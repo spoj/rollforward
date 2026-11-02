@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, constants, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { basename, dirname, extname, join, posix } from 'node:path';
 import { changes, tree } from './system.ts';
@@ -135,7 +135,7 @@ export function moveInstance(inst: Instance, seriesId: string) {
 
 export function duplicateInstance(src: Instance, label: string, by: string, logins: string[]): Instance {
   const name = freeLabel(src.seriesId, label), id = newId(), dir = instanceDir(id);
-  cpSync(src.dir, dir, { recursive: true, filter: p => p !== join(src.dir, 'session') });
+  cpSync(src.dir, dir, { recursive: true, mode: constants.COPYFILE_FICLONE, filter: p => p !== join(src.dir, 'session') }); // shares blocks where the disk can
   setMeta(id, { label: name, series: src.seriesId });
   const inst = instance(id);
   inst.doc.status = 'open';
