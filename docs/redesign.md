@@ -110,14 +110,9 @@ A separate service, in its own repo (`machines`), with one client: the rollforwa
 
 ## Sandbox and network
 
-- **Each run is a bubblewrap sandbox** in its own cgroup, with its own HOME and TMPDIR on scratch space. It sees a tree by name built from the index when it starts:
-  - its series, writable only in its own instance's `working/` and `session/`, and the series' `.pylib`;
-  - the workspaces in reach, read-only;
-  - the catalogue, guidance and the skills, read-only;
-  - `rf`.
-- **No keys inside.** `rf` reaches the server over a unix socket with a per-run token bound to the instance and its ticks. The store, `.rf/` and the server's environment are never visible.
-- **The network goes through a proxy** that adds the model key and lets through a broad allowlist: package registries (PyPI, npm, uv's installer), GitHub and documentation sites, extended as needs show. Internal addresses are never reachable; only the machines service reaches the ERP. Every host contacted is logged where the agent can't edit it.
-- **Preinstalled:** uv, Node, pandas, openpyxl, LibreOffice and Playwright's client, with shared package caches, so most runs install nothing.
+Built: each run is a bubblewrap sandbox with a broad allowlist through the server's socket (PLAN.md, M3 and decision 33). Still to come:
+- **A tree by name** (with Storage): the run sees its series, the workspaces in reach, the catalogue, guidance and skills, built from the index when it starts.
+- **Shared package caches,** so most runs install nothing.
 - **What this gives up:** an allowed site that accepts uploads is a way out for data if the agent is tricked, such as a token planted in an email with "push this file". If that ever matters, the proxy can allow only downloads and clones, which means inspecting encrypted traffic.
 
 ## Storage
@@ -167,7 +162,7 @@ Everything we build runs on the development machine; only the real outside syste
 
 ## Build order
 
-1. The sandbox and the network.
+1. The sandbox and the network (built).
 2. Ids, members and owners, and the migration script.
 3. Microsoft 365 logins and the ticks.
 4. Website logins through the machines service, moving the ERP and the portals onto personal logins.

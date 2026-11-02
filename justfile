@@ -50,4 +50,4 @@ deploy:
     podman build -q -t rollforward-public {{cache}}/repo
     if podman top {{live}} args 2>/dev/null | grep -q cli.js; then echo 'A run is going; deploy when it ends.'; exit 1; fi
     podman rm -f {{live}}
-    podman run -d --name {{live}} --init --restart=always -p 127.0.0.1:8790:8780 --env-file {{cache}}/env -v {{live}}-data:/data -v {{cache}}/data-sources:{{justfile_directory()}}/demo/run/data-sources rollforward-public
+    podman run -d --name {{live}} --init --restart=always --security-opt 'unmask=/proc/*' -p 127.0.0.1:8790:8780 --env-file {{cache}}/env -e RF_SANDBOX_RO={{justfile_directory()}}/demo/run/data-sources -v {{live}}-data:/data -v {{cache}}/data-sources:{{justfile_directory()}}/demo/run/data-sources rollforward-public

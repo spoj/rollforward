@@ -7,7 +7,8 @@ import { promisify } from 'node:util';
 import { basename, dirname, join, posix, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInstance, duplicateInstance, forget, renameInstance, replaceReadOnly, HttpError, instance, instances, isPerson, safeName, type Entry, type Instance } from './store.ts';
-import { startRun, type Run } from './runner.ts';
+import { socketDir, startRun, type Run } from './runner.ts';
+import { serveSandboxes } from './sandbox.ts';
 import { authenticate, checkConfig, mode, removeUser, signOutEverywhere, upsertUser, users, type Me, type Role } from './auth.ts';
 import { initSystem, setOwner, workspace, workspaces } from './system.ts';
 import { builtIn, catalog as systemCatalog, missing, removeSystem, savedSystem, saveSystem, view as systemView } from './systems.ts';
@@ -31,7 +32,7 @@ checkConfig(host);
 rmSync(tmpDir, { recursive: true, force: true });
 mkdirSync(tmpDir);
 
-type Active = { inst: Instance; n: number; token: string; run?: Run; sent: number; seen: number; texts: Map<string, number>; interrupted: boolean; done: boolean; cost: number; browsing?: Browsing; timer?: NodeJS.Timeout };
+type Active = { inst: Instance; n: number; token: string; run?: Run; sent: number; seen: number; texts: Map<string, number>; interrupted: boolean; done: boolean; cost: number; hosts: Set<string>; browsing?: Browsing; timer?: NodeJS.Timeout };
 const active = new Map<string, Active>();
 const byToken = new Map<string, Active>();
 const debounce = new Map<string, NodeJS.Timeout>();
@@ -81,14 +82,14 @@ async function start(inst: Instance) {
   const n = inst.log.filter(e => e.op === 'run').length + 1;
   const entries = inst.log.filter(e => e.seq > seen && e.by !== 'agent');
   const text = message(inst, n, entries);
-  const a: Active = { inst, n, token: randomUUID(), sent: entries.at(-1)!.seq, seen, texts: new Map([[text, entries.at(-1)!.seq]]), interrupted: false, done: false, cost: 0 };
+  const a: Active = { inst, n, token: randomUUID(), sent: entries.at(-1)!.seq, seen, texts: new Map([[text, entries.at(-1)!.seq]]), interrupted: false, done: false, cost: 0, hosts: new Set() };
   active.set(series, a);
   byToken.set(a.token, a);
   inst.append('server', 'run', { run: n, upto: a.sent });
   try {
     a.run = await startRun({
-      seriesDir: series, instanceDir: inst.dir, message: text, skills: seriesSettings(series).skills.filter(id => skill(id)),
-      env: { RF_URL: `http://127.0.0.1:${port}`, RF_TOKEN: a.token, RF_WORKING: join(inst.dir, 'working') },
+      seriesDir: series, instanceDir: inst.dir, token: a.token, read: readable(series).map(s => join(dirname(series), s)),
+      message: text, skills: seriesSettings(series).skills.filter(id => skill(id)),
       onEvent: e => {
         if (e.type === 'message_end' && e.message.role === 'assistant') a.cost += e.message.usage.cost.total;
         if (e.type !== 'message_start' || e.message.role !== 'user') return;
@@ -417,12 +418,32 @@ async function catalog(me: Me, req: IncomingMessage, res: ServerResponse, url: U
   throw new HttpError(405, 'PUT, DELETE, or POST test');
 }
 
+mkdirSync(socketDir, { recursive: true });
+serveSandboxes(join(socketDir, 'rf.sock'), {
+  agent: async (req, res, url) => {
+    try {
+      await agent(req, res, url);
+    } catch (err) {
+      send(res, err instanceof HttpError ? err.status : 500, (err as Error).message);
+    }
+  },
+  run: token => {
+    const a = byToken.get(token);
+    return a && {
+      egress(host, allowed) {
+        if (a.hosts.has(host)) return;
+        a.hosts.add(host);
+        a.inst.append('server', 'egress', { run: a.n, host, allowed });
+      },
+    };
+  },
+});
+
 createServer({ requestTimeout: 60 * 60_000 }, async (req, res) => {
   const url = new URL(req.url!, 'http://x');
   try {
     const site = req.headers['sec-fetch-site'];
     if (req.method !== 'GET' && site && site !== 'same-origin') throw new HttpError(403, 'cross-site request refused');
-    if (url.pathname.startsWith('/agent/')) return await agent(req, res, url);
     const me = await authenticate(req, res, url);
     if (!me) return;
     if (url.pathname === '/') {

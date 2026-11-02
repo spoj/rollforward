@@ -222,7 +222,7 @@ test('a cross-site POST is refused, so another web page cannot steer the agent',
 test('without a session the site shows Sign in with Microsoft; in the demo that leads to a picker of the two demo accounts', async () => {
   assert.equal((await fetch(base + '/api')).status, 401);
   assert.match(await (await fetch(base + '/')).text(), /href="\/auth\/login[^"]*">[\s\S]*Sign in with Microsoft/);
-  assert.equal(await (await fetch(base + '/agent/workspace')).text(), 'no run for this token', 'the agent API takes its run token instead');
+  assert.equal((await fetch(base + '/agent/workspace')).status, 401, "the agent API is only on the sandboxes' socket");
   assert.equal((await fetch(base + '/auth/login', { redirect: 'manual' })).headers.get('location'), '/auth/demo?next=%2F');
   const picker = await (await fetch(base + '/auth/demo')).text();
   assert.ok(picker.includes(adminEmail) && picker.includes(bob));

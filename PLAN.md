@@ -7,7 +7,7 @@
 ## Concepts
 
 - **People:** everyone signs in with a Microsoft account, by pressing Sign in with Microsoft. A person is a **user** or an **admin**.
-- **Workspace:** a top-level folder of series, such as one client's or one team's. It has one **owner**: only the owner and admins see it, its series and their files. A workspace with no owner is the admins'. No run sees another workspace's files (enforced from M3).
+- **Workspace:** a top-level folder of series, such as one client's or one team's. It has one **owner**: only the owner and admins see it, its series and their files. A workspace with no owner is the admins'. No run sees another workspace's files (its sandbox holds only its series and the series it may read).
 - **Series:** a recurring transform, such as "Weekly borrowing base": each instance's input files become its output files. The folder name is the series' name. What an instance should contain comes from earlier instances, not from a declaration.
 - **Skill:** what the agent knows how to fetch or do, and how, whole in a folder: such as the day's AR aging from OneDrive, or a customer's payments from its vendor portal. Admins set each up once, under Skills, with its links and, for a website, its account.
 - **Skill use:** the skills a series' agent may use. A skill writes to a system only what a person approves on the screen.
@@ -164,7 +164,7 @@ The schemas are loose, and unknown fields are ignored, so the agent and the UI c
 - **Answers carry over.** Close logs the default of every unanswered question as an answer. The next instance's agent applies the answers given after the previous instance's last run, and folds standing rules into `process.md`. Approvals to write don't carry over: one the previous instance never acted on is reported and asked again (decision 29).
 - **Reads sources, never writes them.** People usually bring the files. When a person points the agent to a source instead, such as a database or a mailbox folder, the agent reads it, saves what it read in `working/` as the input's file with a `source`, and keeps the fetch as a script that later instances rerun. It reads the series folder, and writes only to its instance's `working/` and, through `rf`, its workspace.
   - People remain the executor: they post the entries and send the certificates. Skills are the exception: a skill writes to a system only what a person approves on the screen (decision 29), and a skill's website takes no write at all (see Skill use).
-  - On the host, these limits rest on the instructions alone; M3 enforces them with a sandbox.
+  - The run's sandbox enforces them (M3): it can't write elsewhere or reach any system but through the server.
 - **History is the memory.** Rather than keep a standing script library, the agent copies and adapts the most recently closed instance's scripts. Each instance's `working/` is then a complete record of how its outputs were made. Nothing else is carried between instances.
 - **One run at a time per series,** with a time limit (2 hours; `RF_LIMIT_MIN`).
 - **Model:** one, set in the runner (`RF_MODEL`, default `openrouter/anthropic/claude-opus-5.5`, thinking `high`). Choosing a model per series comes later.
@@ -202,15 +202,13 @@ The runner, [src/runner.ts](src/runner.ts), drives Pi through Pi's `RpcClient`, 
       --session-dir "<label>/session" --session-id main
 
 - **Advanced's controls are Pi's own commands.** `prompt` starts a run, and `steer` delivers mid-run events and Advanced's Steer. Interrupt is `clear_queue`, then `abort`.
-- **Steering mode `all`** comes from the Pi settings the runner uses. The runner doesn't send `set_steering_mode`, which would save to the user's global settings.
-  - On the host these are the user's own settings, which must say `all`. The Docker image sets it.
-  - At M3 the sandbox gets its own Pi home, with `steeringMode` set to `all` and an API key.
+- **Each run has its own Pi home,** in its sandbox's scratch: `settings.json` with `steeringMode` `all`, and `models.json`, which points the provider at the server's socket (see Runs in sandboxes). `PI_OFFLINE` keeps Pi from checking for updates.
 - **One process per run.** The runner stops Pi at `agent_settled`, since RPC mode runs until its stdin closes. At the time limit, it aborts the run and stops Pi.
 - **Sessions are found by working folder.** Pi reopens `main` only if the folder recorded in the session's first line is the series folder, so a series rename rewrites that line in every session of the series.
-- **Credentials:** Pi uses the OpenRouter key from `OPENROUTER_API_KEY` or the user's Pi credentials. It works with `--no-extensions`, unlike a Claude subscription, which needs its auth extension loaded with `-e`.
-- **Skills are the app's own:** `--skill` loads each skill the series chose under Skill use, and `--no-skills` keeps out the Pi skills of whoever runs the server. The agent's scripts reach a skill's files through `RF_SKILLS`. A skill's keys, such as an outside service's API key, come from the server's environment, which Pi passes on.
-- **Harness-specific code stays in one module,** the runner. `RpcClient` always starts `node <cliPath>`, so M3 needs a `cliPath` shim that runs `sbx exec -i <sandbox> -- pi …`. Pi's docs show only `pi -p` inside a sandbox, so RPC through `sbx exec` needs a test.
-- **Not the AI SDK's `HarnessAgent`,** whose steering is experimental (`experimental_steerTurn`) and not supported by every adapter. **Not Docker Agent,** whose delegation isn't needed when agents talk through files; Docker's sandbox is still the M3 plan.
+- **Credentials:** the OpenRouter key, `OPENROUTER_API_KEY`, stays with the server, which adds it to each model request a run sends through its socket. A run whose server has none ends at once with that error. A Claude subscription won't do: it needs its auth extension loaded with `-e`.
+- **Skills are the app's own:** `--skill` loads each skill the series chose under Skill use, and `--no-skills` keeps out the Pi skills of whoever runs the server. The agent's scripts reach a skill's files through `RF_SKILLS`. Nothing of the server's environment reaches a run.
+- **Harness-specific code stays in one module,** the runner. `RpcClient` always starts `node`, found on the `PATH` it's given, so the runner puts [bin/sandbox](bin/sandbox) first, whose `node` starts Pi in the run's sandbox.
+- **Not the AI SDK's `HarnessAgent`,** whose steering is experimental (`experimental_steerTurn`) and not supported by every adapter. **Not Docker Agent,** whose delegation isn't needed when agents talk through files. **Not Docker Sandboxes:** a microVM per run is more than one VM's 20–40 runs need, where bubblewrap does it in a process.
 
 ## Build order
 
@@ -231,7 +229,7 @@ The risk is whether an agent can learn a real deliverable from examples, so the 
      - `uv venv .venv && uv pip install -r requirements.txt` (openpyxl, pandas, xlrd, extract-msg, defusedxml, requests, beautifulsoup4, lxml, matplotlib, pdfplumber, python-docx), with `.venv/bin` first on the agent's `PATH`;
      - LibreOffice, to recalculate scratch copies of formula workbooks.
      - Each series has its own `.pylib` on the agent's `PYTHONPATH`: Python packages the agent installs there with `pip install --target` stay with the series, in the data volume, and survive a new image.
-     - The Docker image adds poppler, sqlite3, curl, git, jq, zip and CJK fonts. Its outbound network is open, and a run can reach every series; per-series capabilities (network, packages, sources, secrets) wait for the sandbox.
+     - The Docker image adds poppler, sqlite3, curl, git, jq, zip, CJK fonts, bubblewrap and socat.
 2. **M2, the page (built):** [web/index.html](web/index.html), over the same server:
    - the graph, tiles, notes, ops log and Advanced, which reads the agent's work from the instance's Pi session file;
    - phone layout: Outputs come first, then the other tiles, each saying what it's made from instead of lines; notes open as a bottom sheet;
@@ -243,8 +241,8 @@ The risk is whether an agent can learn a real deliverable from examples, so the 
    The demo can run behind `tailscale serve`, to try it from a phone.
 
    Then add a second series, such as a monthly rec whose day-2 GL listing arrives later.
-3. **M3, hosting.** Sign-in, one workspace per client, and backups. Pi runs in Docker Sandboxes, built from Docker's Pi kit plus Python, the spreadsheet libraries and `rf`.
-   - **Sign in with Microsoft (built, [src/auth.ts](src/auth.ts)):** everything but `/agent/` needs a session. Someone without one sees a page with a single Sign in with Microsoft button; nobody types an address or a code.
+3. **M3, hosting.** Sign-in, one workspace per client, sandboxes and backups.
+   - **Sign in with Microsoft (built, [src/auth.ts](src/auth.ts)):** everything needs a session. Someone without one sees a page with a single Sign in with Microsoft button; nobody types an address or a code.
      - **Demo** (the default): the button leads to a picker of two fixed demo accounts, `admin@demo.test` (admin) and `bob@demo.test` (user), one click each. Anyone who reaches the site can be the demo admin, so keep a demo on localhost; the server warns otherwise.
      - **Microsoft** (once `RF_OIDC_ISSUER`, `RF_OIDC_CLIENT_ID` and `RF_PUBLIC_URL` are set for an app registered in Microsoft Entra ID): the same button goes to Microsoft, by the authorization code flow with PKCE, and back to the app's registered redirect, `RF_OIDC_REDIRECT_URI` (by default `RF_PUBLIC_URL/auth/callback`; it may be the site's root). How the code becomes an ID token follows how the app is registered:
        - a **Web** app with a client secret (`RF_OIDC_CLIENT_SECRET`), or a **public client** (Mobile and desktop) without one: the server redeems the code itself, with the secret if there is one and the PKCE verifier. It takes the token straight from Microsoft's token endpoint over TLS, so it doesn't check the signature (OpenID Connect Core 3.1.3.7);
@@ -253,10 +251,13 @@ The risk is whether an agent can learn a real deliverable from examples, so the 
        Either way the server checks the token's issuer, audience, expiry and nonce. Each sign-in in flight keeps its state in a cookie of its own, so sign-ins started in several tabs don't undo each other. Except on localhost, Microsoft takes only https redirects, so a site others reach needs an https address registered with the app. The first sign-in adds a person as a user unless `RF_AUTO_PROVISION=0`; `RF_ALLOWED_DOMAINS` limits who may, `RF_ADMINS` names admins, and a person's Microsoft id is pinned at their first sign-in.
      - A session is a cookie for 12 hours (`RF_SESSION_HOURS`), signed with `.rf/session.key` and the person's epoch, so Disable (and the CLI's signout) end it at once. People are managed on the Users page or with `node src/auth.ts DATA_ROOT list | add | role | disable | enable | signout | remove`. The agent's environment gets a blank `RF_OIDC_CLIENT_SECRET`.
    - **Workspaces per person (built):** every API call, file and preview is checked against the workspace's owner, and a workspace someone else owns answers 404. A new workspace belongs to whoever makes it, and a name another person uses is taken. Admins see every workspace and give one to someone from its settings.
-   - Each sandbox is a microVM. The series folder is mounted read-only; only the instance's `working/` and `session/` are writable.
-   - **Network:** outbound traffic is denied except to the model API and the agent API. Docker's proxy adds the model key on the way out, so the key never enters the sandbox. The agent API is reached at `host.docker.internal` after `sbx policy allow network --sandbox <name> localhost:<port>`.
-   - **The agent API gets its own port.** Each call carries a per-run token that is bound to one instance and expires when the run ends. A sandbox can then never reach another workspace through the server.
-   - Local sandboxes are free, including for commercial use.
+   - **Runs in sandboxes (built, [src/sandbox.ts](src/sandbox.ts), [src/runner.ts](src/runner.ts)):** each run's Pi is a bubblewrap sandbox, in a systemd scope of its own (`MemoryHigh` 4 GB, `MemoryMax` 8 GB, in `rollforward-runs.slice`; `RF_SANDBOX_SCOPE`, empty in the container image, where there is no systemd).
+     - **What it sees:** the system, the app and the skills, read-only; its series read-only but for the instance's `working/` and `session/` and the series' `.pylib`; the series it may read, and `RF_SANDBOX_RO`, read-only; and a HOME and /tmp of its own on scratch (`RF_SCRATCH`), deleted when the run ends. Never `.rf/`, another series or workspace, or the server's environment.
+     - **No network of its own.** Its one way out is the server's socket, `RF_SCRATCH/socket/rf.sock`, which socat offers at 127.0.0.1:7000 inside:
+       - `/agent/…`, the agent API, with the run's token (`RF_URL`, `RF_TOKEN`), bound to one instance and gone when the run ends. The site no longer serves it;
+       - `/model/<token>/…`, the model, with the key added on the way (`RF_MODEL_URL`, default OpenRouter's), so no key is inside;
+       - `CONNECT`, an HTTPS proxy (`HTTPS_PROXY`) to package registries, GitHub and documentation sites, and the hosts in `.rf/egress.json`; never to a private address. Each host a run asks for is logged once, as `egress`, allowed or not.
+     - **In a container,** bubblewrap needs podman's `--security-opt unmask=/proc/*` (Docker: `seccomp=unconfined` and `systempaths=unconfined`).
 
 ## Stack
 
@@ -317,6 +318,7 @@ The risk is whether an agent can learn a real deliverable from examples, so the 
 30. **Tools for fixed fetches** (22 Oct; replaced by 31): inputs that come by the same steps every time (OneDrive files, a mail's attachment, vendor portals behind emailed codes) are named tools the server runs with credentials admins keep under Systems, rather than steps the agent clicks through. They only read, they cost no model time, and the same steps give the same file. Microsoft 365 is reached as an app with its own permissions, and the code only reads, whatever those permissions allow.
 31. **Connections and skills apart** (23 Oct; replaced by 32): Tool use holds connections, how to reach a system and the credentials for it; Skill use holds skills, what to fetch or do and how, each with the series' own settings. Connections give the agent a few general reads (files, mail, a signed-in browser) and keep every secret in the server; skills are folders in Pi's format that use them, so a new fetch is a skill, not a change to the server, and a series loads only the skills it chose. A portal's steps are a flow in its skill, which the server runs in the connection's browser: as fixed and cheap as code in the server, but kept with the skill, and still unable to write, as its few reads that post are named in the file.
 32. **Skills, set up once** (23 Oct): a series chooses only skills; admins set each skill up once, under Skills, for every series, as people saw a series' own copy of the same links as repetition. A skill with a website, such as a vendor portal, holds that site whole, as the ERP's skill holds its service: its account in its settings (the password sealed), its hosts, its flows and its own sign-in, so a new portal is a skill, not a change to the server. Only the Microsoft 365 apps stay shared connections, under Systems, used by the skills that say so. The agent's own browsing of those systems, with its writes held for approval (27), is gone for now: the ERP goes through its skill. One portal's skill reads the export people put on OneDrive each day, as its site stopped mailing sign-in codes.
+33. **Runs in bubblewrap sandboxes** (2 Nov): rather than Docker Sandboxes' microVMs, each run is a bubblewrap sandbox in a cgroup of its own, with no network but the server's socket: the agent API, the model with its key added on the way, and a proxy to an allowlist broad enough to install packages and read documentation (pypi, npm, GitHub, docs sites, `.rf/egress.json`), never a private address. No key, no `.rf/` and no other workspace is inside. The site no longer serves the agent API. [docs/redesign.md](docs/redesign.md) holds the rest of the round agreed that day.
 
 ## Proposed by the agent (open to change)
 

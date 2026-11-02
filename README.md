@@ -72,11 +72,11 @@ To reach it from the internet, run `tailscale funnel --bg 8780`, with Microsoft 
 
 For a demo run in podman behind Tailscale Funnel, the justfile has `just invite EMAIL [admin]`, `just revoke EMAIL`, `just people`, `just logs`, and `just deploy`, which rebuilds it from the committed main branch.
 
-**Security:** anyone signed in can steer the agents of their own workspaces, which run shell commands inside the container: they can read the model's API key and every series, and reach whatever the host can reach.
+**Security:** each run is a sandbox. It sees its own series and the series it may read, holds no key, and reaches the internet only through the server, to package registries, GitHub and documentation sites. Anyone signed in can steer the agents of their own workspaces within that.
 
 ## Without Docker
 
-You need Node 26 and uv. LibreOffice is optional, for recalculating formula workbooks.
+You need Node 26, uv, bubblewrap and socat, and a systemd user session for each run's memory limits (or `RF_SANDBOX_SCOPE=` without). LibreOffice is optional, for recalculating formula workbooks.
 
     npm install
     uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt
@@ -84,15 +84,20 @@ You need Node 26 and uv. LibreOffice is optional, for recalculating formula work
 
 The [justfile](justfile) has these and more as recipes; `just` lists them.
 
-- **Pi credentials:** Pi needs `OPENROUTER_API_KEY` or a Pi login.
-- **Pi settings:** `"steeringMode": "all"` in `~/.pi/agent/settings.json`.
+- **Model key:** `OPENROUTER_API_KEY`. It stays with the server, which adds it to the runs' model requests.
+- **On a VM:** run the server as a systemd user service with lingering on, and cap all runs together with `systemctl --user set-property rollforward-runs.slice MemoryMax=50G`.
 - **Environment variables:**
   - `RF_MODEL` (default `openrouter/anthropic/claude-opus-5.5`)
   - `RF_THINKING` (`high`)
   - `RF_LIMIT_MIN` (120)
   - `RF_PI_ARGS` (a JSON array of extra Pi arguments)
   - `RF_HOST` (`127.0.0.1`)
-  - `RF_SKILLS_DIR`, the folder of this deployment's skills, and any keys they need
+  - `RF_SKILLS_DIR`, the folder of this deployment's skills
+  - `RF_SCRATCH` (the system's temp folder`/rollforward`), for each run's HOME and /tmp and the server's socket for runs
+  - `RF_SANDBOX_SCOPE`, the command that gives each run its cgroup (a `systemd-run --user --scope` line; empty for none)
+  - `RF_SANDBOX_RO`, more folders runs may read, separated by `:`
+  - `RF_MODEL_URL` (`https://openrouter.ai/api`)
+- **Hosts runs may reach,** beyond package registries, GitHub and documentation sites: a JSON list in `.rf/egress.json`, such as `["api.example.com", "*.example.org"]`.
 
 To build the demo from scratch (about $4 of model use; the generator needs the internet for the ECB rates):
 

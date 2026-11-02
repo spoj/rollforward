@@ -1,11 +1,19 @@
 import { RpcClient, type JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PORT, sandboxArgs } from './sandbox.ts';
 import { skillsDir } from './skills.ts';
 
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const cliPath = join(dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent'))), 'cli.js');
 const [provider, model] = (process.env.RF_MODEL ?? 'openrouter/anthropic/claude-opus-5.5').split(/\/(.*)/);
+// Where runs get their HOME and /tmp, and the folder of the server's socket for sandboxes.
+export const scratch = process.env.RF_SCRATCH ?? join(tmpdir(), 'rollforward');
+export const socketDir = join(scratch, 'socket');
+// Each run's own cgroup, where systemd runs the server; the container image sets this empty.
+const SCOPE = 'systemd-run --user --scope --quiet --collect --slice=rollforward-runs -p MemoryHigh=4G -p MemoryMax=8G --';
 
 export type Run = {
   steer(text: string): Promise<unknown>;
@@ -14,30 +22,48 @@ export type Run = {
   settled: Promise<boolean>;
 };
 
-// `skills`: the skills the series chose under Skill use; the run loads only those.
-export function pi(o: { seriesDir: string; instanceDir: string; env: Record<string, string>; skills?: string[] }): RpcClient {
+// Pi for one run, in its sandbox (sandbox.ts): the series read-only but for the instance's working/ and session/ and the
+// series' .pylib, the series in `read` read-only, the skills the series chose and nothing else of the host's.
+export function pi(o: { seriesDir: string; instanceDir: string; token: string; read?: string[]; skills?: string[] }): RpcClient {
+  const run = join(scratch, 'runs', o.token), home = join(run, 'home'), agentDir = join(home, '.pi', 'agent'), tmp = join(run, 'tmp');
+  const pylib = join(o.seriesDir, '.pylib'), working = join(o.instanceDir, 'working'), session = join(o.instanceDir, 'session');
+  for (const d of [agentDir, tmp, pylib, working, session]) mkdirSync(d, { recursive: true });
+  const local = `http://127.0.0.1:${PORT}`, proxy = `http://rf:${o.token}@127.0.0.1:${PORT}`;
+  writeFileSync(join(agentDir, 'models.json'), JSON.stringify({ providers: { [provider]: { baseUrl: `${local}/model/${o.token}`, apiKey: 'none' } } }));
+  writeFileSync(join(agentDir, 'settings.json'), JSON.stringify({ steeringMode: 'all' }));
+  const args = sandboxArgs({
+    cwd: o.seriesDir, home, tmp, socketDir,
+    ro: [app, skillsDir(), o.seriesDir, ...(o.read ?? []), ...(process.env.RF_SANDBOX_RO ?? '').split(delimiter)].filter(p => p && existsSync(p)),
+    rw: [working, session, pylib],
+    env: {
+      PATH: [join(app, 'bin'), join(app, '.venv', 'bin'), '/usr/bin'].join(delimiter), LANG: 'C.UTF-8', PYTHONPATH: pylib, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: '1', PI_TELEMETRY: '0',
+      RF_URL: local, RF_TOKEN: o.token, RF_WORKING: working, RF_SKILLS: skillsDir(), ...(process.env.RF_TODAY && { RF_TODAY: process.env.RF_TODAY }),
+      HTTPS_PROXY: proxy, HTTP_PROXY: proxy, https_proxy: proxy, http_proxy: proxy, NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost', NODE_USE_ENV_PROXY: '1',
+    },
+  });
+  writeFileSync(join(run, 'bwrap.args'), `${args.join('\0')}\0`);
   return new RpcClient({
     cliPath, cwd: o.seriesDir, provider, model,
-    // Pi gets the server's environment; blank the sign-in secret so the agent never sees it.
-    env: { ...o.env, PATH: [join(app, 'bin'), join(app, '.venv', process.platform === 'win32' ? 'Scripts' : 'bin'), process.env.PATH].join(delimiter), PYTHONPATH: join(o.seriesDir, '.pylib'), RF_SKILLS: skillsDir(), RF_OIDC_CLIENT_SECRET: '' },
+    env: { PATH: [join(app, 'bin', 'sandbox'), process.env.PATH].join(delimiter), RF_SANDBOX_ARGS: join(run, 'bwrap.args'), RF_SANDBOX_SCOPE: process.env.RF_SANDBOX_SCOPE ?? SCOPE },
     args: ['--no-extensions', '--no-skills', '--no-mcp', '--no-context-files', '--no-prompt-templates', ...(o.skills ?? []).flatMap(id => ['--skill', join(skillsDir(), id)]),
       '--tools', 'read,bash,edit,write', '--append-system-prompt', join(app, 'prompt.md'),
       '--thinking', process.env.RF_THINKING ?? 'high',
-      '--session-dir', join(o.instanceDir, 'session'), '--session-id', 'main',
+      '--session-dir', session, '--session-id', 'main',
       ...JSON.parse(process.env.RF_PI_ARGS ?? '[]')],
   });
 }
 
-export async function startRun(o: { seriesDir: string; instanceDir: string; env: Record<string, string>; skills?: string[]; message: string; onEvent: (e: JsonAgentSessionEvent) => void }): Promise<Run> {
-  const client = pi(o);
+export async function startRun(o: Parameters<typeof pi>[0] & { message: string; onEvent: (e: JsonAgentSessionEvent) => void }): Promise<Run> {
+  if (!process.env.OPENROUTER_API_KEY) throw new Error('no model key: the server has no OPENROUTER_API_KEY');
+  const client = pi(o), stop = async () => { await client.stop(); rmSync(join(scratch, 'runs', o.token), { recursive: true, force: true }); };
   const settled = new Promise<boolean>(resolve => client.onEvent(e => e.type === 'agent_settled' && resolve(e.aborted)));
   client.onEvent(o.onEvent);
   await client.start();
-  await client.prompt(o.message).catch(async e => { await client.stop(); throw e; });
+  await client.prompt(o.message).catch(async e => { await stop(); throw e; });
   return {
     steer: text => client.steer(text),
     interrupt: async () => { await client.clearQueue(); await client.abort(); },
-    stop: () => client.stop(),
+    stop,
     settled,
   };
 }
