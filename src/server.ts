@@ -11,6 +11,7 @@ import { socketDir } from './runner.ts';
 import { serveSandboxes } from './sandbox.ts';
 import { authenticate, checkConfig, mode, removeUser, signOutEverywhere, upsertUser, users, type Me, type Role } from './auth.ts';
 import { canManage, canSee, everyone, initSystem, saveTree, tree, type Workspace } from './system.ts';
+import { checkTicks, logins, runnerOf, signOut } from './logins.ts';
 import { builtIn, catalog as systemCatalog, missing, removeSystem, savedSystem, saveSystem, view as systemView } from './systems.ts';
 import { agentCall, testSkill } from './agent-api.ts';
 import { testM365 } from './m365.ts';
@@ -181,7 +182,8 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
     mustSee(me, s && t.workspaces[s.workspace]);
     if (req.method === 'POST') {
       if (instances(id).filter(i => i.doc.status === 'open').length >= MAX_OPEN) throw new HttpError(409, `${MAX_OPEN} instances are open; close one first`);
-      const created = createInstance(id, String((await json(req)).label ?? ''), by);
+      const { label, logins: ticks } = await json(req);
+      const created = createInstance(id, String(label ?? ''), by, checkTicks(by, ticks ?? []));
       kick(created);
       return send(res, 200, { id: created.id });
     }
@@ -196,7 +198,7 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
     if (change.archived !== undefined) s.archived = !!change.archived;
     saveTree(t);
     const { wakes: allowed, ...settings } = seriesSettings(seriesDir(id));
-    const wakesBy = change.allow_wakes === undefined ? allowed : change.allow_wakes ? { by, since: new Date().toISOString() } : undefined;
+    const wakesBy = change.allow_wakes === undefined ? allowed : change.allow_wakes ? { by, since: new Date().toISOString(), logins: checkTicks(by, change.logins ?? []) } : undefined;
     replaceReadOnly(join(seriesDir(id), 'series.json'), JSON.stringify({ ...settings, ...(change.skills !== undefined && { skills: checkChosen(change.skills) }), ...(wakesBy && { wakes: wakesBy }) }, null, 1));
     return send(res, 200, 'ok');
   }
@@ -215,7 +217,7 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
     if (!r) throw new HttpError(404, `no request ${id}`);
     mustSee(me, t.workspaces[t.series[r.series].workspace]);
     if (req.method === 'POST') {
-      const inst = startWith(r.series, r.label, by, { reason: r.reason, from: r.from });
+      const inst = startWith(r.series, r.label, by, checkTicks(by, (await json(req)).logins ?? []), { reason: r.reason, from: r.from });
       dropRequest(id);
       return send(res, 200, { id: inst.id });
     }
@@ -228,13 +230,13 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
   mustSee(me, t.workspaces[t.series[inst.seriesId].workspace]);
   const a = active.get(inst.seriesId);
   const mine = a?.inst === inst ? a : undefined;
-  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log, run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4) } : null, queued: queued(inst) });
+  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log, run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4) } : null, queued: queued(inst), runner: runnerOf(inst) });
   if (action === 'trace') return send(res, 200, trace(inst));
   if (req.method !== 'POST') throw new HttpError(405, 'POST only');
   if (action === 'duplicate') {
     if (inst.doc.status === 'open') throw new HttpError(409, 'only a closed or abandoned instance can be duplicated');
     if (instances(inst.seriesId).filter(i => i.doc.status === 'open').length >= MAX_OPEN) throw new HttpError(409, `${MAX_OPEN} instances are open; close one first`);
-    return send(res, 200, { id: duplicateInstance(inst, url.searchParams.get('as') ?? '', by).id });
+    return send(res, 200, { id: duplicateInstance(inst, url.searchParams.get('as') ?? '', by, checkTicks(by, (await json(req)).logins ?? [])).id });
   }
   if (action === 'promote') {
     // Make it a series: a one-off ask of Ad hoc becomes the first instance of a new series, which later instances roll forward from.
@@ -276,8 +278,13 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
     renameInstance(inst, url.searchParams.get('as') ?? '');
     inst.append(by, 'rename', { from });
     return send(res, 200, 'ok');
+  } else if (action === 'takeover') {
+    // Taking over makes you the runner from now on, with your own logins ticked; whoever closes answers for the whole instance.
+    inst.append(by, 'takeover', { from: runnerOf(inst).by, logins: checkTicks(by, (await json(req)).logins ?? []) });
+    return send(res, 200, 'ok');
   } else if (action === 'close' || action === 'abandon') {
     if (mine) throw new HttpError(409, 'wait for the run to end');
+    if (action === 'close' && runnerOf(inst).by !== by) throw new HttpError(403, `only the runner, ${runnerOf(inst).by}, closes it, as closing signs it off; take it over first`);
     inst[action](by);
     cancelWake(inst.id);
     if (action === 'close') closed(inst);
@@ -395,6 +402,8 @@ createServer({ requestTimeout: 60 * 60_000 }, async (req, res) => {
     else if (url.pathname.startsWith('/files/')) await file(me, res, url, false);
     else if (url.pathname.startsWith('/preview/')) await file(me, res, url, true);
     else if (url.pathname.startsWith('/api/')) await api(me, req, res, url);
+    else if (url.pathname === '/logins' && req.method === 'GET') send(res, 200, logins(me.email));
+    else if (url.pathname.startsWith('/logins/') && req.method === 'DELETE') send(res, 200, (signOut(me.email, decodeURIComponent(url.pathname.slice(8))), 'ok'));
     else if (url.pathname === '/users' || url.pathname.startsWith('/users/')) await admin(me, req, res, url);
     else if (url.pathname === '/systems' || url.pathname.startsWith('/systems/')) await catalog(me, req, res, url);
     else if (url.pathname === '/skills' || url.pathname.startsWith('/skills/')) await skillsRoute(me, req, res, url);

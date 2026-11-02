@@ -176,10 +176,10 @@ export function dropRequest(id: string): Request {
   return r;
 }
 
-// Starts an instance of a series for a wake or a request, run by `by`, with the reason as its first entry.
-export function startWith(seriesId: string, label: string, by: string, wake: { reason: string; from: string }): Instance {
+// Starts an instance of a series for a wake or a request, run by `by` with the logins they ticked, the reason its first entry.
+export function startWith(seriesId: string, label: string, by: string, logins: string[], wake: { reason: string; from: string }): Instance {
   if (instances(seriesId).filter(i => i.doc.status === 'open').length >= MAX_OPEN) throw new HttpError(409, `${MAX_OPEN} instances are open; close one first`);
-  const inst = createInstance(seriesId, label, by);
+  const inst = createInstance(seriesId, label, by, logins);
   inst.append('server', 'wake', wake);
   kick(inst);
   return inst;
@@ -201,7 +201,7 @@ function fire() {
     const runs = u && !u.disabled && canSee({ email: allow.by, role: u.role, groups: u.groups ?? [] }, t.workspaces[t.series[target].workspace]);
     try {
       if (!runs) throw new Error('no Allow wakes');
-      startWith(target, wake.label!, allow.by, { reason: wake.reason, from: wake.from });
+      startWith(target, wake.label!, allow.by, allow.logins, { reason: wake.reason, from: wake.from });
     } catch {
       w.requests[newId()] = { series: target, label: wake.label!, reason: wake.reason, from: wake.from, at: now };
     }

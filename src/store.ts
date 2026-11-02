@@ -86,8 +86,9 @@ function freeLabel(seriesId: string, label: string): string {
   return name;
 }
 
-// A new instance starts from its series' latest closed one, but in a workspace's Ad hoc series, where each is a one-off ask.
-export function createInstance(seriesId: string, label: string, by: string): Instance {
+// A new instance starts from its series' latest closed one, but in a workspace's Ad hoc series, where each is a one-off ask. `by` is
+// its runner, and `logins` the offers of their logins they ticked for it (logins.ts).
+export function createInstance(seriesId: string, label: string, by: string, logins: string[]): Instance {
   const name = freeLabel(seriesId, label), id = newId(), dir = instanceDir(id);
   const closed = tree().series[seriesId]?.adhoc ? [] : instances(seriesId).filter(i => i.doc.status === 'closed').sort((a, b) => a.closedAt().localeCompare(b.closedAt()));
   const from = closed.at(-1);
@@ -98,7 +99,7 @@ export function createInstance(seriesId: string, label: string, by: string): Ins
   inst.doc.items = (from?.doc.items ?? []).map(({ id, name, kind, from }) => ({ id, name, kind, file: null, from, notes: [] }));
   inst.save();
   const fetch = from?.doc.items.some(i => i.kind === 'input' && i.file?.startsWith('working/'));
-  inst.append(by, 'create', { from: from?.label ?? null, ...(fetch && { fetch }) });
+  inst.append(by, 'create', { from: from?.label ?? null, ...(fetch && { fetch }), logins });
   return inst;
 }
 
@@ -110,14 +111,14 @@ export function moveInstance(inst: Instance, seriesId: string) {
   setMeta(inst.id, { label: freeLabel(seriesId, inst.label), series: seriesId });
 }
 
-export function duplicateInstance(src: Instance, label: string, by: string): Instance {
+export function duplicateInstance(src: Instance, label: string, by: string, logins: string[]): Instance {
   const name = freeLabel(src.seriesId, label), id = newId(), dir = instanceDir(id);
   cpSync(src.dir, dir, { recursive: true, filter: p => p !== join(src.dir, 'session') });
   setMeta(id, { label: name, series: src.seriesId });
   const inst = instance(id);
   inst.doc.status = 'open';
   inst.save();
-  inst.append(by, 'duplicate', { from: src.label });
+  inst.append(by, 'duplicate', { from: src.label, logins });
   return inst;
 }
 

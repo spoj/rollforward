@@ -421,7 +421,7 @@ function renderSide() {
   if (archived) h += `<button class="quiet" data-act="toggle-archived">${showArchived ? 'Hide' : 'Show'} archived (${archived})</button>`;
   h += `<div class="legend"><div><i class="p">Blue</i> uploaded by a person</div><div><i>Black</i> made by the agent</div><div><span class="tri"></span>a note, for information</div><div><span class="tri q"></span>a question for you</div><div><span class="dash"></span>expected, not there yet</div></div>`;
   h += `<div class="acct"><div>${esc(me.name)}${me.role === 'admin' ? ' · admin' : ''}</div><div class="mail">${esc(me.email)}</div>`
-    + (me.role === 'admin' ? '<button class="quiet" data-act="users">Users</button><button class="quiet" data-act="systems">Systems</button><button class="quiet" data-act="skills">Skills</button>' : '') + '<button class="quiet" data-act="signout">Sign out</button></div>';
+    + '<button class="quiet" data-act="logins">Logins</button>' + (me.role === 'admin' ? '<button class="quiet" data-act="users">Users</button><button class="quiet" data-act="systems">Systems</button><button class="quiet" data-act="skills">Skills</button>' : '') + '<button class="quiet" data-act="signout">Sign out</button></div>';
   put($('#side'), h);
 }
 
@@ -438,7 +438,9 @@ function renderBar() {
     h += `<div class="state">${state}</div>`;
     h += `<button class="btn top ${ui.log ? 'sel' : ''}" data-act="log">Ops log</button>`;
     const off = data.run ? 'disabled title="Available when the run ends"' : '';
-    if (data.doc.status === 'open') h += `<button class="btn danger top" data-act="abandon" ${off}>Abandon</button><button class="btn commit top" data-act="close" ${off}>Close instance</button>`;
+    if (data.doc.status === 'open') h += `<button class="btn danger top" data-act="abandon" ${off}>Abandon</button>`
+      + (data.runner.by === me.email ? `<button class="btn commit top" data-act="close" ${off}>Close instance</button>`
+        : `<button class="btn top" data-act="takeover" title="${esc(data.runner.by)} runs it: their logins, their sign-off. Taking over makes it yours.">Take over</button>`);
     else h += `<button class="btn top" data-act="duplicate">Duplicate</button>`;
     if (cur.s.adhoc) h += `<button class="btn top" data-act="promote" title="Move this one-off into a new series, as its first instance">Make it a series</button>`;
   }
@@ -743,6 +745,8 @@ function renderPv() {
   else if (pv.settings?.kind === 'users') h += `<div class="pvb vl">${usersHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'systems') h += `<div class="pvb vl">${systemsHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'skills') h += `<div class="pvb vl">${skillsHtml(pv.settings)}</div>`;
+  else if (pv.settings?.kind === 'logins') h += `<div class="pvb vl">${loginsHtml(pv.settings)}</div>`;
+  else if (pv.settings?.kind === 'start') h += `<div class="pvb vl">${startHtml(pv.settings)}</div>`;
   else if (pv.settings) {
     const s = pv.settings;
     h += '<div class="pvb vl">';
@@ -753,7 +757,8 @@ function renderPv() {
         + `<div class="sub" style="margin:0 0 6px 22px">${esc(k.description.length > 180 ? k.description.slice(0, 180) + '…' : k.description)}</div>`).join('')
       + (s.skillList.some(k => !k.configured) ? `<div class="sub">A skill not set up yet can be chosen now; the agent can use it once ${me.role === 'admin' ? 'you set it up' : 'an admin sets it up'} under Skills.</div>` : '')
       + `<h3>Wakes</h3><label class="skill-row"><input type="checkbox" id="swakes" ${s.allow_wakes ? 'checked' : ''}> Allow wakes</label>`
-      + `<div class="sub">${s.allow_wakes ? `Wakes start new instances of this series, run as ${esc(s.allow_wakes)}${s.allow_wakes === me.email ? ' (you)' : ''}. Saving with it on makes you their runner.` : 'An agent that wakes this series asks on this page instead, for someone to start the instance.'}</div>`
+      + `<div class="sub">${s.allow_wakes ? `Wakes start new instances of this series, run as ${esc(s.allow_wakes)}${s.allow_wakes === me.email ? ' (you)' : ''}. ` : 'An agent that wakes this series asks on this page instead, for someone to start the instance. Turned on, wakes run as you, with the logins ticked here.'}</div>`
+      + ticksHtml(s.offers) + (s.allow_wakes && s.allow_wakes !== me.email ? '<div><button class="btn" data-act="wakes-mine">Run wakes as me, with these logins</button></div>' : '')
       + (s.wake ? `<div class="row2"><span class="sub">Next: starts ${esc(s.wake.label)}, ${esc(s.wake.reason)}</span></div><div class="row2"><input type="datetime-local" id="swake" value="${localInput(s.wake.at)}"><button class="btn" data-act="wake-move">Move</button><button class="btn" data-act="wake-cancel">Cancel wake</button></div>` : '<div class="sub">No wake pending. The agent sets the next one.</div>')
       + `<h3>Reading</h3><div class="sub">${s.reads.length ? `This series' agent can read ${esc(s.reads.join(', '))}: the other series of its workspace, and those of workspaces that have all its people.` : "This series' agent reads only this series."}</div>`
       + '<div><button class="btn primary" data-act="savesettings">Save</button></div><hr>';
@@ -847,6 +852,32 @@ async function openSystems() {
   renderPv();
 }
 
+// Your logins, each with what it offers a run, which you tick when you start or take over an instance.
+function loginsHtml(s) {
+  let h = `<div class="sub">Every login is yours alone. A run uses only its runner's logins, and only those ticked for its instance. Nothing here is a password: you sign in to each system yourself.</div>`;
+  if (!s.logins.length) h += '<div class="sub">No logins yet.</div>';
+  for (const l of s.logins) h += `<h3>${esc(l.name)}</h3><div class="sub">${esc(l.account ?? '')}${l.account ? ' · ' : ''}since ${esc(when(l.since))}</div>`
+    + l.offers.map(o => `<div class="skill-row">${esc(o.name)}</div>`).join('') + `<div><button class="btn" data-act="signout-login" data-id="${esc(l.id)}">Sign out</button></div>`;
+  return h;
+}
+
+// Ticks: which of your logins an instance may use, asked whenever you start, copy or take over one, or allow wakes.
+const ticksHtml = offers => offers.length ? offers.map(o => `<label class="skill-row"><input type="checkbox" class="tick" value="${esc(o.id)}"> ${esc(o.name)}</label>`).join('')
+  : '<div class="sub">You have no logins yet; add them under Logins. The agent can still work with the files people bring.</div>';
+const ticked = () => [...document.querySelectorAll('#pv input.tick:checked')].map(i => i.value);
+const myOffers = async () => (await api('/logins')).flatMap(l => l.offers);
+
+function startHtml(s) {
+  return (s.label !== undefined ? `<h3>Label</h3><input type="text" id="slabel" value="${esc(s.label)}" placeholder="such as a date">` : '')
+    + `<h3>Logins this instance may use</h3>` + ticksHtml(s.offers) + `<div><button class="btn primary" data-act="start-go">${esc(s.go)}</button></div>`;
+}
+
+async function openStart(title, go, then, label) {
+  pv = { title, settings: { kind: 'start', go, then, label, offers: await myOffers() } };
+  renderPv();
+  $('#slabel')?.focus();
+}
+
 async function openUsers() {
   pv = { title: 'Users', settings: { kind: 'users', users: await api('/users') } };
   renderPv();
@@ -914,7 +945,7 @@ document.addEventListener('click', async ev => {
   if (act === 'unpv') { pv = null; renderPv(); }
   if (act === 'settings') {
     const s = cur.s, skillList = await api('/skills');
-    pv = { title: 'Series settings', settings: { kind: 'series', id: s.id, allow_wakes: s.allow_wakes, wake: s.wake, adhoc: s.adhoc, name: s.name, skills: s.skills ?? [], skillList, reads: s.reads, archived: s.archived } };
+    pv = { title: 'Series settings', settings: { kind: 'series', offers: await myOffers(), id: s.id, allow_wakes: s.allow_wakes, wake: s.wake, adhoc: s.adhoc, name: s.name, skills: s.skills ?? [], skillList, reads: s.reads, archived: s.archived } };
     renderPv();
   }
   if (act === 'systems') await openSystems();
@@ -993,7 +1024,7 @@ document.addEventListener('click', async ev => {
   if (act === 'savesettings') {
     const name = $('#sname').value.trim();
     const skills = [...document.querySelectorAll('#pv input.skill:checked')].map(i => i.value);
-    await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ name, skills, archived: pv.settings.archived, allow_wakes: $('#swakes').checked }) });
+    await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ name, skills, archived: pv.settings.archived, ...($('#swakes').checked !== !!pv.settings.allow_wakes && { allow_wakes: $('#swakes').checked, logins: ticked() }) }) });
     pv = null;
     renderPv();
     await refresh();
@@ -1004,6 +1035,12 @@ document.addEventListener('click', async ev => {
     await api(`${instPath()}/rename?as=${enc(label)}`, { method: 'POST' });
     await refresh();
   }
+  if (act === 'wakes-mine') {
+    await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ allow_wakes: true, logins: ticked() }) });
+    pv = null;
+    renderPv();
+    await refresh();
+  }
   if (act === 'wake-move' || act === 'wake-cancel') {
     const id = pv.settings.id;
     if (act === 'wake-move') await api(`/api/wakes/${id}`, { method: 'PUT', body: JSON.stringify({ at: new Date($('#swake').value).toISOString() }) });
@@ -1012,7 +1049,7 @@ document.addEventListener('click', async ev => {
     renderPv();
     await refresh();
   }
-  if (act === 'req-start') go((await api(`/api/requests/${el.dataset.id}`, { method: 'POST' })).id);
+  if (act === 'req-start') await openStart('Start the instance asked for', 'Start', ({ logins }) => api(`/api/requests/${el.dataset.id}`, { method: 'POST', body: JSON.stringify({ logins }) }));
   if (act === 'req-drop') {
     await api(`/api/requests/${el.dataset.id}`, { method: 'DELETE' });
     await refresh();
@@ -1029,11 +1066,7 @@ document.addEventListener('click', async ev => {
     p.cmp = !p.cmp;
     if (pv === p) renderPv();
   }
-  if (act === 'duplicate') {
-    const label = (prompt('Label for the copy:', `${cur.i.label} copy`) || '').trim();
-    if (!label) return;
-    go((await api(`${instPath()}/duplicate?as=${enc(label)}`, { method: 'POST' })).id);
-  }
+  if (act === 'duplicate') await openStart(`Copy ${cur.i.label}`, 'Copy', ({ label, logins }) => api(`${instPath()}/duplicate?as=${enc(label)}`, { method: 'POST', body: JSON.stringify({ logins }) }), `${cur.i.label} copy`);
   if (act === 'sheet') { pv.sheet = Number(el.dataset.k); renderPv(); }
   if (act === 'cellnote') $('#pvn').textContent = el.dataset.note;
   if (act === 'toggle-closed') { showClosed = !showClosed; renderSide(); }
@@ -1062,10 +1095,25 @@ document.addEventListener('click', async ev => {
     await api(`${instPath()}/abandon`, { method: 'POST' });
     await refresh();
   }
-  if (act === 'new-instance') {
-    const label = (prompt('Label for the new instance, such as a date:') || '').trim();
-    if (!label) return;
-    go((await api(seriesPath(cur), { method: 'POST', body: JSON.stringify({ label }) })).id);
+  if (act === 'new-instance') await openStart('New instance', 'Start', ({ label, logins }) => api(seriesPath(cur), { method: 'POST', body: JSON.stringify({ label, logins }) }), '');
+  if (act === 'takeover') await openStart(`Take over ${cur.i.label}`, 'Take over', ({ logins }) => api(`${instPath()}/takeover`, { method: 'POST', body: JSON.stringify({ logins }) }));
+  if (act === 'start-go') {
+    const s = pv.settings, label = $('#slabel')?.value.trim();
+    if (label === '') return toast('Give it a label');
+    const r = await s.then({ label, logins: ticked() });
+    pv = null;
+    renderPv();
+    if (r?.id) go(r.id);
+    else await refresh();
+  }
+  if (act === 'logins') {
+    pv = { title: 'Logins', settings: { kind: 'logins', logins: await api('/logins') } };
+    renderPv();
+  }
+  if (act === 'signout-login') {
+    await api(`/logins/${enc(el.dataset.id)}`, { method: 'DELETE' });
+    pv.settings.logins = await api('/logins');
+    renderPv();
   }
   if (act === 'new-series') {
     const name = (prompt('Name of the new series:') || '').trim();

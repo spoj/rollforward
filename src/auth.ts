@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { resolve } from 'node:path';
 import { HttpError } from './store.ts';
 import { forgetPerson, initSystem, key, readJson, writeJson } from './system.ts';
+import { forgetLogins } from './logins.ts';
 
 // Sign-in with a Microsoft account. People press "Sign in with Microsoft" and type nothing. With RF_OIDC_ISSUER and the app's id set,
 // the button goes to Microsoft Entra ID (OpenID Connect, code flow with PKCE): the server redeems the code, with the app's secret if it
@@ -56,6 +57,7 @@ export function removeUser(email: string) {
   delete all[email];
   writeJson('users.json', all);
   forgetPerson(email);
+  forgetLogins(email);
 }
 
 export function signOutEverywhere(email: string) {

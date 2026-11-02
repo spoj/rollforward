@@ -37,6 +37,8 @@ Agreed with Matthew on 2 Nov, after his review of the proposals and twenty quest
 
 ## Logins
 
+Built: logins sealed per person, ticks at every start, copy and takeover, runners and takeover, and close by the runner only (PLAN.md, decision 37). Still to come: the two kinds below.
+
 - **Kinds, to start:**
   - **A website,** for the ERP and each vendor portal. The person signs in themselves, in a live browser shown on rollforward's page; the session's saved state (cookies and site data) becomes their login. No password is ever stored. It lasts as long as the site keeps a login alive: weeks behind a company sign-in, under an hour on sites with short sessions of their own.
   - **Microsoft 365:** one read-only sign-in per person (`Mail.Read`, `Mail.Read.Shared`, `Files.Read.All`, `Sites.Read.All`, `offline_access`), approved once for the company by an admin. The person then adds what they want offered: their mailbox, shared mailboxes by address (rollforward checks they have access), their OneDrive, and SharePoint sites by link. The sign-in renews itself while used, up to about 90 days or what company policy allows.

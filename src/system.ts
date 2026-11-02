@@ -29,8 +29,12 @@ export function writeJson(name: string, data: unknown) {
   renameSync(p + '.tmp', p);
 }
 
-// A 32-byte key, made once and kept in .rf/.
+export const rfDir = () => dir;
+
+// A 32-byte key. Where systemd runs the server, it's the credential of that name (LoadCredentialEncrypted=, sealed to the machine's
+// TPM), so a copy of the data holds only ciphertext; elsewhere, as in the container image, it's made once and kept in .rf/.
 export function key(name: string): Buffer {
+  if (process.env.CREDENTIALS_DIRECTORY) return readFileSync(join(process.env.CREDENTIALS_DIRECTORY, name));
   const p = join(dir, name);
   if (!existsSync(p)) writeFileSync(p, randomBytes(32), { mode: 0o600, flag: 'wx' });
   return readFileSync(p);

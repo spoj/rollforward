@@ -21,7 +21,7 @@ saveTree({
 writeJson('users.json', { [alice]: { role: 'user' } });
 for (const s of ['s1', 's2', 's3']) mkdirSync(join(tmp, 'series', s), { recursive: true });
 const make = (series: string, label: string, status?: 'close') => {
-  const i = createInstance(series, label, alice);
+  const i = createInstance(series, label, alice, []);
   if (status) i.close(alice);
   return i;
 };
@@ -62,7 +62,7 @@ test("a series' wake starts an instance as whoever allowed wakes; without Allow 
   assert.deepEqual(Object.values(wakes().requests).map(r => [r.series, r.label, r.reason]), [['s2', '2026-10', 'rec done']]);
   assert.equal(labels('s2').length, 0);
 
-  writeFileSync(join(tmp, 'series', 's2', 'series.json'), JSON.stringify({ skills: [], wakes: { by: alice, since: new Date().toISOString() } }));
+  writeFileSync(join(tmp, 'series', 's2', 'series.json'), JSON.stringify({ skills: [], wakes: { by: alice, since: new Date().toISOString(), logins: [] } }));
   writeJson('wakes.json', { ...readJson('wakes.json', {}), fired: {} });
   setWake('s2', { at: new Date().toISOString(), reason: 'rec done', from: 'Acme/Bank rec/2026-09', label: '2026-11' });
   await settle();

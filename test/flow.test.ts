@@ -115,7 +115,7 @@ export default { async signIn(page, sys) {
   saveSkillConfig('demo', { url: `${url}/login`, username: 'svc', password: PASS, note: 'from settings' }, 'admin');
   saveSkillConfig('portal', { url: `${url}/login`, username: 'svc', password: PASS }, 'admin');
   openStore(join(tmp, 'data'));
-  inst = createInstance('weekly', 'w1', 'admin@demo.test');
+  inst = createInstance('weekly', 'w1', 'admin@demo.test', []);
   b = new Browsing(inst, ['demo', 'portal']);
 });
 
