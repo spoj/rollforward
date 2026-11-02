@@ -41,6 +41,7 @@ export function secret(email: string, id: string): string {
 
 // Signing out deletes the record.
 export function signOut(email: string, id: string) {
+  if (!logins(email).some(l => l.id === id)) throw new HttpError(404, `you have no login ${id}`);
   rmSync(join(folder(email), `${id}.sealed`), { force: true });
   writeFileSync(list(email), JSON.stringify(logins(email).filter(l => l.id !== id), null, 1), { mode: 0o600 });
 }

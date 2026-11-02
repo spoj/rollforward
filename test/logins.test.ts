@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initSystem, rfDir, saveTree } from '../src/system.ts';
 import { upsertUser } from '../src/auth.ts';
-import { forgetLogins, logins, saveLogin, secret, use } from '../src/logins.ts';
+import { forgetLogins, logins, saveLogin, secret, signOut, use } from '../src/logins.ts';
 import type { Instance } from '../src/store.ts';
 
 test("a login's secret is sealed to its person and id, so a copy into another's folder won't open; a run uses only what's ticked", () => {
@@ -17,6 +17,8 @@ test("a login's secret is sealed to its person and id, so a copy into another's 
   assert.equal(secret(alice, 'm365'), 'refresh-token-1');
   const people = join(rfDir(), 'people'), [a, b] = [alice, bob].map(p => readdirSync(people).find(d => readFileSync(join(people, d, 'logins.json'), 'utf8').includes(p === alice ? 'alice@demo.test' : '"offers": []'))!);
   assert.ok(!readFileSync(join(people, a, 'm365.sealed')).includes('refresh-token-1'));
+  assert.throws(() => signOut(bob, `../${a}/m365`), /you have no login/, "nor signs out another's");
+  assert.equal(secret(alice, 'm365'), 'refresh-token-1');
   cpSync(join(people, a, 'm365.sealed'), join(people, b, 'm365.sealed'));
   assert.throws(() => secret(bob, 'm365'), /authenticate/);
 
