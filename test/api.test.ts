@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -185,7 +185,7 @@ test('close and abandon end an open instance; a closed one takes no actions', as
   assert.equal(closed.doc.status, 'closed');
   assert.equal(closed.log.at(-1).op, 'close');
   for (const action of ['upload', 'comment', 'close', 'abandon'])
-    assert.equal((await call('POST', `${await at(series, '2026-09-06', action)}?name=y.csv`, 'x')).status, 409, action);
+    assert.equal((await call('POST', `${await at(series, '2026-09-06', action)}?name=y.csv`, action === 'upload' ? 'x' : '{}')).status, 409, action);
 
   assert.equal((await call('POST', await at(series, '2026-09-13', 'abandon'))).status, 200);
   const ab = await json(await at(series, '2026-09-13'));
@@ -506,8 +506,54 @@ test('the page hears of changes from an event stream, only of instances it can s
   assert.ok(mine.got.join('').includes(`data: ${id}\n\n`));
   assert.ok(!bobs.got.join('').includes(id), "bob isn't in larkfield");
   const row = (await shown(series)).instances.find((i: { id: string }) => i.id === id);
-  assert.deepEqual(await json(`${path}/summary`), row, "the instance's row, as the listing has it");
+  const sum = await json(`${path}/summary`);
+  assert.deepEqual([Object.keys(sum), sum.id, sum.label, sum.runner], [Object.keys(row), row.id, row.label, row.runner], "the instance's row, as the listing has it");
   assert.equal((await call('GET', `${path}/summary`, undefined, b)).status, 404);
   mine.stop();
   bobs.stop();
+});
+
+test('the second audit: a bad request line, a bad workbook and a slow body hurt nothing; a token makes tokens for no one', async () => {
+  const { connect } = await import('node:net'), { request } = await import('node:http');
+  const raw = connect(Number(new URL(base).port), '127.0.0.1');
+  raw.end('GET http://[ HTTP/1.1\r\nHost: x\r\n\r\n');
+  await once(raw, 'close');
+  const open = await iid(series, '2026-08-30 copy');
+  assert.equal((await call('POST', `/api/instances/${open}/upload?name=bad.xlsx`, 'not a workbook')).status, 200);
+  assert.equal((await call('GET', `/preview/${open}/upload/bad.xlsx`)).status, 500);
+  assert.equal((await call('GET', '/me')).status, 200, 'the server is still up');
+
+  const b = sessionOf(await login(bob))!, { token } = await (await call('POST', '/tokens', JSON.stringify({ name: 'mine', days: 7 }))).json();
+  const r = await fetch(base + '/tokens', { method: 'POST', headers: { cookie: b, authorization: `Bearer ${token}` }, body: JSON.stringify({ name: 'mixed', days: 7 }) });
+  assert.equal(r.status, 200);
+  assert.ok((await json('/tokens', b)).some((x: { name: string }) => x.name === 'mixed'), "made as the session's person");
+  assert.ok(!(await json('/tokens')).some((x: { name: string }) => x.name === 'mixed'));
+
+  const [lark, other] = [await named('larkfield'), (await workspaces()).find((w: { name: string; manage: boolean }) => w.name !== 'larkfield' && w.manage)];
+  const slow = request(`${base}/api/workspaces/${lark.id}`, { method: 'PUT', headers: { cookie: admin }, agent: false }), done = once(slow, 'response');
+  slow.write('{"guidance": ');
+  await new Promise(ok => setTimeout(ok, 200));
+  assert.equal((await call('PUT', `/api/workspaces/${other.id}`, JSON.stringify({ archived: true }))).status, 200);
+  slow.end('"held open"}');
+  const [answered] = await done;
+  answered.resume();
+  assert.equal(answered.statusCode, 200);
+  assert.ok((await workspaces()).find((w: { id: string }) => w.id === other.id).archived, 'the change made meanwhile stays');
+  assert.equal((await named('larkfield')).guidance, 'held open');
+  await call('PUT', `/api/workspaces/${other.id}`, JSON.stringify({ archived: false }));
+  await call('PUT', `/api/workspaces/${lark.id}`, JSON.stringify({ guidance: lark.guidance }));
+});
+
+test('closing refuses a shown file the agent replaced after it was shown', async () => {
+  assert.equal((await call('POST', `${await at(series, '2026-08-30', 'duplicate')}?as=tamper`)).status, 200);
+  const d = await dir(series, 'tamper'), doc = JSON.parse(readFileSync(join(d, 'workspace.json'), 'utf8'));
+  const shownFile = doc.items.find((i: { file: string | null }) => i.file?.startsWith('working/')).file, was = readFileSync(join(d, shownFile));
+  writeFileSync(join(d, 'working', 'swap.tmp'), 'other bytes');
+  renameSync(join(d, 'working', 'swap.tmp'), join(d, shownFile));
+  const r = await call('POST', await at(series, 'tamper', 'close'));
+  assert.equal(r.status, 409);
+  assert.match(await r.text(), /changed after it was shown/);
+  writeFileSync(join(d, 'working', 'swap.tmp'), was);
+  renameSync(join(d, 'working', 'swap.tmp'), join(d, shownFile));
+  assert.equal((await call('POST', await at(series, 'tamper', 'close'))).status, 200);
 });

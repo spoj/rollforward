@@ -111,7 +111,7 @@ rename or a move never moves a folder.
     - a note's `files` are paths of existing files under `upload/` or `working/` of this instance or another (`../<label>/working/...`);
     - `status` is unchanged;
     - each question has a unique id, two or more options, and a valid default.
-  - On accept, the server logs each change: `point`, `item`, `note`, `unnote` and `remove`. It also freezes each newly shown file.
+  - On accept, the server logs each change: `point`, `item`, `note`, `unnote` and `remove`. It also freezes each newly shown file, and logs its sha256 with the `point`. Closing checks every shown file in `working/` against that hash and refuses if one changed, as the run's own folder can't stop a file being replaced; the agent shows a new version under a new name.
 - **The agent makes the decisions.** It decides what each upload is (a new input, a replacement or a revised output), what the outputs are, and the notes. If an item points at a person's upload, the agent repoints it to its own file only by asking first.
 - **A closed instance's `workspace.json` is its example pair:** the items and the files that were actually used or sent.
 - **Red dot:** in v0, each browser remembers when it last opened an instance. There are no read events in the log.

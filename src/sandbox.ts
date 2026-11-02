@@ -39,8 +39,10 @@ export type SandboxRun = { egress(host: string, allowed: boolean): void; owns(br
 
 export function serveSandboxes(path: string, o: { agent(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void>; run(token: string): SandboxRun | undefined }) {
   if (existsSync(path)) rmSync(path);
+  // What comes in here is the agent's to shape, so a request the server can't parse is refused, never thrown.
   const server = createServer(async (req, res) => {
-    const url = new URL(req.url!, 'http://sandbox');
+    const url = URL.parse(req.url!, 'http://sandbox');
+    if (!url) return void res.writeHead(400).end();
     if (url.pathname.startsWith('/agent/')) return o.agent(req, res, url);
     const [, root, token, ...rest] = url.pathname.split('/');
     if (root !== 'model' || !o.run(token)) return void res.writeHead(404).end();
@@ -53,11 +55,14 @@ export function serveSandboxes(path: string, o: { agent(req: IncomingMessage, re
     req.pipe(up);
   });
   server.on('upgrade', (req, socket, head) => {
-    const [, root, token, id] = new URL(req.url!, 'http://sandbox').pathname.split('/');
+    socket.on('error', () => socket.destroy());
+    const [, root, token, id] = URL.parse(req.url!, 'http://sandbox')?.pathname.split('/') ?? [];
     if (root !== 'browser' || !o.run(token)?.owns(id)) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
     passUpgrade(req, socket, head, `/sessions/${id}/cdp`);
   });
   server.on('connect', async (req: IncomingMessage, client, head: Buffer) => {
+    let up: ReturnType<typeof connect> | undefined;
+    client.on('error', () => up?.destroy());
     const token = Buffer.from(String(req.headers['proxy-authorization'] ?? '').replace(/^Basic /, ''), 'base64').toString().split(':')[1];
     const run = o.run(token ?? ''), [host, port] = req.url!.split(':');
     const refuse = (why: string) => client.end(`HTTP/1.1 403 Forbidden\r\ncontent-type: text/plain\r\n\r\n${why}\n`);
@@ -67,14 +72,13 @@ export function serveSandboxes(path: string, o: { agent(req: IncomingMessage, re
     const open = addresses.length > 0 && !addresses.some(isPrivate);
     run.egress(host, open);
     if (!open) return refuse(listed ? `${host} resolves to no public address` : `${host} is not on the sandbox's allowlist; an admin adds hosts in .rf/egress.json`);
-    const up = connect(443, addresses[0].address, () => {
+    up = connect(443, addresses[0].address, () => {
       client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-      up.write(head);
-      up.pipe(client);
-      client.pipe(up);
+      up!.write(head);
+      up!.pipe(client);
+      client.pipe(up!);
     });
     up.on('error', () => client.destroy());
-    client.on('error', () => up.destroy());
   });
   server.listen(path);
   return server;

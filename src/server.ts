@@ -141,8 +141,9 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
     const bytes = readFileSync(fd), run = exec(python, [join(app, 'src', 'preview.py'), basename(rel)], { timeout: 30_000, maxBuffer: 64e6 });
     closeSync(fd);
     run.child.stdin!.end(bytes);
+    const { stdout } = await run;
     res.writeHead(200, { 'content-type': 'application/json' });
-    return void res.end((await run).stdout);
+    return void res.end(stdout);
   }
   const image = rel.match(/\.(png|jpe?g|gif|webp|svg)$/i)?.[1].toLowerCase().replace('jpg', 'jpeg').replace('svg', 'svg+xml');
   res.writeHead(200, {
@@ -168,7 +169,9 @@ function events(me: Me, req: IncomingMessage, res: ServerResponse) {
 
 const threads = (inst: Instance) => [...new Set(inst.log.filter(e => e.op === 'comment').map(e => e.thread as string))];
 const text = (path: string) => (existsSync(path) ? readFileSync(path, 'utf8') : '');
-const json = async (req: IncomingMessage) => JSON.parse((await body(req)).toString() || '{}');
+const json = async (req: IncomingMessage) => {
+  try { return JSON.parse((await body(req)).toString() || '{}'); } catch { throw new HttpError(400, 'the body is JSON'); }
+};
 const people = (w: { owners?: unknown; members?: unknown }) => [w.owners, w.members].map(list => {
   const ok = Array.isArray(list) && list.every(p => typeof p === 'string' && /^[^@\s]+@[^@\s]+$|^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(p));
   if (!ok) throw new HttpError(400, `owners and members are lists of emails and Entra group ids: ${JSON.stringify(list)}`);
@@ -179,9 +182,11 @@ const people = (w: { owners?: unknown; members?: unknown }) => [w.owners, w.memb
 // the new names from its next start.
 async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) {
   const [kind, id = '', action] = url.pathname.split('/').slice(2).map(decodeURIComponent);
+  // The body before the tree: a request held open must not save a tree from before others' changes, such as an owner's removal.
+  const payload = action === 'upload' || action === 'attach' ? {} : await json(req);
   const t = tree(), by = me.email;
   if (kind === 'workspaces' && !id && req.method === 'POST') {
-    const name = safeName(String((await json(req)).name ?? ''));
+    const name = safeName(String(payload.name ?? ''));
     if (Object.values(t.workspaces).some(w => w.name === name)) throw new HttpError(409, `the name ${name} is taken; choose another`);
     const wid = newId(), adhoc = newId();
     t.workspaces[wid] = { name, owners: [me.email], members: [] };
@@ -193,7 +198,7 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
   if (kind === 'workspaces' && req.method === 'PUT') {
     const w = mustSee(me, t.workspaces[id]);
     if (!canManage(me, w)) throw new HttpError(403, "only the workspace's owners and admins change it");
-    const change = await json(req);
+    const change = payload;
     if (change.name !== undefined) {
       const name = safeName(String(change.name));
       if (name !== w.name && Object.values(t.workspaces).some(x => x.name === name)) throw new HttpError(409, `the name ${name} is taken; choose another`);
@@ -206,7 +211,7 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
     return send(res, 200, 'ok');
   }
   if (kind === 'series' && !id && req.method === 'POST') {
-    const { workspace, name: asked } = await json(req), name = safeName(String(asked ?? ''));
+    const { workspace, name: asked } = payload, name = safeName(String(asked ?? ''));
     mustSee(me, t.workspaces[workspace]);
     if (Object.values(t.series).some(s => s.workspace === workspace && s.name === name)) throw new HttpError(409, `${name} exists`);
     const sid = newId();
@@ -220,13 +225,13 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
     mustSee(me, s && t.workspaces[s.workspace]);
     if (req.method === 'POST') {
       if (instances(id).filter(i => i.doc.status === 'open').length >= MAX_OPEN) throw new HttpError(409, `${MAX_OPEN} instances are open; close one first`);
-      const { label, logins: ticks } = await json(req);
+      const { label, logins: ticks } = payload;
       const created = createInstance(id, String(label ?? ''), by, checkTicks(by, ticks ?? []));
       kick(created);
       return send(res, 200, { id: created.id });
     }
     if (req.method !== 'PUT') throw new HttpError(405, 'PUT, or POST a new instance');
-    const change = await json(req);
+    const change = payload;
     if (change.name !== undefined && change.name !== s.name) {
       const name = safeName(String(change.name));
       if (s.adhoc) throw new HttpError(400, 'the Ad hoc series keeps its name');
@@ -247,7 +252,7 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
     mustSee(me, t.workspaces[t.series[target].workspace]);
     if (req.method === 'DELETE' && !wake) throw new HttpError(404, 'no wake pending');
     if (req.method === 'DELETE') return void (cancelWake(id), send(res, 200, 'ok'));
-    const { at: when, reason, label } = await json(req), at = Date.parse(String(when));
+    const { at: when, reason, label } = payload, at = Date.parse(String(when));
     if (req.method !== 'PUT' || Number.isNaN(at)) throw new HttpError(400, 'PUT {"at": a date and time, "reason", "label" for a series}, or DELETE');
     if (!wake && !reason) throw new HttpError(400, 'a new wake has a reason');
     if (!wake && t.series[id] && !label) throw new HttpError(400, 'waking a series starts a new instance: name it with a label');
@@ -259,7 +264,7 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
     if (!r) throw new HttpError(404, `no request ${id}`);
     mustSee(me, t.workspaces[t.series[r.series].workspace]);
     if (req.method === 'POST') {
-      const inst = startWith(r.series, r.label, by, checkTicks(by, (await json(req)).logins ?? []), { reason: r.reason, from: r.from });
+      const inst = startWith(r.series, r.label, by, checkTicks(by, payload.logins ?? []), { reason: r.reason, from: r.from });
       dropRequest(id);
       return send(res, 200, { id: inst.id });
     }
@@ -287,13 +292,13 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
   if (action === 'duplicate') {
     if (inst.doc.status === 'open') throw new HttpError(409, 'only a closed or abandoned instance can be duplicated');
     if (instances(inst.seriesId).filter(i => i.doc.status === 'open').length >= MAX_OPEN) throw new HttpError(409, `${MAX_OPEN} instances are open; close one first`);
-    return send(res, 200, { id: duplicateInstance(inst, url.searchParams.get('as') ?? '', by, checkTicks(by, (await json(req)).logins ?? [])).id });
+    return send(res, 200, { id: duplicateInstance(inst, url.searchParams.get('as') ?? '', by, checkTicks(by, payload.logins ?? [])).id });
   }
   if (action === 'promote') {
     // Make it a series: a one-off ask of Ad hoc becomes the first instance of a new series, which later instances roll forward from.
     if (!t.series[inst.seriesId].adhoc) throw new HttpError(400, 'only an Ad hoc instance can be made a series');
     if (a || queued(inst)) throw new HttpError(409, "wait for the series' run to end");
-    const ws = t.series[inst.seriesId].workspace, name = safeName(String((await json(req)).name ?? ''));
+    const ws = t.series[inst.seriesId].workspace, name = safeName(String(payload.name ?? ''));
     if (Object.values(t.series).some(x => x.workspace === ws && x.name === name)) throw new HttpError(409, `${name} exists`);
     const sid = newId();
     t.series[sid] = { name, workspace: ws };
@@ -323,18 +328,18 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
       rmSync(tmp, { force: true });
     }
   } else if (action === 'answer') {
-    const { note, choice } = JSON.parse((await body(req)).toString());
+    const { note, choice } = payload;
     inst.answer(by, note, choice);
   } else if (action === 'comment') {
     // A comment starts a thread, on an item (at a ref, such as a cell, if given) or on the instance, or replies in one.
-    const { thread, item, ref, text, files = [] } = await json(req);
+    const { thread, item, ref, text, files = [] } = payload;
     if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a comment has text');
     for (const f of files) if (typeof f !== 'string' || !f.startsWith('upload/attachments/') || f.includes('..') || !existsSync(join(inst.dir, f))) throw new HttpError(400, `no attachment ${f}`);
     if (thread !== undefined && !threads(inst).includes(thread)) throw new HttpError(400, `no thread ${thread}`);
     if (item !== undefined && !inst.doc.items.some(i => i.id === item)) throw new HttpError(400, `no item ${item}`);
     inst.append(by, 'comment', { thread: thread ?? `c${inst.log.length + 1}`, ...(thread === undefined && { item: item ?? null, ref: ref ?? null }), text: text.trim(), ...(files.length && { files }) });
   } else if (action === 'resolve') {
-    const { thread } = await json(req);
+    const { thread } = payload;
     if (!threads(inst).includes(thread)) throw new HttpError(400, `no thread ${thread}`);
     inst.append(by, 'resolve', { thread });
     return send(res, 200, 'ok');
@@ -352,7 +357,7 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
     return send(res, 200, 'ok');
   } else if (action === 'takeover') {
     // Taking over makes you the runner from now on, with your own logins ticked; whoever closes answers for the whole instance.
-    inst.append(by, 'takeover', { from: runnerOf(inst).by, logins: checkTicks(by, (await json(req)).logins ?? []) });
+    inst.append(by, 'takeover', { from: runnerOf(inst).by, logins: checkTicks(by, payload.logins ?? []) });
     return send(res, 200, 'ok');
   } else if (action === 'close' || action === 'abandon') {
     if (mine) throw new HttpError(409, 'wait for the run to end');
@@ -444,8 +449,8 @@ serveSandboxes(join(socketDir, 'rf.sock'), {
 });
 
 const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) => {
-  const url = new URL(req.url!, 'http://x');
   try {
+    const url = new URL(req.url!, 'http://x');
     const site = req.headers['sec-fetch-site'];
     if (req.method !== 'GET' && site && site !== 'same-origin') throw new HttpError(403, 'cross-site request refused');
     const me = await authenticate(req, res, url);
@@ -466,11 +471,12 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       send(res, 200, 'ok');
     } else if (url.pathname === '/tokens' && req.method === 'GET') send(res, 200, myTokens(me.email));
     else if ((url.pathname === '/tokens' && req.method === 'POST') || (url.pathname.startsWith('/tokens/') && req.method === 'DELETE')) {
-      // Made and revoked on the page only: a token that could make tokens would outlive its own revocation.
-      if (!session(req)) throw new HttpError(403, 'tokens are made and revoked on the page');
-      if (req.method === 'DELETE') return send(res, 200, (revokeToken(me.email, decodeURIComponent(url.pathname.slice(8))), 'ok'));
+      // Made and revoked on the page only, as the session's own person: a token that could make tokens would outlive its revocation.
+      const own = session(req);
+      if (!own) throw new HttpError(403, 'tokens are made and revoked on the page');
+      if (req.method === 'DELETE') return send(res, 200, (revokeToken(own.email, decodeURIComponent(url.pathname.slice(8))), 'ok'));
       const { name, days } = await json(req);
-      send(res, 200, { token: newToken(me.email, String(name ?? '').trim(), Number(days)) });
+      send(res, 200, { token: newToken(own.email, String(name ?? '').trim(), Number(days)) });
     } else if (url.pathname === '/rf.ts') {
       res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'content-disposition': 'attachment; filename=rf.ts' });
       res.end(readFileSync(join(app, 'src', 'rf-people.ts')));
@@ -493,12 +499,14 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     else if (url.pathname === '/skills' || url.pathname.startsWith('/skills/')) await skillsRoute(me, req, res, url);
     else throw new HttpError(404, 'not found');
   } catch (err) {
-    send(res, err instanceof HttpError ? err.status : 500, (err as Error).message);
+    if (res.headersSent) res.destroy();
+    else send(res, err instanceof HttpError ? err.status : 500, (err as Error).message);
   }
 });
 // A sign-in's live view, the person's own: its websockets pass through to the machines service.
 server.on('upgrade', (req, socket, head) => {
-  const me = session(req), m = /^\/signins\/(\w+)\/(view\/(?:watch|drive))$/.exec(new URL(req.url!, 'http://x').pathname);
+  socket.on('error', () => socket.destroy());
+  const me = session(req), m = /^\/signins\/(\w+)\/(view\/(?:watch|drive))$/.exec(URL.parse(req.url!, 'http://x')?.pathname ?? '');
   if (!me || !m || !isSignIn(me.email, m[1])) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
   passUpgrade(req, socket, head, `/sessions/${m[1]}/${m[2]}`);
 });

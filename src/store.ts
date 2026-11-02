@@ -209,7 +209,15 @@ export class Instance {
     return this.log.some(e => e.op === 'answer' && e.note === noteId);
   }
 
+  // Closing signs off what people saw: a shown file in working/ must still be what its point logged. Its folder is the run's, so
+  // read-only alone doesn't stop a file being replaced.
   close(by: string) {
+    for (const i of this.doc.items.filter(i => i.file?.startsWith('working/'))) {
+      const fd = openFile(this.dir, i.file!), logged = this.log.findLast(e => e.op === 'point' && e.file === i.file && e.sha256)?.sha256;
+      const now = fd === undefined ? undefined : createHash('sha256').update(readFileSync(fd)).digest('hex');
+      if (fd !== undefined) closeSync(fd);
+      if (logged && now !== logged) throw new HttpError(409, `${i.file} changed after it was shown: the agent shows the new version under a new name, and you review that`);
+    }
     for (const n of this.doc.items.flatMap(i => i.notes ?? []))
       if (n.id && n.options && !this.answered(n.id))
         this.append('server', 'answer', { note: n.id, choice: n.default ?? 0, text: n.options[n.default ?? 0], default: true });
@@ -231,7 +239,6 @@ export class Instance {
     if (doc.status !== this.doc.status) throw new HttpError(400, 'status is set by the server');
     if (!Array.isArray(doc.items)) throw new HttpError(400, 'items must be an array');
     const errors: string[] = [], ids = new Set<string>(), questions = new Set<string>(), sums = new Map<string, string | undefined>();
-    const shown = new Set(this.log.filter(e => e.op === 'point').map(e => e.file));
     const old = new Map(this.doc.items.map(i => [i.id, i]));
     for (const i of doc.items) {
       if (typeof i.id !== 'string' || !i.id || ids.has(i.id)) errors.push(`item id missing or repeated: ${JSON.stringify(i.id)}`);
@@ -247,7 +254,7 @@ export class Instance {
           const fd = openFile(this.dir, i.file);
           if (fd === undefined) errors.push(`${i.id}: no file ${i.file} (links are not followed)`);
           else if (i.file !== old.get(i.id)?.file) {
-            sums.set(i.id, shown.has(i.file) ? undefined : createHash('sha256').update(readFileSync(fd)).digest('hex'));
+            sums.set(i.id, createHash('sha256').update(readFileSync(fd)).digest('hex'));
             if (i.file.startsWith('working/')) fchmodSync(fd, 0o444);
           }
           if (fd !== undefined) closeSync(fd);

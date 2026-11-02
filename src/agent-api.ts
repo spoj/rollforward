@@ -74,8 +74,9 @@ export async function testSkill(id: string, email: string): Promise<string> {
 export async function serveAgent(inst: Instance): Promise<{ url: string; token: string; close(): Promise<void> }> {
   const token = randomUUID(), a: AgentRun = { inst, n: 0, token };
   const server = createServer(async (req, res) => {
-    const url = new URL(req.url!, 'http://x'), send = (status: number, data: unknown) => res.writeHead(status, { 'content-type': typeof data === 'string' ? 'text/plain; charset=utf-8' : 'application/json' }).end(typeof data === 'string' ? data : JSON.stringify(data, null, 1));
+    const send = (status: number, data: unknown) => res.writeHead(status, { 'content-type': typeof data === 'string' ? 'text/plain; charset=utf-8' : 'application/json' }).end(typeof data === 'string' ? data : JSON.stringify(data, null, 1));
     try {
+      const url = new URL(req.url!, 'http://x');
       if (req.headers.authorization !== `Bearer ${token}`) throw new HttpError(401, 'no run for this token');
       const r = await agentCall(a, url.pathname, req.method ?? 'GET', url.searchParams, async () => { const c: Buffer[] = []; for await (const x of req) c.push(x as Buffer); return Buffer.concat(c); });
       if (!r) throw new HttpError(404, 'not found');
@@ -85,7 +86,8 @@ export async function serveAgent(inst: Instance): Promise<{ url: string; token: 
     }
   });
   server.on('upgrade', (req, socket, head) => {
-    const [, root, t, id] = new URL(req.url!, 'http://x').pathname.split('/');
+    socket.on('error', () => socket.destroy());
+    const [, root, t, id] = URL.parse(req.url!, 'http://x')?.pathname.split('/') ?? [];
     if (root !== 'browser' || t !== token || !a.machines?.owns(id)) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
     passUpgrade(req, socket, head, `/sessions/${id}/cdp`);
   });
