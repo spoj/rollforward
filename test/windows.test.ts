@@ -10,9 +10,9 @@ import type { Instance } from '../src/store.ts';
 // A run's Windows machine, through the machines service (RF_MACHINES_URL and RF_MACHINES_KEY, else skipped), called as a run's
 // agent calls it: rf, through the agent API.
 const app = join(import.meta.dirname, '..'), tmp = mkdtempSync(join(tmpdir(), 'rf-windows-')), dir = join(tmp, 'w1');
+after(() => rmSync(tmp, { recursive: true, force: true }));
 
 describe("a run's Windows machine", { skip: !process.env.RF_MACHINES_URL && 'needs the machines service: RF_MACHINES_URL and RF_MACHINES_KEY' }, () => {
-  after(() => rmSync(tmp, { recursive: true, force: true }));
 
   test('opens on first use, runs scripts, takes files from working/ and gives them back, and closes when the run ends', async () => {
     const { initSystem } = await import('../src/system.ts'), { serveAgent } = await import('../src/agent-api.ts');

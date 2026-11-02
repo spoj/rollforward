@@ -57,7 +57,11 @@ export function serveSandboxes(path: string, o: { agent(req: IncomingMessage, re
   server.on('upgrade', (req, socket, head) => {
     socket.on('error', () => socket.destroy());
     const [, root, token, id] = URL.parse(req.url!, 'http://sandbox')?.pathname.split('/') ?? [];
-    if (root !== 'browser' || !o.run(token)?.owns(id)) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
+    try {
+      if (root !== 'browser' || !o.run(token)?.owns(id)) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
+    } catch (e) {
+      return socket.end(`HTTP/1.1 403 Forbidden\r\ncontent-type: text/plain\r\n\r\n${(e as Error).message}\n`);
+    }
     passUpgrade(req, socket, head, `/sessions/${id}/cdp`);
   });
   server.on('connect', async (req: IncomingMessage, client, head: Buffer) => {

@@ -616,7 +616,7 @@ function logText(e) {
     mail: () => `${w} ${e.action === 'find' ? `looked in ${esc(e.mailbox)} for mail of ${esc(e.date)}: ${e.found} found` : `saved ${esc((e.saved ?? []).join(', '))}`}`,
     rename: () => `${w} renamed the instance from ${esc(e.from)}`,
     duplicate: () => `${w} made this instance as a copy of ${esc(e.from)}`,
-    browser: () => `${w} closed run ${e.run}'s browser${e.site ? ` on ${esc(e.site)}, in ${esc(e.login)}'s login` : ''}<div class="d">${e.error ? esc(e.error) : `${e.requests} requests${e.writes ? `, ${e.writes} writes` : ''}${e.blocked ? `, ${e.blocked} blocked` : ''}`}</div>${f}`,
+    browser: () => e.action === 'get' ? `${w} fetched ${esc(e.from)} from the browser on ${esc(e.site)}${f}` : `${w} closed run ${e.run}'s browser${e.site ? ` on ${esc(e.site)}, in ${esc(e.login)}'s login` : ''}<div class="d">${e.error ? esc(e.error) : `${e.requests} requests${e.writes ? `, ${e.writes} writes` : ''}${e.blocked ? `, ${e.blocked} blocked` : ''}`}</div>${f}`,
     windows: () => `${w} ${{ open: 'opened a Windows machine', run: `ran ${esc(e.script)} on Windows: ${e.timed_out ? 'timed out' : `exit ${e.exit}`}`, put: `put ${esc(e.to)} on Windows`, get: `fetched ${esc(e.from)} from Windows`, screenshot: 'took a screenshot of Windows', close: `closed ${e.run ? `run ${e.run}'s` : 'the'} Windows machine` }[e.action]}${f}`,
     machines: () => `Run ${e.run}'s machines did not all close<div class="d">${esc(e.error)}</div>`,
     browse: () => `${w} used ${esc(e.system.toUpperCase())}<div class="d">${esc([e.action, ...e.args].join(' '))}</div>`,

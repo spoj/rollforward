@@ -51,7 +51,11 @@ export async function serveAgent(inst: Instance): Promise<{ url: string; token: 
   server.on('upgrade', (req, socket, head) => {
     socket.on('error', () => socket.destroy());
     const [, root, t, id] = URL.parse(req.url!, 'http://x')?.pathname.split('/') ?? [];
-    if (root !== 'browser' || t !== token || !a.machines?.owns(id)) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
+    try {
+      if (root !== 'browser' || t !== token || !a.machines?.owns(id)) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
+    } catch (e) {
+      return socket.end(`HTTP/1.1 403 Forbidden\r\ncontent-type: text/plain\r\n\r\n${(e as Error).message}\n`);
+    }
     passUpgrade(req, socket, head, `/sessions/${id}/cdp`);
   });
   await new Promise<void>(ok => server.listen(0, '127.0.0.1', ok));
@@ -101,7 +105,11 @@ export async function agentCall(a: AgentRun, path: string, method: string, body:
     const [cmd, site, from, to] = await words();
     a.machines ??= new Machines(a.inst, a.n);
     if (cmd === 'open' && site) return { status: 200, data: `/browser/${a.token}/${await a.machines.browser(site)}` };
-    if (cmd === 'get' && site && from && to) return { status: 200, data: { saved: rel(to), data: data(await a.machines.browserFile(site, from)) } };
+    if (cmd === 'get' && site && from && to) {
+      const bytes = await a.machines.browserFile(site, from);
+      a.inst.append('agent', 'browser', { action: 'get', site, from, file: rel(to) });
+      return { status: 200, data: { saved: rel(to), data: data(bytes) } };
+    }
     throw new HttpError(400, 'rf browser open SITE | rf browser get SITE PATH FILE');
   }
   // Each call waits until it's done; files come from and go to working/, scripts too.

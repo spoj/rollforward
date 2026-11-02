@@ -16,6 +16,7 @@ import { filesOf, standIns } from './push.ts';
 // that login, counts its writes, and hands it back refreshed.
 const app = join(import.meta.dirname, '..'), ADMIN = 'admin@demo.test';
 const tmp = mkdtempSync(join(tmpdir(), 'rf-browser-')), root = join(tmp, 'data');
+after(() => rmSync(tmp, { recursive: true, force: true }));
 const seen: string[] = [];
 let portal: Server, origin = '', proc: ChildProcess, base = '', admin = '', bob = '', visits = 0;
 
@@ -70,7 +71,6 @@ describe('website logins', { skip: !process.env.RF_MACHINES_URL && 'needs the ma
       await once(proc, 'exit');
     }
     portal.close();
-    rmSync(tmp, { recursive: true, force: true });
   });
 
   test("a person signs in in the live view on the Logins page, and their login is that browser's state", async () => {
@@ -127,12 +127,14 @@ describe('website logins', { skip: !process.env.RF_MACHINES_URL && 'needs the ma
     run.log.push({ op: 'takeover', by: ADMIN, logins: [] });
     assert.match(await rf(api, 'browser', 'open', 'portal'), /web:portal is not ticked/, 'checked again at every call');
     assert.match(await rf(api, 'browser', 'get', 'portal', await download.path(), 'again.csv'), /web:portal is not ticked/);
+    await assert.rejects(chromium.connectOverCDP(cdp), /403/, 'nor connects to it again');
     run.log.pop();
     await browser.close();
     await api.close();
 
     assert.ok(seen.includes('POST /save'));
-    const entry = log.find(e => e.op === 'browser')!;
+    assert.deepEqual(log.filter(e => e.op === 'browser' && e.action === 'get').map(e => [e.site, e.file]), [['portal', 'working/invoices.csv']], 'a fetch is logged');
+    const entry = log.findLast(e => e.op === 'browser')!;
     assert.deepEqual([entry.run, entry.site, entry.login, entry.writes, entry.file], [0, 'portal', ADMIN, 1, 'browser/run 0 portal.jsonl']);
     const requests = readFileSync(join(dir, 'browser', 'run 0 portal.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     assert.equal(requests.length, entry.requests);

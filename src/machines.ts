@@ -132,18 +132,28 @@ export class Machines {
     this.run = run;
   }
 
-  // Checked at every call, so a login its runner can no longer lend stops at the next one; a connection already open lasts until
-  // the run ends.
-  async browser(site: string): Promise<string> {
+  // The login a browser on a website may use now, and the run's browser there if open: checked at every call and every new
+  // connection, so a login its runner can no longer lend stops at the next one; a connection already open lasts until the run ends.
+  private lent(site: string) {
     const { email, login } = use(this.inst, `web:${site}`), had = this.browsers.get(site);
     if (had && had.email !== email) throw new HttpError(409, `this run's browser on ${site} is in ${had.email}'s login, and ${email} has taken the instance over: the next run opens one in theirs`);
+    return { email, login, had };
+  }
+
+  async browser(site: string): Promise<string> {
+    const { email, login, had } = this.lent(site);
     if (had) return had.id;
     const id = await open(website(site), 7200, JSON.parse(secret(email, login.id)));
     this.browsers.set(site, { id, email });
     return id;
   }
 
-  owns = (id: string) => [...this.browsers.values()].some(s => s.id === id);
+  // Whether `id` is one of this run's browsers; a 403 or 409 if its login may no longer be used.
+  owns(id: string): boolean {
+    const site = [...this.browsers].find(([, b]) => b.id === id)?.[0];
+    if (site) this.lent(site);
+    return !!site;
+  }
 
   async browserFile(site: string, path: string): Promise<Buffer> {
     if (!this.browsers.has(site)) throw new HttpError(409, `no browser on ${site} in this run: rf browser open ${site} first`);
