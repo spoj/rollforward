@@ -506,7 +506,7 @@ test('the page hears of changes from an event stream, only of instances it can s
   };
   const b = sessionOf(await login(bob))!, mine = await listen(admin), bobs = await listen(b), path = await at(series, 'talk'), id = path.split('/').pop()!;
   await call('POST', `${path}/comment`, JSON.stringify({ text: 'heard?' }));
-  await new Promise(r => setTimeout(r, 1500));
+  for (let waited = 0; !mine.got.join('').includes(`data: ${id}\n\n`) && waited < 10_000; waited += 100) await new Promise(r => setTimeout(r, 100));
   assert.ok(mine.got.join('').includes(`data: ${id}\n\n`));
   assert.ok(!bobs.got.join('').includes(id), "bob isn't in larkfield");
   const row = (await shown(series)).instances.find((i: { id: string }) => i.id === id);
