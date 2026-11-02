@@ -58,7 +58,7 @@ Built: logins sealed per person, ticks at every start, copy and takeover, runner
 Built (PLAN.md, What starts a run, decision 36), with Allow wakes' login ticks and Waiting on you at the top of the sidebar. Schedules are gone: a run is started by a person, by an upload or answer, or by a wake.
 
 - **`rf wake TARGET AT REASON`:**
-  - **An open instance** (this one if none is named): continues it, as its runner, as a reply does.
+  - **An open instance** (this one by its own label): continues it, as its runner, as a reply does.
   - **A closed instance:** fails, saying to wake its series for a repair.
   - **A series:** starts a new instance, for the next period or for a repair, as the reason says. That needs the series' **Allow wakes**; without it, the wake becomes a request on the page: "Inventory rec asks to start Borrowing base".
 - **Allow wakes,** per series: whoever turns it on becomes the runner of every instance a wake starts, with the logins they tick then. Off, or that person losing access, stops it; anyone can take it over.
@@ -104,7 +104,7 @@ A separate service, in its own repo (`machines`), with one client: the rollforwa
 
 - **A browser** is a throwaway container per session, with Chromium. The agent's code connects with Playwright over CDP, through rollforward's socket, so it has all of Playwright, including requests with the page's cookies. Since CDP is close to code on the browser's host, the container is the wall: an empty home in memory, no view of the host or other sessions, and a network only through the service's proxy.
   - The proxy lets the session reach only its site's hosts; private addresses only where a listed host resolves there.
-  - By default it blocks requests other than GET, HEAD and OPTIONS, except those the site lists as reads that post, and except while a person drives the live view. That's a firm default, not a wall: code could work around it. The ERP's web client posts even to search, so there it would block everything: the ERP's site lists its posts as reads, and "no writes" rests on the instructions and on the ERP role the person signs in with.
+  - It blocks nothing by method: the ERP's web client posts even to search, so a rule by method blocks reads too. It counts each run's writes in the browser's log entry, and "no writes" rests on the instructions and on the role the person signs in with (PLAN.md, decision 45).
   - Every request is logged with its run and login, where the agent can't edit it.
   - The service loads the runner's saved login at the start, and returns it refreshed at the end; then the container is deleted.
   - The same session, shown live on rollforward's page, is how people sign in.
