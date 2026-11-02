@@ -227,6 +227,9 @@ a[data-act=preview], a[data-act=opencard] { text-decoration: underline; cursor: 
 .log { display: none; width: 352px; border-left: 1px solid var(--rule); background: var(--sheet); height: 100dvh; overflow: auto; }
 .log.open { display: block; }
 .conv { padding: 4px 20px 20px; display: grid; gap: 8px; }
+.proc div { white-space: pre-wrap; font-size: 13px; line-height: 1.5; padding: 0 4px; }
+.proc .ins { background: #e6f4ea; }
+.proc .del { background: #fdecea; text-decoration: line-through; color: var(--ink-3); }
 .conv h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-3); margin: 12px 0 0; }
 .conv textarea { font: inherit; padding: 7px 9px; border: 1px solid var(--rule-2); border-radius: var(--r1); resize: vertical; width: 100%; }
 .thread { border: 1px solid var(--rule); border-radius: var(--r1); padding: 8px 10px; display: grid; gap: 6px; }
@@ -331,7 +334,8 @@ function toast(text, kind = '') {
   setTimeout(() => el.remove(), 6000);
 }
 const folds = new Map();
-const ui = { adv: false, log: false, conv: false, on: null };
+const ui = { adv: false, log: false, conv: false, on: null, proc: false };
+let proc = { key: '', html: '' };
 const drawn = new WeakMap();
 
 function put(el, html) {
@@ -440,7 +444,7 @@ function renderBar() {
     const state = data.doc.status !== 'open' ? `${data.doc.status === 'closed' ? 'Closed' : 'Abandoned'} · read-only` : data.run ? `<span class="spin"></span>Agent working · run ${data.run.n}` : data.queued ? '\u29D7 Queued' : d ? `Agent idle · last run ${hhmm(d.at)}` : 'Waiting for files';
     h += `<div class="state">${state}</div>`;
     const talk = threadsOf().filter(t => !t.resolved).length + openQuestions().length;
-    h += `<button class="btn top ${ui.conv ? 'sel' : ''}" data-act="conv">Conversation${talk ? ` (${talk})` : ''}</button><button class="btn top ${ui.log ? 'sel' : ''}" data-act="log">Ops log</button>`;
+    h += `<button class="btn top ${ui.proc ? 'sel' : ''}" data-act="proc">Process</button><button class="btn top ${ui.conv ? 'sel' : ''}" data-act="conv">Conversation${talk ? ` (${talk})` : ''}</button><button class="btn top ${ui.log ? 'sel' : ''}" data-act="log">Ops log</button>`;
     const off = data.run ? 'disabled title="Available when the run ends"' : '';
     if (data.doc.status === 'open') h += `<button class="btn danger top" data-act="abandon" ${off}>Abandon</button>`
       + (data.runner.by === me.email ? `<button class="btn commit top" data-act="close" ${off}>Close instance</button>`
@@ -588,9 +592,14 @@ function logText(e) {
 }
 
 function renderLog() {
-  $('#log').className = 'log' + ((ui.log || ui.conv) && data ? ' open' : '');
+  $('#log').className = 'log' + ((ui.log || ui.conv || ui.proc) && data ? ' open' : '');
   if (!data) return;
   if (ui.conv) return put($('#log'), conversationHtml());
+  if (ui.proc) {
+    const key = `${cur.i.id}:${data.doc.rev}`;
+    if (proc.key !== key) loadProcess(key);
+    return put($('#log'), proc.html);
+  }
   if (!ui.log) return;
   put($('#log'), `<div class="lh"><b>Ops log</b><button class="btn" data-act="log">Close</button></div>` + [...data.log].reverse().map(logLine).join(''));
 }
@@ -670,6 +679,33 @@ function traceHtml() {
   });
   flush(!!data.run);
   return h || '<div class="rh">No runs yet.</div>';
+}
+
+// Process: the instance's working/process.md, redlined against the instance it was made from, else the series' latest closed before it.
+async function loadProcess(key) {
+  proc.key = key;
+  const from = data.log.find(e => e.op === 'create' || e.op === 'duplicate')?.from;
+  const prev = from ?? cur.s.instances.filter(i => i.status === 'closed' && i.label < cur.i.label).map(i => i.label).sort().at(-1);
+  const get = async path => { const r = await fetch(fileUrl(path)); return r.ok ? r.text() : ''; };
+  const [now, was] = await Promise.all([get('working/process.md'), prev ? get(`../${prev}/working/process.md`) : '']);
+  const lines = redline(was, now), changed = lines.some(([k]) => k);
+  proc.html = `<div class="lh"><b>Process</b><button class="btn" data-act="proc">Close</button></div><div class="conv">`
+    + `<div class="sub">${!now ? 'No process.md yet: the agent writes it as it learns the series.' : prev ? (changed ? `Changes since ${esc(prev)} are marked.` : `Unchanged since ${esc(prev)}.`) : 'The series\' first process.'}</div>`
+    + `<div class="proc">${lines.map(([k, l]) => `<div class="${k}">${md(l) || '&nbsp;'}</div>`).join('')}</div></div>`;
+  if (ui.proc && proc.key === key) renderLog();
+}
+
+function redline(a, b) {
+  const x = a ? a.split('\n') : [], y = b ? b.split('\n') : [], n = x.length, m = y.length;
+  const L = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i][j] = x[i] === y[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const out = [];
+  for (let i = 0, j = 0; i < n || j < m;) {
+    if (i < n && j < m && x[i] === y[j]) { out.push(['', y[j]]); i++; j++; }
+    else if (j < m && (i === n || L[i][j + 1] >= L[i + 1][j])) out.push(['ins', y[j++]]);
+    else out.push(['del', x[i++]]);
+  }
+  return a ? out : out.map(([, l]) => ['', l]);
 }
 
 // Threads from the log: a comment starts one, on an item (at a ref) or the instance; comments and the agent's `say` reply in it.
@@ -974,9 +1010,12 @@ document.addEventListener('click', async ev => {
   }
   const act = el.dataset.act;
   if (act === 'menu') $('#side').classList.toggle('open');
-  if (act === 'log') { ui.log = !ui.log; ui.conv = false; renderLog(); renderBar(); placeCard(); }
-  if (act === 'conv') { ui.conv = !ui.conv; ui.log = false; ui.on = null; renderLog(); renderBar(); placeCard(); }
-  if (act === 'comment-on') { ui.conv = true; ui.log = false; ui.on = el.dataset.item; renderLog(); renderBar(); $('#newcomment')?.focus(); }
+  if (act === 'log' || act === 'conv' || act === 'proc') {
+    const open = !ui[act];
+    Object.assign(ui, { log: false, conv: false, proc: false, on: null, [act]: open });
+    renderLog(); renderBar(); placeCard();
+  }
+  if (act === 'comment-on') { Object.assign(ui, { log: false, conv: true, proc: false, on: el.dataset.item }); renderLog(); renderBar(); $('#newcomment')?.focus(); }
   if (act === 'comment' || act === 'reply-thread') {
     const box = act === 'comment' ? $('#newcomment') : el.closest('.thread').querySelector('textarea'), text = box.value.trim();
     if (!text) return;
@@ -1222,7 +1261,7 @@ addEventListener('keydown', e => {
   if (pv) { pv = null; renderPv(); }
   else if ($('#side').classList.contains('open')) $('#side').classList.remove('open');
   else if (openItem) { openItem = null; renderCard(); renderPanes(); }
-  else if (ui.log || ui.conv) { ui.log = ui.conv = false; renderLog(); renderBar(); }
+  else if (ui.log || ui.conv || ui.proc) { ui.log = ui.conv = ui.proc = false; renderLog(); renderBar(); }
   else if (ui.adv) { ui.adv = false; renderAdv(); }
 });
 // Microsoft sends people back to #logins after they connect Microsoft 365.

@@ -81,7 +81,7 @@ As proposed, unchanged except that nothing asks for approval to write:
 
 ## Process and the review sheet
 
-Built in the prompt: `process.md` as the people's document, and a review sheet with every instance. Still to come: Process beside the graph, with its redline against the previous instance.
+Built: `process.md` as the people's document and a review sheet with every instance (in the prompt), and Process beside the graph, redlined against the previous instance.
 
 - **Process is the people's document,** shown beside the graph and written for a colleague who knows the business but not the scripts: what the series delivers, each input and where it comes from, the steps with their rules in words, the standing rules with who set them, and the checks. No paths or code. It shows, as a redline, what changed since the previous instance. The agent's technical memory lives in its scripts.
 - **A review sheet with every instance,** for whoever closes it: key figures against the previous instance with the reason for each material change; the checks run, each linked to its cell; what was carried or assumed; the open points; and each input's source. A workbook when the outputs are workbooks.
@@ -173,7 +173,7 @@ Everything we build runs on the development machine; only the real outside syste
 3. Microsoft 365 logins and the ticks (built).
 4. Website logins through the machines service, moving the ERP and the portals onto personal logins.
 5. Waking, several open instances, Ad hoc (built).
-6. Talking, Process and the review sheet. The prompt-only parts can land early.
+6. Talking, Process and the review sheet (built).
 7. Power users, `rf skill push`, guidance and the catalogue.
 
 The machines service is built alongside, in its own repo: browsers first, then Windows.
