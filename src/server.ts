@@ -57,7 +57,11 @@ async function agent(req: IncomingMessage, res: ServerResponse, url: URL) {
   }
   if (url.pathname === '/agent/wake' && req.method === 'POST') return send(res, 200, wakeFrom(a, ((await json(req)).args ?? []).map(String)));
   // Skills and machines: rf skills, rf settings, rf files, rf mail, rf browser, rf windows (see agent-api.ts).
-  const r = await agentCall(a, url.pathname, req.method ?? 'GET', url.searchParams, () => body(req));
+  // A login the run's runner must sign in to again is logged, so the instance carries on once they do.
+  const r = await agentCall(a, url.pathname, req.method ?? 'GET', url.searchParams, () => body(req)).catch((e: HttpError & { login?: string }) => {
+    if (e.login) a.inst.append('server', 'expired', { login: e.login, runner: runnerOf(a.inst).by });
+    throw e;
+  });
   if (r) return send(res, r.status, r.data);
   throw new HttpError(404, 'not found');
 }

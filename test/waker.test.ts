@@ -11,6 +11,7 @@ import type { Active } from '../src/waker.ts';
 delete process.env.OPENROUTER_API_KEY;
 process.env.RF_WAKE_TICK_MS = '50';
 const { closed, recover, setWake, startWaking, wakeFrom, wakes } = await import('../src/waker.ts');
+const { saveLogin } = await import('../src/logins.ts');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-wake-')), alice = 'alice@demo.test';
 initSystem(tmp);
 openStore(tmp);
@@ -93,4 +94,17 @@ test('a run a restart cut ends as aborted, and its instance is woken to carry on
   assert.deepEqual(cut.log.slice(-2).map(e => [e.op, e.error ?? e.reason]), [['done', 'a restart cut the run'], ['wake', 'A restart cut your last run; carry on']]);
   await settle();
   assert.equal(cut.log.filter(e => e.op === 'run').length, 2, 'started again');
+});
+
+test("an instance whose run met its runner's expired login carries on when they sign in again, once", async () => {
+  const waits = make('s2', 'waits');
+  waits.append('server', 'expired', { login: 'm365', runner: alice });
+  saveLogin(alice, { id: 'm365', kind: 'm365', name: 'Microsoft 365', since: '', offers: [], expired: true });
+  assert.ok(!waits.log.some(e => e.op === 'wake'), 'an expired login wakes nothing');
+  saveLogin(alice, { id: 'm365', kind: 'm365', name: 'Microsoft 365', since: '', offers: [] }, 'refresh');
+  assert.deepEqual(waits.log.filter(e => e.op === 'wake').map(e => e.reason), [`${alice} signed in to Microsoft 365 again`]);
+  saveLogin(alice, { id: 'm365', kind: 'm365', name: 'Microsoft 365', since: '', offers: [] }, 'turned over');
+  assert.equal(waits.log.filter(e => e.op === 'wake').length, 1, 'a refresh token turning over wakes nothing');
+  await settle();
+  assert.ok(waits.log.some(e => e.op === 'run'), 'the wake started a run');
 });

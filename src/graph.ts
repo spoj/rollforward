@@ -15,7 +15,7 @@ export async function token(email: string): Promise<string> {
   const t = tokens.get(email);
   if (t && t.exp > Date.now()) return t.token;
   const login = logins(email).find(l => l.id === 'm365');
-  if (!login || login.expired) throw new HttpError(409, `${email} has no current Microsoft 365 login: they sign in to it on the Logins page`);
+  if (!login || login.expired) throw Object.assign(new HttpError(409, `${email} has no current Microsoft 365 login: they sign in to it on the Logins page`), { login: 'm365' });
   try {
     const r = await refreshM365(secret(email, 'm365'));
     saveLogin(email, login, r.refresh);
@@ -24,7 +24,7 @@ export async function token(email: string): Promise<string> {
   } catch (e) {
     if ((e as HttpError).status !== 401) throw e;
     saveLogin(email, { ...login, expired: true });
-    throw new HttpError(409, `${email}'s Microsoft 365 login has expired: they sign in to it again on the Logins page`);
+    throw Object.assign(new HttpError(409, `${email}'s Microsoft 365 login has expired: they sign in to it again on the Logins page`), { login: 'm365' });
   }
 }
 

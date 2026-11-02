@@ -2,7 +2,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { HttpError, type Instance } from './store.ts';
-import { key, rfDir } from './system.ts';
+import { changes, key, rfDir } from './system.ts';
 
 // Every login is personal: a person's own sign-in to Microsoft 365 or to a website, kept in .rf/people/<id>/. logins.json lists
 // them, each with what it offers a run, such as a mailbox or a site; each login's secret (Microsoft's refresh token, a website's
@@ -18,7 +18,9 @@ export function logins(email: string): Login[] {
   return existsSync(list(email)) ? JSON.parse(readFileSync(list(email), 'utf8')) : [];
 }
 
+// A login that becomes usable, new or signed in again after it expired, wakes the runs that waited for it (waker.ts).
 export function saveLogin(email: string, login: Login, secret?: string) {
+  const was = logins(email).find(l => l.id === login.id);
   mkdirSync(folder(email), { recursive: true, mode: 0o700 });
   if (secret !== undefined) {
     const iv = randomBytes(12), c = createCipheriv('aes-256-gcm', key('seal.key'), iv).setAAD(Buffer.from(`${email}\n${login.id}`));
@@ -26,6 +28,7 @@ export function saveLogin(email: string, login: Login, secret?: string) {
     writeFileSync(join(folder(email), `${login.id}.sealed`), Buffer.concat([iv, c.getAuthTag(), body]), { mode: 0o600 });
   }
   writeFileSync(list(email), JSON.stringify([...logins(email).filter(l => l.id !== login.id), login], null, 1), { mode: 0o600 });
+  if ((!was || was.expired) && !login.expired) changes.emit('login', email, login.id, login.name);
 }
 
 export function secret(email: string, id: string): string {

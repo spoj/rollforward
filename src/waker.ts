@@ -260,6 +260,16 @@ export function recover() {
   }
 }
 
+// An open instance whose run met its runner's expired login carries on when they sign in to it again.
+changes.on('login', (email: string, id: string, name: string) => {
+  for (const sid of Object.keys(tree().series)) for (const inst of instances(sid).filter(i => i.doc.status === 'open')) {
+    const hit = inst.log.findLast(e => e.op === 'expired' && e.login === id && e.runner === email);
+    if (!hit || inst.log.some(e => e.seq > hit.seq && e.op === 'wake' && e.login === id)) continue;
+    inst.append('server', 'wake', { reason: `${email} signed in to ${name} again`, from: 'server', login: id });
+    kick(inst);
+  }
+});
+
 export function startWaking() {
   recover();
   fire();

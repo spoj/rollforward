@@ -37,7 +37,7 @@ Agreed with Matthew on 2 Nov, after his review of the proposals and twenty quest
 
 ## Logins
 
-Built: logins sealed per person, ticks at every start, copy and takeover, runners and takeover, close by the runner only, Microsoft 365 logins and website logins (PLAN.md, decisions 37, 38 and 43). Still to come: an expired login's run waiting for its runner to sign in again rather than only saying so.
+Built: logins sealed per person, ticks at every start, copy and takeover, runners and takeover, close by the runner only, Microsoft 365 logins and website logins (PLAN.md, decisions 37, 38 and 43). A run that meets its runner's expired Microsoft 365 login says so, and the instance carries on once they sign in again.
 
 - **Kinds, to start:**
   - **A website,** for the ERP and each vendor portal. The person signs in themselves, in a live browser shown on rollforward's page; the session's saved state (cookies and site data) becomes their login. No password is ever stored. It lasts as long as the site keeps a login alive: weeks behind a company sign-in, under an hour on sites with short sessions of their own.

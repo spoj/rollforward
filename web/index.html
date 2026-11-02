@@ -586,6 +586,7 @@ function logText(e) {
     resolve: () => `${w} resolved a thread`,
     report: () => `${w} reported on run ${e.run}<div class="d">${md(e.text)}</div>`,
     wake: () => `Woken${e.from ? ` by ${esc(e.from)}` : ''}<div class="d">${esc(e.reason)}</div>`,
+    expired: () => `Waiting for ${esc(e.runner)} to sign in to ${e.login === 'm365' ? 'Microsoft 365' : esc(e.login)} again`,
     takeover: () => `${w} took over from ${esc(e.from)}${e.logins?.length ? `<div class="d">Logins: ${esc(e.logins.join(', '))}</div>` : ''}`,
     promote: () => `${w} made this one-off the first instance of ${esc(e.series)}`,
     egress: () => `Run ${e.run} ${e.allowed ? 'reached' : 'was refused'} ${esc(e.host)}`,
