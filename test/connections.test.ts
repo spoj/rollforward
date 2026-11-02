@@ -1,7 +1,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -141,6 +141,19 @@ test('a login Microsoft no longer renews is marked expired, and the run is told 
   const fresh = await import(`../src/graph.ts?again=${Date.now()}`);
   await assert.rejects(fresh.token(ALICE), /alice@demo.test's Microsoft 365 login has expired/);
   assert.equal(logins.logins(ALICE)[0].expired, true);
+});
+
+test('a push takes only a skill.json skills() can read, and an id of letters, digits and dashes; a push cut short leaves nothing behind', async () => {
+  const { pushSkill, skills, versionsOf } = await import('../src/skills.ts');
+  const files = (meta: string) => ({ 'SKILL.md': Buffer.from('---\nname: x\n---\n').toString('base64'), 'skill.json': Buffer.from(meta).toString('base64') });
+  for (const bad of ['{', '[]', '{"uses": "m365-mail"}', '{"uses": ["ftp"]}', '{"settings": [{"key": "a"}]}', '{"site": {"hosts": "a.example"}}'])
+    assert.throws(() => pushSkill('bad', files(bad), ALICE), /skill.json is/, bad);
+  assert.throws(() => versionsOf('../../instances'), /a skill id is/);
+  mkdirSync(join(tmp, 'skills', 'versions', 'half', '1'), { recursive: true });
+  symlinkSync(join('..', 'versions', 'half', '1'), join(tmp, 'skills', 'live', 'half.new'));
+  assert.equal(pushSkill('half', files('{"uses": ["m365-mail"]}'), ALICE), 2, 'after a version cut short, and its leftover link');
+  assert.deepEqual(versionsOf('half').map(v => v.version), [2]);
+  assert.ok(!skills().some(s => s.id.includes('.')));
 });
 
 test("admins set each skill up once, a website's address among its settings; a series picks skills that exist", async () => {
