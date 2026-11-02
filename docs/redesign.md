@@ -164,7 +164,7 @@ One VM with 16 cores and 64 GB, inside the company network, runs the server, the
 
 Everything we build runs on the development machine; only the real outside systems don't.
 - **Stand-ins:** a fake portal (a sign-in, expiring sessions, an ERP-like page whose every click posts, a download, a link to another host) and a fake Microsoft (sign-in, mail, files) reached through configurable addresses.
-- **Scenario tests** drive real runs with a scripted stand-in for the model, so wakes, ticks, takeovers and the sandbox's walls are checked at no model cost: reading `.rf/`, reaching an internal address or opening an unticked mailbox must fail.
+- **Scenario tests** (built: [test/scenarios.test.ts](../test/scenarios.test.ts)) drive real runs with a scripted stand-in for the model, so wakes, ticks, takeovers and the sandbox's walls are checked at no model cost: reading `.rf/`, reaching an internal address or opening an unticked mailbox must fail.
 - **A few runs with the real model** check the prompts, at $1–4 each.
 - **Not on the development machine:** the real ERP and portals (a pass on the company VM) and a real Microsoft tenant (an app registration there).
 
