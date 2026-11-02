@@ -4,7 +4,7 @@ import { appendFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { HttpError } from './store.ts';
 import { forgetPerson, initSystem, key, readJson, rfDir, writeJson } from './system.ts';
-import { forgetLogins, saveLogin } from './logins.ts';
+import { forgetLogins, logins, saveLogin } from './logins.ts';
 
 // Sign-in with a Microsoft account. People press "Sign in with Microsoft" and type nothing. With RF_OIDC_ISSUER and the app's id set,
 // the button goes to Microsoft Entra ID (OpenID Connect, code flow with PKCE): the server redeems the code, with the app's secret if it
@@ -257,15 +257,16 @@ export async function connectM365(res: ServerResponse, email: string) {
   await microsoft(res, '/#logins', email);
 }
 
-// Keeps the Microsoft 365 login of the person who asked for it, offering their own mailbox and OneDrive to start with.
+// Keeps the Microsoft 365 login of the person who asked for it, offering their own mailbox and OneDrive, and on signing in again,
+// the shared mailboxes and sites they had added.
 async function finishM365(req: IncomingMessage, res: ServerResponse, claims: any, refresh: string | undefined, p: Pending) {
   const email = String(claims.email ?? claims.preferred_username ?? claims.upn ?? '').toLowerCase();
   if (session(req)?.email !== p.m365) return page(res, 401, 'Sign in to rollforward first, then connect Microsoft 365.');
   if (email !== p.m365) return page(res, 403, `That was ${email}'s Microsoft account; connect your own, ${p.m365}.`);
   if (!refresh) return page(res, 502, 'Microsoft gave no refresh token, so the login could not be kept: the app needs offline_access.');
-  saveLogin(email, { id: 'm365', kind: 'm365', name: 'Microsoft 365', account: email, since: new Date().toISOString(), offers: [
-    { id: `m365:mail:${email}`, name: `Mailbox ${email}` }, { id: 'm365:onedrive', name: 'OneDrive' },
-  ] }, refresh);
+  const own = [{ id: `m365:mail:${email}`, name: `Mailbox ${email}` }, { id: 'm365:onedrive', name: 'OneDrive' }];
+  const added = (logins(email).find(l => l.id === 'm365')?.offers ?? []).filter(o => !own.some(x => x.id === o.id));
+  saveLogin(email, { id: 'm365', kind: 'm365', name: 'Microsoft 365', account: email, since: new Date().toISOString(), offers: [...own, ...added] }, refresh);
   res.writeHead(302, { location: p.next, 'set-cookie': cookie(pendingCookie(p.state), '', 0) }).end();
 }
 

@@ -117,6 +117,7 @@ test("Connect Microsoft 365 asks the same app for read-only mail and files, and 
   const a = await start(confidential, 'alex@acme.test');
   const s = sessionOf(await fetch(a.back, { redirect: 'manual', headers: { cookie: a.cookie } }))!;
   assert.equal((await (await fetch(`${confidential}/me`, { headers: { cookie: s } })).json()).m365, true);
+  assert.equal((await fetch(`${confidential}/logins/m365/connect`, { redirect: 'manual', headers: { cookie: s, 'sec-fetch-site': 'cross-site' } })).status, 403, "another site's link doesn't start it");
   const out = await fetch(`${confidential}/logins/m365/connect`, { redirect: 'manual', headers: { cookie: s } });
   const to = new URL(out.headers.get('location')!), pending = out.headers.getSetCookie()[0].split(';')[0];
   assert.deepEqual(to.searchParams.get('scope')!.split(' ').sort(), ['email', 'https://graph.microsoft.com/Files.Read.All', 'https://graph.microsoft.com/Mail.Read', 'https://graph.microsoft.com/Mail.Read.Shared', 'https://graph.microsoft.com/Sites.Read.All', 'offline_access', 'openid']);

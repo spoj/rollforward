@@ -11,19 +11,23 @@ const tokens = new Map<string, { token: string; exp: number }>();
 // Tests point this at a stand-in.
 export const endpoints = { graph: GRAPH };
 
+// The login as it is now: its person may change its offers, or sign out, while Microsoft answers.
+const current = (email: string) => logins(email).find(l => l.id === 'm365');
+
 export async function token(email: string): Promise<string> {
   const t = tokens.get(email);
   if (t && t.exp > Date.now()) return t.token;
-  const login = logins(email).find(l => l.id === 'm365');
+  const login = current(email);
   if (!login || login.expired) throw Object.assign(new HttpError(409, `${email} has no current Microsoft 365 login: they sign in to it on the Logins page`), { login: 'm365' });
   try {
-    const r = await refreshM365(secret(email, 'm365'));
-    saveLogin(email, login, r.refresh);
+    const r = await refreshM365(secret(email, 'm365')), now = current(email);
+    if (now) saveLogin(email, now, r.refresh);
     tokens.set(email, { token: r.access, exp: r.expires });
     return r.access;
   } catch (e) {
     if ((e as HttpError).status !== 401) throw e;
-    saveLogin(email, { ...login, expired: true });
+    const now = current(email);
+    if (now) saveLogin(email, { ...now, expired: true });
     throw Object.assign(new HttpError(409, `${email}'s Microsoft 365 login has expired: they sign in to it again on the Logins page`), { login: 'm365' });
   }
 }
@@ -81,7 +85,7 @@ export async function messages(email: string, mailbox: string, from: Date, to: D
 }
 
 export async function attachments(email: string, mailbox: string, message: string): Promise<{ name: string; contentType: string; bytes: Buffer }[]> {
-  const page = await graph(email, `/users/${encodeURIComponent(mailbox)}/messages/${message}/attachments`);
+  const page = await graph(email, `/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(message)}/attachments`);
   return page.value.filter((a: any) => a['@odata.type'] === '#microsoft.graph.fileAttachment')
     .map((a: any) => ({ name: a.name, contentType: a.contentType, bytes: Buffer.from(a.contentBytes ?? '', 'base64') }));
 }
