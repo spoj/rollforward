@@ -140,7 +140,7 @@ Built: folders by id, `.rf/tree.json`, the index of `instance.json`s, renames th
 - **Frozen files are referenced, not copied:** an item may point at another instance's frozen file by id, path and hash.
 - **Derived files by hash:** each frozen file gets its Preview, a text extract (so `rf search` greps inside every workbook and email in reach) and its renders, once.
 - **Tools carry the mechanics; the prompt carries judgement.** `rf` gains `say`, `wake`, `browser`, `windows`, `search` and `skill`, each with its own help.
-- **Events instead of polling:** `/api/events` streams changes the principal may see; the page stops polling the whole tree every 4 seconds.
+- **Events instead of polling** (built): `/api/events` streams changes the principal may see; the page no longer polls the whole tree every 4 seconds.
 - **Costs are shown** per instance and per series (built). No caps for now.
 
 ## Power users

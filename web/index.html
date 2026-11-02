@@ -1272,12 +1272,18 @@ addEventListener('keydown', e => {
 const backFromMicrosoft = location.hash === '#logins';
 if (backFromMicrosoft) history.replaceState(null, '', '#/');
 refresh().then(() => backFromMicrosoft && openLogins());
-let polling = false;
-setInterval(async () => {
-  if (document.hidden || polling) return;
-  polling = true;
-  await refresh().finally(() => { polling = false; });
-}, 4000);
+// The server says what changed; the page refreshes then, at most one refresh at a time, and when it comes back into view.
+let busy = false, stale = false;
+async function changed() {
+  if (busy || document.hidden) return void (stale = true);
+  [busy, stale] = [true, false];
+  await refresh().finally(() => { busy = false; });
+  if (stale) changed();
+}
+const events = new EventSource('/api/events');
+events.onmessage = changed;
+events.onopen = changed;
+addEventListener('visibilitychange', () => stale && changed());
 </script>
 </body>
 </html>

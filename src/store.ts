@@ -1,7 +1,7 @@
 import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { basename, dirname, extname, join, posix } from 'node:path';
-import { tree } from './system.ts';
+import { changes, tree } from './system.ts';
 
 // Paths in the screen are /-separated on every system.
 const normalize = posix.normalize;
@@ -165,12 +165,14 @@ export class Instance {
     const e = { seq: this.log.length + 1, at: new Date().toISOString(), by, op, ...fields };
     this.log.push(e);
     appendFileSync(join(this.dir, 'log.jsonl'), JSON.stringify(e) + '\n');
+    changes.emit('change', this.id);
     return e;
   }
 
   save() {
     this.doc.rev++;
     replaceReadOnly(join(this.dir, 'workspace.json'), JSON.stringify(this.doc, null, 1));
+    changes.emit('change', this.id);
   }
 
   closedAt(): string {

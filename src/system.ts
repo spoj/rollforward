@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -12,6 +13,9 @@ export type Series = { name: string; workspace: string; archived?: boolean; adho
 export type Tree = { workspaces: Record<string, Workspace>; series: Record<string, Series> };
 
 let dir = '';
+
+// What changed, for the page's event stream: an instance's id, or "tree" for anything in .rf/ such as names, wakes or logins.
+export const changes = new EventEmitter().setMaxListeners(0);
 
 export function initSystem(root: string) {
   dir = join(root, '.rf');
@@ -27,6 +31,7 @@ export function writeJson(name: string, data: unknown) {
   const p = join(dir, name);
   writeFileSync(p + '.tmp', JSON.stringify(data, null, 1), { mode: 0o600 });
   renameSync(p + '.tmp', p);
+  changes.emit('change', 'tree');
 }
 
 export const rfDir = () => dir;

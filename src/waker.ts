@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, posix, relative } from 'node:path';
 import { createInstance, guidanceFile, HttpError, instance, instanceDir, instances, isPerson, labels, newId, seriesDir, type Entry, type Instance } from './store.ts';
 import { startRun, type Run, type View } from './runner.ts';
-import { canSee, everyone, readJson, tree, writeJson, type Tree } from './system.ts';
+import { canSee, changes, everyone, readJson, tree, type Tree, writeJson } from './system.ts';
 import { users } from './auth.ts';
 import type { Browsers } from './machines.ts';
 import { skillsText } from './agent-api.ts';
@@ -112,6 +112,7 @@ async function start(inst: Instance) {
       token: a.token, view: a.view,
       message: text, skills: chosen,
       onEvent: e => {
+        if (e.type === 'message_end' || e.type === 'tool_execution_end') changes.emit('change', inst.id); // Advanced shows the run as it goes
         if (e.type === 'message_end' && e.message.role === 'assistant') {
           a.cost += e.message.usage.cost.total;
           const text = e.message.content.map(b => (b.type === 'text' ? b.text : '')).join('').trim();

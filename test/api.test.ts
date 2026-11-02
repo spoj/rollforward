@@ -464,3 +464,18 @@ test('rf for people: ls, comment, and admins manage people from it', async () =>
   await rf('user', 'remove', 'carol@demo.test');
   assert.doesNotMatch(await rf('users'), /carol/);
 });
+
+test('the page hears of changes from an event stream, only of instances it can see', async () => {
+  const listen = async (cookie: string) => {
+    const r = await fetch(base + '/api/events', { headers: { cookie } }), reader = r.body!.getReader(), got: string[] = [];
+    (async () => { for (let c; !(c = await reader.read()).done;) got.push(new TextDecoder().decode(c.value)); })().catch(() => {});
+    return { got, stop: () => reader.cancel() };
+  };
+  const b = sessionOf(await login(bob))!, mine = await listen(admin), bobs = await listen(b), path = await at(series, 'talk'), id = path.split('/').pop()!;
+  await call('POST', `${path}/comment`, JSON.stringify({ text: 'heard?' }));
+  await new Promise(r => setTimeout(r, 1500));
+  assert.ok(mine.got.join('').includes(`data: ${id}\n\n`));
+  assert.ok(!bobs.got.join('').includes(id), "bob isn't in larkfield");
+  mine.stop();
+  bobs.stop();
+});

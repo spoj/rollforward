@@ -11,7 +11,7 @@ import { socketDir } from './runner.ts';
 import { search } from './search.ts';
 import { serveSandboxes } from './sandbox.ts';
 import { authenticate, checkConfig, connectM365, m365Ready, mode, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, upsertUser, users, type Me, type Role } from './auth.ts';
-import { canManage, canSee, everyone, initSystem, saveTree, tree, type Workspace } from './system.ts';
+import { canManage, canSee, changes, everyone, initSystem, saveTree, tree, type Workspace } from './system.ts';
 import { checkTicks, logins, runnerOf, signOut } from './logins.ts';
 import { agentCall, testSkill } from './agent-api.ts';
 import { endSignIn, isSignIn, passUpgrade, startSignIn, viewPage } from './machines.ts';
@@ -137,6 +137,19 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
     'content-disposition': `${image ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(basename(rel))}`,
   });
   createReadStream(path).pipe(res);
+}
+
+// The page's event stream: the id of each instance the person can see as it changes, and "tree" for anything else, at most one a
+// second each, so the page refreshes on change instead of polling.
+function events(me: Me, req: IncomingMessage, res: ServerResponse) {
+  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
+  const due = new Map<string, NodeJS.Timeout>(), beat = setInterval(() => res.write(': beat\n\n'), 30_000);
+  const on = (id: string) => {
+    if (due.has(id) || (id !== 'tree' && !canSee(me, tree().workspaces[tree().series[instance(id).seriesId].workspace]))) return;
+    due.set(id, setTimeout(() => { due.delete(id); res.write(`data: ${id}\n\n`); }, 1000));
+  };
+  changes.on('change', on);
+  req.on('close', () => { changes.off('change', on); clearInterval(beat); for (const t of due.values()) clearTimeout(t); });
 }
 
 const threads = (inst: Instance) => [...new Set(inst.log.filter(e => e.op === 'comment').map(e => e.thread as string))];
@@ -412,6 +425,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(readFileSync(page));
     } else if (url.pathname === '/me') send(res, 200, { ...me, sign_in: mode, m365: m365Ready() });
+    else if (url.pathname === '/api/events') events(me, req, res);
     else if (url.pathname === '/api') send(res, 200, listing(me));
     else if (url.pathname.startsWith('/files/')) await file(me, res, url, false);
     else if (url.pathname.startsWith('/preview/')) await file(me, res, url, true);
