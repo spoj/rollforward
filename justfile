@@ -43,10 +43,12 @@ logs:
     podman logs -f --tail 50 {{live}}
 
 # The demo series in the volume read their sources at this repo's demo/run/data-sources.
-# Rebuild the live demo from the committed main branch and restart it; a run it cuts carries on after the restart
+# Rebuild the live demo from the committed main branch and restart it, moving its data to folders by id the first time;
+# a run it cuts carries on after the restart
 deploy:
     git -C {{cache}}/repo fetch -q {{justfile_directory()}} main
     git -C {{cache}}/repo checkout -q --detach FETCH_HEAD
     podman build -q -t rollforward-public {{cache}}/repo
     podman rm -f {{live}}
+    podman run --rm -v {{live}}-data:/data rollforward-public sh -c 'test -e /data/.rf/tree.json || node scripts/migrate-ids.ts /data'
     podman run -d --name {{live}} --init --restart=always --security-opt 'unmask=/proc/*' -p 127.0.0.1:8790:8780 --env-file {{cache}}/env -e RF_SANDBOX_RO={{justfile_directory()}}/demo/run/data-sources -v {{live}}-data:/data -v {{cache}}/data-sources:{{justfile_directory()}}/demo/run/data-sources rollforward-public
