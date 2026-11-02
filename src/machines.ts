@@ -1,7 +1,9 @@
-import { connect } from 'node:net';
+import { connect, isIP } from 'node:net';
+import { connect as tlsConnect } from 'node:tls';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { request, type IncomingMessage } from 'node:http';
+import { request as httpRequest, type IncomingMessage } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import type { Duplex } from 'node:stream';
 import { HttpError, replaceReadOnly, type Instance } from './store.ts';
 import { logins, saveLogin, secret, use } from './logins.ts';
@@ -13,14 +15,15 @@ import { siteOf, skill } from './skills.ts';
 //   people sign in themselves, in the live view shown on the Logins page, and a run's browser starts from its runner's login and
 //   hands it back refreshed;
 // - Windows: a virtual machine with no network, cloned from a clean, signed-in state, that runs scripts and takes files.
-// Calls use node:http, as fetch gives up on an answer after 5 minutes and a Windows script may run longer.
+// Calls use node:http(s), as fetch gives up on an answer after 5 minutes and a Windows script may run longer. The service may be on
+// a host of its own, at an https address (or over a private link): runs and people reach it only through this server.
 
-const base = process.env.RF_MACHINES_URL ?? 'http://127.0.0.1:8797';
+const base = process.env.RF_MACHINES_URL ?? 'http://127.0.0.1:8797', u = new URL(base), tls = u.protocol === 'https:';
 const key = () => ({ authorization: `Bearer ${process.env.RF_MACHINES_KEY}` });
 
 function call(method: string, path: string, body?: unknown): Promise<Buffer> {
   return new Promise((ok, fail) => {
-    const req = request(base + path, { method, headers: key() }, res => {
+    const req = (tls ? httpsRequest : httpRequest)(base + path, { method, headers: key() }, res => {
       const chunks: Buffer[] = [];
       res.on('data', c => chunks.push(c)).on('end', () => {
         const data = Buffer.concat(chunks);
@@ -40,7 +43,8 @@ const close = (id: string): Promise<{ state: unknown; log: { blocked?: string }[
 
 // A websocket passed through to the service's `path`, with the key added.
 export function passUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, path: string) {
-  const u = new URL(base), up = connect(Number(u.port), u.hostname);
+  const port = Number(u.port || (tls ? 443 : 80));
+  const up = tls ? tlsConnect({ host: u.hostname, port, servername: isIP(u.hostname) ? undefined : u.hostname }) : connect(port, u.hostname);
   up.on('error', () => socket.destroy());
   socket.on('error', () => up.destroy());
   const headers: Record<string, unknown> = { ...req.headers, host: u.host, ...key() };
