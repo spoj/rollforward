@@ -20,7 +20,7 @@ const full = () => active.size >= MAX_RUNS || freemem() < MIN_FREE;
 export const MAX_OPEN = 3;
 const SPACING_MS = 15 * 60_000;
 
-export type Active = { inst: Instance; n: number; token: string; view: View; run?: Run; sent: number; seen: number; texts: Map<string, number>; interrupted: boolean; done: boolean; cost: number; said: string; hosts: Set<string>; machines?: Machines; timer?: NodeJS.Timeout };
+export type Active = { inst: Instance; n: number; token: string; view: View; run?: Run; sent: number; seen: number; texts: Map<string, number>; interrupted: boolean; done: boolean; cost: number; said: string; failed?: string; hosts: Set<string>; machines?: Machines; timer?: NodeJS.Timeout };
 export const active = new Map<string, Active>();
 export const byToken = new Map<string, Active>();
 const debounce = new Map<string, NodeJS.Timeout>();
@@ -115,6 +115,7 @@ async function start(inst: Instance) {
         if (e.type === 'message_end' || e.type === 'tool_execution_end') changes.emit('change', inst.id); // Advanced shows the run as it goes
         if (e.type === 'message_end' && e.message.role === 'assistant') {
           a.cost += e.message.usage.cost.total;
+          a.failed = e.message.stopReason === 'error' ? e.message.errorMessage ?? 'the model failed' : undefined; // a later success clears it
           const text = e.message.content.map(b => (b.type === 'text' ? b.text : '')).join('').trim();
           if (text) a.said = text;
         }
@@ -134,7 +135,7 @@ async function start(inst: Instance) {
     await a.run!.interrupt().catch(() => {});
     finish(a, true, 'time limit');
   }, LIMIT_MS);
-  a.run.settled.then(aborted => finish(a, aborted));
+  a.run.settled.then(aborted => finish(a, aborted, a.failed));
 }
 
 function finish(a: Active, aborted: boolean, error?: string) {

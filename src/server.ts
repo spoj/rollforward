@@ -259,7 +259,7 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
   const mine = a?.inst === inst ? a : undefined;
   if (!action) return send(res, 200, { doc: inst.doc, log: inst.log, run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4) } : null, queued: queued(inst), runner: runnerOf(inst) });
   if (action === 'trace') return send(res, 200, trace(inst));
-  if (action === 'files') return send(res, 200, ['upload', 'working', 'calls'].filter(top => existsSync(join(inst.dir, top))).flatMap(top =>
+  if (action === 'files') return send(res, 200, ['upload', 'working', 'calls', 'browser'].filter(top => existsSync(join(inst.dir, top))).flatMap(top =>
     readdirSync(join(inst.dir, top), { recursive: true, withFileTypes: true }).filter(d => d.isFile()).map(d => {
       const st = statSync(join(d.parentPath, d.name));
       return { path: relative(inst.dir, join(d.parentPath, d.name)), size: st.size, mtime: st.mtime.toISOString() };

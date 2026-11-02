@@ -10,7 +10,7 @@ import { join } from 'node:path';
 // Real runs, from a person's act down to Pi in its sandbox, with a scripted stand-in for the model: each run's prompt takes the next
 // script, bash commands and then the report, and the stand-in keeps what each command answered. So the walls a run meets, a wake
 // and a takeover are checked as a run meets them, at no model cost.
-type Script = { bash: (string | (() => string))[]; report: string; prompt?: string; saw: string[] };
+type Script = { bash: (string | (() => string))[]; report: string; prompt?: string; saw: string[]; fail?: string };
 const scripts: Script[] = [], byPrompt = new Map<string, Script>();
 const app = join(import.meta.dirname, '..'), tmp = mkdtempSync(join(tmpdir(), 'rf-scenario-')), root = join(tmp, 'data');
 const ADMIN = 'admin@demo.test', BOB = 'bob@demo.test';
@@ -27,6 +27,7 @@ async function answer(req: IncomingMessage, res: ServerResponse) {
   if (!byPrompt.has(key)) byPrompt.set(key, Object.assign(scripts.shift()!, { prompt: key }));
   const s = byPrompt.get(key)!, results = msgs.slice(at + 1).filter(isResult).flatMap(m => (m.content as { type: string; content: unknown }[]).filter(b => b.type === 'tool_result'));
   s.saw = results.map(r => text(r.content));
+  if (s.fail) return void res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: s.fail } }));
   const step = s.bash[results.length], bash = body.tools.find((t: { name: string }) => /bash/i.test(t.name)).name;
   const block = step === undefined ? { type: 'text', text: s.report } : { type: 'tool_use', id: `toolu_${Date.now()}`, name: bash, input: { command: typeof step === 'string' ? step : step() } };
   const send = (type: string, data: object) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
@@ -122,4 +123,9 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   log = await runs(id, 3);
   assert.match(takenOver.saw[0], /m365:mail:bob@demo.test is not ticked for this instance; its runner, bob@demo.test/);
   assert.equal(log.findLast(e => e.op === 'done')!.aborted, false);
+
+  scripts.push({ bash: [], report: '', saw: [], fail: 'the model said no' });
+  assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Once more.' }, bob)).status, 200);
+  log = await runs(id, 4);
+  assert.match(String(log.findLast(e => e.op === 'done')!.error), /the model said no/, "a model's failure is the run's error");
 });
