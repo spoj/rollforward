@@ -369,13 +369,35 @@ async function refresh() {
   let [w, s, i] = all.find(e => e.at(-1).id === id) ?? [t.find(w => !w.archived)];
   s ??= w?.series.find(s => !s.archived && !s.adhoc) ?? w?.series.find(s => !s.archived);
   i ??= s?.instances.find(i => i.status === 'open') ?? s?.instances.at(-1);
-  const next = w && { w, s, i };
-  const path = i ? `/api/instances/${i.id}` : '', d = path ? await api(path) : null;
-  const key = `${path}:${d?.log.length}`, st = ui.adv && d && (d.run || key !== linesKey) ? await api(path + '/trace') : null;
+  const path = i ? `/api/instances/${i.id}` : '', [d, st] = path ? await fetchInstance(path) : [null, null];
   if (n !== refreshes) return;
+  [tree, expired] = [t, mine.filter(l => l.expired)];
+  land(w && { w, s, i }, path, d, st);
+}
+
+// Instances changed: each one's row in the sidebar, and the open one's data. One the sidebar lacks takes a full refresh.
+async function patch(ids) {
+  const rows = tree.flatMap(w => w.series.flatMap(s => s.instances)), others = ids.filter(id => id !== cur?.i?.id);
+  const sums = await Promise.all(others.map(id => api(`/api/instances/${id}/summary`)));
+  if (sums.some(x => !rows.some(r => r.id === x.id))) return refresh();
+  for (const x of sums) Object.assign(rows.find(r => r.id === x.id), x);
+  if (others.length === ids.length) return render();
+  const n = ++refreshes, path = shown, [[d, st], sum] = await Promise.all([fetchInstance(path), api(`${path}/summary`)]);
+  if (n !== refreshes) return;
+  Object.assign(cur.i, sum);
+  land(cur, path, d, st);
+}
+
+// An instance's data, and its trace when Advanced is open and the trace may have moved.
+async function fetchInstance(path) {
+  const d = await api(path), key = `${path}:${d.log.length}`;
+  return [d, ui.adv && (d.run || key !== linesKey) ? [await api(path + '/trace'), key] : null];
+}
+
+function land(next, path, d, st) {
   const was = data && path === shown ? lastDone()?.seq ?? 0 : undefined;
-  [tree, cur, data, shown, expired] = [t, next, d, path, mine.filter(l => l.expired)];
-  if (st) [lines, linesKey] = [st, key];
+  [cur, data, shown] = [next, d, path];
+  if (st) [lines, linesKey] = st;
   const done = data && lastDone();
   if (done && was !== undefined && done.seq > was) toast(done.error ? `Run ${done.run} failed: ${done.error}` : `Run ${done.run} finished${done.summary ? ': ' + done.summary : ''}`, done.error ? '' : 'ok');
   if (data) localStorage[`rev:${path}`] = data.doc.rev;
@@ -1303,20 +1325,25 @@ addEventListener('keydown', e => {
 const backFromMicrosoft = location.hash === '#logins';
 if (backFromMicrosoft) history.replaceState(null, '', '#/');
 refresh().then(() => backFromMicrosoft && openLogins());
-// The server says what changed; the page refreshes then, at most one refresh at a time, and when it comes back into view.
-let busy = false, stale = false;
-async function changed() {
-  if (busy || document.hidden) return void (stale = true);
-  [busy, stale] = [true, false];
-  await refresh().catch(console.error).finally(() => { busy = false; });
-  if (stale) changed();
+// The server names what changed: "tree" for names, settings, wakes and logins, else an instance by its id. The page catches up one
+// refresh at a time, and when it comes back into view.
+const pend = new Set();
+let busy = false;
+async function drain() {
+  if (busy || document.hidden || !pend.size) return;
+  busy = true;
+  const ids = [...pend];
+  pend.clear();
+  await (ids.includes('tree') ? refresh() : patch(ids)).catch(console.error);
+  busy = false;
+  drain();
 }
 const events = new EventSource('/api/events');
-events.onmessage = changed;
-events.onopen = changed;
+events.onmessage = e => { pend.add(e.data); drain(); };
+events.onopen = () => { pend.add('tree'); drain(); };
 // The browser gives up on a stream that comes back with an error, as during a deploy or once the session has ended.
 events.onerror = () => events.readyState === EventSource.CLOSED && setTimeout(() => location.reload(), 5000);
-addEventListener('visibilitychange', () => stale && changed());
+addEventListener('visibilitychange', drain);
 </script>
 </body>
 </html>

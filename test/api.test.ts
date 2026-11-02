@@ -505,6 +505,9 @@ test('the page hears of changes from an event stream, only of instances it can s
   await new Promise(r => setTimeout(r, 1500));
   assert.ok(mine.got.join('').includes(`data: ${id}\n\n`));
   assert.ok(!bobs.got.join('').includes(id), "bob isn't in larkfield");
+  const row = (await shown(series)).instances.find((i: { id: string }) => i.id === id);
+  assert.deepEqual(await json(`${path}/summary`), row, "the instance's row, as the listing has it");
+  assert.equal((await call('GET', `${path}/summary`, undefined, b)).status, 404);
   mine.stop();
   bobs.stop();
 });

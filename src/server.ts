@@ -77,6 +77,19 @@ function questions(inst: Instance): string[] {
   return inst.doc.items.flatMap(i => i.notes ?? []).filter(n => n.id && n.options && !inst.answered(n.id)).map(n => n.ask ?? runnerOf(inst).by);
 }
 
+// An instance as the sidebar shows it. What comes from its log and screen is kept until either moves on, so a listing reads each
+// instance's log once, not on every refresh.
+const kept = new WeakMap<Instance, { key: string; questions: string[]; runner: string; cost: number }>();
+function summary(i: Instance, w8 = wakes()) {
+  const key = `${i.log.length}:${i.doc.rev}`;
+  let k = kept.get(i);
+  if (k?.key !== key) kept.set(i, k = { key, questions: questions(i), runner: runnerOf(i).by, cost: +i.log.reduce((t, e) => t + ((e.cost as number | undefined) ?? 0), 0).toFixed(4) });
+  return {
+    id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(i.seriesId)?.inst === i, queued: queued(i),
+    questions: k.questions, wake: w8.pending[i.id]?.at ?? null, runner: k.runner, cost: k.cost,
+  };
+}
+
 function listing(me: Me) {
   const t = tree(), w8 = wakes(), byName = (a: [string, { name: string }], b: [string, { name: string }]) => a[1].name.localeCompare(b[1].name);
   return Object.entries(t.workspaces).filter(([, w]) => canSee(me, w)).sort(byName).map(([id, w]) => ({
@@ -85,10 +98,7 @@ function listing(me: Me) {
       id: sid, name: s.name, archived: !!s.archived, adhoc: !!s.adhoc, skills: seriesSettings(seriesDir(sid)).skills, allow_wakes: seriesSettings(seriesDir(sid)).wakes?.by ?? null,
       reads: reach(t, sid).map(r => named(t, r).replace('/', ' / ')), wake: w8.pending[sid] ?? null,
       requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r })),
-      instances: instances(sid).map(i => ({
-        id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(sid)?.inst === i, queued: queued(i), questions: questions(i), wake: w8.pending[i.id]?.at ?? null, runner: runnerOf(i).by,
-        cost: +i.log.reduce((t, e) => t + ((e.cost as number | undefined) ?? 0), 0).toFixed(4),
-      })),
+      instances: instances(sid).map(i => summary(i, w8)),
     })),
   }));
 }
@@ -146,7 +156,7 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
 // The page's event stream: the id of each instance the person can see as it changes, and "tree" for anything else, at most one a
 // second each, so the page refreshes on change instead of polling.
 function events(me: Me, req: IncomingMessage, res: ServerResponse) {
-  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
+  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' }).flushHeaders(); // the page hears it's open at once
   const due = new Map<string, NodeJS.Timeout>(), beat = setInterval(() => res.write(': beat\n\n'), 30_000);
   const on = (id: string) => {
     if (due.has(id) || (id !== 'tree' && !canSee(me, tree().workspaces[tree().series[instance(id).seriesId].workspace]))) return;
@@ -264,6 +274,7 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
   const mine = a?.inst === inst ? a : undefined;
   if (!action) return send(res, 200, { doc: inst.doc, log: inst.log, run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4) } : null, queued: queued(inst), runner: runnerOf(inst) });
   if (action === 'trace') return send(res, 200, trace(inst));
+  if (action === 'summary') return send(res, 200, summary(inst));
   if (action === 'files') {
     // By hand, never into a link: a run may have made links anywhere in working/.
     const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(d => d.isDirectory() ? walk(join(dir, d.name)) : d.isFile() ? [join(dir, d.name)] : []);

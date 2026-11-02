@@ -258,7 +258,7 @@ The risk is whether an agent can learn a real deliverable from examples, so the 
 2. **M2, the page (built):** [web/index.html](web/index.html), over the same server:
    - the graph, tiles, notes, ops log and Advanced, which reads the agent's work from the instance's Pi session file;
    - phone layout: Outputs come first, then the other tiles, each saying what it's made from instead of lines; notes open as a bottom sheet;
-   - it refreshes when the server's event stream (`/api/events`) names a change it may see, an instance by id or "tree" for anything in `.rf/`, at most once a second each, rather than polling;
+   - it refreshes when the server's event stream (`/api/events`) names a change it may see, at most once a second each, rather than polling: "tree" for anything in `.rf/` or an instance's name or series, which reloads the listing; else an instance by id, which reloads only that instance's row (`GET /api/instances/<id>/summary`), and its data if it's the one open. The listing keeps each instance's row parts read from its log until the log or the screen moves on;
    - uploads, answers, comments, Interrupt and Close as POSTs, refused when the browser marks them cross-site, so another web page can't talk to an agent;
    - file downloads: attachments with a sandboxing CSP (images inline), and only files whose real path stays inside the instance, so an agent's link can't expose the server's files;
    - who is who, from the sign-in (see M3).

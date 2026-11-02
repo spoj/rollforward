@@ -225,8 +225,9 @@ export function startWith(seriesId: string, label: string, by: string, logins: s
 
 function fire() {
   startWaiting();
-  const w = wakes(), now = new Date().toISOString(), t = tree();
-  for (const [target, wake] of Object.entries(w.pending).filter(([, k]) => k.at <= now)) {
+  const w = wakes(), now = new Date().toISOString(), t = tree(), due = Object.entries(w.pending).filter(([, k]) => k.at <= now);
+  if (!due.length) return;
+  for (const [target, wake] of due) {
     delete w.pending[target];
     w.fired[target] = now;
     const s = t.series[t.series[target] ? target : instance(target).seriesId];

@@ -97,6 +97,7 @@ export function isPerson(e: Entry): boolean {
 function setMeta(id: string, meta: Meta) {
   replaceReadOnly(join(instanceDir(id), 'instance.json'), JSON.stringify(meta));
   index.set(id, meta);
+  changes.emit('change', 'tree');
 }
 
 function freeLabel(seriesId: string, label: string): string {
