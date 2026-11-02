@@ -2,12 +2,14 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-// The data root's .rf/ holds what only the server uses: the people who can sign in, the sessions' key, and each workspace's people.
-// Its name starts with a dot, so no workspace can be called that.
+// The data root's .rf/ holds what only the server uses: the people who can sign in, the sessions' key, and tree.json, the
+// workspaces and series by id.
 
-// A workspace's people, each an email or an Entra group's id. Owners manage who is in it; owners and members see and work in all of
-// it. A workspace with neither is the admins'.
-export type Workspace = { owners: string[]; members: string[] };
+// A workspace's people are each an email or an Entra group's id. Owners manage who is in it; owners and members see and work in all
+// of it. A workspace with neither is the admins'.
+export type Workspace = { name: string; owners: string[]; members: string[]; archived?: boolean };
+export type Series = { name: string; workspace: string; archived?: boolean };
+export type Tree = { workspaces: Record<string, Workspace>; series: Record<string, Series> };
 
 let dir = '';
 
@@ -34,23 +36,19 @@ export function key(name: string): Buffer {
   return readFileSync(p);
 }
 
-export function workspaces(): Record<string, Workspace> {
-  return readJson<Record<string, Workspace>>('workspaces.json', {});
+export function tree(): Tree {
+  return readJson<Tree>('tree.json', { workspaces: {}, series: {} });
 }
 
-export function workspace(name: string): Workspace {
-  return workspaces()[name] ?? { owners: [], members: [] };
-}
-
-export function setWorkspace(name: string, w: Workspace) {
-  writeJson('workspaces.json', { ...workspaces(), [name]: w });
+export function saveTree(t: Tree) {
+  writeJson('tree.json', t);
 }
 
 export function forgetPerson(email: string) {
-  const all = workspaces();
-  for (const w of Object.values(all)) {
+  const t = tree();
+  for (const w of Object.values(t.workspaces)) {
     w.owners = w.owners.filter(p => p !== email);
     w.members = w.members.filter(p => p !== email);
   }
-  writeJson('workspaces.json', all);
+  saveTree(t);
 }

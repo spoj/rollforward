@@ -1,13 +1,13 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // A run's Pi in its real sandbox, with stand-ins for the server's side of the socket: the agent API answers with the token it
 // saw, and the model is a local server that echoes the key it was sent.
-const tmp = mkdtempSync(join(tmpdir(), 'rf-')), root = join(tmp, 'data'), series = join(root, 'ws', 'Weekly'), inst = join(series, 'w2');
+const tmp = mkdtempSync(join(tmpdir(), 'rf-')), root = join(tmp, 'data'), i = (id: string) => join(root, 'instances', id);
 const model = createServer((req, res) => res.end(`model got ${req.url} with ${req.headers.authorization}`));
 await new Promise<void>(ok => model.listen(0, '127.0.0.1', ok));
 Object.assign(process.env, {
@@ -28,11 +28,18 @@ const sockets = serveSandboxes(join(socketDir, 'rf.sock'), {
   agent: async (req, res) => void res.end(`agent API, as ${req.headers.authorization}`),
   run: token => (token === TOKEN ? { egress: (host, allowed) => void egress.push([host, allowed]) } : undefined),
 });
-for (const d of [join(series, 'w1', 'working'), join(inst, 'working'), join(root, 'ws', 'Shared'), join(root, 'ws', 'Other')]) mkdirSync(d, { recursive: true });
+// Instances by id: w1 and w2 of the run's series, r1 of a series it may read, p1 of one it may not.
+for (const d of [i('w1/working'), i('w2/working'), i('r1/working'), i('p1/working'), join(root, 'series', 'weekly')]) mkdirSync(d, { recursive: true });
 writeFileSync(join(root, '.rf', 'session.key'), 'secret');
-writeFileSync(join(root, 'ws', 'Shared', 'rates.csv'), 'usd,1');
-writeFileSync(join(root, 'ws', 'Other', 'payroll.csv'), 'names');
-const agent = pi({ seriesDir: series, instanceDir: inst, token: TOKEN, read: [join(root, 'ws', 'Shared')], skills: ['tool'] });
+writeFileSync(i('r1/working/rates.csv'), 'usd,1');
+writeFileSync(i('p1/working/payroll.csv'), 'names');
+mkdirSync(i('w2/session'));
+writeFileSync(i('w2/session/main.jsonl'), `${JSON.stringify({ type: 'session', id: 'main', cwd: '/work/ws/Old name' })}\n`);
+const cwd = '/work/ws/Weekly', at = `${cwd}/w2`;
+const agent = pi({
+  token: TOKEN, skills: ['tool'],
+  view: { cwd, instance: at, dir: i('w2'), pylib: join(root, 'series', 'weekly', '.pylib'), ro: [[i('w1'), `${cwd}/w1`], [i('w2'), at], [i('r1'), '/work/ws/Shared/r1']] },
+});
 const sh = async (command: string) => (await agent.bash(command)).output.trim();
 
 before(() => agent.start());
@@ -55,16 +62,18 @@ test("the agent's scripts reach a skill's files through $RF_SKILLS", async () =>
   assert.equal(exitCode, 0, `RF_SKILLS does not lead to the skill: ${output}`);
 });
 
-test('the sandbox shows its series and the series it may read, and nothing else of the data or the host', async () => {
-  assert.equal(await sh(`cat ${join(root, 'ws', 'Shared', 'rates.csv')}`), 'usd,1');
-  assert.match(await sh(`cat ${join(root, '.rf', 'session.key')} 2>&1`), /No such file/);
-  assert.match(await sh(`ls ${join(root, 'ws', 'Other')} 2>&1`), /No such file/);
-  assert.match(await sh('ls /home /root /var 2>&1'), /No such file/);
+test('the sandbox shows its view of the data by name, and nothing else of the data or the host', async () => {
+  assert.equal(await sh('pwd'), cwd);
+  assert.equal(await sh('cat ../Shared/r1/working/rates.csv'), 'usd,1');
+  assert.equal(await sh('ls /work/ws'), 'Shared\nWeekly');
+  for (const p of [root, '/root', '/var', join(import.meta.dirname, '..', 'demo')]) assert.match(await sh(`ls ${p} 2>&1`), /No such file/, p);
+  assert.equal(JSON.parse(readFileSync(i('w2/session/main.jsonl'), 'utf8').split('\n')[0]).cwd, cwd, 'its session moved to the names of today, so Pi resumes it');
 });
 
 test("writes land only in the instance's working/ and session/ and the series' .pylib", async () => {
-  assert.equal(await sh(`touch ${join(inst, 'working', 'out.csv')} ${join(series, '.pylib', 'pkg.py')} && echo ok`), 'ok');
-  for (const p of [join(series, 'w1', 'working', 'x.csv'), join(series, 'notes.md'), join(inst, 'workspace.json')])
+  assert.equal(await sh('touch w2/working/out.csv .pylib/pkg.py && echo ok'), 'ok');
+  assert.ok(existsSync(i('w2/working/out.csv')) && existsSync(join(root, 'series', 'weekly', '.pylib', 'pkg.py')));
+  for (const p of ['w1/working/x.csv', 'notes.md', 'w2/workspace.json', '../Shared/r1/working/x.csv', '/work/x'])
     assert.match(await sh(`touch ${p} 2>&1`), /Read-only file system/, p);
 });
 

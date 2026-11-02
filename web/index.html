@@ -304,8 +304,8 @@ function took(e) {
 const hhmm = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }) : '';
 const fname = f => f.split('/').pop();
 function fileUrl(path, kind = 'files') {
-  const m = path.match(/^\.\.\/([^/]+)\/(.*)$/);
-  return `/${kind}/${[cur.workspace, cur.series, m ? m[1] : cur.label].map(enc).join('/')}/${(m ? m[2] : path).split('/').map(enc).join('/')}`;
+  const m = path.match(/^\.\.\/([^/]+)\/(.*)$/), id = m ? cur.s.instances.find(i => i.label === m[1])?.id : cur.i.id;
+  return `/${kind}/${id}/${(m ? m[2] : path).split('/').map(enc).join('/')}`;
 }
 const ext = f => (f && f.includes('.') ? f.split('.').pop() : '').toUpperCase();
 
@@ -340,19 +340,20 @@ async function api(path, opts) {
   try { return JSON.parse(t); } catch { return t; }
 }
 
-const seriesPath = c => `/api/${enc(c.workspace)}/${enc(c.series)}`;
-const instPath = () => `${seriesPath(cur)}/${enc(cur.label)}`;
-const go = (workspace, series, label) => { location.hash = '#/' + [workspace, series, label].filter(Boolean).map(enc).join('/'); };
+// The page's address is #/ID, of an instance, a series or a workspace; cur holds the tree's entries for them.
+const seriesPath = c => `/api/series/${c.s.id}`;
+const instPath = () => `/api/instances/${cur.i.id}`;
+const go = id => { location.hash = '#/' + id; };
 
 async function refresh() {
   me ??= await api('/me');
   const n = ++refreshes, t = await api('/api');
-  const [workspace, series, label] = location.hash.slice(2).split('/').filter(Boolean).map(decodeURIComponent);
-  const w = workspace ? t.find(w => w.workspace === workspace) : t.find(w => !w.archived);
-  const s = series ? w?.series.find(s => s.series === series) : w?.series.find(s => !s.archived);
-  const i = label ? s?.instances.find(i => i.label === label) : s?.instances.find(i => i.status === 'open') ?? s?.instances.at(-1);
-  const next = w && { workspace: w.workspace, series: s?.series, label: s && (label ?? i?.label) };
-  const path = i ? `${seriesPath(next)}/${enc(i.label)}` : '', d = path ? await api(path) : null;
+  const id = location.hash.slice(2), all = t.flatMap(w => [[w], ...w.series.flatMap(s => [[w, s], ...s.instances.map(i => [w, s, i])])]);
+  let [w, s, i] = all.find(e => e.at(-1).id === id) ?? [t.find(w => !w.archived)];
+  s ??= w?.series.find(s => !s.archived);
+  i ??= s?.instances.find(i => i.status === 'open') ?? s?.instances.at(-1);
+  const next = w && { w, s, i };
+  const path = i ? `/api/instances/${i.id}` : '', d = path ? await api(path) : null;
   const key = `${path}:${d?.log.length}`, st = ui.adv && d && (d.run || key !== linesKey) ? await api(path + '/trace') : null;
   if (n !== refreshes) return;
   const was = data && path === shown ? lastDone()?.seq ?? 0 : undefined;
@@ -366,7 +367,7 @@ async function refresh() {
 
 function render() {
   const qs = tree.filter(w => !w.archived).flatMap(w => w.series.filter(s => !s.archived).flatMap(s => s.instances)).reduce((t, i) => t + i.questions, 0);
-  document.title = `${qs ? `(${qs}) ` : ''}${cur?.label ? cur.label + ' \u00b7 ' : ''}rollforward`;
+  document.title = `${qs ? `(${qs}) ` : ''}${cur?.i ? cur.i.label + ' \u00b7 ' : ''}rollforward`;
   renderSide();
   renderBar();
   renderPanes();
@@ -381,32 +382,32 @@ function renderSide() {
   const btn = (act, title, glyph) => `<button class="add" data-act="${act}" title="${title}">${glyph}</button>`;
   let h = `<div class="row head"><span class="nm">Workspaces</span>${btn('new-workspace', 'New workspace', '+')}</div>`;
   for (const w of tree) {
-    const won = cur?.workspace === w.workspace;
+    const won = cur?.w.id === w.id;
     if (!listed(w, won)) continue;
-    h += `<div class="row ws ${w.archived ? 'archived' : ''}"><a class="nm" href="#/${enc(w.workspace)}">${esc(w.workspace)}${!won && w.series.some(asks) ? '<span class="dot"></span>' : ''}</a>`
+    h += `<div class="row ws ${w.archived ? 'archived' : ''}"><a class="nm" href="#/${w.id}">${esc(w.name)}${!won && w.series.some(asks) ? '<span class="dot"></span>' : ''}</a>`
       + (won ? btn('workspace-settings', 'Workspace settings', '\u22EF') + btn('new-series', 'New series', '+') : w.archived ? '<span class="n">archived</span>' : '') + '</div>';
     if (!won) continue;
     h += '<div class="tree">';
     for (const s of w.series) {
-      const on = cur.series === s.series, open = s.instances.filter(i => i.status === 'open');
+      const on = cur.s?.id === s.id, open = s.instances.filter(i => i.status === 'open');
       if (!listed(s, on)) continue;
-      h += `<div class="row ser ${on ? 'on' : ''} ${s.archived ? 'archived' : ''}"><a class="nm" href="#/${enc(w.workspace)}/${enc(s.series)}">${esc(s.series)}${!on && asks(s) ? '<span class="dot"></span>' : ''}</a>`
+      h += `<div class="row ser ${on ? 'on' : ''} ${s.archived ? 'archived' : ''}"><a class="nm" href="#/${s.id}">${esc(s.name)}${!on && asks(s) ? '<span class="dot"></span>' : ''}</a>`
         + (on ? btn('settings', 'Series settings', '\u22EF') + btn('new-instance', 'New instance', '+') : `<span class="n">${s.archived ? 'archived' : open.length ? `${open.length} open` : ''}</span>`) + '</div>';
       if (!on) continue;
       const closed = s.instances.length - open.length;
       h += '<div class="tree">';
-      for (const i of s.instances.filter(i => i.status === 'open' || showClosed || i.label === cur.label)) {
+      for (const i of s.instances.filter(i => i.status === 'open' || showClosed || i.id === cur.i?.id)) {
         const st = i.running ? '<span class="spin"></span> running' : i.queued ? '\u29D7 queued' : i.questions ? `<span class="q">${i.questions} question${i.questions > 1 ? 's' : ''}</span>` : i.status === 'open' ? '' : i.status;
-        const k = `rev:/api/${enc(w.workspace)}/${enc(s.series)}/${enc(i.label)}`;
+        const k = `rev:/api/instances/${i.id}`;
         localStorage[k] ??= i.rev;
-        h += `<a class="row inst ${i.status} ${cur.label === i.label ? 'on' : ''}" href="#/${enc(w.workspace)}/${enc(s.series)}/${enc(i.label)}"><span class="nm">${esc(i.label)}${i.rev > +localStorage[k] ? '<span class="dot k"></span>' : ''}</span><span class="n">${st}</span></a>`;
+        h += `<a class="row inst ${i.status} ${cur.i?.id === i.id ? 'on' : ''}" href="#/${i.id}"><span class="nm">${esc(i.label)}${i.rev > +localStorage[k] ? '<span class="dot k"></span>' : ''}</span><span class="n">${st}</span></a>`;
       }
       if (closed) h += `<button class="quiet" data-act="toggle-closed">${showClosed ? 'Hide' : 'Show'} closed (${closed})</button>`;
       h += '</div>';
     }
     h += '</div>';
   }
-  const archived = tree.filter(w => w.archived).length + (tree.find(w => w.workspace === cur?.workspace)?.series.filter(s => s.archived).length ?? 0);
+  const archived = tree.filter(w => w.archived).length + (cur?.w.series.filter(s => s.archived).length ?? 0);
   if (archived) h += `<button class="quiet" data-act="toggle-archived">${showArchived ? 'Hide' : 'Show'} archived (${archived})</button>`;
   h += `<div class="legend"><div><i class="p">Blue</i> uploaded by a person</div><div><i>Black</i> made by the agent</div><div><span class="tri"></span>a note, for information</div><div><span class="tri q"></span>a question for you</div><div><span class="dash"></span>expected, not there yet</div></div>`;
   h += `<div class="acct"><div>${esc(me.name)}${me.role === 'admin' ? ' · admin' : ''}</div><div class="mail">${esc(me.email)}</div>`
@@ -420,7 +421,7 @@ const stepText = s => `${s.do}${s.target ? ` ${s.target}` : ''}${s.value !== und
 
 function renderBar() {
   let h = `<button class="menu" data-act="menu">☰</button>`;
-  h += `<div><div class="crumb">${esc(cur?.workspace ?? '')}${cur?.series ? ' · ' + esc(cur.series) : ''}</div><h1>${esc(cur?.label ?? 'No instance')}${data?.doc.status === 'open' ? '<button class="ren" data-act="rename" title="Rename">\u270E</button>' : ''}</h1></div>`;
+  h += `<div><div class="crumb">${esc(cur?.w.name ?? '')}${cur?.s ? ' · ' + esc(cur.s.name) : ''}</div><h1>${esc(cur?.i?.label ?? 'No instance')}${data?.doc.status === 'open' ? '<button class="ren" data-act="rename" title="Rename">\u270E</button>' : ''}</h1></div>`;
   if (data) {
     const d = lastDone();
     const state = data.doc.status !== 'open' ? `${data.doc.status === 'closed' ? 'Closed' : 'Abandoned'} · read-only` : data.run ? `<span class="spin"></span>Agent working · run ${data.run.n}` : data.queued ? '\u29D7 Queued' : d ? `Agent idle · last run ${hhmm(d.at)}` : 'Waiting for files';
@@ -465,7 +466,7 @@ function tile(item) {
 function renderPanes() {
   $('#outs').hidden = !data;
   if (!data) {
-    put($('#flow'), `<div class="empty">${cur?.label ? `No instance ${esc(cur.label)}.` : cur?.series ? 'No instance yet. Make one with + by the series.' : cur ? 'No series yet. Make one with + by the workspace.' : 'No workspace yet. Make one with + by Workspaces.'}</div>`);
+    put($('#flow'), `<div class="empty">${cur?.s ? 'No instance yet. Make one with + by the series.' : cur ? 'No series yet. Make one with + by the workspace.' : 'No workspace yet. Make one with + by Workspaces.'}</div>`);
     return drawEdges();
   }
   const open = data.doc.status === 'open', stored = localStorage[`seen:${instPath()}`], items = data.doc.items;
@@ -606,7 +607,7 @@ function lineHtml(s, i) {
     : s.error ? `<span class="bad">${esc(firstLine(s.result) || 'failed')}</span>`
     : s.kind === 'read' ? `${s.lines} lines`
     : firstLine(s.result) ? esc(firstLine(s.result)) + (s.lines > 1 ? ` +${s.lines - 1} lines` : '') : 'no output';
-  const target = s.kind === 'bash' ? s.text : s.text.split(`/${cur.series}/`).pop();
+  const target = s.kind === 'bash' ? s.text : s.text.split(`/${cur.s.name}/`).pop();
   return fold(`s${i}`, false, `<span class="cmd"><b>${VERB[s.kind] ?? esc(s.kind)}</b> <code>${esc(firstLine(target))}</code></span><div class="res">⎿ ${res}</div>`,
     `<pre>${esc(s.text)}</pre>${s.result ? `<pre class="${s.error ? 'bad' : ''}">${esc(s.result)}</pre>` : ''}`);
 }
@@ -773,7 +774,7 @@ function usersHtml(s) {
 }
 
 async function openWorkspaceSettings() {
-  const w = tree.find(w => w.workspace === cur.workspace);
+  const w = cur.w;
   pv = { title: 'Workspace settings', settings: { kind: 'workspace', archived: w.archived, owners: w.owners, members: w.members, manage: w.manage } };
   renderPv();
 }
@@ -895,8 +896,8 @@ document.addEventListener('click', async ev => {
   if (act === 'preview') await preview(el.dataset.file, data.doc.items.find(i => i.id === el.dataset.item));
   if (act === 'unpv') { pv = null; renderPv(); }
   if (act === 'settings') {
-    const w = tree.find(w => w.workspace === cur.workspace), s = w.series.find(s => s.series === cur.series), skillList = await api('/skills');
-    pv = { title: 'Series settings', settings: { kind: 'series', name: s.series, skills: s.skills ?? [], skillList, reads: s.reads, archived: s.archived } };
+    const s = cur.s, skillList = await api('/skills');
+    pv = { title: 'Series settings', settings: { kind: 'series', name: s.name, skills: s.skills ?? [], skillList, reads: s.reads, archived: s.archived } };
     renderPv();
   }
   if (act === 'systems') await openSystems();
@@ -947,7 +948,7 @@ document.addEventListener('click', async ev => {
     const owners = s.owners.filter(x => x !== p), members = s.members.filter(x => x !== p);
     if (act === 'wadd') members.push(p);
     if (act === 'wrole') (s.owners.includes(p) ? members : owners).push(p);
-    await api(`/api/${enc(cur.workspace)}`, { method: 'PUT', body: JSON.stringify({ owners, members }) });
+    await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ owners, members }) });
     await refresh();
     await openWorkspaceSettings();
   }
@@ -967,7 +968,7 @@ document.addEventListener('click', async ev => {
   }
   if (act === 'archive') {
     const s = pv.settings;
-    await api(s.kind === 'series' ? seriesPath(cur) : `/api/${enc(cur.workspace)}`, { method: 'PUT', body: JSON.stringify({ name: s.name, archived: !s.archived }) });
+    await api(s.kind === 'series' ? seriesPath(cur) : `/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ archived: !s.archived }) });
     pv = null;
     renderPv();
     await refresh();
@@ -978,14 +979,13 @@ document.addEventListener('click', async ev => {
     await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ name, skills, archived: pv.settings.archived }) });
     pv = null;
     renderPv();
-    if (name !== cur.series) return go(cur.workspace, name, cur.label);
     await refresh();
   }
   if (act === 'rename') {
-    const label = (prompt('New label:', cur.label) || '').trim();
-    if (!label || label === cur.label) return;
+    const label = (prompt('New label:', cur.i.label) || '').trim();
+    if (!label || label === cur.i.label) return;
     await api(`${instPath()}/rename?as=${enc(label)}`, { method: 'POST' });
-    go(cur.workspace, cur.series, label);
+    await refresh();
   }
   if (act === 'compare') {
     const p = pv;
@@ -994,10 +994,9 @@ document.addEventListener('click', async ev => {
     if (pv === p) renderPv();
   }
   if (act === 'duplicate') {
-    const label = (prompt('Label for the copy:', `${cur.label} copy`) || '').trim();
+    const label = (prompt('Label for the copy:', `${cur.i.label} copy`) || '').trim();
     if (!label) return;
-    await api(`${instPath()}/duplicate?as=${enc(label)}`, { method: 'POST' });
-    go(cur.workspace, cur.series, label);
+    go((await api(`${instPath()}/duplicate?as=${enc(label)}`, { method: 'POST' })).id);
   }
   if (act === 'sheet') { pv.sheet = Number(el.dataset.k); renderPv(); }
   if (act === 'cellnote') $('#pvn').textContent = el.dataset.note;
@@ -1017,33 +1016,30 @@ document.addEventListener('click', async ev => {
   }
   if (act === 'close') {
     const qs = data.doc.items.flatMap(i => i.notes ?? []).filter(n => n.options && questionState(n) === null);
-    const msg = `Close ${cur.label}? It becomes an example for later instances.` + (qs.length ? '\n\nUnanswered questions take their defaults:\n' + qs.map(n => `• ${n.options[n.default ?? 0]}`).join('\n') : '');
+    const msg = `Close ${cur.i.label}? It becomes an example for later instances.` + (qs.length ? '\n\nUnanswered questions take their defaults:\n' + qs.map(n => `• ${n.options[n.default ?? 0]}`).join('\n') : '');
     if (!confirm(msg)) return;
     await api(`${instPath()}/close`, { method: 'POST' });
     await refresh();
   }
   if (act === 'abandon') {
-    if (!confirm(`Abandon ${cur.label}? It stays as it is, but isn't an example or a starting point for later instances.`)) return;
+    if (!confirm(`Abandon ${cur.i.label}? It stays as it is, but isn't an example or a starting point for later instances.`)) return;
     await api(`${instPath()}/abandon`, { method: 'POST' });
     await refresh();
   }
   if (act === 'new-instance') {
     const label = (prompt('Label for the new instance, such as a date:') || '').trim();
     if (!label) return;
-    await api(`${seriesPath(cur)}/${enc(label)}`, { method: 'POST' });
-    go(cur.workspace, cur.series, label);
+    go((await api(seriesPath(cur), { method: 'POST', body: JSON.stringify({ label }) })).id);
   }
   if (act === 'new-series') {
     const name = (prompt('Name of the new series:') || '').trim();
     if (!name) return;
-    await api(`/api/${enc(cur.workspace)}/${enc(name)}`, { method: 'POST' });
-    go(cur.workspace, name);
+    go((await api('/api/series', { method: 'POST', body: JSON.stringify({ workspace: cur.w.id, name }) })).id);
   }
   if (act === 'new-workspace') {
     const name = (prompt('Name of the new workspace, such as a client:') || '').trim();
     if (!name) return;
-    await api(`/api/${enc(name)}`, { method: 'POST' });
-    go(name);
+    go((await api('/api/workspaces', { method: 'POST', body: JSON.stringify({ name }) })).id);
   }
 });
 

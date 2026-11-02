@@ -1,5 +1,5 @@
 import { RpcClient, type JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,33 +22,43 @@ export type Run = {
   settled: Promise<boolean>;
 };
 
-// Pi for one run, in its sandbox (sandbox.ts): the series read-only but for the instance's working/ and session/ and the
-// series' .pylib, the series in `read` read-only, the skills the series chose and nothing else of the host's.
-export function pi(o: { seriesDir: string; instanceDir: string; token: string; read?: string[]; skills?: string[] }): RpcClient {
+// The run's view of the data, which the server builds: its series at cwd, such as /work/<workspace>/<series>, its own instance at
+// instance, from the folder dir, its series' .pylib from pylib, and in ro, every instance in its reach and the .pylib of the other
+// series there, each [host path, path inside].
+export type View = { cwd: string; instance: string; dir: string; pylib: string; ro: [string, string][] };
+
+// Pi for one run, in its sandbox (sandbox.ts): its view read-only but for the instance's working/ and session/ and the series'
+// .pylib, the skills the series chose and nothing else of the host's. A session started under other names is moved to these, as Pi
+// resumes only a session whose folder it recorded.
+export function pi(o: { token: string; view: View; skills?: string[] }): RpcClient {
   const run = join(scratch, 'runs', o.token), home = join(run, 'home'), agentDir = join(home, '.pi', 'agent'), tmp = join(run, 'tmp');
-  const pylib = join(o.seriesDir, '.pylib'), working = join(o.instanceDir, 'working'), session = join(o.instanceDir, 'session');
+  const { cwd, instance, dir, pylib } = o.view, working = join(dir, 'working'), session = join(dir, 'session');
   for (const d of [agentDir, tmp, pylib, working, session]) mkdirSync(d, { recursive: true });
+  for (const f of readdirSync(session).filter(f => f.endsWith('.jsonl'))) {
+    const text = readFileSync(join(session, f), 'utf8'), nl = text.indexOf('\n'), head = JSON.parse(text.slice(0, nl));
+    if (head.cwd !== cwd) writeFileSync(join(session, f), JSON.stringify({ ...head, cwd }) + text.slice(nl));
+  }
   const local = `http://127.0.0.1:${PORT}`, proxy = `http://rf:${o.token}@127.0.0.1:${PORT}`;
   writeFileSync(join(agentDir, 'models.json'), JSON.stringify({ providers: { [provider]: { baseUrl: `${local}/model/${o.token}`, apiKey: 'none' } } }));
   writeFileSync(join(agentDir, 'settings.json'), JSON.stringify({ steeringMode: 'all' }));
   const args = sandboxArgs({
-    cwd: o.seriesDir, home, tmp, socketDir,
-    ro: [app, dirname(process.execPath), skillsDir(), o.seriesDir, ...(o.read ?? []), ...(process.env.RF_SANDBOX_RO ?? '').split(delimiter)].filter(p => p && existsSync(p)),
-    rw: [working, session, pylib],
+    cwd, home, tmp, socketDir,
+    ro: [...['bin', 'src', 'node_modules', '.venv', 'package.json', 'prompt.md'].map(f => join(app, f)), dirname(process.execPath), skillsDir(), ...(process.env.RF_SANDBOX_RO ?? '').split(delimiter)].filter(p => p && existsSync(p)),
+    work: { ro: o.view.ro.filter(([src]) => existsSync(src)), rw: [[working, `${instance}/working`], [session, `${instance}/session`], [pylib, `${cwd}/.pylib`]] },
     env: {
-      PATH: [join(app, 'bin'), join(app, '.venv', 'bin'), dirname(process.execPath), '/usr/bin'].join(delimiter), LANG: 'C.UTF-8', PYTHONPATH: pylib, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: '1', PI_TELEMETRY: '0',
-      RF_URL: local, RF_TOKEN: o.token, RF_WORKING: working, RF_SKILLS: skillsDir(), ...(process.env.RF_TODAY && { RF_TODAY: process.env.RF_TODAY }),
+      PATH: [join(app, 'bin'), join(app, '.venv', 'bin'), dirname(process.execPath), '/usr/bin'].join(delimiter), LANG: 'C.UTF-8', PYTHONPATH: `${cwd}/.pylib`, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: '1', PI_TELEMETRY: '0',
+      RF_URL: local, RF_TOKEN: o.token, RF_WORKING: `${instance}/working`, RF_SKILLS: skillsDir(), ...(process.env.RF_TODAY && { RF_TODAY: process.env.RF_TODAY }),
       HTTPS_PROXY: proxy, HTTP_PROXY: proxy, https_proxy: proxy, http_proxy: proxy, NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost', NODE_USE_ENV_PROXY: '1',
     },
   });
   writeFileSync(join(run, 'bwrap.args'), `${args.join('\0')}\0`);
   return new RpcClient({
-    cliPath, cwd: o.seriesDir, provider, model,
+    cliPath, cwd: dir, provider, model,
     env: { PATH: [join(app, 'bin', 'sandbox'), process.env.PATH].join(delimiter), RF_SANDBOX_ARGS: join(run, 'bwrap.args'), RF_SANDBOX_SCOPE: process.env.RF_SANDBOX_SCOPE ?? SCOPE },
     args: ['--no-extensions', '--no-skills', '--no-mcp', '--no-context-files', '--no-prompt-templates', ...(o.skills ?? []).flatMap(id => ['--skill', join(skillsDir(), id)]),
       '--tools', 'read,bash,edit,write', '--append-system-prompt', join(app, 'prompt.md'),
       '--thinking', process.env.RF_THINKING ?? 'high',
-      '--session-dir', session, '--session-id', 'main',
+      '--session-dir', `${instance}/session`, '--session-id', 'main',
       ...JSON.parse(process.env.RF_PI_ARGS ?? '[]')],
   });
 }

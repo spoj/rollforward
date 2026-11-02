@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { initSystem } from '../src/system.ts';
-import { createInstance, type Instance } from '../src/store.ts';
+import { createInstance, openStore, type Instance } from '../src/store.ts';
 import { Browsing, closeBrowser } from '../src/browser.ts';
 import { findFlow, saveSkillConfig, skills, useSkillsDir } from '../src/skills.ts';
 import { testSkill } from '../src/agent-api.ts';
@@ -114,9 +114,8 @@ export default { async signIn(page, sys) {
 `);
   saveSkillConfig('demo', { url: `${url}/login`, username: 'svc', password: PASS, note: 'from settings' }, 'admin');
   saveSkillConfig('portal', { url: `${url}/login`, username: 'svc', password: PASS }, 'admin');
-  const seriesDir = join(tmp, 'demo-ws', 'Weekly');
-  mkdirSync(seriesDir, { recursive: true });
-  inst = createInstance(seriesDir, 'w1', 'admin@demo.test');
+  openStore(join(tmp, 'data'));
+  inst = createInstance('weekly', 'w1', 'admin@demo.test');
   b = new Browsing(inst, ['demo', 'portal']);
 });
 

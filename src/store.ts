@@ -1,6 +1,6 @@
 import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
-import { basename, dirname, extname, join, posix, relative, sep } from 'node:path';
+import { createHash, randomBytes } from 'node:crypto';
+import { basename, extname, join, posix } from 'node:path';
 
 // Paths in the screen are /-separated on every system.
 const normalize = posix.normalize;
@@ -26,20 +26,42 @@ export class HttpError extends Error {
   }
 }
 
+// Besides .rf/ (system.ts), the data root holds series/<id>/, a series' series.json and .pylib, and instances/<id>/, each instance
+// flat, with instance.json naming its label and its series. Names live there and in .rf/tree.json, so a rename or a move edits one
+// small file, at any time, even mid-run. The index holds every instance's instance.json, read once at start; an instance loads
+// when it's first listed or opened.
+export type Meta = { label: string; series: string };
+
+let root = '';
+const index = new Map<string, Meta>();
 const cache = new Map<string, Instance>();
 
-export function instance(dir: string): Instance {
-  if (!cache.has(dir)) cache.set(dir, new Instance(dir));
-  return cache.get(dir)!;
+export function openStore(dataRoot: string) {
+  root = dataRoot;
+  index.clear();
+  cache.clear();
+  mkdirSync(join(root, 'instances'), { recursive: true });
+  mkdirSync(join(root, 'series'), { recursive: true });
+  for (const id of readdirSync(join(root, 'instances'))) index.set(id, JSON.parse(readFileSync(join(root, 'instances', id, 'instance.json'), 'utf8')));
 }
 
-export function forget(seriesDir: string) {
-  for (const dir of cache.keys()) if (dirname(dir) === seriesDir) cache.delete(dir);
+export const newId = () => randomBytes(6).toString('hex');
+export const seriesDir = (id: string) => join(root, 'series', id);
+export const instanceDir = (id: string) => join(root, 'instances', id);
+
+export function instance(id: string): Instance {
+  if (!index.has(id)) throw new HttpError(404, `no instance ${id}`);
+  if (!cache.has(id)) cache.set(id, new Instance(instanceDir(id)));
+  return cache.get(id)!;
 }
 
-export function instances(seriesDir: string): Instance[] {
-  if (!existsSync(seriesDir)) return [];
-  return readdirSync(seriesDir).sort().filter(l => existsSync(join(seriesDir, l, 'workspace.json'))).map(l => instance(join(seriesDir, l)));
+// A series' instances, by label, from the index.
+export function labels(seriesId: string): { id: string; label: string }[] {
+  return [...index].filter(([, m]) => m.series === seriesId).map(([id, m]) => ({ id, label: m.label })).sort((a, b) => a.label.localeCompare(b.label, 'en', { numeric: true }));
+}
+
+export function instances(seriesId: string): Instance[] {
+  return labels(seriesId).map(l => instance(l.id));
 }
 
 export function safeName(s: string): string {
@@ -52,47 +74,56 @@ export function isPerson(e: Entry): boolean {
   return e.by !== 'server' && e.by !== 'agent';
 }
 
-export function createInstance(seriesDir: string, label: string, by: string): Instance {
-  const dir = join(seriesDir, safeName(label));
-  if (existsSync(dir)) throw new HttpError(409, `${label} exists`);
-  const closed = instances(seriesDir).filter(i => i.doc.status === 'closed').sort((a, b) => a.closedAt().localeCompare(b.closedAt()));
+function setMeta(id: string, meta: Meta) {
+  replaceReadOnly(join(instanceDir(id), 'instance.json'), JSON.stringify(meta));
+  index.set(id, meta);
+}
+
+function freeLabel(seriesId: string, label: string): string {
+  const name = safeName(label);
+  if (labels(seriesId).some(l => l.label === name)) throw new HttpError(409, `${name} exists`);
+  return name;
+}
+
+export function createInstance(seriesId: string, label: string, by: string): Instance {
+  const name = freeLabel(seriesId, label), id = newId(), dir = instanceDir(id);
+  const closed = instances(seriesId).filter(i => i.doc.status === 'closed').sort((a, b) => a.closedAt().localeCompare(b.closedAt()));
   const from = closed.at(-1);
   mkdirSync(join(dir, 'upload'), { recursive: true });
   mkdirSync(join(dir, 'working'));
-  const inst = instance(dir);
+  setMeta(id, { label: name, series: seriesId });
+  const inst = instance(id);
   inst.doc.items = (from?.doc.items ?? []).map(({ id, name, kind, from }) => ({ id, name, kind, file: null, from, notes: [] }));
   inst.save();
   const fetch = from?.doc.items.some(i => i.kind === 'input' && i.file?.startsWith('working/'));
-  inst.append(by, 'create', { from: from ? basename(from.dir) : null, ...(fetch && { fetch }) });
+  inst.append(by, 'create', { from: from?.label ?? null, ...(fetch && { fetch }) });
   return inst;
 }
 
-export function renameInstance(inst: Instance, label: string): Instance {
-  const dir = join(inst.series(), safeName(label));
-  if (existsSync(dir)) throw new HttpError(409, `${label} exists`);
-  renameSync(inst.dir, dir);
-  cache.delete(inst.dir);
-  return instance(dir);
+export function renameInstance(inst: Instance, label: string) {
+  setMeta(inst.id, { ...inst.meta, label: freeLabel(inst.seriesId, label) });
 }
 
 export function duplicateInstance(src: Instance, label: string, by: string): Instance {
-  const dir = join(src.series(), safeName(label));
-  if (existsSync(dir)) throw new HttpError(409, `${label} exists`);
+  const name = freeLabel(src.seriesId, label), id = newId(), dir = instanceDir(id);
   cpSync(src.dir, dir, { recursive: true, filter: p => p !== join(src.dir, 'session') });
-  const inst = instance(dir);
+  setMeta(id, { label: name, series: src.seriesId });
+  const inst = instance(id);
   inst.doc.status = 'open';
   inst.save();
-  inst.append(by, 'duplicate', { from: basename(src.dir) });
+  inst.append(by, 'duplicate', { from: src.label });
   return inst;
 }
 
 export class Instance {
   dir: string;
+  id: string;
   doc: Doc;
   log: Entry[];
 
   constructor(dir: string) {
     this.dir = dir;
+    this.id = basename(dir);
     const ws = join(dir, 'workspace.json'), log = join(dir, 'log.jsonl');
     this.doc = existsSync(ws) ? JSON.parse(readFileSync(ws, 'utf8')) : { rev: 0, status: 'open', items: [] };
     this.log = existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : [];
@@ -115,7 +146,7 @@ export class Instance {
   }
 
   upload(by: string, name: string, tmp: string, sha256: string, pane: 'in' | 'out', onto: string | null) {
-    if (this.doc.status !== 'open' || !existsSync(join(this.dir, 'workspace.json'))) throw new HttpError(409, 'the instance was closed or moved during the upload');
+    if (this.doc.status !== 'open') throw new HttpError(409, 'the instance was closed during the upload');
     const clean = safeName(name), ext = extname(clean), stem = clean.slice(0, clean.length - ext.length);
     mkdirSync(join(this.dir, 'upload'), { recursive: true });
     let file = `upload/${clean}`;
@@ -179,9 +210,9 @@ export class Instance {
       for (const n of i.notes ?? []) {
         if (typeof n.text !== 'string' || !n.text) errors.push(`${i.id}: a note has no text`);
         for (const f of n.files ?? []) {
-          const rel = typeof f === 'string' && normalize(f) === f ? relative(this.series(), join(this.dir, f)).split(sep).join('/') : '';
-          if (!/^[^/.][^/]*\/(upload|working)\/./.test(rel)) errors.push(`${i.id}: cited file ${JSON.stringify(f)} must be under upload/ or working/ of this instance or another, such as ../<label>/working/...`);
-          else if (!existsSync(join(this.dir, f)) || !statSync(join(this.dir, f)).isFile()) errors.push(`${i.id}: no file ${f}`);
+          const path = this.cited(f);
+          if (!path) errors.push(`${i.id}: cited file ${JSON.stringify(f)} must be under upload/ or working/ of this instance or another of its series, such as ../<label>/working/...`);
+          else if (!existsSync(path) || !statSync(path).isFile()) errors.push(`${i.id}: no file ${f}`);
         }
         if (n.options) {
           if (!n.id || questions.has(n.id)) errors.push(`${i.id}: question id missing or repeated: ${JSON.stringify(n.id)}`);
@@ -222,7 +253,26 @@ export class Instance {
     return this.doc.rev;
   }
 
+  // Where a note's cited file is: under upload/ or working/ of this instance, or of another of its series as ../<label>/....
+  cited(f: unknown): string | undefined {
+    const m = typeof f === 'string' && normalize(f) === f ? f.match(/^(?:\.\.\/([^/]+)\/)?((?:upload|working)\/.+)$/) : null;
+    const id = m && (m[1] === undefined ? this.id : labels(this.seriesId).find(l => l.label === m[1])?.id);
+    return id && !m[2].split('/').includes('..') ? join(instanceDir(id), m[2]) : undefined;
+  }
+
+  get meta(): Meta {
+    return index.get(this.id)!;
+  }
+
+  get label(): string {
+    return this.meta.label;
+  }
+
+  get seriesId(): string {
+    return this.meta.series;
+  }
+
   series(): string {
-    return dirname(this.dir);
+    return seriesDir(this.seriesId);
   }
 }

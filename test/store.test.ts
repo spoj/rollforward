@@ -1,13 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createInstance } from '../src/store.ts';
+import { createInstance, openStore } from '../src/store.ts';
 
 test('a put takes steps and from, and a new instance carries the graph; from must name items and not go round in a circle', () => {
-  const tmp = mkdtempSync(join(tmpdir(), 'rf-')), series = join(tmp, 'larkfield', 'Weekly');
-  mkdirSync(series, { recursive: true });
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-')), series = 'weekly';
+  openStore(tmp);
   const inst = createInstance(series, 'w1', 'alex');
   writeFileSync(join(inst.dir, 'working', 'eligible.csv'), 'a\n');
   const put = (items: object[]) => inst.put(JSON.stringify({ rev: inst.doc.rev, status: 'open', items }));

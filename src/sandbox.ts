@@ -75,14 +75,16 @@ export function serveSandboxes(path: string, o: { agent(req: IncomingMessage, re
 
 // bubblewrap's arguments for a run: the system read-only, `ro` read-only and `rw` writable at their own paths, HOME and /tmp on
 // the run's scratch, the socket's folder at /run/rf, and `env` as its whole environment. Nothing else of the host is there.
-export function sandboxArgs(o: { cwd: string; socketDir: string; home: string; tmp: string; ro: string[]; rw: string[]; env: Record<string, string> }): string[] {
+// The run's data is a tree of its own under /work, read-only but for the binds in rw, each [host path, path inside].
+export function sandboxArgs(o: { cwd: string; socketDir: string; home: string; tmp: string; ro: string[]; work: { ro: [string, string][]; rw: [string, string][] }; env: Record<string, string> }): string[] {
   const bind = (flag: string, paths: string[]) => paths.flatMap(p => [flag, p, p]);
   return [
     '--unshare-all', '--die-with-parent', '--new-session', '--clearenv',
     '--ro-bind', '/usr', '/usr', '--symlink', 'usr/bin', '/bin', '--symlink', 'usr/bin', '/sbin', '--symlink', 'usr/lib', '/lib', '--symlink', 'usr/lib64', '/lib64',
     ...bind('--ro-bind', ['/etc/ssl', '/etc/ca-certificates', '/etc/fonts', '/etc/passwd', '/etc/group', '/etc/localtime', '/etc/mime.types'].filter(existsSync)),
     '--proc', '/proc', '--dev', '/dev', '--bind', o.tmp, '/tmp', '--bind', o.home, o.home, '--ro-bind', o.socketDir, '/run/rf',
-    ...bind('--ro-bind', o.ro), ...bind('--bind', o.rw),
+    ...bind('--ro-bind', o.ro),
+    '--tmpfs', '/work', ...o.work.ro.flatMap(([src, dst]) => ['--ro-bind', src, dst]), ...o.work.rw.flatMap(([src, dst]) => ['--bind', src, dst]), '--remount-ro', '/work',
     ...Object.entries({ ...o.env, HOME: o.home, TMPDIR: '/tmp' }).flatMap(([k, v]) => ['--setenv', k, v]),
     '--chdir', o.cwd,
   ];

@@ -1,16 +1,16 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { createReadStream, createWriteStream, existsSync, globSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, posix, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createInstance, duplicateInstance, forget, renameInstance, replaceReadOnly, HttpError, instance, instances, isPerson, safeName, type Entry, type Instance } from './store.ts';
-import { socketDir, startRun, type Run } from './runner.ts';
+import { createInstance, duplicateInstance, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openStore, safeName, seriesDir, type Entry, type Instance } from './store.ts';
+import { socketDir, startRun, type Run, type View } from './runner.ts';
 import { serveSandboxes } from './sandbox.ts';
 import { authenticate, checkConfig, mode, removeUser, signOutEverywhere, upsertUser, users, type Me, type Role } from './auth.ts';
-import { initSystem, setWorkspace, workspace, workspaces, type Workspace } from './system.ts';
+import { initSystem, saveTree, tree, type Tree, type Workspace } from './system.ts';
 import { builtIn, catalog as systemCatalog, missing, removeSystem, savedSystem, saveSystem, view as systemView } from './systems.ts';
 import type { Browsing } from './browser.ts';
 import { agentCall, skillsText, testSkill } from './agent-api.ts';
@@ -28,6 +28,7 @@ const host = process.env.RF_HOST ?? '127.0.0.1';
 const LIMIT_MS = Number(process.env.RF_LIMIT_MIN ?? 120) * 60_000;
 const tmpDir = join(root, '.tmp');
 initSystem(root);
+openStore(root);
 checkConfig(host);
 rmSync(tmpDir, { recursive: true, force: true });
 mkdirSync(tmpDir);
@@ -46,28 +47,40 @@ function pending(inst: Instance, seen: number): Entry[] {
 }
 
 function message(inst: Instance, n: number, entries: Entry[]): string {
-  const reads = readable(inst.series()).map(d => `${relative(inst.series(), d)}/`).join(', ');
+  const t = tree(), here = t.series[inst.seriesId].workspace;
+  const reads = reach(t, inst.seriesId).map(id => (t.series[id].workspace === here ? `../${t.series[id].name}/` : `../../${named(t, id)}/`)).join(', ');
   const uses = seriesSettings(inst.series()).skills.length ? skillsText(inst.series()).split('\n').join('; ') : '';
-  return `Instance ${basename(inst.dir)} (folder ${basename(inst.dir)}/), run ${n}.${reads ? ` Series you can read: ${reads}.` : ''}${uses ? ` Skills you can use: ${uses}.` : ''} New log entries:\n`
+  return `Instance ${inst.label} (folder ${inst.label}/), run ${n}.${reads ? ` Series you can read: ${reads}.` : ''}${uses ? ` Skills you can use: ${uses}.` : ''} New log entries:\n`
     + entries.map(e => JSON.stringify(e)).join('\n');
 }
 
 // What a series' agent may read: the other series of its workspace, and those of any workspace that has everyone this one has, by
 // the same email or group, so nothing it reads reaches someone who couldn't see it already. A workspace with no one in it reads only
 // itself.
-function readable(seriesDir: string): string[] {
-  const ws = basename(dirname(seriesDir)), people = everyone(workspace(ws));
-  return dirs(root).filter(o => o === ws || (people.length > 0 && people.every(p => everyone(workspace(o)).includes(p))))
-    .flatMap(o => dirs(join(root, o)).map(s => join(root, o, s))).filter(d => d !== seriesDir);
+function reach(t: Tree, seriesId: string): string[] {
+  const ws = t.series[seriesId].workspace, people = everyone(t.workspaces[ws]);
+  const reads = (o: string) => o === ws || (people.length > 0 && people.every(p => everyone(t.workspaces[o]).includes(p)));
+  return Object.keys(t.series).filter(id => id !== seriesId && reads(t.series[id].workspace)).sort((a, b) => named(t, a).localeCompare(named(t, b)));
 }
 
 const everyone = (w: Workspace) => [...w.owners, ...w.members];
+const named = (t: Tree, seriesId: string) => `${t.workspaces[t.series[seriesId].workspace].name}/${t.series[seriesId].name}`;
+
+// The run's view of the data, by name: /work/<workspace>/<series>/<label>/ for every instance in its reach, built when it starts.
+function view(inst: Instance): View {
+  const t = tree(), at = (id: string) => `/work/${named(t, id)}`;
+  const ro = [inst.seriesId, ...reach(t, inst.seriesId)].flatMap(id => [
+    ...labels(id).map(l => [instanceDir(l.id), `${at(id)}/${l.label}`] as [string, string]),
+    ...(id === inst.seriesId ? [] : [[join(seriesDir(id), '.pylib'), `${at(id)}/.pylib`] as [string, string]]),
+  ]);
+  return { cwd: at(inst.seriesId), instance: `${at(inst.seriesId)}/${inst.label}`, dir: inst.dir, pylib: join(inst.series(), '.pylib'), ro };
+}
 
 function kick(inst: Instance) {
-  const a = active.get(inst.series());
+  const a = active.get(inst.seriesId);
   if (a) return a.inst === inst && a.run && flush(a);
-  clearTimeout(debounce.get(inst.dir));
-  debounce.set(inst.dir, setTimeout(() => { debounce.delete(inst.dir); start(inst); }, 1500));
+  clearTimeout(debounce.get(inst.id));
+  debounce.set(inst.id, setTimeout(() => { debounce.delete(inst.id); start(inst); }, 1500));
 }
 
 function flush(a: Active) {
@@ -80,7 +93,7 @@ function flush(a: Active) {
 }
 
 async function start(inst: Instance) {
-  const series = inst.series();
+  const series = inst.seriesId;
   const seen = seenBefore(inst);
   if (active.has(series) || inst.doc.status !== 'open' || !pending(inst, seen).length) return;
   const n = inst.log.filter(e => e.op === 'run').length + 1;
@@ -92,8 +105,8 @@ async function start(inst: Instance) {
   inst.append('server', 'run', { run: n, upto: a.sent });
   try {
     a.run = await startRun({
-      seriesDir: series, instanceDir: inst.dir, token: a.token, read: readable(series),
-      message: text, skills: seriesSettings(series).skills.filter(id => skill(id)),
+      token: a.token, view: view(inst),
+      message: text, skills: seriesSettings(inst.series()).skills.filter(id => skill(id)),
       onEvent: e => {
         if (e.type === 'message_end' && e.message.role === 'assistant') a.cost += e.message.usage.cost.total;
         if (e.type !== 'message_start' || e.message.role !== 'user') return;
@@ -120,14 +133,14 @@ function finish(a: Active, aborted: boolean, error?: string) {
   a.done = true;
   clearTimeout(a.timer);
   byToken.delete(a.token);
-  const series = a.inst.series();
+  const series = a.inst.seriesId;
   active.delete(series);
   a.run?.stop();
   a.browsing?.close();
   a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(4), summary: a.inst.doc.summary ?? null, ...(error && { error }) });
   if (!a.run) return; // it never started, as with a missing API key: wait for the next person action rather than retry at once
   if (!a.interrupted && pending(a.inst, a.seen).length) return void start(a.inst);
-  const next = instances(series).find(i => i.doc.status === 'open' && !(a.interrupted && i.dir === a.inst.dir) && pending(i, seenBefore(i)).length);
+  const next = instances(series).find(i => i.doc.status === 'open' && !(a.interrupted && i === a.inst) && pending(i, seenBefore(i)).length);
   if (next) start(next);
 }
 
@@ -154,23 +167,20 @@ async function agent(req: IncomingMessage, res: ServerResponse, url: URL) {
   throw new HttpError(404, 'not found');
 }
 
-function dirs(path: string): string[] {
-  return existsSync(path) ? readdirSync(path).filter(n => !n.startsWith('.') && statSync(join(path, n)).isDirectory()).sort() : [];
-}
-
 // Owners and members see a workspace and everything in it, by their email or an Entra group they're in; admins see every one. A
 // workspace with no one in it, such as the demo's, is the admins'. Owners and admins manage who is in it.
 const isIn = (me: Me, people: string[]) => people.some(p => p === me.email || me.groups.includes(p));
-const canSee = (me: Me, ws: string) => me.role === 'admin' || isIn(me, everyone(workspace(ws)));
-const canManage = (me: Me, ws: string) => me.role === 'admin' || isIn(me, workspace(ws).owners);
+const canSee = (me: Me, w: Workspace) => me.role === 'admin' || isIn(me, everyone(w));
+const canManage = (me: Me, w: Workspace) => me.role === 'admin' || isIn(me, w.owners);
 
-function mustSee(me: Me, ws: string) {
-  if (!canSee(me, ws) || !existsSync(join(root, ws))) throw new HttpError(404, `no workspace ${ws}`);
+function mustSee(me: Me, w: Workspace | undefined): Workspace {
+  if (!w || !canSee(me, w)) throw new HttpError(404, 'no such workspace');
+  return w;
 }
 
 function queued(inst: Instance): boolean {
-  const a = active.get(inst.series());
-  return a?.inst !== inst && inst.doc.status === 'open' && (debounce.has(inst.dir) || (!!a && pending(inst, seenBefore(inst)).length > 0));
+  const a = active.get(inst.seriesId);
+  return a?.inst !== inst && inst.doc.status === 'open' && (debounce.has(inst.id) || (!!a && pending(inst, seenBefore(inst)).length > 0));
 }
 
 function questions(inst: Instance): number {
@@ -178,14 +188,14 @@ function questions(inst: Instance): number {
   return inst.doc.items.flatMap(i => i.notes ?? []).filter(n => n.id && n.options && !inst.answered(n.id)).length;
 }
 
-function tree(me: Me) {
-  return dirs(root).filter(ws => canSee(me, ws)).map(ws => ({
-    workspace: ws, archived: existsSync(join(root, ws, '.archived')), ...workspace(ws), manage: canManage(me, ws),
-    series: dirs(join(root, ws)).map(series => ({
-      series, archived: existsSync(join(root, ws, series, '.archived')), ...seriesSettings(join(root, ws, series)),
-      reads: readable(join(root, ws, series)).map(d => relative(root, d).split(sep).join(' / ')),
-      instances: instances(join(root, ws, series)).map(i => ({
-        label: basename(i.dir), status: i.doc.status, rev: i.doc.rev, running: active.get(i.series())?.inst === i, queued: queued(i), questions: questions(i),
+function listing(me: Me) {
+  const t = tree(), byName = (a: [string, { name: string }], b: [string, { name: string }]) => a[1].name.localeCompare(b[1].name);
+  return Object.entries(t.workspaces).filter(([, w]) => canSee(me, w)).sort(byName).map(([id, w]) => ({
+    id, name: w.name, archived: !!w.archived, owners: w.owners, members: w.members, manage: canManage(me, w),
+    series: Object.entries(t.series).filter(([, s]) => s.workspace === id).sort(byName).map(([sid, s]) => ({
+      id: sid, name: s.name, archived: !!s.archived, ...seriesSettings(seriesDir(sid)), reads: reach(t, sid).map(r => named(t, r).replace('/', ' / ')),
+      instances: instances(sid).map(i => ({
+        id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(sid)?.inst === i, queued: queued(i), questions: questions(i),
       })),
     })),
   }));
@@ -218,13 +228,14 @@ function trace(inst: Instance) {
 }
 
 async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
-  const [ws, series, label, ...rest] = url.pathname.split('/').slice(2).map(decodeURIComponent);
+  const [id, ...rest] = url.pathname.split('/').slice(2).map(decodeURIComponent);
   const rel = rest.join('/');
   if (posix.normalize(rel) !== rel || !/^(upload|working|calls)\//.test(rel) || rel.split('/').includes('..')) throw new HttpError(400, 'bad path');
-  mustSee(me, safeName(ws));
-  const dir = join(root, safeName(ws), safeName(series), safeName(label)), path = join(dir, rel);
+  const inst = instance(id);
+  mustSee(me, tree().workspaces[tree().series[inst.seriesId].workspace]);
+  const path = join(inst.dir, rel);
   if (!existsSync(path)) throw new HttpError(404, 'no such file');
-  if (!realpathSync(path).startsWith(realpathSync(dir) + sep)) throw new HttpError(400, 'links must stay inside the instance');
+  if (!realpathSync(path).startsWith(realpathSync(inst.dir) + sep)) throw new HttpError(400, 'links must stay inside the instance');
   if (preview) {
     const { stdout } = await exec(python, [join(app, 'src', 'preview.py'), path], { timeout: 30_000, maxBuffer: 64e6 });
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -239,80 +250,81 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
   createReadStream(path).pipe(res);
 }
 
-async function people(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) {
-  const [ws, series, label, action] = url.pathname.split('/').slice(2).map(s => safeName(decodeURIComponent(s)));
-  const workspaceDir = join(root, ws), by = me.email;
-  if (!series) {
-    if (req.method === 'POST') {
-      if (existsSync(workspaceDir)) {
-        if (!canSee(me, ws)) throw new HttpError(409, `the name ${ws} is taken; choose another`);
-      } else {
-        mkdirSync(workspaceDir);
-        setWorkspace(ws, { owners: [me.email], members: [] });
-      }
-      return send(res, 200, 'ok');
+const json = async (req: IncomingMessage) => JSON.parse((await body(req)).toString() || '{}');
+const people = (w: { owners?: unknown; members?: unknown }) => [w.owners, w.members].map(list => {
+  const ok = Array.isArray(list) && list.every(p => typeof p === 'string' && /^[^@\s]+@[^@\s]+$|^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(p));
+  if (!ok) throw new HttpError(400, `owners and members are lists of emails and Entra group ids: ${JSON.stringify(list)}`);
+  return (list as string[]).map(p => p.toLowerCase());
+});
+
+// Workspaces, series and instances, by id. Renaming a workspace or a series edits .rf/tree.json, so it may happen mid-run; a run sees
+// the new names from its next start.
+async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) {
+  const [kind, id = '', action] = url.pathname.split('/').slice(2).map(decodeURIComponent);
+  const t = tree(), by = me.email;
+  if (kind === 'workspaces' && !id && req.method === 'POST') {
+    const name = safeName(String((await json(req)).name ?? ''));
+    if (Object.values(t.workspaces).some(w => w.name === name)) throw new HttpError(409, `the name ${name} is taken; choose another`);
+    const wid = newId();
+    t.workspaces[wid] = { name, owners: [me.email], members: [] };
+    saveTree(t);
+    return send(res, 200, { id: wid });
+  }
+  if (kind === 'workspaces' && req.method === 'PUT') {
+    const w = mustSee(me, t.workspaces[id]);
+    if (!canManage(me, w)) throw new HttpError(403, "only the workspace's owners and admins change it");
+    const change = await json(req);
+    if (change.name !== undefined) {
+      const name = safeName(String(change.name));
+      if (name !== w.name && Object.values(t.workspaces).some(x => x.name === name)) throw new HttpError(409, `the name ${name} is taken; choose another`);
+      w.name = name;
     }
-    mustSee(me, ws);
-    if (!canManage(me, ws)) throw new HttpError(403, "only the workspace's owners and admins change it");
-    const { archived, owners, members } = JSON.parse((await body(req)).toString());
-    if (owners !== undefined || members !== undefined) {
-      const w = { owners: owners ?? workspace(ws).owners, members: members ?? workspace(ws).members };
-      const bad = everyone(w).filter(p => typeof p !== 'string' || !/^[^@\s]+@[^@\s]+$|^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(p));
-      if (bad.length) throw new HttpError(400, `not an email or an Entra group id: ${bad.join(', ')}`);
-      setWorkspace(ws, { owners: w.owners.map((p: string) => p.toLowerCase()), members: w.members.map((p: string) => p.toLowerCase()) });
-    }
-    if (archived !== undefined) {
-      if (archived) writeFileSync(join(workspaceDir, '.archived'), '');
-      else rmSync(join(workspaceDir, '.archived'), { force: true });
-    }
+    if (change.owners !== undefined || change.members !== undefined) [w.owners, w.members] = people({ owners: w.owners, members: w.members, ...change });
+    if (change.archived !== undefined) w.archived = !!change.archived;
+    saveTree(t);
     return send(res, 200, 'ok');
   }
-  mustSee(me, ws);
-  const seriesDir = join(workspaceDir, series);
-  if (!label) {
+  if (kind === 'series' && !id && req.method === 'POST') {
+    const { workspace, name: asked } = await json(req), name = safeName(String(asked ?? ''));
+    mustSee(me, t.workspaces[workspace]);
+    if (Object.values(t.series).some(s => s.workspace === workspace && s.name === name)) throw new HttpError(409, `${name} exists`);
+    const sid = newId();
+    t.series[sid] = { name, workspace };
+    mkdirSync(seriesDir(sid));
+    saveTree(t);
+    return send(res, 200, { id: sid });
+  }
+  if (kind === 'series') {
+    const s = t.series[id];
+    mustSee(me, s && t.workspaces[s.workspace]);
     if (req.method === 'POST') {
-      mkdirSync(seriesDir, { recursive: true });
-      return send(res, 200, 'ok');
+      const created = createInstance(id, String((await json(req)).label ?? ''), by);
+      kick(created);
+      return send(res, 200, { id: created.id });
     }
-    if (req.method === 'PUT') {
-      const { name, skills: chosen, archived } = JSON.parse((await body(req)).toString());
-      const to = safeName(name);
-      if (to !== series) {
-        if (existsSync(join(workspaceDir, to))) throw new HttpError(409, `${to} exists`);
-        if (active.has(seriesDir) || instances(seriesDir).some(i => debounce.has(i.dir))) throw new HttpError(409, 'wait for the run to end');
-      }
-      replaceReadOnly(join(seriesDir, 'series.json'), JSON.stringify({ ...seriesSettings(seriesDir), ...(chosen !== undefined && { skills: checkChosen(chosen) }) }, null, 1));
-      if (archived) writeFileSync(join(seriesDir, '.archived'), '');
-      else rmSync(join(seriesDir, '.archived'), { force: true });
-      if (to !== series) {
-        const dir = resolve(workspaceDir, to);
-        renameSync(seriesDir, dir);
-        forget(seriesDir);
-        for (const f of globSync('*/session/*.jsonl', { cwd: dir })) {
-          const text = readFileSync(join(dir, f), 'utf8'), nl = text.indexOf('\n');
-          writeFileSync(join(dir, f), JSON.stringify({ ...JSON.parse(text.slice(0, nl)), cwd: dir }) + text.slice(nl));
-        }
-      }
-      return send(res, 200, 'ok');
+    if (req.method !== 'PUT') throw new HttpError(405, 'PUT, or POST a new instance');
+    const change = await json(req);
+    if (change.name !== undefined) {
+      const name = safeName(String(change.name));
+      if (name !== s.name && Object.values(t.series).some(x => x.workspace === s.workspace && x.name === name)) throw new HttpError(409, `${name} exists`);
+      s.name = name;
     }
-    return send(res, 200, instances(seriesDir).map(i => ({ label: basename(i.dir), status: i.doc.status, running: active.get(seriesDir)?.inst === i })));
+    if (change.archived !== undefined) s.archived = !!change.archived;
+    saveTree(t);
+    if (change.skills !== undefined) replaceReadOnly(join(seriesDir(id), 'series.json'), JSON.stringify({ skills: checkChosen(change.skills) }, null, 1));
+    return send(res, 200, 'ok');
   }
-  if (!action && req.method === 'POST') {
-    const created = createInstance(seriesDir, label, by);
-    kick(created);
-    return send(res, 200, created.doc);
-  }
-  const dir = join(seriesDir, label);
-  if (!existsSync(join(dir, 'workspace.json'))) throw new HttpError(404, `no instance ${label}`);
-  const inst = instance(dir);
-  const a = active.get(seriesDir);
+  if (kind !== 'instances') throw new HttpError(404, 'not found');
+  const inst = instance(id);
+  mustSee(me, t.workspaces[t.series[inst.seriesId].workspace]);
+  const a = active.get(inst.seriesId);
   const mine = a?.inst === inst ? a : undefined;
   if (!action) return send(res, 200, { doc: inst.doc, log: inst.log, run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4) } : null, queued: queued(inst) });
   if (action === 'trace') return send(res, 200, trace(inst));
   if (req.method !== 'POST') throw new HttpError(405, 'POST only');
   if (action === 'duplicate') {
     if (inst.doc.status === 'open') throw new HttpError(409, 'only a closed or abandoned instance can be duplicated');
-    return send(res, 200, duplicateInstance(inst, url.searchParams.get('as') ?? '', by).doc);
+    return send(res, 200, { id: duplicateInstance(inst, url.searchParams.get('as') ?? '', by).id });
   }
   if (inst.doc.status !== 'open') throw new HttpError(409, `instance is ${inst.doc.status}`);
   if (action === 'upload') {
@@ -335,9 +347,10 @@ async function people(me: Me, req: IncomingMessage, res: ServerResponse, url: UR
     await mine.run.interrupt();
     return send(res, 200, 'ok');
   } else if (action === 'rename') {
-    if (mine || debounce.has(inst.dir)) throw new HttpError(409, 'wait for the run to end');
-    const label = url.searchParams.get('as') ?? '';
-    renameInstance(inst, label).append(by, 'rename', { from: basename(inst.dir) });
+    if (a || debounce.has(inst.id)) throw new HttpError(409, "wait for the series' run to end");
+    const from = inst.label;
+    renameInstance(inst, url.searchParams.get('as') ?? '');
+    inst.append(by, 'rename', { from });
     return send(res, 200, 'ok');
   } else if (action === 'close' || action === 'abandon') {
     if (mine) throw new HttpError(409, 'wait for the run to end');
@@ -357,8 +370,8 @@ async function admin(me: Me, req: IncomingMessage, res: ServerResponse, url: URL
       upsertUser(String(email ?? ''), { role: role === 'admin' ? 'admin' : 'user' });
       return send(res, 200, 'ok');
     }
-    const all = Object.entries(workspaces());
-    return send(res, 200, Object.entries(users()).map(([email, { sub, epoch, groups, ...u }]) => ({ email, ...u, workspaces: all.filter(([, w]) => everyone(w).includes(email)).map(([n]) => n) })));
+    const all = Object.values(tree().workspaces);
+    return send(res, 200, Object.entries(users()).map(([email, { sub, epoch, groups, ...u }]) => ({ email, ...u, workspaces: all.filter(w => everyone(w).includes(email)).map(w => w.name) })));
   }
   if (!users()[email]) throw new HttpError(404, `no user ${email}`);
   if (req.method === 'DELETE') {
@@ -451,10 +464,10 @@ createServer({ requestTimeout: 60 * 60_000 }, async (req, res) => {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(readFileSync(page));
     } else if (url.pathname === '/me') send(res, 200, { ...me, sign_in: mode });
-    else if (url.pathname === '/api') send(res, 200, tree(me));
+    else if (url.pathname === '/api') send(res, 200, listing(me));
     else if (url.pathname.startsWith('/files/')) await file(me, res, url, false);
     else if (url.pathname.startsWith('/preview/')) await file(me, res, url, true);
-    else if (url.pathname.startsWith('/api/')) await people(me, req, res, url);
+    else if (url.pathname.startsWith('/api/')) await api(me, req, res, url);
     else if (url.pathname === '/users' || url.pathname.startsWith('/users/')) await admin(me, req, res, url);
     else if (url.pathname === '/systems' || url.pathname.startsWith('/systems/')) await catalog(me, req, res, url);
     else if (url.pathname === '/skills' || url.pathname.startsWith('/skills/')) await skillsRoute(me, req, res, url);

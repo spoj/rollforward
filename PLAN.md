@@ -8,7 +8,7 @@
 
 - **People:** everyone signs in with a Microsoft account, by pressing Sign in with Microsoft. A person is a **user** or an **admin**.
 - **Workspace:** a top-level folder of series, usually one entity's work, such as its bank rec, inventory rec and borrowing base. It is the only unit of sharing: its **members** see and work in every series in it, and its **owners** also manage who is in it. Each is a person by email or an Entra group by id. An area that needs hiding, such as payroll, is a workspace of its own with fewer people. A workspace with no one in it, such as the demo's, is the admins'.
-- **Series:** a recurring transform, such as "Weekly borrowing base": each instance's input files become its output files. The folder name is the series' name. What an instance should contain comes from earlier instances, not from a declaration.
+- **Series:** a recurring transform, such as "Weekly borrowing base": each instance's input files become its output files. What an instance should contain comes from earlier instances, not from a declaration.
 - **Skill:** what the agent knows how to fetch or do, and how, whole in a folder: such as the day's AR aging from OneDrive, or a customer's payments from its vendor portal. Admins set each up once, under Skills, with its links and, for a website, its account.
 - **Skill use:** the skills a series' agent may use. A skill writes to a system only what a person approves on the screen.
 - **Connection:** a Microsoft 365 app (M365 Mail, M365 OneDrive) that skills read through, kept by admins under Systems. Series don't choose these; their skills say what they use.
@@ -49,7 +49,7 @@
 - **Abandon:** the other way an instance ends. It stays as it is, but it isn't an example, never becomes a new instance's starting point, and applies no defaults. It is also disabled while a run is going. Closed and abandoned instances both show under "Show closed".
 - **Duplicate:** a closed or abandoned instance can be copied, under a new label, into an open instance. The copy has its files, screen and log, but not its agent session, and its log records the copy as `duplicate`.
 - **Rename:** an open instance's label changes from the pencil by its title, between runs. The log records `rename`.
-- **Series settings:** the series' name, its Skill use (the skills its agent may use, each saying if it is not set up yet), what its agent can read, and Archive. Renaming moves the series folder, and waits until no run is going. **Workspace settings** hold its people, owners and members, which owners and admins change, and Archive, also theirs. An archived workspace or series is restored from its settings, under "Show archived".
+- **Series settings:** the series' name, its Skill use (the skills its agent may use, each saying if it is not set up yet), what its agent can read, and Archive. Renaming a series or a workspace edits one small file, so it may happen mid-run; a run sees the new names from its next start. **Workspace settings** hold its people, owners and members, which owners and admins change, and Archive, also theirs. An archived workspace or series is restored from its settings, under "Show archived".
 - **Users** (admins): who can sign in, their role, the workspaces they're in by email and when they last signed in; Add, Disable (which also signs them out everywhere; Enable lets them back) and Remove, which takes them out of every workspace.
 - **Systems** (admins): the two Microsoft 365 connections, each with whether it is ready: its tenant id, client id, client secret (write-only) and settings, such as the one mailbox it reads. It may be saved part done. Test reads its mailbox or a test folder; Clear takes it back to not set up.
 - **Skills** (admins): every skill, with the connections it uses and whether it is ready; Set up or Edit shows its settings from its `skill.json`, a password as write-only. Test checks it for real: a website skill signs in, code and all; one that reads OneDrive or mail reads its links or today's mail.
@@ -57,22 +57,27 @@
 
 ## Storage
 
-Workspaces are folders on the host's disk. There is no database.
+Everything is files on the host's disk, in folders named by random ids. There is no database. Names live in two small files, so a
+rename or a move never moves a folder.
 
-    .rf/                      the server's own: users.json, workspaces.json (each workspace's owners and members), systems.json
-                              (service passwords sealed with AES-256-GCM), and the keys session.key and systems.key
-    <workspace>/              e.g. "Larkfield"
-      .archived               there while the workspace is archived, set by people through the server
-      <series>/               e.g. "Weekly borrowing base"; moved only by a rename in Series settings
-        series.json           {"skills": [skill ids]}, set by people through the server, read-only
-        .archived             there while the series is archived
-        <label>/              an instance: a folder holding workspace.json, made by New instance
-          upload/             people's files, as uploaded, read-only
-          working/            the agent's area: scripts, process.md, drafts, outputs and its own inputs
-          workspace.json      the instance's screen, saved by the server, read-only
-          log.jsonl           everything that happened in the instance, written by the server
-          session/            the instance's Pi session, shown in Advanced
-          calls/              writes the agent proposed: the page it started from (<id>.png) and the outcome (<id>.result.png), by the server
+    .rf/                      the server's own: users.json, tree.json, systems.json (service passwords sealed with AES-256-GCM), and
+                              the keys session.key and systems.key
+      tree.json               {"workspaces": {id: {name, owners, members, archived?}}, "series": {id: {name, workspace, archived?}}}
+    series/<id>/              a series
+      series.json             {"skills": [skill ids]}, set by people through the server, read-only
+      .pylib/                 Python packages the series' scripts installed
+    instances/<id>/           an instance, flat, made by New instance
+      instance.json           {"label", "series": id}, read-only
+      upload/                 people's files, as uploaded, read-only
+      working/                the agent's area: scripts, process.md, drafts, outputs and its own inputs
+      workspace.json          the instance's screen, saved by the server, read-only
+      log.jsonl               everything that happened in the instance, written by the server
+      session/                the instance's Pi session, shown in Advanced
+      calls/                  writes the agent proposed: the page it started from (<id>.png) and the outcome (<id>.result.png), by the server
+
+- **The index:** at start the server reads every `instance.json`, and lists a series' instances from that; an instance's screen and log load when it's first listed or opened. The site and its API address workspaces, series and instances by id (`/api/workspaces/<id>`, `/api/series/<id>`, `/api/instances/<id>`, `/files/<id>/…`), and the page's address is `#/<id>`, so links survive renames.
+- **A run sees the data by name** (see Runs in sandboxes): `/work/<workspace>/<series>/<label>/` for every instance in its reach, built when it starts. A note's cited file, `../<label>/…`, is found by label in the instance's series when it's put, so an open instance waits for its series' run to end before it's renamed.
+- **[scripts/migrate-ids.ts](scripts/migrate-ids.ts)** moved the trial's data, and the demo's, from folders by name to folders by id, once.
 
 - **The server holds each instance's screen and log.** They needn't be files, but who owns what stays the same. The server saves the screen to `workspace.json` (a temporary file renamed into place, read-only) and appends each event to `log.jsonl`. Closed instances therefore stay plain folders.
 - **Who writes what:**
@@ -144,7 +149,7 @@ The schemas are loose, and unknown fields are ignored, so the agent and the UI c
 
 ## The agent
 
-- **One session per instance.** The server runs Pi in the series folder with the instructions in [prompt.md](prompt.md). Each run is one prompt into the instance's session, so within an instance the agent remembers its earlier runs. A new instance starts a new session, so whatever the next instance needs must be in the files.
+- **One session per instance.** The server runs Pi in the series' folder in the run's view, `/work/<workspace>/<series>`, with the instructions in [prompt.md](prompt.md). Each run is one prompt into the instance's session, so within an instance the agent remembers its earlier runs. A new instance starts a new session, so whatever the next instance needs must be in the files.
 - **Messages:** every prompt and steer reads `Instance <label> (folder <label>/), run <n>. New log entries:`, followed by the log lines, as JSON, that the agent hasn't been sent. The agent's own lines are left out.
 - **What starts a run:** an upload, an answer, a Steer, or an approval or rejection of a proposed write from a person, or a new instance whose parent had inputs the agent made (files in `working/`), so the fetched inputs arrive at once; its `create` entry carries `fetch`. Runs start 1.5 s after the last of a burst of uploads, so a multi-file drop starts one run.
   - **During a run,** the same events reach the agent as a steer. Pi delivers it after the current turn's tool calls, and with steering mode `all`, everything queued by then arrives together.
@@ -199,12 +204,12 @@ The runner, [src/runner.ts](src/runner.ts), drives Pi through Pi's `RpcClient`, 
     pi --mode rpc --provider openrouter --model anthropic/claude-opus-5.5 --thinking high \
       --no-extensions --no-skills --no-mcp --no-context-files --no-prompt-templates --skill <app>/skills/<id> … \
       --tools read,bash,edit,write --append-system-prompt <app>/prompt.md \
-      --session-dir "<label>/session" --session-id main
+      --session-dir "/work/<workspace>/<series>/<label>/session" --session-id main
 
 - **Advanced's controls are Pi's own commands.** `prompt` starts a run, and `steer` delivers mid-run events and Advanced's Steer. Interrupt is `clear_queue`, then `abort`.
 - **Each run has its own Pi home,** in its sandbox's scratch: `settings.json` with `steeringMode` `all`, and `models.json`, which points the provider at the server's socket (see Runs in sandboxes). `PI_OFFLINE` keeps Pi from checking for updates.
 - **One process per run.** The runner stops Pi at `agent_settled`, since RPC mode runs until its stdin closes. At the time limit, it aborts the run and stops Pi.
-- **Sessions are found by working folder.** Pi reopens `main` only if the folder recorded in the session's first line is the series folder, so a series rename rewrites that line in every session of the series.
+- **Sessions are found by working folder.** Pi reopens `main` only if the folder recorded in the session's first line is its working folder, so a run whose names changed since the last rewrites that line first.
 - **Credentials:** the OpenRouter key, `OPENROUTER_API_KEY`, stays with the server, which adds it to each model request a run sends through its socket. A run whose server has none ends at once with that error. A Claude subscription won't do: it needs its auth extension loaded with `-e`.
 - **Skills are the app's own:** `--skill` loads each skill the series chose under Skill use, and `--no-skills` keeps out the Pi skills of whoever runs the server. The agent's scripts reach a skill's files through `RF_SKILLS`. Nothing of the server's environment reaches a run.
 - **Harness-specific code stays in one module,** the runner. `RpcClient` always starts `node`, found on the `PATH` it's given, so the runner puts [bin/sandbox](bin/sandbox) first, whose `node` starts Pi in the run's sandbox.
@@ -252,7 +257,7 @@ The risk is whether an agent can learn a real deliverable from examples, so the 
      - A session is a cookie for 12 hours (`RF_SESSION_HOURS`), signed with `.rf/session.key` and the person's epoch, so Disable (and the CLI's signout) end it at once. People are managed on the Users page or with `node src/auth.ts DATA_ROOT list | add | role | disable | enable | signout | remove`. The agent's environment gets a blank `RF_OIDC_CLIENT_SECRET`.
    - **Workspaces' people (built):** every API call, file and preview is checked against the workspace's owners and members, by email or by an Entra group the person's ID token named at their last sign-in (once the app is set to send `groups`), and a workspace someone isn't in answers 404. A new workspace starts with whoever makes it as its owner, and a name in use is taken. Admins see and manage every workspace.
    - **Runs in sandboxes (built, [src/sandbox.ts](src/sandbox.ts), [src/runner.ts](src/runner.ts)):** each run's Pi is a bubblewrap sandbox, in a systemd scope of its own (`MemoryHigh` 4 GB, `MemoryMax` 8 GB, in `rollforward-runs.slice`; `RF_SANDBOX_SCOPE`, empty in the container image, where there is no systemd).
-     - **What it sees:** the system, the app and the skills, read-only; its series read-only but for the instance's `working/` and `session/` and the series' `.pylib`; the series in its reach, and `RF_SANDBOX_RO`, read-only; and a HOME and /tmp of its own on scratch (`RF_SCRATCH`), deleted when the run ends. Never `.rf/`, another series or workspace, or the server's environment.
+     - **What it sees:** the system, the app's code and the skills, read-only; under `/work/<workspace>/<series>/`, every instance in its reach by label, read-only but for its own instance's `working/` and `session/` and its series' `.pylib`; `RF_SANDBOX_RO`, read-only; and a HOME and /tmp of its own on scratch (`RF_SCRATCH`), deleted when the run ends. Never `.rf/`, the data root, a series or workspace outside its reach, or the server's environment.
      - **No network of its own.** Its one way out is the server's socket, `RF_SCRATCH/socket/rf.sock`, which socat offers at 127.0.0.1:7000 inside:
        - `/agent/…`, the agent API, with the run's token (`RF_URL`, `RF_TOKEN`), bound to one instance and gone when the run ends. The site no longer serves it;
        - `/model/<token>/…`, the model, with the key added on the way (`RF_MODEL_URL`, default OpenRouter's), so no key is inside;
@@ -320,6 +325,7 @@ The risk is whether an agent can learn a real deliverable from examples, so the 
 32. **Skills, set up once** (23 Oct): a series chooses only skills; admins set each skill up once, under Skills, for every series, as people saw a series' own copy of the same links as repetition. A skill with a website, such as a vendor portal, holds that site whole, as the ERP's skill holds its service: its account in its settings (the password sealed), its hosts, its flows and its own sign-in, so a new portal is a skill, not a change to the server. Only the Microsoft 365 apps stay shared connections, under Systems, used by the skills that say so. The agent's own browsing of those systems, with its writes held for approval (27), is gone for now: the ERP goes through its skill. One portal's skill reads the export people put on OneDrive each day, as its site stopped mailing sign-in codes.
 33. **Runs in bubblewrap sandboxes** (2 Nov): rather than Docker Sandboxes' microVMs, each run is a bubblewrap sandbox in a cgroup of its own, with no network but the server's socket: the agent API, the model with its key added on the way, and a proxy to an allowlist broad enough to install packages and read documentation (pypi, npm, GitHub, docs sites, `.rf/egress.json`), never a private address. No key, no `.rf/` and no other workspace is inside. The site no longer serves the agent API. [docs/redesign.md](docs/redesign.md) holds the rest of the round agreed that day.
 34. **Members and owners; reach** (2 Nov; replaces 21 and 26's one owner): the workspace is the only unit of sharing, with members, who see and work in all of it, and owners, who also manage who is in it, each a person or an Entra group. There's no read-only role. Series visibility goes: an agent reads its whole workspace, and any workspace that has everyone its own has, so reading never widens who sees what.
+35. **Folders by id** (2 Nov): instances sit flat under `instances/<id>/` and series under `series/<id>/`, with names in `instance.json` and `.rf/tree.json`, so renames and moves edit one small file at any time and links use ids. Each run gets the data by name, as a tree of its own built when it starts. Notes' cited files stay label paths within the series for now.
 
 ## Proposed by the agent (open to change)
 
@@ -332,7 +338,7 @@ The risk is whether an agent can learn a real deliverable from examples, so the 
 7. A file the screen has shown is read-only, and the log keeps its hash.
 8. The ops log is a side panel.
 9. There is one Pi session per instance.
-10. A series' name is its folder name.
+10. A series' name is its folder name. (Since 35, folders are named by id.)
 11. A new instance starts from the most recently closed instance, by close time rather than label order.
 12. The colour code: blue for what a person put in, black for what the agent made, red for notes ([docs/design.md](docs/design.md)).
 13. The runner's cursor: events the agent never received start another run when the current one settles, except after an Interrupt.

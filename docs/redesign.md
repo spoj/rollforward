@@ -111,17 +111,15 @@ A separate service, in its own repo (`machines`), with one client: the rollforwa
 ## Sandbox and network
 
 Built: each run is a bubblewrap sandbox with a broad allowlist through the server's socket (PLAN.md, M3 and decision 33). Still to come:
-- **A tree by name** (with Storage): the run sees its series, the workspaces in reach, the catalogue, guidance and skills, built from the index when it starts.
+- **The catalogue and guidance** in the tree by name each run gets (built: its reach, by name).
 - **Shared package caches,** so most runs install nothing.
 - **What this gives up:** an allowed site that accepts uploads is a way out for data if the agent is tricked, such as a token planted in an email with "push this file". If that ever matters, the proxy can allow only downloads and clones, which means inspecting encrypted traffic.
 
 ## Storage
 
-- **Folders are named by id.** Each instance is a folder named by a random id, flat under `instances/`, with `instance.json` holding its label and its series' id. A series' `series.json` and `.pylib` live under `series/<id>/`. `.rf/tree.json` holds each workspace and series by id: name, parent, members, archive state.
-- **The index:** at start the server reads every `instance.json` and keeps a summary of each instance in memory, updated from the log bus. Lists come from the index; an instance loads when someone opens it.
-- **Renames and moves edit one small file,** at any time, even mid-run. Page links use ids.
+Built: folders by id, `.rf/tree.json`, the index of `instance.json`s, renames that edit one file, links by id, and the one-off migration (PLAN.md, Storage, decision 35). Still to come:
+- **The index keeps a summary** of each instance, updated from the log bus, so lists stop loading every instance's screen and log.
 - **References are kept by id.** The agent cites `../2026-08-16/working/x.csv`; on `rf put` the server resolves it against the run's own tree, stores the instance id, the path and the sha256 alongside what was written, and rejects what doesn't resolve.
-- **Migration** of the trial's data is a one-off script run on the old VM, not product code.
 - **Later:** object storage and Postgres, when one host or one disk stops being enough. Id folders map to blob prefixes and `.rf/` to tables; nothing above the tree changes.
 
 ## Architecture
@@ -163,7 +161,7 @@ Everything we build runs on the development machine; only the real outside syste
 ## Build order
 
 1. The sandbox and the network (built).
-2. Ids, members and owners (built), and the migration script.
+2. Ids, members and owners, and the migration script (built).
 3. Microsoft 365 logins and the ticks.
 4. Website logins through the machines service, moving the ERP and the portals onto personal logins.
 5. Waking, several open instances, Ad hoc.

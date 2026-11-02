@@ -1,17 +1,17 @@
 """Drive the made-up weekly borrowing base series through a running server, then score each forward week against truth.json.
 
 Usage: .venv/bin/python demo/run_demo.py demo/out http://127.0.0.1:8780 DATA_ROOT [first-label]
-Each week is staged only when the agent may see it, so it never sees the future. The sources the agent fetches from 08-16
+It signs in as the demo's admin, so the server must run without RF_OIDC_CLIENT_ID. Each week is staged only when the agent may see it, so it never sees the future. The sources the agent fetches from 08-16
 live in DATA_ROOT-sources: warehouse.sqlite and mailbox/. Scoring and the checks are test tooling, not part of the system.
 """
-import csv, json, shutil, sqlite3, sys, time, urllib.parse, urllib.request
+import csv, json, shutil, sqlite3, sys, time, urllib.error, urllib.parse, urllib.request
 from pathlib import Path
 from openpyxl import load_workbook
 
 SRC = Path(sys.argv[1])
 SERIES = 'Weekly borrowing base'
-API = sys.argv[2] + '/api/larkfield/' + urllib.parse.quote(SERIES)
-DATA = Path(sys.argv[3]) / 'larkfield' / SERIES
+BASE = sys.argv[2]
+DATA = Path(sys.argv[3]) / 'instances'
 SOURCES = Path(sys.argv[3] + '-sources').resolve()
 WAREHOUSE, MAILBOX = SOURCES / 'warehouse.sqlite', SOURCES / 'mailbox'
 EXAMPLES = ['2026-07-05', '2026-07-12', '2026-07-19', '2026-07-26']
@@ -23,25 +23,47 @@ SOURCES_STEER = f"""From this week on we stop uploading two files; fetch them yo
 Also new: Maison Verte SARL is billed in EUR from this week (see the Currency column of the AR aging). Convert it at the ECB euro reference rate for the week end, or the last business day before it, from the ECB data API: {ECB}"""
 
 
-def call(method, path='', data=b'', **q):
-    url = API + path + ('?' + urllib.parse.urlencode(q) if q else '')
-    with urllib.request.urlopen(urllib.request.Request(url, data=data if method == 'POST' else None, method=method)) as r:
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args):
+        return None
+
+
+def sign_in():
+    form = urllib.parse.urlencode({'email': 'admin@demo.test', 'next': '/'}).encode()
+    try:
+        urllib.request.build_opener(NoRedirect).open(urllib.request.Request(BASE + '/auth/demo', data=form))
+    except urllib.error.HTTPError as e:
+        return next(c.split(';')[0] for c in e.headers.get_all('set-cookie') if c.startswith('rf_session='))
+
+
+COOKIE = sign_in()
+IDS = {}  # instance label -> id
+
+
+def call(method, path, data=b'', **q):
+    url = BASE + path + ('?' + urllib.parse.urlencode(q) if q else '')
+    req = urllib.request.Request(url, data=data if method in ('POST', 'PUT') else None, method=method, headers={'cookie': COOKIE})
+    with urllib.request.urlopen(req) as r:
         body = r.read().decode()
     return json.loads(body) if body[:1] in '{[' else body
 
 
+def at(label, action=''):
+    return f'/api/instances/{IDS[label]}' + (f'/{action}' if action else '')
+
+
 def state(label):
-    return call('GET', '/' + label)
+    return call('GET', at(label))
 
 
 def upload(label, path, pane, by='alex', onto=None):
-    q = {'by': by, 'pane': pane, 'name': path.name, **({'onto': onto} if onto else {})}
-    call('POST', f'/{label}/upload', path.read_bytes(), **q)
+    q = {'pane': pane, 'name': path.name, **({'onto': onto} if onto else {})}
+    call('POST', at(label, 'upload'), path.read_bytes(), **q)
     print(f'  {by} uploaded {path.name} ({pane}{", onto " + onto if onto else ""})')
 
 
 def steer(label, text, by='alex'):
-    call('POST', f'/{label}/steer', json.dumps({'text': text}).encode(), by=by)
+    call('POST', at(label, 'steer'), json.dumps({'text': text}).encode())
     print(f'  {by} steered: {text.splitlines()[0]}')
 
 
@@ -89,7 +111,7 @@ def score(label, s, key='lines'):
     if not outs:
         print('  SCORE: no agent output on screen')
         return
-    got = lines(DATA / label / outs[-1]['file'])
+    got = lines(DATA / IDS[label] / outs[-1]['file'])
     used, ok, bad = set(), 0, []
     for name, value in truth:
         match = next((i for i, (n, v) in enumerate(got) if n == name.lower() and i not in used), None)
@@ -110,7 +132,7 @@ def check(label, s):
     no_headline = [i['id'] for i in items if i['kind'] == 'output' and i['file'] and not i.get('headline')]
     sourced = [i['id'] for i in items if i.get('source')]
     cited = sorted({f for i in items for n in i.get('notes') or [] for f in n.get('files') or []})
-    process = DATA / label / 'working' / 'process.md'
+    process = DATA / IDS[label] / 'working' / 'process.md'
     print(f"  CHECK {label}: from {s['log'][0].get('from')}; placeholder ids {placeholders}; outputs without headline {no_headline}; "
           f"sourced {sourced}; cited {cited}; process.md {process.stat().st_size if process.exists() else 0} bytes")
 
@@ -136,17 +158,22 @@ def weekly_uploads(label):
     return [f for f in sorted((SRC / label / 'inputs').iterdir())]
 
 
-def create(label, by='alex'):
-    call('POST', '/' + label, by=by)
+def create(label):
+    IDS[label] = call('POST', f'/api/series/{SERIES_ID}', json.dumps({'label': label}).encode())['id']
 
 
 def close(label):
-    call('POST', f'/{label}/close', by='alex')
+    call('POST', at(label, 'close'))
     print(f'  closed {label}')
 
 
 start = sys.argv[4] if len(sys.argv) > 4 else ORDER[0]
-call('POST')
+ws = next((w for w in call('GET', '/api') if w['name'] == 'larkfield'), None)
+if ws is None:
+    ws = {'id': call('POST', '/api/workspaces', json.dumps({'name': 'larkfield'}).encode())['id'], 'series': []}
+known = next((x for x in ws['series'] if x['name'] == SERIES), None)
+SERIES_ID = known['id'] if known else call('POST', '/api/series', json.dumps({'workspace': ws['id'], 'name': SERIES}).encode())['id']
+IDS.update({i['label']: i['id'] for i in (known or {}).get('instances', [])})
 MAILBOX.mkdir(parents=True, exist_ok=True)
 for label in ORDER:
     if label < start:
@@ -183,7 +210,7 @@ for label in ORDER:
         close('2026-08-16')
         close(label)
         create('scratch')
-        call('POST', '/scratch/abandon', by='alex')
+        call('POST', at('scratch', 'abandon'))
         print('  created and abandoned scratch')
         continue
     if label == '2026-08-30':
@@ -225,7 +252,7 @@ for label in ORDER:
                   and not any(e['op'] == 'answer' and e.get('note') == n['id'] for e in s['log'])), None)
         if q:
             choice = next((k for k, o in enumerate(q['options']) if 'standing' in o.lower() or 'from now on' in o.lower()), 1)
-            call('POST', f'/{label}/answer', json.dumps({'note': q['id'], 'choice': choice}).encode(), by='sam')
+            call('POST', at(label, 'answer'), json.dumps({'note': q['id'], 'choice': choice}).encode())
             print(f"  sam answered {q['id']}: {q['options'][choice]}")
             s = wait(label)
             screen(s)

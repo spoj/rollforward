@@ -4,7 +4,7 @@ Recurring tasks, files in and files out. People drop this period's input files i
 
 ![An instance: inputs, steps and outputs, joined by what each is made from](docs/screenshots/instance.png)
 
-- **The agent** is [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent), run over RPC with read, bash, edit and write tools, in the series folder. It copies and adapts the previous instance's scripts, so each instance's `working/` is a complete record of how its outputs were made.
+- **The agent** is [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent), run over RPC with read, bash, edit and write tools, in its series' folder. It copies and adapts the previous instance's scripts, so each instance's `working/` is a complete record of how its outputs were made.
 - **Skills** reach systems outside the series, for the series that choose them. They are each deployment's own, in the folder `RF_SKILLS_DIR` names; none ship with this repo.
 - **Inputs** are uploads, or sources a person points the agent to, such as a database, a mailbox folder or a web API. The agent keeps a frozen copy of what it read, and the tile shows where it came from.
 - **Workspaces hold series,** such as one client's. Each belongs to one person, who alone sees it, besides admins. A workspace or a series can be archived, which hides it until it's restored.
