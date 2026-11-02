@@ -106,3 +106,9 @@ test("a browser the run opened is reached through the socket, with the machines 
   assert.equal(await ws(`/browser/${TOKEN}/b2`), '');
   assert.equal(await ws('/browser/wrong/b1'), '');
 });
+
+test("the agent's python is the app's venv, with its packages", async () => {
+  const { exitCode, output } = await agent.bash('python -c "import openpyxl, sys; print(sys.prefix)"');
+  assert.equal(exitCode, 0, output);
+  assert.match(output, /\.venv/);
+});

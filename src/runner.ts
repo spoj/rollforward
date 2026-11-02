@@ -7,6 +7,8 @@ import { PORT, sandboxArgs } from './sandbox.ts';
 import { skillsDir } from './skills.ts';
 
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
+// The Python the app's venv runs on, which uv keeps outside the app (the venv's pyvenv.cfg names it); runs must see it too.
+const pythonHome = dirname(readFileSync(join(app, '.venv', 'pyvenv.cfg'), 'utf8').match(/^home\s*=\s*(.+)$/m)![1].trim());
 const cliPath = join(dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent'))), 'cli.js');
 const [provider, model] = (process.env.RF_MODEL ?? 'openrouter/anthropic/claude-opus-5.5').split(/\/(.*)/);
 // Where runs get their HOME and /tmp, and the folder of the server's socket for sandboxes.
@@ -44,7 +46,7 @@ export function pi(o: { token: string; view: View; skills?: string[] }): RpcClie
   writeFileSync(join(run, 'CATALOGUE.md'), o.view.catalogue);
   const args = sandboxArgs({
     cwd, home, tmp, socketDir,
-    ro: [...['bin', 'src', 'node_modules', '.venv', 'package.json', 'prompt.md'].map(f => join(app, f)), dirname(process.execPath), ...(process.env.RF_SANDBOX_RO ?? '').split(delimiter)].filter(p => p && existsSync(p)),
+    ro: [...['bin', 'src', 'node_modules', '.venv', 'package.json', 'prompt.md'].map(f => join(app, f)), dirname(process.execPath), pythonHome, ...(process.env.RF_SANDBOX_RO ?? '').split(delimiter)].filter(p => p && existsSync(p)),
     work: { ro: [[join(run, 'CATALOGUE.md'), '/work/CATALOGUE.md'], [dirname(skillsDir()), '/skills'], ...o.view.ro.filter(([src]) => existsSync(src))], rw: [[working, `${instance}/working`], [session, `${instance}/session`], [pylib, `${cwd}/.pylib`]] },
     env: {
       PATH: [join(app, 'bin'), join(app, '.venv', 'bin'), dirname(process.execPath), '/usr/bin'].join(delimiter), LANG: 'C.UTF-8', PYTHONPATH: `${cwd}/.pylib`, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: '1', PI_TELEMETRY: '0',
