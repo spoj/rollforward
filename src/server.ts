@@ -264,7 +264,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const at = w === 'now' ? Date.now() : /^\+\d+[mhd]$/.test(w) ? Date.now() + Number(w.slice(1, -1)) * { m: 60e3, h: 3600e3, d: 86400e3 }[w.at(-1) as 'm'] : Date.parse(w);
     if (req.method !== 'PUT' || Number.isNaN(at)) throw new HttpError(400, 'PUT {"at", "reason", "label" for a series}, or DELETE; at is now, +<n>m|h|d, or a date and time such as 2026-09-14T07:00+08:00');
     if (!wake && !reason) throw new HttpError(400, 'a new wake has a reason');
-    if (!wake && t.series[id] && !label) throw new HttpError(400, 'waking a series starts a new instance: name it with a label');
+    if (!wake && t.series[id] && !label) throw new HttpError(400, `waking a series starts a new instance: name it with a label${run ? `; to wake your own instance, name its folder: ${run.inst.label}` : ''}`);
     if (!t.series[id] && instance(id).doc.status !== 'open') throw new HttpError(409, `${instance(id).label} is ${instance(id).doc.status}: to correct it, wake its series with the label ${instance(id).label}-r2`);
     const from = run ? `${named(t, run.inst.seriesId)}/${run.inst.label}` : by;
     return send(res, 200, setWake(id, { ...wake, at: new Date(at).toISOString(), from, ...(reason && { reason }), ...(label && { label }) }));
