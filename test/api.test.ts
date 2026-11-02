@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { cpSync, existsSync, globSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync } from 'node:fs';
+import { cpSync, existsSync, globSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -163,37 +163,34 @@ test('close and abandon end an open instance; a closed one takes no actions', as
   assert.equal(ab.log.at(-1).op, 'abandon');
 });
 
-test('series settings write series.json; a rename moves the folder and rewrites readers', async () => {
+test("series settings write series.json; a rename moves the folder; a series' agent reads the rest of its workspace", async () => {
   const put = (name: string, body: object) => call('PUT', at(name), JSON.stringify(body));
-  assert.equal((await put(monthly, { name: monthly, visible_to: [series] })).status, 200);
-  assert.equal((await put(series, { name: series, visible_to: [monthly] })).status, 200);
-  assert.deepEqual(JSON.parse(readFileSync(join(root, 'larkfield', series, 'series.json'), 'utf8')), { visible_to: [monthly], skills: [] });
-  assert.deepEqual((await shown(series)).visible_to, [monthly]);
-  assert.deepEqual((await shown(monthly)).reads, [series]);
+  assert.equal((await put(series, { name: series })).status, 200);
+  assert.deepEqual(JSON.parse(readFileSync(join(root, 'larkfield', series, 'series.json'), 'utf8')), { skills: [] });
+  assert.deepEqual((await shown(monthly)).reads, [`larkfield / ${series}`]);
 
-  assert.equal((await put(series, { name: renamed, visible_to: [monthly] })).status, 200);
+  assert.equal((await put(series, { name: renamed })).status, 200);
   assert.ok(existsSync(join(root, 'larkfield', renamed, '2026-08-30')));
   assert.ok(!existsSync(join(root, 'larkfield', series)));
   const sessions = globSync('*/session/*.jsonl', { cwd: join(root, 'larkfield', renamed) });
   assert.ok(sessions.length);
   for (const f of sessions) assert.equal(JSON.parse(readFileSync(join(root, 'larkfield', renamed, f), 'utf8').split('\n')[0]).cwd, join(root, 'larkfield', renamed), 'Pi finds a session only under the folder it recorded');
-  assert.deepEqual((await shown(monthly)).visible_to, [renamed]);
-  assert.deepEqual((await shown(monthly)).reads, [renamed]);
+  assert.deepEqual((await shown(monthly)).reads, [`larkfield / ${renamed}`]);
 
-  assert.equal((await put(renamed, { name: monthly, visible_to: [] })).status, 409);
-  assert.equal((await put(renamed, { name: series, visible_to: [monthly] })).status, 200);
+  assert.equal((await put(renamed, { name: monthly })).status, 409);
+  assert.equal((await put(renamed, { name: series })).status, 200);
 });
 
 test('a workspace can be made; a workspace or a series is archived and restored, and a renamed series stays archived', async () => {
   const acme = async () => (await workspaces()).find((w: { workspace: string }) => w.workspace === 'Acme');
   assert.equal((await call('POST', '/api/Acme')).status, 200);
-  assert.deepEqual(await acme(), { workspace: 'Acme', archived: false, owner: adminEmail, series: [] });
+  assert.deepEqual(await acme(), { workspace: 'Acme', archived: false, owners: [adminEmail], members: [], manage: true, series: [] });
   assert.equal((await call('PUT', '/api/Acme', JSON.stringify({ archived: true }))).status, 200);
   assert.equal((await acme()).archived, true);
   assert.equal((await call('PUT', '/api/Acme', JSON.stringify({ archived: false }))).status, 200);
   assert.equal((await acme()).archived, false);
 
-  const put = (name: string, to: string, archived: boolean) => call('PUT', at(name), JSON.stringify({ name: to, visible_to: [monthly], archived }));
+  const put = (name: string, to: string, archived: boolean) => call('PUT', at(name), JSON.stringify({ name: to, archived }));
   assert.equal((await put(series, renamed, true)).status, 200);
   assert.equal((await shown(renamed)).archived, true);
   assert.equal((await put(renamed, series, false)).status, 200);
@@ -233,24 +230,43 @@ test('without a session the site shows Sign in with Microsoft; in the demo that 
   assert.equal((await fetch(base + '/auth/login', { redirect: 'manual', headers: { cookie: admin } })).headers.get('location'), '/', 'signed in already');
 });
 
-test('each person sees only the workspaces they own; an admin sees all and can give one to someone', async () => {
+test("each person sees the workspaces they're in, by email or Entra group; owners and admins manage who is in", async () => {
   const b = sessionOf(await login(bob))!;
+  const people = (ws: string, body: object, cookie = admin) => call('PUT', `/api/${ws}`, JSON.stringify(body), cookie);
   assert.equal((await json('/me', b)).role, 'user');
   assert.deepEqual(await workspaces(b), []);
   assert.equal((await call('POST', '/api/BobCo', undefined, b)).status, 200);
-  assert.deepEqual((await workspaces(b)).map((w: { workspace: string }) => w.workspace), ['BobCo']);
+  assert.deepEqual((await workspaces(b)).map((w: { workspace: string; owners: string[] }) => [w.workspace, w.owners]), [['BobCo', [bob]]]);
   for (const path of [at(series, '2026-08-30'), at(series), `/files/larkfield/${encodeURIComponent(series)}/2026-08-30/upload/x`])
     assert.equal((await call('GET', path, undefined, b)).status, 404, path);
   assert.equal((await call('POST', at(series, '2026-12-31'), undefined, b)).status, 404);
   assert.equal((await call('POST', '/api/larkfield', undefined, b)).status, 409, 'a name in use elsewhere is taken');
-  assert.equal((await call('PUT', '/api/BobCo', JSON.stringify({ owner: bob }), b)).status, 403, 'only an admin gives workspaces away');
   assert.equal((await call('GET', '/users', undefined, b)).status, 403);
-  assert.ok((await workspaces()).some((w: { workspace: string; owner: string }) => w.workspace === 'BobCo' && w.owner === bob), 'an admin sees every workspace');
+  assert.ok((await workspaces()).some((w: { workspace: string }) => w.workspace === 'BobCo'), 'an admin sees every workspace');
 
-  assert.equal((await call('PUT', '/api/larkfield', JSON.stringify({ owner: bob }))).status, 200);
+  assert.equal((await people('larkfield', { owners: [adminEmail], members: ['Bob@demo.test'] })).status, 200);
+  assert.deepEqual((await workspaces(b)).map((w: { workspace: string; manage: boolean }) => [w.workspace, w.manage]), [['BobCo', true], ['larkfield', false]]);
   assert.equal((await call('GET', at(series, '2026-08-30'), undefined, b)).status, 200);
-  assert.equal((await call('PUT', '/api/larkfield', JSON.stringify({ owner: null }))).status, 200);
+  assert.equal((await people('larkfield', { members: [] }, b)).status, 403, 'a member does not manage who is in');
+  assert.equal((await people('larkfield', { members: ['not an email'] })).status, 400);
+
+  const group = '0b8e5c8a-6d3e-4c21-9f2a-1d2e3f4a5b6c', users = join(root, '.rf', 'users.json');
+  writeFileSync(users, JSON.stringify({ ...JSON.parse(readFileSync(users, 'utf8')), [bob]: { ...JSON.parse(readFileSync(users, 'utf8'))[bob], groups: [group] } }));
+  assert.equal((await call('POST', '/api/Acme Payroll')).status, 200);
+  assert.equal((await call('POST', `/api/Acme Payroll/Payroll`)).status, 200);
+  assert.ok(!(await workspaces(b)).some((w: { workspace: string }) => w.workspace === 'Acme Payroll'));
+  assert.equal((await people('Acme Payroll', { members: [group] })).status, 200);
+  assert.ok((await workspaces(b)).some((w: { workspace: string }) => w.workspace === 'Acme Payroll'), 'through the Entra group');
+
+  const reads = async (ws: string, name: string) => (await workspaces()).find((w: { workspace: string }) => w.workspace === ws).series.find((s: { series: string }) => s.series === name).reads;
+  assert.ok(!(await reads('larkfield', series)).includes('Acme Payroll / Payroll'), 'larkfield has bob by email, who Payroll has only by group');
+  assert.equal((await people('Acme Payroll', { members: [] })).status, 200);
+  assert.ok((await reads('Acme Payroll', 'Payroll')).includes(`larkfield / ${series}`), 'everyone in Payroll is in larkfield, so its agent reads larkfield');
+  assert.ok(!(await reads('larkfield', series)).includes('Acme Payroll / Payroll'), 'never the reverse');
+
+  assert.equal((await people('larkfield', { owners: [], members: [] })).status, 200);
   assert.equal((await call('GET', at(series, '2026-08-30'), undefined, b)).status, 404);
+  assert.deepEqual(await reads('larkfield', series), [`larkfield / ${monthly}`], 'a workspace with no one in it reads only itself');
 });
 
 test('Systems holds the two Microsoft 365 connections, for admins: saved in part, the secret sealed', async () => {
@@ -285,12 +301,12 @@ test('Skill use: admins set skills up once under Skills; a series only chooses w
   assert.ok(!readFileSync(join(root, '.rf', 'skills.json'), 'utf8').includes('Portal!pw'));
 
   assert.deepEqual((await shown(series)).skills, [], 'as a series saved before Skill use has it');
-  const put = (body: object) => call('PUT', at(series), JSON.stringify({ name: series, visible_to: [], ...body }));
+  const put = (body: object) => call('PUT', at(series), JSON.stringify({ name: series, ...body }));
   assert.equal((await put({ skills: ['nope'] })).status, 400);
   assert.equal((await put({ skills: ['mail-report', 'onedrive-report'] })).status, 200, 'a skill may be chosen before it is set up');
   assert.deepEqual((await shown(series)).skills, ['mail-report', 'onedrive-report']);
-  assert.equal((await put({ visible_to: ['*'] })).status, 200);
-  assert.deepEqual((await shown(series)).skills, ['mail-report', 'onedrive-report'], 'Visibility alone leaves Skill use as it was');
+  assert.equal((await put({})).status, 200);
+  assert.deepEqual((await shown(series)).skills, ['mail-report', 'onedrive-report'], 'a save without skills leaves Skill use as it was');
   assert.equal((await put({ skills: [] })).status, 200);
   assert.deepEqual((await shown(series)).skills, [], 'none, once a series has chosen');
 });

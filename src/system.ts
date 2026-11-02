@@ -2,10 +2,12 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-// The data root's .rf/ holds what only the server uses: the people who can sign in, the sessions' key, and who owns each workspace.
+// The data root's .rf/ holds what only the server uses: the people who can sign in, the sessions' key, and each workspace's people.
 // Its name starts with a dot, so no workspace can be called that.
 
-export type Workspace = { owner: string | null };
+// A workspace's people, each an email or an Entra group's id. Owners manage who is in it; owners and members see and work in all of
+// it. A workspace with neither is the admins'.
+export type Workspace = { owners: string[]; members: string[] };
 
 let dir = '';
 
@@ -36,16 +38,19 @@ export function workspaces(): Record<string, Workspace> {
   return readJson<Record<string, Workspace>>('workspaces.json', {});
 }
 
-export function workspace(name: string): Workspace | undefined {
-  return workspaces()[name];
+export function workspace(name: string): Workspace {
+  return workspaces()[name] ?? { owners: [], members: [] };
 }
 
-export function setOwner(name: string, owner: string | null) {
-  writeJson('workspaces.json', { ...workspaces(), [name]: { owner } });
+export function setWorkspace(name: string, w: Workspace) {
+  writeJson('workspaces.json', { ...workspaces(), [name]: w });
 }
 
-export function forgetOwners(owner: string) {
+export function forgetPerson(email: string) {
   const all = workspaces();
-  for (const w of Object.values(all)) if (w.owner === owner) w.owner = null;
+  for (const w of Object.values(all)) {
+    w.owners = w.owners.filter(p => p !== email);
+    w.members = w.members.filter(p => p !== email);
+  }
   writeJson('workspaces.json', all);
 }

@@ -7,12 +7,12 @@
 ## Concepts
 
 - **People:** everyone signs in with a Microsoft account, by pressing Sign in with Microsoft. A person is a **user** or an **admin**.
-- **Workspace:** a top-level folder of series, such as one client's or one team's. It has one **owner**: only the owner and admins see it, its series and their files. A workspace with no owner is the admins'. No run sees another workspace's files (its sandbox holds only its series and the series it may read).
+- **Workspace:** a top-level folder of series, usually one entity's work, such as its bank rec, inventory rec and borrowing base. It is the only unit of sharing: its **members** see and work in every series in it, and its **owners** also manage who is in it. Each is a person by email or an Entra group by id. An area that needs hiding, such as payroll, is a workspace of its own with fewer people. A workspace with no one in it, such as the demo's, is the admins'.
 - **Series:** a recurring transform, such as "Weekly borrowing base": each instance's input files become its output files. The folder name is the series' name. What an instance should contain comes from earlier instances, not from a declaration.
 - **Skill:** what the agent knows how to fetch or do, and how, whole in a folder: such as the day's AR aging from OneDrive, or a customer's payments from its vendor portal. Admins set each up once, under Skills, with its links and, for a website, its account.
 - **Skill use:** the skills a series' agent may use. A skill writes to a system only what a person approves on the screen.
 - **Connection:** a Microsoft 365 app (M365 Mail, M365 OneDrive) that skills read through, kept by admins under Systems. Series don't choose these; their skills say what they use.
-- **Visibility:** a series can make itself visible to other series of the workspace, or to all of them. Their agents may then read it, never write it, and copy into their own `working/` what they rely on. Visibility is one way, and only the publishing series grants it.
+- **Reach:** a series' agent reads the other series of its workspace, and those of any workspace that has everyone its own has (by the same email or group), so nothing it reads reaches someone who couldn't see it already: a payroll workspace's agent reads the entity's main workspace, never the reverse. It never writes there, and copies into its own `working/` what it relies on. A workspace with no one in it reaches only itself.
 - **Archive:** a workspace or a series that's no longer in use can be archived. It leaves the sidebar, except under "Show archived", until it's restored, and nothing in it changes. It isn't transitive, but what a reader copies can flow on.
 - **Instance:** one pass through a series, under a label people choose, such as "2026-08-24" or "Larkfield refinancing". Instances needn't be periods. They sort alphabetically by label, and only open ones show by default.
 - **Item:** one tile on an instance's screen. It has a stable id, a display name and a kind: input, step or output. A **step** is an intermediate result a reviewer would check, such as "Eligible AR", in a file the agent writes. An item also has the file it currently shows, the items it's made from (`from`), and its notes. Replacing a file means pointing the item at a new file.
@@ -49,8 +49,8 @@
 - **Abandon:** the other way an instance ends. It stays as it is, but it isn't an example, never becomes a new instance's starting point, and applies no defaults. It is also disabled while a run is going. Closed and abandoned instances both show under "Show closed".
 - **Duplicate:** a closed or abandoned instance can be copied, under a new label, into an open instance. The copy has its files, screen and log, but not its agent session, and its log records the copy as `duplicate`.
 - **Rename:** an open instance's label changes from the pencil by its title, between runs. The log records `rename`.
-- **Series settings:** the series' name, its Skill use (the skills its agent may use, each saying if it is not set up yet), its visibility (the other series that can see it) and Archive. Visibility shows All series with the workspace's other series folded under it: ticking All series ticks them all and saves `*`, which takes in series made later too; ticking some saves those alone, and All series shows half-ticked. Renaming moves the series folder, and waits until no run is going. **Workspace settings** hold the owner (admins only) and Archive. An archived workspace or series is restored from its settings, under "Show archived".
-- **Users** (admins): who can sign in, their role, their workspaces and when they last signed in; Add, Disable (which also signs them out everywhere; Enable lets them back) and Remove.
+- **Series settings:** the series' name, its Skill use (the skills its agent may use, each saying if it is not set up yet), what its agent can read, and Archive. Renaming moves the series folder, and waits until no run is going. **Workspace settings** hold its people, owners and members, which owners and admins change, and Archive, also theirs. An archived workspace or series is restored from its settings, under "Show archived".
+- **Users** (admins): who can sign in, their role, the workspaces they're in by email and when they last signed in; Add, Disable (which also signs them out everywhere; Enable lets them back) and Remove, which takes them out of every workspace.
 - **Systems** (admins): the two Microsoft 365 connections, each with whether it is ready: its tenant id, client id, client secret (write-only) and settings, such as the one mailbox it reads. It may be saved part done. Test reads its mailbox or a test folder; Clear takes it back to not set up.
 - **Skills** (admins): every skill, with the connections it uses and whether it is ready; Set up or Edit shows its settings from its `skill.json`, a password as write-only. Test checks it for real: a website skill signs in, code and all; one that reads OneDrive or mail reads its links or today's mail.
 - **Names:** the log records each person by the email they signed in with. The sidebar's foot shows who is signed in, with Sign out.
@@ -59,12 +59,12 @@
 
 Workspaces are folders on the host's disk. There is no database.
 
-    .rf/                      the server's own: users.json, workspaces.json (each workspace's owner), systems.json
+    .rf/                      the server's own: users.json, workspaces.json (each workspace's owners and members), systems.json
                               (service passwords sealed with AES-256-GCM), and the keys session.key and systems.key
     <workspace>/              e.g. "Larkfield"
       .archived               there while the workspace is archived, set by people through the server
       <series>/               e.g. "Weekly borrowing base"; moved only by a rename in Series settings
-        series.json           {"visible_to": [series names, or "*"], "tools": [system ids]}, set by people through the server, read-only
+        series.json           {"skills": [skill ids]}, set by people through the server, read-only
         .archived             there while the series is archived
         <label>/              an instance: a folder holding workspace.json, made by New instance
           upload/             people's files, as uploaded, read-only
@@ -250,9 +250,9 @@ The risk is whether an agent can learn a real deliverable from examples, so the 
 
        Either way the server checks the token's issuer, audience, expiry and nonce. Each sign-in in flight keeps its state in a cookie of its own, so sign-ins started in several tabs don't undo each other. Except on localhost, Microsoft takes only https redirects, so a site others reach needs an https address registered with the app. The first sign-in adds a person as a user unless `RF_AUTO_PROVISION=0`; `RF_ALLOWED_DOMAINS` limits who may, `RF_ADMINS` names admins, and a person's Microsoft id is pinned at their first sign-in.
      - A session is a cookie for 12 hours (`RF_SESSION_HOURS`), signed with `.rf/session.key` and the person's epoch, so Disable (and the CLI's signout) end it at once. People are managed on the Users page or with `node src/auth.ts DATA_ROOT list | add | role | disable | enable | signout | remove`. The agent's environment gets a blank `RF_OIDC_CLIENT_SECRET`.
-   - **Workspaces per person (built):** every API call, file and preview is checked against the workspace's owner, and a workspace someone else owns answers 404. A new workspace belongs to whoever makes it, and a name another person uses is taken. Admins see every workspace and give one to someone from its settings.
+   - **Workspaces' people (built):** every API call, file and preview is checked against the workspace's owners and members, by email or by an Entra group the person's ID token named at their last sign-in (once the app is set to send `groups`), and a workspace someone isn't in answers 404. A new workspace starts with whoever makes it as its owner, and a name in use is taken. Admins see and manage every workspace.
    - **Runs in sandboxes (built, [src/sandbox.ts](src/sandbox.ts), [src/runner.ts](src/runner.ts)):** each run's Pi is a bubblewrap sandbox, in a systemd scope of its own (`MemoryHigh` 4 GB, `MemoryMax` 8 GB, in `rollforward-runs.slice`; `RF_SANDBOX_SCOPE`, empty in the container image, where there is no systemd).
-     - **What it sees:** the system, the app and the skills, read-only; its series read-only but for the instance's `working/` and `session/` and the series' `.pylib`; the series it may read, and `RF_SANDBOX_RO`, read-only; and a HOME and /tmp of its own on scratch (`RF_SCRATCH`), deleted when the run ends. Never `.rf/`, another series or workspace, or the server's environment.
+     - **What it sees:** the system, the app and the skills, read-only; its series read-only but for the instance's `working/` and `session/` and the series' `.pylib`; the series in its reach, and `RF_SANDBOX_RO`, read-only; and a HOME and /tmp of its own on scratch (`RF_SCRATCH`), deleted when the run ends. Never `.rf/`, another series or workspace, or the server's environment.
      - **No network of its own.** Its one way out is the server's socket, `RF_SCRATCH/socket/rf.sock`, which socat offers at 127.0.0.1:7000 inside:
        - `/agent/…`, the agent API, with the run's token (`RF_URL`, `RF_TOKEN`), bound to one instance and gone when the run ends. The site no longer serves it;
        - `/model/<token>/…`, the model, with the key added on the way (`RF_MODEL_URL`, default OpenRouter's), so no key is inside;
@@ -282,7 +282,7 @@ The risk is whether an agent can learn a real deliverable from examples, so the 
 
 1. **Name:** rollforward.
 2. **Storage location:** on the host's disk.
-3. **Agent's reach:** its own series, with all of that series' instances. A workspace-wide super agent comes later.
+3. **Agent's reach:** its own series, with all of that series' instances. A workspace-wide super agent comes later. (Since 34, its workspace and the workspaces that have all its people.)
 4. **Closing:** an explicit "Close instance".
 5. **Stack:** TypeScript on Node.
 6. **Model access:** through OpenRouter.
@@ -319,6 +319,7 @@ The risk is whether an agent can learn a real deliverable from examples, so the 
 31. **Connections and skills apart** (23 Oct; replaced by 32): Tool use holds connections, how to reach a system and the credentials for it; Skill use holds skills, what to fetch or do and how, each with the series' own settings. Connections give the agent a few general reads (files, mail, a signed-in browser) and keep every secret in the server; skills are folders in Pi's format that use them, so a new fetch is a skill, not a change to the server, and a series loads only the skills it chose. A portal's steps are a flow in its skill, which the server runs in the connection's browser: as fixed and cheap as code in the server, but kept with the skill, and still unable to write, as its few reads that post are named in the file.
 32. **Skills, set up once** (23 Oct): a series chooses only skills; admins set each skill up once, under Skills, for every series, as people saw a series' own copy of the same links as repetition. A skill with a website, such as a vendor portal, holds that site whole, as the ERP's skill holds its service: its account in its settings (the password sealed), its hosts, its flows and its own sign-in, so a new portal is a skill, not a change to the server. Only the Microsoft 365 apps stay shared connections, under Systems, used by the skills that say so. The agent's own browsing of those systems, with its writes held for approval (27), is gone for now: the ERP goes through its skill. One portal's skill reads the export people put on OneDrive each day, as its site stopped mailing sign-in codes.
 33. **Runs in bubblewrap sandboxes** (2 Nov): rather than Docker Sandboxes' microVMs, each run is a bubblewrap sandbox in a cgroup of its own, with no network but the server's socket: the agent API, the model with its key added on the way, and a proxy to an allowlist broad enough to install packages and read documentation (pypi, npm, GitHub, docs sites, `.rf/egress.json`), never a private address. No key, no `.rf/` and no other workspace is inside. The site no longer serves the agent API. [docs/redesign.md](docs/redesign.md) holds the rest of the round agreed that day.
+34. **Members and owners; reach** (2 Nov; replaces 21 and 26's one owner): the workspace is the only unit of sharing, with members, who see and work in all of it, and owners, who also manage who is in it, each a person or an Entra group. There's no read-only role. Series visibility goes: an agent reads its whole workspace, and any workspace that has everyone its own has, so reading never widens who sees what.
 
 ## Proposed by the agent (open to change)
 

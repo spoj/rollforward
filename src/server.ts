@@ -4,13 +4,13 @@ import { createHash, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { basename, dirname, join, posix, resolve, sep } from 'node:path';
+import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInstance, duplicateInstance, forget, renameInstance, replaceReadOnly, HttpError, instance, instances, isPerson, safeName, type Entry, type Instance } from './store.ts';
 import { socketDir, startRun, type Run } from './runner.ts';
 import { serveSandboxes } from './sandbox.ts';
 import { authenticate, checkConfig, mode, removeUser, signOutEverywhere, upsertUser, users, type Me, type Role } from './auth.ts';
-import { initSystem, setOwner, workspace, workspaces } from './system.ts';
+import { initSystem, setWorkspace, workspace, workspaces, type Workspace } from './system.ts';
 import { builtIn, catalog as systemCatalog, missing, removeSystem, savedSystem, saveSystem, view as systemView } from './systems.ts';
 import type { Browsing } from './browser.ts';
 import { agentCall, skillsText, testSkill } from './agent-api.ts';
@@ -46,18 +46,22 @@ function pending(inst: Instance, seen: number): Entry[] {
 }
 
 function message(inst: Instance, n: number, entries: Entry[]): string {
-  const reads = readable(inst.series()).map(s => `../${s}/`).join(', ');
+  const reads = readable(inst.series()).map(d => `${relative(inst.series(), d)}/`).join(', ');
   const uses = seriesSettings(inst.series()).skills.length ? skillsText(inst.series()).split('\n').join('; ') : '';
   return `Instance ${basename(inst.dir)} (folder ${basename(inst.dir)}/), run ${n}.${reads ? ` Series you can read: ${reads}.` : ''}${uses ? ` Skills you can use: ${uses}.` : ''} New log entries:\n`
     + entries.map(e => JSON.stringify(e)).join('\n');
 }
 
-const visibleTo = (seriesDir: string) => seriesSettings(seriesDir).visible_to;
-
+// What a series' agent may read: the other series of its workspace, and those of any workspace that has everyone this one has, by
+// the same email or group, so nothing it reads reaches someone who couldn't see it already. A workspace with no one in it reads only
+// itself.
 function readable(seriesDir: string): string[] {
-  const name = basename(seriesDir), workspaceDir = dirname(seriesDir);
-  return dirs(workspaceDir).filter(s => s !== name && visibleTo(join(workspaceDir, s)).some(v => v === '*' || v === name));
+  const ws = basename(dirname(seriesDir)), people = everyone(workspace(ws));
+  return dirs(root).filter(o => o === ws || (people.length > 0 && people.every(p => everyone(workspace(o)).includes(p))))
+    .flatMap(o => dirs(join(root, o)).map(s => join(root, o, s))).filter(d => d !== seriesDir);
 }
+
+const everyone = (w: Workspace) => [...w.owners, ...w.members];
 
 function kick(inst: Instance) {
   const a = active.get(inst.series());
@@ -88,7 +92,7 @@ async function start(inst: Instance) {
   inst.append('server', 'run', { run: n, upto: a.sent });
   try {
     a.run = await startRun({
-      seriesDir: series, instanceDir: inst.dir, token: a.token, read: readable(series).map(s => join(dirname(series), s)),
+      seriesDir: series, instanceDir: inst.dir, token: a.token, read: readable(series),
       message: text, skills: seriesSettings(series).skills.filter(id => skill(id)),
       onEvent: e => {
         if (e.type === 'message_end' && e.message.role === 'assistant') a.cost += e.message.usage.cost.total;
@@ -154,10 +158,11 @@ function dirs(path: string): string[] {
   return existsSync(path) ? readdirSync(path).filter(n => !n.startsWith('.') && statSync(join(path, n)).isDirectory()).sort() : [];
 }
 
-// Each workspace belongs to one person; admins see them all. A workspace with no owner, such as the demo's, is the admins'.
-function canSee(me: Me, ws: string): boolean {
-  return me.role === 'admin' || workspace(ws)?.owner === me.email;
-}
+// Owners and members see a workspace and everything in it, by their email or an Entra group they're in; admins see every one. A
+// workspace with no one in it, such as the demo's, is the admins'. Owners and admins manage who is in it.
+const isIn = (me: Me, people: string[]) => people.some(p => p === me.email || me.groups.includes(p));
+const canSee = (me: Me, ws: string) => me.role === 'admin' || isIn(me, everyone(workspace(ws)));
+const canManage = (me: Me, ws: string) => me.role === 'admin' || isIn(me, workspace(ws).owners);
 
 function mustSee(me: Me, ws: string) {
   if (!canSee(me, ws) || !existsSync(join(root, ws))) throw new HttpError(404, `no workspace ${ws}`);
@@ -174,11 +179,12 @@ function questions(inst: Instance): number {
 }
 
 function tree(me: Me) {
-  return dirs(root).filter(ws => canSee(me, ws)).map(workspace => ({
-    workspace, archived: existsSync(join(root, workspace, '.archived')), owner: workspaceOwner(workspace),
-    series: dirs(join(root, workspace)).map(series => ({
-      series, archived: existsSync(join(root, workspace, series, '.archived')), ...seriesSettings(join(root, workspace, series)), reads: readable(join(root, workspace, series)),
-      instances: instances(join(root, workspace, series)).map(i => ({
+  return dirs(root).filter(ws => canSee(me, ws)).map(ws => ({
+    workspace: ws, archived: existsSync(join(root, ws, '.archived')), ...workspace(ws), manage: canManage(me, ws),
+    series: dirs(join(root, ws)).map(series => ({
+      series, archived: existsSync(join(root, ws, series, '.archived')), ...seriesSettings(join(root, ws, series)),
+      reads: readable(join(root, ws, series)).map(d => relative(root, d).split(sep).join(' / ')),
+      instances: instances(join(root, ws, series)).map(i => ({
         label: basename(i.dir), status: i.doc.status, rev: i.doc.rev, running: active.get(i.series())?.inst === i, queued: queued(i), questions: questions(i),
       })),
     })),
@@ -211,8 +217,6 @@ function trace(inst: Instance) {
   return out;
 }
 
-const workspaceOwner = (ws: string) => workspace(ws)?.owner ?? null;
-
 async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
   const [ws, series, label, ...rest] = url.pathname.split('/').slice(2).map(decodeURIComponent);
   const rel = rest.join('/');
@@ -244,16 +248,18 @@ async function people(me: Me, req: IncomingMessage, res: ServerResponse, url: UR
         if (!canSee(me, ws)) throw new HttpError(409, `the name ${ws} is taken; choose another`);
       } else {
         mkdirSync(workspaceDir);
-        setOwner(ws, me.email);
+        setWorkspace(ws, { owners: [me.email], members: [] });
       }
       return send(res, 200, 'ok');
     }
     mustSee(me, ws);
-    const { archived, owner } = JSON.parse((await body(req)).toString());
-    if (owner !== undefined) {
-      if (me.role !== 'admin') throw new HttpError(403, 'only an admin can give a workspace to someone');
-      if (owner !== null && !users()[owner]) throw new HttpError(400, `no user ${owner}`);
-      setOwner(ws, owner);
+    if (!canManage(me, ws)) throw new HttpError(403, "only the workspace's owners and admins change it");
+    const { archived, owners, members } = JSON.parse((await body(req)).toString());
+    if (owners !== undefined || members !== undefined) {
+      const w = { owners: owners ?? workspace(ws).owners, members: members ?? workspace(ws).members };
+      const bad = everyone(w).filter(p => typeof p !== 'string' || !/^[^@\s]+@[^@\s]+$|^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(p));
+      if (bad.length) throw new HttpError(400, `not an email or an Entra group id: ${bad.join(', ')}`);
+      setWorkspace(ws, { owners: w.owners.map((p: string) => p.toLowerCase()), members: w.members.map((p: string) => p.toLowerCase()) });
     }
     if (archived !== undefined) {
       if (archived) writeFileSync(join(workspaceDir, '.archived'), '');
@@ -269,18 +275,13 @@ async function people(me: Me, req: IncomingMessage, res: ServerResponse, url: UR
       return send(res, 200, 'ok');
     }
     if (req.method === 'PUT') {
-      const { name, visible_to, skills: chosen, archived } = JSON.parse((await body(req)).toString());
-      if (!Array.isArray(visible_to) || !visible_to.every(n => typeof n === 'string')) throw new HttpError(400, 'visible_to must be a list of series names');
-      const to = safeName(name), updates = new Map([[seriesDir, { ...seriesSettings(seriesDir), visible_to, ...(chosen !== undefined && { skills: checkChosen(chosen) }) }]]);
+      const { name, skills: chosen, archived } = JSON.parse((await body(req)).toString());
+      const to = safeName(name);
       if (to !== series) {
         if (existsSync(join(workspaceDir, to))) throw new HttpError(409, `${to} exists`);
         if (active.has(seriesDir) || instances(seriesDir).some(i => debounce.has(i.dir))) throw new HttpError(409, 'wait for the run to end');
-        for (const s of dirs(workspaceDir)) {
-          const other = seriesSettings(join(workspaceDir, s));
-          if (other.visible_to.includes(series)) updates.set(join(workspaceDir, s), { ...other, visible_to: other.visible_to.map(n => (n === series ? to : n)) });
-        }
       }
-      for (const [dir, settings] of updates) replaceReadOnly(join(dir, 'series.json'), JSON.stringify(settings, null, 1));
+      replaceReadOnly(join(seriesDir, 'series.json'), JSON.stringify({ ...seriesSettings(seriesDir), ...(chosen !== undefined && { skills: checkChosen(chosen) }) }, null, 1));
       if (archived) writeFileSync(join(seriesDir, '.archived'), '');
       else rmSync(join(seriesDir, '.archived'), { force: true });
       if (to !== series) {
@@ -356,8 +357,8 @@ async function admin(me: Me, req: IncomingMessage, res: ServerResponse, url: URL
       upsertUser(String(email ?? ''), { role: role === 'admin' ? 'admin' : 'user' });
       return send(res, 200, 'ok');
     }
-    const owned = Object.entries(workspaces());
-    return send(res, 200, Object.entries(users()).map(([email, { sub, epoch, ...u }]) => ({ email, ...u, workspaces: owned.filter(([, w]) => w.owner === email).map(([n]) => n) })));
+    const all = Object.entries(workspaces());
+    return send(res, 200, Object.entries(users()).map(([email, { sub, epoch, groups, ...u }]) => ({ email, ...u, workspaces: all.filter(([, w]) => everyone(w).includes(email)).map(([n]) => n) })));
   }
   if (!users()[email]) throw new HttpError(404, `no user ${email}`);
   if (req.method === 'DELETE') {

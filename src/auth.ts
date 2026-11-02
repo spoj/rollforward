@@ -2,7 +2,7 @@ import { createHash, createHmac, createPublicKey, randomBytes, timingSafeEqual, 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { resolve } from 'node:path';
 import { HttpError } from './store.ts';
-import { forgetOwners, initSystem, key, readJson, writeJson } from './system.ts';
+import { forgetPerson, initSystem, key, readJson, writeJson } from './system.ts';
 
 // Sign-in with a Microsoft account. People press "Sign in with Microsoft" and type nothing. With RF_OIDC_ISSUER and the app's id set,
 // the button goes to Microsoft Entra ID (OpenID Connect, code flow with PKCE): the server redeems the code, with the app's secret if it
@@ -10,8 +10,8 @@ import { forgetOwners, initSystem, key, readJson, writeJson } from './system.ts'
 // signature. Without them it goes to a demo account picker that offers the two demo accounts below, so keep a demo on localhost.
 
 export type Role = 'admin' | 'user';
-export type User = { name?: string; role: Role; disabled?: boolean; sub?: string; epoch?: number; created?: string; last_login?: string };
-export type Me = { email: string; name: string; role: Role };
+export type User = { name?: string; role: Role; disabled?: boolean; sub?: string; groups?: string[]; epoch?: number; created?: string; last_login?: string };
+export type Me = { email: string; name: string; role: Role; groups: string[] };
 
 export const DEMO_ACCOUNTS: { email: string; name: string; role: Role }[] = [
   { email: 'admin@demo.test', name: 'Demo Admin', role: 'admin' },
@@ -55,7 +55,7 @@ export function removeUser(email: string) {
   if (!all[email]) throw new HttpError(404, `no user ${email}`);
   delete all[email];
   writeJson('users.json', all);
-  forgetOwners(email);
+  forgetPerson(email);
 }
 
 export function signOutEverywhere(email: string) {
@@ -83,16 +83,17 @@ function session(req: IncomingMessage): Me | null {
   const [email = '', exp = '', sig = ''] = (cookies(req).rf_session ?? '').split('.');
   const id = unb64(email), u = users()[id];
   if (!u || u.disabled || !(Number(exp) > Date.now()) || !same(sig, mac(`${id} ${exp} ${u.epoch ?? 0}`))) return null;
-  return { email: id, name: u.name ?? id, role: admins.has(id) ? 'admin' : u.role };
+  return { email: id, name: u.name ?? id, role: admins.has(id) ? 'admin' : u.role, groups: u.groups ?? [] };
 }
 
-// Lets someone in whom Microsoft (or the demo picker) has vouched for: records them, then sets the session cookie.
-function admit(res: ServerResponse, email: string, name: string | undefined, sub: string | undefined, next: string, extra: string[] = []) {
+// Lets someone in whom Microsoft (or the demo picker) has vouched for: records them, with the Entra groups their token names (once the
+// app is set to send them), then sets the session cookie.
+function admit(res: ServerResponse, email: string, name: string | undefined, sub: string | undefined, groups: string[] | undefined, next: string, extra: string[] = []) {
   const known = users()[email];
   if (!known && env.RF_AUTO_PROVISION === '0' && !admins.has(email)) return page(res, 403, `${email} has no access yet. Ask an admin to add you.`);
   if (known?.disabled) return page(res, 403, `${email} is disabled. Ask an admin.`);
   if (known?.sub && sub && known.sub !== sub) return page(res, 403, `${email} belongs to another Microsoft account.`);
-  const u = upsertUser(email, { name: name ?? known?.name, ...(sub && { sub }), last_login: new Date().toISOString(), ...(admins.has(email) && { role: 'admin' as Role }) });
+  const u = upsertUser(email, { name: name ?? known?.name, ...(sub && { sub }), ...(groups && { groups }), last_login: new Date().toISOString(), ...(admins.has(email) && { role: 'admin' as Role }) });
   const exp = String(Date.now() + SESSION_MS);
   res.writeHead(302, { location: next, 'set-cookie': [cookie('rf_session', `${b64(email)}.${exp}.${mac(`${email} ${exp} ${u.epoch ?? 0}`)}`, SESSION_MS / 1000), ...extra] });
   res.end();
@@ -187,7 +188,7 @@ async function finishSignIn(res: ServerResponse, claims: any, p: Pending) {
   const email = String(claims.email ?? claims.preferred_username ?? claims.upn ?? '').toLowerCase();
   if (!email.includes('@')) return page(res, 403, 'Your account has no email address.');
   if (domains.length && !domains.includes(email.split('@')[1])) return page(res, 403, `${email} is not in an allowed domain.`);
-  admit(res, email, claims.name, claims.sub, p.next, [cookie(pendingCookie(p.state), '', 0)]);
+  admit(res, email, claims.name, claims.sub, Array.isArray(claims.groups) ? claims.groups.map(String) : undefined, p.next, [cookie(pendingCookie(p.state), '', 0)]);
 }
 
 async function callback(req: IncomingMessage, res: ServerResponse, url: URL) {
@@ -278,7 +279,7 @@ export async function authenticate(req: IncomingMessage, res: ServerResponse, ur
     const form = new URLSearchParams(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString());
     const account = DEMO_ACCOUNTS.find(a => a.email === form.get('email'));
     if (!account) return page(res, 400, 'Pick one of the demo accounts.'), null;
-    admit(res, account.email, account.name, undefined, nextOf(form));
+    admit(res, account.email, account.name, undefined, undefined, nextOf(form));
   } else if (mode === 'microsoft' && url.pathname === redirectPath && url.searchParams.has('state') && (url.searchParams.has('code') || url.searchParams.has('error'))) {
     // Microsoft's return, which may be the site's own root if that is what the app registers.
     await callback(req, res, url);

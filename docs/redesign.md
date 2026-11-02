@@ -163,7 +163,7 @@ Everything we build runs on the development machine; only the real outside syste
 ## Build order
 
 1. The sandbox and the network (built).
-2. Ids, members and owners, and the migration script.
+2. Ids, members and owners (built), and the migration script.
 3. Microsoft 365 logins and the ticks.
 4. Website logins through the machines service, moving the ERP and the portals onto personal logins.
 5. Waking, several open instances, Ad hoc.

@@ -48,10 +48,8 @@ a { color: inherit; }
 .vl label { display: flex; align-items: center; gap: 8px; }
 .adv-set { display: grid; gap: 10px; border-top: 1px solid var(--rule); padding-top: 10px; }
 .adv-set summary { cursor: pointer; color: var(--ink-2); font-size: 13px; }
-.vis-all { display: flex; align-items: center; gap: 2px; margin-left: -6px; }
 .twisty { all: unset; flex: none; width: 20px; height: 20px; display: grid; place-items: center; border-radius: var(--r1); color: var(--ink-2); font-size: 15px; cursor: pointer; }
 button.twisty:hover { background: var(--rule); color: var(--ink); }
-.vis-list { display: grid; gap: 8px; margin-left: 7px; padding: 2px 0 2px 19px; border-left: 1px solid var(--rule-2); }
 .vl textarea { font: 12.5px/1.5 var(--mono); padding: 7px 9px; border: 1px solid var(--rule-2); border-radius: var(--r1); resize: vertical; min-height: 4.5em; }
 .vl :is(input[type=email], input[type=password], select) { font: inherit; padding: 7px 9px; border: 1px solid var(--rule-2); border-radius: var(--r1); background: var(--sheet); min-width: 0; max-width: 100%; }
 .vl .row2 { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -386,7 +384,7 @@ function renderSide() {
     const won = cur?.workspace === w.workspace;
     if (!listed(w, won)) continue;
     h += `<div class="row ws ${w.archived ? 'archived' : ''}"><a class="nm" href="#/${enc(w.workspace)}">${esc(w.workspace)}${!won && w.series.some(asks) ? '<span class="dot"></span>' : ''}</a>`
-      + (won ? btn('workspace-settings', 'Workspace settings', '\u22EF') + btn('new-series', 'New series', '+') : w.archived ? '<span class="n">archived</span>' : w.owner !== me.email ? `<span class="n">${esc(w.owner?.split('@')[0] ?? 'no owner')}</span>` : '') + '</div>';
+      + (won ? btn('workspace-settings', 'Workspace settings', '\u22EF') + btn('new-series', 'New series', '+') : w.archived ? '<span class="n">archived</span>' : '') + '</div>';
     if (!won) continue;
     h += '<div class="tree">';
     for (const s of w.series) {
@@ -736,47 +734,34 @@ function renderPv() {
   else if (pv.settings) {
     const s = pv.settings;
     h += '<div class="pvb vl">';
-    if (s.kind === 'workspace' && me.role === 'admin') h += `<h3>Owner</h3><div class="sub">Only the owner and admins can see this workspace and its series.</div><div class="row2"><select id="wowner"><option value="">No owner (admins only)</option>${s.users.map(u => `<option value="${esc(u.email)}" ${u.email === s.owner ? 'selected' : ''}>${esc(u.name ?? u.email)} · ${esc(u.email)}</option>`).join('')}</select><button class="btn" data-act="saveowner">Save</button></div><hr>`;
+    if (s.kind === 'workspace') h += peopleHtml(s) + '<hr>';
     if (s.kind === 'series') h += `<h3>Name</h3><input type="text" id="sname" value="${esc(s.name)}">`
       + `<h3>Skill use</h3><div class="sub">What the agent may fetch or do for this series. Admins set each skill up once, under Skills, for every series.</div>`
       + s.skillList.map(k => `<label class="skill-row"><input type="checkbox" class="skill" value="${esc(k.id)}" ${s.skills.includes(k.id) ? 'checked' : ''}> ${esc(k.name)}${k.configured ? '' : ' <span class="sub">· not set up yet</span>'}</label>`
         + `<div class="sub" style="margin:0 0 6px 22px">${esc(k.description.length > 180 ? k.description.slice(0, 180) + '…' : k.description)}</div>`).join('')
       + (s.skillList.some(k => !k.configured) ? `<div class="sub">A skill not set up yet can be chosen now; the agent can use it once ${me.role === 'admin' ? 'you set it up' : 'an admin sets it up'} under Skills.</div>` : '')
-      + `<h3>Visibility</h3><div class="sub">Other series that can see this one</div>` + visibilityHtml(s)
-      + (s.reads.length ? `<div class="sub">This series can see ${esc(s.reads.join(', '))}.</div>` : '')
+      + `<h3>Reading</h3><div class="sub">${s.reads.length ? `This series' agent can read ${esc(s.reads.join(', '))}: the other series of its workspace, and those of workspaces that have all its people.` : "This series' agent reads only this series."}</div>`
       + '<div><button class="btn primary" data-act="savesettings">Save</button></div><hr>';
     h += `<h3>Archive</h3><div class="sub">${s.archived ? 'Archived: in the sidebar only under Show archived.' : `Hides the ${s.kind} from the sidebar, except under Show archived. Nothing in it changes.`}</div><div><button class="btn" data-act="archive">${s.archived ? 'Restore' : 'Archive'} ${s.kind}</button></div></div>`;
   }
   else if (pv.loading) h += `<div class="pvb"><div class="empty">Loading…</div></div>`;
   else h += `<div class="pvb"><div class="empty">No preview for this kind of file. Download it instead.</div></div>`;
   $('#pv').innerHTML = h + '<div class="pvn" id="pvn"></div>';
-  if (pv.settings?.kind === 'series') syncVisibility();
 }
 
-// Visibility: All series, with the other series one level under it, folded unless only some of them are chosen. All series ticked
-// saves as "*", which takes in series made later too; otherwise the series ticked are saved one by one.
-function visibilityHtml(s) {
-  const all = s.chosen.includes('*'), picked = n => all || s.chosen.includes(n);
-  s.open ??= !all && s.others.some(picked);
-  return `<div class="vis-all">${s.others.length ? `<button class="twisty" data-act="vis-fold" title="${s.open ? 'Hide' : 'Show'} the series" aria-expanded="${s.open}">${s.open ? '▾' : '▸'}</button>` : '<span class="twisty"></span>'}`
-    + `<label><input type="checkbox" id="vis-all" ${all ? 'checked' : ''}> All series <span class="sub" id="vis-count"></span></label></div>`
-    + `<div class="vis-list" id="vis-list" ${s.open ? '' : 'hidden'}>${s.others.map(n => `<label><input type="checkbox" class="vis" value="${esc(n)}" ${picked(n) ? 'checked' : ''}> ${esc(n)}</label>`).join('')}</div>`;
-}
-
-// Keeps All series in step with the series under it: ticked when all are, half-ticked when some are.
-function syncVisibility() {
-  const top = $('#vis-all'), kids = [...document.querySelectorAll('#pv input.vis')], n = kids.filter(k => k.checked).length;
-  if (!top) return;
-  if (kids.length) {
-    top.checked = n === kids.length;
-    top.indeterminate = n > 0 && n < kids.length;
-  }
-  $('#vis-count').textContent = top.checked ? '· also series made later' : kids.length ? `· ${n} of ${kids.length}` : '· none yet';
+// A workspace's people, each an email or an Entra group's id: owners manage who is in it, and owners and members see and work in all
+// of it.
+function peopleHtml(s) {
+  const row = (p, owner) => `<tr><td>${esc(p)}</td><td>${owner ? 'Owner' : 'Member'}</td>`
+    + (s.manage ? `<td><div class="row2"><button class="btn" data-act="wrole" data-p="${esc(p)}">${owner ? 'Make member' : 'Make owner'}</button><button class="btn" data-act="wremove" data-p="${esc(p)}">Remove</button></div></td>` : '') + '</tr>';
+  return `<h3>People</h3><div class="sub">Owners and members see and work in everything here, and its agents read across it. Owners manage who is in it.${s.owners.length + s.members.length ? '' : ' No one is in it yet, so only admins see it.'}</div>`
+    + `<table class="ut">${s.owners.map(p => row(p, true)).join('')}${s.members.map(p => row(p, false)).join('')}</table>`
+    + (s.manage ? `<div class="row2"><input type="text" id="wperson" placeholder="name@example.com, or an Entra group's id" style="flex:1"><button class="btn primary" data-act="wadd">Add</button></div>` : '');
 }
 
 function usersHtml(s) {
   const when = iso => iso ? new Date(iso).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : 'never';
-  let h = `<div class="sub">People sign in with their Microsoft account. Each sees only the workspaces they own; admins see them all.</div><table class="ut"><tr><th>Person</th><th>Role</th><th>Workspaces</th><th>Last in</th><th></th></tr>`;
+  let h = `<div class="sub">People sign in with their Microsoft account. Each sees the workspaces they are in; admins see them all.</div><table class="ut"><tr><th>Person</th><th>Role</th><th>Workspaces</th><th>Last in</th><th></th></tr>`;
   for (const u of s.users) {
     const self = u.email === me.email;
     h += `<tr><td>${esc(u.name ?? '')}<div class="sub">${esc(u.email)}${u.disabled ? ' · disabled' : ''}</div></td>`
@@ -784,12 +769,12 @@ function usersHtml(s) {
       + `<td>${esc(u.workspaces.join(', ')) || '<span class="sub">none</span>'}</td><td class="sub">${esc(when(u.last_login))}</td>`
       + `<td>${self ? '' : `<div class="row2"><button class="btn" data-act="disable" data-email="${esc(u.email)}" data-on="${u.disabled ? '' : '1'}">${u.disabled ? 'Enable' : 'Disable'}</button><button class="btn danger" data-act="deluser" data-email="${esc(u.email)}">Remove</button></div>`}</td></tr>`;
   }
-  return h + `</table><h3>Add someone</h3><div class="sub">They can then sign in. Give them a workspace from its settings.</div><div class="row2"><input type="email" id="uemail" placeholder="name@example.com" style="flex:1"><select id="urole"><option value="user">User</option><option value="admin">Admin</option></select><button class="btn primary" data-act="adduser">Add</button></div>`;
+  return h + `</table><h3>Add someone</h3><div class="sub">They can then sign in. Add them to a workspace from its settings.</div><div class="row2"><input type="email" id="uemail" placeholder="name@example.com" style="flex:1"><select id="urole"><option value="user">User</option><option value="admin">Admin</option></select><button class="btn primary" data-act="adduser">Add</button></div>`;
 }
 
 async function openWorkspaceSettings() {
   const w = tree.find(w => w.workspace === cur.workspace);
-  pv = { title: 'Workspace settings', settings: { kind: 'workspace', archived: w.archived, owner: w.owner, users: me.role === 'admin' ? await api('/users') : [] } };
+  pv = { title: 'Workspace settings', settings: { kind: 'workspace', archived: w.archived, owners: w.owners, members: w.members, manage: w.manage } };
   renderPv();
 }
 
@@ -911,15 +896,8 @@ document.addEventListener('click', async ev => {
   if (act === 'unpv') { pv = null; renderPv(); }
   if (act === 'settings') {
     const w = tree.find(w => w.workspace === cur.workspace), s = w.series.find(s => s.series === cur.series), skillList = await api('/skills');
-    pv = { title: 'Series settings', settings: { kind: 'series', name: s.series, others: w.series.map(x => x.series).filter(n => n !== s.series), chosen: s.visible_to, skills: s.skills ?? [], skillList, reads: s.reads, archived: s.archived } };
+    pv = { title: 'Series settings', settings: { kind: 'series', name: s.series, skills: s.skills ?? [], skillList, reads: s.reads, archived: s.archived } };
     renderPv();
-  }
-  if (act === 'vis-fold') {
-    const open = pv.settings.open = !pv.settings.open;
-    $('#vis-list').hidden = !open;
-    el.textContent = open ? '▾' : '▸';
-    el.title = `${open ? 'Hide' : 'Show'} the series`;
-    el.setAttribute('aria-expanded', open);
   }
   if (act === 'systems') await openSystems();
   if (act === 'skills') await openSkills();
@@ -963,9 +941,13 @@ document.addEventListener('click', async ev => {
   if (act === 'workspace-settings') await openWorkspaceSettings();
   if (act === 'users') await openUsers();
   if (act === 'signout') location.href = (await api('/auth/logout', { method: 'POST' })).next;
-  if (act === 'saveowner') {
-    await api(`/api/${enc(cur.workspace)}`, { method: 'PUT', body: JSON.stringify({ owner: $('#wowner').value || null }) });
-    toast('Owner saved', 'ok');
+  if (act === 'wadd' || act === 'wremove' || act === 'wrole') {
+    const s = pv.settings, p = act === 'wadd' ? $('#wperson').value.trim().toLowerCase() : el.dataset.p;
+    if (!p) return;
+    const owners = s.owners.filter(x => x !== p), members = s.members.filter(x => x !== p);
+    if (act === 'wadd') members.push(p);
+    if (act === 'wrole') (s.owners.includes(p) ? members : owners).push(p);
+    await api(`/api/${enc(cur.workspace)}`, { method: 'PUT', body: JSON.stringify({ owners, members }) });
     await refresh();
     await openWorkspaceSettings();
   }
@@ -979,22 +961,21 @@ document.addEventListener('click', async ev => {
     await openUsers();
   }
   if (act === 'deluser') {
-    if (!confirm(`Remove ${el.dataset.email}? Their workspaces stay, with no owner, so only admins see them.`)) return;
+    if (!confirm(`Remove ${el.dataset.email}? They leave every workspace they are in.`)) return;
     await api(`/users/${enc(el.dataset.email)}`, { method: 'DELETE' });
     await openUsers();
   }
   if (act === 'archive') {
     const s = pv.settings;
-    await api(s.kind === 'series' ? seriesPath(cur) : `/api/${enc(cur.workspace)}`, { method: 'PUT', body: JSON.stringify({ name: s.name, visible_to: s.chosen, archived: !s.archived }) });
+    await api(s.kind === 'series' ? seriesPath(cur) : `/api/${enc(cur.workspace)}`, { method: 'PUT', body: JSON.stringify({ name: s.name, archived: !s.archived }) });
     pv = null;
     renderPv();
     await refresh();
   }
   if (act === 'savesettings') {
     const name = $('#sname').value.trim();
-    const visible_to = $('#vis-all').checked ? ['*'] : [...document.querySelectorAll('#pv input.vis:checked')].map(i => i.value);
     const skills = [...document.querySelectorAll('#pv input.skill:checked')].map(i => i.value);
-    await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ name, visible_to, skills, archived: pv.settings.archived }) });
+    await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ name, skills, archived: pv.settings.archived }) });
     pv = null;
     renderPv();
     if (name !== cur.series) return go(cur.workspace, name, cur.label);
@@ -1068,11 +1049,6 @@ document.addEventListener('click', async ev => {
 
 $('#picker').addEventListener('change', e => upload([...e.target.files], e.target.dataset.pane, e.target.dataset.onto));
 $('#pv').addEventListener('change', async e => {
-  if (e.target.id === 'vis-all') {
-    for (const k of document.querySelectorAll('#pv input.vis')) k.checked = e.target.checked;
-    return syncVisibility();
-  }
-  if (e.target.matches('input.vis')) return syncVisibility();
   if (!e.target.matches('select[data-act=role]')) return;
   await api(`/users/${enc(e.target.dataset.email)}`, { method: 'PUT', body: JSON.stringify({ role: e.target.value }) }).catch(() => {});
   await openUsers();
