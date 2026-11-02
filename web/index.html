@@ -927,7 +927,7 @@ function loginsHtml(s) {
       + `<div class="row2"><input type="text" id="offer-site" placeholder="A SharePoint site's link" style="flex:1"><button class="btn" data-act="offer-site">Add</button></div>`;
     h += `<div class="row2">${l.id === 'm365' && l.expired ? '<a class="btn primary" href="/logins/m365/connect">Sign in again</a>' : ''}<button class="btn" data-act="signout-login" data-id="${esc(l.id)}">Sign out</button></div>`;
   }
-  if (s.sites.length) h += `<h3>Websites</h3><div class="sub">You sign in yourself, in a browser shown here; your login is that browser's cookies, which a run's browser starts from and brings back refreshed.</div>`
+  if (s.sites.length) h += `<h3>Websites</h3><div class="sub">Sign in yourself, in a browser shown here. Your login is what that browser keeps, its cookies, never your password; a run's browser starts from it and brings it back refreshed.</div>`
     + s.sites.map(w => {
       const l = s.logins.find(l => l.id === `web:${w.id}`);
       return `<div class="skill-row" style="display:flex;align-items:center;gap:8px"><span style="flex:1">${esc(w.name)} <span class="sub">${l ? `since ${esc(when(l.since))}` : ''}</span></span>`
@@ -1279,10 +1279,10 @@ new ResizeObserver(() => { placeCard(); drawEdges(); }).observe($('#panes'));
 document.fonts.ready.then(drawEdges);
 
 addEventListener('hashchange', () => {
-  openItem = null; pv = null; folds.clear(); prevSigs = {};
+  openItem = null; folds.clear(); prevSigs = {};
   $('#panes').scrollTop = $('#flow').scrollTop = $('#flow').scrollLeft = $('#outs').scrollTop = $('#log').scrollTop = 0;
   $('#trace').scrollTop = $('#trace').scrollHeight;
-  renderPv();
+  closePv();
   $('#side').classList.remove('open');
   refresh();
 });
