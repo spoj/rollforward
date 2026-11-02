@@ -32,6 +32,9 @@ test("a login's secret is sealed to its person and id, so a copy into another's 
   upsertUser(alice, { disabled: false });
   saveTree({ workspaces: { w: { name: 'W', owners: [bob], members: [] } }, series: { s: { name: 'S', workspace: 'w' } } });
   assert.throws(() => use(inst(['m365:mail:alice@demo.test']), 'm365:mail:alice@demo.test'), /can no longer run this instance/, 'nor out of the workspace');
+  upsertUser(alice, { role: 'admin' });
+  assert.equal(use({ ...inst(['m365:mail:alice@demo.test']), seriesId: 'tried' } as Instance, 'm365:mail:alice@demo.test').login.id, 'm365', "an admin's, even in no workspace, as a try is");
+  upsertUser(alice, { role: 'user' });
   saveTree({ workspaces: { w: { name: 'W', owners: [alice], members: [] } }, series: { s: { name: 'S', workspace: 'w' } } });
   forgetLogins(alice);
   assert.deepEqual(logins(alice), []);

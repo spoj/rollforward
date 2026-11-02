@@ -67,7 +67,8 @@ export function runnerOf(inst: Instance): { by: string; logins: string[] } {
 // in and see the instance's workspace.
 export function use(inst: Instance, offer: string): { email: string; login: Login } {
   const { by, logins: ticked } = runnerOf(inst), u = users()[by], t = tree();
-  if (!u || u.disabled || !canSee({ email: by, role: u.role, groups: u.groups ?? [] }, t.workspaces[t.series[inst.seriesId].workspace]))
+  // Admins see every workspace; a try's stand-in instance (cli.ts) is in none.
+  if (!u || u.disabled || (u.role !== 'admin' && !canSee({ email: by, role: u.role, groups: u.groups ?? [] }, t.workspaces[t.series[inst.seriesId].workspace])))
     throw new HttpError(403, `${by} can no longer run this instance, so their logins aren't used: someone in its workspace takes it over`);
   if (!ticked.includes(offer)) throw new HttpError(403, `${offer} is not ticked for this instance; its runner, ${by}, ticks logins when starting or taking it over`);
   const login = logins(by).find(l => l.offers.some(o => o.id === offer));
