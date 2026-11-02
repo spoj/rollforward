@@ -1,10 +1,11 @@
 import { RpcClient, type JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, constants, existsSync, ftruncateSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PORT, sandboxArgs } from './sandbox.ts';
 import { skillsDir } from './skills.ts';
+import { openFile } from './store.ts';
 
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 // The Python the app's venv runs on, which uv keeps outside the app (the venv's pyvenv.cfg names it); runs must see it too.
@@ -37,8 +38,15 @@ export function pi(o: { token: string; view: View; skills?: string[] }): RpcClie
   const { cwd, instance, dir, pylib } = o.view, working = join(dir, 'working'), session = join(dir, 'session');
   for (const d of [agentDir, tmp, pylib, working, session]) mkdirSync(d, { recursive: true });
   for (const f of readdirSync(session).filter(f => f.endsWith('.jsonl'))) {
-    const text = readFileSync(join(session, f), 'utf8'), nl = text.indexOf('\n'), head = JSON.parse(text.slice(0, nl));
-    if (head.cwd !== cwd) writeFileSync(join(session, f), JSON.stringify({ ...head, cwd }) + text.slice(nl));
+    const fd = openFile(session, f, constants.O_RDWR);
+    if (fd === undefined) continue;
+    try {
+      const text = readFileSync(fd, 'utf8'), nl = text.indexOf('\n'), head = JSON.parse(text.slice(0, nl));
+      if (head.cwd !== cwd) {
+        ftruncateSync(fd);
+        writeSync(fd, JSON.stringify({ ...head, cwd }) + text.slice(nl), 0);
+      }
+    } finally { closeSync(fd); }
   }
   const local = `http://127.0.0.1:${PORT}`, proxy = `http://rf:${o.token}@127.0.0.1:${PORT}`;
   writeFileSync(join(agentDir, 'models.json'), JSON.stringify({ providers: { [provider]: { baseUrl: `${local}/model/${o.token}`, apiKey: 'none' } } }));
@@ -80,7 +88,10 @@ async function ready(client: RpcClient, tries = 4): Promise<void> {
 
 export async function startRun(o: Parameters<typeof pi>[0] & { message: string; onEvent: (e: JsonAgentSessionEvent) => void }): Promise<Run> {
   if (!process.env.OPENROUTER_API_KEY) throw new Error('no model key: the server has no OPENROUTER_API_KEY');
-  const client = pi(o), stop = async () => { await client.stop(); rmSync(join(scratch, 'runs', o.token), { recursive: true, force: true }); };
+  const client = pi(o), run = join(scratch, 'runs', o.token);
+  // A run may leave folders it can't write in its home; they're made writable first, never through a link.
+  const writable = (d: string) => { chmodSync(d, 0o700); for (const e of readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) writable(join(d, e.name)); };
+  const stop = async () => { await client.stop(); writable(run); rmSync(run, { recursive: true, force: true }); };
   const settled = new Promise<boolean>(resolve => client.onEvent(e => e.type === 'agent_settled' && resolve(e.aborted)));
   client.onEvent(o.onEvent);
   await client.start();

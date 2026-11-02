@@ -1,8 +1,7 @@
 import { freemem } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
 import { join, posix, relative } from 'node:path';
-import { createInstance, guidanceFile, HttpError, instance, instanceDir, instances, isPerson, labels, newId, seriesDir, type Entry, type Instance } from './store.ts';
+import { createInstance, guidanceFile, HttpError, instance, instanceDir, instances, isPerson, labels, newId, readFile, seriesDir, type Entry, type Instance } from './store.ts';
 import { startRun, type Run, type View } from './runner.ts';
 import { canSee, changes, everyone, readJson, tree, type Tree, writeJson } from './system.ts';
 import { users } from './auth.ts';
@@ -14,9 +13,11 @@ import { pushed, skill } from './skills.ts';
 // What runs when: one run at a time per series, at most RF_MAX_RUNS at once, started by people's acts and by wakes.
 const LIMIT_MS = Number(process.env.RF_LIMIT_MIN ?? 120) * 60_000;
 const MAX_RUNS = Number(process.env.RF_MAX_RUNS ?? 20);
-// Memory binds first: no run starts while less than RF_MIN_FREE_GB is free; waiting ones start as runs end, or at the next tick.
+// Memory binds first: no run starts while less than RF_MIN_FREE_GB is free; waiting ones start as runs end, or at the next tick. Each
+// run started in the last minute asks 1 GB more, about what one takes as it loads, which free memory doesn't show yet.
 const MIN_FREE = Number(process.env.RF_MIN_FREE_GB ?? 6) * 2 ** 30;
-const full = () => active.size >= MAX_RUNS || freemem() < MIN_FREE;
+const started: number[] = [];
+const full = () => active.size >= MAX_RUNS || freemem() < MIN_FREE + started.filter(t => t > Date.now() - 60_000).length * 2 ** 30;
 export const MAX_OPEN = 3;
 const SPACING_MS = 15 * 60_000;
 
@@ -33,6 +34,9 @@ function seenBefore(inst: Instance): number {
 function pending(inst: Instance, seen: number): Entry[] {
   return inst.log.filter(e => e.seq > seen && (e.op === 'wake' || (isPerson(e) && (['upload', 'answer', 'comment'].includes(e.op) || (e.op === 'create' && e.fetch)))));
 }
+
+// Whether an instance has something for a run: what came since its last run, or since an Interrupt, which waits for the next act.
+const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math.max(seenBefore(inst), inst.log.findLast(e => e.op === 'interrupt')?.seq ?? 0)).length > 0;
 
 function message(inst: Instance, n: number, entries: Entry[]): string {
   const t = tree(), here = t.series[inst.seriesId].workspace;
@@ -68,8 +72,7 @@ function view(inst: Instance): View {
 
 function line(t: Tree, id: string, cwd: string): string {
   const all = instances(id), last = all.filter(i => i.doc.status === 'closed').sort((a, b) => a.closedAt().localeCompare(b.closedAt())).at(-1);
-  const process = last && join(last.dir, 'working', 'process.md');
-  const purpose = process && existsSync(process) ? readFileSync(process, 'utf8').split('\n').map(l => l.replace(/^[#\s]+/, '').trim()).find(Boolean) : undefined;
+  const purpose = last && readFile(last.dir, 'working/process.md')?.split('\n').map(l => l.replace(/^[#\s]+/, '').trim()).find(Boolean);
   const inputs = last?.doc.items.filter(i => i.kind === 'input').map(i => `${i.name} (${i.source ?? (i.file?.startsWith('upload/') ? 'uploaded' : 'fetched')})`) ?? [];
   const who = (op: string) => [...new Set(last?.log.filter(e => e.op === op && isPerson(e)).map(e => e.by))];
   const open = all.filter(i => i.doc.status === 'open').map(i => i.label);
@@ -97,8 +100,10 @@ function flush(a: Active) {
 async function start(inst: Instance) {
   const series = inst.seriesId;
   const seen = seenBefore(inst);
-  if (active.has(series) || inst.doc.status !== 'open' || !pending(inst, seen).length) return;
+  if (active.has(series) || !due(inst)) return;
   if (full()) return void waiting.add(inst);
+  started.push(Date.now());
+  started.splice(0, started.length - MAX_RUNS);
   const n = inst.log.filter(e => e.op === 'run').length + 1;
   const entries = inst.log.filter(e => e.seq > seen && e.by !== 'agent');
   const text = message(inst, n, entries);
@@ -145,14 +150,13 @@ function finish(a: Active, aborted: boolean, error?: string) {
   byToken.delete(a.token);
   const series = a.inst.seriesId;
   active.delete(series);
-  a.run?.stop();
+  a.run?.stop().catch(e => console.error(`run ${a.n} of ${a.inst.id} left its scratch folder`, e));
   a.machines?.close().catch(e => a.inst.append('server', 'machines', { run: a.n, error: e.message }));
   // The agent's last words in a run are its report to the instance's people; its first line is the run's summary.
   if (a.said && !aborted) a.inst.append('agent', 'report', { run: a.n, text: a.said });
   a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(4), summary: a.said && !aborted ? summaryOf(a.said) : null, ...(error && { error }) });
-  if (a.run) { // one that never started, as with a missing API key, waits for the next act rather than retrying at once
-    const next = !a.interrupted && pending(a.inst, a.seen).length ? a.inst
-      : instances(series).find(i => i.doc.status === 'open' && !(a.interrupted && i === a.inst) && pending(i, seenBefore(i)).length);
+  if (a.run) { // one that never started, as with a missing API key, waits for the next act or a restart rather than retrying at once
+    const next = due(a.inst) ? a.inst : instances(series).find(i => i !== a.inst && due(i));
     if (next) start(next);
   }
   startWaiting();
@@ -168,11 +172,12 @@ function startWaiting() {
 
 export function queued(inst: Instance): boolean {
   const a = active.get(inst.seriesId);
-  return a?.inst !== inst && inst.doc.status === 'open' && (debounce.has(inst.id) || waiting.has(inst) || (!!a && pending(inst, seenBefore(inst)).length > 0));
+  return a?.inst !== inst && inst.doc.status === 'open' && (debounce.has(inst.id) || waiting.has(inst) || (!!a && due(inst)));
 }
 
 // Closing an instance wakes its series' later open instances, which may have used its draft.
 export function closed(inst: Instance) {
+  if (tree().series[inst.seriesId].adhoc) return;
   for (const later of instances(inst.seriesId).filter(i => i.doc.status === 'open' && i.label.localeCompare(inst.label, 'en', { numeric: true }) > 0)) {
     later.append('server', 'wake', { reason: `${inst.label} closed: its final figures may differ from the draft you read`, from: inst.label });
     kick(later);
@@ -224,6 +229,8 @@ function fire() {
   for (const [target, wake] of Object.entries(w.pending).filter(([, k]) => k.at <= now)) {
     delete w.pending[target];
     w.fired[target] = now;
+    const s = t.series[t.series[target] ? target : instance(target).seriesId];
+    if (s.archived || t.workspaces[s.workspace].archived) continue;
     if (!t.series[target]) {
       const inst = instance(target);
       if (inst.doc.status !== 'open') continue;
@@ -253,9 +260,10 @@ function summaryOf(report: string): string {
 export function recover() {
   for (const id of Object.keys(tree().series)) for (const inst of instances(id).filter(i => i.doc.status === 'open')) {
     const run = inst.log.findLast(e => e.op === 'run' || e.op === 'done');
-    if (run?.op !== 'run') continue;
-    inst.append('server', 'done', { run: run.run, aborted: true, seen: seenBefore(inst), cost: 0, summary: null, error: 'a restart cut the run' });
-    inst.append('server', 'wake', { reason: 'A restart cut your last run; carry on', from: 'server' });
+    if (run?.op === 'run') {
+      inst.append('server', 'done', { run: run.run, aborted: true, seen: seenBefore(inst), cost: 0, summary: null, error: 'a restart cut the run' });
+      inst.append('server', 'wake', { reason: 'A restart cut your last run; carry on', from: 'server' });
+    }
     kick(inst);
   }
 }
@@ -288,6 +296,7 @@ export function wakeFrom(a: Active, args: string[]): string {
   const t = tree(), full = posix.normalize(posix.join(a.view.cwd, target)).split('/'), path = full.slice(2);
   const sid = Object.keys(t.series).find(id => t.series[id].name === path[1] && t.workspaces[t.series[id].workspace].name === path[0]);
   if (full[1] !== 'work' || path.length < 2 || path.length > 3 || !sid || (sid !== a.inst.seriesId && !reach(t, a.inst.seriesId).includes(sid))) throw new HttpError(404, `no series you can read at ${target}`);
+  if (t.series[sid].workspace !== t.series[a.inst.seriesId].workspace) throw new HttpError(403, `${target} is in another workspace: you can read it, not wake it`);
   const from = `${named(t, a.inst.seriesId)}/${a.inst.label}`, reason = why.join(' ');
   if (path.length === 2) {
     if (!label) throw new HttpError(400, `waking a series starts a new instance: name it with --label`);

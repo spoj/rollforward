@@ -1,12 +1,12 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, posix, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createInstance, duplicateInstance, guidanceFile, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instances, newId, openStore, safeName, seriesDir, type Instance } from './store.ts';
+import { createInstance, duplicateInstance, guidanceFile, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instances, newId, openFile, openStore, readFile, safeName, seriesDir, type Instance } from './store.ts';
 import { socketDir } from './runner.ts';
 import { serveSandboxes } from './sandbox.ts';
 import { authenticate, checkConfig, connectM365, m365Ready, mode, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, upsertUser, users, type Me, type Role } from './auth.ts';
@@ -98,7 +98,7 @@ function trace(inst: Instance) {
   type Line = { kind: string; text: string; at?: string; result?: string; lines?: number; error?: boolean };
   const out: Line[] = [], calls = new Map<string, Line>();
   for (const f of existsSync(dir) ? readdirSync(dir).filter(f => f.endsWith('.jsonl')).sort() : []) {
-    for (const line of readFileSync(join(dir, f), 'utf8').split('\n').filter(Boolean)) {
+    for (const line of (readFile(dir, f) ?? '').split('\n').filter(Boolean)) {
       const e = JSON.parse(line);
       if (e.type !== 'message') continue;
       const m = e.message;
@@ -125,13 +125,14 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
   if (posix.normalize(rel) !== rel || !/^(upload|working|calls|browser)\//.test(rel) || rel.split('/').includes('..')) throw new HttpError(400, 'bad path');
   const inst = instance(id);
   mustSee(me, tree().workspaces[tree().series[inst.seriesId].workspace]);
-  const path = join(inst.dir, rel);
-  if (!existsSync(path)) throw new HttpError(404, 'no such file');
-  if (!realpathSync(path).startsWith(realpathSync(inst.dir) + sep)) throw new HttpError(400, 'links must stay inside the instance');
+  const fd = openFile(inst.dir, rel);
+  if (fd === undefined) throw new HttpError(404, 'no such file');
   if (preview) {
-    const { stdout } = await exec(python, [join(app, 'src', 'preview.py'), path], { timeout: 30_000, maxBuffer: 64e6 });
+    const bytes = readFileSync(fd), run = exec(python, [join(app, 'src', 'preview.py'), basename(rel)], { timeout: 30_000, maxBuffer: 64e6 });
+    closeSync(fd);
+    run.child.stdin!.end(bytes);
     res.writeHead(200, { 'content-type': 'application/json' });
-    return void res.end(stdout);
+    return void res.end((await run).stdout);
   }
   const image = rel.match(/\.(png|jpe?g|gif|webp|svg)$/i)?.[1].toLowerCase().replace('jpg', 'jpeg').replace('svg', 'svg+xml');
   res.writeHead(200, {
@@ -139,7 +140,7 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
     'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox",
     'content-disposition': `${image ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(basename(rel))}`,
   });
-  createReadStream(path).pipe(res);
+  createReadStream('', { fd }).pipe(res);
 }
 
 // The page's event stream: the id of each instance the person can see as it changes, and "tree" for anything else, at most one a
@@ -263,11 +264,14 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
   const mine = a?.inst === inst ? a : undefined;
   if (!action) return send(res, 200, { doc: inst.doc, log: inst.log, run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4) } : null, queued: queued(inst), runner: runnerOf(inst) });
   if (action === 'trace') return send(res, 200, trace(inst));
-  if (action === 'files') return send(res, 200, ['upload', 'working', 'calls', 'browser'].filter(top => existsSync(join(inst.dir, top))).flatMap(top =>
-    readdirSync(join(inst.dir, top), { recursive: true, withFileTypes: true }).filter(d => d.isFile()).map(d => {
-      const st = statSync(join(d.parentPath, d.name));
-      return { path: relative(inst.dir, join(d.parentPath, d.name)), size: st.size, mtime: st.mtime.toISOString() };
+  if (action === 'files') {
+    // By hand, never into a link: a run may have made links anywhere in working/.
+    const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(d => d.isDirectory() ? walk(join(dir, d.name)) : d.isFile() ? [join(dir, d.name)] : []);
+    return send(res, 200, ['upload', 'working', 'calls', 'browser'].filter(top => existsSync(join(inst.dir, top))).flatMap(top => walk(join(inst.dir, top)).map(p => {
+      const st = lstatSync(p);
+      return { path: relative(inst.dir, p), size: st.size, mtime: st.mtime.toISOString() };
     })));
+  }
   if (req.method !== 'POST') throw new HttpError(405, 'POST only');
   if (action === 'duplicate') {
     if (inst.doc.status === 'open') throw new HttpError(409, 'only a closed or abandoned instance can be duplicated');

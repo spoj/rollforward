@@ -1,6 +1,6 @@
-import { appendFileSync, chmodSync, constants, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, closeSync, constants, cpSync, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
-import { basename, dirname, extname, join, posix } from 'node:path';
+import { basename, extname, join, posix } from 'node:path';
 import { changes, tree } from './system.ts';
 
 // Paths in the screen are /-separated on every system.
@@ -14,20 +14,26 @@ export function replaceReadOnly(path: string, text: string) {
   renameSync(path + '.tmp', path);
 }
 
+// Opens `rel` under `base` where a run may have put anything: only a regular file reached without a link, else undefined. The real
+// path of what was opened is checked, so a folder swapped for a link meanwhile is refused too.
+export function openFile(base: string, rel: string, flags = constants.O_RDONLY): number | undefined {
+  const path = join(base, rel);
+  if (!lstatSync(path, { throwIfNoEntry: false })?.isFile()) return undefined;
+  const fd = openSync(path, flags | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  if (fstatSync(fd).isFile() && readlinkSync(`/proc/self/fd/${fd}`) === join(realpathSync(base), rel)) return fd;
+  closeSync(fd);
+}
+
+export function readFile(base: string, rel: string): string | undefined {
+  const fd = openFile(base, rel);
+  if (fd === undefined) return undefined;
+  try { return readFileSync(fd, 'utf8'); } finally { closeSync(fd); }
+}
+
 export type Note = { id?: string; ref?: string; text: string; files?: string[]; options?: string[]; default?: number; ask?: string };
 export type Item = { id: string; name: string; kind: 'input' | 'step' | 'output'; file: string | null; from?: string[]; headline?: string; source?: string; notes?: Note[] };
 export type Doc = { rev: number; status: 'open' | 'closed' | 'abandoned'; items: Item[] };
 export type Entry = { seq: number; at: string; by: string; op: string; [k: string]: unknown };
-
-// Saves bytes in working/ (`dir`) under `name`, or `name (2)` and on if taken, and answers the path as the screen names it.
-export function saveNew(dir: string, name: string, bytes: Buffer): string {
-  const clean = name.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim() || 'download', dot = clean.lastIndexOf('.');
-  mkdirSync(dir, { recursive: true });
-  let file = clean;
-  for (let k = 2; existsSync(join(dir, file)); k++) file = dot > 0 ? `${clean.slice(0, dot)} (${k})${clean.slice(dot)}` : `${clean} (${k})`;
-  writeFileSync(join(dir, file), bytes);
-  return `working/${file}`;
-}
 
 export class HttpError extends Error {
   status: number;
@@ -41,15 +47,6 @@ export class HttpError extends Error {
 // flat, with instance.json naming its label and its series. Names live there and in .rf/tree.json, so a rename or a move edits one
 // small file, at any time, even mid-run. The index holds every instance's instance.json, read once at start; an instance loads
 // when it's first listed or opened.
-// A path under the instance's working/, where the agent's files go.
-export function workingFile(instDir: string, file: string | undefined): string {
-  const rel = posix.normalize(String(file ?? '').replace(/^working\//, ''));
-  if (!file || rel.startsWith('..') || rel.startsWith('/') || /^[a-z]:/i.test(rel)) throw new HttpError(400, 'FILE is a path under your working/, such as "vouchers 09.06.2026.csv"');
-  const path = join(instDir, 'working', rel);
-  mkdirSync(dirname(path), { recursive: true });
-  return path;
-}
-
 export type Meta = { label: string; series: string };
 
 let root = '';
@@ -135,7 +132,8 @@ export function moveInstance(inst: Instance, seriesId: string) {
 
 export function duplicateInstance(src: Instance, label: string, by: string, logins: string[]): Instance {
   const name = freeLabel(src.seriesId, label), id = newId(), dir = instanceDir(id);
-  cpSync(src.dir, dir, { recursive: true, mode: constants.COPYFILE_FICLONE, filter: p => p !== join(src.dir, 'session') }); // shares blocks where the disk can
+  // Files and folders only, sharing blocks where the disk can: a run may have left links or FIFOs in working/.
+  cpSync(src.dir, dir, { recursive: true, mode: constants.COPYFILE_FICLONE, filter: p => p !== join(src.dir, 'session') && (lstatSync(p).isFile() || lstatSync(p).isDirectory()) });
   setMeta(id, { label: name, series: src.seriesId });
   const inst = instance(id);
   inst.doc.status = 'open';
@@ -231,7 +229,9 @@ export class Instance {
     if (doc.rev !== this.doc.rev) throw new HttpError(409, `stale rev ${doc.rev}: the workspace is now at rev ${this.doc.rev}. Run rf show and merge.`);
     if (doc.status !== this.doc.status) throw new HttpError(400, 'status is set by the server');
     if (!Array.isArray(doc.items)) throw new HttpError(400, 'items must be an array');
-    const errors: string[] = [], ids = new Set<string>(), questions = new Set<string>();
+    const errors: string[] = [], ids = new Set<string>(), questions = new Set<string>(), sums = new Map<string, string | undefined>();
+    const shown = new Set(this.log.filter(e => e.op === 'point').map(e => e.file));
+    const old = new Map(this.doc.items.map(i => [i.id, i]));
     for (const i of doc.items) {
       if (typeof i.id !== 'string' || !i.id || ids.has(i.id)) errors.push(`item id missing or repeated: ${JSON.stringify(i.id)}`);
       ids.add(i.id);
@@ -242,7 +242,15 @@ export class Instance {
       if (i.file !== null) {
         const ok = typeof i.file === 'string' && normalize(i.file) === i.file && /^(upload|working)\/./.test(i.file) && !i.file.split('/').includes('..');
         if (!ok) errors.push(`${i.id}: file must be null or a path under upload/ or working/, relative to the instance folder`);
-        else if (!existsSync(join(this.dir, i.file)) || !statSync(join(this.dir, i.file)).isFile()) errors.push(`${i.id}: no file ${i.file}`);
+        else {
+          const fd = openFile(this.dir, i.file);
+          if (fd === undefined) errors.push(`${i.id}: no file ${i.file} (links are not followed)`);
+          else if (i.file !== old.get(i.id)?.file) {
+            sums.set(i.id, shown.has(i.file) ? undefined : createHash('sha256').update(readFileSync(fd)).digest('hex'));
+            if (i.file.startsWith('working/')) fchmodSync(fd, 0o444);
+          }
+          if (fd !== undefined) closeSync(fd);
+        }
       }
       for (const n of i.notes ?? []) {
         if (typeof n.text !== 'string' || !n.text) errors.push(`${i.id}: a note has no text`);
@@ -268,15 +276,10 @@ export class Instance {
     if (from.size) errors.push(`from goes round in a circle among ${[...from.keys()].join(', ')}`);
     if (errors.length) throw new HttpError(400, errors.join('\n'));
 
-    const shown = new Set(this.log.filter(e => e.op === 'point').map(e => e.file));
-    const old = new Map(this.doc.items.map(i => [i.id, i]));
     for (const i of doc.items) {
       const o = old.get(i.id);
       if (i.file !== (o?.file ?? null) && i.file !== null) {
-        const path = join(this.dir, i.file);
-        const sha256 = shown.has(i.file) ? undefined : createHash('sha256').update(readFileSync(path)).digest('hex');
-        if (i.file.startsWith('working/')) chmodSync(path, 0o444);
-        this.append('agent', 'point', { item: i.id, file: i.file, was: o?.file ?? null, sha256 });
+        this.append('agent', 'point', { item: i.id, file: i.file, was: o?.file ?? null, sha256: sums.get(i.id) });
       } else if (i.file === null && o?.file) this.append('agent', 'point', { item: i.id, file: null, was: o.file });
       if (!o || o.name !== i.name || o.kind !== i.kind || JSON.stringify(o.from) !== JSON.stringify(i.from) || o.headline !== i.headline || o.source !== i.source)
         this.append('agent', 'item', { item: i.id, name: i.name, kind: i.kind, from: i.from, headline: i.headline, source: i.source });

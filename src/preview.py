@@ -1,11 +1,12 @@
-"""Print a JSON preview of one file: spreadsheet values, or an email's plain text."""
-import csv, email, json, sys
+"""Print a JSON preview of one file, read from stdin and named by the argument: spreadsheet values, or an email's plain text."""
+import csv, email, io, json, sys
 from email import policy
 from pathlib import Path
 
 ROWS, COLS = 2000, 40
-path = Path(sys.argv[1])
-ext = path.suffix.lower()
+name = sys.argv[1]
+ext = Path(name).suffix.lower()
+data = sys.stdin.buffer.read()
 
 
 def sheet(name, rows):
@@ -19,8 +20,8 @@ def sheet(name, rows):
 
 if ext in ('.xlsx', '.xlsm'):
     from openpyxl import load_workbook
-    values = load_workbook(path, read_only=True, data_only=True)
-    formulas = load_workbook(path, read_only=True)
+    values = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    formulas = load_workbook(io.BytesIO(data), read_only=True)
 
     def cells(vs, fs):
         for vrow, frow in zip(vs.iter_rows(values_only=True), fs.iter_rows(values_only=True)):
@@ -29,13 +30,12 @@ if ext in ('.xlsx', '.xlsm'):
     out = {'sheets': [sheet(vs.title, cells(vs, fs)) for vs, fs in zip(values.worksheets, formulas.worksheets)]}
 elif ext == '.xls':
     import xlrd
-    book = xlrd.open_workbook(path)
+    book = xlrd.open_workbook(file_contents=data)
     out = {'sheets': [sheet(s.name, (s.row_values(i) for i in range(s.nrows))) for s in book.sheets()]}
 elif ext == '.csv':
-    with open(path, newline='', encoding='utf-8-sig', errors='replace') as f:
-        out = {'sheets': [sheet(path.name, csv.reader(f))]}
+    out = {'sheets': [sheet(name, csv.reader(io.StringIO(data.decode('utf-8-sig', errors='replace'), newline='')))]}
 elif ext == '.eml':
-    m = email.message_from_bytes(path.read_bytes(), policy=policy.default)
+    m = email.message_from_bytes(data, policy=policy.default)
     body = m.get_body(preferencelist=('plain',))
     out = {'email': {
         'headers': {k: str(m[k]) for k in ('From', 'To', 'Cc', 'Date', 'Subject') if m[k]},

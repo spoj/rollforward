@@ -608,7 +608,9 @@ function logText(e) {
 function renderLog() {
   $('#log').className = 'log' + ((ui.log || ui.conv || ui.proc) && data ? ' open' : '');
   if (!data) return;
-  if (ui.conv) return put($('#log'), conversationHtml());
+  // A half-written comment or reply, or files picked for one, holds the conversation still until it's sent or cleared.
+  const drafting = [...$('#log').querySelectorAll('textarea')].some(t => t.value.trim()) || [...$('#log').querySelectorAll('input[type=file]')].some(f => f.files.length);
+  if (ui.conv) return drafting || put($('#log'), conversationHtml());
   if (ui.proc) {
     const key = `${cur.i.id}:${data.doc.rev}`;
     if (proc.key !== key) loadProcess(key);
@@ -671,24 +673,25 @@ function groupHtml(g, live) {
 }
 
 function traceHtml() {
-  let h = '', g = [], run = 0, si = 0;
-  const says = data.log.filter(e => e.op === 'say');
+  // The session files are the agent's to write: what they say of the log is only seqs, each shown from the log itself.
+  let h = '', g = [], run = 0;
+  const entry = text => data.log.find(e => e.seq === Number(text?.match(/\bseq"?:? ?(\d+)/)?.[1]));
   const flush = live => { if (g.length) h += groupHtml(g, live); g = []; };
   lines.forEach((s, i) => {
     const said = s.kind === 'bash' && /\brf say\b/.test(s.text);
     if (s.kind !== 'user' && s.kind !== 'say' && !said) return void g.push([s, i]);
     flush(false);
-    if (said) return void (h += `<div class="say reply">${md(says[si++]?.text ?? s.text)}</div>`);
+    if (said) return void (h += `<div class="say reply">${md(entry(s.result)?.text ?? s.text)}</div>`);
     if (s.kind === 'say') return void (h += `<div class="say">${md(s.text)}</div>`);
-    const n = Number(s.text.match(/run (\d+)\./)[1]);
+    const n = Number(s.text.match(/run (\d+)\./)?.[1]);
     if (n !== run) {
       const d = data.log.find(e => e.op === 'done' && e.run === n);
       h += `<div class="rh">Run ${n} · ${hhmm(s.at)}${d ? ` · ${took(d)} · ${usd(d.cost)}` : data.run?.n === n ? ' · running' : ''}</div>`;
       run = n;
     }
-    for (const l of s.text.split('New log entries:\n')[1].split('\n')) {
-      const e = JSON.parse(l);
-      if (e.by !== 'server') h += `<div class="trig">${logText(e)}</div>`;
+    for (const l of (s.text.split('New log entries:\n')[1] ?? '').split('\n')) {
+      const e = entry(l);
+      if (e && e.by !== 'server') h += `<div class="trig">${logText(e)}</div>`;
     }
   });
   flush(!!data.run);
@@ -728,7 +731,7 @@ function threadsOf() {
   const out = new Map();
   for (const e of data?.log ?? []) {
     if (e.op === 'comment' && !out.has(e.thread)) out.set(e.thread, { id: e.thread, item: e.item, ref: e.ref, posts: [], resolved: false });
-    if ((e.op === 'comment' || e.op === 'say') && out.has(e.thread)) out.get(e.thread).posts.push(e);
+    if ((e.op === 'comment' || e.op === 'say') && out.has(e.thread)) Object.assign(out.get(e.thread), { resolved: false }).posts.push(e);
     if (e.op === 'resolve' && out.has(e.thread)) out.get(e.thread).resolved = true;
   }
   return [...out.values()];
@@ -1305,12 +1308,14 @@ let busy = false, stale = false;
 async function changed() {
   if (busy || document.hidden) return void (stale = true);
   [busy, stale] = [true, false];
-  await refresh().finally(() => { busy = false; });
+  await refresh().catch(console.error).finally(() => { busy = false; });
   if (stale) changed();
 }
 const events = new EventSource('/api/events');
 events.onmessage = changed;
 events.onopen = changed;
+// The browser gives up on a stream that comes back with an error, as during a deploy or once the session has ended.
+events.onerror = () => events.readyState === EventSource.CLOSED && setTimeout(() => location.reload(), 5000);
 addEventListener('visibilitychange', () => stale && changed());
 </script>
 </body>

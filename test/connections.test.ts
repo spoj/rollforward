@@ -1,10 +1,12 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import type { Instance } from '../src/store.ts';
 import type { AgentRun } from '../src/agent-api.ts';
 
@@ -108,9 +110,7 @@ test('rf files reads a ticked SharePoint site as the runner: lists a folder, ste
   const up = (await call('/agent/files', { args: ['list', folder.parent] }))!.data as any;
   assert.deepEqual(up.items.map((i: any) => i.name), ['2026', '2025']);
   const got = (await call('/agent/files', { args: ['get', 'b!d1/a', 'aging.csv'] }))!.data as any;
-  assert.equal(got.saved, 'working/aging.csv');
-  assert.equal(readFileSync(join(instDir, 'working', 'aging.csv'), 'utf8'), content.a);
-  await assert.rejects(call('/agent/files', { args: ['get', 'b!d1/a', '../escape.csv'] }), /under your working/);
+  assert.deepEqual([got.saved, Buffer.from(got.data, 'base64').toString()], ['working/aging.csv', content.a], 'the bytes come back for rf to save');
   assert.ok(methods.length && methods.every(m => m === 'GET'));
   assert.equal(logins.secret(ALICE, 'm365'), 'r1', 'the refresh token turned over and was sealed again');
 });
@@ -124,9 +124,12 @@ test("rf mail reads a ticked mailbox, the runner's own unless named, and saves a
   const found = (await call('/agent/mail', { args: ['find', '--date', '2026-10-20', '--subject', 'request successfully', '--attachments'] }))!.data as any;
   assert.deepEqual([found.mailbox, found.messages.map((m: any) => m.id)], [ALICE, ['m1']]);
   assert.ok(!('body' in found.messages[0]), "a message's body is never handed out");
-  const saved = (await call('/agent/mail', { args: ['save', 'm1', '--name', '\\.xlsx$'] }))!.data as any;
-  const again = (await call('/agent/mail', { args: ['save', 'm1', '--name', '\\.xlsx$'] }))!.data as any;
-  assert.deepEqual([saved.saved, again.saved], [['working/Open to Pay.xlsx'], ['working/Open to Pay (2).xlsx']]);
+  const { serveAgent } = await import('../src/agent-api.ts'), api = await serveAgent(inst);
+  const rf = async (...args: string[]) => JSON.parse((await promisify(execFile)(process.execPath, [join(app, 'src', 'rf.ts'), ...args], { env: { ...process.env, RF_URL: api.url, RF_TOKEN: api.token, RF_WORKING: join(instDir, 'working') } })).stdout);
+  const saved = await rf('mail', 'save', 'm1', '--name', '\\.xlsx$'), again = await rf('mail', 'save', 'm1', '--name', '\\.xlsx$');
+  await api.close();
+  assert.deepEqual([saved.saved, again.saved], [['working/Open to Pay.xlsx'], ['working/Open to Pay (2).xlsx']], 'rf saves them, never over a file already there');
+  assert.ok(readFileSync(join(instDir, 'working', 'Open to Pay (2).xlsx')).length);
   await assert.rejects(call('/agent/mail', { args: ['find', '--mailbox', AP] }), /m365:mail:ap@demo.test is not ticked/);
 });
 

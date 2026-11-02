@@ -237,9 +237,27 @@ test('files: uploads download as attachments; paths outside upload/ and working/
   assert.ok((Buffer.from(await r.arrayBuffer())).equals(readFileSync(join(root, 'instances', id, 'upload', name))));
   for (const rel of ['upload/../../workspace.json', 'workspace.json', 'log.jsonl'])
     assert.equal((await call('GET', file(rel))).status, 400, rel);
-  if (process.platform === 'win32') return;
-  symlinkSync('/proc/self/environ', join(root, 'instances', id, 'working', 'env.txt'));
-  assert.equal((await call('GET', file('working/env.txt'))).status, 400, 'a link out of the instance is refused');
+});
+
+test("a run's links, FIFOs and folders in working/ and session/ are never followed or read", async () => {
+  const id = await iid(series, '2026-08-30'), d = join(root, 'instances', id), file = (rel: string) => `/files/${id}/${encodeURIComponent(rel)}`;
+  writeFileSync(join(d, 'working', 'real.txt'), 'mine');
+  symlinkSync('/proc/self/environ', join(d, 'working', 'env.txt'));
+  symlinkSync('real.txt', join(d, 'working', 'inside.txt'));
+  symlinkSync('../..', join(d, 'working', 'up'));
+  symlinkSync('../..', join(d, 'working', 'up2'));
+  execFileSync('mkfifo', [join(d, 'working', 'pipe.txt'), join(d, 'session', 'zz.jsonl')]);
+  for (const rel of ['working/env.txt', 'working/inside.txt', 'working/pipe.txt', `working/up/instances/${id}/working/real.txt`])
+    assert.equal((await call('GET', file(rel))).status, 404, rel);
+  assert.equal(await (await call('GET', file('working/real.txt'))).text(), 'mine');
+  const listed = (await json(await at(series, '2026-08-30', 'files'))).map((f: { path: string }) => f.path);
+  assert.deepEqual(listed.filter((p: string) => /^working\/(env|inside|pipe|up|real)/.test(p)), ['working/real.txt'], 'only regular files, and never into a link');
+  assert.equal((await call('GET', await at(series, '2026-08-30', 'trace'))).status, 200, 'a FIFO among the session files is skipped');
+  assert.equal((await call('POST', `${await at(series, '2026-08-30', 'duplicate')}?as=links`)).status, 200);
+  assert.deepEqual(readdirSync(join(await dir(series, 'links'), 'working')).filter(f => /env|inside|pipe|up|real/.test(f)), ['real.txt'], 'a copy leaves them out');
+  for (const f of ['real.txt', 'env.txt', 'inside.txt', 'up', 'up2', 'pipe.txt']) rmSync(join(d, 'working', f));
+  rmSync(join(d, 'session', 'zz.jsonl'));
+  assert.equal((await call('POST', `${await at(series, 'links', 'abandon')}`)).status, 200);
 });
 
 test('a cross-site POST is refused, so another web page cannot talk to the agent', async () => {

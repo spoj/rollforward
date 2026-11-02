@@ -20,7 +20,7 @@ describe("a run's Windows machine", { skip: !process.env.RF_MACHINES_URL && 'nee
     const log: Record<string, unknown>[] = [];
     const inst = { dir, log: [{ op: 'create', by: 'alice@demo.test', logins: [] }], series: () => tmp, append: (_by: string, op: string, data: object) => (log.push({ op, ...data }), { seq: log.length }) } as unknown as Instance;
     const api = await serveAgent(inst);
-    const rf = async (...args: string[]) => (await promisify(execFile)(process.execPath, [join(app, 'src', 'rf.ts'), 'windows', ...args], { env: { ...process.env, RF_URL: api.url, RF_TOKEN: api.token } })
+    const rf = async (...args: string[]) => (await promisify(execFile)(process.execPath, [join(app, 'src', 'rf.ts'), 'windows', ...args], { env: { ...process.env, RF_URL: api.url, RF_TOKEN: api.token, RF_WORKING: join(dir, 'working') } })
       .catch(e => e)).stdout.trim();
     mkdirSync(join(dir, 'working'), { recursive: true });
     writeFileSync(join(dir, 'working', 'in.txt'), 'made in the run');

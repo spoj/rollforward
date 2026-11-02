@@ -104,7 +104,7 @@ describe('website logins', { skip: !process.env.RF_MACHINES_URL && 'needs the ma
     const { id: workspace } = await (await call('POST', '/api/workspaces', { name: 'Portal work' })).json();
     const { id: seriesId } = await (await call('POST', '/api/series', { workspace, name: 'Invoices' })).json();
     const stand = (dir: string, ticks: string[]) => ({ dir, seriesId, log: [{ op: 'create', by: ADMIN, logins: ticks }], series: () => seriesDir, append: (_by: string, op: string, data: object) => (log.push({ op, ...data }), { seq: log.length }) }) as unknown as Instance;
-    const rf = async (api: { url: string; token: string }, ...args: string[]) => (await promisify(execFile)(process.execPath, [join(app, 'src', 'rf.ts'), ...args], { env: { ...process.env, RF_URL: api.url, RF_TOKEN: api.token } })
+    const rf = async (api: { url: string; token: string }, ...args: string[]) => (await promisify(execFile)(process.execPath, [join(app, 'src', 'rf.ts'), ...args], { env: { ...process.env, RF_URL: api.url, RF_TOKEN: api.token, RF_WORKING: join(tmp, 'w1', 'working') } })
       .catch(e => e)).stdout.trim();
 
     const unticked = await serveAgent(stand(join(tmp, 'w0'), []));

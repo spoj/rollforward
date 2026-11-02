@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInstance, instance, labels, openStore, type Instance } from '../src/store.ts';
-import { initSystem, readJson, saveTree, writeJson } from '../src/system.ts';
+import { initSystem, readJson, saveTree, tree, writeJson } from '../src/system.ts';
 import type { Active } from '../src/waker.ts';
 
 // Wakes without a model: a run that a wake starts ends at once for want of a key, which is enough to see what started it.
@@ -16,11 +16,14 @@ const tmp = mkdtempSync(join(tmpdir(), 'rf-wake-')), alice = 'alice@demo.test';
 initSystem(tmp);
 openStore(tmp);
 saveTree({
-  workspaces: { w: { name: 'Acme', owners: [alice], members: [] }, x: { name: 'Hidden', owners: ['zed@demo.test'], members: [] } },
-  series: { s1: { name: 'Bank rec', workspace: 'w' }, s2: { name: 'Borrowing base', workspace: 'w' }, s3: { name: 'Payroll', workspace: 'x' } },
+  workspaces: { w: { name: 'Acme', owners: [alice], members: [] }, x: { name: 'Hidden', owners: ['zed@demo.test'], members: [] }, m: { name: 'Main', owners: [alice, 'zed@demo.test'], members: [] } },
+  series: {
+    s1: { name: 'Bank rec', workspace: 'w' }, s2: { name: 'Borrowing base', workspace: 'w' }, s3: { name: 'Payroll', workspace: 'x' },
+    s4: { name: 'Ad hoc', workspace: 'w', adhoc: true }, s5: { name: 'Close', workspace: 'm' }, s6: { name: 'Queue', workspace: 'w' },
+  },
 });
 writeJson('users.json', { [alice]: { role: 'user' } });
-for (const s of ['s1', 's2', 's3']) mkdirSync(join(tmp, 'series', s), { recursive: true });
+for (const s of ['s1', 's2', 's3', 's4', 's5', 's6']) mkdirSync(join(tmp, 'series', s), { recursive: true });
 const make = (series: string, label: string, status?: 'close') => {
   const i = createInstance(series, label, alice, []);
   if (status) i.close(alice);
@@ -45,6 +48,7 @@ test('rf wake names its target as the run sees it, within its reach, and refuses
   assert.equal(wakes().pending[oct.id].reason, 'the bank file is late');
   assert.equal(wakes().pending[oct.id].from, 'Acme/Bank rec/2026-09');
   assert.match(wakeFrom(run, ['../Borrowing base', '2026-11-02T07:00+08:00', 'rec done', '--label', '2026-10']), /starts 2026-10 at 2026-11-01T23:00:00.000Z/);
+  assert.throws(() => wakeFrom(run, ['../../Main/Close', 'now', 'x', '--label', 'y']), /in another workspace: you can read it, not wake it/);
 });
 
 test('a due wake continues an open instance, as a reply does; one more than 15 minutes after its last is moved', async () => {
@@ -107,4 +111,28 @@ test("an instance whose run met its runner's expired login carries on when they 
   assert.equal(waits.log.filter(e => e.op === 'wake').length, 1, 'a refresh token turning over wakes nothing');
   await settle();
   assert.ok(waits.log.some(e => e.op === 'run'), 'the wake started a run');
+});
+
+test('after a restart every open instance with something for a run starts; an Interrupt holds until the next act', async () => {
+  const queued = make('s6', 'queued'), held = make('s6', 'held');
+  queued.append(alice, 'comment', { thread: 't1', text: 'please redo' });
+  held.append(alice, 'comment', { thread: 't2', text: 'stop that' });
+  held.append(alice, 'interrupt');
+  recover();
+  await settle();
+  assert.ok(ops(queued).includes('run'), 'its comment came just before the restart');
+  assert.ok(!ops(held).includes('run'), 'interrupted, it waits for the next act');
+});
+
+test('closing an Ad hoc instance wakes no other; a wake in an archived workspace is dropped', async () => {
+  const first = make('s4', 'ask 1'), second = make('s4', 'ask 2');
+  first.close(alice);
+  closed(first);
+  assert.ok(!ops(second).includes('wake'));
+  const t = tree(), cut = instance(labels('s3').find(l => l.label === 'cut')!.id);
+  saveTree({ ...t, workspaces: { ...t.workspaces, x: { ...t.workspaces.x, archived: true } } });
+  setWake(cut.id, { at: new Date().toISOString(), reason: 'archived', from: 'x' });
+  await settle();
+  assert.equal(wakes().pending[cut.id], undefined);
+  assert.ok(!cut.log.some(e => e.reason === 'archived'));
 });

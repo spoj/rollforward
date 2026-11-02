@@ -1,5 +1,4 @@
-import { writeFileSync } from 'node:fs';
-import { HttpError, saveNew, type Instance } from './store.ts';
+import { HttpError, type Instance } from './store.ts';
 import { attachments, children, download, graph, messages, shared, type DriveItem } from './graph.ts';
 import { logins, runnerOf, saveLogin, use } from './logins.ts';
 
@@ -58,12 +57,11 @@ export async function filesList(inst: Instance, target: string) {
   return { ...describe(it), parent, ...(it.folder && { items: (await children(email, it)).map(describe) }) };
 }
 
-export async function filesGet(inst: Instance, target: string, path: string): Promise<{ name: string; size: number; modified: string }> {
+export async function filesGet(inst: Instance, target: string): Promise<{ name: string; size: number; modified: string; bytes: Buffer }> {
   const { email, it } = await item(inst, target);
   if (it.folder) throw new HttpError(400, `${it.name} is a folder; rf files list shows what is in it`);
   const bytes = await download(email, it);
-  writeFileSync(path, bytes);
-  return { name: it.name, size: bytes.length, modified: it.lastModifiedDateTime };
+  return { name: it.name, size: bytes.length, modified: it.lastModifiedDateTime, bytes };
 }
 
 // The mailbox a run reads: the one named, else its runner's own, if ticked.
@@ -82,10 +80,10 @@ export async function mailFind(inst: Instance, args: Args) {
   return { mailbox: box, date: d, messages: found.map(m => ({ id: m.id, subject: m.subject, received: m.receivedDateTime, from: m.from?.emailAddress?.address, attachments: m.hasAttachments })) };
 }
 
-// Saves the attachments whose names match into working/ (`dir`), each named `prefix` + its own name, never over a file already there.
-export async function mailSave(inst: Instance, args: Args, id: string, name: RegExp | undefined, dir: string, prefix = ''): Promise<string[]> {
+// The message's attachments whose names match.
+export async function mailSave(inst: Instance, args: Args, id: string, name: RegExp | undefined): Promise<{ name: string; bytes: Buffer }[]> {
   const { email, mailbox: box } = mailbox(inst, args);
-  return (await attachments(email, box, id)).filter(a => !name || name.test(a.name)).map(a => saveNew(dir, prefix + a.name, a.bytes));
+  return (await attachments(email, box, id)).filter(a => !name || name.test(a.name));
 }
 
 // What a person's Microsoft 365 login offers besides their own mailbox and OneDrive: a shared mailbox they can read, or a SharePoint
