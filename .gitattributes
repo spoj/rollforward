@@ -1,0 +1,2 @@
+# bin/ runs in the Linux container, where a shebang line ending in CR cannot start
+bin/* text eol=lf

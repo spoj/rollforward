@@ -44,8 +44,26 @@ a { color: inherit; }
 .vl .sub { color: var(--ink-3); font-size: 12.5px; }
 .vl hr { width: 100%; margin: 6px 0 0; border: 0; border-top: 1px solid var(--rule); }
 .vl input[type=text] { font: inherit; padding: 7px 9px; border: 1px solid var(--rule-2); border-radius: var(--r1); }
-.pv.small { inset: 12vh auto auto 50%; transform: translateX(-50%); width: min(420px, 92vw); }
+.pv.small { inset: 12vh auto auto 50%; transform: translateX(-50%); width: min(420px, 92vw); max-height: 80dvh; }
 .vl label { display: flex; align-items: center; gap: 8px; }
+.adv-set { display: grid; gap: 10px; border-top: 1px solid var(--rule); padding-top: 10px; }
+.adv-set summary { cursor: pointer; color: var(--ink-2); font-size: 13px; }
+.vis-all { display: flex; align-items: center; gap: 2px; margin-left: -6px; }
+.twisty { all: unset; flex: none; width: 20px; height: 20px; display: grid; place-items: center; border-radius: var(--r1); color: var(--ink-2); font-size: 15px; cursor: pointer; }
+button.twisty:hover { background: var(--rule); color: var(--ink); }
+.vis-list { display: grid; gap: 8px; margin-left: 7px; padding: 2px 0 2px 19px; border-left: 1px solid var(--rule-2); }
+.vl textarea { font: 12.5px/1.5 var(--mono); padding: 7px 9px; border: 1px solid var(--rule-2); border-radius: var(--r1); resize: vertical; min-height: 4.5em; }
+.vl :is(input[type=email], input[type=password], select) { font: inherit; padding: 7px 9px; border: 1px solid var(--rule-2); border-radius: var(--r1); background: var(--sheet); min-width: 0; max-width: 100%; }
+.vl .row2 { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.pv.mid { inset: 6vh auto auto 50%; transform: translateX(-50%); width: min(660px, 94vw); max-height: 88vh; }
+.ut { border-collapse: collapse; font-size: 12.5px; width: 100%; }
+.ut td, .ut th { border-top: 1px solid var(--rule); padding: 6px 6px 6px 0; text-align: left; vertical-align: top; }
+.ut th { font-weight: 500; color: var(--ink-3); }
+.ut select { max-width: 100px; }
+.acct { padding: 14px 8px 0; font-size: 12.5px; color: var(--ink-2); border-top: 1px solid var(--rule); margin-top: 10px; }
+.acct .mail { color: var(--ink-3); font-size: 12px; word-break: break-all; }
+.acct .quiet { display: inline-block; padding: 4px 10px 0 0; }
+@media (max-width: 560px) { .ut th:nth-child(3), .ut td:nth-child(3), .ut th:nth-child(4), .ut td:nth-child(4) { display: none; } }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--note); display: inline-block; margin-left: 6px; vertical-align: 1px; }
 .dot.k { background: var(--ink); }
 .legend { margin-top: auto; font-size: 12px; color: var(--ink-2); padding: 16px 8px 4px; display: grid; gap: 4px; }
@@ -70,7 +88,13 @@ a { color: inherit; }
 .btn.sel { background: var(--paper); box-shadow: inset 0 1px 2px rgba(0,0,0,.08); }
 
 .panes { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: minmax(0, 1fr); position: relative; padding-bottom: 46px; }
-.pane { padding: 22px 28px 20px; display: flex; flex-direction: column; position: relative; overflow: auto; min-width: 0; }
+.pane { padding: 22px 28px 20px; display: flex; flex-direction: column; position: relative; overflow: auto; min-width: 0; scrollbar-gutter: stable; }
+/* Always-visible scrollbars, so a long list of inputs or outputs shows it goes on (Edge's overlay scrollbars hide until hovered). */
+.pane::-webkit-scrollbar { width: 10px; height: 10px; }
+.pane::-webkit-scrollbar-track { background: var(--rule); }
+.pane::-webkit-scrollbar-thumb { background: var(--edge); border: 2px solid var(--rule); border-radius: 6px; }
+.pane::-webkit-scrollbar-thumb:hover { background: var(--ink-3); }
+@supports not selector(::-webkit-scrollbar) { .pane { scrollbar-width: thin; scrollbar-color: var(--edge) var(--rule); } }
 .flow { grid-area: 1 / 1; }
 .outs { grid-area: 1 / 2; overflow: hidden auto; border-left: 1px solid var(--rule); }
 .cols { display: flex; gap: 64px; align-items: start; }
@@ -85,7 +109,9 @@ a { color: inherit; }
 .pane.drag::after { content: '+ Add'; position: absolute; top: 20px; right: 28px; font-weight: 600; color: var(--person); }
 .pane.drag .ph .btn { visibility: hidden; }
 .pane.drag { background: var(--person-bg); }
-.ph { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; min-height: 26px; margin-bottom: 4px; }
+/* A pane's heading, with + Add files, stays in view while its tiles scroll under it. */
+.ph { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; min-height: 26px; margin: -22px 0 4px; padding: 22px 0 6px; position: sticky; top: -22px; z-index: 4; background: var(--paper); }
+.pane.drag .ph { background: var(--person-bg); }
 .ph h2 { margin: 0; font-size: 15px; font-weight: 600; }
 .ph .c { font-size: 13px; color: var(--ink-3); }
 .ph .btn { margin-left: auto; padding: 4px 10px; font-size: 12px; }
@@ -127,7 +153,7 @@ a[data-act=preview], a[data-act=opencard] { text-decoration: underline; cursor: 
 .pvh b { font-size: 13px; word-break: break-all; margin-right: auto; }
 .tabs { display: flex; gap: 6px; padding: 8px 14px; flex-wrap: wrap; border-bottom: 1px solid var(--rule); }
 .tabs .btn { padding: 4px 9px; font-size: 12px; }
-.pvb { flex: 1; overflow: auto; }
+.pvb { flex: 1; min-height: 0; overflow: auto; }
 .pvb .say { padding: 14px 18px; white-space: pre-wrap; font-size: 13.5px; }
 .pvb pre { white-space: pre-wrap; word-break: break-word; font: 12.5px/1.5 var(--mono); padding: 14px 16px; margin: 0; }
 .pvb img { max-width: 100%; display: block; margin: 12px auto; }
@@ -219,6 +245,7 @@ a[data-act=preview], a[data-act=opencard] { text-decoration: underline; cursor: 
   .bar .btn.top { padding: 6px 9px; font-size: 12px; }
   .panes { display: block; overflow: auto; padding-bottom: 60px; }
   .pane { padding: 16px 14px; overflow: clip; }
+  .ph { position: static; margin: 0 0 4px; padding: 0; background: none; }
   .outs { border-left: 0; border-bottom: 1px solid var(--rule); }
   .cols { display: block; }
   .col { width: auto; grid-template-columns: repeat(2, 1fr); }
@@ -284,7 +311,7 @@ function fileUrl(path, kind = 'files') {
 }
 const ext = f => (f && f.includes('.') ? f.split('.').pop() : '').toUpperCase();
 
-let tree = [], cur = null, data = null, lines = [], linesKey = '', openItem = null, hover = null, showClosed = false, showArchived = false, pv = null;
+let tree = [], cur = null, data = null, lines = [], linesKey = '', openItem = null, hover = null, showClosed = false, showArchived = false, pv = null, me = null;
 let seen = {}, prevSigs = {}, uploads = [], shown = '', refreshes = 0;
 const sig = i => `${i.file}|${i.notes?.length ?? 0}|${i.headline ?? ''}`;
 
@@ -307,11 +334,6 @@ function put(el, html) {
   drawn.set(el, html);
 }
 
-function who() {
-  if (!localStorage.rfName) localStorage.rfName = (prompt('Your name, for the log:') || '').trim() || 'someone';
-  return localStorage.rfName;
-}
-
 async function api(path, opts) {
   const r = await fetch(path, opts);
   const t = await r.text();
@@ -325,6 +347,7 @@ const instPath = () => `${seriesPath(cur)}/${enc(cur.label)}`;
 const go = (workspace, series, label) => { location.hash = '#/' + [workspace, series, label].filter(Boolean).map(enc).join('/'); };
 
 async function refresh() {
+  me ??= await api('/me');
   const n = ++refreshes, t = await api('/api');
   const [workspace, series, label] = location.hash.slice(2).split('/').filter(Boolean).map(decodeURIComponent);
   const w = workspace ? t.find(w => w.workspace === workspace) : t.find(w => !w.archived);
@@ -363,7 +386,7 @@ function renderSide() {
     const won = cur?.workspace === w.workspace;
     if (!listed(w, won)) continue;
     h += `<div class="row ws ${w.archived ? 'archived' : ''}"><a class="nm" href="#/${enc(w.workspace)}">${esc(w.workspace)}${!won && w.series.some(asks) ? '<span class="dot"></span>' : ''}</a>`
-      + (won ? btn('workspace-settings', 'Workspace settings', '\u22EF') + btn('new-series', 'New series', '+') : w.archived ? '<span class="n">archived</span>' : '') + '</div>';
+      + (won ? btn('workspace-settings', 'Workspace settings', '\u22EF') + btn('new-series', 'New series', '+') : w.archived ? '<span class="n">archived</span>' : w.owner !== me.email ? `<span class="n">${esc(w.owner?.split('@')[0] ?? 'no owner')}</span>` : '') + '</div>';
     if (!won) continue;
     h += '<div class="tree">';
     for (const s of w.series) {
@@ -388,10 +411,14 @@ function renderSide() {
   const archived = tree.filter(w => w.archived).length + (tree.find(w => w.workspace === cur?.workspace)?.series.filter(s => s.archived).length ?? 0);
   if (archived) h += `<button class="quiet" data-act="toggle-archived">${showArchived ? 'Hide' : 'Show'} archived (${archived})</button>`;
   h += `<div class="legend"><div><i class="p">Blue</i> uploaded by a person</div><div><i>Black</i> made by the agent</div><div><span class="tri"></span>a note, for information</div><div><span class="tri q"></span>a question for you</div><div><span class="dash"></span>expected, not there yet</div></div>`;
+  h += `<div class="acct"><div>${esc(me.name)}${me.role === 'admin' ? ' · admin' : ''}</div><div class="mail">${esc(me.email)}</div>`
+    + (me.role === 'admin' ? '<button class="quiet" data-act="users">Users</button><button class="quiet" data-act="systems">Systems</button><button class="quiet" data-act="skills">Skills</button>' : '') + '<button class="quiet" data-act="signout">Sign out</button></div>';
   put($('#side'), h);
 }
 
 function lastDone() { return data.log.findLast(e => e.op === 'done'); }
+
+const stepText = s => `${s.do}${s.target ? ` ${s.target}` : ''}${s.value !== undefined ? ` = "${s.value}"` : ''}`;
 
 function renderBar() {
   let h = `<button class="menu" data-act="menu">☰</button>`;
@@ -528,6 +555,11 @@ function logText(e) {
     reply: () => `${w} replied<div class="d">${esc(e.text)}</div>`,
     rename: () => `${w} renamed the instance from ${esc(e.from)}`,
     duplicate: () => `${w} made this instance as a copy of ${esc(e.from)}`,
+    browse: () => `${w} used ${esc(e.system.toUpperCase())}<div class="d">${esc([e.action, ...e.args].join(' '))}</div>`,
+    request: () => `${w} asked to write in ${esc(e.name)} (${esc(e.request)})<div class="d">${esc(e.description)}</div>${e.screenshot ? `<div class="f"><a data-act="preview" data-file="${esc(e.screenshot)}">${esc(e.screenshot)}</a></div>` : ''}`,
+    approve: () => `${w} approved ${esc(e.request)}`,
+    reject: () => `${w} rejected ${esc(e.request)}${e.reason ? `<div class="d">${esc(e.reason)}</div>` : ''}`,
+    call: () => `${w} ${e.ok ? 'made' : 'could not make'} ${esc(e.request)} in ${esc(e.name)}<div class="d">${esc(e.error ?? e.text ?? '')}</div><div class="f"><a data-act="preview" data-file="${esc(e.screenshot)}">${esc(e.screenshot)}</a></div>`,
   }[e.op]?.() ?? `${w} ${esc(e.op)}`;
 }
 
@@ -688,7 +720,7 @@ function sheetTable(s, first) {
 function renderPv() {
   $('#pv').hidden = !pv;
   if (!pv) return;
-  $('#pv').className = 'pv' + (pv.settings ? ' small' : '');
+  $('#pv').className = 'pv' + (pv.settings ? (['users', 'systems'].includes(pv.settings.kind) ? ' mid' : ' small') : '');
   let h = `<div class="pvh"><b>${esc(pv.title)}</b>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${pv.path ? `<a class="btn" href="${fileUrl(pv.path)}">Download</a>` : ''}<button class="btn" data-act="unpv">Close</button></div>`;
   if (pv.sheets) {
     if (pv.sheets.length > 1) h += `<div class="tabs">${pv.sheets.map((s, k) => `<button class="btn ${k === pv.sheet ? 'sel' : ''}" data-act="sheet" data-k="${k}">${esc(s.name)}</button>`).join('')}</div>`;
@@ -698,11 +730,19 @@ function renderPv() {
     h += `<div class="pvb"><pre>${esc(Object.entries(m.headers).map(([k, v]) => `${k}: ${v}`).join('\n') + (m.attachments.length ? `\nAttachments: ${m.attachments.join(', ')}` : '') + '\n\n' + m.text)}</pre></div>`;
   } else if (pv.image) h += `<div class="pvb"><img src="${fileUrl(pv.path)}" alt=""></div>`;
   else if (pv.text !== undefined) h += `<div class="pvb">${pv.md ? `<div class="say">${md(pv.text)}</div>` : `<pre>${esc(pv.text)}</pre>`}</div>`;
+  else if (pv.settings?.kind === 'users') h += `<div class="pvb vl">${usersHtml(pv.settings)}</div>`;
+  else if (pv.settings?.kind === 'systems') h += `<div class="pvb vl">${systemsHtml(pv.settings)}</div>`;
+  else if (pv.settings?.kind === 'skills') h += `<div class="pvb vl">${skillsHtml(pv.settings)}</div>`;
   else if (pv.settings) {
     const s = pv.settings;
     h += '<div class="pvb vl">';
-    if (s.kind === 'series') h += `<h3>Name</h3><input type="text" id="sname" value="${esc(s.name)}"><h3>Visibility</h3><div class="sub">Other series that can see this one</div>`
-      + ['*', ...s.others].map(n => `<label><input type="checkbox" value="${esc(n)}" ${s.chosen.includes(n) ? 'checked' : ''}> ${n === '*' ? 'All series' : esc(n)}</label>`).join('')
+    if (s.kind === 'workspace' && me.role === 'admin') h += `<h3>Owner</h3><div class="sub">Only the owner and admins can see this workspace and its series.</div><div class="row2"><select id="wowner"><option value="">No owner (admins only)</option>${s.users.map(u => `<option value="${esc(u.email)}" ${u.email === s.owner ? 'selected' : ''}>${esc(u.name ?? u.email)} · ${esc(u.email)}</option>`).join('')}</select><button class="btn" data-act="saveowner">Save</button></div><hr>`;
+    if (s.kind === 'series') h += `<h3>Name</h3><input type="text" id="sname" value="${esc(s.name)}">`
+      + `<h3>Skill use</h3><div class="sub">What the agent may fetch or do for this series. Admins set each skill up once, under Skills, for every series.</div>`
+      + s.skillList.map(k => `<label class="skill-row"><input type="checkbox" class="skill" value="${esc(k.id)}" ${s.skills.includes(k.id) ? 'checked' : ''}> ${esc(k.name)}${k.configured ? '' : ' <span class="sub">· not set up yet</span>'}</label>`
+        + `<div class="sub" style="margin:0 0 6px 22px">${esc(k.description.length > 180 ? k.description.slice(0, 180) + '…' : k.description)}</div>`).join('')
+      + (s.skillList.some(k => !k.configured) ? `<div class="sub">A skill not set up yet can be chosen now; the agent can use it once ${me.role === 'admin' ? 'you set it up' : 'an admin sets it up'} under Skills.</div>` : '')
+      + `<h3>Visibility</h3><div class="sub">Other series that can see this one</div>` + visibilityHtml(s)
       + (s.reads.length ? `<div class="sub">This series can see ${esc(s.reads.join(', '))}.</div>` : '')
       + '<div><button class="btn primary" data-act="savesettings">Save</button></div><hr>';
     h += `<h3>Archive</h3><div class="sub">${s.archived ? 'Archived: in the sidebar only under Show archived.' : `Hides the ${s.kind} from the sidebar, except under Show archived. Nothing in it changes.`}</div><div><button class="btn" data-act="archive">${s.archived ? 'Restore' : 'Archive'} ${s.kind}</button></div></div>`;
@@ -710,6 +750,103 @@ function renderPv() {
   else if (pv.loading) h += `<div class="pvb"><div class="empty">Loading…</div></div>`;
   else h += `<div class="pvb"><div class="empty">No preview for this kind of file. Download it instead.</div></div>`;
   $('#pv').innerHTML = h + '<div class="pvn" id="pvn"></div>';
+  if (pv.settings?.kind === 'series') syncVisibility();
+}
+
+// Visibility: All series, with the other series one level under it, folded unless only some of them are chosen. All series ticked
+// saves as "*", which takes in series made later too; otherwise the series ticked are saved one by one.
+function visibilityHtml(s) {
+  const all = s.chosen.includes('*'), picked = n => all || s.chosen.includes(n);
+  s.open ??= !all && s.others.some(picked);
+  return `<div class="vis-all">${s.others.length ? `<button class="twisty" data-act="vis-fold" title="${s.open ? 'Hide' : 'Show'} the series" aria-expanded="${s.open}">${s.open ? '▾' : '▸'}</button>` : '<span class="twisty"></span>'}`
+    + `<label><input type="checkbox" id="vis-all" ${all ? 'checked' : ''}> All series <span class="sub" id="vis-count"></span></label></div>`
+    + `<div class="vis-list" id="vis-list" ${s.open ? '' : 'hidden'}>${s.others.map(n => `<label><input type="checkbox" class="vis" value="${esc(n)}" ${picked(n) ? 'checked' : ''}> ${esc(n)}</label>`).join('')}</div>`;
+}
+
+// Keeps All series in step with the series under it: ticked when all are, half-ticked when some are.
+function syncVisibility() {
+  const top = $('#vis-all'), kids = [...document.querySelectorAll('#pv input.vis')], n = kids.filter(k => k.checked).length;
+  if (!top) return;
+  if (kids.length) {
+    top.checked = n === kids.length;
+    top.indeterminate = n > 0 && n < kids.length;
+  }
+  $('#vis-count').textContent = top.checked ? '· also series made later' : kids.length ? `· ${n} of ${kids.length}` : '· none yet';
+}
+
+function usersHtml(s) {
+  const when = iso => iso ? new Date(iso).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : 'never';
+  let h = `<div class="sub">People sign in with their Microsoft account. Each sees only the workspaces they own; admins see them all.</div><table class="ut"><tr><th>Person</th><th>Role</th><th>Workspaces</th><th>Last in</th><th></th></tr>`;
+  for (const u of s.users) {
+    const self = u.email === me.email;
+    h += `<tr><td>${esc(u.name ?? '')}<div class="sub">${esc(u.email)}${u.disabled ? ' · disabled' : ''}</div></td>`
+      + `<td><select data-act="role" data-email="${esc(u.email)}" ${self ? 'disabled' : ''}><option value="user">User</option><option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Admin</option></select></td>`
+      + `<td>${esc(u.workspaces.join(', ')) || '<span class="sub">none</span>'}</td><td class="sub">${esc(when(u.last_login))}</td>`
+      + `<td>${self ? '' : `<div class="row2"><button class="btn" data-act="disable" data-email="${esc(u.email)}" data-on="${u.disabled ? '' : '1'}">${u.disabled ? 'Enable' : 'Disable'}</button><button class="btn danger" data-act="deluser" data-email="${esc(u.email)}">Remove</button></div>`}</td></tr>`;
+  }
+  return h + `</table><h3>Add someone</h3><div class="sub">They can then sign in. Give them a workspace from its settings.</div><div class="row2"><input type="email" id="uemail" placeholder="name@example.com" style="flex:1"><select id="urole"><option value="user">User</option><option value="admin">Admin</option></select><button class="btn primary" data-act="adduser">Add</button></div>`;
+}
+
+async function openWorkspaceSettings() {
+  const w = tree.find(w => w.workspace === cur.workspace);
+  pv = { title: 'Workspace settings', settings: { kind: 'workspace', archived: w.archived, owner: w.owner, users: me.role === 'admin' ? await api('/users') : [] } };
+  renderPv();
+}
+
+const KINDS = { m365: 'Microsoft 365 app' };
+
+function systemsHtml(s) {
+  if (!s.edit) {
+    return `<div class="sub">The Microsoft 365 apps the server reads through, shared by the skills that use them; a site that mails a sign-in code has it read from M365 Mail. Series don't choose these: they choose skills.</div>`
+      + `<table class="ut"><tr><th>System</th><th>Kind</th><th>State</th><th></th></tr>`
+      + s.list.map(x => `<tr><td><b>${esc(x.name)}</b></td><td class="sub">${KINDS[x.kind]}</td>`
+        + `<td>${x.configured ? 'Ready' : `<span class="sub">${x.saved ? `needs ${esc(x.missing.join(', '))}` : 'not set up yet'}</span>`}</td>`
+        + `<td><button class="btn" data-act="editsys" data-id="${esc(x.id)}">${x.saved ? 'Edit' : 'Set up'}</button></td></tr>`).join('')
+      + '</table>';
+  }
+  const e = s.edit, kind = 'm365';
+  const f = (id, label, v = '', ph = '', type = 'text') => `<label style="display:grid;gap:4px">${label}<input type="${type}" id="${id}" value="${esc(v)}" placeholder="${esc(ph)}" autocomplete="off"></label>`;
+  const secret = (label) => f('ys-pass', label, '', e.has_password ? 'Saved. Leave empty to keep it.' : '', 'password');
+  const fields = (e.fields ?? []).map(x => `<label style="display:grid;gap:4px">${esc(x.label)}<input type="text" class="ys-set" data-key="${esc(x.key)}" value="${esc(e.settings?.[x.key] ?? '')}" autocomplete="off">${x.hint ? `<span class="sub">${esc(x.hint)}</span>` : ''}</label>`).join('');
+  let h = `<h3>${e.saved ? `Edit ${esc(e.name)}` : `Set up ${esc(e.name)}`}</h3><div class="sub">${KINDS[kind]}${e.missing?.length && e.id ? ` · needs ${esc(e.missing.join(', '))}` : ''}</div>`;
+  h += f('ys-tenant', 'Directory (tenant) ID', e.tenant, '00000000-0000-0000-0000-000000000000') + f('ys-client', 'Application (client) ID', e.client_id, '00000000-0000-0000-0000-000000000000')
+      + secret('Client secret') + fields + `<div class="sub">The app reads through Microsoft Graph with its own application permissions, granted by an admin.</div>`;
+  return h + `<div class="row2"><button class="btn primary" data-act="savesys">Save</button>${e.configured ? '<button class="btn" data-act="testsys">Test</button>' : ''}`
+    + `${e.saved ? `<button class="btn danger" data-act="delsys">Clear</button>` : ''}<button class="btn" data-act="systems" style="margin-left:auto">Back</button></div>`;
+}
+
+function skillsHtml(s) {
+  if (!s.edit) {
+    return `<div class="sub">What each skill fetches or does, set up once here for every series; a series chooses which skills it uses under Skill use. Passwords are saved sealed and never shown again.</div>`
+      + `<table class="ut"><tr><th>Skill</th><th>Uses</th><th>State</th><th></th></tr>`
+      + s.list.map(x => `<tr><td><b>${esc(x.name)}</b>${x.site ? '<div class="sub">website</div>' : ''}</td><td class="sub">${esc(x.uses.join(', ') || '—')}</td>`
+        + `<td>${x.configured ? 'Ready' : `<span class="sub">needs ${esc(x.missing.join(', '))}</span>`}</td>`
+        + `<td><button class="btn" data-act="editskill" data-id="${esc(x.id)}">${x.configured ? 'Edit' : 'Set up'}</button></td></tr>`).join('') + '</table>';
+  }
+  const e = s.edit;
+  const field = x => x.secret
+    ? `<label style="display:grid;gap:4px">${esc(x.label)}<input type="password" class="sk-set" data-key="${esc(x.key)}" placeholder="${e.secrets[x.key] ? 'Saved. Leave empty to keep it.' : ''}" autocomplete="new-password"></label>`
+    : `<label style="display:grid;gap:4px"><span>${esc(x.label)}${x.optional ? ' <span class="sub">(optional)</span>' : ''}</span><input type="text" class="sk-set" data-key="${esc(x.key)}" value="${esc(e.values[x.key] ?? '')}" autocomplete="off">${x.hint ? `<span class="sub">${esc(x.hint)}</span>` : ''}</label>`;
+  return `<h3>${esc(e.name)}</h3><div class="sub">${esc(e.description)}</div>`
+    + (e.uses.length ? `<div class="sub">Reads through ${esc(e.uses.join(', '))}, set up under Systems.</div>` : '')
+    + (e.missing.length ? `<div class="sub">Needs ${esc(e.missing.join(', '))}.</div>` : '')
+    + (e.settings.length ? e.settings.map(field).join('') : '<div class="sub">It has no settings.</div>')
+    + `<div class="row2">${e.settings.length ? '<button class="btn primary" data-act="saveskill">Save</button>' : ''}${e.configured ? '<button class="btn" data-act="testskill">Test</button>' : ''}<button class="btn" data-act="skills" style="margin-left:auto">Back</button></div>`;
+}
+
+async function openSkills() {
+  pv = { title: 'Skills', settings: { kind: 'skills', list: await api('/skills') } };
+  renderPv();
+}
+
+async function openSystems() {
+  pv = { title: 'Systems', settings: { kind: 'systems', list: await api('/systems') } };
+  renderPv();
+}
+
+async function openUsers() {
+  pv = { title: 'Users', settings: { kind: 'users', users: await api('/users') } };
+  renderPv();
 }
 
 async function preview(path, item) {
@@ -726,13 +863,13 @@ async function preview(path, item) {
 }
 
 async function upload(files, pane, onto) {
-  const by = who(), path = instPath(), mine = files.map(f => ({ f, pane, path, pct: 0 })), before = new Set(data.doc.items.map(i => i.file));
+  const path = instPath(), mine = files.map(f => ({ f, pane, path, pct: 0 })), before = new Set(data.doc.items.map(i => i.file));
   uploads.push(...mine);
   renderPanes();
   for (const u of mine) {
     await new Promise((ok, fail) => {
       const x = new XMLHttpRequest();
-      x.open('POST', `${path}/upload?by=${enc(by)}&pane=${pane}&name=${enc(u.f.name)}${onto ? '&onto=' + enc(onto) : ''}`);
+      x.open('POST', `${path}/upload?pane=${pane}&name=${enc(u.f.name)}${onto ? '&onto=' + enc(onto) : ''}`);
       x.upload.onprogress = e => { u.pct = 100 * e.loaded / e.total; renderPanes(); };
       x.onload = () => (x.status < 300 ? ok() : fail(new Error(x.responseText)));
       x.onerror = () => fail(new Error(`${u.f.name} didn't upload`));
@@ -773,13 +910,78 @@ document.addEventListener('click', async ev => {
   if (act === 'preview') await preview(el.dataset.file, data.doc.items.find(i => i.id === el.dataset.item));
   if (act === 'unpv') { pv = null; renderPv(); }
   if (act === 'settings') {
-    const w = tree.find(w => w.workspace === cur.workspace), s = w.series.find(s => s.series === cur.series);
-    pv = { title: 'Series settings', settings: { kind: 'series', name: s.series, others: w.series.map(x => x.series).filter(n => n !== s.series), chosen: s.visible_to, reads: s.reads, archived: s.archived } };
+    const w = tree.find(w => w.workspace === cur.workspace), s = w.series.find(s => s.series === cur.series), skillList = await api('/skills');
+    pv = { title: 'Series settings', settings: { kind: 'series', name: s.series, others: w.series.map(x => x.series).filter(n => n !== s.series), chosen: s.visible_to, skills: s.skills ?? [], skillList, reads: s.reads, archived: s.archived } };
     renderPv();
   }
-  if (act === 'workspace-settings') {
-    pv = { title: 'Workspace settings', settings: { kind: 'workspace', archived: tree.find(w => w.workspace === cur.workspace).archived } };
+  if (act === 'vis-fold') {
+    const open = pv.settings.open = !pv.settings.open;
+    $('#vis-list').hidden = !open;
+    el.textContent = open ? '▾' : '▸';
+    el.title = `${open ? 'Hide' : 'Show'} the series`;
+    el.setAttribute('aria-expanded', open);
+  }
+  if (act === 'systems') await openSystems();
+  if (act === 'skills') await openSkills();
+  if (act === 'editskill') { pv.settings.edit = pv.settings.list.find(s => s.id === el.dataset.id); renderPv(); }
+  if (act === 'saveskill') {
+    const e = pv.settings.edit, body = {};
+    for (const i of document.querySelectorAll('#pv .sk-set')) if (i.type !== 'password' || i.value) body[i.dataset.key] = i.type === 'password' ? i.value : i.value.trim();
+    const saved = await api(`/skills/${enc(e.id)}`, { method: 'PUT', body: JSON.stringify(body) });
+    toast(`Saved ${e.name}`, 'ok');
+    await openSkills();
+    pv.settings.edit = pv.settings.list.find(s => s.id === saved.id);
     renderPv();
+  }
+  if (act === 'testskill') {
+    el.disabled = true;
+    const was = el.textContent;
+    el.textContent = 'Testing…';
+    try { toast(await api(`/skills/${enc(pv.settings.edit.id)}/test`, { method: 'POST' }), 'ok'); } finally { el.disabled = false; el.textContent = was; }
+  }
+  if (act === 'editsys') { pv.settings.edit = pv.settings.list.find(s => s.id === el.dataset.id); renderPv(); }
+  if (act === 'savesys') {
+    const e = pv.settings.edit, val = id => document.getElementById(id)?.value.trim() ?? '';
+    const settings = Object.fromEntries([...document.querySelectorAll('#pv .ys-set')].map(i => [i.dataset.key, i.value.trim()]));
+    const body = { name: e.name, tenant: val('ys-tenant'), client_id: val('ys-client'), settings, ...(val('ys-pass') && { password: document.getElementById('ys-pass').value }) };
+    await api(`/systems/${enc(e.id)}`, { method: 'PUT', body: JSON.stringify(body) });
+    toast(`Saved ${body.name}`, 'ok');
+    await openSystems();
+  }
+  if (act === 'testsys') {
+    el.disabled = true;
+    const was = el.textContent;
+    el.textContent = 'Testing…';
+    try { toast(await api(`/systems/${enc(pv.settings.edit.id)}/test`, { method: 'POST' }), 'ok'); } finally { el.disabled = false; el.textContent = was; }
+  }
+  if (act === 'delsys') {
+    const e = pv.settings.edit;
+    if (!confirm(`Clear ${e.name}'s ids and secret? It stays on the list, not set up, and the skills that use it stop until it's set up again.`)) return;
+    await api(`/systems/${enc(e.id)}`, { method: 'DELETE' });
+    await openSystems();
+  }
+  if (act === 'workspace-settings') await openWorkspaceSettings();
+  if (act === 'users') await openUsers();
+  if (act === 'signout') location.href = (await api('/auth/logout', { method: 'POST' })).next;
+  if (act === 'saveowner') {
+    await api(`/api/${enc(cur.workspace)}`, { method: 'PUT', body: JSON.stringify({ owner: $('#wowner').value || null }) });
+    toast('Owner saved', 'ok');
+    await refresh();
+    await openWorkspaceSettings();
+  }
+  if (act === 'adduser') {
+    await api('/users', { method: 'POST', body: JSON.stringify({ email: $('#uemail').value.trim(), role: $('#urole').value }) });
+    await openUsers();
+  }
+  if (act === 'disable') {
+    await api(`/users/${enc(el.dataset.email)}`, { method: 'PUT', body: JSON.stringify({ disabled: !!el.dataset.on }) });
+    toast(el.dataset.on ? `${el.dataset.email} is disabled and signed out` : `${el.dataset.email} can sign in again`, 'ok');
+    await openUsers();
+  }
+  if (act === 'deluser') {
+    if (!confirm(`Remove ${el.dataset.email}? Their workspaces stay, with no owner, so only admins see them.`)) return;
+    await api(`/users/${enc(el.dataset.email)}`, { method: 'DELETE' });
+    await openUsers();
   }
   if (act === 'archive') {
     const s = pv.settings;
@@ -790,8 +992,9 @@ document.addEventListener('click', async ev => {
   }
   if (act === 'savesettings') {
     const name = $('#sname').value.trim();
-    const visible_to = [...document.querySelectorAll('#pv input:checked')].map(i => i.value);
-    await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ name, visible_to, archived: pv.settings.archived }) });
+    const visible_to = $('#vis-all').checked ? ['*'] : [...document.querySelectorAll('#pv input.vis:checked')].map(i => i.value);
+    const skills = [...document.querySelectorAll('#pv input.skill:checked')].map(i => i.value);
+    await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ name, visible_to, skills, archived: pv.settings.archived }) });
     pv = null;
     renderPv();
     if (name !== cur.series) return go(cur.workspace, name, cur.label);
@@ -800,7 +1003,7 @@ document.addEventListener('click', async ev => {
   if (act === 'rename') {
     const label = (prompt('New label:', cur.label) || '').trim();
     if (!label || label === cur.label) return;
-    await api(`${instPath()}/rename?as=${enc(label)}&by=${enc(who())}`, { method: 'POST' });
+    await api(`${instPath()}/rename?as=${enc(label)}`, { method: 'POST' });
     go(cur.workspace, cur.series, label);
   }
   if (act === 'compare') {
@@ -812,7 +1015,7 @@ document.addEventListener('click', async ev => {
   if (act === 'duplicate') {
     const label = (prompt('Label for the copy:', `${cur.label} copy`) || '').trim();
     if (!label) return;
-    await api(`${instPath()}/duplicate?as=${enc(label)}&by=${enc(who())}`, { method: 'POST' });
+    await api(`${instPath()}/duplicate?as=${enc(label)}`, { method: 'POST' });
     go(cur.workspace, cur.series, label);
   }
   if (act === 'sheet') { pv.sheet = Number(el.dataset.k); renderPv(); }
@@ -828,25 +1031,25 @@ document.addEventListener('click', async ev => {
     p.click();
   }
   if (act === 'answer') {
-    await api(`${instPath()}/answer?by=${enc(who())}`, { method: 'POST', body: JSON.stringify({ note: el.dataset.note, choice: Number(el.dataset.choice) }) });
+    await api(`${instPath()}/answer`, { method: 'POST', body: JSON.stringify({ note: el.dataset.note, choice: Number(el.dataset.choice) }) });
     await refresh();
   }
   if (act === 'close') {
     const qs = data.doc.items.flatMap(i => i.notes ?? []).filter(n => n.options && questionState(n) === null);
     const msg = `Close ${cur.label}? It becomes an example for later instances.` + (qs.length ? '\n\nUnanswered questions take their defaults:\n' + qs.map(n => `• ${n.options[n.default ?? 0]}`).join('\n') : '');
     if (!confirm(msg)) return;
-    await api(`${instPath()}/close?by=${enc(who())}`, { method: 'POST' });
+    await api(`${instPath()}/close`, { method: 'POST' });
     await refresh();
   }
   if (act === 'abandon') {
     if (!confirm(`Abandon ${cur.label}? It stays as it is, but isn't an example or a starting point for later instances.`)) return;
-    await api(`${instPath()}/abandon?by=${enc(who())}`, { method: 'POST' });
+    await api(`${instPath()}/abandon`, { method: 'POST' });
     await refresh();
   }
   if (act === 'new-instance') {
     const label = (prompt('Label for the new instance, such as a date:') || '').trim();
     if (!label) return;
-    await api(`${seriesPath(cur)}/${enc(label)}?by=${enc(who())}`, { method: 'POST' });
+    await api(`${seriesPath(cur)}/${enc(label)}`, { method: 'POST' });
     go(cur.workspace, cur.series, label);
   }
   if (act === 'new-series') {
@@ -864,17 +1067,27 @@ document.addEventListener('click', async ev => {
 });
 
 $('#picker').addEventListener('change', e => upload([...e.target.files], e.target.dataset.pane, e.target.dataset.onto));
+$('#pv').addEventListener('change', async e => {
+  if (e.target.id === 'vis-all') {
+    for (const k of document.querySelectorAll('#pv input.vis')) k.checked = e.target.checked;
+    return syncVisibility();
+  }
+  if (e.target.matches('input.vis')) return syncVisibility();
+  if (!e.target.matches('select[data-act=role]')) return;
+  await api(`/users/${enc(e.target.dataset.email)}`, { method: 'PUT', body: JSON.stringify({ role: e.target.value }) }).catch(() => {});
+  await openUsers();
+});
 $('#compose').addEventListener('submit', async e => {
   e.preventDefault();
   const text = $('#steer').value.trim();
   if (!text) return;
   $('#steer').value = '';
-  await api(`${instPath()}/steer?by=${enc(who())}`, { method: 'POST', body: JSON.stringify({ text }) }).catch(() => { $('#steer').value = text; });
+  await api(`${instPath()}/steer`, { method: 'POST', body: JSON.stringify({ text }) }).catch(() => { $('#steer').value = text; });
   await refresh();
 });
 $('#interrupt').addEventListener('click', async () => {
   if (!data?.run) return;
-  await api(`${instPath()}/interrupt?by=${enc(who())}`, { method: 'POST' });
+  await api(`${instPath()}/interrupt`, { method: 'POST' });
   await refresh();
 });
 

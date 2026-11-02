@@ -1,6 +1,17 @@
 import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { basename, dirname, extname, join, normalize, relative } from 'node:path';
+import { basename, dirname, extname, join, posix, relative, sep } from 'node:path';
+
+// Paths in the screen are /-separated on every system.
+const normalize = posix.normalize;
+
+// Writes a read-only file whole, by renaming a temporary file into place. Windows refuses to rename over a read-only file, so there
+// the old one is made writable first.
+export function replaceReadOnly(path: string, text: string) {
+  writeFileSync(path + '.tmp', text, { mode: 0o444 });
+  if (process.platform === 'win32' && existsSync(path)) chmodSync(path, 0o644);
+  renameSync(path + '.tmp', path);
+}
 
 export type Note = { id?: string; ref?: string; text: string; files?: string[]; options?: string[]; default?: number };
 export type Item = { id: string; name: string; kind: 'input' | 'step' | 'output'; file: string | null; from?: string[]; headline?: string; source?: string; notes?: Note[] };
@@ -96,9 +107,7 @@ export class Instance {
 
   save() {
     this.doc.rev++;
-    const ws = join(this.dir, 'workspace.json');
-    writeFileSync(ws + '.tmp', JSON.stringify(this.doc, null, 1), { mode: 0o444 });
-    renameSync(ws + '.tmp', ws);
+    replaceReadOnly(join(this.dir, 'workspace.json'), JSON.stringify(this.doc, null, 1));
   }
 
   closedAt(): string {
@@ -170,7 +179,7 @@ export class Instance {
       for (const n of i.notes ?? []) {
         if (typeof n.text !== 'string' || !n.text) errors.push(`${i.id}: a note has no text`);
         for (const f of n.files ?? []) {
-          const rel = typeof f === 'string' && normalize(f) === f ? relative(this.series(), join(this.dir, f)) : '';
+          const rel = typeof f === 'string' && normalize(f) === f ? relative(this.series(), join(this.dir, f)).split(sep).join('/') : '';
           if (!/^[^/.][^/]*\/(upload|working)\/./.test(rel)) errors.push(`${i.id}: cited file ${JSON.stringify(f)} must be under upload/ or working/ of this instance or another, such as ../<label>/working/...`);
           else if (!existsSync(join(this.dir, f)) || !statSync(join(this.dir, f)).isFile()) errors.push(`${i.id}: no file ${f}`);
         }

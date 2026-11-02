@@ -5,3 +5,6 @@ demo/data/
 __pycache__/
 demo/run/
 .env
+data/
+.history/
+docs/try-output/

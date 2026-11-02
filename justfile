@@ -26,17 +26,17 @@ test:
 live := "rf-tailnet"
 cache := home_directory() / ".cache" / live
 
-# Print an invite link for NAME; it sets up their authenticator app, once
-invite name:
-    @echo "https://$(tailscale status --json | jq -r '.Self.DNSName | rtrimstr(".")')$(podman exec {{live}} node src/access.ts /data invite '{{name}}')"
+# Let EMAIL sign in with Microsoft, as a user or, with role=admin, an admin
+invite email role="user":
+    podman exec {{live}} node src/auth.ts /data add '{{email}}' {{role}}
 
-# Cut NAME off: their link, code and sessions stop working at once
-revoke name:
-    podman exec {{live}} node src/access.ts /data revoke '{{name}}'
+# Cut EMAIL off: their sessions end and they can no longer sign in
+revoke email:
+    podman exec {{live}} node src/auth.ts /data disable '{{email}}'
 
-# List who is set up and who has an unused invite
+# List who can sign in, with their role and last sign-in
 people:
-    podman exec {{live}} node src/access.ts /data list
+    podman exec {{live}} node src/auth.ts /data list
 
 # Follow the live demo's log
 logs:

@@ -5,8 +5,11 @@ Recurring tasks, files in and files out. People drop this period's input files i
 ![An instance: inputs, steps and outputs, joined by what each is made from](docs/screenshots/instance.png)
 
 - **The agent** is [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent), run over RPC with read, bash, edit and write tools, in the series folder. It copies and adapts the previous instance's scripts, so each instance's `working/` is a complete record of how its outputs were made.
+- **Skills** reach systems outside the series, for the series that choose them. They are each deployment's own, in the folder `RF_SKILLS_DIR` names; none ship with this repo.
 - **Inputs** are uploads, or sources a person points the agent to, such as a database, a mailbox folder or a web API. The agent keeps a frozen copy of what it read, and the tile shows where it came from.
-- **Workspaces hold series,** such as one client's. A workspace or a series can be archived, which hides it until it's restored.
+- **Workspaces hold series,** such as one client's. Each belongs to one person, who alone sees it, besides admins. A workspace or a series can be archived, which hides it until it's restored.
+- **People sign in with Microsoft,** with one button.
+- **Skill use:** a series picks skills, such as fetching the day's A/R aging from OneDrive or a customer's payments from its vendor portal. Admins set each up once, with its links and, for a website, the account the server signs in with; the agent never sees the password.
 - **Series can share.** A series can let other series read it, one way.
 - **Everything is files on disk.** Each instance has `upload/` (people's files), `working/` (the agent's), `workspace.json` (what the screen shows) and `log.jsonl` (every event).
 
@@ -18,7 +21,7 @@ Recurring tasks, files in and files out. People drop this period's input files i
 
 ## Try it
 
-    cp .env.example .env          # set OPENROUTER_API_KEY
+    cp .env.example .env          # set OPENROUTER_API_KEY, and RF_SKILLS_DIR for your skills
     docker compose up --build     # then open http://127.0.0.1:8780
 
 The image comes with a demo series that is already populated: a weekly borrowing base for a made-up housewares company, nine weeks the agent has done.
@@ -30,19 +33,46 @@ The image comes with a demo series that is already populated: a weekly borrowing
 
 ## Access
 
-Until someone is invited there is no sign-in, so keep the site on localhost. After that, each person sets up an authenticator app from a one-time link, and the site asks for their name and a code and keeps the browser in for 7 days. Each wrong code doubles the wait before the next try, up to 5 minutes.
+People sign in with one button, **Sign in with Microsoft**, and type nothing.
 
-    docker compose exec rollforward node src/access.ts /data invite alice   # prints /join/...: send alice the site's address with it
-    docker compose exec rollforward node src/access.ts /data list
-    docker compose exec rollforward node src/access.ts /data revoke alice   # her link, code and sessions stop working at once
+- **Demo (the default):** the button leads to a picker of two demo accounts: `admin@demo.test`, an admin, and `bob@demo.test`, a user. Anyone who reaches the site can be the demo admin, so keep it on localhost.
+- **Your organisation's Microsoft accounts:** with an app registered in Microsoft Entra ID, set in `.env` (see `.env.example`) `RF_OIDC_ISSUER` (`https://login.microsoftonline.com/<tenant id>/v2.0`), `RF_OIDC_CLIENT_ID` and `RF_PUBLIC_URL`, then match the app's registration:
+  - its redirect: `RF_OIDC_REDIRECT_URI`, exactly as registered (by default `RF_PUBLIC_URL/auth/callback`; the site's root works too);
+  - a **Web** app: its client secret in `RF_OIDC_CLIENT_SECRET`. A public client (Mobile and desktop) needs none;
+  - a **Single-page application**: `RF_OIDC_SPA=1`, and no secret. The browser then redeems the sign-in, as Microsoft requires, and the server checks the token's signature.
 
-A link works until it's used. Each time it's opened it shows a new key, so a mail scanner that opens it first learns nothing. Inviting someone again moves them to a new phone. The list is `.access.json` in the data root.
+  The same button then goes to Microsoft. `RF_ADMINS` names the admins; `RF_ALLOWED_DOMAINS` and `RF_AUTO_PROVISION=0` narrow who may come in. Start with `node --env-file=.env src/server.ts DATA_ROOT` without Docker. Microsoft takes http redirects only on localhost, so open the site as `http://localhost:8780`, not `127.0.0.1`; for others to reach it, register an https address.
+- **What people see:** each workspace has one owner. A user sees only the workspaces they own, with their series and files. Admins see every workspace, give one to someone in its settings, and manage people on the Users page. The same from a shell:
 
-To reach it from the internet, run `tailscale funnel --bg 8780`.
+      docker compose exec rollforward node src/auth.ts /data list
+      docker compose exec rollforward node src/auth.ts /data add alice@example.com [admin]
+      docker compose exec rollforward node src/auth.ts /data disable alice@example.com   # her sessions end at once
 
-For a demo run in podman behind Tailscale Funnel, the justfile has `just invite NAME`, which prints the whole link, `just revoke NAME`, `just people`, `just logs`, and `just deploy`, which rebuilds it from the committed main branch.
+Sessions last 12 hours (`RF_SESSION_HOURS`). The people, the owners and the session key are in `.rf/` in the data root.
 
-**Security:** anyone who can open the site, signed in once people are invited, can steer the agent, which runs shell commands inside the container: it can read the API key, everyone's keys and every series, and reach whatever the host can reach.
+## Skill use
+
+A series picks, in its settings, the **skills** its agent may use; choosing none is fine. A skill is what to fetch or do, and how, whole in a folder `<id>/` under `RF_SKILLS_DIR`: a `SKILL.md` for the agent, a `skill.json` naming the Microsoft 365 connections it reads through and its settings, and what it runs (scripts, or flows the server runs in the skill's website, with a `signin.ts` where signing in takes more than a name and a password).
+
+| Kind of skill | Reads through | Fetches, for example |
+| --- | --- | --- |
+| A OneDrive file | M365 OneDrive | the day's AR aging file from its folder |
+| A mail attachment | M365 Mail | the Excel attachment of the day's report mail |
+| A vendor portal | its website; M365 Mail for sign-in codes | the portal's payments and unpaid items, as csv |
+
+Admins set things up at the foot of the sidebar, once for every series:
+- **Skills:** each skill's settings, such as a folder link, or for a website its address, account and password. Passwords are sealed in `.rf/` and never shown again, and the agent never sees them. Until a skill is set up a series can choose it, but the agent can't use it.
+- **Systems:** the two Microsoft 365 apps the skills read through, each registered in Entra ID: its tenant id, client id and client secret. The server only ever reads with them: **M365 Mail** needs `Mail.Read` (best limited to its mailbox by an application access policy), **M365 OneDrive** read access to the folders (such as `Sites.Selected` with read).
+
+**Test** on each row checks it for real; a website skill signs in, code and all. A website skill's browser stays on the site's own hosts and makes no write.
+
+From a shell, without the model: `node --env-file=.env src/cli.ts DATA_ROOT test SKILL|CONNECTION`, and `… DATA_ROOT try aging -- python "$RF_SKILLS/aging/scripts/fetch.py"` (or `try portal -- rf flow portal/payments`) runs a skill as a run with it would. Set `RF_TODAY` in `.env` to test against a day that has data. Without Docker, the browser needs `node node_modules/playwright/cli.js install chromium` once.
+
+To reach it from the internet, run `tailscale funnel --bg 8780`, with Microsoft sign-in configured.
+
+For a demo run in podman behind Tailscale Funnel, the justfile has `just invite EMAIL [admin]`, `just revoke EMAIL`, `just people`, `just logs`, and `just deploy`, which rebuilds it from the committed main branch.
+
+**Security:** anyone signed in can steer the agents of their own workspaces, which run shell commands inside the container: they can read the model's API key and every series, and reach whatever the host can reach.
 
 ## Without Docker
 
@@ -62,6 +92,7 @@ The [justfile](justfile) has these and more as recipes; `just` lists them.
   - `RF_LIMIT_MIN` (120)
   - `RF_PI_ARGS` (a JSON array of extra Pi arguments)
   - `RF_HOST` (`127.0.0.1`)
+  - `RF_SKILLS_DIR`, the folder of this deployment's skills, and any keys they need
 
 To build the demo from scratch (about $4 of model use; the generator needs the internet for the ECB rates):
 
