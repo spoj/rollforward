@@ -290,7 +290,7 @@ The risk is whether an agent can learn a real deliverable from examples, so the 
 
 - **TypeScript on Node,** with `node:http` and no framework or build step. The page will be one HTML file with plain JS. Pi's `RpcClient` is TypeScript, so the runner lives in the server.
 - **Python** for the agent's own scripts, from `.venv`, with Playwright for driving a website's browser.
-- **The machines service,** a repo of its own, next to the server as a user of its own or on a host of its own: browsers in podman containers and Windows virtual machines in QEMU, reached at `RF_MACHINES_URL` with `RF_MACHINES_KEY`. Without it, all but websites and `rf windows` works.
+- **The machines service,** a repo of its own ([spoj/machines](https://github.com/spoj/machines)), next to the server as a user of its own or on a host of its own: browsers in podman containers and Windows virtual machines in QEMU, reached at `RF_MACHINES_URL` with `RF_MACHINES_KEY`. Without it, all but websites and `rf windows` works.
 
 ## Later (not in v0)
 
