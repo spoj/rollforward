@@ -461,8 +461,14 @@ test('rf for people: ls, comment, and admins manage people from it', async () =>
     p.on('exit', code => (code ? fail(new Error(out)) : ok(out)));
   });
   assert.equal((await rf('login', base, token)).trim(), `signed in as ${adminEmail}`);
+  const asToken = (method: string, path: string, body?: string) => fetch(base + path, { method, body, headers: { authorization: `Bearer ${token}` } });
+  assert.equal((await asToken('POST', '/tokens', JSON.stringify({ name: 'more', days: 90 }))).status, 403, 'a token makes no tokens');
+  assert.equal((await asToken('DELETE', '/tokens/x')).status, 403);
+  assert.equal((await call('POST', '/tokens', JSON.stringify({ name: 'long', days: 365 }))).status, 400, 'at most 90 days');
   assert.match(await rf('ls'), /^larkfield\/Weekly borrowing base\/2026-08-30  closed/m);
   await rf('comment', `larkfield/${series}/talk`, 'From the shell');
+  assert.match(await rf('pull', join(tmp, 'pulled')), /instances, \d+ files fetched/);
+  assert.ok(existsSync(join(tmp, 'pulled', 'larkfield', series, '2026-08-30', 'screen.json')));
   assert.equal((await json(await at(series, 'talk'))).log.at(-1).text, 'From the shell');
   await rf('user', 'add', 'carol@demo.test', 'publisher');
   assert.match(await rf('users'), /^carol@demo\.test\tpublisher/m);

@@ -450,11 +450,13 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       writeFileSync(guidanceFile(), (await body(req)).toString());
       send(res, 200, 'ok');
     } else if (url.pathname === '/tokens' && req.method === 'GET') send(res, 200, myTokens(me.email));
-    else if (url.pathname === '/tokens' && req.method === 'POST') {
+    else if ((url.pathname === '/tokens' && req.method === 'POST') || (url.pathname.startsWith('/tokens/') && req.method === 'DELETE')) {
+      // Made and revoked on the page only: a token that could make tokens would outlive its own revocation.
+      if (!session(req)) throw new HttpError(403, 'tokens are made and revoked on the page');
+      if (req.method === 'DELETE') return send(res, 200, (revokeToken(me.email, decodeURIComponent(url.pathname.slice(8))), 'ok'));
       const { name, days } = await json(req);
       send(res, 200, { token: newToken(me.email, String(name ?? '').trim(), Number(days)) });
-    } else if (url.pathname.startsWith('/tokens/') && req.method === 'DELETE') send(res, 200, (revokeToken(me.email, decodeURIComponent(url.pathname.slice(8))), 'ok'));
-    else if (url.pathname === '/rf.ts') {
+    } else if (url.pathname === '/rf.ts') {
       res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'content-disposition': 'attachment; filename=rf.ts' });
       res.end(readFileSync(join(app, 'src', 'rf-people.ts')));
     } else if (url.pathname === '/logins' && req.method === 'GET') send(res, 200, logins(me.email));

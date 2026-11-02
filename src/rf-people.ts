@@ -2,7 +2,7 @@
 // Needs Node 22.18 or later. PATH is workspace/series/label, as `rf ls` prints it.
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, join, relative } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
 const USAGE = `rf login URL TOKEN
 rf ls
@@ -57,7 +57,11 @@ function write(path: string, data: string | Uint8Array) {
   chmodSync(path, 0o444);
 }
 
-// Pulls what changed since the last pull, by each instance's files' sizes and times, and removes what moved or went.
+// A path the server named, under `base`, or undefined: on Windows a file's name may hold \ and lead out of it.
+const under = (base: string, rel: string) => resolve(base, rel).startsWith(resolve(base) + sep) ? resolve(base, rel) : undefined;
+
+// Pulls what changed since the last pull, by each instance's files' sizes and times, and removes what moved or went. A file that fails
+// is said and fetched again next time.
 async function pull(dir: string) {
   const manifest = join(dir, '.rf-pull.json'), had = existsSync(manifest) ? JSON.parse(readFileSync(manifest, 'utf8')) : {};
   const now: Record<string, { path: string; files: Record<string, string> }> = {}, tree = await get('/api');
@@ -74,12 +78,25 @@ async function pull(dir: string) {
     write(join(dir, mine.path, 'log.jsonl'), d.log.map(e => JSON.stringify(e)).join('\n') + '\n');
     write(join(dir, mine.path, 'trace.json'), JSON.stringify(await get(`${at}/trace`), null, 1));
     for (const f of await get(`${at}/files`)) {
+      const path = under(join(dir, mine.path), f.path);
+      if (!path) {
+        console.error(`skipped ${mine.path}/${f.path}: it leads out of its folder`);
+        continue;
+      }
       mine.files[f.path] = `${f.size} ${f.mtime}`;
       if (was[f.path] === mine.files[f.path]) continue;
-      write(join(dir, mine.path, f.path), new Uint8Array(await (await api(`/files/${id}/${f.path.split('/').map(encodeURIComponent).join('/')}`)).arrayBuffer()));
-      fetched++;
+      try {
+        write(path, new Uint8Array(await (await api(`/files/${id}/${f.path.split('/').map(encodeURIComponent).join('/')}`)).arrayBuffer()));
+        fetched++;
+      } catch (e) {
+        mine.files[f.path] = '';
+        console.error(`${mine.path}/${f.path}: ${(e as Error).message}`);
+      }
     }
-    for (const gone of Object.keys(was).filter(p => !(p in mine.files))) rmSync(join(dir, mine.path, gone), { force: true });
+    for (const gone of Object.keys(was).filter(p => !(p in mine.files))) {
+      const path = under(join(dir, mine.path), gone);
+      if (path) rmSync(path, { force: true });
+    }
   }
   writeFileSync(manifest, JSON.stringify(now));
   console.log(`${Object.keys(now).length} instances, ${fetched} files fetched, into ${dir}`);
@@ -102,10 +119,12 @@ else if (cmd === 'comment' && args.length === 2) {
   const seq = (await get(at)).log.at(-1).seq;
   if (!flags.wait) console.log(`commented, seq ${seq}`);
   else for (;;) {
+    // The run that saw the comment, and what it said from then on: a run ending as it came may not have.
     await new Promise(r => setTimeout(r, 5000));
-    const log = (await get(at)).log, done = log.find(e => e.seq > seq && e.op === 'done');
+    const log = (await get(at)).log, done = log.find(e => e.op === 'done' && e.seen >= seq);
     if (!done) continue;
-    for (const e of log.filter(e => e.seq > seq && (e.op === 'say' || e.op === 'report'))) console.log(`${e.op === 'say' ? `In thread ${e.thread}` : 'Report'}:\n${e.text}\n`);
+    const from = Math.max(seq, log.find(e => e.op === 'run' && e.run === done.run).seq);
+    for (const e of log.filter(e => e.seq > from && e.seq < done.seq && (e.op === 'say' || e.op === 'report'))) console.log(`${e.op === 'say' ? `In thread ${e.thread}` : 'Report'}:\n${e.text}\n`);
     if (done.error) console.log(`The run failed: ${done.error}`);
     break;
   }
@@ -132,8 +151,8 @@ else if (cmd === 'comment' && args.length === 2) {
   }
 } else if (cmd === 'skill' && args[0] === 'push' && args[1]) {
   const files = Object.fromEntries(readdirSync(args[1], { recursive: true, withFileTypes: true }).filter(d => d.isFile())
-    .map(d => [relative(args[1], join(d.parentPath, d.name)), readFileSync(join(d.parentPath, d.name)).toString('base64')]));
-  console.log(await (await post(`/skills/${encodeURIComponent(basename(args[1].replace(/\/$/, '')))}/versions`, { files })).text());
+    .map(d => [relative(args[1], join(d.parentPath, d.name)).split(sep).join('/'), readFileSync(join(d.parentPath, d.name)).toString('base64')]));
+  console.log(await (await post(`/skills/${encodeURIComponent(basename(resolve(args[1])))}/versions`, { files })).text());
 } else if (cmd === 'skill' && args[0] === 'versions' && args[1]) {
   for (const v of await get(`/skills/${encodeURIComponent(args[1])}/versions`)) console.log(`${v.version}  ${v.at}  ${v.by}`);
 } else if (cmd === 'skill' && args[0] === 'rollback' && args.length === 3) {

@@ -75,7 +75,7 @@ const digest = (token: string) => createHash('sha256').update(token).digest('hex
 const tokens = () => readJson<Record<string, Token>>('tokens.json', {});
 
 export function newToken(email: string, name: string, days: number): string {
-  if (!name || !(days >= 1 && days <= 365)) throw new HttpError(400, 'a token has a name and lasts 1 to 365 days');
+  if (!name || !(days >= 1 && days <= 90)) throw new HttpError(400, 'a token has a name and lasts 1 to 90 days');
   const token = `rft_${randomBytes(24).toString('base64url')}`, all = tokens(), now = Date.now();
   all[digest(token)] = { id: randomBytes(6).toString('hex'), email, name, created: new Date(now).toISOString(), expires: new Date(now + days * 86_400_000).toISOString(), epoch: users()[email].epoch ?? 0 };
   writeJson('tokens.json', all);
