@@ -111,7 +111,7 @@ describe('website logins', { skip: !process.env.RF_MACHINES_URL && 'needs the ma
     assert.match(await rf(unticked, 'browser', 'open', 'portal'), /web:portal is not ticked for this instance/);
     await unticked.close();
 
-    const dir = join(tmp, 'w1'), api = await serveAgent(stand(dir, ['web:portal']));
+    const dir = join(tmp, 'w1'), run = stand(dir, ['web:portal']), api = await serveAgent(run);
     const cdp = await rf(api, 'browser', 'open', 'portal');
     assert.match(cdp, /^ws:\/\/127\.0\.0\.1:\d+\/browser\/[\w-]+\/\w+$/);
     assert.equal(await rf(api, 'browser', 'open', 'portal'), cdp, 'one browser per site and run');
@@ -124,6 +124,11 @@ describe('website logins', { skip: !process.env.RF_MACHINES_URL && 'needs the ma
     const [download] = await Promise.all([page.waitForEvent('download'), page.click('a')]);
     assert.equal(await rf(api, 'browser', 'get', 'portal', await download.path(), 'invoices.csv'), 'saved working/invoices.csv');
     assert.equal(readFileSync(join(dir, 'working', 'invoices.csv'), 'utf8'), 'no,amount\n1,10\n');
+    assert.match(await rf(api, 'browser', 'get', 'portal', '../../../sessions', 'all.json'), /a path without \. or \.\. in it/);
+    run.log.push({ op: 'takeover', by: ADMIN, logins: [] });
+    assert.match(await rf(api, 'browser', 'open', 'portal'), /web:portal is not ticked/, 'checked again at every call');
+    assert.match(await rf(api, 'browser', 'get', 'portal', await download.path(), 'again.csv'), /web:portal is not ticked/);
+    run.log.pop();
     await browser.close();
     await api.close();
 

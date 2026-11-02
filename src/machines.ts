@@ -36,7 +36,12 @@ function call(method: string, path: string, body?: unknown): Promise<Buffer> {
   });
 }
 const json = async (method: string, path: string, body?: unknown) => JSON.parse((await call(method, path, body)).toString());
-const files = (id: string, path: string) => `/sessions/${id}/files/${path.replace(/\\/g, '/').replace(/^\//, '').split('/').map(encodeURIComponent).join('/')}`;
+// A file on a session's machine, its parts encoded and none . or .., which would lead out of the session to the service's other calls.
+function files(id: string, path: string) {
+  const parts = path.replace(/\\/g, '/').replace(/^\//, '').split('/');
+  if (parts.some(p => p === '.' || p === '..')) throw new HttpError(400, `${path}: a path without . or .. in it`);
+  return `/sessions/${id}/files/${parts.map(encodeURIComponent).join('/')}`;
+}
 
 const open = async (site: string, ttl_s: number, state?: unknown): Promise<string> => (await json('POST', '/sessions', { kind: 'browser', site: siteOf(site), state, ttl_s })).id;
 const close = (id: string): Promise<{ state: unknown; log: { blocked?: string }[] }> => json('DELETE', `/sessions/${id}`);
@@ -95,9 +100,12 @@ export class Machines {
     this.run = run;
   }
 
+  // Checked at every call, so a login its runner can no longer lend stops at the next one; a connection already open lasts until
+  // the run ends.
   async browser(site: string): Promise<string> {
-    if (this.browsers.has(site)) return this.browsers.get(site)!.id;
-    const { email, login } = use(this.inst, `web:${site}`);
+    const { email, login } = use(this.inst, `web:${site}`), had = this.browsers.get(site);
+    if (had && had.email !== email) throw new HttpError(409, `this run's browser on ${site} is in ${had.email}'s login, and ${email} has taken the instance over: the next run opens one in theirs`);
+    if (had) return had.id;
     const id = await open(site, 7200, JSON.parse(secret(email, login.id)));
     this.browsers.set(site, { id, email });
     return id;
@@ -105,9 +113,9 @@ export class Machines {
 
   owns = (id: string) => [...this.browsers.values()].some(s => s.id === id);
 
-  browserFile(site: string, path: string): Promise<Buffer> {
+  async browserFile(site: string, path: string): Promise<Buffer> {
     if (!this.browsers.has(site)) throw new HttpError(409, `no browser on ${site} in this run: rf browser open ${site} first`);
-    return call('GET', files(this.browsers.get(site)!.id, path));
+    return call('GET', files(await this.browser(site), path));
   }
 
   async windowsId(): Promise<string> {
