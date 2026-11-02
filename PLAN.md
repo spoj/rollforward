@@ -124,7 +124,7 @@ The schemas are loose, and unknown fields are ignored, so the agent and the UI c
 
     {
       "rev": 31,
-      "status": "open",                         // the server sets "closed" or "abandoned"
+      "status": "open",                         // the server sets "closed" or "abandoned"; a put may leave it out
       "items": [
         {"id": "ar-aging", "name": "AR aging", "kind": "input",
          "file": "upload/Larkfield AR aging 082426_2.xlsx",

@@ -27,8 +27,8 @@ a { color: inherit; }
 .row.adhoc { margin-top: 6px; border-top: 1px solid var(--rule); border-radius: 0; }
 .row.adhoc .nm { font-style: italic; }
 .row.wake, .row.req { font-size: 12px; color: var(--ink-2); }
-.row .nm { flex: 1; min-width: 0; padding: 5px 0; text-decoration: none; overflow-wrap: anywhere; }
-.row .n { color: var(--ink-3); font-size: 12px; font-weight: 400; white-space: nowrap; padding-left: 6px; }
+.row .nm { flex: 0 1 auto; min-width: 45%; padding: 5px 0; text-decoration: none; overflow-wrap: anywhere; }
+.row .n { flex: 1 1 0; min-width: 0; color: var(--ink-3); font-size: 12px; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; padding-left: 6px; }
 .head { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
 .ws { font-size: 14px; font-weight: 600; }
 .tree { margin-left: 14px; padding-left: 4px; border-left: 1px solid var(--rule-2); }
