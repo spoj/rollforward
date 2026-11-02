@@ -55,7 +55,7 @@ Built: logins sealed per person, ticks at every start, copy and takeover, runner
 
 ## Waking
 
-Built (PLAN.md, What starts a run, decision 36), but for the home page's list of what waits on you, and for Allow wakes' login ticks, which come with the logins. Schedules are gone: a run is started by a person, by an upload or answer, or by a wake.
+Built (PLAN.md, What starts a run, decision 36), with Allow wakes' login ticks and Waiting on you at the top of the sidebar. Schedules are gone: a run is started by a person, by an upload or answer, or by a wake.
 
 - **`rf wake TARGET AT REASON`:**
   - **An open instance** (this one if none is named): continues it, as its runner, as a reply does.

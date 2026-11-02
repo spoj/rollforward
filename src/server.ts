@@ -79,7 +79,7 @@ function listing(me: Me) {
       reads: reach(t, sid).map(r => named(t, r).replace('/', ' / ')), wake: w8.pending[sid] ?? null,
       requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r })),
       instances: instances(sid).map(i => ({
-        id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(sid)?.inst === i, queued: queued(i), questions: questions(i), wake: w8.pending[i.id]?.at ?? null,
+        id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(sid)?.inst === i, queued: queued(i), questions: questions(i), wake: w8.pending[i.id]?.at ?? null, runner: runnerOf(i).by,
         cost: +i.log.reduce((t, e) => t + ((e.cost as number | undefined) ?? 0), 0).toFixed(4),
       })),
     })),

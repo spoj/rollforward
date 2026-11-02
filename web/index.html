@@ -36,7 +36,10 @@ a { color: inherit; }
 .ser.on { color: var(--ink); font-weight: 600; }
 .inst { font-size: 13px; color: var(--ink-2); }
 .inst.on { background: #e7eaee; color: var(--ink); font-weight: 500; }
-.inst .q { color: var(--note); }
+.inst .q, .waits .q { color: var(--note); }
+.waits { margin-bottom: 8px; cursor: pointer; }
+.wt { padding: 7px 0; border-bottom: 1px solid var(--rule); }
+.wt .btn { margin-left: 8px; }
 .inst.abandoned .nm { text-decoration: line-through; }
 .archived .nm { color: var(--ink-3); }
 .add { all: unset; cursor: pointer; flex: none; width: 24px; height: 24px; display: grid; place-items: center; border-radius: var(--r1); color: var(--ink-3); font-size: 17px; line-height: 1; }
@@ -319,7 +322,7 @@ function fileUrl(path, kind = 'files') {
 }
 const ext = f => (f && f.includes('.') ? f.split('.').pop() : '').toUpperCase();
 
-let tree = [], cur = null, data = null, lines = [], linesKey = '', openItem = null, hover = null, showClosed = false, showArchived = false, pv = null, me = null;
+let tree = [], expired = [], cur = null, data = null, lines = [], linesKey = '', openItem = null, hover = null, showClosed = false, showArchived = false, pv = null, me = null;
 let seen = {}, prevSigs = {}, uploads = [], shown = '', refreshes = 0;
 const sig = i => `${i.file}|${i.notes?.length ?? 0}|${i.headline ?? ''}`;
 
@@ -358,7 +361,7 @@ const go = id => { location.hash = '#/' + id; };
 
 async function refresh() {
   me ??= await api('/me');
-  const n = ++refreshes, t = await api('/api');
+  const n = ++refreshes, [t, mine] = await Promise.all([api('/api'), api('/logins')]);
   const id = location.hash.slice(2), all = t.flatMap(w => [[w], ...w.series.flatMap(s => [[w, s], ...s.instances.map(i => [w, s, i])])]);
   let [w, s, i] = all.find(e => e.at(-1).id === id) ?? [t.find(w => !w.archived)];
   s ??= w?.series.find(s => !s.archived && !s.adhoc) ?? w?.series.find(s => !s.archived);
@@ -368,7 +371,7 @@ async function refresh() {
   const key = `${path}:${d?.log.length}`, st = ui.adv && d && (d.run || key !== linesKey) ? await api(path + '/trace') : null;
   if (n !== refreshes) return;
   const was = data && path === shown ? lastDone()?.seq ?? 0 : undefined;
-  [tree, cur, data, shown] = [t, next, d, path];
+  [tree, cur, data, shown, expired] = [t, next, d, path, mine.filter(l => l.expired)];
   if (st) [lines, linesKey] = [st, key];
   const done = data && lastDone();
   if (done && was !== undefined && done.seq > was) toast(done.error ? `Run ${done.run} failed: ${done.error}` : `Run ${done.run} finished${done.summary ? ': ' + done.summary : ''}`, done.error ? '' : 'ok');
@@ -391,7 +394,9 @@ function renderSide() {
   const listed = (x, on) => !x.archived || showArchived || on;
   const asks = s => !s.archived && s.instances.some(i => i.questions);
   const btn = (act, title, glyph) => `<button class="add" data-act="${act}" title="${title}">${glyph}</button>`;
-  let h = `<div class="row head"><span class="nm">Workspaces</span>${btn('new-workspace', 'New workspace', '+')}</div>`;
+  const waits = waiting().length;
+  let h = waits ? `<div class="row waits"><a class="nm" data-act="waiting">Waiting on you<span class="q"> ${waits}</span></a></div>` : '';
+  h += `<div class="row head"><span class="nm">Workspaces</span>${btn('new-workspace', 'New workspace', '+')}</div>`;
   for (const w of tree) {
     const won = cur?.w.id === w.id;
     if (!listed(w, won)) continue;
@@ -826,6 +831,7 @@ function renderPv() {
   else if (pv.settings?.kind === 'users') h += `<div class="pvb vl">${usersHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'skills') h += `<div class="pvb vl">${skillsHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'logins') h += `<div class="pvb vl">${loginsHtml(pv.settings)}</div>`;
+  else if (pv.settings?.kind === 'waiting') h += `<div class="pvb vl">${waiting().join('') || '<div class="sub">Nothing waits on you.</div>'}</div>`;
   else if (pv.settings?.kind === 'guidance') h += `<div class="pvb vl">${guidanceHtml(pv.settings, "Every agent reads it at the start of each run, in every workspace: the company's conventions, and changes that cut across many series.", me.role === 'admin')}</div>`;
   else if (pv.settings?.kind === 'start') h += `<div class="pvb vl">${startHtml(pv.settings)}</div>`;
   else if (pv.settings) {
@@ -937,6 +943,17 @@ const myOffers = async () => (await api('/logins')).flatMap(l => l.offers);
 function startHtml(s) {
   return (s.label !== undefined ? `<h3>Label</h3><input type="text" id="slabel" value="${esc(s.label)}" placeholder="such as a date">` : '')
     + `<h3>Logins this instance may use</h3>` + ticksHtml(s.offers) + `<div><button class="btn primary" data-act="start-go">${esc(s.go)}</button></div>`;
+}
+
+// What waits on you: questions in instances you run, requests to start a series you can see, and chains of wakes that broke.
+function waiting() {
+  const out = [], at = (w, s, i) => `<a href="#/${i?.id ?? w.id}">${esc(w.name)} · ${esc(s.name)}${i ? ' · ' + esc(i.label) : ''}</a>`;
+  for (const w of tree.filter(w => !w.archived)) for (const s of w.series.filter(s => !s.archived)) {
+    for (const i of s.instances.filter(i => i.questions && i.runner === me.email)) out.push(`<div class="wt">${at(w, s, i)}: ${i.questions} question${i.questions > 1 ? 's' : ''} for you</div>`);
+    for (const r of s.requests) out.push(`<div class="wt">${at(w, s)}: ${esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)} <button class="btn" data-act="req-start" data-id="${esc(r.id)}">Start</button></div>`);
+    if (s.allow_wakes === me.email && !s.instances.some(i => i.status === 'open') && !s.wake && !s.requests.length) out.push(`<div class="wt">${at(w, s)}: wakes itself, but nothing is open and no wake is set</div>`);
+  }
+  return [...out, ...expired.map(l => `<div class="wt">Your ${esc(l.name)} login has expired: <a data-act="logins">sign in again</a></div>`)];
 }
 
 async function openLogins() {
@@ -1174,6 +1191,10 @@ document.addEventListener('click', async ev => {
     else await refresh();
   }
   if (act === 'logins') await openLogins();
+  if (act === 'waiting') {
+    pv = { title: 'Waiting on you', settings: { kind: 'waiting' } };
+    renderPv();
+  }
   if (act === 'guidance') {
     pv = { title: "The company's guidance", settings: { kind: 'guidance', guidance: (await api('/guidance')).text } };
     renderPv();
