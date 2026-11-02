@@ -1,6 +1,6 @@
 # rollforward: recurring tasks, files in and files out
 
-`src/` holds the server, the store, the runner and `rf`, `web/` the page, `skills/` the skills series choose from, and `demo/` a made-up weekly series to test them with. [docs/design.md](docs/design.md) holds the design notes for the page.
+`src/` holds the server, the store, the runner, the agent's `rf` and people's (`rf-people.ts`), `web/` the page, and `demo/` a made-up weekly series to test them with. [docs/design.md](docs/design.md) holds the design notes for the page.
 
 - **What this is:** a small web platform for recurring tasks. People drop in input files, and an agent produces the output files, having learned how from earlier instances. People move files; they don't type prompts.
 
@@ -57,8 +57,9 @@
 - **Series settings:** the series' name, its Skill use (the skills its agent may use, each saying if it is not set up yet), what its agent can read, and Archive. Renaming a series or a workspace edits one small file, so it may happen mid-run; a run sees the new names from its next start. **Workspace settings** hold its people, owners and members, which owners and admins change, and Archive, also theirs. An archived workspace or series is restored from its settings, under "Show archived".
 - **Logins** (everyone): your logins, each with what it offers, and Sign out, which deletes it. **Connect Microsoft 365** signs you in to Microsoft for read-only mail and files; then add the shared mailboxes you read, by address, and SharePoint sites, by a link. An expired login says so, with Sign in again.
 - **Costs** show per instance (Advanced) and per series (Series settings), with no caps.
-- **Users** (admins): who can sign in, their role, the workspaces they're in by email and when they last signed in; Add, Disable (which also signs them out everywhere; Enable lets them back) and Remove, which takes them out of every workspace.
-- **Skills** (admins): every skill, with the connections it uses and whether it is ready; Set up or Edit shows its settings from its `skill.json`, a password as write-only. Test checks it for real: a website skill signs in, code and all; one that reads OneDrive or mail reads its links or today's mail.
+- **Tokens** (everyone): personal tokens for **rf**, people's command line ([src/rf-people.ts](src/rf-people.ts), served at `/rf.ts`), each named, lasting 7, 30 or 90 days, shown once and revocable. rf does what the page does, as its person: `ls`, `pull DIR` (a read-only mirror of what they can see, in the layout agents see, with each instance's screen, log and trace), `comment` (`--wait` prints the agent's replies and report), `answer`, `upload`, `wake` and `guidance`. A token stops at its expiry, when revoked, or when its person is disabled, signed out everywhere or removed; `.rf/tokens.json` keeps only hashes, and `.rf/token-uses.jsonl` logs every use.
+- **Admin is rf, not the page.** Admins see every workspace on the page, but manage people (`rf users`, `rf user add|role|disable|enable|signout|remove`), skills' settings and tests (`rf skill set|test`) and the company's guidance (`rf guidance --set`) with rf. Publishers, a role admins give, push skills (`rf skill push DIR`, `versions`, `rollback`). The first admins come from `RF_ADMINS`, or `node src/auth.ts DATA_ROOT add EMAIL admin` on the server.
+- **Skills** (everyone, read-only): every skill, what it reads, its live version with who pushed it and when, and whether it is set up.
 - **Names:** the log records each person by the email they signed in with. The sidebar's foot shows who is signed in, with Sign out.
 
 ## Storage
@@ -66,11 +67,15 @@
 Everything is files on the host's disk, in folders named by random ids. There is no database. Names live in two small files, so a
 rename or a move never moves a folder.
 
-    .rf/                      the server's own: users.json, tree.json, people/<id>/ (each person's logins), skills.json (skills'
-                              settings, passwords sealed), and the keys session.key, seal.key and systems.key
+    .rf/                      the server's own: users.json, tree.json, people/<sha256(email)[:16]>/ (each person's logins),
+                              skills.json (skills' settings, passwords sealed), wakes.json (pending wakes and requests),
+                              egress.json (hosts runs may reach), tokens.json and token-uses.jsonl, and the keys session.key,
+                              seal.key and systems.key
+    guidance/                 company.md, the admins', and <workspace id>.md, each workspace's owners'
+    skills/                   versions/<id>/<n>/, each pushed version with its .pushed.json, and live/<id>, a link to the one runs use
       tree.json               {"workspaces": {id: {name, owners, members, archived?}}, "series": {id: {name, workspace, archived?}}}
     series/<id>/              a series
-      series.json             {"skills": [skill ids]}, set by people through the server, read-only
+      series.json             {"skills": [skill ids], "wakes": {by, since, logins}}, set by people through the server, read-only
       .pylib/                 Python packages the series' scripts installed
     instances/<id>/           an instance, flat, made by New instance
       instance.json           {"label", "series": id}, read-only
@@ -79,7 +84,7 @@ rename or a move never moves a folder.
       workspace.json          the instance's screen, saved by the server, read-only
       log.jsonl               everything that happened in the instance, written by the server
       session/                the instance's Pi session, shown in Advanced
-      calls/                  writes the agent proposed: the page it started from (<id>.png) and the outcome (<id>.result.png), by the server
+      calls/                  in instances from before decision 32 only: writes the agent proposed and their outcomes
 
 - **Logins are sealed:** `.rf/people/<id>/logins.json` lists a person's logins and what each offers; each login's secret (Microsoft's refresh token, a website's saved browser state) is `<login id>.sealed`, AES-256-GCM with the person and the login's id as authenticated data, so a record copied to another person's folder won't open. Signing out deletes it, and removing a person deletes all of theirs. The key, `seal.key`, like the cookie-signing `session.key`, is a systemd credential where systemd runs the server (`LoadCredentialEncrypted=`, sealed to the machine's TPM), so a copy of the data holds only ciphertext; in the container image it is made once in `.rf/`.
 - **The index:** at start the server reads every `instance.json`, and lists a series' instances from that; an instance's screen and log load when it's first listed or opened. The site and its API address workspaces, series and instances by id (`/api/workspaces/<id>`, `/api/series/<id>`, `/api/instances/<id>`, `/files/<id>/…`), and the page's address is `#/<id>`, so links survive renames.
@@ -119,7 +124,6 @@ The schemas are loose, and unknown fields are ignored, so the agent and the UI c
     {
       "rev": 31,
       "status": "open",                         // the server sets "closed" or "abandoned"
-      "summary": "Rebuilt the borrowing base from Sam's review.",   // the agent's line for the ops log, each run
       "items": [
         {"id": "ar-aging", "name": "AR aging", "kind": "input",
          "file": "upload/Larkfield AR aging 082426_2.xlsx",
@@ -142,7 +146,7 @@ The schemas are loose, and unknown fields are ignored, so the agent and the UI c
       ]
     }
 
-**`log.jsonl`** has one line per event. `seq` orders the lines, and `by` is a person's name, "server" or "agent". The ops are `create`, `upload`, `point`, `item`, `note`, `unnote`, `remove`, `run`, `done`, `answer`, `comment`, `say`, `resolve`, `report`, `interrupt`, `close`, `abandon`, `duplicate`, `rename`, and for skills `files` and `mail` (a read through Microsoft 365) and `flow` (a skill's flow in its website, with the files it saved). Instances from before decision 32 may also hold Tool use's `browse`, `request`, `approve`, `reject` and `call`, which the page still shows. `done` carries the run's model cost in USD. Here `point` means an item now shows a file:
+**`log.jsonl`** has one line per event. `seq` orders the lines, and `by` is a person's name, "server" or "agent". The ops are `create`, `upload`, `point`, `item`, `note`, `unnote`, `remove`, `run`, `done`, `answer`, `comment`, `say`, `resolve`, `report`, `interrupt`, `close`, `abandon`, `duplicate`, `rename`, `takeover`, `promote`, `wake`, `egress` (a host a run reached or was refused), and for skills `files` and `mail` (a read through Microsoft 365) and `flow` (a skill's flow in its website, with the files it saved). Instances from before decision 32 may also hold Tool use's `browse`, `request`, `approve`, `reject` and `call`, which the page still shows. `done` carries the run's model cost in USD. Here `point` means an item now shows a file:
 
     {"seq": 40, "at": "2026-08-24T15:02:00Z", "by": "alex", "op": "upload", "file": "upload/Larkfield AR aging 082426_2.xlsx", "pane": "in", "onto": null, "sha256": "9f2c…"}
     {"seq": 41, "at": "2026-08-24T15:02:00Z", "by": "server", "op": "point", "item": "u40", "file": "upload/Larkfield AR aging 082426_2.xlsx"}
@@ -158,7 +162,7 @@ The schemas are loose, and unknown fields are ignored, so the agent and the UI c
 
 - **One session per instance.** The server runs Pi in the series' folder in the run's view, `/work/<workspace>/<series>`, with the instructions in [prompt.md](prompt.md). Each run is one prompt into the instance's session, so within an instance the agent remembers its earlier runs. A new instance starts a new session, so whatever the next instance needs must be in the files.
 - **Messages:** every prompt and steer reads `Instance <label> (folder <label>/), run <n>. New log entries:`, followed by the log lines, as JSON, that the agent hasn't been sent. The agent's own lines are left out.
-- **What every run reads first:** the company's guidance (`/work/GUIDANCE.md`, the admins', set under Guidance at the sidebar's foot) and its workspace's (`/work/<workspace>/GUIDANCE.md`, the owners', in Workspace settings), files in `guidance/` of the data root: conventions, and changes that cut across many series, such as a renamed entity, which each series adapts to at its next run. And the catalogue, `/work/CATALOGUE.md`, which the server writes when the run starts: a line per series in its reach, from its latest closed instance, with what it delivers (its `process.md`'s first line), its inputs and their sources, who brings files and who answers, and its open instances.
+- **What every run reads first:** the company's guidance (`/work/GUIDANCE.md`, the admins', set with `rf guidance --set` and shown under Guidance at the sidebar's foot) and its workspace's (`/work/<workspace>/GUIDANCE.md`, the owners', in Workspace settings), files in `guidance/` of the data root: conventions, and changes that cut across many series, such as a renamed entity, which each series adapts to at its next run. And the catalogue, `/work/CATALOGUE.md`, which the server writes when the run starts: a line per series in its reach, from its latest closed instance, with what it delivers (its `process.md`'s first line), its inputs and their sources, who brings files and who answers, and its open instances.
 - **The report:** the agent's last message of a run is its report to the instance's people, logged as `report`; its first line is the run's summary in the ops log. The screen has no `summary` of its own.
 - **Process and the review sheet** (prompt.md): `working/process.md` is the people's document, for a colleague who knows the business but not the scripts, whose first line says what the series delivers; and every instance has a review sheet, an output `review`, for whoever closes it: key figures against the previous instance with the reasons, the checks and where each looks, what was carried or assumed, the open points and each input's source. The agent asks about every call a reviewer might make differently, leading with its effect on the deliverable, after looking for an earlier answer.
 - **What starts a run:** an upload, an answer or a comment from a person, or a new instance whose parent had inputs the agent made (files in `working/`), so the fetched inputs arrive at once; its `create` entry carries `fetch`; or a `wake` entry. Runs start 1.5 s after the last of a burst of uploads, so a multi-file drop starts one run. One run goes at a time per series, and at most `RF_MAX_RUNS` (20) at once; the rest queue. [src/waker.ts](src/waker.ts) decides what runs when; [src/runner.ts](src/runner.ts) runs one.
@@ -196,26 +200,26 @@ Each person connects their own Microsoft 365 from the Logins page ([src/auth.ts]
 
 ## Skill use: skills
 
-A skill says what to fetch or do, and how. Each is whole in a folder `<id>/` under the deployment's `RF_SKILLS_DIR` ([src/skills.ts](src/skills.ts)); none ship with this repo, and a new one is a folder, not a change to the server:
+A skill says what to fetch or do, and how. Each is whole in a folder, which a publisher pushes with `rf skill push DIR` ([src/skills.ts](src/skills.ts)): every push is a version, `skills/versions/<id>/<n>/` in the data root, live at once through the link `skills/live/<id>`, and an earlier one comes back by pushing it again (`rf skill rollback ID N`). Each run's `run` entry names the versions it loaded. None ship with this repo, and a new one is a push, not a change to the server:
 
 - `SKILL.md`, in Pi's format: front matter with `name` and `description`, which Pi puts in the agent's system prompt, then instructions the agent reads when it needs them;
 - `skill.json`, rollforward's: `{"uses": [what of the runner's Microsoft 365 login it reads: "m365-mail", "m365-files"], "settings": [{"key", "label", "hint", "optional", "secret"}], "site": {"hosts": [...]}}`, the last for a skill with a website of its own;
 - what it runs: scripts the agent runs in its sandbox, which reach the server through the agent API (`RF_URL`, `RF_TOKEN`) and save into `RF_WORKING`, the instance's `working/`; flows (`*.flow.json`), fixed steps the server takes in the skill's website; and, for a site whose sign-in is more than a name and a password, `signin.ts`, the server's steps to sign in.
 
-- **Settings are the admins',** set once under Skills for every series (`.rf/skills.json`). A `secret` setting, such as a website's password, is sealed and never shown again, only whether one is saved; left empty, it keeps the one saved. The agent reads the rest with `rf settings ID`. Test on each row reads something real: a website skill signs in; one that reads Microsoft 365 reads, as the admin testing it, each link in its settings, and today's mail with its subject in their own mailbox.
-- **A series chooses** its skills under Skill use (`series.json` `skills: [ids]`), possibly none, and possibly one not set up yet. A run loads only those (`--skill skills/<id>` each); its message lists them, how each is used and what each still needs (`rf skills` says the same). 
+- **Settings are the admins',** set once with `rf skill set ID KEY VALUE` for every series (`.rf/skills.json`). A `secret` setting, such as a website's password, is sealed and never shown again, only whether one is saved; left empty, it keeps the one saved. The agent reads the rest with `rf settings ID`. `rf skill test ID` reads something real: a website skill signs in; one that reads Microsoft 365 reads, as the admin testing it, each link in its settings, and today's mail with its subject in their own mailbox.
+- **A series chooses** its skills under Skill use (`series.json` `skills: [ids]`), possibly none, and possibly one not set up yet. A run loads only those (`--skill /skills/live/<id>` each, the data root's `skills/` being read-only at `/skills` in its sandbox, and `RF_SKILLS` `/skills/live`); its message lists them, how each is used and what each still needs (`rf skills` says the same). 
 - **A skill's website** is a browser the server runs ([src/browser.ts](src/browser.ts)), one context per run and skill, closed when the run ends, with an ordinary Chrome user agent (some portals turn headless Chrome's away). The server signs in with the account in the skill's settings, by the skill's `signin.ts` or else by filling the sign-in form (the password field, the field before it and Enter), so the password never reaches the agent. The context reaches only the site's address and its `site.hosts`, and stops every request that is a write (any but GET, HEAD and OPTIONS) unless the flow running names it.
 - **Flows** ([src/flow.ts](src/flow.ts)): `rf flow SKILL/FLOW [--var NAME=VALUE …]` runs one of a chosen skill's flows, so the same steps give the same file and the agent spends no model time clicking. Steps: `goto`, `reload`, `click`, `fill`, `press`, `pause`, `wait` (a target, any of several, or a selector gone), `stop_if`, `expect` and `download`; targets are text, a role and name, or CSS, visible ones only. `{name}` comes from `--var`, then the skill's settings but its secrets, and `{today}`. A site that reads with a POST (a sign-in's token exchange, single sign-on) has those named in the flow's `reads_that_post`, let through only while it runs. A site that asks for a sign-in code again is answered after each step. The agent can't write a flow of its own, nor click through a site itself. Each run is logged as `flow` with its files; a failure names the step and leaves a screenshot in `working/`.
 - **"Today"** for a skill's script is `--date`, else `RF_TODAY`, else today on the server; a test sets `RF_TODAY` to a day with data, and the server's start says so. A website shows what it holds now, so flows ignore it.
 - **The skills** are each deployment's own, kept outside this repo: for example, a file from a OneDrive folder dated the day, the attachments of the day's mail with a given subject, or a vendor portal's payments as csv through its flows.
-- **Without the model:** `node --env-file=.env src/cli.ts DATA_ROOT try SKILL[,SKILL…] --as EMAIL -- COMMAND` runs a skill's script or `rf` command as a run with those skills would, as EMAIL with all their logins ticked, on a port of its own, with `working/` under `./try-output`; `… DATA_ROOT test SKILL --as EMAIL` is the Skills page's Test.
+- **Without the model:** `node --env-file=.env src/cli.ts DATA_ROOT try SKILL[,SKILL…] --as EMAIL -- COMMAND` runs a skill's script or `rf` command as a run with those skills would, as EMAIL with all their logins ticked, on a port of its own, with `working/` under `./try-output`; `… DATA_ROOT test SKILL --as EMAIL` is `rf skill test`.
 
 ## Harness: Pi over RPC
 
 The runner, [src/runner.ts](src/runner.ts), drives Pi through Pi's `RpcClient`, which runs Pi as a child process and exchanges JSON lines with it:
 
     pi --mode rpc --provider openrouter --model anthropic/claude-opus-5.5 --thinking high \
-      --no-extensions --no-skills --no-mcp --no-context-files --no-prompt-templates --skill <app>/skills/<id> … \
+      --no-extensions --no-skills --no-mcp --no-context-files --no-prompt-templates --skill /skills/live/<id> … \
       --tools read,bash,edit,write --append-system-prompt <app>/prompt.md \
       --session-dir "/work/<workspace>/<series>/<label>/session" --session-id main
 
@@ -244,7 +248,7 @@ The risk is whether an agent can learn a real deliverable from examples, so the 
      A driver imports the examples one at a time, then stages each forward week only when the agent may see it. To test the build, it compares the agent's outputs with the generator's, and prints checks (ids, headlines, sources, citations, `process.md` size); that is test tooling, not part of the system.
    - **Environment:**
      - Node 26, which runs TypeScript directly, and `npm install`;
-     - `uv venv .venv && uv pip install -r requirements.txt` (openpyxl, pandas, xlrd, extract-msg, defusedxml, requests, beautifulsoup4, lxml, matplotlib, pdfplumber, python-docx), with `.venv/bin` first on the agent's `PATH`;
+     - `uv venv .venv && uv pip install -r requirements.txt` (openpyxl, pandas, xlrd, extract-msg, defusedxml, requests, beautifulsoup4, lxml, matplotlib, pdfplumber, python-docx, python-calamine), with `.venv/bin` first on the agent's `PATH`;
      - LibreOffice, to recalculate scratch copies of formula workbooks.
      - Each series has its own `.pylib` on the agent's `PYTHONPATH`: Python packages the agent installs there with `pip install --target` stay with the series, in the data volume, and survive a new image.
      - The Docker image adds poppler, sqlite3, curl, git, jq, zip, CJK fonts, bubblewrap and socat.
@@ -267,7 +271,7 @@ The risk is whether an agent can learn a real deliverable from examples, so the 
        - a **Single-page application** (`RF_OIDC_SPA=1`): Microsoft lets only a browser redeem its codes, by a cross-origin request (AADSTS9002327 otherwise). The server answers the return with a page that redeems the code and posts the ID token to `/auth/token`; as the token has passed through the browser, the server checks its RS256 signature against Microsoft's published keys (`jwks_uri`).
 
        Either way the server checks the token's issuer, audience, expiry and nonce. Each sign-in in flight keeps its state in a cookie of its own, so sign-ins started in several tabs don't undo each other. Except on localhost, Microsoft takes only https redirects, so a site others reach needs an https address registered with the app. The first sign-in adds a person as a user unless `RF_AUTO_PROVISION=0`; `RF_ALLOWED_DOMAINS` limits who may, `RF_ADMINS` names admins, and a person's Microsoft id is pinned at their first sign-in.
-     - A session is a cookie for 12 hours (`RF_SESSION_HOURS`), signed with `.rf/session.key` and the person's epoch, so Disable (and the CLI's signout) end it at once. People are managed on the Users page or with `node src/auth.ts DATA_ROOT list | add | role | disable | enable | signout | remove`. The agent's environment gets a blank `RF_OIDC_CLIENT_SECRET`.
+     - A session is a cookie for 12 hours (`RF_SESSION_HOURS`), signed with `.rf/session.key` and the person's epoch, so Disable (and the CLI's signout) end it at once. People are managed with rf or with `node src/auth.ts DATA_ROOT list | add | role | disable | enable | signout | remove`. A run's environment is built from nothing, so it holds none of the server's.
    - **Workspaces' people (built):** every API call, file and preview is checked against the workspace's owners and members, by email or by an Entra group the person's ID token named at their last sign-in (once the app is set to send `groups`), and a workspace someone isn't in answers 404. A new workspace starts with whoever makes it as its owner, and a name in use is taken. Admins see and manage every workspace.
    - **Runs in sandboxes (built, [src/sandbox.ts](src/sandbox.ts), [src/runner.ts](src/runner.ts)):** each run's Pi is a bubblewrap sandbox, in a systemd scope of its own (`MemoryHigh` 4 GB, `MemoryMax` 8 GB, in `rollforward-runs.slice`; `RF_SANDBOX_SCOPE`, empty in the container image, where there is no systemd).
      - **What it sees:** the system, the app's code and the skills, read-only; under `/work/<workspace>/<series>/`, every instance in its reach by label, read-only but for its own instance's `working/` and `session/` and its series' `.pylib`; `RF_SANDBOX_RO`, read-only; and a HOME and /tmp of its own on scratch (`RF_SCRATCH`), deleted when the run ends. Never `.rf/`, the data root, a series or workspace outside its reach, or the server's environment.
@@ -344,6 +348,7 @@ The risk is whether an agent can learn a real deliverable from examples, so the 
 38. **Microsoft 365 as personal logins** (2 Nov; replaces 30–32's shared M365 apps): each person connects their own read-only, delegated Microsoft 365 login, through the sign-in app, and offers runs their mailboxes, OneDrive and SharePoint sites; a run reads only its runner's, as ticked. Systems, the admins' M365 apps with client secrets reading one mailbox, is gone, and so are sign-in codes read from mail.
 39. **Guidance, the catalogue and the report** (2 Nov): what a run knows beyond its series comes from the company's and its workspace's guidance and a catalogue of its reach, all files in its view, rather than from rules in the server; and the agent's last message is its report, which replaces the screen's `summary`.
 40. **Talking is in threads** (2 Nov): people comment, on an item or the instance, and the agent replies in the thread with `rf say`; Advanced's Steer and `rf reply` are gone, so there is one place to talk and every exchange stays where it applies.
+41. **Admin is rf; skills are pushed data** (3 Nov): people's rf, with personal tokens, does what the page does, and is the only place to manage people, skills' settings and the company's guidance, so the page stays simple and gives admins visibility, not controls. Skills are pushed by publishers as versions in the data root, live at once and rolled back by pushing again; `RF_SKILLS_DIR` is gone.
 
 ## Proposed by the agent (open to change)
 

@@ -8,7 +8,7 @@ import { users } from './auth.ts';
 import type { Browsing } from './browser.ts';
 import { skillsText } from './agent-api.ts';
 import { seriesSettings } from './series.ts';
-import { skill } from './skills.ts';
+import { pushed, skill } from './skills.ts';
 
 // What runs when: one run at a time per series, at most RF_MAX_RUNS at once, started by people's acts and by wakes.
 const LIMIT_MS = Number(process.env.RF_LIMIT_MIN ?? 120) * 60_000;
@@ -101,11 +101,12 @@ async function start(inst: Instance) {
   const a: Active = { inst, n, token: randomUUID(), view: view(inst), sent: entries.at(-1)!.seq, seen, texts: new Map([[text, entries.at(-1)!.seq]]), interrupted: false, done: false, cost: 0, said: '', hosts: new Set() };
   active.set(series, a);
   byToken.set(a.token, a);
-  inst.append('server', 'run', { run: n, upto: a.sent });
+  const chosen = seriesSettings(inst.series()).skills.filter(id => skill(id));
+  inst.append('server', 'run', { run: n, upto: a.sent, skills: Object.fromEntries(chosen.map(id => [id, pushed(skill(id)!).version])) });
   try {
     a.run = await startRun({
       token: a.token, view: a.view,
-      message: text, skills: seriesSettings(inst.series()).skills.filter(id => skill(id)),
+      message: text, skills: chosen,
       onEvent: e => {
         if (e.type === 'message_end' && e.message.role === 'assistant') {
           a.cost += e.message.usage.cost.total;

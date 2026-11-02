@@ -16,10 +16,12 @@ Object.assign(process.env, {
 });
 const { pi, socketDir } = await import('../src/runner.ts');
 const { serveSandboxes } = await import('../src/sandbox.ts');
-const { useSkillsDir } = await import('../src/skills.ts');
+const { openSkills, pushSkill } = await import('../src/skills.ts');
 const { initSystem, writeJson } = await import('../src/system.ts');
-useSkillsDir(join(import.meta.dirname, 'skills'));
+const { filesOf, standIns } = await import('./push.ts');
 initSystem(root);
+openSkills(root);
+pushSkill('tool', filesOf(join(standIns, 'tool')), 'admin@demo.test');
 writeJson('egress.json', ['127.0.0.1.nip.io']);
 
 const TOKEN = 'run-token', egress: [string, boolean][] = [];

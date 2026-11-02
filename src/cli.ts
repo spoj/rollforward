@@ -8,7 +8,7 @@ import { initSystem } from './system.ts';
 import { closeBrowser } from './browser.ts';
 import { logins } from './logins.ts';
 import { serveAgent, skillsText, testSkill } from './agent-api.ts';
-import { checkChosen, skillsDir } from './skills.ts';
+import { checkChosen, openSkills, skillsDir } from './skills.ts';
 
 // An admin's shell into the skills, with what DATA_ROOT has set up, and no model, as the person EMAIL with all their logins ticked:
 //   node --env-file=.env src/cli.ts DATA_ROOT test SKILL --as EMAIL
@@ -25,6 +25,7 @@ if (!root || !cmd) {
   process.exit(2);
 }
 initSystem(resolve(root));
+openSkills(resolve(root));
 
 const as = rest.includes('--as') ? rest[rest.indexOf('--as') + 1] : '';
 

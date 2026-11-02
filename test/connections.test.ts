@@ -78,12 +78,14 @@ before(async () => {
   await new Promise<void>(ok => graph.listen(0, '127.0.0.1', ok));
   Object.assign(process.env, { RF_OIDC_ISSUER: `http://127.0.0.1:${(graph.address() as { port: number }).port}`, RF_OIDC_CLIENT_ID: 'app', RF_PUBLIC_URL: 'http://127.0.0.1:1' });
   const { initSystem } = await import('../src/system.ts');
-  const { useSkillsDir } = await import('../src/skills.ts');
+  const { openSkills, pushSkill } = await import('../src/skills.ts');
+  const { filesOf, standIns } = await import('./push.ts');
   const { agentCall } = await import('../src/agent-api.ts');
   const { endpoints } = await import('../src/graph.ts');
   logins = await import('../src/logins.ts');
-  useSkillsDir(join(app, 'test', 'skills'));
   initSystem(tmp);
+  openSkills(tmp);
+  for (const id of ['mail-report', 'onedrive-report', 'portal', 'tool']) pushSkill(id, filesOf(join(standIns, id)), ALICE);
   endpoints.graph = process.env.RF_OIDC_ISSUER!;
   logins.saveLogin(ALICE, { id: 'm365', kind: 'm365', name: 'Microsoft 365', account: ALICE, since: '2026-11-02T00:00:00Z', offers: [
     { id: `m365:mail:${ALICE}`, name: 'Mailbox' }, { id: 'm365:onedrive', name: 'OneDrive' }, { id: 'm365:site:host,site1,web1', name: 'SharePoint Reports' },

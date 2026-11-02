@@ -9,6 +9,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { filesOf, standIns } from './push.ts';
+
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const series = 'Weekly borrowing base', monthly = 'Monthly rec', renamed = 'Weekly BB';
 const weeks = Array.from({ length: 10 }, (_, i) => new Date(Date.UTC(2026, 6, 5 + 7 * i)).toISOString().slice(0, 10));
@@ -35,7 +37,7 @@ const create = async (name: string, label: string, cookie = admin) => call('POST
 
 before(async () => {
   cpSync(join(app, 'demo', 'snapshot'), root, { recursive: true });
-  const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch'), RF_SKILLS_DIR: join(app, 'test', 'skills') };
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch') };
   mkdirSync(env.HOME);
   delete env.OPENROUTER_API_KEY;
   const probe = createServer();
@@ -49,6 +51,7 @@ before(async () => {
     proc.on('exit', code => fail(new Error(`server exited with ${code}`)));
   });
   admin = sessionOf(await login(adminEmail))!;
+  for (const id of readdirSync(standIns)) assert.equal((await call('POST', `/skills/${id}/versions`, JSON.stringify({ files: filesOf(join(standIns, id)) }))).status, 200);
 });
 
 after(async () => {
@@ -303,7 +306,7 @@ test("each person sees the workspaces they're in, by email or Entra group; owner
 test('Skill use: admins set skills up once under Skills; a series only chooses which', async () => {
   const b = sessionOf(await login(bob))!;
   const report = (list: { id: string }[]) => list.find(s => s.id === 'mail-report') as Record<string, unknown>;
-  assert.deepEqual(Object.keys(report(await json('/skills', b))).sort(), ['configured', 'description', 'id', 'name', 'uses'], 'anyone signed in sees the skills, not their settings');
+  assert.deepEqual(Object.keys(report(await json('/skills', b))).sort(), ['configured', 'description', 'id', 'name', 'pushed', 'uses'], 'anyone signed in sees the skills, not their settings');
   assert.equal((await call('PUT', '/skills/mail-report', JSON.stringify({ subject: 'Open AP report' }), b)).status, 403);
   assert.equal((await call('PUT', '/skills/mail-report', JSON.stringify({ mailbox: 'x' }))).status, 400, 'only the settings the skill declares');
   const set = await (await call('PUT', '/skills/mail-report', JSON.stringify({ subject: 'Open AP report' }))).json();
@@ -410,4 +413,54 @@ test('talking is in threads: a comment starts one on an item or the instance, th
   assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ thread: 'nope', text: 'x' }))).status, 400);
   assert.equal((await call('POST', `${path}/resolve`, JSON.stringify({ thread: started.thread }))).status, 200);
   assert.equal((await json(path)).log.at(-1).op, 'resolve');
+});
+
+test('skills are pushed by publishers and admins, each push a version live at once, and rolled back by pushing an earlier one', async () => {
+  const b = sessionOf(await login(bob))!, push = (files: object, cookie = admin) => call('POST', '/skills/tool/versions', JSON.stringify(files), cookie);
+  assert.equal((await push({ files: filesOf(join(standIns, 'tool')) }, b)).status, 403, 'a user may not push');
+  authCli('role', bob, 'publisher');
+  const changed = { ...filesOf(join(standIns, 'tool')), 'SKILL.md': Buffer.from('---\nname: tool\ndescription: the second\n---\n').toString('base64') };
+  assert.equal(await (await push({ files: changed }, b)).text(), 'pushed tool version 2, live now');
+  const live = async () => (await json('/skills')).find((x: { id: string }) => x.id === 'tool');
+  assert.deepEqual([(await live()).description, (await live()).pushed.version, (await live()).pushed.by], ['the second', 2, bob]);
+  assert.equal(await (await push({ from: 1 })).text(), 'pushed tool version 3, live now');
+  assert.notEqual((await live()).description, 'the second', 'version 3 is version 1 again');
+  assert.deepEqual((await json('/skills/tool/versions')).map((v: { version: number }) => v.version), [1, 2, 3]);
+  assert.equal((await push({ files: { '../x': 'eA==', 'SKILL.md': 'eA==' } })).status, 400);
+  authCli('role', bob, 'user');
+});
+
+test("personal tokens act as their person for rf, every use logged, until revoked", async () => {
+  const b = sessionOf(await login(bob))!;
+  assert.equal((await call('POST', '/tokens', JSON.stringify({ name: 'laptop', days: 0 }), b)).status, 400);
+  const { token } = await (await call('POST', '/tokens', JSON.stringify({ name: 'laptop', days: 30 }), b)).json();
+  const as = (path: string, init: RequestInit = {}) => fetch(base + path, { ...init, headers: { authorization: `Bearer ${token}` } });
+  assert.equal((await (await as('/me')).json()).email, bob);
+  assert.equal((await as('/users')).status, 403, 'a token is its person, no more');
+  assert.match(readFileSync(join(root, '.rf', 'token-uses.jsonl'), 'utf8'), /"path":"\/me"/);
+  assert.ok(!readFileSync(join(root, '.rf', 'tokens.json'), 'utf8').includes(token), 'only its hash is kept');
+  const [t] = await json('/tokens', b);
+  assert.equal((await call('DELETE', `/tokens/${t.id}`, undefined, b)).status, 200);
+  assert.equal((await as('/me')).status, 401);
+});
+
+test('rf for people: ls, comment, and admins manage people from it', async () => {
+  const { token } = await (await call('POST', '/tokens', JSON.stringify({ name: 'cli', days: 1 }))).json();
+  const home = join(tmp, 'cli-home');
+  mkdirSync(home);
+  const rf = (...args: string[]) => new Promise<string>((ok, fail) => {
+    const p = spawn(process.execPath, [join(app, 'src', 'rf-people.ts'), ...args], { env: { ...process.env, HOME: home } });
+    let out = '';
+    p.stdout.on('data', d => (out += d));
+    p.stderr.on('data', d => (out += d));
+    p.on('exit', code => (code ? fail(new Error(out)) : ok(out)));
+  });
+  assert.equal((await rf('login', base, token)).trim(), `signed in as ${adminEmail}`);
+  assert.match(await rf('ls'), /^larkfield\/Weekly borrowing base\/2026-08-30  closed/m);
+  await rf('comment', `larkfield/${series}/talk`, 'From the shell');
+  assert.equal((await json(await at(series, 'talk'))).log.at(-1).text, 'From the shell');
+  await rf('user', 'add', 'carol@demo.test', 'publisher');
+  assert.match(await rf('users'), /^carol@demo\.test\tpublisher/m);
+  await rf('user', 'remove', 'carol@demo.test');
+  assert.doesNotMatch(await rf('users'), /carol/);
 });

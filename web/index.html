@@ -59,7 +59,6 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .vl textarea { font: 12.5px/1.5 var(--mono); padding: 7px 9px; border: 1px solid var(--rule-2); border-radius: var(--r1); resize: vertical; min-height: 4.5em; }
 .vl :is(input[type=email], input[type=password], select) { font: inherit; padding: 7px 9px; border: 1px solid var(--rule-2); border-radius: var(--r1); background: var(--sheet); min-width: 0; max-width: 100%; }
 .vl .row2 { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.pv.mid { inset: 6vh auto auto 50%; transform: translateX(-50%); width: min(660px, 94vw); max-height: 88vh; }
 .ut { border-collapse: collapse; font-size: 12.5px; width: 100%; }
 .ut td, .ut th { border-top: 1px solid var(--rule); padding: 6px 6px 6px 0; text-align: left; vertical-align: top; }
 .ut th { font-weight: 500; color: var(--ink-3); }
@@ -432,8 +431,8 @@ function renderSide() {
   const archived = tree.filter(w => w.archived).length + (cur?.w.series.filter(s => s.archived).length ?? 0);
   if (archived) h += `<button class="quiet" data-act="toggle-archived">${showArchived ? 'Hide' : 'Show'} archived (${archived})</button>`;
   h += `<div class="legend"><div><i class="p">Blue</i> uploaded by a person</div><div><i>Black</i> made by the agent</div><div><span class="tri"></span>a note, for information</div><div><span class="tri q"></span>a question for you</div><div><span class="dash"></span>expected, not there yet</div></div>`;
-  h += `<div class="acct"><div>${esc(me.name)}${me.role === 'admin' ? ' · admin' : ''}</div><div class="mail">${esc(me.email)}</div>`
-    + '<button class="quiet" data-act="logins">Logins</button><button class="quiet" data-act="guidance">Guidance</button>' + (me.role === 'admin' ? '<button class="quiet" data-act="users">Users</button><button class="quiet" data-act="skills">Skills</button>' : '') + '<button class="quiet" data-act="signout">Sign out</button></div>';
+  h += `<div class="acct"><div>${esc(me.name)}${me.role === 'user' ? '' : ' · ' + me.role}</div><div class="mail">${esc(me.email)}</div>`
+    + '<button class="quiet" data-act="logins">Logins</button><button class="quiet" data-act="tokens">Tokens</button><button class="quiet" data-act="guidance">Guidance</button><button class="quiet" data-act="skills">Skills</button><button class="quiet" data-act="signout">Sign out</button></div>';
   put($('#side'), h);
 }
 
@@ -818,7 +817,7 @@ function sheetTable(s, first) {
 function renderPv() {
   $('#pv').hidden = !pv;
   if (!pv) return;
-  $('#pv').className = 'pv' + (pv.settings ? (pv.settings.kind === 'users' ? ' mid' : ' small') : '');
+  $('#pv').className = 'pv' + (pv.settings ? ' small' : '');
   let h = `<div class="pvh"><b>${esc(pv.title)}</b>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${pv.path ? `<a class="btn" href="${fileUrl(pv.path)}">Download</a>` : ''}<button class="btn" data-act="unpv">Close</button></div>`;
   if (pv.sheets) {
     if (pv.sheets.length > 1) h += `<div class="tabs">${pv.sheets.map((s, k) => `<button class="btn ${k === pv.sheet ? 'sel' : ''}" data-act="sheet" data-k="${k}">${esc(s.name)}</button>`).join('')}</div>`;
@@ -828,11 +827,11 @@ function renderPv() {
     h += `<div class="pvb"><pre>${esc(Object.entries(m.headers).map(([k, v]) => `${k}: ${v}`).join('\n') + (m.attachments.length ? `\nAttachments: ${m.attachments.join(', ')}` : '') + '\n\n' + m.text)}</pre></div>`;
   } else if (pv.image) h += `<div class="pvb"><img src="${fileUrl(pv.path)}" alt=""></div>`;
   else if (pv.text !== undefined) h += `<div class="pvb">${pv.md ? `<div class="say">${md(pv.text)}</div>` : `<pre>${esc(pv.text)}</pre>`}</div>`;
-  else if (pv.settings?.kind === 'users') h += `<div class="pvb vl">${usersHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'skills') h += `<div class="pvb vl">${skillsHtml(pv.settings)}</div>`;
+  else if (pv.settings?.kind === 'tokens') h += `<div class="pvb vl">${tokensHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'logins') h += `<div class="pvb vl">${loginsHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'waiting') h += `<div class="pvb vl">${waiting().join('') || '<div class="sub">Nothing waits on you.</div>'}</div>`;
-  else if (pv.settings?.kind === 'guidance') h += `<div class="pvb vl">${guidanceHtml(pv.settings, "Every agent reads it at the start of each run, in every workspace: the company's conventions, and changes that cut across many series.", me.role === 'admin')}</div>`;
+  else if (pv.settings?.kind === 'guidance') h += `<div class="pvb vl">${guidanceHtml(pv.settings, "Every agent reads it at the start of each run, in every workspace: the company's conventions, and changes that cut across many series. Admins set it with rf.", false)}</div>`;
   else if (pv.settings?.kind === 'start') h += `<div class="pvb vl">${startHtml(pv.settings)}</div>`;
   else if (pv.settings) {
     const s = pv.settings;
@@ -875,42 +874,29 @@ function peopleHtml(s) {
 // A datetime-local input's value, in the browser's time zone.
 const localInput = iso => new Date(new Date(iso).getTime() - new Date(iso).getTimezoneOffset() * 60e3).toISOString().slice(0, 16);
 
-function usersHtml(s) {
-  const when = iso => iso ? new Date(iso).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : 'never';
-  let h = `<div class="sub">People sign in with their Microsoft account. Each sees the workspaces they are in; admins see them all.</div><table class="ut"><tr><th>Person</th><th>Role</th><th>Workspaces</th><th>Last in</th><th></th></tr>`;
-  for (const u of s.users) {
-    const self = u.email === me.email;
-    h += `<tr><td>${esc(u.name ?? '')}<div class="sub">${esc(u.email)}${u.disabled ? ' · disabled' : ''}</div></td>`
-      + `<td><select data-act="role" data-email="${esc(u.email)}" ${self ? 'disabled' : ''}><option value="user">User</option><option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Admin</option></select></td>`
-      + `<td>${esc(u.workspaces.join(', ')) || '<span class="sub">none</span>'}</td><td class="sub">${esc(when(u.last_login))}</td>`
-      + `<td>${self ? '' : `<div class="row2"><button class="btn" data-act="disable" data-email="${esc(u.email)}" data-on="${u.disabled ? '' : '1'}">${u.disabled ? 'Enable' : 'Disable'}</button><button class="btn danger" data-act="deluser" data-email="${esc(u.email)}">Remove</button></div>`}</td></tr>`;
-  }
-  return h + `</table><h3>Add someone</h3><div class="sub">They can then sign in. Add them to a workspace from its settings.</div><div class="row2"><input type="email" id="uemail" placeholder="name@example.com" style="flex:1"><select id="urole"><option value="user">User</option><option value="admin">Admin</option></select><button class="btn primary" data-act="adduser">Add</button></div>`;
-}
-
 async function openWorkspaceSettings() {
   const w = cur.w;
   pv = { title: 'Workspace settings', settings: { kind: 'workspace', archived: w.archived, owners: w.owners, members: w.members, manage: w.manage, guidance: w.guidance } };
   renderPv();
 }
 
-function skillsHtml(s) {
-  if (!s.edit) {
-    return `<div class="sub">What each skill fetches or does, set up once here for every series; a series chooses which skills it uses under Skill use. Passwords are saved sealed and never shown again.</div>`
-      + `<table class="ut"><tr><th>Skill</th><th>Uses</th><th>State</th><th></th></tr>`
-      + s.list.map(x => `<tr><td><b>${esc(x.name)}</b>${x.site ? '<div class="sub">website</div>' : ''}</td><td class="sub">${esc(x.uses.join(', ') || '—')}</td>`
-        + `<td>${x.configured ? 'Ready' : `<span class="sub">needs ${esc(x.missing.join(', '))}</span>`}</td>`
-        + `<td><button class="btn" data-act="editskill" data-id="${esc(x.id)}">${x.configured ? 'Edit' : 'Set up'}</button></td></tr>`).join('') + '</table>';
-  }
-  const e = s.edit;
-  const field = x => x.secret
-    ? `<label style="display:grid;gap:4px">${esc(x.label)}<input type="password" class="sk-set" data-key="${esc(x.key)}" placeholder="${e.secrets[x.key] ? 'Saved. Leave empty to keep it.' : ''}" autocomplete="new-password"></label>`
-    : `<label style="display:grid;gap:4px"><span>${esc(x.label)}${x.optional ? ' <span class="sub">(optional)</span>' : ''}</span><input type="text" class="sk-set" data-key="${esc(x.key)}" value="${esc(e.values[x.key] ?? '')}" autocomplete="off">${x.hint ? `<span class="sub">${esc(x.hint)}</span>` : ''}</label>`;
-  return `<h3>${esc(e.name)}</h3><div class="sub">${esc(e.description)}</div>`
-    + (e.uses.length ? `<div class="sub">Reads ${esc(e.uses.join(' and '))}, as far as each instance's ticks allow. Test reads them as you.</div>` : '')
-    + (e.missing.length ? `<div class="sub">Needs ${esc(e.missing.join(', '))}.</div>` : '')
-    + (e.settings.length ? e.settings.map(field).join('') : '<div class="sub">It has no settings.</div>')
-    + `<div class="row2">${e.settings.length ? '<button class="btn primary" data-act="saveskill">Save</button>' : ''}${e.configured ? '<button class="btn" data-act="testskill">Test</button>' : ''}<button class="btn" data-act="skills" style="margin-left:auto">Back</button></div>`;
+// Skills, read-only: publishers push them and admins set them up with rf; a series chooses which it uses under Skill use.
+const skillsHtml = s => `<div class="sub">What each skill fetches or does, for every series that chooses it. Publishers push skills, and admins set them up, with rf (Tokens).</div>`
+  + `<table class="ut"><tr><th>Skill</th><th>Reads</th><th>Version</th><th>State</th></tr>`
+  + s.list.map(x => `<tr><td><b>${esc(x.name)}</b><div class="sub">${esc(x.description)}</div></td><td class="sub">${esc(x.uses.join(', ') || '—')}</td>`
+    + `<td class="sub">${x.pushed.version}, ${esc(when(x.pushed.at))} by ${esc(x.pushed.by)}</td><td>${x.configured ? 'Ready' : '<span class="sub">needs setting up</span>'}</td></tr>`).join('') + '</table>';
+
+// Personal tokens: rf, on your own machine or for your desktop agent, acts as you with one.
+function tokensHtml(s) {
+  return `<div class="sub">rf does what this page does, from a shell or your desktop agent, as you: list and pull what you can see, comment, answer, upload and wake${me.role === 'user' ? '' : `, and ${me.role === 'admin' ? "manage people, skills and the company's guidance" : 'push skills'}`}. Get <a href="/rf.ts" download>rf.ts</a> (Node 22.18 or later), make a token, then: <code>node rf.ts login ${esc(location.origin)} TOKEN</code>.</div>`
+    + (s.made ? `<h3>Your new token</h3><div class="sub">Copy it now: it isn't shown again.</div><input type="text" readonly value="${esc(s.made)}" onclick="this.select()">` : '')
+    + (s.tokens.length ? `<h3>Your tokens</h3>` + s.tokens.map(t => `<div class="wt">${esc(t.name)} <span class="sub">made ${esc(when(t.created))}, ${t.expires < new Date().toISOString() ? 'expired' : 'until ' + esc(when(t.expires))}</span><button class="quiet" data-act="revoke-token" data-id="${esc(t.id)}">Revoke</button></div>`).join('') : '')
+    + `<h3>New token</h3><div class="row2"><input type="text" id="tname" placeholder="Name, such as laptop" style="flex:1"><select id="tdays"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option></select><button class="btn primary" data-act="new-token">Make</button></div>`;
+}
+
+async function openTokens(made) {
+  pv = { title: 'Tokens', settings: { kind: 'tokens', tokens: await api('/tokens'), made } };
+  renderPv();
 }
 
 async function openSkills() {
@@ -965,11 +951,6 @@ async function openStart(title, go, then, label) {
   pv = { title, settings: { kind: 'start', go, then, label, offers: await myOffers() } };
   renderPv();
   $('#slabel')?.focus();
-}
-
-async function openUsers() {
-  pv = { title: 'Users', settings: { kind: 'users', users: await api('/users') } };
-  renderPv();
 }
 
 async function preview(path, item) {
@@ -1055,24 +1036,7 @@ document.addEventListener('click', async ev => {
     renderPv();
   }
   if (act === 'skills') await openSkills();
-  if (act === 'editskill') { pv.settings.edit = pv.settings.list.find(s => s.id === el.dataset.id); renderPv(); }
-  if (act === 'saveskill') {
-    const e = pv.settings.edit, body = {};
-    for (const i of document.querySelectorAll('#pv .sk-set')) if (i.type !== 'password' || i.value) body[i.dataset.key] = i.type === 'password' ? i.value : i.value.trim();
-    const saved = await api(`/skills/${enc(e.id)}`, { method: 'PUT', body: JSON.stringify(body) });
-    toast(`Saved ${e.name}`, 'ok');
-    await openSkills();
-    pv.settings.edit = pv.settings.list.find(s => s.id === saved.id);
-    renderPv();
-  }
-  if (act === 'testskill') {
-    el.disabled = true;
-    const was = el.textContent;
-    el.textContent = 'Testing…';
-    try { toast(await api(`/skills/${enc(pv.settings.edit.id)}/test`, { method: 'POST' }), 'ok'); } finally { el.disabled = false; el.textContent = was; }
-  }
   if (act === 'workspace-settings') await openWorkspaceSettings();
-  if (act === 'users') await openUsers();
   if (act === 'signout') location.href = (await api('/auth/logout', { method: 'POST' })).next;
   if (act === 'wadd' || act === 'wremove' || act === 'wrole') {
     const s = pv.settings, p = act === 'wadd' ? $('#wperson').value.trim().toLowerCase() : el.dataset.p;
@@ -1083,20 +1047,6 @@ document.addEventListener('click', async ev => {
     await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ owners, members }) });
     await refresh();
     await openWorkspaceSettings();
-  }
-  if (act === 'adduser') {
-    await api('/users', { method: 'POST', body: JSON.stringify({ email: $('#uemail').value.trim(), role: $('#urole').value }) });
-    await openUsers();
-  }
-  if (act === 'disable') {
-    await api(`/users/${enc(el.dataset.email)}`, { method: 'PUT', body: JSON.stringify({ disabled: !!el.dataset.on }) });
-    toast(el.dataset.on ? `${el.dataset.email} is disabled and signed out` : `${el.dataset.email} can sign in again`, 'ok');
-    await openUsers();
-  }
-  if (act === 'deluser') {
-    if (!confirm(`Remove ${el.dataset.email}? They leave every workspace they are in.`)) return;
-    await api(`/users/${enc(el.dataset.email)}`, { method: 'DELETE' });
-    await openUsers();
   }
   if (act === 'archive') {
     const s = pv.settings;
@@ -1191,6 +1141,16 @@ document.addEventListener('click', async ev => {
     else await refresh();
   }
   if (act === 'logins') await openLogins();
+  if (act === 'tokens') await openTokens();
+  if (act === 'new-token') {
+    const name = $('#tname').value.trim();
+    if (!name) return toast('Name the token, such as laptop');
+    await openTokens((await api('/tokens', { method: 'POST', body: JSON.stringify({ name, days: Number($('#tdays').value) }) })).token);
+  }
+  if (act === 'revoke-token') {
+    await api(`/tokens/${enc(el.dataset.id)}`, { method: 'DELETE' });
+    await openTokens();
+  }
   if (act === 'waiting') {
     pv = { title: 'Waiting on you', settings: { kind: 'waiting' } };
     renderPv();
@@ -1201,8 +1161,7 @@ document.addEventListener('click', async ev => {
   }
   if (act === 'save-guidance') {
     const text = $('#guidance').value;
-    if (pv.settings.kind === 'guidance') await api('/guidance', { method: 'PUT', body: text });
-    else await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ guidance: text }) });
+    await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ guidance: text }) });
     pv.settings.guidance = text;
     toast('Guidance saved', 'ok');
     await refresh();
@@ -1237,11 +1196,6 @@ document.addEventListener('click', async ev => {
 });
 
 $('#picker').addEventListener('change', e => upload([...e.target.files], e.target.dataset.pane, e.target.dataset.onto));
-$('#pv').addEventListener('change', async e => {
-  if (!e.target.matches('select[data-act=role]')) return;
-  await api(`/users/${enc(e.target.dataset.email)}`, { method: 'PUT', body: JSON.stringify({ role: e.target.value }) }).catch(() => {});
-  await openUsers();
-});
 $('#interrupt').addEventListener('click', async () => {
   if (!data?.run) return;
   await api(`${instPath()}/interrupt`, { method: 'POST' });

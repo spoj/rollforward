@@ -1,8 +1,9 @@
 import { createHash, createHmac, createPublicKey, randomBytes, timingSafeEqual, verify } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { resolve } from 'node:path';
+import { appendFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { HttpError } from './store.ts';
-import { forgetPerson, initSystem, key, readJson, writeJson } from './system.ts';
+import { forgetPerson, initSystem, key, readJson, rfDir, writeJson } from './system.ts';
 import { forgetLogins, saveLogin } from './logins.ts';
 
 // Sign-in with a Microsoft account. People press "Sign in with Microsoft" and type nothing. With RF_OIDC_ISSUER and the app's id set,
@@ -10,7 +11,9 @@ import { forgetLogins, saveLogin } from './logins.ts';
 // has one, or, for an app registered as a Single-page application (RF_OIDC_SPA=1), the browser does and the server checks the token's
 // signature. Without them it goes to a demo account picker that offers the two demo accounts below, so keep a demo on localhost.
 
-export type Role = 'admin' | 'user';
+// Publishers push skills; admins manage people and skills, from rf.
+export type Role = 'admin' | 'publisher' | 'user';
+export const ROLES: Role[] = ['admin', 'publisher', 'user'];
 export type User = { name?: string; role: Role; disabled?: boolean; sub?: string; groups?: string[]; epoch?: number; created?: string; last_login?: string };
 export type Me = { email: string; name: string; role: Role; groups: string[] };
 
@@ -62,6 +65,36 @@ export function removeUser(email: string) {
   writeJson('users.json', all);
   forgetPerson(email);
   forgetLogins(email);
+  for (const t of myTokens(email)) revokeToken(email, t.id);
+}
+
+// Personal tokens, for power users' rf: each acts as its person until it expires, is revoked, or its person is disabled or signed
+// out everywhere. .rf/tokens.json keeps only their hashes; .rf/token-uses.jsonl logs every use.
+type Token = { id: string; email: string; name: string; created: string; expires: string; epoch: number };
+const digest = (token: string) => createHash('sha256').update(token).digest('hex');
+const tokens = () => readJson<Record<string, Token>>('tokens.json', {});
+
+export function newToken(email: string, name: string, days: number): string {
+  if (!name || !(days >= 1 && days <= 365)) throw new HttpError(400, 'a token has a name and lasts 1 to 365 days');
+  const token = `rft_${randomBytes(24).toString('base64url')}`, all = tokens(), now = Date.now();
+  all[digest(token)] = { id: randomBytes(6).toString('hex'), email, name, created: new Date(now).toISOString(), expires: new Date(now + days * 86_400_000).toISOString(), epoch: users()[email].epoch ?? 0 };
+  writeJson('tokens.json', all);
+  return token;
+}
+
+export const myTokens = (email: string) => Object.values(tokens()).filter(t => t.email === email).map(({ id, name, created, expires }) => ({ id, name, created, expires }));
+
+export function revokeToken(email: string, id: string) {
+  writeJson('tokens.json', Object.fromEntries(Object.entries(tokens()).filter(([, t]) => t.email !== email || t.id !== id)));
+}
+
+function bearer(req: IncomingMessage, url: URL): Me | null {
+  const token = /^Bearer (rft_\S+)$/.exec(req.headers.authorization ?? '')?.[1];
+  if (!token) return null;
+  const t = tokens()[digest(token)], u = t && users()[t.email];
+  if (!u || u.disabled || (u.epoch ?? 0) !== t.epoch || t.expires < new Date().toISOString()) throw new HttpError(401, 'this token has expired or was revoked');
+  appendFileSync(join(rfDir(), 'token-uses.jsonl'), JSON.stringify({ at: new Date().toISOString(), token: t.id, email: t.email, method: req.method, path: url.pathname }) + '\n');
+  return { email: t.email, name: u.name ?? t.email, role: admins.has(t.email) ? 'admin' : u.role, groups: u.groups ?? [] };
 }
 
 export function signOutEverywhere(email: string) {
@@ -328,7 +361,7 @@ export async function authenticate(req: IncomingMessage, res: ServerResponse, ur
     res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': cookie('rf_session', '', 0) });
     res.end(JSON.stringify({ next: end ? `${end}?post_logout_redirect_uri=${encodeURIComponent(oidc.publicUrl + '/')}` : '/' }));
   } else {
-    const me = session(req);
+    const me = bearer(req, url) ?? session(req);
     if (me) return me;
     if (url.pathname !== '/' || req.method !== 'GET') throw new HttpError(401, 'sign in first');
     signInPage(res, '/');
@@ -346,15 +379,15 @@ if (import.meta.main) {
   const [, cmd, email = '', arg] = process.argv.slice(2), id = email.trim().toLowerCase();
   const all = users();
   try {
-    if (cmd === 'add' && id) upsertUser(id, { role: arg === 'admin' ? 'admin' : 'user' });
-    else if (cmd === 'role' && id in all && (arg === 'admin' || arg === 'user')) upsertUser(id, { role: arg });
+    if (cmd === 'add' && id) upsertUser(id, { role: ROLES.includes(arg as Role) ? (arg as Role) : 'user' });
+    else if (cmd === 'role' && id in all && ROLES.includes(arg as Role)) upsertUser(id, { role: arg as Role });
     else if (cmd === 'disable' && id in all) upsertUser(id, { disabled: true });
     else if (cmd === 'enable' && id in all) upsertUser(id, { disabled: false });
     else if (cmd === 'signout' && id in all) signOutEverywhere(id);
     else if (cmd === 'remove' && id in all) removeUser(id);
     else if (cmd === 'list') for (const [n, u] of Object.entries(all)) console.log([n, u.role, u.disabled ? 'disabled' : '', u.last_login ? `last in ${u.last_login}` : 'never in'].filter(Boolean).join('\t'));
     else {
-      console.error('usage: node src/auth.ts DATA_ROOT list | add EMAIL [admin] | role EMAIL admin|user | disable EMAIL | enable EMAIL | signout EMAIL | remove EMAIL');
+      console.error('usage: node src/auth.ts DATA_ROOT list | add EMAIL [admin|publisher] | role EMAIL admin|publisher|user | disable EMAIL | enable EMAIL | signout EMAIL | remove EMAIL');
       process.exitCode = 2;
     }
   } catch (e) {

@@ -1,21 +1,21 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { basename, dirname, join, posix, resolve, sep } from 'node:path';
+import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInstance, duplicateInstance, guidanceFile, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instances, newId, openStore, safeName, seriesDir, type Instance } from './store.ts';
 import { socketDir } from './runner.ts';
 import { serveSandboxes } from './sandbox.ts';
-import { authenticate, checkConfig, connectM365, m365Ready, mode, removeUser, signOutEverywhere, upsertUser, users, type Me, type Role } from './auth.ts';
+import { authenticate, checkConfig, connectM365, m365Ready, mode, myTokens, newToken, removeUser, revokeToken, ROLES, signOutEverywhere, upsertUser, users, type Me, type Role } from './auth.ts';
 import { canManage, canSee, everyone, initSystem, saveTree, tree, type Workspace } from './system.ts';
 import { checkTicks, logins, runnerOf, signOut } from './logins.ts';
 import { agentCall, testSkill } from './agent-api.ts';
 import { offer, unoffer } from './m365.ts';
 import { seriesSettings } from './series.ts';
-import { checkChosen, saveSkillConfig, skill, skills, skillView } from './skills.ts';
+import { checkChosen, openSkills, pushSkill, saveSkillConfig, skill, skills, skillView, versionFiles, versionsOf } from './skills.ts';
 import { active, byToken, cancelWake, closed, dropRequest, kick, MAX_OPEN, named, queued, reach, setWake, startWaking, startWith, wakeFrom, wakes } from './waker.ts';
 
 const root = resolve(process.argv[2]);
@@ -28,6 +28,7 @@ const host = process.env.RF_HOST ?? '127.0.0.1';
 const tmpDir = join(root, '.tmp');
 initSystem(root);
 openStore(root);
+openSkills(root);
 checkConfig(host);
 rmSync(tmpDir, { recursive: true, force: true });
 mkdirSync(tmpDir);
@@ -211,13 +212,17 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
   }
   // A pending wake, which people may move or cancel, and a request to start an instance, which they start or dismiss.
   if (kind === 'wakes') {
+    // A person moves or cancels a pending wake, or sets one, as an agent's rf wake does: an open instance continues, a series starts LABEL.
     const target = t.series[id] ? id : instance(id).seriesId, wake = wakes().pending[id];
     mustSee(me, t.workspaces[t.series[target].workspace]);
-    if (!wake) throw new HttpError(404, 'no wake pending');
+    if (req.method === 'DELETE' && !wake) throw new HttpError(404, 'no wake pending');
     if (req.method === 'DELETE') return void (cancelWake(id), send(res, 200, 'ok'));
-    const at = Date.parse(String((await json(req)).at));
-    if (req.method !== 'PUT' || Number.isNaN(at)) throw new HttpError(400, 'PUT {"at": a date and time}, or DELETE');
-    return send(res, 200, setWake(id, { ...wake, at: new Date(at).toISOString(), from: by }));
+    const { at: when, reason, label } = await json(req), at = Date.parse(String(when));
+    if (req.method !== 'PUT' || Number.isNaN(at)) throw new HttpError(400, 'PUT {"at": a date and time, "reason", "label" for a series}, or DELETE');
+    if (!wake && !reason) throw new HttpError(400, 'a new wake has a reason');
+    if (!wake && t.series[id] && !label) throw new HttpError(400, 'waking a series starts a new instance: name it with a label');
+    if (!t.series[id] && instance(id).doc.status !== 'open') throw new HttpError(409, `${instance(id).label} is ${instance(id).doc.status}: to correct it, wake its series`);
+    return send(res, 200, setWake(id, { ...wake, at: new Date(at).toISOString(), from: by, ...(reason && { reason }), ...(label && { label }) }));
   }
   if (kind === 'requests') {
     const r = wakes().requests[id];
@@ -239,6 +244,11 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
   const mine = a?.inst === inst ? a : undefined;
   if (!action) return send(res, 200, { doc: inst.doc, log: inst.log, run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4) } : null, queued: queued(inst), runner: runnerOf(inst) });
   if (action === 'trace') return send(res, 200, trace(inst));
+  if (action === 'files') return send(res, 200, ['upload', 'working', 'calls'].filter(top => existsSync(join(inst.dir, top))).flatMap(top =>
+    readdirSync(join(inst.dir, top), { recursive: true, withFileTypes: true }).filter(d => d.isFile()).map(d => {
+      const st = statSync(join(d.parentPath, d.name));
+      return { path: relative(inst.dir, join(d.parentPath, d.name)), size: st.size, mtime: st.mtime.toISOString() };
+    })));
   if (req.method !== 'POST') throw new HttpError(405, 'POST only');
   if (action === 'duplicate') {
     if (inst.doc.status === 'open') throw new HttpError(409, 'only a closed or abandoned instance can be duplicated');
@@ -318,7 +328,7 @@ async function admin(me: Me, req: IncomingMessage, res: ServerResponse, url: URL
   if (!email) {
     if (req.method === 'POST') {
       const { email, role } = JSON.parse((await body(req)).toString());
-      upsertUser(String(email ?? ''), { role: role === 'admin' ? 'admin' : 'user' });
+      upsertUser(String(email ?? ''), { role: ROLES.includes(role) ? role : 'user' });
       return send(res, 200, 'ok');
     }
     const all = Object.values(tree().workspaces);
@@ -330,19 +340,25 @@ async function admin(me: Me, req: IncomingMessage, res: ServerResponse, url: URL
     removeUser(email);
   } else if (req.method === 'PUT') {
     const { role, disabled, signout } = JSON.parse((await body(req)).toString());
-    if (email === me.email && (disabled || role === 'user')) throw new HttpError(409, 'you cannot lock yourself out');
-    if (role !== undefined && role !== 'admin' && role !== 'user') throw new HttpError(400, 'role is admin or user');
+    if (email === me.email && (disabled || (role !== undefined && role !== 'admin'))) throw new HttpError(409, 'you cannot lock yourself out');
+    if (role !== undefined && !ROLES.includes(role)) throw new HttpError(400, `role is one of ${ROLES.join(', ')}`);
     upsertUser(email, { ...(role && { role: role as Role }), ...(disabled !== undefined && { disabled: !!disabled }) });
     if (signout) signOutEverywhere(email);
   } else throw new HttpError(405, 'PUT or DELETE');
   send(res, 200, 'ok');
 }
 
-// Skills: anyone signed in may list them with whether each is set up, to choose a series' Skill use; only admins see their
-// settings (never a secret, only whether one is saved), change them and test them.
+// Skills: anyone signed in may list them with whether each is set up, to choose a series' Skill use. Publishers and admins push
+// versions; only admins see their settings (never a secret, only whether one is saved), change them and test them, all with rf.
 async function skillsRoute(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) {
   const [id = '', action] = url.pathname.split('/').slice(2).map(decodeURIComponent);
   if (!id && req.method === 'GET') return send(res, 200, skills().map(s => skillView(s, me.role === 'admin')));
+  if (action === 'versions' && req.method === 'GET') return send(res, 200, versionsOf(id));
+  if (action === 'versions' && req.method === 'POST') {
+    if (me.role !== 'admin' && me.role !== 'publisher') throw new HttpError(403, 'publishers and admins push skills');
+    const { files, from } = await json(req);
+    return send(res, 200, `pushed ${id} version ${pushSkill(id, from === undefined ? files : versionFiles(id, Number(from)), me.email)}, live now`);
+  }
   if (me.role !== 'admin') throw new HttpError(403, 'admins only');
   const s = skill(id);
   if (!s) throw new HttpError(404, `no skill ${id}`);
@@ -401,6 +417,14 @@ createServer({ requestTimeout: 60 * 60_000 }, async (req, res) => {
       if (me.role !== 'admin') throw new HttpError(403, "the company's guidance is the admins'");
       writeFileSync(guidanceFile(), (await body(req)).toString());
       send(res, 200, 'ok');
+    } else if (url.pathname === '/tokens' && req.method === 'GET') send(res, 200, myTokens(me.email));
+    else if (url.pathname === '/tokens' && req.method === 'POST') {
+      const { name, days } = await json(req);
+      send(res, 200, { token: newToken(me.email, String(name ?? '').trim(), Number(days)) });
+    } else if (url.pathname.startsWith('/tokens/') && req.method === 'DELETE') send(res, 200, (revokeToken(me.email, decodeURIComponent(url.pathname.slice(8))), 'ok'));
+    else if (url.pathname === '/rf.ts') {
+      res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'content-disposition': 'attachment; filename=rf.ts' });
+      res.end(readFileSync(join(app, 'src', 'rf-people.ts')));
     } else if (url.pathname === '/logins' && req.method === 'GET') send(res, 200, logins(me.email));
     else if (url.pathname === '/logins/m365/connect') await connectM365(res, me.email);
     else if (url.pathname === '/logins/m365/offers' && req.method === 'POST') send(res, 200, (await offer(me.email, await json(req)), 'ok'));

@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { initSystem } from '../src/system.ts';
 import { createInstance, openStore, type Instance } from '../src/store.ts';
 import { Browsing, closeBrowser } from '../src/browser.ts';
-import { findFlow, saveSkillConfig, skills, useSkillsDir } from '../src/skills.ts';
+import { findFlow, openSkills, saveSkillConfig, skills } from '../src/skills.ts';
 import { testSkill } from '../src/agent-api.ts';
 
 // A stand-in site behind a sign-in, and two stand-in skills for it: `demo`, signed in by filling the form, and `portal`, by a
@@ -16,7 +16,7 @@ import { testSkill } from '../src/agent-api.ts';
 // a form whose post is a write, and a link to another host.
 const PASS = 'S3rvice!pw';
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
-const tmp = mkdtempSync(join(tmpdir(), 'rf-flow-')), skillsDir = join(tmp, 'skills');
+const tmp = mkdtempSync(join(tmpdir(), 'rf-flow-')), skillsDir = join(tmp, 'skills', 'live');
 let site: Server, other: Server, url = '', otherUrl = '', inst: Instance, b: Browsing;
 const posted: string[] = [], via: string[] = [];
 
@@ -95,7 +95,7 @@ const run = (name: string, ...vars: string[]) => b.flow(name, vars.flatMap(v => 
 
 before(async () => {
   initSystem(tmp);
-  useSkillsDir(skillsDir);
+  openSkills(tmp);
   for (const [s, set] of [[site = standIn(), (u: string) => { url = u; }], [other = standIn(), (u: string) => { otherUrl = u; }]] as const) {
     await new Promise<void>(ok => s.listen(0, '127.0.0.1', ok));
     set(`http://127.0.0.1:${(s.address() as { port: number }).port}`);

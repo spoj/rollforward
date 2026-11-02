@@ -5,12 +5,15 @@ Recurring tasks, files in and files out. People drop this period's input files i
 ![An instance: inputs, steps and outputs, joined by what each is made from](docs/screenshots/instance.png)
 
 - **The agent** is [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent), run over RPC with read, bash, edit and write tools, in its series' folder. It copies and adapts the previous instance's scripts, so each instance's `working/` is a complete record of how its outputs were made.
-- **Skills** reach systems outside the series, for the series that choose them. They are each deployment's own, in the folder `RF_SKILLS_DIR` names; none ship with this repo.
+- **Skills** reach systems outside the series, for the series that choose them. They are each deployment's own, pushed by publishers with `rf skill push`; none ship with this repo.
 - **Inputs** are uploads, or sources a person points the agent to, such as a database, a mailbox folder or a web API. The agent keeps a frozen copy of what it read, and the tile shows where it came from.
-- **Workspaces hold series,** such as one client's. Each belongs to one person, who alone sees it, besides admins. A workspace or a series can be archived, which hides it until it's restored.
+- **Workspaces hold series,** such as one client's, and its owners and members see them. A workspace or a series can be archived, which hides it until it's restored.
 - **People sign in with Microsoft,** with one button.
-- **Skill use:** a series picks skills, such as fetching the day's A/R aging from OneDrive or a customer's payments from its vendor portal. Admins set each up once, with its links and, for a website, the account the server signs in with; the agent never sees the password.
-- **Series can share.** A series can let other series read it, one way.
+- **Logins are each person's own:** a run reads Microsoft 365 and websites only through its runner's logins, and only those ticked for its instance.
+- **Talking is in comments,** on an item or the instance; the agent replies in the thread and ends each run with a report.
+- **Wakes:** an agent sets when its instance, or its series' next period, runs again; nothing is scheduled.
+- **Reach:** a series reads its own workspace, and any workspace whose people all belong to its own; every run also reads the company's and its workspace's guidance.
+- **rf** is people's command line, with a personal token: what the page does, plus pulling everything you can see, for your own desktop agent. Admin is rf, not the page.
 - **Everything is files on disk.** Each instance has `upload/` (people's files), `working/` (the agent's), `workspace.json` (what the screen shows) and `log.jsonl` (every event).
 
 | A tile's notes | Preview, compared with the file it replaced |
@@ -21,7 +24,7 @@ Recurring tasks, files in and files out. People drop this period's input files i
 
 ## Try it
 
-    cp .env.example .env          # set OPENROUTER_API_KEY, and RF_SKILLS_DIR for your skills
+    cp .env.example .env          # set OPENROUTER_API_KEY
     docker compose up --build     # then open http://127.0.0.1:8780
 
 The image comes with a demo series that is already populated: a weekly borrowing base for a made-up housewares company, nine weeks the agent has done.
@@ -42,17 +45,17 @@ People sign in with one button, **Sign in with Microsoft**, and type nothing.
   - a **Single-page application**: `RF_OIDC_SPA=1`, and no secret. The browser then redeems the sign-in, as Microsoft requires, and the server checks the token's signature.
 
   The same button then goes to Microsoft, and the same app gives each person's **Microsoft 365 login** (Logins, Connect Microsoft 365): grant it the delegated Microsoft Graph permissions `Mail.Read`, `Mail.Read.Shared`, `Files.Read.All`, `Sites.Read.All` and `offline_access`, with admin consent once for the organisation. That needs a Web app or a public client; a Single-page application can't keep the login. `RF_ADMINS` names the admins; `RF_ALLOWED_DOMAINS` and `RF_AUTO_PROVISION=0` narrow who may come in. Start with `node --env-file=.env src/server.ts DATA_ROOT` without Docker. Microsoft takes http redirects only on localhost, so open the site as `http://localhost:8780`, not `127.0.0.1`; for others to reach it, register an https address.
-- **What people see:** a workspace's owners and members, people by email or Entra groups by id, see all of it; owners manage who is in it. Admins see every workspace and manage people on the Users page. The same from a shell:
+- **What people see:** a workspace's owners and members, people by email or Entra groups by id, see all of it; owners manage who is in it. Admins see every workspace, and manage people with rf (Tokens, at the sidebar's foot): `rf users`, `rf user add|role|disable|enable|signout|remove EMAIL`, roles being admin, publisher (who pushes skills) and user. On the server, before there is an admin:
 
       docker compose exec rollforward node src/auth.ts /data list
-      docker compose exec rollforward node src/auth.ts /data add alice@example.com [admin]
+      docker compose exec rollforward node src/auth.ts /data add alice@example.com [admin|publisher]
       docker compose exec rollforward node src/auth.ts /data disable alice@example.com   # her sessions end at once
 
 Sessions last 12 hours (`RF_SESSION_HOURS`). The people, the workspaces' people and everyone's logins are in `.rf/` in the data root, the logins sealed with `seal.key`. Where systemd runs the server, give it `session.key` and `seal.key` as credentials (`systemd-creds encrypt --with-key=tpm2 …`, then `LoadCredentialEncrypted=`), so a copy of the data holds only ciphertext; otherwise they are made in `.rf/`.
 
 ## Skill use
 
-A series picks, in its settings, the **skills** its agent may use; choosing none is fine. A skill is what to fetch or do, and how, whole in a folder `<id>/` under `RF_SKILLS_DIR`: a `SKILL.md` for the agent, a `skill.json` naming what of the runner's Microsoft 365 login it reads and its settings, and what it runs (scripts, or flows the server runs in the skill's website, with a `signin.ts` where signing in takes more than a name and a password).
+A series picks, in its settings, the **skills** its agent may use; choosing none is fine. A skill is what to fetch or do, and how, whole in a folder that a publisher pushes with `rf skill push DIR`, live at once; each push is a version, and `rf skill rollback ID N` brings an earlier one back. It holds a `SKILL.md` for the agent, a `skill.json` naming what of the runner's Microsoft 365 login it reads and its settings, and what it runs (scripts, or flows the server runs in the skill's website, with a `signin.ts` where signing in takes more than a name and a password).
 
 | Kind of skill | Reads through | Fetches, for example |
 | --- | --- | --- |
@@ -60,12 +63,11 @@ A series picks, in its settings, the **skills** its agent may use; choosing none
 | A mail attachment | the runner's Microsoft 365 mail | the Excel attachment of the day's report mail |
 | A vendor portal | its website | the portal's payments and unpaid items, as csv |
 
-Admins set things up at the foot of the sidebar, once for every series:
-- **Skills:** each skill's settings, such as a folder link, or for a website its address, account and password. Passwords are sealed in `.rf/` and never shown again, and the agent never sees them. Until a skill is set up a series can choose it, but the agent can't use it.
+Admins set each skill up once for every series, with `rf skill set ID KEY VALUE`, such as a folder's link; a secret (`-` reads it from stdin) is sealed in `.rf/` and never shown again. Until a skill is set up a series can choose it, but the agent can't use it. Skills, at the sidebar's foot, lists them with their versions.
 
 Microsoft 365 is nobody's but each person's: a run reads mail and files only through its runner's own login, and only the mailboxes, OneDrive and SharePoint sites ticked for its instance.
 
-**Test** on each row checks it for real, reading Microsoft 365 as you; a website skill signs in. A website skill's browser stays on the site's own hosts and makes no write.
+`rf skill test ID` checks one for real, reading Microsoft 365 as you; a website skill signs in. A website skill's browser stays on the site's own hosts and makes no write.
 
 From a shell, without the model: `node --env-file=.env src/cli.ts DATA_ROOT test SKILL --as EMAIL`, and `… DATA_ROOT try aging --as EMAIL -- python "$RF_SKILLS/aging/scripts/fetch.py"` (or `try portal --as EMAIL -- rf flow portal/payments`) runs a skill as a run with it would, with EMAIL's logins. Set `RF_TODAY` in `.env` to test against a day that has data. Without Docker, the browser needs `node node_modules/playwright/cli.js install chromium` once.
 
@@ -73,7 +75,7 @@ To reach it from the internet, run `tailscale funnel --bg 8780`, with Microsoft 
 
 For a demo run in podman behind Tailscale Funnel, the justfile has `just invite EMAIL [admin]`, `just revoke EMAIL`, `just people`, `just logs`, and `just deploy`, which rebuilds it from the committed main branch.
 
-**Security:** each run is a sandbox. It sees its own series and the series it may read, holds no key, and reaches the internet only through the server, to package registries, GitHub and documentation sites. Anyone signed in can steer the agents of their own workspaces within that.
+**Security:** each run is a sandbox. It sees its own series and the series it may read, holds no key, and reaches the internet only through the server, to package registries, GitHub and documentation sites. Anyone signed in can talk to the agents of their own workspaces within that.
 
 ## Without Docker
 
@@ -93,11 +95,12 @@ The [justfile](justfile) has these and more as recipes; `just` lists them.
   - `RF_LIMIT_MIN` (120)
   - `RF_PI_ARGS` (a JSON array of extra Pi arguments)
   - `RF_HOST` (`127.0.0.1`)
-  - `RF_SKILLS_DIR`, the folder of this deployment's skills
   - `RF_SCRATCH` (the system's temp folder`/rollforward`), for each run's HOME and /tmp and the server's socket for runs
   - `RF_SANDBOX_SCOPE`, the command that gives each run its cgroup (a `systemd-run --user --scope` line; empty for none)
   - `RF_SANDBOX_RO`, more folders runs may read, separated by `:`
   - `RF_MODEL_URL` (`https://openrouter.ai/api`)
+  - `RF_MAX_RUNS` (20), runs at once across all series
+  - `RF_OIDC_SCOPES` (`openid profile email`), sign-in's scopes
 - **Hosts runs may reach,** beyond package registries, GitHub and documentation sites: a JSON list in `.rf/egress.json`, such as `["api.example.com", "*.example.org"]`.
 
 To build the demo from scratch (about $4 of model use; the generator needs the internet for the ECB rates):

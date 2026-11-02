@@ -1,13 +1,13 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join, posix } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { HttpError } from './store.ts';
 import { readJson, writeJson } from './system.ts';
 import { readFlow, type Flow } from './flow.ts';
 import { seal, type Field, type System } from './systems.ts';
 import type { Adapter } from './signin.ts';
 
-// Skills: what to fetch or do, and how, each whole in a folder <id>/ under RF_SKILLS_DIR, a deployment's own (none ship here):
+// Skills: what to fetch or do, and how, each whole in a folder, which publishers push with rf skill push (none ship here):
 // - SKILL.md, in Pi's format: a front matter with `name` and `description`, then instructions the agent reads when it needs them;
 // - skill.json, rollforward's: {"uses": [what of the runner's Microsoft 365 login it reads: "m365-mail", "m365-files"], "settings": [fields, a
 //   password among them marked "secret"], "site": {"hosts": [...]}} for a skill with a website of its own;
@@ -15,10 +15,43 @@ import type { Adapter } from './signin.ts';
 //   the skill's website; and, for a site whose sign-in is more than a name and a password, signin.ts (see signin.ts).
 // Admins set each skill's settings once, under Skills (.rf/skills.json, secrets sealed); a series only chooses which skills it uses.
 
-// Tests point this at stand-in skills.
-let root = process.env.RF_SKILLS_DIR ?? join(dirname(fileURLToPath(import.meta.url)), '..', 'skills');
-export const useSkillsDir = (dir: string) => { root = dir; };
+// Skills are data: each push is a version, DATA/skills/versions/<id>/<n>/, with who pushed it and when in its .pushed.json, and
+// DATA/skills/live/<id> links to the version runs use, so a push is live at once. Rolling back is pushing an earlier one again.
+let root = '';
+export function openSkills(dataRoot: string) {
+  root = join(dataRoot, 'skills', 'live');
+  mkdirSync(root, { recursive: true });
+}
 export const skillsDir = () => root;
+export const pushed = (s: Skill): { version: number; by: string; at: string } => JSON.parse(readFileSync(join(s.dir, '.pushed.json'), 'utf8'));
+
+export function pushSkill(id: string, files: Record<string, string>, by: string): number {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(id)) throw new HttpError(400, 'a skill id is lowercase letters, digits and dashes');
+  if (!files['SKILL.md']) throw new HttpError(400, 'a skill has a SKILL.md at its top');
+  for (const rel of Object.keys(files)) if (posix.normalize(rel) !== rel || rel.startsWith('../') || posix.isAbsolute(rel)) throw new HttpError(400, `bad path ${rel}`);
+  const versions = join(root, '..', 'versions', id), n = Math.max(0, ...(existsSync(versions) ? readdirSync(versions).map(Number) : [])) + 1, dir = join(versions, String(n));
+  for (const [rel, data] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, rel)), { recursive: true });
+    writeFileSync(join(dir, rel), Buffer.from(data, 'base64'));
+  }
+  writeFileSync(join(dir, '.pushed.json'), JSON.stringify({ version: n, by, at: new Date().toISOString() }));
+  symlinkSync(join('..', 'versions', id, String(n)), `${join(root, id)}.new`);
+  renameSync(`${join(root, id)}.new`, join(root, id));
+  return n;
+}
+
+// A version's files, to push again as the newest: the rollback.
+export function versionFiles(id: string, n: number): Record<string, string> {
+  const dir = join(root, '..', 'versions', id, String(n));
+  if (!existsSync(dir)) throw new HttpError(404, `${id} has no version ${n}`);
+  return Object.fromEntries(readdirSync(dir, { recursive: true, withFileTypes: true }).filter(d => d.isFile() && d.name !== '.pushed.json')
+    .map(d => [posix.relative(dir, join(d.parentPath, d.name)), readFileSync(join(d.parentPath, d.name)).toString('base64')]));
+}
+
+export const versionsOf = (id: string) => {
+  const dir = join(root, '..', 'versions', id);
+  return existsSync(dir) ? readdirSync(dir).map(n => JSON.parse(readFileSync(join(dir, n, '.pushed.json'), 'utf8'))).sort((a, b) => a.version - b.version) : [];
+};
 
 export type Skill = {
   id: string; name: string; description: string; dir: string; uses: string[]; settings: Field[];
@@ -75,7 +108,7 @@ const USES: Record<string, string> = { 'm365-mail': "the runner's Microsoft 365 
 
 // What the Skills page shows: never a secret, only whether one is saved.
 export function skillView(s: Skill, admin: boolean) {
-  const need = skillMissing(s), base = { id: s.id, name: s.name, description: s.description, uses: s.uses.map(u => USES[u] ?? u), configured: !need.length };
+  const need = skillMissing(s), base = { id: s.id, name: s.name, description: s.description, uses: s.uses.map(u => USES[u] ?? u), configured: !need.length, pushed: pushed(s) };
   if (!admin) return base;
   const c = skillConfig(s.id);
   return {

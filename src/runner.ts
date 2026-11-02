@@ -44,11 +44,11 @@ export function pi(o: { token: string; view: View; skills?: string[] }): RpcClie
   writeFileSync(join(run, 'CATALOGUE.md'), o.view.catalogue);
   const args = sandboxArgs({
     cwd, home, tmp, socketDir,
-    ro: [...['bin', 'src', 'node_modules', '.venv', 'package.json', 'prompt.md'].map(f => join(app, f)), dirname(process.execPath), skillsDir(), ...(process.env.RF_SANDBOX_RO ?? '').split(delimiter)].filter(p => p && existsSync(p)),
-    work: { ro: [[join(run, 'CATALOGUE.md'), '/work/CATALOGUE.md'], ...o.view.ro.filter(([src]) => existsSync(src))], rw: [[working, `${instance}/working`], [session, `${instance}/session`], [pylib, `${cwd}/.pylib`]] },
+    ro: [...['bin', 'src', 'node_modules', '.venv', 'package.json', 'prompt.md'].map(f => join(app, f)), dirname(process.execPath), ...(process.env.RF_SANDBOX_RO ?? '').split(delimiter)].filter(p => p && existsSync(p)),
+    work: { ro: [[join(run, 'CATALOGUE.md'), '/work/CATALOGUE.md'], [dirname(skillsDir()), '/skills'], ...o.view.ro.filter(([src]) => existsSync(src))], rw: [[working, `${instance}/working`], [session, `${instance}/session`], [pylib, `${cwd}/.pylib`]] },
     env: {
       PATH: [join(app, 'bin'), join(app, '.venv', 'bin'), dirname(process.execPath), '/usr/bin'].join(delimiter), LANG: 'C.UTF-8', PYTHONPATH: `${cwd}/.pylib`, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: '1', PI_TELEMETRY: '0',
-      RF_URL: local, RF_TOKEN: o.token, RF_WORKING: `${instance}/working`, RF_SKILLS: skillsDir(), ...(process.env.RF_TODAY && { RF_TODAY: process.env.RF_TODAY }),
+      RF_URL: local, RF_TOKEN: o.token, RF_WORKING: `${instance}/working`, RF_SKILLS: '/skills/live', ...(process.env.RF_TODAY && { RF_TODAY: process.env.RF_TODAY }),
       HTTPS_PROXY: proxy, HTTP_PROXY: proxy, https_proxy: proxy, http_proxy: proxy, NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost', NODE_USE_ENV_PROXY: '1',
     },
   });
@@ -56,7 +56,7 @@ export function pi(o: { token: string; view: View; skills?: string[] }): RpcClie
   return new RpcClient({
     cliPath, cwd: dir, provider, model,
     env: { PATH: [join(app, 'bin', 'sandbox'), process.env.PATH].join(delimiter), RF_SANDBOX_ARGS: join(run, 'bwrap.args'), RF_SANDBOX_SCOPE: process.env.RF_SANDBOX_SCOPE ?? SCOPE },
-    args: ['--no-extensions', '--no-skills', '--no-mcp', '--no-context-files', '--no-prompt-templates', ...(o.skills ?? []).flatMap(id => ['--skill', join(skillsDir(), id)]),
+    args: ['--no-extensions', '--no-skills', '--no-mcp', '--no-context-files', '--no-prompt-templates', ...(o.skills ?? []).flatMap(id => ['--skill', `/skills/live/${id}`]),
       '--tools', 'read,bash,edit,write', '--append-system-prompt', join(app, 'prompt.md'),
       '--thinking', process.env.RF_THINKING ?? 'high',
       '--session-dir', `${instance}/session`, '--session-id', 'main',
