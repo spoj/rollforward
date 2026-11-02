@@ -66,13 +66,25 @@ export function pi(o: { token: string; view: View; skills?: string[] }): RpcClie
   });
 }
 
+// Pi answers commands only once it has loaded, and RpcClient waits 30 s for an answer. A cold or busy machine, such as one starting
+// many runs after a restart, has been seen to take 40 s, so ask for its state again on each timeout before sending the prompt.
+async function ready(client: RpcClient, tries = 4): Promise<void> {
+  for (let i = 1; ; i++) {
+    try {
+      return void (await client.getState());
+    } catch (e) {
+      if (i === tries || !(e as Error).message.startsWith('Timeout waiting for response')) throw e;
+    }
+  }
+}
+
 export async function startRun(o: Parameters<typeof pi>[0] & { message: string; onEvent: (e: JsonAgentSessionEvent) => void }): Promise<Run> {
   if (!process.env.OPENROUTER_API_KEY) throw new Error('no model key: the server has no OPENROUTER_API_KEY');
   const client = pi(o), stop = async () => { await client.stop(); rmSync(join(scratch, 'runs', o.token), { recursive: true, force: true }); };
   const settled = new Promise<boolean>(resolve => client.onEvent(e => e.type === 'agent_settled' && resolve(e.aborted)));
   client.onEvent(o.onEvent);
   await client.start();
-  await client.prompt(o.message).catch(async e => { await stop(); throw e; });
+  await ready(client).then(() => client.prompt(o.message)).catch(async e => { await stop(); throw e; });
   return {
     steer: text => client.steer(text),
     interrupt: async () => { await client.clearQueue(); await client.abort(); },

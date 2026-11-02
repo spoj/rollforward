@@ -702,9 +702,10 @@ async function loadProcess(key) {
   const prev = from ?? cur.s.instances.filter(i => i.status === 'closed' && i.label < cur.i.label).map(i => i.label).sort().at(-1);
   const get = async path => { const r = await fetch(fileUrl(path)); return r.ok ? r.text() : ''; };
   const [now, was] = await Promise.all([get('working/process.md'), prev ? get(`../${prev}/working/process.md`) : '']);
-  const lines = redline(was, now), changed = lines.some(([k]) => k);
+  // Until this instance's agent writes its own, the process is still the one it starts from.
+  const lines = now ? redline(was, now) : redline('', was), changed = lines.some(([k]) => k);
   proc.html = `<div class="lh"><b>Process</b><button class="btn" data-act="proc">Close</button></div><div class="conv">`
-    + `<div class="sub">${!now ? 'No process.md yet: the agent writes it as it learns the series.' : prev ? (changed ? `Changes since ${esc(prev)} are marked.` : `Unchanged since ${esc(prev)}.`) : 'The series\' first process.'}</div>`
+    + `<div class="sub">${!now && !was ? 'No process.md yet: the agent writes it as it learns the series.' : !now ? `As of ${esc(prev)}, until the agent updates it here.` : prev ? (changed ? `Changes since ${esc(prev)} are marked.` : `Unchanged since ${esc(prev)}.`) : 'The series\' first process.'}</div>`
     + `<div class="proc">${lines.map(([k, l]) => `<div class="${k}">${md(l) || '&nbsp;'}</div>`).join('')}</div></div>`;
   if (ui.proc && proc.key === key) renderLog();
 }
