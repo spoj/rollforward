@@ -148,7 +148,7 @@ function finish(a: Active, aborted: boolean, error?: string) {
   a.browsers?.close().catch(e => a.inst.append('server', 'browser', { run: a.n, error: e.message }));
   // The agent's last words in a run are its report to the instance's people; its first line is the run's summary.
   if (a.said && !aborted) a.inst.append('agent', 'report', { run: a.n, text: a.said });
-  a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(4), summary: a.said && !aborted ? a.said.split('\n')[0].replace(/\*+|^#+/g, '').trim().slice(0, 200) : null, ...(error && { error }) });
+  a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(4), summary: a.said && !aborted ? summaryOf(a.said) : null, ...(error && { error }) });
   if (a.run) { // one that never started, as with a missing API key, waits for the next act rather than retrying at once
     const next = !a.interrupted && pending(a.inst, a.seen).length ? a.inst
       : instances(series).find(i => i.doc.status === 'open' && !(a.interrupted && i === a.inst) && pending(i, seenBefore(i)).length);
@@ -240,6 +240,12 @@ function fire() {
     }
   }
   saveWakes(w);
+}
+
+// The ops log's line for a run: the report's first line, plain, or its first sentence when that line runs long.
+function summaryOf(report: string): string {
+  const line = report.split('\n')[0].replace(/\*+|^#+/g, '').trim();
+  return (line.length > 200 ? line.split(/(?<=[.!?])\s/)[0] : line).slice(0, 200);
 }
 
 // A run a restart cut ends as aborted, and its instance is woken to carry on, so a deploy needn't wait for quiet.
