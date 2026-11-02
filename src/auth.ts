@@ -51,7 +51,8 @@ export function users(): Record<string, User> {
 export function upsertUser(email: string, change: Partial<User>): User {
   const all = users(), id = email.trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+$/.test(id)) throw new HttpError(400, `not an email address: ${email}`);
-  all[id] = { role: 'user', created: new Date().toISOString(), ...all[id], ...change };
+  // A new person's epoch is the time, so a cookie from someone of that address removed before is not theirs.
+  all[id] = { role: 'user', created: new Date().toISOString(), ...(!all[id] && { epoch: Date.now() }), ...all[id], ...change };
   // Disabling: a new epoch makes every cookie signed for the old one stop working.
   if (change.disabled) all[id].epoch = (all[id].epoch ?? 0) + 1;
   writeJson('users.json', all);

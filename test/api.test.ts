@@ -490,8 +490,12 @@ test('rf for people: ls, comment, and admins manage people from it', async () =>
   assert.equal((await json(await at(series, 'talk'))).log.at(-1).text, 'From the shell');
   await rf('user', 'add', 'carol@demo.test', 'publisher');
   assert.match(await rf('users'), /^carol@demo\.test\tpublisher/m);
+  const carols = sessionOf(await login('carol@demo.test'))!;
   await rf('user', 'remove', 'carol@demo.test');
   assert.doesNotMatch(await rf('users'), /carol/);
+  await rf('user', 'add', 'carol@demo.test');
+  assert.equal((await fetch(`${base}/me`, { headers: { cookie: carols } })).status, 401, "a cookie from before she was removed isn't the new carol's");
+  await rf('user', 'remove', 'carol@demo.test');
 });
 
 test('the page hears of changes from an event stream, only of instances it can see', async () => {
