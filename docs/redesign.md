@@ -139,7 +139,7 @@ Built: folders by id, `.rf/tree.json`, the index of `instance.json`s, renames th
 - **Restarts don't wait for quiet** (built). On start, each run a restart cut is logged as aborted and started again with "A restart cut your last run; carry on". `just deploy` no longer waits.
 - **Frozen files are referenced, not copied:** an item may point at another instance's frozen file by id, path and hash.
 - **Derived files by hash:** each frozen file gets its Preview and its renders, once.
-- **Tools carry the mechanics; the prompt carries judgement.** `rf` gains `say`, `wake`, `browser`, `windows` and `skill`, each with its own help.
+- **Tools carry the mechanics; the prompt carries judgement.** The agent's `rf` gains `say`, `wake`, `browser` and `windows`, and people's `rf` `skill`, each with its own help.
 - **Events instead of polling** (built): `/api/events` streams changes the principal may see; the page no longer polls the whole tree every 4 seconds.
 - **Costs are shown** per instance and per series (built). No caps for now.
 

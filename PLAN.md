@@ -6,7 +6,7 @@
 
 ## Concepts
 
-- **People:** everyone signs in with a Microsoft account, by pressing Sign in with Microsoft. A person is a **user** or an **admin**.
+- **People:** everyone signs in with a Microsoft account, by pressing Sign in with Microsoft. A person is a **user**, a **publisher** (who also pushes skills) or an **admin**.
 - **Workspace:** a top-level folder of series, usually one entity's work, such as its bank rec, inventory rec and borrowing base. It is the only unit of sharing: its **members** see and work in every series in it, and its **owners** also manage who is in it. Each is a person by email or an Entra group by id. An area that needs hiding, such as payroll, is a workspace of its own with fewer people. A workspace with no one in it, such as the demo's, is the admins'.
 - **Series:** a recurring transform, such as "Weekly borrowing base": each instance's input files become its output files. What an instance should contain comes from earlier instances, not from a declaration.
 - **Skill:** what the agent knows how to fetch or do, and how, whole in a folder: such as the day's AR aging from OneDrive, or a customer's payments from its vendor portal. Admins set each up once with rf: its links or, for a website, its address.
@@ -37,7 +37,6 @@
   - A drop is a hint. The server adds each dropped file as a new item at once, even mid-run: an output if it was dropped on Outputs, otherwise an input, and the log records the tile it was dropped on, if any. The agent then decides what it is, such as a replacement for an input's file, and says so in a note.
   - There is no text box. People drop files, click answers and close the instance.
 - **State hints:** a spinner marks the running instance in the sidebar and the top bar, with a stripe along Outputs; ⧗ marks one waiting to run. A tile flashes when it changes and keeps a black dot until opened. An unanswered question's corner pulses, and an answer shows a spinner until the agent has read it. Uploads show progress, a finished run and an error each show a toast, the tab title counts open questions, Esc closes the top layer, and abandoned instances are struck through.
-- **Not shown:** `process.md`, the agent's own account of the process, which points at its scripts. The graph is the process for people.
 - **Waiting on you,** at the top of the sidebar when anything does: questions in instances you run, requests to start a series you can see, series whose wakes you allowed that have nothing open and no wake set, and your logins that have expired. There are no notifications.
 - **Process:** a side panel with the instance's `working/process.md`, redlined against the instance it was made from (else the series' latest closed before it), so a reviewer sees what changed in the method, not only in the figures.
 - **Conversation:** a side panel with what waits on people, open questions first and then open threads, the agent's latest report, and every thread. People talk to the agent only in comments: a comment starts a thread, on an item (Comment on its card; a `ref`, such as a cell, may say where) or on the instance, or replies in one. The agent replies in the thread with `rf say`, and a person resolves it. A comment starts a run, like an upload or an answer; the bar's Conversation button counts what is open.
@@ -185,7 +184,7 @@ The schemas are loose, and unknown fields are ignored, so the agent and the UI c
   - It draws the graph: a handful of steps, each in a small file it writes, even where earlier instances had none, and each item's `from`, as its scripts actually read them.
   - It puts each step and output on the screen when it's ready, and ends every run with `rf put` and a one-line summary.
 - **The agent makes the call.** Nothing in the system checks or scores outputs. The agent decides whether its work is right, and writes checks as scripts in `working/` when it judges it needs them.
-- **Answers carry over.** Close logs the default of every unanswered question as an answer. The next instance's agent applies the answers given after the previous instance's last run, and folds standing rules into `process.md`. Approvals to write don't carry over: one the previous instance never acted on is reported and asked again (decision 29).
+- **Answers carry over.** Close logs the default of every unanswered question as an answer. The next instance's agent applies the answers given after the previous instance's last run, and folds standing rules into `process.md`.
 - **Reads sources, never writes them.** People usually bring the files. When a person points the agent to a source instead, such as a database or a mailbox folder, the agent reads it, saves what it read in `working/` as the input's file with a `source`, and keeps the fetch as a script that later instances rerun. It reads the series folder, and writes only to its instance's `working/` and, through `rf`, its workspace.
   - People remain the executor: they post the entries and send the certificates. Nothing writes to outside systems (decision 42): a write the work needs, such as vouchers to enter in the ERP, is an output people take onward.
   - The run's sandbox enforces them (M3): it can't write elsewhere or reach any system but through the server.
@@ -226,7 +225,7 @@ The runner, [src/runner.ts](src/runner.ts), drives Pi through Pi's `RpcClient`, 
       --tools read,bash,edit,write --append-system-prompt <app>/prompt.md \
       --session-dir "/work/<workspace>/<series>/<label>/session" --session-id main
 
-- **Advanced's controls are Pi's own commands.** `prompt` starts a run, and `steer` delivers mid-run events. Interrupt is `clear_queue`, then `abort`.
+- **Runs are driven by Pi's own commands.** `prompt` starts a run, and `steer` delivers mid-run events. Advanced's Interrupt is `clear_queue`, then `abort`.
 - **Each run has its own Pi home,** in its sandbox's scratch: `settings.json` with `steeringMode` `all`, and `models.json`, which points the provider at the server's socket (see Runs in sandboxes). `PI_OFFLINE` keeps Pi from checking for updates.
 - **One process per run.** The runner stops Pi at `agent_settled`, since RPC mode runs until its stdin closes. At the time limit, it aborts the run and stops Pi.
 - **Sessions are found by working folder.** Pi reopens `main` only if the folder recorded in the session's first line is its working folder, so a run whose names changed since the last rewrites that line first.
@@ -240,7 +239,7 @@ The runner, [src/runner.ts](src/runner.ts), drives Pi through Pi's `RpcClient`, 
 The risk is whether an agent can learn a real deliverable from examples, so the agent comes first.
 
 1. **M1, server and runner (built).** One Node process holds the store, the `rf` endpoint, the run queue and a JSON API for people's actions.
-   - **Made-up series** ([demo/](demo/)): a generator makes a weekly borrowing base for a made-up housewares company: four example weeks, then five forward weeks with traps.
+   - **Made-up series** ([demo/](demo/)): a generator makes a weekly borrowing base for a made-up housewares company: five example weeks, then five forward weeks with traps.
      - **08-09:** a wrong inventory file, replaced mid-run under a new name; the card receipts arriving late; a reviewer raising the availability block, answered as a standing rule that later weeks must apply.
      - **08-16:** people stop uploading the inventory and the lender's loan activity. A comment points the agent to a warehouse database and a mailbox folder. A new customer is billed in EUR, converted at the ECB reference rate, which the agent fetches from the ECB's data API.
      - **08-23:** created while 08-16 is still open, so only 08-16 shows where the sources are. The lender's email arrives late, and a comment asks for a refetch.
@@ -251,10 +250,10 @@ The risk is whether an agent can learn a real deliverable from examples, so the 
      A driver imports the examples one at a time, then stages each forward week only when the agent may see it. To test the build, it compares the agent's outputs with the generator's, and prints checks (ids, headlines, sources, citations, `process.md` size); that is test tooling, not part of the system.
    - **Environment:**
      - Node 26, which runs TypeScript directly, and `npm install`;
-     - `uv venv .venv && uv pip install -r requirements.txt` (openpyxl, pandas, xlrd, extract-msg, defusedxml, requests, beautifulsoup4, lxml, matplotlib, pdfplumber, python-docx, python-calamine), with `.venv/bin` first on the agent's `PATH`;
+     - `uv venv .venv && uv pip install -r requirements.txt` (openpyxl, pandas, xlrd, extract-msg, defusedxml, requests, beautifulsoup4, lxml, matplotlib, pdfplumber, python-docx, python-calamine, playwright), with `.venv/bin` first on the agent's `PATH`;
      - LibreOffice, to recalculate scratch copies of formula workbooks.
      - Each series has its own `.pylib` on the agent's `PYTHONPATH`: Python packages the agent installs there with `pip install --target` stay with the series, in the data volume, and survive a new image.
-     - The Docker image adds poppler, sqlite3, curl, git, jq, zip, CJK fonts, bubblewrap and socat.
+     - The Docker image adds poppler, sqlite3, curl, git, jq, zip and unzip, ripgrep and fd, LibreOffice Calc, CJK fonts, bubblewrap and socat.
 2. **M2, the page (built):** [web/index.html](web/index.html), over the same server:
    - the graph, tiles, notes, ops log and Advanced, which reads the agent's work from the instance's Pi session file;
    - phone layout: Outputs come first, then the other tiles, each saying what it's made from instead of lines; notes open as a bottom sheet;
@@ -329,7 +328,7 @@ The risk is whether an agent can learn a real deliverable from examples, so the 
 16. **No pass bars or automatic checks** (15 Oct): agents make the call, and build checks as scripts if they need them. The product isn't aimed at finance, and shouldn't be over-explained.
 17. **Key and additional inputs; evidence and working** (15 Oct). See Concepts.
 18. **Direction** (15 Oct): each instance records its parent (`from`). The agent starts there and checks the open instances; no stricter rules.
-19. **Sources** (15 Oct): the agent may read the sources people point it to, and never writes to them. Skills (29) let it write, one approved write at a time.
+19. **Sources** (15 Oct): the agent may read the sources people point it to, and never writes to them. Skills (29) let it write, one approved write at a time, until 42 ended all writes outside.
 20. **Two end states** (15 Oct): Close or Abandon.
 21. **Series visibility** (15 Oct): one way, granted by the publishing series, read-only for the reader; one workspace for now. People's roles per series (owner, member, visitor) come later.
 22. **Duplicate and series settings** (15 Oct): a closed or abandoned instance can be duplicated into an open one. Each series has settings, for now its name and its visibility to other series.

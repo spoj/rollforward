@@ -63,7 +63,7 @@ A series picks, in its settings, the **skills** its agent may use; choosing none
 | A mail attachment | the runner's Microsoft 365 mail | the Excel attachment of the day's report mail |
 | A vendor portal | the runner's login to its website | the portal's payments and unpaid items, as csv |
 
-Admins set each skill up once for every series, with `rf skill set ID KEY VALUE`, such as a folder's link or a website's address (`url`); none is a secret. Until a skill is set up a series can choose it, but the agent can't use it. Skills, at the sidebar's foot, lists them with their versions.
+Admins set each skill up once for every series, with `rf skill set ID KEY VALUE`, such as a folder's link or a website's address (`url`); none is a secret. A series can choose a skill before it is set up; its agent is then told what the skill still needs. Skills, at the sidebar's foot, lists them with their versions.
 
 Microsoft 365 is nobody's but each person's: a run reads mail and files only through its runner's own login, and only the mailboxes, OneDrive and SharePoint sites ticked for its instance.
 
@@ -106,6 +106,7 @@ The [justfile](justfile) has these and more as recipes; `just` lists them.
   - `RF_MODEL_URL` (`https://openrouter.ai/api`)
   - `RF_MAX_RUNS` (20), runs at once across all series, and `RF_MIN_FREE_GB` (6), the free memory below which none starts
   - `RF_OIDC_SCOPES` (`openid profile email`), sign-in's scopes
+  - `RF_WAKE_TICK_MS` (60000), how often pending wakes are checked
 - **Hosts runs may reach,** beyond package registries, GitHub and documentation sites: a JSON list in `.rf/egress.json`, such as `["api.example.com", "*.example.org"]`.
 
 To build the demo from scratch (about $4 of model use; the generator needs the internet for the ECB rates):

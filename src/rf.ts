@@ -21,7 +21,7 @@ else if (cmd === 'settings') res = await send('GET', `settings?skill=${encodeURI
 else if (['files', 'mail', 'browser', 'windows', 'wake'].includes(cmd) && args.length >= 1) res = await send('POST', cmd, JSON.stringify({ args }));
 else {
   console.error('usage: rf show | rf put FILE | rf say THREAD TEXT|- | rf skills | rf settings [SKILL] | rf files list LINK|REF | rf files get LINK|REF FILE'
-    + ' | rf mail find [--date YYYY-MM-DD] [--subject TEXT] [--from TEXT] [--attachments] | rf mail save ID [--name REGEX] [--prefix TEXT]'
+    + ' | rf mail find [--mailbox ADDRESS] [--date YYYY-MM-DD] [--subject TEXT] [--from TEXT] [--attachments] | rf mail save ID [--mailbox ADDRESS] [--name REGEX] [--prefix TEXT]'
     + ' | rf browser open SITE | rf browser get SITE PATH FILE'
     + ' | rf windows open | rf windows run python|powershell FILE [--timeout SECONDS] | rf windows put FILE [PATH] | rf windows get PATH FILE | rf windows screenshot FILE | rf windows close'
     + ' | rf wake TARGET AT REASON [--label LABEL]');
