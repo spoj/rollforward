@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { HttpError, workingFile, type Instance } from './store.ts';
-import { Browsers, passUpgrade } from './machines.ts';
+import { Machines, passUpgrade } from './machines.ts';
 import { children, messages, shared } from './graph.ts';
 import { day, filesGet, filesList, localDate, mailFind, mailSave, type Args } from './m365.ts';
 import { seriesSettings } from './series.ts';
@@ -16,9 +16,13 @@ import { settingsOf, skill, skillMissing, type Skill } from './skills.ts';
 //   POST /agent/files {args}       rf files list|get …, through the runner's Microsoft 365 login, as far as the instance's ticks offer
 //   POST /agent/mail {args}        rf mail find|save …, likewise
 //   POST /agent/browser {args}     rf browser open SITE | get SITE PATH FILE: a browser on a skill's website, in the runner's login
+//   POST /agent/windows {args}     rf windows open | run | put | get | screenshot | close: the run's Windows machine
 
-// A run as the agent API sees it: its instance, its number and token, and its browsers.
-export type AgentRun = { inst: Instance; n: number; token: string; browsers?: Browsers };
+// A run as the agent API sees it: its instance, its number and token, and its machines.
+export type AgentRun = { inst: Instance; n: number; token: string; machines?: Machines };
+
+// A file's name under working/, as the screen names it.
+const rel = (file: string) => `working/${file.replace(/^working\//, '')}`;
 
 // Parses `--name value` pairs, where a name may repeat, and a bare `--flag` (followed by another --name or nothing) as "true".
 export function parseArgs(words: string[]): { args: Args; rest: string[] } {
@@ -81,13 +85,13 @@ export async function serveAgent(inst: Instance): Promise<{ url: string; token: 
   });
   server.on('upgrade', (req, socket, head) => {
     const [, root, t, id] = new URL(req.url!, 'http://x').pathname.split('/');
-    if (root !== 'browser' || t !== token || !a.browsers?.owns(id)) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
+    if (root !== 'browser' || t !== token || !a.machines?.owns(id)) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
     passUpgrade(req, socket, head, `/sessions/${id}/cdp`);
   });
   await new Promise<void>(ok => server.listen(0, '127.0.0.1', ok));
   return {
     url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, token,
-    async close() { await a.browsers?.close(); server.close(); server.closeAllConnections(); },
+    async close() { await a.machines?.close(); server.close(); server.closeAllConnections(); },
   };
 }
 
@@ -112,8 +116,8 @@ export async function agentCall(a: AgentRun, path: string, method: string, query
     }
     if (cmd === 'get' && target && file) {
       const out = await filesGet(a.inst, target, workingFile(a.inst.dir, file));
-      a.inst.append('agent', 'files', { action: 'get', name: out.name, modified: out.modified, file: `working/${file.replace(/^working\//, '')}` });
-      return { status: 200, data: { ...out, saved: `working/${file.replace(/^working\//, '')}` } };
+      a.inst.append('agent', 'files', { action: 'get', name: out.name, modified: out.modified, file: rel(file) });
+      return { status: 200, data: { ...out, saved: rel(file) } };
     }
     throw new HttpError(400, 'rf files list LINK|REF | get LINK|REF FILE');
   }
@@ -138,13 +142,55 @@ export async function agentCall(a: AgentRun, path: string, method: string, query
   if (path === '/agent/browser' && method === 'POST') {
     const [cmd, site, from, to] = await words();
     if (!chosenSkills(seriesDir).some(s => s.id === site)) throw new HttpError(403, `${site} is not in this series' Skill use`);
-    a.browsers ??= new Browsers(a.inst, a.n);
-    if (cmd === 'open' && site) return { status: 200, data: `/browser/${a.token}/${await a.browsers.session(site)}` };
+    a.machines ??= new Machines(a.inst, a.n);
+    if (cmd === 'open' && site) return { status: 200, data: `/browser/${a.token}/${await a.machines.browser(site)}` };
     if (cmd === 'get' && site && from && to) {
-      writeFileSync(workingFile(a.inst.dir, to), await a.browsers.file(site, from));
-      return { status: 200, data: `saved working/${to.replace(/^working\//, '')}` };
+      writeFileSync(workingFile(a.inst.dir, to), await a.machines.browserFile(site, from));
+      return { status: 200, data: `saved ${rel(to)}` };
     }
     throw new HttpError(400, 'rf browser open SITE | rf browser get SITE PATH FILE');
+  }
+  // Each call waits until it's done; files come from and go to working/, scripts too.
+  if (path === '/agent/windows' && method === 'POST') {
+    const { args, rest: [cmd, x, y] } = parseArgs(await words()), m = a.machines ??= new Machines(a.inst, a.n);
+    const log = (data: object) => a.inst.append('agent', 'windows', data);
+    const read = (file: string) => {
+      const path = workingFile(a.inst.dir, file);
+      if (!existsSync(path)) throw new HttpError(404, `no ${rel(file)}`);
+      return readFileSync(path);
+    };
+    if (cmd === 'open') {
+      await m.windowsId();
+      log({ action: 'open' });
+      return { status: 200, data: 'A Windows machine is open for this run: no network, scripts run in C:\\work, and it goes back to a clean state when closed or when the run ends.' };
+    }
+    if (cmd === 'run' && (x === 'python' || x === 'powershell') && y) {
+      const out = await m.windowsRun(x, read(y).toString(), Number(args.timeout?.[0] ?? 600));
+      log({ action: 'run', lang: x, script: rel(y), exit: out.exit, ...(out.timed_out && { timed_out: true }) });
+      return { status: 200, data: out };
+    }
+    if (cmd === 'put' && x) {
+      const to = y ?? `C:/work/${basename(x)}`;
+      await m.windowsPut(to, read(x));
+      log({ action: 'put', file: rel(x), to });
+      return { status: 200, data: `put ${to}` };
+    }
+    if (cmd === 'get' && x && y) {
+      writeFileSync(workingFile(a.inst.dir, y), await m.windowsGet(x));
+      log({ action: 'get', from: x, file: rel(y) });
+      return { status: 200, data: `saved ${rel(y)}` };
+    }
+    if (cmd === 'screenshot' && x) {
+      writeFileSync(workingFile(a.inst.dir, x), await m.windowsScreenshot());
+      log({ action: 'screenshot', file: rel(x) });
+      return { status: 200, data: `saved ${rel(x)}` };
+    }
+    if (cmd === 'close') {
+      await m.closeWindows();
+      log({ action: 'close' });
+      return { status: 200, data: 'closed: a later rf windows opens a clean machine' };
+    }
+    throw new HttpError(400, 'rf windows open | run python|powershell FILE [--timeout SECONDS] | put FILE [PATH] | get PATH FILE | screenshot FILE | close');
   }
   return null;
 }

@@ -178,7 +178,7 @@ Everything we build runs on the development machine; only the real outside syste
 6. Talking, Process and the review sheet (built).
 7. Power users, `rf skill push`, guidance and the catalogue (built).
 
-The machines service is built alongside, in its own repo: browsers (built, used by website logins), then Windows (built, paused on licences; `rf windows` is to come).
+The machines service is built alongside, in its own repo: browsers (built, used by website logins), then Windows (built, with `rf windows`; licences still to come).
 
 ## Facts still to get
 

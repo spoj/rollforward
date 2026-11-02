@@ -58,7 +58,7 @@ async function agent(req: IncomingMessage, res: ServerResponse, url: URL) {
   }
   if (url.pathname === '/agent/wake' && req.method === 'POST') return send(res, 200, wakeFrom(a, ((await json(req)).args ?? []).map(String)));
   if (url.pathname === '/agent/search' && req.method === 'POST') return send(res, 200, await search(a.view, ((await json(req)).args ?? []).map(String)));
-  // Skills: rf skills, rf settings, rf files, rf mail, rf browser (see agent-api.ts).
+  // Skills and machines: rf skills, rf settings, rf files, rf mail, rf browser, rf windows (see agent-api.ts).
   const r = await agentCall(a, url.pathname, req.method ?? 'GET', url.searchParams, () => body(req));
   if (r) return send(res, r.status, r.data);
   throw new HttpError(404, 'not found');
@@ -409,7 +409,7 @@ serveSandboxes(join(socketDir, 'rf.sock'), {
         a.hosts.add(host);
         a.inst.append('server', 'egress', { run: a.n, host, allowed });
       },
-      owns: id => !!a.browsers?.owns(id),
+      owns: id => !!a.machines?.owns(id),
     };
   },
 });

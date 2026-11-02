@@ -69,6 +69,8 @@ Microsoft 365 is nobody's but each person's: a run reads mail and files only thr
 
 Websites are each person's too: under Logins, Websites, they sign in themselves in a live browser on the page, and that browser's state is their login, sealed in `.rf/`; no password is stored. A run's scripts open a browser on a skill's website with `rf browser open SITE`, from the runner's login if ticked, and drive it with Playwright over CDP. The browsers come from the machines service, a repo of its own (`RF_MACHINES_URL`, `RF_MACHINES_KEY`): each stays on its site's hosts, makes no write but while a person drives it, and logs every request, which the instance keeps under `browser/`.
 
+A run can also lease a Windows machine from the same service, with `rf windows`, for what needs Windows itself: scripts in Python with pywin32 or PowerShell, files passed through `working/`, no network, and a clean state again when the run ends. Office isn't on it yet. The machines service builds it from the Windows 11 evaluation, which can't activate offline and may shut down hourly once unactivated; real use needs a licence from IT.
+
 `rf skill test ID` checks one that reads Microsoft 365 for real, as you.
 
 From a shell, without the model: `node --env-file=.env src/cli.ts DATA_ROOT test SKILL --as EMAIL`, and `… DATA_ROOT try aging --as EMAIL -- python "$RF_SKILLS/aging/scripts/fetch.py"` (or `try portal --as EMAIL -- rf browser open portal`) runs a skill as a run with it would, with EMAIL's logins. Set `RF_TODAY` in `.env` to test against a day that has data.
@@ -100,7 +102,7 @@ The [justfile](justfile) has these and more as recipes; `just` lists them.
   - `RF_SCRATCH` (the system's temp folder`/rollforward`), for each run's HOME and /tmp and the server's socket for runs
   - `RF_SANDBOX_SCOPE`, the command that gives each run its cgroup (a `systemd-run --user --scope` line; empty for none)
   - `RF_SANDBOX_RO`, more folders runs may read, separated by `:`
-  - `RF_MACHINES_URL` (`http://127.0.0.1:8797`) and `RF_MACHINES_KEY`, the machines service, for websites' browsers; the browser tests run only with these set
+  - `RF_MACHINES_URL` (`http://127.0.0.1:8797`) and `RF_MACHINES_KEY`, the machines service, for websites' browsers and Windows machines; their tests run only with these set
   - `RF_MODEL_URL` (`https://openrouter.ai/api`)
   - `RF_MAX_RUNS` (20), runs at once across all series, and `RF_MIN_FREE_GB` (6), the free memory below which none starts
   - `RF_OIDC_SCOPES` (`openid profile email`), sign-in's scopes
