@@ -231,7 +231,19 @@ function fire() {
   saveWakes(w);
 }
 
+// A run a restart cut ends as aborted, and its instance is woken to carry on, so a deploy needn't wait for quiet.
+export function recover() {
+  for (const id of Object.keys(tree().series)) for (const inst of instances(id).filter(i => i.doc.status === 'open')) {
+    const run = inst.log.findLast(e => e.op === 'run' || e.op === 'done');
+    if (run?.op !== 'run') continue;
+    inst.append('server', 'done', { run: run.run, aborted: true, seen: seenBefore(inst), cost: 0, summary: null, error: 'a restart cut the run' });
+    inst.append('server', 'wake', { reason: 'A restart cut your last run; carry on', from: 'server' });
+    kick(inst);
+  }
+}
+
 export function startWaking() {
+  recover();
   fire();
   setInterval(fire, Number(process.env.RF_WAKE_TICK_MS ?? 60_000)).unref();
 }

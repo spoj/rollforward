@@ -767,6 +767,7 @@ function renderPv() {
       + `<div class="sub">${s.allow_wakes ? `Wakes start new instances of this series, run as ${esc(s.allow_wakes)}${s.allow_wakes === me.email ? ' (you)' : ''}. ` : 'An agent that wakes this series asks on this page instead, for someone to start the instance. Turned on, wakes run as you, with the logins ticked here.'}</div>`
       + ticksHtml(s.offers) + (s.allow_wakes && s.allow_wakes !== me.email ? '<div><button class="btn" data-act="wakes-mine">Run wakes as me, with these logins</button></div>' : '')
       + (s.wake ? `<div class="row2"><span class="sub">Next: starts ${esc(s.wake.label)}, ${esc(s.wake.reason)}</span></div><div class="row2"><input type="datetime-local" id="swake" value="${localInput(s.wake.at)}"><button class="btn" data-act="wake-move">Move</button><button class="btn" data-act="wake-cancel">Cancel wake</button></div>` : '<div class="sub">No wake pending. The agent sets the next one.</div>')
+      + `<h3>Cost</h3><div class="sub">This series' runs have cost ${usd(s.cost)} so far, ${usd(s.cost / Math.max(1, s.closed))} per closed instance.</div>`
       + `<h3>Reading</h3><div class="sub">${s.reads.length ? `This series' agent can read ${esc(s.reads.join(', '))}: the other series of its workspace, and those of workspaces that have all its people.` : "This series' agent reads only this series."}</div>`
       + '<div><button class="btn primary" data-act="savesettings">Save</button></div><hr>';
     h += `<h3>Archive</h3><div class="sub">${s.archived ? 'Archived: in the sidebar only under Show archived.' : `Hides the ${s.kind} from the sidebar, except under Show archived. Nothing in it changes.`}</div><div><button class="btn" data-act="archive">${s.archived ? 'Restore' : 'Archive'} ${s.kind}</button></div></div>`;
@@ -942,7 +943,7 @@ document.addEventListener('click', async ev => {
   if (act === 'unpv') { pv = null; renderPv(); }
   if (act === 'settings') {
     const s = cur.s, skillList = await api('/skills');
-    pv = { title: 'Series settings', settings: { kind: 'series', offers: await myOffers(), id: s.id, allow_wakes: s.allow_wakes, wake: s.wake, adhoc: s.adhoc, name: s.name, skills: s.skills ?? [], skillList, reads: s.reads, archived: s.archived } };
+    pv = { title: 'Series settings', settings: { kind: 'series', offers: await myOffers(), cost: s.instances.reduce((t, i) => t + i.cost, 0), closed: s.instances.filter(i => i.status === 'closed').length, id: s.id, allow_wakes: s.allow_wakes, wake: s.wake, adhoc: s.adhoc, name: s.name, skills: s.skills ?? [], skillList, reads: s.reads, archived: s.archived } };
     renderPv();
   }
   if (act === 'skills') await openSkills();

@@ -10,7 +10,7 @@ import type { Active } from '../src/waker.ts';
 // Wakes without a model: a run that a wake starts ends at once for want of a key, which is enough to see what started it.
 delete process.env.OPENROUTER_API_KEY;
 process.env.RF_WAKE_TICK_MS = '50';
-const { closed, setWake, startWaking, wakeFrom, wakes } = await import('../src/waker.ts');
+const { closed, recover, setWake, startWaking, wakeFrom, wakes } = await import('../src/waker.ts');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-wake-')), alice = 'alice@demo.test';
 initSystem(tmp);
 openStore(tmp);
@@ -84,4 +84,13 @@ test('closing an instance wakes the later open ones of its series, not the earli
   await settle();
   assert.match(oct.log.findLast(e => e.op === 'wake')!.reason as string, /^2026-09 closed/);
   assert.ok(!ops(before).includes('wake'));
+});
+
+test('a run a restart cut ends as aborted, and its instance is woken to carry on', async () => {
+  const cut = make('s3', 'cut');
+  cut.append('server', 'run', { run: 1, upto: 1 });
+  recover();
+  assert.deepEqual(cut.log.slice(-2).map(e => [e.op, e.error ?? e.reason]), [['done', 'a restart cut the run'], ['wake', 'A restart cut your last run; carry on']]);
+  await settle();
+  assert.equal(cut.log.filter(e => e.op === 'run').length, 2, 'started again');
 });
