@@ -34,7 +34,7 @@ const mail = [
 ];
 const ticks = ['m365:mail:alice@demo.test', 'm365:site:host,site1,web1'];
 const inst = { dir: instDir, log: [{ op: 'create', by: ALICE, logins: ticks }], series: () => seriesDir, append: (_by: string, op: string, data: any) => { log.push({ op, data }); return { seq: log.length }; } } as unknown as Instance;
-const run: AgentRun = { inst };
+const run: AgentRun = { inst, n: 1, token: 'run' };
 let call: (path: string, body?: unknown, query?: string) => Promise<{ status: number; data: unknown } | null>;
 let logins: typeof import('../src/logins.ts');
 
@@ -143,16 +143,17 @@ test('a login Microsoft no longer renews is marked expired, and the run is told 
   assert.equal(logins.logins(ALICE)[0].expired, true);
 });
 
-test('admins set each skill up once; a password is sealed, never handed out, and kept when left empty; a series picks skills that exist', async () => {
-  const { checkChosen, publicSettings, saveSkillConfig, skill, skills } = await import('../src/skills.ts');
+test("admins set each skill up once, a website's address among its settings; a series picks skills that exist", async () => {
+  const { checkChosen, saveSkillConfig, settingsOf, siteOf, skill, skills } = await import('../src/skills.ts');
   assert.deepEqual(checkChosen(['mail-report', 'mail-report']), ['mail-report']);
   assert.throws(() => checkChosen(['nope']), /no skill nope/);
   assert.throws(() => saveSkillConfig('mail-report', { mailbox: 'x' }, 'admin'), /mail-report has no setting mailbox/);
-  saveSkillConfig('portal', { url: 'https://portal.test/#/login', username: 'svc', password: 'P4ss!word' }, 'admin');
-  assert.ok(!readFileSync(join(tmp, '.rf', 'skills.json'), 'utf8').includes('P4ss!word'));
-  assert.deepEqual(publicSettings(skill('portal')!), { url: 'https://portal.test/#/login', username: 'svc' });
-  saveSkillConfig('portal', { url: 'https://portal.test/#/login', username: 'svc2' }, 'admin');
-  assert.ok(JSON.parse(readFileSync(join(tmp, '.rf', 'skills.json'), 'utf8'))['portal'].password, 'an empty password keeps the one saved');
+  assert.throws(() => siteOf('portal'), /Portal has no address yet/);
+  assert.throws(() => saveSkillConfig('portal', { url: 'portal.test' }, 'admin'), /an http\(s\) address/);
+  saveSkillConfig('portal', { url: 'https://portal.test/#/login' }, 'admin');
+  assert.deepEqual(settingsOf(skill('portal')!), { url: 'https://portal.test/#/login' });
+  assert.deepEqual(siteOf('portal'), { hosts: ['portal.test', 'cdn.portal.test'], start_url: 'https://portal.test/#/login', reads_that_post: ['*/search'] });
+  assert.throws(() => siteOf('mail-report'), /no website mail-report; the skills with one are portal/);
   const ids = skills().map(s => s.id);
   for (const id of ['onedrive-report', 'mail-report', 'portal', 'tool']) assert.ok(ids.includes(id), id);
   writeFileSync(join(seriesDir, 'series.json'), JSON.stringify({ skills: ['mail-report'] }));

@@ -6,8 +6,6 @@ RUN ln -sf /bin/bash /bin/sh
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
-# Chromium and its libraries, for the browser that Tool use runs in the server.
-RUN node node_modules/playwright/cli.js install --with-deps chromium && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt ./
 RUN python3 -m venv .venv && .venv/bin/pip install --no-cache-dir -r requirements.txt
 COPY . .

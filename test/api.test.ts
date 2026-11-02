@@ -303,17 +303,17 @@ test("each person sees the workspaces they're in, by email or Entra group; owner
   assert.deepEqual(await reads('larkfield', series), ['larkfield / Ad hoc', `larkfield / ${monthly}`], 'a workspace with no one in it reads only itself');
 });
 
-test('Skill use: admins set skills up once under Skills; a series only chooses which', async () => {
+test('Skill use: admins set skills up once; a series only chooses which', async () => {
   const b = sessionOf(await login(bob))!;
   const report = (list: { id: string }[]) => list.find(s => s.id === 'mail-report') as Record<string, unknown>;
-  assert.deepEqual(Object.keys(report(await json('/skills', b))).sort(), ['configured', 'description', 'id', 'name', 'pushed', 'uses'], 'anyone signed in sees the skills, not their settings');
+  assert.deepEqual(Object.keys(report(await json('/skills', b))).sort(), ['configured', 'description', 'id', 'name', 'pushed', 'site', 'uses'], 'anyone signed in sees the skills, not their settings');
   assert.equal((await call('PUT', '/skills/mail-report', JSON.stringify({ subject: 'Open AP report' }), b)).status, 403);
   assert.equal((await call('PUT', '/skills/mail-report', JSON.stringify({ mailbox: 'x' }))).status, 400, 'only the settings the skill declares');
   const set = await (await call('PUT', '/skills/mail-report', JSON.stringify({ subject: 'Open AP report' }))).json();
   assert.deepEqual([set.values, set.configured, set.uses], [{ subject: 'Open AP report' }, true, ["the runner's Microsoft 365 mail"]], "it reads the runner's own mail, so there's nothing more to set up");
-  const site = await (await call('PUT', '/skills/portal', JSON.stringify({ url: 'https://portal.test/#/login', username: 'svc', password: 'Portal!pw' }))).json();
-  assert.deepEqual([site.values, site.secrets, site.configured], [{ url: 'https://portal.test/#/login', username: 'svc' }, { password: true }, true], 'a password shows only as saved');
-  assert.ok(!readFileSync(join(root, '.rf', 'skills.json'), 'utf8').includes('Portal!pw'));
+  assert.equal((await call('PUT', '/skills/portal', JSON.stringify({ url: 'https://portal.test/#/login', password: 'Portal!pw' }))).status, 400, 'a website takes no password: people sign in themselves');
+  const site = await (await call('PUT', '/skills/portal', JSON.stringify({ url: 'https://portal.test/#/login' }))).json();
+  assert.deepEqual([site.values, site.site, site.configured], [{ url: 'https://portal.test/#/login' }, true, true]);
 
   assert.deepEqual((await shown(series)).skills, []);
   const put = async (body: object) => call('PUT', await at(series), JSON.stringify(body));

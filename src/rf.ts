@@ -12,12 +12,14 @@ else if (cmd === 'put' && arg) res = await fetch(`${url}/workspace`, { method: '
 else if (cmd === 'say' && args.length >= 2) res = await fetch(`${url}/say`, { method: 'POST', headers, body: JSON.stringify({ args: args[1] === '-' ? [args[0], readFileSync(0, 'utf8')] : args }) });
 else if (cmd === 'skills') res = await fetch(`${url}/skills`, { headers });
 else if (cmd === 'settings') res = await fetch(`${url}/settings?skill=${encodeURIComponent(args[0] ?? '')}`, { headers });
-else if ((cmd === 'files' || cmd === 'mail' || cmd === 'flow' || cmd === 'wake' || cmd === 'search') && args.length >= 1) res = await post(cmd);
+else if ((cmd === 'files' || cmd === 'mail' || cmd === 'browser' || cmd === 'wake' || cmd === 'search') && args.length >= 1) res = await post(cmd);
 else {
   console.error('usage: rf show | rf put FILE | rf say THREAD TEXT|- | rf skills | rf settings [SKILL] | rf files list LINK|REF | rf files get LINK|REF FILE'
     + ' | rf mail find [--date YYYY-MM-DD] [--subject TEXT] [--from TEXT] [--attachments] | rf mail save ID [--name REGEX] [--prefix TEXT]'
-    + ' | rf flow SKILL/FLOW [--var NAME=VALUE ...] | rf wake TARGET AT REASON [--label LABEL] | rf search PATTERN [FOLDER ...]');
+    + ' | rf browser open SITE | rf browser get SITE PATH FILE | rf wake TARGET AT REASON [--label LABEL] | rf search PATTERN [FOLDER ...]');
   process.exit(2);
 }
-console.log(await res.text());
+// rf browser open answers a path on the server's socket: the CDP address is that path here.
+const text = await res.text();
+console.log(res.ok && cmd === 'browser' && args[0] === 'open' ? process.env.RF_URL!.replace(/^http/, 'ws') + text : text);
 process.exitCode = res.ok ? 0 : 1;

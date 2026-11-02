@@ -1,23 +1,24 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
-import { HttpError, type Instance } from './store.ts';
-import { Browsing, testLogin, workingFile } from './browser.ts';
+import { HttpError, workingFile, type Instance } from './store.ts';
+import { Browsers, passUpgrade } from './machines.ts';
 import { children, messages, shared } from './graph.ts';
 import { day, filesGet, filesList, localDate, mailFind, mailSave, type Args } from './m365.ts';
 import { seriesSettings } from './series.ts';
-import { loadSignIn, publicSettings, siteOf, skill, skillMissing, type Skill } from './skills.ts';
+import { settingsOf, skill, skillMissing, type Skill } from './skills.ts';
 
 // The agent's use of its series' skills, behind `rf`: shared by the server, for runs, and by `cli.ts try`, which lets an admin run
 // a skill's steps without the model.
 //   GET  /agent/skills             the series' skills, and how to use them
-//   GET  /agent/settings?skill=ID  a chosen skill's settings, but its secrets, as JSON
+//   GET  /agent/settings?skill=ID  a chosen skill's settings, as JSON
 //   POST /agent/files {args}       rf files list|get …, through the runner's Microsoft 365 login, as far as the instance's ticks offer
 //   POST /agent/mail {args}        rf mail find|save …, likewise
-//   POST /agent/flow {args}        rf flow SKILL/FLOW [--var NAME=VALUE …], in the skill's website
+//   POST /agent/browser {args}     rf browser open SITE | get SITE PATH FILE: a browser on a skill's website, in the runner's login
 
-export type AgentRun = { inst: Instance; browsing?: Browsing };
+// A run as the agent API sees it: its instance, its number and token, and its browsers.
+export type AgentRun = { inst: Instance; n: number; token: string; browsers?: Browsers };
 
 // Parses `--name value` pairs, where a name may repeat, and a bare `--flag` (followed by another --name or nothing) as "true".
 export function parseArgs(words: string[]): { args: Args; rest: string[] } {
@@ -36,7 +37,7 @@ const chosenSkills = (seriesDir: string) => seriesSettings(seriesDir).skills.map
 export function skillsText(seriesDir: string): string {
   return chosenSkills(seriesDir).map(s => {
     const need = skillMissing(s), how = [
-      ...(s.flows.length ? [`rf flow ${s.flows.map(f => `${s.id}/${f}`).join(' | ')}`] : []),
+      ...(s.site ? [`rf browser open ${s.id}`] : []),
       ...(s.uses.includes('m365-files') ? ['rf files'] : []), ...(s.uses.includes('m365-mail') ? ['rf mail'] : []),
       ...(s.settings.length ? [`rf settings ${s.id}`] : []),
     ];
@@ -44,15 +45,14 @@ export function skillsText(seriesDir: string): string {
   }).join('\n') || 'None: this series\' Skill use is empty.';
 }
 
-// Skills page Test: each reads something real. A skill with a website signs in to it, code and all; one that reads Microsoft 365
-// does so as the admin testing it, `email`, through their own login: each link in its settings, and today's mail with its subject.
+// rf skill test: one that reads Microsoft 365 does so as the admin testing it, `email`, through their own login: each link in its
+// settings, and today's mail with its subject.
 export async function testSkill(id: string, email: string): Promise<string> {
   const s = skill(id);
   if (!s) throw new HttpError(404, `no skill ${id}`);
   const need = skillMissing(s);
   if (need.length) throw new HttpError(409, `${s.name} still needs ${need.join(', ')}`);
-  if (s.site) return testLogin(siteOf(s), await loadSignIn(s));
-  const values = publicSettings(s), out: string[] = [];
+  const values = settingsOf(s), out: string[] = [];
   if (s.uses.includes('m365-files')) for (const [k, v] of Object.entries(values).filter(([, v]) => /^https?:\/\//.test(v))) {
     const it = await shared(email, v);
     out.push(`${s.settings.find(f => f.key === k)?.label ?? k}: ${it.name}${it.folder ? `, a folder of ${(await children(email, it)).length} items` : `, changed ${it.lastModifiedDateTime}`}`);
@@ -66,8 +66,8 @@ export async function testSkill(id: string, email: string): Promise<string> {
 }
 
 // The agent API on a port of its own, for one stand-in run: what `cli.ts try` and the tests use in place of the server.
-export async function serveAgent(a: AgentRun): Promise<{ url: string; token: string; close(): Promise<void> }> {
-  const token = randomUUID();
+export async function serveAgent(inst: Instance): Promise<{ url: string; token: string; close(): Promise<void> }> {
+  const token = randomUUID(), a: AgentRun = { inst, n: 0, token };
   const server = createServer(async (req, res) => {
     const url = new URL(req.url!, 'http://x'), send = (status: number, data: unknown) => res.writeHead(status, { 'content-type': typeof data === 'string' ? 'text/plain; charset=utf-8' : 'application/json' }).end(typeof data === 'string' ? data : JSON.stringify(data, null, 1));
     try {
@@ -79,10 +79,15 @@ export async function serveAgent(a: AgentRun): Promise<{ url: string; token: str
       send((e as HttpError).status ?? 500, (e as Error).message);
     }
   });
+  server.on('upgrade', (req, socket, head) => {
+    const [, root, t, id] = new URL(req.url!, 'http://x').pathname.split('/');
+    if (root !== 'browser' || t !== token || !a.browsers?.owns(id)) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
+    passUpgrade(req, socket, head, `/sessions/${id}/cdp`);
+  });
   await new Promise<void>(ok => server.listen(0, '127.0.0.1', ok));
   return {
     url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, token,
-    async close() { await a.browsing?.close(); server.close(); server.closeAllConnections(); },
+    async close() { await a.browsers?.close(); server.close(); server.closeAllConnections(); },
   };
 }
 
@@ -93,9 +98,9 @@ export async function agentCall(a: AgentRun, path: string, method: string, query
   if (path === '/agent/skills' && method === 'GET') return { status: 200, data: skillsText(seriesDir) };
   if (path === '/agent/settings' && method === 'GET') {
     const chosen = chosenSkills(seriesDir), id = query.get('skill') ?? '', s = chosen.find(x => x.id === id);
-    if (!id) return { status: 200, data: Object.fromEntries(chosen.map(x => [x.id, publicSettings(x)])) };
+    if (!id) return { status: 200, data: Object.fromEntries(chosen.map(x => [x.id, settingsOf(x)])) };
     if (!s) throw new HttpError(403, `${id} is not in this series' Skill use; it has ${chosen.map(x => x.id).join(', ') || 'none'}`);
-    return { status: 200, data: publicSettings(s) };
+    return { status: 200, data: settingsOf(s) };
   }
   if (path === '/agent/files' && method === 'POST') {
     const { rest } = parseArgs(await words()), [cmd, target, file] = rest;
@@ -129,10 +134,17 @@ export async function agentCall(a: AgentRun, path: string, method: string, query
     }
     throw new HttpError(400, 'rf mail find [--mailbox ADDRESS] [--date YYYY-MM-DD] [--subject TEXT] [--from TEXT] [--attachments] | save ID [--mailbox ADDRESS] [--name REGEX] [--prefix TEXT]');
   }
-  if (path === '/agent/flow' && method === 'POST') {
-    const [name = '', ...rest] = await words();
-    a.browsing ??= new Browsing(a.inst, seriesSettings(seriesDir).skills);
-    return { status: 200, data: await a.browsing.flow(name, rest) };
+  // `open` answers the CDP address's path; rf makes it an address the sandbox reaches (see sandbox.ts).
+  if (path === '/agent/browser' && method === 'POST') {
+    const [cmd, site, from, to] = await words();
+    if (!chosenSkills(seriesDir).some(s => s.id === site)) throw new HttpError(403, `${site} is not in this series' Skill use`);
+    a.browsers ??= new Browsers(a.inst, a.n);
+    if (cmd === 'open' && site) return { status: 200, data: `/browser/${a.token}/${await a.browsers.session(site)}` };
+    if (cmd === 'get' && site && from && to) {
+      writeFileSync(workingFile(a.inst.dir, to), await a.browsers.file(site, from));
+      return { status: 200, data: `saved working/${to.replace(/^working\//, '')}` };
+    }
+    throw new HttpError(400, 'rf browser open SITE | rf browser get SITE PATH FILE');
   }
   return null;
 }

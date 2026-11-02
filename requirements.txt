@@ -10,3 +10,4 @@ matplotlib
 pdfplumber
 python-docx
 python-calamine
+playwright

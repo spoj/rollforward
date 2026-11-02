@@ -6,13 +6,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // A run's Pi in its real sandbox, with stand-ins for the server's side of the socket: the agent API answers with the token it
-// saw, and the model is a local server that echoes the key it was sent.
+// saw, and the model and the machines service are local servers that echo the key they were sent.
 const tmp = mkdtempSync(join(tmpdir(), 'rf-')), root = join(tmp, 'data'), i = (id: string) => join(root, 'instances', id);
 const model = createServer((req, res) => res.end(`model got ${req.url} with ${req.headers.authorization}`));
+const machines = createServer().on('upgrade', (req, socket) => socket.end(`HTTP/1.1 101 Switching Protocols\r\n\r\nmachines got ${req.url} with ${req.headers.authorization}`));
 await new Promise<void>(ok => model.listen(0, '127.0.0.1', ok));
+await new Promise<void>(ok => machines.listen(0, '127.0.0.1', ok));
 Object.assign(process.env, {
   RF_SCRATCH: join(tmp, 'scratch'), RF_MODEL_URL: `http://127.0.0.1:${(model.address() as { port: number }).port}/v1`,
   OPENROUTER_API_KEY: 'the-real-key', RF_TEST_SECRET: 'server-only',
+  RF_MACHINES_URL: `http://127.0.0.1:${(machines.address() as { port: number }).port}`, RF_MACHINES_KEY: 'the-machines-key',
 });
 const { pi, socketDir } = await import('../src/runner.ts');
 const { serveSandboxes } = await import('../src/sandbox.ts');
@@ -28,7 +31,7 @@ const TOKEN = 'run-token', egress: [string, boolean][] = [];
 mkdirSync(socketDir, { recursive: true });
 const sockets = serveSandboxes(join(socketDir, 'rf.sock'), {
   agent: async (req, res) => void res.end(`agent API, as ${req.headers.authorization}`),
-  run: token => (token === TOKEN ? { egress: (host, allowed) => void egress.push([host, allowed]) } : undefined),
+  run: token => (token === TOKEN ? { egress: (host, allowed) => void egress.push([host, allowed]), owns: id => id === 'b1' } : undefined),
 });
 // Instances by id: w1 and w2 of the run's series, r1 of a series it may read, p1 of one it may not.
 for (const d of [i('w1/working'), i('w2/working'), i('r1/working'), i('p1/working'), join(root, 'series', 'weekly')]) mkdirSync(d, { recursive: true });
@@ -50,6 +53,7 @@ after(async () => {
   await agent.stop();
   sockets.close();
   model.close();
+  machines.close();
   rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -94,4 +98,11 @@ test("the network is the server's socket: allowed hosts through its proxy, never
   assert.match(await sh('curl -s -m 10 -o /dev/null -w "%{http_code}" https://127.0.0.1.nip.io/ 2>&1'), /^000|^403/);
   assert.equal(await sh('curl -s -m 20 -o /dev/null -w "%{http_code}" https://pypi.org/simple/'), '200');
   assert.deepEqual(egress, [['example.org', false], ['127.0.0.1.nip.io', false], ['pypi.org', true]]);
+});
+
+test("a browser the run opened is reached through the socket, with the machines service's key added there; no other", async () => {
+  const ws = (path: string) => sh(`curl -s -m 5 -N -H 'Connection: Upgrade' -H 'Upgrade: websocket' http://127.0.0.1:7000${path}`);
+  assert.equal(await ws(`/browser/${TOKEN}/b1`), 'machines got /sessions/b1/cdp with Bearer the-machines-key');
+  assert.equal(await ws(`/browser/${TOKEN}/b2`), '');
+  assert.equal(await ws('/browser/wrong/b1'), '');
 });

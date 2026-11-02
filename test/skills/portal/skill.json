@@ -1,9 +1,5 @@
 {
   "uses": [],
-  "site": { "hosts": ["https://portal.test"] },
-  "settings": [
-    { "key": "url", "label": "Address", "hint": "Where the sign-in starts" },
-    { "key": "username", "label": "Account", "hint": "The user name the server signs in with" },
-    { "key": "password", "label": "Password", "secret": true }
-  ]
+  "site": { "hosts": ["cdn.portal.test"], "reads_that_post": ["*/search"] },
+  "settings": [{ "key": "url", "label": "Address", "hint": "Where the sign-in starts" }]
 }

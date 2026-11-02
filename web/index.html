@@ -587,6 +587,7 @@ function logText(e) {
     mail: () => `${w} ${e.action === 'find' ? `looked in ${esc(e.mailbox)} for mail of ${esc(e.date)}: ${e.found} found` : `saved ${esc((e.saved ?? []).join(', '))}`}`,
     rename: () => `${w} renamed the instance from ${esc(e.from)}`,
     duplicate: () => `${w} made this instance as a copy of ${esc(e.from)}`,
+    browser: () => `${w} closed run ${e.run}'s browser${e.site ? ` on ${esc(e.site)}, in ${esc(e.login)}'s login` : ''}<div class="d">${e.error ? esc(e.error) : `${e.requests} requests${e.blocked ? `, ${e.blocked} blocked` : ''}`}</div>${f}`,
     browse: () => `${w} used ${esc(e.system.toUpperCase())}<div class="d">${esc([e.action, ...e.args].join(' '))}</div>`,
     request: () => `${w} asked to write in ${esc(e.name)} (${esc(e.request)})<div class="d">${esc(e.description)}</div>${e.screenshot ? `<div class="f"><a data-act="preview" data-file="${esc(e.screenshot)}">${esc(e.screenshot)}</a></div>` : ''}`,
     approve: () => `${w} approved ${esc(e.request)}`,
@@ -818,7 +819,7 @@ function renderPv() {
   $('#pv').hidden = !pv;
   if (!pv) return;
   $('#pv').className = 'pv' + (pv.settings ? ' small' : '');
-  let h = `<div class="pvh"><b>${esc(pv.title)}</b>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${pv.path ? `<a class="btn" href="${fileUrl(pv.path)}">Download</a>` : ''}<button class="btn" data-act="unpv">Close</button></div>`;
+  let h = `<div class="pvh"><b>${esc(pv.title)}</b>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${pv.path ? `<a class="btn" href="${fileUrl(pv.path)}">Download</a>` : ''}${pv.signin ? '<button class="btn primary" data-act="signin-save">Save login</button>' : ''}<button class="btn" data-act="unpv">${pv.signin ? 'Cancel' : 'Close'}</button></div>`;
   if (pv.sheets) {
     if (pv.sheets.length > 1) h += `<div class="tabs">${pv.sheets.map((s, k) => `<button class="btn ${k === pv.sheet ? 'sel' : ''}" data-act="sheet" data-k="${k}">${esc(s.name)}</button>`).join('')}</div>`;
     h += `<div class="pvb">${sheetTable(pv.sheets[pv.sheet], pv.sheet === 0)}</div>`;
@@ -826,6 +827,7 @@ function renderPv() {
     const m = pv.email;
     h += `<div class="pvb"><pre>${esc(Object.entries(m.headers).map(([k, v]) => `${k}: ${v}`).join('\n') + (m.attachments.length ? `\nAttachments: ${m.attachments.join(', ')}` : '') + '\n\n' + m.text)}</pre></div>`;
   } else if (pv.image) h += `<div class="pvb"><img src="${fileUrl(pv.path)}" alt=""></div>`;
+  else if (pv.signin) h += `<div class="sub" style="padding:8px 14px">Take control, sign in as you always do, then Save login. Only you see this browser.</div><div class="pvb"><iframe src="/signins/${pv.signin}/view" style="width:100%;height:100%;border:0"></iframe></div>`;
   else if (pv.text !== undefined) h += `<div class="pvb">${pv.md ? `<div class="say">${md(pv.text)}</div>` : `<pre>${esc(pv.text)}</pre>`}</div>`;
   else if (pv.settings?.kind === 'skills') h += `<div class="pvb vl">${skillsHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'tokens') h += `<div class="pvb vl">${tokensHtml(pv.settings)}</div>`;
@@ -910,14 +912,20 @@ function loginsHtml(s) {
   let h = `<div class="sub">Every login is yours alone. A run uses only its runner's logins, and only those ticked for its instance. Nothing here is a password: you sign in to each system yourself.</div>`;
   const m365 = s.logins.find(l => l.id === 'm365');
   if (me.m365 && !m365) h += `<h3>Microsoft 365</h3><div class="sub">Read-only: your mail and the shared mailboxes you can read, your OneDrive and the SharePoint sites you add.</div><div><a class="btn primary" href="/logins/m365/connect">Connect Microsoft 365</a></div>`;
-  for (const l of s.logins) {
+  for (const l of s.logins.filter(l => l.kind === 'm365')) {
     h += `<h3>${esc(l.name)}</h3><div class="sub">${esc(l.account ?? '')}${l.account ? ' · ' : ''}${l.expired ? '<span class="q">expired: sign in again</span>' : `since ${esc(when(l.since))}`}</div>`
       + l.offers.map(o => `<div class="skill-row" style="display:flex;align-items:center"><span style="flex:1">${esc(o.name)}</span>${l.id === 'm365' ? `<button class="quiet" data-act="unoffer" data-id="${esc(o.id)}">Remove</button>` : ''}</div>`).join('');
     if (l.id === 'm365') h += `<div class="row2"><input type="text" id="offer-mailbox" placeholder="A shared mailbox, such as ap@example.com" style="flex:1"><button class="btn" data-act="offer-mailbox">Add</button></div>`
       + `<div class="row2"><input type="text" id="offer-site" placeholder="A SharePoint site's link" style="flex:1"><button class="btn" data-act="offer-site">Add</button></div>`;
     h += `<div class="row2">${l.id === 'm365' && l.expired ? '<a class="btn primary" href="/logins/m365/connect">Sign in again</a>' : ''}<button class="btn" data-act="signout-login" data-id="${esc(l.id)}">Sign out</button></div>`;
   }
-  if (!s.logins.length && !me.m365) h += '<div class="sub">No logins yet.</div>';
+  if (s.sites.length) h += `<h3>Websites</h3><div class="sub">You sign in yourself, in a browser shown here; your login is that browser's cookies, which a run's browser starts from and brings back refreshed.</div>`
+    + s.sites.map(w => {
+      const l = s.logins.find(l => l.id === `web:${w.id}`);
+      return `<div class="skill-row" style="display:flex;align-items:center;gap:8px"><span style="flex:1">${esc(w.name)} <span class="sub">${l ? `since ${esc(when(l.since))}` : ''}</span></span>`
+        + `<button class="btn" data-act="web-signin" data-id="${esc(w.id)}" data-name="${esc(w.name)}">${l ? 'Sign in again' : 'Sign in'}</button>${l ? `<button class="quiet" data-act="signout-login" data-id="${esc(l.id)}">Sign out</button>` : ''}</div>`;
+    }).join('');
+  if (!s.logins.length && !me.m365 && !s.sites.length) h += '<div class="sub">No logins yet.</div>';
   return h;
 }
 
@@ -944,7 +952,15 @@ function waiting() {
 }
 
 async function openLogins() {
-  pv = { title: 'Logins', settings: { kind: 'logins', logins: await api('/logins') } };
+  const [logins, skills] = await Promise.all([api('/logins'), api('/skills')]);
+  pv = { title: 'Logins', settings: { kind: 'logins', logins, sites: skills.filter(k => k.site) } };
+  renderPv();
+}
+
+// A sign-in's live browser; closing it otherwise than by Save login throws it away.
+function closePv() {
+  if (pv?.signin) api(`/signins/${pv.signin}`, { method: 'DELETE' }).catch(() => {});
+  pv = null;
   renderPv();
 }
 
@@ -1030,7 +1046,7 @@ document.addEventListener('click', async ev => {
   if (act === 'uncard') { openItem = null; renderCard(); renderPanes(); }
   if (act === 'opencard') { openItem = el.dataset.item; markSeen(data.doc.items.filter(i => i.id === openItem)); renderPanes(); renderCard(); }
   if (act === 'preview') await preview(el.dataset.file, data.doc.items.find(i => i.id === el.dataset.item));
-  if (act === 'unpv') { pv = null; renderPv(); }
+  if (act === 'unpv') closePv();
   if (act === 'settings') {
     const s = cur.s, skillList = await api('/skills');
     pv = { title: 'Series settings', settings: { kind: 'series', offers: await myOffers(), cost: s.instances.reduce((t, i) => t + i.cost, 0), closed: s.instances.filter(i => i.status === 'closed').length, id: s.id, allow_wakes: s.allow_wakes, wake: s.wake, adhoc: s.adhoc, name: s.name, skills: s.skills ?? [], skillList, reads: s.reads, archived: s.archived } };
@@ -1183,6 +1199,14 @@ document.addEventListener('click', async ev => {
     pv.settings.logins = await api('/logins');
     renderPv();
   }
+  if (act === 'web-signin') {
+    pv = { title: `Sign in to ${el.dataset.name}`, signin: (await api(`/logins/web/${enc(el.dataset.id)}`, { method: 'POST' })).id };
+    renderPv();
+  }
+  if (act === 'signin-save') {
+    await api(`/signins/${pv.signin}`, { method: 'POST' });
+    await openLogins();
+  }
   if (act === 'signout-login') {
     await api(`/logins/${enc(el.dataset.id)}`, { method: 'DELETE' });
     pv.settings.logins = await api('/logins');
@@ -1238,7 +1262,7 @@ addEventListener('hashchange', () => {
 });
 addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
-  if (pv) { pv = null; renderPv(); }
+  if (pv) closePv();
   else if ($('#side').classList.contains('open')) $('#side').classList.remove('open');
   else if (openItem) { openItem = null; renderCard(); renderPanes(); }
   else if (ui.log || ui.conv || ui.proc) { ui.log = ui.conv = ui.proc = false; renderLog(); renderBar(); }

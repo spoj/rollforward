@@ -5,7 +5,6 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Instance } from './store.ts';
 import { initSystem } from './system.ts';
-import { closeBrowser } from './browser.ts';
 import { logins } from './logins.ts';
 import { serveAgent, skillsText, testSkill } from './agent-api.ts';
 import { checkChosen, openSkills, skillsDir } from './skills.ts';
@@ -16,7 +15,7 @@ import { checkChosen, openSkills, skillsDir } from './skills.ts';
 //   node --env-file=.env src/cli.ts DATA_ROOT try SKILL[,SKILL...] --as EMAIL [--out DIR] -- COMMAND ...
 //       runs COMMAND as a run of a series with those skills would: rf reaching them, and working/ under DIR (default ./try-output).
 //       Such as: try aging -- python "$RF_SKILLS/aging/scripts/fetch.py"
-//                try portal -- rf flow portal/payments
+//                try portal -- rf browser open portal
 
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const [root, cmd, ...rest] = process.argv.slice(2);
@@ -38,7 +37,7 @@ async function tryIt(chosen: string, args: string[]) {
   const seriesDir = mkdtempSync(join(tmpdir(), 'rf-try-'));
   writeFileSync(join(seriesDir, 'series.json'), JSON.stringify({ skills: checkChosen(chosen.split(',')) }));
   const inst = { dir: out, log: [{ op: 'create', by: as, logins: logins(as).flatMap(l => l.offers.map(o => o.id)) }], series: () => seriesDir, append: (_by: string, op: string, data: object) => { console.log(`  [log] ${op} ${JSON.stringify(data)}`); return { seq: 0 }; } } as unknown as Instance;
-  const api = await serveAgent({ inst });
+  const api = await serveAgent(inst);
   console.log(`Skills:\n${skillsText(seriesDir)}\n`);
   let words = args.slice(dash + 1);
   const venv = join(app, '.venv', process.platform === 'win32' ? 'Scripts' : 'bin');
@@ -62,6 +61,4 @@ try {
 } catch (e) {
   console.error((e as Error).message);
   process.exitCode = 1;
-} finally {
-  await closeBrowser();
 }

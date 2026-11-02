@@ -4,11 +4,13 @@ import { BlockList, connect } from 'node:net';
 import { lookup } from 'node:dns/promises';
 import { existsSync, rmSync } from 'node:fs';
 import { readJson } from './system.ts';
+import { passUpgrade } from './machines.ts';
 
 // Each run is a bubblewrap sandbox with no network of its own (bin/sandbox/node starts Pi in it, with sandboxArgs). Its one way
 // out is the socket served here, which socat inside offers at 127.0.0.1:PORT:
 // - /agent/…: the agent API, as the run (rf);
 // - /model/<token>/…: the model, with the key added here, so no key is ever inside;
+// - /browser/<token>/<id>: the CDP websocket of a browser the run opened (rf browser open), passed to the machines service;
 // - CONNECT: an HTTPS proxy that lets through only the hosts allowed below or in .rf/egress.json, never to a private address,
 //   and logs each host a run asks for.
 
@@ -33,7 +35,7 @@ export const allowed = (host: string) =>
   [...ALLOWED, ...readJson<string[]>('egress.json', [])].some(p => (p.startsWith('*.') ? host.endsWith(p.slice(1)) : host === p));
 
 // What the server knows of a run, by its token.
-export type SandboxRun = { egress(host: string, allowed: boolean): void };
+export type SandboxRun = { egress(host: string, allowed: boolean): void; owns(browser: string): boolean };
 
 export function serveSandboxes(path: string, o: { agent(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void>; run(token: string): SandboxRun | undefined }) {
   if (existsSync(path)) rmSync(path);
@@ -49,6 +51,11 @@ export function serveSandboxes(path: string, o: { agent(req: IncomingMessage, re
     }, r => { res.writeHead(r.statusCode!, r.headers); r.pipe(res); });
     up.on('error', e => res.headersSent ? res.destroy() : res.writeHead(502).end(e.message));
     req.pipe(up);
+  });
+  server.on('upgrade', (req, socket, head) => {
+    const [, root, token, id] = new URL(req.url!, 'http://sandbox').pathname.split('/');
+    if (root !== 'browser' || !o.run(token)?.owns(id)) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
+    passUpgrade(req, socket, head, `/sessions/${id}/cdp`);
   });
   server.on('connect', async (req: IncomingMessage, client, head: Buffer) => {
     const token = Buffer.from(String(req.headers['proxy-authorization'] ?? '').replace(/^Basic /, ''), 'base64').toString().split(':')[1];

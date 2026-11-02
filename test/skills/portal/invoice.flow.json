@@ -1,7 +1,0 @@
-{
-  "vars": ["invoices"],
-  "steps": [
-    { "goto": "/search?invoice={invoices}" },
-    { "download": { "text": "/^\\s*Export to CSV\\s*$/i" }, "save": "Portal invoices {invoices} {today}.csv" }
-  ]
-}

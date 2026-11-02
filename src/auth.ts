@@ -118,7 +118,7 @@ function cookie(name: string, value: string, maxAge: number, path = '/') {
   return `${name}=${value}; Path=${path}; Max-Age=${maxAge}; HttpOnly; SameSite=Lax${secure ? '; Secure' : ''}`;
 }
 
-function session(req: IncomingMessage): Me | null {
+export function session(req: IncomingMessage): Me | null {
   const [email = '', exp = '', sig = ''] = (cookies(req).rf_session ?? '').split('.');
   const id = unb64(email), u = users()[id];
   if (!u || u.disabled || !(Number(exp) > Date.now()) || !same(sig, mac(`${id} ${exp} ${u.epoch ?? 0}`))) return null;

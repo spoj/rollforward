@@ -22,7 +22,7 @@ Admins:
 rf users
 rf user add EMAIL [admin|publisher] | role EMAIL admin|publisher|user | disable EMAIL | enable EMAIL | signout EMAIL | remove EMAIL
 rf skills
-rf skill set ID KEY VALUE|-       a setting, such as a folder's link; - reads a secret from stdin
+rf skill set ID KEY VALUE|-       a setting, such as a folder's link or a website's address; - reads it from stdin
 rf skill test ID                  reads through your own logins`;
 
 const config = join(homedir(), '.config', 'rollforward.json');

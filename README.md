@@ -55,21 +55,23 @@ Sessions last 12 hours (`RF_SESSION_HOURS`). The people, the workspaces' people 
 
 ## Skill use
 
-A series picks, in its settings, the **skills** its agent may use; choosing none is fine. A skill is what to fetch or do, and how, whole in a folder that a publisher pushes with `rf skill push DIR`, live at once; each push is a version, and `rf skill rollback ID N` brings an earlier one back. It holds a `SKILL.md` for the agent, a `skill.json` naming what of the runner's Microsoft 365 login it reads and its settings, and what it runs (scripts, or flows the server runs in the skill's website, with a `signin.ts` where signing in takes more than a name and a password).
+A series picks, in its settings, the **skills** its agent may use; choosing none is fine. A skill is what to fetch or do, and how, whole in a folder that a publisher pushes with `rf skill push DIR`, live at once; each push is a version, and `rf skill rollback ID N` brings an earlier one back. It holds a `SKILL.md` for the agent, a `skill.json` naming what of the runner's Microsoft 365 login it reads, its website's hosts if it has one, and its settings, and the scripts it runs.
 
 | Kind of skill | Reads through | Fetches, for example |
 | --- | --- | --- |
 | A OneDrive file | the runner's Microsoft 365 files | the day's AR aging file from its folder |
 | A mail attachment | the runner's Microsoft 365 mail | the Excel attachment of the day's report mail |
-| A vendor portal | its website | the portal's payments and unpaid items, as csv |
+| A vendor portal | the runner's login to its website | the portal's payments and unpaid items, as csv |
 
-Admins set each skill up once for every series, with `rf skill set ID KEY VALUE`, such as a folder's link; a secret (`-` reads it from stdin) is sealed in `.rf/` and never shown again. Until a skill is set up a series can choose it, but the agent can't use it. Skills, at the sidebar's foot, lists them with their versions.
+Admins set each skill up once for every series, with `rf skill set ID KEY VALUE`, such as a folder's link or a website's address (`url`); none is a secret. Until a skill is set up a series can choose it, but the agent can't use it. Skills, at the sidebar's foot, lists them with their versions.
 
 Microsoft 365 is nobody's but each person's: a run reads mail and files only through its runner's own login, and only the mailboxes, OneDrive and SharePoint sites ticked for its instance.
 
-`rf skill test ID` checks one for real, reading Microsoft 365 as you; a website skill signs in. A website skill's browser stays on the site's own hosts and makes no write.
+Websites are each person's too: under Logins, Websites, they sign in themselves in a live browser on the page, and that browser's state is their login, sealed in `.rf/`; no password is stored. A run's scripts open a browser on a skill's website with `rf browser open SITE`, from the runner's login if ticked, and drive it with Playwright over CDP. The browsers come from the machines service, a repo of its own (`RF_MACHINES_URL`, `RF_MACHINES_KEY`): each stays on its site's hosts, makes no write but while a person drives it, and logs every request, which the instance keeps under `browser/`.
 
-From a shell, without the model: `node --env-file=.env src/cli.ts DATA_ROOT test SKILL --as EMAIL`, and `… DATA_ROOT try aging --as EMAIL -- python "$RF_SKILLS/aging/scripts/fetch.py"` (or `try portal --as EMAIL -- rf flow portal/payments`) runs a skill as a run with it would, with EMAIL's logins. Set `RF_TODAY` in `.env` to test against a day that has data. Without Docker, the browser needs `node node_modules/playwright/cli.js install chromium` once.
+`rf skill test ID` checks one that reads Microsoft 365 for real, as you.
+
+From a shell, without the model: `node --env-file=.env src/cli.ts DATA_ROOT test SKILL --as EMAIL`, and `… DATA_ROOT try aging --as EMAIL -- python "$RF_SKILLS/aging/scripts/fetch.py"` (or `try portal --as EMAIL -- rf browser open portal`) runs a skill as a run with it would, with EMAIL's logins. Set `RF_TODAY` in `.env` to test against a day that has data.
 
 To reach it from the internet, run `tailscale funnel --bg 8780`, with Microsoft sign-in configured.
 
@@ -98,6 +100,7 @@ The [justfile](justfile) has these and more as recipes; `just` lists them.
   - `RF_SCRATCH` (the system's temp folder`/rollforward`), for each run's HOME and /tmp and the server's socket for runs
   - `RF_SANDBOX_SCOPE`, the command that gives each run its cgroup (a `systemd-run --user --scope` line; empty for none)
   - `RF_SANDBOX_RO`, more folders runs may read, separated by `:`
+  - `RF_MACHINES_URL` (`http://127.0.0.1:8797`) and `RF_MACHINES_KEY`, the machines service, for websites' browsers; the browser tests run only with these set
   - `RF_MODEL_URL` (`https://openrouter.ai/api`)
   - `RF_MAX_RUNS` (20), runs at once across all series, and `RF_MIN_FREE_GB` (6), the free memory below which none starts
   - `RF_OIDC_SCOPES` (`openid profile email`), sign-in's scopes

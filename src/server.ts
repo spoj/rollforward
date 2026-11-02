@@ -10,10 +10,11 @@ import { createInstance, duplicateInstance, guidanceFile, moveInstance, renameIn
 import { socketDir } from './runner.ts';
 import { search } from './search.ts';
 import { serveSandboxes } from './sandbox.ts';
-import { authenticate, checkConfig, connectM365, m365Ready, mode, myTokens, newToken, removeUser, revokeToken, ROLES, signOutEverywhere, upsertUser, users, type Me, type Role } from './auth.ts';
+import { authenticate, checkConfig, connectM365, m365Ready, mode, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, upsertUser, users, type Me, type Role } from './auth.ts';
 import { canManage, canSee, everyone, initSystem, saveTree, tree, type Workspace } from './system.ts';
 import { checkTicks, logins, runnerOf, signOut } from './logins.ts';
 import { agentCall, testSkill } from './agent-api.ts';
+import { endSignIn, isSignIn, passUpgrade, startSignIn, viewPage } from './machines.ts';
 import { offer, unoffer } from './m365.ts';
 import { seriesSettings } from './series.ts';
 import { checkChosen, openSkills, pushSkill, saveSkillConfig, skill, skills, skillView, versionFiles, versionsOf } from './skills.ts';
@@ -57,7 +58,7 @@ async function agent(req: IncomingMessage, res: ServerResponse, url: URL) {
   }
   if (url.pathname === '/agent/wake' && req.method === 'POST') return send(res, 200, wakeFrom(a, ((await json(req)).args ?? []).map(String)));
   if (url.pathname === '/agent/search' && req.method === 'POST') return send(res, 200, await search(a.view, ((await json(req)).args ?? []).map(String)));
-  // Skills: rf skills, rf settings, rf files, rf mail, rf flow (see agent-api.ts).
+  // Skills: rf skills, rf settings, rf files, rf mail, rf browser (see agent-api.ts).
   const r = await agentCall(a, url.pathname, req.method ?? 'GET', url.searchParams, () => body(req));
   if (r) return send(res, r.status, r.data);
   throw new HttpError(404, 'not found');
@@ -118,7 +119,7 @@ function trace(inst: Instance) {
 async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
   const [id, ...rest] = url.pathname.split('/').slice(2).map(decodeURIComponent);
   const rel = rest.join('/');
-  if (posix.normalize(rel) !== rel || !/^(upload|working|calls)\//.test(rel) || rel.split('/').includes('..')) throw new HttpError(400, 'bad path');
+  if (posix.normalize(rel) !== rel || !/^(upload|working|calls|browser)\//.test(rel) || rel.split('/').includes('..')) throw new HttpError(400, 'bad path');
   const inst = instance(id);
   mustSee(me, tree().workspaces[tree().series[inst.seriesId].workspace]);
   const path = join(inst.dir, rel);
@@ -395,11 +396,12 @@ serveSandboxes(join(socketDir, 'rf.sock'), {
         a.hosts.add(host);
         a.inst.append('server', 'egress', { run: a.n, host, allowed });
       },
+      owns: id => !!a.browsers?.owns(id),
     };
   },
 });
 
-createServer({ requestTimeout: 60 * 60_000 }, async (req, res) => {
+const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) => {
   const url = new URL(req.url!, 'http://x');
   try {
     const site = req.headers['sec-fetch-site'];
@@ -431,6 +433,12 @@ createServer({ requestTimeout: 60 * 60_000 }, async (req, res) => {
     else if (url.pathname === '/logins/m365/connect') await connectM365(res, me.email);
     else if (url.pathname === '/logins/m365/offers' && req.method === 'POST') send(res, 200, (await offer(me.email, await json(req)), 'ok'));
     else if (url.pathname.startsWith('/logins/m365/offers/') && req.method === 'DELETE') send(res, 200, (unoffer(me.email, decodeURIComponent(url.pathname.slice(20))), 'ok'));
+    else if (url.pathname.startsWith('/logins/web/') && req.method === 'POST') send(res, 200, { id: await startSignIn(me.email, decodeURIComponent(url.pathname.slice(12))) });
+    else if (/^\/signins\/\w+\/view$/.test(url.pathname) && req.method === 'GET') {
+      const html = await viewPage(me.email, url.pathname.split('/')[2]);
+      res.writeHead(200, { 'content-type': 'text/html' }).end(html);
+    }
+    else if (/^\/signins\/\w+$/.test(url.pathname) && (req.method === 'POST' || req.method === 'DELETE')) send(res, 200, (await endSignIn(me.email, url.pathname.slice(9), req.method === 'POST'), 'ok'));
     else if (url.pathname.startsWith('/logins/') && req.method === 'DELETE') send(res, 200, (signOut(me.email, decodeURIComponent(url.pathname.slice(8))), 'ok'));
     else if (url.pathname === '/users' || url.pathname.startsWith('/users/')) await admin(me, req, res, url);
     else if (url.pathname === '/skills' || url.pathname.startsWith('/skills/')) await skillsRoute(me, req, res, url);
@@ -438,7 +446,14 @@ createServer({ requestTimeout: 60 * 60_000 }, async (req, res) => {
   } catch (err) {
     send(res, err instanceof HttpError ? err.status : 500, (err as Error).message);
   }
-}).listen(port, host, () => {
+});
+// A sign-in's live view, the person's own: its websockets pass through to the machines service.
+server.on('upgrade', (req, socket, head) => {
+  const me = session(req), m = /^\/signins\/(\w+)\/(view\/(?:watch|drive))$/.exec(new URL(req.url!, 'http://x').pathname);
+  if (!me || !m || !isSignIn(me.email, m[1])) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
+  passUpgrade(req, socket, head, `/sessions/${m[1]}/${m[2]}`);
+});
+server.listen(port, host, () => {
   startWaking();
   console.log(`rollforward on http://${host}:${port}, data in ${root}, sign-in ${mode}${process.env.RF_TODAY ? `, skills take today as ${process.env.RF_TODAY} (RF_TODAY)` : ''}`);
 });

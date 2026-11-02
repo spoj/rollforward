@@ -1,6 +1,6 @@
 import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
-import { basename, extname, join, posix } from 'node:path';
+import { basename, dirname, extname, join, posix } from 'node:path';
 import { tree } from './system.ts';
 
 // Paths in the screen are /-separated on every system.
@@ -41,6 +41,15 @@ export class HttpError extends Error {
 // flat, with instance.json naming its label and its series. Names live there and in .rf/tree.json, so a rename or a move edits one
 // small file, at any time, even mid-run. The index holds every instance's instance.json, read once at start; an instance loads
 // when it's first listed or opened.
+// A path under the instance's working/, where the agent's files go.
+export function workingFile(instDir: string, file: string | undefined): string {
+  const rel = posix.normalize(String(file ?? '').replace(/^working\//, ''));
+  if (!file || rel.startsWith('..') || rel.startsWith('/') || /^[a-z]:/i.test(rel)) throw new HttpError(400, 'FILE is a path under your working/, such as "vouchers 09.06.2026.csv"');
+  const path = join(instDir, 'working', rel);
+  mkdirSync(dirname(path), { recursive: true });
+  return path;
+}
+
 export type Meta = { label: string; series: string };
 
 let root = '';

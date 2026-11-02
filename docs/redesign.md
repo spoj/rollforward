@@ -37,7 +37,7 @@ Agreed with Matthew on 2 Nov, after his review of the proposals and twenty quest
 
 ## Logins
 
-Built: logins sealed per person, ticks at every start, copy and takeover, runners and takeover, close by the runner only, and Microsoft 365 logins (PLAN.md, decisions 37 and 38). Still to come: website logins, and an expired login's run waiting for its runner to sign in again rather than only saying so.
+Built: logins sealed per person, ticks at every start, copy and takeover, runners and takeover, close by the runner only, Microsoft 365 logins and website logins (PLAN.md, decisions 37, 38 and 43). Still to come: an expired login's run waiting for its runner to sign in again rather than only saying so.
 
 - **Kinds, to start:**
   - **A website,** for the ERP and each vendor portal. The person signs in themselves, in a live browser shown on rollforward's page; the session's saved state (cookies and site data) becomes their login. No password is ever stored. It lasts as long as the site keeps a login alive: weeks behind a company sign-in, under an hour on sites with short sessions of their own.
@@ -173,12 +173,12 @@ Everything we build runs on the development machine; only the real outside syste
 1. The sandbox and the network (built).
 2. Ids, members and owners, and the migration script (built).
 3. Microsoft 365 logins and the ticks (built).
-4. Website logins through the machines service, moving the ERP and the portals onto personal logins.
+4. Website logins through the machines service (built); the ERP and the portals move onto them as their skills are rewritten.
 5. Waking, several open instances, Ad hoc (built).
 6. Talking, Process and the review sheet (built).
 7. Power users, `rf skill push`, guidance and the catalogue (built).
 
-The machines service is built alongside, in its own repo: browsers first, then Windows.
+The machines service is built alongside, in its own repo: browsers (built, used by website logins), then Windows (built, paused on licences; `rf windows` is to come).
 
 ## Facts still to get
 
