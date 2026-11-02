@@ -69,6 +69,8 @@ Built (PLAN.md, What starts a run, decision 36), but for the home page's list of
 
 ## Talking
 
+Built: the agent's report (its last message, logged, its first line the summary) and the prompt's rules for asking. Still to come: comment threads, `rf say`, and Advanced without its own typing.
+
 As proposed, unchanged except that nothing asks for approval to write:
 - **Comments** on the work, as in Excel: on a tile, a cell from Preview, a paragraph of Process, or the instance. Each is a thread anyone can reply to, with attachments; open until resolved.
 - **Questions** keep options and a default, so Close still works, and people can always answer in their own words. A question may name who should answer it.
@@ -79,10 +81,14 @@ As proposed, unchanged except that nothing asks for approval to write:
 
 ## Process and the review sheet
 
+Built in the prompt: `process.md` as the people's document, and a review sheet with every instance. Still to come: Process beside the graph, with its redline against the previous instance.
+
 - **Process is the people's document,** shown beside the graph and written for a colleague who knows the business but not the scripts: what the series delivers, each input and where it comes from, the steps with their rules in words, the standing rules with who set them, and the checks. No paths or code. It shows, as a redline, what changed since the previous instance. The agent's technical memory lives in its scripts.
 - **A review sheet with every instance,** for whoever closes it: key figures against the previous instance with the reason for each material change; the checks run, each linked to its cell; what was carried or assumed; the open points; and each input's source. A workbook when the outputs are workbooks.
 
 ## Knowledge
+
+Built: guidance, the company's and each workspace's, and the catalogue, both in each run's view (PLAN.md, decision 39). Still to come: `rf search`, skills published with `rf skill push`, and power users' `rf`.
 
 - **The archive is the instances.** Agents find and weigh what they need when they need it; nothing is classified on the way in.
 - **Reach** is the workspace, plus any workspace every member of this one belongs to. Everything in reach is mounted read-only in the run's sandbox, at a stable path.

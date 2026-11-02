@@ -210,7 +210,7 @@ test('a workspace can be made; a workspace or a series is archived and restored,
   const acme = () => named('Acme');
   const { id } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Acme' }))).json();
   const { series: made, ...rest } = await acme();
-  assert.deepEqual(rest, { id, name: 'Acme', archived: false, owners: [adminEmail], members: [], manage: true });
+  assert.deepEqual(rest, { id, name: 'Acme', archived: false, owners: [adminEmail], members: [], manage: true, guidance: '' });
   assert.deepEqual(made.map((s: { name: string; adhoc: boolean }) => [s.name, s.adhoc]), [['Ad hoc', true]], 'a workspace starts with its Ad hoc series');
   assert.equal((await call('POST', '/api/workspaces', JSON.stringify({ name: 'Acme' }))).status, 409);
   assert.equal((await call('PUT', `/api/workspaces/${id}`, JSON.stringify({ archived: true }))).status, 200);
@@ -354,6 +354,17 @@ test("people see and move a series' next wake, turn Allow wakes on as themselves
   assert.equal((await shown(series)).wake, null);
   assert.equal((await call('PUT', await at(series), JSON.stringify({ allow_wakes: false }))).status, 200);
   for (const label of ['2026-09-27', 'third']) assert.equal((await call('POST', `${await at(series, label, 'abandon')}`)).status, 200);
+});
+
+test("guidance: the company's is the admins', a workspace's its owners', and both are files every agent in scope reads", async () => {
+  const b = sessionOf(await login(bob))!;
+  assert.equal((await call('PUT', '/guidance', 'Fiscal months end on the last Saturday.', b)).status, 403);
+  assert.equal((await call('PUT', '/guidance', 'Fiscal months end on the last Saturday.')).status, 200);
+  assert.deepEqual(await json('/guidance', b), { text: 'Fiscal months end on the last Saturday.' });
+  const ws = await named('larkfield');
+  assert.equal((await call('PUT', `/api/workspaces/${ws.id}`, JSON.stringify({ guidance: 'Larkfield Ltd is now Larkfield Holdings.' }))).status, 200);
+  assert.equal((await named('larkfield')).guidance, 'Larkfield Ltd is now Larkfield Holdings.');
+  assert.equal(readFileSync(join(root, 'guidance', `${ws.id}.md`), 'utf8'), 'Larkfield Ltd is now Larkfield Holdings.');
 });
 
 test('each workspace has an Ad hoc series of one-off asks; Make it a series moves one into a series of its own', async () => {

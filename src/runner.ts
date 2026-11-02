@@ -25,7 +25,7 @@ export type Run = {
 // The run's view of the data, which the server builds: its series at cwd, such as /work/<workspace>/<series>, its own instance at
 // instance, from the folder dir, its series' .pylib from pylib, and in ro, every instance in its reach and the .pylib of the other
 // series there, each [host path, path inside].
-export type View = { cwd: string; instance: string; dir: string; pylib: string; ro: [string, string][] };
+export type View = { cwd: string; instance: string; dir: string; pylib: string; ro: [string, string][]; catalogue: string };
 
 // Pi for one run, in its sandbox (sandbox.ts): its view read-only but for the instance's working/ and session/ and the series'
 // .pylib, the skills the series chose and nothing else of the host's. A session started under other names is moved to these, as Pi
@@ -41,10 +41,11 @@ export function pi(o: { token: string; view: View; skills?: string[] }): RpcClie
   const local = `http://127.0.0.1:${PORT}`, proxy = `http://rf:${o.token}@127.0.0.1:${PORT}`;
   writeFileSync(join(agentDir, 'models.json'), JSON.stringify({ providers: { [provider]: { baseUrl: `${local}/model/${o.token}`, apiKey: 'none' } } }));
   writeFileSync(join(agentDir, 'settings.json'), JSON.stringify({ steeringMode: 'all' }));
+  writeFileSync(join(run, 'CATALOGUE.md'), o.view.catalogue);
   const args = sandboxArgs({
     cwd, home, tmp, socketDir,
     ro: [...['bin', 'src', 'node_modules', '.venv', 'package.json', 'prompt.md'].map(f => join(app, f)), dirname(process.execPath), skillsDir(), ...(process.env.RF_SANDBOX_RO ?? '').split(delimiter)].filter(p => p && existsSync(p)),
-    work: { ro: o.view.ro.filter(([src]) => existsSync(src)), rw: [[working, `${instance}/working`], [session, `${instance}/session`], [pylib, `${cwd}/.pylib`]] },
+    work: { ro: [[join(run, 'CATALOGUE.md'), '/work/CATALOGUE.md'], ...o.view.ro.filter(([src]) => existsSync(src))], rw: [[working, `${instance}/working`], [session, `${instance}/session`], [pylib, `${cwd}/.pylib`]] },
     env: {
       PATH: [join(app, 'bin'), join(app, '.venv', 'bin'), dirname(process.execPath), '/usr/bin'].join(delimiter), LANG: 'C.UTF-8', PYTHONPATH: `${cwd}/.pylib`, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: '1', PI_TELEMETRY: '0',
       RF_URL: local, RF_TOKEN: o.token, RF_WORKING: `${instance}/working`, RF_SKILLS: skillsDir(), ...(process.env.RF_TODAY && { RF_TODAY: process.env.RF_TODAY }),

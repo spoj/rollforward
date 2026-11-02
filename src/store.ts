@@ -16,7 +16,7 @@ export function replaceReadOnly(path: string, text: string) {
 
 export type Note = { id?: string; ref?: string; text: string; files?: string[]; options?: string[]; default?: number };
 export type Item = { id: string; name: string; kind: 'input' | 'step' | 'output'; file: string | null; from?: string[]; headline?: string; source?: string; notes?: Note[] };
-export type Doc = { rev: number; status: 'open' | 'closed' | 'abandoned'; summary?: string; items: Item[] };
+export type Doc = { rev: number; status: 'open' | 'closed' | 'abandoned'; items: Item[] };
 export type Entry = { seq: number; at: string; by: string; op: string; [k: string]: unknown };
 
 // Saves bytes in working/ (`dir`) under `name`, or `name (2)` and on if taken, and answers the path as the screen names it.
@@ -53,12 +53,15 @@ export function openStore(dataRoot: string) {
   cache.clear();
   mkdirSync(join(root, 'instances'), { recursive: true });
   mkdirSync(join(root, 'series'), { recursive: true });
+  mkdirSync(join(root, 'guidance'), { recursive: true });
   for (const id of readdirSync(join(root, 'instances'))) index.set(id, JSON.parse(readFileSync(join(root, 'instances', id, 'instance.json'), 'utf8')));
 }
 
 export const newId = () => randomBytes(6).toString('hex');
 export const seriesDir = (id: string) => join(root, 'series', id);
 export const instanceDir = (id: string) => join(root, 'instances', id);
+// Guidance: guidance/company.md, the admins', and guidance/<workspace id>.md, each workspace's owners', read by every agent in scope.
+export const guidanceFile = (id = 'company') => join(root, 'guidance', `${id}.md`);
 
 export function instance(id: string): Instance {
   if (!index.has(id)) throw new HttpError(404, `no instance ${id}`);
@@ -265,7 +268,7 @@ export class Instance {
       for (const n of before) if (!after.has(n)) this.append('agent', 'unnote', { item: i.id, note: JSON.parse(n) });
     }
     for (const o of this.doc.items) if (!ids.has(o.id)) this.append('agent', 'remove', { item: o.id });
-    this.doc = { rev: this.doc.rev, status: this.doc.status, summary: doc.summary, items: doc.items };
+    this.doc = { rev: this.doc.rev, status: this.doc.status, items: doc.items };
     this.save();
     return this.doc.rev;
   }

@@ -421,7 +421,7 @@ function renderSide() {
   if (archived) h += `<button class="quiet" data-act="toggle-archived">${showArchived ? 'Hide' : 'Show'} archived (${archived})</button>`;
   h += `<div class="legend"><div><i class="p">Blue</i> uploaded by a person</div><div><i>Black</i> made by the agent</div><div><span class="tri"></span>a note, for information</div><div><span class="tri q"></span>a question for you</div><div><span class="dash"></span>expected, not there yet</div></div>`;
   h += `<div class="acct"><div>${esc(me.name)}${me.role === 'admin' ? ' · admin' : ''}</div><div class="mail">${esc(me.email)}</div>`
-    + '<button class="quiet" data-act="logins">Logins</button>' + (me.role === 'admin' ? '<button class="quiet" data-act="users">Users</button><button class="quiet" data-act="skills">Skills</button>' : '') + '<button class="quiet" data-act="signout">Sign out</button></div>';
+    + '<button class="quiet" data-act="logins">Logins</button><button class="quiet" data-act="guidance">Guidance</button>' + (me.role === 'admin' ? '<button class="quiet" data-act="users">Users</button><button class="quiet" data-act="skills">Skills</button>' : '') + '<button class="quiet" data-act="signout">Sign out</button></div>';
   put($('#side'), h);
 }
 
@@ -565,6 +565,13 @@ function logText(e) {
     close: () => `${w} closed the instance`,
     abandon: () => `${w} abandoned the instance`,
     reply: () => `${w} replied<div class="d">${esc(e.text)}</div>`,
+    report: () => `${w} reported on run ${e.run}<div class="d">${md(e.text)}</div>`,
+    wake: () => `Woken${e.from ? ` by ${esc(e.from)}` : ''}<div class="d">${esc(e.reason)}</div>`,
+    takeover: () => `${w} took over from ${esc(e.from)}${e.logins?.length ? `<div class="d">Logins: ${esc(e.logins.join(', '))}</div>` : ''}`,
+    promote: () => `${w} made this one-off the first instance of ${esc(e.series)}`,
+    egress: () => `Run ${e.run} ${e.allowed ? 'reached' : 'was refused'} ${esc(e.host)}`,
+    files: () => `${w} ${e.action === 'get' ? `fetched ${esc(e.name)}` : `listed ${esc(e.target)}`} from Microsoft 365${e.file ? `<div class="f"><a data-act="preview" data-file="${esc(e.file)}">${esc(e.file)}</a></div>` : ''}`,
+    mail: () => `${w} ${e.action === 'find' ? `looked in ${esc(e.mailbox)} for mail of ${esc(e.date)}: ${e.found} found` : `saved ${esc((e.saved ?? []).join(', '))}`}`,
     rename: () => `${w} renamed the instance from ${esc(e.from)}`,
     duplicate: () => `${w} made this instance as a copy of ${esc(e.from)}`,
     browse: () => `${w} used ${esc(e.system.toUpperCase())}<div class="d">${esc([e.action, ...e.args].join(' '))}</div>`,
@@ -745,11 +752,12 @@ function renderPv() {
   else if (pv.settings?.kind === 'users') h += `<div class="pvb vl">${usersHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'skills') h += `<div class="pvb vl">${skillsHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'logins') h += `<div class="pvb vl">${loginsHtml(pv.settings)}</div>`;
+  else if (pv.settings?.kind === 'guidance') h += `<div class="pvb vl">${guidanceHtml(pv.settings, "Every agent reads it at the start of each run, in every workspace: the company's conventions, and changes that cut across many series.", me.role === 'admin')}</div>`;
   else if (pv.settings?.kind === 'start') h += `<div class="pvb vl">${startHtml(pv.settings)}</div>`;
   else if (pv.settings) {
     const s = pv.settings;
     h += '<div class="pvb vl">';
-    if (s.kind === 'workspace') h += peopleHtml(s) + '<hr>';
+    if (s.kind === 'workspace') h += peopleHtml(s) + guidanceHtml(s, 'Every agent in this workspace reads it at the start of each run: its conventions, and changes that cut across its series, such as a renamed entity.', s.manage) + '<hr>';
     if (s.kind === 'series') h += `<h3>Name</h3><input type="text" id="sname" value="${esc(s.name)}" ${s.adhoc ? 'disabled title="The Ad hoc series keeps its name"' : ''}>`
       + `<h3>Skill use</h3><div class="sub">What the agent may fetch or do for this series. Admins set each skill up once, under Skills, for every series.</div>`
       + s.skillList.map(k => `<label class="skill-row"><input type="checkbox" class="skill" value="${esc(k.id)}" ${s.skills.includes(k.id) ? 'checked' : ''}> ${esc(k.name)}${k.configured ? '' : ' <span class="sub">· not set up yet</span>'}</label>`
@@ -767,6 +775,11 @@ function renderPv() {
   else h += `<div class="pvb"><div class="empty">No preview for this kind of file. Download it instead.</div></div>`;
   $('#pv').innerHTML = h + '<div class="pvn" id="pvn"></div>';
 }
+
+// Guidance, the company's or a workspace's: a text every agent in scope reads, which only admins, or the workspace's owners, change.
+const guidanceHtml = (s, sub, edit) => `<h3>Guidance</h3><div class="sub">${sub}</div>`
+  + (edit ? `<textarea id="guidance" rows="8" placeholder="Such as: Fiscal months end on the last Saturday.">${esc(s.guidance)}</textarea><div><button class="btn" data-act="save-guidance">Save guidance</button></div>`
+    : `<div class="sub">${s.guidance ? esc(s.guidance) : 'None yet.'}</div>`);
 
 // A workspace's people, each an email or an Entra group's id: owners manage who is in it, and owners and members see and work in all
 // of it.
@@ -796,7 +809,7 @@ function usersHtml(s) {
 
 async function openWorkspaceSettings() {
   const w = cur.w;
-  pv = { title: 'Workspace settings', settings: { kind: 'workspace', archived: w.archived, owners: w.owners, members: w.members, manage: w.manage } };
+  pv = { title: 'Workspace settings', settings: { kind: 'workspace', archived: w.archived, owners: w.owners, members: w.members, manage: w.manage, guidance: w.guidance } };
   renderPv();
 }
 
@@ -1069,6 +1082,18 @@ document.addEventListener('click', async ev => {
     else await refresh();
   }
   if (act === 'logins') await openLogins();
+  if (act === 'guidance') {
+    pv = { title: "The company's guidance", settings: { kind: 'guidance', guidance: (await api('/guidance')).text } };
+    renderPv();
+  }
+  if (act === 'save-guidance') {
+    const text = $('#guidance').value;
+    if (pv.settings.kind === 'guidance') await api('/guidance', { method: 'PUT', body: text });
+    else await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ guidance: text }) });
+    pv.settings.guidance = text;
+    toast('Guidance saved', 'ok');
+    await refresh();
+  }
   if (act === 'offer-mailbox' || act === 'offer-site') {
     const v = $(`#${act}`).value.trim();
     if (!v) return;

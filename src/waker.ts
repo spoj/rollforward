@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { join, posix } from 'node:path';
-import { createInstance, HttpError, instance, instanceDir, instances, isPerson, labels, newId, seriesDir, type Entry, type Instance } from './store.ts';
+import { existsSync, readFileSync } from 'node:fs';
+import { join, posix, relative } from 'node:path';
+import { createInstance, guidanceFile, HttpError, instance, instanceDir, instances, isPerson, labels, newId, seriesDir, type Entry, type Instance } from './store.ts';
 import { startRun, type Run, type View } from './runner.ts';
 import { canSee, everyone, readJson, tree, writeJson, type Tree } from './system.ts';
 import { users } from './auth.ts';
@@ -15,7 +16,7 @@ const MAX_RUNS = Number(process.env.RF_MAX_RUNS ?? 20);
 export const MAX_OPEN = 3;
 const SPACING_MS = 15 * 60_000;
 
-export type Active = { inst: Instance; n: number; token: string; view: View; run?: Run; sent: number; seen: number; texts: Map<string, number>; interrupted: boolean; done: boolean; cost: number; hosts: Set<string>; browsing?: Browsing; timer?: NodeJS.Timeout };
+export type Active = { inst: Instance; n: number; token: string; view: View; run?: Run; sent: number; seen: number; texts: Map<string, number>; interrupted: boolean; done: boolean; cost: number; said: string; hosts: Set<string>; browsing?: Browsing; timer?: NodeJS.Timeout };
 export const active = new Map<string, Active>();
 export const byToken = new Map<string, Active>();
 const debounce = new Map<string, NodeJS.Timeout>();
@@ -48,14 +49,29 @@ export function reach(t: Tree, seriesId: string): string[] {
 
 export const named = (t: Tree, seriesId: string) => `${t.workspaces[t.series[seriesId].workspace].name}/${t.series[seriesId].name}`;
 
-// The run's view of the data, by name: /work/<workspace>/<series>/<label>/ for every instance in its reach, built when it starts.
+// The run's view of the data, by name, built when it starts: /work/<workspace>/<series>/<label>/ for every instance in its reach,
+// the company's guidance at /work/GUIDANCE.md and each workspace's at /work/<workspace>/GUIDANCE.md, and the catalogue.
 function view(inst: Instance): View {
-  const t = tree(), at = (id: string) => `/work/${named(t, id)}`;
-  const ro = [inst.seriesId, ...reach(t, inst.seriesId)].flatMap(id => [
+  const t = tree(), at = (id: string) => `/work/${named(t, id)}`, series = [inst.seriesId, ...reach(t, inst.seriesId)];
+  const ro = series.flatMap(id => [
     ...labels(id).map(l => [instanceDir(l.id), `${at(id)}/${l.label}`] as [string, string]),
     ...(id === inst.seriesId ? [] : [[join(seriesDir(id), '.pylib'), `${at(id)}/.pylib`] as [string, string]]),
   ]);
-  return { cwd: at(inst.seriesId), instance: `${at(inst.seriesId)}/${inst.label}`, dir: inst.dir, pylib: join(inst.series(), '.pylib'), ro };
+  const guidance = [...new Set(series.map(id => t.series[id].workspace))].map(w => [guidanceFile(w), `/work/${t.workspaces[w].name}/GUIDANCE.md`] as [string, string]);
+  const catalogue = `# What you can read\n\nOne line per series, from its latest closed instance: what it delivers (its process.md's first line), its inputs and where they come from, who brings files and who answers, and its open instances, which are drafts.\n\n${series.map(id => line(t, id, at(inst.seriesId))).join('\n')}\n`;
+  return { cwd: at(inst.seriesId), instance: `${at(inst.seriesId)}/${inst.label}`, dir: inst.dir, pylib: join(inst.series(), '.pylib'), ro: [[guidanceFile(), '/work/GUIDANCE.md'], ...guidance, ...ro], catalogue };
+}
+
+function line(t: Tree, id: string, cwd: string): string {
+  const all = instances(id), last = all.filter(i => i.doc.status === 'closed').sort((a, b) => a.closedAt().localeCompare(b.closedAt())).at(-1);
+  const process = last && join(last.dir, 'working', 'process.md');
+  const purpose = process && existsSync(process) ? readFileSync(process, 'utf8').split('\n').map(l => l.replace(/^[#\s]+/, '').trim()).find(Boolean) : undefined;
+  const inputs = last?.doc.items.filter(i => i.kind === 'input').map(i => `${i.name} (${i.source ?? (i.file?.startsWith('upload/') ? 'uploaded' : 'fetched')})`) ?? [];
+  const who = (op: string) => [...new Set(last?.log.filter(e => e.op === op && isPerson(e)).map(e => e.by))];
+  const open = all.filter(i => i.doc.status === 'open').map(i => i.label);
+  return `- ${relative(cwd, `/work/${named(t, id)}`) || '.'}: ${purpose ?? 'no process.md yet'}. `
+    + (last ? `Latest closed: ${last.label}. Inputs: ${inputs.join('; ') || 'none'}. Brings files: ${who('upload').join(', ') || 'nobody'}; answers: ${who('answer').join(', ') || 'nobody'}.` : 'Nothing closed yet.')
+    + (open.length ? ` Open: ${open.join(', ')}.` : '');
 }
 
 export function kick(inst: Instance) {
@@ -82,7 +98,7 @@ async function start(inst: Instance) {
   const n = inst.log.filter(e => e.op === 'run').length + 1;
   const entries = inst.log.filter(e => e.seq > seen && e.by !== 'agent');
   const text = message(inst, n, entries);
-  const a: Active = { inst, n, token: randomUUID(), view: view(inst), sent: entries.at(-1)!.seq, seen, texts: new Map([[text, entries.at(-1)!.seq]]), interrupted: false, done: false, cost: 0, hosts: new Set() };
+  const a: Active = { inst, n, token: randomUUID(), view: view(inst), sent: entries.at(-1)!.seq, seen, texts: new Map([[text, entries.at(-1)!.seq]]), interrupted: false, done: false, cost: 0, said: '', hosts: new Set() };
   active.set(series, a);
   byToken.set(a.token, a);
   inst.append('server', 'run', { run: n, upto: a.sent });
@@ -91,7 +107,11 @@ async function start(inst: Instance) {
       token: a.token, view: a.view,
       message: text, skills: seriesSettings(inst.series()).skills.filter(id => skill(id)),
       onEvent: e => {
-        if (e.type === 'message_end' && e.message.role === 'assistant') a.cost += e.message.usage.cost.total;
+        if (e.type === 'message_end' && e.message.role === 'assistant') {
+          a.cost += e.message.usage.cost.total;
+          const text = e.message.content.map(b => (b.type === 'text' ? b.text : '')).join('').trim();
+          if (text) a.said = text;
+        }
         if (e.type !== 'message_start' || e.message.role !== 'user') return;
         const c = e.message.content;
         const seq = a.texts.get(typeof c === 'string' ? c : c.map(b => (b.type === 'text' ? b.text : '')).join(''));
@@ -120,7 +140,9 @@ function finish(a: Active, aborted: boolean, error?: string) {
   active.delete(series);
   a.run?.stop();
   a.browsing?.close();
-  a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(4), summary: a.inst.doc.summary ?? null, ...(error && { error }) });
+  // The agent's last words in a run are its report to the instance's people; its first line is the run's summary.
+  if (a.said && !aborted) a.inst.append('agent', 'report', { run: a.n, text: a.said });
+  a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(4), summary: a.said && !aborted ? a.said.split('\n')[0].replace(/^[#*_\s]+|[*_\s]+$/g, '').slice(0, 200) : null, ...(error && { error }) });
   if (a.run) { // one that never started, as with a missing API key, waits for the next act rather than retrying at once
     const next = !a.interrupted && pending(a.inst, a.seen).length ? a.inst
       : instances(series).find(i => i.doc.status === 'open' && !(a.interrupted && i === a.inst) && pending(i, seenBefore(i)).length);

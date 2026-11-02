@@ -1,12 +1,12 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { basename, dirname, join, posix, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createInstance, duplicateInstance, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instances, newId, openStore, safeName, seriesDir, type Instance } from './store.ts';
+import { createInstance, duplicateInstance, guidanceFile, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instances, newId, openStore, safeName, seriesDir, type Instance } from './store.ts';
 import { socketDir } from './runner.ts';
 import { serveSandboxes } from './sandbox.ts';
 import { authenticate, checkConfig, connectM365, m365Ready, mode, removeUser, signOutEverywhere, upsertUser, users, type Me, type Role } from './auth.ts';
@@ -69,7 +69,7 @@ function questions(inst: Instance): number {
 function listing(me: Me) {
   const t = tree(), w8 = wakes(), byName = (a: [string, { name: string }], b: [string, { name: string }]) => a[1].name.localeCompare(b[1].name);
   return Object.entries(t.workspaces).filter(([, w]) => canSee(me, w)).sort(byName).map(([id, w]) => ({
-    id, name: w.name, archived: !!w.archived, owners: w.owners, members: w.members, manage: canManage(me, w),
+    id, name: w.name, archived: !!w.archived, owners: w.owners, members: w.members, manage: canManage(me, w), guidance: text(guidanceFile(id)),
     series: Object.entries(t.series).filter(([, s]) => s.workspace === id).sort(byName).map(([sid, s]) => ({
       id: sid, name: s.name, archived: !!s.archived, adhoc: !!s.adhoc, skills: seriesSettings(seriesDir(sid)).skills, allow_wakes: seriesSettings(seriesDir(sid)).wakes?.by ?? null,
       reads: reach(t, sid).map(r => named(t, r).replace('/', ' / ')), wake: w8.pending[sid] ?? null,
@@ -130,6 +130,7 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
   createReadStream(path).pipe(res);
 }
 
+const text = (path: string) => (existsSync(path) ? readFileSync(path, 'utf8') : '');
 const json = async (req: IncomingMessage) => JSON.parse((await body(req)).toString() || '{}');
 const people = (w: { owners?: unknown; members?: unknown }) => [w.owners, w.members].map(list => {
   const ok = Array.isArray(list) && list.every(p => typeof p === 'string' && /^[^@\s]+@[^@\s]+$|^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(p));
@@ -163,6 +164,7 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
     }
     if (change.owners !== undefined || change.members !== undefined) [w.owners, w.members] = people({ owners: w.owners, members: w.members, ...change });
     if (change.archived !== undefined) w.archived = !!change.archived;
+    if (change.guidance !== undefined) writeFileSync(guidanceFile(id), String(change.guidance));
     saveTree(t);
     return send(res, 200, 'ok');
   }
@@ -378,7 +380,12 @@ createServer({ requestTimeout: 60 * 60_000 }, async (req, res) => {
     else if (url.pathname.startsWith('/files/')) await file(me, res, url, false);
     else if (url.pathname.startsWith('/preview/')) await file(me, res, url, true);
     else if (url.pathname.startsWith('/api/')) await api(me, req, res, url);
-    else if (url.pathname === '/logins' && req.method === 'GET') send(res, 200, logins(me.email));
+    else if (url.pathname === '/guidance' && req.method === 'GET') send(res, 200, { text: text(guidanceFile()) });
+    else if (url.pathname === '/guidance' && req.method === 'PUT') {
+      if (me.role !== 'admin') throw new HttpError(403, "the company's guidance is the admins'");
+      writeFileSync(guidanceFile(), (await body(req)).toString());
+      send(res, 200, 'ok');
+    } else if (url.pathname === '/logins' && req.method === 'GET') send(res, 200, logins(me.email));
     else if (url.pathname === '/logins/m365/connect') await connectM365(res, me.email);
     else if (url.pathname === '/logins/m365/offers' && req.method === 'POST') send(res, 200, (await offer(me.email, await json(req)), 'ok'));
     else if (url.pathname.startsWith('/logins/m365/offers/') && req.method === 'DELETE') send(res, 200, (unoffer(me.email, decodeURIComponent(url.pathname.slice(20))), 'ok'));

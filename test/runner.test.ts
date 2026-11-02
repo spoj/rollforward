@@ -38,7 +38,7 @@ writeFileSync(i('w2/session/main.jsonl'), `${JSON.stringify({ type: 'session', i
 const cwd = '/work/ws/Weekly', at = `${cwd}/w2`;
 const agent = pi({
   token: TOKEN, skills: ['tool'],
-  view: { cwd, instance: at, dir: i('w2'), pylib: join(root, 'series', 'weekly', '.pylib'), ro: [[i('w1'), `${cwd}/w1`], [i('w2'), at], [i('r1'), '/work/ws/Shared/r1']] },
+  view: { cwd, instance: at, dir: i('w2'), pylib: join(root, 'series', 'weekly', '.pylib'), ro: [[i('w1'), `${cwd}/w1`], [i('w2'), at], [i('r1'), '/work/ws/Shared/r1']], catalogue: '# What you can read' },
 });
 const sh = async (command: string) => (await agent.bash(command)).output.trim();
 
@@ -66,6 +66,7 @@ test('the sandbox shows its view of the data by name, and nothing else of the da
   assert.equal(await sh('pwd'), cwd);
   assert.equal(await sh('cat ../Shared/r1/working/rates.csv'), 'usd,1');
   assert.equal(await sh('ls /work/ws'), 'Shared\nWeekly');
+  assert.equal(await sh('cat /work/CATALOGUE.md'), '# What you can read');
   for (const p of [root, '/root', '/var', join(import.meta.dirname, '..', 'demo')]) assert.match(await sh(`ls ${p} 2>&1`), /No such file/, p);
   assert.equal(JSON.parse(readFileSync(i('w2/session/main.jsonl'), 'utf8').split('\n')[0]).cwd, cwd, 'its session moved to the names of today, so Pi resumes it');
 });
