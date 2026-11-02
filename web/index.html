@@ -577,6 +577,8 @@ function logText(e) {
     abandon: () => `${w} abandoned the instance`,
     comment: () => `${w} commented${e.item ? ` on ${item(e.item)}${e.ref ? ` at ${esc(e.ref)}` : ''}` : ''}<div class="d">${esc(e.text)}</div>`,
     say: () => `${w} replied<div class="d">${esc(e.text)}</div>`,
+    steer: () => `${w} steered<div class="d">${esc(e.text)}</div>`,
+    reply: () => `${w} replied<div class="d">${esc(e.text)}</div>`,
     resolve: () => `${w} resolved a thread`,
     report: () => `${w} reported on run ${e.run}<div class="d">${md(e.text)}</div>`,
     wake: () => `Woken${e.from ? ` by ${esc(e.from)}` : ''}<div class="d">${esc(e.reason)}</div>`,
