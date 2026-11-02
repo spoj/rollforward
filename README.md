@@ -83,7 +83,7 @@ For a demo run in podman behind Tailscale Funnel, the justfile has `just invite 
 
 ## Without Docker
 
-You need Node 26, uv, bubblewrap and socat, and a systemd user session for each run's memory limits (or `RF_SANDBOX_SCOPE=` without). LibreOffice is optional, for recalculating formula workbooks.
+You need Node 26, uv, bubblewrap, socat, ripgrep and fd, and a systemd user session for each run's memory limits (or `RF_SANDBOX_SCOPE=` without). LibreOffice is optional, for recalculating formula workbooks.
 
     npm install
     uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt

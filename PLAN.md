@@ -72,7 +72,6 @@ rename or a move never moves a folder.
                               egress.json (hosts runs may reach), tokens.json and token-uses.jsonl, and the keys session.key
                               and seal.key
     guidance/                 company.md, the admins', and <workspace id>.md, each workspace's owners'
-    derived/                  <sha256>.txt, the text of a workbook, mail, PDF or Word file, for rf search
     skills/                   versions/<id>/<n>/, each pushed version with its .pushed.json, and live/<id>, a link to the one runs use
       tree.json               {"workspaces": {id: {name, owners, members, archived?}}, "series": {id: {name, workspace, archived?}}}
     series/<id>/              a series
@@ -103,7 +102,6 @@ rename or a move never moves a folder.
 - **`rf`** is a small command on the agent's `PATH`:
   - `rf show` prints the screen, `workspace.json`, including its `rev`, which the server bumps on every change.
   - `rf say THREAD TEXT` replies in a comment thread; the server logs it as `say`.
-  - `rf search PATTERN [FOLDER …]` finds a regular expression, in any case, in every file of every instance in the run's reach: text files by their lines, and workbooks, mail, PDFs and Word files by the text [src/extract.py](src/extract.py) reads of them (a workbook a line per row, `Sheet!row: A1=… | B1=…`), kept in the data root's `derived/` by the file's sha256 so each is read once ([src/search.ts](src/search.ts)).
   - `rf windows open | run python|powershell FILE [--timeout SECONDS] | put FILE [PATH] | get PATH FILE | screenshot FILE | close` drives the run's Windows machine from the machines service ([src/machines.ts](src/machines.ts)): a virtual machine with no network, cloned from a clean, signed-in state with Python and pywin32, opened by the run's first call and back to that state on `close` or when the run ends. Each call waits until done, a script up to `--timeout` (600 seconds by default); scripts and files come from `working/` and go to it, `C:\work` inside, and each call is logged as `windows`. Office isn't on it yet, and the evaluation Windows it runs can't activate offline (see the machines service's README).
   - `rf put FILE` replaces the screen with FILE. The server rejects it if its `rev` isn't current, because someone changed the screen since the agent read it; the agent then re-reads and merges. It also rejects an invalid document, listing the reasons.
   - **Valid** means:

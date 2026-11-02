@@ -8,7 +8,6 @@ import { basename, dirname, join, posix, relative, resolve, sep } from 'node:pat
 import { fileURLToPath } from 'node:url';
 import { createInstance, duplicateInstance, guidanceFile, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instances, newId, openStore, safeName, seriesDir, type Instance } from './store.ts';
 import { socketDir } from './runner.ts';
-import { search } from './search.ts';
 import { serveSandboxes } from './sandbox.ts';
 import { authenticate, checkConfig, connectM365, m365Ready, mode, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, upsertUser, users, type Me, type Role } from './auth.ts';
 import { canManage, canSee, changes, everyone, initSystem, saveTree, tree, type Workspace } from './system.ts';
@@ -57,7 +56,6 @@ async function agent(req: IncomingMessage, res: ServerResponse, url: URL) {
     return send(res, 200, `said, seq ${a.inst.append('agent', 'say', { thread, text }).seq}`);
   }
   if (url.pathname === '/agent/wake' && req.method === 'POST') return send(res, 200, wakeFrom(a, ((await json(req)).args ?? []).map(String)));
-  if (url.pathname === '/agent/search' && req.method === 'POST') return send(res, 200, await search(a.view, ((await json(req)).args ?? []).map(String)));
   // Skills and machines: rf skills, rf settings, rf files, rf mail, rf browser, rf windows (see agent-api.ts).
   const r = await agentCall(a, url.pathname, req.method ?? 'GET', url.searchParams, () => body(req));
   if (r) return send(res, r.status, r.data);

@@ -88,7 +88,7 @@ Built: `process.md` as the people's document and a review sheet with every insta
 
 ## Knowledge
 
-Built: guidance, the company's and each workspace's, and the catalogue, both in each run's view (PLAN.md, decision 39), and skills published with `rf skill push` (decision 41), and `rf search` over every file in reach, with workbooks', mail's, PDFs' and Word files' text kept by hash.
+Built: guidance, the company's and each workspace's, and the catalogue, both in each run's view (PLAN.md, decision 39), and skills published with `rf skill push` (decision 41). No `rf search`: everything in reach is plain files, which the agent searches with `fd`, `rg` and Python, as people do with their own archives (Matthew, 3 Nov).
 
 - **The archive is the instances.** Agents find and weigh what they need when they need it; nothing is classified on the way in.
 - **Reach** is the workspace, plus any workspace every member of this one belongs to. Everything in reach is mounted read-only in the run's sandbox, at a stable path.
@@ -138,8 +138,8 @@ Built: folders by id, `.rf/tree.json`, the index of `instance.json`s, renames th
 - **The run engine moves out of `server.ts`:** `server.ts` keeps HTTP and the API; `waker.ts` decides what runs when (one per series, the cap, wakes); `runner.ts` runs one run, the sandbox and Pi.
 - **Restarts don't wait for quiet** (built). On start, each run a restart cut is logged as aborted and started again with "A restart cut your last run; carry on". `just deploy` no longer waits.
 - **Frozen files are referenced, not copied:** an item may point at another instance's frozen file by id, path and hash.
-- **Derived files by hash:** each frozen file gets its Preview, a text extract (so `rf search` greps inside every workbook and email in reach) and its renders, once.
-- **Tools carry the mechanics; the prompt carries judgement.** `rf` gains `say`, `wake`, `browser`, `windows`, `search` and `skill`, each with its own help.
+- **Derived files by hash:** each frozen file gets its Preview and its renders, once.
+- **Tools carry the mechanics; the prompt carries judgement.** `rf` gains `say`, `wake`, `browser`, `windows` and `skill`, each with its own help.
 - **Events instead of polling** (built): `/api/events` streams changes the principal may see; the page no longer polls the whole tree every 4 seconds.
 - **Costs are shown** per instance and per series (built). No caps for now.
 

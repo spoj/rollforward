@@ -1,8 +1,8 @@
 FROM node:26-slim
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv poppler-utils sqlite3 ca-certificates curl libreoffice-calc-nogui \
-    git jq zip unzip fonts-noto-cjk bubblewrap socat \
+    git jq zip unzip ripgrep fd-find fonts-noto-cjk bubblewrap socat \
  && rm -rf /var/lib/apt/lists/*
-RUN ln -sf /bin/bash /bin/sh
+RUN ln -sf /bin/bash /bin/sh && ln -s /usr/bin/fdfind /usr/bin/fd
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
