@@ -300,24 +300,6 @@ test("each person sees the workspaces they're in, by email or Entra group; owner
   assert.deepEqual(await reads('larkfield', series), ['larkfield / Ad hoc', `larkfield / ${monthly}`], 'a workspace with no one in it reads only itself');
 });
 
-test('Systems holds the two Microsoft 365 connections, for admins: saved in part, the secret sealed', async () => {
-  const b = sessionOf(await login(bob))!;
-  assert.equal((await call('GET', '/systems', undefined, b)).status, 403, 'series do not choose connections, so only admins see them');
-  assert.deepEqual((await json('/systems')).map((s: { id: string; configured: boolean }) => [s.id, s.configured]), [['m365-mail', false], ['m365-files', false]]);
-  const app = { tenant: '00000000-0000-0000-0000-000000000001', client_id: '00000000-0000-0000-0000-000000000002', settings: { mailbox: 'ap@demo.test' } };
-  assert.equal((await call('PUT', '/systems/m365-mail', JSON.stringify(app), b)).status, 403);
-  assert.equal((await call('PUT', '/systems/m365-mail', JSON.stringify({ ...app, tenant: 'not-a-guid' }))).status, 400);
-  assert.equal((await call('PUT', '/systems/m365-mail', JSON.stringify(app))).status, 200, 'saved part done, without its secret');
-  assert.equal((await json('/systems'))[0].configured, false);
-  const made = await (await call('PUT', '/systems/m365-mail', JSON.stringify({ ...app, password: 'S3cret!' }))).json();
-  assert.deepEqual([made.id, made.has_password, 'password' in made], ['m365-mail', true, false]);
-  assert.equal((await json('/systems'))[0].configured, true);
-  assert.ok(!readFileSync(join(root, '.rf', 'systems.json'), 'utf8').includes('S3cret!'));
-  assert.notEqual((await call('PUT', '/systems/portal', JSON.stringify({ url: 'http://127.0.0.1:9/' }))).status, 200, 'websites are skills now, not connections');
-  assert.equal((await call('DELETE', '/systems/m365-mail')).status, 200);
-  assert.equal((await json('/systems'))[0].configured, false, 'clearing it leaves it on the list, not set up');
-});
-
 test('Skill use: admins set skills up once under Skills; a series only chooses which', async () => {
   const b = sessionOf(await login(bob))!;
   const report = (list: { id: string }[]) => list.find(s => s.id === 'mail-report') as Record<string, unknown>;
@@ -325,8 +307,7 @@ test('Skill use: admins set skills up once under Skills; a series only chooses w
   assert.equal((await call('PUT', '/skills/mail-report', JSON.stringify({ subject: 'Open AP report' }), b)).status, 403);
   assert.equal((await call('PUT', '/skills/mail-report', JSON.stringify({ mailbox: 'x' }))).status, 400, 'only the settings the skill declares');
   const set = await (await call('PUT', '/skills/mail-report', JSON.stringify({ subject: 'Open AP report' }))).json();
-  assert.deepEqual([set.values, set.configured, set.missing], [{ subject: 'Open AP report' }, false, ['M365 Mail set up under Systems']], 'it reads through M365 Mail, which is not set up');
-  assert.equal((await call('POST', '/skills/mail-report/test')).status, 409);
+  assert.deepEqual([set.values, set.configured, set.uses], [{ subject: 'Open AP report' }, true, ["the runner's Microsoft 365 mail"]], "it reads the runner's own mail, so there's nothing more to set up");
   const site = await (await call('PUT', '/skills/portal', JSON.stringify({ url: 'https://portal.test/#/login', username: 'svc', password: 'Portal!pw' }))).json();
   assert.deepEqual([site.values, site.secrets, site.configured], [{ url: 'https://portal.test/#/login', username: 'svc' }, { password: true }, true], 'a password shows only as saved');
   assert.ok(!readFileSync(join(root, '.rf', 'skills.json'), 'utf8').includes('Portal!pw'));

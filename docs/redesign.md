@@ -37,7 +37,7 @@ Agreed with Matthew on 2 Nov, after his review of the proposals and twenty quest
 
 ## Logins
 
-Built: logins sealed per person, ticks at every start, copy and takeover, runners and takeover, and close by the runner only (PLAN.md, decision 37). Still to come: the two kinds below.
+Built: logins sealed per person, ticks at every start, copy and takeover, runners and takeover, close by the runner only, and Microsoft 365 logins (PLAN.md, decisions 37 and 38). Still to come: website logins, and an expired login's run waiting for its runner to sign in again rather than only saying so.
 
 - **Kinds, to start:**
   - **A website,** for the ERP and each vendor portal. The person signs in themselves, in a live browser shown on rollforward's page; the session's saved state (cookies and site data) becomes their login. No password is ever stored. It lasts as long as the site keeps a login alive: weeks behind a company sign-in, under an hour on sites with short sessions of their own.
@@ -164,7 +164,7 @@ Everything we build runs on the development machine; only the real outside syste
 
 1. The sandbox and the network (built).
 2. Ids, members and owners, and the migration script (built).
-3. Microsoft 365 logins and the ticks.
+3. Microsoft 365 logins and the ticks (built).
 4. Website logins through the machines service, moving the ERP and the portals onto personal logins.
 5. Waking, several open instances, Ad hoc (built).
 6. Talking, Process and the review sheet. The prompt-only parts can land early.

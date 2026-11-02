@@ -421,7 +421,7 @@ function renderSide() {
   if (archived) h += `<button class="quiet" data-act="toggle-archived">${showArchived ? 'Hide' : 'Show'} archived (${archived})</button>`;
   h += `<div class="legend"><div><i class="p">Blue</i> uploaded by a person</div><div><i>Black</i> made by the agent</div><div><span class="tri"></span>a note, for information</div><div><span class="tri q"></span>a question for you</div><div><span class="dash"></span>expected, not there yet</div></div>`;
   h += `<div class="acct"><div>${esc(me.name)}${me.role === 'admin' ? ' · admin' : ''}</div><div class="mail">${esc(me.email)}</div>`
-    + '<button class="quiet" data-act="logins">Logins</button>' + (me.role === 'admin' ? '<button class="quiet" data-act="users">Users</button><button class="quiet" data-act="systems">Systems</button><button class="quiet" data-act="skills">Skills</button>' : '') + '<button class="quiet" data-act="signout">Sign out</button></div>';
+    + '<button class="quiet" data-act="logins">Logins</button>' + (me.role === 'admin' ? '<button class="quiet" data-act="users">Users</button><button class="quiet" data-act="skills">Skills</button>' : '') + '<button class="quiet" data-act="signout">Sign out</button></div>';
   put($('#side'), h);
 }
 
@@ -732,7 +732,7 @@ function sheetTable(s, first) {
 function renderPv() {
   $('#pv').hidden = !pv;
   if (!pv) return;
-  $('#pv').className = 'pv' + (pv.settings ? (['users', 'systems'].includes(pv.settings.kind) ? ' mid' : ' small') : '');
+  $('#pv').className = 'pv' + (pv.settings ? (pv.settings.kind === 'users' ? ' mid' : ' small') : '');
   let h = `<div class="pvh"><b>${esc(pv.title)}</b>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${pv.path ? `<a class="btn" href="${fileUrl(pv.path)}">Download</a>` : ''}<button class="btn" data-act="unpv">Close</button></div>`;
   if (pv.sheets) {
     if (pv.sheets.length > 1) h += `<div class="tabs">${pv.sheets.map((s, k) => `<button class="btn ${k === pv.sheet ? 'sel' : ''}" data-act="sheet" data-k="${k}">${esc(s.name)}</button>`).join('')}</div>`;
@@ -743,7 +743,6 @@ function renderPv() {
   } else if (pv.image) h += `<div class="pvb"><img src="${fileUrl(pv.path)}" alt=""></div>`;
   else if (pv.text !== undefined) h += `<div class="pvb">${pv.md ? `<div class="say">${md(pv.text)}</div>` : `<pre>${esc(pv.text)}</pre>`}</div>`;
   else if (pv.settings?.kind === 'users') h += `<div class="pvb vl">${usersHtml(pv.settings)}</div>`;
-  else if (pv.settings?.kind === 'systems') h += `<div class="pvb vl">${systemsHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'skills') h += `<div class="pvb vl">${skillsHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'logins') h += `<div class="pvb vl">${loginsHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'start') h += `<div class="pvb vl">${startHtml(pv.settings)}</div>`;
@@ -801,28 +800,6 @@ async function openWorkspaceSettings() {
   renderPv();
 }
 
-const KINDS = { m365: 'Microsoft 365 app' };
-
-function systemsHtml(s) {
-  if (!s.edit) {
-    return `<div class="sub">The Microsoft 365 apps the server reads through, shared by the skills that use them; a site that mails a sign-in code has it read from M365 Mail. Series don't choose these: they choose skills.</div>`
-      + `<table class="ut"><tr><th>System</th><th>Kind</th><th>State</th><th></th></tr>`
-      + s.list.map(x => `<tr><td><b>${esc(x.name)}</b></td><td class="sub">${KINDS[x.kind]}</td>`
-        + `<td>${x.configured ? 'Ready' : `<span class="sub">${x.saved ? `needs ${esc(x.missing.join(', '))}` : 'not set up yet'}</span>`}</td>`
-        + `<td><button class="btn" data-act="editsys" data-id="${esc(x.id)}">${x.saved ? 'Edit' : 'Set up'}</button></td></tr>`).join('')
-      + '</table>';
-  }
-  const e = s.edit, kind = 'm365';
-  const f = (id, label, v = '', ph = '', type = 'text') => `<label style="display:grid;gap:4px">${label}<input type="${type}" id="${id}" value="${esc(v)}" placeholder="${esc(ph)}" autocomplete="off"></label>`;
-  const secret = (label) => f('ys-pass', label, '', e.has_password ? 'Saved. Leave empty to keep it.' : '', 'password');
-  const fields = (e.fields ?? []).map(x => `<label style="display:grid;gap:4px">${esc(x.label)}<input type="text" class="ys-set" data-key="${esc(x.key)}" value="${esc(e.settings?.[x.key] ?? '')}" autocomplete="off">${x.hint ? `<span class="sub">${esc(x.hint)}</span>` : ''}</label>`).join('');
-  let h = `<h3>${e.saved ? `Edit ${esc(e.name)}` : `Set up ${esc(e.name)}`}</h3><div class="sub">${KINDS[kind]}${e.missing?.length && e.id ? ` · needs ${esc(e.missing.join(', '))}` : ''}</div>`;
-  h += f('ys-tenant', 'Directory (tenant) ID', e.tenant, '00000000-0000-0000-0000-000000000000') + f('ys-client', 'Application (client) ID', e.client_id, '00000000-0000-0000-0000-000000000000')
-      + secret('Client secret') + fields + `<div class="sub">The app reads through Microsoft Graph with its own application permissions, granted by an admin.</div>`;
-  return h + `<div class="row2"><button class="btn primary" data-act="savesys">Save</button>${e.configured ? '<button class="btn" data-act="testsys">Test</button>' : ''}`
-    + `${e.saved ? `<button class="btn danger" data-act="delsys">Clear</button>` : ''}<button class="btn" data-act="systems" style="margin-left:auto">Back</button></div>`;
-}
-
 function skillsHtml(s) {
   if (!s.edit) {
     return `<div class="sub">What each skill fetches or does, set up once here for every series; a series chooses which skills it uses under Skill use. Passwords are saved sealed and never shown again.</div>`
@@ -836,7 +813,7 @@ function skillsHtml(s) {
     ? `<label style="display:grid;gap:4px">${esc(x.label)}<input type="password" class="sk-set" data-key="${esc(x.key)}" placeholder="${e.secrets[x.key] ? 'Saved. Leave empty to keep it.' : ''}" autocomplete="new-password"></label>`
     : `<label style="display:grid;gap:4px"><span>${esc(x.label)}${x.optional ? ' <span class="sub">(optional)</span>' : ''}</span><input type="text" class="sk-set" data-key="${esc(x.key)}" value="${esc(e.values[x.key] ?? '')}" autocomplete="off">${x.hint ? `<span class="sub">${esc(x.hint)}</span>` : ''}</label>`;
   return `<h3>${esc(e.name)}</h3><div class="sub">${esc(e.description)}</div>`
-    + (e.uses.length ? `<div class="sub">Reads through ${esc(e.uses.join(', '))}, set up under Systems.</div>` : '')
+    + (e.uses.length ? `<div class="sub">Reads ${esc(e.uses.join(' and '))}, as far as each instance's ticks allow. Test reads them as you.</div>` : '')
     + (e.missing.length ? `<div class="sub">Needs ${esc(e.missing.join(', '))}.</div>` : '')
     + (e.settings.length ? e.settings.map(field).join('') : '<div class="sub">It has no settings.</div>')
     + `<div class="row2">${e.settings.length ? '<button class="btn primary" data-act="saveskill">Save</button>' : ''}${e.configured ? '<button class="btn" data-act="testskill">Test</button>' : ''}<button class="btn" data-act="skills" style="margin-left:auto">Back</button></div>`;
@@ -847,17 +824,19 @@ async function openSkills() {
   renderPv();
 }
 
-async function openSystems() {
-  pv = { title: 'Systems', settings: { kind: 'systems', list: await api('/systems') } };
-  renderPv();
-}
-
 // Your logins, each with what it offers a run, which you tick when you start or take over an instance.
 function loginsHtml(s) {
   let h = `<div class="sub">Every login is yours alone. A run uses only its runner's logins, and only those ticked for its instance. Nothing here is a password: you sign in to each system yourself.</div>`;
-  if (!s.logins.length) h += '<div class="sub">No logins yet.</div>';
-  for (const l of s.logins) h += `<h3>${esc(l.name)}</h3><div class="sub">${esc(l.account ?? '')}${l.account ? ' · ' : ''}since ${esc(when(l.since))}</div>`
-    + l.offers.map(o => `<div class="skill-row">${esc(o.name)}</div>`).join('') + `<div><button class="btn" data-act="signout-login" data-id="${esc(l.id)}">Sign out</button></div>`;
+  const m365 = s.logins.find(l => l.id === 'm365');
+  if (me.m365 && !m365) h += `<h3>Microsoft 365</h3><div class="sub">Read-only: your mail and the shared mailboxes you can read, your OneDrive and the SharePoint sites you add.</div><div><a class="btn primary" href="/logins/m365/connect">Connect Microsoft 365</a></div>`;
+  for (const l of s.logins) {
+    h += `<h3>${esc(l.name)}</h3><div class="sub">${esc(l.account ?? '')}${l.account ? ' · ' : ''}${l.expired ? '<span class="q">expired: sign in again</span>' : `since ${esc(when(l.since))}`}</div>`
+      + l.offers.map(o => `<div class="skill-row" style="display:flex;align-items:center"><span style="flex:1">${esc(o.name)}</span>${l.id === 'm365' ? `<button class="quiet" data-act="unoffer" data-id="${esc(o.id)}">Remove</button>` : ''}</div>`).join('');
+    if (l.id === 'm365') h += `<div class="row2"><input type="text" id="offer-mailbox" placeholder="A shared mailbox, such as ap@example.com" style="flex:1"><button class="btn" data-act="offer-mailbox">Add</button></div>`
+      + `<div class="row2"><input type="text" id="offer-site" placeholder="A SharePoint site's link" style="flex:1"><button class="btn" data-act="offer-site">Add</button></div>`;
+    h += `<div class="row2">${l.id === 'm365' && l.expired ? '<a class="btn primary" href="/logins/m365/connect">Sign in again</a>' : ''}<button class="btn" data-act="signout-login" data-id="${esc(l.id)}">Sign out</button></div>`;
+  }
+  if (!s.logins.length && !me.m365) h += '<div class="sub">No logins yet.</div>';
   return h;
 }
 
@@ -870,6 +849,11 @@ const myOffers = async () => (await api('/logins')).flatMap(l => l.offers);
 function startHtml(s) {
   return (s.label !== undefined ? `<h3>Label</h3><input type="text" id="slabel" value="${esc(s.label)}" placeholder="such as a date">` : '')
     + `<h3>Logins this instance may use</h3>` + ticksHtml(s.offers) + `<div><button class="btn primary" data-act="start-go">${esc(s.go)}</button></div>`;
+}
+
+async function openLogins() {
+  pv = { title: 'Logins', settings: { kind: 'logins', logins: await api('/logins') } };
+  renderPv();
 }
 
 async function openStart(title, go, then, label) {
@@ -948,7 +932,6 @@ document.addEventListener('click', async ev => {
     pv = { title: 'Series settings', settings: { kind: 'series', offers: await myOffers(), id: s.id, allow_wakes: s.allow_wakes, wake: s.wake, adhoc: s.adhoc, name: s.name, skills: s.skills ?? [], skillList, reads: s.reads, archived: s.archived } };
     renderPv();
   }
-  if (act === 'systems') await openSystems();
   if (act === 'skills') await openSkills();
   if (act === 'editskill') { pv.settings.edit = pv.settings.list.find(s => s.id === el.dataset.id); renderPv(); }
   if (act === 'saveskill') {
@@ -965,27 +948,6 @@ document.addEventListener('click', async ev => {
     const was = el.textContent;
     el.textContent = 'Testing…';
     try { toast(await api(`/skills/${enc(pv.settings.edit.id)}/test`, { method: 'POST' }), 'ok'); } finally { el.disabled = false; el.textContent = was; }
-  }
-  if (act === 'editsys') { pv.settings.edit = pv.settings.list.find(s => s.id === el.dataset.id); renderPv(); }
-  if (act === 'savesys') {
-    const e = pv.settings.edit, val = id => document.getElementById(id)?.value.trim() ?? '';
-    const settings = Object.fromEntries([...document.querySelectorAll('#pv .ys-set')].map(i => [i.dataset.key, i.value.trim()]));
-    const body = { name: e.name, tenant: val('ys-tenant'), client_id: val('ys-client'), settings, ...(val('ys-pass') && { password: document.getElementById('ys-pass').value }) };
-    await api(`/systems/${enc(e.id)}`, { method: 'PUT', body: JSON.stringify(body) });
-    toast(`Saved ${body.name}`, 'ok');
-    await openSystems();
-  }
-  if (act === 'testsys') {
-    el.disabled = true;
-    const was = el.textContent;
-    el.textContent = 'Testing…';
-    try { toast(await api(`/systems/${enc(pv.settings.edit.id)}/test`, { method: 'POST' }), 'ok'); } finally { el.disabled = false; el.textContent = was; }
-  }
-  if (act === 'delsys') {
-    const e = pv.settings.edit;
-    if (!confirm(`Clear ${e.name}'s ids and secret? It stays on the list, not set up, and the skills that use it stop until it's set up again.`)) return;
-    await api(`/systems/${enc(e.id)}`, { method: 'DELETE' });
-    await openSystems();
   }
   if (act === 'workspace-settings') await openWorkspaceSettings();
   if (act === 'users') await openUsers();
@@ -1106,8 +1068,17 @@ document.addEventListener('click', async ev => {
     if (r?.id) go(r.id);
     else await refresh();
   }
-  if (act === 'logins') {
-    pv = { title: 'Logins', settings: { kind: 'logins', logins: await api('/logins') } };
+  if (act === 'logins') await openLogins();
+  if (act === 'offer-mailbox' || act === 'offer-site') {
+    const v = $(`#${act}`).value.trim();
+    if (!v) return;
+    await api('/logins/m365/offers', { method: 'POST', body: JSON.stringify(act === 'offer-site' ? { site: v } : { mailbox: v }) });
+    pv.settings.logins = await api('/logins');
+    renderPv();
+  }
+  if (act === 'unoffer') {
+    await api(`/logins/m365/offers/${enc(el.dataset.id)}`, { method: 'DELETE' });
+    pv.settings.logins = await api('/logins');
     renderPv();
   }
   if (act === 'signout-login') {
@@ -1185,7 +1156,10 @@ addEventListener('keydown', e => {
   else if (ui.log) { ui.log = false; renderLog(); renderBar(); }
   else if (ui.adv) { ui.adv = false; renderAdv(); }
 });
-refresh();
+// Microsoft sends people back to #logins after they connect Microsoft 365.
+const backFromMicrosoft = location.hash === '#logins';
+if (backFromMicrosoft) history.replaceState(null, '', '#/');
+refresh().then(() => backFromMicrosoft && openLogins());
 let polling = false;
 setInterval(async () => {
   if (document.hidden || polling) return;

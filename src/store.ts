@@ -19,6 +19,16 @@ export type Item = { id: string; name: string; kind: 'input' | 'step' | 'output'
 export type Doc = { rev: number; status: 'open' | 'closed' | 'abandoned'; summary?: string; items: Item[] };
 export type Entry = { seq: number; at: string; by: string; op: string; [k: string]: unknown };
 
+// Saves bytes in working/ (`dir`) under `name`, or `name (2)` and on if taken, and answers the path as the screen names it.
+export function saveNew(dir: string, name: string, bytes: Buffer): string {
+  const clean = name.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim() || 'download', dot = clean.lastIndexOf('.');
+  mkdirSync(dir, { recursive: true });
+  let file = clean;
+  for (let k = 2; existsSync(join(dir, file)); k++) file = dot > 0 ? `${clean.slice(0, dot)} (${k})${clean.slice(dot)}` : `${clean} (${k})`;
+  writeFileSync(join(dir, file), bytes);
+  return `working/${file}`;
+}
+
 export class HttpError extends Error {
   status: number;
   constructor(status: number, message: string) {

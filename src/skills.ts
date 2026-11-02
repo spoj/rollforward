@@ -4,12 +4,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { HttpError } from './store.ts';
 import { readJson, writeJson } from './system.ts';
 import { readFlow, type Flow } from './flow.ts';
-import { builtIn, missing, savedSystem, seal, type Field, type System } from './systems.ts';
+import { seal, type Field, type System } from './systems.ts';
 import type { Adapter } from './signin.ts';
 
 // Skills: what to fetch or do, and how, each whole in a folder <id>/ under RF_SKILLS_DIR, a deployment's own (none ship here):
 // - SKILL.md, in Pi's format: a front matter with `name` and `description`, then instructions the agent reads when it needs them;
-// - skill.json, rollforward's: {"uses": [the shared connections it reads through, such as "m365-mail"], "settings": [fields, a
+// - skill.json, rollforward's: {"uses": [what of the runner's Microsoft 365 login it reads: "m365-mail", "m365-files"], "settings": [fields, a
 //   password among them marked "secret"], "site": {"hosts": [...]}} for a skill with a website of its own;
 // - what it runs: scripts the agent runs in its sandbox, which reach the server through rf; flows (*.flow.json) the server runs in
 //   the skill's website; and, for a site whose sign-in is more than a name and a password, signin.ts (see signin.ts).
@@ -65,18 +65,17 @@ export function publicSettings(s: Skill): Record<string, string> {
   return out;
 }
 
-// What a skill still needs before a run can use it: its settings, and the shared connections it reads through.
+// What a skill still needs before a run can use it: its settings.
 export function skillMissing(s: Skill): string[] {
   const c = skillConfig(s.id);
-  return [
-    ...s.settings.filter(f => !f.optional && !c[f.key]).map(f => f.label.toLowerCase()),
-    ...s.uses.filter(u => missing(savedSystem(u), u).length).map(u => `${builtIn(u)?.name ?? u} set up under Systems`),
-  ];
+  return s.settings.filter(f => !f.optional && !c[f.key]).map(f => f.label.toLowerCase());
 }
+
+const USES: Record<string, string> = { 'm365-mail': "the runner's Microsoft 365 mail", 'm365-files': "the runner's Microsoft 365 files" };
 
 // What the Skills page shows: never a secret, only whether one is saved.
 export function skillView(s: Skill, admin: boolean) {
-  const need = skillMissing(s), base = { id: s.id, name: s.name, description: s.description, uses: s.uses.map(u => builtIn(u)?.name ?? u), configured: !need.length };
+  const need = skillMissing(s), base = { id: s.id, name: s.name, description: s.description, uses: s.uses.map(u => USES[u] ?? u), configured: !need.length };
   if (!admin) return base;
   const c = skillConfig(s.id);
   return {

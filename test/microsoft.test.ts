@@ -64,7 +64,7 @@ before(async () => {
     if (u.pathname === '/.well-known/openid-configuration') return send({ issuer: idpBase, authorization_endpoint: `${idpBase}/authorize`, token_endpoint: `${idpBase}/token`, jwks_uri: `${idpBase}/keys` });
     if (u.pathname === '/keys') return send({ keys: [{ ...signer.publicKey.export({ format: 'jwk' }), kid: 'k1', use: 'sig' }] });
     if (u.pathname === '/authorize') {
-      const p = u.searchParams, code = b64(JSON.stringify({ email: p.get('login_hint'), nonce: p.get('nonce'), challenge: p.get('code_challenge'), client: p.get('client_id'), redirect: p.get('redirect_uri') }));
+      const p = u.searchParams, code = b64(JSON.stringify({ email: p.get('login_hint'), nonce: p.get('nonce'), challenge: p.get('code_challenge'), client: p.get('client_id'), redirect: p.get('redirect_uri'), scope: p.get('scope') }));
       return void res.writeHead(302, { location: `${p.get('redirect_uri')}?code=${code}&state=${p.get('state')}` }).end();
     }
     let body = '';
@@ -79,7 +79,8 @@ before(async () => {
       if (!req.headers.origin) return void res.writeHead(400).end('{"error":"invalid_request","error_description":"AADSTS9002327: Tokens issued for the \'Single-Page Application\' client-type may only be redeemed via cross-origin requests."}');
       return send({ id_token: signed(claims) });
     }
-    send({ id_token: `${b64('{"alg":"none"}')}.${b64(JSON.stringify(claims))}.` });
+    // A refresh token only for a sign-in that asked offline_access, as Microsoft gives it.
+    send({ id_token: `${b64('{"alg":"none"}')}.${b64(JSON.stringify(claims))}.`, ...(c.scope.split(' ').includes('offline_access') && { refresh_token: `refresh-for-${c.email}` }) });
   });
   await new Promise<void>(ok => idp.listen(0, '127.0.0.1', ok));
   idpBase = `http://127.0.0.1:${(idp.address() as { port: number }).port}`;
@@ -110,6 +111,25 @@ test('the button goes to Microsoft, and back with a session; the demo picker is 
   const s = sessionOf(await fetch(a.back, { redirect: 'manual', headers: { cookie: a.cookie } }))!;
   const me = await (await fetch(`${confidential}/me`, { headers: { cookie: s } })).json();
   assert.deepEqual([me.email, me.name, me.role, me.sign_in], ['alex@acme.test', 'Alex', 'admin', 'microsoft']);
+});
+
+test("Connect Microsoft 365 asks the same app for read-only mail and files, and keeps the person's own login, sealed", async () => {
+  const a = await start(confidential, 'alex@acme.test');
+  const s = sessionOf(await fetch(a.back, { redirect: 'manual', headers: { cookie: a.cookie } }))!;
+  assert.equal((await (await fetch(`${confidential}/me`, { headers: { cookie: s } })).json()).m365, true);
+  const out = await fetch(`${confidential}/logins/m365/connect`, { redirect: 'manual', headers: { cookie: s } });
+  const to = new URL(out.headers.get('location')!), pending = out.headers.getSetCookie()[0].split(';')[0];
+  assert.deepEqual(to.searchParams.get('scope')!.split(' ').sort(), ['email', 'https://graph.microsoft.com/Files.Read.All', 'https://graph.microsoft.com/Mail.Read', 'https://graph.microsoft.com/Mail.Read.Shared', 'https://graph.microsoft.com/Sites.Read.All', 'offline_access', 'openid']);
+  assert.equal(to.searchParams.get('login_hint'), 'alex@acme.test');
+  const other = new URL(to);
+  other.searchParams.set('login_hint', 'mallory@acme.test');
+  const wrong = await fetch((await fetch(other, { redirect: 'manual' })).headers.get('location')!, { redirect: 'manual', headers: { cookie: `${s}; ${pending}` } });
+  assert.match(await wrong.text(), /mallory@acme.test's Microsoft account; connect your own/);
+  const back = await fetch((await fetch(to, { redirect: 'manual' })).headers.get('location')!, { redirect: 'manual', headers: { cookie: `${s}; ${pending}` } });
+  assert.equal(back.headers.get('location'), '/#logins');
+  const [login] = await (await fetch(`${confidential}/logins`, { headers: { cookie: s } })).json();
+  assert.deepEqual([login.id, login.account, login.offers.map((o: { id: string }) => o.id)], ['m365', 'alex@acme.test', ['m365:mail:alex@acme.test', 'm365:onedrive']]);
+  assert.equal((await (await fetch(`${spaClient}/me`, { headers: { cookie: s } })).status), 401, 'another server, another session');
 });
 
 test('sign-ins started in two tabs both finish, and a forged return is refused', async () => {

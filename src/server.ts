@@ -9,12 +9,11 @@ import { fileURLToPath } from 'node:url';
 import { createInstance, duplicateInstance, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instances, newId, openStore, safeName, seriesDir, type Instance } from './store.ts';
 import { socketDir } from './runner.ts';
 import { serveSandboxes } from './sandbox.ts';
-import { authenticate, checkConfig, mode, removeUser, signOutEverywhere, upsertUser, users, type Me, type Role } from './auth.ts';
+import { authenticate, checkConfig, connectM365, m365Ready, mode, removeUser, signOutEverywhere, upsertUser, users, type Me, type Role } from './auth.ts';
 import { canManage, canSee, everyone, initSystem, saveTree, tree, type Workspace } from './system.ts';
 import { checkTicks, logins, runnerOf, signOut } from './logins.ts';
-import { builtIn, catalog as systemCatalog, missing, removeSystem, savedSystem, saveSystem, view as systemView } from './systems.ts';
 import { agentCall, testSkill } from './agent-api.ts';
-import { testM365 } from './m365.ts';
+import { offer, unoffer } from './m365.ts';
 import { seriesSettings } from './series.ts';
 import { checkChosen, saveSkillConfig, skill, skills, skillView } from './skills.ts';
 import { active, byToken, cancelWake, closed, dropRequest, kick, MAX_OPEN, named, queued, reach, setWake, startWaking, startWith, wakeFrom, wakes } from './waker.ts';
@@ -335,35 +334,12 @@ async function skillsRoute(me: Me, req: IncomingMessage, res: ServerResponse, ur
   }
   if (action === 'test' && req.method === 'POST') {
     try {
-      return send(res, 200, await testSkill(id));
+      return send(res, 200, await testSkill(id, me.email));
     } catch (e) {
       throw new HttpError((e as HttpError).status === 409 ? 409 : 502, (e as Error).message.split('\n').slice(0, 5).join('\n'));
     }
   }
   throw new HttpError(405, 'PUT, or POST test');
-}
-
-// The shared connections: admins only, as series don't choose them.
-async function catalog(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) {
-  const [id = '', action] = url.pathname.split('/').slice(2).map(decodeURIComponent);
-  if (me.role !== 'admin') throw new HttpError(403, 'admins only');
-  if (!id && req.method === 'GET') return send(res, 200, systemCatalog());
-  const s = savedSystem(id);
-  if (!builtIn(id)) throw new HttpError(404, `no connection ${id}`);
-  // A connection may be saved in part, such as its ids before its secret.
-  if (req.method === 'PUT') return send(res, 200, systemView(saveSystem(id, JSON.parse((await body(req)).toString()), me.email)));
-  if (action === 'test' && req.method === 'POST') {
-    const need = missing(s, id);
-    if (need.length) throw new HttpError(409, `${builtIn(id)!.name} still needs ${need.join(', ')}`);
-    try {
-      return send(res, 200, await testM365(s!));
-    } catch (e) {
-      throw new HttpError(502, (e as Error).message.split('\n').slice(0, 5).join('\n'));
-    }
-  }
-  if (!s) throw new HttpError(404, `${builtIn(id)!.name} is not set up`);
-  if (req.method === 'DELETE') return void (removeSystem(s.id), send(res, 200, 'ok'));
-  throw new HttpError(405, 'PUT, DELETE, or POST test');
 }
 
 mkdirSync(socketDir, { recursive: true });
@@ -397,15 +373,17 @@ createServer({ requestTimeout: 60 * 60_000 }, async (req, res) => {
     if (url.pathname === '/') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(readFileSync(page));
-    } else if (url.pathname === '/me') send(res, 200, { ...me, sign_in: mode });
+    } else if (url.pathname === '/me') send(res, 200, { ...me, sign_in: mode, m365: m365Ready() });
     else if (url.pathname === '/api') send(res, 200, listing(me));
     else if (url.pathname.startsWith('/files/')) await file(me, res, url, false);
     else if (url.pathname.startsWith('/preview/')) await file(me, res, url, true);
     else if (url.pathname.startsWith('/api/')) await api(me, req, res, url);
     else if (url.pathname === '/logins' && req.method === 'GET') send(res, 200, logins(me.email));
+    else if (url.pathname === '/logins/m365/connect') await connectM365(res, me.email);
+    else if (url.pathname === '/logins/m365/offers' && req.method === 'POST') send(res, 200, (await offer(me.email, await json(req)), 'ok'));
+    else if (url.pathname.startsWith('/logins/m365/offers/') && req.method === 'DELETE') send(res, 200, (unoffer(me.email, decodeURIComponent(url.pathname.slice(20))), 'ok'));
     else if (url.pathname.startsWith('/logins/') && req.method === 'DELETE') send(res, 200, (signOut(me.email, decodeURIComponent(url.pathname.slice(8))), 'ok'));
     else if (url.pathname === '/users' || url.pathname.startsWith('/users/')) await admin(me, req, res, url);
-    else if (url.pathname === '/systems' || url.pathname.startsWith('/systems/')) await catalog(me, req, res, url);
     else if (url.pathname === '/skills' || url.pathname.startsWith('/skills/')) await skillsRoute(me, req, res, url);
     else throw new HttpError(404, 'not found');
   } catch (err) {

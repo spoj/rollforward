@@ -41,32 +41,33 @@ People sign in with one button, **Sign in with Microsoft**, and type nothing.
   - a **Web** app: its client secret in `RF_OIDC_CLIENT_SECRET`. A public client (Mobile and desktop) needs none;
   - a **Single-page application**: `RF_OIDC_SPA=1`, and no secret. The browser then redeems the sign-in, as Microsoft requires, and the server checks the token's signature.
 
-  The same button then goes to Microsoft. `RF_ADMINS` names the admins; `RF_ALLOWED_DOMAINS` and `RF_AUTO_PROVISION=0` narrow who may come in. Start with `node --env-file=.env src/server.ts DATA_ROOT` without Docker. Microsoft takes http redirects only on localhost, so open the site as `http://localhost:8780`, not `127.0.0.1`; for others to reach it, register an https address.
-- **What people see:** each workspace has one owner. A user sees only the workspaces they own, with their series and files. Admins see every workspace, give one to someone in its settings, and manage people on the Users page. The same from a shell:
+  The same button then goes to Microsoft, and the same app gives each person's **Microsoft 365 login** (Logins, Connect Microsoft 365): grant it the delegated Microsoft Graph permissions `Mail.Read`, `Mail.Read.Shared`, `Files.Read.All`, `Sites.Read.All` and `offline_access`, with admin consent once for the organisation. That needs a Web app or a public client; a Single-page application can't keep the login. `RF_ADMINS` names the admins; `RF_ALLOWED_DOMAINS` and `RF_AUTO_PROVISION=0` narrow who may come in. Start with `node --env-file=.env src/server.ts DATA_ROOT` without Docker. Microsoft takes http redirects only on localhost, so open the site as `http://localhost:8780`, not `127.0.0.1`; for others to reach it, register an https address.
+- **What people see:** a workspace's owners and members, people by email or Entra groups by id, see all of it; owners manage who is in it. Admins see every workspace and manage people on the Users page. The same from a shell:
 
       docker compose exec rollforward node src/auth.ts /data list
       docker compose exec rollforward node src/auth.ts /data add alice@example.com [admin]
       docker compose exec rollforward node src/auth.ts /data disable alice@example.com   # her sessions end at once
 
-Sessions last 12 hours (`RF_SESSION_HOURS`). The people, the owners and the session key are in `.rf/` in the data root.
+Sessions last 12 hours (`RF_SESSION_HOURS`). The people, the workspaces' people and everyone's logins are in `.rf/` in the data root, the logins sealed with `seal.key`. Where systemd runs the server, give it `session.key` and `seal.key` as credentials (`systemd-creds encrypt --with-key=tpm2 …`, then `LoadCredentialEncrypted=`), so a copy of the data holds only ciphertext; otherwise they are made in `.rf/`.
 
 ## Skill use
 
-A series picks, in its settings, the **skills** its agent may use; choosing none is fine. A skill is what to fetch or do, and how, whole in a folder `<id>/` under `RF_SKILLS_DIR`: a `SKILL.md` for the agent, a `skill.json` naming the Microsoft 365 connections it reads through and its settings, and what it runs (scripts, or flows the server runs in the skill's website, with a `signin.ts` where signing in takes more than a name and a password).
+A series picks, in its settings, the **skills** its agent may use; choosing none is fine. A skill is what to fetch or do, and how, whole in a folder `<id>/` under `RF_SKILLS_DIR`: a `SKILL.md` for the agent, a `skill.json` naming what of the runner's Microsoft 365 login it reads and its settings, and what it runs (scripts, or flows the server runs in the skill's website, with a `signin.ts` where signing in takes more than a name and a password).
 
 | Kind of skill | Reads through | Fetches, for example |
 | --- | --- | --- |
-| A OneDrive file | M365 OneDrive | the day's AR aging file from its folder |
-| A mail attachment | M365 Mail | the Excel attachment of the day's report mail |
-| A vendor portal | its website; M365 Mail for sign-in codes | the portal's payments and unpaid items, as csv |
+| A OneDrive file | the runner's Microsoft 365 files | the day's AR aging file from its folder |
+| A mail attachment | the runner's Microsoft 365 mail | the Excel attachment of the day's report mail |
+| A vendor portal | its website | the portal's payments and unpaid items, as csv |
 
 Admins set things up at the foot of the sidebar, once for every series:
 - **Skills:** each skill's settings, such as a folder link, or for a website its address, account and password. Passwords are sealed in `.rf/` and never shown again, and the agent never sees them. Until a skill is set up a series can choose it, but the agent can't use it.
-- **Systems:** the two Microsoft 365 apps the skills read through, each registered in Entra ID: its tenant id, client id and client secret. The server only ever reads with them: **M365 Mail** needs `Mail.Read` (best limited to its mailbox by an application access policy), **M365 OneDrive** read access to the folders (such as `Sites.Selected` with read).
 
-**Test** on each row checks it for real; a website skill signs in, code and all. A website skill's browser stays on the site's own hosts and makes no write.
+Microsoft 365 is nobody's but each person's: a run reads mail and files only through its runner's own login, and only the mailboxes, OneDrive and SharePoint sites ticked for its instance.
 
-From a shell, without the model: `node --env-file=.env src/cli.ts DATA_ROOT test SKILL|CONNECTION`, and `… DATA_ROOT try aging -- python "$RF_SKILLS/aging/scripts/fetch.py"` (or `try portal -- rf flow portal/payments`) runs a skill as a run with it would. Set `RF_TODAY` in `.env` to test against a day that has data. Without Docker, the browser needs `node node_modules/playwright/cli.js install chromium` once.
+**Test** on each row checks it for real, reading Microsoft 365 as you; a website skill signs in. A website skill's browser stays on the site's own hosts and makes no write.
+
+From a shell, without the model: `node --env-file=.env src/cli.ts DATA_ROOT test SKILL --as EMAIL`, and `… DATA_ROOT try aging --as EMAIL -- python "$RF_SKILLS/aging/scripts/fetch.py"` (or `try portal --as EMAIL -- rf flow portal/payments`) runs a skill as a run with it would, with EMAIL's logins. Set `RF_TODAY` in `.env` to test against a day that has data. Without Docker, the browser needs `node node_modules/playwright/cli.js install chromium` once.
 
 To reach it from the internet, run `tailscale funnel --bg 8780`, with Microsoft sign-in configured.
 
