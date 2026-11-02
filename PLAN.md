@@ -18,7 +18,7 @@
 - **Item:** one tile on an instance's screen. It has a stable id, a display name and a kind: input, step or output. A **step** is an intermediate result a reviewer would check, such as "Eligible AR", in a file the agent writes. An item also has the file it currently shows, the items it's made from (`from`), and its notes. Replacing a file means pointing the item at a new file.
 - **Graph:** the items, joined by what each is made from. It's a picture for people: nothing runs it, and the agent's scripts needn't follow it.
 - **Example:** a closed instance. Its input items and output items are one example pair. The agent learns the transform from these pairs, and writes it down as scripts and notes in `working/`.
-- **Run:** one stretch of agent work on an instance, started by an upload, an answer or a Steer. Runs are internal; the ops log and Advanced show them.
+- **Run:** one stretch of agent work on an instance, started by an upload, an answer, a comment or a wake. Runs are internal; the ops log and Advanced show them.
 - **Note:** an agent comment on an item, pinned to a place in the file, such as a cell, where that matters. A **question** is a note with options and a default.
 - **Key and additional inputs:**
   - An input item is a **key input**: the output is made from it, and the series expects it every time.
@@ -38,11 +38,12 @@
   - There is no text box. People drop files, click answers and close the instance.
 - **State hints:** a spinner marks the running instance in the sidebar and the top bar, with a stripe along Outputs; ⧗ marks one waiting to run. A tile flashes when it changes and keeps a black dot until opened. An unanswered question's corner pulses, and an answer shows a spinner until the agent has read it. Uploads show progress, a finished run and an error each show a toast, the tab title counts open questions, Esc closes the top layer, and abandoned instances are struck through.
 - **Not shown:** `process.md`, the agent's own account of the process, which points at its scripts. The graph is the process for people.
-- **Ops log:** a side panel listing who did what, when: uploads, runs, every change the screen showed, answers, steers, the agent's replies and the close. Earlier files open from here.
+- **Conversation:** a side panel with what waits on people, open questions first and then open threads, the agent's latest report, and every thread. People talk to the agent only in comments: a comment starts a thread, on an item (Comment on its card; a `ref`, such as a cell, may say where) or on the instance, or replies in one. The agent replies in the thread with `rf say`, and a person resolves it. A comment starts a run, like an upload or an answer; the bar's Conversation button counts what is open.
+- **Ops log:** a side panel listing who did what, when: uploads, runs, every change the screen showed, answers, comments and the agent's replies, reports and the close. Earlier files open from here.
 - **Preview** shows a spreadsheet with its noted cells marked. If the file replaced an earlier one, "Compare with previous" highlights the cells that changed, and a click shows the old value.
 - **Advanced:** a bar along the bottom that expands over the graph, like VS Code's terminal panel.
   - It shows what the agent does, like Claude Code: each run starts with what triggered it, plus its time and cost. The agent's messages read as text, and each tool call is one line with a short result. Consecutive calls fold into a summary such as "Read 3 files, ran 2 commands". Each call expands to its full output, and failures are red. During a run it is live. Past runs are read from the instance's Pi session file.
-  - It is the only place to type. **Steer** sends the agent a message, and starts a run if none is going. **Interrupt** stops the run. The agent answers a question with `rf reply`, which shows in the ops log and here, never as a note.
+  - Nothing is typed here: people talk in the Conversation. **Interrupt** stops the run.
 - **New series:** give it a name. Then import past instances one at a time, in label order: create the instance, drop its inputs on the left and what was actually sent on the right, let the agent rebuild each output and note what it can't derive, and close it.
 - **New instance:** give it a label, and tick which of your logins it may use (asked every time, as when copying an instance or starting one a wake asked for). It starts with the graph of the most recently closed instance, as dashed tiles. Up to three instances of a series are open at once; a fourth waits for one to close.
 - **Ad hoc:** each workspace has an Ad hoc series, listed last, for one-off asks. Its instances start empty rather than from each other, and it keeps its name. **Make it a series** moves an Ad hoc instance into a new series as its first instance, which later instances roll forward from.
@@ -85,14 +86,14 @@ rename or a move never moves a folder.
 
 - **The server holds each instance's screen and log.** They needn't be files, but who owns what stays the same. The server saves the screen to `workspace.json` (a temporary file renamed into place, read-only) and appends each event to `log.jsonl`. Closed instances therefore stay plain folders.
 - **Who writes what:**
-  - People upload, answer, steer, interrupt and close, all through the server.
+  - People upload, answer, comment, interrupt and close, all through the server.
   - The server adds each upload as an item at once, creates and closes instances, and is the only writer of the log.
   - The agent decides the items and the notes. It changes them only through `rf`, and reads `log.jsonl` directly.
 - **`upload/` belongs to people.** Nobody moves, renames or changes these files. Each streams, as it arrives, to a temporary file in the data root's `.tmp/`, which the server empties when it starts; it is then renamed into place and made read-only. An upload may take up to an hour, and is refused if its instance closed or moved meanwhile. A repeated name becomes `<stem>_<n><ext>`, with the lowest free n. Names and labels have `/`, `\` and control characters replaced, and may not start with `.`.
 - **`working/` belongs to the agent,** which may do anything there with one limit. A file the screen has shown never changes again: the server makes it read-only and logs its hash, so a new version gets a new name.
 - **`rf`** is a small command on the agent's `PATH`:
   - `rf show` prints the screen, `workspace.json`, including its `rev`, which the server bumps on every change.
-  - `rf reply TEXT` answers a person's question; the server logs it as `reply`.
+  - `rf say THREAD TEXT` replies in a comment thread; the server logs it as `say`.
   - `rf put FILE` replaces the screen with FILE. The server rejects it if its `rev` isn't current, because someone changed the screen since the agent read it; the agent then re-reads and merges. It also rejects an invalid document, listing the reasons.
   - **Valid** means:
     - every item has a unique id, a name, and a kind of input, step or output;
@@ -139,7 +140,7 @@ The schemas are loose, and unknown fields are ignored, so the agent and the UI c
       ]
     }
 
-**`log.jsonl`** has one line per event. `seq` orders the lines, and `by` is a person's name, "server" or "agent". The ops are `create`, `upload`, `point`, `item`, `note`, `unnote`, `remove`, `run`, `done`, `answer`, `steer`, `interrupt`, `close`, `abandon`, `duplicate`, `rename`, `reply`, and for skills `files` and `mail` (a read through Microsoft 365) and `flow` (a skill's flow in its website, with the files it saved). Instances from before decision 32 may also hold Tool use's `browse`, `request`, `approve`, `reject` and `call`, which the page still shows. `done` carries the run's model cost in USD. Here `point` means an item now shows a file:
+**`log.jsonl`** has one line per event. `seq` orders the lines, and `by` is a person's name, "server" or "agent". The ops are `create`, `upload`, `point`, `item`, `note`, `unnote`, `remove`, `run`, `done`, `answer`, `comment`, `say`, `resolve`, `report`, `interrupt`, `close`, `abandon`, `duplicate`, `rename`, and for skills `files` and `mail` (a read through Microsoft 365) and `flow` (a skill's flow in its website, with the files it saved). Instances from before decision 32 may also hold Tool use's `browse`, `request`, `approve`, `reject` and `call`, which the page still shows. `done` carries the run's model cost in USD. Here `point` means an item now shows a file:
 
     {"seq": 40, "at": "2026-08-24T15:02:00Z", "by": "alex", "op": "upload", "file": "upload/Larkfield AR aging 082426_2.xlsx", "pane": "in", "onto": null, "sha256": "9f2c…"}
     {"seq": 41, "at": "2026-08-24T15:02:00Z", "by": "server", "op": "point", "item": "u40", "file": "upload/Larkfield AR aging 082426_2.xlsx"}
@@ -158,8 +159,8 @@ The schemas are loose, and unknown fields are ignored, so the agent and the UI c
 - **What every run reads first:** the company's guidance (`/work/GUIDANCE.md`, the admins', set under Guidance at the sidebar's foot) and its workspace's (`/work/<workspace>/GUIDANCE.md`, the owners', in Workspace settings), files in `guidance/` of the data root: conventions, and changes that cut across many series, such as a renamed entity, which each series adapts to at its next run. And the catalogue, `/work/CATALOGUE.md`, which the server writes when the run starts: a line per series in its reach, from its latest closed instance, with what it delivers (its `process.md`'s first line), its inputs and their sources, who brings files and who answers, and its open instances.
 - **The report:** the agent's last message of a run is its report to the instance's people, logged as `report`; its first line is the run's summary in the ops log. The screen has no `summary` of its own.
 - **Process and the review sheet** (prompt.md): `working/process.md` is the people's document, for a colleague who knows the business but not the scripts, whose first line says what the series delivers; and every instance has a review sheet, an output `review`, for whoever closes it: key figures against the previous instance with the reasons, the checks and where each looks, what was carried or assumed, the open points and each input's source. The agent asks about every call a reviewer might make differently, leading with its effect on the deliverable, after looking for an earlier answer.
-- **What starts a run:** an upload, an answer, a Steer, or an approval or rejection of a proposed write from a person, or a new instance whose parent had inputs the agent made (files in `working/`), so the fetched inputs arrive at once; its `create` entry carries `fetch`; or a `wake` entry. Runs start 1.5 s after the last of a burst of uploads, so a multi-file drop starts one run. One run goes at a time per series, and at most `RF_MAX_RUNS` (20) at once; the rest queue. [src/waker.ts](src/waker.ts) decides what runs when; [src/runner.ts](src/runner.ts) runs one.
-  - **Wakes:** `rf wake TARGET AT REASON [--label LABEL]` sets one, TARGET being a folder as the run sees it, within its reach: an open instance, which the wake continues, as a reply does; or a series, which it starts a new instance of, labelled LABEL, run by whoever turned on Allow wakes, or else asks for on the page, as it does when 3 are open. A closed instance can't be woken: the answer says to wake its series with `--label <label>-r2` for a repair. Each target has one wake pending, in `.rf/wakes.json` (a new one replaces it), at least 15 minutes after its last; a clock checks them every minute, and overdue ones fire after a restart. A person's upload, answer or Steer starts the run at once and cancels the instance's pending wake. Closing an instance wakes its series' later open instances, which may have used its draft.
+- **What starts a run:** an upload, an answer or a comment from a person, or a new instance whose parent had inputs the agent made (files in `working/`), so the fetched inputs arrive at once; its `create` entry carries `fetch`; or a `wake` entry. Runs start 1.5 s after the last of a burst of uploads, so a multi-file drop starts one run. One run goes at a time per series, and at most `RF_MAX_RUNS` (20) at once; the rest queue. [src/waker.ts](src/waker.ts) decides what runs when; [src/runner.ts](src/runner.ts) runs one.
+  - **Wakes:** `rf wake TARGET AT REASON [--label LABEL]` sets one, TARGET being a folder as the run sees it, within its reach: an open instance, which the wake continues, as a reply does; or a series, which it starts a new instance of, labelled LABEL, run by whoever turned on Allow wakes, or else asks for on the page, as it does when 3 are open. A closed instance can't be woken: the answer says to wake its series with `--label <label>-r2` for a repair. Each target has one wake pending, in `.rf/wakes.json` (a new one replaces it), at least 15 minutes after its last; a clock checks them every minute, and overdue ones fire after a restart. A person's upload, answer or comment starts the run at once and cancels the instance's pending wake. Closing an instance wakes its series' later open instances, which may have used its draft.
   - **A restart doesn't wait for quiet:** at start, a run a restart cut is logged as ended with that error, and its instance is woken with "A restart cut your last run; carry on", so `just deploy` restarts at once.
   - **Cadence is the agent's:** a person starts a series' first instance; the agent sets its next period's wake before finishing, wakes its own instance for a late input, and wakes downstream series when its outputs are ready.
   - **During a run,** the same events reach the agent as a steer. Pi delivers it after the current turn's tool calls, and with steering mode `all`, everything queued by then arrives together.
@@ -216,7 +217,7 @@ The runner, [src/runner.ts](src/runner.ts), drives Pi through Pi's `RpcClient`, 
       --tools read,bash,edit,write --append-system-prompt <app>/prompt.md \
       --session-dir "/work/<workspace>/<series>/<label>/session" --session-id main
 
-- **Advanced's controls are Pi's own commands.** `prompt` starts a run, and `steer` delivers mid-run events and Advanced's Steer. Interrupt is `clear_queue`, then `abort`.
+- **Advanced's controls are Pi's own commands.** `prompt` starts a run, and `steer` delivers mid-run events. Interrupt is `clear_queue`, then `abort`.
 - **Each run has its own Pi home,** in its sandbox's scratch: `settings.json` with `steeringMode` `all`, and `models.json`, which points the provider at the server's socket (see Runs in sandboxes). `PI_OFFLINE` keeps Pi from checking for updates.
 - **One process per run.** The runner stops Pi at `agent_settled`, since RPC mode runs until its stdin closes. At the time limit, it aborts the run and stops Pi.
 - **Sessions are found by working folder.** Pi reopens `main` only if the folder recorded in the session's first line is its working folder, so a run whose names changed since the last rewrites that line first.
@@ -232,8 +233,8 @@ The risk is whether an agent can learn a real deliverable from examples, so the 
 1. **M1, server and runner (built).** One Node process holds the store, the `rf` endpoint, the run queue and a JSON API for people's actions.
    - **Made-up series** ([demo/](demo/)): a generator makes a weekly borrowing base for a made-up housewares company: four example weeks, then five forward weeks with traps.
      - **08-09:** a wrong inventory file, replaced mid-run under a new name; the card receipts arriving late; a reviewer raising the availability block, answered as a standing rule that later weeks must apply.
-     - **08-16:** people stop uploading the inventory and the lender's loan activity. A Steer points the agent to a warehouse database and a mailbox folder. A new customer is billed in EUR, converted at the ECB reference rate, which the agent fetches from the ECB's data API.
-     - **08-23:** created while 08-16 is still open, so only 08-16 shows where the sources are. The lender's email arrives late, and a Steer asks for a refetch.
+     - **08-16:** people stop uploading the inventory and the lender's loan activity. A comment points the agent to a warehouse database and a mailbox folder. A new customer is billed in EUR, converted at the ECB reference rate, which the agent fetches from the ECB's data API.
+     - **08-23:** created while 08-16 is still open, so only 08-16 shows where the sources are. The lender's email arrives late, and a comment asks for a refetch.
      - **A stray instance** is abandoned, so 08-30 must start from 08-23.
      - **08-30:** the warehouse snapshot is stale, and a lender email raises one customer's concentration limit for that week only.
      - **09-06:** open and empty in the image, for a person to drop the AR aging and card receipts into. The sources are the same; the loan email is dated Tuesday, as Monday 09-07 is Labor Day.
@@ -249,7 +250,7 @@ The risk is whether an agent can learn a real deliverable from examples, so the 
    - the graph, tiles, notes, ops log and Advanced, which reads the agent's work from the instance's Pi session file;
    - phone layout: Outputs come first, then the other tiles, each saying what it's made from instead of lines; notes open as a bottom sheet;
    - it polls every 4 seconds rather than streaming events;
-   - uploads, answers, Steer, Interrupt and Close as POSTs, refused when the browser marks them cross-site, so another web page can't steer an agent;
+   - uploads, answers, comments, Interrupt and Close as POSTs, refused when the browser marks them cross-site, so another web page can't talk to an agent;
    - file downloads: attachments with a sandboxing CSP (images inline), and only files whose real path stays inside the instance, so an agent's link can't expose the server's files;
    - who is who, from the sign-in (see M3).
 
@@ -304,7 +305,7 @@ The risk is whether an agent can learn a real deliverable from examples, so the 
 7. **Harness:** Pi over RPC.
 8. **Mid-run drops** join the current run by steering, with the steering mode `all`.
 9. **Files only:** the main screen has no typing or prompting, and doesn't show the agent at work. Inputs and outputs are file tiles that show whether a person or the agent made them. Notes are pinned to files, people can upload on both sides, and a new series is set up by dropping past inputs and outputs.
-10. **Ops log and Advanced** are separate from the graph. Advanced shows the agent's work, can steer and interrupt, and expands over the graph rather than replacing it.
+10. **Ops log and Advanced** are separate from the graph. Advanced shows the agent's work, can interrupt, and expands over the graph rather than replacing it.
 11. **Storage:**
     - `upload/` holds people's files, which nobody ever moves or changes; a repeated name gets `_2`.
     - `working/` is the agent's.
@@ -340,6 +341,7 @@ The risk is whether an agent can learn a real deliverable from examples, so the 
 37. **Personal logins and runners** (2 Nov): each login is one person's, sealed, and ticked per instance by its runner; nobody's login serves another's run, and none is attached to a series or a workspace. Only the runner closes, which signs the instance off; taking over is logged. Microsoft 365 and websites become logins of this kind (docs/redesign.md, Logins).
 38. **Microsoft 365 as personal logins** (2 Nov; replaces 30–32's shared M365 apps): each person connects their own read-only, delegated Microsoft 365 login, through the sign-in app, and offers runs their mailboxes, OneDrive and SharePoint sites; a run reads only its runner's, as ticked. Systems, the admins' M365 apps with client secrets reading one mailbox, is gone, and so are sign-in codes read from mail.
 39. **Guidance, the catalogue and the report** (2 Nov): what a run knows beyond its series comes from the company's and its workspace's guidance and a catalogue of its reach, all files in its view, rather than from rules in the server; and the agent's last message is its report, which replaces the screen's `summary`.
+40. **Talking is in threads** (2 Nov): people comment, on an item or the instance, and the agent replies in the thread with `rf say`; Advanced's Steer and `rf reply` are gone, so there is one place to talk and every exchange stays where it applies.
 
 ## Proposed by the agent (open to change)
 

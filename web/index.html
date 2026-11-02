@@ -226,6 +226,13 @@ a[data-act=preview], a[data-act=opencard] { text-decoration: underline; cursor: 
 
 .log { display: none; width: 352px; border-left: 1px solid var(--rule); background: var(--sheet); height: 100dvh; overflow: auto; }
 .log.open { display: block; }
+.conv { padding: 4px 20px 20px; display: grid; gap: 8px; }
+.conv h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-3); margin: 12px 0 0; }
+.conv textarea { font: inherit; padding: 7px 9px; border: 1px solid var(--rule-2); border-radius: var(--r1); resize: vertical; width: 100%; }
+.thread { border: 1px solid var(--rule); border-radius: var(--r1); padding: 8px 10px; display: grid; gap: 6px; }
+.thread.resolved { opacity: .6; }
+.thread .on, .post .tm { color: var(--ink-3); font-size: 12px; }
+.post b.p { color: var(--person, #1d4ed8); }
 .log .lh { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--rule); position: sticky; top: 0; background: var(--sheet); }
 .log .lh b { font-size: 15px; font-weight: 600; }
 .e { display: grid; grid-template-columns: 46px 1fr; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--rule); font-size: 13px; }
@@ -281,11 +288,7 @@ a[data-act=preview], a[data-act=opencard] { text-decoration: underline; cursor: 
       <div class="ab" id="advbar"></div>
       <div class="body">
         <div class="trace" id="trace"></div>
-        <form class="compose" id="compose">
-          <input id="steer" placeholder="Message the agent" autocomplete="off">
-          <button class="btn" type="button" id="interrupt">Interrupt</button>
-          <button class="btn primary">Steer</button>
-        </form>
+        <div class="compose" id="compose"><button class="btn" type="button" id="interrupt">Interrupt</button></div>
       </div>
     </div>
   </main>
@@ -328,7 +331,7 @@ function toast(text, kind = '') {
   setTimeout(() => el.remove(), 6000);
 }
 const folds = new Map();
-const ui = { adv: false, log: false };
+const ui = { adv: false, log: false, conv: false, on: null };
 const drawn = new WeakMap();
 
 function put(el, html) {
@@ -436,7 +439,8 @@ function renderBar() {
     const d = lastDone();
     const state = data.doc.status !== 'open' ? `${data.doc.status === 'closed' ? 'Closed' : 'Abandoned'} · read-only` : data.run ? `<span class="spin"></span>Agent working · run ${data.run.n}` : data.queued ? '\u29D7 Queued' : d ? `Agent idle · last run ${hhmm(d.at)}` : 'Waiting for files';
     h += `<div class="state">${state}</div>`;
-    h += `<button class="btn top ${ui.log ? 'sel' : ''}" data-act="log">Ops log</button>`;
+    const talk = threadsOf().filter(t => !t.resolved).length + openQuestions().length;
+    h += `<button class="btn top ${ui.conv ? 'sel' : ''}" data-act="conv">Conversation${talk ? ` (${talk})` : ''}</button><button class="btn top ${ui.log ? 'sel' : ''}" data-act="log">Ops log</button>`;
     const off = data.run ? 'disabled title="Available when the run ends"' : '';
     if (data.doc.status === 'open') h += `<button class="btn danger top" data-act="abandon" ${off}>Abandon</button>`
       + (data.runner.by === me.email ? `<button class="btn commit top" data-act="close" ${off}>Close instance</button>`
@@ -560,11 +564,12 @@ function logText(e) {
     run: () => `Run ${e.run} started`,
     done: () => `Run ${e.run} finished${e.aborted ? ' (stopped)' : ''} · ${took(e)} · ${usd(e.cost)}${e.summary ? `<div class="d">${esc(e.summary)}</div>` : ''}${e.error ? `<div class="d">${esc(e.error)}</div>` : ''}`,
     answer: () => `${e.default ? 'Default applied' : w + ' answered'}<div class="d">${esc(e.text)}</div>`,
-    steer: () => `${w} steered<div class="d">${esc(e.text)}</div>`,
     interrupt: () => `${w} interrupted the run`,
     close: () => `${w} closed the instance`,
     abandon: () => `${w} abandoned the instance`,
-    reply: () => `${w} replied<div class="d">${esc(e.text)}</div>`,
+    comment: () => `${w} commented${e.item ? ` on ${item(e.item)}${e.ref ? ` at ${esc(e.ref)}` : ''}` : ''}<div class="d">${esc(e.text)}</div>`,
+    say: () => `${w} replied<div class="d">${esc(e.text)}</div>`,
+    resolve: () => `${w} resolved a thread`,
     report: () => `${w} reported on run ${e.run}<div class="d">${md(e.text)}</div>`,
     wake: () => `Woken${e.from ? ` by ${esc(e.from)}` : ''}<div class="d">${esc(e.reason)}</div>`,
     takeover: () => `${w} took over from ${esc(e.from)}${e.logins?.length ? `<div class="d">Logins: ${esc(e.logins.join(', '))}</div>` : ''}`,
@@ -583,8 +588,10 @@ function logText(e) {
 }
 
 function renderLog() {
-  $('#log').className = 'log' + (ui.log && data ? ' open' : '');
-  if (!ui.log || !data) return;
+  $('#log').className = 'log' + ((ui.log || ui.conv) && data ? ' open' : '');
+  if (!data) return;
+  if (ui.conv) return put($('#log'), conversationHtml());
+  if (!ui.log) return;
   put($('#log'), `<div class="lh"><b>Ops log</b><button class="btn" data-act="log">Close</button></div>` + [...data.log].reverse().map(logLine).join(''));
 }
 
@@ -641,14 +648,14 @@ function groupHtml(g, live) {
 }
 
 function traceHtml() {
-  let h = '', g = [], run = 0, ri = 0;
-  const replies = data.log.filter(e => e.op === 'reply');
+  let h = '', g = [], run = 0, si = 0;
+  const says = data.log.filter(e => e.op === 'say');
   const flush = live => { if (g.length) h += groupHtml(g, live); g = []; };
   lines.forEach((s, i) => {
-    const reply = s.kind === 'bash' && /\brf reply\b/.test(s.text);
-    if (s.kind !== 'user' && s.kind !== 'say' && !reply) return void g.push([s, i]);
+    const said = s.kind === 'bash' && /\brf say\b/.test(s.text);
+    if (s.kind !== 'user' && s.kind !== 'say' && !said) return void g.push([s, i]);
     flush(false);
-    if (reply) return void (h += `<div class="say reply">${md(replies[ri++]?.text ?? s.text)}</div>`);
+    if (said) return void (h += `<div class="say reply">${md(says[si++]?.text ?? s.text)}</div>`);
     if (s.kind === 'say') return void (h += `<div class="say">${md(s.text)}</div>`);
     const n = Number(s.text.match(/run (\d+)\./)[1]);
     if (n !== run) {
@@ -663,6 +670,35 @@ function traceHtml() {
   });
   flush(!!data.run);
   return h || '<div class="rh">No runs yet.</div>';
+}
+
+// Threads from the log: a comment starts one, on an item (at a ref) or the instance; comments and the agent's `say` reply in it.
+function threadsOf() {
+  const out = new Map();
+  for (const e of data?.log ?? []) {
+    if (e.op === 'comment' && !out.has(e.thread)) out.set(e.thread, { id: e.thread, item: e.item, ref: e.ref, posts: [], resolved: false });
+    if ((e.op === 'comment' || e.op === 'say') && out.has(e.thread)) out.get(e.thread).posts.push(e);
+    if (e.op === 'resolve' && out.has(e.thread)) out.get(e.thread).resolved = true;
+  }
+  return [...out.values()];
+}
+
+const openQuestions = () => data?.doc.status === 'open' ? data.doc.items.flatMap(i => (i.notes ?? []).filter(n => n.options && questionState(n) === null).map(n => ({ i, n }))) : [];
+
+// The conversation: what waits on people (questions first, then open threads), the agent's latest report, and every thread.
+function conversationHtml() {
+  const open = data.doc.status === 'open', ts = threadsOf().sort((a, b) => a.resolved - b.resolved), name = id => esc(data.doc.items.find(i => i.id === id)?.name ?? id);
+  const report = data.log.findLast(e => e.op === 'report'), qs = openQuestions();
+  let h = `<div class="lh"><b>Conversation</b><button class="btn" data-act="conv">Close</button></div><div class="conv">`;
+  if (qs.length) h += `<h3>Open questions</h3>` + qs.map(({ i, n }) => `<div class="post"><a data-act="opencard" data-item="${esc(i.id)}">${esc(i.name)}</a>: ${esc(n.text)}</div>`).join('');
+  if (report) h += `<h3>Report, run ${report.run}</h3><div class="post">${md(report.text)}</div>`;
+  for (const t of ts) {
+    h += `<div class="thread ${t.resolved ? 'resolved' : ''}"><div class="on">${t.item ? `On <a data-act="opencard" data-item="${esc(t.item)}">${name(t.item)}</a>${t.ref ? ` at ${esc(t.ref)}` : ''}` : 'On the instance'}${t.resolved ? ' · resolved' : ''}</div>`
+      + t.posts.map(p => `<div class="post"><b class="${p.op === 'say' ? '' : 'p'}">${esc(p.op === 'say' ? 'Agent' : p.by)}</b> <span class="tm">${hhmm(p.at)}</span><div>${p.op === 'say' ? md(p.text) : esc(p.text)}</div></div>`).join('')
+      + (open && !t.resolved ? `<textarea rows="2" placeholder="Reply"></textarea><div class="row2"><button class="btn" data-act="reply-thread" data-thread="${esc(t.id)}">Reply</button><button class="btn" data-act="resolve" data-thread="${esc(t.id)}">Resolve</button></div>` : '') + '</div>';
+  }
+  if (open) h += `<h3>${ui.on ? `Comment on ${name(ui.on)}` : 'Comment on the instance'}</h3><textarea id="newcomment" rows="3" placeholder="The agent replies in the thread"></textarea><div><button class="btn primary" data-act="comment">Comment</button></div>`;
+  return h + '</div>';
 }
 
 function renderCard() {
@@ -689,6 +725,8 @@ function renderCard() {
   h += '<div class="acts">';
   if (item.file) h += `<button class="btn" data-act="preview" data-file="${esc(item.file)}" data-item="${esc(item.id)}">Preview</button><a class="btn" href="${fileUrl(item.file)}">Download</a>`;
   if (open) h += `<button class="btn" data-act="add" data-item="${esc(item.id)}" data-pane="${item.kind === 'output' ? 'out' : 'in'}">Upload…</button>`;
+  const on = threadsOf().filter(t => t.item === item.id);
+  if (open || on.length) h += `<button class="btn" data-act="${open ? 'comment-on' : 'conv'}" data-item="${esc(item.id)}">${on.length ? `Comments (${on.length})` : 'Comment'}</button>`;
   h += `<button class="btn" data-act="uncard" style="margin-left:auto">Close</button></div>`;
   put(card, h);
   card.hidden = false;
@@ -936,7 +974,21 @@ document.addEventListener('click', async ev => {
   }
   const act = el.dataset.act;
   if (act === 'menu') $('#side').classList.toggle('open');
-  if (act === 'log') { ui.log = !ui.log; renderLog(); renderBar(); placeCard(); }
+  if (act === 'log') { ui.log = !ui.log; ui.conv = false; renderLog(); renderBar(); placeCard(); }
+  if (act === 'conv') { ui.conv = !ui.conv; ui.log = false; ui.on = null; renderLog(); renderBar(); placeCard(); }
+  if (act === 'comment-on') { ui.conv = true; ui.log = false; ui.on = el.dataset.item; renderLog(); renderBar(); $('#newcomment')?.focus(); }
+  if (act === 'comment' || act === 'reply-thread') {
+    const box = act === 'comment' ? $('#newcomment') : el.closest('.thread').querySelector('textarea'), text = box.value.trim();
+    if (!text) return;
+    await api(`${instPath()}/comment`, { method: 'POST', body: JSON.stringify(act === 'comment' ? { text, ...(ui.on && { item: ui.on }) } : { thread: el.dataset.thread, text }) });
+    box.value = '';
+    ui.on = null;
+    await refresh();
+  }
+  if (act === 'resolve') {
+    await api(`${instPath()}/resolve`, { method: 'POST', body: JSON.stringify({ thread: el.dataset.thread }) });
+    await refresh();
+  }
   if (act === 'uncard') { openItem = null; renderCard(); renderPanes(); }
   if (act === 'opencard') { openItem = el.dataset.item; markSeen(data.doc.items.filter(i => i.id === openItem)); renderPanes(); renderCard(); }
   if (act === 'preview') await preview(el.dataset.file, data.doc.items.find(i => i.id === el.dataset.item));
@@ -1130,14 +1182,6 @@ $('#pv').addEventListener('change', async e => {
   await api(`/users/${enc(e.target.dataset.email)}`, { method: 'PUT', body: JSON.stringify({ role: e.target.value }) }).catch(() => {});
   await openUsers();
 });
-$('#compose').addEventListener('submit', async e => {
-  e.preventDefault();
-  const text = $('#steer').value.trim();
-  if (!text) return;
-  $('#steer').value = '';
-  await api(`${instPath()}/steer`, { method: 'POST', body: JSON.stringify({ text }) }).catch(() => { $('#steer').value = text; });
-  await refresh();
-});
 $('#interrupt').addEventListener('click', async () => {
   if (!data?.run) return;
   await api(`${instPath()}/interrupt`, { method: 'POST' });
@@ -1167,7 +1211,6 @@ document.fonts.ready.then(drawEdges);
 
 addEventListener('hashchange', () => {
   openItem = null; pv = null; folds.clear(); prevSigs = {};
-  $('#steer').value = '';
   $('#panes').scrollTop = $('#flow').scrollTop = $('#flow').scrollLeft = $('#outs').scrollTop = $('#log').scrollTop = 0;
   $('#trace').scrollTop = $('#trace').scrollHeight;
   renderPv();
@@ -1179,7 +1222,7 @@ addEventListener('keydown', e => {
   if (pv) { pv = null; renderPv(); }
   else if ($('#side').classList.contains('open')) $('#side').classList.remove('open');
   else if (openItem) { openItem = null; renderCard(); renderPanes(); }
-  else if (ui.log) { ui.log = false; renderLog(); renderBar(); }
+  else if (ui.log || ui.conv) { ui.log = ui.conv = false; renderLog(); renderBar(); }
   else if (ui.adv) { ui.adv = false; renderAdv(); }
 });
 // Microsoft sends people back to #logins after they connect Microsoft 365.

@@ -27,7 +27,7 @@ function seenBefore(inst: Instance): number {
 }
 
 function pending(inst: Instance, seen: number): Entry[] {
-  return inst.log.filter(e => e.seq > seen && (e.op === 'wake' || (isPerson(e) && (['upload', 'answer', 'steer'].includes(e.op) || (e.op === 'create' && e.fetch)))));
+  return inst.log.filter(e => e.seq > seen && (e.op === 'wake' || (isPerson(e) && (['upload', 'answer', 'comment'].includes(e.op) || (e.op === 'create' && e.fetch)))));
 }
 
 function message(inst: Instance, n: number, entries: Entry[]): string {
@@ -142,7 +142,7 @@ function finish(a: Active, aborted: boolean, error?: string) {
   a.browsing?.close();
   // The agent's last words in a run are its report to the instance's people; its first line is the run's summary.
   if (a.said && !aborted) a.inst.append('agent', 'report', { run: a.n, text: a.said });
-  a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(4), summary: a.said && !aborted ? a.said.split('\n')[0].replace(/^[#*_\s]+|[*_\s]+$/g, '').slice(0, 200) : null, ...(error && { error }) });
+  a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(4), summary: a.said && !aborted ? a.said.split('\n')[0].replace(/\*+|^#+/g, '').trim().slice(0, 200) : null, ...(error && { error }) });
   if (a.run) { // one that never started, as with a missing API key, waits for the next act rather than retrying at once
     const next = !a.interrupted && pending(a.inst, a.seen).length ? a.inst
       : instances(series).find(i => i.doc.status === 'open' && !(a.interrupted && i === a.inst) && pending(i, seenBefore(i)).length);

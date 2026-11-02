@@ -69,7 +69,7 @@ Built (PLAN.md, What starts a run, decision 36), but for the home page's list of
 
 ## Talking
 
-Built: the agent's report (its last message, logged, its first line the summary) and the prompt's rules for asking. Still to come: comment threads, `rf say`, and Advanced without its own typing.
+Built: comment threads and `rf say`, the Conversation panel, Advanced without its own typing, the agent's report (its last message, logged, its first line the summary) and the prompt's rules for asking (PLAN.md, decisions 39 and 40). Still to come: comments pinned to a cell inside the preview.
 
 As proposed, unchanged except that nothing asks for approval to write:
 - **Comments** on the work, as in Excel: on a tile, a cell from Preview, a paragraph of Process, or the instance. Each is a thread anyone can reply to, with attachments; open until resolved.

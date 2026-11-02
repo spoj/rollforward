@@ -181,7 +181,7 @@ test('close and abandon end an open instance; a closed one takes no actions', as
   const closed = await json(await at(series, '2026-09-06'));
   assert.equal(closed.doc.status, 'closed');
   assert.equal(closed.log.at(-1).op, 'close');
-  for (const action of ['upload', 'steer', 'close', 'abandon'])
+  for (const action of ['upload', 'comment', 'close', 'abandon'])
     assert.equal((await call('POST', `${await at(series, '2026-09-06', action)}?name=y.csv`, 'x')).status, 409, action);
 
   assert.equal((await call('POST', await at(series, '2026-09-13', 'abandon'))).status, 200);
@@ -239,8 +239,8 @@ test('files: uploads download as attachments; paths outside upload/ and working/
   assert.equal((await call('GET', file('working/env.txt'))).status, 400, 'a link out of the instance is refused');
 });
 
-test('a cross-site POST is refused, so another web page cannot steer the agent', async () => {
-  const r = await fetch(base + await at(series, '2026-09-06', 'steer'), { method: 'POST', body: '{"text":"x"}', headers: { 'sec-fetch-site': 'cross-site' } });
+test('a cross-site POST is refused, so another web page cannot talk to the agent', async () => {
+  const r = await fetch(base + await at(series, '2026-09-06', 'comment'), { method: 'POST', body: '{"text":"x"}', headers: { 'sec-fetch-site': 'cross-site' } });
   assert.equal(r.status, 403);
 });
 
@@ -335,7 +335,7 @@ test("people see and move a series' next wake, turn Allow wakes on as themselves
   assert.equal(listed.instances.find((i: { id: string }) => i.id === sep).wake, due);
   const later = new Date(Date.now() + 2 * 86_400_000).toISOString();
   assert.equal((await (await call('PUT', `/api/wakes/${s.id}`, JSON.stringify({ at: later }))).json()).at, later);
-  assert.equal((await call('POST', `${await at(series, '2026-08-30 rework', 'steer')}`, JSON.stringify({ text: 'go' }))).status, 200);
+  assert.equal((await call('POST', `${await at(series, '2026-08-30 rework', 'comment')}`, JSON.stringify({ text: 'go' }))).status, 200);
   assert.equal(JSON.parse(readFileSync(wakes, 'utf8')).pending[sep], undefined, "a person's act starts the run now, so the wake goes");
 
   assert.equal((await call('PUT', await at(series), JSON.stringify({ allow_wakes: true }))).status, 200);
@@ -396,4 +396,18 @@ test('an admin can disable someone, which ends their sessions and stops their si
   authCli('signout', bob);
   assert.equal((await call('GET', '/api', undefined, again)).status, 401);
   assert.match(authCli('list'), new RegExp(`^${bob}\\tuser`, 'm'));
+});
+
+test('talking is in threads: a comment starts one on an item or the instance, the agent says in it, and a person resolves it', async () => {
+  assert.equal((await call('POST', `${await at(series, '2026-08-30', 'duplicate')}?as=talk`)).status, 200);
+  const path = await at(series, 'talk');
+  const inst = await json(path), item = inst.doc.items[0].id;
+  assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ item, ref: 'B4', text: 'Why is this up?' }))).status, 200);
+  const started = (await json(path)).log.at(-1);
+  assert.deepEqual([started.op, started.item, started.ref, started.text], ['comment', item, 'B4', 'Why is this up?']);
+  assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ thread: started.thread, text: 'And B5?' }))).status, 200);
+  assert.equal((await json(path)).log.at(-1).item, undefined, 'a reply keeps its thread, not an item');
+  assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ thread: 'nope', text: 'x' }))).status, 400);
+  assert.equal((await call('POST', `${path}/resolve`, JSON.stringify({ thread: started.thread }))).status, 200);
+  assert.equal((await json(path)).log.at(-1).op, 'resolve');
 });

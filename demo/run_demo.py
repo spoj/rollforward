@@ -17,7 +17,7 @@ WAREHOUSE, MAILBOX = SOURCES / 'warehouse.sqlite', SOURCES / 'mailbox'
 EXAMPLES = ['2026-07-05', '2026-07-12', '2026-07-19', '2026-07-26']
 ORDER = EXAMPLES + ['2026-08-02', '2026-08-09', '2026-08-16', '2026-08-23', '2026-08-30']
 ECB = 'https://data-api.ecb.europa.eu/service/data/EXR/D.USD.EUR.SP00.A?startPeriod=<date>&endPeriod=<date>&format=csvdata'
-SOURCES_STEER = f"""From this week on we stop uploading two files; fetch them yourself:
+SOURCES_COMMENT = f"""From this week on we stop uploading two files; fetch them yourself:
 - Inventory: the warehouse database {WAREHOUSE} (SQLite), table inventory_snapshot, one snapshot per as_of date. Use the latest snapshot on or before the week end.
 - Loan activity: Granite Point emails it each Monday to the mailbox folder {MAILBOX} (.eml files with the xlsx attached).
 Also new: Maison Verte SARL is billed in EUR from this week (see the Currency column of the AR aging). Convert it at the ECB euro reference rate for the week end, or the last business day before it, from the ECB data API: {ECB}"""
@@ -62,9 +62,9 @@ def upload(label, path, pane, by='alex', onto=None):
     print(f'  {by} uploaded {path.name} ({pane}{", onto " + onto if onto else ""})')
 
 
-def steer(label, text, by='alex'):
-    call('POST', at(label, 'steer'), json.dumps({'text': text}).encode())
-    print(f'  {by} steered: {text.splitlines()[0]}')
+def comment(label, text, by='alex'):
+    call('POST', at(label, 'comment'), json.dumps({'text': text}).encode())
+    print(f'  {by} commented: {text.splitlines()[0]}')
 
 
 def wait(label):
@@ -186,7 +186,7 @@ for label in ORDER:
         create(label)
         for f in weekly_uploads(label):
             upload(label, f, 'in')
-        steer(label, SOURCES_STEER)
+        comment(label, SOURCES_COMMENT)
         s = wait(label)
         screen(s)
         score(label, s)
@@ -202,7 +202,7 @@ for label in ORDER:
         screen(s)
         check(label, s)
         deliver_mail(label)
-        steer(label, "Granite Point's email for this week has just arrived in the mailbox. Please fetch it again.")
+        comment(label, "Granite Point's email for this week has just arrived in the mailbox. Please fetch it again.")
         s = wait(label)
         screen(s)
         score(label, s)

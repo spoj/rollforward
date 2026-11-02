@@ -48,7 +48,11 @@ async function agent(req: IncomingMessage, res: ServerResponse, url: URL) {
   if (!a) throw new HttpError(401, 'no run for this token');
   if (url.pathname === '/agent/workspace' && req.method === 'GET') return send(res, 200, a.inst.doc);
   if (url.pathname === '/agent/workspace' && req.method === 'PUT') return send(res, 200, `saved, rev ${a.inst.put((await body(req)).toString())}`);
-  if (url.pathname === '/agent/reply' && req.method === 'POST') return send(res, 200, `replied, seq ${a.inst.append('agent', 'reply', { text: (await body(req)).toString() }).seq}`);
+  if (url.pathname === '/agent/say' && req.method === 'POST') {
+    const [thread = '', ...words] = ((await json(req)).args ?? []).map(String), text = words.join(' ').trim();
+    if (!threads(a.inst).includes(thread) || !text) throw new HttpError(400, `rf say THREAD TEXT, THREAD one of this instance's threads: ${threads(a.inst).join(', ') || 'none yet'}`);
+    return send(res, 200, `said, seq ${a.inst.append('agent', 'say', { thread, text }).seq}`);
+  }
   if (url.pathname === '/agent/wake' && req.method === 'POST') return send(res, 200, wakeFrom(a, ((await json(req)).args ?? []).map(String)));
   // Skills: rf skills, rf settings, rf files, rf mail, rf flow (see agent-api.ts).
   const r = await agentCall(a, url.pathname, req.method ?? 'GET', url.searchParams, () => body(req));
@@ -131,6 +135,7 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
   createReadStream(path).pipe(res);
 }
 
+const threads = (inst: Instance) => [...new Set(inst.log.filter(e => e.op === 'comment').map(e => e.thread as string))];
 const text = (path: string) => (existsSync(path) ? readFileSync(path, 'utf8') : '');
 const json = async (req: IncomingMessage) => JSON.parse((await body(req)).toString() || '{}');
 const people = (w: { owners?: unknown; members?: unknown }) => [w.owners, w.members].map(list => {
@@ -266,8 +271,18 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
   } else if (action === 'answer') {
     const { note, choice } = JSON.parse((await body(req)).toString());
     inst.answer(by, note, choice);
-  } else if (action === 'steer') {
-    inst.append(by, 'steer', { text: JSON.parse((await body(req)).toString()).text });
+  } else if (action === 'comment') {
+    // A comment starts a thread, on an item (at a ref, such as a cell, if given) or on the instance, or replies in one.
+    const { thread, item, ref, text } = await json(req);
+    if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a comment has text');
+    if (thread !== undefined && !threads(inst).includes(thread)) throw new HttpError(400, `no thread ${thread}`);
+    if (item !== undefined && !inst.doc.items.some(i => i.id === item)) throw new HttpError(400, `no item ${item}`);
+    inst.append(by, 'comment', { thread: thread ?? `c${inst.log.length + 1}`, ...(thread === undefined && { item: item ?? null, ref: ref ?? null }), text: text.trim() });
+  } else if (action === 'resolve') {
+    const { thread } = await json(req);
+    if (!threads(inst).includes(thread)) throw new HttpError(400, `no thread ${thread}`);
+    inst.append(by, 'resolve', { thread });
+    return send(res, 200, 'ok');
   } else if (action === 'interrupt') {
     if (!mine?.run) throw new HttpError(409, 'no run going');
     inst.append(by, 'interrupt');
