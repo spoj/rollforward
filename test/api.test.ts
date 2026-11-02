@@ -521,10 +521,12 @@ test('the second audit: a bad request line, a bad workbook and a slow body hurt 
   const { connect } = await import('node:net'), { request } = await import('node:http');
   const raw = connect(Number(new URL(base).port), '127.0.0.1');
   raw.end('GET http://[ HTTP/1.1\r\nHost: x\r\n\r\n');
-  await once(raw, 'close');
-  const open = await iid(series, '2026-08-30 copy');
-  assert.equal((await call('POST', `/api/instances/${open}/upload?name=bad.xlsx`, 'not a workbook')).status, 200);
-  assert.equal((await call('GET', `/preview/${open}/upload/bad.xlsx`)).status, 500);
+  await Promise.race([once(raw, 'data'), once(raw, 'close')]);
+  raw.destroy();
+  const bad = join(await dir(series, '2026-08-30'), 'working', 'bad.xlsx');
+  writeFileSync(bad, 'not a workbook');
+  assert.equal((await call('GET', `/preview/${await iid(series, '2026-08-30')}/working/bad.xlsx`)).status, 500);
+  rmSync(bad);
   assert.equal((await call('GET', '/me')).status, 200, 'the server is still up');
 
   const b = sessionOf(await login(bob))!, { token } = await (await call('POST', '/tokens', JSON.stringify({ name: 'mine', days: 7 }))).json();
