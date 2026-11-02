@@ -1,5 +1,0 @@
-{
-  "uses": [],
-  "site": { "hosts": ["cdn.portal.test"], "reads_that_post": ["*/search"] },
-  "settings": [{ "key": "url", "label": "Address", "hint": "Where the sign-in starts" }]
-}

@@ -616,7 +616,7 @@ function logText(e) {
     mail: () => `${w} ${e.action === 'find' ? `looked in ${esc(e.mailbox)} for mail of ${esc(e.date)}: ${e.found} found` : `saved ${esc((e.saved ?? []).join(', '))}`}`,
     rename: () => `${w} renamed the instance from ${esc(e.from)}`,
     duplicate: () => `${w} made this instance as a copy of ${esc(e.from)}`,
-    browser: () => `${w} closed run ${e.run}'s browser${e.site ? ` on ${esc(e.site)}, in ${esc(e.login)}'s login` : ''}<div class="d">${e.error ? esc(e.error) : `${e.requests} requests${e.blocked ? `, ${e.blocked} blocked` : ''}`}</div>${f}`,
+    browser: () => `${w} closed run ${e.run}'s browser${e.site ? ` on ${esc(e.site)}, in ${esc(e.login)}'s login` : ''}<div class="d">${e.error ? esc(e.error) : `${e.requests} requests${e.writes ? `, ${e.writes} writes` : ''}${e.blocked ? `, ${e.blocked} blocked` : ''}`}</div>${f}`,
     windows: () => `${w} ${{ open: 'opened a Windows machine', run: `ran ${esc(e.script)} on Windows: ${e.timed_out ? 'timed out' : `exit ${e.exit}`}`, put: `put ${esc(e.to)} on Windows`, get: `fetched ${esc(e.from)} from Windows`, screenshot: 'took a screenshot of Windows', close: `closed ${e.run ? `run ${e.run}'s` : 'the'} Windows machine` }[e.action]}${f}`,
     machines: () => `Run ${e.run}'s machines did not all close<div class="d">${esc(e.error)}</div>`,
     browse: () => `${w} used ${esc(e.system.toUpperCase())}<div class="d">${esc([e.action, ...e.args].join(' '))}</div>`,
@@ -876,10 +876,9 @@ function renderPv() {
     h += '<div class="pvb vl">';
     if (s.kind === 'workspace') h += peopleHtml(s) + guidanceHtml(s, 'Every agent in this workspace reads it at the start of each run: its conventions, and changes that cut across its series, such as a renamed entity.', s.manage) + '<hr>';
     if (s.kind === 'series') h += `<h3>Name</h3><input type="text" id="sname" value="${esc(s.name)}" ${s.adhoc ? 'disabled title="The Ad hoc series keeps its name"' : ''}>`
-      + `<h3>Skill use</h3><div class="sub">What the agent may fetch or do for this series. Admins set each skill up once, under Skills, for every series.</div>`
-      + s.skillList.map(k => `<label class="skill-row"><input type="checkbox" class="skill" value="${esc(k.id)}" ${s.skills.includes(k.id) ? 'checked' : ''}> ${esc(k.name)}${k.configured ? '' : ' <span class="sub">· not set up yet</span>'}</label>`
+      + `<h3>Skill use</h3><div class="sub">What the agent may fetch or do for this series.</div>`
+      + s.skillList.map(k => `<label class="skill-row"><input type="checkbox" class="skill" value="${esc(k.id)}" ${s.skills.includes(k.id) ? 'checked' : ''}> ${esc(k.name)}</label>`
         + `<div class="sub" style="margin:0 0 6px 22px">${esc(k.description.length > 180 ? k.description.slice(0, 180) + '…' : k.description)}</div>`).join('')
-      + (s.skillList.some(k => !k.configured) ? `<div class="sub">A skill not set up yet can be chosen now; the agent can use it once ${me.role === 'admin' ? 'you set it up' : 'an admin sets it up'} under Skills.</div>` : '')
       + `<h3>Wakes</h3><label class="skill-row"><input type="checkbox" id="swakes" ${s.allow_wakes ? 'checked' : ''}> Allow wakes</label>`
       + `<div class="sub">${s.allow_wakes ? `Wakes start new instances of this series, run as ${esc(s.allow_wakes)}${s.allow_wakes === me.email ? ' (you)' : ''}. ` : 'An agent that wakes this series asks on this page instead, for someone to start the instance. Turned on, wakes run as you, with the logins ticked here.'}</div>`
       + ticksHtml(s.offers) + (s.allow_wakes && s.allow_wakes !== me.email ? '<div><button class="btn" data-act="wakes-mine">Run wakes as me, with these logins</button></div>' : '')
@@ -918,11 +917,11 @@ async function openWorkspaceSettings() {
   renderPv();
 }
 
-// Skills, read-only: publishers push them and admins set them up with rf; a series chooses which it uses under Skill use.
-const skillsHtml = s => `<div class="sub">What each skill fetches or does, for every series that chooses it. Publishers push skills, and admins set them up, with rf (Tokens).</div>`
-  + `<table class="ut"><tr><th>Skill</th><th>Reads</th><th>Version</th><th>State</th></tr>`
-  + s.list.map(x => `<tr><td><b>${esc(x.name)}</b><div class="sub">${esc(x.description)}</div></td><td class="sub">${esc(x.uses.join(', ') || '—')}</td>`
-    + `<td class="sub">${x.pushed.version}, ${esc(when(x.pushed.at))} by ${esc(x.pushed.by)}</td><td>${x.configured ? 'Ready' : '<span class="sub">needs setting up</span>'}</td></tr>`).join('') + '</table>';
+// Skills, read-only: publishers push them with rf; a series chooses which it uses under Skill use.
+const skillsHtml = s => `<div class="sub">What each skill fetches or does, for every series that chooses it. Publishers push skills with rf (Tokens).</div>`
+  + `<table class="ut"><tr><th>Skill</th><th>Version</th></tr>`
+  + s.list.map(x => `<tr><td><b>${esc(x.name)}</b><div class="sub">${esc(x.description)}</div></td>`
+    + `<td class="sub">${x.pushed.version}, ${esc(when(x.pushed.at))} by ${esc(x.pushed.by)}</td></tr>`).join('') + '</table>';
 
 // Personal tokens: rf, on your own machine or for your desktop agent, acts as you with one.
 function tokensHtml(s) {
@@ -954,10 +953,10 @@ function loginsHtml(s) {
       + `<div class="row2"><input type="text" id="offer-site" placeholder="A SharePoint site's link" style="flex:1"><button class="btn" data-act="offer-site">Add</button></div>`;
     h += `<div class="row2">${l.id === 'm365' && l.expired ? '<a class="btn primary" href="/logins/m365/connect">Sign in again</a>' : ''}<button class="btn" data-act="signout-login" data-id="${esc(l.id)}">Sign out</button></div>`;
   }
-  if (s.sites.length) h += `<h3>Websites</h3><div class="sub">Sign in yourself, in a browser shown here. Your login is what that browser keeps, its cookies, never your password; a run's browser starts from it and brings it back refreshed.</div>`
+  if (s.sites.length) h += `<h3>Websites</h3><div class="sub">Sign in yourself, in a browser shown here. Your login is what that browser keeps, its cookies, never your password; a run's browser starts from it and brings it back refreshed. It reaches only the hosts listed, but there it can do whatever you can: the agent is told only to read, and each run's log counts its writes.</div>`
     + s.sites.map(w => {
       const l = s.logins.find(l => l.id === `web:${w.id}`);
-      return `<div class="skill-row" style="display:flex;align-items:center;gap:8px"><span style="flex:1">${esc(w.name)} <span class="sub">${l ? `since ${esc(when(l.since))}` : ''}</span></span>`
+      return `<div class="skill-row" style="display:flex;align-items:center;gap:8px"><span style="flex:1">${esc(w.name)} <span class="sub">${esc([new URL(w.url).hostname, ...w.hosts].join(', '))}${l ? ` · since ${esc(when(l.since))}` : ''}</span></span>`
         + `<button class="btn" data-act="web-signin" data-id="${esc(w.id)}" data-name="${esc(w.name)}">${l ? 'Sign in again' : 'Sign in'}</button>${l ? `<button class="quiet" data-act="signout-login" data-id="${esc(l.id)}">Sign out</button>` : ''}</div>`;
     }).join('');
   if (!s.logins.length && !me.m365 && !s.sites.length) h += '<div class="sub">No logins yet.</div>';
@@ -990,8 +989,8 @@ function waiting() {
 }
 
 async function openLogins() {
-  const [logins, skills] = await Promise.all([api('/logins'), api('/skills')]);
-  pv = { title: 'Logins', settings: { kind: 'logins', logins, sites: skills.filter(k => k.site) } };
+  const [logins, sites] = await Promise.all([api('/logins'), api('/websites')]);
+  pv = { title: 'Logins', settings: { kind: 'logins', logins, sites } };
   renderPv();
 }
 

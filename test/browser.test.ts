@@ -13,7 +13,7 @@ import { filesOf, standIns } from './push.ts';
 
 // Website logins and a run's browser, through the machines service (RF_MACHINES_URL and RF_MACHINES_KEY, else skipped), on a
 // stand-in portal behind a sign-in: a person signs in in the live view the server passes through, and a run's browser starts from
-// that login, keeps to reads, and hands it back refreshed.
+// that login, counts its writes, and hands it back refreshed.
 const app = join(import.meta.dirname, '..'), ADMIN = 'admin@demo.test';
 const tmp = mkdtempSync(join(tmpdir(), 'rf-browser-')), root = join(tmp, 'data');
 const seen: string[] = [];
@@ -61,7 +61,7 @@ describe('website logins', { skip: !process.env.RF_MACHINES_URL && 'needs the ma
     });
     [admin, bob] = [await login(ADMIN), await login('bob@demo.test')];
     assert.equal((await call('POST', '/skills/portal/versions', { files: filesOf(join(standIns, 'portal')) })).status, 200);
-    assert.equal((await call('PUT', '/skills/portal', { url: `${origin}/login` })).status, 200);
+    assert.equal((await call('PUT', '/websites/portal', { name: 'Portal', url: `${origin}/login` })).status, 200);
   });
 
   after(async () => {
@@ -74,7 +74,7 @@ describe('website logins', { skip: !process.env.RF_MACHINES_URL && 'needs the ma
   });
 
   test("a person signs in in the live view on the Logins page, and their login is that browser's state", async () => {
-    assert.ok((await (await call('GET', '/skills', undefined, bob)).json()).find((s: { id: string }) => s.id === 'portal').site, 'Logins lists the websites');
+    assert.equal((await (await call('GET', '/websites', undefined, bob)).json())[0].name, 'Portal', 'Logins lists the websites');
     const { id } = await (await call('POST', '/logins/web/portal')).json(), ws = `${base.replace('http', 'ws')}/signins/${id}/view`;
     assert.match(await (await call('GET', `/signins/${id}/view`)).text(), /Take control/);
     assert.equal((await call('GET', `/signins/${id}/view`, undefined, bob)).status, 404, "nobody else's sign-in");
@@ -93,7 +93,7 @@ describe('website logins', { skip: !process.env.RF_MACHINES_URL && 'needs the ma
     assert.equal((await call('POST', `/signins/${id}`)).status, 404, 'a sign-in ends once');
   });
 
-  test("a run's browser starts from its runner's login if ticked, keeps to reads, and hands the login back refreshed, with its request log", async () => {
+  test("a run's browser starts from its runner's login if ticked, counts its writes, and hands the login back refreshed, with its request log", async () => {
     const { initSystem } = await import('../src/system.ts'), { openSkills } = await import('../src/skills.ts');
     const { serveAgent } = await import('../src/agent-api.ts'), { secret } = await import('../src/logins.ts');
     initSystem(root);
@@ -119,8 +119,7 @@ describe('website logins', { skip: !process.env.RF_MACHINES_URL && 'needs the ma
     const browser = await chromium.connectOverCDP(cdp), page = browser.contexts()[0].pages()[0];
     await page.goto(`${origin}/invoices`);
     assert.equal(await page.textContent('h1'), 'Invoices', "signed in, as the runner's login");
-    assert.equal(await page.evaluate(() => fetch('/save', { method: 'POST' }).then(r => r.status)), 403, 'a write is blocked');
-    assert.equal(await page.evaluate(() => fetch('/search', { method: 'POST' }).then(r => r.status)), 200, 'a read that posts is not');
+    assert.equal(await page.evaluate(() => fetch('/save', { method: 'POST' }).then(r => r.status)), 200, "a write isn't stopped, but counted");
     const [download] = await Promise.all([page.waitForEvent('download'), page.click('a')]);
     assert.equal(await rf(api, 'browser', 'get', 'portal', await download.path(), 'invoices.csv'), 'saved working/invoices.csv');
     assert.equal(readFileSync(join(dir, 'working', 'invoices.csv'), 'utf8'), 'no,amount\n1,10\n');
@@ -132,12 +131,12 @@ describe('website logins', { skip: !process.env.RF_MACHINES_URL && 'needs the ma
     await browser.close();
     await api.close();
 
-    assert.ok(seen.includes('POST /search') && !seen.includes('POST /save'));
+    assert.ok(seen.includes('POST /save'));
     const entry = log.find(e => e.op === 'browser')!;
-    assert.deepEqual([entry.run, entry.site, entry.login, entry.file], [0, 'portal', ADMIN, 'browser/run 0 portal.jsonl']);
+    assert.deepEqual([entry.run, entry.site, entry.login, entry.writes, entry.file], [0, 'portal', ADMIN, 1, 'browser/run 0 portal.jsonl']);
     const requests = readFileSync(join(dir, 'browser', 'run 0 portal.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     assert.equal(requests.length, entry.requests);
-    assert.ok(requests.some(r => r.method === 'POST' && r.url === `${origin}/save` && r.blocked), 'the blocked write is in the log');
+    assert.ok(requests.some(r => r.method === 'POST' && r.url === `${origin}/save` && r.status === 200), 'the write is in the log');
     assert.equal(JSON.parse(secret(ADMIN, 'web:portal')).cookies.find((c: { name: string }) => c.name === 'visits').value, String(visits), 'the login came back refreshed');
   });
 });

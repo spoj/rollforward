@@ -6,7 +6,6 @@ import { startRun, type Run, type View } from './runner.ts';
 import { canSee, changes, everyone, readJson, tree, type Tree, writeJson } from './system.ts';
 import { users } from './auth.ts';
 import type { Machines } from './machines.ts';
-import { skillsText } from './agent-api.ts';
 import { seriesSettings } from './series.ts';
 import { pushed, skill } from './skills.ts';
 
@@ -41,8 +40,7 @@ const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math
 function message(inst: Instance, n: number, entries: Entry[]): string {
   const t = tree(), here = t.series[inst.seriesId].workspace;
   const reads = reach(t, inst.seriesId).map(id => (t.series[id].workspace === here ? `../${t.series[id].name}/` : `../../${named(t, id)}/`)).join(', ');
-  const uses = seriesSettings(inst.series()).skills.length ? skillsText(inst.series()).split('\n').join('; ') : '';
-  return `Instance ${inst.label} (folder ${inst.label}/)${t.series[inst.seriesId].adhoc ? ", a one-off ask in the workspace's Ad hoc series" : ''}, run ${n}.${reads ? ` Series you can read: ${reads}.` : ''}${uses ? ` Skills you can use: ${uses}.` : ''} New log entries:\n`
+  return `Instance ${inst.label} (folder ${inst.label}/)${t.series[inst.seriesId].adhoc ? ", a one-off ask in the workspace's Ad hoc series" : ''}, run ${n}.${reads ? ` Series you can read: ${reads}.` : ''} New log entries:\n`
     + entries.map(e => JSON.stringify(e)).join('\n');
 }
 

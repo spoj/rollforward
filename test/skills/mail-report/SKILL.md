@@ -1,6 +1,6 @@
 ---
 name: mail-report
-description: Save the spreadsheets of a day's mail whose subject has the words the skill's setting names. Use when a report arrives by mail.
+description: Save the spreadsheets of a day's Open AP report mail. Use when the open AP report is needed.
 ---
 
-Find the day's mail with `rf mail find --date <day> --subject <words> --attachments`, then save each spreadsheet with `rf mail save <id> --name '\.xlsx$'`.
+Find the day's mail with `rf mail find --date <day> --subject "Open AP report" --attachments`, then save each spreadsheet with `rf mail save <id> --name '\.xlsx$'`.

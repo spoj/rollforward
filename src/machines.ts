@@ -7,13 +7,12 @@ import { request as httpsRequest } from 'node:https';
 import type { Duplex } from 'node:stream';
 import { HttpError, replaceReadOnly, type Instance } from './store.ts';
 import { logins, saveLogin, secret, use } from './logins.ts';
-import { siteOf, skill } from './skills.ts';
+import { readJson, writeJson } from './system.ts';
 
 // Machines from the machines service (a repo of its own), whose one client is this server, with its key:
-// - browsers: a throwaway container per session, driven over CDP, whose proxy keeps to the site's hosts, blocks writes but while a
-//   person drives its live view, and logs every request. A website login is the browser state a session hands back when it closes:
-//   people sign in themselves, in the live view shown on the Logins page, and a run's browser starts from its runner's login and
-//   hands it back refreshed;
+// - browsers: a throwaway container per session, driven over CDP, whose proxy keeps to a website's hosts and logs every request.
+//   A website login is the browser state a session hands back when it closes: people sign in themselves, in the live view shown on
+//   the Logins page, and a run's browser starts from its runner's login and hands it back refreshed;
 // - Windows: a virtual machine with no network, cloned from a clean, signed-in state, that runs scripts and takes files.
 // Calls use node:http(s), as fetch gives up on an answer after 5 minutes and a Windows script may run longer. The service may be on
 // a host of its own, at an https address (or over a private link): runs and people reach it only through this server.
@@ -43,8 +42,9 @@ function files(id: string, path: string) {
   return `/sessions/${id}/files/${parts.map(encodeURIComponent).join('/')}`;
 }
 
-const open = async (site: string, ttl_s: number, state?: unknown): Promise<string> => (await json('POST', '/sessions', { kind: 'browser', site: siteOf(site), state, ttl_s })).id;
-const close = (id: string): Promise<{ state: unknown; log: { blocked?: string }[] }> => json('DELETE', `/sessions/${id}`);
+const open = async (w: Website, ttl_s: number, state?: unknown): Promise<string> =>
+  (await json('POST', '/sessions', { kind: 'browser', site: { hosts: [new URL(w.url).hostname, ...w.hosts], start_url: w.url }, state, ttl_s })).id;
+const close = (id: string): Promise<{ state: unknown; log: { method: string; blocked?: string }[] }> => json('DELETE', `/sessions/${id}`);
 
 // A websocket passed through to the service's `path`, with the key added.
 export function passUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, path: string) {
@@ -59,13 +59,45 @@ export function passUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, 
   socket.pipe(up).pipe(socket);
 }
 
-// ---- Signing in: a browser on the site's address with nothing saved, shown to the person on the Logins page, for half an hour.
+// ---- Websites, which admins keep with rf website set: each a name, the address where people sign in, and the other hosts its pages
+// need, such as single sign-on's. A browser on one reaches only those hosts; whatever its login may do there, the browser may, so
+// keeping to reads is the agent's, and its request log shows what it did.
 
-const signIns = new Map<string, { email: string; site: string }>();
+export type Website = { name: string; url: string; hosts: string[]; updated_by: string; updated_at: string };
+export const websites = () => readJson<Record<string, Website>>('websites.json', {});
+
+function website(id: string): Website {
+  const w = websites()[id];
+  if (!w) throw new HttpError(404, `no website ${id}; there are ${Object.keys(websites()).join(', ') || 'none'}: an admin adds one with rf website set`);
+  return w;
+}
+
+export function setWebsite(id: string, input: { name?: unknown; url?: unknown; hosts?: unknown }, by: string): Website {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(id)) throw new HttpError(400, 'a website id is lowercase letters, digits and dashes');
+  if (typeof input.url !== 'string' || !/^https?:\/\/[^/]/.test(input.url)) throw new HttpError(400, 'url: an http(s) address, where sign-in starts');
+  const hosts = input.hosts ?? [];
+  if (!Array.isArray(hosts) || !hosts.every(h => typeof h === 'string' && /^(\*\.)?[a-z0-9.-]+$/i.test(h))) throw new HttpError(400, 'hosts: names such as sso.example.com, or *.example.com for any under it');
+  const all = websites();
+  all[id] = { name: typeof input.name === 'string' && input.name.trim() ? input.name.trim() : id, url: input.url, hosts, updated_by: by, updated_at: new Date().toISOString() };
+  writeJson('websites.json', all);
+  return all[id];
+}
+
+// People's logins to a website removed stay theirs to sign out of; no run can use them.
+export function removeWebsite(id: string) {
+  const all = websites();
+  if (!all[id]) throw new HttpError(404, `no website ${id}`);
+  delete all[id];
+  writeJson('websites.json', all);
+}
+
+// ---- Signing in: a browser on the website's address with nothing saved, shown to the person on the Logins page, for half an hour.
+
+const signIns = new Map<string, { email: string; site: string; name: string }>();
 
 export async function startSignIn(email: string, site: string): Promise<string> {
-  const id = await open(site, 1800);
-  signIns.set(id, { email, site });
+  const w = website(site), id = await open(w, 1800);
+  signIns.set(id, { email, site, name: w.name });
   return id;
 }
 
@@ -81,13 +113,13 @@ export async function viewPage(email: string, id: string): Promise<string> {
 export async function endSignIn(email: string, id: string, save: boolean) {
   if (!isSignIn(email, id)) throw new HttpError(404, 'no such sign-in');
   if (save && !(await json('GET', `/sessions/${id}/log`)).some((e: { live?: true }) => e.live)) throw new HttpError(409, 'Take control and sign in first, then Save login.');
-  const { site } = signIns.get(id)!, { state } = await close(id), name = skill(site)!.name;
+  const { site, name } = signIns.get(id)!, { state } = await close(id);
   signIns.delete(id);
   if (save) saveLogin(email, { id: `web:${site}`, kind: 'website', name, since: new Date().toISOString(), offers: [{ id: `web:${site}`, name }] }, JSON.stringify(state));
 }
 
 // ---- A run's machines, which close when it ends.
-// Browsers: one per site, from its runner's login if ticked for the instance. Closing one seals its login again, refreshed, unless
+// Browsers: one per website, from its runner's login if ticked for the instance. Closing one seals its login again, refreshed, unless
 // its person signed out meanwhile, and keeps its request log in the instance's browser/, which the agent can read but not change.
 // Windows: one machine, opened by the run's first rf windows; closing it puts it back to its clean state.
 export class Machines {
@@ -106,7 +138,7 @@ export class Machines {
     const { email, login } = use(this.inst, `web:${site}`), had = this.browsers.get(site);
     if (had && had.email !== email) throw new HttpError(409, `this run's browser on ${site} is in ${had.email}'s login, and ${email} has taken the instance over: the next run opens one in theirs`);
     if (had) return had.id;
-    const id = await open(site, 7200, JSON.parse(secret(email, login.id)));
+    const id = await open(website(site), 7200, JSON.parse(secret(email, login.id)));
     this.browsers.set(site, { id, email });
     return id;
   }
@@ -143,7 +175,8 @@ export class Machines {
       if (state && login) saveLogin(email, login, JSON.stringify(state));
       mkdirSync(join(this.inst.dir, 'browser'), { recursive: true });
       replaceReadOnly(join(this.inst.dir, file), log.map(e => JSON.stringify(e) + '\n').join(''));
-      this.inst.append('server', 'browser', { run: this.run, site, login: email, requests: log.length, blocked: log.filter(e => e.blocked).length, file });
+      const writes = log.filter(e => !e.blocked && !['GET', 'HEAD', 'OPTIONS'].includes(e.method)).length;
+      this.inst.append('server', 'browser', { run: this.run, site, login: email, requests: log.length, writes, blocked: log.filter(e => e.blocked).length, file });
     })]);
     this.browsers.clear();
   }

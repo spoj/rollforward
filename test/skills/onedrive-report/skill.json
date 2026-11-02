@@ -1,7 +1,0 @@
-{
-  "uses": ["m365-files"],
-  "settings": [
-    { "key": "folder", "label": "Folder link", "hint": "A OneDrive or SharePoint link to the folder of reports" },
-    { "key": "archive_folder", "label": "Archive folder link", "hint": "The same for older reports", "optional": true }
-  ]
-}

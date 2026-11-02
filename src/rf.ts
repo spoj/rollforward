@@ -53,11 +53,9 @@ if (cmd === 'show') res = await send('GET', `${own}/screen`);
 else if (cmd === 'put' && arg) res = await send('PUT', `${own}/screen`, readFileSync(arg === '-' ? 0 : arg));
 else if (cmd === 'say' && args.length >= 2) res = await send('POST', `${own}/comment`, JSON.stringify({ thread: args[0], text: args[1] === '-' ? readFileSync(0, 'utf8') : args.slice(1).join(' ') }));
 else if (cmd === 'wake') res = await wake();
-else if (cmd === 'skills') res = await send('GET', 'agent/skills');
-else if (cmd === 'settings') res = await send('GET', `agent/settings?skill=${encodeURIComponent(args[0] ?? '')}`);
 else if (['files', 'mail', 'browser', 'windows'].includes(cmd) && args.length >= 1) res = await send('POST', `agent/${cmd}`, JSON.stringify({ args, ...(upload && { data: readFileSync(local(upload)).toString('base64') }) }));
 else {
-  console.error('usage: rf show | rf put FILE | rf say THREAD TEXT|- | rf skills | rf settings [SKILL] | rf files list LINK|REF | rf files get LINK|REF FILE'
+  console.error('usage: rf show | rf put FILE | rf say THREAD TEXT|- | rf files list LINK|REF | rf files get LINK|REF FILE'
     + ' | rf mail find [--mailbox ADDRESS] [--date YYYY-MM-DD] [--subject TEXT] [--from TEXT] [--attachments] | rf mail save ID [--mailbox ADDRESS] [--name REGEX] [--prefix TEXT]'
     + ' | rf browser open SITE | rf browser get SITE PATH FILE'
     + ' | rf windows open | rf windows run python|powershell FILE [--timeout SECONDS] | rf windows put FILE [PATH] | rf windows get PATH FILE | rf windows screenshot FILE | rf windows close'

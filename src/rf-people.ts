@@ -12,6 +12,8 @@ rf answer PATH NOTE CHOICE        CHOICE the option's number, from 0
 rf upload PATH FILE [--onto ITEM] [--output]
 rf wake PATH AT REASON [--label LABEL]   AT now, +<n>m|h|d or a date; PATH an open instance, or a series with LABEL
 rf guidance [WORKSPACE] [--set FILE|-]   the company's, or a workspace's; setting the company's is for admins
+rf skills
+rf websites
 
 Publishers and admins:
 rf skill push DIR                 DIR/SKILL.md and the rest become the newest version of the skill named DIR's name, live at once
@@ -21,9 +23,9 @@ rf skill rollback ID N            pushes version N again, as the newest
 Admins:
 rf users
 rf user add EMAIL [admin|publisher] | role EMAIL admin|publisher|user | disable EMAIL | enable EMAIL | signout EMAIL | remove EMAIL
-rf skills
-rf skill set ID KEY VALUE|-       a setting, such as a folder's link or a website's address; - reads it from stdin
-rf skill test ID                  reads through your own logins`;
+rf website set ID URL [--name NAME] [--hosts HOST,...]   a website people sign in to at URL, and the other hosts its pages need,
+                                  such as sso.example.com or *.example.com; a run's browser on it reaches only those
+rf website remove ID`;
 
 const config = join(homedir(), '.config', 'rollforward.json');
 const [cmd, ...argv] = process.argv.slice(2);
@@ -157,15 +159,16 @@ else if (cmd === 'comment' && args.length === 2) {
   for (const v of await get(`/skills/${encodeURIComponent(args[1])}/versions`)) console.log(`${v.version}  ${v.at}  ${v.by}`);
 } else if (cmd === 'skill' && args[0] === 'rollback' && args.length === 3) {
   console.log(await (await post(`/skills/${encodeURIComponent(args[1])}/versions`, { from: Number(args[2]) })).text());
-} else if (cmd === 'skill' && args[0] === 'set' && args.length === 4) {
-  const value = args[3] === '-' ? readFileSync(0, 'utf8').trim() : args[3], s = (await get('/skills')).find(x => x.id === args[1]);
-  if (!s) throw new Error(`no skill ${args[1]}`);
-  await post(`/skills/${encodeURIComponent(args[1])}`, { ...s.values, [args[2]]: value }, 'PUT');
-  console.log('saved');
-} else if (cmd === 'skill' && args[0] === 'test' && args[1]) {
-  console.log(await (await api(`/skills/${encodeURIComponent(args[1])}/test`, { method: 'POST' })).text());
 } else if (cmd === 'skills') {
-  for (const s of await get('/skills')) console.log(`${s.id}  v${s.pushed.version} by ${s.pushed.by} ${s.pushed.at}  ${s.configured ? 'ready' : `needs ${s.missing?.join(', ') ?? 'settings'}`}  ${s.description}`);
+  for (const s of await get('/skills')) console.log(`${s.id}  v${s.pushed.version} by ${s.pushed.by} ${s.pushed.at}  ${s.description}`);
+} else if (cmd === 'websites') {
+  for (const w of await get('/websites')) console.log(`${w.id}  ${w.url}  ${w.hosts.join(' ') || '-'}  ${w.name}`);
+} else if (cmd === 'website' && args[0] === 'set' && args.length === 3) {
+  await post(`/websites/${encodeURIComponent(args[1])}`, { url: args[2], name: flags.name, hosts: typeof flags.hosts === 'string' ? flags.hosts.split(',') : [] }, 'PUT');
+  console.log('saved');
+} else if (cmd === 'website' && args[0] === 'remove' && args[1]) {
+  await api(`/websites/${encodeURIComponent(args[1])}`, { method: 'DELETE' });
+  console.log('removed');
 } else if (cmd === 'users') {
   for (const u of await get('/users')) console.log([u.email, u.role, u.disabled ? 'disabled' : '', u.last_login ? `last in ${u.last_login}` : 'never in', u.workspaces.join(', ')].filter(Boolean).join('\t'));
 } else if (cmd === 'user' && args.length >= 2) {

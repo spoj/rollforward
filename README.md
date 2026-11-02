@@ -47,7 +47,7 @@ People sign in with one button, **Sign in with Microsoft**, and type nothing.
   - a **Single-page application**: `RF_OIDC_SPA=1`, and no secret. The browser then redeems the sign-in, as Microsoft requires, and the server checks the token's signature.
 
   The same button then goes to Microsoft, and the same app gives each person's **Microsoft 365 login** (Logins, Connect Microsoft 365): grant it the delegated Microsoft Graph permissions `Mail.Read`, `Mail.Read.Shared`, `Files.Read.All`, `Sites.Read.All` and `offline_access`, with admin consent once for the organisation. That needs a Web app or a public client; a Single-page application can't keep the login. `RF_ADMINS` names the admins; `RF_ALLOWED_DOMAINS` and `RF_AUTO_PROVISION=0` narrow who may come in. Start with `node --env-file=.env src/server.ts DATA_ROOT` without Docker. Microsoft takes http redirects only on localhost, so open the site as `http://localhost:8780`, not `127.0.0.1`; for others to reach it, register an https address.
-- **What people see:** a workspace's owners and members, people by email or Entra groups by id, see all of it; owners manage who is in it. Admins see every workspace, and manage people with rf (Tokens, at the sidebar's foot): `rf users`, `rf user add|role|disable|enable|signout|remove EMAIL`, roles being admin, publisher (who pushes skills) and user. On the server, before there is an admin:
+- **What people see:** a workspace's owners and members, people by email or Entra groups by id, see all of it; owners manage who is in it. Admins see every workspace, and manage people and websites with rf (Tokens, at the sidebar's foot): `rf users`, `rf user add|role|disable|enable|signout|remove EMAIL`, `rf website set|remove`, roles being admin, publisher (who pushes skills) and user. On the server, before there is an admin:
 
       docker compose exec rollforward node src/auth.ts /data list
       docker compose exec rollforward node src/auth.ts /data add alice@example.com [admin|publisher]
@@ -57,7 +57,7 @@ Sessions last 12 hours (`RF_SESSION_HOURS`). The people, the workspaces' people 
 
 ## Skill use
 
-A series picks, in its settings, the **skills** its agent may use; choosing none is fine. A skill is what to fetch or do, and how, whole in a folder that a publisher pushes with `rf skill push DIR`, live at once; each push is a version, and `rf skill rollback ID N` brings an earlier one back. It holds a `SKILL.md` for the agent, a `skill.json` naming what of the runner's Microsoft 365 login it reads, its website's hosts if it has one, and its settings, and the scripts it runs.
+A series picks, in its settings, the **skills** its agent may use; choosing none is fine. A skill is what to fetch or do, and how, whole in a folder that a publisher pushes with `rf skill push DIR`, live at once; each push is a version, and `rf skill rollback ID N` brings an earlier one back. It is a Pi skill: a `SKILL.md` for the agent, with the links and website it uses written in it, and the scripts it runs.
 
 | Kind of skill | Reads through | Fetches, for example |
 | --- | --- | --- |
@@ -65,17 +65,15 @@ A series picks, in its settings, the **skills** its agent may use; choosing none
 | A mail attachment | the runner's Microsoft 365 mail | the Excel attachment of the day's report mail |
 | A vendor portal | the runner's login to its website | the portal's payments and unpaid items, as csv |
 
-Admins set each skill up once for every series, with `rf skill set ID KEY VALUE`, such as a folder's link or a website's address (`url`); none is a secret. A series can choose a skill before it is set up; its agent is then told what the skill still needs. Skills, at the sidebar's foot, lists them with their versions.
+Skills, at the sidebar's foot, lists them with their versions.
 
 Microsoft 365 is nobody's but each person's: a run reads mail and files only through its runner's own login, and only the mailboxes, OneDrive and SharePoint sites ticked for its instance.
 
-Websites are each person's too: under Logins, Websites, they sign in themselves in a live browser on the page, and that browser's state is their login, sealed in `.rf/`; no password is stored. A run's scripts open a browser on a skill's website with `rf browser open SITE`, from the runner's login if ticked, and drive it with Playwright over CDP. The browsers come from the machines service, a repo of its own (`RF_MACHINES_URL`, `RF_MACHINES_KEY`): each stays on its site's hosts, makes no write but while a person drives it, and logs every request, which the instance keeps under `browser/`.
+Websites are the admins' to list and each person's to sign in to. `rf website set ID URL [--name NAME] [--hosts HOST,...]` adds one: the address where people sign in, and the other hosts its pages need, such as single sign-on's (`*.example.com` for any under it). Under Logins, Websites, people sign in themselves in a live browser on the page, and that browser's state is their login, sealed in `.rf/`; no password is stored. A run's scripts open a browser on a website with `rf browser open SITE`, from the runner's login if ticked, and drive it with Playwright over CDP. The browsers come from the machines service, a repo of its own (`RF_MACHINES_URL`, `RF_MACHINES_KEY`): each stays on its website's hosts and logs every request, which the instance keeps under `browser/`. A browser can do whatever its login can: the agent is told to only read, and each run's writes are counted in its log.
 
 A run can also lease a Windows machine from the same service, with `rf windows`, for what needs Windows itself: scripts in Python with pywin32 or PowerShell, files passed through `working/`, no network, and a clean state again when the run ends. Office isn't on it yet. The machines service builds it from the Windows 11 evaluation, which can't activate offline and may shut down hourly once unactivated; real use needs a licence from IT.
 
-`rf skill test ID` checks one that reads Microsoft 365 for real, as you.
-
-From a shell, without the model: `node --env-file=.env src/cli.ts DATA_ROOT test SKILL --as EMAIL`, and `… DATA_ROOT try aging --as EMAIL -- python "$RF_SKILLS/aging/scripts/fetch.py"` (or `try portal --as EMAIL -- rf browser open portal`) runs a skill as a run with it would, with EMAIL's logins. Set `RF_TODAY` in `.env` to test against a day that has data.
+From a shell, without the model: `node --env-file=.env src/cli.ts DATA_ROOT try aging --as EMAIL -- python "$RF_SKILLS/aging/scripts/fetch.py"` (or `try portal --as EMAIL -- rf browser open portal`) runs a skill as a run with it would, with the logins of EMAIL, an admin: how a skill is tested. Set `RF_TODAY` in `.env` to test against a day that has data.
 
 To reach it from the internet, run `tailscale funnel --bg 8780`, with Microsoft sign-in configured.
 

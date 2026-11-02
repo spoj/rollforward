@@ -268,7 +268,7 @@ test('a cross-site POST is refused, so another web page cannot talk to the agent
 test('without a session the site shows Sign in with Microsoft; in the demo that leads to a picker of the two demo accounts', async () => {
   assert.equal((await fetch(base + '/api')).status, 401);
   assert.match(await (await fetch(base + '/')).text(), /href="\/auth\/login[^"]*">[\s\S]*Sign in with Microsoft/);
-  assert.equal((await fetch(base + '/agent/skills')).status, 401, "the agent API is only on the sandboxes' socket");
+  assert.equal((await fetch(base + '/agent/files', { method: 'POST' })).status, 401, "the agent API is only on the sandboxes' socket");
   assert.equal((await fetch(base + '/auth/login', { redirect: 'manual' })).headers.get('location'), '/auth/demo?next=%2F');
   const picker = await (await fetch(base + '/auth/demo')).text();
   assert.ok(picker.includes(adminEmail) && picker.includes(bob));
@@ -321,22 +321,22 @@ test("each person sees the workspaces they're in, by email or Entra group; owner
   assert.deepEqual(await reads('larkfield', series), ['larkfield / Ad hoc', `larkfield / ${monthly}`], 'a workspace with no one in it reads only itself');
 });
 
-test('Skill use: admins set skills up once; a series only chooses which', async () => {
+test('Skill use: a series chooses skills that exist; admins keep the websites, which everyone sees', async () => {
   const b = sessionOf(await login(bob))!;
   const report = (list: { id: string }[]) => list.find(s => s.id === 'mail-report') as Record<string, unknown>;
-  assert.deepEqual(Object.keys(report(await json('/skills', b))).sort(), ['configured', 'description', 'id', 'name', 'pushed', 'site', 'uses'], 'anyone signed in sees the skills, not their settings');
-  assert.equal((await call('PUT', '/skills/mail-report', JSON.stringify({ subject: 'Open AP report' }), b)).status, 403);
-  assert.equal((await call('PUT', '/skills/mail-report', JSON.stringify({ mailbox: 'x' }))).status, 400, 'only the settings the skill declares');
-  const set = await (await call('PUT', '/skills/mail-report', JSON.stringify({ subject: 'Open AP report' }))).json();
-  assert.deepEqual([set.values, set.configured, set.uses], [{ subject: 'Open AP report' }, true, ["the runner's Microsoft 365 mail"]], "it reads the runner's own mail, so there's nothing more to set up");
-  assert.equal((await call('PUT', '/skills/portal', JSON.stringify({ url: 'https://portal.test/#/login', password: 'Portal!pw' }))).status, 400, 'a website takes no password: people sign in themselves');
-  const site = await (await call('PUT', '/skills/portal', JSON.stringify({ url: 'https://portal.test/#/login' }))).json();
-  assert.deepEqual([site.values, site.site, site.configured], [{ url: 'https://portal.test/#/login' }, true, true]);
+  assert.deepEqual(Object.keys(report(await json('/skills', b))).sort(), ['description', 'id', 'name', 'pushed'], 'anyone signed in sees the skills');
+  assert.equal((await call('PUT', '/websites/portal', JSON.stringify({ url: 'https://portal.test/#/login' }), b)).status, 403);
+  assert.equal((await call('PUT', '/websites/portal', JSON.stringify({ url: 'https://portal.test/#/login', hosts: 'cdn.portal.test' }))).status, 400, 'hosts are a list');
+  const site = await (await call('PUT', '/websites/portal', JSON.stringify({ name: 'Portal', url: 'https://portal.test/#/login', hosts: ['cdn.portal.test'] }))).json();
+  assert.deepEqual([site.name, site.url, site.hosts, site.updated_by], ['Portal', 'https://portal.test/#/login', ['cdn.portal.test'], adminEmail]);
+  assert.deepEqual((await json('/websites', b)).map((w: { id: string }) => w.id), ['portal']);
+  assert.equal((await call('DELETE', '/websites/portal')).status, 200);
+  assert.deepEqual(await json('/websites', b), []);
 
   assert.deepEqual((await shown(series)).skills, []);
   const put = async (body: object) => call('PUT', await at(series), JSON.stringify(body));
   assert.equal((await put({ skills: ['nope'] })).status, 400);
-  assert.equal((await put({ skills: ['mail-report', 'onedrive-report'] })).status, 200, 'a skill may be chosen before it is set up');
+  assert.equal((await put({ skills: ['mail-report', 'onedrive-report'] })).status, 200);
   assert.deepEqual((await shown(series)).skills, ['mail-report', 'onedrive-report']);
   assert.equal((await put({})).status, 200);
   assert.deepEqual((await shown(series)).skills, ['mail-report', 'onedrive-report'], 'a save without skills leaves Skill use as it was');

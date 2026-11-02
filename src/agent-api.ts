@@ -3,19 +3,14 @@ import { createServer } from 'node:http';
 import { basename } from 'node:path';
 import { HttpError, type Instance } from './store.ts';
 import { Machines, passUpgrade } from './machines.ts';
-import { children, messages, shared } from './graph.ts';
-import { day, filesGet, filesList, localDate, mailFind, mailSave, type Args } from './m365.ts';
-import { seriesSettings } from './series.ts';
-import { settingsOf, skill, skillMissing, type Skill } from './skills.ts';
+import { filesGet, filesList, mailFind, mailSave, type Args } from './m365.ts';
 
-// What only a run has, behind `rf`: its series' skills and its runner's logins and machines. (For its own instance, its screen,
+// What only a run has, behind `rf`: its runner's logins and machines. (For its own instance, its screen,
 // threads and wakes, `rf` calls the people's API; see server.ts.) Shared by the server, for runs, and by `cli.ts try`, which lets
 // an admin run a skill's steps without the model.
-//   GET  /agent/skills             the series' skills, and how to use them
-//   GET  /agent/settings?skill=ID  a chosen skill's settings, as JSON
 //   POST /agent/files {args}       rf files list|get …, through the runner's Microsoft 365 login, as far as the instance's ticks offer
 //   POST /agent/mail {args}        rf mail find|save …, likewise
-//   POST /agent/browser {args}     rf browser open SITE | get SITE PATH FILE: a browser on a skill's website, in the runner's login
+//   POST /agent/browser {args}     rf browser open SITE | get SITE PATH FILE: a browser on a website, in the runner's login
 //   POST /agent/windows {args, data?} rf windows open | run | put | get | screenshot | close: the run's Windows machine
 // The server never reads or writes the run's files: rf does, in the sandbox. A file going out travels as `data`, base64, and one
 // coming back as `data` in the answer, with `saved`, the FILE rf saves it as.
@@ -38,39 +33,6 @@ export function parseArgs(words: string[]): { args: Args; rest: string[] } {
   return { args, rest };
 }
 
-const chosenSkills = (seriesDir: string) => seriesSettings(seriesDir).skills.map(id => skill(id)).filter((s): s is Skill => !!s);
-
-export function skillsText(seriesDir: string): string {
-  return chosenSkills(seriesDir).map(s => {
-    const need = skillMissing(s), how = [
-      ...(s.site ? [`rf browser open ${s.id}`] : []),
-      ...(s.uses.includes('m365-files') ? ['rf files'] : []), ...(s.uses.includes('m365-mail') ? ['rf mail'] : []),
-      ...(s.settings.length ? [`rf settings ${s.id}`] : []),
-    ];
-    return `${s.id}${how.length ? ` (${how.join(', ')})` : ''}${need.length ? `: not set up yet, it needs ${need.join(', ')}` : ''}`;
-  }).join('\n') || 'None: this series\' Skill use is empty.';
-}
-
-// rf skill test: one that reads Microsoft 365 does so as the admin testing it, `email`, through their own login: each link in its
-// settings, and today's mail with its subject.
-export async function testSkill(id: string, email: string): Promise<string> {
-  const s = skill(id);
-  if (!s) throw new HttpError(404, `no skill ${id}`);
-  const need = skillMissing(s);
-  if (need.length) throw new HttpError(409, `${s.name} still needs ${need.join(', ')}`);
-  const values = settingsOf(s), out: string[] = [];
-  if (s.uses.includes('m365-files')) for (const [k, v] of Object.entries(values).filter(([, v]) => /^https?:\/\//.test(v))) {
-    const it = await shared(email, v);
-    out.push(`${s.settings.find(f => f.key === k)?.label ?? k}: ${it.name}${it.folder ? `, a folder of ${(await children(email, it)).length} items` : `, changed ${it.lastModifiedDateTime}`}`);
-  }
-  if (s.uses.includes('m365-mail')) {
-    const d = process.env.RF_TODAY ?? localDate(), want = values.subject?.toLowerCase() ?? '';
-    const found = (await messages(email, email, day(d), day(d, 1))).filter(m => (m.subject ?? '').toLowerCase().includes(want));
-    out.push(`${email}: ${found.length} mail${found.length === 1 ? '' : 's'} on ${d}${want ? ' with that subject' : ''}`);
-  }
-  return out.join('\n') || `${s.name} is set up.`;
-}
-
 // The agent API on a port of its own, for one stand-in run: what `cli.ts try` and the tests use in place of the server.
 export async function serveAgent(inst: Instance): Promise<{ url: string; token: string; close(): Promise<void> }> {
   const token = randomUUID(), a: AgentRun = { inst, n: 0, token };
@@ -79,7 +41,7 @@ export async function serveAgent(inst: Instance): Promise<{ url: string; token: 
     try {
       const url = new URL(req.url!, 'http://x');
       if (req.headers.authorization !== `Bearer ${token}`) throw new HttpError(401, 'no run for this token');
-      const r = await agentCall(a, url.pathname, req.method ?? 'GET', url.searchParams, async () => { const c: Buffer[] = []; for await (const x of req) c.push(x as Buffer); return Buffer.concat(c); });
+      const r = await agentCall(a, url.pathname, req.method ?? 'GET', async () => { const c: Buffer[] = []; for await (const x of req) c.push(x as Buffer); return Buffer.concat(c); });
       if (!r) throw new HttpError(404, 'not found');
       send(r.status, r.data);
     } catch (e) {
@@ -99,18 +61,10 @@ export async function serveAgent(inst: Instance): Promise<{ url: string; token: 
   };
 }
 
-export async function agentCall(a: AgentRun, path: string, method: string, query: URLSearchParams, body: () => Promise<Buffer>): Promise<{ status: number; data: unknown } | null> {
-  const seriesDir = a.inst.series();
+export async function agentCall(a: AgentRun, path: string, method: string, body: () => Promise<Buffer>): Promise<{ status: number; data: unknown } | null> {
   const json = async () => { try { return JSON.parse((await body()).toString() || '{}'); } catch { throw new HttpError(400, 'the body is JSON'); } };
   const words = async () => ((await json()).args ?? []).map(String) as string[];
   const data = (bytes: Buffer) => bytes.toString('base64');
-  if (path === '/agent/skills' && method === 'GET') return { status: 200, data: skillsText(seriesDir) };
-  if (path === '/agent/settings' && method === 'GET') {
-    const chosen = chosenSkills(seriesDir), id = query.get('skill') ?? '', s = chosen.find(x => x.id === id);
-    if (!id) return { status: 200, data: Object.fromEntries(chosen.map(x => [x.id, settingsOf(x)])) };
-    if (!s) throw new HttpError(403, `${id} is not in this series' Skill use; it has ${chosen.map(x => x.id).join(', ') || 'none'}`);
-    return { status: 200, data: settingsOf(s) };
-  }
   if (path === '/agent/files' && method === 'POST') {
     const { rest } = parseArgs(await words()), [cmd, target, file] = rest;
     if (cmd === 'list' && target) {
@@ -145,7 +99,6 @@ export async function agentCall(a: AgentRun, path: string, method: string, query
   // `open` answers the CDP address's path; rf makes it an address the sandbox reaches (see sandbox.ts).
   if (path === '/agent/browser' && method === 'POST') {
     const [cmd, site, from, to] = await words();
-    if (!chosenSkills(seriesDir).some(s => s.id === site)) throw new HttpError(403, `${site} is not in this series' Skill use`);
     a.machines ??= new Machines(a.inst, a.n);
     if (cmd === 'open' && site) return { status: 200, data: `/browser/${a.token}/${await a.machines.browser(site)}` };
     if (cmd === 'get' && site && from && to) return { status: 200, data: { saved: rel(to), data: data(await a.machines.browserFile(site, from)) } };

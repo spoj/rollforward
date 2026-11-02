@@ -1,4 +1,0 @@
-{
-  "uses": ["m365-mail"],
-  "settings": [{ "key": "subject", "label": "Subject contains", "hint": "Words the mail's subject always has" }]
-}

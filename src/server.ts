@@ -12,11 +12,11 @@ import { serveSandboxes } from './sandbox.ts';
 import { authenticate, checkConfig, connectM365, m365Ready, mode, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, upsertUser, users, type Me, type Role } from './auth.ts';
 import { canManage, canSee, changes, everyone, initSystem, saveTree, tree, type Workspace } from './system.ts';
 import { checkTicks, logins, runnerOf, signOut } from './logins.ts';
-import { agentCall, testSkill } from './agent-api.ts';
-import { endSignIn, isSignIn, passUpgrade, startSignIn, viewPage } from './machines.ts';
+import { agentCall } from './agent-api.ts';
+import { endSignIn, isSignIn, passUpgrade, removeWebsite, setWebsite, startSignIn, viewPage, websites } from './machines.ts';
 import { offer, unoffer } from './m365.ts';
 import { seriesSettings } from './series.ts';
-import { checkChosen, openSkills, pushSkill, saveSkillConfig, skill, skills, skillView, versionFiles, versionsOf } from './skills.ts';
+import { checkChosen, openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
 import { active, byToken, cancelWake, closed, dropRequest, kick, MAX_OPEN, named, queued, reach, resolveFor, setWake, startWaking, startWith, wakes, type Active } from './waker.ts';
 
 const root = resolve(process.argv[2]);
@@ -52,9 +52,9 @@ async function agent(req: IncomingMessage, res: ServerResponse, url: URL) {
   const a = byToken.get(req.headers.authorization?.replace('Bearer ', '') ?? '');
   if (!a) throw new HttpError(401, 'no run for this token');
   if (url.pathname.startsWith('/api/')) return api({ email: 'agent', name: 'Agent', role: 'user', groups: [], run: a }, req, res, url);
-  // Skills and machines: rf skills, rf settings, rf files, rf mail, rf browser, rf windows (see agent-api.ts).
+  // Logins and machines: rf files, rf mail, rf browser, rf windows (see agent-api.ts).
   // A login the run's runner must sign in to again is logged, so the instance carries on once they do.
-  const r = await agentCall(a, url.pathname, req.method ?? 'GET', url.searchParams, () => body(req)).catch((e: HttpError & { login?: string }) => {
+  const r = await agentCall(a, url.pathname, req.method ?? 'GET', () => body(req)).catch((e: HttpError & { login?: string }) => {
     if (e.login) a.inst.append('server', 'expired', { login: e.login, runner: runnerOf(a.inst).by });
     throw e;
   });
@@ -415,32 +415,27 @@ async function admin(me: Me, req: IncomingMessage, res: ServerResponse, url: URL
   send(res, 200, 'ok');
 }
 
-// Skills: anyone signed in may list them with whether each is set up, to choose a series' Skill use. Publishers and admins push
-// versions; only admins see their settings (never a secret, only whether one is saved), change them and test them, all with rf.
+// Skills: anyone signed in may list them, to choose a series' Skill use. Publishers and admins push versions, with rf.
 async function skillsRoute(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) {
   const [id = '', action] = url.pathname.split('/').slice(2).map(decodeURIComponent);
-  if (!id && req.method === 'GET') return send(res, 200, skills().map(s => skillView(s, me.role === 'admin')));
+  if (!id && req.method === 'GET') return send(res, 200, skills().map(s => ({ id: s.id, name: s.name, description: s.description, pushed: pushed(s) })));
   if (action === 'versions' && req.method === 'GET') return send(res, 200, versionsOf(id));
   if (action === 'versions' && req.method === 'POST') {
     if (me.role !== 'admin' && me.role !== 'publisher') throw new HttpError(403, 'publishers and admins push skills');
     const { files, from } = await json(req);
     return send(res, 200, `pushed ${id} version ${pushSkill(id, from === undefined ? files : versionFiles(id, Number(from)), me.email)}, live now`);
   }
-  if (me.role !== 'admin') throw new HttpError(403, 'admins only');
-  const s = skill(id);
-  if (!s) throw new HttpError(404, `no skill ${id}`);
-  if (req.method === 'PUT') {
-    saveSkillConfig(id, JSON.parse((await body(req)).toString()), me.email);
-    return send(res, 200, skillView(s, true));
-  }
-  if (action === 'test' && req.method === 'POST') {
-    try {
-      return send(res, 200, await testSkill(id, me.email));
-    } catch (e) {
-      throw new HttpError((e as HttpError).status === 409 ? 409 : 502, (e as Error).message.split('\n').slice(0, 5).join('\n'));
-    }
-  }
-  throw new HttpError(405, 'PUT, or POST test');
+  throw new HttpError(405, 'GET, or POST a version');
+}
+
+// Websites: anyone signed in may list them, to sign in to one on the Logins page; admins keep them, with rf.
+async function websitesRoute(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) {
+  const id = decodeURIComponent(url.pathname.slice(10));
+  if (!id && req.method === 'GET') return send(res, 200, Object.entries(websites()).map(([id, w]) => ({ id, ...w })));
+  if (me.role !== 'admin') throw new HttpError(403, 'admins keep websites');
+  if (req.method === 'PUT') return send(res, 200, setWebsite(id, await json(req), me.email));
+  if (req.method === 'DELETE') return send(res, 200, (removeWebsite(id), 'ok'));
+  throw new HttpError(405, 'PUT or DELETE');
 }
 
 mkdirSync(socketDir, { recursive: true });
@@ -514,6 +509,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     else if (url.pathname.startsWith('/logins/') && req.method === 'DELETE') send(res, 200, (signOut(me.email, decodeURIComponent(url.pathname.slice(8))), 'ok'));
     else if (url.pathname === '/users' || url.pathname.startsWith('/users/')) await admin(me, req, res, url);
     else if (url.pathname === '/skills' || url.pathname.startsWith('/skills/')) await skillsRoute(me, req, res, url);
+    else if (url.pathname === '/websites' || url.pathname.startsWith('/websites/')) await websitesRoute(me, req, res, url);
     else throw new HttpError(404, 'not found');
   } catch (err) {
     if (res.headersSent) res.destroy();
