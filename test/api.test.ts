@@ -411,6 +411,11 @@ test('talking is in threads: a comment starts one on an item or the instance, th
   assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ thread: started.thread, text: 'And B5?' }))).status, 200);
   assert.equal((await json(path)).log.at(-1).item, undefined, 'a reply keeps its thread, not an item');
   assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ thread: 'nope', text: 'x' }))).status, 400);
+  const { file } = await (await call('POST', `${path}/attach?name=list.csv`, 'a,b')).json();
+  assert.equal(file, 'upload/attachments/list.csv');
+  assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ thread: started.thread, text: 'The list', files: [file] }))).status, 200);
+  assert.deepEqual((await json(path)).log.at(-1).files, [file], 'a comment names its attachments');
+  assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ text: 'x', files: ['upload/../x'] }))).status, 400);
   assert.equal((await call('POST', `${path}/resolve`, JSON.stringify({ thread: started.thread }))).status, 200);
   assert.equal((await json(path)).log.at(-1).op, 'resolve');
 });

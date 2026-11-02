@@ -67,9 +67,10 @@ function mustSee(me: Me, w: Workspace | undefined): Workspace {
   return w;
 }
 
-function questions(inst: Instance): number {
-  if (inst.doc.status !== 'open') return 0;
-  return inst.doc.items.flatMap(i => i.notes ?? []).filter(n => n.id && n.options && !inst.answered(n.id)).length;
+// The open questions of an open instance, each with whom it asks: a named person, else the runner.
+function questions(inst: Instance): string[] {
+  if (inst.doc.status !== 'open') return [];
+  return inst.doc.items.flatMap(i => i.notes ?? []).filter(n => n.id && n.options && !inst.answered(n.id)).map(n => n.ask ?? runnerOf(inst).by);
 }
 
 function listing(me: Me) {
@@ -284,6 +285,16 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
     return send(res, 200, { id: sid });
   }
   if (inst.doc.status !== 'open') throw new HttpError(409, `instance is ${inst.doc.status}`);
+  if (action === 'attach') {
+    // A comment's attachment, kept in upload/attachments/ and named in the comment that follows; it starts nothing by itself.
+    const tmp = join(tmpDir, randomUUID());
+    try {
+      await pipeline(req, createWriteStream(tmp));
+      return send(res, 200, { file: inst.keep(url.searchParams.get('name') ?? 'file', tmp, 'upload/attachments') });
+    } finally {
+      rmSync(tmp, { force: true });
+    }
+  }
   if (action === 'upload') {
     const pane = url.searchParams.get('pane') === 'out' ? 'out' : 'in', tmp = join(tmpDir, randomUUID()), hash = createHash('sha256');
     try {
@@ -297,11 +308,12 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
     inst.answer(by, note, choice);
   } else if (action === 'comment') {
     // A comment starts a thread, on an item (at a ref, such as a cell, if given) or on the instance, or replies in one.
-    const { thread, item, ref, text } = await json(req);
+    const { thread, item, ref, text, files = [] } = await json(req);
     if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a comment has text');
+    for (const f of files) if (typeof f !== 'string' || !f.startsWith('upload/attachments/') || f.includes('..') || !existsSync(join(inst.dir, f))) throw new HttpError(400, `no attachment ${f}`);
     if (thread !== undefined && !threads(inst).includes(thread)) throw new HttpError(400, `no thread ${thread}`);
     if (item !== undefined && !inst.doc.items.some(i => i.id === item)) throw new HttpError(400, `no item ${item}`);
-    inst.append(by, 'comment', { thread: thread ?? `c${inst.log.length + 1}`, ...(thread === undefined && { item: item ?? null, ref: ref ?? null }), text: text.trim() });
+    inst.append(by, 'comment', { thread: thread ?? `c${inst.log.length + 1}`, ...(thread === undefined && { item: item ?? null, ref: ref ?? null }), text: text.trim(), ...(files.length && { files }) });
   } else if (action === 'resolve') {
     const { thread } = await json(req);
     if (!threads(inst).includes(thread)) throw new HttpError(400, `no thread ${thread}`);

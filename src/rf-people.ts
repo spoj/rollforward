@@ -93,7 +93,7 @@ if (cmd === 'login' && url && token) {
 } else if (cmd === 'ls') {
   for (const w of await get('/api')) for (const s of w.series) {
     console.log(`${w.name}/${s.name}${s.wake ? `  wakes ${s.wake.at} to start ${s.wake.label}: ${s.wake.reason}` : ''}${s.requests.length ? `  ${s.requests.length} asking to start` : ''}`);
-    for (const i of s.instances) console.log(`${w.name}/${s.name}/${i.label}  ${i.status}${i.running ? ', running' : ''}${i.questions ? `, ${i.questions} questions` : ''}${i.wake ? `, wakes ${i.wake}` : ''}, runner ${i.runner}`);
+    for (const i of s.instances) console.log(`${w.name}/${s.name}/${i.label}  ${i.status}${i.running ? ', running' : ''}${i.questions.length ? `, ${i.questions.length} questions` : ''}${i.wake ? `, wakes ${i.wake}` : ''}, runner ${i.runner}`);
   }
 } else if (cmd === 'pull' && args[0]) await pull(args[0]);
 else if (cmd === 'comment' && args.length === 2) {

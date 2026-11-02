@@ -234,6 +234,7 @@ a[data-act=preview], a[data-act=opencard] { text-decoration: underline; cursor: 
 .proc .del { background: #fdecea; text-decoration: line-through; color: var(--ink-3); }
 .conv h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-3); margin: 12px 0 0; }
 .conv textarea { font: inherit; padding: 7px 9px; border: 1px solid var(--rule-2); border-radius: var(--r1); resize: vertical; width: 100%; }
+.conv input[type=file] { font-size: 12px; color: var(--ink-3); }
 .thread { border: 1px solid var(--rule); border-radius: var(--r1); padding: 8px 10px; display: grid; gap: 6px; }
 .thread.resolved { opacity: .6; }
 .thread .on, .post .tm { color: var(--ink-3); font-size: 12px; }
@@ -379,7 +380,7 @@ async function refresh() {
 }
 
 function render() {
-  const qs = tree.filter(w => !w.archived).flatMap(w => w.series.filter(s => !s.archived).flatMap(s => s.instances)).reduce((t, i) => t + i.questions, 0);
+  const qs = tree.filter(w => !w.archived).flatMap(w => w.series.filter(s => !s.archived).flatMap(s => s.instances)).reduce((t, i) => t + i.questions.filter(e => e === me.email).length, 0);
   document.title = `${qs ? `(${qs}) ` : ''}${cur?.i ? cur.i.label + ' \u00b7 ' : ''}rollforward`;
   renderSide();
   renderBar();
@@ -391,7 +392,7 @@ function render() {
 
 function renderSide() {
   const listed = (x, on) => !x.archived || showArchived || on;
-  const asks = s => !s.archived && s.instances.some(i => i.questions);
+  const asks = s => !s.archived && s.instances.some(i => i.questions.length);
   const btn = (act, title, glyph) => `<button class="add" data-act="${act}" title="${title}">${glyph}</button>`;
   const waits = waiting().length;
   let h = waits ? `<div class="row waits"><a class="nm" data-act="waiting">Waiting on you<span class="q"> ${waits}</span></a></div>` : '';
@@ -418,7 +419,7 @@ function renderSide() {
       for (const r of s.requests) h += `<div class="row req"><span class="nm" title="${esc(r.reason)}">${esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)}</span>`
         + `<button class="add" data-act="req-start" data-id="${r.id}" title="Start it">\u25B6</button><button class="add" data-act="req-drop" data-id="${r.id}" title="Dismiss">\u00D7</button></div>`;
       for (const i of s.instances.filter(i => i.status === 'open' || showClosed || i.id === cur.i?.id)) {
-        const st = i.running ? '<span class="spin"></span> running' : i.queued ? '\u29D7 queued' : i.questions ? `<span class="q">${i.questions} question${i.questions > 1 ? 's' : ''}</span>` : i.wake ? `wakes ${when(i.wake)}` : i.status === 'open' ? '' : i.status;
+        const st = i.running ? '<span class="spin"></span> running' : i.queued ? '\u29D7 queued' : i.questions.length ? `<span class="q">${i.questions.length} question${i.questions.length > 1 ? 's' : ''}</span>` : i.wake ? `wakes ${when(i.wake)}` : i.status === 'open' ? '' : i.status;
         const k = `rev:/api/instances/${i.id}`;
         localStorage[k] ??= i.rev;
         h += `<a class="row inst ${i.status} ${cur.i?.id === i.id ? 'on' : ''}" href="#/${i.id}"><span class="nm">${esc(i.label)}${i.rev > +localStorage[k] ? '<span class="dot k"></span>' : ''}</span><span class="n">${st}</span></a>`;
@@ -735,14 +736,14 @@ function conversationHtml() {
   const open = data.doc.status === 'open', ts = threadsOf().sort((a, b) => a.resolved - b.resolved), name = id => esc(data.doc.items.find(i => i.id === id)?.name ?? id);
   const report = data.log.findLast(e => e.op === 'report'), qs = openQuestions();
   let h = `<div class="lh"><b>Conversation</b><button class="btn" data-act="conv">Close</button></div><div class="conv">`;
-  if (qs.length) h += `<h3>Open questions</h3>` + qs.map(({ i, n }) => `<div class="post"><a data-act="opencard" data-item="${esc(i.id)}">${esc(i.name)}</a>: ${esc(n.text)}</div>`).join('');
+  if (qs.length) h += `<h3>Open questions</h3>` + qs.map(({ i, n }) => `<div class="post"><a data-act="opencard" data-item="${esc(i.id)}">${esc(i.name)}</a>${n.ask ? ` (for ${esc(n.ask)})` : ''}: ${esc(n.text)}</div>`).join('');
   if (report) h += `<h3>Report, run ${report.run}</h3><div class="post">${md(report.text)}</div>`;
   for (const t of ts) {
     h += `<div class="thread ${t.resolved ? 'resolved' : ''}"><div class="on">${t.item ? `On <a data-act="opencard" data-item="${esc(t.item)}">${name(t.item)}</a>${t.ref ? ` at ${esc(t.ref)}` : ''}` : 'On the instance'}${t.resolved ? ' · resolved' : ''}</div>`
-      + t.posts.map(p => `<div class="post"><b class="${p.op === 'say' ? '' : 'p'}">${esc(p.op === 'say' ? 'Agent' : p.by)}</b> <span class="tm">${hhmm(p.at)}</span><div>${p.op === 'say' ? md(p.text) : esc(p.text)}</div></div>`).join('')
-      + (open && !t.resolved ? `<textarea rows="2" placeholder="Reply"></textarea><div class="row2"><button class="btn" data-act="reply-thread" data-thread="${esc(t.id)}">Reply</button><button class="btn" data-act="resolve" data-thread="${esc(t.id)}">Resolve</button></div>` : '') + '</div>';
+      + t.posts.map(p => `<div class="post"><b class="${p.op === 'say' ? '' : 'p'}">${esc(p.op === 'say' ? 'Agent' : p.by)}</b> <span class="tm">${hhmm(p.at)}</span><div>${p.op === 'say' ? md(p.text) : esc(p.text)}</div>${(p.files ?? []).map(f => `<div class="f"><a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a></div>`).join('')}</div>`).join('')
+      + (open && !t.resolved ? `<textarea rows="2" placeholder="Reply"></textarea><input type="file" multiple><div class="row2"><button class="btn" data-act="reply-thread" data-thread="${esc(t.id)}">Reply</button><button class="btn" data-act="resolve" data-thread="${esc(t.id)}">Resolve</button></div>` : '') + '</div>';
   }
-  if (open) h += `<h3>${ui.on ? `Comment on ${name(ui.on)}` : 'Comment on the instance'}</h3><textarea id="newcomment" rows="3" placeholder="The agent replies in the thread"></textarea><div><button class="btn primary" data-act="comment">Comment</button></div>`;
+  if (open) h += `<h3>${ui.on ? `Comment on ${name(ui.on)}${ui.ref ? ` at ${esc(ui.ref)}` : ''}` : 'Comment on the instance'}</h3><textarea id="newcomment" rows="3" placeholder="The agent replies in the thread"></textarea><input type="file" id="newfiles" multiple><div><button class="btn primary" data-act="comment">Comment</button></div>`;
   return h + '</div>';
 }
 
@@ -763,7 +764,7 @@ function renderCard() {
       const picked = questionState(n);
       h += `<div class="choices">${n.options.map((o, k) => `<button class="choice ${k === (n.default ?? 0) ? 'def' : ''} ${picked === k ? 'picked' : ''}" data-act="answer" data-note="${esc(n.id)}" data-choice="${k}" ${picked !== null || !open ? 'disabled' : ''}>${esc(o)}</button>`).join('')}</div>`;
       const got = picked !== null && (lastDone()?.seen ?? 0) >= data.log.findLast(e => e.op === 'answer' && e.note === n.id).seq;
-      h += `<div class="by">${picked !== null ? (got || !open ? 'Answered \u2713' : 'Answered \u00b7 <span class="spin"></span> the agent picks it up next') : `If unanswered at close: ${esc(n.options[n.default ?? 0])}`}</div>`;
+      h += `<div class="by">${picked !== null ? (got || !open ? 'Answered \u2713' : 'Answered \u00b7 <span class="spin"></span> the agent picks it up next') : `${n.ask ? `For ${esc(n.ask)}. ` : ''}If unanswered at close: ${esc(n.options[n.default ?? 0])}`}</div>`;
     }
     h += '</div>';
   }
@@ -812,7 +813,7 @@ function sheetTable(s, first) {
       const changed = old && JSON.stringify(was) !== JSON.stringify(v ?? null);
       const note = [noted.get(`${r},${c}`), changed ? `Was: ${cellText(was) || '(empty)'}` : ''].filter(Boolean).join('\n\n');
       const cls = `${typeof v === 'number' ? 'num' : ''} ${v && typeof v === 'object' ? 'fx' : ''} ${noted.has(`${r},${c}`) ? 'noted' : ''} ${asks.has(`${r},${c}`) ? 'q' : ''} ${changed ? 'chg' : ''}`.trim();
-      h += `<td${cls ? ` class="${cls}"` : ''}${note ? ` data-act="cellnote" data-note="${esc(note)}"` : ''}>${esc(cellText(v))}</td>`;
+      h += `<td${cls ? ` class="${cls}"` : ''} data-act="cell" data-ref="${esc(`${s.name}!${colName(c)}${r + 1}`)}"${note ? ` data-note="${esc(note)}"` : ''}>${esc(cellText(v))}</td>`;
     }
     h += '</tr>';
   });
@@ -948,7 +949,10 @@ function startHtml(s) {
 function waiting() {
   const out = [], at = (w, s, i) => `<a href="#/${i?.id ?? w.id}">${esc(w.name)} · ${esc(s.name)}${i ? ' · ' + esc(i.label) : ''}</a>`;
   for (const w of tree.filter(w => !w.archived)) for (const s of w.series.filter(s => !s.archived)) {
-    for (const i of s.instances.filter(i => i.questions && i.runner === me.email)) out.push(`<div class="wt">${at(w, s, i)}: ${i.questions} question${i.questions > 1 ? 's' : ''} for you</div>`);
+    for (const i of s.instances) {
+      const n = i.questions.filter(e => e === me.email).length;
+      if (n) out.push(`<div class="wt">${at(w, s, i)}: ${n} question${n > 1 ? 's' : ''} for you</div>`);
+    }
     for (const r of s.requests) out.push(`<div class="wt">${at(w, s)}: ${esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)} <button class="btn" data-act="req-start" data-id="${esc(r.id)}">Start</button></div>`);
     if (s.allow_wakes === me.email && !s.instances.some(i => i.status === 'open') && !s.wake && !s.requests.length) out.push(`<div class="wt">${at(w, s)}: wakes itself, but nothing is open and no wake is set</div>`);
   }
@@ -976,7 +980,7 @@ async function openStart(title, go, then, label) {
 
 async function preview(path, item) {
   const sheet = /\.(xlsx|xlsm|xls|csv|eml)$/i.test(path), text = /\.(md|txt|json|py|sql|log)$/i.test(path);
-  const p = pv = { title: fname(path), path, notes: item?.notes ?? [], sheet: 0, image: /\.(png|jpe?g|gif|webp|svg)$/i.test(path), was: item && data.log.findLast(e => e.op === 'point' && e.item === item.id && e.file === path)?.was, md: /\.md$/i.test(path), loading: sheet || text };
+  const p = pv = { title: fname(path), path, item: item?.id, notes: item?.notes ?? [], sheet: 0, image: /\.(png|jpe?g|gif|webp|svg)$/i.test(path), was: item && data.log.findLast(e => e.op === 'point' && e.item === item.id && e.file === path)?.was, md: /\.md$/i.test(path), loading: sheet || text };
   renderPv();
   try {
     if (sheet) Object.assign(p, await api(fileUrl(path, 'preview')));
@@ -1031,16 +1035,19 @@ document.addEventListener('click', async ev => {
   if (act === 'menu') $('#side').classList.toggle('open');
   if (act === 'log' || act === 'conv' || act === 'proc') {
     const open = !ui[act];
-    Object.assign(ui, { log: false, conv: false, proc: false, on: null, [act]: open });
+    Object.assign(ui, { log: false, conv: false, proc: false, on: null, ref: null, [act]: open });
     renderLog(); renderBar(); placeCard();
   }
-  if (act === 'comment-on') { Object.assign(ui, { log: false, conv: true, proc: false, on: el.dataset.item }); renderLog(); renderBar(); $('#newcomment')?.focus(); }
+  if (act === 'comment-on') { Object.assign(ui, { log: false, conv: true, proc: false, on: el.dataset.item, ref: null }); renderLog(); renderBar(); $('#newcomment')?.focus(); }
   if (act === 'comment' || act === 'reply-thread') {
     const box = act === 'comment' ? $('#newcomment') : el.closest('.thread').querySelector('textarea'), text = box.value.trim();
+    const picked = act === 'comment' ? $('#newfiles') : el.closest('.thread').querySelector('input[type=file]');
     if (!text) return;
-    await api(`${instPath()}/comment`, { method: 'POST', body: JSON.stringify(act === 'comment' ? { text, ...(ui.on && { item: ui.on }) } : { thread: el.dataset.thread, text }) });
+    const files = [];
+    for (const f of picked.files) files.push((await api(`${instPath()}/attach?name=${enc(f.name)}`, { method: 'POST', body: f })).file);
+    await api(`${instPath()}/comment`, { method: 'POST', body: JSON.stringify(act === 'comment' ? { text, files, ...(ui.on && { item: ui.on }), ...(ui.ref && { ref: ui.ref }) } : { thread: el.dataset.thread, text, files }) });
     box.value = '';
-    ui.on = null;
+    ui.on = ui.ref = null;
     await refresh();
   }
   if (act === 'resolve') {
@@ -1123,7 +1130,19 @@ document.addEventListener('click', async ev => {
   }
   if (act === 'duplicate') await openStart(`Copy ${cur.i.label}`, 'Copy', ({ label, logins }) => api(`${instPath()}/duplicate?as=${enc(label)}`, { method: 'POST', body: JSON.stringify({ logins }) }), `${cur.i.label} copy`);
   if (act === 'sheet') { pv.sheet = Number(el.dataset.k); renderPv(); }
-  if (act === 'cellnote') $('#pvn').textContent = el.dataset.note;
+  if (act === 'cell') {
+    // A cell's notes, and, on an item's file in an open instance, a comment on that cell.
+    const on = data?.doc.status === 'open' && pv.item;
+    put($('#pvn'), `${esc(el.dataset.note ?? '')}${on ? `<div><button class="btn" data-act="comment-cell" data-ref="${esc(el.dataset.ref)}">Comment on ${esc(el.dataset.ref)}</button></div>` : ''}`);
+  }
+  if (act === 'comment-cell') {
+    const item = pv.item;
+    pv = null;
+    renderPv();
+    Object.assign(ui, { log: false, conv: true, proc: false, on: item, ref: el.dataset.ref });
+    renderLog(); renderBar();
+    $('#newcomment')?.focus();
+  }
   if (act === 'toggle-closed') { showClosed = !showClosed; renderSide(); }
   if (act === 'toggle-archived') { showArchived = !showArchived; renderSide(); }
   if (act === 'add') {

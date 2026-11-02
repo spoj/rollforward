@@ -14,7 +14,7 @@ export function replaceReadOnly(path: string, text: string) {
   renameSync(path + '.tmp', path);
 }
 
-export type Note = { id?: string; ref?: string; text: string; files?: string[]; options?: string[]; default?: number };
+export type Note = { id?: string; ref?: string; text: string; files?: string[]; options?: string[]; default?: number; ask?: string };
 export type Item = { id: string; name: string; kind: 'input' | 'step' | 'output'; file: string | null; from?: string[]; headline?: string; source?: string; notes?: Note[] };
 export type Doc = { rev: number; status: 'open' | 'closed' | 'abandoned'; items: Item[] };
 export type Entry = { seq: number; at: string; by: string; op: string; [k: string]: unknown };
@@ -176,14 +176,20 @@ export class Instance {
     return this.log.findLast(e => e.op === 'close')?.at ?? '';
   }
 
-  upload(by: string, name: string, tmp: string, sha256: string, pane: 'in' | 'out', onto: string | null) {
+  // Keeps a person's file under folder/ of upload/, read-only, under its own name made unique; answers its path in the instance.
+  keep(name: string, tmp: string, folder = 'upload'): string {
     if (this.doc.status !== 'open') throw new HttpError(409, 'the instance was closed during the upload');
     const clean = safeName(name), ext = extname(clean), stem = clean.slice(0, clean.length - ext.length);
-    mkdirSync(join(this.dir, 'upload'), { recursive: true });
-    let file = `upload/${clean}`;
-    for (let n = 2; existsSync(join(this.dir, file)); n++) file = `upload/${stem}_${n}${ext}`;
+    mkdirSync(join(this.dir, folder), { recursive: true });
+    let file = `${folder}/${clean}`;
+    for (let n = 2; existsSync(join(this.dir, file)); n++) file = `${folder}/${stem}_${n}${ext}`;
     renameSync(tmp, join(this.dir, file));
     chmodSync(join(this.dir, file), 0o444);
+    return file;
+  }
+
+  upload(by: string, name: string, tmp: string, sha256: string, pane: 'in' | 'out', onto: string | null) {
+    const file = this.keep(name, tmp), clean = safeName(name), stem = clean.slice(0, clean.length - extname(clean).length);
     const up = this.append(by, 'upload', { file, pane, onto, sha256 });
     let id = `u${up.seq}`;
     for (let n = 2; this.doc.items.some(i => i.id === id); n++) id = `u${up.seq}_${n}`;
@@ -249,6 +255,7 @@ export class Instance {
           if (!n.id || questions.has(n.id)) errors.push(`${i.id}: question id missing or repeated: ${JSON.stringify(n.id)}`);
           questions.add(n.id!);
           if (!Array.isArray(n.options) || n.options.length < 2 || !n.options[n.default ?? 0]) errors.push(`${i.id}: question ${n.id} needs 2+ options and a valid default`);
+          if (n.ask !== undefined && !/^[^\s@]+@[^\s@]+$/.test(n.ask)) errors.push(`${i.id}: question ${n.id}'s "ask" is a person's email`);
         }
       }
     }
