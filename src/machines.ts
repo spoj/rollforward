@@ -67,9 +67,11 @@ export async function viewPage(email: string, id: string): Promise<string> {
   return (await call('GET', `/sessions/${id}/view`)).toString();
 }
 
-// Ends a sign-in; with `save`, what the browser holds becomes the person's login to the site, replacing any before.
+// Ends a sign-in; with `save`, what the browser holds becomes the person's login to the site, replacing any before. Signing in
+// takes requests the person makes in control of the browser, so with none there is nothing to save yet.
 export async function endSignIn(email: string, id: string, save: boolean) {
   if (!isSignIn(email, id)) throw new HttpError(404, 'no such sign-in');
+  if (save && !(await json('GET', `/sessions/${id}/log`)).some((e: { live?: true }) => e.live)) throw new HttpError(409, 'Take control and sign in first, then Save login.');
   const { site } = signIns.get(id)!, { state } = await close(id), name = skill(site)!.name;
   signIns.delete(id);
   if (save) saveLogin(email, { id: `web:${site}`, kind: 'website', name, since: new Date().toISOString(), offers: [{ id: `web:${site}`, name }] }, JSON.stringify(state));

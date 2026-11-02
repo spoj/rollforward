@@ -79,6 +79,7 @@ describe('website logins', { skip: !process.env.RF_MACHINES_URL && 'needs the ma
     assert.match(await (await call('GET', `/signins/${id}/view`)).text(), /Take control/);
     assert.equal((await call('GET', `/signins/${id}/view`, undefined, bob)).status, 404, "nobody else's sign-in");
     await assert.rejects(chromium.connectOverCDP(`${ws}/drive`, { headers: { cookie: bob } }), /404/);
+    assert.equal(await (await call('POST', `/signins/${id}`)).text(), 'Take control and sign in first, then Save login.', 'nothing to save before the person signs in');
     const person = await chromium.connectOverCDP(`${ws}/drive`, { headers: { cookie: admin } });
     const page = person.contexts()[0].pages()[0];
     await page.fill('input[name=user]', 'alice');
