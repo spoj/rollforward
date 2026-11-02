@@ -72,6 +72,7 @@ rename or a move never moves a folder.
                               egress.json (hosts runs may reach), tokens.json and token-uses.jsonl, and the keys session.key,
                               seal.key and systems.key
     guidance/                 company.md, the admins', and <workspace id>.md, each workspace's owners'
+    derived/                  <sha256>.txt, the text of a workbook, mail, PDF or Word file, for rf search
     skills/                   versions/<id>/<n>/, each pushed version with its .pushed.json, and live/<id>, a link to the one runs use
       tree.json               {"workspaces": {id: {name, owners, members, archived?}}, "series": {id: {name, workspace, archived?}}}
     series/<id>/              a series
@@ -101,6 +102,7 @@ rename or a move never moves a folder.
 - **`rf`** is a small command on the agent's `PATH`:
   - `rf show` prints the screen, `workspace.json`, including its `rev`, which the server bumps on every change.
   - `rf say THREAD TEXT` replies in a comment thread; the server logs it as `say`.
+  - `rf search PATTERN [FOLDER …]` finds a regular expression, in any case, in every file of every instance in the run's reach: text files by their lines, and workbooks, mail, PDFs and Word files by the text [src/extract.py](src/extract.py) reads of them (a workbook a line per row, `Sheet!row: A1=… | B1=…`), kept in the data root's `derived/` by the file's sha256 so each is read once ([src/search.ts](src/search.ts)).
   - `rf put FILE` replaces the screen with FILE. The server rejects it if its `rev` isn't current, because someone changed the screen since the agent read it; the agent then re-reads and merges. It also rejects an invalid document, listing the reasons.
   - **Valid** means:
     - every item has a unique id, a name, and a kind of input, step or output;

@@ -88,7 +88,7 @@ Built: `process.md` as the people's document and a review sheet with every insta
 
 ## Knowledge
 
-Built: guidance, the company's and each workspace's, and the catalogue, both in each run's view (PLAN.md, decision 39), and skills published with `rf skill push` (decision 41). Still to come: `rf search`.
+Built: guidance, the company's and each workspace's, and the catalogue, both in each run's view (PLAN.md, decision 39), and skills published with `rf skill push` (decision 41), and `rf search` over every file in reach, with workbooks', mail's, PDFs' and Word files' text kept by hash.
 
 - **The archive is the instances.** Agents find and weigh what they need when they need it; nothing is classified on the way in.
 - **Reach** is the workspace, plus any workspace every member of this one belongs to. Everything in reach is mounted read-only in the run's sandbox, at a stable path.
