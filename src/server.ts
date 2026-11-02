@@ -17,7 +17,7 @@ import { endSignIn, isSignIn, passUpgrade, startSignIn, viewPage } from './machi
 import { offer, unoffer } from './m365.ts';
 import { seriesSettings } from './series.ts';
 import { checkChosen, openSkills, pushSkill, saveSkillConfig, skill, skills, skillView, versionFiles, versionsOf } from './skills.ts';
-import { active, byToken, cancelWake, closed, dropRequest, kick, MAX_OPEN, named, queued, reach, setWake, startWaking, startWith, wakeFrom, wakes } from './waker.ts';
+import { active, byToken, cancelWake, closed, dropRequest, kick, MAX_OPEN, named, queued, reach, resolveFor, setWake, startWaking, startWith, wakes, type Active } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -45,17 +45,13 @@ function send(res: ServerResponse, status: number, data: unknown) {
   res.end(typeof data === 'string' ? data : JSON.stringify(data, null, 1));
 }
 
+// A run, on its sandbox's socket, by its token: on /api a caller like any person, with the few rights api() gives a run; on /agent
+// what only a run has, its series' skills and its runner's logins and machines.
+type Caller = Me & { run?: Active };
 async function agent(req: IncomingMessage, res: ServerResponse, url: URL) {
   const a = byToken.get(req.headers.authorization?.replace('Bearer ', '') ?? '');
   if (!a) throw new HttpError(401, 'no run for this token');
-  if (url.pathname === '/agent/workspace' && req.method === 'GET') return send(res, 200, a.inst.doc);
-  if (url.pathname === '/agent/workspace' && req.method === 'PUT') return send(res, 200, `saved, rev ${a.inst.put((await body(req)).toString())}`);
-  if (url.pathname === '/agent/say' && req.method === 'POST') {
-    const [thread = '', ...words] = ((await json(req)).args ?? []).map(String), text = words.join(' ').trim();
-    if (!threads(a.inst).includes(thread) || !text) throw new HttpError(400, `rf say THREAD TEXT, THREAD one of this instance's threads: ${threads(a.inst).join(', ') || 'none yet'}`);
-    return send(res, 200, `said, seq ${a.inst.append('agent', 'say', { thread, text }).seq}`);
-  }
-  if (url.pathname === '/agent/wake' && req.method === 'POST') return send(res, 200, wakeFrom(a, ((await json(req)).args ?? []).map(String)));
+  if (url.pathname.startsWith('/api/')) return api({ email: 'agent', name: 'Agent', role: 'user', groups: [], run: a }, req, res, url);
   // Skills and machines: rf skills, rf settings, rf files, rf mail, rf browser, rf windows (see agent-api.ts).
   // A login the run's runner must sign in to again is logged, so the instance carries on once they do.
   const r = await agentCall(a, url.pathname, req.method ?? 'GET', url.searchParams, () => body(req)).catch((e: HttpError & { login?: string }) => {
@@ -180,11 +176,21 @@ const people = (w: { owners?: unknown; members?: unknown }) => [w.owners, w.memb
 
 // Workspaces, series and instances, by id. Renaming a workspace or a series edits .rf/tree.json, so it may happen mid-run; a run sees
 // the new names from its next start.
-async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) {
+async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: URL) {
   const [kind, id = '', action] = url.pathname.split('/').slice(2).map(decodeURIComponent);
+  // A run reads and writes its own instance's screen and threads, sets wakes in its own workspace, and finds what a folder it can
+  // read names; nothing else here.
+  const run = me.run;
+  if (run && !(kind === 'instances' && id === run.inst.id && (action === 'screen' || action === 'comment')) && !(kind === 'wakes' && req.method === 'PUT') && kind !== 'resolve')
+    throw new HttpError(404, 'not found');
   // The body before the tree: a request held open must not save a tree from before others' changes, such as an owner's removal.
-  const payload = action === 'upload' || action === 'attach' ? {} : await json(req);
+  const payload = ['upload', 'attach', 'screen'].includes(action) ? {} : await json(req);
   const t = tree(), by = me.email;
+  if (kind === 'resolve') {
+    if (!run) throw new HttpError(404, 'not found');
+    const target = resolveFor(run, url.searchParams.get('path') ?? '');
+    return send(res, 200, { id: target, kind: t.series[target] ? 'series' : 'instance' });
+  }
   if (kind === 'workspaces' && !id && req.method === 'POST') {
     const name = safeName(String(payload.name ?? ''));
     if (Object.values(t.workspaces).some(w => w.name === name)) throw new HttpError(409, `the name ${name} is taken; choose another`);
@@ -248,16 +254,20 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
   // A pending wake, which people may move or cancel, and a request to start an instance, which they start or dismiss.
   if (kind === 'wakes') {
     // A person moves or cancels a pending wake, or sets one, as an agent's rf wake does: an open instance continues, a series starts LABEL.
+    // A run wakes only in its own workspace: it reads wider ones, never acts there.
     const target = t.series[id] ? id : instance(id).seriesId, wake = wakes().pending[id];
-    mustSee(me, t.workspaces[t.series[target].workspace]);
+    if (!run) mustSee(me, t.workspaces[t.series[target].workspace]);
+    else if (t.series[target].workspace !== t.series[run.inst.seriesId].workspace) throw new HttpError(403, `${named(t, target)} is in another workspace: you can read it, not wake it`);
     if (req.method === 'DELETE' && !wake) throw new HttpError(404, 'no wake pending');
     if (req.method === 'DELETE') return void (cancelWake(id), send(res, 200, 'ok'));
-    const { at: when, reason, label } = payload, at = Date.parse(String(when));
-    if (req.method !== 'PUT' || Number.isNaN(at)) throw new HttpError(400, 'PUT {"at": a date and time, "reason", "label" for a series}, or DELETE');
+    const { at: when = '', reason, label } = payload, w = String(when);
+    const at = w === 'now' ? Date.now() : /^\+\d+[mhd]$/.test(w) ? Date.now() + Number(w.slice(1, -1)) * { m: 60e3, h: 3600e3, d: 86400e3 }[w.at(-1) as 'm'] : Date.parse(w);
+    if (req.method !== 'PUT' || Number.isNaN(at)) throw new HttpError(400, 'PUT {"at", "reason", "label" for a series}, or DELETE; at is now, +<n>m|h|d, or a date and time such as 2026-09-14T07:00+08:00');
     if (!wake && !reason) throw new HttpError(400, 'a new wake has a reason');
     if (!wake && t.series[id] && !label) throw new HttpError(400, 'waking a series starts a new instance: name it with a label');
-    if (!t.series[id] && instance(id).doc.status !== 'open') throw new HttpError(409, `${instance(id).label} is ${instance(id).doc.status}: to correct it, wake its series`);
-    return send(res, 200, setWake(id, { ...wake, at: new Date(at).toISOString(), from: by, ...(reason && { reason }), ...(label && { label }) }));
+    if (!t.series[id] && instance(id).doc.status !== 'open') throw new HttpError(409, `${instance(id).label} is ${instance(id).doc.status}: to correct it, wake its series with the label ${instance(id).label}-r2`);
+    const from = run ? `${named(t, run.inst.seriesId)}/${run.inst.label}` : by;
+    return send(res, 200, setWake(id, { ...wake, at: new Date(at).toISOString(), from, ...(reason && { reason }), ...(label && { label }) }));
   }
   if (kind === 'requests') {
     const r = wakes().requests[id];
@@ -274,12 +284,16 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
   }
   if (kind !== 'instances') throw new HttpError(404, 'not found');
   const inst = instance(id);
-  mustSee(me, t.workspaces[t.series[inst.seriesId].workspace]);
+  if (!run) mustSee(me, t.workspaces[t.series[inst.seriesId].workspace]);
   const a = active.get(inst.seriesId);
   const mine = a?.inst === inst ? a : undefined;
   if (!action) return send(res, 200, { doc: inst.doc, log: inst.log, run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4) } : null, queued: queued(inst), runner: runnerOf(inst) });
   if (action === 'trace') return send(res, 200, trace(inst));
   if (action === 'summary') return send(res, 200, summary(inst));
+  // The screen: anyone who sees the instance reads it; only its own run writes it.
+  if (action === 'screen' && req.method === 'GET') return send(res, 200, inst.doc);
+  if (action === 'screen' && req.method === 'PUT' && run) return send(res, 200, `saved, rev ${inst.put((await body(req)).toString())}`);
+  if (action === 'screen') throw new HttpError(405, "GET, or PUT by the instance's own run");
   if (action === 'files') {
     // By hand, never into a link: a run may have made links anywhere in working/.
     const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(d => d.isDirectory() ? walk(join(dir, d.name)) : d.isFile() ? [join(dir, d.name)] : []);
@@ -335,9 +349,12 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
     const { thread, item, ref, text, files = [] } = payload;
     if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a comment has text');
     for (const f of files) if (typeof f !== 'string' || !f.startsWith('upload/attachments/') || f.includes('..') || !existsSync(join(inst.dir, f))) throw new HttpError(400, `no attachment ${f}`);
-    if (thread !== undefined && !threads(inst).includes(thread)) throw new HttpError(400, `no thread ${thread}`);
+    if (thread !== undefined && !threads(inst).includes(thread)) throw new HttpError(400, `no thread ${thread}; this instance's threads: ${threads(inst).join(', ') || 'none yet'}`);
     if (item !== undefined && !inst.doc.items.some(i => i.id === item)) throw new HttpError(400, `no item ${item}`);
-    inst.append(by, 'comment', { thread: thread ?? `c${inst.log.length + 1}`, ...(thread === undefined && { item: item ?? null, ref: ref ?? null }), text: text.trim(), ...(files.length && { files }) });
+    // The agent answers in a thread people started, and its words wake nothing.
+    if (run && thread === undefined) throw new HttpError(400, `rf say THREAD TEXT, THREAD one of this instance's threads: ${threads(inst).join(', ') || 'none yet'}`);
+    const said = inst.append(by, 'comment', { thread: thread ?? `c${inst.log.length + 1}`, ...(thread === undefined && { item: item ?? null, ref: ref ?? null }), text: text.trim(), ...(files.length && { files }) });
+    if (run) return send(res, 200, `said, seq ${said.seq}`);
   } else if (action === 'resolve') {
     const { thread } = payload;
     if (!threads(inst).includes(thread)) throw new HttpError(400, `no thread ${thread}`);

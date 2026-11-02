@@ -8,8 +8,9 @@ import { day, filesGet, filesList, localDate, mailFind, mailSave, type Args } fr
 import { seriesSettings } from './series.ts';
 import { settingsOf, skill, skillMissing, type Skill } from './skills.ts';
 
-// The agent's use of its series' skills, behind `rf`: shared by the server, for runs, and by `cli.ts try`, which lets an admin run
-// a skill's steps without the model.
+// What only a run has, behind `rf`: its series' skills and its runner's logins and machines. (For its own instance, its screen,
+// threads and wakes, `rf` calls the people's API; see server.ts.) Shared by the server, for runs, and by `cli.ts try`, which lets
+// an admin run a skill's steps without the model.
 //   GET  /agent/skills             the series' skills, and how to use them
 //   GET  /agent/settings?skill=ID  a chosen skill's settings, as JSON
 //   POST /agent/files {args}       rf files list|get …, through the runner's Microsoft 365 login, as far as the instance's ticks offer

@@ -90,6 +90,9 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB] })).status, 200);
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec' })).json();
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
+  const { id: wide } = await (await call('POST', '/api/workspaces', { name: 'Wide' })).json();
+  assert.equal((await call('PUT', `/api/workspaces/${wide}`, { members: [BOB] })).status, 200);
+  assert.equal((await call('POST', '/api/series', { workspace: wide, name: 'Close' })).status, 200);
   const walls: Script = {
     bash: [
       `cat ${join(root, '.rf', 'seal.key')} 2>&1 | head -1`,
@@ -97,6 +100,12 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
       'curl -s -m 5 https://10.1.2.3/ 2>&1; echo "curl exit $?"',
       'rf mail find --mailbox ceo@demo.test 2>&1',
       () => `rf wake 2026-11 ${new Date(Date.now() + 2500).toISOString()} the bank file comes later 2>&1`,
+      'rf wake ../../Wide/Close now the close can start --label 2026-11 2>&1',
+      'rf wake . soon why 2>&1',
+      'rf wake . +1d the next month 2>&1',
+      'rf say c2 Walls checked. 2>&1',
+      'rf say c9 x 2>&1',
+      'rf show 2>&1 | head -c 200',
     ],
     report: 'Checked the walls, and woke myself for the bank file.', saw: [],
   };
@@ -113,6 +122,13 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.deepEqual(log.filter(e => e.op === 'egress').map(e => [e.run, e.host, e.allowed]), [[1, '10.1.2.3', false]]);
   assert.match(walls.saw[3], /m365:mail:ceo@demo.test is not ticked for this instance; its runner, admin@demo.test/);
   assert.match(walls.saw[4], /^set: 2026-11 wakes at /);
+  assert.match(walls.saw[5], /Wide\/Close is in another workspace: you can read it, not wake it/);
+  assert.match(walls.saw[6], /at is now, \+<n>m\|h\|d, or a date/);
+  assert.match(walls.saw[7], /name it with a label/);
+  assert.match(walls.saw[8], /^said, seq \d+\s*$/);
+  assert.match(walls.saw[9], /no thread c9; this instance's threads: c2/);
+  assert.match(walls.saw[10], /"rev": \d+,\s+"status": "open"/);
+  assert.deepEqual(log.filter(e => e.op === 'comment' && e.by === 'agent').map(e => [e.thread, e.text]), [['c2', 'Walls checked.']], "the agent's reply is a comment of its own");
   assert.match(woken.prompt!, /"op":"wake".*the bank file comes later/, 'the wake started the next run');
   assert.match(woken.saw[0], /m365:mail:admin@demo.test is not ticked/);
   assert.deepEqual(log.filter(e => e.op === 'done').map(e => [e.run, e.aborted]), [[1, false], [2, false]]);

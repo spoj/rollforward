@@ -601,7 +601,7 @@ function logText(e) {
     interrupt: () => `${w} interrupted the run`,
     close: () => `${w} closed the instance`,
     abandon: () => `${w} abandoned the instance`,
-    comment: () => `${w} commented${e.item ? ` on ${item(e.item)}${e.ref ? ` at ${esc(e.ref)}` : ''}` : ''}<div class="d">${esc(e.text)}</div>`,
+    comment: () => e.by === 'agent' ? `${w} replied<div class="d">${esc(e.text)}</div>` : `${w} commented${e.item ? ` on ${item(e.item)}${e.ref ? ` at ${esc(e.ref)}` : ''}` : ''}<div class="d">${esc(e.text)}</div>`,
     say: () => `${w} replied<div class="d">${esc(e.text)}</div>`,
     steer: () => `${w} steered<div class="d">${esc(e.text)}</div>`,
     reply: () => `${w} replied<div class="d">${esc(e.text)}</div>`,
@@ -770,7 +770,7 @@ function conversationHtml() {
   if (report) h += `<h3>Report, run ${report.run}</h3><div class="post">${md(report.text)}</div>`;
   for (const t of ts) {
     h += `<div class="thread ${t.resolved ? 'resolved' : ''}"><div class="on">${t.item ? `On <a data-act="opencard" data-item="${esc(t.item)}">${name(t.item)}</a>${t.ref ? ` at ${esc(t.ref)}` : ''}` : 'On the instance'}${t.resolved ? ' · resolved' : ''}</div>`
-      + t.posts.map(p => `<div class="post"><b class="${p.op === 'say' ? '' : 'p'}">${esc(p.op === 'say' ? 'Agent' : p.by)}</b> <span class="tm">${hhmm(p.at)}</span><div>${p.op === 'say' ? md(p.text) : esc(p.text)}</div>${(p.files ?? []).map(f => `<div class="f"><a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a></div>`).join('')}</div>`).join('')
+      + t.posts.map(p => `<div class="post"><b class="${p.op === 'say' || p.by === 'agent' ? '' : 'p'}">${esc(p.op === 'say' || p.by === 'agent' ? 'Agent' : p.by)}</b> <span class="tm">${hhmm(p.at)}</span><div>${p.op === 'say' ? md(p.text) : esc(p.text)}</div>${(p.files ?? []).map(f => `<div class="f"><a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a></div>`).join('')}</div>`).join('')
       + (open && !t.resolved ? `<textarea rows="2" placeholder="Reply"></textarea><input type="file" multiple><div class="row2"><button class="btn" data-act="reply-thread" data-thread="${esc(t.id)}">Reply</button><button class="btn" data-act="resolve" data-thread="${esc(t.id)}">Resolve</button></div>` : '') + '</div>';
   }
   if (open) h += `<h3>${ui.on ? `Comment on ${name(ui.on)}${ui.ref ? ` at ${esc(ui.ref)}` : ''}` : 'Comment on the instance'}</h3><textarea id="newcomment" rows="3" placeholder="The agent replies in the thread"></textarea><input type="file" id="newfiles" multiple><div><button class="btn primary" data-act="comment">Comment</button></div>`;

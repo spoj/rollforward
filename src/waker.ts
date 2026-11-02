@@ -114,7 +114,7 @@ async function start(inst: Instance) {
   inst.append('server', 'run', { run: n, upto: a.sent, skills: Object.fromEntries(chosen.map(id => [id, pushed(skill(id)!).version])) });
   try {
     a.run = await startRun({
-      token: a.token, view: a.view,
+      token: a.token, id: inst.id, view: a.view,
       message: text, skills: chosen,
       onEvent: e => {
         if (e.type === 'message_end' || e.type === 'tool_execution_end') changes.emit('change', inst.id); // Advanced shows the run as it goes
@@ -285,26 +285,14 @@ export function startWaking() {
   setInterval(fire, Number(process.env.RF_WAKE_TICK_MS ?? 60_000)).unref();
 }
 
-// rf wake TARGET AT REASON [--label LABEL], TARGET being a folder as the run sees it: an instance, such as its own label or
-// ../<series>/<label>, which the wake continues; or a series, such as . or ../<series> or ../../<workspace>/<series>, which it starts
-// a new instance of, labelled LABEL. It reaches only what the run can read.
-export function wakeFrom(a: Active, args: string[]): string {
-  const i = args.indexOf('--label'), label = i >= 0 ? args[i + 1] : undefined, [target, at, ...why] = i >= 0 ? [...args.slice(0, i), ...args.slice(i + 2)] : args;
-  const usage = 'rf wake TARGET AT REASON [--label LABEL]: TARGET an instance folder or a series folder, AT now, +<n>m|h|d or a date and time such as 2026-09-14T07:00+08:00';
-  if (!target || !at || !why.length) throw new HttpError(400, usage);
-  const when = at === 'now' ? Date.now() : at.startsWith('+') ? Date.now() + Number(at.slice(1, -1)) * ({ m: 60e3, h: 3600e3, d: 86400e3 }[at.at(-1)!] ?? NaN) : Date.parse(at);
-  if (Number.isNaN(when)) throw new HttpError(400, usage);
-  const t = tree(), full = posix.normalize(posix.join(a.view.cwd, target)).split('/'), path = full.slice(2);
+// A folder as a run sees it: an instance, such as its own label or ../<series>/<label>, or a series, such as . or ../<series> or
+// ../../<workspace>/<series>; answered by id, if the run can read it.
+export function resolveFor(a: Active, folder: string): string {
+  const t = tree(), full = posix.normalize(posix.join(a.view.cwd, folder)).split('/'), path = full.slice(2);
   const sid = Object.keys(t.series).find(id => t.series[id].name === path[1] && t.workspaces[t.series[id].workspace].name === path[0]);
-  if (full[1] !== 'work' || path.length < 2 || path.length > 3 || !sid || (sid !== a.inst.seriesId && !reach(t, a.inst.seriesId).includes(sid))) throw new HttpError(404, `no series you can read at ${target}`);
-  if (t.series[sid].workspace !== t.series[a.inst.seriesId].workspace) throw new HttpError(403, `${target} is in another workspace: you can read it, not wake it`);
-  const from = `${named(t, a.inst.seriesId)}/${a.inst.label}`, reason = why.join(' ');
-  if (path.length === 2) {
-    if (!label) throw new HttpError(400, `waking a series starts a new instance: name it with --label`);
-    return `set: ${target} starts ${label} at ${setWake(sid, { at: new Date(when).toISOString(), reason, from, label }).at}`;
-  }
+  if (full[1] !== 'work' || path.length < 2 || path.length > 3 || !sid || (sid !== a.inst.seriesId && !reach(t, a.inst.seriesId).includes(sid))) throw new HttpError(404, `no series you can read at ${folder}`);
+  if (path.length === 2) return sid;
   const id = labels(sid).find(l => l.label === path[2])?.id;
   if (!id) throw new HttpError(404, `no instance ${path[2]} in ${t.series[sid].name}`);
-  if (instance(id).doc.status !== 'open') throw new HttpError(409, `${path[2]} is ${instance(id).doc.status}: to correct it, wake its series with --label ${path[2]}-r2`);
-  return `set: ${target} wakes at ${setWake(id, { at: new Date(when).toISOString(), reason, from }).at}`;
+  return id;
 }

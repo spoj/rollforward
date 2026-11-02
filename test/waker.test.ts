@@ -10,7 +10,7 @@ import type { Active } from '../src/waker.ts';
 // Wakes without a model: a run that a wake starts ends at once for want of a key, which is enough to see what started it.
 delete process.env.OPENROUTER_API_KEY;
 process.env.RF_WAKE_TICK_MS = '50';
-const { closed, recover, setWake, startWaking, wakeFrom, wakes } = await import('../src/waker.ts');
+const { closed, recover, resolveFor, setWake, startWaking, wakes } = await import('../src/waker.ts');
 const { saveLogin } = await import('../src/logins.ts');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-wake-')), alice = 'alice@demo.test';
 initSystem(tmp);
@@ -37,18 +37,14 @@ startWaking();
 
 after(() => rmSync(tmp, { recursive: true, force: true }));
 
-test('rf wake names its target as the run sees it, within its reach, and refuses what it cannot wake', () => {
-  assert.throws(() => wakeFrom(run, ['now']), /rf wake TARGET AT REASON/);
-  assert.throws(() => wakeFrom(run, ['2026-09', 'soon', 'why']), /AT now/);
-  assert.throws(() => wakeFrom(run, ['2026-08', 'now', 'redo']), /2026-08 is closed: to correct it, wake its series with --label 2026-08-r2/);
-  assert.throws(() => wakeFrom(run, ['.', 'now', 'next month']), /name it with --label/);
-  assert.throws(() => wakeFrom(run, ['../../Hidden/Payroll', 'now', 'x', '--label', 'y']), /no series you can read/);
-  assert.throws(() => wakeFrom(run, ['../../../x/Acme/Bank rec', 'now', 'x', '--label', 'y']), /no series you can read/);
-  assert.match(wakeFrom(run, ['2026-10', '+2h', 'the', 'bank', 'file', 'is', 'late']), /2026-10 wakes at/);
-  assert.equal(wakes().pending[oct.id].reason, 'the bank file is late');
-  assert.equal(wakes().pending[oct.id].from, 'Acme/Bank rec/2026-09');
-  assert.match(wakeFrom(run, ['../Borrowing base', '2026-11-02T07:00+08:00', 'rec done', '--label', '2026-10']), /starts 2026-10 at 2026-11-01T23:00:00.000Z/);
-  assert.throws(() => wakeFrom(run, ['../../Main/Close', 'now', 'x', '--label', 'y']), /in another workspace: you can read it, not wake it/);
+test('a run names a series or an instance by its folder, within its reach', () => {
+  assert.equal(resolveFor(run, '2026-10'), oct.id);
+  assert.equal(resolveFor(run, '.'), 's1');
+  assert.equal(resolveFor(run, '../Borrowing base'), 's2');
+  assert.equal(resolveFor(run, '../../Main/Close'), 's5', 'a wider workspace is in reach');
+  assert.throws(() => resolveFor(run, '../../Hidden/Payroll'), /no series you can read/);
+  assert.throws(() => resolveFor(run, '../../../x/Acme/Bank rec'), /no series you can read/);
+  assert.throws(() => resolveFor(run, '2026-13'), /no instance 2026-13 in Bank rec/);
 });
 
 test('a due wake continues an open instance, as a reply does; one more than 15 minutes after its last is moved', async () => {

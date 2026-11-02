@@ -5,8 +5,9 @@ import { dirname, join } from 'node:path';
 const [cmd, ...args] = process.argv.slice(2);
 const arg = args.join(' ');
 // node:http, not fetch, which gives up on an answer after 5 minutes: rf windows run waits as long as its script runs.
+// The run calls the people's API for its own instance (/api), and /agent for what only a run has.
 const send = (method: string, path: string, body?: string | Buffer) => new Promise<{ ok: boolean; text: string }>((ok, fail) => {
-  const req = request(`${process.env.RF_URL}/agent/${path}`, { method, headers: { authorization: `Bearer ${process.env.RF_TOKEN}` } }, res => {
+  const req = request(`${process.env.RF_URL}/${path}`, { method, headers: { authorization: `Bearer ${process.env.RF_TOKEN}` } }, res => {
     const chunks: Buffer[] = [];
     res.on('data', c => chunks.push(c)).on('end', () => ok({ ok: res.statusCode! < 300, text: Buffer.concat(chunks).toString() }));
   });
@@ -36,13 +37,25 @@ if (upload !== undefined && !existsSync(local(upload))) {
   process.exit(1);
 }
 
+const own = `api/instances/${process.env.RF_INSTANCE}`;
+// rf wake TARGET AT REASON [--label LABEL]: the folder becomes an id, then the wake is set as a person sets one.
+const wake = async () => {
+  const i = args.indexOf('--label'), label = i >= 0 ? args[i + 1] : undefined, [target, at, ...why] = i >= 0 ? [...args.slice(0, i), ...args.slice(i + 2)] : args;
+  if (!target || !at || !why.length) return { ok: false, text: 'rf wake TARGET AT REASON [--label LABEL]: TARGET an instance folder or a series folder, AT now, +<n>m|h|d or a date and time such as 2026-09-14T07:00+08:00' };
+  const found = await send('GET', `api/resolve?path=${encodeURIComponent(target)}`);
+  if (!found.ok) return found;
+  const { id, kind } = JSON.parse(found.text), set = await send('PUT', `api/wakes/${id}`, JSON.stringify({ at, reason: why.join(' '), label }));
+  return set.ok ? { ok: true, text: `set: ${target} ${kind === 'series' ? `starts ${label}` : 'wakes'} at ${JSON.parse(set.text).at}` } : set;
+};
+
 let res;
-if (cmd === 'show') res = await send('GET', 'workspace');
-else if (cmd === 'put' && arg) res = await send('PUT', 'workspace', readFileSync(arg === '-' ? 0 : arg));
-else if (cmd === 'say' && args.length >= 2) res = await send('POST', 'say', JSON.stringify({ args: args[1] === '-' ? [args[0], readFileSync(0, 'utf8')] : args }));
-else if (cmd === 'skills') res = await send('GET', 'skills');
-else if (cmd === 'settings') res = await send('GET', `settings?skill=${encodeURIComponent(args[0] ?? '')}`);
-else if (['files', 'mail', 'browser', 'windows', 'wake'].includes(cmd) && args.length >= 1) res = await send('POST', cmd, JSON.stringify({ args, ...(upload && { data: readFileSync(local(upload)).toString('base64') }) }));
+if (cmd === 'show') res = await send('GET', `${own}/screen`);
+else if (cmd === 'put' && arg) res = await send('PUT', `${own}/screen`, readFileSync(arg === '-' ? 0 : arg));
+else if (cmd === 'say' && args.length >= 2) res = await send('POST', `${own}/comment`, JSON.stringify({ thread: args[0], text: args[1] === '-' ? readFileSync(0, 'utf8') : args.slice(1).join(' ') }));
+else if (cmd === 'wake') res = await wake();
+else if (cmd === 'skills') res = await send('GET', 'agent/skills');
+else if (cmd === 'settings') res = await send('GET', `agent/settings?skill=${encodeURIComponent(args[0] ?? '')}`);
+else if (['files', 'mail', 'browser', 'windows'].includes(cmd) && args.length >= 1) res = await send('POST', `agent/${cmd}`, JSON.stringify({ args, ...(upload && { data: readFileSync(local(upload)).toString('base64') }) }));
 else {
   console.error('usage: rf show | rf put FILE | rf say THREAD TEXT|- | rf skills | rf settings [SKILL] | rf files list LINK|REF | rf files get LINK|REF FILE'
     + ' | rf mail find [--mailbox ADDRESS] [--date YYYY-MM-DD] [--subject TEXT] [--from TEXT] [--attachments] | rf mail save ID [--mailbox ADDRESS] [--name REGEX] [--prefix TEXT]'

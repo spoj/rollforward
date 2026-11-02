@@ -42,7 +42,7 @@ mkdirSync(i('w2/session'));
 writeFileSync(i('w2/session/main.jsonl'), `${JSON.stringify({ type: 'session', id: 'main', cwd: '/work/ws/Old name' })}\n`);
 const cwd = '/work/ws/Weekly', at = `${cwd}/w2`;
 const agent = pi({
-  token: TOKEN, skills: ['tool'],
+  token: TOKEN, id: 'w2', skills: ['tool'],
   view: { cwd, instance: at, dir: i('w2'), pylib: join(root, 'series', 'weekly', '.pylib'), ro: [[i('w1'), `${cwd}/w1`], [i('w2'), at], [i('r1'), '/work/ws/Shared/r1']], catalogue: '# What you can read' },
 });
 const sh = async (command: string) => (await agent.bash(command)).output.trim();

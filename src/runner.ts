@@ -33,7 +33,7 @@ export type View = { cwd: string; instance: string; dir: string; pylib: string; 
 // Pi for one run, in its sandbox (sandbox.ts): its view read-only but for the instance's working/ and session/ and the series'
 // .pylib, the skills the series chose and nothing else of the host's. A session started under other names is moved to these, as Pi
 // resumes only a session whose folder it recorded.
-export function pi(o: { token: string; view: View; skills?: string[] }): RpcClient {
+export function pi(o: { token: string; id: string; view: View; skills?: string[] }): RpcClient {
   const run = join(scratch, 'runs', o.token), home = join(run, 'home'), agentDir = join(home, '.pi', 'agent'), tmp = join(run, 'tmp');
   const { cwd, instance, dir, pylib } = o.view, working = join(dir, 'working'), session = join(dir, 'session');
   for (const d of [agentDir, tmp, pylib, working, session]) mkdirSync(d, { recursive: true });
@@ -58,7 +58,7 @@ export function pi(o: { token: string; view: View; skills?: string[] }): RpcClie
     work: { ro: [[join(run, 'CATALOGUE.md'), '/work/CATALOGUE.md'], [dirname(skillsDir()), '/skills'], ...o.view.ro.filter(([src]) => existsSync(src))], rw: [[working, `${instance}/working`], [session, `${instance}/session`], [pylib, `${cwd}/.pylib`]] },
     env: {
       PATH: [join(app, 'bin'), join(app, '.venv', 'bin'), dirname(process.execPath), '/usr/bin'].join(delimiter), LANG: 'C.UTF-8', PYTHONPATH: `${cwd}/.pylib`, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: '1', PI_TELEMETRY: '0',
-      RF_URL: local, RF_TOKEN: o.token, RF_WORKING: `${instance}/working`, RF_SKILLS: '/skills/live', ...(process.env.RF_TODAY && { RF_TODAY: process.env.RF_TODAY }),
+      RF_URL: local, RF_TOKEN: o.token, RF_INSTANCE: o.id, RF_WORKING: `${instance}/working`, RF_SKILLS: '/skills/live', ...(process.env.RF_TODAY && { RF_TODAY: process.env.RF_TODAY }),
       HTTPS_PROXY: proxy, HTTP_PROXY: proxy, https_proxy: proxy, http_proxy: proxy, NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost', NODE_USE_ENV_PROXY: '1',
     },
   });

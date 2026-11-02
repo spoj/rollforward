@@ -133,7 +133,7 @@ Built: folders by id, `.rf/tree.json`, the index of `instance.json`s, renames th
 ## Architecture
 
 - **Configuration lives in `.rf/` and `series.json`, history in logs, and content in files.** Whatever happens is a log entry; whatever people set is a JSON file the server writes; whatever people and agents work on is a file.
-- **One API,** documented, used by the page, the agent's `rf` and power users' `rf`. Every caller is a principal: a person (cookie or personal token), a run (run token), or the clock. The API addresses things by id.
+- **One API** (built), documented, used by the page, the agent's `rf` and power users' `rf`. Every caller is a principal: a person (cookie or personal token), a run (run token), or the clock. The API addresses things by id.
 - **The log is the queue and the bus.** Every trigger is a log entry: an upload, an answer, a comment, a wake whose time has come. Consumers (the waker, the page's event stream, the maker of derived files, the catalogue) read new entries from an in-process bus with their own cursors and catch up after a restart.
 - **The run engine moves out of `server.ts`:** `server.ts` keeps HTTP and the API; `waker.ts` decides what runs when (one per series, the cap, wakes); `runner.ts` runs one run, the sandbox and Pi.
 - **Restarts don't wait for quiet** (built). On start, each run a restart cut is logged as aborted and started again with "A restart cut your last run; carry on". `just deploy` no longer waits.

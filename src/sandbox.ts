@@ -43,7 +43,7 @@ export function serveSandboxes(path: string, o: { agent(req: IncomingMessage, re
   const server = createServer(async (req, res) => {
     const url = URL.parse(req.url!, 'http://sandbox');
     if (!url) return void res.writeHead(400).end();
-    if (url.pathname.startsWith('/agent/')) return o.agent(req, res, url);
+    if (url.pathname.startsWith('/agent/') || url.pathname.startsWith('/api/')) return o.agent(req, res, url);
     const [, root, token, ...rest] = url.pathname.split('/');
     if (root !== 'model' || !o.run(token)) return void res.writeHead(404).end();
     const target = new URL(`${MODEL_URL}/${rest.join('/')}${url.search}`);
