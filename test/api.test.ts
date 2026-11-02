@@ -35,7 +35,7 @@ const create = async (name: string, label: string, cookie = admin) => call('POST
 
 before(async () => {
   cpSync(join(app, 'demo', 'snapshot'), root, { recursive: true });
-  const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(tmp, 'home'), RF_SKILLS_DIR: join(app, 'test', 'skills') };
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch'), RF_SKILLS_DIR: join(app, 'test', 'skills') };
   mkdirSync(env.HOME);
   delete env.OPENROUTER_API_KEY;
   const probe = createServer();
@@ -177,12 +177,12 @@ test("series settings write series.json; a rename edits .rf/tree.json; a series'
   const id = (await shown(series)).id;
   assert.equal((await put(series, { skills: [] })).status, 200);
   assert.deepEqual(JSON.parse(readFileSync(join(root, 'series', id, 'series.json'), 'utf8')), { skills: [] });
-  assert.deepEqual((await shown(monthly)).reads, [`larkfield / ${series}`]);
+  assert.deepEqual((await shown(monthly)).reads, ['larkfield / Ad hoc', `larkfield / ${series}`]);
 
   assert.equal((await put(series, { name: renamed })).status, 200);
   assert.equal(JSON.parse(readFileSync(join(root, '.rf', 'tree.json'), 'utf8')).series[id].name, renamed);
   assert.equal((await shown(renamed)).id, id);
-  assert.deepEqual((await shown(monthly)).reads, [`larkfield / ${renamed}`]);
+  assert.deepEqual((await shown(monthly)).reads, ['larkfield / Ad hoc', `larkfield / ${renamed}`]);
 
   assert.equal((await put(renamed, { name: monthly })).status, 409);
   assert.equal((await put(renamed, { name: series })).status, 200);
@@ -191,7 +191,9 @@ test("series settings write series.json; a rename edits .rf/tree.json; a series'
 test('a workspace can be made; a workspace or a series is archived and restored, and a renamed series stays archived', async () => {
   const acme = () => named('Acme');
   const { id } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Acme' }))).json();
-  assert.deepEqual(await acme(), { id, name: 'Acme', archived: false, owners: [adminEmail], members: [], manage: true, series: [] });
+  const { series: made, ...rest } = await acme();
+  assert.deepEqual(rest, { id, name: 'Acme', archived: false, owners: [adminEmail], members: [], manage: true });
+  assert.deepEqual(made.map((s: { name: string; adhoc: boolean }) => [s.name, s.adhoc]), [['Ad hoc', true]], 'a workspace starts with its Ad hoc series');
   assert.equal((await call('POST', '/api/workspaces', JSON.stringify({ name: 'Acme' }))).status, 409);
   assert.equal((await call('PUT', `/api/workspaces/${id}`, JSON.stringify({ archived: true }))).status, 200);
   assert.equal((await acme()).archived, true);
@@ -277,7 +279,7 @@ test("each person sees the workspaces they're in, by email or Entra group; owner
 
   assert.equal((await people('larkfield', { owners: [], members: [] })).status, 200);
   assert.equal((await call('GET', await at(series, '2026-08-30'), undefined, b)).status, 404);
-  assert.deepEqual(await reads('larkfield', series), [`larkfield / ${monthly}`], 'a workspace with no one in it reads only itself');
+  assert.deepEqual(await reads('larkfield', series), ['larkfield / Ad hoc', `larkfield / ${monthly}`], 'a workspace with no one in it reads only itself');
 });
 
 test('Systems holds the two Microsoft 365 connections, for admins: saved in part, the secret sealed', async () => {
@@ -320,6 +322,55 @@ test('Skill use: admins set skills up once under Skills; a series only chooses w
   assert.deepEqual((await shown(series)).skills, ['mail-report', 'onedrive-report'], 'a save without skills leaves Skill use as it was');
   assert.equal((await put({ skills: [] })).status, 200);
   assert.deepEqual((await shown(series)).skills, [], 'none, once a series has chosen');
+});
+
+test("people see and move a series' next wake, turn Allow wakes on as themselves, and start or dismiss requests; acts cancel a wake", async () => {
+  const s = await shown(series), wakes = join(root, '.rf', 'wakes.json'), sep = await iid(series, '2026-08-30 rework');
+  const due = new Date(Date.now() + 86_400_000).toISOString();
+  writeFileSync(wakes, JSON.stringify({
+    pending: { [s.id]: { at: due, reason: 'next week', from: 'larkfield/x/y', label: '2026-09-20' }, [sep]: { at: due, reason: 'late file', from: 'larkfield/x/y' } },
+    fired: {}, requests: { r1: { series: s.id, label: '2026-09-27', reason: 'rec done', from: 'larkfield/Bank rec/2026-09', at: due } },
+  }));
+  const listed = await shown(series);
+  assert.deepEqual([listed.wake.label, listed.requests.map((r: { id: string }) => r.id), listed.allow_wakes], ['2026-09-20', ['r1'], null]);
+  assert.equal(listed.instances.find((i: { id: string }) => i.id === sep).wake, due);
+  const later = new Date(Date.now() + 2 * 86_400_000).toISOString();
+  assert.equal((await (await call('PUT', `/api/wakes/${s.id}`, JSON.stringify({ at: later }))).json()).at, later);
+  assert.equal((await call('POST', `${await at(series, '2026-08-30 rework', 'steer')}`, JSON.stringify({ text: 'go' }))).status, 200);
+  assert.equal(JSON.parse(readFileSync(wakes, 'utf8')).pending[sep], undefined, "a person's act starts the run now, so the wake goes");
+
+  assert.equal((await call('PUT', await at(series), JSON.stringify({ allow_wakes: true }))).status, 200);
+  assert.equal((await shown(series)).allow_wakes, adminEmail);
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(root, 'series', s.id, 'series.json'), 'utf8'))), ['skills', 'wakes']);
+  assert.equal((await call('PUT', await at(series), JSON.stringify({ skills: [] }))).status, 200);
+  assert.equal((await shown(series)).allow_wakes, adminEmail, 'other settings leave Allow wakes as it was');
+
+  const started = await call('POST', '/api/requests/r1');
+  assert.equal(started.status, 200);
+  const made = await json(`/api/instances/${(await started.json()).id}`);
+  assert.deepEqual([made.log[0].by, made.log[1].op, made.log[1].reason], [adminEmail, 'wake', 'rec done']);
+  assert.equal((await call('POST', await at(series), JSON.stringify({ label: 'third' }))).status, 200);
+  assert.equal((await call('POST', await at(series), JSON.stringify({ label: 'fourth' }))).status, 409, '3 open already');
+  assert.equal((await call('DELETE', `/api/wakes/${s.id}`)).status, 200);
+  assert.equal((await shown(series)).wake, null);
+  assert.equal((await call('PUT', await at(series), JSON.stringify({ allow_wakes: false }))).status, 200);
+  for (const label of ['2026-09-27', 'third']) assert.equal((await call('POST', `${await at(series, label, 'abandon')}`)).status, 200);
+});
+
+test('each workspace has an Ad hoc series of one-off asks; Make it a series moves one into a series of its own', async () => {
+  const { id } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Solo' }))).json();
+  const adhoc = (await named('Solo')).series.find((s: { adhoc: boolean }) => s.adhoc);
+  assert.equal(adhoc.name, 'Ad hoc');
+  assert.equal((await call('PUT', `/api/series/${adhoc.id}`, JSON.stringify({ name: 'Mine' }))).status, 400);
+  const ask = (await (await call('POST', `/api/series/${adhoc.id}`, JSON.stringify({ label: 'cash forecast' }))).json()).id;
+  assert.equal((await json(`/api/instances/${ask}`)).log[0].from, null);
+  await new Promise(r => setTimeout(r, 1700));
+  assert.equal((await call('POST', `/api/instances/${ask}/promote`, JSON.stringify({ name: 'Cash forecast' }))).status, 200);
+  const moved = (await named('Solo')).series.find((s: { name: string }) => s.name === 'Cash forecast');
+  assert.deepEqual(moved.instances.map((i: { id: string }) => i.id), [ask]);
+  assert.equal((await json(`/api/instances/${ask}`)).log.at(-1).op, 'promote');
+  assert.equal((await call('POST', `/api/instances/${ask}/promote`, JSON.stringify({ name: 'Again' }))).status, 400);
+  assert.ok(id);
 });
 
 test('an admin can disable someone, which ends their sessions and stops their sign-in; the CLI does the same', async () => {

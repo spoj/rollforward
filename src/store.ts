@@ -1,6 +1,7 @@
 import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { basename, extname, join, posix } from 'node:path';
+import { tree } from './system.ts';
 
 // Paths in the screen are /-separated on every system.
 const normalize = posix.normalize;
@@ -85,9 +86,10 @@ function freeLabel(seriesId: string, label: string): string {
   return name;
 }
 
+// A new instance starts from its series' latest closed one, but in a workspace's Ad hoc series, where each is a one-off ask.
 export function createInstance(seriesId: string, label: string, by: string): Instance {
   const name = freeLabel(seriesId, label), id = newId(), dir = instanceDir(id);
-  const closed = instances(seriesId).filter(i => i.doc.status === 'closed').sort((a, b) => a.closedAt().localeCompare(b.closedAt()));
+  const closed = tree().series[seriesId]?.adhoc ? [] : instances(seriesId).filter(i => i.doc.status === 'closed').sort((a, b) => a.closedAt().localeCompare(b.closedAt()));
   const from = closed.at(-1);
   mkdirSync(join(dir, 'upload'), { recursive: true });
   mkdirSync(join(dir, 'working'));
@@ -102,6 +104,10 @@ export function createInstance(seriesId: string, label: string, by: string): Ins
 
 export function renameInstance(inst: Instance, label: string) {
   setMeta(inst.id, { ...inst.meta, label: freeLabel(inst.seriesId, label) });
+}
+
+export function moveInstance(inst: Instance, seriesId: string) {
+  setMeta(inst.id, { label: freeLabel(seriesId, inst.label), series: seriesId });
 }
 
 export function duplicateInstance(src: Instance, label: string, by: string): Instance {

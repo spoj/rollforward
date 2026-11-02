@@ -8,7 +8,7 @@ import { join } from 'node:path';
 // A workspace's people are each an email or an Entra group's id. Owners manage who is in it; owners and members see and work in all
 // of it. A workspace with neither is the admins'.
 export type Workspace = { name: string; owners: string[]; members: string[]; archived?: boolean };
-export type Series = { name: string; workspace: string; archived?: boolean };
+export type Series = { name: string; workspace: string; archived?: boolean; adhoc?: boolean };
 export type Tree = { workspaces: Record<string, Workspace>; series: Record<string, Series> };
 
 let dir = '';
@@ -35,6 +35,15 @@ export function key(name: string): Buffer {
   if (!existsSync(p)) writeFileSync(p, randomBytes(32), { mode: 0o600, flag: 'wx' });
   return readFileSync(p);
 }
+
+export const everyone = (w: Workspace) => [...w.owners, ...w.members];
+
+// Owners and members see a workspace and everything in it, by their email or an Entra group they're in; admins see every one. A
+// workspace with no one in it, such as the demo's, is the admins'. Owners and admins manage who is in it.
+type Who = { email: string; role: string; groups: string[] };
+const isIn = (who: Who, people: string[]) => people.some(p => p === who.email || who.groups.includes(p));
+export const canSee = (who: Who, w: Workspace) => who.role === 'admin' || isIn(who, everyone(w));
+export const canManage = (who: Who, w: Workspace) => who.role === 'admin' || isIn(who, w.owners);
 
 export function tree(): Tree {
   return readJson<Tree>('tree.json', { workspaces: {}, series: {} });

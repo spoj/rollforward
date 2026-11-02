@@ -10,6 +10,11 @@
   "7c85e38789ac": {
    "name": "Weekly borrowing base",
    "workspace": "3f400589343c"
+  },
+  "03dfebf77eab": {
+   "name": "Ad hoc",
+   "workspace": "3f400589343c",
+   "adhoc": true
   }
  }
 }

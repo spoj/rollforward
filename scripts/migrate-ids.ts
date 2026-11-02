@@ -1,6 +1,6 @@
 // One-off: moves a data root from folders by name (<workspace>/<series>/<label>/, .rf/workspaces.json with one owner each,
-// .archived files, series.json with visible_to) to folders by id (.rf/tree.json, series/<id>/, instances/<id>/). Run it with the
-// server stopped: node scripts/migrate-ids.ts DATA_ROOT
+// .archived files, series.json with visible_to) to folders by id (.rf/tree.json, series/<id>/, instances/<id>/), giving each
+// workspace its Ad hoc series. Run it with the server stopped: node scripts/migrate-ids.ts DATA_ROOT
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { newId } from '../src/store.ts';
@@ -18,6 +18,9 @@ mkdirSync(join(root, 'instances'));
 for (const name of workspaces) {
   const wid = newId(), wsDir = join(root, name), owner = owners[name]?.owner;
   t.workspaces[wid] = { name, owners: owner ? [owner] : [], members: [], ...(existsSync(join(wsDir, '.archived')) && { archived: true }) };
+  const adhoc = newId();
+  t.series[adhoc] = { name: 'Ad hoc', workspace: wid, adhoc: true };
+  mkdirSync(join(root, 'series', adhoc));
   for (const series of folders(wsDir)) {
     const sid = newId(), dir = join(root, 'series', sid);
     renameSync(join(wsDir, series), dir);

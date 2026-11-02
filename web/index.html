@@ -24,6 +24,9 @@ a { color: inherit; }
 
 .side { border-right: 1px solid var(--rule); padding: 14px 10px; display: flex; flex-direction: column; overflow: auto; background: var(--paper); }
 .row { display: flex; align-items: center; gap: 2px; min-height: 30px; padding: 0 4px 0 8px; border-radius: var(--r1); text-decoration: none; }
+.row.adhoc { margin-top: 6px; border-top: 1px solid var(--rule); border-radius: 0; }
+.row.adhoc .nm { font-style: italic; }
+.row.wake, .row.req { font-size: 12px; color: var(--ink-2); }
 .row .nm { flex: 1; min-width: 0; padding: 5px 0; text-decoration: none; overflow-wrap: anywhere; }
 .row .n { color: var(--ink-3); font-size: 12px; font-weight: 400; white-space: nowrap; padding-left: 6px; }
 .head { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
@@ -301,6 +304,7 @@ function took(e) {
   const s = Math.round((Date.parse(e.at) - Date.parse(data.log.find(r => r.op === 'run' && r.run === e.run).at)) / 1000);
   return `${s >= 60 ? Math.floor(s / 60) + 'm ' : ''}${s % 60}s`;
 }
+const when = iso => new Date(iso).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false });
 const hhmm = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }) : '';
 const fname = f => f.split('/').pop();
 function fileUrl(path, kind = 'files') {
@@ -350,7 +354,7 @@ async function refresh() {
   const n = ++refreshes, t = await api('/api');
   const id = location.hash.slice(2), all = t.flatMap(w => [[w], ...w.series.flatMap(s => [[w, s], ...s.instances.map(i => [w, s, i])])]);
   let [w, s, i] = all.find(e => e.at(-1).id === id) ?? [t.find(w => !w.archived)];
-  s ??= w?.series.find(s => !s.archived);
+  s ??= w?.series.find(s => !s.archived && !s.adhoc) ?? w?.series.find(s => !s.archived);
   i ??= s?.instances.find(i => i.status === 'open') ?? s?.instances.at(-1);
   const next = w && { w, s, i };
   const path = i ? `/api/instances/${i.id}` : '', d = path ? await api(path) : null;
@@ -388,16 +392,22 @@ function renderSide() {
       + (won ? btn('workspace-settings', 'Workspace settings', '\u22EF') + btn('new-series', 'New series', '+') : w.archived ? '<span class="n">archived</span>' : '') + '</div>';
     if (!won) continue;
     h += '<div class="tree">';
-    for (const s of w.series) {
+    for (const s of [...w.series.filter(s => !s.adhoc), ...w.series.filter(s => s.adhoc)]) {
       const on = cur.s?.id === s.id, open = s.instances.filter(i => i.status === 'open');
       if (!listed(s, on)) continue;
-      h += `<div class="row ser ${on ? 'on' : ''} ${s.archived ? 'archived' : ''}"><a class="nm" href="#/${s.id}">${esc(s.name)}${!on && asks(s) ? '<span class="dot"></span>' : ''}</a>`
-        + (on ? btn('settings', 'Series settings', '\u22EF') + btn('new-instance', 'New instance', '+') : `<span class="n">${s.archived ? 'archived' : open.length ? `${open.length} open` : ''}</span>`) + '</div>';
+      // A series that wakes itself but has nothing open and no wake set has a broken chain.
+      const broken = s.allow_wakes && !open.length && !s.wake && !s.requests.length;
+      const note = s.archived ? 'archived' : broken ? '<span class="q">no wake set</span>' : s.requests.length ? `<span class="q">${s.requests.length} to start</span>` : open.length ? `${open.length} open` : s.wake ? `wakes ${when(s.wake.at)}` : '';
+      h += `<div class="row ser ${on ? 'on' : ''} ${s.archived ? 'archived' : ''} ${s.adhoc ? 'adhoc' : ''}"><a class="nm" href="#/${s.id}">${esc(s.name)}${!on && asks(s) ? '<span class="dot"></span>' : ''}</a>`
+        + (on ? btn('settings', 'Series settings', '\u22EF') + btn('new-instance', 'New instance', '+') : `<span class="n">${note}</span>`) + '</div>';
       if (!on) continue;
       const closed = s.instances.length - open.length;
       h += '<div class="tree">';
+      if (s.wake) h += `<div class="row wake"><span class="nm">Starts ${esc(s.wake.label)} ${when(s.wake.at)}</span><span class="n" title="${esc(s.wake.reason)}">wake</span></div>`;
+      for (const r of s.requests) h += `<div class="row req"><span class="nm" title="${esc(r.reason)}">${esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)}</span>`
+        + `<button class="add" data-act="req-start" data-id="${r.id}" title="Start it">\u25B6</button><button class="add" data-act="req-drop" data-id="${r.id}" title="Dismiss">\u00D7</button></div>`;
       for (const i of s.instances.filter(i => i.status === 'open' || showClosed || i.id === cur.i?.id)) {
-        const st = i.running ? '<span class="spin"></span> running' : i.queued ? '\u29D7 queued' : i.questions ? `<span class="q">${i.questions} question${i.questions > 1 ? 's' : ''}</span>` : i.status === 'open' ? '' : i.status;
+        const st = i.running ? '<span class="spin"></span> running' : i.queued ? '\u29D7 queued' : i.questions ? `<span class="q">${i.questions} question${i.questions > 1 ? 's' : ''}</span>` : i.wake ? `wakes ${when(i.wake)}` : i.status === 'open' ? '' : i.status;
         const k = `rev:/api/instances/${i.id}`;
         localStorage[k] ??= i.rev;
         h += `<a class="row inst ${i.status} ${cur.i?.id === i.id ? 'on' : ''}" href="#/${i.id}"><span class="nm">${esc(i.label)}${i.rev > +localStorage[k] ? '<span class="dot k"></span>' : ''}</span><span class="n">${st}</span></a>`;
@@ -430,6 +440,7 @@ function renderBar() {
     const off = data.run ? 'disabled title="Available when the run ends"' : '';
     if (data.doc.status === 'open') h += `<button class="btn danger top" data-act="abandon" ${off}>Abandon</button><button class="btn commit top" data-act="close" ${off}>Close instance</button>`;
     else h += `<button class="btn top" data-act="duplicate">Duplicate</button>`;
+    if (cur.s.adhoc) h += `<button class="btn top" data-act="promote" title="Move this one-off into a new series, as its first instance">Make it a series</button>`;
   }
   put($('#bar'), h);
 }
@@ -736,11 +747,14 @@ function renderPv() {
     const s = pv.settings;
     h += '<div class="pvb vl">';
     if (s.kind === 'workspace') h += peopleHtml(s) + '<hr>';
-    if (s.kind === 'series') h += `<h3>Name</h3><input type="text" id="sname" value="${esc(s.name)}">`
+    if (s.kind === 'series') h += `<h3>Name</h3><input type="text" id="sname" value="${esc(s.name)}" ${s.adhoc ? 'disabled title="The Ad hoc series keeps its name"' : ''}>`
       + `<h3>Skill use</h3><div class="sub">What the agent may fetch or do for this series. Admins set each skill up once, under Skills, for every series.</div>`
       + s.skillList.map(k => `<label class="skill-row"><input type="checkbox" class="skill" value="${esc(k.id)}" ${s.skills.includes(k.id) ? 'checked' : ''}> ${esc(k.name)}${k.configured ? '' : ' <span class="sub">· not set up yet</span>'}</label>`
         + `<div class="sub" style="margin:0 0 6px 22px">${esc(k.description.length > 180 ? k.description.slice(0, 180) + '…' : k.description)}</div>`).join('')
       + (s.skillList.some(k => !k.configured) ? `<div class="sub">A skill not set up yet can be chosen now; the agent can use it once ${me.role === 'admin' ? 'you set it up' : 'an admin sets it up'} under Skills.</div>` : '')
+      + `<h3>Wakes</h3><label class="skill-row"><input type="checkbox" id="swakes" ${s.allow_wakes ? 'checked' : ''}> Allow wakes</label>`
+      + `<div class="sub">${s.allow_wakes ? `Wakes start new instances of this series, run as ${esc(s.allow_wakes)}${s.allow_wakes === me.email ? ' (you)' : ''}. Saving with it on makes you their runner.` : 'An agent that wakes this series asks on this page instead, for someone to start the instance.'}</div>`
+      + (s.wake ? `<div class="row2"><span class="sub">Next: starts ${esc(s.wake.label)}, ${esc(s.wake.reason)}</span></div><div class="row2"><input type="datetime-local" id="swake" value="${localInput(s.wake.at)}"><button class="btn" data-act="wake-move">Move</button><button class="btn" data-act="wake-cancel">Cancel wake</button></div>` : '<div class="sub">No wake pending. The agent sets the next one.</div>')
       + `<h3>Reading</h3><div class="sub">${s.reads.length ? `This series' agent can read ${esc(s.reads.join(', '))}: the other series of its workspace, and those of workspaces that have all its people.` : "This series' agent reads only this series."}</div>`
       + '<div><button class="btn primary" data-act="savesettings">Save</button></div><hr>';
     h += `<h3>Archive</h3><div class="sub">${s.archived ? 'Archived: in the sidebar only under Show archived.' : `Hides the ${s.kind} from the sidebar, except under Show archived. Nothing in it changes.`}</div><div><button class="btn" data-act="archive">${s.archived ? 'Restore' : 'Archive'} ${s.kind}</button></div></div>`;
@@ -759,6 +773,9 @@ function peopleHtml(s) {
     + `<table class="ut">${s.owners.map(p => row(p, true)).join('')}${s.members.map(p => row(p, false)).join('')}</table>`
     + (s.manage ? `<div class="row2"><input type="text" id="wperson" placeholder="name@example.com, or an Entra group's id" style="flex:1"><button class="btn primary" data-act="wadd">Add</button></div>` : '');
 }
+
+// A datetime-local input's value, in the browser's time zone.
+const localInput = iso => new Date(new Date(iso).getTime() - new Date(iso).getTimezoneOffset() * 60e3).toISOString().slice(0, 16);
 
 function usersHtml(s) {
   const when = iso => iso ? new Date(iso).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : 'never';
@@ -897,7 +914,7 @@ document.addEventListener('click', async ev => {
   if (act === 'unpv') { pv = null; renderPv(); }
   if (act === 'settings') {
     const s = cur.s, skillList = await api('/skills');
-    pv = { title: 'Series settings', settings: { kind: 'series', name: s.name, skills: s.skills ?? [], skillList, reads: s.reads, archived: s.archived } };
+    pv = { title: 'Series settings', settings: { kind: 'series', id: s.id, allow_wakes: s.allow_wakes, wake: s.wake, adhoc: s.adhoc, name: s.name, skills: s.skills ?? [], skillList, reads: s.reads, archived: s.archived } };
     renderPv();
   }
   if (act === 'systems') await openSystems();
@@ -976,7 +993,7 @@ document.addEventListener('click', async ev => {
   if (act === 'savesettings') {
     const name = $('#sname').value.trim();
     const skills = [...document.querySelectorAll('#pv input.skill:checked')].map(i => i.value);
-    await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ name, skills, archived: pv.settings.archived }) });
+    await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ name, skills, archived: pv.settings.archived, allow_wakes: $('#swakes').checked }) });
     pv = null;
     renderPv();
     await refresh();
@@ -985,6 +1002,25 @@ document.addEventListener('click', async ev => {
     const label = (prompt('New label:', cur.i.label) || '').trim();
     if (!label || label === cur.i.label) return;
     await api(`${instPath()}/rename?as=${enc(label)}`, { method: 'POST' });
+    await refresh();
+  }
+  if (act === 'wake-move' || act === 'wake-cancel') {
+    const id = pv.settings.id;
+    if (act === 'wake-move') await api(`/api/wakes/${id}`, { method: 'PUT', body: JSON.stringify({ at: new Date($('#swake').value).toISOString() }) });
+    else await api(`/api/wakes/${id}`, { method: 'DELETE' });
+    pv = null;
+    renderPv();
+    await refresh();
+  }
+  if (act === 'req-start') go((await api(`/api/requests/${el.dataset.id}`, { method: 'POST' })).id);
+  if (act === 'req-drop') {
+    await api(`/api/requests/${el.dataset.id}`, { method: 'DELETE' });
+    await refresh();
+  }
+  if (act === 'promote') {
+    const name = (prompt('Name of the new series, which later instances roll forward from:') || '').trim();
+    if (!name) return;
+    await api(`${instPath()}/promote`, { method: 'POST', body: JSON.stringify({ name }) });
     await refresh();
   }
   if (act === 'compare') {

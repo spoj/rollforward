@@ -53,7 +53,7 @@ Agreed with Matthew on 2 Nov, after his review of the proposals and twenty quest
 
 ## Waking
 
-Schedules are gone: a run is started by a person, by an upload or answer, or by a wake.
+Built (PLAN.md, What starts a run, decision 36), but for the home page's list of what waits on you, and for Allow wakes' login ticks, which come with the logins. Schedules are gone: a run is started by a person, by an upload or answer, or by a wake.
 
 - **`rf wake TARGET AT REASON`:**
   - **An open instance** (this one if none is named): continues it, as its runner, as a reply does.
@@ -164,7 +164,7 @@ Everything we build runs on the development machine; only the real outside syste
 2. Ids, members and owners, and the migration script (built).
 3. Microsoft 365 logins and the ticks.
 4. Website logins through the machines service, moving the ERP and the portals onto personal logins.
-5. Waking, several open instances, Ad hoc.
+5. Waking, several open instances, Ad hoc (built).
 6. Talking, Process and the review sheet. The prompt-only parts can land early.
 7. Power users, `rf skill push`, guidance and the catalogue.
 

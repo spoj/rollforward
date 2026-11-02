@@ -6,17 +6,17 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { basename, dirname, join, posix, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createInstance, duplicateInstance, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openStore, safeName, seriesDir, type Entry, type Instance } from './store.ts';
-import { socketDir, startRun, type Run, type View } from './runner.ts';
+import { createInstance, duplicateInstance, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instances, newId, openStore, safeName, seriesDir, type Instance } from './store.ts';
+import { socketDir } from './runner.ts';
 import { serveSandboxes } from './sandbox.ts';
 import { authenticate, checkConfig, mode, removeUser, signOutEverywhere, upsertUser, users, type Me, type Role } from './auth.ts';
-import { initSystem, saveTree, tree, type Tree, type Workspace } from './system.ts';
+import { canManage, canSee, everyone, initSystem, saveTree, tree, type Workspace } from './system.ts';
 import { builtIn, catalog as systemCatalog, missing, removeSystem, savedSystem, saveSystem, view as systemView } from './systems.ts';
-import type { Browsing } from './browser.ts';
-import { agentCall, skillsText, testSkill } from './agent-api.ts';
+import { agentCall, testSkill } from './agent-api.ts';
 import { testM365 } from './m365.ts';
 import { seriesSettings } from './series.ts';
 import { checkChosen, saveSkillConfig, skill, skills, skillView } from './skills.ts';
+import { active, byToken, cancelWake, closed, dropRequest, kick, MAX_OPEN, named, queued, reach, setWake, startWaking, startWith, wakeFrom, wakes } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -25,124 +25,12 @@ const python = join(app, '.venv', ...(process.platform === 'win32' ? ['Scripts',
 const exec = promisify(execFile);
 const port = Number(process.argv[3] ?? 8780);
 const host = process.env.RF_HOST ?? '127.0.0.1';
-const LIMIT_MS = Number(process.env.RF_LIMIT_MIN ?? 120) * 60_000;
 const tmpDir = join(root, '.tmp');
 initSystem(root);
 openStore(root);
 checkConfig(host);
 rmSync(tmpDir, { recursive: true, force: true });
 mkdirSync(tmpDir);
-
-type Active = { inst: Instance; n: number; token: string; run?: Run; sent: number; seen: number; texts: Map<string, number>; interrupted: boolean; done: boolean; cost: number; hosts: Set<string>; browsing?: Browsing; timer?: NodeJS.Timeout };
-const active = new Map<string, Active>();
-const byToken = new Map<string, Active>();
-const debounce = new Map<string, NodeJS.Timeout>();
-
-function seenBefore(inst: Instance): number {
-  return (inst.log.findLast(e => e.op === 'done')?.seen as number | undefined) ?? 0;
-}
-
-function pending(inst: Instance, seen: number): Entry[] {
-  return inst.log.filter(e => e.seq > seen && isPerson(e) && (['upload', 'answer', 'steer'].includes(e.op) || (e.op === 'create' && e.fetch)));
-}
-
-function message(inst: Instance, n: number, entries: Entry[]): string {
-  const t = tree(), here = t.series[inst.seriesId].workspace;
-  const reads = reach(t, inst.seriesId).map(id => (t.series[id].workspace === here ? `../${t.series[id].name}/` : `../../${named(t, id)}/`)).join(', ');
-  const uses = seriesSettings(inst.series()).skills.length ? skillsText(inst.series()).split('\n').join('; ') : '';
-  return `Instance ${inst.label} (folder ${inst.label}/), run ${n}.${reads ? ` Series you can read: ${reads}.` : ''}${uses ? ` Skills you can use: ${uses}.` : ''} New log entries:\n`
-    + entries.map(e => JSON.stringify(e)).join('\n');
-}
-
-// What a series' agent may read: the other series of its workspace, and those of any workspace that has everyone this one has, by
-// the same email or group, so nothing it reads reaches someone who couldn't see it already. A workspace with no one in it reads only
-// itself.
-function reach(t: Tree, seriesId: string): string[] {
-  const ws = t.series[seriesId].workspace, people = everyone(t.workspaces[ws]);
-  const reads = (o: string) => o === ws || (people.length > 0 && people.every(p => everyone(t.workspaces[o]).includes(p)));
-  return Object.keys(t.series).filter(id => id !== seriesId && reads(t.series[id].workspace)).sort((a, b) => named(t, a).localeCompare(named(t, b)));
-}
-
-const everyone = (w: Workspace) => [...w.owners, ...w.members];
-const named = (t: Tree, seriesId: string) => `${t.workspaces[t.series[seriesId].workspace].name}/${t.series[seriesId].name}`;
-
-// The run's view of the data, by name: /work/<workspace>/<series>/<label>/ for every instance in its reach, built when it starts.
-function view(inst: Instance): View {
-  const t = tree(), at = (id: string) => `/work/${named(t, id)}`;
-  const ro = [inst.seriesId, ...reach(t, inst.seriesId)].flatMap(id => [
-    ...labels(id).map(l => [instanceDir(l.id), `${at(id)}/${l.label}`] as [string, string]),
-    ...(id === inst.seriesId ? [] : [[join(seriesDir(id), '.pylib'), `${at(id)}/.pylib`] as [string, string]]),
-  ]);
-  return { cwd: at(inst.seriesId), instance: `${at(inst.seriesId)}/${inst.label}`, dir: inst.dir, pylib: join(inst.series(), '.pylib'), ro };
-}
-
-function kick(inst: Instance) {
-  const a = active.get(inst.seriesId);
-  if (a) return a.inst === inst && a.run && flush(a);
-  clearTimeout(debounce.get(inst.id));
-  debounce.set(inst.id, setTimeout(() => { debounce.delete(inst.id); start(inst); }, 1500));
-}
-
-function flush(a: Active) {
-  const entries = a.inst.log.filter(e => e.seq > a.sent && e.by !== 'agent');
-  if (!pending(a.inst, a.sent).length) return;
-  const text = message(a.inst, a.n, entries);
-  a.sent = entries.at(-1)!.seq;
-  a.texts.set(text, a.sent);
-  a.run!.steer(text).catch(err => finish(a, true, String(err)));
-}
-
-async function start(inst: Instance) {
-  const series = inst.seriesId;
-  const seen = seenBefore(inst);
-  if (active.has(series) || inst.doc.status !== 'open' || !pending(inst, seen).length) return;
-  const n = inst.log.filter(e => e.op === 'run').length + 1;
-  const entries = inst.log.filter(e => e.seq > seen && e.by !== 'agent');
-  const text = message(inst, n, entries);
-  const a: Active = { inst, n, token: randomUUID(), sent: entries.at(-1)!.seq, seen, texts: new Map([[text, entries.at(-1)!.seq]]), interrupted: false, done: false, cost: 0, hosts: new Set() };
-  active.set(series, a);
-  byToken.set(a.token, a);
-  inst.append('server', 'run', { run: n, upto: a.sent });
-  try {
-    a.run = await startRun({
-      token: a.token, view: view(inst),
-      message: text, skills: seriesSettings(inst.series()).skills.filter(id => skill(id)),
-      onEvent: e => {
-        if (e.type === 'message_end' && e.message.role === 'assistant') a.cost += e.message.usage.cost.total;
-        if (e.type !== 'message_start' || e.message.role !== 'user') return;
-        const c = e.message.content;
-        const seq = a.texts.get(typeof c === 'string' ? c : c.map(b => (b.type === 'text' ? b.text : '')).join(''));
-        if (seq) a.seen = Math.max(a.seen, seq);
-      },
-    });
-  } catch (err) {
-    finish(a, true, String(err));
-    return;
-  }
-  flush(a);
-  a.timer = setTimeout(async () => {
-    a.interrupted = true;
-    await a.run!.interrupt().catch(() => {});
-    finish(a, true, 'time limit');
-  }, LIMIT_MS);
-  a.run.settled.then(aborted => finish(a, aborted));
-}
-
-function finish(a: Active, aborted: boolean, error?: string) {
-  if (a.done) return;
-  a.done = true;
-  clearTimeout(a.timer);
-  byToken.delete(a.token);
-  const series = a.inst.seriesId;
-  active.delete(series);
-  a.run?.stop();
-  a.browsing?.close();
-  a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(4), summary: a.inst.doc.summary ?? null, ...(error && { error }) });
-  if (!a.run) return; // it never started, as with a missing API key: wait for the next person action rather than retry at once
-  if (!a.interrupted && pending(a.inst, a.seen).length) return void start(a.inst);
-  const next = instances(series).find(i => i.doc.status === 'open' && !(a.interrupted && i === a.inst) && pending(i, seenBefore(i)).length);
-  if (next) start(next);
-}
 
 async function body(req: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -161,26 +49,16 @@ async function agent(req: IncomingMessage, res: ServerResponse, url: URL) {
   if (url.pathname === '/agent/workspace' && req.method === 'GET') return send(res, 200, a.inst.doc);
   if (url.pathname === '/agent/workspace' && req.method === 'PUT') return send(res, 200, `saved, rev ${a.inst.put((await body(req)).toString())}`);
   if (url.pathname === '/agent/reply' && req.method === 'POST') return send(res, 200, `replied, seq ${a.inst.append('agent', 'reply', { text: (await body(req)).toString() }).seq}`);
+  if (url.pathname === '/agent/wake' && req.method === 'POST') return send(res, 200, wakeFrom(a, ((await json(req)).args ?? []).map(String)));
   // Skills: rf skills, rf settings, rf files, rf mail, rf flow (see agent-api.ts).
   const r = await agentCall(a, url.pathname, req.method ?? 'GET', url.searchParams, () => body(req));
   if (r) return send(res, r.status, r.data);
   throw new HttpError(404, 'not found');
 }
 
-// Owners and members see a workspace and everything in it, by their email or an Entra group they're in; admins see every one. A
-// workspace with no one in it, such as the demo's, is the admins'. Owners and admins manage who is in it.
-const isIn = (me: Me, people: string[]) => people.some(p => p === me.email || me.groups.includes(p));
-const canSee = (me: Me, w: Workspace) => me.role === 'admin' || isIn(me, everyone(w));
-const canManage = (me: Me, w: Workspace) => me.role === 'admin' || isIn(me, w.owners);
-
 function mustSee(me: Me, w: Workspace | undefined): Workspace {
   if (!w || !canSee(me, w)) throw new HttpError(404, 'no such workspace');
   return w;
-}
-
-function queued(inst: Instance): boolean {
-  const a = active.get(inst.seriesId);
-  return a?.inst !== inst && inst.doc.status === 'open' && (debounce.has(inst.id) || (!!a && pending(inst, seenBefore(inst)).length > 0));
 }
 
 function questions(inst: Instance): number {
@@ -189,13 +67,15 @@ function questions(inst: Instance): number {
 }
 
 function listing(me: Me) {
-  const t = tree(), byName = (a: [string, { name: string }], b: [string, { name: string }]) => a[1].name.localeCompare(b[1].name);
+  const t = tree(), w8 = wakes(), byName = (a: [string, { name: string }], b: [string, { name: string }]) => a[1].name.localeCompare(b[1].name);
   return Object.entries(t.workspaces).filter(([, w]) => canSee(me, w)).sort(byName).map(([id, w]) => ({
     id, name: w.name, archived: !!w.archived, owners: w.owners, members: w.members, manage: canManage(me, w),
     series: Object.entries(t.series).filter(([, s]) => s.workspace === id).sort(byName).map(([sid, s]) => ({
-      id: sid, name: s.name, archived: !!s.archived, ...seriesSettings(seriesDir(sid)), reads: reach(t, sid).map(r => named(t, r).replace('/', ' / ')),
+      id: sid, name: s.name, archived: !!s.archived, adhoc: !!s.adhoc, skills: seriesSettings(seriesDir(sid)).skills, allow_wakes: seriesSettings(seriesDir(sid)).wakes?.by ?? null,
+      reads: reach(t, sid).map(r => named(t, r).replace('/', ' / ')), wake: w8.pending[sid] ?? null,
+      requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r })),
       instances: instances(sid).map(i => ({
-        id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(sid)?.inst === i, queued: queued(i), questions: questions(i),
+        id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(sid)?.inst === i, queued: queued(i), questions: questions(i), wake: w8.pending[i.id]?.at ?? null,
       })),
     })),
   }));
@@ -265,8 +145,10 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
   if (kind === 'workspaces' && !id && req.method === 'POST') {
     const name = safeName(String((await json(req)).name ?? ''));
     if (Object.values(t.workspaces).some(w => w.name === name)) throw new HttpError(409, `the name ${name} is taken; choose another`);
-    const wid = newId();
+    const wid = newId(), adhoc = newId();
     t.workspaces[wid] = { name, owners: [me.email], members: [] };
+    t.series[adhoc] = { name: 'Ad hoc', workspace: wid, adhoc: true };
+    mkdirSync(seriesDir(adhoc));
     saveTree(t);
     return send(res, 200, { id: wid });
   }
@@ -298,20 +180,47 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
     const s = t.series[id];
     mustSee(me, s && t.workspaces[s.workspace]);
     if (req.method === 'POST') {
+      if (instances(id).filter(i => i.doc.status === 'open').length >= MAX_OPEN) throw new HttpError(409, `${MAX_OPEN} instances are open; close one first`);
       const created = createInstance(id, String((await json(req)).label ?? ''), by);
       kick(created);
       return send(res, 200, { id: created.id });
     }
     if (req.method !== 'PUT') throw new HttpError(405, 'PUT, or POST a new instance');
     const change = await json(req);
-    if (change.name !== undefined) {
+    if (change.name !== undefined && change.name !== s.name) {
       const name = safeName(String(change.name));
-      if (name !== s.name && Object.values(t.series).some(x => x.workspace === s.workspace && x.name === name)) throw new HttpError(409, `${name} exists`);
+      if (s.adhoc) throw new HttpError(400, 'the Ad hoc series keeps its name');
+      if (Object.values(t.series).some(x => x.workspace === s.workspace && x.name === name)) throw new HttpError(409, `${name} exists`);
       s.name = name;
     }
     if (change.archived !== undefined) s.archived = !!change.archived;
     saveTree(t);
-    if (change.skills !== undefined) replaceReadOnly(join(seriesDir(id), 'series.json'), JSON.stringify({ skills: checkChosen(change.skills) }, null, 1));
+    const { wakes: allowed, ...settings } = seriesSettings(seriesDir(id));
+    const wakesBy = change.allow_wakes === undefined ? allowed : change.allow_wakes ? { by, since: new Date().toISOString() } : undefined;
+    replaceReadOnly(join(seriesDir(id), 'series.json'), JSON.stringify({ ...settings, ...(change.skills !== undefined && { skills: checkChosen(change.skills) }), ...(wakesBy && { wakes: wakesBy }) }, null, 1));
+    return send(res, 200, 'ok');
+  }
+  // A pending wake, which people may move or cancel, and a request to start an instance, which they start or dismiss.
+  if (kind === 'wakes') {
+    const target = t.series[id] ? id : instance(id).seriesId, wake = wakes().pending[id];
+    mustSee(me, t.workspaces[t.series[target].workspace]);
+    if (!wake) throw new HttpError(404, 'no wake pending');
+    if (req.method === 'DELETE') return void (cancelWake(id), send(res, 200, 'ok'));
+    const at = Date.parse(String((await json(req)).at));
+    if (req.method !== 'PUT' || Number.isNaN(at)) throw new HttpError(400, 'PUT {"at": a date and time}, or DELETE');
+    return send(res, 200, setWake(id, { ...wake, at: new Date(at).toISOString(), from: by }));
+  }
+  if (kind === 'requests') {
+    const r = wakes().requests[id];
+    if (!r) throw new HttpError(404, `no request ${id}`);
+    mustSee(me, t.workspaces[t.series[r.series].workspace]);
+    if (req.method === 'POST') {
+      const inst = startWith(r.series, r.label, by, { reason: r.reason, from: r.from });
+      dropRequest(id);
+      return send(res, 200, { id: inst.id });
+    }
+    if (req.method !== 'DELETE') throw new HttpError(405, 'POST to start it, or DELETE');
+    dropRequest(id);
     return send(res, 200, 'ok');
   }
   if (kind !== 'instances') throw new HttpError(404, 'not found');
@@ -324,7 +233,22 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
   if (req.method !== 'POST') throw new HttpError(405, 'POST only');
   if (action === 'duplicate') {
     if (inst.doc.status === 'open') throw new HttpError(409, 'only a closed or abandoned instance can be duplicated');
+    if (instances(inst.seriesId).filter(i => i.doc.status === 'open').length >= MAX_OPEN) throw new HttpError(409, `${MAX_OPEN} instances are open; close one first`);
     return send(res, 200, { id: duplicateInstance(inst, url.searchParams.get('as') ?? '', by).id });
+  }
+  if (action === 'promote') {
+    // Make it a series: a one-off ask of Ad hoc becomes the first instance of a new series, which later instances roll forward from.
+    if (!t.series[inst.seriesId].adhoc) throw new HttpError(400, 'only an Ad hoc instance can be made a series');
+    if (a || queued(inst)) throw new HttpError(409, "wait for the series' run to end");
+    const ws = t.series[inst.seriesId].workspace, name = safeName(String((await json(req)).name ?? ''));
+    if (Object.values(t.series).some(x => x.workspace === ws && x.name === name)) throw new HttpError(409, `${name} exists`);
+    const sid = newId();
+    t.series[sid] = { name, workspace: ws };
+    mkdirSync(seriesDir(sid));
+    saveTree(t);
+    moveInstance(inst, sid);
+    inst.append(by, 'promote', { from: 'Ad hoc', series: name });
+    return send(res, 200, { id: sid });
   }
   if (inst.doc.status !== 'open') throw new HttpError(409, `instance is ${inst.doc.status}`);
   if (action === 'upload') {
@@ -347,7 +271,7 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
     await mine.run.interrupt();
     return send(res, 200, 'ok');
   } else if (action === 'rename') {
-    if (a || debounce.has(inst.id)) throw new HttpError(409, "wait for the series' run to end");
+    if (a || queued(inst)) throw new HttpError(409, "wait for the series' run to end");
     const from = inst.label;
     renameInstance(inst, url.searchParams.get('as') ?? '');
     inst.append(by, 'rename', { from });
@@ -355,8 +279,11 @@ async function api(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) 
   } else if (action === 'close' || action === 'abandon') {
     if (mine) throw new HttpError(409, 'wait for the run to end');
     inst[action](by);
+    cancelWake(inst.id);
+    if (action === 'close') closed(inst);
     return send(res, 200, 'ok');
   } else throw new HttpError(404, `no action ${action}`);
+  cancelWake(inst.id);
   kick(inst);
   send(res, 200, 'ok');
 }
@@ -475,4 +402,7 @@ createServer({ requestTimeout: 60 * 60_000 }, async (req, res) => {
   } catch (err) {
     send(res, err instanceof HttpError ? err.status : 500, (err as Error).message);
   }
-}).listen(port, host, () => console.log(`rollforward on http://${host}:${port}, data in ${root}, sign-in ${mode}${process.env.RF_TODAY ? `, skills take today as ${process.env.RF_TODAY} (RF_TODAY)` : ''}`));
+}).listen(port, host, () => {
+  startWaking();
+  console.log(`rollforward on http://${host}:${port}, data in ${root}, sign-in ${mode}${process.env.RF_TODAY ? `, skills take today as ${process.env.RF_TODAY} (RF_TODAY)` : ''}`);
+});

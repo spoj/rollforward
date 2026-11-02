@@ -38,7 +38,7 @@ async function serve(env: Record<string, string>): Promise<string> {
   mkdirSync(root);
   const vars = Object.fromEntries(Object.entries(env).map(([k, v]) => [k, v.replace('{base}', base)]));
   const proc = spawn(process.execPath, [join(app, 'src', 'server.ts'), root, String(port)], {
-    env: { ...process.env, HOME: tmp, RF_OIDC_ISSUER: idpBase, RF_PUBLIC_URL: base, RF_ADMINS: 'alex@acme.test', ...vars }, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'inherit'],
+    env: { ...process.env, HOME: tmp, RF_SCRATCH: join(tmp, `scratch-${port}`), RF_OIDC_ISSUER: idpBase, RF_PUBLIC_URL: base, RF_ADMINS: 'alex@acme.test', ...vars }, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'inherit'],
   });
   servers.push({ proc, base });
   await new Promise((ok, fail) => {
