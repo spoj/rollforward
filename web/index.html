@@ -75,7 +75,7 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .legend .tri { display: inline-block; width: 0; height: 0; border-top: 9px solid var(--ink-3); border-left: 9px solid transparent; margin-right: 6px; }
 .legend .dash { display: inline-block; width: 16px; height: 10px; border: 1px dashed var(--ink-3); border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
 
-.main { display: flex; flex-direction: column; min-width: 0; height: 100dvh; position: relative; }
+.main { display: flex; flex-direction: column; min-width: 0; height: 100dvh; position: relative; container: main / inline-size; }
 .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px 28px; border-bottom: 1px solid var(--rule); background: var(--sheet); }
 .menu { display: none; border: 1px solid var(--rule-2); background: var(--sheet); border-radius: var(--r1); padding: 6px 10px; }
 .crumb { font-size: 13px; color: var(--ink-3); }
@@ -83,6 +83,8 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .ren { all: unset; cursor: pointer; color: var(--ink-3); font-size: 15px; font-weight: 400; margin-left: 6px; }
 .ren:hover { color: var(--ink); }
 .state { margin-left: auto; font-size: 13px; color: var(--ink-2); display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+/* With a side panel open the bar's buttons come first; the run's state shows again on the sidebar and in Advanced. */
+@container main (min-width: 801px) and (max-width: 940px) { .state { display: none; } .bar > div:first-of-type { margin-right: auto; } }
 .btn { border: 1px solid var(--rule-2); background: var(--sheet); color: var(--ink); border-radius: var(--r1); padding: 7px 12px; font-size: 13px; font-weight: 500; white-space: nowrap; text-decoration: none; display: inline-block; }
 .btn.primary { background: var(--ink); border-color: var(--ink); color: #fff; }
 .btn.commit { background: var(--person); border-color: var(--person); color: #fff; }
@@ -188,7 +190,7 @@ a[data-act=preview], a[data-act=opencard] { text-decoration: underline; cursor: 
 .choice.picked { background: var(--ink); color: #fff; border-color: var(--ink); }
 .choice:disabled:not(.picked) { color: var(--ink-3); }
 .by { font-size: 11.5px; color: var(--ink-3); white-space: normal; }
-.acts { display: flex; gap: 8px; border-top: 1px solid var(--rule); padding-top: 10px; margin-top: 8px; }
+.acts { display: flex; flex-wrap: wrap; gap: 8px; border-top: 1px solid var(--rule); padding-top: 10px; margin-top: 8px; }
 
 .adv { position: absolute; left: 0; right: 0; bottom: 0; z-index: 5; background: var(--sheet); border-top: 1px solid var(--rule-2); font-size: 13px; color: var(--ink-2); }
 .adv.open { box-shadow: 0 -6px 20px rgba(21,24,29,.08); }
@@ -235,6 +237,7 @@ a[data-act=preview], a[data-act=opencard] { text-decoration: underline; cursor: 
 .conv h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-3); margin: 12px 0 0; }
 .conv textarea { font: inherit; padding: 7px 9px; border: 1px solid var(--rule-2); border-radius: var(--r1); resize: vertical; width: 100%; }
 .conv input[type=file] { font-size: 12px; color: var(--ink-3); }
+.conv .post { white-space: pre-wrap; }
 .thread { border: 1px solid var(--rule); border-radius: var(--r1); padding: 8px 10px; display: grid; gap: 6px; }
 .thread.resolved { opacity: .6; }
 .thread .on, .post .tm { color: var(--ink-3); font-size: 12px; }
