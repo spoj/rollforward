@@ -33,10 +33,10 @@ export function pi(o: { seriesDir: string; instanceDir: string; token: string; r
   writeFileSync(join(agentDir, 'settings.json'), JSON.stringify({ steeringMode: 'all' }));
   const args = sandboxArgs({
     cwd: o.seriesDir, home, tmp, socketDir,
-    ro: [app, skillsDir(), o.seriesDir, ...(o.read ?? []), ...(process.env.RF_SANDBOX_RO ?? '').split(delimiter)].filter(p => p && existsSync(p)),
+    ro: [app, dirname(process.execPath), skillsDir(), o.seriesDir, ...(o.read ?? []), ...(process.env.RF_SANDBOX_RO ?? '').split(delimiter)].filter(p => p && existsSync(p)),
     rw: [working, session, pylib],
     env: {
-      PATH: [join(app, 'bin'), join(app, '.venv', 'bin'), '/usr/bin'].join(delimiter), LANG: 'C.UTF-8', PYTHONPATH: pylib, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: '1', PI_TELEMETRY: '0',
+      PATH: [join(app, 'bin'), join(app, '.venv', 'bin'), dirname(process.execPath), '/usr/bin'].join(delimiter), LANG: 'C.UTF-8', PYTHONPATH: pylib, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: '1', PI_TELEMETRY: '0',
       RF_URL: local, RF_TOKEN: o.token, RF_WORKING: working, RF_SKILLS: skillsDir(), ...(process.env.RF_TODAY && { RF_TODAY: process.env.RF_TODAY }),
       HTTPS_PROXY: proxy, HTTP_PROXY: proxy, https_proxy: proxy, http_proxy: proxy, NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost', NODE_USE_ENV_PROXY: '1',
     },
