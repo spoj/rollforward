@@ -2,7 +2,8 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { HttpError, type Instance } from './store.ts';
-import { changes, key, rfDir } from './system.ts';
+import { canSee, changes, key, rfDir, tree } from './system.ts';
+import { users } from './auth.ts';
 
 // Every login is personal: a person's own sign-in to Microsoft 365 or to a website, kept in .rf/people/<id>/. logins.json lists
 // them, each with what it offers a run, such as a mailbox or a site; each login's secret (Microsoft's refresh token, a website's
@@ -61,9 +62,12 @@ export function runnerOf(inst: Instance): { by: string; logins: string[] } {
   return { by: e.by, logins: (e.logins as string[] | undefined) ?? [] };
 }
 
-// The login a run may use for an offer: its runner's, if ticked for the instance and still offered.
+// The login a run may use for an offer: its runner's, if ticked for the instance and still offered, while the runner may still sign
+// in and see the instance's workspace.
 export function use(inst: Instance, offer: string): { email: string; login: Login } {
-  const { by, logins: ticked } = runnerOf(inst);
+  const { by, logins: ticked } = runnerOf(inst), u = users()[by], t = tree();
+  if (!u || u.disabled || !canSee({ email: by, role: u.role, groups: u.groups ?? [] }, t.workspaces[t.series[inst.seriesId].workspace]))
+    throw new HttpError(403, `${by} can no longer run this instance, so their logins aren't used: someone in its workspace takes it over`);
   if (!ticked.includes(offer)) throw new HttpError(403, `${offer} is not ticked for this instance; its runner, ${by}, ticks logins when starting or taking it over`);
   const login = logins(by).find(l => l.offers.some(o => o.id === offer));
   if (!login) throw new HttpError(403, `${by} no longer has a login offering ${offer}; they sign in again on the Logins page`);

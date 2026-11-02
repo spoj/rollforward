@@ -33,7 +33,7 @@ const mail = [
   { id: 'm2', subject: 'Something else', receivedDateTime: '2026-10-20T12:00:00Z', hasAttachments: true, from: { emailAddress: { address: 'x@demo.test' } } },
 ];
 const ticks = ['m365:mail:alice@demo.test', 'm365:site:host,site1,web1'];
-const inst = { dir: instDir, log: [{ op: 'create', by: ALICE, logins: ticks }], series: () => seriesDir, append: (_by: string, op: string, data: any) => { log.push({ op, data }); return { seq: log.length }; } } as unknown as Instance;
+const inst = { dir: instDir, seriesId: 'weekly', log: [{ op: 'create', by: ALICE, logins: ticks }], series: () => seriesDir, append: (_by: string, op: string, data: any) => { log.push({ op, data }); return { seq: log.length }; } } as unknown as Instance;
 const run: AgentRun = { inst, n: 1, token: 'run' };
 let call: (path: string, body?: unknown, query?: string) => Promise<{ status: number; data: unknown } | null>;
 let logins: typeof import('../src/logins.ts');
@@ -77,13 +77,16 @@ before(async () => {
   });
   await new Promise<void>(ok => graph.listen(0, '127.0.0.1', ok));
   Object.assign(process.env, { RF_OIDC_ISSUER: `http://127.0.0.1:${(graph.address() as { port: number }).port}`, RF_OIDC_CLIENT_ID: 'app', RF_PUBLIC_URL: 'http://127.0.0.1:1' });
-  const { initSystem } = await import('../src/system.ts');
+  const { initSystem, saveTree } = await import('../src/system.ts');
+  const { upsertUser } = await import('../src/auth.ts');
   const { openSkills, pushSkill } = await import('../src/skills.ts');
   const { filesOf, standIns } = await import('./push.ts');
   const { agentCall } = await import('../src/agent-api.ts');
   const { endpoints } = await import('../src/graph.ts');
   logins = await import('../src/logins.ts');
   initSystem(tmp);
+  saveTree({ workspaces: { w: { name: 'W', owners: [ALICE], members: [] } }, series: { weekly: { name: 'Weekly', workspace: 'w' } } });
+  upsertUser(ALICE, { role: 'user' });
   openSkills(tmp);
   for (const id of ['mail-report', 'onedrive-report', 'portal', 'tool']) pushSkill(id, filesOf(join(standIns, id)), ALICE);
   endpoints.graph = process.env.RF_OIDC_ISSUER!;

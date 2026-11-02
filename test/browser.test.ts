@@ -101,7 +101,9 @@ describe('website logins', { skip: !process.env.RF_MACHINES_URL && 'needs the ma
     const seriesDir = join(tmp, 'series'), log: Record<string, unknown>[] = [];
     mkdirSync(seriesDir);
     writeFileSync(join(seriesDir, 'series.json'), JSON.stringify({ skills: ['portal'] }));
-    const stand = (dir: string, ticks: string[]) => ({ dir, log: [{ op: 'create', by: ADMIN, logins: ticks }], series: () => seriesDir, append: (_by: string, op: string, data: object) => (log.push({ op, ...data }), { seq: log.length }) }) as unknown as Instance;
+    const { id: workspace } = await (await call('POST', '/api/workspaces', { name: 'Portal work' })).json();
+    const { id: seriesId } = await (await call('POST', '/api/series', { workspace, name: 'Invoices' })).json();
+    const stand = (dir: string, ticks: string[]) => ({ dir, seriesId, log: [{ op: 'create', by: ADMIN, logins: ticks }], series: () => seriesDir, append: (_by: string, op: string, data: object) => (log.push({ op, ...data }), { seq: log.length }) }) as unknown as Instance;
     const rf = async (api: { url: string; token: string }, ...args: string[]) => (await promisify(execFile)(process.execPath, [join(app, 'src', 'rf.ts'), ...args], { env: { ...process.env, RF_URL: api.url, RF_TOKEN: api.token } })
       .catch(e => e)).stdout.trim();
 
