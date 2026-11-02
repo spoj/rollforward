@@ -1,3 +1,4 @@
+import { freemem } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, posix, relative } from 'node:path';
@@ -13,6 +14,9 @@ import { pushed, skill } from './skills.ts';
 // What runs when: one run at a time per series, at most RF_MAX_RUNS at once, started by people's acts and by wakes.
 const LIMIT_MS = Number(process.env.RF_LIMIT_MIN ?? 120) * 60_000;
 const MAX_RUNS = Number(process.env.RF_MAX_RUNS ?? 20);
+// Memory binds first: no run starts while less than RF_MIN_FREE_GB is free; waiting ones start as runs end, or at the next tick.
+const MIN_FREE = Number(process.env.RF_MIN_FREE_GB ?? 6) * 2 ** 30;
+const full = () => active.size >= MAX_RUNS || freemem() < MIN_FREE;
 export const MAX_OPEN = 3;
 const SPACING_MS = 15 * 60_000;
 
@@ -94,7 +98,7 @@ async function start(inst: Instance) {
   const series = inst.seriesId;
   const seen = seenBefore(inst);
   if (active.has(series) || inst.doc.status !== 'open' || !pending(inst, seen).length) return;
-  if (active.size >= MAX_RUNS) return void waiting.add(inst);
+  if (full()) return void waiting.add(inst);
   const n = inst.log.filter(e => e.op === 'run').length + 1;
   const entries = inst.log.filter(e => e.seq > seen && e.by !== 'agent');
   const text = message(inst, n, entries);
@@ -149,8 +153,12 @@ function finish(a: Active, aborted: boolean, error?: string) {
       : instances(series).find(i => i.doc.status === 'open' && !(a.interrupted && i === a.inst) && pending(i, seenBefore(i)).length);
     if (next) start(next);
   }
+  startWaiting();
+}
+
+function startWaiting() {
   for (const i of waiting) {
-    if (active.size >= MAX_RUNS) break;
+    if (full()) break;
     waiting.delete(i);
     start(i);
   }
@@ -209,6 +217,7 @@ export function startWith(seriesId: string, label: string, by: string, logins: s
 }
 
 function fire() {
+  startWaiting();
   const w = wakes(), now = new Date().toISOString(), t = tree();
   for (const [target, wake] of Object.entries(w.pending).filter(([, k]) => k.at <= now)) {
     delete w.pending[target];

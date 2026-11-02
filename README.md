@@ -99,7 +99,7 @@ The [justfile](justfile) has these and more as recipes; `just` lists them.
   - `RF_SANDBOX_SCOPE`, the command that gives each run its cgroup (a `systemd-run --user --scope` line; empty for none)
   - `RF_SANDBOX_RO`, more folders runs may read, separated by `:`
   - `RF_MODEL_URL` (`https://openrouter.ai/api`)
-  - `RF_MAX_RUNS` (20), runs at once across all series
+  - `RF_MAX_RUNS` (20), runs at once across all series, and `RF_MIN_FREE_GB` (6), the free memory below which none starts
   - `RF_OIDC_SCOPES` (`openid profile email`), sign-in's scopes
 - **Hosts runs may reach,** beyond package registries, GitHub and documentation sites: a JSON list in `.rf/egress.json`, such as `["api.example.com", "*.example.org"]`.
 

@@ -155,7 +155,7 @@ Built (PLAN.md, Tokens, decision 41): personal tokens and people's `rf`, which i
 One VM with 16 cores and 64 GB, inside the company network, runs the server, the runs and the browser containers. Windows machines need a host of their own, or this one with less room for runs.
 
 - **Measured runs:** a light run takes 0.3–7 minutes and $0.02–1.08; a heavy one (a 26 MB workbook) takes 7–33 minutes, 40–50% of it in tools on one core, and $1.53–6.66.
-- **Memory binds first:** a run takes 0.5–1.5 GB typically and up to 7 GB for a full openpyxl load. Each run's cgroup has `MemoryHigh` 4 GB and `MemoryMax` 8 GB, all runs share a parent capped near 50 GB, and the waker starts nothing while free memory is under about 6 GB. 40 runs fit; 20 leave room.
+- **Memory binds first:** a run takes 0.5–1.5 GB typically and up to 7 GB for a full openpyxl load. Each run's cgroup has `MemoryHigh` 4 GB and `MemoryMax` 8 GB, all runs share a parent capped near 50 GB, and the waker starts nothing while free memory is under about 6 GB (built: `RF_MIN_FREE_GB`). 40 runs fit; 20 leave room.
 - **CPU:** 16 cores suffice; runs get equal weights, the server more.
 - **The provider binds next:** check the key's per-minute limits against 40 heavy runs (10–28M cache-read tokens a minute) and keep the cap under them; Pi's auto-retry backs off on rate limits.
 - **Disk:** added when the load grows. For design: 0.5–1.2 TB a year, on a filesystem with reflinks; nightly restic backups, with the keys kept apart.
