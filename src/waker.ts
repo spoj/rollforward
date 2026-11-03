@@ -42,7 +42,7 @@ export const starter = (inst: Instance, who: string) => {
 export const isNote = (inst: Instance, e: Entry) => !!e.note || (isPerson(e) && ['upload', 'comment'].includes(e.op) && !starter(inst, e.by)
   && !(e.op === 'comment' && inst.log.findLast(x => x.seq < e.seq && x.op === 'comment' && x.thread === e.thread && x.by === 'agent')?.to === e.by));
 
-function pending(inst: Instance, seen: number): Entry[] {
+export function pending(inst: Instance, seen: number): Entry[] {
   return inst.log.filter(e => e.seq > seen && !isNote(inst, e) && (e.op === 'wake' || (isPerson(e) && (['upload', 'comment'].includes(e.op) || (e.op === 'create' && e.fetch)))));
 }
 
@@ -187,9 +187,12 @@ function startWaiting() {
   }
 }
 
-export function queued(inst: Instance): boolean {
+// Why an instance waits to run, if it does, and since when: the first of what its run would read.
+export function queued(inst: Instance): { why: string; since: string } | undefined {
   const a = active.get(inst.seriesId);
-  return a?.inst !== inst && inst.doc.status === 'open' && (debounce.has(inst.id) || waiting.has(inst) || (!!a && due(inst)));
+  if (a?.inst === inst || inst.doc.status !== 'open' || !(debounce.has(inst.id) || waiting.has(inst) || (a && due(inst)))) return;
+  const why = debounce.has(inst.id) ? 'starting' : a ? `its series is running ${a.inst.label}` : active.size >= MAX_RUNS ? `${MAX_RUNS} runs are going, the most RF_MAX_RUNS allows` : 'too little memory is free (RF_MIN_FREE_GB)';
+  return { why, since: pending(inst, seenBefore(inst))[0]?.at ?? new Date().toISOString() };
 }
 
 // Closing an instance wakes its series' later open instances, which may have used its draft.

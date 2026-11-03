@@ -16,6 +16,14 @@ rf wake PATH AT REASON [--label LABEL]   AT now, +<n>m|h|d or a date; PATH an op
 rf agents [WORKSPACE] [--set FILE|-]     the company's AGENTS.md, or a workspace's; setting the company's is for admins
 rf skills
 rf websites
+rf status [--long MIN] [--json]   what goes on and what's stuck: runs going, flagged past MIN minutes (30), and queued, with why;
+                                  what waits on whom since when; open instances whose last run failed
+rf runs [PATH] [--since DATE] [--failed] [--running] [--long MIN] [--json]
+                                  a line per run: start, path, run, outcome, time, cost, what started it, summary or error
+rf costs [PATH] [--since DATE] [--by workspace|series|person|day] [--json]   totals, runs and cost per run; person is the runner
+rf people WORKSPACE [--set FILE|-] [-n] [--force]   its owners and admins: its people as lines of owner|member EMAIL-OR-GROUP,
+                                  each with a comment; --set replaces them, -n shows the changes, --force hides open instances
+                                  from their runners
 
 Publishers and admins:
 rf skill push DIR                 DIR/SKILL.md and the rest become the newest version of the skill named DIR's name, live at once
@@ -23,8 +31,9 @@ rf skill versions ID
 rf skill rollback ID N            pushes version N again, as the newest
 
 Admins:
-rf users
-rf user add EMAIL [admin|publisher] | role EMAIL admin|publisher|user | disable EMAIL | enable EMAIL | signout EMAIL | remove EMAIL
+rf people [--set FILE|-] [-n] [--force]   everyone as lines of ROLE EMAIL, each with a comment; --set sets the roles of the people
+                                  listed and adds new ones, removing no one
+rf user add EMAIL [admin|publisher] | role EMAIL admin|publisher|user [--force] | disable EMAIL | enable EMAIL | signout EMAIL | remove EMAIL
 rf website set ID URL [--name NAME] [--hosts HOST,...]   a website people sign in to at URL, and the other hosts its pages need,
                                   such as sso.example.com or *.example.com; a run's browser on it reaches only those
 rf website remove ID`;
@@ -61,7 +70,21 @@ Usual work
 - Give an input or a corrected output: rf upload PATH FILE [--onto ITEM] [--output].
 - Start an instance: rf wake SERIES now REASON --label LABEL; take one up later: rf wake PATH +2h REASON.
 - Read what a run did: rf pull PATH/ DIR, then its report and done entries in log.jsonl, the files in working/, and session/ for
-  every step.`;
+  every step.
+
+Watching over it, for admins and power users; each sees what the caller sees, and takes --json
+- What's stuck: rf status lists runs going, flagging those past --long MIN (30); queued runs, since when and why: their series is
+  running, the RF_MAX_RUNS cap, or memory; what waits on whom since when: asks, notes for runners, expired logins and the instances
+  they hold, requests to start, and shared series with nothing open and no wake set; and open instances whose last run failed.
+- History: rf runs [PATH] [--since DATE] [--failed] [--running] [--long MIN] prints a line per run: its start, path, run number,
+  outcome, time taken, cost, what started it and by whom, and its summary or error. rf costs [PATH] [--since DATE] [--by
+  workspace|series|person|day] totals them, by the runner for person.
+- People: rf people (admins) prints everyone as ROLE EMAIL lines, and rf people WORKSPACE (its owners and admins) its owners and
+  members as owner|member lines; a comment after each says when they last signed in and which open instances they run, and for
+  everyone those they run in workspaces they aren't in. Edit the lines, see the changes with --set FILE -n (FILE may be - for
+  stdin), then --set FILE. For everyone it sets the roles of the people listed and adds new ones, removing no one (rf user remove
+  does); for a workspace it replaces its people. A change that would hide an open instance from the person who runs it is refused,
+  naming them, unless --force: have someone who stays take those over first.`;
 
 const config = join(homedir(), '.config', 'rollforward.json');
 const [cmd, ...argv] = process.argv.slice(2);
@@ -70,7 +93,7 @@ for (let i = 0; i < argv.length; i++) {
   const flag = argv[i] === '-n' ? 'dry-run' : argv[i].match(/^--(.+)$/)?.[1];
   if (!flag) args.push(argv[i]);
   else if (flag === 'exclude') excludes.push(argv[++i]);
-  else flags[flag] = ['wait', 'output', 'delete', 'dry-run'].includes(flag) ? true : argv[++i];
+  else flags[flag] = ['wait', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running'].includes(flag) ? true : argv[++i];
 }
 if (cmd === 'help') {
   console.log(GUIDE);
@@ -96,6 +119,13 @@ async function find(path: string) {
   if (!series || (l !== undefined && !inst)) throw new Error(`nothing you can see at ${path}`);
   return { series, inst, at: inst ? `/api/instances/${inst.id}` : '' };
 }
+
+// Times as this machine's clock reads them, and lengths of time and costs, for the views.
+const when = (iso: string) => new Date(iso).toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' });
+const took = (s: number) => s < 60 ? `${Math.round(s)}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${Math.floor(s / 3600)}h${String(Math.round((s % 3600) / 60)).padStart(2, '0')}`;
+const usd = (n: number) => `$${n.toFixed(2)}`;
+const runsIn = async (path = '') => (await get(`/api/runs?since=${encodeURIComponent(String(flags.since ?? ''))}`))
+  .filter(r => !path || r.path === path.replace(/\/+$/, '') || r.path.startsWith(path.replace(/\/+$/, '') + '/'));
 
 function write(path: string, data: string | Uint8Array, mtime: string) {
   mkdirSync(dirname(path), { recursive: true });
@@ -218,12 +248,70 @@ else if (cmd === 'comment' && args.length === 2) {
 } else if (cmd === 'website' && args[0] === 'remove' && args[1]) {
   await api(`/websites/${encodeURIComponent(args[1])}`, { method: 'DELETE' });
   console.log('removed');
-} else if (cmd === 'users') {
-  for (const u of await get('/users')) console.log([u.email, u.role, u.disabled ? 'disabled' : '', u.last_login ? `last in ${u.last_login}` : 'never in', u.workspaces.join(', ')].filter(Boolean).join('\t'));
+} else if (cmd === 'status' && !args.length) {
+  const s = await get('/api/status'), long = Number(flags.long ?? 30);
+  if (flags.json) console.log(JSON.stringify(s, null, 1));
+  else {
+    const sections = [
+      [`Running`, s.running.map(r => `${r.path}  run ${r.run}  for ${took((Date.now() - Date.parse(r.at)) / 1000)}  ${usd(r.cost)}${Date.now() - Date.parse(r.at) > long * 60e3 ? `  LONG, past ${long}m` : ''}`)],
+      [`Queued`, s.queued.map(q => `${q.path}  since ${when(q.since)}: ${q.why}`)],
+      [`Waiting`, [
+        ...s.asks.sort((a, b) => a.who.localeCompare(b.who) || a.since.localeCompare(b.since)).map(a => `${a.who}  ${a.note ? 'a note' : 'an ask'} in ${a.path} since ${when(a.since)}: ${a.text.split('\n')[0].slice(0, 80)}`),
+        ...s.expired.map(e => `${e.who}  their ${e.login} login expired${e.holding.length ? `, holding ${e.holding.join(', ')}` : ''}`),
+        ...s.requests.map(r => `${r.path}  ${r.from} asks to start ${r.label}, since ${when(r.at)}: ${r.reason}`),
+        ...s.broken.map(b => `${b.path}  shared by ${b.shared_by}, but nothing is open and no wake is set`),
+      ]],
+      [`Last run failed`, s.failed.map(f => `${f.path}  run ${f.run} at ${when(f.at)}: ${f.error}`)],
+    ].filter(([, rows]) => rows.length);
+    console.log(sections.map(([title, rows]) => `${title} (${rows.length})\n${rows.map(r => `  ${r}`).join('\n')}`).join('\n\n') || 'Nothing is running, queued, waiting or failed.');
+  }
+} else if (cmd === 'runs' && args.length <= 1) {
+  const rows = (await runsIn(args[0])).filter(r => (!flags.failed || r.outcome === 'failed') && (!flags.running || r.outcome === 'running') && (!flags.long || r.seconds >= Number(flags.long) * 60));
+  if (flags.json) console.log(JSON.stringify(rows, null, 1));
+  else for (const r of rows) console.log(`${when(r.at)}  ${r.path}  run ${r.run}  ${r.outcome}  ${took(r.seconds)}  ${usd(r.cost)}  ${r.started ? `${r.started.op} by ${r.started.by}` : '-'}  ${r.error ?? r.summary ?? ''}`);
+} else if (cmd === 'costs' && args.length <= 1) {
+  const by = String(flags.by ?? 'series'), key = { workspace: r => r.path.split('/')[0], series: r => r.path.split('/').slice(0, 2).join('/'), person: r => r.runner, day: r => when(r.at).slice(0, 10) }[by];
+  if (!key) throw new Error(USAGE);
+  const sums = new Map<string, { runs: number; cost: number }>(), rows = await runsIn(args[0]);
+  for (const r of rows) sums.set(key(r), { runs: (sums.get(key(r))?.runs ?? 0) + 1, cost: (sums.get(key(r))?.cost ?? 0) + r.cost });
+  const out = [...sums].map(([k, v]) => ({ [by]: k, runs: v.runs, cost: +v.cost.toFixed(4), per_run: +(v.cost / v.runs).toFixed(4) }))
+    .sort((a, b) => by === 'day' ? a.day.localeCompare(b.day) : b.cost - a.cost);
+  if (flags.json) console.log(JSON.stringify(out, null, 1));
+  else {
+    for (const o of out) console.log(`${usd(o.cost).padStart(10)}  ${String(o.runs).padStart(5)} runs  ${usd(o.per_run).padStart(8)} a run  ${o[by]}`);
+    console.log(`${usd(rows.reduce((t, r) => t + r.cost, 0)).padStart(10)}  ${String(rows.length).padStart(5)} runs  in all`);
+  }
+} else if (cmd === 'people' && args.length <= 1) {
+  // People as lines to edit and set: ROLE EMAIL for everyone, owner|member EMAIL-OR-GROUP for a workspace, each with a comment.
+  const ws = args[0] === undefined ? undefined : (await get('/api')).find(w => w.name === args[0]);
+  if (args[0] !== undefined && !ws) throw new Error(`no workspace ${args[0]}`);
+  const last = (iso: string | null) => iso ? `last in ${when(iso)}` : 'never in';
+  const now = ws ? (await get(`/api/workspaces/${ws.id}/people`)).map(p => ({ kind: p.as, who: p.who, note: [p.who.includes('@') ? last(p.last_login) : 'a group', p.runs.length && `runs ${p.runs.join(', ')}`] }))
+    : (await get('/users')).map(u => ({ kind: u.role, who: u.email, note: [u.disabled && 'disabled', last(u.last_login), `in ${u.workspaces.join(', ') || 'none'}`, u.outside.length && `runs outside them: ${u.outside.join(', ')}`] }));
+  if (typeof flags.set !== 'string') {
+    const w = Math.max(0, ...now.map(p => p.who.length));
+    for (const p of now) console.log(`${p.kind.padEnd(9)} ${p.who.padEnd(w)}  # ${p.note.filter(Boolean).join('; ')}`);
+    if (!now.length) console.log('# no one is in it: only admins see it');
+  } else {
+    const kinds = ws ? ['owner', 'member'] : ['admin', 'publisher', 'user'];
+    const want = readFileSync(flags.set === '-' ? 0 : flags.set, 'utf8').split('\n').map(l => l.replace(/#.*/, '').trim()).filter(Boolean).map(l => l.split(/\s+/));
+    const bad = want.find(([kind, who, more]) => !kinds.includes(kind) || !who || more);
+    if (bad) throw new Error(`each line is ${kinds.join('|')} ${ws ? 'EMAIL-OR-GROUP' : 'EMAIL'}, not: ${bad.join(' ')}`);
+    const had = new Map(now.map(p => [p.who, p.kind])), wanted = new Map(want.map(([kind, who]) => [who.toLowerCase(), kind]));
+    const set = [...wanted].filter(([who, kind]) => had.get(who) !== kind), gone = ws ? [...had].filter(([who]) => !wanted.has(who)) : [];
+    const changes = [...set.map(([who, kind]) => had.has(who) ? `${who}: ${had.get(who)} -> ${kind}` : `+ ${kind} ${who}`), ...gone.map(([who, kind]) => `- ${kind} ${who}`)];
+    console.log(changes.join('\n') || 'no changes');
+    if (changes.length && !flags['dry-run']) {
+      const ofKind = (kind: string) => want.filter(([k]) => k === kind).map(([, who]) => who);
+      await (ws ? post(`/api/workspaces/${ws.id}`, { owners: ofKind('owner'), members: ofKind('member'), force: !!flags.force }, 'PUT')
+        : post('/users', { roles: Object.fromEntries(set), force: !!flags.force }, 'PUT'));
+      console.log('saved');
+    }
+  }
 } else if (cmd === 'user' && args.length >= 2) {
   const [what, email, role] = args, at = `/users/${encodeURIComponent(email)}`;
-  if (what === 'add') await post('/users', { email, role: role ?? 'user' });
-  else if (what === 'role' && role) await post(at, { role }, 'PUT');
+  if (what === 'add') await post('/users', { roles: { [email]: role ?? 'user' } }, 'PUT');
+  else if (what === 'role' && role) await post('/users', { roles: { [email]: role }, force: !!flags.force }, 'PUT');
   else if (what === 'disable' || what === 'enable') await post(at, { disabled: what === 'disable' }, 'PUT');
   else if (what === 'signout') await post(at, { signout: true }, 'PUT');
   else if (what === 'remove') await api(at, { method: 'DELETE' });

@@ -459,7 +459,7 @@ test("personal tokens act as their person for rf, every use logged, until revoke
   assert.equal((await as('/me')).status, 401);
 });
 
-test('rf for people: ls, comment, pull as rsync does, and admins manage people from it', async () => {
+test('rf for people: ls, comment, pull as rsync does, runs, costs and status, and admins manage people from it', async () => {
   const { token } = await (await call('POST', '/tokens', JSON.stringify({ name: 'cli', days: 1 }))).json();
   const home = join(tmp, 'cli-home');
   mkdirSync(home);
@@ -496,14 +496,41 @@ test('rf for people: ls, comment, pull as rsync does, and admins manage people f
   assert.ok(!existsSync(join(two, 'mine.txt')));
   assert.match(await rf('help'), /What rf pull copies/);
   assert.equal((await json(await at(series, 'talk'))).log.at(-1).text, 'From the shell');
+  const runs = JSON.parse(await rf('runs', `larkfield/${series}`, '--json'));
+  assert.ok(runs.every((r: { path: string }) => r.path.startsWith(`larkfield/${series}/`)));
+  assert.deepEqual(runs[0], { path: `larkfield/${series}/2026-08-23`, run: 1, at: '2026-08-23T23:01:00.000Z', outcome: 'done', seconds: 240, cost: 0.21, runner: 'alex', started: { op: 'upload', by: 'alex' }, summary: 'Borrowing base for 08-23: excess 173,800.', error: null });
+  assert.match(await rf('runs', '--failed'), /  run \d+  failed  \d+[sm]  \$0\.00  (upload|comment|create|wake) by \S+  /, 'without a model key, the runs the tests start fail');
+  assert.match(await rf('costs', '--by', 'person'), /^ +\$\d+\.\d\d +\d+ runs +\$\d+\.\d\d a run  alex$/m);
+  assert.deepEqual(Object.keys(JSON.parse(await rf('status', '--json'))), ['running', 'queued', 'asks', 'expired', 'requests', 'broken', 'failed']);
+  assert.match(await rf('status'), /^Last run failed \(\d+\)\n  larkfield\//m);
+
   await rf('user', 'add', 'carol@demo.test', 'publisher');
-  assert.match(await rf('users'), /^carol@demo\.test\tpublisher/m);
+  assert.match(await rf('people'), /^publisher carol@demo\.test +# never in; in none$/m);
   const carols = sessionOf(await login('carol@demo.test'))!;
   await rf('user', 'remove', 'carol@demo.test');
-  assert.doesNotMatch(await rf('users'), /carol/);
+  assert.doesNotMatch(await rf('people'), /carol/);
   await rf('user', 'add', 'carol@demo.test');
   assert.equal((await fetch(`${base}/me`, { headers: { cookie: carols } })).status, 401, "a cookie from before she was removed isn't the new carol's");
   await rf('user', 'remove', 'carol@demo.test');
+
+  // Bob runs an instance in a workspace, so taking him out of it, or his admin role when he isn't in it, is refused unless forced.
+  await call('POST', '/api/workspaces', JSON.stringify({ name: 'Guarded' }));
+  const file = join(tmp, 'people.txt'), b = sessionOf(await login(bob))!;
+  writeFileSync(file, `owner ${adminEmail}\nmember ${bob}  # he runs one\n`);
+  assert.match(await rf('people', 'Guarded', '--set', file), /^\+ member bob@demo\.test\nsaved$/m);
+  const adhoc = (await named('Guarded')).series[0].id;
+  assert.equal((await call('POST', `/api/series/${adhoc}`, JSON.stringify({ label: 'one' }), b)).status, 200);
+  assert.match(await rf('people', 'Guarded'), /^member +bob@demo\.test +# last in [\d-]+ [\d:]+; runs Ad hoc\/one$/m);
+  writeFileSync(file, `owner ${adminEmail}\n`);
+  assert.match(await rf('people', 'Guarded', '--set', file, '-n'), /^- member bob@demo\.test$/m);
+  await assert.rejects(rf('people', 'Guarded', '--set', file), /hide open instances from the people who run them.*Guarded\/Ad hoc\/one, run by bob@demo\.test/);
+  assert.equal((await named('Guarded')).members.length, 1, 'refused, it changed nothing');
+  assert.match(await rf('people', 'Guarded', '--set', file, '--force'), /saved/);
+  assert.match(await rf('people'), /^user +bob@demo\.test +# last in .*; runs outside them: Guarded\/Ad hoc\/one$/m);
+  await rf('user', 'role', bob, 'admin');
+  writeFileSync(file, `user ${bob}\n`);
+  await assert.rejects(rf('people', '--set', file), /Guarded\/Ad hoc\/one, run by bob@demo\.test/);
+  assert.match(await rf('people', '--set', file, '--force'), /^bob@demo\.test: admin -> user\nsaved$/m);
 });
 
 test('the page hears of changes from an event stream, only of instances it can see', async () => {

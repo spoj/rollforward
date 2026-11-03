@@ -6,18 +6,18 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { agentsFile, createInstance, duplicateInstance, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, safeName, seriesDir, type Instance } from './store.ts';
+import { agentsFile, createInstance, duplicateInstance, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, safeName, seriesDir, type Entry, type Instance } from './store.ts';
 import { socketDir } from './runner.ts';
 import { serveSandboxes } from './sandbox.ts';
-import { authenticate, checkConfig, connectM365, m365Ready, mode, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, upsertUser, users, type Me, type Role } from './auth.ts';
-import { canManage, canSee, changes, everyone, initSystem, saveTree, tree, type Workspace } from './system.ts';
+import { authenticate, checkConfig, connectM365, m365Ready, mode, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, upsertUser, users, type Me, type Role, type User } from './auth.ts';
+import { canManage, canSee, changes, everyone, initSystem, saveTree, tree, type Tree, type Workspace } from './system.ts';
 import { checkTicks, logins, runnerOf, signOut } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { endSignIn, isSignIn, passUpgrade, removeWebsite, setWebsite, startSignIn, viewPage, websites } from './browsers.ts';
 import { offer, unoffer } from './m365.ts';
 import { seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, byToken, cancelWake, closed, dropRequest, isNote, kick, MAX_OPEN, named, queued, resolveFor, setWake, startWaking, startWith, wakes, wider, type Active } from './waker.ts';
+import { active, byToken, cancelWake, closed, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, resolveFor, setWake, startWaking, startWith, wakes, wider, type Active } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -67,12 +67,26 @@ function mustSee(me: Me, w: Workspace | undefined): Workspace {
   return w;
 }
 
-// Whom each of an open instance's asks still waits on: the person it names, else the runner.
-// Whom an open instance waits on: each ask's person, else the runner, and the runner for each thread a note ends.
-function asks(inst: Instance): string[] {
+// Whom an open instance waits on, and with what: each ask on the person it names, else the runner, and each thread a note ends on
+// the runner.
+function waits(inst: Instance): { who: string; e: Entry }[] {
   if (inst.doc.status !== 'open') return [];
-  const runner = runnerOf(inst).by, notes = [...inst.threads().values()].filter(t => isNote(inst, t.at(-1)!)).map(() => runner);
-  return [...inst.asking().map(e => (e.to as string | undefined) ?? runner), ...notes];
+  const runner = runnerOf(inst).by, notes = [...inst.threads().values()].map(t => t.at(-1)!).filter(e => isNote(inst, e));
+  return [...inst.asking().map(e => ({ who: (e.to as string | undefined) ?? runner, e })), ...notes.map(e => ({ who: runner, e }))];
+}
+
+// The open instances whose runner couldn't see them with this tree and these people: their runs can't use the runner's logins.
+function hidden(t: Tree, us: Record<string, User>): string[] {
+  return Object.entries(t.series).flatMap(([sid, s]) => instances(sid).filter(i => {
+    const by = runnerOf(i).by, u = us[by];
+    return i.doc.status === 'open' && (!u || !canSee({ email: by, role: u.role, groups: u.groups ?? [] }, t.workspaces[s.workspace]));
+  }).map(i => `${named(t, sid)}/${i.label}, run by ${runnerOf(i).by}`));
+}
+
+// A change of who is where or of roles may hide no more open instances from their runners, unless forced.
+function guard(before: string[], after: string[], force: unknown) {
+  const lost = after.filter(x => !before.includes(x));
+  if (lost.length && !force) throw new HttpError(409, `this would hide open instances from the people who run them, so their runs couldn't use their logins: ${lost.join('; ')}. Have someone who stays take them over first`);
 }
 
 // An instance as the sidebar shows it. What comes from its log and screen is kept until either moves on, so a listing reads each
@@ -81,9 +95,9 @@ const kept = new WeakMap<Instance, { key: string; asks: string[]; runner: string
 function summary(i: Instance, w8 = wakes()) {
   const key = `${i.log.length}:${i.doc.rev}`;
   let k = kept.get(i);
-  if (k?.key !== key) kept.set(i, k = { key, asks: asks(i), runner: runnerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: +i.log.reduce((t, e) => t + ((e.cost as number | undefined) ?? 0), 0).toFixed(4) });
+  if (k?.key !== key) kept.set(i, k = { key, asks: waits(i).map(w => w.who), runner: runnerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: +i.log.reduce((t, e) => t + ((e.cost as number | undefined) ?? 0), 0).toFixed(4) });
   return {
-    id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(i.seriesId)?.inst === i, queued: queued(i),
+    id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(i.seriesId)?.inst === i, queued: !!queued(i),
     asks: k.asks, wake: w8.pending[i.id]?.at ?? null, runner: k.runner, cost: k.cost,
   };
 }
@@ -108,6 +122,52 @@ function listing(me: Me) {
       series,
     };
   });
+}
+
+// Every run in what `me` sees, started since `since`: where and when, how it ended, its cost, whose it was and what started it.
+function runs(me: Me, since: string) {
+  const t = tree();
+  return Object.entries(t.series).filter(([, s]) => canSee(me, t.workspaces[s.workspace])).flatMap(([sid]) => instances(sid).flatMap(i => {
+    const a = active.get(sid);
+    return i.log.filter(r => r.op === 'run' && r.at >= since).map(r => {
+      const d = i.log.find(e => e.op === 'done' && e.run === r.run), seen = (i.log.findLast(e => e.op === 'done' && e.seq < r.seq)?.seen as number | undefined) ?? 0;
+      const cause = pending(i, seen).find(e => e.seq <= (r.upto as number));
+      return {
+        path: `${named(t, sid)}/${i.label}`, run: r.run as number, at: r.at, outcome: !d ? 'running' : d.error ? 'failed' : d.aborted ? 'interrupted' : 'done',
+        seconds: Math.round(((d ? Date.parse(d.at) : Date.now()) - Date.parse(r.at)) / 1000), cost: d ? d.cost as number : a?.inst === i ? +a.cost.toFixed(4) : 0,
+        runner: i.log.findLast(e => e.seq < r.seq && ['create', 'duplicate', 'takeover'].includes(e.op))!.by,
+        started: cause ? { op: cause.op, by: cause.op === 'wake' ? cause.from as string : cause.by } : null,
+        summary: d?.summary ?? null, error: d?.error ?? null,
+      };
+    });
+  })).sort((x, y) => x.at.localeCompare(y.at));
+}
+
+// What goes on and what is stuck in what `me` sees: runs going and queued, what waits on whom, and open instances whose last run
+// failed. Admins see everyone's expired logins, others their own.
+function status(me: Me) {
+  const t = tree(), w8 = wakes(), path = (i: Instance) => `${named(t, i.seriesId)}/${i.label}`;
+  const seen = Object.entries(t.series).filter(([, s]) => canSee(me, t.workspaces[s.workspace]));
+  const open = seen.flatMap(([sid]) => instances(sid).filter(i => i.doc.status === 'open'));
+  return {
+    running: seen.flatMap(([sid]) => active.get(sid) ?? []).map(a => ({ path: path(a.inst), run: a.n, at: a.inst.log.findLast(e => e.op === 'run')!.at, cost: +a.cost.toFixed(4) })),
+    queued: open.flatMap(i => { const q = queued(i); return q ? [{ path: path(i), ...q }] : []; }),
+    asks: open.flatMap(i => waits(i).map(({ who, e }) => ({ who, path: path(i), since: e.at, text: e.text as string, note: isNote(i, e) }))),
+    expired: (me.role === 'admin' ? Object.keys(users()) : [me.email]).flatMap(who => logins(who).filter(l => l.expired).map(l => ({
+      who, login: l.name,
+      holding: open.filter(i => {
+        const hit = i.log.findLast(e => e.op === 'expired' && e.login === l.id && e.runner === who);
+        return hit && !i.log.some(e => e.seq > hit.seq && e.op === 'wake' && e.login === l.id);
+      }).map(path),
+    }))),
+    requests: Object.values(w8.requests).filter(r => seen.some(([sid]) => sid === r.series)).map(r => ({ path: named(t, r.series), label: r.label, from: r.from, reason: r.reason, at: r.at })),
+    broken: seen.filter(([sid, s]) => !s.archived && seriesSettings(seriesDir(sid)).shared && !open.some(i => i.seriesId === sid) && !w8.pending[sid] && !Object.values(w8.requests).some(r => r.series === sid))
+      .map(([sid]) => ({ path: named(t, sid), shared_by: seriesSettings(seriesDir(sid)).shared!.by })),
+    failed: open.filter(i => active.get(i.seriesId)?.inst !== i).flatMap(i => {
+      const d = i.log.findLast(e => e.op === 'done');
+      return d?.error ? [{ path: path(i), run: d.run as number, at: d.at, error: d.error as string }] : [];
+    }),
+  };
 }
 
 function trace(inst: Instance) {
@@ -234,6 +294,14 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     saveTree(t);
     return send(res, 200, { id: wid });
   }
+  if (kind === 'workspaces' && action === 'people') {
+    const w = mustSee(me, t.workspaces[id]);
+    if (!canManage(me, w)) throw new HttpError(403, "only the workspace's owners and admins see its people");
+    const us = users(), open = Object.keys(t.series).filter(sid => t.series[sid].workspace === id).flatMap(sid => instances(sid).filter(i => i.doc.status === 'open'));
+    return send(res, 200, [...w.owners.map(who => ({ who, as: 'owner' })), ...w.members.map(who => ({ who, as: 'member' }))].map(p => ({
+      ...p, last_login: us[p.who]?.last_login ?? null, runs: open.filter(i => runnerOf(i).by === p.who).map(i => `${t.series[i.seriesId].name}/${i.label}`),
+    })));
+  }
   if (kind === 'workspaces' && req.method === 'PUT') {
     const w = mustSee(me, t.workspaces[id]);
     if (!canManage(me, w)) throw new HttpError(403, "only the workspace's owners and admins change it");
@@ -243,7 +311,11 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       if (name !== w.name && Object.values(t.workspaces).some(x => x.name === name)) throw new HttpError(409, `the name ${name} is taken; choose another`);
       w.name = name;
     }
-    if (change.owners !== undefined || change.members !== undefined) [w.owners, w.members] = people({ owners: w.owners, members: w.members, ...change });
+    if (change.owners !== undefined || change.members !== undefined) {
+      const before = hidden(t, users());
+      [w.owners, w.members] = people({ owners: w.owners, members: w.members, ...change });
+      guard(before, hidden(t, users()), change.force);
+    }
     if (change.archived !== undefined) w.archived = !!change.archived;
     if (change.agents !== undefined) writeFileSync(agentsFile(id), String(change.agents));
     saveTree(t);
@@ -320,7 +392,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   if (!run) mustSee(me, t.workspaces[t.series[inst.seriesId].workspace]);
   const a = active.get(inst.seriesId);
   const mine = a?.inst === inst ? a : undefined;
-  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4) } : null, queued: queued(inst), runner: runnerOf(inst) });
+  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4) } : null, queued: !!queued(inst), runner: runnerOf(inst) });
   if (action === 'trace') return send(res, 200, trace(inst));
   if (action === 'summary') return send(res, 200, summary(inst));
   // The screen: anyone who sees the instance reads it; only its own run writes it.
@@ -427,23 +499,35 @@ async function admin(me: Me, req: IncomingMessage, res: ServerResponse, url: URL
   if (me.role !== 'admin') throw new HttpError(403, 'admins only');
   const email = decodeURIComponent(url.pathname.split('/')[2] ?? '').toLowerCase();
   if (!email) {
-    if (req.method === 'POST') {
-      const { email, role } = JSON.parse((await body(req)).toString());
-      upsertUser(String(email ?? ''), { role: ROLES.includes(role) ? role : 'user' });
+    const t = tree(), us = users();
+    if (req.method === 'PUT') {
+      // Roles by email: a new email becomes a person; no one is removed.
+      const { roles, force } = await json(req), after = structuredClone(us);
+      for (const [e, role] of Object.entries(roles as Record<string, string>)) {
+        if (!/^[^\s@]+@[^\s@]+$/.test(e)) throw new HttpError(400, `not an email address: ${e}`);
+        if (!ROLES.includes(role as Role)) throw new HttpError(400, `${e}: a role is one of ${ROLES.join(', ')}`);
+        if (e.toLowerCase() === me.email && role !== 'admin') throw new HttpError(409, 'you cannot lock yourself out');
+        after[e.toLowerCase()] = { ...after[e.toLowerCase()], role: role as Role };
+      }
+      guard(hidden(t, us), hidden(t, after), force);
+      for (const [e, role] of Object.entries(roles as Record<string, Role>)) upsertUser(e, { role });
       return send(res, 200, 'ok');
     }
-    const all = Object.values(tree().workspaces);
-    return send(res, 200, Object.entries(users()).map(([email, { sub, epoch, groups, ...u }]) => ({ email, ...u, workspaces: all.filter(w => everyone(w).includes(email)).map(w => w.name) })));
+    // Besides where each person is: the open instances they run in workspaces they aren't in, which they'd lose sight of as users.
+    const open = Object.entries(t.series).flatMap(([sid, s]) => instances(sid).filter(i => i.doc.status === 'open').map(i => ({ i, w: t.workspaces[s.workspace], path: `${named(t, sid)}/${i.label}` })));
+    return send(res, 200, Object.entries(us).map(([email, { sub, epoch, groups, ...u }]) => ({
+      email, ...u, workspaces: Object.values(t.workspaces).filter(w => everyone(w).includes(email)).map(w => w.name),
+      outside: open.filter(o => runnerOf(o.i).by === email && !canSee({ email, role: 'user', groups: groups ?? [] }, o.w)).map(o => o.path),
+    })));
   }
   if (!users()[email]) throw new HttpError(404, `no user ${email}`);
   if (req.method === 'DELETE') {
     if (email === me.email) throw new HttpError(409, 'you cannot remove yourself');
     removeUser(email);
   } else if (req.method === 'PUT') {
-    const { role, disabled, signout } = JSON.parse((await body(req)).toString());
-    if (email === me.email && (disabled || (role !== undefined && role !== 'admin'))) throw new HttpError(409, 'you cannot lock yourself out');
-    if (role !== undefined && !ROLES.includes(role)) throw new HttpError(400, `role is one of ${ROLES.join(', ')}`);
-    upsertUser(email, { ...(role && { role: role as Role }), ...(disabled !== undefined && { disabled: !!disabled }) });
+    const { disabled, signout } = await json(req);
+    if (email === me.email && disabled) throw new HttpError(409, 'you cannot lock yourself out');
+    if (disabled !== undefined) upsertUser(email, { disabled: !!disabled });
     if (signout) signOutEverywhere(email);
   } else throw new HttpError(405, 'PUT or DELETE');
   send(res, 200, 'ok');
@@ -508,6 +592,8 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     else if (url.pathname === '/api/events') events(me, req, res);
     else if (url.pathname === '/api') send(res, 200, listing(me));
     else if (url.pathname === '/api/files') send(res, 200, pullable(me, url.searchParams.get('path') ?? ''));
+    else if (url.pathname === '/api/runs') send(res, 200, runs(me, url.searchParams.get('since') ?? ''));
+    else if (url.pathname === '/api/status') send(res, 200, status(me));
     else if (url.pathname.startsWith('/files/')) await file(me, res, url, false);
     else if (url.pathname.startsWith('/preview/')) await file(me, res, url, true);
     else if (url.pathname.startsWith('/api/')) await api(me, req, res, url);
