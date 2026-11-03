@@ -101,10 +101,10 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
       `curl -s -m 5 ${base}/api 2>&1; echo "curl exit $?"`,
       'curl -s -m 5 https://10.1.2.3/ 2>&1; echo "curl exit $?"',
       'curl -s -m 10 https://graph.microsoft.com/v1.0/users/ceo@demo.test/messages 2>&1',
-      () => `rf wake 2026-11 ${new Date(Date.now() + 2500).toISOString()} the bank file comes later 2>&1`,
-      'rf wake ../../Wide/Close now the close can start --label 2026-11 2>&1',
-      'rf wake . soon why 2>&1',
-      'rf wake . +1d the next month 2>&1',
+      () => `rf wake 2026-11 ${new Date(Date.now() + 2500).toISOString()} 2>&1`,
+      'rf wake ../../Wide/Close now --label 2026-11 2>&1',
+      'rf wake . soon 2>&1',
+      'rf wake . +1d 2>&1',
       'rf say --in c2 Walls checked. 2>&1',
       'rf say --in c9 x 2>&1',
       'rf show 2>&1 | head -c 200',
@@ -143,7 +143,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.match(walls.saw[13], /no item nope/);
   assert.match(walls.saw[14], /admin@demo.test started c2, and resolves it/);
   assert.deepEqual(log.filter(e => e.op === 'comment' && e.by === 'agent').map(e => [e.text, !!e.ask]), [['Walls checked.', false], ['Is the bank file coming today?', true]], "the agent's words are comments of its own, and an ask is marked");
-  assert.match(woken.prompt!, /"op":"wake".*the bank file comes later/, 'the wake started the next run');
+  assert.match(woken.prompt!, /"op":"wake","from":"[^"]*\/2026-11"/, 'the wake started the next run, saying only who set it');
   assert.match(woken.saw[0], /m365:mail:admin@demo.test is not ticked/);
   assert.deepEqual(log.filter(e => e.op === 'done').map(e => [e.run, e.aborted]), [[1, false], [2, false]]);
   assert.deepEqual(log.filter(e => e.op === 'report').map(e => e.text), [walls.report, woken.report]);

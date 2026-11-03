@@ -13,7 +13,7 @@ rf pull PATH DIR [--delete] [-n|--dry-run] [--exclude PATTERN]...
 rf help                           how rollforward works and how to use rf, for an agent
 rf comment PATH TEXT [--item ID] [--ref REF] [--thread T] [--wait]   a new thread, or a reply in T, as to an agent's ask
 rf upload PATH FILE [--onto ITEM] [--output]
-rf wake PATH AT REASON [--label LABEL]   AT now, +<n>m|h|d or a date; PATH an open instance, or a series with LABEL
+rf wake PATH AT [--label LABEL]   AT now, +<n>m|h|d or a date; PATH an open instance, or a series with LABEL
 rf agents [WORKSPACE] [--set FILE|-]     the company's AGENTS.md, or a workspace's; setting the company's is for admins
 rf skills
 rf connections
@@ -78,8 +78,8 @@ Usual work
 - What waits on me: rf ls, then the asks in that instance's log.jsonl, ask true, whose thread has nothing after them.
 - Answer an ask: rf comment PATH TEXT --thread T --wait, which prints what the agent says back.
 - Give an input or a corrected output: rf upload PATH FILE [--onto ITEM] [--output].
-- Start an instance: rf wake SERIES now REASON --label LABEL, which starts it as whoever shares the series, else asks on the page for
-  someone to start it; take one you run up later: rf wake PATH +2h REASON.
+- Start an instance: rf wake SERIES now --label LABEL, which starts it as whoever shares the series, else asks on the page for
+  someone to start it; take one you run up later: rf wake PATH +2h.
 - Read what a run did: rf pull PATH/ DIR, then its report and done entries in log.jsonl, the files in working/, and session/ for
   every step.
 
@@ -231,7 +231,7 @@ if (cmd === 'login' && url) {
   console.log(`signed in as ${me.email}`);
 } else if (cmd === 'ls') {
   for (const w of await get('/api')) for (const s of w.series) {
-    console.log(`${w.name}/${s.name}${s.wake ? `  wakes ${s.wake.at} to start ${s.wake.label}: ${s.wake.reason}` : ''}${s.requests.length ? `  ${s.requests.length} asking to start` : ''}`);
+    console.log(`${w.name}/${s.name}${s.wake ? `  wakes ${s.wake.at} to start ${s.wake.label}` : ''}${s.requests.length ? `  ${s.requests.length} asking to start` : ''}`);
     for (const i of s.instances) console.log(`${w.name}/${s.name}/${i.label}  ${i.status}${i.running ? ', running' : ''}${i.asks.length ? `, ${i.asks.length} asks waiting` : ''}${i.wake ? `, wakes ${i.wake}` : ''}, runner ${i.runner}`);
   }
 } else if (cmd === 'pull' && args.length === 2) await pull(args[0], args[1]);
@@ -255,10 +255,10 @@ else if (cmd === 'comment' && args.length === 2) {
   const q = new URLSearchParams({ name: basename(args[1]), pane: flags.output ? 'out' : 'in', ...(typeof flags.onto === 'string' && { onto: flags.onto }) });
   await api(`${(await find(args[0])).at}/upload?${q}`, { method: 'POST', body: readFileSync(args[1]) });
   console.log('uploaded');
-} else if (cmd === 'wake' && args.length >= 3) {
+} else if (cmd === 'wake' && args.length === 2) {
   const { series, inst } = await find(args[0]);
   const at = args[1] === 'now' ? Date.now() : args[1].startsWith('+') ? Date.now() + Number(args[1].slice(1, -1)) * { m: 60e3, h: 3600e3, d: 86400e3 }[args[1].at(-1)!]! : Date.parse(args[1]);
-  const w = await (await post(`/api/wakes/${inst?.id ?? series.id}`, { at: new Date(at).toISOString(), reason: args.slice(2).join(' '), label: flags.label }, 'PUT')).json();
+  const w = await (await post(`/api/wakes/${inst?.id ?? series.id}`, { at: new Date(at).toISOString(), label: flags.label }, 'PUT')).json();
   console.log(`wakes at ${w.at}`);
 } else if (cmd === 'agents' && args.length <= 1) {
   const ws = args[0] === undefined ? undefined : (await get('/api')).find(w => w.name === args[0]);
@@ -297,7 +297,7 @@ else if (cmd === 'comment' && args.length === 2) {
       [`Waiting`, [
         ...s.asks.sort((a, b) => a.who.localeCompare(b.who) || a.since.localeCompare(b.since)).map(a => `${a.who}  ${a.signoff ? 'a sign-off' : a.note ? 'a note' : 'an ask'} in ${a.path} since ${when(a.since)}: ${a.text.split('\n')[0].slice(0, 80)}`),
         ...s.expired.map(e => `${e.who}  their ${e.login} login expired${e.holding.length ? `, holding ${e.holding.join(', ')}` : ''}`),
-        ...s.requests.map(r => `${r.path}  ${r.from} asks to start ${r.label}, since ${when(r.at)}: ${r.reason}`),
+        ...s.requests.map(r => `${r.path}  ${r.from} asks to start ${r.label}, since ${when(r.at)}`),
       ]],
       [`Last run failed`, s.failed.map(f => `${f.path}  run ${f.run} at ${when(f.at)}: ${f.error}`)],
     ].filter(([, rows]) => rows.length);

@@ -25,8 +25,8 @@ const HELP: Record<string, string> = {
   name of whoever signed.`,
   resolve: `rf resolve THREAD [TEXT]
   Resolves a thread you started, once it no longer applies, saying why.`,
-  wake: `rf wake TARGET AT REASON [--label LABEL]
-  Starts a run later. TARGET is a folder as you see it: an open instance, such as your own label or ../<series>/<label>, which
+  wake: `rf wake TARGET AT [--label LABEL]
+  Starts a run later, which sees who woke it. TARGET is a folder as you see it: an open instance, such as your own label or ../<series>/<label>, which
   the wake continues; or a series, such as . or ../<series>, which it starts a new instance of, labelled LABEL. AT is now,
   +<n>m, +<n>h, +<n>d, or a date and time with its offset, such as 2026-09-14T07:00+08:00. A target has one wake pending (a new
   one replaces it), at least 15 minutes after its last. A closed instance can't be woken: to correct one, wake its series
@@ -69,13 +69,13 @@ function comment() {
   return send('POST', `${own}/comment`, JSON.stringify({ thread: o.in, item, ref, text, files: o.file, ask: cmd === 'ask', to: o.to, signoff: o.signoff }));
 }
 
-// rf wake TARGET AT REASON [--label LABEL]: the folder becomes an id, then the wake is set as a person sets one.
+// rf wake TARGET AT [--label LABEL]: the folder becomes an id, then the wake is set as a person sets one.
 const wake = async () => {
-  const i = args.indexOf('--label'), label = i >= 0 ? args[i + 1] : undefined, [target, at, ...why] = i >= 0 ? [...args.slice(0, i), ...args.slice(i + 2)] : args;
-  if (!target || !at || !why.length) return usage('wake');
+  const i = args.indexOf('--label'), label = i >= 0 ? args[i + 1] : undefined, [target, at, ...rest] = i >= 0 ? [...args.slice(0, i), ...args.slice(i + 2)] : args;
+  if (!target || !at || rest.length) return usage('wake');
   const found = await send('GET', `api/resolve?path=${encodeURIComponent(target)}`);
   if (!found.ok) return found;
-  const { id, kind } = JSON.parse(found.text), set = await send('PUT', `api/wakes/${id}`, JSON.stringify({ at, reason: why.join(' '), label }));
+  const { id, kind } = JSON.parse(found.text), set = await send('PUT', `api/wakes/${id}`, JSON.stringify({ at, label }));
   return set.ok ? { ok: true, text: `set: ${target} ${kind === 'series' ? `starts ${label}` : 'wakes'} at ${JSON.parse(set.text).at}` } : set;
 };
 

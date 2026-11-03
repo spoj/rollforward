@@ -226,7 +226,7 @@ function status(me: Me) {
         return hit && !i.log.some(e => e.seq > hit.seq && e.op === 'wake' && e.login === l.id);
       }).map(path),
     }))),
-    requests: Object.values(w8.requests).filter(r => seen.some(([sid]) => sid === r.series)).map(r => ({ path: named(t, r.series), label: r.label, from: r.from, reason: r.reason, at: r.at })),
+    requests: Object.values(w8.requests).filter(r => seen.some(([sid]) => sid === r.series)).map(r => ({ path: named(t, r.series), label: r.label, from: r.from, at: r.at })),
     failed: open.filter(i => active.get(i.seriesId)?.inst !== i).flatMap(i => {
       const d = i.log.findLast(e => e.op === 'done');
       return d?.error ? [{ path: path(i), run: d.run as number, at: d.at, error: d.error as string }] : [];
@@ -455,21 +455,20 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     else if (t.series[target].workspace !== t.series[run.inst.seriesId].workspace) throw new HttpError(403, `${named(t, target)} is in another workspace: you can read it, not wake it`);
     if (req.method === 'DELETE' && !wake) throw new HttpError(404, 'no wake pending');
     if (req.method === 'DELETE') return void (cancelWake(id), send(res, 200, 'ok'));
-    const { at: when = '', reason, label } = payload, w = String(when);
+    const { at: when = '', label } = payload, w = String(when);
     const at = w === 'now' ? Date.now() : /^\+\d+[mhd]$/.test(w) ? Date.now() + Number(w.slice(1, -1)) * { m: 60e3, h: 3600e3, d: 86400e3 }[w.at(-1) as 'm'] : Date.parse(w);
-    if (req.method !== 'PUT' || Number.isNaN(at)) throw new HttpError(400, 'PUT {"at", "reason", "label" for a series}, or DELETE; at is now, +<n>m|h|d, or a date and time such as 2026-09-14T07:00+08:00');
-    if (!wake && !reason) throw new HttpError(400, 'a new wake has a reason');
+    if (req.method !== 'PUT' || Number.isNaN(at)) throw new HttpError(400, 'PUT {"at", "label" for a series}, or DELETE; at is now, +<n>m|h|d, or a date and time such as 2026-09-14T07:00+08:00');
     if (!wake && t.series[id] && !label) throw new HttpError(400, `waking a series starts a new instance: name it with a label${run ? `; to wake your own instance, name its folder: ${run.inst.label}` : ''}`);
     if (!t.series[id] && instance(id).doc.status !== 'open') throw new HttpError(409, `${instance(id).label} is ${instance(id).doc.status}: to correct it, wake its series with the label ${instance(id).label}-r2`);
     const from = run ? `${named(t, run.inst.seriesId)}/${run.inst.label}` : by;
-    return send(res, 200, setWake(id, { ...wake, at: new Date(at).toISOString(), from, inst: run?.inst.id, ...(reason && { reason }), ...(label && { label }) }));
+    return send(res, 200, setWake(id, { ...wake, at: new Date(at).toISOString(), from, inst: run?.inst.id, ...(label && { label }) }));
   }
   if (kind === 'requests') {
     const r = wakes().requests[id];
     if (!r) throw new HttpError(404, `no request ${id}`);
     mustSee(me, t.workspaces[t.series[r.series].workspace]);
     if (req.method === 'POST') {
-      const inst = startWith(r.series, r.label, by, checkTicks(by, payload.logins ?? []), { reason: r.reason, from: r.from });
+      const inst = startWith(r.series, r.label, by, checkTicks(by, payload.logins ?? []), { from: r.from });
       dropRequest(id);
       return send(res, 200, { id: inst.id });
     }

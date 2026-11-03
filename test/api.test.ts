@@ -362,8 +362,8 @@ test("people see and move a series' next wake, share it as themselves, and start
   const s = await shown(series), wakes = join(root, '.rf', 'wakes.json'), sep = await iid(series, '2026-08-30 rework');
   const due = new Date(Date.now() + 86_400_000).toISOString();
   writeFileSync(wakes, JSON.stringify({
-    pending: { [s.id]: { at: due, reason: 'next week', from: 'larkfield/x/y', label: '2026-09-20' }, [sep]: { at: due, reason: 'late file', from: 'larkfield/x/y' } },
-    fired: {}, requests: { r1: { series: s.id, label: '2026-09-27', reason: 'rec done', from: 'larkfield/Bank rec/2026-09', at: due } },
+    pending: { [s.id]: { at: due, from: 'larkfield/x/y', label: '2026-09-20' }, [sep]: { at: due, from: 'larkfield/x/y' } },
+    fired: {}, requests: { r1: { series: s.id, label: '2026-09-27', from: 'larkfield/Bank rec/2026-09', at: due } },
   }));
   const listed = await shown(series);
   assert.deepEqual([listed.wake.label, listed.requests.map((r: { id: string }) => r.id), listed.shared_by], ['2026-09-20', ['r1'], null]);
@@ -394,7 +394,7 @@ test("people see and move a series' next wake, share it as themselves, and start
   const started = await call('POST', '/api/requests/r1');
   assert.equal(started.status, 200);
   const made = await json(`/api/instances/${(await started.json()).id}`);
-  assert.deepEqual([made.log[0].by, made.log[1].op, made.log[1].reason], [adminEmail, 'wake', 'rec done']);
+  assert.deepEqual([made.log[0].by, made.log[1].op, made.log[1].from], [adminEmail, 'wake', 'larkfield/Bank rec/2026-09']);
   assert.equal((await call('POST', await at(series), JSON.stringify({ label: 'third' }))).status, 200);
   assert.equal((await call('POST', await at(series), JSON.stringify({ label: 'fourth' }))).status, 409, '3 open already');
   assert.equal((await call('DELETE', `/api/wakes/${s.id}`)).status, 200);

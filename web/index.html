@@ -562,7 +562,7 @@ function renderSide() {
       const closed = s.instances.length - open.length;
       h += '<div class="tree">';
       if (s.wake) h += `<div class="row wake"><span class="nm" title="Starts ${esc(s.wake.label)} ${when(s.wake.at)}"><span class="l">Starts ${esc(s.wake.label)} ${soon(s.wake.at)}</span></span><span class="n" title="${esc(s.wake.reason)}">wake</span></div>`;
-      for (const r of s.requests) h += `<div class="row req"><span class="nm" title="${esc(`${r.from} asks to start ${r.label}: ${r.reason}`)}"><span class="l">${esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)}</span></span>`
+      for (const r of s.requests) h += `<div class="row req"><span class="nm" title="${esc(`${r.from} asks to start ${r.label}`)}"><span class="l">${esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)}</span></span>`
         + `<button class="add" data-act="req-start" data-id="${r.id}" title="Start it">\u25B6</button><button class="add" data-act="req-drop" data-id="${r.id}" title="Dismiss">\u00D7</button></div>`;
       h += s.instances.filter(i => i.status === 'open' || showClosed || i.id === cur?.i?.id).map(row).join('');
       if (closed) h += `<button class="quiet" data-act="toggle-closed">${showClosed ? 'Hide' : 'Show'} closed (${closed})</button>`;
@@ -743,7 +743,7 @@ function logText(e) {
     comment: () => `${w} ${e.note ? `left a note for ${who(data.runner.by)}` : e.by !== 'agent' ? 'commented' : e.ask ? `asked${e.to ? ' ' + who(e.to) : ''}` : 'said'}${e.item ? ` on ${item(e.item)}${e.ref ? ` at ${esc(e.ref)}` : ''}` : ''}<div class="d">${esc(e.text)}</div>`,
     resolve: () => `${w} resolved a thread${e.text ? `<div class="d">${esc(e.text)}</div>` : ''}`,
     report: () => `${w} reported on run ${e.run}<div class="d">${md(e.text)}</div>`,
-    wake: () => `${e.note ? `${person(e.from)} would wake it: a note for ${who(data.runner.by)}` : `Woken${e.from ? ` by ${who(e.from)}` : ''}`}<div class="d">${esc(e.reason)}</div>`,
+    wake: () => `${e.note ? `${person(e.from)} would wake it: a note for ${who(data.runner.by)}` : `Woken${e.from ? ` by ${who(e.from)}` : ''}`}${e.reason ? `<div class="d">${esc(e.reason)}</div>` : ''}`,
     expired: () => `Waiting for ${who(e.runner)} to sign in to ${esc(e.name ?? (e.login === 'm365' ? 'Microsoft 365' : e.login))} again${e.runner === me.email && !data.log.some(x => x.seq > e.seq && x.op === 'wake' && x.login === e.login) ? `<div>${signInHtml(e.login, e.name ?? e.login)}</div>` : ''}`,
     takeover: () => `${w} took over from ${who(e.from)}${e.logins?.length ? `<div class="d">Logins: ${esc(e.logins.join(', '))}</div>` : ''}`,
     promote: () => `${w} made it a series, ${esc(e.series)}`,
@@ -1056,7 +1056,7 @@ function startsHtml(s) {
   return `<div>${s.shared_by ? `Anyone in ${ws}, and its agents, start runs of this series as ${mine ? 'you, with these logins:' : person(s.shared_by) + '.'}` : "Each instance's runner, and nobody else: others' comments are notes for them, and a wake asks someone to start the instance."}</div>`
     + (mine ? ticksHtml(s.offers, s.shared_logins) + '<div class="row2"><button class="btn" data-act="share-off">Stop</button></div>' : `<div class="row2">${arm}</div>`)
     + (pv.arming ? `<div class="warn">With these logins:${ticksHtml(s.offers)}You take on every run that anyone in ${ws}, or any of its agents, starts in this series: their comments, uploads and wakes in your instances, and the instances their wakes start, all run as you, with your logins.<div><button class="btn danger" data-act="share-on">Start their runs as me</button></div></div>` : '')
-    + (s.wake ? `<div class="sub">Next: starts ${esc(s.wake.label)}, ${esc(when(s.wake.at))}: ${esc(s.wake.reason)}</div><div class="row2"><input type="datetime-local" id="swake" value="${localInput(s.wake.at)}"><button class="btn" data-act="wake-move">Move</button><button class="btn" data-act="wake-cancel">Cancel wake</button></div>`
+    + (s.wake ? `<div class="sub">Next: starts ${esc(s.wake.label)}, ${esc(when(s.wake.at))}</div><div class="row2"><input type="datetime-local" id="swake" value="${localInput(s.wake.at)}"><button class="btn" data-act="wake-move">Move</button><button class="btn" data-act="wake-cancel">Cancel wake</button></div>`
       : '<div class="sub">No wake pending: the agent sets the next one.</div>');
 }
 

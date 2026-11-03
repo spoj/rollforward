@@ -209,8 +209,8 @@ export function closed(inst: Instance, by: string) {
 // Wakes (.rf/wakes.json): at most one pending per target, an instance or a series by id, fired by the clock at least 15 minutes after
 // the target's last, and the requests to start an instance that a series no one shares, or with 3 open, got instead.
 // A run's wake notes its instance, `inst`, as its name in `from` may change before it fires.
-export type Wake = { at: string; reason: string; from: string; label?: string; inst?: string };
-export type Request = { series: string; label: string; reason: string; from: string; at: string };
+export type Wake = { at: string; from: string; label?: string; inst?: string };
+export type Request = { series: string; label: string; from: string; at: string };
 type Wakes = { pending: Record<string, Wake>; fired: Record<string, string>; requests: Record<string, Request> };
 export const wakes = () => readJson<Wakes>('wakes.json', { pending: {}, fired: {}, requests: {} });
 const saveWakes = (w: Wakes) => writeJson('wakes.json', w);
@@ -237,8 +237,8 @@ export function dropRequest(id: string): Request {
   return r;
 }
 
-// Starts an instance of a series for a wake or a request, run by `by` with the logins they ticked, the reason its first entry.
-export function startWith(seriesId: string, label: string, by: string, logins: string[], wake: { reason: string; from: string }): Instance {
+// Starts an instance of a series for a wake or a request, run by `by` with the logins they ticked, the wake its first entry.
+export function startWith(seriesId: string, label: string, by: string, logins: string[], wake: { from: string }): Instance {
   if (instances(seriesId).filter(i => i.doc.status === 'open').length >= MAX_OPEN) throw new HttpError(409, `${MAX_OPEN} instances are open; close one first`);
   const inst = createInstance(seriesId, label, by, logins);
   inst.append('server', 'wake', wake);
@@ -258,7 +258,7 @@ function fire() {
     if (!t.series[target]) {
       const inst = instance(target);
       if (inst.doc.status !== 'open') continue;
-      inst.append('server', 'wake', { reason: wake.reason, from: wake.from, ...(wake.inst !== inst.id && !starter(inst, wake.from) && { note: true }) });
+      inst.append('server', 'wake', { from: wake.from, ...(wake.inst !== inst.id && !starter(inst, wake.from) && { note: true }) });
       kick(inst);
       continue;
     }
@@ -266,9 +266,9 @@ function fire() {
     const runs = u && !u.disabled && canSee({ email: shared.by, role: u.role, groups: u.groups ?? [] }, t.workspaces[t.series[target].workspace]);
     try {
       if (!runs) throw new Error('not shared');
-      startWith(target, wake.label!, shared.by, shared.logins, { reason: wake.reason, from: wake.from });
+      startWith(target, wake.label!, shared.by, shared.logins, { from: wake.from });
     } catch {
-      w.requests[newId()] = { series: target, label: wake.label!, reason: wake.reason, from: wake.from, at: now };
+      w.requests[newId()] = { series: target, label: wake.label!, from: wake.from, at: now };
     }
   }
   saveWakes(w);
