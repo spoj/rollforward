@@ -1,5 +1,5 @@
-// Moves this checkout to the newest release CI made, then restarts the server: a systemd timer runs it (docs/deploy.md), and
-// never twice at once. A release is taken once every check on its commit has passed, and never past a prerelease, which a tag with
+// Moves this checkout to the newest release CI made, then restarts the server once the runs going end: a systemd timer runs it
+// (docs/deploy.md), and never twice at once. A release is taken once every check on its commit has passed, and never past a prerelease, which a tag with
 // a Manual: line makes for a release that needs a person first. If the server doesn't answer HEALTH after the move, the checkout
 // goes back, and that release isn't tried again.
 //   node scripts/update.ts HEALTH
@@ -35,12 +35,16 @@ if (!checks.length || checks.some((c: any) => c.status !== 'completed' || !['suc
   process.exit(0);
 }
 
-// The checkout at `to`, with what changed since `from` installed, and the server restarted.
-function move(from: string, to: string) {
+// The checkout at `to`, with what changed since `from` installed, and the server restarted. It drains first, on SIGUSR2: no run
+// starts, and it exits once those going end, or after 30 minutes, for systemd to start it again; a stopped one is started.
+async function move(from: string, to: string) {
   sh('git', 'checkout', '-q', '--detach', to);
   if (sh('git', 'diff', '--name-only', from, to, '--', 'package-lock.json')) sh('npm', 'ci', '--omit=dev', '--no-audit', '--no-fund');
   if (sh('git', 'diff', '--name-only', from, to, '--', 'requirements.txt')) sh('uv', 'pip', 'install', '--python', '.venv/bin/python', '-r', 'requirements.txt');
-  sh('systemctl', '--user', 'restart', 'rollforward');
+  const pid = () => sh('systemctl', '--user', 'show', '--property=MainPID', '--value', 'rollforward'), was = pid();
+  if (was === '0') return void sh('systemctl', '--user', 'restart', 'rollforward');
+  sh('systemctl', '--user', 'kill', '--kill-whom=main', '--signal=SIGUSR2', 'rollforward');
+  while (pid() === was) await sleep(5000);
 }
 async function answers() {
   for (let i = 0; i < 30; i++) {
@@ -53,7 +57,7 @@ async function answers() {
 console.log(`${current} -> ${target}`);
 sh('git', 'fetch', '-q', '--tags', 'origin');
 try {
-  move(current, target);
+  await move(current, target);
   if (await answers()) {
     console.log(`on ${target}`);
     process.exit(0);
@@ -62,7 +66,7 @@ try {
 } catch (e) {
   console.log(`${target} failed: ${(e as Error).message}`);
 }
-move(target, current);
+await move(target, current);
 mkdirSync(dirname(state), { recursive: true });
 writeFileSync(state, JSON.stringify({ bad: [...bad, target] }));
 console.log(`back on ${current}; ${target} won't be tried again`);

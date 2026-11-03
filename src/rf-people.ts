@@ -75,7 +75,7 @@ Usual work
 Watching over it, for admins and power users; each sees what the caller sees, and takes --json
 - What's stuck: rf status lists runs going, flagging those past --long MIN (30); queued runs, since when and why: their series is
   running, the RF_MAX_RUNS cap, or memory; what waits on whom since when: asks, notes for runners, expired logins and the instances
-  they hold, requests to start, and shared series with nothing open and no wake set; and open instances whose last run failed.
+  they hold, and requests to start; and open instances whose last run failed.
 - History: rf runs [PATH] [--since DATE] [--failed] [--running] [--long MIN] prints a line per run: its start, path, run number,
   outcome, time taken, cost, what started it and by whom, and its summary or error. rf costs [PATH] [--since DATE] [--by
   workspace|series|person|day] totals them, by the runner for person.
@@ -259,7 +259,6 @@ else if (cmd === 'comment' && args.length === 2) {
         ...s.asks.sort((a, b) => a.who.localeCompare(b.who) || a.since.localeCompare(b.since)).map(a => `${a.who}  ${a.note ? 'a note' : 'an ask'} in ${a.path} since ${when(a.since)}: ${a.text.split('\n')[0].slice(0, 80)}`),
         ...s.expired.map(e => `${e.who}  their ${e.login} login expired${e.holding.length ? `, holding ${e.holding.join(', ')}` : ''}`),
         ...s.requests.map(r => `${r.path}  ${r.from} asks to start ${r.label}, since ${when(r.at)}: ${r.reason}`),
-        ...s.broken.map(b => `${b.path}  shared by ${b.shared_by}, but nothing is open and no wake is set`),
       ]],
       [`Last run failed`, s.failed.map(f => `${f.path}  run ${f.run} at ${when(f.at)}: ${f.error}`)],
     ].filter(([, rows]) => rows.length);

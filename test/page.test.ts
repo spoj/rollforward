@@ -128,3 +128,12 @@ test("the side panel opens on Conversation beside the instance; the Ops log fold
   await page.click('#bar [data-act=show-panel]');
   await page.waitForSelector('#log.open .tab.sel:text-is("Conversation")');
 });
+
+test("a row's chevron folds and opens it, selected or not, and selects nothing", async () => {
+  const title = await page.textContent('#bar h1');
+  await page.click('.row.ws.on .chev');
+  assert.equal(await page.locator('.row.ser').count(), 0, 'the selected workspace folds, and stays folded');
+  assert.equal(await page.textContent('#bar h1'), title);
+  await page.click('.row.ws.on .chev');
+  await page.waitForSelector('.row.ser');
+});

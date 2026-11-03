@@ -10,7 +10,7 @@ import type { Active } from '../src/waker.ts';
 // Wakes without a model: a run that a wake starts ends at once for want of a key, which is enough to see what started it.
 delete process.env.OPENROUTER_API_KEY;
 process.env.RF_WAKE_TICK_MS = '50';
-const { closed, kick, recover, resolveFor, setWake, startWaking, view, wakes } = await import('../src/waker.ts');
+const { closed, drain, kick, queued, recover, resolveFor, setWake, startWaking, view, wakes } = await import('../src/waker.ts');
 const { saveLogin } = await import('../src/logins.ts');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-wake-')), alice = 'alice@demo.test';
 initSystem(tmp);
@@ -87,11 +87,13 @@ test('closing an instance wakes the later open ones of its series, not the earli
   assert.ok(!ops(before).includes('wake'));
 });
 
-test('a run a restart cut ends as aborted, and its instance is woken to carry on', async () => {
-  const cut = make('s3', 'cut');
-  cut.append('server', 'run', { run: 1, upto: 1 });
+test('a run a restart cut ends as aborted, with what it cost so far, and its instance is woken to carry on', async () => {
+  const cut = make('s3', 'cut'), reply = (at: string, total: number) => JSON.stringify({ type: 'message', timestamp: at, message: { role: 'assistant', usage: { cost: { total } } } });
+  const { at } = cut.append('server', 'run', { run: 1, upto: 1 });
+  mkdirSync(join(cut.dir, 'session'));
+  writeFileSync(join(cut.dir, 'session', 'main.jsonl'), [reply('2026-01-01T00:00:00.000Z', 5), reply(at, 0.25), reply(at, 0.5), '{"type":"mess'].join('\n'));
   recover();
-  assert.deepEqual(cut.log.slice(-2).map(e => [e.op, e.error ?? e.reason]), [['done', 'a restart cut the run'], ['wake', 'A restart cut your last run; carry on']]);
+  assert.deepEqual(cut.log.slice(-2).map(e => [e.op, e.error ?? e.reason, e.cost]), [['done', 'a restart cut the run', 0.75], ['wake', 'A restart cut your last run; carry on', undefined]]);
   await settle();
   assert.equal(cut.log.filter(e => e.op === 'run').length, 2, 'started again');
 });
@@ -151,4 +153,17 @@ test("only an instance's runner starts its runs: others' comments and wakes are 
   kick(shared);
   await settle();
   assert.equal(runs(shared), 1, 'in a series its runner shares, anyone starts runs');
+});
+
+// Last: a drained server starts no more runs.
+test('an update drains the server: it exits once no run is going, and starts none meanwhile', async () => {
+  let exits = 0;
+  drain(() => exits++);
+  assert.equal(exits, 1, 'nothing was going');
+  const held = make('s6', 'drained');
+  held.append(alice, 'comment', { thread: 'h1', text: 'go on' });
+  kick(held);
+  await settle();
+  assert.ok(!ops(held).includes('run'));
+  assert.match(queued(held)!.why, /updates once the runs going end/);
 });

@@ -502,13 +502,13 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   assert.match(await rf('pull', `${week}/`, two, '--exclude', 'session', '--delete'), /^deleted  mine\.txt$/m);
   assert.ok(!existsSync(join(two, 'mine.txt')));
   assert.match(await rf('help'), /What rf pull copies/);
-  assert.equal((await json(await at(series, 'talk'))).log.at(-1).text, 'From the shell');
+  assert.equal((await json(await at(series, 'talk'))).log.findLast((e: { op: string }) => e.op === 'comment').text, 'From the shell');
   const runs = JSON.parse(await rf('runs', `larkfield/${series}`, '--json'));
   assert.ok(runs.every((r: { path: string }) => r.path.startsWith(`larkfield/${series}/`)));
   assert.deepEqual(runs[0], { path: `larkfield/${series}/2026-08-23`, run: 1, at: '2026-08-23T23:01:00.000Z', outcome: 'done', seconds: 240, cost: 0.21, runner: 'alex', started: { op: 'upload', by: 'alex' }, summary: 'Borrowing base for 08-23: excess 173,800.', error: null });
   assert.match(await rf('runs', '--failed'), /  run \d+  failed  \d+[sm]  \$0\.00  (upload|comment|create|wake) by \S+  /, 'without a model key, the runs the tests start fail');
   assert.match(await rf('costs', '--by', 'person'), /^ +\$\d+\.\d\d +\d+ runs +\$\d+\.\d\d a run  alex$/m);
-  assert.deepEqual(Object.keys(JSON.parse(await rf('status', '--json'))), ['running', 'queued', 'asks', 'expired', 'requests', 'broken', 'failed']);
+  assert.deepEqual(Object.keys(JSON.parse(await rf('status', '--json'))), ['running', 'queued', 'asks', 'expired', 'requests', 'failed']);
   assert.match(await rf('status'), /^Last run failed \(\d+\)\n  larkfield\//m);
 
   await rf('user', 'add', 'carol@demo.test', 'publisher');

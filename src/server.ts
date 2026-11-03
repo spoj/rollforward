@@ -17,7 +17,7 @@ import { endSignIn, isSignIn, passUpgrade, removeWebsite, setWebsite, startSignI
 import { offer, unoffer } from './m365.ts';
 import { seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, byToken, cancelWake, closed, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, resolveFor, setWake, startWaking, startWith, wakes, wider, type Active } from './waker.ts';
+import { active, byToken, cancelWake, closed, drain, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, resolveFor, setWake, startWaking, startWith, wakes, wider, type Active } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -191,8 +191,6 @@ function status(me: Me) {
       }).map(path),
     }))),
     requests: Object.values(w8.requests).filter(r => seen.some(([sid]) => sid === r.series)).map(r => ({ path: named(t, r.series), label: r.label, from: r.from, reason: r.reason, at: r.at })),
-    broken: seen.filter(([sid, s]) => !s.archived && seriesSettings(seriesDir(sid)).shared && !open.some(i => i.seriesId === sid) && !w8.pending[sid] && !Object.values(w8.requests).some(r => r.series === sid))
-      .map(([sid]) => ({ path: named(t, sid), shared_by: seriesSettings(seriesDir(sid)).shared!.by })),
     failed: open.filter(i => active.get(i.seriesId)?.inst !== i).flatMap(i => {
       const d = i.log.findLast(e => e.op === 'done');
       return d?.error ? [{ path: path(i), run: d.run as number, at: d.at, error: d.error as string }] : [];
@@ -689,6 +687,12 @@ server.on('upgrade', (req, socket, head) => {
   const me = session(req), m = /^\/signins\/(\w+)\/(view\/(?:watch|drive))$/.exec(URL.parse(req.url!, 'http://x')?.pathname ?? '');
   if (!me || !m || !isSignIn(me.email, m[1])) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
   passUpgrade(req, socket, head, `/sessions/${m[1]}/${m[2]}`);
+});
+// An update (scripts/update.ts) drains the server: it exits once the runs going end, or after 30 minutes, and systemd starts the new
+// release, which starts what queued meanwhile.
+process.on('SIGUSR2', () => {
+  drain(() => process.exit(0));
+  setTimeout(() => process.exit(0), 30 * 60_000);
 });
 server.listen(port, host, () => {
   startWaking();

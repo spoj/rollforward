@@ -24,8 +24,8 @@ a { color: inherit; }
 
 .side { border-right: 1px solid var(--rule); padding: 14px 10px; display: flex; flex-direction: column; min-height: 0; background: var(--paper); }
 .side .scroll { flex: 1; min-height: 0; overflow: auto; }
-.chev { all: unset; cursor: pointer; flex: none; width: 16px; text-align: center; font-size: 11px; color: var(--ink-3); }
-.chev:hover { color: var(--ink); }
+.chev { all: unset; position: relative; z-index: 1; cursor: pointer; flex: none; width: 22px; align-self: stretch; display: grid; place-items: center; border-radius: var(--r1); font-size: 13px; color: var(--ink-2); }
+.chev:hover { background: var(--rule); color: var(--ink); }
 .row:is(.ws, .ser) > .add { display: none; }
 .row:is(.ws, .ser):is(:hover, .on) > .add { display: grid; }
 .row.ws .nm { font-weight: 600; color: var(--ink); }
@@ -448,6 +448,9 @@ async function fetchInstance(path) {
 
 function land(next, path, d, st) {
   const was = data && path === shown ? lastDone()?.seq ?? 0 : undefined;
+  // A new selection opens its rows in the sidebar; from then on only their chevrons fold and open them.
+  if (next?.w && next.w.id !== cur?.w.id) expandRow(next.w.id, true);
+  if (next?.s && next.s.id !== cur?.s?.id) expandRow(next.s.id, true);
   [cur, data, shown] = [next, d, path];
   threads = threadsOf();
   if (st) [lines, linesKey] = st;
@@ -477,8 +480,6 @@ function expandRow(id, open = !expanded.has(id)) {
 
 function renderSide() {
   if (editing) return;
-  if (cur?.w && !expanded.has(cur.w.id)) expandRow(cur.w.id, true);
-  if (cur?.s && !expanded.has(cur.s.id)) expandRow(cur.s.id, true);
   const listed = (x, on) => !x.archived || showArchived || on, mine = localStorage.workspaces !== 'all' && tree.some(w => w.mine);
   const asks = s => !s.archived && s.instances.some(i => i.asks.length);
   const btn = (act, title, glyph, id = '') => `<button class="add" data-act="${act}" data-id="${id}" title="${title}">${glyph}</button>`;
@@ -502,9 +503,7 @@ function renderSide() {
     for (const s of w.series.filter(s => !s.single).sort(byAct(sAct))) {
       const on = cur?.s?.id === s.id, open = s.instances.filter(i => i.status === 'open');
       if (!listed(s, on)) continue;
-      // A series that wakes itself but has nothing open and no wake set has a broken chain.
-      const broken = s.shared_by && !open.length && !s.wake && !s.requests.length;
-      const note = s.archived ? 'archived' : broken ? '<span class="q">no wake set</span>' : s.requests.length ? `<span class="q">${s.requests.length} to start</span>` : open.length ? `${open.length} open` : s.wake ? `wakes ${when(s.wake.at)}` : '';
+      const note = s.archived ? 'archived' : s.requests.length ? `<span class="q">${s.requests.length} to start</span>` : open.length ? `${open.length} open` : s.wake ? `wakes ${when(s.wake.at)}` : '';
       h += `<div class="row ser ${on ? 'on' : ''} ${s.archived ? 'archived' : ''}">${chev(s.id)}<a class="nm" href="#/${s.id}">${esc(s.name)}${!expanded.has(s.id) && asks(s) ? '<span class="dot"></span>' : ''}</a>`
         + `<span class="n">${note}</span>` + btn('settings', 'Settings', '\u2699', s.id) + btn('new-instance', 'New instance', '+', s.id) + '</div>';
       if (!expanded.has(s.id)) continue;
@@ -527,7 +526,7 @@ function renderSide() {
   if (archived) h += `<button class="quiet" data-act="toggle-archived">${showArchived ? 'Hide' : 'Show'} archived (${archived})</button>`;
   put($('#tree'), h);
   put($('#acct'), `<div class="me" tabindex="0"><span>${esc(me.name)}${me.role === 'user' ? '' : ' · ' + me.role}</span><span class="mail">${esc(me.email)}</span></div>`
-    + `<span class="acts2"><button class="add" data-act="logins" title="Logins, tokens, AGENTS.md, skills${me.role === 'admin' ? ', people' : ''}">\u2699</button><button class="quiet" data-act="signout">Sign out</button></span>`);
+    + `<span class="acts2"><button class="add" data-act="logins" title="Logins, tokens${me.role === 'admin' ? ', people' : ''}">\u2699</button><button class="quiet" data-act="signout">Sign out</button></span>`);
 }
 
 function lastDone() { return data.log.findLast(e => e.op === 'done'); }
@@ -933,8 +932,8 @@ function renderPv() {
   if (!pv) return void (d.open && d.close());
   d.className = 'pv' + (pv.settings ? ' small' : '');
   let h = `<div class="pvh"><b>${esc(pv.title)}</b><span class="saved"></span>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${pv.path ? `<a class="btn" href="${fileUrl(pv.path)}">Download</a>` : ''}${pv.signin ? '<button class="btn primary" data-act="signin-save">Save login</button>' : ''}<button class="btn" data-act="unpv">${pv.signin ? 'Cancel' : 'Close'}</button></div>`;
-  // Your account's dialog: Logins, Tokens, AGENTS.md, Skills and People, as tabs.
-  const account = [['logins', 'Logins'], ['tokens', 'Tokens'], ['agents', 'AGENTS.md'], ['skills', 'Skills'], ...(me.role === 'admin' ? [['people', 'People']] : [])];
+  // Your account's dialog: Logins, Tokens and, for admins, People, as tabs.
+  const account = [['logins', 'Logins'], ['tokens', 'Tokens'], ...(me.role === 'admin' ? [['people', 'People']] : [])];
   if (account.some(([k]) => k === pv.settings?.kind)) h += `<div class="pvtabs">${account.map(([k, name]) => `<button class="tab ${pv.settings.kind === k ? 'sel' : ''}" data-act="${k}">${name}</button>`).join('')}</div>`;
   if (pv.sheets) {
     if (pv.sheets.length > 1) h += `<div class="tabs">${pv.sheets.map((s, k) => `<button class="btn ${k === pv.sheet ? 'sel' : ''}" data-act="sheet" data-k="${k}">${esc(s.name)}</button>`).join('')}</div>`;
@@ -945,12 +944,10 @@ function renderPv() {
   } else if (pv.image) h += `<div class="pvb"><img src="${fileUrl(pv.path)}" alt=""></div>`;
   else if (pv.signin) h += `<div class="sub" style="padding:8px 14px">Sign in as you always do, then Save login. Only you see this browser.</div><div class="pvb"><iframe src="/signins/${pv.signin}/view?drive" style="width:100%;height:100%;border:0"></iframe></div>`;
   else if (pv.text !== undefined) h += `<div class="pvb">${pv.md ? `<div class="say">${md(pv.text)}</div>` : `<pre>${esc(pv.text)}</pre>`}</div>`;
-  else if (pv.settings?.kind === 'skills') h += `<div class="pvb vl">${skillsHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'tokens') h += `<div class="pvb vl">${tokensHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'people') h += `<div class="pvb vl"><div class="sub">Everyone who can sign in. Admins manage people with rf (Tokens): rf people, as a file to edit and set, and rf user add|role|disable|enable|signout|remove.</div><table class="ut"><tr><th>Person</th><th>Role</th><th>Workspaces</th><th>Last in</th></tr>${pv.settings.users.map(u => `<tr><td>${esc(u.name ?? '')}<div class="sub">${esc(u.email)}${u.disabled ? ' · disabled' : ''}</div></td><td>${esc(u.role)}</td><td class="sub">${esc(u.workspaces.join(', ')) || 'none'}</td><td class="sub">${esc(u.last_login ? when(u.last_login) : 'never')}</td></tr>`).join('')}</table></div>`;
   else if (pv.settings?.kind === 'logins') h += `<div class="pvb vl">${loginsHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'waiting') h += `<div class="pvb vl">${waiting().join('') || '<div class="sub">Nothing waits on you.</div>'}</div>`;
-  else if (pv.settings?.kind === 'agents') h += `<div class="pvb vl">${agentsHtml(pv.settings, "Every agent reads it at the start of each run, in every workspace: the company's conventions, and changes that cut across many series. Admins set it with rf.", false)}</div>`;
   else if (pv.settings?.kind === 'start') h += `<div class="pvb vl">${startHtml(pv.settings)}</div>`;
   else if (pv.settings) {
     const s = pv.settings;
@@ -1019,12 +1016,6 @@ function saved() {
   savedFor = setTimeout(() => { $('#pv .saved').textContent = ''; }, 2000);
 }
 
-// Skills, read-only: publishers push them with rf, and every run loads every live one.
-const skillsHtml = s => `<div class="sub">What each skill fetches or does. Every run loads every skill here. Publishers push skills with rf (Tokens).</div>`
-  + `<table class="ut"><tr><th>Skill</th><th>Version</th></tr>`
-  + s.list.map(x => `<tr><td><b>${esc(x.name)}</b><div class="sub">${esc(x.description)}</div></td>`
-    + `<td class="sub">${x.pushed.version}, ${esc(when(x.pushed.at))} by ${esc(x.pushed.by)}</td></tr>`).join('') + '</table>';
-
 // Personal tokens: rf, on your own machine or for your desktop agent, acts as you with one.
 function tokensHtml(s) {
   return `<div class="sub">rf does what this page does, from a shell or your desktop agent, as you: list and pull what you can see, comment and reply, upload and wake${me.role === 'user' ? '' : `, and ${me.role === 'admin' ? "manage people, skills and the company's AGENTS.md" : 'push skills'}`}. Install it with <code>npm i -g @rfany/rf</code> (Node 22 or later), make a token, then: <code>rf login ${esc(location.origin)} TOKEN</code>.</div>`
@@ -1035,11 +1026,6 @@ function tokensHtml(s) {
 
 async function openTokens(made) {
   pv = { title: 'Tokens', settings: { kind: 'tokens', tokens: await api('/tokens'), made } };
-  renderPv();
-}
-
-async function openSkills() {
-  pv = { title: 'Skills', settings: { kind: 'skills', list: await api('/skills') } };
   renderPv();
 }
 
@@ -1091,7 +1077,6 @@ function waiting() {
       if (n) out.push(`<div class="wt">${at(w, s, i)}: ${n} ask${n > 1 ? 's' : ''} for you</div>`);
     }
     for (const r of s.requests) out.push(`<div class="wt">${at(w, s)}: ${esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)} <button class="btn" data-act="req-start" data-id="${esc(r.id)}">Start</button></div>`);
-    if (s.shared_by === me.email && !s.instances.some(i => i.status === 'open') && !s.wake && !s.requests.length) out.push(`<div class="wt">${at(w, s)}: wakes itself, but nothing is open and no wake is set</div>`);
   }
   return [...out, ...expired.map(l => `<div class="wt">Your ${esc(l.name)} login has expired. ${signInHtml(l.id, l.name)}</div>`)];
 }
@@ -1290,7 +1275,6 @@ async function onAct(act, el, was) {
   if (act === 'preview') await preview(el.dataset.file, data.doc.items.find(i => i.id === el.dataset.item));
   if (act === 'unpv') closePv();
   if (act === 'settings') await openSeriesSettings();
-  if (act === 'skills') await openSkills();
   if (act === 'workspace-settings') openWorkspaceSettings();
   if (act === 'signout') location.href = (await api('/auth/logout', { method: 'POST' })).next;
   if (act === 'wadd' || act === 'wremove' || act === 'wrole') {
@@ -1418,10 +1402,6 @@ async function onAct(act, el, was) {
   }
   if (act === 'waiting') {
     pv = { title: 'Waiting on you', settings: { kind: 'waiting' } };
-    renderPv();
-  }
-  if (act === 'agents') {
-    pv = { title: "The company's AGENTS.md", settings: { kind: 'agents', agents: (await api('/agents')).text } };
     renderPv();
   }
   if (act === 'save-agents') {

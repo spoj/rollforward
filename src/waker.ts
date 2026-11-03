@@ -1,3 +1,4 @@
+import { existsSync, readdirSync } from 'node:fs';
 import { freemem } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { join, posix, relative } from 'node:path';
@@ -18,8 +19,14 @@ const MAX_RUNS = Number(process.env.RF_MAX_RUNS ?? 20);
 // memory, as for tests on a small machine.
 const MIN_FREE = Number(process.env.RF_MIN_FREE_GB ?? 6) * 2 ** 30;
 const started: number[] = [];
-const full = () => active.size >= MAX_RUNS || (MIN_FREE > 0 && freemem() < MIN_FREE + started.filter(t => t > Date.now() - 60_000).length * 2 ** 30);
+const full = () => !!draining || active.size >= MAX_RUNS || (MIN_FREE > 0 && freemem() < MIN_FREE + started.filter(t => t > Date.now() - 60_000).length * 2 ** 30);
 export const MAX_OPEN = 3;
+// An update drains the server: no run starts, and once none is going it calls this, to exit; what waits starts after the restart.
+let draining: (() => void) | undefined;
+export function drain(exit: () => void) {
+  draining = exit;
+  if (!active.size) exit();
+}
 const SPACING_MS = 15 * 60_000;
 
 export type Active = { inst: Instance; n: number; token: string; view: View; run?: Run; sent: number; seen: number; texts: Map<string, number>; interrupted: boolean; done: boolean; cost: number; said: string; failed?: string; hosts: Set<string>; browsers?: Browsers; timer?: NodeJS.Timeout };
@@ -177,6 +184,7 @@ function finish(a: Active, aborted: boolean, error?: string) {
     if (next) start(next);
   }
   startWaiting();
+  if (draining && !active.size) draining();
 }
 
 function startWaiting() {
@@ -191,7 +199,7 @@ function startWaiting() {
 export function queued(inst: Instance): { why: string; since: string } | undefined {
   const a = active.get(inst.seriesId);
   if (a?.inst === inst || inst.doc.status !== 'open' || !(debounce.has(inst.id) || waiting.has(inst) || (a && due(inst)))) return;
-  const why = debounce.has(inst.id) ? 'starting' : a ? `its series is running ${a.inst.label}` : active.size >= MAX_RUNS ? `${MAX_RUNS} runs are going, the most RF_MAX_RUNS allows` : 'too little memory is free (RF_MIN_FREE_GB)';
+  const why = debounce.has(inst.id) ? 'starting' : a ? `its series is running ${a.inst.label}` : draining ? 'the server updates once the runs going end' : active.size >= MAX_RUNS ? `${MAX_RUNS} runs are going, the most RF_MAX_RUNS allows` : 'too little memory is free (RF_MIN_FREE_GB)';
   return { why, since: pending(inst, seenBefore(inst))[0]?.at ?? new Date().toISOString() };
 }
 
@@ -276,12 +284,21 @@ function summaryOf(report: string): string {
   return (line.length > 200 ? line.split(/(?<=[.!?])\s/)[0] : line).slice(0, 200);
 }
 
-// A run a restart cut ends as aborted, and its instance is woken to carry on, so a deploy needn't wait for quiet.
+// What a run cost until a restart cut it: its agent's replies since it started, in its session, whose last line the cut may have
+// left half written.
+function costSince(inst: Instance, at: string): number {
+  const dir = join(inst.dir, 'session'), lines = existsSync(dir) ? readdirSync(dir).flatMap(f => readFile(inst.dir, `session/${f}`)?.split('\n') ?? []) : [];
+  return lines.map(l => { try { return JSON.parse(l); } catch { return {}; } })
+    .filter(e => e.type === 'message' && e.message.role === 'assistant' && e.timestamp >= at).reduce((t, e) => t + (e.message.usage?.cost?.total ?? 0), 0);
+}
+
+// A run a restart cut ends as aborted, with what it cost so far, and its instance is woken to carry on, so a deploy needn't wait
+// for quiet.
 export function recover() {
   for (const id of Object.keys(tree().series)) for (const inst of instances(id).filter(i => i.doc.status === 'open')) {
     const run = inst.log.findLast(e => e.op === 'run' || e.op === 'done');
     if (run?.op === 'run') {
-      inst.append('server', 'done', { run: run.run, aborted: true, seen: seenBefore(inst), cost: 0, summary: null, error: 'a restart cut the run' });
+      inst.append('server', 'done', { run: run.run, aborted: true, seen: seenBefore(inst), cost: +costSince(inst, run.at).toFixed(4), summary: null, error: 'a restart cut the run' });
       inst.append('server', 'wake', { reason: 'A restart cut your last run; carry on', from: 'server' });
     }
     kick(inst);
