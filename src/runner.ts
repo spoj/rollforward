@@ -74,7 +74,7 @@ export function pi(o: { token: string; id: string; view: View; skills?: string[]
       RF_URL: local, RF_TOKEN: o.token, RF_BROWSERS: `${local}/browsers/${o.token}`, RF_INSTANCE: o.id, RF_WORKING: `${instance}/working`, RF_SKILLS: '/skills/live', ...(process.env.RF_TODAY && { RF_TODAY: process.env.RF_TODAY }),
       HTTPS_PROXY: proxy, HTTP_PROXY: proxy, https_proxy: proxy, http_proxy: proxy, NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost', NODE_USE_ENV_PROXY: '1',
       // Stand-ins for the keys of the server's own connections, which its proxy puts in: Pi's own calls to OpenRouter take this one.
-      OPENROUTER_API_KEY: 'rf', EXA_API_KEY: 'rf',
+      OPENROUTER_API_KEY: 'rf', ...(process.env.EXA_API_KEY && { EXA_API_KEY: 'rf' }),
       ...Object.fromEntries(['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS', 'CURL_CA_BUNDLE'].map(k => [k, join(home, 'ca.pem')])), ...o.view.env,
     },
   });
