@@ -132,7 +132,7 @@ function trace(inst: Instance) {
 async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
   const [id, ...rest] = url.pathname.split('/').slice(2).map(decodeURIComponent);
   const rel = rest.join('/');
-  if (posix.normalize(rel) !== rel || !/^(upload|working|calls|browser)\//.test(rel) || rel.split('/').includes('..')) throw new HttpError(400, 'bad path');
+  if (posix.normalize(rel) !== rel || !/^(upload|working|browser)\//.test(rel) || rel.split('/').includes('..')) throw new HttpError(400, 'bad path');
   const inst = instance(id);
   mustSee(me, tree().workspaces[tree().series[inst.seriesId].workspace]);
   const fd = openFile(inst.dir, rel);
@@ -300,7 +300,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   if (action === 'files') {
     // By hand, never into a link: a run may have made links anywhere in working/.
     const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(d => d.isDirectory() ? walk(join(dir, d.name)) : d.isFile() ? [join(dir, d.name)] : []);
-    return send(res, 200, ['upload', 'working', 'calls', 'browser'].filter(top => existsSync(join(inst.dir, top))).flatMap(top => walk(join(inst.dir, top)).map(p => {
+    return send(res, 200, ['upload', 'working', 'browser'].filter(top => existsSync(join(inst.dir, top))).flatMap(top => walk(join(inst.dir, top)).map(p => {
       const st = lstatSync(p);
       return { path: relative(inst.dir, p), size: st.size, mtime: st.mtime.toISOString() };
     })));
