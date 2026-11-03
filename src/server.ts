@@ -129,7 +129,10 @@ function hidden(t: Tree, us: Record<string, User>): string[] {
   return Object.entries(t.series).flatMap(([sid, s]) => instances(sid).filter(i => {
     const by = runnerOf(i).by, u = us[by];
     return i.doc.status === 'open' && (!u || !canSee({ email: by, role: u.role, groups: u.groups ?? [] }, t.workspaces[s.workspace]));
-  }).map(i => `${named(t, sid)}/${i.label}, run by ${runnerOf(i).by}`));
+  }).map(i => {
+    const by = runnerOf(i).by;
+    return `${named(t, sid)}/${i.label}, run by ${us[by]?.name ? `${us[by].name} <${by}>` : by}`;
+  }));
 }
 
 // A change of who is where or of roles may hide no more open instances from their runners, unless forced.
@@ -386,7 +389,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     }
     // Whoever manages a workspace labels its Entra groups, for everyone who sees one of them.
     for (const [g, label] of Object.entries(change.groups ?? {})) {
-      if (g.includes('@') || !everyone(w).includes(g) || typeof label !== 'string' || !label.trim()) throw new HttpError(400, `a label is some text for an Entra group in this workspace: not ${g}: ${JSON.stringify(label)}`);
+      if (g.includes('@') || !everyone(w).includes(g) || typeof label !== 'string' || !label.trim() || label.includes('@')) throw new HttpError(400, `a label is some text, without an @, for an Entra group in this workspace: not ${g}: ${JSON.stringify(label)}`);
       (t.groups ??= {})[g] = label.trim();
     }
     if (change.archived !== undefined) w.archived = !!change.archived;

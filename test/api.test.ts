@@ -337,8 +337,8 @@ test("the page names everyone who has signed in, and the Entra groups by the lab
   assert.equal((await names(b))[dana], 'Dana Tan', "bob sees the name of someone he shares no workspace with");
   assert.equal((await people('BobCo', { members: [dana, group], groups: { [group]: ' Finance HK' } }, b)).status, 200);
   assert.deepEqual(await names(b), { [group]: 'Finance HK', [adminEmail]: 'Demo Admin', [bob]: 'Bob', [dana]: 'Dana Tan' });
-  for (const groups of [{ [dana]: 'Dana' }, { [other]: 'Payroll' }, { [group]: ' ' }])
-    assert.equal((await people('BobCo', { groups }, b)).status, 400, `${JSON.stringify(groups)}: only a group in the workspace, with some text`);
+  for (const groups of [{ [dana]: 'Dana' }, { [other]: 'Payroll' }, { [group]: ' ' }, { [group]: 'dana@x.test' }])
+    assert.equal((await people('BobCo', { groups }, b)).status, 400, `${JSON.stringify(groups)}: only a group in the workspace, with some text and no @, which would pass for a person's email`);
   assert.equal((await people('Acme Payroll', { members: [other], groups: { [other]: 'Payroll team' } })).status, 200);
   assert.equal((await names())[other], 'Payroll team');
   assert.equal((await names(b))[other], 'Payroll team', "and a group's in a workspace he doesn't see");
@@ -580,13 +580,13 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   assert.match(await rf('people', 'Guarded'), /^member +bob@demo\.test +# last in [\d-]+ [\d:]+; runs Weekly\/one$/m);
   writeFileSync(file, `owner ${adminEmail}\n`);
   assert.match(await rf('people', 'Guarded', '--set', file, '-n'), /^- member bob@demo\.test$/m);
-  await assert.rejects(rf('people', 'Guarded', '--set', file), /hide open instances from the people who run them.*Guarded\/Weekly\/one, run by bob@demo\.test/);
+  await assert.rejects(rf('people', 'Guarded', '--set', file), /hide open instances from the people who run them.*Guarded\/Weekly\/one, run by Bob <bob@demo\.test>/);
   assert.equal((await named('Guarded')).members.length, 1, 'refused, it changed nothing');
   assert.match(await rf('people', 'Guarded', '--set', file, '--force'), /saved/);
   assert.match(await rf('people'), /^user +bob@demo\.test +# last in .*; runs outside them: Guarded\/Weekly\/one$/m);
   await rf('user', 'role', bob, 'admin');
   writeFileSync(file, `user ${bob}\n`);
-  await assert.rejects(rf('people', '--set', file), /Guarded\/Weekly\/one, run by bob@demo\.test/);
+  await assert.rejects(rf('people', '--set', file), /Guarded\/Weekly\/one, run by Bob <bob@demo\.test>/);
   assert.match(await rf('people', '--set', file, '--force'), /^bob@demo\.test: admin -> user\nsaved$/m);
 });
 

@@ -277,3 +277,20 @@ test("people show by name, with their email on hover, and Entra groups by label;
   await page.click('#log [data-tab=log]');
   await page.locator('#log .e', { hasText: 'Bob left a note for you' }).waitFor();
 });
+
+test("a name two people share shows with their email, a group among a workspace's people is marked as one, and a person's request to start a series names them", async () => {
+  const bob = 'bob@demo.test', users = join(root, '.rf', 'users.json'), group = '6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b';
+  writeFileSync(join(root, '.rf', 'wakes.json'), JSON.stringify({ pending: {}, fired: {}, requests: { r9: { series: 'a5c0ff5e1fee', label: '2027-01', from: bob, at: new Date().toISOString() } } }));
+  await page.reload();
+  await page.click('[data-act=waiting]');
+  await page.waitForSelector(`#pv .wt span[title="${bob}"]:text-is("Bob")`);
+  writeFileSync(users, JSON.stringify({ ...JSON.parse(readFileSync(users, 'utf8')), 'bob2@demo.test': { role: 'user', name: 'Bob' } }));
+  await page.reload();
+  await page.click('[data-act=waiting]');
+  await page.waitForSelector(`#pv .wt span[title="${bob}"]:text-is("Bob <${bob}>")`);
+  await page.mouse.click(5, 5);
+  await page.hover('.row.ws');
+  await page.click('.row.ws [data-act=workspace-settings]');
+  await page.waitForSelector(`#pv .ut td:has(span[title="${bob}"]:text-is("Bob <${bob}>"))`);
+  assert.equal(await page.locator(`#pv .ut td:has(span[title="${group}"])`).innerText(), 'Finance HK · group');
+});
