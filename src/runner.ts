@@ -15,6 +15,9 @@ const cliPath = join(dirname(fileURLToPath(import.meta.resolve('@earendil-works/
 const [provider, model] = (process.env.RF_MODEL ?? 'openrouter/anthropic/claude-opus-5.5').split(/\/(.*)/);
 // Where runs get their HOME and /tmp, and the folder of the server's socket for sandboxes.
 export const scratch = process.env.RF_SCRATCH ?? join(tmpdir(), 'rollforward');
+// The server's user alone reaches its runs, whose folders are named by their tokens.
+mkdirSync(scratch, { recursive: true });
+chmodSync(scratch, 0o700);
 // Each run's own cgroup, where systemd runs the server; the container image sets this empty.
 const SCOPE = 'systemd-run --user --scope --quiet --collect --slice=rollforward-runs -p MemoryHigh=4G -p MemoryMax=8G --';
 
