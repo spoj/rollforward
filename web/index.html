@@ -99,6 +99,11 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .legend .tri { display: inline-block; width: 0; height: 0; border-top: 9px solid var(--ink-3); border-left: 9px solid transparent; margin-right: 6px; }
 .legend .dash { display: inline-block; width: 16px; height: 10px; border: 1px dashed var(--ink-3); border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
 
+/* The deployment's brand (rf brand) tops the sidebar: its logo and its text, or nothing when unset. */
+.brand { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 0 8px 10px; border-bottom: 1px solid var(--rule); margin-bottom: 10px; font-size: 15px; font-weight: 600; line-height: 1.25; overflow-wrap: anywhere; }
+.brand:empty { display: none; }
+.brand img { display: block; max-height: 32px; max-width: 100%; }
+
 .main { display: flex; flex-direction: column; min-width: 0; height: 100dvh; position: relative; }
 .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px 28px; border-bottom: 1px solid var(--rule); background: var(--sheet); }
 .menu { display: none; border: 1px solid var(--rule-2); background: var(--sheet); border-radius: var(--r1); padding: 6px 10px; }
@@ -328,7 +333,7 @@ input[type=checkbox] { accent-color: var(--ink); }
 </head>
 <body>
 <div class="app">
-  <aside class="side" id="side"><div class="scroll" id="tree"></div><div class="acct" id="acct"></div></aside>
+  <aside class="side" id="side"><div class="brand" id="brand"></div><div class="scroll" id="tree"></div><div class="acct" id="acct"></div></aside>
   <main class="main">
     <div class="bar" id="bar"></div>
     <div class="panes" id="panes">
@@ -464,12 +469,20 @@ function land(next, path, d, st) {
 
 function render() {
   const qs = tree.filter(w => !w.archived).flatMap(w => w.series.filter(s => !s.archived).flatMap(s => s.instances)).reduce((t, i) => t + i.asks.filter(e => e === me.email).length, 0);
-  document.title = `${qs ? `(${qs}) ` : ''}${cur?.i ? cur.i.label + ' \u00b7 ' : ''}rollforward`;
+  document.title = `${qs ? `(${qs}) ` : ''}${cur?.i ? cur.i.label + ' \u00b7 ' : ''}${me.brand.text ?? 'rollforward'}`;
+  renderBrand();
   renderSide();
   renderBar();
   renderPanes();
   renderLog();
   renderCard();
+}
+
+// The deployment's brand (rf brand): its logo and text top the sidebar; the text titles the page, and the logo is its icon.
+function renderBrand() {
+  const { text, logo } = me.brand;
+  put($('#brand'), `${logo ? '<img src="/brand/logo" alt="">' : ''}${text ? `<span>${esc(text)}</span>` : ''}`);
+  if (logo && !$('link[rel=icon]')) document.head.append(Object.assign(document.createElement('link'), { rel: 'icon', href: '/brand/logo' }));
 }
 
 // The sidebar's tree, folded as a file browser's: selecting a row opens it and leaves the others as they were, and its chevron folds

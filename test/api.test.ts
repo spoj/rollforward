@@ -466,7 +466,7 @@ test("personal tokens act as their person for rf, every use logged, until revoke
   assert.equal((await as('/me')).status, 401);
 });
 
-test('rf for people: ls, comment, pull as rsync does, runs, costs and status, and admins manage people from it', async () => {
+test('rf for people: ls, comment, pull as rsync does, runs, costs and status, and admins manage people and the brand from it', async () => {
   const { token } = await (await call('POST', '/tokens', JSON.stringify({ name: 'cli', days: 1 }))).json();
   const home = join(tmp, 'cli-home');
   mkdirSync(home);
@@ -519,6 +519,21 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   await rf('user', 'add', 'carol@demo.test');
   assert.equal((await fetch(`${base}/me`, { headers: { cookie: carols } })).status, 401, "a cookie from before she was removed isn't the new carol's");
   await rf('user', 'remove', 'carol@demo.test');
+
+  const logo = join(tmp, 'logo.png'), png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+  writeFileSync(logo, png);
+  assert.equal((await rf('brand')).trim(), 'no brand: the plain look');
+  await rf('brand', '--text', 'Larkfield Finance', '--logo', logo);
+  assert.deepEqual((await json('/me')).brand, { text: 'Larkfield Finance', logo: true });
+  const served = await call('GET', '/brand/logo');
+  assert.deepEqual([served.headers.get('content-type'), Buffer.from(await served.arrayBuffer())], ['image/png', png]);
+  await rf('brand', '--text', 'Larkfield');
+  assert.equal((await rf('brand')).trim(), 'Larkfield, with a logo', 'a new text keeps the logo');
+  await assert.rejects(rf('brand', '--logo', join(app, 'README.md')), /a logo is a \.png/);
+  assert.equal((await call('PUT', '/brand', JSON.stringify({ clear: true }), sessionOf(await login(bob))!)).status, 403, "the brand is the admins'");
+  await rf('brand', '--clear');
+  assert.deepEqual((await json('/me')).brand, { text: null, logo: false });
+  assert.equal((await call('GET', '/brand/logo')).status, 404);
 
   // Bob runs an instance in a workspace, so taking him out of it, or his admin role when he isn't in it, is refused unless forced.
   await call('POST', '/api/workspaces', JSON.stringify({ name: 'Guarded' }));

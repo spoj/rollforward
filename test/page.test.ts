@@ -150,3 +150,20 @@ test('keys: c goes to the comment box, Ctrl+Enter sends it, Esc leaves it, and j
   await page.keyboard.press('j');
   assert.ok(await page.evaluate(() => !!document.activeElement?.closest('#tree')), 'a row has the focus');
 });
+
+test("the deployment's brand tops the sidebar and titles the page, its logo the page's icon; unset, there is none", async () => {
+  const brand = (data: object) => page.request.put(new URL('/brand', page.url()).href, { data });
+  assert.equal(await page.locator('#brand').isVisible(), false);
+  await brand({ text: 'Larkfield Finance', logo: { name: 'logo.png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==' } });
+  await page.reload();
+  await page.waitForSelector('#brand span:text-is("Larkfield Finance")');
+  assert.equal(await page.getAttribute('#brand img', 'src'), '/brand/logo');
+  assert.match(await page.title(), / Larkfield Finance$/);
+  assert.equal(await page.getAttribute('link[rel=icon]', 'href'), '/brand/logo');
+  await brand({ clear: true });
+  await page.reload();
+  await page.waitForSelector('#tree .row.ws');
+  assert.equal(await page.locator('#brand').isVisible(), false);
+  assert.equal(await page.locator('link[rel=icon]').count(), 0);
+  assert.match(await page.title(), / rollforward$/);
+});

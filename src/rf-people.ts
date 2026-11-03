@@ -36,7 +36,10 @@ rf people [--set FILE|-] [-n] [--force]   everyone as lines of ROLE EMAIL, each 
 rf user add EMAIL [admin|publisher] | role EMAIL admin|publisher|user [--force] | disable EMAIL | enable EMAIL | signout EMAIL | remove EMAIL
 rf website set ID URL [--name NAME] [--hosts HOST,...]   a website people sign in to at URL, and the other hosts its pages need,
                                   such as sso.example.com or *.example.com; a run's browser on it reaches only those
-rf website remove ID`;
+rf website remove ID
+rf brand [--text TEXT] [--logo FILE] [--clear]   the deployment's text and logo, a .png, .jpg, .gif, .webp or .svg, which top
+                                  the sidebar and are the page's title and icon; --clear goes back to the plain look, and with
+                                  no option it prints them`;
 
 const GUIDE = `rollforward runs a team's recurring work, such as a weekly borrowing base or a month-end reconciliation, with an agent
 that does each period's work and people who check it. rf does what its page does, as you.
@@ -93,7 +96,7 @@ for (let i = 0; i < argv.length; i++) {
   const flag = argv[i] === '-n' ? 'dry-run' : argv[i].match(/^--(.+)$/)?.[1];
   if (!flag) args.push(argv[i]);
   else if (flag === 'exclude') excludes.push(argv[++i]);
-  else flags[flag] = ['wait', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running'].includes(flag) ? true : argv[++i];
+  else flags[flag] = ['wait', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear'].includes(flag) ? true : argv[++i];
 }
 if (cmd === 'help') {
   console.log(GUIDE);
@@ -306,6 +309,15 @@ else if (cmd === 'comment' && args.length === 2) {
         : post('/users', { roles: Object.fromEntries(set), force: !!flags.force }, 'PUT'));
       console.log('saved');
     }
+  }
+} else if (cmd === 'brand' && !args.length) {
+  if (flags.clear || flags.text !== undefined || flags.logo !== undefined) {
+    const logo = typeof flags.logo === 'string' ? { name: basename(flags.logo), data: readFileSync(flags.logo).toString('base64') } : undefined;
+    await post('/brand', { clear: flags.clear, text: flags.text, logo }, 'PUT');
+    console.log('saved');
+  } else {
+    const { text, logo } = (await get('/me')).brand;
+    console.log(text || logo ? `${text ?? 'no text'}, ${logo ? 'with a logo' : 'no logo'}` : 'no brand: the plain look');
   }
 } else if (cmd === 'user' && args.length >= 2) {
   const [what, email, role] = args, at = `/users/${encodeURIComponent(email)}`;

@@ -10,7 +10,7 @@ import { agentsFile, createInstance, duplicateInstance, moveInstance, renameInst
 import { socketDir } from './runner.ts';
 import { serveSandboxes } from './sandbox.ts';
 import { authenticate, checkConfig, connectM365, m365Ready, mode, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, upsertUser, users, type Me, type Role, type User } from './auth.ts';
-import { canManage, canSee, changes, everyone, initSystem, saveTree, tree, writeJson, type Tree, type Workspace } from './system.ts';
+import { canManage, canSee, changes, everyone, initSystem, readJson, saveTree, tree, writeJson, type Tree, type Workspace } from './system.ts';
 import { checkTicks, logins, runnerOf, signOut } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './graph.ts';
@@ -294,6 +294,8 @@ function events(me: Me, req: IncomingMessage, res: ServerResponse) {
 }
 
 const text = (path: string) => (existsSync(path) ? readFileSync(path, 'utf8') : '');
+// The deployment's brand, the admins': a text and a logo, which top the sidebar and are the page's title and icon.
+const brand = () => readJson<{ text?: string; logo?: string; type?: string }>('brand.json', {});
 const json = async (req: IncomingMessage) => {
   try { return JSON.parse((await body(req)).toString() || '{}'); } catch { throw new HttpError(400, 'the body is JSON'); }
 };
@@ -643,7 +645,26 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     if (url.pathname === '/') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(readFileSync(page));
-    } else if (url.pathname === '/me') send(res, 200, { ...me, sign_in: mode, m365: m365Ready(), browsers: !!process.env.RF_BROWSER_URL });
+    } else if (url.pathname === '/me') {
+      const { text, logo } = brand();
+      send(res, 200, { ...me, sign_in: mode, m365: m365Ready(), browsers: !!process.env.RF_BROWSER_URL, brand: { text: text || null, logo: !!logo } });
+    } else if (url.pathname === '/brand' && req.method === 'PUT') {
+      if (me.role !== 'admin') throw new HttpError(403, "the deployment's brand is the admins'");
+      const { text, logo, clear } = await json(req), b = { ...(!clear && brand()) };
+      if (text !== undefined) b.text = String(text);
+      if (logo) {
+        const type = String(logo.name).match(/\.(png|jpe?g|gif|webp|svg)$/i)?.[1].toLowerCase().replace('jpg', 'jpeg').replace('svg', 'svg+xml');
+        if (!type) throw new HttpError(400, 'a logo is a .png, .jpg, .gif, .webp or .svg file');
+        Object.assign(b, { logo: String(logo.data), type: `image/${type}` });
+      }
+      writeJson('brand.json', b);
+      send(res, 200, 'saved');
+    } else if (url.pathname === '/brand/logo') {
+      const { logo, type } = brand();
+      if (!logo) throw new HttpError(404, 'no logo');
+      res.writeHead(200, { 'content-type': type, 'cache-control': 'no-cache', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" });
+      res.end(Buffer.from(logo, 'base64'));
+    }
     else if (url.pathname === '/api/events') events(me, req, res);
     else if (url.pathname === '/api') send(res, 200, listing(me));
     else if (url.pathname === '/api/files') send(res, 200, pullable(me, url.searchParams.get('path') ?? ''));
