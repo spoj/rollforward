@@ -329,7 +329,7 @@ test("each person sees the workspaces they're in, by email or Entra group; owner
   assert.deepEqual(await reads('larkfield'), [], 'a workspace with no one in it reads only itself');
 });
 
-test("the page names everyone who has signed in, and the Entra groups by the labels their workspaces' owners give", async () => {
+test("the page names everyone who has signed in, and the Entra groups in the workspaces you see by the labels their owners give", async () => {
   const b = sessionOf(await login(bob))!, dana = 'dana@demo.test', group = '6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b', other = '7a2e3d4c-5b6f-4a71-9b8c-0d1e2f3a4b5c';
   const users = join(root, '.rf', 'users.json'), names = async (cookie = admin) => (await json('/me', cookie)).names;
   const people = async (ws: string, body: object, cookie = admin) => call('PUT', `/api/workspaces/${(await named(ws)).id}`, JSON.stringify(body), cookie);
@@ -341,7 +341,7 @@ test("the page names everyone who has signed in, and the Entra groups by the lab
     assert.equal((await people('BobCo', { groups }, b)).status, 400, `${JSON.stringify(groups)}: only a group in the workspace, with some text and no @, which would pass for a person's email`);
   assert.equal((await people('Acme Payroll', { members: [other], groups: { [other]: 'Payroll team' } })).status, 200);
   assert.equal((await names())[other], 'Payroll team');
-  assert.equal((await names(b))[other], 'Payroll team', "and a group's in a workspace he doesn't see");
+  assert.ok(!(other in await names(b)), "a group in a workspace bob doesn't see goes unnamed for him");
   assert.deepEqual(JSON.parse(readFileSync(join(root, '.rf', 'tree.json'), 'utf8')).groups, { [group]: 'Finance HK', [other]: 'Payroll team' });
 });
 
