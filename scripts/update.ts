@@ -26,7 +26,8 @@ const later = (a: string, b: string) => { const x = parts(a), y = parts(b), i = 
 
 let current = '';
 try {
-  current = sh('git', 'describe', '--tags', '--exact-match', 'HEAD');
+  // A release's commit may carry an image's agent-<id> tag too.
+  current = sh('git', 'describe', '--tags', '--exact-match', '--match', 'v[0-9]*', 'HEAD');
 } catch {
   console.log(`the checkout is at ${sh('git', 'rev-parse', '--short', 'HEAD')}, on no release: updates wait until a person checks one out`);
   process.exit(1);
