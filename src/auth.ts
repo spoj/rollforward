@@ -14,7 +14,7 @@ import { forgetLogins, logins, saveLogin } from './logins.ts';
 // Publishers push skills; admins manage people and skills, from rf.
 export type Role = 'admin' | 'publisher' | 'user';
 export const ROLES: Role[] = ['admin', 'publisher', 'user'];
-export type User = { name?: string; role: Role; disabled?: boolean; sub?: string; groups?: string[]; epoch?: number; created?: string; last_login?: string };
+export type User = { name?: string; role: Role; disabled?: boolean; sub?: string; oid?: string; groups?: string[]; epoch?: number; created?: string; last_login?: string };
 export type Me = { email: string; name: string; role: Role; groups: string[] };
 
 export const DEMO_ACCOUNTS: { email: string; name: string; role: Role }[] = [
@@ -138,13 +138,15 @@ export function session(req: IncomingMessage): Me | null {
 }
 
 // Lets someone in whom Microsoft (or the demo picker) has vouched for: records them, with the Entra groups their token names (once the
-// app is set to send them), then sets the session cookie.
-function admit(res: ServerResponse, email: string, name: string | undefined, sub: string | undefined, groups: string[] | undefined, next: string, extra: string[] = []) {
+// app is set to send them), then sets the session cookie. Entra's sub differs for each app, but its tenant and object ids (oid, kept as
+// tid/oid) name the person whatever the app, so a record from before them, made through an app since replaced, takes them at its
+// next sign-in; another issuer's sub must match.
+function admit(res: ServerResponse, email: string, name: string | undefined, who: { sub?: string; oid?: string }, groups: string[] | undefined, next: string, extra: string[] = []) {
   const known = users()[email];
   if (!known && env.RF_AUTO_PROVISION === '0' && !admins.has(email)) return page(res, 403, `${email} has no access yet. Ask an admin to add you.`);
   if (known?.disabled) return page(res, 403, `${email} is disabled. Ask an admin.`);
-  if (known?.sub && sub && known.sub !== sub) return page(res, 403, `${email} belongs to another Microsoft account.`);
-  const u = upsertUser(email, { name: name ?? known?.name, ...(sub && { sub }), ...(groups && { groups }), last_login: new Date().toISOString(), ...(admins.has(email) && { role: 'admin' as Role }) });
+  if (who.oid ? known?.oid && known.oid !== who.oid : known?.sub && who.sub && known.sub !== who.sub) return page(res, 403, `${email} belongs to another Microsoft account.`);
+  const u = upsertUser(email, { name: name ?? known?.name, ...(who.sub && { sub: who.sub }), ...(who.oid && { oid: who.oid }), ...(groups && { groups }), last_login: new Date().toISOString(), ...(admins.has(email) && { role: 'admin' as Role }) });
   const exp = String(Date.now() + SESSION_MS);
   res.writeHead(302, { location: next, 'set-cookie': [cookie('rf_session', `${b64(email)}.${exp}.${mac(`${email} ${exp} ${u.epoch ?? 0}`)}`, SESSION_MS / 1000), ...extra] });
   res.end();
@@ -240,7 +242,7 @@ async function finishSignIn(res: ServerResponse, claims: any, p: Pending) {
   const email = String(claims.email ?? claims.preferred_username ?? claims.upn ?? '').toLowerCase();
   if (!email.includes('@')) return page(res, 403, 'Your account has no email address.');
   if (domains.length && !domains.includes(email.split('@')[1])) return page(res, 403, `${email} is not in an allowed domain.`);
-  admit(res, email, claims.name, claims.sub, Array.isArray(claims.groups) ? claims.groups.map(String) : undefined, p.next, [cookie(pendingCookie(p.state), '', 0)]);
+  admit(res, email, claims.name, { sub: claims.sub, ...(claims.oid && { oid: `${claims.tid}/${claims.oid}` }) }, Array.isArray(claims.groups) ? claims.groups.map(String) : undefined, p.next, [cookie(pendingCookie(p.state), '', 0)]);
 }
 
 async function callback(req: IncomingMessage, res: ServerResponse, url: URL) {
@@ -367,7 +369,7 @@ export async function authenticate(req: IncomingMessage, res: ServerResponse, ur
     const form = new URLSearchParams(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString());
     const account = DEMO_ACCOUNTS.find(a => a.email === form.get('email'));
     if (!account) return page(res, 400, 'Pick one of the demo accounts.'), null;
-    admit(res, account.email, account.name, undefined, undefined, nextOf(form));
+    admit(res, account.email, account.name, {}, undefined, nextOf(form));
   } else if (mode === 'microsoft' && (url.pathname === redirectPath || (spa && url.pathname === '/auth/m365')) && url.searchParams.has('state') && (url.searchParams.has('code') || url.searchParams.has('error'))) {
     // Microsoft's return, which may be the site's own root if that is what the app registers.
     await callback(req, res, url);

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -76,7 +76,7 @@ before(async () => {
     const bad = f.get('client_id') !== c.client || f.get('redirect_uri') !== c.redirect || (f.get('client_secret') ?? undefined) !== (web ? SECRETS[c.client] : undefined)
       || createHash('sha256').update(f.get('code_verifier')!).digest('base64url') !== c.challenge;
     if (bad) return void res.writeHead(400).end('{"error":"invalid_grant","error_description":"AADSTS-like: the code, verifier, redirect or secret does not match"}');
-    const claims = { iss: idpBase, aud: c.client, exp: Date.now() / 1000 + 300, nonce: c.nonce, email: c.email, name: 'Alex', sub: `sub-${c.email}` };
+    const claims = { iss: idpBase, aud: c.client, exp: Date.now() / 1000 + 300, nonce: c.nonce, email: c.email, name: 'Alex', sub: `sub-${c.client}-${c.email}`, tid: 't1', oid: `oid-${c.email}` };
     if (!web) {
       // As Microsoft does for a Single-page application: only a cross-origin request, from a browser, may redeem the code.
       if (!req.headers.origin) return void res.writeHead(400).end('{"error":"invalid_request","error_description":"AADSTS9002327: Tokens issued for the \'Single-Page Application\' client-type may only be redeemed via cross-origin requests."}');
@@ -135,6 +135,17 @@ test("Connect Microsoft 365 asks the same app for read-only mail and files, and 
   const [login] = await (await fetch(`${confidential}/logins`, { headers: { cookie: s } })).json();
   assert.deepEqual([login.id, login.account, login.offers.map((o: { id: string }) => o.id)], ['m365', 'alex@acme.test', ['m365:mail:alex@acme.test', 'm365:onedrive']]);
   assert.equal((await (await fetch(`${spaClient}/me`, { headers: { cookie: s } })).status), 401, 'another server, another session');
+});
+
+test("a person signed in through an app since replaced keeps their account, known now by tenant and object id, which another can't take", async () => {
+  const file = join(tmp, `data-${new URL(confidential).port}`, '.rf', 'users.json'), all = () => JSON.parse(readFileSync(file, 'utf8'));
+  writeFileSync(file, JSON.stringify({ ...all(), 'lee@acme.test': { role: 'user', sub: 'sub-from-the-old-app' } }));
+  const a = await start(confidential, 'lee@acme.test');
+  assert.ok(sessionOf(await fetch(a.back, { redirect: 'manual', headers: { cookie: a.cookie } })));
+  assert.deepEqual([all()['lee@acme.test'].sub, all()['lee@acme.test'].oid], ['sub-rf-test-lee@acme.test', 't1/oid-lee@acme.test']);
+  writeFileSync(file, JSON.stringify({ ...all(), 'lee@acme.test': { ...all()['lee@acme.test'], oid: 't1/someone-else' } }));
+  const b = await start(confidential, 'lee@acme.test');
+  assert.match(await (await fetch(b.back, { redirect: 'manual', headers: { cookie: b.cookie } })).text(), /lee@acme.test belongs to another Microsoft account/);
 });
 
 test('sign-ins started in two tabs both finish, and a forged return is refused', async () => {
