@@ -22,7 +22,17 @@ button { font: inherit; cursor: pointer; }
 a { color: inherit; }
 .app { display: grid; grid-template-columns: 236px 1fr auto; height: 100dvh; }
 
-.side { border-right: 1px solid var(--rule); padding: 14px 10px; display: flex; flex-direction: column; overflow: auto; background: var(--paper); }
+.side { border-right: 1px solid var(--rule); padding: 14px 10px; display: flex; flex-direction: column; min-height: 0; background: var(--paper); }
+.side .scroll { flex: 1; min-height: 0; overflow: auto; }
+.chev { all: unset; cursor: pointer; flex: none; width: 16px; text-align: center; font-size: 11px; color: var(--ink-3); }
+.chev:hover { color: var(--ink); }
+.row:is(.ws, .ser) > .add { display: none; }
+.row:is(.ws, .ser):is(:hover, .on) > .add { display: grid; }
+.row.ws .nm { font-weight: 600; color: var(--ink); }
+.row.ser .nm { color: #1f5f8b; }
+.seg { display: flex; margin-left: auto; margin-right: 4px; border: 1px solid var(--rule-2); border-radius: var(--r1); overflow: hidden; }
+.seg button { all: unset; cursor: pointer; padding: 1px 7px; font-size: 11.5px; color: var(--ink-3); }
+.seg button.sel { background: var(--sheet); color: var(--ink); }
 .row { display: flex; align-items: center; gap: 2px; min-height: 30px; padding: 0 4px 0 8px; border-radius: var(--r1); text-decoration: none; }
 .row.adhoc { margin-top: 6px; border-top: 1px solid var(--rule); border-radius: 0; }
 .row.adhoc .nm { font-style: italic; }
@@ -76,7 +86,9 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 @media (max-width: 560px) { .ut th:nth-child(3), .ut td:nth-child(3), .ut th:nth-child(4), .ut td:nth-child(4) { display: none; } }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--red); display: inline-block; margin-left: 6px; vertical-align: 1px; }
 .dot.k { background: var(--ink); }
-.legend { margin-top: auto; font-size: 12px; color: var(--ink-2); padding: 16px 8px 4px; display: grid; gap: 4px; }
+.key { position: absolute; right: 16px; bottom: 12px; z-index: 4; font-size: 12px; color: var(--ink-3); background: var(--sheet); border: 1px solid var(--rule-2); border-radius: 12px; padding: 2px 10px; cursor: default; }
+.legend { display: none; position: absolute; right: 0; bottom: calc(100% + 6px); width: max-content; font-size: 12px; color: var(--ink-2); background: var(--sheet); border: 1px solid var(--rule-2); border-radius: var(--r1); box-shadow: 0 6px 20px rgba(21,24,29,.12); padding: 10px 12px; gap: 4px; }
+.key:is(:hover, :focus-within) .legend { display: grid; }
 .legend i { font-style: normal; font-weight: 600; }
 .legend .p { color: var(--person); }
 .legend .tri { display: inline-block; width: 0; height: 0; border-top: 9px solid var(--ink-3); border-left: 9px solid transparent; margin-right: 6px; }
@@ -311,13 +323,14 @@ input[type=checkbox] { accent-color: var(--ink); }
 </head>
 <body>
 <div class="app">
-  <aside class="side" id="side"></aside>
+  <aside class="side" id="side"><div class="scroll" id="tree"></div><div class="acct" id="acct"></div></aside>
   <main class="main">
     <div class="bar" id="bar"></div>
     <div class="panes" id="panes">
       <section class="pane outs" id="outs" data-pane="out"></section>
       <section class="pane flow" id="flow" data-pane="in"></section>
       <svg class="edges" id="edges"></svg>
+      <div class="key" tabindex="0">Key<div class="legend"><div><i class="p">Blue</i> uploaded by a person</div><div><i>Black</i> made by the agent</div><div><span class="tri"></span>comments</div><div><span class="tri q"></span>waiting on a reply</div><div><span class="dash"></span>expected, not there yet</div></div></div>
     </div>
   </main>
   <aside class="log" id="log"></aside>
@@ -446,51 +459,61 @@ function render() {
   renderCard();
 }
 
+// The sidebar's tree, folded as a file browser's: selecting a row opens it and leaves the others as they were, and its chevron folds
+// it. Mine keeps to the workspaces you own or worked in, and the one you're in.
+const expanded = new Set(JSON.parse(localStorage.expanded ?? '[]'));
+function expandRow(id, open = !expanded.has(id)) {
+  if (open) expanded.add(id); else expanded.delete(id);
+  localStorage.expanded = JSON.stringify([...expanded]);
+}
+
 function renderSide() {
   if (editing) return;
-  const listed = (x, on) => !x.archived || showArchived || on;
+  if (cur?.w && !expanded.has(cur.w.id)) expandRow(cur.w.id, true);
+  if (cur?.s && !expanded.has(cur.s.id)) expandRow(cur.s.id, true);
+  const listed = (x, on) => !x.archived || showArchived || on, mine = localStorage.workspaces !== 'all' && tree.some(w => w.mine);
   const asks = s => !s.archived && s.instances.some(i => i.asks.length);
-  const btn = (act, title, glyph) => `<button class="add" data-act="${act}" title="${title}">${glyph}</button>`;
+  const btn = (act, title, glyph, id = '') => `<button class="add" data-act="${act}" data-id="${id}" title="${title}">${glyph}</button>`;
+  const chev = id => `<button class="chev" data-act="expand" data-id="${id}">${expanded.has(id) ? '\u25BE' : '\u25B8'}</button>`;
   const waits = waiting().length;
   let h = waits ? `<div class="row waits"><a class="nm" data-act="waiting">Waiting on you<span class="q"> ${waits}</span></a></div>` : '';
-  h += `<div class="row head"><span class="nm">Workspaces</span>${btn('new-workspace', 'New workspace', '+')}</div>`;
+  h += `<div class="row head"><span class="nm">Workspaces</span><span class="seg">${['mine', 'all'].map(v => `<button class="${(v === 'mine') === mine ? 'sel' : ''}" data-act="workspaces" data-id="${v}">${v === 'mine' ? 'Mine' : 'All'}</button>`).join('')}</span>${btn('new-workspace', 'New workspace', '+')}</div>`;
   for (const w of tree) {
     const won = cur?.w.id === w.id;
-    if (!listed(w, won)) continue;
-    h += `<div class="row ws ${won ? 'on' : ''} ${w.archived ? 'archived' : ''}"><a class="nm" href="#/${w.id}">${esc(w.name)}${!won && w.series.some(asks) ? '<span class="dot"></span>' : ''}</a>`
-      + (won ? btn('menu-workspace', 'Rename, settings, archive', '\u22EF') + btn('new-series', 'New series', '+') : w.archived ? '<span class="n">archived</span>' : '') + '</div>';
-    if (!won) continue;
+    if (!listed(w, won) || (mine && !w.mine && !won)) continue;
+    h += `<div class="row ws ${won ? 'on' : ''} ${w.archived ? 'archived' : ''}">${chev(w.id)}<a class="nm" href="#/${w.id}">${esc(w.name)}${!expanded.has(w.id) && w.series.some(asks) ? '<span class="dot"></span>' : ''}</a>`
+      + (w.archived ? '<span class="n">archived</span>' : '') + btn('workspace-settings', 'Settings', '\u2699', w.id) + btn('new-series', 'New series', '+', w.id) + '</div>';
+    if (!expanded.has(w.id)) continue;
     h += '<div class="tree">';
     for (const s of [...w.series.filter(s => !s.adhoc), ...w.series.filter(s => s.adhoc)]) {
-      const on = cur.s?.id === s.id, open = s.instances.filter(i => i.status === 'open');
+      const on = cur?.s?.id === s.id, open = s.instances.filter(i => i.status === 'open');
       if (!listed(s, on)) continue;
       // A series that wakes itself but has nothing open and no wake set has a broken chain.
       const broken = s.shared_by && !open.length && !s.wake && !s.requests.length;
       const note = s.archived ? 'archived' : broken ? '<span class="q">no wake set</span>' : s.requests.length ? `<span class="q">${s.requests.length} to start</span>` : open.length ? `${open.length} open` : s.wake ? `wakes ${when(s.wake.at)}` : '';
-      h += `<div class="row ser ${on ? 'on' : ''} ${s.archived ? 'archived' : ''} ${s.adhoc ? 'adhoc' : ''}"><a class="nm" href="#/${s.id}">${esc(s.name)}${!on && asks(s) ? '<span class="dot"></span>' : ''}</a>`
-        + (on ? btn('menu-series', 'Rename, settings, archive', '\u22EF') + btn('new-instance', 'New instance', '+') : `<span class="n">${note}</span>`) + '</div>';
-      if (!on) continue;
+      h += `<div class="row ser ${on ? 'on' : ''} ${s.archived ? 'archived' : ''} ${s.adhoc ? 'adhoc' : ''}">${chev(s.id)}<a class="nm" href="#/${s.id}">${esc(s.name)}${!expanded.has(s.id) && asks(s) ? '<span class="dot"></span>' : ''}</a>`
+        + `<span class="n">${note}</span>` + btn('settings', 'Settings', '\u2699', s.id) + btn('new-instance', 'New instance', '+', s.id) + '</div>';
+      if (!expanded.has(s.id)) continue;
       const closed = s.instances.length - open.length;
       h += '<div class="tree">';
       if (s.wake) h += `<div class="row wake"><span class="nm">Starts ${esc(s.wake.label)} ${when(s.wake.at)}</span><span class="n" title="${esc(s.wake.reason)}">wake</span></div>`;
       for (const r of s.requests) h += `<div class="row req"><span class="nm" title="${esc(r.reason)}">${esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)}</span>`
         + `<button class="add" data-act="req-start" data-id="${r.id}" title="Start it">\u25B6</button><button class="add" data-act="req-drop" data-id="${r.id}" title="Dismiss">\u00D7</button></div>`;
-      for (const i of s.instances.filter(i => i.status === 'open' || showClosed || i.id === cur.i?.id)) {
+      for (const i of s.instances.filter(i => i.status === 'open' || showClosed || i.id === cur?.i?.id)) {
         const st = i.running ? '<span class="spin"></span> running' : i.queued ? '\u29D7 queued' : i.asks.length ? `<span class="q">${i.asks.length} to answer</span>` : i.wake ? `wakes ${when(i.wake)}` : i.status === 'open' ? '' : i.status;
         const k = `rev:/api/instances/${i.id}`;
         localStorage[k] ??= i.rev;
-        h += `<a class="row inst ${i.status} ${cur.i?.id === i.id ? 'on' : ''}" href="#/${i.id}"><span class="nm">${esc(i.label)}${i.rev > +localStorage[k] ? '<span class="dot k"></span>' : ''}</span><span class="n">${st}</span></a>`;
+        h += `<a class="row inst ${i.status} ${cur?.i?.id === i.id ? 'on' : ''}" href="#/${i.id}"><span class="nm">${esc(i.label)}${i.rev > +localStorage[k] ? '<span class="dot k"></span>' : ''}</span><span class="n">${st}</span></a>`;
       }
       if (closed) h += `<button class="quiet" data-act="toggle-closed">${showClosed ? 'Hide' : 'Show'} closed (${closed})</button>`;
       h += '</div>';
     }
     h += '</div>';
   }
-  const archived = tree.filter(w => w.archived).length + (cur?.w.series.filter(s => s.archived).length ?? 0);
+  const archived = tree.filter(w => w.archived).length + tree.filter(w => expanded.has(w.id)).flatMap(w => w.series).filter(s => s.archived).length;
   if (archived) h += `<button class="quiet" data-act="toggle-archived">${showArchived ? 'Hide' : 'Show'} archived (${archived})</button>`;
-  h += `<div class="legend"><div><i class="p">Blue</i> uploaded by a person</div><div><i>Black</i> made by the agent</div><div><span class="tri"></span>comments</div><div><span class="tri q"></span>waiting on a reply</div><div><span class="dash"></span>expected, not there yet</div></div>`;
-  h += `<div class="acct"><button class="me" data-act="menu-me" title="Logins, tokens, AGENTS.md, skills"><span>${esc(me.name)}${me.role === 'user' ? '' : ' · ' + me.role}</span><span class="mail">${esc(me.email)}</span></button></div>`;
-  put($('#side'), h);
+  put($('#tree'), h);
+  put($('#acct'), `<button class="me" data-act="menu-me" title="Logins, tokens, AGENTS.md, skills"><span>${esc(me.name)}${me.role === 'user' ? '' : ' · ' + me.role}</span><span class="mail">${esc(me.email)}</span></button>`);
 }
 
 function lastDone() { return data.log.findLast(e => e.op === 'done'); }
@@ -908,10 +931,12 @@ function renderPv() {
     h += '<div class="pvb vl">';
     if (s.kind === 'workspace') h += (s.manage ? `<h3>Name</h3><input type="text" id="wname" value="${esc(s.name)}">` : '') + peopleHtml(s)
       + `<h3>Reading</h3><div class="sub">Agents here read every series of this workspace${s.reads.length ? `, and of ${esc(s.reads.join(', '))}, which ${s.reads.length > 1 ? 'have' : 'has'} everyone this one has` : ''}. They write only here.${s.read_by.length ? ` Agents in ${esc(s.read_by.join(', '))}, whose people are all here, read this one.` : ''}</div>`
-      + agentsHtml(s, 'Every agent in this workspace reads it at the start of each run: its conventions, and changes that cut across its series, such as a renamed entity.', s.manage);
+      + agentsHtml(s, 'Every agent in this workspace reads it at the start of each run: its conventions, and changes that cut across its series, such as a renamed entity.', s.manage)
+      + (s.manage ? `<div class="row2"><button class="btn danger" data-act="archive-workspace">${s.archived ? 'Restore workspace' : 'Archive workspace'}</button></div>` : '');
     if (s.kind === 'series') h += (s.adhoc ? '' : `<h3>Name</h3><input type="text" id="sname" value="${esc(s.name)}">`)
       + `<h3>Who starts runs</h3>${startsHtml(s)}`
-      + `<h3>Cost</h3><div class="sub">This series' runs have cost ${usd(s.cost)} so far, ${usd(s.cost / Math.max(1, s.closed))} per closed instance.</div>`;
+      + `<h3>Cost</h3><div class="sub">This series' runs have cost ${usd(s.cost)} so far, ${usd(s.cost / Math.max(1, s.closed))} per closed instance.</div>`
+      + `<div class="row2"><button class="btn danger" data-act="archive-series">${s.archived ? 'Restore series' : 'Archive series'}</button></div>`;
     h += '</div>';
   }
   else if (pv.loading) h += `<div class="pvb"><div class="empty">Loading…</div></div>`;
@@ -1191,14 +1216,13 @@ document.addEventListener('click', async ev => {
 async function onAct(act, el, was) {
   if (act.startsWith('menu-') && was === act) return;
   if (act === 'menu') $('#side').classList.toggle('open');
-  if (act === 'menu-workspace') openMenu(el, [
-    cur.w.manage && ['Rename', 'rename-workspace'], ['New series', 'new-series'], ['Settings', 'workspace-settings'],
-    cur.w.manage && ['-'], cur.w.manage && [cur.w.archived ? 'Restore workspace' : 'Archive workspace', 'archive-workspace'],
-  ]);
-  if (act === 'menu-series') openMenu(el, [
-    !cur.s.adhoc && ['Rename', 'rename-series'], ['New instance', 'new-instance'], ['Settings', 'settings'],
-    ['-'], [cur.s.archived ? 'Restore series' : 'Archive series', 'archive-series'],
-  ]);
+  if (act === 'expand') { expandRow(el.dataset.id); renderSide(); }
+  if (act === 'workspaces') { localStorage.workspaces = el.dataset.id; renderSide(); }
+  // A row's settings and + act on that row, which they open first.
+  if (['workspace-settings', 'new-series', 'settings', 'new-instance'].includes(act) && el.dataset.id && ![cur?.w.id, cur?.s?.id].includes(el.dataset.id)) {
+    location.hash = `#/${el.dataset.id}`;
+    await refresh();
+  }
   if (act === 'menu-instance') {
     const open = data.doc.status === 'open', busy = cur.s.instances.some(i => i.running) || cur.i.queued;
     openMenu(el, [
@@ -1258,14 +1282,10 @@ async function onAct(act, el, was) {
     const x = act === 'archive-series' ? cur.s : cur.w, flip = () => api(act === 'archive-series' ? seriesPath(cur) : `/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ archived: !x.archived }) });
     if (x.archived) await flip();
     else if (!await ask({ title: `Archive ${x.name}?`, text: 'It leaves the sidebar, except under Show archived. Nothing in it changes.', ok: 'Archive', act: flip })) return;
+    closePv();
     await refresh();
   }
   if (act === 'rename') editName($('#bar h1 .t'), cur.i.label, label => api(`${instPath()}/rename?as=${enc(label)}`, { method: 'POST' }));
-  if (act === 'rename-series' || act === 'rename-workspace') {
-    $('#side').classList.add('open');
-    const series = act === 'rename-series';
-    editName($(series ? '#side .ser.on .nm' : '#side .ws.on .nm'), series ? cur.s.name : cur.w.name, name => api(series ? seriesPath(cur) : `/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ name }) }));
-  }
   if (act === 'share-arm') { pv.arming = !pv.arming; renderPv(); }
   if (act === 'share-on' || act === 'share-off' || act === 'wake-move' || act === 'wake-cancel') {
     if (act === 'share-on' || act === 'share-off') await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify(act === 'share-on' ? { share: true, logins: ticked() } : { share: false }) });

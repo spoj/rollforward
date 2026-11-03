@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { agentsFile, createInstance, duplicateInstance, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, labels, newId, openFile, openStore, readFile, safeName, seriesDir, type Instance } from './store.ts';
+import { agentsFile, createInstance, duplicateInstance, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, safeName, seriesDir, type Instance } from './store.ts';
 import { socketDir } from './runner.ts';
 import { serveSandboxes } from './sandbox.ts';
 import { authenticate, checkConfig, connectM365, m365Ready, mode, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, upsertUser, users, type Me, type Role } from './auth.ts';
@@ -77,11 +77,11 @@ function asks(inst: Instance): string[] {
 
 // An instance as the sidebar shows it. What comes from its log and screen is kept until either moves on, so a listing reads each
 // instance's log once, not on every refresh.
-const kept = new WeakMap<Instance, { key: string; asks: string[]; runner: string; cost: number }>();
+const kept = new WeakMap<Instance, { key: string; asks: string[]; runner: string; acted: string[]; cost: number }>();
 function summary(i: Instance, w8 = wakes()) {
   const key = `${i.log.length}:${i.doc.rev}`;
   let k = kept.get(i);
-  if (k?.key !== key) kept.set(i, k = { key, asks: asks(i), runner: runnerOf(i).by, cost: +i.log.reduce((t, e) => t + ((e.cost as number | undefined) ?? 0), 0).toFixed(4) });
+  if (k?.key !== key) kept.set(i, k = { key, asks: asks(i), runner: runnerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: +i.log.reduce((t, e) => t + ((e.cost as number | undefined) ?? 0), 0).toFixed(4) });
   return {
     id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(i.seriesId)?.inst === i, queued: queued(i),
     asks: k.asks, wake: w8.pending[i.id]?.at ?? null, runner: k.runner, cost: k.cost,
@@ -90,10 +90,8 @@ function summary(i: Instance, w8 = wakes()) {
 
 function listing(me: Me) {
   const t = tree(), w8 = wakes(), byName = (a: [string, { name: string }], b: [string, { name: string }]) => a[1].name.localeCompare(b[1].name);
-  return Object.entries(t.workspaces).filter(([, w]) => canSee(me, w)).sort(byName).map(([id, w]) => ({
-    id, name: w.name, archived: !!w.archived, owners: w.owners, members: w.members, manage: canManage(me, w), agents: text(agentsFile(id)),
-    reads: wider(t, id).map(o => t.workspaces[o].name).sort(), read_by: Object.keys(t.workspaces).filter(o => wider(t, o).includes(id)).map(o => t.workspaces[o].name).sort(),
-    series: Object.entries(t.series).filter(([, s]) => s.workspace === id).sort(byName).map(([sid, s]) => {
+  return Object.entries(t.workspaces).filter(([, w]) => canSee(me, w)).sort(byName).map(([id, w]) => {
+    const series = Object.entries(t.series).filter(([, s]) => s.workspace === id).sort(byName).map(([sid, s]) => {
       const { shared } = seriesSettings(seriesDir(sid));
       return {
         id: sid, name: s.name, archived: !!s.archived, adhoc: !!s.adhoc, shared_by: shared?.by ?? null, shared_logins: shared?.by === me.email ? shared.logins : [],
@@ -101,8 +99,15 @@ function listing(me: Me) {
         requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r })),
         instances: instances(sid).map(i => summary(i, w8)),
       };
-    }),
-  }));
+    });
+    // Mine: a workspace you own, or one where you ran an instance, commented or uploaded; membership alone isn't.
+    const mine = w.owners.includes(me.email) || series.some(s => instances(s.id).some(i => kept.get(i)!.acted.includes(me.email)));
+    return {
+      id, name: w.name, archived: !!w.archived, owners: w.owners, members: w.members, manage: canManage(me, w), agents: text(agentsFile(id)), mine,
+      reads: wider(t, id).map(o => t.workspaces[o].name).sort(), read_by: Object.keys(t.workspaces).filter(o => wider(t, o).includes(id)).map(o => t.workspaces[o].name).sort(),
+      series,
+    };
+  });
 }
 
 function trace(inst: Instance) {

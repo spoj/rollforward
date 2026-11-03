@@ -45,12 +45,7 @@ after(async () => {
   await once(proc, 'exit');
 });
 
-test('names change in place: Enter saves, Escape keeps the old one', async () => {
-  await page.click('[data-act=menu-series]');
-  await page.click('#pop [data-act=rename-series]');
-  await page.keyboard.type('Weekly BB');
-  await page.keyboard.press('Enter');
-  await page.waitForSelector('.row.ser.on .nm:text-is("Weekly BB")');
+test("an instance's label changes in place: Enter saves, Escape keeps the old one", async () => {
   await page.click('#bar h1 .t');
   await page.keyboard.type('nope');
   await page.keyboard.press('Escape');
@@ -61,9 +56,13 @@ test('names change in place: Enter saves, Escape keeps the old one', async () =>
   await page.waitForSelector('#bar h1 .t:text-is("2026-09-06 b")');
 });
 
-test('settings save as they change, and a click beside the dialog closes it', async () => {
-  await page.click('[data-act=menu-series]');
-  await page.click('#pop [data-act=settings]');
+test("a series' gear opens its settings, which save as they change; a click beside the dialog closes it", async () => {
+  await page.hover('.row.ser.on');
+  await page.click('.row.ser.on [data-act=settings]');
+  await page.fill('#sname', 'Weekly BB');
+  await page.press('#sname', 'Enter');
+  await page.waitForSelector('#pv .saved:text-is("Saved")');
+  await page.waitForSelector('.row.ser.on .nm:text-is("Weekly BB")');
   await page.fill('#sname', 'Weekly borrowing base');
   await page.press('#sname', 'Enter');
   await page.waitForSelector('#pv .saved:text-is("Saved")');
