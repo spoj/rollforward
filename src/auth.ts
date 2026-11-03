@@ -184,6 +184,43 @@ function signInPage(res: ServerResponse, next: string) {
 <a class="ms" href="/auth/login?next=${encodeURIComponent(next)}">${LOGO}Sign in with Microsoft</a></div>`);
 }
 
+// rf login URL, without a token, signs in through the browser, as gh auth login --web does: rf asks for a request, whose code the
+// person matches and allows on the page (/cli) within 10 minutes, and rf collects the token that makes. Only rf holds the
+// request's id, which collects it; the page shows its code.
+type Asked = { name: string; code: string; at: number; token?: string; denied?: boolean };
+const asked = new Map<string, Asked>();
+const pending = (match: (id: string, a: Asked) => boolean) => [...asked].find(([id, a]) => Date.now() - a.at < 600_000 && match(id, a));
+
+async function ask(req: IncomingMessage, res: ServerResponse) {
+  const { name } = JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString() || '{}');
+  const id = randomBytes(24).toString('base64url'), letters = [...randomBytes(8)].map(b => 'BCDFGHJKLMNPQRSTVWXZ'[b % 20]).join('');
+  asked.set(id, { name: String(name || 'rf').slice(0, 80), code: `${letters.slice(0, 4)}-${letters.slice(4)}`, at: Date.now() });
+  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ id, code: asked.get(id)!.code }));
+}
+
+async function collect(req: IncomingMessage, res: ServerResponse) {
+  const { id } = JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString() || '{}'), a = pending(i => i === id)?.[1];
+  const [status, text] = !a ? [410, 'the sign-in request expired: run rf login URL again'] : a.denied ? [403, 'denied on the page'] : !a.token ? [202, 'waiting'] : [200, JSON.stringify({ token: a.token })];
+  if (status !== 202) asked.delete(id);
+  res.writeHead(status, { 'content-type': status === 200 ? 'application/json' : 'text/plain' }).end(text);
+}
+
+// The page that allows a request, as the session's own person: a token could make no tokens.
+export async function cli(req: IncomingMessage, res: ServerResponse, url: URL) {
+  const own = session(req);
+  if (!own) throw new HttpError(403, 'tokens are made on the page');
+  const form = req.method === 'POST' ? new URLSearchParams(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString()) : url.searchParams;
+  const a = pending((_, a) => a.code === form.get('code'))?.[1];
+  const show = (body: string) => res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+    .end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>rf login · rollforward</title>${STYLE}<div class="box"><h1>rollforward</h1>${body}</div>`);
+  if (!a) return show('<p class="bad">This sign-in request has expired, or was answered. Run rf login URL again.</p>');
+  if (req.method === 'POST' && form.get('allow') === 'yes') a.token = newToken(own.email, a.name, 30);
+  else if (req.method === 'POST') a.denied = true;
+  if (req.method === 'POST') return show(`<p>${a.token ? `${esc(a.name)} is signed in as you. You can close this tab; the token is under Tokens, where you can revoke it.` : 'Denied. rf is not signed in.'}</p>`);
+  show(`<p><b>${esc(a.name)}</b> asks to act as you, ${esc(own.email)}, for 30 days: what you do on this site, from a shell or a desktop agent. Allow it only if rf shows the code <b>${esc(a.code)}</b>.</p>
+<form method="post" action="/cli"><input type="hidden" name="code" value="${esc(a.code)}"><button class="ms" name="allow" value="yes">Allow</button><p></p><button class="ms" name="allow" value="no">Deny</button></form>`);
+}
+
 // The demo's stand-in for Microsoft's account picker: the two demo accounts, one click each.
 function demoPicker(res: ServerResponse, next: string) {
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -376,6 +413,8 @@ export async function authenticate(req: IncomingMessage, res: ServerResponse, ur
     // Microsoft's return, which may be the site's own root if that is what the app registers.
     await callback(req, res, url);
   } else if (mode === 'microsoft' && spa && url.pathname === '/auth/token' && req.method === 'POST') await tokenFromBrowser(req, res);
+  else if (url.pathname === '/auth/cli' && req.method === 'POST') await ask(req, res);
+  else if (url.pathname === '/auth/cli/poll' && req.method === 'POST') await collect(req, res);
   else if (url.pathname === '/auth/logout' && req.method === 'POST') {
     const end = mode === 'microsoft' ? (await discovery().catch(() => undefined))?.end_session_endpoint : undefined;
     res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': cookie('rf_session', '', 0) });
@@ -383,8 +422,8 @@ export async function authenticate(req: IncomingMessage, res: ServerResponse, ur
   } else {
     const me = bearer(req, url) ?? session(req);
     if (me) return me;
-    if (url.pathname !== '/' || req.method !== 'GET') throw new HttpError(401, 'sign in first');
-    signInPage(res, '/');
+    if (!['/', '/cli'].includes(url.pathname) || req.method !== 'GET') throw new HttpError(401, 'sign in first');
+    signInPage(res, url.pathname + url.search);
   }
   return null;
 }

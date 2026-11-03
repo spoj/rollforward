@@ -1,10 +1,11 @@
 // rf for people: what the page does, from a shell or a desktop agent, as you, with a personal token made on the page (Tokens).
 // Published to npm as @rfany/rf, from cli/. PATH is workspace/series/label, as `rf ls` prints it.
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { spawn } from 'node:child_process';
+import { homedir, hostname } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
-const USAGE = `rf login URL TOKEN
+const USAGE = `rf login URL [TOKEN]                without a TOKEN, through the browser: allow it on the page, where it shows rf's code
 rf ls
 rf pull PATH DIR [--delete] [-n|--dry-run] [--exclude PATTERN]...
                                   PATH's files into DIR as rsync copies them, whole, if their size or time differ: PATH/ fills DIR,
@@ -109,10 +110,10 @@ if (cmd === 'help') {
   process.exit();
 }
 if (cmd !== 'login' && !existsSync(config)) {
-  console.error(`Sign in first, with a token made on the page under Tokens: rf login URL TOKEN\n\n${USAGE}`);
+  console.error(`Sign in first: rf login URL\n\n${USAGE}`);
   process.exit(2);
 }
-const { url, token } = cmd === 'login' ? { url: args[0], token: args[1] } : JSON.parse(readFileSync(config, 'utf8'));
+let { url, token } = cmd === 'login' ? { url: args[0]?.replace(/\/$/, ''), token: args[1] } : JSON.parse(readFileSync(config, 'utf8'));
 
 async function api(path: string, init: RequestInit = {}) {
   const r = await fetch(url + path, { ...init, headers: { authorization: `Bearer ${token}` } });
@@ -203,7 +204,22 @@ async function pull(path: string, dir: string) {
   if (failed) process.exitCode = 1;
 }
 
-if (cmd === 'login' && url && token) {
+// The browser's sign-in: the server makes a request, the person allows it on the page, which shows its code, and rf collects the token.
+async function browserToken(): Promise<string> {
+  const { id, code } = await (await fetch(`${url}/auth/cli`, { method: 'POST', body: JSON.stringify({ name: `rf on ${hostname()}` }) })).json();
+  const link = `${url}/cli?code=${code}`;
+  console.log(`Open ${link}\nand allow rf there if the page shows the code ${code}.`);
+  spawn(process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open', [link], { stdio: 'ignore', detached: true }).on('error', () => {}).unref();
+  for (;;) {
+    await new Promise(ok => setTimeout(ok, 2000));
+    const r = await fetch(`${url}/auth/cli/poll`, { method: 'POST', body: JSON.stringify({ id }) });
+    if (r.status === 200) return (await r.json()).token;
+    if (r.status !== 202) throw new Error(await r.text());
+  }
+}
+
+if (cmd === 'login' && url) {
+  token ??= await browserToken();
   const me = await get('/me');
   mkdirSync(dirname(config), { recursive: true });
   writeFileSync(config, JSON.stringify({ url, token }), { mode: 0o600 });

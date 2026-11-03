@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { agentsFile, createInstance, duplicateInstance, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, safeName, seriesDir, type Entry, type Instance } from './store.ts';
 import { socketDir } from './runner.ts';
 import { serveSandboxes } from './sandbox.ts';
-import { authenticate, checkConfig, connectM365, m365Ready, mode, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
+import { authenticate, checkConfig, cli, connectM365, m365Ready, mode, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
 import { canManage, canSee, changes, everyone, initSystem, readJson, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
 import { checkTicks, logins, runnerOf, signOut } from './logins.ts';
 import { agentCall } from './agent-api.ts';
@@ -708,7 +708,8 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       if (me.role !== 'admin') throw new HttpError(403, "the company's AGENTS.md is the admins'");
       writeFileSync(agentsFile(), (await body(req)).toString());
       send(res, 200, 'ok');
-    } else if (url.pathname === '/tokens' && req.method === 'GET') send(res, 200, myTokens(me.email));
+    } else if (url.pathname === '/cli') await cli(req, res, url);
+    else if (url.pathname === '/tokens' && req.method === 'GET') send(res, 200, myTokens(me.email));
     else if ((url.pathname === '/tokens' && req.method === 'POST') || (url.pathname.startsWith('/tokens/') && req.method === 'DELETE')) {
       // Made and revoked on the page only, as the session's own person: a token that could make tokens would outlive its revocation.
       const own = session(req);

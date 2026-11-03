@@ -654,6 +654,28 @@ test("an instance is new to a person while it has others' or the agent's news th
   assert.equal((await call('PUT', `/api/workspaces/${id}`, JSON.stringify({ owners: [], members: [], force: true }))).status, 200);
 });
 
+test("rf login without a token signs in through the browser: the person allows rf's request on the page, matching its code, and rf collects a 30-day token", async () => {
+  const home = join(tmp, 'browser-login-home');
+  mkdirSync(home);
+  // No opener on PATH, so the test opens no browser; rf prints the link all the same.
+  const p = spawn(process.execPath, [join(app, 'src', 'rf-people.ts'), 'login', base], { env: { HOME: home, PATH: dirname(process.execPath) } });
+  let out = '';
+  p.stdout.on('data', d => (out += d));
+  while (!/code ([A-Z]{4}-[A-Z]{4})/.test(out)) await new Promise(r => setTimeout(r, 50));
+  const code = /code ([A-Z]{4}-[A-Z]{4})/.exec(out)![1];
+  assert.match(out, new RegExp(`Open ${base}/cli\\?code=${code}`));
+  assert.equal((await fetch(`${base}/cli?code=${code}`)).status, 200, 'not signed in, the page offers to sign in');
+  assert.match(await (await call('GET', `/cli?code=${code}`)).text(), new RegExp(`rf on .+ asks to act as you, ${adminEmail}, for 30 days.+${code}`, 's'));
+  const allow = await fetch(`${base}/cli`, { method: 'POST', body: new URLSearchParams({ code, allow: 'yes' }), headers: { cookie: admin, 'sec-fetch-site': 'same-origin' } });
+  assert.match(await allow.text(), /is signed in as you/);
+  await once(p, 'exit');
+  assert.match(out, new RegExp(`signed in as ${adminEmail}`));
+  assert.ok((await json('/tokens')).some((t: { name: string }) => t.name.startsWith('rf on ')), 'the token shows under Tokens');
+  const { id } = await (await fetch(`${base}/auth/cli`, { method: 'POST', body: '{}' })).json();
+  assert.equal((await fetch(`${base}/auth/cli/poll`, { method: 'POST', body: JSON.stringify({ id }) })).status, 202);
+  assert.equal((await fetch(`${base}/auth/cli/poll`, { method: 'POST', body: JSON.stringify({ id: 'made-up' }) })).status, 410);
+});
+
 // Last: a drained server starts no more runs.
 test('an update drains the server: GET /drained answers 200 once no run is going', async () => {
   assert.equal((await fetch(base + '/drained')).status, 503);

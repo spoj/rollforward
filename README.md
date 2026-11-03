@@ -208,7 +208,7 @@ People sign in with one button, **Sign in with Microsoft**, and type nothing.
       docker compose exec rollforward node src/auth.ts /data add alice@example.com [admin|publisher]
       docker compose exec rollforward node src/auth.ts /data disable alice@example.com   # her sessions end at once
 
-- **Tokens,** under the account's ⚙, are each person's for rf: named, lasting 7, 30 or 90 days, shown once and revocable. A token stops at its expiry, when revoked, or when its person is disabled, signed out everywhere or removed. `.rf/tokens.json` keeps only hashes, and `.rf/token-uses.jsonl` logs every use.
+- **Tokens,** under the account's ⚙, are each person's for rf: named, lasting 7, 30 or 90 days, shown once and revocable. `rf login URL` without one signs in through the browser, as `gh auth login --web` does: rf prints a link and a code, and opens the link; the person, signed in to the page, allows "rf on HOST" there if it shows the same code, within 10 minutes, and rf collects a 30-day token, which shows under Tokens. It works over SSH too, the link opened on another machine. A token stops at its expiry, when revoked, or when its person is disabled, signed out everywhere or removed. `.rf/tokens.json` keeps only hashes, and `.rf/token-uses.jsonl` logs every use.
 
 Sessions last 12 hours (`RF_SESSION_HOURS`). The people, the workspaces' people and everyone's logins are in `.rf/` in the data root, the logins sealed with `seal.key`. Where systemd runs the server, give it `session.key` and `seal.key` as credentials (`systemd-creds encrypt --with-key=tpm2 …`, then `LoadCredentialEncrypted=`), so a copy of the data holds only ciphertext; otherwise they are made in `.rf/`.
 
