@@ -40,7 +40,7 @@ The method:
 If there is no closed instance yet and people supplied no outputs, ask for past instances' inputs and outputs.
 
 Rules:
-- A package you `pip install` stays for the series' later runs. Scripts take the instance folder as an argument, as the next instance runs them on its own.
+- Besides Python 3.13 with common data and Office packages, the sandbox has LibreOffice (`soffice`), poppler, tesseract (English and Chinese), `officecli` and the usual command-line tools. A package you `pip install` stays for the series' later runs. Scripts take the instance folder as an argument, as the next instance runs them on its own.
 - A file the screen has shown is frozen: write each new version under a new name, such as `... v2.xlsx`, and repoint the item.
 - Put each step and output on the screen when it's ready, and finish every run with `rf put`.
 - `rf commit MESSAGE` keeps the instance as it stands in its history (`rf help commit`): commit at moments worth keeping, such as before and after a big change, or once people have reviewed a version.
