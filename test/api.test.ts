@@ -253,10 +253,13 @@ test("a run's links, FIFOs and folders in working/ and session/ are never follow
   const listed = (await json(`/api/files?path=${encodeURIComponent(`larkfield/${series}/2026-08-30/working`)}`)).map((f: { path: string }) => f.path);
   assert.deepEqual(listed.filter((p: string) => /\/working\/(env|inside|pipe|up|real)/.test(p)), [`larkfield/${series}/2026-08-30/working/real.txt`], 'only regular files, and never into a link');
   assert.equal((await call('GET', await at(series, '2026-08-30', 'trace'))).status, 200, 'a FIFO among the session files is skipped');
+  writeFileSync(join(d, 'session', 'zy.jsonl'), '{"type":"message","message":{"role":"user","content":"cut"}}\n{"type":"message","mess\n');
+  assert.equal((await json(await at(series, '2026-08-30', 'trace'))).filter((l: { text: string }) => l.text === 'cut').length, 1, 'a line a restart cut half written is skipped');
   assert.equal((await call('POST', `${await at(series, '2026-08-30', 'duplicate')}?as=links`)).status, 200);
   assert.deepEqual(readdirSync(join(await dir(series, 'links'), 'working')).filter(f => /env|inside|pipe|up|real/.test(f)), ['real.txt'], 'a copy leaves them out');
   for (const f of ['real.txt', 'env.txt', 'inside.txt', 'up', 'up2', 'pipe.txt']) rmSync(join(d, 'working', f));
   rmSync(join(d, 'session', 'zz.jsonl'));
+  rmSync(join(d, 'session', 'zy.jsonl'));
   assert.equal((await call('POST', `${await at(series, 'links', 'abandon')}`)).status, 200);
 });
 

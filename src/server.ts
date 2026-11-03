@@ -213,8 +213,10 @@ function trace(inst: Instance) {
   type Line = { kind: string; text: string; at?: string; result?: string; lines?: number; error?: boolean };
   const out: Line[] = [], calls = new Map<string, Line>();
   for (const f of existsSync(dir) ? readdirSync(dir).filter(f => f.endsWith('.jsonl')).sort() : []) {
+    // A line a restart cut left half written is skipped, as Pi skips it.
     for (const line of (readFile(dir, f) ?? '').split('\n').filter(Boolean)) {
-      const e = JSON.parse(line);
+      let e;
+      try { e = JSON.parse(line); } catch { continue; }
       if (e.type !== 'message') continue;
       const m = e.message;
       if (m.role === 'user') out.push({ kind: 'user', at: e.timestamp, text: typeof m.content === 'string' ? m.content : m.content.map((b: { text?: string }) => b.text ?? '').join('') });
