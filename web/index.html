@@ -273,6 +273,8 @@ input[type=checkbox] { accent-color: var(--ink); }
 .conv .post { white-space: pre-wrap; }
 .thread { border: 1px solid var(--rule); border-radius: var(--r1); padding: 8px 10px; display: grid; gap: 6px; }
 .thread.waits { border-color: var(--note); }
+.thread .row2 { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.thread .quiet { padding: 2px 0; }
 .thread.resolved { opacity: .6; }
 .post.ask b::after { content: ' asks'; color: var(--note); font-weight: 500; }
 .thread .on, .post .tm { color: var(--ink-3); font-size: 12px; }
@@ -364,6 +366,8 @@ const ext = f => (f && f.includes('.') ? f.split('.').pop() : '').toUpperCase();
 
 let tree = [], expired = [], cur = null, data = null, lines = [], linesKey = '', openItem = null, hover = null, showClosed = false, showArchived = false, pv = null, me = null;
 let seen = {}, prevSigs = {}, uploads = [], shown = '', refreshes = 0, threads = [];
+// Threads with a reply box open: those waiting on people have one anyway, the others once Reply is clicked.
+const replying = new Set();
 // An item's open threads; a new one shows on its tile as a change.
 const talkOn = id => threads.filter(t => t.item === id && !t.resolved);
 const sig = i => `${i.file}|${talkOn(i.id).length}|${i.headline ?? ''}`;
@@ -806,7 +810,9 @@ function threadHtml(t) {
   const state = t.waits ? ` \u00b7 waits on ${esc(who(t.waits))}` : t.pending ? ' \u00b7 <span class="spin"></span> the agent picks it up next' : t.resolved ? ` \u00b7 resolved by ${esc(who(t.last.by))}${t.last.text ? `: ${esc(t.last.text)}` : ''}` : '';
   return `<div class="thread ${t.resolved ? 'resolved' : ''} ${t.waits ? 'waits' : ''}" data-thread="${esc(t.id)}"><div class="on">${place(t)}${state}</div>`
     + t.posts.map(p => `<div class="post ${p.ask ? 'ask' : ''}"><b class="${p.by === 'agent' ? '' : 'p'}">${esc(who(p.by))}</b> <span class="tm">${hhmm(p.at)}${p.to ? ` \u00b7 to ${esc(who(p.to))}` : ''}</span><div>${p.by === 'agent' ? md(p.text) : esc(p.text)}</div>${(p.files ?? []).map(f => `<div class="f"><a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a></div>`).join('')}</div>`).join('')
-    + (data.doc.status === 'open' && !t.resolved ? `<textarea rows="2" placeholder="Reply"></textarea><input type="file" multiple><div class="row2"><button class="btn" data-act="reply-thread" data-thread="${esc(t.id)}">Reply</button><button class="btn" data-act="resolve" data-thread="${esc(t.id)}" title="Done with it, without waking the agent">Resolve</button></div>` : '') + '</div>';
+    + (data.doc.status !== 'open' || t.resolved ? ''
+      : t.waits || replying.has(t.id) ? `<textarea rows="2" placeholder="Reply"></textarea><input type="file" multiple><div class="row2"><button class="btn" data-act="reply-thread" data-thread="${esc(t.id)}">Reply</button><button class="btn" data-act="resolve" data-thread="${esc(t.id)}" title="Done with it, without waking the agent">Resolve</button></div>`
+      : `<div class="row2"><button class="quiet" data-act="thread" data-thread="${esc(t.id)}">Reply</button><button class="quiet" data-act="resolve" data-thread="${esc(t.id)}" title="Done with it, without waking the agent">Resolve</button></div>`) + '</div>';
 }
 
 // The conversation: the threads waiting on people, the agent's latest report, then the other threads, the resolved last.
@@ -1231,6 +1237,7 @@ async function onAct(act, el, was) {
     for (const f of picked.files) files.push((await api(`${instPath()}/attach?name=${enc(f.name)}`, { method: 'POST', body: f })).file);
     await api(`${instPath()}/comment`, { method: 'POST', body: JSON.stringify(act === 'comment' ? { text, files, ...(ui.on && { item: ui.on }), ...(ui.ref && { ref: ui.ref }) } : { thread: el.dataset.thread, text, files }) });
     box.value = '';
+    replying.delete(el.dataset.thread);
     ui.on = ui.ref = null;
     await refresh();
   }
@@ -1298,6 +1305,7 @@ async function onAct(act, el, was) {
     put($('#pvn'), `${esc(el.dataset.note ?? '')}${go && `<div>${go}</div>`}`);
   }
   if (act === 'thread') {
+    replying.add(el.dataset.thread);
     closePv();
     Object.assign(ui, { log: false, conv: true, proc: false, on: null, ref: null });
     renderLog(); renderBar();
