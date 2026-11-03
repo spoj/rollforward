@@ -86,6 +86,25 @@ A data root of the team's fork (its main at a1fa8db, with folders `<workspace>/<
 
 - **Keys:** `.rf/session.key` signs sessions, and `.rf/seal.key` encrypts everyone's logins. Back up the data folder nightly without them, and keep a copy of both elsewhere. Without seal.key, people sign in to their logins again.
 - **Updates:** check out the next tag, rebuild, then `systemctl --user restart rollforward`. A run the restart cuts carries on by itself.
+- **Updates without the image** come by themselves: `scripts/update.ts` moves the checkout to the newest GitHub Release once every check on its commit has passed, installs what changed (`npm ci`, `uv pip install`), restarts the server, and goes back if it doesn't answer, never trying that release again. CI makes a Release from each tag whose tests pass; a tag with a `Manual:` line in its message makes a prerelease, which the updater stops before, for a person to deploy by hand. It asks GitHub without a token, so every 15 minutes, as a timer of the same user:
+
+       # ~/.config/systemd/user/rollforward-update.service
+       [Service]
+       Type=oneshot
+       WorkingDirectory=%h/rollforward
+       Environment=PATH=/opt/node-v26/bin:/usr/local/bin:/usr/bin
+       ExecStart=/opt/node-v26/bin/node scripts/update.ts http://127.0.0.1:8780/
+       TimeoutStartSec=3h
+
+       # ~/.config/systemd/user/rollforward-update.timer
+       [Timer]
+       OnBootSec=5min
+       OnUnitActiveSec=15min
+
+       [Install]
+       WantedBy=timers.target
+
+  then `systemctl --user enable --now rollforward-update.timer`; `journalctl --user -u rollforward-update` shows what it did. A restart cuts the runs going on, which carry on by themselves; `OnCalendar=*-*-* 02:00` in place of the two lines above updates at night only.
 
 ## Check
 
