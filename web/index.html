@@ -663,8 +663,7 @@ function logText(e) {
     rename: () => `${w} renamed the instance from ${esc(e.from)}`,
     duplicate: () => `${w} made this instance as a copy of ${esc(e.from)}`,
     browser: () => e.action === 'get' ? `${w} fetched ${esc(e.from)} from the browser on ${esc(e.site)}${f}` : `${w} closed run ${e.run}'s browser${e.site ? ` on ${esc(e.site)}, in ${esc(e.login)}'s login` : ''}<div class="d">${e.error ? esc(e.error) : `${e.requests} requests${e.writes ? `, ${e.writes} writes` : ''}${e.blocked ? `, ${e.blocked} blocked` : ''}`}</div>${f}`,
-    windows: () => `${w} ${{ open: 'opened a Windows machine', run: `ran ${esc(e.script)} on Windows: ${e.timed_out ? 'timed out' : `exit ${e.exit}`}`, put: `put ${esc(e.to)} on Windows`, get: `fetched ${esc(e.from)} from Windows`, screenshot: 'took a screenshot of Windows', close: `closed ${e.run ? `run ${e.run}'s` : 'the'} Windows machine` }[e.action]}${f}`,
-    machines: () => `Run ${e.run}'s machines did not all close<div class="d">${esc(e.error)}</div>`,
+    browsers: () => `Run ${e.run}'s browsers did not all close<div class="d">${esc(e.error)}</div>`,
     browse: () => `${w} used ${esc(e.system.toUpperCase())}<div class="d">${esc([e.action, ...e.args].join(' '))}</div>`,
     request: () => `${w} asked to write in ${esc(e.name)} (${esc(e.request)})<div class="d">${esc(e.description)}</div>${e.screenshot ? `<div class="f"><a data-act="preview" data-file="${esc(e.screenshot)}">${esc(e.screenshot)}</a></div>` : ''}`,
     approve: () => `${w} approved ${esc(e.request)}`,
@@ -1031,7 +1030,7 @@ function loginsHtml(s) {
       return `<div class="skill-row" style="display:flex;align-items:center;gap:8px"><span style="flex:1">${esc(w.name)} <span class="sub">${esc([new URL(w.url).hostname, ...w.hosts].join(', '))}${l ? ` · since ${esc(when(l.since))}` : ''}</span></span>`
         + `<button class="btn" data-act="web-signin" data-id="${esc(w.id)}" data-name="${esc(w.name)}">${l ? 'Sign in again' : 'Sign in'}</button>${l ? `<button class="quiet" data-act="signout-login" data-id="${esc(l.id)}">Sign out</button>` : ''}</div>`;
     }).join('');
-  if (!s.sites.length) h += `<h3>Websites</h3><div class="sub">${me.machines ? 'None yet: admins add a website with <code>rf website set ID URL --hosts ...</code>, and then everyone can sign in to it here.' : "Not set up on this server: website logins need the machines service (README, Websites and Windows), and then admins add websites with <code>rf website set</code>."}</div>`;
+  if (!s.sites.length) h += `<h3>Websites</h3><div class="sub">${me.browsers ? 'None yet: admins add a website with <code>rf website set ID URL --hosts ...</code>, and then everyone can sign in to it here.' : "Not set up on this server: website logins need the browser service (README, Websites), and then admins add websites with <code>rf website set</code>."}</div>`;
   return h;
 }
 

@@ -69,9 +69,7 @@ Skills, at the sidebar's foot, lists them with their versions.
 
 Microsoft 365 is nobody's but each person's: a run reads mail and files only through its runner's own login, and only the mailboxes, OneDrive and SharePoint sites ticked for its instance.
 
-Websites are the admins' to list and each person's to sign in to. `rf website set ID URL [--name NAME] [--hosts HOST,...]` adds one: the address where people sign in, and the other hosts its pages need, such as single sign-on's (`*.example.com` for any under it). Under Logins, Websites, people sign in themselves in a live browser on the page, and that browser's state is their login, sealed in `.rf/`; no password is stored. A run's scripts open a browser on a website with `rf browser open SITE`, from the runner's login if ticked, and drive it with Playwright over CDP. The browsers come from the machines service, a repo of its own (`RF_MACHINES_URL`, `RF_MACHINES_KEY`): each stays on its website's hosts and logs every request, which the instance keeps under `browser/`. A browser can do whatever its login can: the agent is told to only read, and each run's writes are counted in its log.
-
-A run can also lease a Windows machine from the same service, with `rf windows`, for what needs Windows itself: scripts in Python with pywin32 or PowerShell, files passed through `working/`, no network, and a clean state again when the run ends. Office isn't on it yet. The machines service builds it from the Windows 11 evaluation, which can't activate offline and may shut down hourly once unactivated; real use needs a licence from IT.
+Websites are the admins' to list and each person's to sign in to. `rf website set ID URL [--name NAME] [--hosts HOST,...]` adds one: the address where people sign in, and the other hosts its pages need, such as single sign-on's (`*.example.com` for any under it). Under Logins, Websites, people sign in themselves in a live browser on the page, and that browser's state is their login, sealed in `.rf/`; no password is stored. A run's scripts open a browser on a website with `rf browser open SITE`, from the runner's login if ticked, and drive it with Playwright over CDP. The browsers come from the browser service, a repo of its own (`RF_BROWSER_URL`, `RF_BROWSER_KEY`): each stays on its website's hosts and logs every request, which the instance keeps under `browser/`. A browser can do whatever its login can: the agent is told to only read, and each run's writes are counted in its log.
 
 From a shell, without the model: `node --env-file=.env src/cli.ts DATA_ROOT try aging --as EMAIL -- python "$RF_SKILLS/aging/scripts/fetch.py"` (or `try portal --as EMAIL -- rf browser open portal`) runs a skill as a run with it would, with the logins of EMAIL, an admin: how a skill is tested. Set `RF_TODAY` in `.env` to test against a day that has data.
 
@@ -102,12 +100,12 @@ The [justfile](justfile) has these and more as recipes; `just` lists them.
   - `RF_SCRATCH` (the system's temp folder`/rollforward`), for each run's HOME and /tmp and the server's socket for runs
   - `RF_SANDBOX_SCOPE`, the command that gives each run its cgroup (a `systemd-run --user --scope` line; empty for none)
   - `RF_SANDBOX_RO`, more folders runs may read, separated by `:`
-  - `RF_MACHINES_URL` (`http://127.0.0.1:8797`) and `RF_MACHINES_KEY`, the machines service, for websites' browsers and Windows machines; their tests run only with these set
+  - `RF_BROWSER_URL` (`http://127.0.0.1:8797`) and `RF_BROWSER_KEY`, the browser service, for websites' browsers; their tests run only with these set
   - `RF_MODEL_URL` (`https://openrouter.ai/api`)
   - `RF_MAX_RUNS` (20), runs at once across all series, and `RF_MIN_FREE_GB` (6), the free memory below which none starts, plus 1 GB for each run started in the last minute
   - `RF_OIDC_SCOPES` (`openid profile email`), sign-in's scopes
   - `RF_WAKE_TICK_MS` (60000), how often pending wakes are checked
-- **Websites and Windows** come from the machines service, a repo of its own ([spoj/machines](https://github.com/spoj/machines)), which runs next to the server as a user of its own; its README says what to install and how to run it. Give both the same key, its `MACHINES_KEY` and this server's `RF_MACHINES_KEY`, and set `RF_MACHINES_URL` if it isn't at `http://127.0.0.1:8797`, such as `https://machines.internal:8797` for one on a host of its own (`NODE_EXTRA_CA_CERTS` adds a private CA); nothing else changes, as runs and the page reach it only through this server. `just machines-check` answers `[]` once the server can reach it. Without it, all but website sign-ins, `rf browser` and `rf windows` works. The Docker image doesn't include it.
+- **Websites** come from the browser service, a repo of its own ([spoj/rollforward-browser](https://github.com/spoj/rollforward-browser)), which runs next to the server as a user of its own; its README says what to install and how to run it. Give both the same key, its `BROWSER_KEY` and this server's `RF_BROWSER_KEY`, and set `RF_BROWSER_URL` if it isn't at `http://127.0.0.1:8797`, such as `https://browser.internal:8797` for one on a host of its own (`NODE_EXTRA_CA_CERTS` adds a private CA); nothing else changes, as runs and the page reach it only through this server. `just browser-check` answers `[]` once the server can reach it. Without it, all but website sign-ins and `rf browser` works. The Docker image doesn't include it.
 - **Hosts runs may reach,** beyond package registries, GitHub and documentation sites: a JSON list in `.rf/egress.json`, such as `["api.example.com", "*.example.org"]`.
 
 To build the demo from scratch (about $4 of model use; the generator needs the internet for the ECB rates):
@@ -120,5 +118,5 @@ To build the demo from scratch (about $4 of model use; the generator needs the i
 - [PLAN.md](PLAN.md): the design and the decisions.
 - [prompt.md](prompt.md): the agent's instructions.
 - [docs/design.md](docs/design.md): the look.
-- [docs/deploy.md](docs/deploy.md): deploying on two hosts, rollforward's and the machines service's.
+- [docs/deploy.md](docs/deploy.md): deploying on two hosts, rollforward's and the browser service's.
 - [LICENSE](LICENSE): MIT.

@@ -13,7 +13,7 @@ import { authenticate, checkConfig, connectM365, m365Ready, mode, myTokens, newT
 import { canManage, canSee, changes, everyone, initSystem, saveTree, tree, type Workspace } from './system.ts';
 import { checkTicks, logins, runnerOf, signOut } from './logins.ts';
 import { agentCall } from './agent-api.ts';
-import { endSignIn, isSignIn, passUpgrade, removeWebsite, setWebsite, startSignIn, viewPage, websites } from './machines.ts';
+import { endSignIn, isSignIn, passUpgrade, removeWebsite, setWebsite, startSignIn, viewPage, websites } from './browsers.ts';
 import { offer, unoffer } from './m365.ts';
 import { seriesSettings } from './series.ts';
 import { checkChosen, openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
@@ -46,13 +46,13 @@ function send(res: ServerResponse, status: number, data: unknown) {
 }
 
 // A run, on its sandbox's socket, by its token: on /api a caller like any person, with the few rights api() gives a run; on /agent
-// what only a run has, its series' skills and its runner's logins and machines.
+// what only a run has, its series' skills and its runner's logins and browsers.
 type Caller = Me & { run?: Active };
 async function agent(req: IncomingMessage, res: ServerResponse, url: URL) {
   const a = byToken.get(req.headers.authorization?.replace('Bearer ', '') ?? '');
   if (!a) throw new HttpError(401, 'no run for this token');
   if (url.pathname.startsWith('/api/')) return api({ email: 'agent', name: 'Agent', role: 'user', groups: [], run: a }, req, res, url);
-  // Logins and machines: rf files, rf mail, rf browser, rf windows (see agent-api.ts).
+  // Logins and browsers: rf files, rf mail, rf browser (see agent-api.ts).
   // A login the run's runner must sign in to again is logged, so the instance carries on once they do.
   const r = await agentCall(a, url.pathname, req.method ?? 'GET', () => body(req)).catch((e: HttpError & { login?: string }) => {
     if (e.login) a.inst.append('server', 'expired', { login: e.login, runner: runnerOf(a.inst).by });
@@ -459,7 +459,7 @@ serveSandboxes(join(socketDir, 'rf.sock'), {
         a.hosts.add(host);
         a.inst.append('server', 'egress', { run: a.n, host, allowed });
       },
-      owns: id => !!a.machines?.owns(id),
+      owns: id => !!a.browsers?.owns(id),
     };
   },
 });
@@ -474,7 +474,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     if (url.pathname === '/') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(readFileSync(page));
-    } else if (url.pathname === '/me') send(res, 200, { ...me, sign_in: mode, m365: m365Ready(), machines: !!process.env.RF_MACHINES_URL });
+    } else if (url.pathname === '/me') send(res, 200, { ...me, sign_in: mode, m365: m365Ready(), browsers: !!process.env.RF_BROWSER_URL });
     else if (url.pathname === '/api/events') events(me, req, res);
     else if (url.pathname === '/api') send(res, 200, listing(me));
     else if (url.pathname.startsWith('/files/')) await file(me, res, url, false);
@@ -520,7 +520,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     else send(res, err instanceof HttpError ? err.status : 500, (err as Error).message);
   }
 });
-// A sign-in's live view, the person's own: its websockets pass through to the machines service.
+// A sign-in's live view, the person's own: its websockets pass through to the browser service.
 server.on('upgrade', (req, socket, head) => {
   socket.on('error', () => socket.destroy());
   const me = session(req), m = /^\/signins\/(\w+)\/(view\/(?:watch|drive))$/.exec(URL.parse(req.url!, 'http://x')?.pathname ?? '');

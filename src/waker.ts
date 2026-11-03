@@ -5,7 +5,7 @@ import { createInstance, guidanceFile, HttpError, instance, instanceDir, instanc
 import { startRun, type Run, type View } from './runner.ts';
 import { canSee, changes, everyone, readJson, tree, type Tree, writeJson } from './system.ts';
 import { users } from './auth.ts';
-import type { Machines } from './machines.ts';
+import type { Browsers } from './browsers.ts';
 import { seriesSettings } from './series.ts';
 import { pushed, skill } from './skills.ts';
 
@@ -20,7 +20,7 @@ const full = () => active.size >= MAX_RUNS || freemem() < MIN_FREE + started.fil
 export const MAX_OPEN = 3;
 const SPACING_MS = 15 * 60_000;
 
-export type Active = { inst: Instance; n: number; token: string; view: View; run?: Run; sent: number; seen: number; texts: Map<string, number>; interrupted: boolean; done: boolean; cost: number; said: string; failed?: string; hosts: Set<string>; machines?: Machines; timer?: NodeJS.Timeout };
+export type Active = { inst: Instance; n: number; token: string; view: View; run?: Run; sent: number; seen: number; texts: Map<string, number>; interrupted: boolean; done: boolean; cost: number; said: string; failed?: string; hosts: Set<string>; browsers?: Browsers; timer?: NodeJS.Timeout };
 export const active = new Map<string, Active>();
 export const byToken = new Map<string, Active>();
 const debounce = new Map<string, NodeJS.Timeout>();
@@ -156,7 +156,7 @@ function finish(a: Active, aborted: boolean, error?: string) {
   const series = a.inst.seriesId;
   active.delete(series);
   a.run?.stop().catch(e => console.error(`run ${a.n} of ${a.inst.id} left its scratch folder`, e));
-  a.machines?.close().catch(e => a.inst.append('server', 'machines', { run: a.n, error: e.message }));
+  a.browsers?.close().catch(e => a.inst.append('server', 'browsers', { run: a.n, error: e.message }));
   // The agent's last words in a run are its report to the instance's people; its first line is the run's summary.
   if (a.said && !aborted) a.inst.append('agent', 'report', { run: a.n, text: a.said });
   a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(4), summary: a.said && !aborted ? summaryOf(a.said) : null, ...(error && { error }) });

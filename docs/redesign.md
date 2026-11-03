@@ -49,7 +49,7 @@ Built: logins sealed per person, ticks at every start, copy and takeover, runner
 - **Storage:**
   - Each login is one sealed record under `.rf/people/<id>/`: AES-256-GCM, with the owner and the login's id as authenticated data, so a record copied to another person's file won't open.
   - The key is a systemd credential (`LoadCredentialEncrypted=`), sealed to the VM's TPM, outside the data folder. A copy of the data holds only ciphertext. The cookie-signing key moves the same way.
-  - Sandboxes never see `.rf/`. Microsoft tokens never leave the server: the agent reaches mail and files through `rf mail` and `rf files`. A website login goes to the machines service for one session and comes back refreshed, to be sealed again; during the session, the agent's code can read its cookies.
+  - Sandboxes never see `.rf/`. Microsoft tokens never leave the server: the agent reaches mail and files through `rf mail` and `rf files`. A website login goes to the browser service for one session and comes back refreshed, to be sealed again; during the session, the agent's code can read its cookies.
   - Signing out deletes the record; removing a person deletes all of theirs; every use is logged with its run.
 - **The ERP:** if it has an inquiry-only role, people use it when they sign in to the ERP through rollforward, which makes "no writes" a wall there (see Machines).
 
@@ -100,7 +100,7 @@ Built: guidance, the company's and each workspace's, and the catalogue, both in 
 
 ## Machines: browsers and Windows
 
-A separate service, in its own repo (`machines`), with one client: the rollforward server, holding its key. Two kinds of machine, one API: open, run code, move files, screenshot, request log, close and wipe.
+A separate service, in its own repo, with one client: the rollforward server, holding its key. Two kinds of machine, one API: open, run code, move files, screenshot, request log, close and wipe. Windows was deferred on 3 Nov (PLAN.md, decision 48): its licences are unsolved, and Excel's own recalculation will more likely come from Excel on the web through Graph. The service ships with browsers only, as [spoj/rollforward-browser](https://github.com/spoj/rollforward-browser).
 
 - **A browser** is a throwaway container per session, with Chromium. The agent's code connects with Playwright over CDP, through rollforward's socket, so it has all of Playwright, including requests with the page's cookies. Since CDP is close to code on the browser's host, the container is the wall: an empty home in memory, no view of the host or other sessions, and a network only through the service's proxy.
   - The proxy lets the session reach only its site's hosts; private addresses only where a listed host resolves there.
@@ -173,19 +173,18 @@ Everything we build runs on the development machine; only the real outside syste
 1. The sandbox and the network (built).
 2. Ids, members and owners, and the migration script (built).
 3. Microsoft 365 logins and the ticks (built).
-4. Website logins through the machines service (built); the ERP and the portals move onto them as their skills are rewritten.
+4. Website logins through the browser service (built); the ERP and the portals move onto them as their skills are rewritten.
 5. Waking, several open instances, Ad hoc (built).
 6. Talking, Process and the review sheet (built).
 7. Power users, `rf skill push`, guidance and the catalogue (built).
 
-The machines service is built alongside, in its own repo: browsers (built, used by website logins), then Windows (built, with `rf windows`; licences still to come).
+The browser service is built alongside, in its own repo (spoj/rollforward-browser), and used by website logins. Windows was built too, with `rf windows`, then deferred until licences, and taken out.
 
 ## Facts still to get
 
 - Whether the ERP has an inquiry-only role.
 - Whether the company sends web traffic through a proxy.
 - Who in IT approves the Microsoft 365 permissions.
-- Windows and Office licences for virtual machines.
 
 ## What this reverses in PLAN.md
 

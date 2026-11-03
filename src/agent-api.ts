@@ -1,22 +1,20 @@
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
-import { basename } from 'node:path';
 import { HttpError, type Instance } from './store.ts';
-import { Machines, passUpgrade } from './machines.ts';
+import { Browsers, passUpgrade } from './browsers.ts';
 import { filesGet, filesList, mailFind, mailSave, type Args } from './m365.ts';
 
-// What only a run has, behind `rf`: its runner's logins and machines. (For its own instance, its screen,
+// What only a run has, behind `rf`: its runner's logins and browsers. (For its own instance, its screen,
 // threads and wakes, `rf` calls the people's API; see server.ts.) Shared by the server, for runs, and by `cli.ts try`, which lets
 // an admin run a skill's steps without the model.
 //   POST /agent/files {args}       rf files list|get …, through the runner's Microsoft 365 login, as far as the instance's ticks offer
 //   POST /agent/mail {args}        rf mail find|save …, likewise
 //   POST /agent/browser {args}     rf browser open SITE | get SITE PATH FILE: a browser on a website, in the runner's login
-//   POST /agent/windows {args, data?} rf windows open | run | put | get | screenshot | close: the run's Windows machine
-// The server never reads or writes the run's files: rf does, in the sandbox. A file going out travels as `data`, base64, and one
-// coming back as `data` in the answer, with `saved`, the FILE rf saves it as.
+// The server never reads or writes the run's files: rf does, in the sandbox. A file coming back travels as `data`, base64, in the
+// answer, with `saved`, the FILE rf saves it as.
 
-// A run as the agent API sees it: its instance, its number and token, and its machines.
-export type AgentRun = { inst: Instance; n: number; token: string; machines?: Machines };
+// A run as the agent API sees it: its instance, its number and token, and its browsers.
+export type AgentRun = { inst: Instance; n: number; token: string; browsers?: Browsers };
 
 // A file's name under working/, as the screen names it.
 const rel = (file: string) => `working/${file.replace(/^working\//, '')}`;
@@ -52,7 +50,7 @@ export async function serveAgent(inst: Instance): Promise<{ url: string; token: 
     socket.on('error', () => socket.destroy());
     const [, root, t, id] = URL.parse(req.url!, 'http://x')?.pathname.split('/') ?? [];
     try {
-      if (root !== 'browser' || t !== token || !a.machines?.owns(id)) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
+      if (root !== 'browser' || t !== token || !a.browsers?.owns(id)) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
     } catch (e) {
       return socket.end(`HTTP/1.1 403 Forbidden\r\ncontent-type: text/plain\r\n\r\n${(e as Error).message}\n`);
     }
@@ -61,7 +59,7 @@ export async function serveAgent(inst: Instance): Promise<{ url: string; token: 
   await new Promise<void>(ok => server.listen(0, '127.0.0.1', ok));
   return {
     url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, token,
-    async close() { await a.machines?.close(); server.close(); server.closeAllConnections(); },
+    async close() { await a.browsers?.close(); server.close(); server.closeAllConnections(); },
   };
 }
 
@@ -103,52 +101,14 @@ export async function agentCall(a: AgentRun, path: string, method: string, body:
   // `open` answers the CDP address's path; rf makes it an address the sandbox reaches (see sandbox.ts).
   if (path === '/agent/browser' && method === 'POST') {
     const [cmd, site, from, to] = await words();
-    a.machines ??= new Machines(a.inst, a.n);
-    if (cmd === 'open' && site) return { status: 200, data: `/browser/${a.token}/${await a.machines.browser(site)}` };
+    a.browsers ??= new Browsers(a.inst, a.n);
+    if (cmd === 'open' && site) return { status: 200, data: `/browser/${a.token}/${await a.browsers.browser(site)}` };
     if (cmd === 'get' && site && from && to) {
-      const bytes = await a.machines.browserFile(site, from);
+      const bytes = await a.browsers.browserFile(site, from);
       a.inst.append('agent', 'browser', { action: 'get', site, from, file: rel(to) });
       return { status: 200, data: { saved: rel(to), data: data(bytes) } };
     }
     throw new HttpError(400, 'rf browser open SITE | rf browser get SITE PATH FILE');
-  }
-  // Each call waits until it's done; files come from and go to working/, scripts too.
-  if (path === '/agent/windows' && method === 'POST') {
-    const body = await json(), { args, rest: [cmd, x, y] } = parseArgs((body.args ?? []).map(String)), m = a.machines ??= new Machines(a.inst, a.n);
-    const log = (data: object) => a.inst.append('agent', 'windows', data);
-    const sent = () => Buffer.from(String(body.data ?? ''), 'base64');
-    if (cmd === 'open') {
-      await m.windowsId();
-      log({ action: 'open' });
-      return { status: 200, data: 'A Windows machine is open for this run: no network, scripts run in C:\\work, and it goes back to a clean state when closed or when the run ends.' };
-    }
-    if (cmd === 'run' && (x === 'python' || x === 'powershell') && y) {
-      const out = await m.windowsRun(x, sent().toString(), Number(args.timeout?.[0] ?? 600));
-      log({ action: 'run', lang: x, script: rel(y), exit: out.exit, ...(out.timed_out && { timed_out: true }) });
-      return { status: 200, data: out };
-    }
-    if (cmd === 'put' && x) {
-      const to = y ?? `C:/work/${basename(x)}`;
-      await m.windowsPut(to, sent());
-      log({ action: 'put', file: rel(x), to });
-      return { status: 200, data: `put ${to}` };
-    }
-    if (cmd === 'get' && x && y) {
-      const bytes = await m.windowsGet(x);
-      log({ action: 'get', from: x, file: rel(y) });
-      return { status: 200, data: { saved: rel(y), data: data(bytes) } };
-    }
-    if (cmd === 'screenshot' && x) {
-      const bytes = await m.windowsScreenshot();
-      log({ action: 'screenshot', file: rel(x) });
-      return { status: 200, data: { saved: rel(x), data: data(bytes) } };
-    }
-    if (cmd === 'close') {
-      await m.closeWindows();
-      log({ action: 'close' });
-      return { status: 200, data: 'closed: a later rf windows opens a clean machine' };
-    }
-    throw new HttpError(400, 'rf windows open | run python|powershell FILE [--timeout SECONDS] | put FILE [PATH] | get PATH FILE | screenshot FILE | close');
   }
   return null;
 }

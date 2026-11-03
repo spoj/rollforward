@@ -4,13 +4,13 @@ import { BlockList, connect } from 'node:net';
 import { lookup } from 'node:dns/promises';
 import { existsSync, rmSync } from 'node:fs';
 import { readJson } from './system.ts';
-import { passUpgrade } from './machines.ts';
+import { passUpgrade } from './browsers.ts';
 
 // Each run is a bubblewrap sandbox with no network of its own (bin/sandbox/node starts Pi in it, with sandboxArgs). Its one way
 // out is the socket served here, which socat inside offers at 127.0.0.1:PORT:
 // - /agent/…: the agent API, as the run (rf);
 // - /model/<token>/…: the model, with the key added here, so no key is ever inside;
-// - /browser/<token>/<id>: the CDP websocket of a browser the run opened (rf browser open), passed to the machines service;
+// - /browser/<token>/<id>: the CDP websocket of a browser the run opened (rf browser open), passed to the browser service;
 // - CONNECT: an HTTPS proxy that lets through only the hosts allowed below or in .rf/egress.json, never to a private address,
 //   and logs each host a run asks for.
 

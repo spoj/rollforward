@@ -20,13 +20,13 @@ demo port="8780":
     [ -d /tmp/rf-demo ] || cp -r demo/snapshot /tmp/rf-demo
     node src/server.ts /tmp/rf-demo {{port}}
 
-# Run the tests; those of websites and Windows too when .env sets RF_MACHINES_URL and RF_MACHINES_KEY
+# Run the tests; those of websites too when .env sets RF_BROWSER_URL and RF_BROWSER_KEY
 test:
     node --test test/
 
-# Check that the server reaches the machines service with .env's RF_MACHINES_URL and RF_MACHINES_KEY: prints its open sessions
-machines-check:
-    curl -fsS -H "authorization: Bearer $RF_MACHINES_KEY" "${RF_MACHINES_URL:-http://127.0.0.1:8797}/sessions" && echo
+# Check that the server reaches the browser service with .env's RF_BROWSER_URL and RF_BROWSER_KEY: prints its open sessions
+browser-check:
+    curl -fsS -H "authorization: Bearer $RF_BROWSER_KEY" "${RF_BROWSER_URL:-http://127.0.0.1:8797}/sessions" && echo
 
 live := "rf-tailnet"
 cache := home_directory() / ".cache" / live

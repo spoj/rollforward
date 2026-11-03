@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 
 const [cmd, ...args] = process.argv.slice(2);
 const arg = args.join(' ');
-// node:http, not fetch, which gives up on an answer after 5 minutes: rf windows run waits as long as its script runs.
+// node:http, not fetch, which gives up on an answer after 5 minutes.
 // The run calls the people's API for its own instance (/api), and /agent for what only a run has.
 const send = (method: string, path: string, body?: string | Buffer) => new Promise<{ ok: boolean; text: string }>((ok, fail) => {
   const req = request(`${process.env.RF_URL}/${path}`, { method, headers: { authorization: `Bearer ${process.env.RF_TOKEN}` } }, res => {
@@ -29,13 +29,6 @@ function free(name: string): string {
   for (let k = 2; existsSync(local(f)); k++) f = dot > 0 ? `${clean.slice(0, dot)} (${k})${clean.slice(dot)}` : `${clean} (${k})`;
   return f;
 }
-// The words that are neither --flags nor their values, as the server parses them.
-const words = args.filter((w, i) => !w.startsWith('--') && !/^--[\w-]+$/.test(args[i - 1] ?? ''));
-const upload = cmd === 'windows' ? ({ put: words[1], run: words[2] } as Record<string, string | undefined>)[words[0]] : undefined;
-if (upload !== undefined && !existsSync(local(upload))) {
-  console.log(`no ${shown(upload)}`);
-  process.exit(1);
-}
 
 const own = `api/instances/${process.env.RF_INSTANCE}`;
 // rf wake TARGET AT REASON [--label LABEL]: the folder becomes an id, then the wake is set as a person sets one.
@@ -53,12 +46,11 @@ if (cmd === 'show') res = await send('GET', `${own}/screen`);
 else if (cmd === 'put' && arg) res = await send('PUT', `${own}/screen`, readFileSync(arg === '-' ? 0 : arg));
 else if (cmd === 'say' && args.length >= 2) res = await send('POST', `${own}/comment`, JSON.stringify({ thread: args[0], text: args[1] === '-' ? readFileSync(0, 'utf8') : args.slice(1).join(' ') }));
 else if (cmd === 'wake') res = await wake();
-else if (['files', 'mail', 'browser', 'windows'].includes(cmd) && args.length >= 1) res = await send('POST', `agent/${cmd}`, JSON.stringify({ args, ...(upload && { data: readFileSync(local(upload)).toString('base64') }) }));
+else if (['files', 'mail', 'browser'].includes(cmd) && args.length >= 1) res = await send('POST', `agent/${cmd}`, JSON.stringify({ args }));
 else {
   console.error('usage: rf show | rf put FILE | rf say THREAD TEXT|- | rf files list LINK|REF | rf files get LINK|REF FILE'
     + ' | rf mail find [--mailbox ADDRESS] [--date YYYY-MM-DD] [--subject TEXT] [--from TEXT] [--attachments] | rf mail save ID [--mailbox ADDRESS] [--name REGEX] [--prefix TEXT]'
     + ' | rf browser open SITE | rf browser get SITE PATH FILE'
-    + ' | rf windows open | rf windows run python|powershell FILE [--timeout SECONDS] | rf windows put FILE [PATH] | rf windows get PATH FILE | rf windows screenshot FILE | rf windows close'
     + ' | rf wake TARGET AT REASON [--label LABEL]');
   process.exit(2);
 }

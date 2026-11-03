@@ -9,16 +9,14 @@ import { HttpError, replaceReadOnly, type Instance } from './store.ts';
 import { logins, saveLogin, secret, use } from './logins.ts';
 import { readJson, writeJson } from './system.ts';
 
-// Machines from the machines service (a repo of its own), whose one client is this server, with its key:
-// - browsers: a throwaway container per session, driven over CDP, whose proxy keeps to a website's hosts and logs every request.
-//   A website login is the browser state a session hands back when it closes: people sign in themselves, in the live view shown on
-//   the Logins page, and a run's browser starts from its runner's login and hands it back refreshed;
-// - Windows: a virtual machine with no network, cloned from a clean, signed-in state, that runs scripts and takes files.
-// Calls use node:http(s), as fetch gives up on an answer after 5 minutes and a Windows script may run longer. The service may be on
-// a host of its own, at an https address (or over a private link): runs and people reach it only through this server.
+// Browsers from the browser service (spoj/rollforward-browser, a repo of its own), whose one client is this server, with its key: a
+// throwaway container per session, driven over CDP, whose proxy keeps to a website's hosts and logs every request. A website login is
+// the browser state a session hands back when it closes: people sign in themselves, in the live view shown on the Logins page, and a
+// run's browser starts from its runner's login and hands it back refreshed. The service may be on a host of its own, at an https
+// address (or over a private link): runs and people reach it only through this server.
 
-const base = process.env.RF_MACHINES_URL ?? 'http://127.0.0.1:8797', u = new URL(base), tls = u.protocol === 'https:';
-const key = () => ({ authorization: `Bearer ${process.env.RF_MACHINES_KEY}` });
+const base = process.env.RF_BROWSER_URL ?? 'http://127.0.0.1:8797', u = new URL(base), tls = u.protocol === 'https:';
+const key = () => ({ authorization: `Bearer ${process.env.RF_BROWSER_KEY}` });
 
 function call(method: string, path: string, body?: unknown): Promise<Buffer> {
   return new Promise((ok, fail) => {
@@ -27,23 +25,23 @@ function call(method: string, path: string, body?: unknown): Promise<Buffer> {
       res.on('data', c => chunks.push(c)).on('end', () => {
         const data = Buffer.concat(chunks);
         if (res.statusCode! < 300) ok(data);
-        else fail(new HttpError(502, `machines: ${JSON.parse(data.toString()).error}`));
+        else fail(new HttpError(502, `browser service: ${JSON.parse(data.toString()).error}`));
       });
     });
-    req.on('error', e => fail(new HttpError(502, `the machines service at ${base} does not answer: ${e.message}`)));
+    req.on('error', e => fail(new HttpError(502, `the browser service at ${base} does not answer: ${e.message}`)));
     req.end(body === undefined || Buffer.isBuffer(body) ? body : JSON.stringify(body));
   });
 }
 const json = async (method: string, path: string, body?: unknown) => JSON.parse((await call(method, path, body)).toString());
-// A file on a session's machine, its parts encoded and none . or .., which would lead out of the session to the service's other calls.
-function files(id: string, path: string) {
+// A file in a session's browser, its parts encoded and none . or .., which would lead out of the session to the service's other calls.
+export function files(id: string, path: string) {
   const parts = path.replace(/\\/g, '/').replace(/^\//, '').split('/');
   if (parts.some(p => p === '.' || p === '..')) throw new HttpError(400, `${path}: a path without . or .. in it`);
   return `/sessions/${id}/files/${parts.map(encodeURIComponent).join('/')}`;
 }
 
 const open = async (w: Website, ttl_s: number, state?: unknown): Promise<string> =>
-  (await json('POST', '/sessions', { kind: 'browser', site: { hosts: [new URL(w.url).hostname, ...w.hosts], start_url: w.url }, state, ttl_s })).id;
+  (await json('POST', '/sessions', { site: { hosts: [new URL(w.url).hostname, ...w.hosts], start_url: w.url }, state, ttl_s })).id;
 const close = (id: string): Promise<{ state: unknown; log: { method: string; blocked?: string }[] }> => json('DELETE', `/sessions/${id}`);
 
 // A websocket passed through to the service's `path`, with the key added.
@@ -118,15 +116,13 @@ export async function endSignIn(email: string, id: string, save: boolean) {
   if (save) saveLogin(email, { id: `web:${site}`, kind: 'website', name, since: new Date().toISOString(), offers: [{ id: `web:${site}`, name }] }, JSON.stringify(state));
 }
 
-// ---- A run's machines, which close when it ends.
-// Browsers: one per website, from its runner's login if ticked for the instance. Closing one seals its login again, refreshed, unless
-// its person signed out meanwhile, and keeps its request log in the instance's browser/, which the agent can read but not change.
-// Windows: one machine, opened by the run's first rf windows; closing it puts it back to its clean state.
-export class Machines {
+// ---- A run's browsers, which close when it ends: one per website, from its runner's login if ticked for the instance. Closing one
+// seals its login again, refreshed, unless its person signed out meanwhile, and keeps its request log in the instance's browser/,
+// which the agent can read but not change.
+export class Browsers {
   inst: Instance;
   run: number;
-  browsers = new Map<string, { id: string; email: string }>();
-  windows?: string;
+  bySite = new Map<string, { id: string; email: string }>();
   constructor(inst: Instance, run: number) {
     this.inst = inst;
     this.run = run;
@@ -135,7 +131,7 @@ export class Machines {
   // The login a browser on a website may use now, and the run's browser there if open: checked at every call and every new
   // connection, so a login its runner can no longer lend stops at the next one; a connection already open lasts until the run ends.
   private lent(site: string) {
-    const { email, login } = use(this.inst, `web:${site}`), had = this.browsers.get(site);
+    const { email, login } = use(this.inst, `web:${site}`), had = this.bySite.get(site);
     if (had && had.email !== email) throw new HttpError(409, `this run's browser on ${site} is in ${had.email}'s login, and ${email} has taken the instance over: the next run opens one in theirs`);
     return { email, login, had };
   }
@@ -144,50 +140,31 @@ export class Machines {
     const { email, login, had } = this.lent(site);
     if (had) return had.id;
     const id = await open(website(site), 7200, JSON.parse(secret(email, login.id)));
-    this.browsers.set(site, { id, email });
+    this.bySite.set(site, { id, email });
     return id;
   }
 
   // Whether `id` is one of this run's browsers; a 403 or 409 if its login may no longer be used.
   owns(id: string): boolean {
-    const site = [...this.browsers].find(([, b]) => b.id === id)?.[0];
+    const site = [...this.bySite].find(([, b]) => b.id === id)?.[0];
     if (site) this.lent(site);
     return !!site;
   }
 
   async browserFile(site: string, path: string): Promise<Buffer> {
-    if (!this.browsers.has(site)) throw new HttpError(409, `no browser on ${site} in this run: rf browser open ${site} first`);
+    if (!this.bySite.has(site)) throw new HttpError(409, `no browser on ${site} in this run: rf browser open ${site} first`);
     return call('GET', files(await this.browser(site), path));
   }
 
-  async windowsId(): Promise<string> {
-    this.windows ??= (await json('POST', '/sessions', { kind: 'windows', ttl_s: 7200 })).id;
-    return this.windows!;
-  }
-
-  async windowsRun(lang: string, script: string, timeout_s: number): Promise<{ exit: number | null; stdout: string; stderr: string; timed_out?: true }> {
-    return json('POST', `/sessions/${await this.windowsId()}/run`, { lang, script, timeout_s });
-  }
-
-  windowsPut = async (path: string, data: Buffer) => void await call('PUT', files(await this.windowsId(), path), data);
-  windowsGet = async (path: string) => call('GET', files(await this.windowsId(), path));
-  windowsScreenshot = async () => call('GET', `/sessions/${await this.windowsId()}/screenshot`);
-
-  async closeWindows() {
-    if (this.windows) await call('DELETE', `/sessions/${this.windows}`);
-    this.windows = undefined;
-  }
-
   async close() {
-    const windows = this.windows && this.closeWindows().then(() => void this.inst.append('server', 'windows', { run: this.run, action: 'close' }));
-    await Promise.all([windows, ...[...this.browsers].map(async ([site, { id, email }]) => {
+    await Promise.all([...this.bySite].map(async ([site, { id, email }]) => {
       const { state, log } = await close(id), login = logins(email).find(l => l.id === `web:${site}`), file = `browser/run ${this.run} ${site}.jsonl`;
       if (state && login) saveLogin(email, login, JSON.stringify(state));
       mkdirSync(join(this.inst.dir, 'browser'), { recursive: true });
       replaceReadOnly(join(this.inst.dir, file), log.map(e => JSON.stringify(e) + '\n').join(''));
       const writes = log.filter(e => !e.blocked && !['GET', 'HEAD', 'OPTIONS'].includes(e.method)).length;
       this.inst.append('server', 'browser', { run: this.run, site, login: email, requests: log.length, writes, blocked: log.filter(e => e.blocked).length, file });
-    })]);
-    this.browsers.clear();
+    }));
+    this.bySite.clear();
   }
 }

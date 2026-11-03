@@ -11,7 +11,7 @@ import { chromium } from 'playwright';
 import type { Instance } from '../src/store.ts';
 import { filesOf, standIns } from './push.ts';
 
-// Website logins and a run's browser, through the machines service (RF_MACHINES_URL and RF_MACHINES_KEY, else skipped), on a
+// Website logins and a run's browser, through the browser service (RF_BROWSER_URL and RF_BROWSER_KEY, else skipped), on a
 // stand-in portal behind a sign-in: a person signs in in the live view the server passes through, and a run's browser starts from
 // that login, counts its writes, and hands it back refreshed.
 const app = join(import.meta.dirname, '..'), ADMIN = 'admin@demo.test';
@@ -43,7 +43,13 @@ function standIn(): Server {
   });
 }
 
-describe('website logins', { skip: !process.env.RF_MACHINES_URL && 'needs the machines service: RF_MACHINES_URL and RF_MACHINES_KEY' }, () => {
+test("a path in a session's browser stays inside that session, never reaching the service's other calls", async () => {
+  const { files } = await import('../src/browsers.ts');
+  for (const path of ['../../../sessions', 'downloads\\..\\..\\s2\\files\\pay.csv', './x']) assert.throws(() => files('s1', path), /a path without \. or \.\. in it/);
+  assert.equal(files('s1', 'downloads/%2e%2e/out.txt'), '/sessions/s1/files/downloads/%252e%252e/out.txt');
+});
+
+describe('website logins', { skip: !process.env.RF_BROWSER_URL && 'needs the browser service: RF_BROWSER_URL and RF_BROWSER_KEY' }, () => {
   before(async () => {
     portal = standIn();
     await new Promise<void>(ok => portal.listen(0, '127.0.0.1', ok));
