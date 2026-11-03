@@ -11,7 +11,7 @@ Recurring tasks, files in and files out. People drop this period's input files i
 - **People sign in with Microsoft,** with one button, and **logins are each person's own:** a run reaches Microsoft 365 and websites only through its runner's logins, and only those ticked for its instance.
 - **Wakes:** an agent sets when its instance, or its series' next period, runs again; nothing is scheduled.
 - **AGENTS.md:** every run loads the company's and its workspace's. It finds the series it can read as folders under `/work`: its own workspace's, and those of any workspace that has everyone its own has, so nothing it reads reaches someone who couldn't see it already.
-- **rf** is people's command line, with a personal token: what the page does, plus `rf pull`, which copies what you can see as rsync does, for your own desktop agent, and `rf help`, its guide. For watching over runs, `rf status` shows what goes on and what's stuck, `rf runs` the history of runs and `rf costs` their totals. Admin is rf, not the page: `rf people` prints everyone, or a workspace's people, as lines to edit and set back with `--set`, which refuses a change that would hide an open instance from the person who runs it, unless `--force`, and `rf brand` gives the deployment its logo and text. Install it with `npm i -g @rfany/rf` ([cli/](cli/)).
+- **rf** is people's command line, with a personal token: what the page does, plus `rf pull`, which copies what you can see as rsync does, for your own desktop agent, and `rf help`, its guide. For watching over runs, `rf status` shows what goes on and what's stuck, `rf indexes` how indexing goes, `rf runs` the history of runs and `rf costs` their totals. Admin is rf, not the page: `rf people` prints everyone, or a workspace's people, as lines to edit and set back with `--set`, which refuses a change that would hide an open instance from the person who runs it, unless `--force`, and `rf brand` gives the deployment its logo and text. Install it with `npm i -g @rfany/rf` ([cli/](cli/)).
 - **Everything is files on disk,** with no database.
 
 | A tile's card and its threads | Preview, compared with the file it replaced |
@@ -112,12 +112,12 @@ Talk is threads only, as `comment` entries in the instance's `log.jsonl`: `{thre
 
 ## Storage
 
-Everything is files on the host's disk, in folders named by random ids, with no database. Names live in two small files, so a rename or a move edits one of them, at any time, even mid-run.
+Everything is files on the host's disk, in folders named by random ids, with no database but the indexes of outside sources, which are caches (see Indexes). Names live in two small files, so a rename or a move edits one of them, at any time, even mid-run.
 
     .rf/                      the server's own: users.json, tree.json, people/<sha256(email)[:16]>/ (each person's logins),
                               connections.json, ca/ (the runs' certificate authority), wakes.json (pending wakes and requests), egress.json (hosts runs may reach),
-                              tokens.json and token-uses.jsonl, brand.json (the deployment's logo and text), and the keys
-                              session.key and seal.key
+                              tokens.json and token-uses.jsonl, brand.json (the deployment's logo and text), index/ (see Indexes),
+                              and the keys session.key and seal.key
       tree.json               {"workspaces": {id: {name, owners, members, archived?}}, "series": {id: {name, workspace, archived?, single?}},
                               "groups": {Entra group id: label}}
     agents/                   company.md, the company's AGENTS.md, and <workspace id>.md, each workspace's
@@ -237,6 +237,16 @@ Two connections are the server's own, which admins don't keep and no one lends: 
 
 Runs reach them as they reach Graph, with stand-in keys, `OPENROUTER_API_KEY` and `EXA_API_KEY`, for the image's `openai` and `exa-py` or anything else, and the proxy puts the server's key in, as both Authorization and x-api-key. What each answer cost, its `usage.cost` or `costDollars.total`, whole or in the last event of its stream that has one, adds to the run's cost as it comes, and its `call` entry has it, with the `model` asked for.
 
+## Indexes
+
+Graph takes 30 minutes to 2 hours to list a big library or mailbox, but seconds to say what changed since, so the server keeps an index of each source a Microsoft 365 login offers: a folder with all under it, which may be a whole library or OneDrive, a site's libraries, or a mailbox, but not a file. Its SQLite file, `.rf/index/<sha256(offer)[:16]>.sqlite`, holds the latest JSON of each item exactly as Graph's delta gave it, keyed by its id: the union of what each person's own token returned. The server calls Graph itself, as each person, never through a run's proxy.
+
+- **Permission roots** are its only reading of an item: an item is its own root if it's the ticked folder or a library's root, or has a `shared` facet, which delta shows with `Prefer: hierarchicalsharing`; else its parent's. A mailbox is one root. A folder's subtree goes with it when it moves or its sharing changes, as delta sends only the folder, and an item that was a root stays one, which only narrows who sees what's under it. Each person's access to each root is asked with their own token, in `$batch`es of 20, and kept a day; a person sees only items under roots they open.
+- **Cursors:** each person has their own per part of a source: a folder's or library's delta, or a mailbox's folder list and each folder's messages. They crawl with nextLinks, then follow deltaLinks. A person's first use starts where Graph is now, at `token=latest`, if the roots they open are those of someone who finished a crawl and still indexes the source, as the rows already hold what they may see; otherwise they crawl. Messages have no `token=latest`, so a mailbox's second member crawls it too. Deletions come only from a `deleted` facet or an `@removed`, so one person losing access deletes nothing.
+- **Resumable:** a page is the unit. One transaction writes its items and moves its cursor, and writes are idempotent, so a page replayed after a crash changes nothing. Nothing is kept in memory: a worker gives the most overdue person's cursors in a source, 20 to a `$batch`, a slice of 5 s, again and again, so crawls interleave with refreshes, a restart goes on from the cursors and a drain waits for at most one slice. Each file has one writer. A failure keeps the page: 429 and 503 wait as Retry-After says, an expired login waits for its person to sign in again, a 410 crawls again with the rows kept, a ticked folder whose delta Graph refuses follows its drive's from the root instead, and anything else backs off 1, 2, 4 and 8 minutes, then stops until the person's next run or sign-in, shown by `rf status` and `rf indexes`. A file that fails its integrity check, or has another schema, moves aside for a fresh one.
+- **When:** a person's source starts indexing when they add it, or at the server's start if it hasn't; it catches up hourly while their login is live and offers it; and before a run, its runner's cursors catch up for up to about 15 s, as the latest items matter most.
+- **A run's copy,** for each source its runner ticked, read-only at `$RF_INDEX`: `<name>.ndjson.zst`, the items under roots they open, as Graph gave them, one per line, zstd-compressed, and `<name>.json`, `{source, as_of, deltaLinks}`: the runner's own deltaLinks, to follow through the proxy for what changed since `as_of`, when the oldest of them was reached, or null while their crawl goes on. On any failure the run still gets the best copy there is. Delta's items have no paths: an agent rebuilds them from parent ids. duckdb, zstdcat with jq, and Python read it.
+
 ## Skills
 
 Every run loads every live **skill**: a website's skill, with its guardrails, is there wherever a runner's login to that website is ticked, so the company's skills are few and chosen with care. A skill is what to fetch or do, and how, whole in a folder that a publisher pushes with `rf skill push DIR`, live at once; each push is a version, and `rf skill rollback ID N` brings an earlier one back. It is a Pi skill: a `SKILL.md` for the agent, with the links and website it uses written in it, and the scripts it runs. A run loads them from `/skills/live/<id>`, and its scripts reach them through `RF_SKILLS`; each run's `run` entry names the versions it loaded.
@@ -295,6 +305,7 @@ TypeScript on Node, with `node:http` and no framework or build step; the agent's
 - [src/waker.ts](src/waker.ts): what runs when, wakes, and each run's view; [src/runner.ts](src/runner.ts) and [src/sandbox.ts](src/sandbox.ts): Pi in its sandbox; [agent/](agent), [src/agent.ts](src/agent.ts) and [scripts/agent.ts](scripts/agent.ts): the agent image.
 - [src/rf.ts](src/rf.ts): the agent's rf, and [src/agent-api.ts](src/agent-api.ts), what only a run has; [src/rf-people.ts](src/rf-people.ts): people's rf.
 - [src/auth.ts](src/auth.ts), [src/logins.ts](src/logins.ts), [src/entra.ts](src/entra.ts), [src/browsers.ts](src/browsers.ts), [src/skills.ts](src/skills.ts): sign-in, logins, Entra logins' tokens, websites and skills.
+- [src/indexes.ts](src/indexes.ts): the indexes of outside sources.
 - [src/connections.ts](src/connections.ts): connections and the calls runs make to them, a module each type, and each of the server's own, under [src/connections/](src/connections), and [src/ca.ts](src/ca.ts), the runs' certificate authority.
 - [web/index.html](web/index.html): the page, one file of plain JS.
 - [prompt.md](prompt.md): the agent's instructions.

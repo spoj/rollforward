@@ -18,6 +18,7 @@ import { checkLogins } from './entra.ts';
 import { byLogin, call, connections, convert, intercepts, loginOf, removeConnection, setConnection } from './connections.ts';
 import { Browsers, endSignIn, isSignIn, passUpgrade, startSignIn, viewPage } from './browsers.ts';
 import { offer, unoffer } from './connections/graph.ts';
+import { indexes, startIndexing, stopIndexing, track } from './indexes.ts';
 import { seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
 import { active, byToken, cancelWake, closed, drain, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, resolveFor, setWake, startWaking, startWith, wakes, wider, type Active } from './waker.ts';
@@ -42,12 +43,12 @@ function freeName(t: Tree, ws: string, name: string): string {
   return n;
 }
 
-// An update (scripts/update.ts) drains the server before it moves the checkout: no run starts, and once those going end, or after 30
-// minutes, GET /drained answers 200, for the update to move it and restart the server, which starts what queued meanwhile. Heard
-// from the start, so a drain asked as the server starts waits for it.
+// An update (scripts/update.ts) drains the server before it moves the checkout: no run starts, and once those going end, and the
+// indexing's slice going, or after 30 minutes, GET /drained answers 200, for the update to move it and restart the server, which
+// starts what queued meanwhile. Heard from the start, so a drain asked as the server starts waits for it.
 let drained = false;
 process.on('SIGUSR2', () => {
-  drain(() => { drained = true; });
+  drain(() => stopIndexing().then(() => { drained = true; }));
   setTimeout(() => { drained = true; }, 30 * 60_000);
 });
 
@@ -744,6 +745,8 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     else if (url.pathname === '/api/files') send(res, 200, pullable(me, url.searchParams.get('path') ?? ''));
     else if (url.pathname === '/api/runs') send(res, 200, runs(me, url.searchParams.get('since') ?? ''));
     else if (url.pathname === '/api/status') send(res, 200, status(me));
+    // Each index the person can see, admins all, others those they are indexing.
+    else if (url.pathname === '/api/indexes') send(res, 200, indexes().filter(x => me.role === 'admin' || x.people.some(p => p.who === me.email)));
     else if (url.pathname.startsWith('/files/')) await file(me, res, url, false);
     else if (url.pathname.startsWith('/preview/')) await file(me, res, url, true);
     else if (url.pathname.startsWith('/api/')) await api(me, req, res, url);
@@ -769,7 +772,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       if (!login?.scope) throw new HttpError(404, 'no connection signs in to Microsoft with that login');
       await connect(res, me.email, login);
     }
-    else if (url.pathname === '/logins/m365/offers' && req.method === 'POST') send(res, 200, (await offer(me.email, String((await json(req)).add ?? '')), 'ok'));
+    else if (url.pathname === '/logins/m365/offers' && req.method === 'POST') send(res, 200, (await offer(me.email, String((await json(req)).add ?? '')), track(me.email), 'ok'));
     else if (url.pathname.startsWith('/logins/m365/offers/') && req.method === 'DELETE') send(res, 200, (unoffer(me.email, decodeURIComponent(url.pathname.slice(20))), 'ok'));
     else if (url.pathname.startsWith('/logins/web/') && req.method === 'POST') send(res, 200, { id: await startSignIn(me.email, decodeURIComponent(url.pathname.slice(12))) });
     else if (/^\/signins\/\w+\/view$/.test(url.pathname) && req.method === 'GET') {
@@ -796,6 +799,7 @@ server.on('upgrade', (req, socket, head) => {
 });
 server.listen(port, host, () => {
   startWaking();
+  startIndexing();
   if (m365Ready()) checkLogins(connections().map(loginOf).flatMap(l => l.scope ? [l] : []));
   console.log(`rollforward on http://${host}:${port}, data in ${root}, sign-in ${mode}${process.env.RF_TODAY ? `, skills take today as ${process.env.RF_TODAY} (RF_TODAY)` : ''}`);
 });

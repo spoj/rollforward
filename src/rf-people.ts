@@ -19,6 +19,8 @@ rf skills
 rf connections
 rf status [--long MIN] [--json]   what goes on and what's stuck: runs going, flagged past MIN minutes (30), and queued, with why;
                                   what waits on whom since when; open instances whose last run failed
+rf indexes [--json]               each index of a source you index, all for admins: its kind, items and size, and per person
+                                  its phase, crawl or follow, pages read, when last caught up, and its error and next try
 rf runs [PATH] [--since DATE] [--failed] [--running] [--long MIN] [--json]
                                   a line per run: start, path, run, outcome, time, cost, what started it, summary or error
 rf costs [PATH] [--since DATE] [--by workspace|series|person|day] [--json]   totals, runs and cost per run; person is the runner
@@ -86,7 +88,9 @@ Usual work
 Watching over it, for admins and power users; each sees what the caller sees, and takes --json
 - What's stuck: rf status lists runs going, flagging those past --long MIN (30); queued runs, since when and why: their series is
   running, the RF_MAX_RUNS cap, or memory; what waits on whom since when: asks, notes for runners, expired logins and the instances
-  they hold, and requests to start; and open instances whose last run failed.
+  they hold, and requests to start; open instances whose last run failed; and indexes crawling or failing.
+- Indexes: rf indexes shows each index of a big library or mailbox you index, every one for admins: its items and size, and per
+  person whether it is crawling or following changes, pages read, when last caught up, and an error, if any, with its next try.
 - History: rf runs [PATH] [--since DATE] [--failed] [--running] [--long MIN] prints a line per run: its start, path, run number,
   outcome, time taken, cost, what started it and by whom, and its summary or error. rf costs [PATH] [--since DATE] [--by
   workspace|series|person|day] totals them, by the runner for person.
@@ -288,8 +292,8 @@ else if (cmd === 'comment' && args.length === 2) {
   await api(`/connections/${encodeURIComponent(args[1])}`, { method: 'DELETE' });
   console.log('removed');
 } else if (cmd === 'status' && !args.length) {
-  const s = await get('/api/status'), long = Number(flags.long ?? 30);
-  if (flags.json) console.log(JSON.stringify(s, null, 1));
+  const [s, ix] = await Promise.all([get('/api/status'), get('/api/indexes')]), long = Number(flags.long ?? 30);
+  if (flags.json) console.log(JSON.stringify({ ...s, indexes: ix }, null, 1));
   else {
     const sections = [
       [`Running`, s.running.map(r => `${r.path}  run ${r.run}  for ${took((Date.now() - Date.parse(r.at)) / 1000)}  ${usd(r.cost)}${Date.now() - Date.parse(r.at) > long * 60e3 ? `  LONG, past ${long}m` : ''}`)],
@@ -300,9 +304,16 @@ else if (cmd === 'comment' && args.length === 2) {
         ...s.requests.map(r => `${r.path}  ${r.from} asks to start ${r.label}, since ${when(r.at)}`),
       ]],
       [`Last run failed`, s.failed.map(f => `${f.path}  run ${f.run} at ${when(f.at)}: ${f.error}`)],
+      [`Indexes crawling or failing`, ix.filter(x => x.people.some(p => p.phase === 'crawl' || p.error)).map(x => `${x.name}  ${x.people.filter(p => p.phase === 'crawl' || p.error)
+        .map(p => `${p.who} ${p.error ? `failing${p.retry_at ? `, again ${when(p.retry_at)}` : ''}: ${p.error.split('\n')[0].slice(0, 80)}` : `crawling, ${p.pages} pages`}`).join('; ')}`)],
     ].filter(([, rows]) => rows.length);
     console.log(sections.map(([title, rows]) => `${title} (${rows.length})\n${rows.map(r => `  ${r}`).join('\n')}`).join('\n\n') || 'Nothing is running, queued, waiting or failed.');
   }
+} else if (cmd === 'indexes' && !args.length) {
+  const ix = await get('/api/indexes');
+  if (flags.json) console.log(JSON.stringify(ix, null, 1));
+  else console.log(ix.map(x => [`${x.name}  ${x.kind}  ${x.items} items  ${(x.bytes / 2 ** 20).toFixed(1)} MB`, ...x.people.map(p =>
+    `  ${p.who}  ${p.phase}  ${p.pages} pages  caught up ${p.caught_up ? when(p.caught_up) : 'never'}${p.error ? `  ${p.retry_at ? `again ${when(p.retry_at)}` : 'stopped'}: ${p.error}` : ''}`)].join('\n')).join('\n\n') || 'No indexes.');
 } else if (cmd === 'runs' && args.length <= 1) {
   const rows = (await runsIn(args[0])).filter(r => (!flags.failed || r.outcome === 'failed') && (!flags.running || r.outcome === 'running') && (!flags.long || r.seconds >= Number(flags.long) * 60));
   if (flags.json) console.log(JSON.stringify(rows, null, 1));

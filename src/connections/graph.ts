@@ -13,7 +13,7 @@ import type { Request, Type } from '../connections.ts';
 
 // Tests point this at a stand-in.
 export const endpoints = { graph: 'https://graph.microsoft.com' };
-const scope = () => graphScopes.map(s => `https://graph.microsoft.com/${s}`);
+export const scope = () => graphScopes.map(s => `https://graph.microsoft.com/${s}`);
 
 // A GET's JSON, as a person; an error names what Microsoft said, such as no access to a mailbox.
 export async function graph(email: string, path: string): Promise<any> {

@@ -1,8 +1,10 @@
 import { freemem } from 'node:os';
+import { rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
 import { agentsFile, createInstance, HttpError, instance, instanceDir, instances, isPerson, labels, newId, seriesDir, type Entry, type Instance } from './store.ts';
-import { startRun, type Run, type View } from './runner.ts';
+import { scratch, startRun, type Run, type View } from './runner.ts';
+import { prepare } from './indexes.ts';
 import { canSee, changes, everyone, readJson, tree, type Tree, writeJson } from './system.ts';
 import { users } from './auth.ts';
 import type { Browsers } from './browsers.ts';
@@ -130,6 +132,12 @@ async function start(inst: Instance) {
   const live = skills();
   inst.append('server', 'run', { run: n, upto: a.sent, skills: Object.fromEntries(live.map(s => [s.id, pushed(s).version])) });
   try {
+    // The indexes of what its runner ticked, read-only at $RF_INDEX.
+    const index = join(scratch, 'runs', a.token, 'index');
+    if (await prepare(inst, index)) {
+      a.view.ro.push([index, '/index']);
+      a.view.env.RF_INDEX = '/index';
+    }
     a.run = await startRun({
       token: a.token, id: inst.id, view: a.view,
       message: text, skills: live.map(s => s.id),
@@ -167,7 +175,8 @@ function finish(a: Active, aborted: boolean, error?: string) {
   byToken.delete(a.token);
   const series = a.inst.seriesId;
   active.delete(series);
-  a.run?.stop().catch(e => console.error(`run ${a.n} of ${a.inst.id} left its scratch folder`, e));
+  if (a.run) a.run.stop().catch(e => console.error(`run ${a.n} of ${a.inst.id} left its scratch folder`, e));
+  else rmSync(join(scratch, 'runs', a.token), { recursive: true, force: true });
   a.browsers?.end().catch(e => a.inst.append('server', 'browsers', { run: a.n, error: e.message }));
   // The agent's last words in a run are its report to the instance's people; its first line is the run's summary.
   if (a.said && !aborted) a.inst.append('agent', 'report', { run: a.n, text: a.said });
