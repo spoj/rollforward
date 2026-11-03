@@ -1,7 +1,7 @@
 import { freemem } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { join, posix, relative } from 'node:path';
-import { createInstance, guidanceFile, HttpError, instance, instanceDir, instances, isPerson, labels, newId, readFile, seriesDir, type Entry, type Instance } from './store.ts';
+import { agentsFile, createInstance, HttpError, instance, instanceDir, instances, isPerson, labels, newId, readFile, seriesDir, type Entry, type Instance } from './store.ts';
 import { startRun, type Run, type View } from './runner.ts';
 import { canSee, changes, everyone, readJson, tree, type Tree, writeJson } from './system.ts';
 import { users } from './auth.ts';
@@ -38,9 +38,7 @@ function pending(inst: Instance, seen: number): Entry[] {
 const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math.max(seenBefore(inst), inst.log.findLast(e => e.op === 'interrupt')?.seq ?? 0)).length > 0;
 
 function message(inst: Instance, n: number, entries: Entry[]): string {
-  const t = tree(), here = t.series[inst.seriesId].workspace;
-  const reads = reach(t, inst.seriesId).map(id => (t.series[id].workspace === here ? `../${t.series[id].name}/` : `../../${named(t, id)}/`)).join(', ');
-  return `Instance ${inst.label} (folder ${inst.label}/)${t.series[inst.seriesId].adhoc ? ", a one-off ask in the workspace's Ad hoc series" : ''}, run ${n}.${reads ? ` Series you can read: ${reads}.` : ''} New log entries:\n`
+  return `Instance ${inst.label} (folder ${inst.label}/)${tree().series[inst.seriesId].adhoc ? ", a one-off ask in the workspace's Ad hoc series" : ''}, run ${n}. New log entries:\n`
     + entries.map(e => JSON.stringify(e)).join('\n');
 }
 
@@ -62,16 +60,17 @@ export function reach(t: Tree, seriesId: string): string[] {
 export const named = (t: Tree, seriesId: string) => `${t.workspaces[t.series[seriesId].workspace].name}/${t.series[seriesId].name}`;
 
 // The run's view of the data, by name, built when it starts: /work/<workspace>/<series>/<label>/ for every instance in its reach,
-// the company's guidance at /work/GUIDANCE.md and each workspace's at /work/<workspace>/GUIDANCE.md, and the catalogue.
+// the company's AGENTS.md at /work/AGENTS.md and each workspace's at /work/<workspace>/AGENTS.md, and the catalogue, which the
+// runner puts at its series folder's own AGENTS.md.
 function view(inst: Instance): View {
   const t = tree(), at = (id: string) => `/work/${named(t, id)}`, series = [inst.seriesId, ...reach(t, inst.seriesId)];
   const ro = series.flatMap(id => [
     ...labels(id).map(l => [instanceDir(l.id), `${at(id)}/${l.label}`] as [string, string]),
     ...(id === inst.seriesId ? [] : [[join(seriesDir(id), '.pylib'), `${at(id)}/.pylib`] as [string, string]]),
   ]);
-  const guidance = [...new Set(series.map(id => t.series[id].workspace))].map(w => [guidanceFile(w), `/work/${t.workspaces[w].name}/GUIDANCE.md`] as [string, string]);
+  const agents = [...new Set(series.map(id => t.series[id].workspace))].map(w => [agentsFile(w), `/work/${t.workspaces[w].name}/AGENTS.md`] as [string, string]);
   const catalogue = `# What you can read\n\nOne line per series, from its latest closed instance: what it delivers (its process.md's first line), its inputs and where they come from, who brings files and who answers, and its open instances, which are drafts.\n\n${series.map(id => line(t, id, at(inst.seriesId))).join('\n')}\n`;
-  return { cwd: at(inst.seriesId), instance: `${at(inst.seriesId)}/${inst.label}`, dir: inst.dir, pylib: join(inst.series(), '.pylib'), ro: [[guidanceFile(), '/work/GUIDANCE.md'], ...guidance, ...ro], catalogue };
+  return { cwd: at(inst.seriesId), instance: `${at(inst.seriesId)}/${inst.label}`, dir: inst.dir, pylib: join(inst.series(), '.pylib'), ro: [[agentsFile(), '/work/AGENTS.md'], ...agents, ...ro], catalogue };
 }
 
 function line(t: Tree, id: string, cwd: string): string {
@@ -81,7 +80,7 @@ function line(t: Tree, id: string, cwd: string): string {
   const who = (op: string) => [...new Set(last?.log.filter(e => e.op === op && isPerson(e)).map(e => e.by))];
   const open = all.filter(i => i.doc.status === 'open').map(i => i.label);
   return `- ${relative(cwd, `/work/${named(t, id)}`) || '.'}: ${purpose ?? 'no process.md yet'}. `
-    + (last ? `Latest closed: ${last.label}. Inputs: ${inputs.join('; ') || 'none'}. Brings files: ${who('upload').join(', ') || 'nobody'}; answers: ${who('answer').join(', ') || 'nobody'}.` : 'Nothing closed yet.')
+    + (last ? `Latest closed: ${last.label}. Inputs: ${inputs.join('; ') || 'none'}. Brings files: ${who('upload').join(', ') || 'nobody'}; answers: ${who('comment').join(', ') || 'nobody'}.` : 'Nothing closed yet.')
     + (open.length ? ` Open: ${open.join(', ')}.` : '');
 }
 

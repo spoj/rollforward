@@ -2,7 +2,7 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,7 +10,7 @@ import { join } from 'node:path';
 // Real runs, from a person's act down to Pi in its sandbox, with a scripted stand-in for the model: each run's prompt takes the next
 // script, bash commands and then the report, and the stand-in keeps what each command answered. So the walls a run meets, a wake
 // and a takeover are checked as a run meets them, at no model cost.
-type Script = { bash: (string | (() => string))[]; report: string; prompt?: string; saw: string[]; fail?: string };
+type Script = { bash: (string | (() => string))[]; report: string; prompt?: string; system?: string; saw: string[]; fail?: string };
 const scripts: Script[] = [], byPrompt = new Map<string, Script>();
 const app = join(import.meta.dirname, '..'), tmp = mkdtempSync(join(tmpdir(), 'rf-scenario-')), root = join(tmp, 'data');
 const ADMIN = 'admin@demo.test', BOB = 'bob@demo.test';
@@ -24,7 +24,7 @@ async function answer(req: IncomingMessage, res: ServerResponse) {
   const body = JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString());
   const msgs: { role: string; content: unknown }[] = body.messages, at = msgs.findLastIndex(m => m.role === 'user' && !isResult(m));
   const key = text(msgs[at].content);
-  if (!byPrompt.has(key)) byPrompt.set(key, Object.assign(scripts.shift()!, { prompt: key }));
+  if (!byPrompt.has(key)) byPrompt.set(key, Object.assign(scripts.shift()!, { prompt: key, system: text(body.system) }));
   const s = byPrompt.get(key)!, results = msgs.slice(at + 1).filter(isResult).flatMap(m => (m.content as { type: string; content: unknown }[]).filter(b => b.type === 'tool_result'));
   s.saw = results.map(r => text(r.content));
   if (s.fail) return void res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: s.fail } }));
@@ -87,7 +87,8 @@ after(async () => {
 
 test("a run meets its walls, wakes itself, and after a takeover runs as its new runner, with the new runner's ticks", async () => {
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Scenarios' })).json();
-  assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB] })).status, 200);
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB], agents: 'Scenarios: amounts in USD.' })).status, 200);
+  assert.equal((await fetch(`${base}/agents`, { method: 'PUT', headers: { cookie: admin }, body: 'Company: fiscal months end on the last Saturday.' })).status, 200);
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec' })).json();
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
   const { id: wide } = await (await call('POST', '/api/workspaces', { name: 'Wide' })).json();
@@ -116,6 +117,9 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Check what you can reach.' })).status, 200);
   let log = await runs(id, 2);
   assert.match(walls.prompt!, /Check what you can reach/);
+  assert.ok(walls.system!.startsWith(readFileSync(join(app, 'prompt.md'), 'utf8').split('\n')[0]), "prompt.md is the system prompt, not added to Pi's own");
+  const order = ['Company: fiscal', 'Scenarios: amounts', '# What you can read', '- ../../Wide/Close: '].map(t => walls.system!.indexOf(t));
+  assert.ok(order[0] > 0 && order.every((at, k) => k === 0 || at > order[k - 1]), `the AGENTS.md files from /work down to the series folder, the catalogue last: ${walls.system}`);
   assert.match(walls.saw[0], /No such file or directory/, 'the data root is not in the sandbox');
   assert.match(walls.saw[1], /curl exit 7/, "the server's own port is not reachable");
   assert.match(walls.saw[2], /curl exit [1-9]/, 'nor an internal address');

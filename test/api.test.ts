@@ -211,7 +211,7 @@ test('a workspace can be made; a workspace or a series is archived and restored,
   const acme = () => named('Acme');
   const { id } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Acme' }))).json();
   const { series: made, ...rest } = await acme();
-  assert.deepEqual(rest, { id, name: 'Acme', archived: false, owners: [adminEmail], members: [], manage: true, guidance: '', reads: [], read_by: [] });
+  assert.deepEqual(rest, { id, name: 'Acme', archived: false, owners: [adminEmail], members: [], manage: true, agents: '', reads: [], read_by: [] });
   assert.deepEqual(made.map((s: { name: string; adhoc: boolean }) => [s.name, s.adhoc]), [['Ad hoc', true]], 'a workspace starts with its Ad hoc series');
   assert.equal((await call('POST', '/api/workspaces', JSON.stringify({ name: 'Acme' }))).status, 409);
   assert.equal((await call('PUT', `/api/workspaces/${id}`, JSON.stringify({ archived: true }))).status, 200);
@@ -377,15 +377,15 @@ test("people see and move a series' next wake, turn Allow wakes on as themselves
   for (const label of ['2026-09-27', 'third']) assert.equal((await call('POST', `${await at(series, label, 'abandon')}`)).status, 200);
 });
 
-test("guidance: the company's is the admins', a workspace's its owners', and both are files every agent in scope reads", async () => {
+test("AGENTS.md: the company's is the admins', a workspace's its owners', and both are files every agent in scope reads", async () => {
   const b = sessionOf(await login(bob))!;
-  assert.equal((await call('PUT', '/guidance', 'Fiscal months end on the last Saturday.', b)).status, 403);
-  assert.equal((await call('PUT', '/guidance', 'Fiscal months end on the last Saturday.')).status, 200);
-  assert.deepEqual(await json('/guidance', b), { text: 'Fiscal months end on the last Saturday.' });
+  assert.equal((await call('PUT', '/agents', 'Fiscal months end on the last Saturday.', b)).status, 403);
+  assert.equal((await call('PUT', '/agents', 'Fiscal months end on the last Saturday.')).status, 200);
+  assert.deepEqual(await json('/agents', b), { text: 'Fiscal months end on the last Saturday.' });
   const ws = await named('larkfield');
-  assert.equal((await call('PUT', `/api/workspaces/${ws.id}`, JSON.stringify({ guidance: 'Larkfield Ltd is now Larkfield Holdings.' }))).status, 200);
-  assert.equal((await named('larkfield')).guidance, 'Larkfield Ltd is now Larkfield Holdings.');
-  assert.equal(readFileSync(join(root, 'guidance', `${ws.id}.md`), 'utf8'), 'Larkfield Ltd is now Larkfield Holdings.');
+  assert.equal((await call('PUT', `/api/workspaces/${ws.id}`, JSON.stringify({ agents: 'Larkfield Ltd is now Larkfield Holdings.' }))).status, 200);
+  assert.equal((await named('larkfield')).agents, 'Larkfield Ltd is now Larkfield Holdings.');
+  assert.equal(readFileSync(join(root, 'agents', `${ws.id}.md`), 'utf8'), 'Larkfield Ltd is now Larkfield Holdings.');
 });
 
 test('each workspace has an Ad hoc series of one-off asks; Make it a series moves one into a series of its own', async () => {
@@ -487,6 +487,7 @@ test('rf for people: ls, comment, and admins manage people from it', async () =>
   await rf('comment', `larkfield/${series}/talk`, 'From the shell');
   assert.match(await rf('pull', join(tmp, 'pulled')), /instances, \d+ files fetched/);
   assert.ok(existsSync(join(tmp, 'pulled', 'larkfield', series, '2026-08-30', 'screen.json')));
+  assert.deepEqual(['', 'larkfield'].map(d => readFileSync(join(tmp, 'pulled', d, 'AGENTS.md'), 'utf8')), ['Fiscal months end on the last Saturday.', 'Larkfield Ltd is now Larkfield Holdings.']);
   assert.equal((await json(await at(series, 'talk'))).log.at(-1).text, 'From the shell');
   await rf('user', 'add', 'carol@demo.test', 'publisher');
   assert.match(await rf('users'), /^carol@demo\.test\tpublisher/m);
@@ -537,7 +538,7 @@ test('the second audit: a bad request line, a bad workbook and a slow body hurt 
 
   const [lark, other] = [await named('larkfield'), (await workspaces()).find((w: { name: string; manage: boolean }) => w.name !== 'larkfield' && w.manage)];
   const slow = request(`${base}/api/workspaces/${lark.id}`, { method: 'PUT', headers: { cookie: admin }, agent: false }), done = once(slow, 'response');
-  slow.write('{"guidance": ');
+  slow.write('{"agents": ');
   await new Promise(ok => setTimeout(ok, 200));
   assert.equal((await call('PUT', `/api/workspaces/${other.id}`, JSON.stringify({ archived: true }))).status, 200);
   slow.end('"held open"}');
@@ -545,9 +546,9 @@ test('the second audit: a bad request line, a bad workbook and a slow body hurt 
   answered.resume();
   assert.equal(answered.statusCode, 200);
   assert.ok((await workspaces()).find((w: { id: string }) => w.id === other.id).archived, 'the change made meanwhile stays');
-  assert.equal((await named('larkfield')).guidance, 'held open');
+  assert.equal((await named('larkfield')).agents, 'held open');
   await call('PUT', `/api/workspaces/${other.id}`, JSON.stringify({ archived: false }));
-  await call('PUT', `/api/workspaces/${lark.id}`, JSON.stringify({ guidance: lark.guidance }));
+  await call('PUT', `/api/workspaces/${lark.id}`, JSON.stringify({ agents: lark.agents }));
 });
 
 test('closing refuses a shown file the agent replaced after it was shown', async () => {
