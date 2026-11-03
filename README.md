@@ -121,3 +121,4 @@ To build the demo from scratch (about $4 of model use; the generator needs the i
 - [prompt.md](prompt.md): the agent's instructions.
 - [docs/design.md](docs/design.md): the look.
 - [docs/deploy.md](docs/deploy.md): deploying on two hosts, rollforward's and the machines service's.
+- [LICENSE](LICENSE): MIT.

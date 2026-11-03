@@ -1,6 +1,7 @@
 {
   "name": "rollforward",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "start": "node src/server.ts",
