@@ -137,3 +137,16 @@ test("a row's chevron folds and opens it, selected or not, and selects nothing",
   await page.click('.row.ws.on .chev');
   await page.waitForSelector('.row.ser');
 });
+
+test('keys: c goes to the comment box, Ctrl+Enter sends it, Esc leaves it, and j moves through the sidebar', async () => {
+  await page.click('a.row.inst.open >> nth=0');
+  await page.waitForSelector('#bar [data-act=close], #bar [data-act=takeover]');
+  await page.keyboard.press('c');
+  assert.equal(await page.evaluate(() => document.activeElement?.id), 'newcomment');
+  await page.keyboard.type('Sent with keys');
+  await page.keyboard.press('Control+Enter');
+  await page.waitForFunction(() => $('#log').textContent!.includes('Sent with keys') && !($('#newcomment') as HTMLTextAreaElement).value);
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('j');
+  assert.ok(await page.evaluate(() => !!document.activeElement?.closest('#tree')), 'a row has the focus');
+});

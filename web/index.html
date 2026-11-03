@@ -91,7 +91,9 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .dot.k { background: var(--ink); }
 .key { position: absolute; right: 16px; bottom: 12px; z-index: 4; font-size: 12px; color: var(--ink-3); background: var(--sheet); border: 1px solid var(--rule-2); border-radius: 12px; padding: 2px 10px; cursor: default; }
 .legend { display: none; position: absolute; right: 0; bottom: calc(100% + 6px); width: max-content; font-size: 12px; color: var(--ink-2); background: var(--sheet); border: 1px solid var(--rule-2); border-radius: var(--r1); box-shadow: 0 6px 20px rgba(21,24,29,.12); padding: 10px 12px; gap: 4px; }
-.key:is(:hover, :focus-within) .legend { display: grid; }
+.key:is(:hover, :focus-within, .show) .legend { display: grid; }
+.legend .keys { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--rule); color: var(--ink-3); display: grid; gap: 2px; }
+.legend kbd { font: inherit; color: var(--ink); }
 .legend i { font-style: normal; font-weight: 600; }
 .legend .p { color: var(--person); }
 .legend .tri { display: inline-block; width: 0; height: 0; border-top: 9px solid var(--ink-3); border-left: 9px solid transparent; margin-right: 6px; }
@@ -333,7 +335,7 @@ input[type=checkbox] { accent-color: var(--ink); }
       <section class="pane outs" id="outs" data-pane="out"></section>
       <section class="pane flow" id="flow" data-pane="in"></section>
       <svg class="edges" id="edges"></svg>
-      <div class="key" tabindex="0">Key<div class="legend"><div><i class="p">Blue</i> uploaded by a person</div><div><i>Black</i> made by the agent</div><div><span class="tri"></span>comments</div><div><span class="tri q"></span>waiting on a reply</div><div><span class="dash"></span>expected, not there yet</div></div></div>
+      <div class="key" tabindex="0">Key<div class="legend"><div><i class="p">Blue</i> uploaded by a person</div><div><i>Black</i> made by the agent</div><div><span class="tri"></span>comments</div><div><span class="tri q"></span>waiting on a reply</div><div><span class="dash"></span>expected, not there yet</div><div class="keys"><div><kbd>j k</kbd> move through the sidebar, <kbd>h l</kbd> fold and open, <kbd>Enter</kbd> go</div><div><kbd>1 2 3</kbd> the panel's tabs, <kbd>c</kbd> the comment box</div><div><kbd>Ctrl Enter</kbd> sends, <kbd>Esc</kbd> leaves a field, <kbd>?</kbd> shows this</div></div></div></div>
     </div>
   </main>
   <aside class="log" id="log"></aside>
@@ -524,7 +526,10 @@ function renderSide() {
   }
   const archived = tree.filter(w => w.archived).length + tree.filter(w => expanded.has(w.id)).flatMap(w => w.series).filter(s => s.archived).length;
   if (archived) h += `<button class="quiet" data-act="toggle-archived">${showArchived ? 'Hide' : 'Show'} archived (${archived})</button>`;
+  // Keys move a focus through the rows' links (j, k), which a new drawing keeps.
+  const kf = $('#tree').contains(document.activeElement) && document.activeElement.getAttribute('href');
   put($('#tree'), h);
+  if (kf) $(`#tree [href="${kf}"]`)?.focus();
   put($('#acct'), `<div class="me" tabindex="0"><span>${esc(me.name)}${me.role === 'user' ? '' : ' · ' + me.role}</span><span class="mail">${esc(me.email)}</span></div>`
     + `<span class="acts2"><button class="add" data-act="logins" title="Logins, tokens${me.role === 'admin' ? ', people' : ''}">\u2699</button><button class="quiet" data-act="signout">Sign out</button></span>`);
 }
@@ -1504,7 +1509,31 @@ addEventListener('hashchange', () => {
   $('#side').classList.remove('open');
   refresh();
 });
+// Keys, while no field has the focus: j and k (or the arrows) move through the sidebar's rows, l opens a row or goes into it, h
+// folds it or goes to its parent, Enter goes to it; 1, 2 and 3 pick the panel's tab, c goes to the comment box, ? shows the keys.
+function navigate(e) {
+  const rows = [...$('#tree').querySelectorAll('a[href]')], at = rows.indexOf(document.activeElement), row = document.activeElement.closest('#tree .row');
+  const chev = row?.querySelector('.chev'), open = chev?.textContent === '\u25BE', key = { ArrowDown: 'j', ArrowUp: 'k', ArrowRight: 'l', ArrowLeft: 'h' }[e.key] ?? e.key;
+  if (e.key.startsWith('Arrow') && at < 0) return; // the arrows scroll, unless the sidebar has the focus
+  if (key === 'j' || key === 'k') (at < 0 ? rows.find(r => r.closest('.on')) ?? rows[0] : rows[at + (key === 'j' ? 1 : -1)])?.focus();
+  else if (key === 'l' && chev) open ? rows[at + 1]?.focus() : chev.click();
+  else if (key === 'h' && row) open ? chev.click() : row.closest('.tree')?.previousElementSibling.querySelector('a[href]').focus();
+  else if (['1', '2', '3', 'c'].includes(key) && data) {
+    Object.assign(ui, { open: true, tab: key === 'c' ? 'conv' : ['conv', 'proc', 'log'][key - 1], on: null, ref: null, focus: key === 'c' });
+    renderLog(); renderBar(); placeCard();
+  } else if (key === '?') $('.key').classList.toggle('show');
+  else return;
+  e.preventDefault();
+}
+
 addEventListener('keydown', e => {
+  // Ctrl+Enter, or Cmd+Enter on a Mac, sends from the panel's comment and reply boxes.
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.target.matches('#log textarea')) {
+    e.preventDefault();
+    return (e.target.id === 'newcomment' ? $('#log [data-act=comment]') : e.target.closest('.thread').querySelector('[data-act=reply-thread]')).click();
+  }
+  if (e.key === 'Escape' && e.target.matches('textarea, input:not(.inline)') && !document.querySelector('dialog[open]')) return e.target.blur();
+  if ($('#pop').hidden && !e.target.matches('input, textarea, select') && !e.ctrlKey && !e.metaKey && !e.altKey && !document.querySelector('dialog[open]')) navigate(e);
   if (!$('#pop').hidden && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
     const items = [...$('#pop').querySelectorAll('button:not(:disabled)')], k = items.indexOf(document.activeElement);
     items.at((k + (e.key === 'ArrowDown' ? 1 : -1)) % items.length)?.focus();
