@@ -71,7 +71,7 @@ test("a series' gear opens its settings, which save as they change; a click besi
   await page.waitForSelector('#pv:not([open])', { state: 'attached' });
 });
 
-test('a new series asks for its name, and says in the dialog why one is refused', async () => {
+test('a new series asks for its name, says in the dialog why one is refused, and lists after those with activity', async () => {
   await page.click('[data-act=new-series]');
   await page.keyboard.type('Weekly borrowing base');
   await page.keyboard.press('Enter');
@@ -79,6 +79,7 @@ test('a new series asks for its name, and says in the dialog why one is refused'
   await page.fill('#ask input', 'Bank rec');
   await page.keyboard.press('Enter');
   await page.waitForSelector('.row.ser.on .nm:text-is("Bank rec")');
+  assert.deepEqual(await page.locator('.row.ser .nm').allTextContents(), ['Weekly borrowing base', 'Bank rec', 'Ad hoc'], 'newest activity first: a new series has none yet, and Ad hoc comes last');
 });
 
 test('only the runner abandons, and abandoning asks first, in the page', async () => {

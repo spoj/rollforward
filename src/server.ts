@@ -91,14 +91,14 @@ function guard(before: string[], after: string[], force: unknown) {
 
 // An instance as the sidebar shows it. What comes from its log and screen is kept until either moves on, so a listing reads each
 // instance's log once, not on every refresh.
-const kept = new WeakMap<Instance, { key: string; asks: string[]; runner: string; acted: string[]; cost: number }>();
+const kept = new WeakMap<Instance, { key: string; active: string; asks: string[]; runner: string; acted: string[]; cost: number }>();
 function summary(i: Instance, w8 = wakes()) {
   const key = `${i.log.length}:${i.doc.rev}`;
   let k = kept.get(i);
-  if (k?.key !== key) kept.set(i, k = { key, asks: waits(i).map(w => w.who), runner: runnerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: +i.log.reduce((t, e) => t + ((e.cost as number | undefined) ?? 0), 0).toFixed(4) });
+  if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i).map(w => w.who), runner: runnerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: +i.log.reduce((t, e) => t + ((e.cost as number | undefined) ?? 0), 0).toFixed(4) });
   return {
     id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(i.seriesId)?.inst === i, queued: !!queued(i),
-    asks: k.asks, wake: w8.pending[i.id]?.at ?? null, runner: k.runner, cost: k.cost,
+    asks: k.asks, wake: w8.pending[i.id]?.at ?? null, runner: k.runner, cost: k.cost, active: k.active,
   };
 }
 

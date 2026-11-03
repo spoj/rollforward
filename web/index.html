@@ -477,17 +477,21 @@ function renderSide() {
   const asks = s => !s.archived && s.instances.some(i => i.asks.length);
   const btn = (act, title, glyph, id = '') => `<button class="add" data-act="${act}" data-id="${id}" title="${title}">${glyph}</button>`;
   const chev = id => `<button class="chev" data-act="expand" data-id="${id}">${expanded.has(id) ? '\u25BE' : '\u25B8'}</button>`;
+  // Newest activity first, as in a chat: an instance's latest log entry, now while it runs; a series' newest instance's, and a
+  // workspace's newest series'. A series' instances keep their labels' order, and Ad hoc comes last, its asks newest first.
+  const now = new Date().toISOString(), recent = i => i.running ? now : i.active, newest = xs => xs.reduce((m, x) => x > m ? x : m, '');
+  const sAct = s => newest(s.instances.map(recent)), wAct = w => newest(w.series.map(sAct)), byAct = f => (a, b) => (f(b) > f(a)) - (f(b) < f(a));
   const waits = waiting().length;
   let h = waits ? `<div class="row waits"><a class="nm" data-act="waiting">Waiting on you<span class="q"> ${waits}</span></a></div>` : '';
   h += `<div class="row head"><span class="nm">Workspaces</span><span class="seg">${['mine', 'all'].map(v => `<button class="${(v === 'mine') === mine ? 'sel' : ''}" data-act="workspaces" data-id="${v}">${v === 'mine' ? 'Mine' : 'All'}</button>`).join('')}</span>${btn('new-workspace', 'New workspace', '+')}</div>`;
-  for (const w of tree) {
+  for (const w of [...tree].sort(byAct(wAct))) {
     const won = cur?.w.id === w.id;
     if (!listed(w, won) || (mine && !w.mine && !won)) continue;
     h += `<div class="row ws ${won ? 'on' : ''} ${w.archived ? 'archived' : ''}">${chev(w.id)}<a class="nm" href="#/${w.id}">${esc(w.name)}${!expanded.has(w.id) && w.series.some(asks) ? '<span class="dot"></span>' : ''}</a>`
       + (w.archived ? '<span class="n">archived</span>' : '') + btn('workspace-settings', 'Settings', '\u2699', w.id) + btn('new-series', 'New series', '+', w.id) + '</div>';
     if (!expanded.has(w.id)) continue;
     h += '<div class="tree">';
-    for (const s of [...w.series.filter(s => !s.adhoc), ...w.series.filter(s => s.adhoc)]) {
+    for (const s of [...w.series.filter(s => !s.adhoc).sort(byAct(sAct)), ...w.series.filter(s => s.adhoc)]) {
       const on = cur?.s?.id === s.id, open = s.instances.filter(i => i.status === 'open');
       if (!listed(s, on)) continue;
       // A series that wakes itself but has nothing open and no wake set has a broken chain.
@@ -501,7 +505,7 @@ function renderSide() {
       if (s.wake) h += `<div class="row wake"><span class="nm">Starts ${esc(s.wake.label)} ${when(s.wake.at)}</span><span class="n" title="${esc(s.wake.reason)}">wake</span></div>`;
       for (const r of s.requests) h += `<div class="row req"><span class="nm" title="${esc(r.reason)}">${esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)}</span>`
         + `<button class="add" data-act="req-start" data-id="${r.id}" title="Start it">\u25B6</button><button class="add" data-act="req-drop" data-id="${r.id}" title="Dismiss">\u00D7</button></div>`;
-      for (const i of s.instances.filter(i => i.status === 'open' || showClosed || i.id === cur?.i?.id)) {
+      for (const i of s.instances.filter(i => i.status === 'open' || showClosed || i.id === cur?.i?.id).sort(s.adhoc ? byAct(recent) : () => 0)) {
         const st = i.running ? '<span class="spin"></span> running' : i.queued ? '\u29D7 queued' : i.asks.length ? `<span class="q">${i.asks.length} to answer</span>` : i.wake ? `wakes ${when(i.wake)}` : i.status === 'open' ? '' : i.status;
         const k = `rev:/api/instances/${i.id}`;
         localStorage[k] ??= i.rev;
