@@ -26,7 +26,7 @@ const left = (dir: string, known: string[]) => {
 // answers and steers people's replies, and the agent's replies its comments in the latest steer's thread. Removing an item
 // resolves its threads, as its notes went with it, and the questions closing defaulted are what the close accepted. Entries
 // are numbered afresh, as append takes the next seq from the log's length. A run left cut gets its done, with every entry
-// seen, so the new server starts no run for the old log.
+// seen, so the new server sends none of the old log again; it wakes the instance to carry on (waker.ts, recover).
 function convert(log: Entry[]): Entry[] {
   const out: Entry[] = [], seqOf = new Map<unknown, number>(), byNote = new Map<string, string>(), byId = new Map<string, string>();
   const onItem = new Map<string, Set<string>>(), accepted: string[] = [];

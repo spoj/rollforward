@@ -98,6 +98,17 @@ test('a run a restart cut ends as aborted, with what it cost so far, and its ins
   assert.equal(cut.log.filter(e => e.op === 'run').length, 2, 'started again');
 });
 
+test('a run the move to 0.2.0 cut, which the move ended without a wake, is woken at the next start, once', async () => {
+  const moved = make('s3', 'moved');
+  moved.append('server', 'run', { run: 1, upto: 1 });
+  moved.append('server', 'done', { run: 1, aborted: true, seen: 2, cost: 0, summary: null, error: 'cut by the move to 0.2.0' });
+  recover();
+  recover();
+  assert.deepEqual(moved.log.filter(e => e.op === 'wake').map(e => e.reason), ['The move to 0.2.0 cut your last run; carry on']);
+  await settle();
+  assert.equal(moved.log.filter(e => e.op === 'run').length, 2, 'started again');
+});
+
 test("an instance whose run met its runner's expired login carries on when they sign in again, once", async () => {
   const waits = make('s2', 'waits');
   waits.append('server', 'expired', { login: 'm365', runner: alice });

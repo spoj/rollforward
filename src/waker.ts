@@ -293,7 +293,7 @@ function costSince(inst: Instance, at: string): number {
 }
 
 // A run a restart cut ends as aborted, with what it cost so far, and its instance is woken to carry on, so a deploy needn't wait
-// for quiet.
+// for quiet. A run the move from the team's fork cut has its done already, from scripts/migrate-fork.ts, and is woken the same way.
 export function recover() {
   for (const id of Object.keys(tree().series)) for (const inst of instances(id).filter(i => i.doc.status === 'open')) {
     const run = inst.log.findLast(e => e.op === 'run' || e.op === 'done');
@@ -301,6 +301,7 @@ export function recover() {
       inst.append('server', 'done', { run: run.run, aborted: true, seen: seenBefore(inst), cost: +costSince(inst, run.at).toFixed(4), summary: null, error: 'a restart cut the run' });
       inst.append('server', 'wake', { reason: 'A restart cut your last run; carry on', from: 'server' });
     }
+    if (run?.error === 'cut by the move to 0.2.0' && !due(inst)) inst.append('server', 'wake', { reason: 'The move to 0.2.0 cut your last run; carry on', from: 'server' });
     kick(inst);
   }
 }
