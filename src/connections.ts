@@ -23,7 +23,7 @@ import website from './connections/website.ts';
 // credential added. A refusal is a plain 403 with the reason, logged too.
 
 export type Connection = { name: string; type: string; [setting: string]: any };
-export type Request = { method: string; url: URL; headers: Record<string, string | string[] | undefined>; json?: any };
+export type Request = { method: string; url: URL; headers: Record<string, string | string[] | undefined>; json?: any; body?: Buffer };
 export type Type = {
   settings(input: Record<string, unknown>): Record<string, unknown>;
   // Its person's login: an Entra login, with its scope, or a website's, which they sign in to in a live browser.
@@ -99,10 +99,13 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     let body: Buffer | undefined, auth: string | undefined;
     if (c) {
       const type = types[c.type], { by, logins: ticks } = lender(a.inst);
-      // A JSON body is read whole, for the policy; anything else streams.
-      const json = ['POST', 'PATCH', 'PUT'].includes(method) && String(req.headers['content-type']).includes('json') ? JSON.parse((body = Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>))).toString() || 'null') : undefined;
-      const checked = await type.check!(c, by, ticks, { method, url, headers: req.headers, json });
-      if (checked.json) body = Buffer.from(JSON.stringify(checked.json));
+      // A POST's or PATCH's body, or a JSON one, is read whole, for the policy; a JSON body goes on as the JSON it read, as it rewrote
+      // it, never as bytes another parser might read otherwise, such as a key twice. Anything else, such as a file's content, streams.
+      const isJson = String(req.headers['content-type']).includes('json');
+      const raw = ['POST', 'PATCH'].includes(method) || (method === 'PUT' && isJson) ? Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)) : undefined;
+      const json = isJson && raw?.length ? JSON.parse(raw.toString()) : undefined;
+      const checked = await type.check!(c, by, ticks, { method, url, headers: req.headers, json, body: raw });
+      body = json === undefined ? raw : Buffer.from(JSON.stringify(checked.json ?? json));
       const login = loginOf(c) as EntraLogin;
       auth = `Bearer ${await token(use(a.inst, checked.offer).email, login.id, login.scope)}`;
     }

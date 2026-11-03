@@ -8,8 +8,8 @@ import type { Request, Type } from '../connections.ts';
 // folders, and its sendMail; /drives/ID/…, /shares/ID/…, /me/drive/… or /users/ADDRESS/drive/… for files, within a ticked folder,
 // a ticked file, a ticked site's libraries or the runner's ticked OneDrive; and /sites/ID/… for a ticked site, all under v1.0, as
 // Graph reads a path, dot segments resolved. A write, a POST, PATCH, PUT or DELETE, reaches only what a read does: a file it makes,
-// moves or copies lands within the ticks, mail goes out as the ticked mailbox it is sent from, written as JSON, and it shares
-// nothing. Its person's login is Microsoft 365's, 'm365', whose offers they add one at a time.
+// moves or copies lands within the ticks, mail goes out as the ticked mailbox it is sent from, and it shares nothing. A write's
+// body is a JSON object, which the policy reads, but a file's content and mail as MIME, whose headers it reads. Its person's login is Microsoft 365's, 'm365', whose offers they add one at a time.
 
 // Tests point this at a stand-in.
 export const endpoints = { graph: 'https://graph.microsoft.com' };
@@ -23,8 +23,32 @@ export async function graph(email: string, path: string): Promise<any> {
   return j;
 }
 
+// Mail as MIME, base64 as Graph takes it, goes out as its From, which Exchange reads its own way: so its headers parse cleanly, with
+// one From holding one plain address, a display name allowed, which is the mailbox it is sent from, and nothing else names a sender.
+const ATOM = "[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+", ADDRESS = `${ATOM}(?:\\.${ATOM})*@${ATOM}(?:\\.${ATOM})*`;
+const WORD = '(?:"(?:[^"\\\\\\r\\n]|\\\\[^\\r\\n])*"|[A-Za-z0-9!#$%&\'*+/=?^_`{|}~\\x80-\\xff.-]+)';
+const FROM = new RegExp(`^(?:(${ADDRESS})|(?:${WORD}(?:[ \\t]+${WORD})*[ \\t]*)?<(${ADDRESS})>)$`);
+function mime(body: Buffer | undefined, box: string, bare: string) {
+  const refuse = (why: string) => new HttpError(403, `${bare}: ${why}`);
+  const b64 = body?.toString('latin1').replace(/[ \t\r\n]/g, '') ?? '';
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(b64) || b64.length % 4) throw refuse('mail is a JSON object, or MIME in base64 as text/plain');
+  const lines = Buffer.from(b64, 'base64').toString('latin1').split(/\r?\n/), headers: [string, string][] = [];
+  for (const line of lines.slice(0, lines.indexOf('') < 0 ? lines.length : lines.indexOf(''))) {
+    if (/^[ \t]/.test(line) && headers.length && !/[\r\0]/.test(line)) headers.at(-1)![1] += line;
+    else if (/^[!-9;-~]+:[^\r\0]*$/.test(line)) headers.push([line.slice(0, line.indexOf(':')).toLowerCase(), line.slice(line.indexOf(':') + 1).trim()]);
+    else throw refuse(`its MIME header ${JSON.stringify(line.slice(0, 60))} doesn't parse`);
+  }
+  const named = (n: string) => headers.filter(([k]) => k === n).map(([, v]) => v);
+  for (const n of ['Sender', 'Resent-From', 'Resent-Sender']) if (named(n.toLowerCase()).length) throw refuse(`its ${n} header would name another sender`);
+  const from = named('from');
+  if (from.length !== 1) throw refuse(`a message has one From header, not ${from.length}`);
+  const m = FROM.exec(from[0].trim()), address = m?.[1] ?? m?.[2];
+  if (!address || address.includes('=?')) throw refuse(`its From is one plain address, with a display name if any: not ${JSON.stringify(from[0])}`);
+  if (address.toLowerCase() !== box) throw refuse(`mail from ${box} goes out as ${box}, not ${address}`);
+}
+
 // The offer that lets a request through, or why not.
-async function check(runner: string, ticks: string[], { method, url, headers, json }: Request): Promise<string> {
+async function check(runner: string, ticks: string[], { method, url, headers, json, body: raw }: Request): Promise<string> {
   if (!url.pathname.startsWith('/v1.0/')) throw new HttpError(403, `${url.pathname}: Microsoft Graph v1.0, under /v1.0/`);
   // Neither another method in a header, nor a Prefer that redeems a sharing link, which grants the runner access.
   if (Object.keys(headers).some(h => /^x-http-method/i.test(h)) || /redeemsharinglink/i.test(String(headers.prefer ?? ''))) throw new HttpError(403, 'no X-HTTP-Method header, and no Prefer that redeems a sharing link');
@@ -32,16 +56,18 @@ async function check(runner: string, ticks: string[], { method, url, headers, js
   // /me is the runner, and mailFolders('inbox') is mailFolders.
   const segs = segments[0] === 'me' ? ['users', runner, ...segments.slice(1)] : segments, [top, id = '', part = ''] = segs.map(s => s.replace(/\(.*$/, ''));
   const write = method !== 'GET', actions = segs.map(s => s.replace(/\(.*$/, '').replace(/^microsoft\.graph\./i, '').toLowerCase()), action = actions.at(-1);
+  const mailbox = top === 'users' && (part === 'messages' || part === 'mailFolders' || (write && actions[2] === 'sendmail'));
+  const body = headers['transfer-encoding'] !== undefined || Number(headers['content-length'] ?? 0) > 0, object = typeof json === 'object' && json !== null;
+  if (write && body && !object && !mailbox && !(method === 'PUT' && action === 'content')) throw new HttpError(403, `${bare}: a write's body is a JSON object, but a file's content, with PUT …/content, or mail as MIME`);
   let offer: string | undefined, mail = false;
-  if (top === 'users' && (part === 'messages' || part === 'mailFolders' || (write && actions[2] === 'sendmail'))) {
+  if (mailbox) {
     const scope = !write ? 'Mail.Read' : ['sendmail', 'send', 'reply', 'replyall', 'forward'].includes(action!) ? 'Mail.Send' : 'Mail.ReadWrite';
     const what = { 'Mail.Read': ['read mail', 'read shared mailboxes'], 'Mail.Send': ['send mail', 'send from shared mailboxes'], 'Mail.ReadWrite': ['write mail', 'write to shared mailboxes'] }[scope];
     needs(scope, what[0]);
     if (id.toLowerCase() !== runner) needs(`${scope}.Shared`, what[1]);
     offer = `m365:mail:${id.toLowerCase()}`;
     mail = true;
-    // Mail goes out as the mailbox it is sent from, which only JSON shows.
-    if (['POST', 'PATCH', 'PUT'].includes(method) && Number(headers['content-length'] ?? 1) > 0 && !json) throw new HttpError(403, `${bare}: write mail as JSON, such as {"message": {...}}`);
+    if (write && body && !object) mime(String(headers['content-type']).startsWith('text/plain') ? raw : undefined, id.toLowerCase(), bare);
     const as = json?.message ?? json;
     if ([as?.from, as?.sender].some(x => x && x.emailAddress?.address?.toLowerCase() !== id.toLowerCase())) throw new HttpError(403, `${bare}: mail from ${id} goes out as ${id}`);
   } else if (top === 'drives' || top === 'shares' || (top === 'users' && part === 'drive')) {

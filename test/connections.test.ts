@@ -362,7 +362,7 @@ test('writes go within the ticks: a file saved into a ticked folder, a message s
   assert.equal((await via('POST', `${G}/me/messages/d1/send`)).status, 202);
 });
 
-test("writes share nothing, and make, move or copy nothing outside the ticks; mail goes out as the ticked mailbox, written as JSON", async () => {
+test("writes share nothing, and make, move or copy nothing outside the ticks; mail goes out as the ticked mailbox, in JSON or in MIME whose one From is it", async () => {
   runs.set('run3', { ...inst, log: [{ op: 'create', by: ALICE, logins: ['m365:item:b!d1/y2026', `m365:mail:${ALICE}`] }] } as unknown as Instance);
   const write = (method: string, path: string, body: unknown) => via(method, `${G}${path}`, { token: 'run3', ...json(body) }), before = writes.length;
   for (const [method, path, body, why] of [
@@ -382,8 +382,41 @@ test("writes share nothing, and make, move or copy nothing outside the ticks; ma
   const site = await write('POST', '/sites/host,site1,web1/lists/l1/items', {});
   assert.deepEqual([site.status, site.text], [409, "this server's Microsoft 365 logins don't write SharePoint sites: RF_M365_SCOPES has no Sites.ReadWrite.All\n"], "the server's to change");
   assert.match((await via('PUT', `${G}/drives/b!d1/items/y2025:/x.csv:/content`, { token: 'run3', body: 'x' })).text, /is in no folder, file or SharePoint site ticked/);
-  assert.match((await via('POST', `${G}/me/sendMail`, { token: 'run3', body: 'MIME', headers: { 'content-type': 'text/plain' } })).text, /write mail as JSON/);
+  assert.match((await via('PATCH', `${G}/drives/b!d1/items/a`, { token: 'run3', body: JSON.stringify({ parentReference: { id: 'y2025' } }), headers: { 'content-type': 'text/plain' } })).text, /a write's body is a JSON object/);
   assert.equal(writes.length, before, 'none reached Graph');
+  // Mail as MIME goes out as its From, so its headers must parse cleanly, with one From, the ticked mailbox it is sent from.
+  const mime = (...headers: string[]) => Buffer.from([...headers, 'To: controller@demo.test', 'Subject: Pack', '', 'The pack is attached.'].join('\r\n')).toString('base64');
+  const sendMime = (body: string, headers?: Record<string, string>, path = '/me/sendMail') => via('POST', `${G}${path}`, { token: 'run3', body, headers: { 'content-type': 'text/plain', ...headers } });
+  for (const [body, why] of [
+    [mime(`From: ${ALICE}`, `From: ${AP}`), /a message has one From header, not 2/],
+    [mime('From: Alice', ` <${AP}>`), /mail from alice@demo.test goes out as alice@demo.test, not ap@demo.test/],
+    [mime(`From: <=?utf-8?Q?alice?=@demo.test>`), /its From is one plain address/],
+    [mime(`From: =?utf-8?B?${Buffer.from(ALICE).toString('base64')}?=`), /its From is one plain address/],
+    [mime(`From: ${ALICE}`, `Sender: ${AP}`), /its Sender header would name another sender/],
+    [mime(`From: ${ALICE}`, `Resent-From: ${AP}`), /its Resent-From header/],
+    [mime(`From: ${ALICE}`, `resent-sender: ${AP}`), /its Resent-Sender header/],
+    [mime(`From: Finance: ${ALICE};`), /its From is one plain address/],
+    [mime(`From: ${ALICE}, ${AP}`), /its From is one plain address/],
+    [mime(`From: ${ALICE} (${AP})`), /its From is one plain address/],
+    [mime(`From : ${ALICE}`), /its MIME header "From : alice@demo.test" doesn't parse/],
+    [mime('To: controller@demo.test'), /a message has one From header, not 0/],
+    ['not base64!', /mail is a JSON object, or MIME in base64 as text\/plain/],
+  ] as [string, RegExp][]) {
+    const r = await sendMime(body);
+    assert.equal(r.status, 403, Buffer.from(body, 'base64').toString().split('\r\n')[0]);
+    assert.match(r.text, why);
+  }
+  assert.match((await sendMime(mime(`From: ${ALICE}`), { 'content-type': 'application/octet-stream' })).text, /MIME in base64 as text\/plain/);
+  assert.equal(writes.length, before, 'none reached Graph');
+  const sent = mime('From: "Ames, Alice"', `\t<${ALICE}> `);
+  assert.equal((await sendMime(sent)).status, 202, 'a folded From, with a display name');
+  assert.equal(writes.at(-1)!.body.toString(), sent, 'as it came');
+  assert.equal((await sendMime(mime(`From: ${ALICE.toUpperCase()}`), { 'transfer-encoding': 'chunked' })).status, 202);
+  assert.equal((await sendMime(mime(`From: Alice Ames <${ALICE}>`), {}, '/me/messages')).status, 201, 'a draft, which is sent as it was made');
+  // A key twice: Graph gets the JSON the check read, not bytes it might read otherwise.
+  const twice = `{"message": {"from": {"emailAddress": {"address": "${AP}"}}, "from": {"emailAddress": {"address": "${ALICE}"}}, "subject": "Pack"}}`;
+  assert.equal((await via('POST', `${G}/me/sendMail`, { token: 'run3', body: twice, headers: { 'content-type': 'application/json' } })).status, 202);
+  assert.equal(writes.at(-1)!.body.toString(), JSON.stringify({ message: { from: { emailAddress: { address: ALICE } }, subject: 'Pack' } }));
   assert.equal((await write('PATCH', '/drives/b!d1/items/a', { name: 'aging.csv' })).status, 200, 'a rename in place');
 });
 
