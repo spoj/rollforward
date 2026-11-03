@@ -52,7 +52,7 @@ async function agent(req: IncomingMessage, res: ServerResponse, url: URL) {
   const a = byToken.get(req.headers.authorization?.replace('Bearer ', '') ?? '');
   if (!a) throw new HttpError(401, 'no run for this token');
   if (url.pathname.startsWith('/api/')) return api({ email: 'agent', name: 'Agent', role: 'user', groups: [], run: a }, req, res, url);
-  // Logins and browsers: rf files, rf mail, rf browser (see agent-api.ts).
+  // Logins and browsers: rf graph, rf browser (see agent-api.ts).
   // A login the run's runner must sign in to again is logged, so the instance carries on once they do.
   const r = await agentCall(a, url.pathname, req.method ?? 'GET', () => body(req)).catch((e: HttpError & { login?: string }) => {
     if (e.login) a.inst.append('server', 'expired', { login: e.login, runner: runnerOf(a.inst).by });

@@ -99,7 +99,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
       `cat ${join(root, '.rf', 'seal.key')} 2>&1 | head -1`,
       `curl -s -m 5 ${base}/api 2>&1; echo "curl exit $?"`,
       'curl -s -m 5 https://10.1.2.3/ 2>&1; echo "curl exit $?"',
-      'rf mail find --mailbox ceo@demo.test 2>&1',
+      'rf graph /users/ceo@demo.test/messages 2>&1',
       () => `rf wake 2026-11 ${new Date(Date.now() + 2500).toISOString()} the bank file comes later 2>&1`,
       'rf wake ../../Wide/Close now the close can start --label 2026-11 2>&1',
       'rf wake . soon why 2>&1',
@@ -114,8 +114,8 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
     ],
     report: 'Checked the walls, and woke myself for the bank file.', saw: [],
   };
-  const woken: Script = { bash: ['rf mail find 2>&1'], report: 'Woken; no mail is ticked.', saw: [] };
-  const takenOver: Script = { bash: ['rf mail find 2>&1'], report: 'Run as Bob.', saw: [] };
+  const woken: Script = { bash: ['rf graph /me/messages 2>&1'], report: 'Woken; no mail is ticked.', saw: [] };
+  const takenOver: Script = { bash: ['rf graph /me/messages 2>&1'], report: 'Run as Bob.', saw: [] };
   scripts.push(walls, woken, takenOver);
 
   assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Check what you can reach.' })).status, 200);

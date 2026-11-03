@@ -2,13 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { HttpError, type Instance } from './store.ts';
 import { Browsers, passUpgrade } from './browsers.ts';
-import { filesGet, filesList, mailFind, mailSave, type Args } from './m365.ts';
+import { graphGet } from './m365.ts';
 
 // What only a run has, behind `rf`: its runner's logins and browsers. (For its own instance, its screen,
 // threads and wakes, `rf` calls the people's API; see server.ts.) Shared by the server, for runs, and by `cli.ts try`, which lets
 // an admin run a skill's steps without the model.
-//   POST /agent/files {args}       rf files list|get …, through the runner's Microsoft 365 login, as far as the instance's ticks offer
-//   POST /agent/mail {args}        rf mail find|save …, likewise
+//   POST /agent/graph {args}       rf graph PATH …: a GET to Microsoft Graph through the runner's Microsoft 365 login, as far as the
+//                                  instance's ticks reach, answered as Graph answers it
 //   POST /agent/browser {args}     rf browser open SITE | get SITE PATH FILE: a browser on a website, in the runner's login
 // The server never reads or writes the run's files: rf does, in the sandbox. A file coming back travels as `data`, base64, in the
 // answer, with `saved`, the FILE rf saves it as.
@@ -18,6 +18,8 @@ export type AgentRun = { inst: Instance; n: number; token: string; browsers?: Br
 
 // A file's name under working/, as the screen names it.
 const rel = (file: string) => `working/${file.replace(/^working\//, '')}`;
+
+export type Args = Record<string, string[]>;
 
 // Parses `--name value` pairs, where a name may repeat, and a bare `--flag` (followed by another --name or nothing) as "true".
 export function parseArgs(words: string[]): { args: Args; rest: string[] } {
@@ -67,36 +69,15 @@ export async function agentCall(a: AgentRun, path: string, method: string, body:
   const json = async () => { try { return JSON.parse((await body()).toString() || '{}'); } catch { throw new HttpError(400, 'the body is JSON'); } };
   const words = async () => ((await json()).args ?? []).map(String) as string[];
   const data = (bytes: Buffer) => bytes.toString('base64');
-  if (path === '/agent/files' && method === 'POST') {
-    const { rest } = parseArgs(await words()), [cmd, target, file] = rest;
-    if (cmd === 'list' && target) {
-      const out = await filesList(a.inst, target);
-      a.inst.append('agent', 'files', { action: 'list', target: out.name, items: 'items' in out ? (out.items as unknown[]).length : undefined });
-      return { status: 200, data: out };
-    }
-    if (cmd === 'get' && target && file) {
-      const { bytes, ...out } = await filesGet(a.inst, target);
-      a.inst.append('agent', 'files', { action: 'get', name: out.name, modified: out.modified, file: rel(file) });
-      return { status: 200, data: { ...out, saved: rel(file), data: data(bytes) } };
-    }
-    throw new HttpError(400, 'rf files list LINK|REF | get LINK|REF FILE');
-  }
-  if (path === '/agent/mail' && method === 'POST') {
-    const { args, rest } = parseArgs(await words());
-    if (rest[0] === 'find') {
-      const out = await mailFind(a.inst, args);
-      a.inst.append('agent', 'mail', { action: 'find', mailbox: out.mailbox, date: out.date, subject: args.subject?.[0], found: out.messages.length });
-      return { status: 200, data: out };
-    }
-    if (rest[0] === 'save' && rest[1]) {
-      let name: RegExp | undefined;
-      try { name = args.name ? new RegExp(args.name[0], 'i') : undefined; } catch { throw new HttpError(400, '--name is a regular expression'); }
-      const found = await mailSave(a.inst, args, rest[1], name);
-      const names = found.map(f => (args.prefix?.[0] ?? '') + f.name);
-      a.inst.append('agent', 'mail', { action: 'save', saved: names });
-      return { status: 200, data: { attachments: found.map((f, i) => ({ name: names[i], data: data(f.bytes) })) } };
-    }
-    throw new HttpError(400, 'rf mail find [--mailbox ADDRESS] [--date YYYY-MM-DD] [--subject TEXT] [--from TEXT] [--attachments] | save ID [--mailbox ADDRESS] [--name REGEX] [--prefix TEXT]');
+  if (path === '/agent/graph' && method === 'POST') {
+    const { args, rest } = parseArgs(await words()), out = args.out?.[0];
+    if (rest.length !== 1) throw new HttpError(400, "rf graph PATH [--out FILE] [--header 'NAME: VALUE']...");
+    const headers = Object.fromEntries((args.header ?? []).map(h => [h.slice(0, h.indexOf(':')).trim().toLowerCase(), h.slice(h.indexOf(':') + 1).trim()]));
+    const r = await graphGet(a.inst, rest[0], headers), saved = out && r.status < 300 ? rel(out) : undefined;
+    a.inst.append('agent', 'graph', { path: rest[0], status: r.status, bytes: r.bytes.length, ...(saved && { file: saved }) });
+    if (saved) return { status: 200, data: { saved, data: data(r.bytes) } };
+    if (!r.type.includes('json')) throw new HttpError(r.status < 300 ? 400 : r.status, r.status < 300 ? `Graph answered ${r.type || 'bytes'}, ${r.bytes.length} of them: save them with --out FILE` : r.bytes.toString());
+    return { status: r.status, data: JSON.parse(r.bytes.toString()) };
   }
   // `open` answers the CDP address's path; rf makes it an address the sandbox reaches (see sandbox.ts).
   if (path === '/agent/browser' && method === 'POST') {

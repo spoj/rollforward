@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { dirname, join } from 'node:path';
 
@@ -26,15 +26,10 @@ const HELP: Record<string, string> = {
   +<n>m, +<n>h, +<n>d, or a date and time with its offset, such as 2026-09-14T07:00+08:00. A target has one wake pending (a new
   one replaces it), at least 15 minutes after its last. A closed instance can't be woken: to correct one, wake its series
   with --label <its label>-r2.`,
-  files: `rf files list LINK|REF
-rf files get LINK|REF FILE
-  Microsoft 365 files, through your runner's login: their OneDrive, and the SharePoint sites ticked for this instance. LINK is
-  a sharing link; list answers JSON with each item's ref, and a folder's items. get saves the file as working/FILE.`,
-  mail: `rf mail find [--mailbox ADDRESS] [--date YYYY-MM-DD] [--subject TEXT] [--from TEXT] [--attachments]
-rf mail save ID [--mailbox ADDRESS] [--name REGEX] [--prefix TEXT]
-  Microsoft 365 mail, through your runner's login: their own mailbox, or a ticked shared one by --mailbox. find answers JSON,
-  each message with its ID; you never see a body. save saves a message's attachments in working/, those whose names match
-  --name, with --prefix before each name; a name taken gets " (2)".`,
+  graph: `rf graph PATH [--out FILE] [--header 'NAME: VALUE']...
+  A GET to Microsoft Graph v1.0 as your runner, answered as Graph answers it, or with --out its bytes saved as working/FILE.
+  PATH is Graph's own, query included, or an @odata.nextLink, under what is ticked for this instance: /me/messages,
+  /me/mailFolders, /users/ADDRESS/messages, /me/drive, /drives/ID, /sites/ID and /shares/ID.`,
   browser: `rf browser open SITE
 rf browser get SITE PATH FILE
   open prints the CDP address of a browser on the website SITE, signed in with your runner's login if it is ticked for this
@@ -65,14 +60,6 @@ function save(f: string, data: string): string {
   writeFileSync(local(f), Buffer.from(data, 'base64'));
   return shown(f);
 }
-// An attachment's name as a file name, with " (2)" and on if one is there already.
-function free(name: string): string {
-  const clean = name.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim() || 'download', dot = clean.lastIndexOf('.');
-  let f = clean;
-  for (let k = 2; existsSync(local(f)); k++) f = dot > 0 ? `${clean.slice(0, dot)} (${k})${clean.slice(dot)}` : `${clean} (${k})`;
-  return f;
-}
-
 const own = `api/instances/${process.env.RF_INSTANCE}`;
 
 // rf say and rf ask: a comment in a thread, or starting one on an item or the instance.
@@ -106,16 +93,16 @@ else if (cmd === 'put' && args[0]) res = await send('PUT', `${own}/screen`, read
 else if (cmd === 'say' || cmd === 'ask') res = await comment();
 else if (cmd === 'resolve' && args[0]) res = await send('POST', `${own}/resolve`, JSON.stringify({ thread: args[0], text: args.slice(1).join(' ') }));
 else if (cmd === 'wake') res = await wake();
-else if (['files', 'mail', 'browser'].includes(cmd) && args.length >= 1) res = await send('POST', `agent/${cmd}`, JSON.stringify({ args }));
+else if (['graph', 'browser'].includes(cmd) && args.length >= 1) res = await send('POST', `agent/${cmd}`, JSON.stringify({ args }));
 else if (cmd === 'help') res = { ok: true, text: HELP[args[0]] ?? USAGE };
 else res = usage(cmd);
 let text = res.text;
 // rf browser open answers a path on the server's socket: the CDP address is that path here.
 if (res.ok && cmd === 'browser' && args[0] === 'open') text = process.env.RF_URL!.replace(/^http/, 'ws') + text;
-else if (res.ok && text.startsWith('{')) {
-  const { data, attachments, ...out } = JSON.parse(text);
-  if (attachments) text = JSON.stringify({ saved: attachments.map((a: { name: string; data: string }) => save(free(a.name), a.data)) });
-  else if (data !== undefined) text = Object.keys(out).length === 1 ? `saved ${save(out.saved, data)}` : JSON.stringify({ ...out, saved: save(out.saved, data) });
+// A file coming back is {saved, data}: rf saves it in the sandbox, as the server never writes the run's files.
+else if (res.ok && /^\{\s*"saved":/.test(text)) {
+  const { saved, data } = JSON.parse(text);
+  text = `saved ${save(saved, data)}`;
 }
 (res.ok ? console.log : console.error)(text);
 process.exitCode = res.ok ? 0 : 1;

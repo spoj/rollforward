@@ -1,93 +1,44 @@
 import { HttpError, type Instance } from './store.ts';
-import { attachments, children, download, graph, messages, shared, type DriveItem } from './graph.ts';
+import { endpoints, get, graph } from './graph.ts';
 import { needs } from './auth.ts';
 import { logins, runnerOf, saveLogin, use } from './logins.ts';
 
-// The agent's reads through its runner's Microsoft 365 login, for skills to build on, each refused unless the instance's ticks
-// offer it. They only read, as graph.ts only sends GETs:
-//   rf files list LINK|REF            a OneDrive or SharePoint item by its sharing link or a ref from an earlier listing: the item, its
-//                                      parent's ref (to step to a sibling, such as another year's folder) and, for a folder, its items;
-//                                      in the runner's own OneDrive or a SharePoint site, if ticked
-//   rf files get LINK|REF FILE        saves a file under working/
-//   rf mail find [--mailbox ADDRESS] [--date YYYY-MM-DD] [--subject TEXT] [--from TEXT] [--attachments]
-//                                      a ticked mailbox, the runner's own unless named; never a message's body
-//   rf mail save ID [--mailbox ADDRESS] [--name REGEX] [--prefix TEXT]   saves a message's attachments under working/
-
-export type Args = Record<string, string[]>;
-
-export const localDate = (d = new Date()) => d.toLocaleDateString('sv');
-
-// Local midnight of a YYYY-MM-DD day, plus `days`.
-export function day(date: string, days = 0): Date {
-  if (!/^\d{4}-\d\d-\d\d$/.test(date)) throw new HttpError(400, `a date is YYYY-MM-DD, not ${date}`);
-  const [y, m, d] = date.split('-').map(Number);
-  return new Date(y, m - 1, d + days);
+// rf graph: a GET to Microsoft Graph as the instance's runner, answered as Graph answers it, as far as the instance's ticks reach:
+// /me/… or /users/ADDRESS/… for a mailbox's messages and folders, /me/drive/… for the runner's OneDrive, /drives/ID/… for it or a
+// site's library, /sites/ID/… for a site, and /shares/ID/… for what a sharing link points at, where that lives. PATH may be a whole
+// @odata.nextLink, and is read as Graph reads it, dot segments resolved.
+export async function graphGet(inst: Instance, target: string, headers: Record<string, string>) {
+  const base = new URL(endpoints.graph), root = base.pathname.replace(/\/$/, ''), runner = runnerOf(inst).by;
+  const u = new URL(target.startsWith('/') ? endpoints.graph + target : target);
+  if (u.origin !== base.origin || !u.pathname.startsWith(`${root}/`)) throw new HttpError(400, `a Graph path, such as /me/messages, or a link Graph gave: not ${target}`);
+  const path = u.pathname.slice(root.length) + u.search, segments = path.split('?')[0].split('/').slice(1).map(s => decodeURIComponent(s));
+  // /me is the runner, and mailFolders('inbox') is mailFolders.
+  const [top, id = '', part = ''] = (segments[0] === 'me' ? ['users', runner, ...segments.slice(1)] : segments).map(s => s.replace(/\(.*$/, ''));
+  let offer: string;
+  if (top === 'users' && (part === 'messages' || part === 'mailFolders')) {
+    needs('Mail.Read', 'mail');
+    if (id.toLowerCase() !== runner) needs('Mail.Read.Shared', 'shared mailboxes');
+    offer = `m365:mail:${id.toLowerCase()}`;
+  } else if (top === 'users' && part === 'drive' && id.toLowerCase() === runner) {
+    needs('Files.Read.All', 'OneDrive');
+    offer = 'm365:onedrive';
+  } else if (top === 'drives' || top === 'shares') {
+    needs('Files.Read.All', 'OneDrive or SharePoint files');
+    offer = await driveOffer(runner, top === 'drives' ? id : (await graph(runner, `/shares/${encodeURIComponent(id)}/driveItem?$select=parentReference`)).parentReference.driveId);
+  } else if (top === 'sites') {
+    needs('Sites.Read.All', 'SharePoint sites');
+    offer = `m365:site:${id}`;
+  } else throw new HttpError(403, `rf graph reads mailboxes, OneDrive and SharePoint sites ticked for this instance, not ${path}`);
+  return get(use(inst, offer).email, path, headers);
 }
-
-// A ref is "driveId/itemId": drive ids hold "!" but never "/".
-const refOf = (i: DriveItem) => `${i.parentReference.driveId}/${i.id}`;
 
 const own = new Map<string, string>();
-async function ownDrive(email: string): Promise<string> {
-  if (!own.has(email)) own.set(email, (await graph(email, '/me/drive')).id);
-  return own.get(email)!;
-}
-
-// The item a link or ref names, if the instance's ticks offer where it lives: the runner's own OneDrive, or a SharePoint site.
-async function item(inst: Instance, linkOrRef: string): Promise<{ email: string; it: DriveItem }> {
-  needs('Files.Read.All', 'OneDrive or SharePoint files');
-  const email = runnerOf(inst).by;
-  let it: DriveItem;
-  if (/^https?:\/\//i.test(linkOrRef)) it = await shared(email, linkOrRef);
-  else {
-    const m = /^([^/\s]+)\/([^/\s]+)$/.exec(linkOrRef);
-    if (!m) throw new HttpError(400, 'give a sharing link (https://…) or a ref from rf files list');
-    const found: DriveItem = await graph(email, `/drives/${encodeURIComponent(m[1])}/items/${encodeURIComponent(m[2])}`);
-    it = { ...found, parentReference: { ...found.parentReference, driveId: found.parentReference?.driveId ?? m[1] } };
-  }
-  const p = it.parentReference, where = p.driveId === await ownDrive(email) ? 'm365:onedrive' : p.driveType === 'documentLibrary' ? `m365:site:${p.siteId}` : '';
-  if (!where) throw new HttpError(403, `${it.name} is in someone else's OneDrive; a run reads only its runner's own OneDrive and the SharePoint sites ticked for it`);
-  use(inst, where);
-  return { email, it };
-}
-
-const describe = (i: DriveItem) => ({ name: i.name, ref: refOf(i), folder: !!i.folder, size: i.size, modified: i.lastModifiedDateTime });
-
-export async function filesList(inst: Instance, target: string) {
-  const { email, it } = await item(inst, target);
-  const parent = it.parentReference.id ? `${it.parentReference.driveId}/${it.parentReference.id}` : null;
-  return { ...describe(it), parent, ...(it.folder && { items: (await children(email, it)).map(describe) }) };
-}
-
-export async function filesGet(inst: Instance, target: string): Promise<{ name: string; size: number; modified: string; bytes: Buffer }> {
-  const { email, it } = await item(inst, target);
-  if (it.folder) throw new HttpError(400, `${it.name} is a folder; rf files list shows what is in it`);
-  const bytes = await download(email, it);
-  return { name: it.name, size: bytes.length, modified: it.lastModifiedDateTime, bytes };
-}
-
-// The mailbox a run reads: the one named, else its runner's own, if ticked.
-function mailbox(inst: Instance, args: Args): { email: string; mailbox: string } {
-  const mailbox = (args.mailbox?.[0] ?? runnerOf(inst).by).toLowerCase();
-  needs('Mail.Read', 'mail');
-  if (mailbox !== runnerOf(inst).by) needs('Mail.Read.Shared', 'shared mailboxes');
-  return { email: use(inst, `m365:mail:${mailbox}`).email, mailbox };
-}
-
-export async function mailFind(inst: Instance, args: Args) {
-  const { email, mailbox: box } = mailbox(inst, args);
-  const d = args.date?.[0] ?? localDate(), subject = args.subject?.[0]?.toLowerCase(), from = args.from?.[0]?.toLowerCase();
-  const found = (await messages(email, box, day(d), day(d, 1)))
-    .filter(m => (!subject || (m.subject ?? '').toLowerCase().includes(subject))
-      && (!from || `${m.from?.emailAddress?.address ?? ''} ${m.from?.emailAddress?.name ?? ''}`.toLowerCase().includes(from))
-      && (!args.attachments || m.hasAttachments));
-  return { mailbox: box, date: d, messages: found.map(m => ({ id: m.id, subject: m.subject, received: m.receivedDateTime, from: m.from?.emailAddress?.address, attachments: m.hasAttachments })) };
-}
-
-// The message's attachments whose names match.
-export async function mailSave(inst: Instance, args: Args, id: string, name: RegExp | undefined): Promise<{ name: string; bytes: Buffer }[]> {
-  const { email, mailbox: box } = mailbox(inst, args);
-  return (await attachments(email, box, id)).filter(a => !name || name.test(a.name));
+// The tick a drive needs: the runner's own OneDrive, or the site whose library it is.
+async function driveOffer(email: string, id: string): Promise<string> {
+  if (!own.has(email)) own.set(email, (await graph(email, '/me/drive?$select=id')).id);
+  if (id === own.get(email)) return 'm365:onedrive';
+  const s = (await graph(email, `/drives/${encodeURIComponent(id)}?$select=sharePointIds`)).sharePointIds;
+  return `m365:site:${new URL(s.siteUrl).hostname},${s.siteId},${s.webId}`;
 }
 
 // What a person's Microsoft 365 login offers besides their own mailbox and OneDrive: a shared mailbox they can read, or a SharePoint

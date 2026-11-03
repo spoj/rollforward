@@ -10,8 +10,8 @@ import { promisify } from 'node:util';
 import type { Instance } from '../src/store.ts';
 import type { AgentRun } from '../src/agent-api.ts';
 
-// A stand-in for Microsoft's sign-in and Graph: a SharePoint folder of years of reports, the runner's OneDrive, someone else's
-// OneDrive, and two mailboxes. The reads are called as a run's agent calls them, through its runner's Microsoft 365 login.
+// A stand-in for Microsoft's sign-in and Graph: a SharePoint library with a folder of years of reports, the runner's OneDrive,
+// someone else's OneDrive, and two mailboxes. rf graph is called as a run's agent calls it, through its runner's Microsoft 365 login.
 const ALICE = 'alice@demo.test', AP = 'ap@demo.test';
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-conn-')), seriesDir = join(tmp, 'series', 'weekly'), instDir = join(tmp, 'instances', 'w1');
@@ -30,10 +30,14 @@ const folders: Record<string, ReturnType<typeof item>[]> = {
   y2026: [item('a', 'AGING_A_1.csv', '2026-10-20T12:00:00Z'), item('b', 'AGING_B_2.csv', '2026-10-20T12:30:00Z'), item('c', 'AGING_A_0.csv', '2026-10-19T12:00:00Z')],
 };
 const content: Record<string, string> = { a: 'As-Of Date,10/20/2026\nCustomer,Open\nAcme,10\n' };
+const drives: Record<string, { siteUrl: string; siteId: string; webId: string }> = {
+  'b!d1': { siteUrl: 'https://host/sites/reports', siteId: 'site1', webId: 'web1' }, 'b!bob': { siteUrl: 'https://host/personal/bob', siteId: 'personal', webId: 'bob' },
+};
 const mail = [
-  { id: 'm1', subject: 'FW: Request successfully processed for DEMO SUPPLIER LLC', receivedDateTime: '2026-10-20T11:00:00Z', hasAttachments: true, from: { emailAddress: { address: 'may@demo.test' } } },
-  { id: 'm2', subject: 'Something else', receivedDateTime: '2026-10-20T12:00:00Z', hasAttachments: true, from: { emailAddress: { address: 'x@demo.test' } } },
+  { id: 'm1', subject: 'FW: Request successfully processed for DEMO SUPPLIER LLC', body: { contentType: 'text', content: 'The payment run is attached.' } },
+  { id: 'm2', subject: 'Something else', body: { contentType: 'text', content: 'Lunch?' } },
 ];
+const MIME = 'Subject: FW: Request successfully processed\r\n\r\nThe payment run is attached.\r\n';
 const ticks = ['m365:mail:alice@demo.test', 'm365:site:host,site1,web1'];
 const inst = { dir: instDir, seriesId: 'weekly', log: [{ op: 'create', by: ALICE, logins: ticks }], series: () => seriesDir, append: (_by: string, op: string, data: any) => { log.push({ op, data }); return { seq: log.length }; } } as unknown as Instance;
 const run: AgentRun = { inst, n: 1, token: 'run' };
@@ -65,14 +69,9 @@ before(async () => {
     if ((m = /^\/drives\/b!d1\/items\/(\w+)\/children$/.exec(path))) return send({ value: folders[m[1]] ?? [] });
     if ((m = /^\/drives\/b!d1\/items\/(\w+)\/content$/.exec(path))) return void res.writeHead(200).end(content[m[1]]);
     if ((m = /^\/drives\/b!d1\/items\/(\w+)$/.exec(path))) return send(m[1] === 'top' ? item('top', 'LFM', '2026-01-01T00:00:00Z', true) : [...Object.values(folders).flat()].find(i => i.id === m![1]));
-    if ((m = /^\/users\/([^/]+)\/messages$/.exec(path)) && [ALICE, AP].includes(m[1])) {
-      const [, from, to] = /ge (\S+) and receivedDateTime lt (\S+)/.exec(u.searchParams.get('$filter') ?? '') ?? [];
-      return send({ value: (m[1] === ALICE ? mail : []).filter(x => x.receivedDateTime >= from && x.receivedDateTime < to) });
-    }
-    if (path === `/users/${ALICE}/messages/m1/attachments`) return send({ value: [
-      { '@odata.type': '#microsoft.graph.fileAttachment', name: 'Open to Pay.xlsx', contentType: 'application/vnd.ms-excel', contentBytes: Buffer.from('xlsx bytes').toString('base64') },
-      { '@odata.type': '#microsoft.graph.fileAttachment', name: 'logo.png', contentType: 'image/png', contentBytes: '' },
-    ] });
+    if ((m = /^\/drives\/(b!\w+)$/.exec(path)) && drives[m[1]]) return send({ id: m[1], sharePointIds: drives[m[1]] });
+    if (path === '/me/messages') return send({ value: mail });
+    if (path === '/me/messages/m1/$value') return void res.writeHead(200, { 'content-type': 'message/rfc822' }).end(MIME);
     if (path === `/users/${AP}/mailFolders/inbox`) return send({ id: 'inbox' });
     if (path === '/sites/demo.sharepoint.com:/sites/Finance') return send({ id: 'host,site2,web2', displayName: 'Finance' });
     send({ error: { code: 'itemNotFound', message: 'not here' } }, 404);
@@ -104,33 +103,36 @@ after(() => {
   rmSync(tmp, { recursive: true, force: true, maxRetries: 3 });
 });
 
-test('rf files reads a ticked SharePoint site as the runner: lists a folder, steps to its parent, saves a file; Graph is only read', async () => {
-  const folder = (await call('/agent/files', { args: ['list', 'https://share.test/reports'] }))!.data as any;
-  assert.deepEqual([folder.name, folder.folder, folder.parent, folder.items.length], ['2026', true, 'b!d1/top', 3]);
-  const up = (await call('/agent/files', { args: ['list', folder.parent] }))!.data as any;
-  assert.deepEqual(up.items.map((i: any) => i.name), ['2026', '2025']);
-  const got = (await call('/agent/files', { args: ['get', 'b!d1/a', 'aging.csv'] }))!.data as any;
+test('rf graph reads a ticked SharePoint library as Graph answers: a sharing link, a folder, a file saved with --out; Graph is only read', async () => {
+  const graph = async (...args: string[]) => (await call('/agent/graph', { args }))!.data as any;
+  const folder = await graph(`/shares/u!${Buffer.from('https://share.test/reports').toString('base64url')}/driveItem`);
+  assert.deepEqual([folder.name, folder.parentReference.driveId], ['2026', 'b!d1']);
+  assert.deepEqual((await graph('/drives/b!d1/items/y2026/children')).value.map((i: any) => i.name), ['AGING_A_1.csv', 'AGING_B_2.csv', 'AGING_A_0.csv']);
+  const got = await graph('/drives/b!d1/items/a/content', '--out', 'aging.csv');
   assert.deepEqual([got.saved, Buffer.from(got.data, 'base64').toString()], ['working/aging.csv', content.a], 'the bytes come back for rf to save');
+  await assert.rejects(graph('/drives/b!d1/items/a/content'), /save them with --out FILE/);
   assert.ok(methods.length && methods.every(m => m === 'GET'));
   assert.equal(logins.secret(ALICE, 'm365'), 'r1', 'the refresh token turned over and was sealed again');
 });
 
-test("rf files refuses the runner's OneDrive unless ticked, and anyone else's OneDrive always", async () => {
-  await assert.rejects(call('/agent/files', { args: ['list', 'https://share.test/mine'] }), /m365:onedrive is not ticked for this instance/);
-  await assert.rejects(call('/agent/files', { args: ['list', 'https://share.test/bobs'] }), /someone else's OneDrive/);
+test("rf graph reaches only what's ticked: not the runner's OneDrive unticked, anyone else's, an unticked mailbox, a path climbing out, or the rest of Graph", async () => {
+  const graph = (path: string) => call('/agent/graph', { args: [path] });
+  await assert.rejects(graph('/me/drive/root/children'), /m365:onedrive is not ticked for this instance/);
+  await assert.rejects(graph(`/shares/u!${Buffer.from('https://share.test/bobs').toString('base64url')}/driveItem/content`), /m365:site:host,personal,bob is not ticked/);
+  await assert.rejects(graph(`/users/${AP}/messages`), /m365:mail:ap@demo.test is not ticked/);
+  await assert.rejects(graph(`/me/messages/../../users/${AP}/messages`), /m365:mail:ap@demo.test is not ticked/);
+  await assert.rejects(graph('/users'), /rf graph reads mailboxes, OneDrive and SharePoint sites ticked for this instance, not \/users/);
+  await assert.rejects(graph('https://elsewhere.test/v1.0/me/messages'), /a Graph path/);
 });
 
-test("rf mail reads a ticked mailbox, the runner's own unless named, and saves attachments without overwriting", async () => {
-  const found = (await call('/agent/mail', { args: ['find', '--date', '2026-10-20', '--subject', 'request successfully', '--attachments'] }))!.data as any;
-  assert.deepEqual([found.mailbox, found.messages.map((m: any) => m.id)], [ALICE, ['m1']]);
-  assert.ok(!('body' in found.messages[0]), "a message's body is never handed out");
+test("rf graph reads a ticked mailbox whole: messages with their bodies, and a message's MIME, which rf saves", async () => {
   const { serveAgent } = await import('../src/agent-api.ts'), api = await serveAgent(inst);
-  const rf = async (...args: string[]) => JSON.parse((await promisify(execFile)(process.execPath, [join(app, 'src', 'rf.ts'), ...args], { env: { ...process.env, RF_URL: api.url, RF_TOKEN: api.token, RF_WORKING: join(instDir, 'working') } })).stdout);
-  const saved = await rf('mail', 'save', 'm1', '--name', '\\.xlsx$'), again = await rf('mail', 'save', 'm1', '--name', '\\.xlsx$');
+  const rf = async (...args: string[]) => (await promisify(execFile)(process.execPath, [join(app, 'src', 'rf.ts'), ...args], { env: { ...process.env, RF_URL: api.url, RF_TOKEN: api.token, RF_WORKING: join(instDir, 'working') } })).stdout;
+  assert.deepEqual(JSON.parse(await rf('graph', '/me/messages?$select=subject,body')).value.map((m: any) => m.body.content), ['The payment run is attached.', 'Lunch?']);
+  assert.equal((await rf('graph', '/me/messages/m1/$value', '--out', 'm1.eml')).trim(), 'saved working/m1.eml');
   await api.close();
-  assert.deepEqual([saved.saved, again.saved], [['working/Open to Pay.xlsx'], ['working/Open to Pay (2).xlsx']], 'rf saves them, never over a file already there');
-  assert.ok(readFileSync(join(instDir, 'working', 'Open to Pay (2).xlsx')).length);
-  await assert.rejects(call('/agent/mail', { args: ['find', '--mailbox', AP] }), /m365:mail:ap@demo.test is not ticked/);
+  assert.equal(readFileSync(join(instDir, 'working', 'm1.eml'), 'utf8'), MIME);
+  assert.deepEqual(log.filter(e => e.op === 'graph').slice(-2).map(e => [e.data.path, e.data.status, e.data.file]), [['/me/messages?$select=subject,body', 200, undefined], ['/me/messages/m1/$value', 200, 'working/m1.eml']]);
 });
 
 test('a person adds a shared mailbox they can read, and a SharePoint site by its link', async () => {

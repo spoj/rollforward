@@ -97,11 +97,11 @@ Talk is threads only, as `comment` entries in the instance's `log.jsonl`: `{thre
 
 ## The agent's rf
 
-`rf` is on the agent's `PATH`; `rf help COMMAND` gives each command's details. For its own instance it calls the people's API, `/api`, as a caller with a run's few rights: its own instance's screen and threads, wakes in its own workspace, and naming a folder it can read; so each rule lives once. `/agent` holds what only a run has: its runner's logins and browsers.
+`rf` is on the agent's `PATH`; `rf help COMMAND` gives each command's details. What reaches outside the series is a wide path: the real interface, Microsoft Graph or a browser over CDP, behind a boundary the server keeps (the instance's ticks, GETs only, the website's hosts) and with every request logged, not commands that wrap it. Narrow conveniences are skills people write. For its own instance it calls the people's API, `/api`, as a caller with a run's few rights: its own instance's screen and threads, wakes in its own workspace, and naming a folder it can read; so each rule lives once. `/agent` holds what only a run has: its runner's logins and browsers.
 
 - `rf show` prints the screen, `workspace.json`, with its `rev`; `rf put FILE` replaces it. A put is refused if its `rev` isn't current, as people may have uploaded meanwhile, and unless every item has a unique id, a name and a kind; `from` names items, never in a circle; `file` is null or an existing file under `upload/` or `working/`; and `status` is left as it is. The server logs each change (`point`, `item`, `remove`) and freezes each newly shown file, logging its sha256.
 - `rf say`, `rf ask` and `rf resolve` (see Talking), and `rf wake` (see Runs).
-- `rf files list|get` and `rf mail find|save` read Microsoft 365 through the runner's login, as ticked; `rf browser open|get` drives a website (see Skill use). The agent never sees a message's body or a password.
+- `rf graph PATH [--out FILE]` is a GET to Microsoft Graph through the runner's login, answered as Graph answers it, anywhere under the mailboxes, OneDrive and SharePoint sites ticked for the instance: messages with their bodies, a message's MIME, folders, `$search`, files and paging. `rf browser open|get` drives a website (see Skill use). The agent never sees a password or a Microsoft token.
 
 ## Storage
 
