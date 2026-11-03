@@ -52,7 +52,7 @@ writeFileSync(i('r1/working/rates.csv'), 'usd,1');
 writeFileSync(i('p1/working/payroll.csv'), 'names');
 mkdirSync(i('w2/session'));
 writeFileSync(i('w2/session/main.jsonl'), `${JSON.stringify({ type: 'session', id: 'main', cwd: '/work/ws/Old name' })}\n`);
-const cwd = '/work/ws/Weekly', at = `${cwd}/w2`;
+const cwd = '/work/ws/Weekly: AR', at = `${cwd}/w2`;
 const agent = pi({
   token: TOKEN, id: 'w2', skills: ['tool'],
   view: { cwd, instance: at, dir: i('w2'), pylib: join(root, 'series', 'weekly', '.pylib'), ro: [[i('w1'), `${cwd}/w1`], [i('w2'), at], [i('r1'), '/work/ws/Shared/r1']], env: { DATABRICKS_HOST: 'https://adb-1.test' } },
@@ -83,7 +83,7 @@ test("the agent's scripts reach a skill's files through $RF_SKILLS", async () =>
 test('the sandbox shows its view of the data by name, and nothing else of the data or the host', async () => {
   assert.equal(await sh('pwd'), cwd);
   assert.equal(await sh('cat ../Shared/r1/working/rates.csv'), 'usd,1');
-  assert.equal(await sh('ls /work/ws'), 'Shared\nWeekly');
+  assert.equal(await sh('ls /work/ws'), 'Shared\nWeekly: AR');
   for (const p of [root, '/root', '/var', import.meta.dirname]) assert.match(await sh(`ls ${p} 2>&1`), /No such file/, p);
   assert.equal(JSON.parse(readFileSync(i('w2/session/main.jsonl'), 'utf8').split('\n')[0]).cwd, cwd, 'its session moved to the names of today, so Pi resumes it');
 });
@@ -119,8 +119,9 @@ test("the network is the server's socket: allowed hosts through its proxy, never
   assert.deepEqual(egress, [['example.org', false], ['127.0.0.1.nip.io', false], ['pypi.org', true]]);
 });
 
-test("a plain pip install lands in the series' .pylib, for the Python runs use, where later commands import it", async () => {
-  assert.match(await sh('pip install -q --no-deps six 2>&1; python -c "import six; print(six.__file__)"'), /\/\.pylib\/six\.py$/);
+test("a plain pip install lands in the series' .pylib, for the Python runs use, where later commands import it, a colon in its path and all", async () => {
+  assert.match(await sh('pip --version'), /\/\.venv\/lib\/python3\.\d+\/site-packages\/pip /, "the venv's pip");
+  assert.match(await sh('pip install -q --no-deps six 2>&1; python -c "import six, os; print(os.path.realpath(six.__file__))"'), /^\/work\/ws\/Weekly: AR\/\.pylib\/six\.py$/);
 });
 
 test("a connection's host is the server's to answer, with rollforward's own certificate, which curl, Python and Node trust; its type's environment is set", async () => {
