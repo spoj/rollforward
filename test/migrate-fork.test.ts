@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { instances, labels, openStore } from '../src/store.ts';
@@ -22,6 +22,8 @@ test("migrate-fork copies the fork's root by id, with its talk as threads, numbe
   write('Acme/AR weekly/w1/workspace.json', { rev: 3, status: 'closed', summary: 'built', items: [{ ...ar, notes: [q] }] });
   write('Acme/AR weekly/w1/upload/ar.csv', 'a\n');
   write('Acme/AR weekly/w1/session/s.jsonl', '{}\n');
+  write('Acme/AR weekly/w1/working/x.csv', 'x\n');
+  symlinkSync('x.csv', join(old, 'Acme/AR weekly/w1/working/latest.csv'));
   log('Acme/AR weekly/w1/log.jsonl', [
     { by: 'ann@x.com', op: 'create', from: null },
     { by: 'ann@x.com', op: 'upload', file: 'upload/ar.csv', pane: 'inputs', onto: null, sha256: 'x' },
@@ -66,6 +68,7 @@ test("migrate-fork copies the fork's root by id, with its talk as threads, numbe
   assert.equal(statSync(join(w1.dir, 'workspace.json')).mode & 0o777, 0o444);
   assert.equal(readFileSync(join(w1.dir, 'upload', 'ar.csv'), 'utf8'), 'a\n');
   assert.deepEqual(readdirSync(join(w1.dir, 'session')), ['s.jsonl']);
+  assert.equal(readlinkSync(join(w1.dir, 'working', 'latest.csv')), 'x.csv');
   const brief = (e: Record<string, unknown>) => [e.seq, e.op, e.thread ?? e.upto ?? e.seen ?? e.accepted ?? e.logins ?? null];
   assert.deepEqual(w1.log.map(brief), [
     [1, 'create', []], [2, 'upload', null], [3, 'run', 2], [4, 'item', null], [5, 'comment', 'c5'], [6, 'comment', 'c6'], [7, 'comment', 'c7'],

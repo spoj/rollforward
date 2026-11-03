@@ -16,7 +16,7 @@ if (existsSync(root)) throw new Error(`${root} exists: migrate into a new folder
 const id = (path: string) => createHash('sha256').update(path).digest('hex').slice(0, 12);
 const folders = (dir: string) => readdirSync(dir).filter(n => !n.startsWith('.') && statSync(join(dir, n)).isDirectory()).sort();
 const json = (p: string) => JSON.parse(readFileSync(p, 'utf8'));
-const copy = (from: string, to: string) => existsSync(from) && cpSync(from, to, { recursive: true, preserveTimestamps: true, mode: constants.COPYFILE_FICLONE });
+const copy = (from: string, to: string) => existsSync(from) && cpSync(from, to, { recursive: true, preserveTimestamps: true, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE });
 const left = (dir: string, known: string[]) => {
   const rest = readdirSync(dir).filter(n => !known.includes(n));
   if (rest.length) console.log(`left in ${dir}: ${rest.join(', ')}`);
