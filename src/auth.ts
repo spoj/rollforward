@@ -284,7 +284,7 @@ async function finishM365(req: IncomingMessage, res: ServerResponse, claims: any
 }
 
 // A fresh access token for a person's Microsoft 365 login, and the refresh token that replaces theirs. A login Microsoft no longer
-// renews answers 401.
+// renews answers 401, as does one made through another app, or with a secret since replaced.
 export async function refreshM365(refreshToken: string): Promise<{ access: string; refresh: string; expires: number }> {
   const d = await discovery();
   const r = await fetch(d.token_endpoint, {
@@ -292,7 +292,7 @@ export async function refreshM365(refreshToken: string): Promise<{ access: strin
     body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: oidc.clientId, scope: M365_SCOPES, ...(oidc.clientSecret && { client_secret: oidc.clientSecret }) }),
   });
   const t = await r.json().catch(() => ({}));
-  if (!r.ok || !t.access_token) throw new HttpError(t.error === 'invalid_grant' ? 401 : 502, `Microsoft did not renew the login: ${(t.error_description ?? t.error ?? r.status).toString().split('\r\n')[0]}`);
+  if (!r.ok || !t.access_token) throw new HttpError(['invalid_grant', 'invalid_client', 'unauthorized_client'].includes(t.error) ? 401 : 502, `Microsoft did not renew the login: ${(t.error_description ?? t.error ?? r.status).toString().split('\r\n')[0]}`);
   return { access: t.access_token, refresh: t.refresh_token ?? refreshToken, expires: Date.now() + (Number(t.expires_in ?? 3600) - 120) * 1000 };
 }
 

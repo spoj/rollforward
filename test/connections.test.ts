@@ -66,6 +66,7 @@ before(async () => {
       let body = '';
       req.on('data', c => (body += c)).on('end', () => {
         const f = new URLSearchParams(body);
+        if (f.get('refresh_token') === 'old-app') return send({ error: 'invalid_client', error_description: "AADSTS7000215: Invalid client secret provided for a secret added to app 'old'." }, 401);
         if (f.get('grant_type') !== 'refresh_token' || f.get('refresh_token') !== `r${refreshes}`) return send({ error: 'invalid_grant', error_description: 'AADSTS700082: The refresh token has expired.' }, 400);
         refreshes++;
         send({ access_token: 'tok', refresh_token: `r${refreshes}`, expires_in: 3600 });
@@ -182,6 +183,13 @@ test('a login Microsoft no longer renews is marked expired, and the run is told 
   logins.saveLogin(ALICE, logins.logins(ALICE)[0], 'stale');
   const fresh = await import(`../src/graph.ts?again=${Date.now()}`);
   await assert.rejects(fresh.token(ALICE), /alice@demo.test's Microsoft 365 login has expired/);
+  assert.equal(logins.logins(ALICE)[0].expired, true);
+});
+
+test("a login made through another app, or with a secret since replaced, shows as expired from the server's start", async () => {
+  logins.saveLogin(ALICE, { ...logins.logins(ALICE)[0], expired: false }, 'old-app');
+  const fresh = await import(`../src/graph.ts?app=${Date.now()}`);
+  await fresh.checkLogins();
   assert.equal(logins.logins(ALICE)[0].expired, true);
 });
 

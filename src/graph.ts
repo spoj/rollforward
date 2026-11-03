@@ -1,5 +1,5 @@
 import { HttpError } from './store.ts';
-import { refreshM365 } from './auth.ts';
+import { refreshM365, users } from './auth.ts';
 import { logins, saveLogin, secret } from './logins.ts';
 
 // Microsoft Graph as a person, through their delegated Microsoft 365 login (logins.ts): each access token comes from the
@@ -30,6 +30,12 @@ export async function token(email: string): Promise<string> {
     if (now) saveLogin(email, { ...now, expired: true });
     throw Object.assign(new HttpError(409, `${email}'s Microsoft 365 login has expired: they sign in to it again on the Logins page`), { login: 'm365' });
   }
+}
+
+// At the start, each Microsoft 365 login is renewed once, so one this server's app can no longer renew, as after the app or its
+// secret changed, shows as expired, for its person to sign in again, before a run needs it.
+export async function checkLogins() {
+  for (const email of Object.keys(users())) if (current(email) && !current(email)!.expired) await token(email).catch(() => {});
 }
 
 // A GET, answered as Graph answers it. Only ever a GET: nothing here can change or delete a file or a message.

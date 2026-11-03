@@ -13,6 +13,7 @@ import { authenticate, checkConfig, connectM365, m365Ready, mode, myTokens, newT
 import { canManage, canSee, changes, everyone, initSystem, saveTree, tree, writeJson, type Tree, type Workspace } from './system.ts';
 import { checkTicks, logins, runnerOf, signOut } from './logins.ts';
 import { agentCall } from './agent-api.ts';
+import { checkLogins } from './graph.ts';
 import { endSignIn, isSignIn, passUpgrade, removeWebsite, setWebsite, startSignIn, viewPage, websites } from './browsers.ts';
 import { offer, unoffer } from './m365.ts';
 import { seriesSettings } from './series.ts';
@@ -697,5 +698,6 @@ server.on('upgrade', (req, socket, head) => {
 });
 server.listen(port, host, () => {
   startWaking();
+  if (m365Ready()) checkLogins();
   console.log(`rollforward on http://${host}:${port}, data in ${root}, sign-in ${mode}${process.env.RF_TODAY ? `, skills take today as ${process.env.RF_TODAY} (RF_TODAY)` : ''}`);
 });
