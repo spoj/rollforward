@@ -10,7 +10,7 @@ Recurring tasks, files in and files out. People drop this period's input files i
 - **Workspaces hold series,** such as one client's, and its owners and members see them.
 - **People sign in with Microsoft,** with one button, and **logins are each person's own:** a run reaches Microsoft 365 and websites only through its runner's logins, and only those ticked for its instance.
 - **Wakes:** an agent sets when its instance, or its series' next period, runs again; nothing is scheduled.
-- **AGENTS.md:** every run loads the company's and its workspace's. It finds the series it can read as folders under `/work`: its own workspace's, and those of any workspace whose people all belong to its own.
+- **AGENTS.md:** every run loads the company's and its workspace's. It finds the series it can read as folders under `/work`: its own workspace's, and those of any workspace that has everyone its own has, so nothing it reads reaches someone who couldn't see it already.
 - **rf** is people's command line, with a personal token: what the page does, plus `rf pull`, which copies what you can see as rsync does, for your own desktop agent, and `rf help`, its guide. For watching over runs, `rf status` shows what goes on and what's stuck, `rf runs` the history of runs and `rf costs` their totals. Admin is rf, not the page: `rf people` prints everyone, or a workspace's people, as lines to edit and set back with `--set`, which refuses a change that would hide an open instance from the person who runs it, unless `--force`, and `rf brand` gives the deployment its logo and text. Install it with `npm i -g @rfany/rf` ([cli/](cli/)).
 - **Everything is files on disk,** with no database.
 
