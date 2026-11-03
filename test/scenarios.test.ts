@@ -1,8 +1,8 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -156,4 +156,63 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Once more.' }, bob)).status, 200);
   log = await runs(id, 4);
   assert.match(String(log.findLast(e => e.op === 'done')!.error), /the model said no/, "a model's failure is the run's error");
+});
+
+test('sign-offs are git commits: the agent commits a moment worth keeping, the runner approves or rejects in their name, and closing commits as theirs', async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Signed' })).json();
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB] })).status, 200);
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Pack' })).json();
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-12', logins: [] })).json();
+  const dir = join(root, 'instances', id), git = (...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
+  const ask: Script = {
+    bash: [
+      'echo 100 > 2026-12/working/pack.csv && rf commit Draft pack built 2>&1',
+      "git -C 2026-12 log --format='%an|%s' 2>&1; echo 200 > 2026-12/working/pack.csv; git -C 2026-12 status --short 2>&1",
+      'git -C 2026-12 commit --allow-empty -qm mine 2>&1 | head -1',
+      'rf ask --sign-off --to bob@demo.test Send it? 2>&1',
+      'rf ask --sign-off The pack is ready to send to the bank. 2>&1',
+    ],
+    report: 'Built the pack; asked for a sign-off.', saw: [],
+  };
+  const again: Script = { bash: ['rf ask --sign-off The rate is fixed: send it now? 2>&1'], report: 'Fixed the rate; asked again.', saw: [] };
+  const approved: Script = { bash: [], report: 'Signed off: sending.', saw: [] };
+  scripts.push(ask, again, approved);
+
+  assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Build the pack.' })).status, 200);
+  let log = await runs(id, 1);
+  assert.match(ask.saw[0], /^committed [0-9a-f]{40}\s*$/);
+  assert.match(ask.saw[1], /^rollforward agent\|Draft pack built\n[^]* M working\/pack.csv/, 'the run reads its history, and sees what changed since');
+  assert.match(ask.saw[2], /Read-only file system|Permission denied|unable to/i, 'and never writes it');
+  assert.match(ask.saw[3], /a sign-off is the runner's, admin@demo.test: leave out --to/);
+  assert.match(ask.saw[4], /^asked in c\d+/);
+  assert.deepEqual(log.filter(e => e.op === 'commit').map(e => [e.by, e.run, e.message, e.commit]), [['agent', 1, 'Draft pack built', git('rev-parse', 'HEAD~0')]]);
+  const thread = log.findLast(e => e.op === 'comment')!.thread as string, signoff = (body: object, cookie = admin) => call('POST', `/api/instances/${id}/signoff`, { thread, ...body }, cookie);
+  assert.equal(log.findLast(e => e.op === 'comment')!.signoff, true);
+
+  assert.equal((await signoff({ approved: true }, bob)).status, 403, "only the runner signs");
+  assert.equal((await signoff({ approved: false, text: 'Use the new rate.' })).status, 200);
+  log = await runs(id, 2);
+  const rejected = log.find(e => e.op === 'signoff')!;
+  assert.deepEqual([rejected.by, rejected.approved, rejected.text], [ADMIN, false, 'Use the new rate.']);
+  assert.equal(git('log', '-1', '--format=%an <%ae>%n%B', String(rejected.commit)), 'Demo Admin <admin@demo.test>\nThe pack is ready to send to the bank.\n\nUse the new rate.', 'a rejection commits too, without a Signed-off-by');
+  assert.equal(git('show', `${rejected.commit}:working/pack.csv`), '200', 'the folder as it stood');
+  assert.match(again.prompt!, /"op":"signoff".*"approved":false.*"text":"Use the new rate."/, 'the answer starts a run, as a reply does');
+  assert.equal((await signoff({ approved: true })).status, 409, 'nothing waits in that thread now');
+
+  const next = log.findLast(e => e.op === 'comment')!.thread;
+  assert.equal((await call('POST', `/api/instances/${id}/signoff`, { thread: next, approved: true, text: 'Go.' })).status, 200);
+  log = await runs(id, 3);
+  const yes = log.findLast(e => e.op === 'signoff')!;
+  assert.equal(git('log', '-1', '--format=%an%n%B', String(yes.commit)), 'Demo Admin\nThe rate is fixed: send it now?\n\nGo.\n\nSigned-off-by: Demo Admin <admin@demo.test>');
+  assert.match(git('show', `${yes.commit}:log.jsonl`), /"op":"signoff","thread":"c\d+","approved":false/, 'the whole folder, its log included');
+
+  assert.equal((await call('POST', `/api/instances/${id}/close`)).status, 200);
+  log = (await (await call('GET', `/api/instances/${id}`)).json()).log;
+  assert.equal(log.at(-1).commit, git('rev-parse', 'HEAD'));
+  assert.equal(git('log', '-1', '--format=%an%n%B'), 'Demo Admin\nClose 2026-12\n\nSigned-off-by: Demo Admin <admin@demo.test>');
+  assert.equal(git('rev-list', '--count', 'HEAD'), '4', 'the agent\'s commit, the two answers and the close');
+  const pulled = await (await call('GET', '/api/files?path=Signed/Pack/2026-12')).json();
+  assert.ok(pulled.length && !pulled.some((f: { path: string }) => f.path.includes('/.git/')), 'rf pull leaves the history out');
+  const { id: copy } = await (await call('POST', `/api/instances/${id}/duplicate?as=copy`, { logins: [] })).json();
+  assert.ok(!existsSync(join(root, 'instances', copy, '.git')), 'a duplicate starts afresh');
 });

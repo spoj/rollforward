@@ -24,12 +24,10 @@ saveTree({
 });
 writeJson('users.json', { [alice]: { role: 'user' } });
 for (const s of ['s1', 's2', 's3', 's4', 's5', 's6']) mkdirSync(join(tmp, 'series', s), { recursive: true });
-const make = (series: string, label: string, status?: 'close') => {
-  const i = createInstance(series, label, alice, []);
-  if (status) i.close(alice);
-  return i;
-};
-const aug = make('s1', '2026-08', 'close'), sep = make('s1', '2026-09'), oct = make('s1', '2026-10');
+const make = (series: string, label: string) => createInstance(series, label, alice, []);
+const aug = make('s1', '2026-08');
+await aug.close({ email: alice, name: 'Alice' });
+const sep = make('s1', '2026-09'), oct = make('s1', '2026-10');
 const run = { inst: sep, view: { cwd: '/work/Acme/Bank rec' } } as unknown as Active;
 const ops = (i: Instance) => i.log.map(e => e.op);
 const settle = () => new Promise(r => setTimeout(r, 2000));
@@ -80,7 +78,7 @@ test("a series' wake starts an instance as whoever shares the series; unshared, 
 
 test("closing an instance wakes the later open ones of its series, not the earlier; a note for those the closer doesn't start", async () => {
   const before = make('s1', '2026-07');
-  sep.close(alice);
+  await sep.close({ email: alice, name: 'Alice' });
   closed(sep, alice);
   await settle();
   assert.deepEqual([oct.log.findLast(e => e.op === 'wake')!.reason, oct.log.findLast(e => e.op === 'wake')!.note], [`2026-09 closed: its final figures may differ from the draft you read`, undefined]);

@@ -50,7 +50,7 @@ export const isNote = (inst: Instance, e: Entry) => !!e.note || (isPerson(e) && 
   && !(e.op === 'comment' && inst.log.findLast(x => x.seq < e.seq && x.op === 'comment' && x.thread === e.thread && x.by === 'agent')?.to === e.by));
 
 export function pending(inst: Instance, seen: number): Entry[] {
-  return inst.log.filter(e => e.seq > seen && !isNote(inst, e) && (e.op === 'wake' || (isPerson(e) && (['upload', 'comment'].includes(e.op) || (e.op === 'create' && e.fetch)))));
+  return inst.log.filter(e => e.seq > seen && !isNote(inst, e) && (e.op === 'wake' || (isPerson(e) && (['upload', 'comment', 'signoff'].includes(e.op) || (e.op === 'create' && e.fetch)))));
 }
 
 // Whether an instance has something for a run: what came since its last run, or since an Interrupt, which waits for the next act.

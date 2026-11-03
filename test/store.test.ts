@@ -1,11 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInstance, openStore } from '../src/store.ts';
 
-test('a put takes steps and from, and a new instance carries the graph; from must name items and not go round in a circle', () => {
+const alex = { email: 'alex', name: 'Alex' };
+
+test('a put takes steps and from, and a new instance carries the graph; from must name items and not go round in a circle', async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-')), series = 'weekly';
   openStore(tmp);
   const inst = createInstance(series, 'w1', 'alex', []);
@@ -17,12 +20,12 @@ test('a put takes steps and from, and a new instance carries the graph; from mus
   assert.throws(() => put([ar, { id: 'bb', name: 'BB', kind: 'output', file: null, from: ['nope'] }]), /bb: from names no item "nope"/);
   assert.throws(() => put([{ ...ar, from: ['bb'] }, { id: 'bb', name: 'BB', kind: 'output', file: null, from: ['ar'] }]), /circle among ar, bb/);
   put([ar, { id: 'el', name: 'Eligible AR', kind: 'step', file: 'working/eligible.csv', from: ['ar'] }, { id: 'bb', name: 'Borrowing base', kind: 'output', file: null, from: ['el'] }]);
-  inst.close('alex');
+  await inst.close(alex);
   assert.deepEqual(createInstance(series, 'w2', 'alex', []).doc.items.map(i => [i.id, i.kind, i.file, i.from]), [['ar', 'input', null, undefined], ['el', 'step', null, ['ar']], ['bb', 'output', null, ['el']]]);
   rmSync(tmp, { recursive: true, force: true });
 });
 
-test("an output's destination is free text, logged as it changes and carried to the next instance", () => {
+test("an output's destination is free text, logged as it changes and carried to the next instance", async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-')), series = 'monthly';
   openStore(tmp);
   const inst = createInstance(series, 'm1', 'alex', []);
@@ -30,12 +33,12 @@ test("an output's destination is free text, logged as it changes and carried to 
   assert.throws(() => put([{ id: 'pack', name: 'Pack', kind: 'output', file: null, destination: 3 }]), /pack: destination must be a string/);
   put([{ id: 'pack', name: 'Pack', kind: 'output', file: null, destination: 'Mail to ap@demo.test' }]);
   assert.equal(inst.log.findLast(e => e.op === 'item')!.destination, 'Mail to ap@demo.test');
-  inst.close('alex');
+  await inst.close(alex);
   assert.equal(createInstance(series, 'm2', 'alex', []).doc.items[0].destination, 'Mail to ap@demo.test');
   rmSync(tmp, { recursive: true, force: true });
 });
 
-test("an ask waits on people until someone replies or resolves it, and closing accepts the ones still waiting", () => {
+test("an ask waits on people until someone replies or resolves it, and closing accepts the ones still waiting", async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-')), sam = 'sam@example.com';
   openStore(tmp);
   const inst = createInstance('weekly', 'w1', 'alex', []);
@@ -46,7 +49,24 @@ test("an ask waits on people until someone replies or resolves it, and closing a
   inst.append('agent', 'comment', { thread: 'c4', item: null, ref: null, text: 'Which file is right?', ask: true });
   inst.append(sam, 'resolve', { thread: 'c4' });
   assert.deepEqual(inst.asking().map(e => e.thread), ['c1']);
-  inst.close('alex');
+  await inst.close(alex);
   assert.deepEqual(inst.log.at(-1)!.accepted, ['c1']);
+  rmSync(tmp, { recursive: true, force: true });
+});
+
+test("closing commits the folder in the runner's name; a commit that fails, here on a file a run made unreadable, leaves it open", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
+  openStore(tmp);
+  const inst = createInstance('monthly', 'm1', 'alex', []), locked = join(inst.dir, 'working', 'locked.csv');
+  writeFileSync(locked, 'x\n');
+  chmodSync(locked, 0);
+  await assert.rejects(inst.close(alex), /working\/locked.csv can't be read: EACCES/);
+  assert.deepEqual([inst.doc.status, JSON.parse(readFileSync(join(inst.dir, 'workspace.json'), 'utf8')).status, inst.log.at(-1)!.op], ['open', 'open', 'create']);
+  chmodSync(locked, 0o644);
+  await inst.close(alex);
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: inst.dir, encoding: 'utf8' }).trim();
+  assert.equal(inst.log.at(-1)!.commit, git('rev-parse', 'HEAD'));
+  assert.equal(git('log', '-1', '--format=%an <%ae>%n%B'), 'Alex <alex>\nClose m1\n\nSigned-off-by: Alex <alex>');
+  assert.equal(git('show', 'HEAD:working/locked.csv'), 'x');
   rmSync(tmp, { recursive: true, force: true });
 });

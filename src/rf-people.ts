@@ -54,15 +54,17 @@ What there is
   series, and a reply from whom an ask names; anyone else's is a note, which the agent takes up once the runner does.
 - A comment starts a thread, on the instance or on an item, at a cell such as Base!C25, and others reply in it. An ask is the
   agent's comment that waits on someone, the one it names or else the runner, until they reply or resolve it. rf ls says how many
-  asks wait in each instance.
+  asks wait in each instance. A sign-off, an ask with signoff true, waits on the runner, who approves or rejects it on the page:
+  either commits the instance's folder to its history, .git in it, as closing does.
 
 What rf pull copies, the folders as the agent sees them
   AGENTS.md                  the company's conventions; <workspace>/AGENTS.md the workspace's
   <workspace>/<series>/<label>/
     workspace.json           the screen: {rev, status, items: [{id, name, kind, file, from, headline, source}]}
     log.jsonl                every event, by seq: by is a person's email, "server" or "agent"; op is upload, comment (thread, item,
-                             ref, text, ask, to), resolve, point and item (the screen changing), run, report (the agent's account of
-                             a run), done (its cost, summary or error), close, and the rest
+                             ref, text, ask, to, signoff), resolve, signoff (the runner's answer, with its commit), commit, point and
+                             item (the screen changing), run, report (the agent's account of a run), done (its cost, summary or
+                             error), close, and the rest
     upload/                  what people uploaded, their comments' attachments in upload/attachments/
     working/                 what the agent made, its scripts, and process.md, how it does this series
     session/                 the agent's own session: every message and tool call of every run
@@ -290,7 +292,7 @@ else if (cmd === 'comment' && args.length === 2) {
       [`Running`, s.running.map(r => `${r.path}  run ${r.run}  for ${took((Date.now() - Date.parse(r.at)) / 1000)}  ${usd(r.cost)}${Date.now() - Date.parse(r.at) > long * 60e3 ? `  LONG, past ${long}m` : ''}`)],
       [`Queued`, s.queued.map(q => `${q.path}  since ${when(q.since)}: ${q.why}`)],
       [`Waiting`, [
-        ...s.asks.sort((a, b) => a.who.localeCompare(b.who) || a.since.localeCompare(b.since)).map(a => `${a.who}  ${a.note ? 'a note' : 'an ask'} in ${a.path} since ${when(a.since)}: ${a.text.split('\n')[0].slice(0, 80)}`),
+        ...s.asks.sort((a, b) => a.who.localeCompare(b.who) || a.since.localeCompare(b.since)).map(a => `${a.who}  ${a.signoff ? 'a sign-off' : a.note ? 'a note' : 'an ask'} in ${a.path} since ${when(a.since)}: ${a.text.split('\n')[0].slice(0, 80)}`),
         ...s.expired.map(e => `${e.who}  their ${e.login} login expired${e.holding.length ? `, holding ${e.holding.join(', ')}` : ''}`),
         ...s.requests.map(r => `${r.path}  ${r.from} asks to start ${r.label}, since ${when(r.at)}: ${r.reason}`),
       ]],

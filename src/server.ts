@@ -8,6 +8,7 @@ import { basename, dirname, join, posix, relative, resolve, sep } from 'node:pat
 import { fileURLToPath } from 'node:url';
 import { agentsFile, createInstance, duplicateInstance, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, safeName, seriesDir, type Entry, type Instance } from './store.ts';
 import { socketDir } from './runner.ts';
+import { commit } from './git.ts';
 import { serveSandboxes } from './sandbox.ts';
 import { authenticate, checkConfig, cli, connectM365, m365Ready, mode, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
 import { canManage, canSee, changes, everyone, initSystem, readJson, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
@@ -145,9 +146,9 @@ function runner(inst: Instance) {
   return { ...r, name: users()[r.by]?.name || r.by, ticked: r.logins.map(id => offers.find(o => o.id === id)?.name ?? id) };
 }
 
-// What makes an instance new to a person, when someone else or the agent did it: a run's end, a report, a comment, an upload, a
-// takeover, a close.
-const NEWS = ['done', 'report', 'comment', 'upload', 'takeover', 'close', 'abandon'];
+// What makes an instance new to a person, when someone else or the agent did it: a run's end, a report, a comment, a sign-off, an
+// upload, a takeover, a close.
+const NEWS = ['done', 'report', 'comment', 'signoff', 'upload', 'takeover', 'close', 'abandon'];
 
 function summary(i: Instance, email: string, w8 = wakes(), us = users()) {
   const key = `${i.log.length}:${i.doc.rev}:${seriesSettings(i.series()).shared?.by ?? ''}`;
@@ -211,7 +212,7 @@ function status(me: Me) {
   return {
     running: seen.flatMap(([sid]) => active.get(sid) ?? []).map(a => ({ path: path(a.inst), run: a.n, at: a.inst.log.findLast(e => e.op === 'run')!.at, cost: +a.cost.toFixed(4) })),
     queued: open.flatMap(i => { const q = queued(i); return q ? [{ path: path(i), ...q }] : []; }),
-    asks: open.flatMap(i => waits(i).map(({ who, e }) => ({ who, path: path(i), since: e.at, text: e.text as string, note: isNote(i, e) }))),
+    asks: open.flatMap(i => waits(i).map(({ who, e }) => ({ who, path: path(i), since: e.at, text: e.text as string, note: isNote(i, e), signoff: !!e.signoff }))),
     expired: (me.role === 'admin' ? Object.keys(users()) : [me.email]).flatMap(who => logins(who).filter(l => l.expired).map(l => ({
       who, login: l.name,
       holding: open.filter(i => {
@@ -255,8 +256,9 @@ function trace(inst: Instance) {
   return out;
 }
 
-// Files by hand, never into a link: a run may have made links anywhere in working/.
-const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(d => d.isDirectory() ? walk(join(dir, d.name)) : d.isFile() ? [join(dir, d.name)] : []);
+// Files by hand, never into a link: a run may have made links anywhere in working/. A .git, such as the instance's history, isn't
+// copied.
+const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(d => d.isDirectory() ? (d.name === '.git' ? [] : walk(join(dir, d.name))) : d.isFile() ? [join(dir, d.name)] : []);
 
 // What rf pull copies: every file under `path` that `me` sees, in the layout runs see (workspace/series/label/ and the instance's own
 // files), with its size and time; the AGENTS.md files whole, and each instance file at its /files address.
@@ -333,10 +335,10 @@ const people = (w: { owners?: unknown; members?: unknown }) => [w.owners, w.memb
 // the new names from its next start.
 async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: URL) {
   const [kind, id = '', action] = url.pathname.split('/').slice(2).map(decodeURIComponent);
-  // A run reads and writes its own instance's screen and threads, sets wakes in its own workspace, and finds what a folder it can
-  // read names; nothing else here.
+  // A run reads and writes its own instance's screen and threads, commits its folder, sets wakes in its own workspace, and finds
+  // what a folder it can read names; nothing else here.
   const run = me.run;
-  if (run && !(kind === 'instances' && id === run.inst.id && ['screen', 'comment', 'resolve'].includes(action)) && !(kind === 'wakes' && req.method === 'PUT') && kind !== 'resolve')
+  if (run && !(kind === 'instances' && id === run.inst.id && ['screen', 'comment', 'resolve', 'commit'].includes(action)) && !(kind === 'wakes' && req.method === 'PUT') && kind !== 'resolve')
     throw new HttpError(404, 'not found');
   // The body before the tree: a request held open must not save a tree from before others' changes, such as an owner's removal.
   const payload = ['upload', 'attach', 'screen'].includes(action) ? {} : await json(req);
@@ -506,8 +508,9 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   } else if (action === 'comment') {
     // A comment starts a thread, on an item (at a ref, such as a cell, if given) or on the instance, or replies in one. A person's
     // starts a run. The agent's starts nothing: it says something, or asks, and then the thread waits on a person's reply, from the
-    // one it names or else the runner.
-    const { thread, item, ref, text, files = [], ask, to } = payload, threads = inst.threads();
+    // one it names or else the runner. A sign-off it asks for is the runner's.
+    const { thread, item, ref, text, files = [], ask, to, signoff } = payload, threads = inst.threads();
+    if (signoff && to) throw new HttpError(400, `a sign-off is the runner's, ${runnerOf(inst).by}: leave out --to`);
     if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a comment has text');
     if (thread !== undefined && !threads.has(thread)) throw new HttpError(400, `no thread ${thread}; this instance's threads: ${[...threads.keys()].join(', ') || 'none yet'}`);
     if (thread === undefined && item != null && !inst.doc.items.some(i => i.id === item)) throw new HttpError(400, `no item ${item}; the screen's items: ${inst.doc.items.map(i => i.id).join(', ')}`);
@@ -520,7 +523,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       throw new HttpError(400, `${to} can't see this instance; ask its runner, ${runnerOf(inst).by}, or someone in its workspace`);
     const said = inst.append(by, 'comment', {
       thread: thread ?? `c${inst.log.length + 1}`, ...(thread === undefined && { item: item ?? null, ref: ref ?? null }), text: text.trim(), ...(files.length && { files }),
-      ...(run && ask && { ask: true, ...(who && { to: who }) }),
+      ...(run && ask && { ask: true, ...(who && { to: who }), ...(signoff && { signoff: true }) }),
     });
     if (run) return send(res, 200, `${ask ? 'asked' : 'said'} in ${said.thread}, seq ${said.seq}`);
     // Until a task is renamed, its first prompt's opening words name it.
@@ -539,6 +542,24 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (run && posts[0].by !== 'agent') throw new HttpError(403, `${posts[0].by} started ${thread}, and resolves it; reply in it with rf say --in ${thread}`);
     inst.append(by, 'resolve', { thread, ...(typeof text === 'string' && text.trim() && { text: text.trim() }) });
     return send(res, 200, `resolved ${thread}`);
+  } else if (action === 'signoff') {
+    // The runner approves what the agent asked them to sign off, or rejects it, with a note. Either commits the folder in their name,
+    // with the ask and the note as its message and, for an approval, their Signed-off-by; and starts a run, as a reply does.
+    const { thread, approved, text } = payload, ask = inst.threads().get(thread)?.at(-1), signer = runnerOf(inst).by;
+    if (!ask?.signoff) throw new HttpError(409, `no sign-off waits in ${thread}`);
+    if (signer !== by) throw new HttpError(403, `only the runner, ${signer}, signs it off; take it over first`);
+    if (mine) throw new HttpError(409, 'wait for the run to end');
+    const note = typeof text === 'string' ? text.trim() : '';
+    const hash = await commit(inst.dir, me, [ask.text, note, approved && `Signed-off-by: ${me.name} <${me.email}>`].filter(Boolean).join('\n\n'));
+    if (inst.threads().get(thread)!.at(-1) !== ask) throw new HttpError(409, `${thread} was answered meanwhile`);
+    inst.append(by, 'signoff', { thread, approved: !!approved, ...(note && { text: note }), commit: hash });
+  } else if (action === 'commit' && run) {
+    // The agent commits the folder at a moment worth keeping, in its own name.
+    const message = typeof payload.message === 'string' ? payload.message.trim() : '';
+    if (!message) throw new HttpError(400, 'a commit has a message');
+    const hash = await commit(inst.dir, { name: 'rollforward agent', email: 'agent@rollforward' }, message);
+    inst.append('agent', 'commit', { run: run.n, message, commit: hash });
+    return send(res, 200, `committed ${hash}`);
   } else if (action === 'interrupt') {
     if (!mine?.run) throw new HttpError(409, 'no run going');
     inst.append(by, 'interrupt');
@@ -570,7 +591,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   } else if (action === 'close' || action === 'abandon') {
     if (mine) throw new HttpError(409, 'wait for the run to end');
     if (runnerOf(inst).by !== by) throw new HttpError(403, `only the runner, ${runnerOf(inst).by}, ${action === 'close' ? 'closes it, as closing signs it off' : 'abandons it'}; take it over first`);
-    inst[action](by);
+    await (action === 'close' ? inst.close(me) : inst.abandon(by));
     cancelWake(inst.id);
     if (action === 'close') closed(inst, by);
     return send(res, 200, 'ok');

@@ -2,6 +2,7 @@ import { appendFileSync, chmodSync, closeSync, constants, cpSync, existsSync, fc
 import { createHash, randomBytes } from 'node:crypto';
 import { basename, extname, join, posix } from 'node:path';
 import { changes, tree } from './system.ts';
+import { commit, type Who } from './git.ts';
 
 // Paths in the screen are /-separated on every system.
 const normalize = posix.normalize;
@@ -134,10 +135,10 @@ export function moveInstance(inst: Instance, seriesId: string) {
 export function duplicateInstance(src: Instance, label: string, by: string, logins: string[]): Instance {
   const name = freeLabel(src.seriesId, label), id = newId(), dir = instanceDir(id);
   // Files and folders only, sharing blocks where the disk can: a run may have left links or FIFOs in working/, or a name that isn't
-  // UTF-8, which reads back as another name, which no file has.
+  // UTF-8, which reads back as another name, which no file has. The copy starts afresh, with no session and no history.
   cpSync(src.dir, dir, { recursive: true, mode: constants.COPYFILE_FICLONE, filter: p => {
     const st = lstatSync(p, { throwIfNoEntry: false });
-    return p !== join(src.dir, 'session') && !!st && (st.isFile() || st.isDirectory());
+    return p !== join(src.dir, 'session') && p !== join(src.dir, '.git') && !!st && (st.isFile() || st.isDirectory());
   } });
   setMeta(id, { label: name, series: src.seriesId });
   const inst = instance(id);
@@ -201,11 +202,11 @@ export class Instance {
     this.save();
   }
 
-  // Each thread's comments and resolves, in order. A comment starts a thread, on an item (at a ref) or on the instance, and later
-  // comments reply in it.
+  // Each thread's comments, resolves and sign-offs, in order. A comment starts a thread, on an item (at a ref) or on the instance,
+  // and later comments reply in it.
   threads(): Map<string, Entry[]> {
     const out = new Map<string, Entry[]>();
-    for (const e of this.log) if (e.op === 'comment' || e.op === 'resolve') out.set(e.thread as string, [...(out.get(e.thread as string) ?? []), e]);
+    for (const e of this.log) if (['comment', 'resolve', 'signoff'].includes(e.op)) out.set(e.thread as string, [...(out.get(e.thread as string) ?? []), e]);
     return out;
   }
 
@@ -215,8 +216,10 @@ export class Instance {
   }
 
   // Closing signs off what people saw: a shown file in working/ must still be what its point logged. Its folder is the run's, so
-  // read-only alone doesn't stop a file being replaced. The asks still waiting are accepted as the agent said it did them.
-  close(by: string) {
+  // read-only alone doesn't stop a file being replaced. The asks still waiting are accepted as the agent said it did them. As the
+  // runner's sign-off, it commits the folder in their name. The instance is closed meanwhile, so nothing changes it, but saved only
+  // once committed: a failed commit, or a restart, leaves it open.
+  async close(by: Who) {
     for (const i of this.doc.items.filter(i => i.file?.startsWith('working/'))) {
       const fd = openFile(this.dir, i.file!), logged = this.log.findLast(e => e.op === 'point' && e.file === i.file && e.sha256)?.sha256;
       const now = fd === undefined ? undefined : createHash('sha256').update(readFileSync(fd)).digest('hex');
@@ -225,8 +228,12 @@ export class Instance {
     }
     const accepted = this.asking().map(e => e.thread);
     this.doc.status = 'closed';
+    const hash = await commit(this.dir, by, `Close ${this.label}\n\nSigned-off-by: ${by.name} <${by.email}>`).catch(e => {
+      this.doc.status = 'open';
+      throw e;
+    });
     this.save();
-    this.append(by, 'close', accepted.length ? { accepted } : {});
+    this.append(by.email, 'close', { ...(accepted.length && { accepted }), commit: hash });
   }
 
   abandon(by: string) {

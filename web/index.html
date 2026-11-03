@@ -309,6 +309,8 @@ input[type=checkbox] { accent-color: var(--ink); }
 .thread .quiet { padding: 2px 0; }
 .thread.resolved { opacity: .6; }
 .post.ask b::after { content: ' asks'; color: var(--red); font-weight: 500; }
+.post.signoff b::after { content: ' asks for a sign-off'; }
+.thread.waits.signoff { border: 2px solid var(--red); }
 .thread .on, .post .tm { color: var(--ink-3); font-size: 12px; }
 .post b.p { color: var(--person, #1d4ed8); }
 .log .lh { display: flex; align-items: flex-end; gap: 4px; padding: 8px 12px 0; border-bottom: 1px solid var(--rule); position: sticky; top: 0; z-index: 1; background: var(--sheet); }
@@ -726,7 +728,9 @@ function logText(e) {
     run: () => `Run ${e.run} started${data.run?.n === e.run ? ` \u00b7 ${usd(data.run.cost)} so far` : ''}`,
     done: () => `Run ${e.run} finished${e.aborted ? ' (stopped)' : ''} · ${took(e)} · ${usd(e.cost)}${e.summary ? `<div class="d">${esc(e.summary)}</div>` : ''}${e.error ? `<div class="d">${esc(e.error)}</div>` : ''}`,
     interrupt: () => `${w} interrupted the run`,
-    close: () => `${w} closed the instance${e.accepted ? `<div class="d">Accepting what the agent did for ${e.accepted.length} ask${e.accepted.length > 1 ? 's' : ''} still waiting</div>` : ''}`,
+    close: () => `${w} closed the instance${e.accepted ? `<div class="d">Accepting what the agent did for ${e.accepted.length} ask${e.accepted.length > 1 ? 's' : ''} still waiting</div>` : ''}${e.commit ? `<div class="d">Commit <code>${e.commit.slice(0, 7)}</code></div>` : ''}`,
+    signoff: () => `${w} ${e.approved ? 'signed off' : 'rejected the sign-off'}<div class="d">${e.text ? `${esc(e.text)} · ` : ''}Commit <code>${e.commit.slice(0, 7)}</code></div>`,
+    commit: () => `${w} committed the folder<div class="d">${esc(e.message)} · Commit <code>${e.commit.slice(0, 7)}</code></div>`,
     abandon: () => `${w} abandoned the instance`,
     comment: () => `${w} ${e.note ? `left a note for ${esc(data.runner.by)}` : e.by !== 'agent' ? 'commented' : e.ask ? `asked${e.to ? ' ' + esc(e.to) : ''}` : 'said'}${e.item ? ` on ${item(e.item)}${e.ref ? ` at ${esc(e.ref)}` : ''}` : ''}<div class="d">${esc(e.text)}</div>`,
     resolve: () => `${w} resolved a thread${e.text ? `<div class="d">${esc(e.text)}</div>` : ''}`,
@@ -879,10 +883,11 @@ function redline(a, b) {
 function threadsOf() {
   const out = new Map(), open = data?.doc.status === 'open';
   for (const e of data?.log ?? []) {
-    if (e.op !== 'comment' && e.op !== 'resolve') continue;
+    if (!['comment', 'resolve', 'signoff'].includes(e.op)) continue;
     if (!out.has(e.thread)) out.set(e.thread, { id: e.thread, item: e.item, ref: e.ref, posts: [] });
     const t = out.get(e.thread);
     if (e.op === 'comment') t.posts.push(e);
+    if (e.op === 'signoff') t.posts.push({ ...e, text: `${e.approved ? 'Signed off' : 'Rejected'}${e.text ? `: ${e.text}` : ''}` });
     t.last = e;
   }
   for (const t of out.values()) Object.assign(t, {
@@ -897,10 +902,12 @@ const who = by => by === 'agent' ? 'Agent' : by === me.email ? 'you' : by;
 const place = t => t.item ? `On <a data-act="opencard" data-item="${esc(t.item)}">${esc(data.doc.items.find(i => i.id === t.item)?.name ?? t.item)}</a>${t.ref ? ` at ${esc(t.ref)}` : ''}` : 'On the instance';
 
 function threadHtml(t) {
-  const state = t.waits ? ` \u00b7 waits on ${esc(who(t.waits))}` : t.pending ? ' \u00b7 <span class="spin"></span> the agent picks it up next' : t.resolved ? ` \u00b7 resolved by ${esc(who(t.last.by))}${t.last.text ? `: ${esc(t.last.text)}` : ''}` : '';
-  return `<div class="thread ${t.resolved ? 'resolved' : ''} ${t.waits ? 'waits' : ''}" data-thread="${esc(t.id)}"><div class="on">${place(t)}${state}</div>`
-    + t.posts.map(p => `<div class="post ${p.ask ? 'ask' : ''}"><b class="${p.by === 'agent' ? '' : 'p'}">${esc(who(p.by))}</b> <span class="tm">${hhmm(p.at)}${p.to ? ` \u00b7 to ${esc(who(p.to))}` : ''}${p.note ? ` \u00b7 a note for ${esc(who(data.runner.by))}` : ''}</span><div>${p.by === 'agent' ? md(p.text) : esc(p.text)}</div>${(p.files ?? []).map(f => `<div class="f"><a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a></div>`).join('')}</div>`).join('')
+  const signoff = t.waits && t.last.signoff, off = data.run ? ' disabled title="Available when the run ends"' : '';
+  const state = signoff ? ` \u00b7 waits on ${t.waits === me.email ? 'your' : `${esc(t.waits)}'s`} sign-off` : t.waits ? ` \u00b7 waits on ${esc(who(t.waits))}` : t.pending ? ' \u00b7 <span class="spin"></span> the agent picks it up next' : t.resolved ? ` \u00b7 resolved by ${esc(who(t.last.by))}${t.last.text ? `: ${esc(t.last.text)}` : ''}` : '';
+  return `<div class="thread ${t.resolved ? 'resolved' : ''} ${t.waits ? 'waits' : ''} ${signoff ? 'signoff' : ''}" data-thread="${esc(t.id)}"><div class="on">${place(t)}${state}</div>`
+    + t.posts.map(p => `<div class="post ${p.ask ? 'ask' : ''} ${p.signoff ? 'signoff' : ''}"><b class="${p.by === 'agent' ? '' : 'p'}">${esc(who(p.by))}</b> <span class="tm">${hhmm(p.at)}${p.to ? ` \u00b7 to ${esc(who(p.to))}` : ''}${p.note ? ` \u00b7 a note for ${esc(who(data.runner.by))}` : ''}${p.commit ? ` \u00b7 commit <code>${p.commit.slice(0, 7)}</code>` : ''}</span><div>${p.by === 'agent' ? md(p.text) : esc(p.text)}</div>${(p.files ?? []).map(f => `<div class="f"><a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a></div>`).join('')}</div>`).join('')
     + (data.doc.status !== 'open' || t.resolved ? ''
+      : signoff ? (t.waits === me.email ? `<textarea rows="2" placeholder="A note, such as what to change"></textarea><div class="row2"><button class="btn commit" data-act="signoff" data-ok="1" data-thread="${esc(t.id)}"${off}>Approve</button><button class="btn" data-act="signoff" data-thread="${esc(t.id)}"${off}>Reject</button></div>` : '')
       : t.waits || replying.has(t.id) ? `<textarea rows="2" placeholder="Reply"></textarea><input type="file" multiple><div class="row2"><button class="btn" data-act="reply-thread" data-thread="${esc(t.id)}">Reply</button><button class="btn" data-act="resolve" data-thread="${esc(t.id)}" title="Done with it, without waking the agent">Resolve</button></div>`
       : `<div class="row2"><button class="quiet" data-act="thread" data-thread="${esc(t.id)}">Reply</button><button class="quiet" data-act="resolve" data-thread="${esc(t.id)}" title="Done with it, without waking the agent">Resolve</button></div>`) + '</div>';
 }
@@ -1336,6 +1343,12 @@ async function onAct(act, el, was) {
     await api(`${instPath()}/resolve`, { method: 'POST', body: JSON.stringify({ thread: el.dataset.thread }) });
     await refresh();
   }
+  if (act === 'signoff') {
+    const box = el.closest('.thread').querySelector('textarea');
+    await api(`${instPath()}/signoff`, { method: 'POST', body: JSON.stringify({ thread: el.dataset.thread, approved: !!el.dataset.ok, text: box.value.trim() }) });
+    box.value = '';
+    await refresh();
+  }
   if (act === 'uncard') { openItem = null; renderCard(); renderPanes(); }
   if (act === 'opencard') { openItem = el.dataset.item; markSeen(data.doc.items.filter(i => i.id === openItem)); renderPanes(); renderCard(); }
   if (act === 'preview') await preview(el.dataset.file, data.doc.items.find(i => i.id === el.dataset.item));
@@ -1593,7 +1606,7 @@ addEventListener('keydown', e => {
   // Ctrl+Enter, or Cmd+Enter on a Mac, sends from the panel's comment and reply boxes.
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.target.matches('#log textarea')) {
     e.preventDefault();
-    return (e.target.id === 'newcomment' ? $('#log [data-act=comment]') : e.target.closest('.thread').querySelector('[data-act=reply-thread]')).click();
+    return (e.target.id === 'newcomment' ? $('#log [data-act=comment]') : e.target.closest('.thread').querySelector('[data-act=reply-thread]'))?.click();
   }
   if (e.key === 'Escape' && e.target.matches('textarea, input:not(.inline)') && !document.querySelector('dialog[open]')) return e.target.blur();
   if ($('#pop').hidden && !e.target.matches('input, textarea, select') && !e.ctrlKey && !e.metaKey && !e.altKey && !document.querySelector('dialog[open]')) navigate(e);

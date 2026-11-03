@@ -2,7 +2,7 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { appendFileSync, cpSync, mkdirSync, mkdtempSync } from 'node:fs';
+import { appendFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -18,6 +18,18 @@ const native: string[] = [];
 
 before(async () => {
   cpSync(join(app, 'test', 'fixture'), root, { recursive: true });
+  // An open instance of a series of its own, whose agent asks its runner, the admin, for a sign-off.
+  const tree = JSON.parse(readFileSync(join(root, '.rf', 'tree.json'), 'utf8')), signed = join(root, 'instances', 'a5c0ff5e1f00');
+  tree.series.a5c0ff5e1fee = { name: 'Year-end pack', workspace: '1b3031035ff6' };
+  writeFileSync(join(root, '.rf', 'tree.json'), JSON.stringify(tree));
+  mkdirSync(join(root, 'series', 'a5c0ff5e1fee'));
+  mkdirSync(join(signed, 'working'), { recursive: true });
+  writeFileSync(join(signed, 'instance.json'), JSON.stringify({ label: '2026-12', series: 'a5c0ff5e1fee' }));
+  writeFileSync(join(signed, 'workspace.json'), JSON.stringify({ rev: 1, status: 'open', items: [] }));
+  writeFileSync(join(signed, 'log.jsonl'), [
+    { seq: 1, at: '2026-08-01T09:00:00.000Z', by: 'admin@demo.test', op: 'create', from: null, logins: [] },
+    { seq: 2, at: '2026-08-01T09:05:00.000Z', by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'The pack is ready to send to the bank.', ask: true, signoff: true },
+  ].map(e => JSON.stringify(e) + '\n').join(''));
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch') };
   mkdirSync(env.HOME!);
   delete env.OPENROUTER_API_KEY;
@@ -88,7 +100,7 @@ test("the workspace's + starts a task at once, which its first prompt names, new
   await page.fill('#ask input', 'Zebra surveys');
   await page.click('#ask button:text-is("Make it a series and close")');
   await page.waitForSelector('.row.ser .l:text-is("Zebra surveys")');
-  assert.deepEqual(await page.locator('.row.ser .l').allTextContents(), ['Zebra surveys', 'Weekly borrowing base'], 'series too come newest activity first');
+  assert.deepEqual(await page.locator('.row.ser .l').allTextContents(), ['Zebra surveys', 'Weekly borrowing base', 'Year-end pack'], 'series too come newest activity first');
   assert.deepEqual(await page.locator('.row.grp ~ a.row.inst .l').allTextContents(), ['Apple orchard audit for 2026']);
 });
 
@@ -199,4 +211,21 @@ test("what the session names, such as a tool call's name, shows as text in the O
   await page.click('#log [data-tab=log]');
   await page.locator('#log .e > div > details', { hasText: '<img src=x onerror="window.pwned=1"> 1 call' }).waitFor();
   assert.equal(await page.evaluate(() => (window as unknown as { pwned?: number }).pwned), undefined);
+});
+
+test("a sign-off the agent asks for shows louder, with Approve and Reject for its runner; approving commits the folder, as the thread and the Ops log say", async () => {
+  await page.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
+  await page.waitForSelector('#log.open');
+  await page.click('#log [data-tab=conv]');
+  const thread = page.locator('#log .thread.waits.signoff');
+  await thread.waitFor();
+  assert.match(await thread.locator('.on').innerText(), /waits on your sign-off/);
+  assert.deepEqual(await thread.locator('button').allInnerTexts(), ['Approve', 'Reject']);
+  await thread.locator('textarea').fill('Looks right.');
+  await thread.locator('[data-act=signoff][data-ok]').click();
+  const post = page.locator('#log .thread .post', { hasText: 'Signed off: Looks right.' });
+  await post.waitFor();
+  assert.match(await post.locator('.tm').innerText(), /commit [0-9a-f]{7}/);
+  await page.click('#log [data-tab=log]');
+  await page.locator('#log .e', { hasText: 'admin@demo.test signed off' }).waitFor();
 });
