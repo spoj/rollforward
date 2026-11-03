@@ -138,6 +138,8 @@ test("rf graph reaches only what's ticked: not the runner's OneDrive unticked, a
   await assert.rejects(graph(`/me/messages/../../users/${AP}/messages`), /m365:mail:ap@demo.test is not ticked/);
   await assert.rejects(graph('/users'), /rf graph reads mailboxes, and folders, files and SharePoint sites ticked for this instance, not \/users/);
   await assert.rejects(graph('https://elsewhere.test/v1.0/me/messages'), /a Graph path/);
+  for (const out of ["/sites/host,site1,web1/getByPath(path='/sites/HR')/drive/root/children", "/sites/host,site1,web1/microsoft.graph.getByPath(path='/sites/HR')"])
+    await assert.rejects(graph(out), /getByPath reaches any site by its path/, out);
 });
 
 test("rf graph reads a ticked mailbox whole: messages with their bodies, and a message's MIME, which rf saves", async () => {
@@ -177,6 +179,10 @@ test("a ticked folder reaches what's under it, at any depth, and a search within
   assert.ok((await graph("/drives/b!d1/items/y2026/search(q='AGING')")).value);
   for (const out of ['/drives/b!d1/items/top/children', '/drives/b!d1/items/y2025/children', "/drives/b!d1/root/search(q='AGING')", '/drives/b!d1/root:/LFM:/children'])
     await assert.rejects(graph(out), /is in no folder, file or SharePoint site ticked/, out);
+  const share = `/shares/u!${Buffer.from('https://share.test/reports').toString('base64url')}`;
+  assert.equal((await graph(`${share}/driveItem`)).id, 'y2026', 'the ticked folder, shared');
+  for (const out of [`${share}/site/drive/root/children`, `${share}/list/items`, `${share}/Site/lists`])
+    await assert.rejects(graph(out), /reaches past what is ticked/, out);
 });
 
 test('a login Microsoft no longer renews is marked expired, and the run is told its runner signs in again', async () => {

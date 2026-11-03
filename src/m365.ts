@@ -21,11 +21,14 @@ export async function graphGet(inst: Instance, target: string, headers: Record<s
     offer = `m365:mail:${id.toLowerCase()}`;
   } else if (top === 'drives' || top === 'shares' || (top === 'users' && part === 'drive')) {
     needs('Files.Read.All', 'OneDrive or SharePoint files');
+    // A share's site and list are the whole site and library its item is in, past what is ticked.
+    if (top === 'shares' && !['', 'driveitem', 'root', 'items', 'listitem'].includes(part.toLowerCase())) throw new HttpError(403, `${path.split('?')[0]}: a share is read through its driveItem, root or items, not its ${part}, which reaches past what is ticked`);
     const item = await graph(runner, `${addressed(path.split('?')[0].replace(/^\/me\//, `/users/${runner}/`))}?$select=id,parentReference`);
     offer = await covering(runner, runnerOf(inst).logins, item.parentReference.driveId, item.id, item.parentReference.id);
     if (!offer) throw new HttpError(403, `${path.split('?')[0]} is in no folder, file or SharePoint site ticked for this instance`);
   } else if (top === 'sites') {
     needs('Sites.Read.All', 'SharePoint sites');
+    if (segments.some(s => /(^|\.)getbypath\(/i.test(s))) throw new HttpError(403, `${path.split('?')[0]}: getByPath reaches any site by its path; read the ticked one by its id`);
     offer = `m365:site:${id}`;
   } else throw new HttpError(403, `rf graph reads mailboxes, and folders, files and SharePoint sites ticked for this instance, not ${path}`);
   return get(use(inst, offer).email, path, headers);
