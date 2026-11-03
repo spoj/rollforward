@@ -45,8 +45,10 @@ a { color: inherit; }
 .row.grp .nm { font-style: italic; color: var(--ink-3); }
 .ticks2 { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 12.5px; color: var(--ink-2); margin: 6px 0; }
 .row.wake, .row.req { font-size: 12px; color: var(--ink-2); }
-.row .nm { flex: 1 1 0; min-width: 40%; padding: 5px 0; text-decoration: none; overflow-wrap: anywhere; }
-.row .n { flex: 0 1 auto; min-width: 0; color: var(--ink-3); font-size: 12px; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; padding-left: 6px; }
+/* A row keeps to one line: its name gives way, cut short with the whole of it on hover; what follows it never does. */
+.row .nm { flex: 1 1 0; min-width: 0; display: flex; align-items: center; padding: 5px 0; text-decoration: none; }
+.row .l { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .n { flex: none; color: var(--ink-3); font-size: 12px; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; padding-left: 6px; }
 /* A row with a link is a link all over, but for its buttons. */
 .row:has(> a.nm), a.row { position: relative; }
 .row > a.nm::before { content: ''; position: absolute; inset: 0; }
@@ -60,6 +62,8 @@ a { color: inherit; }
 .inst { font-size: 13px; color: var(--ink-2); }
 .inst.on { background: #e7eaee; color: var(--ink); font-weight: 500; }
 .inst .q, .waits .q { color: var(--red); }
+.waits .q { margin-left: 5px; }
+.cnt { min-width: 16px; padding: 0 5px; border-radius: 8px; background: var(--red); color: #fff; font-size: 10.5px; font-weight: 600; line-height: 16px; text-align: center; display: inline-block; }
 .waits { margin-bottom: 8px; cursor: pointer; }
 .wt { padding: 7px 0; border-bottom: 1px solid var(--rule); }
 .wt .btn { margin-left: 8px; }
@@ -94,7 +98,7 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .pvtabs { display: flex; gap: 4px; padding: 0 12px; border-bottom: 1px solid var(--rule); }
 .me .mail { color: var(--ink-3); font-size: 12px; word-break: break-all; }
 @media (max-width: 560px) { .ut th:nth-child(3), .ut td:nth-child(3), .ut th:nth-child(4), .ut td:nth-child(4) { display: none; } }
-.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--red); display: inline-block; margin-left: 6px; vertical-align: 1px; }
+.dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--red); display: inline-block; margin-left: 6px; vertical-align: 1px; }
 .dot.u { background: var(--person); }
 .row .nm.b { font-weight: 600; }
 .row .age { flex: none; min-width: 22px; text-align: right; font-size: 11.5px; color: var(--ink-3); padding-left: 4px; }
@@ -125,7 +129,7 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .owner { position: relative; display: inline-block; vertical-align: 3px; margin-left: 10px; padding: 1px 9px; border-radius: 10px; font-size: 12.5px; font-weight: 500; letter-spacing: 0; color: var(--person); background: var(--person-bg); cursor: default; }
 .owner .about { display: none; position: absolute; left: 0; top: calc(100% + 6px); z-index: 5; width: max-content; max-width: 340px; font-weight: 400; color: var(--ink-2); background: var(--sheet); border: 1px solid var(--rule-2); border-radius: var(--r1); box-shadow: 0 6px 20px rgba(21,24,29,.12); padding: 8px 12px; line-height: 1.5; }
 .owner:is(:hover, :focus-within) .about { display: block; }
-.who { display: inline-block; margin-left: 6px; padding: 0 4px; border-radius: 6px; font-size: 10px; font-weight: 600; line-height: 15px; vertical-align: 1px; color: var(--person); background: var(--person-bg); }
+.who { flex: none; display: inline-block; margin-left: 6px; padding: 0 4px; border-radius: 6px; font-size: 10px; font-weight: 600; line-height: 15px; vertical-align: 1px; color: var(--person); background: var(--person-bg); }
 .state { margin-left: auto; font-size: 13px; color: var(--ink-2); display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .btn { border: 1px solid var(--rule-2); background: var(--sheet); color: var(--ink); border-radius: var(--r1); padding: 7px 12px; font-size: 13px; font-weight: 500; white-space: nowrap; text-decoration: none; display: inline-block; }
 .btn.primary { background: var(--ink); border-color: var(--ink); color: #fff; }
@@ -438,9 +442,11 @@ const recent = i => i.running ? new Date().toISOString() : i.active, newest = xs
 const sAct = s => newest(s.instances.map(recent)), wAct = w => newest(w.series.map(sAct)), byAct = f => (a, b) => (f(b) > f(a)) - (f(b) < f(a));
 // How long ago, compactly, as a row's last activity: now, 5m, 3h, 2d, 7w.
 const initials = name => {
-  const w = name.match(/\p{L}+/gu);
+  const w = name.replace(/^v-/i, '').match(/\p{L}+/gu);
   return (w.length > 1 ? w[0][0] + w[1][0] : w[0].slice(0, 2)).toUpperCase();
 };
+// A time to come, compactly: its time today, else its day.
+const soon = iso => new Date(iso).toDateString() === new Date().toDateString() ? hhmm(iso) : new Date(iso).toLocaleDateString([], { day: 'numeric', month: 'short' });
 const ago = iso => {
   const m = (Date.now() - Date.parse(iso)) / 60e3;
   return m < 1 ? 'now' : m < 60 ? `${m | 0}m` : m < 1440 ? `${m / 60 | 0}h` : m < 10080 ? `${m / 1440 | 0}d` : `${m / 10080 | 0}w`;
@@ -529,8 +535,8 @@ function renderSide() {
   const btn = (act, title, glyph, id = '') => `<button class="add" data-act="${act}" data-id="${id}" title="${title}">${glyph}</button>`;
   const chev = id => `<button class="chev" data-act="expand" data-id="${id}">${expanded.has(id) ? '\u25BE' : '\u25B8'}</button>`;
   const row = i => {
-    const st = i.queued ? '\u29D7 queued' : i.asks.length ? `<span class="q">${i.asks.length} to answer</span>` : i.wake ? `wakes ${when(i.wake)}` : i.status === 'open' ? '' : i.status;
-    return `<a class="row inst ${i.status} ${cur?.i?.id === i.id ? 'on' : ''}" href="#/${i.id}"><span class="nm ${i.unread ? 'b' : ''}">${esc(i.label)}${i.runner === me.email ? '' : `<span class="who" title="${esc(i.runner_name)} runs it">${esc(initials(i.runner_name))}</span>`}${i.unread && !i.asks.length ? '<span class="dot u"></span>' : ''}</span><span class="n">${st}</span>${age(i.active, i.running)}</a>`;
+    const st = i.queued ? '\u29D7 queued' : i.asks.length ? `<span class="cnt" title="${i.asks.length} to answer">${i.asks.length}</span>` : i.wake ? `<span title="${when(i.wake)}">wakes ${soon(i.wake)}</span>` : i.status === 'open' ? '' : i.status;
+    return `<a class="row inst ${i.status} ${cur?.i?.id === i.id ? 'on' : ''}" href="#/${i.id}" title="${esc(i.label)}"><span class="nm ${i.unread ? 'b' : ''}"><span class="l">${esc(i.label)}</span>${i.runner === me.email ? '' : `<span class="who" title="${esc(i.runner_name)} runs it">${esc(initials(i.runner_name))}</span>`}${i.unread && !i.asks.length ? '<span class="dot u"></span>' : ''}</span><span class="n">${st}</span>${age(i.active, i.running)}</a>`;
   };
   const waits = waiting().length;
   let h = waits ? `<div class="row waits"><a class="nm" data-act="waiting">Waiting on you<span class="q"> ${waits}</span></a></div>` : '';
@@ -538,21 +544,21 @@ function renderSide() {
   for (const w of [...tree].sort(byAct(wAct))) {
     const won = cur?.w.id === w.id;
     if (!listed(w, won) || (mine && !w.mine && !won)) continue;
-    h += `<div class="row ws ${won ? 'on' : ''} ${w.archived ? 'archived' : ''}">${chev(w.id)}<a class="nm" href="#/${w.id}">${esc(w.name)}${dot(w.id, w.series)}</a>`
+    h += `<div class="row ws ${won ? 'on' : ''} ${w.archived ? 'archived' : ''}">${chev(w.id)}<a class="nm" href="#/${w.id}" title="${esc(w.name)}"><span class="l">${esc(w.name)}</span>${dot(w.id, w.series)}</a>`
       + `<span class="n">${w.archived ? 'archived' : ''}</span>${age(wAct(w), w.series.some(s => s.instances.some(i => i.running)))}` + btn('workspace-settings', 'Settings', '\u2699', w.id) + btn('new-task', 'New task', '+', w.id) + '</div>';
     if (!expanded.has(w.id)) continue;
     h += '<div class="tree">';
     for (const s of w.series.filter(s => !s.single).sort(byAct(sAct))) {
       const on = cur?.s?.id === s.id, open = s.instances.filter(i => i.status === 'open');
       if (!listed(s, on)) continue;
-      const note = s.archived ? 'archived' : s.requests.length ? `<span class="q">${s.requests.length} to start</span>` : open.length ? `${open.length} open` : s.wake ? `wakes ${when(s.wake.at)}` : '';
-      h += `<div class="row ser ${on ? 'on' : ''} ${s.archived ? 'archived' : ''}">${chev(s.id)}<a class="nm" href="#/${s.id}">${esc(s.name)}${dot(s.id, [s])}</a>`
+      const note = s.archived ? 'archived' : s.requests.length ? `<span class="q">${s.requests.length} to start</span>` : open.length && !expanded.has(s.id) ? `${open.length} open` : s.wake && !expanded.has(s.id) ? `<span title="${when(s.wake.at)}">wakes ${soon(s.wake.at)}</span>` : '';
+      h += `<div class="row ser ${on ? 'on' : ''} ${s.archived ? 'archived' : ''}">${chev(s.id)}<a class="nm" href="#/${s.id}" title="${esc(s.name)}"><span class="l">${esc(s.name)}</span>${dot(s.id, [s])}</a>`
         + `<span class="n">${note}</span>${age(sAct(s), s.instances.some(i => i.running))}` + btn('settings', 'Settings', '\u2699', s.id) + btn('new-instance', 'New instance', '+', s.id) + '</div>';
       if (!expanded.has(s.id)) continue;
       const closed = s.instances.length - open.length;
       h += '<div class="tree">';
-      if (s.wake) h += `<div class="row wake"><span class="nm">Starts ${esc(s.wake.label)} ${when(s.wake.at)}</span><span class="n" title="${esc(s.wake.reason)}">wake</span></div>`;
-      for (const r of s.requests) h += `<div class="row req"><span class="nm" title="${esc(r.reason)}">${esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)}</span>`
+      if (s.wake) h += `<div class="row wake"><span class="nm" title="Starts ${esc(s.wake.label)} ${when(s.wake.at)}"><span class="l">Starts ${esc(s.wake.label)} ${soon(s.wake.at)}</span></span><span class="n" title="${esc(s.wake.reason)}">wake</span></div>`;
+      for (const r of s.requests) h += `<div class="row req"><span class="nm" title="${esc(`${r.from} asks to start ${r.label}: ${r.reason}`)}"><span class="l">${esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)}</span></span>`
         + `<button class="add" data-act="req-start" data-id="${r.id}" title="Start it">\u25B6</button><button class="add" data-act="req-drop" data-id="${r.id}" title="Dismiss">\u00D7</button></div>`;
       h += s.instances.filter(i => i.status === 'open' || showClosed || i.id === cur?.i?.id).map(row).join('');
       if (closed) h += `<button class="quiet" data-act="toggle-closed">${showClosed ? 'Hide' : 'Show'} closed (${closed})</button>`;

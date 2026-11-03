@@ -62,11 +62,11 @@ test("a series' gear opens its settings, which save as they change; a click besi
   await page.fill('#sname', 'Weekly BB');
   await page.press('#sname', 'Enter');
   await page.waitForSelector('#pv .saved:text-is("Saved")');
-  await page.waitForSelector('.row.ser.on .nm:text-is("Weekly BB")');
+  await page.waitForSelector('.row.ser.on .l:text-is("Weekly BB")');
   await page.fill('#sname', 'Weekly borrowing base');
   await page.press('#sname', 'Enter');
   await page.waitForSelector('#pv .saved:text-is("Saved")');
-  await page.waitForSelector('.row.ser.on .nm:text-is("Weekly borrowing base")');
+  await page.waitForSelector('.row.ser.on .l:text-is("Weekly borrowing base")');
   await page.mouse.click(5, 5);
   await page.waitForSelector('#pv:not([open])', { state: 'attached' });
 });
@@ -82,18 +82,18 @@ test("the workspace's + starts a task at once, which its first prompt names, new
     await page.waitForSelector(`#bar h1 .t:text-is("${prompt}")`);
   }
   assert.equal(await page.textContent('#bar .crumb'), 'larkfield · Ungrouped');
-  assert.deepEqual(await page.locator('.row.grp ~ a.row.inst .nm').allTextContents(), ['Zebra crossing survey', 'Apple orchard audit for 2026']);
+  assert.deepEqual(await page.locator('.row.grp ~ a.row.inst .l').allTextContents(), ['Zebra crossing survey', 'Apple orchard audit for 2026']);
   await page.waitForSelector('#bar .state .bad:text("Run 1 failed")');
   await page.click('#bar [data-act=close]');
   await page.fill('#ask input', 'Zebra surveys');
   await page.click('#ask button:text-is("Make it a series and close")');
-  await page.waitForSelector('.row.ser .nm:text-is("Zebra surveys")');
-  assert.deepEqual(await page.locator('.row.ser .nm').allTextContents(), ['Zebra surveys', 'Weekly borrowing base'], 'series too come newest activity first');
-  assert.deepEqual(await page.locator('.row.grp ~ a.row.inst .nm').allTextContents(), ['Apple orchard audit for 2026']);
+  await page.waitForSelector('.row.ser .l:text-is("Zebra surveys")');
+  assert.deepEqual(await page.locator('.row.ser .l').allTextContents(), ['Zebra surveys', 'Weekly borrowing base'], 'series too come newest activity first');
+  assert.deepEqual(await page.locator('.row.grp ~ a.row.inst .l').allTextContents(), ['Apple orchard audit for 2026']);
 });
 
 test('only the runner abandons, and abandoning asks first, in the page', async () => {
-  await page.click('.row.ser .nm:text-is("Weekly borrowing base")');
+  await page.click('.row.ser .l:text-is("Weekly borrowing base")');
   await page.click('[data-act=menu-instance]');
   assert.equal(await page.locator('#pop [data-act=abandon]').count(), 0, 'alex runs it');
   await page.keyboard.press('Escape');
