@@ -1,11 +1,13 @@
 // Moves this checkout to the newest release CI made, once the server's runs going have ended, then restarts it: a systemd timer runs it
 // (docs/deploy.md), and never twice at once. A release is taken once every check on its commit has passed, and never past a prerelease, which a tag with
-// a Manual: line makes for a release that needs a person first. If the server doesn't answer HEALTH after the move, the checkout
-// goes back, and that release isn't tried again; if going back fails too, the server restarts as the checkout is, never left drained.
+// a Manual: line makes for a release that needs a person first. What it installs is fetched before the server drains, so a failure
+// there, as without the network, changes nothing, and the next tick tries again. If the server doesn't answer HEALTH after the move,
+// the checkout goes back, and that release isn't tried again; if going back fails too, the server restarts as the checkout is, never
+// left drained.
 //   node scripts/update.ts HEALTH
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -21,7 +23,13 @@ async function github(path: string) {
 const parts = (tag: string) => tag.slice(1).split('.').map(Number);
 const later = (a: string, b: string) => { const x = parts(a), y = parts(b), i = x.findIndex((n, k) => n !== y[k]); return i >= 0 && x[i] > y[i]; };
 
-const current = sh('git', 'describe', '--tags', '--exact-match', 'HEAD');
+let current = '';
+try {
+  current = sh('git', 'describe', '--tags', '--exact-match', 'HEAD');
+} catch {
+  console.log(`the checkout is at ${sh('git', 'rev-parse', '--short', 'HEAD')}, on no release: updates wait until a person checks one out`);
+  process.exit(1);
+}
 const bad: string[] = existsSync(state) ? JSON.parse(readFileSync(state, 'utf8')).bad : [];
 const releases = (await github('/releases?per_page=100')).filter((r: any) => !r.draft && /^v\d+\.\d+\.\d+$/.test(r.tag_name) && later(r.tag_name, current))
   .sort((a: any, b: any) => (later(a.tag_name, b.tag_name) ? 1 : -1));
@@ -46,10 +54,11 @@ async function move(from: string, to: string) {
     for (let i = 0; i < 420 && pid() === was && !(await fetch(new URL('/drained', health)).then(r => r.ok, () => false)); i++) await sleep(5000);
   }
   sh('git', 'checkout', '-q', '--detach', to);
-  if (sh('git', 'diff', '--name-only', from, to, '--', 'package-lock.json')) sh('npm', 'ci', '--omit=dev', '--no-audit', '--no-fund');
-  if (sh('git', 'diff', '--name-only', from, to, '--', 'requirements.txt')) sh('uv', 'pip', 'install', '--python', '.venv/bin/python', '-r', 'requirements.txt');
+  if (changed(from, to, 'package-lock.json')) sh('npm', 'ci', '--omit=dev', '--no-audit', '--no-fund', '--offline');
+  if (changed(from, to, 'requirements.txt')) sh('uv', 'pip', 'install', '--offline', '--python', '.venv/bin/python', '-r', 'requirements.txt');
   sh('systemctl', '--user', 'restart', 'rollforward');
 }
+const changed = (from: string, to: string, file: string) => !!sh('git', 'diff', '--name-only', from, to, '--', file);
 // A start may take a while, as one that moves data does.
 async function answers() {
   for (let i = 0; i < 150; i++) {
@@ -61,6 +70,21 @@ async function answers() {
 
 console.log(`${current} -> ${target}`);
 sh('git', 'fetch', '-q', '--tags', 'origin');
+// What the target installs, into npm's and uv's caches, from which the move installs it, and the move back what this one has.
+const tmp = mkdtempSync(join(tmpdir(), 'rollforward-update-'));
+try {
+  if (changed(current, target, 'package-lock.json')) {
+    for (const f of ['package.json', 'package-lock.json']) writeFileSync(join(tmp, f), sh('git', 'show', `${target}:${f}`));
+    sh('npm', 'ci', '--omit=dev', '--no-audit', '--no-fund', '--prefix', tmp);
+  }
+  if (changed(current, target, 'requirements.txt')) {
+    writeFileSync(join(tmp, 'requirements.txt'), sh('git', 'show', `${target}:requirements.txt`));
+    sh('uv', 'venv', '-q', '--python', '.venv/bin/python', join(tmp, '.venv'));
+    sh('uv', 'pip', 'install', '-q', '--python', join(tmp, '.venv', 'bin', 'python'), '-r', join(tmp, 'requirements.txt'));
+  }
+} finally {
+  rmSync(tmp, { recursive: true, force: true });
+}
 try {
   await move(current, target);
   if (await answers()) {
