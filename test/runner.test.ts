@@ -11,7 +11,7 @@ const tmp = mkdtempSync(join(tmpdir(), 'rf-')), root = join(tmp, 'data'), i = (i
 const browsers = createServer().on('upgrade', (req, socket) => socket.end(`HTTP/1.1 101 Switching Protocols\r\n\r\nbrowser service got ${req.url} with ${req.headers.authorization}`));
 await new Promise<void>(ok => browsers.listen(0, '127.0.0.1', ok));
 Object.assign(process.env, {
-  RF_SCRATCH: join(tmp, 'scratch'), OPENROUTER_API_KEY: 'the-real-key', RF_TEST_SECRET: 'server-only',
+  RF_SCRATCH: join(tmp, 'scratch'), OPENROUTER_API_KEY: 'the-real-key', EXA_API_KEY: 'the-real-key', RF_TEST_SECRET: 'server-only',
   RF_BROWSER_URL: `http://127.0.0.1:${(browsers.address() as { port: number }).port}`, RF_BROWSER_KEY: 'the-browser-key',
 });
 const { pi } = await import('../src/runner.ts');
@@ -39,7 +39,7 @@ const sockets = serveSandboxes({
   agent: async (req, res) => void res.end(`agent API, as ${req.headers.authorization}`),
   // The server's answer for a connection's host, which here says what it was asked.
   run: token => ([TOKEN, OTHER].includes(token) ? {
-    egress: (host, allowed) => void egress.push([host, allowed]), browsers: () => standIn, intercepts: host => ['graph.microsoft.com', 'openrouter.ai'].includes(host),
+    egress: (host, allowed) => void egress.push([host, allowed]), browsers: () => standIn, intercepts: host => ['graph.microsoft.com', 'openrouter.ai', 'api.exa.ai'].includes(host),
     call: async (host, req, res) => void res.end(`${host} ${req.method} ${req.url} ${req.headers.authorization ?? '-'}`),
   } : undefined),
 });
@@ -92,9 +92,10 @@ test("writes land only in the instance's working/ and session/ and the series' .
     assert.match(await sh(`touch ${p} 2>&1`), /Read-only file system/, p);
 });
 
-test("no key or server setting is inside: OpenRouter is at its own address, through the proxy, with a stand-in key, which its SDKs take", async () => {
+test("no key or server setting is inside: OpenRouter and Exa are at their own addresses, through the proxy, with stand-in keys, which their SDKs take", async () => {
   assert.doesNotMatch(await sh('env'), /the-real-key|server-only/);
   assert.equal(await sh(`python -c "import os, openai; print(openai.OpenAI(base_url='https://openrouter.ai/api/v1', api_key=os.environ['OPENROUTER_API_KEY']).models.with_raw_response.list().text)"`), 'openrouter.ai GET /api/v1/models Bearer rf');
+  assert.equal(await sh(`python -c "import exa_py; print(exa_py.Exa().headers['x-api-key'])" && curl -s -m 10 -X POST https://api.exa.ai/search`), 'rf\napi.exa.ai POST /search -');
   assert.equal(await sh('rf show 2>&1 | head -1'), `agent API, as Bearer ${TOKEN}`);
 });
 

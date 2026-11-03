@@ -1,7 +1,7 @@
 import { HttpError } from '../store.ts';
 import type { Request } from '../connections.ts';
 
-// OpenRouter, any model, the server's own connection (connections.ts): Pi's own calls to its model go through it too. It
+// OpenRouter, any model, one of the server's own connections (connections.ts): Pi's own calls to its model go through it too. It
 // takes inference, POST /api/v1/chat/completions, completions, responses and messages, and reads of the models and of a
 // generation, GET /api/v1/models… and /api/v1/generation: no keys, credits or anything else. A body is a JSON object, which goes
 // on asking only for providers that don't collect its data.

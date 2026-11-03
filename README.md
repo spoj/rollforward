@@ -24,7 +24,7 @@ Recurring tasks, files in and files out. People drop this period's input files i
 
 ## Try it
 
-    cp .env.example .env                  # set OPENROUTER_API_KEY
+    cp .env.example .env                  # set OPENROUTER_API_KEY, and EXA_API_KEY for web search
     docker build -t rollforward-agent agent
     docker compose up --build             # then open http://127.0.0.1:8780
 
@@ -103,7 +103,7 @@ Talk is threads only, as `comment` entries in the instance's `log.jsonl`: `{thre
 
 ## The agent's rf
 
-`rf` is on the agent's `PATH`; `rf help COMMAND` gives each command's details. What reaches outside the series is a wide path: the real interface at its real address, Microsoft Graph, a Databricks workspace, OpenRouter or a website in a browser over CDP, reached with real tools and the vendors' own docs, behind a boundary the server keeps (the connection's policy, the instance's ticks, the website's hosts) and with every request logged, not commands that wrap it (see Connections). Narrow conveniences are skills people write. For its own instance it calls the people's API, `/api`, as a caller with a run's few rights: its own instance's screen and threads, commits of its folder, wakes in its own workspace, and naming a folder it can read; so each rule lives once. `/agent` holds what only a run has: its runner's browsers.
+`rf` is on the agent's `PATH`; `rf help COMMAND` gives each command's details. What reaches outside the series is a wide path: the real interface at its real address, Microsoft Graph, a Databricks workspace, OpenRouter, Exa or a website in a browser over CDP, reached with real tools and the vendors' own docs, behind a boundary the server keeps (the connection's policy, the instance's ticks, the website's hosts) and with every request logged, not commands that wrap it (see Connections). Narrow conveniences are skills people write. For its own instance it calls the people's API, `/api`, as a caller with a run's few rights: its own instance's screen and threads, commits of its folder, wakes in its own workspace, and naming a folder it can read; so each rule lives once. `/agent` holds what only a run has: its runner's browsers.
 
 - `rf show` prints the screen, `workspace.json`, with its `rev`; `rf put FILE` replaces it. A put is refused if its `rev` isn't current, as people may have uploaded meanwhile, and unless every item has a unique id, a name and a kind; `from` names items, never in a circle; `file` is null or an existing file under `upload/` or `working/`; and `status` is left as it is. The server logs each change (`point`, `item`, `remove`) and freezes each newly shown file, logging its sha256.
 - `rf say`, `rf ask` and `rf resolve` (see Talking), and `rf wake` (see Runs).
@@ -155,7 +155,7 @@ The screen, `workspace.json`:
       {"id": "borrowing-base", "name": "Borrowing base", "kind": "output", "file": "working/Borrowing base 08.24.2026 v3.xlsx",
        "from": ["eligible-ar", "inventory"], "headline": "Excess 1.2M, 0.3M less than last week"}]}
 
-`log.jsonl` has one line per event, in `seq` order, `by` a person's email, "server" or "agent"; unknown fields are ignored. The ops are `create`, `upload`, `point` (an item now shows a file), `item`, `remove`, `run`, `done` (with the run's cost in USD, what its calls to OpenRouter cost), `report`, `comment`, `resolve`, `signoff` (the runner's answer to a sign-off, with its `commit`), `commit` (the agent's, with its `message`, the run and the `commit`), `interrupt`, `close`, `abandon`, `duplicate`, `rename`, `takeover`, `promote`, `wake`, `expired`, `egress` (a host a run reached or was refused), `call` (a run's request to a connection, with its `name`, `method`, `path`, the `status` answered and the answer's `bytes`, and, for OpenRouter, the `model` asked for and what the answer `cost`; a refusal also has the reason, `refused`; earlier versions logged `graph` entries instead), `delivered` (an output delivered, with `to`, `receipt` and the run), `browser` (a run's browser on a website closed, with its request and write counts, or, with `action: wait`, a run waiting for its person's browser there, with who `held` it), `shot` (a screenshot of a run's browser after a tool call changed its page) and `browsers` (a run's browsers didn't all close).
+`log.jsonl` has one line per event, in `seq` order, `by` a person's email, "server" or "agent"; unknown fields are ignored. The ops are `create`, `upload`, `point` (an item now shows a file), `item`, `remove`, `run`, `done` (with the run's cost in USD, what its calls to OpenRouter and Exa cost), `report`, `comment`, `resolve`, `signoff` (the runner's answer to a sign-off, with its `commit`), `commit` (the agent's, with its `message`, the run and the `commit`), `interrupt`, `close`, `abandon`, `duplicate`, `rename`, `takeover`, `promote`, `wake`, `expired`, `egress` (a host a run reached or was refused), `call` (a run's request to a connection, with its `name`, `method`, `path`, the `status` answered and the answer's `bytes`, and, for OpenRouter or Exa, the `model` asked for and what the answer `cost`; a refusal also has the reason, `refused`; earlier versions logged `graph` entries instead), `delivered` (an output delivered, with `to`, `receipt` and the run), `browser` (a run's browser on a website closed, with its request and write counts, or, with `action: wait`, a run waiting for its person's browser there, with who `held` it), `shot` (a screenshot of a run's browser after a tool call changed its page) and `browsers` (a run's browsers didn't all close).
 
     {"seq": 40, "at": "2026-08-24T15:02:00Z", "by": "sam@example.com", "op": "upload", "file": "upload/AR aging 082426_2.xlsx", "pane": "in", "onto": null, "sha256": "9f2c…"}
     {"seq": 41, "at": "2026-08-24T15:02:00Z", "by": "server", "op": "point", "item": "u40", "file": "upload/AR aging 082426_2.xlsx"}
@@ -230,7 +230,12 @@ A **connection** is an outside system runs reach as their runner, which admins k
 
 A run reaches Graph and Databricks at their real addresses, with real tools: the sandbox's proxy answers for those hosts with rollforward's own certificate authority, in `.rf/ca/`, which runs trust (`SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` and `CURL_CA_BUNDLE` name it with the system's). Each request is checked against its connection's policy and the instance's ticks, has its Authorization replaced with the runner's token, and goes on, a JSON body as the JSON the check read; the answer comes back as it is, logged as a `call` entry. A refusal is a 403 with the reason, logged too. A link an answer gives, such as an upload session's, a file's download address or a result's chunk, goes through for that run alone, exactly as given, with no credential added. The agent learns the connections it may use from its messages (see One Pi session per instance), and how each type is reached from prompt.md.
 
-One connection is the server's own, which admins don't keep and no one lends: `openrouter`, any model, at `openrouter.ai`, which every run has while the server has `OPENROUTER_API_KEY`, and Pi's own calls to its model go through. It takes inference, POST `/api/v1/chat/completions`, `/api/v1/completions`, `/api/v1/responses` and `/api/v1/messages`, and reads of the models and of a generation, GET `/api/v1/models…` and `/api/v1/generation`; never keys, credits or anything else. A body is a JSON object, which goes on with `provider.data_collection` set to `deny`, so no provider that stores or trains on data gets it. Runs reach it as they reach Graph, with a stand-in `OPENROUTER_API_KEY`, for the image's `openai` or anything else, and the proxy puts the server's key in, as both Authorization and x-api-key. What each answer cost, its `usage.cost`, whole or in the last event of its stream that has one, adds to the run's cost as it comes, and its `call` entry has it, with the `model` asked for.
+Two connections are the server's own, which admins don't keep and no one lends: every run has each while the server has its key, and Pi's own calls to its model go through the first.
+
+- `openrouter`, any model, at `openrouter.ai`, with `OPENROUTER_API_KEY`: inference, POST `/api/v1/chat/completions`, `/api/v1/completions`, `/api/v1/responses` and `/api/v1/messages`, and reads of the models and of a generation, GET `/api/v1/models…` and `/api/v1/generation`; never keys, credits or anything else. A body is a JSON object, which goes on with `provider.data_collection` set to `deny`, so no provider that stores or trains on data gets it;
+- `exa`, web search and pages' contents, at `api.exa.ai`, with `EXA_API_KEY`: POST `/search`, `/contents`, `/findSimilar` and `/answer`, each with a JSON object.
+
+Runs reach them as they reach Graph, with stand-in keys, `OPENROUTER_API_KEY` and `EXA_API_KEY`, for the image's `openai` and `exa-py` or anything else, and the proxy puts the server's key in, as both Authorization and x-api-key. What each answer cost, its `usage.cost` or `costDollars.total`, whole or in the last event of its stream that has one, adds to the run's cost as it comes, and its `call` entry has it, with the `model` asked for.
 
 ## Skills
 
@@ -262,7 +267,7 @@ You need Node 26, bubblewrap and tar, and a systemd user session for each run's 
 
 The [justfile](justfile) has these and more as recipes; `just` lists them. `just test` runs the tests.
 
-- **Model key:** `OPENROUTER_API_KEY`. It stays with the server, whose proxy puts it in the runs' requests to OpenRouter.
+- **Keys:** `OPENROUTER_API_KEY`, the model's, and `EXA_API_KEY`, for runs' web search. They stay with the server, whose proxy puts them in the runs' requests.
 - **On a VM:** run the server as a systemd user service with lingering on, and cap all runs together with `systemctl --user set-property rollforward-runs.slice MemoryMax=50G`.
 - **Environment variables:**
   - `RF_MODEL` (default `openrouter/anthropic/claude-opus-5.5`), an OpenRouter model, as Pi names it
@@ -290,7 +295,7 @@ TypeScript on Node, with `node:http` and no framework or build step; the agent's
 - [src/waker.ts](src/waker.ts): what runs when, wakes, and each run's view; [src/runner.ts](src/runner.ts) and [src/sandbox.ts](src/sandbox.ts): Pi in its sandbox; [agent/](agent), [src/agent.ts](src/agent.ts) and [scripts/agent.ts](scripts/agent.ts): the agent image.
 - [src/rf.ts](src/rf.ts): the agent's rf, and [src/agent-api.ts](src/agent-api.ts), what only a run has; [src/rf-people.ts](src/rf-people.ts): people's rf.
 - [src/auth.ts](src/auth.ts), [src/logins.ts](src/logins.ts), [src/entra.ts](src/entra.ts), [src/browsers.ts](src/browsers.ts), [src/skills.ts](src/skills.ts): sign-in, logins, Entra logins' tokens, websites and skills.
-- [src/connections.ts](src/connections.ts): connections and the calls runs make to them, a module each type, and the server's own, under [src/connections/](src/connections), and [src/ca.ts](src/ca.ts), the runs' certificate authority.
+- [src/connections.ts](src/connections.ts): connections and the calls runs make to them, a module each type, and each of the server's own, under [src/connections/](src/connections), and [src/ca.ts](src/ca.ts), the runs' certificate authority.
 - [web/index.html](web/index.html): the page, one file of plain JS.
 - [prompt.md](prompt.md): the agent's instructions.
 - [docs/design.md](docs/design.md): the look; [docs/deploy.md](docs/deploy.md): deploying on two hosts, rollforward's and the browser service's, and moving from the team's fork with [scripts/migrate-fork.ts](scripts/migrate-fork.ts).

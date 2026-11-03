@@ -11,9 +11,9 @@ import type { Instance } from '../src/store.ts';
 import type { AgentRun } from '../src/agent-api.ts';
 
 // A stand-in for Microsoft's sign-in and Graph: a SharePoint library with a folder of years of reports, the runner's OneDrive,
-// someone else's OneDrive, and two mailboxes; a Databricks warehouse; and OpenRouter, the server's own. Each is reached as a run
-// reaches it, through the sandbox's proxy, with the host's own address and rollforward's certificate authority, and the runner's
-// login, or the server's key, put in on the way. Every item names its parent, up to its drive's root.
+// someone else's OneDrive, and two mailboxes; a Databricks warehouse; and OpenRouter and Exa, the server's own. Each is reached as a
+// run reaches it, through the sandbox's proxy, with the host's own address and rollforward's certificate authority, and the
+// runner's login, or the server's key, put in on the way. Every item names its parent, up to its drive's root.
 const ALICE = 'alice@demo.test', AP = 'ap@demo.test';
 const tmp = mkdtempSync(join(tmpdir(), 'rf-conn-')), seriesDir = join(tmp, 'series', 'weekly'), instDir = join(tmp, 'instances', 'w1');
 const methods: string[] = [], log: { op: string; data: any }[] = [], writes: { method: string; path: string; auth?: string; type?: string; body: Buffer }[] = [];
@@ -58,7 +58,7 @@ let agentCall: typeof import('../src/agent-api.ts').agentCall;
 let logins: typeof import('../src/logins.ts');
 // The proxy's runs, by token, each the instance the run is for.
 const runs = new Map<string, Instance>(), callRuns = new Map<string, import('../src/connections.ts').CallRun>();
-// What OpenRouter was asked; a stream holds after its first event until the test lets it go on.
+// What OpenRouter and Exa were asked; a stream holds after its first event until the test lets it go on.
 const asked: { path: string; auth?: string; key?: string | string[]; body: unknown }[] = [];
 let held = Promise.resolve();
 let sock = '', ca = '', proxy: Server;
@@ -156,7 +156,7 @@ before(async () => {
     send({ error: { code: 'itemNotFound', message: 'not here' } }, 404);
   });
   await new Promise<void>(ok => graph.listen(0, '127.0.0.1', ok));
-  // OpenRouter, whose answers say what they cost: a chat completion whole, and a message and a response streamed.
+  // OpenRouter and Exa, whose answers say what they cost: a chat completion whole, a message and a response streamed, and a search.
   services = createServer(async (req, res) => {
     const chunks = await Array.fromAsync(req as AsyncIterable<Buffer>), body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined;
     asked.push({ path: req.url!, auth: req.headers.authorization, key: req.headers['x-api-key'], body });
@@ -167,12 +167,12 @@ before(async () => {
     };
     if (req.url === '/api/v1/messages') return stream({ type: 'message_start', message: { usage: { input_tokens: 0 } } }, { type: 'message_delta', usage: { output_tokens: 3, cost: 0.002 } }, { type: 'message_stop' });
     if (req.url === '/api/v1/responses') return stream({ type: 'response.created', response: { usage: null } }, { type: 'response.completed', response: { usage: { cost: 0.004 } } });
-    const answer = req.url === '/api/v1/models' ? { data: [] } : { choices: [{ message: { content: 'Hello' } }], usage: { cost: 0.001 } };
+    const answer = req.url === '/search' ? { results: [], costDollars: { total: 0.005 } } : req.url === '/api/v1/models' ? { data: [] } : { choices: [{ message: { content: 'Hello' } }], usage: { cost: 0.001 } };
     res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(answer));
   });
   await new Promise<void>(ok => services.listen(0, '127.0.0.1', ok));
   const base = `http://127.0.0.1:${(graph.address() as { port: number }).port}`;
-  Object.assign(process.env, { OPENROUTER_API_KEY: 'the-openrouter-key', RF_OIDC_ISSUER: base, RF_OIDC_CLIENT_ID: 'app', RF_PUBLIC_URL: 'http://127.0.0.1:1', RF_M365_SCOPES: 'Mail.ReadWrite Mail.ReadWrite.Shared Mail.Send Mail.Send.Shared Files.ReadWrite.All Sites.Read.All' });
+  Object.assign(process.env, { OPENROUTER_API_KEY: 'the-openrouter-key', EXA_API_KEY: 'the-exa-key', RF_OIDC_ISSUER: base, RF_OIDC_CLIENT_ID: 'app', RF_PUBLIC_URL: 'http://127.0.0.1:1', RF_M365_SCOPES: 'Mail.ReadWrite Mail.ReadWrite.Shared Mail.Send Mail.Send.Shared Files.ReadWrite.All Sites.Read.All' });
   const { initSystem, saveTree, writeJson } = await import('../src/system.ts');
   const { upsertUser } = await import('../src/auth.ts');
   const { openSkills, pushSkill } = await import('../src/skills.ts');
@@ -192,7 +192,7 @@ before(async () => {
   c.setConnection('adb', { type: 'databricks', host: 'adb-1.test', warehouse: 'wh1' }, 'admin');
   endpoints.graph = base;
   for (const host of ['graph.microsoft.com', 'adb-1.test', 'upload.test', 'blob.test']) c.upstreams[host] = base;
-  c.upstreams['openrouter.ai'] = `http://127.0.0.1:${(services.address() as { port: number }).port}`;
+  for (const host of ['openrouter.ai', 'api.exa.ai']) c.upstreams[host] = `http://127.0.0.1:${(services.address() as { port: number }).port}`;
   logins.saveLogin(ALICE, { id: 'm365', kind: 'm365', name: 'Microsoft 365', account: ALICE, since: '2026-11-02T00:00:00Z', offers: [
     { id: `m365:mail:${ALICE}`, name: 'Mailbox' }, { id: 'm365:onedrive', name: 'OneDrive' }, { id: 'm365:site:host,site1,web1', name: 'SharePoint Reports' },
   ] }, 'r0');
@@ -504,6 +504,22 @@ test('OpenRouter takes nothing but inference and reads of the models: no keys or
   }
   assert.match((await via('POST', `${O}/chat/completions`, { body: '{"model":"x","provider":{"data_collection":"allow"}}' })).text, /its body is a JSON object, sent as application\/json/);
   assert.equal(asked.length, before, 'none reached OpenRouter');
+});
+
+test("Exa is every run's too, with the server's key: a search, whose cost adds to the run's; nothing else, and nothing once the server has no key", async () => {
+  const before = callRuns.get('run')?.cost ?? 0;
+  const found = await via('POST', 'https://api.exa.ai/search', { body: JSON.stringify({ query: 'Larkfield refinancing' }), headers: { 'content-type': 'application/json', authorization: '', 'x-api-key': 'rf' } });
+  assert.equal(found.status, 200);
+  assert.deepEqual(asked.at(-1), { path: '/search', auth: 'Bearer the-exa-key', key: 'the-exa-key', body: { query: 'Larkfield refinancing' } });
+  assert.deepEqual(calls().at(-1), { run: 1, name: 'exa', method: 'POST', path: '/search', status: 200, bytes: found.text.length, cost: 0.005 });
+  assert.equal(+(callRuns.get('run')!.cost - before).toFixed(6), 0.005);
+  const n = asked.length;
+  for (const [method, path] of [['GET', '/search'], ['POST', '/websets/v0/websets'], ['POST', '/research/v1']]) assert.match((await via(method, `https://api.exa.ai${path}`, json({}))).text, /exa takes POST \/search, \/contents, \/findSimilar, \/answer/, path);
+  assert.match((await via('POST', 'https://api.exa.ai/contents', { body: 'urls=x' })).text, /\/contents: its body is a JSON object/);
+  delete process.env.EXA_API_KEY;
+  await assert.rejects(via('POST', 'https://api.exa.ai/search', json({ query: 'x' })), /CONNECT answered 403/);
+  process.env.EXA_API_KEY = 'the-exa-key';
+  assert.equal(asked.length, n, 'none reached Exa');
 });
 
 test('a login Microsoft asks to consent to what the server asks for anew renews with what it has, and says what its person reconnects to grant', async () => {

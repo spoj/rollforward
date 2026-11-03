@@ -12,6 +12,7 @@ import graph from './connections/graph.ts';
 import databricks from './connections/databricks.ts';
 import website from './connections/website.ts';
 import * as openrouter from './connections/openrouter.ts';
+import * as exa from './connections/exa.ts';
 
 // Connections: the outside systems runs reach, which admins keep with rf connection set NAME TYPE: each a name, a type and the
 // type's settings, in .rf/connections.json. A type is a module under connections/, saying how its person signs in and what that
@@ -23,9 +24,9 @@ import * as openrouter from './connections/openrouter.ts';
 // a `call` entry logs it. A link an answer held, such as an upload session's, goes through for that run, as it is, with no
 // credential added. A refusal is a plain 403 with the reason, logged too.
 //
-// The server's own connection, OpenRouter, a module under connections/ too, is every run's while the server has its key, which no
-// person lends: a request is checked against its policy and has the key put in for the run's stand-in, and what its answer cost
-// adds to the run's.
+// The server's own connections, OpenRouter and Exa, each a module under connections/ too, are every run's while the server has
+// its key, which no person lends: a request is checked against its policy and has the key put in for the run's stand-in, and what
+// its answer cost adds to the run's.
 
 export type Connection = { name: string; type: string; [setting: string]: any };
 export type Request = { method: string; url: URL; headers: Record<string, string | string[] | undefined>; json?: any; body?: Buffer };
@@ -89,7 +90,7 @@ export type CallRun = { inst: Instance; n: number; links: Map<string, string>; c
 // Tests point a host at a stand-in.
 export const upstreams: Record<string, string> = {};
 
-const own = (host: string) => [openrouter].find(s => s.host === host && process.env[s.key]);
+const own = (host: string) => [openrouter, exa].find(s => s.host === host && process.env[s.key]);
 
 export const intercepts = (a: CallRun, host: string) =>
   !!own(host) || connections().some(c => types[c.type].host?.(c) === host) || [...a.links.keys()].some(u => new URL(u).host === host);
@@ -117,7 +118,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       auth = { authorization: `Bearer ${await token(use(a.inst, checked.offer).email, login.id, login.scope)}` };
     }
     if (s) {
-      // The key goes in both headers SDKs send one in: Authorization, and x-api-key, as Anthropic's, Pi's among them, do.
+      // The key goes in both headers SDKs send one in: Authorization, and x-api-key, as Anthropic's, Pi's among them, and Exa's do.
       sent = s.check(r);
       auth = { authorization: `Bearer ${process.env[s.key]}`, 'x-api-key': process.env[s.key]! };
     }

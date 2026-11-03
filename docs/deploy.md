@@ -9,7 +9,7 @@ rollforward runs on one host and the browser service ([spoj/rollforward-browser]
   - **browser:** 4 vCPUs, 8 GB and 50 GB: a browser is capped at 2 GB, and idles at about 0.2 GB.
 - **A DNS name and a TLS certificate** for rollforward, or a place behind the company's reverse proxy.
 - **Routes out of the rollforward host:**
-  - the model's API (`openrouter.ai`);
+  - the model's API (`openrouter.ai`), and Exa's (`api.exa.ai`) for runs' web search;
   - Microsoft (`login.microsoftonline.com` and `graph.microsoft.com`);
   - the package registries and GitHub that runs install from (`.rf/egress.json` adds hosts);
   - the browser host's port.
@@ -17,7 +17,7 @@ rollforward runs on one host and the browser service ([spoj/rollforward-browser]
   If traffic out must go through a proxy, say so before you start: runs' own connections don't use one yet.
 - **Routes out of the browser host** to the websites people sign in to, such as the ERP and the portals.
 - **An app registered in Entra ID** (README, Access), with an admin's consent to its delegated Graph permissions.
-- **A model API key.**
+- **A model API key** for OpenRouter, and one for Exa if runs are to search the web.
 
 ## The browser host
 
@@ -34,7 +34,7 @@ Run the image under podman, as a systemd service. The image is the agent image, 
 1. Give the service a user of its own, with lingering on, and install rootless podman. Check out a tagged commit of this repo, and build the agent image, then the server's on it: `podman build -t rollforward-agent agent && podman build -t rollforward .`.
 2. Make an empty data folder, `~/rollforward-data`.
 3. Write `~/.config/rollforward.env` with:
-   - `OPENROUTER_API_KEY`;
+   - `OPENROUTER_API_KEY`, and `EXA_API_KEY` for web search;
    - the `RF_OIDC_*` lines and `RF_PUBLIC_URL` (README, Access);
    - `RF_ADMINS`, the first admins;
    - `RF_BROWSER_URL` and `RF_BROWSER_KEY`;
