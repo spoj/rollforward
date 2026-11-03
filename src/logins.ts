@@ -63,13 +63,18 @@ export function runnerOf(inst: Instance): { by: string; logins: string[] } {
   return { by: e.by, logins: (e.logins as string[] | undefined) ?? [] };
 }
 
-// The login a run may use for an offer: its runner's, if ticked for the instance and still offered, while the runner may still sign
-// in and see the instance's workspace.
-export function use(inst: Instance, offer: string): { email: string; login: Login } {
-  const { by, logins: ticked } = runnerOf(inst), u = users()[by], t = tree();
+// An instance's runner, while they may still lend it their logins: they may still sign in and see the instance's workspace.
+export function lender(inst: Instance): { by: string; logins: string[] } {
+  const r = runnerOf(inst), u = users()[r.by], t = tree();
   // Admins see every workspace; a try's stand-in instance (cli.ts) is in none.
-  if (!u || u.disabled || (u.role !== 'admin' && !canSee({ email: by, role: u.role, groups: u.groups ?? [] }, t.workspaces[t.series[inst.seriesId].workspace])))
-    throw new HttpError(403, `${by} can no longer run this instance, so their logins aren't used: someone in its workspace takes it over`);
+  if (!u || u.disabled || (u.role !== 'admin' && !canSee({ email: r.by, role: u.role, groups: u.groups ?? [] }, t.workspaces[t.series[inst.seriesId].workspace])))
+    throw new HttpError(403, `${r.by} can no longer run this instance, so their logins aren't used: someone in its workspace takes it over`);
+  return r;
+}
+
+// The login a run may use for an offer: its lender's, if ticked for the instance and still offered.
+export function use(inst: Instance, offer: string): { email: string; login: Login } {
+  const { by, logins: ticked } = lender(inst);
   if (!ticked.includes(offer)) throw new HttpError(403, `${offer} is not ticked for this instance; its runner, ${by}, ticks logins when starting or taking it over`);
   const login = logins(by).find(l => l.offers.some(o => o.id === offer));
   if (!login) throw Object.assign(new HttpError(409, `${by} no longer has a login offering ${offer}: they sign in again on the Logins page, and the instance carries on`), { login: offer.startsWith('m365') ? 'm365' : offer });

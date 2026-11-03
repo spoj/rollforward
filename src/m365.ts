@@ -1,14 +1,15 @@
 import { HttpError, type Instance } from './store.ts';
 import { endpoints, get, graph } from './graph.ts';
 import { needs } from './auth.ts';
-import { logins, runnerOf, saveLogin, use, type Offer } from './logins.ts';
+import { lender, logins, saveLogin, use, type Offer } from './logins.ts';
 
 // rf graph: a GET to Microsoft Graph as the instance's runner, answered as Graph answers it, as far as the instance's ticks reach:
 // /me/… or /users/ADDRESS/… for a mailbox's messages and folders; /drives/ID/…, /shares/ID/…, /me/drive/… or /users/ADDRESS/drive/…
 // for files, within a ticked folder, a ticked file, a ticked site's libraries or, as before, the runner's ticked OneDrive; and
 // /sites/ID/… for a ticked site. PATH may be a whole @odata.nextLink, and is read as Graph reads it, dot segments resolved.
 export async function graphGet(inst: Instance, target: string, headers: Record<string, string>) {
-  const base = new URL(endpoints.graph), root = base.pathname.replace(/\/$/, ''), runner = runnerOf(inst).by;
+  // The runner may lend their login before it reads anything, even what an item's ticks are checked against.
+  const base = new URL(endpoints.graph), root = base.pathname.replace(/\/$/, ''), { by: runner, logins: ticks } = lender(inst);
   const u = new URL(target.startsWith('/') ? endpoints.graph + target : target);
   if (u.origin !== base.origin || !u.pathname.startsWith(`${root}/`)) throw new HttpError(400, `a Graph path, such as /me/messages, or a link Graph gave: not ${target}`);
   const path = u.pathname.slice(root.length) + u.search, segments = path.split('?')[0].split('/').slice(1).map(s => decodeURIComponent(s));
@@ -24,7 +25,7 @@ export async function graphGet(inst: Instance, target: string, headers: Record<s
     // A share's site and list are the whole site and library its item is in, past what is ticked.
     if (top === 'shares' && !['', 'driveitem', 'root', 'items', 'listitem'].includes(part.toLowerCase())) throw new HttpError(403, `${path.split('?')[0]}: a share is read through its driveItem, root or items, not its ${part}, which reaches past what is ticked`);
     const item = await graph(runner, `${addressed(path.split('?')[0].replace(/^\/me\//, `/users/${runner}/`))}?$select=id,parentReference`);
-    offer = await covering(runner, runnerOf(inst).logins, item.parentReference.driveId, item.id, item.parentReference.id);
+    offer = await covering(runner, ticks, item.parentReference.driveId, item.id, item.parentReference.id);
     if (!offer) throw new HttpError(403, `${path.split('?')[0]} is in no folder, file or SharePoint site ticked for this instance`);
   } else if (top === 'sites') {
     needs('Sites.Read.All', 'SharePoint sites');

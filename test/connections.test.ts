@@ -234,3 +234,11 @@ test('admins keep websites, each an address and the other hosts its pages need',
   removeWebsite('portal');
   assert.throws(() => removeWebsite('portal'), /no website portal/);
 });
+
+test('rf graph reads nothing, not even what a tick is checked against, for a runner who can no longer lend their login', async () => {
+  const { upsertUser } = await import('../src/auth.ts'), before = methods.length;
+  upsertUser(ALICE, { disabled: true });
+  await assert.rejects(call('/agent/graph', { args: ['/drives/b!d1/items/y2026/children'] }), /can no longer run this instance/);
+  upsertUser(ALICE, { disabled: false });
+  assert.equal(methods.length, before, 'no request reached Graph');
+});
