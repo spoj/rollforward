@@ -267,5 +267,5 @@ TypeScript on Node, with `node:http` and no framework or build step; the agent's
 - [src/auth.ts](src/auth.ts), [src/logins.ts](src/logins.ts), [src/m365.ts](src/m365.ts), [src/browsers.ts](src/browsers.ts), [src/skills.ts](src/skills.ts): sign-in, logins, Microsoft 365, websites and skills.
 - [web/index.html](web/index.html): the page, one file of plain JS.
 - [prompt.md](prompt.md): the agent's instructions.
-- [docs/design.md](docs/design.md): the look; [docs/deploy.md](docs/deploy.md): deploying on two hosts, rollforward's and the browser service's.
+- [docs/design.md](docs/design.md): the look; [docs/deploy.md](docs/deploy.md): deploying on two hosts, rollforward's and the browser service's, and moving from the team's fork with [scripts/migrate-fork.ts](scripts/migrate-fork.ts).
 - [LICENSE](LICENSE): MIT.

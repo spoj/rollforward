@@ -67,6 +67,21 @@ Run the image under podman, as a systemd service. The image pins Node, Python, b
 
    A proxy that buffers, such as nginx, needs `proxy_buffering off` for the page's live updates and `client_max_body_size 0` for uploads.
 
+**Where the image can't be built,** such as on a host whose filter blocks Debian's mirrors, run the server as README's Without Docker says, as a systemd user service of the same user:
+
+- Node 26 beside the system's, such as in `/opt/node-v26`: a run binds node's own folder.
+- socat, ripgrep and fd from the distribution (on EL9, ripgrep and fd-find come from EPEL): a run sees `/usr`, with `/usr/bin` on its PATH, but not `/usr/local/bin` or `/opt`.
+- `npm ci --omit=dev`, then `uv venv --python 3.13 .venv && uv pip install --python .venv/bin/python -r requirements.txt`, as EL9's python3 is too old. Under `sudo -i`, `/usr/local/bin` isn't on PATH, so give uv's whole path.
+- The unit `~/.config/systemd/user/rollforward.service` has `WorkingDirectory=%h/rollforward`, `ExecStart=/opt/node-v26/bin/node --env-file=%h/.config/rollforward.env src/server.ts %h/rollforward-data 8780` and `Restart=always`; `systemctl --user set-property rollforward-runs.slice MemoryMax=24G` caps all runs together.
+
+## Moving from the team's fork
+
+A data root of the team's fork (its main at a1fa8db, with folders `<workspace>/<series>/<label>/`) moves with `node scripts/migrate-fork.ts OLD NEW`. It reads OLD only and writes NEW, which mustn't exist yet. Ids come from the old paths, so a rerun into a fresh NEW gives the same links: try it on a copy while the fork runs, then again with the fork stopped, and point the proxy at the new server.
+
+- **It carries** people with their roles, workspaces with their owners and an Ad hoc series each, series with their `.pylib`, and instances with `upload/`, `working/` and the agent's session. Notes become the agent's comments and questions its asks, with their options in the text; steers and answers become people's replies, and a question closing defaulted is one the close accepted.
+- **It leaves** the fork's skills, its Microsoft 365 connections and vendor passwords, and its keys: people sign in again, series start with no skills, and publishers push them again. It prints anything else it left.
+- **The new server starts no run** for the old logs: a run cut short gets its `done`.
+
 ## Keys, backups and updates
 
 - **Keys:** `.rf/session.key` signs sessions, and `.rf/seal.key` encrypts everyone's logins. Back up the data folder nightly without them, and keep a copy of both elsewhere. Without seal.key, people sign in to their logins again.
