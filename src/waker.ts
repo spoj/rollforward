@@ -122,7 +122,8 @@ async function start(inst: Instance) {
       token: a.token, id: inst.id, view: a.view,
       message: text, skills: live.map(s => s.id),
       onEvent: e => {
-        if (e.type === 'message_end' || e.type === 'tool_execution_end') changes.emit('change', inst.id); // Advanced shows the run as it goes
+        if (e.type === 'message_end' || e.type === 'tool_execution_end') changes.emit('change', inst.id); // the Ops log shows the run as it goes
+        if (e.type === 'tool_execution_end') a.browsers?.shoot().catch(err => console.error(`run ${n} of ${inst.id}: no screenshot`, err));
         if (e.type === 'message_end' && e.message.role === 'assistant') {
           a.cost += e.message.usage.cost.total;
           a.failed = e.message.stopReason === 'error' ? e.message.errorMessage ?? 'the model failed' : undefined; // a later success clears it

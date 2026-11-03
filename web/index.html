@@ -82,7 +82,7 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .legend .tri { display: inline-block; width: 0; height: 0; border-top: 9px solid var(--ink-3); border-left: 9px solid transparent; margin-right: 6px; }
 .legend .dash { display: inline-block; width: 16px; height: 10px; border: 1px dashed var(--ink-3); border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
 
-.main { display: flex; flex-direction: column; min-width: 0; height: 100dvh; position: relative; container: main / inline-size; }
+.main { display: flex; flex-direction: column; min-width: 0; height: 100dvh; position: relative; }
 .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px 28px; border-bottom: 1px solid var(--rule); background: var(--sheet); }
 .menu { display: none; border: 1px solid var(--rule-2); background: var(--sheet); border-radius: var(--r1); padding: 6px 10px; }
 .crumb { font-size: 13px; color: var(--ink-3); }
@@ -91,8 +91,6 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .bar h1 .t { cursor: text; }
 .bar h1:hover .ren { color: var(--ink); }
 .state { margin-left: auto; font-size: 13px; color: var(--ink-2); display: flex; align-items: center; gap: 8px; white-space: nowrap; }
-/* With a side panel open the bar's buttons come first; the run's state shows again on the sidebar and in Advanced. */
-@container main (min-width: 801px) and (max-width: 940px) { .state { display: none; } .bar > div:first-of-type { margin-right: auto; } }
 .btn { border: 1px solid var(--rule-2); background: var(--sheet); color: var(--ink); border-radius: var(--r1); padding: 7px 12px; font-size: 13px; font-weight: 500; white-space: nowrap; text-decoration: none; display: inline-block; }
 .btn.primary { background: var(--ink); border-color: var(--ink); color: #fff; }
 .btn.commit { background: var(--person); border-color: var(--person); color: #fff; }
@@ -105,7 +103,7 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .btn.danger:hover:not(:disabled) { background: #fdf1f0; border-color: var(--red); }
 [aria-busy=true] { pointer-events: none; opacity: .6; cursor: progress; }
 
-.panes { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: minmax(0, 1fr); position: relative; padding-bottom: 46px; }
+.panes { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: minmax(0, 1fr); position: relative; }
 .pane { padding: 22px 28px 20px; display: flex; flex-direction: column; position: relative; overflow: auto; min-width: 0; scrollbar-gutter: stable; }
 /* Always-visible scrollbars, so a long list of inputs or outputs shows it goes on (Edge's overlay scrollbars hide until hovered). */
 .pane::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -220,41 +218,30 @@ dialog::backdrop { background: rgba(21,24,29,.3); }
 .by { font-size: 11.5px; color: var(--ink-3); white-space: normal; margin-top: 4px; }
 .acts { display: flex; flex-wrap: wrap; gap: 8px; border-top: 1px solid var(--rule); padding-top: 10px; margin-top: 8px; }
 
-.adv { position: absolute; left: 0; right: 0; bottom: 0; z-index: 5; background: var(--sheet); border-top: 1px solid var(--rule-2); font-size: 13px; color: var(--ink-2); }
-.adv.open { box-shadow: 0 -6px 20px rgba(21,24,29,.08); }
-.adv .ab { display: flex; flex-shrink: 0; align-items: center; gap: 14px; height: 46px; padding: 0 28px; cursor: pointer; white-space: nowrap; overflow: hidden; }
-.adv .ab .t { color: var(--ink); font-weight: 600; }
-.adv .ab .t::before { content: "▸ "; color: var(--ink-3); }
-.adv.open .ab .t::before { content: "▾ "; }
-.adv .ab .s { overflow: hidden; text-overflow: ellipsis; }
-.adv .ab .r { margin-left: auto; color: var(--ink-3); font-size: 12px; }
-.adv .body { display: none; height: min(476px, 60dvh); border-top: 1px solid var(--rule); grid-template-rows: 1fr auto; background: var(--paper); }
-.adv.open .body { display: grid; }
-.trace { overflow: auto; padding: 4px 28px 14px; }
-.trace .rh { font-size: 12px; font-weight: 600; color: var(--ink-3); margin: 14px 0 6px; padding-top: 12px; border-top: 1px solid var(--rule); }
-.trace .rh:first-child { border-top: 0; }
-.trace .trig { font-size: 12.5px; color: var(--ink-2); margin: 2px 0 6px; }
-.trace .say { margin: 10px 0; color: var(--ink); white-space: pre-wrap; }
-.trace .say.reply { border-left: 3px solid var(--ink); padding-left: 12px; }
+.log details { color: var(--ink-2); }
+.log details :is(details, .ln, .say, .shots) { margin: 4px 0 0 14px; font-size: 12.5px; }
+.log .say { color: var(--ink); white-space: pre-wrap; }
 .say table { border-collapse: collapse; margin: 4px 0; white-space: normal; }
 .say td { border: 1px solid var(--rule); padding: 3px 8px; font-size: 12.5px; }
 .say tr:first-child td { font-weight: 600; background: var(--sheet); }
-.trace details { font-size: 12.5px; color: var(--ink-2); margin: 4px 0; }
-.trace details details { margin-left: 14px; }
-.trace summary { cursor: pointer; list-style: none; }
-.trace summary::-webkit-details-marker { display: none; }
-.trace summary::before { content: '▸'; display: inline-block; width: 14px; color: var(--ink-3); vertical-align: top; }
-.trace details[open] > summary::before { content: '▾'; }
-.trace summary b { color: var(--ink); font-weight: 500; }
-.trace .cmd { display: inline-block; max-width: calc(100% - 20px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: top; }
-.trace code, .trace .res { font: 12px var(--mono); }
-.trace .res { color: var(--ink-3); padding-left: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.trace pre { margin: 4px 0 8px 14px; padding: 8px 10px; background: var(--sheet); border: 1px solid var(--rule); border-radius: var(--r1); white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow: auto; font: 11.5px/1.5 var(--mono); }
-.trace .bad { color: var(--red); }
+.log summary { cursor: pointer; list-style: none; }
+.log summary::-webkit-details-marker { display: none; }
+.log summary::before { content: '▸'; display: inline-block; width: 14px; color: var(--ink-3); vertical-align: top; }
+.log details[open] > summary::before { content: '▾'; }
+.log summary b { color: var(--ink); font-weight: 500; }
+.log .cmd { display: inline-block; max-width: calc(100% - 20px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: top; }
+.log code, .log .res { font: 12px var(--mono); }
+.log .res { color: var(--ink-3); padding-left: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.log pre { margin: 4px 0 8px 14px; padding: 8px 10px; background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r1); white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow: auto; font: 11.5px/1.5 var(--mono); }
+.bad { color: var(--red); }
+.ln { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ln :is(.d, .f) { display: inline; margin-left: 6px; white-space: nowrap; }
+.shots { display: flex; gap: 6px; overflow-x: auto; margin-top: 6px; }
+.shots img { width: 112px; border: 1px solid var(--rule); border-radius: var(--r1); cursor: zoom-in; flex-shrink: 0; }
+details[open] + .shots { display: none; }
+.tot { padding: 10px 20px; font-size: 12.5px; color: var(--ink-3); border-bottom: 1px solid var(--rule); }
 .spin { display: inline-block; width: 8px; height: 8px; border: 2px solid var(--rule-2); border-top-color: var(--ink); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -1px; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.compose { border-top: 1px solid var(--rule); background: var(--sheet); padding: 10px 28px 14px; display: flex; gap: 8px; }
-.compose input { flex: 1; min-width: 0; background: var(--sheet); border: 1px solid var(--rule-2); border-radius: var(--r1); padding: 8px 10px; font: inherit; }
 
 :focus-visible { outline: 2px solid var(--person); outline-offset: 1px; }
 :is(input:not([type=checkbox]), textarea, select):focus { outline: none; border-color: var(--person); box-shadow: 0 0 0 3px var(--person-bg); }
@@ -279,14 +266,18 @@ input[type=checkbox] { accent-color: var(--ink); }
 .post.ask b::after { content: ' asks'; color: var(--red); font-weight: 500; }
 .thread .on, .post .tm { color: var(--ink-3); font-size: 12px; }
 .post b.p { color: var(--person, #1d4ed8); }
-.log .lh { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--rule); position: sticky; top: 0; background: var(--sheet); }
-.log .lh b { font-size: 15px; font-weight: 600; }
+.log .lh { display: flex; align-items: flex-end; gap: 4px; padding: 8px 12px 0; border-bottom: 1px solid var(--rule); position: sticky; top: 0; z-index: 1; background: var(--sheet); }
+.tab { border: 0; border-bottom: 2px solid transparent; background: none; padding: 8px 8px 9px; margin-bottom: -1px; font-family: inherit; font-size: 13px; font-weight: 500; color: var(--ink-3); cursor: pointer; white-space: nowrap; }
+.tab.sel { color: var(--ink); border-bottom-color: var(--ink); }
+.tab:hover, .log .lh .x:hover { color: var(--ink); }
+.log .lh .x { margin: 0 0 6px auto; border: 0; background: none; padding: 2px 6px; font-size: 20px; line-height: 1; color: var(--ink-3); cursor: pointer; }
 .e { display: grid; grid-template-columns: 46px 1fr; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--rule); font-size: 13px; }
+.e > div { min-width: 0; }
 .e .tm { color: var(--ink-3); font-size: 12px; padding-top: 1px; }
-:is(.e, .trig) .w { font-weight: 600; }
-:is(.e, .trig) .w.p { color: var(--person); }
-:is(.e, .trig) .d { color: var(--ink-2); font-size: 12.5px; margin-top: 2px; white-space: pre-wrap; word-break: break-word; }
-:is(.e, .trig) .f { font: 11.5px var(--mono); color: var(--ink-3); margin-top: 3px; word-break: break-all; }
+.e .w { font-weight: 600; }
+.e .w.p { color: var(--person); }
+.e .d { color: var(--ink-2); font-size: 12.5px; margin-top: 2px; white-space: pre-wrap; word-break: break-word; }
+.e .f { font: 11.5px var(--mono); color: var(--ink-3); margin-top: 3px; word-break: break-all; }
 
 @media (max-width: 800px) {
   .app { display: block; }
@@ -297,7 +288,7 @@ input[type=checkbox] { accent-color: var(--ink); }
   .bar h1 { font-size: 17px; }
   .state { margin-left: 0; order: 5; width: 100%; }
   .bar .btn.top { padding: 6px 9px; font-size: 12px; }
-  .panes { display: block; overflow: auto; padding-bottom: 60px; }
+  .panes { display: block; overflow: auto; }
   .pane { padding: 16px 14px; overflow: clip; }
   .ph { position: static; margin: 0 0 4px; padding: 0; background: none; }
   .outs { border-left: 0; border-bottom: 1px solid var(--rule); }
@@ -309,11 +300,6 @@ input[type=checkbox] { accent-color: var(--ink); }
   .from { display: block; }
   .hint { display: none; }
   .card { left: 0 !important; right: 0; bottom: 0; top: auto !important; width: auto; max-height: 75dvh; border-radius: 12px 12px 0 0; padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
-  .adv { position: fixed; }
-  .adv .ab { padding: 0 14px; }
-  .adv.open { top: 0; display: flex; flex-direction: column; }
-  .adv.open .body { height: auto; flex: 1; min-height: 0; }
-  .trace, .compose { padding-left: 14px; padding-right: 14px; }
   .log.open { position: fixed; inset: 0; width: auto; z-index: 25; }
   .pv, .pv.small { inset: 0; transform: none; width: auto; max-height: none; border: 0; border-radius: 0; }
   .sh td { max-width: 24ch; overflow: hidden; text-overflow: ellipsis; }
@@ -329,13 +315,6 @@ input[type=checkbox] { accent-color: var(--ink); }
       <section class="pane outs" id="outs" data-pane="out"></section>
       <section class="pane flow" id="flow" data-pane="in"></section>
       <svg class="edges" id="edges"></svg>
-    </div>
-    <div class="adv" id="adv">
-      <div class="ab" id="advbar"></div>
-      <div class="body">
-        <div class="trace" id="trace"></div>
-        <div class="compose" id="compose"><button class="btn" type="button" id="interrupt">Interrupt</button></div>
-      </div>
     </div>
   </main>
   <aside class="log" id="log"></aside>
@@ -386,7 +365,8 @@ function toast(text, kind = '') {
   setTimeout(() => { el.remove(); if (!box.children.length) box.hidePopover(); }, 6000);
 }
 const folds = new Map();
-const ui = { adv: false, log: false, conv: false, on: null, proc: false };
+// The side panel opens beside the instance where there's room for both, on Conversation.
+const ui = { open: innerWidth > 800, tab: 'conv', on: null, ref: null };
 let proc = { key: '', html: '' };
 const drawn = new WeakMap();
 
@@ -436,10 +416,10 @@ async function patch(ids) {
   land(cur, path, d, st);
 }
 
-// An instance's data, and its trace when Advanced is open and the trace may have moved.
+// An instance's data, and its trace when the Ops log shows and the trace may have moved.
 async function fetchInstance(path) {
   const d = await api(path), key = `${path}:${d.log.length}`;
-  return [d, ui.adv && (d.run || key !== linesKey) ? [await api(path + '/trace'), key] : null];
+  return [d, ui.open && ui.tab === 'log' && (d.run || key !== linesKey) ? [await api(path + '/trace'), key] : null];
 }
 
 function land(next, path, d, st) {
@@ -460,7 +440,6 @@ function render() {
   renderBar();
   renderPanes();
   renderLog();
-  renderAdv();
   renderCard();
 }
 
@@ -521,11 +500,13 @@ function renderBar() {
   let h = `<button class="menu" data-act="menu">☰</button>`;
   h += `<div><div class="crumb">${esc(cur?.w.name ?? '')}${cur?.s ? ' · ' + esc(cur.s.name) : ''}</div><h1>${renamable ? `<span class="t" data-act="rename" title="Rename">${esc(cur.i.label)}</span><button class="ren" data-act="rename" title="Rename">\u270E</button>` : esc(cur?.i?.label ?? 'No instance')}</h1></div>`;
   if (data) {
-    const d = lastDone();
-    const state = data.doc.status !== 'open' ? `${data.doc.status === 'closed' ? 'Closed' : 'Abandoned'} · read-only` : data.run ? `<span class="spin"></span>Agent working · run ${data.run.n}` : data.queued ? '\u29D7 Queued' : d ? `Agent idle · last run ${hhmm(d.at)}` : 'Waiting for files';
+    const d = lastDone(), talk = threads.filter(t => t.waits).length;
+    const state = data.doc.status !== 'open' ? `${data.doc.status === 'closed' ? 'Closed' : 'Abandoned'} · read-only`
+      : data.run ? `<span class="spin"></span>Agent working · run ${data.run.n}<button class="quiet" data-act="interrupt">Interrupt</button>`
+      : data.queued ? '\u29D7 Queued' : d?.error ? `<span class="bad" title="${esc(d.error)}">Run ${d.run} failed · ${hhmm(d.at)}</span>`
+      : d ? `Agent idle · last run ${hhmm(d.at)}` : 'Waiting for files';
     h += `<div class="state">${state}</div>`;
-    const talk = threads.filter(t => t.waits).length;
-    h += `<button class="btn top ${ui.proc ? 'sel' : ''}" data-act="proc">Process</button><button class="btn top ${ui.conv ? 'sel' : ''}" data-act="conv">Conversation${talk ? ` (${talk})` : ''}</button><button class="btn top ${ui.log ? 'sel' : ''}" data-act="log">Ops log</button>`;
+    if (!ui.open) h += `<button class="btn top" data-act="show-panel">Conversation${talk ? ` (${talk})` : ''}</button>`;
     const off = data.run ? 'disabled title="Available when the run ends"' : '';
     if (open) h += data.runner.by === me.email ? `<button class="btn commit top" data-act="close" ${off}>Close instance</button>`
       : `<button class="btn top" data-act="takeover" title="${esc(data.runner.by)} runs it: their logins, their sign-off. Taking over makes it yours.">Take over</button>`;
@@ -627,9 +608,12 @@ function drawEdges() {
 
 const logLine = e => `<div class="e"><span class="tm">${hhmm(e.at)}</span><div>${logText(e)}</div></div>`;
 
+const plural = (n, word) => `${n} ${word}${n > 1 ? 's' : ''}`;
+const actor = by => `<span class="w ${by !== 'server' && by !== 'agent' ? 'p' : ''}">${esc(by === 'agent' ? 'Agent' : by === 'server' ? 'Server' : by)}</span>`;
+const shotsHtml = es => `<div class="shots">${es.map(e => `<img src="${fileUrl(e.file)}" loading="lazy" alt="" title="${esc(e.site)} \u00b7 ${hhmm(e.at)}" data-act="preview" data-file="${esc(e.file)}">`).join('')}</div>`;
+
 function logText(e) {
-  const person = e.by !== 'server' && e.by !== 'agent';
-  const w = `<span class="w ${person ? 'p' : ''}">${esc(person ? e.by : e.by === 'agent' ? 'Agent' : 'Server')}</span>`;
+  const w = actor(e.by);
   const item = id => esc(data.doc.items.find(i => i.id === id)?.name ?? id);
   const f = e.file ? `<div class="f"><a data-act="preview" data-file="${esc(e.file)}">${esc(e.file)}</a></div>` : '';
   return {
@@ -638,7 +622,7 @@ function logText(e) {
     point: () => `${w} ${e.file ? 'showed' : 'cleared'} ${item(e.item)}${e.was ? `<div class="d">Replacing ${esc(fname(e.was))}</div>` : ''}${f}`,
     item: () => `${w} set up ${esc(e.name)}${e.from?.length ? `<div class="d">From ${e.from.map(item).join(', ')}</div>` : ''}${e.headline ? `<div class="d">${esc(e.headline)}</div>` : ''}${e.source ? `<div class="d">Source: ${esc(e.source)}</div>` : ''}`,
     remove: () => `${w} removed ${esc(e.item)} from the screen`,
-    run: () => `Run ${e.run} started`,
+    run: () => `Run ${e.run} started${data.run?.n === e.run ? ` \u00b7 ${usd(data.run.cost)} so far` : ''}`,
     done: () => `Run ${e.run} finished${e.aborted ? ' (stopped)' : ''} · ${took(e)} · ${usd(e.cost)}${e.summary ? `<div class="d">${esc(e.summary)}</div>` : ''}${e.error ? `<div class="d">${esc(e.error)}</div>` : ''}`,
     interrupt: () => `${w} interrupted the run`,
     close: () => `${w} closed the instance${e.accepted ? `<div class="d">Accepting what the agent did for ${e.accepted.length} ask${e.accepted.length > 1 ? 's' : ''} still waiting</div>` : ''}`,
@@ -655,41 +639,31 @@ function logText(e) {
     rename: () => `${w} renamed the instance from ${esc(e.from)}`,
     duplicate: () => `${w} made this instance as a copy of ${esc(e.from)}`,
     browser: () => e.action === 'get' ? `${w} fetched ${esc(e.from)} from the browser on ${esc(e.site)}${f}` : `${w} closed run ${e.run}'s browser${e.site ? ` on ${esc(e.site)}, in ${esc(e.login)}'s login` : ''}<div class="d">${e.error ? esc(e.error) : `${e.requests} requests${e.writes ? `, ${e.writes} writes` : ''}${e.blocked ? `, ${e.blocked} blocked` : ''}`}</div>${f}`,
+    shot: () => `Run ${e.run}'s browser on ${esc(e.site)}${shotsHtml([e])}`,
     browsers: () => `Run ${e.run}'s browsers did not all close<div class="d">${esc(e.error)}</div>`,
   }[e.op]?.() ?? `${w} ${esc(e.op)}`;
 }
 
-function renderLog() {
-  $('#log').className = 'log' + ((ui.log || ui.conv || ui.proc) && data ? ' open' : '');
-  if (!data) return;
-  // A half-written comment or reply, or files picked for one, holds the conversation still until it's sent or cleared.
-  const drafting = [...$('#log').querySelectorAll('textarea')].some(t => t.value.trim()) || [...$('#log').querySelectorAll('input[type=file]')].some(f => f.files.length);
-  if (ui.conv) return drafting || put($('#log'), conversationHtml());
-  if (ui.proc) {
-    const key = `${cur.i.id}:${data.doc.rev}`;
-    if (proc.key !== key) loadProcess(key);
-    return put($('#log'), proc.html);
-  }
-  if (!ui.log) return;
-  // Oldest first, opening at the latest, and kept there as entries come unless the reader has scrolled up.
-  put($('#log'), `<div class="lh"><b>Ops log</b><button class="btn" data-act="log">Close</button></div>` + data.log.map(logLine).join(''));
-  if ($('#log').dataset.end !== 'no') $('#log').scrollTop = $('#log').scrollHeight;
+// The side panel's tabs: Conversation, Process and the Ops log.
+function tabsHtml() {
+  const talk = threads.filter(t => t.waits).length;
+  return `<div class="lh">${[['conv', `Conversation${talk ? ` (${talk})` : ''}`], ['proc', 'Process'], ['log', 'Ops log']].map(([t, name]) => `<button class="tab ${ui.tab === t ? 'sel' : ''}" data-act="tab" data-tab="${t}">${name}</button>`).join('')}<button class="x" data-act="hide-panel" title="Close">\u00D7</button></div>`;
 }
 
-function renderAdv() {
-  $('#adv').className = 'adv' + (ui.adv ? ' open' : '');
-  $('#adv').hidden = !data;
-  if (!data) return;
-  $('#compose').hidden = data.doc.status !== 'open';
-  $('#interrupt').disabled = !data.run;
-  const d = lastDone();
-  const cost = data.log.reduce((t, e) => t + (e.cost ?? 0), 0) + (data.run?.cost ?? 0);
-  const s = (data.run ? `Run ${data.run.n} running` : d ? `Run ${d.run} ${d.error ? 'failed' : 'finished'} ${hhmm(d.at)}${d.error ?? d.summary ? ' · ' + (d.error ?? d.summary) : ''}` : 'No runs yet') + (cost ? ` · ${usd(cost)} so far` : '');
-  $('#advbar').innerHTML = `<span class="t">Advanced</span><span class="s">${esc(s)}</span><span class="r">${ui.adv ? 'Hide runs' : 'Show runs'}</span>`;
-  if (!ui.adv) return;
-  const trace = $('#trace'), atEnd = trace.scrollTop + trace.clientHeight >= trace.scrollHeight - 30;
-  put(trace, traceHtml());
-  if (atEnd) trace.scrollTop = trace.scrollHeight;
+function renderLog() {
+  $('#log').className = 'log' + (ui.open && data ? ' open' : '');
+  if (!data || !ui.open) return;
+  // A half-written comment or reply, or files picked for one, holds the conversation still until it's sent or cleared.
+  const drafting = [...$('#log').querySelectorAll('textarea')].some(t => t.value.trim()) || [...$('#log').querySelectorAll('input[type=file]')].some(f => f.files.length);
+  if (ui.tab === 'conv') return drafting || put($('#log'), tabsHtml() + conversationHtml());
+  if (ui.tab === 'proc') {
+    const key = `${cur.i.id}:${data.doc.rev}`;
+    if (proc.key !== key) loadProcess(key);
+    return put($('#log'), tabsHtml() + proc.html);
+  }
+  // Oldest first, opening at the latest, and kept there as entries come unless the reader has scrolled up.
+  put($('#log'), tabsHtml() + opsHtml());
+  if ($('#log').dataset.end !== 'no') $('#log').scrollTop = $('#log').scrollHeight;
 }
 
 const VERB = { read: 'Read', bash: 'Ran', edit: 'Edited', write: 'Wrote' };
@@ -720,39 +694,48 @@ function lineHtml(s, i) {
     `<pre>${esc(s.text)}</pre>${s.result ? `<pre class="${s.error ? 'bad' : ''}">${esc(s.result)}</pre>` : ''}`);
 }
 
-function groupHtml(g, live) {
-  if (g.length === 1) return lineHtml(...g[0]);
-  const counts = Object.entries(Object.groupBy(g, ([s]) => s.kind)).map(([k, xs]) => `${esc(VERB[k] ?? k).toLowerCase()} ${xs.length} ${NOUN[k] ?? 'call'}${xs.length > 1 ? 's' : ''}`).join(', ');
-  const bad = g.filter(([s]) => s.error).length;
-  const head = counts[0].toUpperCase() + counts.slice(1) + (bad ? ` · <span class="bad">${bad} failed</span>` : '') + (live ? ' <span class="spin"></span>' : '');
-  return fold(`g${g[0][1]}`, live, head, g.map(x => lineHtml(...x)).join(''));
+// What a row of the agent's work did, by kind of entry, and what a person's entries of one kind in a row did.
+const DID = {
+  graph: n => `read ${plural(n, 'path')} from Microsoft 365`, point: n => `showed ${plural(n, 'file')}`, item: n => `set up ${plural(n, 'item')}`,
+  remove: n => `removed ${plural(n, 'item')}`, get: n => `fetched ${plural(n, 'file')} from the browser`, browser: n => `closed ${plural(n, 'browser')}`,
+  egress: n => `reached ${plural(n, 'host')}`, upload: n => `uploaded ${plural(n, 'file')}`, resolve: n => `resolved ${plural(n, 'thread')}`,
+};
+const ALONE = new Set(['comment', 'report', 'run', 'done']);
+
+// The Ops log: the log's entries and, from the agent's session, its messages and tool calls, in time order. What the agent does
+// between comments, reports and a run's start and end folds into one row, with what the server logged of the run, such as each
+// screenshot of its browser, which the row shows; a person's entries of one kind in a row fold too. A run's trigger and the rf
+// say and ask calls are left out, as their entries show them, and so is its last message, which is its report.
+function opsHtml() {
+  const reported = new Set(data.log.filter(e => e.op === 'report').map(e => e.text));
+  const steps = lines.map((s, i) => ({ ...s, i })).filter(s => s.kind !== 'user' && !(s.kind === 'bash' && /\brf (say|ask)\b/.test(s.text)) && !(s.kind === 'say' && reported.has(s.text.trim())));
+  const rows = [];
+  for (const x of [...steps, ...data.log].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))) {
+    const key = ALONE.has(x.op) ? '' : !x.op || x.by === 'agent' || (x.by === 'server' && x.run) ? 'work' : `${x.op} ${x.by}`;
+    if (key && rows.at(-1)?.key === key) rows.at(-1).xs.push(x);
+    else rows.push({ key, xs: [x] });
+  }
+  const runs = data.log.filter(e => e.op === 'run').length, cost = data.log.reduce((t, e) => t + (e.cost ?? 0), 0) + (data.run?.cost ?? 0);
+  return (runs ? `<div class="tot">${plural(runs, 'run')}, ${usd(cost)}</div>` : '') + rows.map((r, k) => rowHtml(r, !!data.run && k === rows.length - 1)).join('');
 }
 
-function traceHtml() {
-  // The session files are the agent's to write: what they say of the log is only seqs, each shown from the log itself.
-  let h = '', g = [], run = 0;
-  const entry = text => data.log.find(e => e.seq === Number(text?.match(/\bseq"?:? ?(\d+)/)?.[1]));
-  const flush = live => { if (g.length) h += groupHtml(g, live); g = []; };
-  lines.forEach((s, i) => {
-    const said = s.kind === 'bash' && /\brf (say|ask)\b/.test(s.text);
-    if (s.kind !== 'user' && s.kind !== 'say' && !said) return void g.push([s, i]);
-    flush(false);
-    // Each comment the command made, as its output names them by seq.
-    if (said) return void (h += [...(s.result ?? '').matchAll(/\bseq (\d+)/g)].map(m => entry(m[0])).filter(Boolean).map(e => `<div class="say reply">${md(e.text)}</div>`).join('') || `<div class="say reply">${md(s.text)}</div>`);
-    if (s.kind === 'say') return void (h += `<div class="say">${md(s.text)}</div>`);
-    const n = Number(s.text.match(/run (\d+)\./)?.[1]);
-    if (n !== run) {
-      const d = data.log.find(e => e.op === 'done' && e.run === n);
-      h += `<div class="rh">Run ${n} · ${hhmm(s.at)}${d ? ` · ${took(d)} · ${usd(d.cost)}` : data.run?.n === n ? ' · running' : ''}</div>`;
-      run = n;
-    }
-    for (const l of (s.text.split('New log entries:\n')[1] ?? '').split('\n')) {
-      const e = entry(l);
-      if (e && e.by !== 'server') h += `<div class="trig">${logText(e)}</div>`;
-    }
-  });
-  flush(!!data.run);
-  return h || '<div class="rh">No runs yet.</div>';
+// A row of the Ops log: an entry or a step, or a fold of several, which opens to one line each.
+function rowHtml({ key, xs }, live) {
+  const x = xs[0], line = x => x.op === 'shot' ? shotsHtml([x]) : x.op ? `<div class="ln">${logText(x)}</div>` : x.kind === 'say' ? `<div class="say">${md(x.text)}</div>` : lineHtml(x, x.i);
+  if (xs.length === 1) return x.op ? logLine(x) : `<div class="e"><span class="tm">${hhmm(x.at)}</span><div>${line(x)}</div></div>`;
+  const shots = xs.filter(x => x.op === 'shot');
+  const head = key === 'work' ? workHead(xs, live) : `${actor(x.by)} ${DID[x.op]?.(xs.length) ?? `${esc(x.op)} \u00D7${xs.length}`}`;
+  return `<div class="e"><span class="tm">${hhmm(x.at)}</span><div>${fold(`r${x.seq ?? 's' + x.i}`, false, head, xs.map(line).join(''))}${shots.length ? shotsHtml(shots) : ''}</div></div>`;
+}
+
+function workHead(xs, live) {
+  const steps = xs.filter(x => !x.op && x.kind !== 'say'), entries = xs.filter(x => x.op && x.op !== 'shot');
+  const did = [
+    ...Object.entries(Object.groupBy(steps, s => s.kind)).map(([k, g]) => `${(VERB[k] ?? k).toLowerCase()} ${plural(g.length, NOUN[k] ?? 'call')}`),
+    ...Object.entries(Object.groupBy(entries, e => (e.action === 'get' ? 'get' : e.op))).map(([k, g]) => DID[k]?.(g.length) ?? `${esc(k)} \u00D7${g.length}`),
+  ];
+  const bad = steps.filter(s => s.error).length + entries.filter(e => e.status >= 300 || e.allowed === false || e.op === 'browsers').length;
+  return `${actor('agent')} ${did.join(', ') || 'worked'}${bad ? ` \u00b7 <span class="bad">${bad} failed</span>` : ''}${live ? ' <span class="spin"></span>' : ''}`;
 }
 
 // Process: the instance's working/process.md, redlined against the instance it was made from, else the series' latest closed before it.
@@ -764,10 +747,10 @@ async function loadProcess(key) {
   const [now, was] = await Promise.all([get('working/process.md'), prev ? get(`../${prev}/working/process.md`) : '']);
   // Until this instance's agent writes its own, the process is still the one it starts from.
   const lines = now ? redline(was, now) : redline('', was), changed = lines.some(([k]) => k);
-  proc.html = `<div class="lh"><b>Process</b><button class="btn" data-act="proc">Close</button></div><div class="conv">`
+  proc.html = '<div class="conv">'
     + `<div class="sub">${!now && !was ? 'No process.md yet: the agent writes it as it learns the series.' : !now ? `As of ${esc(prev)}, until the agent updates it here.` : prev ? (changed ? `Changes since ${esc(prev)} are marked.` : `Unchanged since ${esc(prev)}.`) : 'The series\' first process.'}</div>`
     + `<div class="proc">${lines.map(([k, l]) => `<div class="${k}">${md(l) || '&nbsp;'}</div>`).join('')}</div></div>`;
-  if (ui.proc && proc.key === key) renderLog();
+  if (ui.tab === 'proc' && proc.key === key) renderLog();
 }
 
 function redline(a, b) {
@@ -819,7 +802,7 @@ function threadHtml(t) {
 function conversationHtml() {
   const open = data.doc.status === 'open', name = id => esc(data.doc.items.find(i => i.id === id)?.name ?? id);
   const report = data.log.findLast(e => e.op === 'report'), rest = threads.filter(t => !t.waits).sort((a, b) => a.resolved - b.resolved);
-  let h = `<div class="lh"><b>Conversation</b><button class="btn" data-act="conv">Close</button></div><div class="conv">`;
+  let h = '<div class="conv">';
   if (threads.some(t => t.waits)) h += `<h3>Waiting on people</h3>` + threads.filter(t => t.waits).map(threadHtml).join('');
   if (report) h += `<h3>Report, run ${report.run}</h3><div class="post">${md(report.text)}</div>`;
   if (rest.length) h += `<h3>Threads</h3>` + rest.map(threadHtml).join('');
@@ -1176,17 +1159,16 @@ document.addEventListener('click', async ev => {
   const was = $('#pop').hidden ? null : $('#pop').dataset.by;
   $('#pop').hidden = true;
   if (!ev.target.closest('#side, [data-act=menu]') || ev.target.closest('#side a')) $('#side').classList.remove('open');
-  const sum = ev.target.closest('#trace summary');
+  const sum = ev.target.closest('#log summary');
   if (sum) {
     folds.set(sum.parentElement.dataset.key, !sum.parentElement.open);
-    return void drawn.set($('#trace'), traceHtml());
+    return void drawn.set($('#log'), tabsHtml() + opsHtml());
   }
-  const el = ev.target.closest('[data-act], .tile, #advbar');
+  const el = ev.target.closest('[data-act], .tile');
   if (!el) {
     if (!ev.target.closest('#card, dialog, #pop')) { openItem = null; renderCard(); renderPanes(); }
     return;
   }
-  if (el.id === 'advbar') { ui.adv = !ui.adv; if (ui.adv) lines = await api(instPath() + '/trace'); return renderAdv(); }
   if (el.classList.contains('tile')) {
     openItem = openItem === el.dataset.item ? null : el.dataset.item;
     markSeen(data.doc.items.filter(i => i.id === openItem));
@@ -1218,13 +1200,18 @@ async function onAct(act, el, was) {
     ]);
   }
   if (act === 'menu-me') openMenu(el, [['Logins', 'logins'], ['Tokens', 'tokens'], ['AGENTS.md', 'agents'], ['Skills', 'skills'], me.role === 'admin' && ['People', 'people'], ['-'], ['Sign out', 'signout']]);
-  if (act === 'log' || act === 'conv' || act === 'proc') {
-    const open = !ui[act];
+  if (act === 'tab') {
+    if (el.dataset.tab === 'log') [lines, linesKey] = [await api(instPath() + '/trace'), `${instPath()}:${data.log.length}`];
     $('#log').dataset.end = 'yes';
-    Object.assign(ui, { log: false, conv: false, proc: false, on: null, ref: null, [act]: open });
+    Object.assign(ui, { tab: el.dataset.tab, on: null, ref: null });
+    renderLog();
+  }
+  if (act === 'show-panel' || act === 'hide-panel') {
+    Object.assign(ui, { open: act === 'show-panel', tab: 'conv', on: null, ref: null });
     renderLog(); renderBar(); placeCard();
   }
-  if (act === 'comment-on') { Object.assign(ui, { log: false, conv: true, proc: false, on: el.dataset.item, ref: null }); renderLog(); renderBar(); $('#newcomment')?.focus(); }
+  if (act === 'interrupt') { await api(`${instPath()}/interrupt`, { method: 'POST' }); await refresh(); }
+  if (act === 'comment-on') { Object.assign(ui, { open: true, tab: 'conv', on: el.dataset.item, ref: null }); renderLog(); renderBar(); $('#newcomment')?.focus(); }
   if (act === 'comment' || act === 'reply-thread') {
     const box = act === 'comment' ? $('#newcomment') : el.closest('.thread').querySelector('textarea'), text = box.value.trim();
     const picked = act === 'comment' ? $('#newfiles') : el.closest('.thread').querySelector('input[type=file]');
@@ -1303,7 +1290,7 @@ async function onAct(act, el, was) {
   if (act === 'thread') {
     replying.add(el.dataset.thread);
     closePv();
-    Object.assign(ui, { log: false, conv: true, proc: false, on: null, ref: null });
+    Object.assign(ui, { open: true, tab: 'conv', on: null, ref: null });
     renderLog(); renderBar();
     const box = document.querySelector(`#log .thread[data-thread="${CSS.escape(el.dataset.thread)}"]`);
     box?.scrollIntoView({ block: 'center' });
@@ -1313,7 +1300,7 @@ async function onAct(act, el, was) {
     const item = pv.item;
     pv = null;
     renderPv();
-    Object.assign(ui, { log: false, conv: true, proc: false, on: item, ref: el.dataset.ref });
+    Object.assign(ui, { open: true, tab: 'conv', on: item, ref: el.dataset.ref });
     renderLog(); renderBar();
     $('#newcomment')?.focus();
   }
@@ -1424,11 +1411,6 @@ $('#pv').addEventListener('click', e => {
   const r = $('#pv').getBoundingClientRect();
   if (e.target === $('#pv') && !pv.signin && (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom)) closePv();
 });
-$('#interrupt').addEventListener('click', async () => {
-  if (!data?.run) return;
-  await api(`${instPath()}/interrupt`, { method: 'POST' });
-  await refresh();
-});
 
 for (const type of ['dragover', 'dragleave', 'drop']) {
   $('#panes').addEventListener(type, e => {
@@ -1455,7 +1437,6 @@ addEventListener('hashchange', () => {
   openItem = null; folds.clear(); prevSigs = {};
   $('#panes').scrollTop = $('#flow').scrollTop = $('#flow').scrollLeft = $('#outs').scrollTop = $('#log').scrollTop = 0;
   $('#log').dataset.end = 'yes';
-  $('#trace').scrollTop = $('#trace').scrollHeight;
   closePv();
   $('#side').classList.remove('open');
   refresh();
@@ -1474,8 +1455,7 @@ addEventListener('keydown', e => {
   if (!$('#pop').hidden) $('#pop').hidden = true;
   else if ($('#side').classList.contains('open')) $('#side').classList.remove('open');
   else if (openItem) { openItem = null; renderCard(); renderPanes(); }
-  else if (ui.log || ui.conv || ui.proc) { ui.log = ui.conv = ui.proc = false; renderLog(); renderBar(); }
-  else if (ui.adv) { ui.adv = false; renderAdv(); }
+  else if (ui.open) { ui.open = false; renderLog(); renderBar(); placeCard(); }
 });
 // Microsoft sends people back to #logins after they connect Microsoft 365.
 const backFromMicrosoft = location.hash === '#logins';

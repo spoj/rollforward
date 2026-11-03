@@ -118,11 +118,12 @@ export async function endSignIn(email: string, id: string, save: boolean) {
 
 // ---- A run's browsers, which close when it ends: one per website, from its runner's login if ticked for the instance. Closing one
 // seals its login again, refreshed, unless its person signed out meanwhile, and keeps its request log in the instance's browser/,
-// which the agent can read but not change.
+// which the agent can read but not change, beside the screenshots taken after each of the agent's tool calls.
 export class Browsers {
   inst: Instance;
   run: number;
-  bySite = new Map<string, { id: string; email: string }>();
+  bySite = new Map<string, { id: string; email: string; shot?: Buffer }>();
+  shots = 0;
   constructor(inst: Instance, run: number) {
     this.inst = inst;
     this.run = run;
@@ -154,6 +155,19 @@ export class Browsers {
   async browserFile(site: string, path: string): Promise<Buffer> {
     if (!this.bySite.has(site)) throw new HttpError(409, `no browser on ${site} in this run: rf browser open ${site} first`);
     return call('GET', files(await this.browser(site), path));
+  }
+
+  // A screenshot of each browser's newest tab, unless it looks as it did at the last, logged as shot for the Ops log.
+  async shoot() {
+    await Promise.all([...this.bySite].map(async ([site, b]) => {
+      const png = await call('GET', `/sessions/${b.id}/screenshot`);
+      if (b.shot?.equals(png)) return;
+      b.shot = png;
+      const file = `browser/run ${this.run} ${site} ${++this.shots}.png`;
+      mkdirSync(join(this.inst.dir, 'browser'), { recursive: true });
+      replaceReadOnly(join(this.inst.dir, file), png);
+      this.inst.append('server', 'shot', { run: this.run, site, file });
+    }));
   }
 
   async close() {

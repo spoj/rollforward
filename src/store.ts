@@ -8,8 +8,8 @@ const normalize = posix.normalize;
 
 // Writes a read-only file whole, by renaming a temporary file into place. Windows refuses to rename over a read-only file, so there
 // the old one is made writable first.
-export function replaceReadOnly(path: string, text: string) {
-  writeFileSync(path + '.tmp', text, { mode: 0o444 });
+export function replaceReadOnly(path: string, data: string | Buffer) {
+  writeFileSync(path + '.tmp', data, { mode: 0o444 });
   if (process.platform === 'win32' && existsSync(path)) chmodSync(path, 0o644);
   renameSync(path + '.tmp', path);
 }

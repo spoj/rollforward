@@ -19,8 +19,8 @@ Recurring tasks, files in and files out. People drop this period's input files i
 | ![A tile's card](docs/screenshots/card.png) | ![Preview](docs/screenshots/preview.png) |
 | **Conversation: what waits on people, the report and the threads** | **Process, marked against the previous instance** |
 | ![Conversation](docs/screenshots/conversation.png) | ![Process](docs/screenshots/process.png) |
-| **Advanced: the agent's work** | **Phone** |
-| ![Advanced](docs/screenshots/advanced.png) | ![Phone](docs/screenshots/phone.png) |
+| **Ops log: a run's work in one row, open to each tool call** | **Phone** |
+| ![Ops log](docs/screenshots/ops-log.png) | ![Phone](docs/screenshots/phone.png) |
 
 ## Try it
 
@@ -59,10 +59,11 @@ For scale, a weekly borrowing base's runs cost about $0.20–0.60 each with Clau
 - **An instance** is its graph: inputs first, then the steps, column by column, with lines from each tile to what it's made from, and the outputs in a column of their own that stays in view. A tile shows its item's name, file and version, and who made it, by colour: blue for a person, black for the agent. Dashed tiles have no file yet. A corner marks a tile with threads, gray, or red while an ask waits on a reply. A click opens the tile's card: its threads, Preview, Download, Upload and Comment. Under the inputs, "Also used" lists the files the agent's comments cite and no tile shows.
 - **Drops are hints.** Outputs and the rest are the two drop zones. The server adds each dropped file as an item at once, even mid-run: an output if it was dropped on Outputs, else an input. The agent decides what it is, such as a replacement for an input's file.
 - **Preview** shows a spreadsheet with its threads' cells marked; a click on a cell comments on it or opens its thread. "Compare with previous" marks the cells that changed since the file it replaced.
+- **The side panel,** beside the instance where there's room for both, has three tabs: Conversation, Process and the Ops log. × closes it, and the bar's Conversation button, with the count waiting on people, opens it again; on a phone it covers the page.
 - **Conversation:** the threads waiting on people first, then the agent's latest report, then the other threads, and a box to comment on the instance.
 - **Process:** the instance's `working/process.md`, redlined against the instance it was made from, so a reviewer sees what changed in the method, not only in the figures.
-- **Ops log:** who did what and when, oldest first, opening at the latest; earlier files open from it.
-- **Advanced,** along the bottom, shows the agent's work, live during a run: what started each run, with its time and cost, the agent's messages, and each tool call as one line that expands to its output. **Interrupt** stops the run.
+- **Ops log:** who did what and when, oldest first, opening at the latest, under what the runs have cost: the log, and from the agent's session its messages and tool calls. What the agent does between comments, reports and a run's start and end is one row, such as "Agent ran 14 commands, showed 4 files · 1 failed", which opens to a line per step, each opening to its output; a person's entries of one kind in a row fold too. A screenshot of the run's browser, taken after each tool call that changed its page, shows on its row and opens in Preview, as earlier files do.
+- **The bar** says what the agent is doing: working on run N, with **Interrupt**, which stops the run; queued; idle since its last run; or that its last run failed, with why on hover.
 - **Close instance** is the runner's "I've reviewed this and stand by it", for the whole instance; others see **Take over**, which makes them the runner, with their own logins ticked. **Abandon**, in the ⋯ menu, ends it otherwise: it is neither an example nor a starting point. Both wait for the run to end. A closed or abandoned instance can be **duplicated** into an open one, without its agent session. An instance's label changes by clicking it, between runs.
 - **Starting an instance** asks for its label and which of your logins it may use, every time, as do copying and taking over.
 - **Series settings:** its name, its wakes and its cost. The next wake can be moved or cancelled, and **Allow wakes** lets a wake start an instance, run as you with the logins you tick. **Workspace settings:** its name, its people, what its agents read and who reads it, and its AGENTS.md.
@@ -122,8 +123,8 @@ Everything is files on the host's disk, in folders named by random ids, with no 
       working/                the agent's: scripts, process.md, drafts, outputs, and inputs it fetched or made
       workspace.json          the screen, read-only
       log.jsonl               every event, written by the server
-      session/                the instance's Pi session, which Advanced shows
-      browser/                each run's browser requests, one line per request
+      session/                the instance's Pi session, which the Ops log shows
+      browser/                each run's browser requests, one line per request, and its screenshots
 
 - **Who writes what:** people upload, comment, interrupt and close, through the server. The server adds each upload as an item at once, creates and closes instances, and alone writes the log. The agent decides the items, through `rf`, and reads `log.jsonl` directly.
 - **`upload/` is people's:** nobody moves, renames or changes its files. Each streams to `.tmp/` in the data root as it arrives, then moves into place, read-only; it may take up to an hour, and is refused if its instance closed meanwhile. A repeated name becomes `<stem>_<n><ext>`.
@@ -144,7 +145,7 @@ The screen, `workspace.json`:
       {"id": "borrowing-base", "name": "Borrowing base", "kind": "output", "file": "working/Borrowing base 08.24.2026 v3.xlsx",
        "from": ["eligible-ar", "inventory"], "headline": "Excess 1.2M, 0.3M less than last week"}]}
 
-`log.jsonl` has one line per event, in `seq` order, `by` a person's email, "server" or "agent"; unknown fields are ignored. The ops are `create`, `upload`, `point` (an item now shows a file), `item`, `remove`, `run`, `done` (with the run's model cost in USD), `report`, `comment`, `resolve`, `interrupt`, `close`, `abandon`, `duplicate`, `rename`, `takeover`, `promote`, `wake`, `expired`, `egress` (a host a run reached or was refused), `files` and `mail` (reads through Microsoft 365), `browser` (a run's browser on a website closed, with its request and write counts) and `browsers` (a run's browsers didn't all close).
+`log.jsonl` has one line per event, in `seq` order, `by` a person's email, "server" or "agent"; unknown fields are ignored. The ops are `create`, `upload`, `point` (an item now shows a file), `item`, `remove`, `run`, `done` (with the run's model cost in USD), `report`, `comment`, `resolve`, `interrupt`, `close`, `abandon`, `duplicate`, `rename`, `takeover`, `promote`, `wake`, `expired`, `egress` (a host a run reached or was refused), `files` and `mail` (reads through Microsoft 365), `browser` (a run's browser on a website closed, with its request and write counts), `shot` (a screenshot of a run's browser after a tool call changed its page) and `browsers` (a run's browsers didn't all close).
 
     {"seq": 40, "at": "2026-08-24T15:02:00Z", "by": "sam@example.com", "op": "upload", "file": "upload/AR aging 082426_2.xlsx", "pane": "in", "onto": null, "sha256": "9f2c…"}
     {"seq": 41, "at": "2026-08-24T15:02:00Z", "by": "server", "op": "point", "item": "u40", "file": "upload/AR aging 082426_2.xlsx"}
