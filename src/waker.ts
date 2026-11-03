@@ -39,12 +39,12 @@ function seenBefore(inst: Instance): number {
   return (inst.log.findLast(e => e.op === 'done')?.seen as number | undefined) ?? 0;
 }
 
-// Who starts an instance's runs: its runner and its own run, and anyone, people or agents, where the runner shares the series. What
-// others add is a note for the runner: it starts nothing, and the next run reads it marked as one. A reply from whom the agent's ask
-// named is no note.
+// Who starts an instance's runs: its runner, and anyone, people or agents, where the runner shares the series, and its own run's wakes
+// (fire). What others add is a note for the runner: it starts nothing, and the next run reads it marked as one. A reply from whom the
+// agent's ask named is no note.
 export const starter = (inst: Instance, who: string) => {
   const runner = runnerOf(inst).by;
-  return who === runner || who === `${named(tree(), inst.seriesId)}/${inst.label}` || seriesSettings(inst.series()).shared?.by === runner;
+  return who === runner || seriesSettings(inst.series()).shared?.by === runner;
 };
 export const isNote = (inst: Instance, e: Entry) => !!e.note || (isPerson(e) && ['upload', 'comment'].includes(e.op) && !starter(inst, e.by)
   && !(e.op === 'comment' && inst.log.findLast(x => x.seq < e.seq && x.op === 'comment' && x.thread === e.thread && x.by === 'agent')?.to === e.by));
@@ -201,17 +201,18 @@ export function queued(inst: Instance): { why: string; since: string } | undefin
   return { why, since: pending(inst, seenBefore(inst))[0]?.at ?? new Date().toISOString() };
 }
 
-// Closing an instance wakes its series' later open instances, which may have used its draft.
-export function closed(inst: Instance) {
+// Closing an instance wakes its series' later open instances, which may have used its draft; a note for those the closer doesn't start.
+export function closed(inst: Instance, by: string) {
   for (const later of instances(inst.seriesId).filter(i => i.doc.status === 'open' && i.label.localeCompare(inst.label, 'en', { numeric: true }) > 0)) {
-    later.append('server', 'wake', { reason: `${inst.label} closed: its final figures may differ from the draft you read`, from: inst.label });
+    later.append('server', 'wake', { reason: `${inst.label} closed: its final figures may differ from the draft you read`, from: inst.label, ...(!starter(later, by) && { note: true }) });
     kick(later);
   }
 }
 
 // Wakes (.rf/wakes.json): at most one pending per target, an instance or a series by id, fired by the clock at least 15 minutes after
 // the target's last, and the requests to start an instance that a series no one shares, or with 3 open, got instead.
-export type Wake = { at: string; reason: string; from: string; label?: string };
+// A run's wake notes its instance, `inst`, as its name in `from` may change before it fires.
+export type Wake = { at: string; reason: string; from: string; label?: string; inst?: string };
 export type Request = { series: string; label: string; reason: string; from: string; at: string };
 type Wakes = { pending: Record<string, Wake>; fired: Record<string, string>; requests: Record<string, Request> };
 export const wakes = () => readJson<Wakes>('wakes.json', { pending: {}, fired: {}, requests: {} });
@@ -260,7 +261,7 @@ function fire() {
     if (!t.series[target]) {
       const inst = instance(target);
       if (inst.doc.status !== 'open') continue;
-      inst.append('server', 'wake', { reason: wake.reason, from: wake.from, ...(!starter(inst, wake.from) && { note: true }) });
+      inst.append('server', 'wake', { reason: wake.reason, from: wake.from, ...(wake.inst !== inst.id && !starter(inst, wake.from) && { note: true }) });
       kick(inst);
       continue;
     }

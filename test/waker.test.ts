@@ -47,10 +47,10 @@ test('a run names a series or an instance by its folder, within its reach', () =
   assert.throws(() => resolveFor(run, '2026-13'), /no instance 2026-13 in Bank rec/);
 });
 
-test('a due wake its own run set continues an open instance, as a reply does; one more than 15 minutes after its last is moved', async () => {
-  setWake(oct.id, { at: new Date().toISOString(), reason: 'statement arrived', from: 'Acme/Bank rec/2026-10' });
+test('a due wake its own run set continues an open instance, as a reply does, though it was renamed since; one more than 15 minutes after its last is moved', async () => {
+  setWake(oct.id, { at: new Date().toISOString(), reason: 'statement arrived', from: 'Acme/Bank rec/October', inst: oct.id });
   await settle();
-  assert.deepEqual(oct.log.filter(e => e.op === 'wake').map(e => [e.reason, e.from, e.note]), [['statement arrived', 'Acme/Bank rec/2026-10', undefined]]);
+  assert.deepEqual(oct.log.filter(e => e.op === 'wake').map(e => [e.reason, e.from, e.note]), [['statement arrived', 'Acme/Bank rec/October', undefined]]);
   assert.ok(ops(oct).includes('run'), 'it started a run');
   assert.equal(wakes().pending[oct.id], undefined);
   const next = setWake(oct.id, { at: new Date().toISOString(), reason: 'again', from: 'x' });
@@ -78,13 +78,15 @@ test("a series' wake starts an instance as whoever shares the series; unshared, 
   assert.ok(Object.values(wakes().requests).some(r => r.label === '2027-02'), '3 open already');
 });
 
-test('closing an instance wakes the later open ones of its series, not the earlier', async () => {
+test("closing an instance wakes the later open ones of its series, not the earlier; a note for those the closer doesn't start", async () => {
   const before = make('s1', '2026-07');
   sep.close(alice);
-  closed(sep);
+  closed(sep, alice);
   await settle();
-  assert.match(oct.log.findLast(e => e.op === 'wake')!.reason as string, /^2026-09 closed/);
+  assert.deepEqual([oct.log.findLast(e => e.op === 'wake')!.reason, oct.log.findLast(e => e.op === 'wake')!.note], [`2026-09 closed: its final figures may differ from the draft you read`, undefined]);
   assert.ok(!ops(before).includes('wake'));
+  closed(sep, 'bob@demo.test');
+  assert.equal(oct.log.findLast(e => e.op === 'wake')!.note, true);
 });
 
 test('a run a restart cut ends as aborted, with what it cost so far, and its instance is woken to carry on', async () => {

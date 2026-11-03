@@ -48,6 +48,13 @@ process.on('SIGUSR2', () => {
   setTimeout(() => { drained = true; }, 30 * 60_000);
 });
 
+// Before v0.2.25 a run's wake for its own instance was known by the run's name, which a rename changes; it gets the instance's id.
+{
+  const t = tree(), w8 = wakes();
+  for (const [id, k] of Object.entries(w8.pending)) if (!t.series[id] && k.from === `${named(t, instance(id).seriesId)}/${instance(id).label}`) k.inst = id;
+  writeJson('wakes.json', w8);
+}
+
 // Before v0.2.17 each workspace had an Ad hoc series of one-offs. Each of its instances becomes a task, a single series of its own,
 // saved before the instance moves into it, so a stop midway loses nothing; an open one gets a copy of the Ad hoc .pylib. A wake or
 // a request to start an Ad hoc instance is dropped.
@@ -427,7 +434,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (!wake && t.series[id] && !label) throw new HttpError(400, `waking a series starts a new instance: name it with a label${run ? `; to wake your own instance, name its folder: ${run.inst.label}` : ''}`);
     if (!t.series[id] && instance(id).doc.status !== 'open') throw new HttpError(409, `${instance(id).label} is ${instance(id).doc.status}: to correct it, wake its series with the label ${instance(id).label}-r2`);
     const from = run ? `${named(t, run.inst.seriesId)}/${run.inst.label}` : by;
-    return send(res, 200, setWake(id, { ...wake, at: new Date(at).toISOString(), from, ...(reason && { reason }), ...(label && { label }) }));
+    return send(res, 200, setWake(id, { ...wake, at: new Date(at).toISOString(), from, inst: run?.inst.id, ...(reason && { reason }), ...(label && { label }) }));
   }
   if (kind === 'requests') {
     const r = wakes().requests[id];
@@ -549,7 +556,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (runnerOf(inst).by !== by) throw new HttpError(403, `only the runner, ${runnerOf(inst).by}, ${action === 'close' ? 'closes it, as closing signs it off' : 'abandons it'}; take it over first`);
     inst[action](by);
     cancelWake(inst.id);
-    if (action === 'close') closed(inst);
+    if (action === 'close') closed(inst, by);
     return send(res, 200, 'ok');
   } else throw new HttpError(404, `no action ${action}`);
   // An act that starts a run replaces the pending wake; a note for the runner starts nothing, so the wake stays.
