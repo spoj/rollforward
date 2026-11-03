@@ -1,6 +1,6 @@
 # The next round
 
-Agreed with Matthew on 2 Nov, after his review of the proposals and twenty questions. Each part moves into PLAN.md as it is built; until then this is the design, and PLAN.md describes what runs today.
+Agreed on 2 Nov, after a review of the proposals and twenty questions. Each part moves into PLAN.md as it is built; until then this is the design, and PLAN.md describes what runs today.
 
 ## Principles
 
@@ -88,7 +88,7 @@ Built: `process.md` as the people's document and a review sheet with every insta
 
 ## Knowledge
 
-Built: guidance, the company's and each workspace's, and the catalogue, both in each run's view (PLAN.md, decision 39), and skills published with `rf skill push` (decision 41). No `rf search`: everything in reach is plain files, which the agent searches with `fd`, `rg` and Python, as people do with their own archives (Matthew, 3 Nov).
+Built: guidance, the company's and each workspace's, and the catalogue, both in each run's view (PLAN.md, decision 39), and skills published with `rf skill push` (decision 41). No `rf search`: everything in reach is plain files, which the agent searches with `fd`, `rg` and Python, as people do with their own archives (3 Nov).
 
 - **The archive is the instances.** Agents find and weigh what they need when they need it; nothing is classified on the way in.
 - **Reach** is the workspace, plus any workspace every member of this one belongs to. Everything in reach is mounted read-only in the run's sandbox, at a stable path.
@@ -145,7 +145,7 @@ Built: folders by id, `.rf/tree.json`, the index of `instance.json`s, renames th
 
 ## Power users
 
-Built (PLAN.md, Tokens, decision 41): personal tokens and people's `rf`, which is also the only place for admin (Matthew, 3 Nov: the page gives admins visibility, not controls). Publishers are a role admins give. Still to come: `rf comment` on a cell from a desktop agent's own view of a workbook.
+Built (PLAN.md, Tokens, decision 41): personal tokens and people's `rf`, which is also the only place for admin (3 Nov: the page gives admins visibility, not controls). Publishers are a role admins give. Still to come: `rf comment` on a cell from a desktop agent's own view of a workbook.
 
 - **Personal tokens,** made in the page with an expiry, acting as the person; every use logged; revocable.
 - **`rf` for people,** on their own machine: `rf login`, `rf ls`, `rf pull` (a read-only mirror of what they can see, in the layout agents see, traces included), `rf comment` (`--wait` prints the agent's report), `rf answer`, `rf upload`, `rf wake`, and for publishers `rf skill push`.
