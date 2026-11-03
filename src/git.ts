@@ -1,6 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { closeSync, constants, createReadStream, existsSync, fstatSync, openSync, readdirSync, readlinkSync } from 'node:fs';
+import { closeSync, constants, createReadStream, existsSync, fstatSync, openSync, readdirSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
@@ -41,40 +42,54 @@ const read = <T>(path: Buffer, f: () => T): T => {
   try { return f(); } catch (e) { throw new Error(`${path} can't be read: ${(e as NodeJS.ErrnoException).code}`); }
 };
 
+// What the last commit read of each file, by its path: its inode, size, modification and change times and mode, and its blob. A file
+// whose are the same is that blob, unread, as git's index does it: a run can set a file's modification time, never its change time.
+// One changed in the second before it was read isn't kept, as the clock may not have moved for a change after.
+type Seen = Map<string, [string, string]>;
+
 // The folder's files and links as fast-import's file commands. Each name is reached through its folder's open descriptor, and
 // opened without following a link, so a folder swapped for a link meanwhile leads nowhere outside. Names are bytes, as git keeps
 // them, which needn't be UTF-8.
-async function* files(dfd: number, rel: Buffer): AsyncGenerator<Buffer> {
+async function* files(dfd: number, rel: Buffer, seen: Seen, now: Seen): AsyncGenerator<Buffer> {
   const at = (name: Buffer) => Buffer.concat([Buffer.from(`/proc/self/fd/${dfd}/`), name]);
   for (const d of readdirSync(`/proc/self/fd/${dfd}`, { withFileTypes: true, encoding: 'buffer' })) {
     const name = d.name as unknown as Buffer, path = rel.length ? Buffer.concat([rel, SLASH, name]) : name;
     if (refused(name.toString('latin1'), d.isSymbolicLink())) continue;
     if (d.isDirectory()) {
       const sub = read(path, () => openSync(at(name), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW));
-      try { yield* files(sub, path); } finally { closeSync(sub); }
+      try { yield* files(sub, path, seen, now); } finally { closeSync(sub); }
     } else if (d.isSymbolicLink()) {
       const to = read(path, () => readlinkSync(at(name), { encoding: 'buffer' }));
       yield Buffer.concat([Buffer.from('M 120000 inline '), quote(path), Buffer.from(`\ndata ${to.length}\n`), to, Buffer.from('\n')]);
     } else if (d.isFile()) {
-      const fd = read(path, () => openSync(at(name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)), st = fstatSync(fd);
-      if (!st.isFile() || !st.size) closeSync(fd);
+      const fd = read(path, () => openSync(at(name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)), st = fstatSync(fd, { bigint: true });
+      const mode = st.mode & 0o111n ? '100755' : '100644', key = path.toString('latin1'), stat = `${st.ino} ${st.size} ${st.mtimeNs} ${st.ctimeNs} ${mode}`;
+      const was = seen.get(key), size = Number(st.size), fresh = st.ctimeNs > BigInt(Date.now() - 1000) * 1_000_000n;
+      if (!st.isFile() || !size || was?.[0] === stat) closeSync(fd);
       if (!st.isFile()) throw new Error(`${path} changed as it was committed`);
-      yield Buffer.concat([Buffer.from(`M ${st.mode & 0o111 ? '100755' : '100644'} inline `), quote(path), Buffer.from(`\ndata ${st.size}\n`)]);
+      if (was?.[0] === stat) {
+        now.set(key, was);
+        yield Buffer.concat([Buffer.from(`M ${mode} ${was[1]} `), quote(path), Buffer.from('\n')]);
+        continue;
+      }
+      yield Buffer.concat([Buffer.from(`M ${mode} inline `), quote(path), Buffer.from(`\ndata ${size}\n`)]);
+      const blob = createHash('sha1').update(`blob ${size}\0`);
       let sent = 0;
-      if (st.size) for await (const c of createReadStream('', { fd, end: st.size - 1 })) { sent += c.length; yield c; }
-      if (sent !== st.size) throw new Error(`${path} changed as it was committed`);
+      if (size) for await (const c of createReadStream('', { fd, end: size - 1 })) { sent += c.length; blob.update(c); yield c; }
+      if (sent !== size) throw new Error(`${path} changed as it was committed`);
+      if (!fresh) now.set(key, [stat, blob.digest('hex')]);
       yield Buffer.from('\n');
     }
   }
 }
 
-async function* stream(dir: string, who: Who, message: string, parent: string) {
+async function* stream(dir: string, who: Who, message: string, parent: string, seen: Seen, now: Seen) {
   const at = Math.floor(Date.now() / 1000), text = Buffer.from(`${message.trim()}\n`);
   yield Buffer.from(`commit refs/heads/main\nauthor ${ident(who)} ${at} +0000\ncommitter rollforward <server@rollforward> ${at} +0000\ndata ${text.length}\n`);
   yield text;
   yield Buffer.from(`${parent ? `from ${parent}\n` : ''}deleteall\n`);
   const top = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY);
-  try { yield* files(top, Buffer.alloc(0)); } finally { closeSync(top); }
+  try { yield* files(top, Buffer.alloc(0), seen, now); } finally { closeSync(top); }
   yield Buffer.from('done\n');
 }
 
@@ -85,16 +100,19 @@ async function snapshot(dir: string, who: Who, message: string): Promise<string>
     await git(dir, 'config', 'gc.auto', '0');
   }
   const parent = await git(dir, 'rev-parse', '-q', '--verify', 'refs/heads/main').catch(() => '');
+  const cache = join(dir, '.git', 'rf-seen.json'), now: Seen = new Map();
+  const seen: Seen = new Map(parent && existsSync(cache) ? Object.entries(JSON.parse(readFileSync(cache, 'latin1'))) : []);
   const p = spawn('git', ['fast-import', '--quiet', '--done'], { cwd: dir, env, stdio: ['pipe', 'ignore', 'pipe'] });
   let err = '';
   p.stderr.on('data', c => (err += c));
   const exit = once(p, 'close');
-  const fed = await pipeline(stream(dir, who, message, parent), p.stdin).then(() => undefined, (e: NodeJS.ErrnoException) => e);
+  const fed = await pipeline(stream(dir, who, message, parent, seen, now), p.stdin).then(() => undefined, (e: NodeJS.ErrnoException) => e);
   const [code] = await exit;
   // A broken pipe means git stopped reading, and says why.
   if (fed && fed.code !== 'EPIPE') throw fed;
   if (code) throw new Error(`git fast-import failed: ${err.trim()}`);
   const hash = await git(dir, 'rev-parse', 'refs/heads/main');
+  writeFileSync(cache, JSON.stringify(Object.fromEntries(now)), 'latin1');
   // An index of the commit, so a run's git diff and git status show what changed since.
   await git(dir, 'read-tree', hash);
   return hash;

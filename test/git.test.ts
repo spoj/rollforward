@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { commit } from '../src/git.ts';
@@ -16,6 +16,7 @@ test('a commit holds the whole folder, every file whatever its size or name, and
   };
   w('log.jsonl', '{"seq":1}\n');
   w('upload/AR aging.csv', 'a,b\n');
+  utimesSync(join(dir, 'upload/AR aging.csv'), 1.7e9, 1.7e9);
   w('working/run.sh', 'echo hi\n');
   chmodSync(join(dir, 'working/run.sh'), 0o755);
   w('working/big.bin', big);
@@ -32,6 +33,7 @@ test('a commit holds the whole folder, every file whatever its size or name, and
   symlinkSync('/etc/passwd', join(dir, 'working/passwd'));
   execFileSync('mkfifo', [join(dir, 'working/fifo')]);
 
+  await new Promise(ok => setTimeout(ok, 1100)); // so the next commit keeps what it read of each file
   const first = await commit(dir, { name: 'Ann <Lee>', email: 'ann@x.com' }, 'Close 2026-09\n\nSigned-off-by: Ann Lee <ann@x.com>');
   assert.match(first, /^[0-9a-f]{40}$/);
   const files = git(dir, 'ls-tree', '-r', '-z', '--full-tree', first).toString().split('\0').filter(Boolean).map(l => [l.split(' ')[0], l.split('\t')[1]]);
@@ -46,6 +48,10 @@ test('a commit holds the whole folder, every file whatever its size or name, and
   const [second, third] = await Promise.all([commit(dir, { name: 'agent', email: 'agent@x' }, 'Run 2'), commit(dir, { name: 'agent', email: 'agent@x' }, 'Run 2, again')]);
   assert.equal(git(dir, 'rev-parse', `${third}^`).toString().trim(), second, 'one at a time');
   assert.equal(git(dir, 'rev-parse', `${second}^`).toString().trim(), first);
-  assert.equal(git(dir, 'diff', '--name-only', first, second).toString(), 'working/run.sh\n');
+  assert.equal(git(dir, 'diff', '--name-only', first, second).toString(), 'working/run.sh\n', 'the files read before, unread');
+  writeFileSync(join(dir, 'upload/AR aging.csv'), 'a,c\n');
+  utimesSync(join(dir, 'upload/AR aging.csv'), 1.7e9, 1.7e9);
+  const fourth = await commit(dir, { name: 'agent', email: 'agent@x' }, 'Same size, same time');
+  assert.equal(git(dir, 'show', `${fourth}:upload/AR aging.csv`).toString(), 'a,c\n', 'a file changed in place, its time put back, is read again');
   rmSync(dir, { recursive: true, force: true });
 });
