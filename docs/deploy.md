@@ -65,7 +65,7 @@ Run the image under podman, as a systemd service. The image pins Node, Python, b
            reverse_proxy 127.0.0.1:8780
        }
 
-   A proxy that buffers, such as nginx, needs `proxy_buffering off` for the page's live updates and `client_max_body_size 0` for uploads.
+   A proxy that buffers, such as nginx, needs `proxy_buffering off` for the page's live updates and `client_max_body_size 0` for uploads. nginx also passes websockets, which the live view of a website's sign-in uses, only when told: `proxy_http_version 1.1`, `proxy_set_header Upgrade $http_upgrade` and `proxy_set_header Connection "upgrade"`.
 
 **Where the image can't be built,** such as on a host whose filter blocks Debian's mirrors, run the server as README's Without Docker says, as a systemd user service of the same user:
 
