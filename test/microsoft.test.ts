@@ -133,7 +133,7 @@ test("Connect Microsoft 365 asks the same app for read-only mail and files, and 
   const back = await fetch((await fetch(to, { redirect: 'manual' })).headers.get('location')!, { redirect: 'manual', headers: { cookie: `${s}; ${pending}` } });
   assert.equal(back.headers.get('location'), '/#logins');
   const [login] = await (await fetch(`${confidential}/logins`, { headers: { cookie: s } })).json();
-  assert.deepEqual([login.id, login.account, login.offers.map((o: { id: string }) => o.id)], ['m365', 'alex@acme.test', ['m365:mail:alex@acme.test', 'm365:onedrive']]);
+  assert.deepEqual([login.id, login.account, login.offers], ['m365', 'alex@acme.test', []], 'it offers nothing until its person adds it');
   assert.equal((await (await fetch(`${spaClient}/me`, { headers: { cookie: s } })).status), 401, 'another server, another session');
 });
 
@@ -205,8 +205,8 @@ test("a Single-page application with its secret: sign-in stays the browser's, an
   const back = await fetch((await fetch(to, { redirect: 'manual' })).headers.get('location')!, { redirect: 'manual', headers: { cookie: `${s}; ${pending}` } });
   assert.equal(back.headers.get('location'), '/#logins');
   const [login] = await (await fetch(`${spaWeb}/logins`, { headers: { cookie: s } })).json();
-  assert.deepEqual([login.id, login.account, login.offers.map((o: { id: string }) => o.id)], ['m365', 'kim@acme.test', ['m365:mail:kim@acme.test']]);
-  const site = await fetch(`${spaWeb}/logins/m365/offers`, { method: 'POST', headers: { cookie: s, 'content-type': 'application/json' }, body: JSON.stringify({ site: 'https://acme.sharepoint.com/sites/Finance' }) });
+  assert.deepEqual([login.id, login.account, login.offers], ['m365', 'kim@acme.test', []]);
+  const site = await fetch(`${spaWeb}/logins/m365/offers`, { method: 'POST', headers: { cookie: s, 'content-type': 'application/json' }, body: JSON.stringify({ add: 'https://acme.sharepoint.com/sites/Finance' }) });
   assert.equal(site.status, 409);
   assert.match(await site.text(), /don't read SharePoint sites: RF_M365_SCOPES has no Sites.Read.All/);
 });

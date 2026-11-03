@@ -663,7 +663,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       if (req.headers['sec-fetch-site'] && req.headers['sec-fetch-site'] !== 'same-origin') throw new HttpError(403, 'connect Microsoft 365 from the Logins page');
       await connectM365(res, me.email);
     }
-    else if (url.pathname === '/logins/m365/offers' && req.method === 'POST') send(res, 200, (await offer(me.email, await json(req)), 'ok'));
+    else if (url.pathname === '/logins/m365/offers' && req.method === 'POST') send(res, 200, (await offer(me.email, String((await json(req)).add ?? '')), 'ok'));
     else if (url.pathname.startsWith('/logins/m365/offers/') && req.method === 'DELETE') send(res, 200, (unoffer(me.email, decodeURIComponent(url.pathname.slice(20))), 'ok'));
     else if (url.pathname.startsWith('/logins/web/') && req.method === 'POST') send(res, 200, { id: await startSignIn(me.email, decodeURIComponent(url.pathname.slice(12))) });
     else if (/^\/signins\/\w+\/view$/.test(url.pathname) && req.method === 'GET') {

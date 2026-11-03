@@ -12,26 +12,36 @@ import type { AgentRun } from '../src/agent-api.ts';
 
 // A stand-in for Microsoft's sign-in and Graph: a SharePoint library with a folder of years of reports, the runner's OneDrive,
 // someone else's OneDrive, and two mailboxes. rf graph is called as a run's agent calls it, through its runner's Microsoft 365 login.
+// Every item names its parent, up to its drive's root.
 const ALICE = 'alice@demo.test', AP = 'ap@demo.test';
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-conn-')), seriesDir = join(tmp, 'series', 'weekly'), instDir = join(tmp, 'instances', 'w1');
 const methods: string[] = [], log: { op: string; data: any }[] = [];
 let graph: Server, refreshes = 0;
 
-const item = (id: string, name: string, modified: string, folder = false, where = { driveId: 'b!d1', driveType: 'documentLibrary', siteId: 'host,site1,web1' }) =>
-  ({ id, name, lastModifiedDateTime: modified, parentReference: { ...where, id: 'top' }, ...(folder ? { folder: {} } : { file: {} }) });
-const shares: Record<string, ReturnType<typeof item>> = {
+const lib = { driveId: 'b!d1', driveType: 'documentLibrary', siteId: 'host,site1,web1' }, alices = { driveId: 'b!own', driveType: 'business', siteId: 'host,personal,alice' };
+const item = (id: string, name: string, modified: string, folder = false, parent = 'top', where = lib) =>
+  ({ id, name, lastModifiedDateTime: modified, parentReference: { ...where, id: parent }, ...(folder ? { folder: {} } : { file: {} }) });
+const roots: Record<string, any> = { 'b!d1': { id: 'root1', name: 'root', root: {}, folder: {}, parentReference: { driveId: 'b!d1' } }, 'b!own': { id: 'root2', name: 'root', root: {}, folder: {}, parentReference: { driveId: 'b!own' } } };
+const shares: Record<string, any> = {
   'https://share.test/reports': item('y2026', '2026', '2026-01-02T00:00:00Z', true),
-  'https://share.test/mine': item('mine', 'mine.csv', '2026-10-20T00:00:00Z', false, { driveId: 'b!own', driveType: 'business', siteId: 'host,personal,alice' }),
-  'https://share.test/bobs': item('bobs', 'bobs.csv', '2026-10-20T00:00:00Z', false, { driveId: 'b!bob', driveType: 'business', siteId: 'host,personal,bob' }),
+  'https://host/sites/reports/Shared%20Documents/LFM/2026': item('y2026', '2026', '2026-01-02T00:00:00Z', true),
+  'https://host/sites/reports/Shared%20Documents/LFM': item('top', 'LFM', '2026-01-01T00:00:00Z', true, 'root1'),
+  'https://host/:f:/s/reports/Tok3n?e=x': item('y2025', '2025', '2025-01-02T00:00:00Z', true),
+  'https://host-my/personal/alice/Documents': roots['b!own'],
+  'https://share.test/mine': item('mine', 'mine.csv', '2026-10-20T00:00:00Z', false, 'root2', alices),
+  'https://share.test/bobs': item('bobs', 'bobs.csv', '2026-10-20T00:00:00Z', false, 'bobroot', { driveId: 'b!bob', driveType: 'business', siteId: 'host,personal,bob' }),
 };
 const folders: Record<string, ReturnType<typeof item>[]> = {
+  root1: [item('top', 'LFM', '2026-01-01T00:00:00Z', true, 'root1')],
   top: [item('y2026', '2026', '2026-01-02T00:00:00Z', true), item('y2025', '2025', '2025-01-02T00:00:00Z', true)],
-  y2026: [item('a', 'AGING_A_1.csv', '2026-10-20T12:00:00Z'), item('b', 'AGING_B_2.csv', '2026-10-20T12:30:00Z'), item('c', 'AGING_A_0.csv', '2026-10-19T12:00:00Z')],
+  y2026: [item('a', 'AGING_A_1.csv', '2026-10-20T12:00:00Z', false, 'y2026'), item('b', 'AGING_B_2.csv', '2026-10-20T12:30:00Z', false, 'y2026'), item('c', 'AGING_A_0.csv', '2026-10-19T12:00:00Z', false, 'y2026')],
 };
 const content: Record<string, string> = { a: 'As-Of Date,10/20/2026\nCustomer,Open\nAcme,10\n' };
-const drives: Record<string, { siteUrl: string; siteId: string; webId: string }> = {
-  'b!d1': { siteUrl: 'https://host/sites/reports', siteId: 'site1', webId: 'web1' }, 'b!bob': { siteUrl: 'https://host/personal/bob', siteId: 'personal', webId: 'bob' },
+const drives: Record<string, any> = {
+  'b!d1': { driveType: 'documentLibrary', sharePointIds: { siteUrl: 'https://host/sites/reports', siteId: 'site1', webId: 'web1' } },
+  'b!own': { driveType: 'business', owner: { user: { displayName: 'Alice Ames' } }, sharePointIds: { siteUrl: 'https://host-my/personal/alice', siteId: 'personal', webId: 'alice' } },
+  'b!bob': { driveType: 'business', owner: { user: { displayName: 'Bob Bell' } }, sharePointIds: { siteUrl: 'https://host/personal/bob', siteId: 'personal', webId: 'bob' } },
 };
 const mail = [
   { id: 'm1', subject: 'FW: Request successfully processed for DEMO SUPPLIER LLC', body: { contentType: 'text', content: 'The payment run is attached.' } },
@@ -42,6 +52,7 @@ const ticks = ['m365:mail:alice@demo.test', 'm365:site:host,site1,web1'];
 const inst = { dir: instDir, seriesId: 'weekly', log: [{ op: 'create', by: ALICE, logins: ticks }], series: () => seriesDir, append: (_by: string, op: string, data: any) => { log.push({ op, data }); return { seq: log.length }; } } as unknown as Instance;
 const run: AgentRun = { inst, n: 1, token: 'run' };
 let call: (path: string, body?: unknown) => Promise<{ status: number; data: unknown } | null>;
+let agentCall: typeof import('../src/agent-api.ts').agentCall;
 let logins: typeof import('../src/logins.ts');
 
 before(async () => {
@@ -65,11 +76,14 @@ before(async () => {
     if (req.headers.authorization !== 'Bearer tok') return void res.writeHead(401).end();
     let m;
     if (path === '/me/drive') return send({ id: 'b!own' });
-    if ((m = /^\/shares\/u!([\w-]+)\/driveItem$/.exec(path))) return send(shares[Buffer.from(m[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString()]);
-    if ((m = /^\/drives\/b!d1\/items\/(\w+)\/children$/.exec(path))) return send({ value: folders[m[1]] ?? [] });
+    if ((m = /^\/shares\/u!([\w-]+)\/driveItem$/.exec(path))) return send(shares[Buffer.from(m[1], 'base64url').toString()] ?? { error: { code: 'itemNotFound' } }, shares[Buffer.from(m[1], 'base64url').toString()] ? 200 : 404);
+    if ((m = /^\/drives\/b!d1\/(?:items\/(\w+)|root)\/(?:children|search\(q='\w+'\))$/.exec(path))) return send({ value: folders[m[1] ?? 'root1'] ?? [] });
     if ((m = /^\/drives\/b!d1\/items\/(\w+)\/content$/.exec(path))) return void res.writeHead(200).end(content[m[1]]);
-    if ((m = /^\/drives\/b!d1\/items\/(\w+)$/.exec(path))) return send(m[1] === 'top' ? item('top', 'LFM', '2026-01-01T00:00:00Z', true) : [...Object.values(folders).flat()].find(i => i.id === m![1]));
-    if ((m = /^\/drives\/(b!\w+)$/.exec(path)) && drives[m[1]]) return send({ id: m[1], sharePointIds: drives[m[1]] });
+    if ((m = /^\/drives\/b!d1\/items\/(\w+)$/.exec(path))) return send(m[1] === 'root1' ? roots['b!d1'] : [...Object.values(folders).flat()].find(i => i.id === m![1]));
+    if ((m = /^\/(?:drives\/(b!\w+)|users\/alice@demo\.test\/drive)\/root$/.exec(path))) return send(roots[m[1] ?? 'b!own']);
+    if ((m = /^\/drives\/(b!\w+)$/.exec(path)) && drives[m[1]]) return send({ id: m[1], ...drives[m[1]] });
+    if (path === '/sites/host,site1,web1') return send({ id: 'host,site1,web1', displayName: 'Reports' });
+    if (path === '/drives/b!d1/root:/LFM:') return send(item('top', 'LFM', '2026-01-01T00:00:00Z', true, 'root1'));
     if (path === '/me/messages') return send({ value: mail });
     if (path === '/me/messages/m1/$value') return void res.writeHead(200, { 'content-type': 'message/rfc822' }).end(MIME);
     if (path === `/users/${AP}/mailFolders/inbox`) return send({ id: 'inbox' });
@@ -82,8 +96,8 @@ before(async () => {
   const { upsertUser } = await import('../src/auth.ts');
   const { openSkills, pushSkill } = await import('../src/skills.ts');
   const { filesOf, standIns } = await import('./push.ts');
-  const { agentCall } = await import('../src/agent-api.ts');
   const { endpoints } = await import('../src/graph.ts');
+  agentCall = (await import('../src/agent-api.ts')).agentCall;
   logins = await import('../src/logins.ts');
   initSystem(tmp);
   saveTree({ workspaces: { w: { name: 'W', owners: [ALICE], members: [] } }, series: { weekly: { name: 'Weekly', workspace: 'w' } } });
@@ -117,11 +131,11 @@ test('rf graph reads a ticked SharePoint library as Graph answers: a sharing lin
 
 test("rf graph reaches only what's ticked: not the runner's OneDrive unticked, anyone else's, an unticked mailbox, a path climbing out, or the rest of Graph", async () => {
   const graph = (path: string) => call('/agent/graph', { args: [path] });
-  await assert.rejects(graph('/me/drive/root/children'), /m365:onedrive is not ticked for this instance/);
-  await assert.rejects(graph(`/shares/u!${Buffer.from('https://share.test/bobs').toString('base64url')}/driveItem/content`), /m365:site:host,personal,bob is not ticked/);
+  await assert.rejects(graph('/me/drive/root/children'), /\/me\/drive\/root\/children is in no folder, file or SharePoint site ticked for this instance/);
+  await assert.rejects(graph(`/shares/u!${Buffer.from('https://share.test/bobs').toString('base64url')}/driveItem/content`), /is in no folder, file or SharePoint site ticked/);
   await assert.rejects(graph(`/users/${AP}/messages`), /m365:mail:ap@demo.test is not ticked/);
   await assert.rejects(graph(`/me/messages/../../users/${AP}/messages`), /m365:mail:ap@demo.test is not ticked/);
-  await assert.rejects(graph('/users'), /rf graph reads mailboxes, OneDrive and SharePoint sites ticked for this instance, not \/users/);
+  await assert.rejects(graph('/users'), /rf graph reads mailboxes, and folders, files and SharePoint sites ticked for this instance, not \/users/);
   await assert.rejects(graph('https://elsewhere.test/v1.0/me/messages'), /a Graph path/);
 });
 
@@ -135,13 +149,33 @@ test("rf graph reads a ticked mailbox whole: messages with their bodies, and a m
   assert.deepEqual(log.filter(e => e.op === 'graph').slice(-2).map(e => [e.data.path, e.data.status, e.data.file]), [['/me/messages?$select=subject,body', 200, undefined], ['/me/messages/m1/$value', 200, 'working/m1.eml']]);
 });
 
-test('a person adds a shared mailbox they can read, and a SharePoint site by its link', async () => {
-  const { offer } = await import('../src/m365.ts');
-  await offer(ALICE, { mailbox: 'AP@demo.test' });
-  await offer(ALICE, { site: 'https://demo.sharepoint.com/sites/Finance/Shared%20Documents/Forms/AllItems.aspx' });
-  await assert.rejects(offer(ALICE, { mailbox: 'ceo@demo.test' }), /404/);
-  await assert.rejects(offer(ALICE, { site: 'https://demo.sharepoint.com/personal/bob' }), /a SharePoint site link/);
-  assert.deepEqual(logins.logins(ALICE)[0].offers.slice(3), [{ id: `m365:mail:${AP}`, name: `Mailbox ${AP}` }, { id: 'm365:site:host,site2,web2', name: 'SharePoint Finance' }]);
+test('a person adds, in one box, a mailbox by its address, a site by its link, and a folder or file by any link to it', async () => {
+  const { offer } = await import('../src/m365.ts'), before = logins.logins(ALICE)[0].offers.length;
+  await offer(ALICE, 'AP@demo.test');
+  await offer(ALICE, 'https://demo.sharepoint.com/sites/Finance/');
+  await offer(ALICE, 'https://host/:f:/r/sites/reports/Shared%20Documents/LFM/2026?csf=1&web=1&e=abc');
+  await offer(ALICE, 'https://host/sites/reports/Shared%20Documents/Forms/AllItems.aspx?id=%2Fsites%2Freports%2FShared%20Documents%2FLFM&viewid=v');
+  await offer(ALICE, 'https://host/:f:/s/reports/Tok3n?e=x');
+  await offer(ALICE, 'https://host-my/personal/alice/Documents');
+  await offer(ALICE, 'https://host/sites/reports/Shared%20Documents/LFM/2026');
+  await assert.rejects(offer(ALICE, 'ceo@demo.test'), /404/);
+  await assert.rejects(offer(ALICE, 'https://host/sites/reports/nothing/here'), /404/);
+  await assert.rejects(offer(ALICE, 'Finance'), /a mailbox address, or a link/);
+  assert.deepEqual(logins.logins(ALICE)[0].offers.slice(before), [
+    { id: `m365:mail:${AP}`, name: `Mailbox ${AP}` }, { id: 'm365:site:host,site2,web2', name: 'Site Finance' },
+    { id: 'm365:item:b!d1/top', name: 'Folder LFM, Reports' }, { id: 'm365:item:b!d1/y2025', name: 'Folder 2025, Reports' },
+    { id: 'm365:item:b!own/root2', name: "Alice Ames's OneDrive" }, { id: 'm365:item:b!d1/y2026', name: 'Folder 2026, Reports' },
+  ], 'the same item again replaces its offer');
+});
+
+test("a ticked folder reaches what's under it, at any depth, and a search within it; not its parent, a sibling, or a search of the whole drive", async () => {
+  const folder = { ...inst, log: [{ op: 'create', by: ALICE, logins: ['m365:item:b!d1/y2026'] }] };
+  const graph = async (...args: string[]) => (await agentCall({ inst: folder, n: 1, token: 'run2' }, '/agent/graph', 'POST', async () => Buffer.from(JSON.stringify({ args }))))!.data as any;
+  assert.deepEqual((await graph('/drives/b!d1/items/y2026/children')).value.map((i: any) => i.id), ['a', 'b', 'c']);
+  assert.equal(Buffer.from((await graph('/drives/b!d1/items/a/content', '--out', 'a.csv')).data, 'base64').toString(), content.a, 'a file under it');
+  assert.ok((await graph("/drives/b!d1/items/y2026/search(q='AGING')")).value);
+  for (const out of ['/drives/b!d1/items/top/children', '/drives/b!d1/items/y2025/children', "/drives/b!d1/root/search(q='AGING')", '/drives/b!d1/root:/LFM:/children'])
+    await assert.rejects(graph(out), /is in no folder, file or SharePoint site ticked/, out);
 });
 
 test('a login Microsoft no longer renews is marked expired, and the run is told its runner signs in again', async () => {

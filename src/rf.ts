@@ -28,8 +28,10 @@ const HELP: Record<string, string> = {
   with --label <its label>-r2.`,
   graph: `rf graph PATH [--out FILE] [--header 'NAME: VALUE']...
   A GET to Microsoft Graph v1.0 as your runner, answered as Graph answers it, or with --out its bytes saved as working/FILE.
-  PATH is Graph's own, query included, or an @odata.nextLink, under what is ticked for this instance: /me/messages,
-  /me/mailFolders, /users/ADDRESS/messages, /me/drive, /drives/ID, /sites/ID and /shares/ID.`,
+  PATH is Graph's own, query included, or an @odata.nextLink, under what is ticked for this instance: a mailbox's
+  /me/messages, /me/mailFolders or /users/ADDRESS/messages; a site's /sites/ID; and files by /drives/ID, /shares/ID or /me/drive,
+  within a ticked folder or file, or a ticked site's libraries. A search, /drives/ID/items/ID/search(q='...'), stays within its
+  folder; one across a whole drive needs the whole drive ticked.`,
   browser: `rf browser open SITE
 rf browser get SITE PATH FILE
 rf browser expired SITE

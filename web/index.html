@@ -1033,13 +1033,13 @@ async function openTokens(made) {
 function loginsHtml(s) {
   let h = `<div class="sub">Every login is yours alone. A run uses only its runner's logins, and only those ticked for its instance. Nothing here is a password: you sign in to each system yourself.</div>`;
   const m365 = s.logins.find(l => l.id === 'm365');
-  if (me.m365 && !m365) h += `<h3>Microsoft 365</h3><div class="sub">Read-only: your mail and the shared mailboxes you can read, your OneDrive and the SharePoint sites you add.</div><div><a class="btn primary" href="/logins/m365/connect">Connect Microsoft 365</a></div>`;
+  if (me.m365 && !m365) h += `<h3>Microsoft 365</h3><div class="sub">Read-only, and only what you add once connected: mailboxes, SharePoint sites, and folders or files in SharePoint or OneDrive.</div><div><a class="btn primary" href="/logins/m365/connect">Connect Microsoft 365</a></div>`;
   if (!me.m365) h += `<h3>Microsoft 365</h3><div class="sub">Not set up on this server: it needs an app registered in Microsoft Entra ID, which an admin sets in the server's settings (README, Access).</div>`;
   for (const l of s.logins.filter(l => l.kind === 'm365')) {
     h += `<h3>${esc(l.name)}</h3><div class="sub">${esc(l.account ?? '')}${l.account ? ' · ' : ''}${l.expired ? '<span class="q">expired: sign in again</span>' : `since ${esc(when(l.since))}`}</div>`
       + l.offers.map(o => `<div class="skill-row" style="display:flex;align-items:center"><span style="flex:1">${esc(o.name)}</span>${l.id === 'm365' ? `<button class="quiet" data-act="unoffer" data-id="${esc(o.id)}">Remove</button>` : ''}</div>`).join('');
-    if (l.id === 'm365') h += `<div class="row2"><input type="text" id="offer-mailbox" placeholder="A shared mailbox, such as ap@example.com" style="flex:1"><button class="btn" data-act="offer-mailbox">Add</button></div>`
-      + `<div class="row2"><input type="text" id="offer-site" placeholder="A SharePoint site's link" style="flex:1"><button class="btn" data-act="offer-site">Add</button></div>`;
+    if (l.id === 'm365') h += `<div class="sub">Add a mailbox by its address, yours or one you may read; a whole SharePoint site by its link; or a folder, with all under it, or a file, in SharePoint or anyone's OneDrive, by any link to it.</div>`
+      + `<div class="row2"><input type="text" id="offer-add" placeholder="A mailbox or a link" style="flex:1"><button class="btn" data-act="offer-add">Add</button></div>`;
     h += `<div class="row2">${l.id === 'm365' && l.expired ? '<a class="btn primary" href="/logins/m365/connect">Sign in again</a>' : ''}<button class="btn" data-act="signout-login" data-id="${esc(l.id)}">Sign out</button></div>`;
   }
   if (s.sites.length) h += `<h3>Websites</h3><div class="sub">Sign in yourself, in a browser shown here. Your login is what that browser keeps, its cookies, never your password; a run's browser starts from it and brings it back refreshed. It reaches only the hosts listed, but there it can do whatever you can: the agent is told only to read, and each run's log counts its writes.</div>`
@@ -1411,10 +1411,10 @@ async function onAct(act, el, was) {
     saved();
     await refresh();
   }
-  if (act === 'offer-mailbox' || act === 'offer-site') {
-    const v = $(`#${act}`).value.trim();
+  if (act === 'offer-add') {
+    const v = $('#offer-add').value.trim();
     if (!v) return;
-    await api('/logins/m365/offers', { method: 'POST', body: JSON.stringify(act === 'offer-site' ? { site: v } : { mailbox: v }) });
+    await api('/logins/m365/offers', { method: 'POST', body: JSON.stringify({ add: v }) });
     pv.settings.logins = await api('/logins');
     renderPv();
   }
