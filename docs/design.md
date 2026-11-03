@@ -13,14 +13,15 @@ Sources: [Layr design reference](https://layr.design/reference/layr-001-intentio
 
 ## Choices
 
-- **The colours carry provenance.** Blue marks a file a person uploaded and black a file the agent made, borrowing the spreadsheet habit of blue for typed-in values and black for calculated ones. A note carries a gray triangle, like Excel's comment, because it is for information; red is kept for a question, which needs a person. The only other colour marks the two ways an instance ends: Close instance is solid blue, a person's commit, and Abandon is red, a discard.
+- **The colours carry provenance.** Blue marks a file a person uploaded and black a file the agent made, borrowing the spreadsheet habit of blue for typed-in values and black for calculated ones. A thread carries a gray triangle, like Excel's comment, on its tile and its cell; it turns red while the agent's ask waits on a person's reply. The only other colour marks the two ways an instance ends: Close instance is solid blue, a person's commit, and Abandon is red, a discard.
 - **Type:** IBM Plex Sans, a plain engineered face. IBM Plex Mono is used only for code and addresses: file types, cell references, paths and tool calls. Numerals are tabular everywhere.
-- **Surfaces:** tiles have a 1px border and no shadow. Only floating things are raised: question cards, and Advanced when expanded. A card points at its tile, like an Excel comment. There are two radii: 4px for tiles and buttons, and 8px for cards.
+- **Surfaces:** tiles have a 1px border and no shadow. Only floating things are raised: a tile's card, and Advanced when expanded. A card points at its tile, like an Excel comment. There are two radii: 4px for tiles and buttons, and 8px for cards.
 - **The awkward states are drawn:**
   - a missing input, with how often closed instances had it;
   - a step or output not built yet;
   - a run in progress, with Close disabled until it ends;
-  - what each question defaults to if it's still unanswered at close.
+  - a reply the agent hasn't picked up yet;
+  - the asks still waiting at close, which closing accepts as the agent did them.
 - **The graph:** tiles in columns, inputs to steps, with Outputs in a column of their own that never scrolls away. Lines are thin gray curves behind the tiles, entering each tile at its own point and crossing a column only between tiles; hovering a tile turns its lineage black. Columns come from the longest path of steps; there is no layout library.
 - **The sidebar is a cascade:** workspace, series, instance, each level indented under a rule. A row's actions sit in its corner, ⋯ for a menu and + for a new child, so the list holds only things and never grows a row of buttons. A row is a link all over, and shades under the pointer.
 - **Menus and dialogs are the page's own.** A ⋯ menu drops from its button, with a rule before Archive or Abandon. A dialog dims the page behind it and closes on Escape or a click beside it. Names change in place, and settings save as they change, with Saved in the dialog's header. Buttons darken under the pointer, and stay dimmed while what they started runs.
@@ -31,7 +32,7 @@ Sources: [Layr design reference](https://layr.design/reference/layr-001-intentio
 
 - Gradients, glass, glow, emoji, or sparkle and robot icons.
 - Pills or badges for ordinary labels, or icons in rounded squares.
-- Motion, except to show state: a spinner while the agent works, a stripe on Outputs during a run, one flash when a tile changes, and a pulsing corner on an unanswered question.
+- Motion, except to show state: a spinner while the agent works, a stripe on Outputs during a run, one flash when a tile changes, and a pulsing corner on an ask that waits on a reply.
 - A colour whose meaning neither the legend nor the button's label gives.
 
 ## Tokens
@@ -48,8 +49,7 @@ Gemini 3.8 Flash reviewed the screenshots once.
   - style cell references as addresses rather than red alerts;
   - make Advanced light;
   - move the legend off the canvas;
-  - anchor each card to its tile;
-  - put each choice button on one line, and state the default below them.
+  - anchor each card to its tile.
 - **Rejected, because they undo the owner's choices:**
   - tables instead of file tiles;
   - pills instead of comment triangles.
