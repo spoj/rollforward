@@ -1,7 +1,7 @@
 // Moves this checkout to the newest release CI made, once the server's runs going have ended, then restarts it: a systemd timer runs it
 // (docs/deploy.md), and never twice at once. A release is taken once every check on its commit has passed, and never past a prerelease, which a tag with
 // a Manual: line makes for a release that needs a person first. If the server doesn't answer HEALTH after the move, the checkout
-// goes back, and that release isn't tried again.
+// goes back, and that release isn't tried again; if going back fails too, the server restarts as the checkout is, never left drained.
 //   node scripts/update.ts HEALTH
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -71,8 +71,14 @@ try {
 } catch (e) {
   console.log(`${target} failed: ${(e as Error).message}`);
 }
-await move(target, current);
+// Recorded first, so a way back that fails too doesn't drain the server again at the next tick.
 mkdirSync(dirname(state), { recursive: true });
 writeFileSync(state, JSON.stringify({ bad: [...bad, target] }));
-console.log(`back on ${current}; ${target} won't be tried again`);
+try {
+  await move(target, current);
+  console.log(`back on ${current}; ${target} won't be tried again`);
+} catch (e) {
+  console.log(`going back to ${current} failed: ${(e as Error).message}; the server restarts as the checkout is, and ${target} won't be tried again`);
+  sh('systemctl', '--user', 'restart', 'rollforward');
+}
 process.exitCode = 1;
