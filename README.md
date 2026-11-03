@@ -55,7 +55,7 @@ For scale, a weekly borrowing base's runs cost about $0.20–0.60 each with Clau
 
 ## The page
 
-- **The sidebar** is a tree of workspaces, in bold, series, in blue, and instances, folded as a file browser's: selecting a row opens it and leaves the others as they were, and its chevron folds it; an open series lists its open instances, then "Show closed". **Mine | All** keeps to the workspaces you own or worked in, by running, commenting or uploading, and the one you're in. A row's ⚙ opens its settings, where it is renamed and archived, and + makes a series or an instance; both show on hover. A red dot marks a folded workspace or series with an ask waiting, and a black dot an instance that changed since this browser opened it. **Waiting on you**, at the top when anything does, lists the asks and notes for you, requests to start a series, series you share that have nothing open and no wake set, and your expired logins. The account stays at the foot, and opens Logins, Tokens, AGENTS.md, Skills, People (admins) and Sign out. The colours' key is a chip on the canvas, shown on hover.
+- **The sidebar** is a tree of workspaces, in bold, series, in blue, and instances, folded as a file browser's: selecting a row opens it and leaves the others as they were, and its chevron folds it; an open series lists its open instances, then "Show closed". **Mine | All** keeps to the workspaces you own or worked in, by running, commenting or uploading, and the one you're in. A row's ⚙ opens its settings, where it is renamed and archived, and + makes a series or an instance; both show on hover. A red dot marks a folded workspace or series with an ask waiting, and a black dot an instance that changed since this browser opened it. **Waiting on you**, at the top when anything does, lists the asks and notes for you, requests to start a series, series you share that have nothing open and no wake set, and your expired logins. The account stays at the foot; on hover it shows Sign out and ⚙, which opens one dialog with tabs, Logins, Tokens, AGENTS.md, Skills and, for admins, People. The colours' key is a chip on the canvas, shown on hover.
 - **An instance** is its graph: inputs first, then the steps, column by column, with lines from each tile to what it's made from, and the outputs in a column of their own that stays in view. A tile shows its item's name, file and version, and who made it, by colour: blue for a person, black for the agent. Dashed tiles have no file yet. A corner marks a tile with threads, gray, or red while an ask waits on a reply. A click opens the tile's card: its threads, Preview, Download, Upload and Comment. Under the inputs, "Also used" lists the files the agent's comments cite and no tile shows.
 - **Drops are hints.** Outputs and the rest are the two drop zones. The server adds each dropped file as an item at once, even mid-run: an output if it was dropped on Outputs, else an input. The agent decides what it is, such as a replacement for an input's file.
 - **Preview** shows a spreadsheet with its threads' cells marked; a click on a cell comments on it or opens its thread. "Compare with previous" marks the cells that changed since the file it replaced.
@@ -205,7 +205,7 @@ People sign in with one button, **Sign in with Microsoft**, and type nothing.
       docker compose exec rollforward node src/auth.ts /data add alice@example.com [admin|publisher]
       docker compose exec rollforward node src/auth.ts /data disable alice@example.com   # her sessions end at once
 
-- **Tokens,** at the sidebar's foot, are each person's for rf: named, lasting 7, 30 or 90 days, shown once and revocable. A token stops at its expiry, when revoked, or when its person is disabled, signed out everywhere or removed. `.rf/tokens.json` keeps only hashes, and `.rf/token-uses.jsonl` logs every use.
+- **Tokens,** under the account's ⚙, are each person's for rf: named, lasting 7, 30 or 90 days, shown once and revocable. A token stops at its expiry, when revoked, or when its person is disabled, signed out everywhere or removed. `.rf/tokens.json` keeps only hashes, and `.rf/token-uses.jsonl` logs every use.
 
 Sessions last 12 hours (`RF_SESSION_HOURS`). The people, the workspaces' people and everyone's logins are in `.rf/` in the data root, the logins sealed with `seal.key`. Where systemd runs the server, give it `session.key` and `seal.key` as credentials (`systemd-creds encrypt --with-key=tpm2 …`, then `LoadCredentialEncrypted=`), so a copy of the data holds only ciphertext; otherwise they are made in `.rf/`.
 
@@ -219,7 +219,7 @@ Every run loads every live **skill**: a website's skill, with its guardrails, is
 | A mail attachment | the runner's Microsoft 365 mail | the Excel attachment of the day's report mail |
 | A vendor portal | the runner's login to its website | the portal's payments and unpaid items, as csv |
 
-Skills, at the sidebar's foot, lists them with their versions.
+Skills, under the account's ⚙, lists them with their versions.
 
 Microsoft 365 is nobody's but each person's: a run reads mail and files only through its runner's own login, and only the mailboxes, OneDrive and SharePoint sites ticked for its instance. Graph only ever gets GETs, and Microsoft's tokens never leave the server.
 

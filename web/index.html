@@ -79,9 +79,11 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .ut td, .ut th { border-top: 1px solid var(--rule); padding: 6px 6px 6px 0; text-align: left; vertical-align: top; }
 .ut th { font-weight: 500; color: var(--ink-3); }
 .ut select { max-width: 100px; }
-.acct { padding-top: 10px; border-top: 1px solid var(--rule); margin-top: 10px; }
-.me { all: unset; box-sizing: border-box; display: grid; width: 100%; padding: 6px 8px; border-radius: var(--r1); font-size: 12.5px; color: var(--ink-2); cursor: pointer; }
-.me:hover { background: #eceff2; }
+.acct { padding-top: 10px; border-top: 1px solid var(--rule); margin-top: 10px; display: flex; align-items: center; gap: 2px; }
+.me { flex: 1; min-width: 0; display: grid; padding: 6px 8px; border-radius: var(--r1); font-size: 12.5px; color: var(--ink-2); outline: none; }
+.acts2 { display: none; align-items: center; }
+.acct:is(:hover, :focus-within) .acts2 { display: flex; }
+.pvtabs { display: flex; gap: 4px; padding: 0 12px; border-bottom: 1px solid var(--rule); }
 .me .mail { color: var(--ink-3); font-size: 12px; word-break: break-all; }
 @media (max-width: 560px) { .ut th:nth-child(3), .ut td:nth-child(3), .ut th:nth-child(4), .ut td:nth-child(4) { display: none; } }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--red); display: inline-block; margin-left: 6px; vertical-align: 1px; }
@@ -513,7 +515,8 @@ function renderSide() {
   const archived = tree.filter(w => w.archived).length + tree.filter(w => expanded.has(w.id)).flatMap(w => w.series).filter(s => s.archived).length;
   if (archived) h += `<button class="quiet" data-act="toggle-archived">${showArchived ? 'Hide' : 'Show'} archived (${archived})</button>`;
   put($('#tree'), h);
-  put($('#acct'), `<button class="me" data-act="menu-me" title="Logins, tokens, AGENTS.md, skills"><span>${esc(me.name)}${me.role === 'user' ? '' : ' · ' + me.role}</span><span class="mail">${esc(me.email)}</span></button>`);
+  put($('#acct'), `<div class="me" tabindex="0"><span>${esc(me.name)}${me.role === 'user' ? '' : ' · ' + me.role}</span><span class="mail">${esc(me.email)}</span></div>`
+    + `<span class="acts2"><button class="add" data-act="logins" title="Logins, tokens, AGENTS.md, skills${me.role === 'admin' ? ', people' : ''}">\u2699</button><button class="quiet" data-act="signout">Sign out</button></span>`);
 }
 
 function lastDone() { return data.log.findLast(e => e.op === 'done'); }
@@ -910,6 +913,9 @@ function renderPv() {
   if (!pv) return void (d.open && d.close());
   d.className = 'pv' + (pv.settings ? ' small' : '');
   let h = `<div class="pvh"><b>${esc(pv.title)}</b><span class="saved"></span>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${pv.path ? `<a class="btn" href="${fileUrl(pv.path)}">Download</a>` : ''}${pv.signin ? '<button class="btn primary" data-act="signin-save">Save login</button>' : ''}<button class="btn" data-act="unpv">${pv.signin ? 'Cancel' : 'Close'}</button></div>`;
+  // Your account's dialog: Logins, Tokens, AGENTS.md, Skills and People, as tabs.
+  const account = [['logins', 'Logins'], ['tokens', 'Tokens'], ['agents', 'AGENTS.md'], ['skills', 'Skills'], ...(me.role === 'admin' ? [['people', 'People']] : [])];
+  if (account.some(([k]) => k === pv.settings?.kind)) h += `<div class="pvtabs">${account.map(([k, name]) => `<button class="tab ${pv.settings.kind === k ? 'sel' : ''}" data-act="${k}">${name}</button>`).join('')}</div>`;
   if (pv.sheets) {
     if (pv.sheets.length > 1) h += `<div class="tabs">${pv.sheets.map((s, k) => `<button class="btn ${k === pv.sheet ? 'sel' : ''}" data-act="sheet" data-k="${k}">${esc(s.name)}</button>`).join('')}</div>`;
     h += `<div class="pvb">${sheetTable(pv.sheets[pv.sheet], pv.sheet === 0)}</div>`;
@@ -1230,7 +1236,6 @@ async function onAct(act, el, was) {
       open && data.runner.by === me.email && ['-'], open && data.runner.by === me.email && ['Abandon', 'abandon', 'danger', data.run && 'Available when the run ends'],
     ]);
   }
-  if (act === 'menu-me') openMenu(el, [['Logins', 'logins'], ['Tokens', 'tokens'], ['AGENTS.md', 'agents'], ['Skills', 'skills'], me.role === 'admin' && ['People', 'people'], ['-'], ['Sign out', 'signout']]);
   if (act === 'tab') {
     if (el.dataset.tab === 'log') [lines, linesKey] = [await api(instPath() + '/trace'), `${instPath()}:${data.log.length}`];
     $('#log').dataset.end = 'yes';
