@@ -1,9 +1,6 @@
 .venv
 node_modules
-demo/out/
-demo/data/
 __pycache__/
-demo/run/
 .env
 data/
 .history/

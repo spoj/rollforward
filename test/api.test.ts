@@ -13,7 +13,6 @@ import { filesOf, standIns } from './push.ts';
 
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const series = 'Weekly borrowing base', monthly = 'Monthly rec', renamed = 'Weekly BB';
-const weeks = Array.from({ length: 10 }, (_, i) => new Date(Date.UTC(2026, 6, 5 + 7 * i)).toISOString().slice(0, 10));
 
 const tmp = mkdtempSync(join(tmpdir(), 'rf-')), root = join(tmp, 'data');
 let proc: ChildProcess, base: string, admin = '';
@@ -36,7 +35,7 @@ const dir = async (name: string, label: string) => join(root, 'instances', await
 const create = async (name: string, label: string, cookie = admin) => call('POST', await at(name), JSON.stringify({ label }), cookie);
 
 before(async () => {
-  cpSync(join(app, 'demo', 'snapshot'), root, { recursive: true });
+  cpSync(join(app, 'test', 'fixture'), root, { recursive: true });
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch') };
   mkdirSync(env.HOME);
   delete env.OPENROUTER_API_KEY;
@@ -64,8 +63,7 @@ after(async () => {
 test('GET /api lists the series and its instances with statuses', async () => {
   const s = await shown(series);
   assert.deepEqual(s.instances.map((i: { label: string; status: string }) => [i.label, i.status]), [
-    ...weeks.map(w => [w, w === '2026-09-06' ? 'open' : 'closed']),
-    ['scratch', 'abandoned'],
+    ['2026-08-23', 'closed'], ['2026-08-30', 'closed'], ['2026-09-06', 'open'], ['scratch', 'abandoned'],
   ]);
 });
 
@@ -228,7 +226,7 @@ test('a workspace can be made; a workspace or a series is archived and restored,
 
 test('files: uploads download as attachments; paths outside upload/ and working/ are refused', async () => {
   const id = await iid(series, '2026-08-30'), file = (rel: string) => `/files/${id}/${encodeURIComponent(rel)}`;
-  const name = 'Larkfield AR aging 083026.xlsx';
+  const name = 'Larkfield AR aging 083026.csv';
   const r = await call('GET', file(`upload/${name}`));
   assert.equal(r.status, 200);
   assert.match(r.headers.get('content-disposition')!, /^attachment/);

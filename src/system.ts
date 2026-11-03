@@ -48,7 +48,7 @@ export function key(name: string): Buffer {
 export const everyone = (w: Workspace) => [...w.owners, ...w.members];
 
 // Owners and members see a workspace and everything in it, by their email or an Entra group they're in; admins see every one. A
-// workspace with no one in it, such as the demo's, is the admins'. Owners and admins manage who is in it.
+// workspace with no one in it is the admins'. Owners and admins manage who is in it.
 type Who = { email: string; role: string; groups: string[] };
 const isIn = (who: Who, people: string[]) => people.some(p => p === who.email || who.groups.includes(p));
 export const canSee = (who: Who, w: Workspace) => who.role === 'admin' || isIn(who, everyone(w));

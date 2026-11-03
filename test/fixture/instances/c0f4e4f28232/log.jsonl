@@ -1,0 +1,14 @@
+{"seq": 1, "at": "2026-08-23T23:00:00.000Z", "by": "alex", "op": "create", "from": null, "logins": []}
+{"seq": 2, "at": "2026-08-23T23:01:00.000Z", "by": "alex", "op": "upload", "file": "upload/Larkfield AR aging 082326.csv", "pane": "in", "onto": null, "sha256": "23e01d628a835fbc7cb5ff71d98d2f66cf5178a4b452847d69ed3e17ad281fa9"}
+{"seq": 3, "at": "2026-08-23T23:01:00.000Z", "by": "server", "op": "point", "item": "u2", "file": "upload/Larkfield AR aging 082326.csv"}
+{"seq": 4, "at": "2026-08-23T23:01:00.000Z", "by": "server", "op": "run", "run": 1, "upto": 3, "skills": {}}
+{"seq": 5, "at": "2026-08-23T23:04:00.000Z", "by": "agent", "op": "point", "item": "ar-aging", "file": "upload/Larkfield AR aging 082326.csv", "was": null}
+{"seq": 6, "at": "2026-08-23T23:04:00.000Z", "by": "agent", "op": "item", "item": "ar-aging", "name": "AR aging", "kind": "input"}
+{"seq": 7, "at": "2026-08-23T23:04:00.000Z", "by": "agent", "op": "point", "item": "inventory", "file": "working/Inventory at cost 08.22.2026.csv", "was": null, "sha256": "36752a493a72ffe8723f10451cf191ab6ae868858d2d657a60ecd6da962a924d"}
+{"seq": 8, "at": "2026-08-23T23:04:00.000Z", "by": "agent", "op": "item", "item": "inventory", "name": "Inventory at cost", "kind": "input", "source": "Warehouse DB, snapshot 08-22, read 08-23 23:02"}
+{"seq": 9, "at": "2026-08-23T23:04:00.000Z", "by": "agent", "op": "point", "item": "borrowing-base", "file": "working/Borrowing base 08.23.2026.csv", "was": null, "sha256": "747ebbaee681c66649f4300be97caadf0c5619f55aafbd7e7da2d877f22fe6c0"}
+{"seq": 10, "at": "2026-08-23T23:04:00.000Z", "by": "agent", "op": "item", "item": "borrowing-base", "name": "Borrowing base", "kind": "output", "from": ["ar-aging", "inventory"], "headline": "Excess 173,800"}
+{"seq": 11, "at": "2026-08-23T23:04:00.000Z", "by": "agent", "op": "remove", "item": "u2"}
+{"seq": 12, "at": "2026-08-23T23:05:00.000Z", "by": "agent", "op": "report", "run": 1, "text": "Borrowing base for 08-23: excess 173,800.\n\nAR aging placed, inventory fetched from the warehouse DB, borrowing base rebuilt."}
+{"seq": 13, "at": "2026-08-23T23:05:00.000Z", "by": "server", "op": "done", "run": 1, "aborted": false, "seen": 3, "cost": 0.21, "summary": "Borrowing base for 08-23: excess 173,800."}
+{"seq": 14, "at": "2026-08-24T09:00:00.000Z", "by": "alex", "op": "close"}

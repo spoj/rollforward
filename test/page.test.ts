@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
 
-// The page in a browser, on a copy of the demo: menus, names changed in place, settings that save as they change, and the page's
+// The page in a browser, on a copy of the test fixture: menus, names changed in place, settings that save as they change, and the page's
 // own dialogs, never the browser's.
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-page-')), root = join(tmp, 'data');
@@ -17,7 +17,7 @@ let proc: ChildProcess, browser: Browser, page: Page;
 const native: string[] = [];
 
 before(async () => {
-  cpSync(join(app, 'demo', 'snapshot'), root, { recursive: true });
+  cpSync(join(app, 'test', 'fixture'), root, { recursive: true });
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch') };
   mkdirSync(env.HOME!);
   delete env.OPENROUTER_API_KEY;

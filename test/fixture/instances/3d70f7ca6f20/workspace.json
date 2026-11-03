@@ -1,0 +1,30 @@
+{
+ "rev": 3,
+ "status": "closed",
+ "items": [
+  {
+   "id": "ar-aging",
+   "name": "AR aging",
+   "kind": "input",
+   "file": "upload/Larkfield AR aging 083026.csv"
+  },
+  {
+   "id": "inventory",
+   "name": "Inventory at cost",
+   "kind": "input",
+   "file": "working/Inventory at cost 08.29.2026.csv",
+   "source": "Warehouse DB, snapshot 08-29, read 08-30 23:02"
+  },
+  {
+   "id": "borrowing-base",
+   "name": "Borrowing base",
+   "kind": "output",
+   "file": "working/Borrowing base 08.30.2026.csv",
+   "from": [
+    "ar-aging",
+    "inventory"
+   ],
+   "headline": "Excess 180,543, up 6,743"
+  }
+ ]
+}

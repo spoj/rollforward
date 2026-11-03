@@ -15,11 +15,6 @@ setup:
 start root port="8780":
     node src/server.ts '{{root}}' {{port}}
 
-# Serve a scratch copy of the demo, made on first use; delete /tmp/rf-demo to start over
-demo port="8780":
-    [ -d /tmp/rf-demo ] || cp -r demo/snapshot /tmp/rf-demo
-    node src/server.ts /tmp/rf-demo {{port}}
-
 # Run the tests; those of websites too when .env sets RF_BROWSER_URL and RF_BROWSER_KEY
 test:
     node --test test/
@@ -43,12 +38,11 @@ revoke email:
 people:
     podman exec {{live}} node src/auth.ts /data list
 
-# Follow the live demo's log
+# Follow the live server's log
 logs:
     podman logs -f --tail 50 {{live}}
 
-# The demo series in the volume read their sources at this repo's demo/run/data-sources.
-# Rebuild the live demo from the committed main branch and restart it, moving its data to folders by id the first time;
+# Rebuild the live server from the committed main branch and restart it, moving its data to folders by id the first time;
 # a run it cuts carries on after the restart
 deploy:
     git -C {{cache}}/repo fetch -q {{justfile_directory()}} main
@@ -56,4 +50,4 @@ deploy:
     podman build -q -t rollforward-public {{cache}}/repo
     podman rm -f {{live}}
     podman run --rm -v {{live}}-data:/data rollforward-public sh -c 'test -e /data/.rf/tree.json || node scripts/migrate-ids.ts /data'
-    podman run -d --name {{live}} --init --restart=always --security-opt 'unmask=/proc/*' -p 127.0.0.1:8790:8780 --env-file {{cache}}/env -e RF_SANDBOX_RO={{justfile_directory()}}/demo/run/data-sources -v {{live}}-data:/data -v {{cache}}/data-sources:{{justfile_directory()}}/demo/run/data-sources rollforward-public
+    podman run -d --name {{live}} --init --restart=always --security-opt 'unmask=/proc/*' -p 127.0.0.1:8790:8780 --env-file {{cache}}/env -v {{live}}-data:/data rollforward-public

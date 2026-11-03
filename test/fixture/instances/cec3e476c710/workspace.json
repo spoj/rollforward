@@ -1,0 +1,28 @@
+{
+ "rev": 1,
+ "status": "open",
+ "items": [
+  {
+   "id": "ar-aging",
+   "name": "AR aging",
+   "kind": "input",
+   "file": null
+  },
+  {
+   "id": "inventory",
+   "name": "Inventory at cost",
+   "kind": "input",
+   "file": null
+  },
+  {
+   "id": "borrowing-base",
+   "name": "Borrowing base",
+   "kind": "output",
+   "from": [
+    "ar-aging",
+    "inventory"
+   ],
+   "file": null
+  }
+ ]
+}

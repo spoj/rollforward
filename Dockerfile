@@ -9,9 +9,7 @@ RUN npm ci --omit=dev
 COPY requirements.txt ./
 RUN python3 -m venv .venv && .venv/bin/pip install --no-cache-dir -r requirements.txt
 COPY . .
-COPY demo/snapshot /data
-COPY demo/sources /data-sources
-# Runs are sandboxes without a systemd scope of their own here; the demo's sources are theirs to read.
-ENV RF_HOST=0.0.0.0 RF_SANDBOX_SCOPE= RF_SANDBOX_RO=/data-sources
+# Runs are sandboxes without a systemd scope of their own here.
+ENV RF_HOST=0.0.0.0 RF_SANDBOX_SCOPE=
 EXPOSE 8780
 CMD ["node", "src/server.ts", "/data", "8780"]

@@ -1,0 +1,20 @@
+{
+ "workspaces": {
+  "1b3031035ff6": {
+   "name": "larkfield",
+   "owners": [],
+   "members": []
+  }
+ },
+ "series": {
+  "d83e3e5c41da": {
+   "name": "Weekly borrowing base",
+   "workspace": "1b3031035ff6"
+  },
+  "045dea8b4dd1": {
+   "name": "Ad hoc",
+   "workspace": "1b3031035ff6",
+   "adhoc": true
+  }
+ }
+}
