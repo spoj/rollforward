@@ -32,13 +32,13 @@ rollforward runs on one host and the browser service ([spoj/rollforward-browser]
 Run the image under podman, as a systemd service. The image pins Node, Python, bubblewrap and LibreOffice together, and an update is a rebuild and a restart. Running without Docker (README) would instead give each run a memory cap of its own and seal the keys to the TPM, at the cost of more to install and keep current.
 
 1. Give the service a user of its own, with lingering on, and install rootless podman. Check out a tagged commit of this repo, and build it with `podman build -t rollforward .`.
-2. Make an empty data folder, `~/rollforward-data`. A named volume would start full of the demo.
+2. Make an empty data folder, `~/rollforward-data`.
 3. Write `~/.config/rollforward.env` with:
    - `OPENROUTER_API_KEY`;
    - the `RF_OIDC_*` lines and `RF_PUBLIC_URL` (README, Access);
    - `RF_ADMINS`, the first admins;
    - `RF_BROWSER_URL` and `RF_BROWSER_KEY`;
-   - `RF_SANDBOX_RO=`, since the image's default is the demo's sources. Instead, it can name folders runs may read, such as a read-only mount of a file share.
+   - `RF_SANDBOX_RO`, only if runs should read folders besides their data, such as a read-only mount of a file share.
 
 4. Install the unit, then run `systemctl --user daemon-reload && systemctl --user start rollforward`:
 

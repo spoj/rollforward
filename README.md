@@ -1,25 +1,23 @@
 # rollforward
 
-Recurring tasks, files in and files out. People drop this period's input files into an instance of a series. An agent learns the transform from the closed instances, produces the output files, and pins notes and questions to the cells they're about. The screen shows the work as a graph, from the inputs through the agent's steps to the outputs. People answer by clicking an option, drop in a corrected file when one was wrong, and close the instance when it's done. There is no prompt box on the main screen.
+Recurring tasks, files in and files out. People drop this period's input files into an instance of a series. An agent learns the transform from the closed instances, produces the output files, and talks in threads pinned to the cells, files and instances they're about: it says what people should know and asks what they should decide. The screen shows the work as a graph, from the inputs through the agent's steps to the outputs. People reply in a thread, drop in a corrected file when one was wrong, and close the instance when it's done. There is no prompt box on the main screen.
 
 ![An instance: inputs, steps and outputs, joined by what each is made from](docs/screenshots/instance.png)
 
-- **The agent** is [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent), run over RPC with read, bash, edit and write tools, in its series' folder. It copies and adapts the previous instance's scripts, so each instance's `working/` is a complete record of how its outputs were made.
-- **Skills** reach systems outside the series, for the series that choose them. They are each deployment's own, pushed by publishers with `rf skill push`; none ship with this repo.
+- **The agent** is [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent), run over RPC with read, bash, edit and write tools, in its series' folder, in a sandbox of its own. It copies and adapts the previous instance's scripts, so each instance's `working/` is a complete record of how its outputs were made.
 - **Inputs** are uploads, or sources a person points the agent to, such as a database, a mailbox folder or a web API. The agent keeps a frozen copy of what it read, and the tile shows where it came from.
-- **Workspaces hold series,** such as one client's, and its owners and members see them. A workspace or a series can be archived, which hides it until it's restored.
-- **People sign in with Microsoft,** with one button.
-- **Logins are each person's own:** a run reads Microsoft 365 and websites only through its runner's logins, and only those ticked for its instance.
-- **Talking is in comments,** on an item or the instance; the agent replies in the thread and ends each run with a report.
+- **Skills** reach systems outside the series, for the series that choose them. They are each deployment's own, pushed by publishers with `rf skill push`; none ship with this repo.
+- **Workspaces hold series,** such as one client's, and its owners and members see them.
+- **People sign in with Microsoft,** with one button, and **logins are each person's own:** a run reads Microsoft 365 and websites only through its runner's logins, and only those ticked for its instance.
 - **Wakes:** an agent sets when its instance, or its series' next period, runs again; nothing is scheduled.
-- **Reach:** a series reads its own workspace, and any workspace whose people all belong to its own; every run also reads the company's and its workspace's guidance.
+- **AGENTS.md:** every run loads the company's and its workspace's, and a catalogue of the series it can read: its own workspace's, and those of any workspace whose people all belong to its own.
 - **rf** is people's command line, with a personal token: what the page does, plus pulling everything you can see, for your own desktop agent. Admin is rf, not the page. Install it with `npm i -g @rfany/rf` ([cli/](cli/)).
-- **Everything is files on disk.** Each instance has `upload/` (people's files), `working/` (the agent's), `workspace.json` (what the screen shows) and `log.jsonl` (every event).
+- **Everything is files on disk,** with no database.
 
-| A tile's notes | Preview, compared with the file it replaced |
+| A tile's card and its threads | Preview, compared with the file it replaced |
 |---|---|
-| ![Notes](docs/screenshots/notes.png) | ![Preview](docs/screenshots/preview.png) |
-| **Conversation: the agent's report and the threads** | **Process, marked against the previous instance** |
+| ![A tile's card](docs/screenshots/card.png) | ![Preview](docs/screenshots/preview.png) |
+| **Conversation: what waits on people, the report and the threads** | **Process, marked against the previous instance** |
 | ![Conversation](docs/screenshots/conversation.png) | ![Process](docs/screenshots/process.png) |
 | **Advanced: the agent's work** | **Phone** |
 | ![Advanced](docs/screenshots/advanced.png) | ![Phone](docs/screenshots/phone.png) |
@@ -29,12 +27,165 @@ Recurring tasks, files in and files out. People drop this period's input files i
     cp .env.example .env          # set OPENROUTER_API_KEY
     docker compose up --build     # then open http://127.0.0.1:8780
 
-The image comes with a demo series that is already populated: a weekly borrowing base for a made-up housewares company, nine weeks the agent has done.
-- **Week 08-16:** the agent starts fetching the inventory from a warehouse database, the lender's figures from a mailbox and the EUR rate from the ECB.
-- **Week 08-30:** it handles a stale snapshot and a one-week waiver from the lender.
-- **Week 09-06:** open it and drop the two files from `demo/try/2026-09-06/`. The agent fetches the inventory from the warehouse database, the loan activity from the mailbox and the EUR rate from the ECB.
-- **Things to open:** a tile, Preview (click a cell to comment on it), Process, the Conversation, the ops log and Advanced.
-- **Running the agent:** create an instance and drop files. A normal week costs about $0.20–0.60 with Claude Opus 5.5 through OpenRouter.
+The image starts empty. Until an app is registered (see Access), Sign in with Microsoft offers two demo accounts: take the admin.
+
+- **A new series:** make a workspace (+ by Workspaces), a series in it, and an instance for a past period. Drop its inputs on the left and what was actually sent on the right. The agent rebuilds each output from the inputs and says what it couldn't derive; close the instance once it's right. Import a few periods this way, oldest first.
+- **The next period:** a new instance starts from the latest closed one, its tiles dashed until their files come. Drop this period's files: the agent builds the outputs, asks what a reviewer might decide differently, and ends each run with a report.
+- **A one-off ask:** start an instance in the workspace's Ad hoc series, and comment what you need.
+
+For scale, a weekly borrowing base's runs cost about $0.20–0.60 each with Claude Opus 5.5 through OpenRouter.
+
+## Concepts
+
+- **People** sign in with a Microsoft account. Each is a **user**, a **publisher**, who also pushes skills, or an **admin**.
+- **Workspace:** a folder of series, usually one entity's work, such as its bank rec, inventory rec and borrowing base. It is the only unit of sharing: its **members** see and work in every series in it, and its **owners** also manage who is in it, each a person by email or an Entra group by id. An area that needs hiding, such as payroll, is a workspace of its own with fewer people. A workspace with no one in it is the admins'.
+- **Series:** a recurring transform, such as "Weekly borrowing base": each instance's input files become its output files. What an instance should contain comes from earlier instances, not from a declaration. Each workspace also has an **Ad hoc** series of one-off asks, whose instances start empty rather than from each other; **Make it a series** moves one into a new series, as its first instance.
+- **Instance:** one pass through a series, under a label people choose, such as "2026-08-24" or "Larkfield refinancing"; instances sort by label. Up to three of a series are open at once. An instance ends **closed**, its runner's sign-off, or **abandoned**.
+- **Example:** a closed instance. Its inputs and outputs are an example pair, from which the agent learns the transform, writing it down as scripts and `process.md` in `working/`.
+- **Item:** one tile on an instance's screen, with a stable id, a name and a kind: an input, a step (an intermediate result a reviewer would check, such as "Eligible AR", in a file the agent writes) or an output. It shows a file, names the items it's made from (`from`), and may carry a `headline`, an output's main result, or a `source`, where a fetched input came from. Replacing a file means pointing the item at a new one.
+- **Graph:** the items, joined by what each is made from: a picture for people, which nothing runs.
+- **Run:** one stretch of agent work on an instance, started by an upload, a comment or a wake.
+- **Thread:** people and the agent talking about one point, on a cell, an item or the instance (see Talking).
+- **Runner:** whoever made the instance, copied it or last took it over; for an instance a wake started, whoever turned on Allow wakes. Runs use the runner's logins, and only the runner closes.
+- **Login:** a person's own sign-in to a system, Microsoft 365 or a website, offering runs what it reaches: mailboxes, files, a site. A run uses only its runner's logins, only those ticked for its instance, and none once the runner is disabled or out of the instance's workspace, until someone takes it over.
+- **Skill:** what the agent knows how to fetch or do, and how, whole in a folder, such as the day's AR aging from OneDrive. A series' **Skill use** is the skills its agent loads. Nothing writes to a system outside rollforward: a write the work needs, such as vouchers for the ERP, is an output people take onward.
+- **Reach:** a workspace's agents read its other series, and those of any workspace that has everyone it has, by the same email or group, so reading never widens who sees what: a payroll workspace's agent reads the entity's main workspace, never the reverse. They never write there.
+- **AGENTS.md:** the company's, the admins', and each workspace's, its owners': conventions, and changes that cut across series, such as a renamed entity, which each series adapts to at its next run.
+- **Archive:** a workspace or a series no longer in use leaves the sidebar, but for "Show archived", until it's restored; nothing in it changes.
+
+## The page
+
+- **The sidebar** cascades workspaces, series and instances: the open series lists its open instances, then "Show closed". A row's ⋯ opens its menu (Rename, New, Settings, Archive), and + makes a series or an instance. A red dot marks a collapsed workspace or series with an ask waiting, and a black dot an instance that changed since this browser opened it. **Waiting on you**, at the top when anything does, lists the asks for you, requests to start a series, series whose wakes you allowed that have nothing open and no wake set, and your expired logins. The account at the foot opens Logins, Tokens, AGENTS.md, Skills, People (admins) and Sign out.
+- **An instance** is its graph: inputs first, then the steps, column by column, with lines from each tile to what it's made from, and the outputs in a column of their own that stays in view. A tile shows its item's name, file and version, and who made it, by colour: blue for a person, black for the agent. Dashed tiles have no file yet. A corner marks a tile with threads, gray, or red while an ask waits on a reply. A click opens the tile's card: its threads, Preview, Download, Upload and Comment.
+- **Drops are hints.** Outputs and the rest are the two drop zones. The server adds each dropped file as an item at once, even mid-run: an output if it was dropped on Outputs, else an input. The agent decides what it is, such as a replacement for an input's file.
+- **Preview** shows a spreadsheet with its threads' cells marked; a click on a cell comments on it or opens its thread. "Compare with previous" marks the cells that changed since the file it replaced.
+- **Conversation:** the threads waiting on people first, then the agent's latest report, then the other threads, and a box to comment on the instance.
+- **Process:** the instance's `working/process.md`, redlined against the instance it was made from, so a reviewer sees what changed in the method, not only in the figures.
+- **Ops log:** who did what and when, oldest first, opening at the latest; earlier files open from it.
+- **Advanced,** along the bottom, shows the agent's work, live during a run: what started each run, with its time and cost, the agent's messages, and each tool call as one line that expands to its output. **Interrupt** stops the run.
+- **Close instance** is the runner's "I've reviewed this and stand by it", for the whole instance; others see **Take over**, which makes them the runner, with their own logins ticked. **Abandon**, in the ⋯ menu, ends it otherwise: it is neither an example nor a starting point. Both wait for the run to end. A closed or abandoned instance can be **duplicated** into an open one, without its agent session. An instance's label changes by clicking it, between runs.
+- **Starting an instance** asks for its label and which of your logins it may use, every time, as do copying and taking over.
+- **Series settings:** its name, its Skill use, its wakes and its cost. The next wake can be moved or cancelled, and **Allow wakes** lets a wake start an instance, run as you with the logins you tick. **Workspace settings:** its name, its people, what its agents read and who reads it, and its AGENTS.md.
+- **On a phone,** Outputs come first, then the other tiles, each saying what it's made from.
+
+## Talking
+
+Talk is threads only, as `comment` entries in the instance's `log.jsonl`: `{thread, item?, ref?, text, files?, ask?: true, to?: email}`. The first comment carries the thread's place, an item and a `ref` in its file such as a cell, or neither for the instance; later comments reply in it. `resolve` `{thread, text?}` closes a thread.
+
+- **People** comment on the page, from a tile's card, a cell in Preview or the Conversation, with attachments kept in `upload/attachments/`, or with `rf comment`. A person's comment starts a run, and a reply to an ask is its answer.
+- **The agent** speaks on the most specific place it can:
+  - `rf say [--in THREAD | --on ITEM[@REF]] [--file PATH]... TEXT`: a fact, which needs no reply, such as a value carried rather than computed;
+  - `rf ask [--in … | --on …] [--to EMAIL] [--file PATH]... TEXT`: a decision, anything a reviewer might decide differently, warnings included, which needs a reply;
+  - `rf resolve THREAD [TEXT]`: closes a thread it started that no longer applies.
+
+  `--file` cites a file the comment relies on, under `upload/` or `working/` of the instance or of another of its series.
+- **Who a thread waits on:** people, while its last comment is the agent's ask, on `to` or else the runner; the agent, while its last comment is a person's. Anyone resolves a thread, the agent only one it started, and resolving starts no run. On the page, a thread that waits on no one shows a quiet Reply, and a tile's card and Preview open its threads.
+- **Closing** lists the asks still waiting and accepts what the agent said it did for each; the log records `close` with `accepted`, their threads.
+- **The report** is the agent's last message of each run, logged as `report`: what the run did, its first line the run's summary in the ops log.
+- **The review sheet,** an output of every instance, gives the key figures against the previous instance with the reasons, and the checks. Open points are asks, carried values are says, and sources stay on the items.
+
+## Runs
+
+- **What starts one:** a person's upload or comment, a new instance whose parent fetched inputs (its `create` entry carries `fetch`), or a wake. A burst of uploads starts one run, 1.5 s after the last. A person's upload or comment cancels the instance's pending wake.
+- **One run at a time per series,** at most `RF_MAX_RUNS` (20) at once, and none while less than `RF_MIN_FREE_GB` (6) of memory is free, plus 1 GB for each run started in the last minute; the rest queue. A run stops at `RF_LIMIT_MIN` (120 minutes). [src/waker.ts](src/waker.ts) decides what runs when; [src/runner.ts](src/runner.ts) runs one.
+- **One Pi session per instance:** each run is a prompt into it, so the agent remembers the instance's earlier runs, while a new instance starts afresh and finds what it needs in the files. Every prompt reads `Instance <label> (folder <label>/), run <n>. New log entries:`, then the log lines, as JSON, that the agent hasn't been sent, leaving out its own.
+- **During a run,** new entries reach the agent as a steer, after the current turn's tool calls; entries for another instance of the series wait for the run to end. The runner records the last entry the agent has received: when a run settles with people's entries after it, another starts at once, except after an Interrupt, which waits for the next act.
+- **What a run loads:** prompt.md is its system prompt, and Pi adds the AGENTS.md files from `/` down to the series folder: the company's at `/work/AGENTS.md`, the workspace's at `/work/<workspace>/AGENTS.md`, and the catalogue at `/work/<workspace>/<series>/AGENTS.md`, which the server writes as the run starts. The catalogue has a line per series in reach, from its latest closed instance: what it delivers (its `process.md`'s first line), its inputs and their sources, who brings files and who comments, and its open instances. Other workspaces' AGENTS.md in reach are files to read, not loaded.
+- **Wakes:** `rf wake TARGET AT REASON [--label LABEL]` sets one, TARGET a folder as the run sees it, in its own workspace: an open instance, which the wake continues, or a series, which it starts a new instance of, labelled LABEL. That instance runs as whoever turned on Allow wakes; without it, or with three open, the wake shows on the page as a request to start or dismiss. Each target has one wake pending, in `.rf/wakes.json`, at least 15 minutes after its last; a clock checks them every minute, and overdue ones fire after a restart. Cadence is the agent's: it sets its next period's wake, wakes its own instance for a late input, and wakes the series its outputs feed. A closed instance can't be woken: its repair is a new instance of its series, labelled `<label>-r2`.
+- **Closing an instance wakes its series' later open instances,** which may have used its draft; closing an Ad hoc one wakes none. A run that meets its runner's expired login logs `expired`, and signing in again wakes the instance. A wake of an archived series, or one in an archived workspace, is dropped.
+- **A restart doesn't wait for quiet:** a run it cut ends as aborted, and its instance is woken to carry on.
+
+## The agent's rf
+
+`rf` is on the agent's `PATH`; `rf help COMMAND` gives each command's details. For its own instance it calls the people's API, `/api`, as a caller with a run's few rights: its own instance's screen and threads, wakes in its own workspace, and naming a folder it can read; so each rule lives once. `/agent` holds what only a run has: its runner's logins and browsers.
+
+- `rf show` prints the screen, `workspace.json`, with its `rev`; `rf put FILE` replaces it. A put is refused if its `rev` isn't current, as people may have uploaded meanwhile, and unless every item has a unique id, a name and a kind; `from` names items, never in a circle; `file` is null or an existing file under `upload/` or `working/`; and `status` is left as it is. The server logs each change (`point`, `item`, `remove`) and freezes each newly shown file, logging its sha256.
+- `rf say`, `rf ask` and `rf resolve` (see Talking), and `rf wake` (see Runs).
+- `rf files list|get` and `rf mail find|save` read Microsoft 365 through the runner's login, as ticked; `rf browser open|get` drives a website (see Skill use). The agent never sees a message's body or a password.
+
+## Storage
+
+Everything is files on the host's disk, in folders named by random ids, with no database. Names live in two small files, so a rename or a move edits one of them, at any time, even mid-run.
+
+    .rf/                      the server's own: users.json, tree.json, people/<sha256(email)[:16]>/ (each person's logins),
+                              websites.json, wakes.json (pending wakes and requests), egress.json (hosts runs may reach),
+                              tokens.json and token-uses.jsonl, and the keys session.key and seal.key
+      tree.json               {"workspaces": {id: {name, owners, members, archived?}}, "series": {id: {name, workspace, archived?, adhoc?}}}
+    agents/                   company.md, the company's AGENTS.md, and <workspace id>.md, each workspace's
+    skills/                   versions/<id>/<n>/, each pushed version, and live/<id>, a link to the one runs use
+    series/<id>/
+      series.json             {"skills": [ids], "wakes": {by, since, logins}}, read-only
+      .pylib/                 Python packages the series' scripts installed
+    instances/<id>/
+      instance.json           {"label", "series": id}, read-only
+      upload/                 people's files, as uploaded, read-only; attachments/ holds comments' files
+      working/                the agent's: scripts, process.md, drafts, outputs, and inputs it fetched or made
+      workspace.json          the screen, read-only
+      log.jsonl               every event, written by the server
+      session/                the instance's Pi session, which Advanced shows
+      browser/                each run's browser requests, one line per request
+
+- **Who writes what:** people upload, comment, interrupt and close, through the server. The server adds each upload as an item at once, creates and closes instances, and alone writes the log. The agent decides the items, through `rf`, and reads `log.jsonl` directly.
+- **`upload/` is people's:** nobody moves, renames or changes its files. Each streams to `.tmp/` in the data root as it arrives, then moves into place, read-only; it may take up to an hour, and is refused if its instance closed meanwhile. A repeated name becomes `<stem>_<n><ext>`.
+- **`working/` is the agent's,** with one limit: a file the screen has shown never changes. The server makes it read-only and logs its hash, so a new version gets a new name, and closing refuses an instance whose shown file was replaced since.
+- **A closed instance's `workspace.json` is its example pair:** the items and the files that were actually used or sent.
+- **Logins are sealed:** each login's secret, Microsoft's refresh token or a website's browser state, is AES-256-GCM, with the person and the login's id as authenticated data, so a record copied to another person's folder won't open. Signing out deletes it.
+- **Addresses use ids,** such as `/api/instances/<id>`, `/files/<id>/…` and the page's `#/<id>`, so links survive renames; a run sees names instead (see Sandboxes).
+
+## The screen and the log
+
+The screen, `workspace.json`:
+
+    {"rev": 31, "status": "open", "items": [
+      {"id": "ar-aging", "name": "AR aging", "kind": "input", "file": "upload/AR aging 082426_2.xlsx"},
+      {"id": "inventory", "name": "Inventory at cost", "kind": "input", "file": "working/Inventory at cost 08.23.2026.xlsx",
+       "source": "Warehouse DB, snapshot 08-23, read 08-24 09:12"},
+      {"id": "eligible-ar", "name": "Eligible AR", "kind": "step", "file": "working/Eligible AR 08.24.2026 v2.csv", "from": ["ar-aging"]},
+      {"id": "borrowing-base", "name": "Borrowing base", "kind": "output", "file": "working/Borrowing base 08.24.2026 v3.xlsx",
+       "from": ["eligible-ar", "inventory"], "headline": "Excess 1.2M, 0.3M less than last week"}]}
+
+`log.jsonl` has one line per event, in `seq` order, `by` a person's email, "server" or "agent"; unknown fields are ignored. The ops are `create`, `upload`, `point` (an item now shows a file), `item`, `remove`, `run`, `done` (with the run's model cost in USD), `report`, `comment`, `resolve`, `interrupt`, `close`, `abandon`, `duplicate`, `rename`, `takeover`, `promote`, `wake`, `expired`, `egress` (a host a run reached or was refused), `files` and `mail` (reads through Microsoft 365), `browser` (a run's browser on a website closed, with its request and write counts) and `browsers` (a run's browsers didn't all close).
+
+    {"seq": 40, "at": "2026-08-24T15:02:00Z", "by": "sam@example.com", "op": "upload", "file": "upload/AR aging 082426_2.xlsx", "pane": "in", "onto": null, "sha256": "9f2c…"}
+    {"seq": 41, "at": "2026-08-24T15:02:00Z", "by": "server", "op": "point", "item": "u40", "file": "upload/AR aging 082426_2.xlsx"}
+    {"seq": 42, "at": "2026-08-24T15:02:02Z", "by": "server", "op": "run", "run": 4, "upto": 41}
+    {"seq": 43, "at": "2026-08-24T15:09:30Z", "by": "agent", "op": "point", "item": "ar-aging", "file": "upload/AR aging 082426_2.xlsx", "was": "upload/AR aging 082426.xlsx"}
+    {"seq": 44, "at": "2026-08-24T15:09:30Z", "by": "agent", "op": "remove", "item": "u40"}
+    {"seq": 45, "at": "2026-08-24T15:10:12Z", "by": "agent", "op": "comment", "thread": "c45", "item": "borrowing-base", "ref": "Base!C22", "text": "Sam raised the availability block from 500,000 to 750,000, which cuts excess by 250,000. One-off, or from now on? I applied it to this week.", "ask": true, "to": "sam@example.com"}
+    {"seq": 46, "at": "2026-08-24T15:14:12Z", "by": "agent", "op": "report", "run": 4, "text": "AR aging replaced; borrowing base v3.\n…"}
+    {"seq": 47, "at": "2026-08-24T15:14:12Z", "by": "server", "op": "done", "run": 4, "aborted": false, "seen": 41, "cost": 0.21, "summary": "AR aging replaced; borrowing base v3."}
+    {"seq": 48, "at": "2026-08-24T15:20:00Z", "by": "sam@example.com", "op": "comment", "thread": "c45", "text": "From now on."}
+
+## Harness: Pi over RPC
+
+The runner, [src/runner.ts](src/runner.ts), drives Pi through Pi's `RpcClient`, which runs Pi as a child process and exchanges JSON lines with it:
+
+    pi --mode rpc --provider openrouter --model anthropic/claude-opus-5.5 --thinking high \
+      --no-extensions --no-skills --no-mcp --no-prompt-templates --skill /skills/live/<id> … \
+      --tools read,bash,edit,write --system-prompt <app>/prompt.md \
+      --session-dir "/work/<workspace>/<series>/<label>/session" --session-id main
+
+- **prompt.md replaces Pi's own system prompt,** and Pi adds the context files it finds from `/` down to its working folder, the series folder: the run's AGENTS.md files. The run's Pi home holds none, so nothing of whoever runs the server reaches it.
+- **Pi's own commands drive a run:** `prompt` starts it, and `steer` delivers mid-run entries, with steering mode `all`, so what queued by the end of a turn arrives together. Interrupt is `clear_queue`, then `abort`.
+- **Each run has its own Pi home,** in its sandbox's scratch: `settings.json`, and `models.json`, which points the provider at the server's socket. `PI_OFFLINE` keeps Pi from checking for updates.
+- **One process per run,** stopped at `agent_settled`, or after an abort at the time limit.
+- **Sessions are found by folder:** Pi reopens `main` only if the folder in its first line is its working folder, so a run whose names changed since rewrites that line first.
+- **The model key,** `OPENROUTER_API_KEY`, stays with the server, which adds it to each model request a run sends through its socket. A server without one ends each run at once with that error.
+- **`--skill`** loads each skill the series chose, and `--no-skills` keeps out the Pi skills of whoever runs the server.
+- **`RpcClient` starts `node`** from the `PATH` it's given; the runner puts [bin/sandbox](bin/sandbox) first, whose `node` starts Pi in the run's sandbox.
+
+## Sandboxes
+
+Each run's Pi is a bubblewrap sandbox ([src/sandbox.ts](src/sandbox.ts)), in a systemd scope of its own (`MemoryHigh` 4 GB, `MemoryMax` 8 GB, in `rollforward-runs.slice`). Anyone signed in can talk to the agents of their own workspaces, within these walls.
+
+- **What it sees:** the system, the app's code and the skills, read-only; under `/work`, its view of the data by name, built as it starts: `/work/<workspace>/<series>/<label>/` for every instance in its reach, read-only but for its own instance's `working/` and `session/` and its series' `.pylib`, and the AGENTS.md files; `RF_SANDBOX_RO`, read-only; and a HOME and /tmp of its own on `RF_SCRATCH`, deleted when it ends. Never `.rf/`, the data root, a workspace outside its reach, or the server's environment.
+- **No network of its own.** Its one way out is the server's socket, `RF_SCRATCH/socket/rf.sock`, which socat offers at 127.0.0.1:7000 inside:
+  - `/api/…` and `/agent/…`, as the run, by its token (`RF_URL`, `RF_TOKEN`), which ends with the run; the site itself serves no `/agent`;
+  - `/model/<token>/…`, the model, with the key added on the way (`RF_MODEL_URL`);
+  - `/browser/<token>/<id>`, the CDP websocket of a browser the run opened, passed to the browser service with its key;
+  - `CONNECT`, an HTTPS proxy to package registries, GitHub, documentation sites and the hosts in `.rf/egress.json`, never to a private address. Each host a run asks for is logged once, as `egress`.
+- **What a run leaves is never followed:** the server reads the files a run can write only as regular files reached without a link, checked by the real path of what it opened, and Duplicate copies only files and folders.
+- **In a container,** bubblewrap needs podman's `--security-opt unmask=/proc/*` (Docker: `seccomp=unconfined` and `systempaths=unconfined`), and runs get no scope of their own (`RF_SANDBOX_SCOPE=`).
 
 ## Access
 
@@ -47,17 +198,19 @@ People sign in with one button, **Sign in with Microsoft**, and type nothing.
   - a **Single-page application**: `RF_OIDC_SPA=1`, and no secret. The browser then redeems the sign-in, as Microsoft requires, and the server checks the token's signature.
 
   The same button then goes to Microsoft, and the same app gives each person's **Microsoft 365 login** (Logins, Connect Microsoft 365): grant it the delegated Microsoft Graph permissions `Mail.Read`, `Mail.Read.Shared`, `Files.Read.All`, `Sites.Read.All` and `offline_access`, with admin consent once for the organisation. That needs a Web app or a public client; a Single-page application can't keep the login. `RF_ADMINS` names the admins; `RF_ALLOWED_DOMAINS` and `RF_AUTO_PROVISION=0` narrow who may come in. Start with `node --env-file=.env src/server.ts DATA_ROOT` without Docker. Microsoft takes http redirects only on localhost, so open the site as `http://localhost:8780`, not `127.0.0.1`; for others to reach it, register an https address.
-- **What people see:** a workspace's owners and members, people by email or Entra groups by id, see all of it; owners manage who is in it. Admins see every workspace, and manage people and websites with rf (Tokens, at the sidebar's foot): `rf users`, `rf user add|role|disable|enable|signout|remove EMAIL`, `rf website set|remove`, roles being admin, publisher (who pushes skills) and user. On the server, before there is an admin:
+- **What people see:** a workspace's owners and members, people by email or Entra groups by id, see all of it; owners manage who is in it. Admins see every workspace, and everyone who can sign in under People, and manage people, websites and the company's AGENTS.md with rf: `rf users`, `rf user add|role|disable|enable|signout|remove EMAIL`, `rf website set|remove`, `rf agents --set FILE`, roles being admin, publisher (who pushes skills) and user. On the server, before there is an admin:
 
       docker compose exec rollforward node src/auth.ts /data list
       docker compose exec rollforward node src/auth.ts /data add alice@example.com [admin|publisher]
       docker compose exec rollforward node src/auth.ts /data disable alice@example.com   # her sessions end at once
 
+- **Tokens,** at the sidebar's foot, are each person's for rf: named, lasting 7, 30 or 90 days, shown once and revocable. A token stops at its expiry, when revoked, or when its person is disabled, signed out everywhere or removed. `.rf/tokens.json` keeps only hashes, and `.rf/token-uses.jsonl` logs every use.
+
 Sessions last 12 hours (`RF_SESSION_HOURS`). The people, the workspaces' people and everyone's logins are in `.rf/` in the data root, the logins sealed with `seal.key`. Where systemd runs the server, give it `session.key` and `seal.key` as credentials (`systemd-creds encrypt --with-key=tpm2 …`, then `LoadCredentialEncrypted=`), so a copy of the data holds only ciphertext; otherwise they are made in `.rf/`.
 
 ## Skill use
 
-A series picks, in its settings, the **skills** its agent may use; choosing none is fine. A skill is what to fetch or do, and how, whole in a folder that a publisher pushes with `rf skill push DIR`, live at once; each push is a version, and `rf skill rollback ID N` brings an earlier one back. It is a Pi skill: a `SKILL.md` for the agent, with the links and website it uses written in it, and the scripts it runs.
+A series picks, in its settings, the **skills** its agent may use; choosing none is fine. A skill is what to fetch or do, and how, whole in a folder that a publisher pushes with `rf skill push DIR`, live at once; each push is a version, and `rf skill rollback ID N` brings an earlier one back. It is a Pi skill: a `SKILL.md` for the agent, with the links and website it uses written in it, and the scripts it runs. A run loads the skills its series chose, from `/skills/live/<id>`, and its scripts reach them through `RF_SKILLS`; each run's `run` entry names the versions it loaded.
 
 | Kind of skill | Reads through | Fetches, for example |
 | --- | --- | --- |
@@ -67,17 +220,13 @@ A series picks, in its settings, the **skills** its agent may use; choosing none
 
 Skills, at the sidebar's foot, lists them with their versions.
 
-Microsoft 365 is nobody's but each person's: a run reads mail and files only through its runner's own login, and only the mailboxes, OneDrive and SharePoint sites ticked for its instance.
+Microsoft 365 is nobody's but each person's: a run reads mail and files only through its runner's own login, and only the mailboxes, OneDrive and SharePoint sites ticked for its instance. Graph only ever gets GETs, and Microsoft's tokens never leave the server.
 
 Websites are the admins' to list and each person's to sign in to. `rf website set ID URL [--name NAME] [--hosts HOST,...]` adds one: the address where people sign in, and the other hosts its pages need, such as single sign-on's (`*.example.com` for any under it). Under Logins, Websites, people sign in themselves in a live browser on the page, and that browser's state is their login, sealed in `.rf/`; no password is stored. A run's scripts open a browser on a website with `rf browser open SITE`, from the runner's login if ticked, and drive it with Playwright over CDP. The browsers come from the browser service, a repo of its own (`RF_BROWSER_URL`, `RF_BROWSER_KEY`): each stays on its website's hosts and logs every request, which the instance keeps under `browser/`. A browser can do whatever its login can: the agent is told to only read, and each run's writes are counted in its log.
 
 From a shell, without the model: `node --env-file=.env src/cli.ts DATA_ROOT try aging --as EMAIL -- python "$RF_SKILLS/aging/scripts/fetch.py"` (or `try portal --as EMAIL -- rf browser open portal`) runs a skill as a run with it would, with the logins of EMAIL, an admin: how a skill is tested. Set `RF_TODAY` in `.env` to test against a day that has data.
 
-To reach it from the internet, run `tailscale funnel --bg 8780`, with Microsoft sign-in configured.
-
-For a demo run in podman behind Tailscale Funnel, the justfile has `just invite EMAIL [admin]`, `just revoke EMAIL`, `just people`, `just logs`, and `just deploy`, which rebuilds it from the committed main branch.
-
-**Security:** each run is a sandbox. It sees its own series and the series it may read, holds no key, and reaches the internet only through the server, to package registries, GitHub and documentation sites. Anyone signed in can talk to the agents of their own workspaces within that.
+To reach it from the internet, run `tailscale funnel --bg 8780`, with Microsoft sign-in configured. For a server in podman behind Tailscale Funnel, the justfile has `just invite EMAIL [admin]`, `just revoke EMAIL`, `just people`, `just logs`, and `just deploy`, which rebuilds it from the committed main branch.
 
 ## Without Docker
 
@@ -87,7 +236,7 @@ You need Node 26, uv, bubblewrap, socat, ripgrep and fd, and a systemd user sess
     uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt
     node src/server.ts DATA_ROOT [PORT]
 
-The [justfile](justfile) has these and more as recipes; `just` lists them.
+The [justfile](justfile) has these and more as recipes; `just` lists them. `just test` runs the tests.
 
 - **Model key:** `OPENROUTER_API_KEY`. It stays with the server, which adds it to the runs' model requests.
 - **On a VM:** run the server as a systemd user service with lingering on, and cap all runs together with `systemctl --user set-property rollforward-runs.slice MemoryMax=50G`.
@@ -108,15 +257,15 @@ The [justfile](justfile) has these and more as recipes; `just` lists them.
 - **Websites** come from the browser service, a repo of its own ([spoj/rollforward-browser](https://github.com/spoj/rollforward-browser)), which runs next to the server as a user of its own; its README says what to install and how to run it. Give both the same key, its `BROWSER_KEY` and this server's `RF_BROWSER_KEY`, and set `RF_BROWSER_URL` if it isn't at `http://127.0.0.1:8797`, such as `https://browser.internal:8797` for one on a host of its own (`NODE_EXTRA_CA_CERTS` adds a private CA); nothing else changes, as runs and the page reach it only through this server. `just browser-check` answers `[]` once the server can reach it. Without it, all but website sign-ins and `rf browser` works. The Docker image doesn't include it.
 - **Hosts runs may reach,** beyond package registries, GitHub and documentation sites: a JSON list in `.rf/egress.json`, such as `["api.example.com", "*.example.org"]`.
 
-To build the demo from scratch (about $4 of model use; the generator needs the internet for the ECB rates):
+## Code
 
-    .venv/bin/python demo/make_demo.py demo/out
-    .venv/bin/python demo/run_demo.py demo/out http://127.0.0.1:8780 DATA_ROOT
+TypeScript on Node, with `node:http` and no framework or build step; the agent's scripts are Python, from `.venv`.
 
-## More
-
-- [PLAN.md](PLAN.md): the design and the decisions.
+- [src/server.ts](src/server.ts): the site, its API and the sandboxes' socket; [src/store.ts](src/store.ts): instances, their screens and logs.
+- [src/waker.ts](src/waker.ts): what runs when, wakes, and each run's view; [src/runner.ts](src/runner.ts) and [src/sandbox.ts](src/sandbox.ts): Pi in its sandbox.
+- [src/rf.ts](src/rf.ts): the agent's rf, and [src/agent-api.ts](src/agent-api.ts), what only a run has; [src/rf-people.ts](src/rf-people.ts): people's rf.
+- [src/auth.ts](src/auth.ts), [src/logins.ts](src/logins.ts), [src/m365.ts](src/m365.ts), [src/browsers.ts](src/browsers.ts), [src/skills.ts](src/skills.ts): sign-in, logins, Microsoft 365, websites and skills.
+- [web/index.html](web/index.html): the page, one file of plain JS.
 - [prompt.md](prompt.md): the agent's instructions.
-- [docs/design.md](docs/design.md): the look.
-- [docs/deploy.md](docs/deploy.md): deploying on two hosts, rollforward's and the browser service's.
+- [docs/design.md](docs/design.md): the look; [docs/deploy.md](docs/deploy.md): deploying on two hosts, rollforward's and the browser service's.
 - [LICENSE](LICENSE): MIT.
