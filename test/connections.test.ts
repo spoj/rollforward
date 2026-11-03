@@ -321,6 +321,8 @@ test("rf graph's writes share nothing, and make, move or copy nothing outside th
   await assert.rejects(graph(['PATCH', '/drives/b!d1/items/a', '--body', 'move.json'], '{"parentReference":{"path":"/drives/b!own/root:"}}'), /name the folder by its parentReference's id/);
   await assert.rejects(graph(['PUT', '/drives/b!d1/items/y2025:/x.csv:/content', '--body', 'x.csv'], 'x'), /is in no folder, file or SharePoint site ticked/);
   await assert.rejects(graph(['POST', `/users/${AP}/sendMail`, '--body', 'mail.json'], '{}'), /m365:mail:ap@demo.test is not ticked/);
+  await assert.rejects(graph(['POST', '/me/sendMail', '--body', 'mail.json'], `{"message":{"from":{"emailAddress":{"address":"${AP}"}}}}`), /mail from alice@demo.test goes out as alice@demo.test/);
+  await assert.rejects(graph(['POST', '/me/mailFolders/inbox/messageRules', '--body', 'rule.json'], '{"actions":{"forwardTo":[]}}'), /would share it/);
   await assert.rejects(graph(['POST', '/sites/host,site1,web1/lists/l1/items', '--body', 'row.json'], '{}'), /don't write SharePoint sites: RF_M365_SCOPES has no Sites.ReadWrite.All/);
   await assert.rejects(graph(['/me/messages', '--for', 'pack']), /rf graph \[POST\|PATCH\|PUT\|DELETE\] PATH/);
   await assert.rejects(graph(['PUT', `${process.env.RF_OIDC_ISSUER}/upload/s1?authtoken=secret`, '--body', 'x.csv'], 'x'), /not .*\/upload\/s1/, "another instance's session");

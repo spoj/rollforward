@@ -35,6 +35,9 @@ export async function graphCall(inst: Instance, method: string, target: string, 
     if (id.toLowerCase() !== runner) needs(`${scope}.Shared`, what[1]);
     offer = `m365:mail:${id.toLowerCase()}`;
     mail = true;
+    // Mail goes out as the mailbox it is sent from.
+    const as = json?.message ?? json;
+    if ([as?.from, as?.sender].some(x => x && x.emailAddress?.address?.toLowerCase() !== id.toLowerCase())) throw new HttpError(403, `${bare}: mail from ${id} goes out as ${id}`);
   } else if (top === 'drives' || top === 'shares' || (top === 'users' && part === 'drive')) {
     needs(write ? 'Files.ReadWrite.All' : 'Files.Read.All', `${write ? 'save' : 'read'} OneDrive or SharePoint files`);
     // A share's site and list are the whole site and library its item is in, past what is ticked.
@@ -50,8 +53,9 @@ export async function graphCall(inst: Instance, method: string, target: string, 
     if (segments.some(s => /(^|\.)getbypath\(/i.test(s))) throw new HttpError(403, `${bare}: getByPath reaches any site by its path; read the ticked one by its id`);
     offer = `m365:site:${id}`;
   } else throw new HttpError(403, `rf graph reaches mailboxes, and folders, files and SharePoint sites ticked for this instance, not ${path}`);
+  // A link, an invitation, a permission or a mailbox's rule shares what is ticked, now or as it comes.
+  if (write && actions.some(a => ['createlink', 'invite', 'grant', 'permissions', 'messagerules'].includes(a))) throw new HttpError(403, `${bare} would share it: rf graph shares nothing, past the ticks or within them`);
   if (write && !mail) {
-    if (actions.some(a => ['createlink', 'invite', 'grant', 'permissions'].includes(a))) throw new HttpError(403, `${bare} would share it: rf graph shares nothing, past the ticks or within them`);
     // A move, a copy or a restore names its folder in the body, which a tick covers too.
     const to = json?.parentReference;
     if (to && (to.path || !to.id)) throw new HttpError(400, `${bare}: name the folder by its parentReference's id, and driveId for another drive`);
