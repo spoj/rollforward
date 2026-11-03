@@ -121,12 +121,13 @@ export async function endSignIn(email: string, id: string, save: boolean) {
 }
 
 // ---- A run's browsers, which close when it ends: one per website, from its runner's login if ticked for the instance. Closing one
-// seals its login again, refreshed, unless its person signed out meanwhile, and keeps its request log in the instance's browser/,
+// seals its login again, refreshed, unless its person signed out or signed in to it anew meanwhile, and keeps its request log in the
+// instance's browser/,
 // which the agent can read but not change, beside the screenshots taken after each of the agent's tool calls.
 export class Browsers {
   inst: Instance;
   run: number;
-  bySite = new Map<string, { id: string; email: string; shot?: Buffer }>();
+  bySite = new Map<string, { id: string; email: string; since: string; shot?: Buffer }>();
   shots = 0;
   constructor(inst: Instance, run: number) {
     this.inst = inst;
@@ -146,7 +147,7 @@ export class Browsers {
     const { email, login, had } = this.lent(site);
     if (had) return had.id;
     const id = await open(website(site), 7200, JSON.parse(secret(email, login.id)));
-    this.bySite.set(site, { id, email });
+    this.bySite.set(site, { id, email, since: login.since });
     return id;
   }
 
@@ -184,12 +185,13 @@ export class Browsers {
     }));
   }
 
-  // The run's browsers, or the one on `only`, close: each hands its login back refreshed, unless it expired, and leaves its request log.
+  // The run's browsers, or the one on `only`, close: each hands its login back refreshed, unless it expired or its person signed in to
+  // it anew since the browser opened, which a stale state would overwrite, and leaves its request log.
   async close(only?: string) {
-    await Promise.all([...this.bySite].filter(([site]) => !only || site === only).map(async ([site, { id, email }]) => {
+    await Promise.all([...this.bySite].filter(([site]) => !only || site === only).map(async ([site, { id, email, since }]) => {
       this.bySite.delete(site);
       const { state, log } = await close(id), login = logins(email).find(l => l.id === `web:${site}`), file = `browser/run ${this.run} ${site}.jsonl`;
-      if (state && login && !login.expired) saveLogin(email, login, JSON.stringify(state));
+      if (state && login && !login.expired && login.since === since) saveLogin(email, login, JSON.stringify(state));
       mkdirSync(join(this.inst.dir, 'browser'), { recursive: true });
       replaceReadOnly(join(this.inst.dir, file), log.map(e => JSON.stringify(e) + '\n').join(''));
       const writes = log.filter(e => !e.blocked && !['GET', 'HEAD', 'OPTIONS'].includes(e.method)).length;
