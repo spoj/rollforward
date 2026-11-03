@@ -119,6 +119,10 @@ test("the network is the server's socket: allowed hosts through its proxy, never
   assert.deepEqual(egress, [['example.org', false], ['127.0.0.1.nip.io', false], ['pypi.org', true]]);
 });
 
+test("a plain pip install lands in the series' .pylib, for the Python runs use, where later commands import it", async () => {
+  assert.match(await sh('pip install -q --no-deps six 2>&1; python -c "import six; print(six.__file__)"'), /\/\.pylib\/six\.py$/);
+});
+
 test("a connection's host is the server's to answer, with rollforward's own certificate, which curl, Python and Node trust; its type's environment is set", async () => {
   assert.equal(await sh('curl -s -m 10 -H "Authorization: Bearer rf" https://graph.microsoft.com/v1.0/me'), 'graph.microsoft.com GET /v1.0/me Bearer rf');
   assert.equal(await sh(`python -c "import requests; print(requests.get('https://graph.microsoft.com/v1.0/me?\\$top=1').text)"`), 'graph.microsoft.com GET /v1.0/me?$top=1 -');

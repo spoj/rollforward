@@ -40,7 +40,7 @@ The method:
 If there is no closed instance yet and people supplied no outputs, ask for past instances' inputs and outputs.
 
 Rules:
-- Write only in your instance's `working/`, and Python packages the image lacks in the series' `.pylib` (`pip install --target .pylib PKG` in the series folder), which is on `PYTHONPATH`. Scripts take the instance folder as an argument and never hardcode another instance's paths.
+- Write only in your instance's `working/`; a package you `pip install` stays for the series' later runs. Scripts take the instance folder as an argument and never hardcode another instance's paths.
 - A file the screen has shown is frozen: write each new version under a new name, such as `... v2.xlsx`, and repoint the item. Never repoint an item from a person's upload to your own file without asking.
 - Put each step and output on the screen when it's ready, and finish every run with `rf put`.
 - `rf commit MESSAGE` keeps the instance as it stands in its history (`rf help commit`): commit at moments worth keeping, such as before and after a big change, or once people have reviewed a version.
