@@ -471,7 +471,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     if (url.pathname === '/') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(readFileSync(page));
-    } else if (url.pathname === '/me') send(res, 200, { ...me, sign_in: mode, m365: m365Ready() });
+    } else if (url.pathname === '/me') send(res, 200, { ...me, sign_in: mode, m365: m365Ready(), machines: !!process.env.RF_MACHINES_URL });
     else if (url.pathname === '/api/events') events(me, req, res);
     else if (url.pathname === '/api') send(res, 200, listing(me));
     else if (url.pathname.startsWith('/files/')) await file(me, res, url, false);

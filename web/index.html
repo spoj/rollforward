@@ -949,6 +949,7 @@ function loginsHtml(s) {
   let h = `<div class="sub">Every login is yours alone. A run uses only its runner's logins, and only those ticked for its instance. Nothing here is a password: you sign in to each system yourself.</div>`;
   const m365 = s.logins.find(l => l.id === 'm365');
   if (me.m365 && !m365) h += `<h3>Microsoft 365</h3><div class="sub">Read-only: your mail and the shared mailboxes you can read, your OneDrive and the SharePoint sites you add.</div><div><a class="btn primary" href="/logins/m365/connect">Connect Microsoft 365</a></div>`;
+  if (!me.m365) h += `<h3>Microsoft 365</h3><div class="sub">Not set up on this server: it needs an app registered in Microsoft Entra ID, which an admin sets in the server's settings (README, Sign-in).</div>`;
   for (const l of s.logins.filter(l => l.kind === 'm365')) {
     h += `<h3>${esc(l.name)}</h3><div class="sub">${esc(l.account ?? '')}${l.account ? ' · ' : ''}${l.expired ? '<span class="q">expired: sign in again</span>' : `since ${esc(when(l.since))}`}</div>`
       + l.offers.map(o => `<div class="skill-row" style="display:flex;align-items:center"><span style="flex:1">${esc(o.name)}</span>${l.id === 'm365' ? `<button class="quiet" data-act="unoffer" data-id="${esc(o.id)}">Remove</button>` : ''}</div>`).join('');
@@ -962,7 +963,7 @@ function loginsHtml(s) {
       return `<div class="skill-row" style="display:flex;align-items:center;gap:8px"><span style="flex:1">${esc(w.name)} <span class="sub">${esc([new URL(w.url).hostname, ...w.hosts].join(', '))}${l ? ` · since ${esc(when(l.since))}` : ''}</span></span>`
         + `<button class="btn" data-act="web-signin" data-id="${esc(w.id)}" data-name="${esc(w.name)}">${l ? 'Sign in again' : 'Sign in'}</button>${l ? `<button class="quiet" data-act="signout-login" data-id="${esc(l.id)}">Sign out</button>` : ''}</div>`;
     }).join('');
-  if (!s.logins.length && !me.m365 && !s.sites.length) h += '<div class="sub">No logins yet.</div>';
+  if (!s.sites.length) h += `<h3>Websites</h3><div class="sub">${me.machines ? 'None yet: admins add a website with <code>rf website set ID URL --hosts ...</code>, and then everyone can sign in to it here.' : "Not set up on this server: website logins need the machines service (README, Websites and Windows), and then admins add websites with <code>rf website set</code>."}</div>`;
   return h;
 }
 
