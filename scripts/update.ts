@@ -46,8 +46,9 @@ async function move(from: string, to: string) {
   sh('systemctl', '--user', 'kill', '--kill-whom=main', '--signal=SIGUSR2', 'rollforward');
   while (pid() === was) await sleep(5000);
 }
+// A start may take a while, as one that moves data does.
 async function answers() {
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 150; i++) {
     await sleep(2000);
     if (await fetch(health).then(r => r.ok, () => false)) return true;
   }

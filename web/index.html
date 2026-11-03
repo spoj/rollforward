@@ -517,7 +517,7 @@ function renderSide() {
       h += '</div>';
     }
     // Tasks, each a series of its one instance, listed under a heading that is no series.
-    const tasks = w.series.filter(s => s.single && listed(s, cur?.s?.id === s.id)).map(s => s.instances[0]).sort(byAct(recent)), done = tasks.filter(i => i.status !== 'open').length;
+    const tasks = w.series.filter(s => s.single && listed(s, cur?.s?.id === s.id)).flatMap(s => s.instances).sort(byAct(recent)), done = tasks.filter(i => i.status !== 'open').length;
     if (tasks.length) h += '<div class="row grp"><span class="nm">Ungrouped</span></div>' + tasks.filter(i => i.status === 'open' || showClosed || i.id === cur?.i?.id).map(row).join('')
       + (done ? `<button class="quiet" data-act="toggle-closed">${showClosed ? 'Hide' : 'Show'} closed (${done})</button>` : '');
     h += '</div>';
@@ -1061,7 +1061,7 @@ const myOffers = async () => (await api('/logins')).flatMap(l => l.offers);
 function startHtml(s) {
   return (s.series !== undefined ? `<h3>Series</h3><div class="sub">This task becomes its first instance, which the new one rolls forward from.</div><input type="text" id="sseries" value="${esc(s.series)}">` : '')
     + (s.label !== undefined ? `<h3>${s.series !== undefined ? 'The new instance' : 'Label'}</h3><input type="text" id="slabel" value="${esc(s.label)}" placeholder="such as a date">` : '')
-    + `<h3>Logins this instance may use</h3>` + ticksHtml(s.offers) + `<div><button class="btn primary" data-act="start-go">${esc(s.go)}</button></div>`;
+    + `<h3>Logins this instance may use</h3>` + ticksHtml(s.offers, s.on) + `<div><button class="btn primary" data-act="start-go">${esc(s.go)}</button></div>`;
 }
 
 // Signing in again, from wherever a login is said to have expired: Microsoft's own page, or a website's live browser.
@@ -1159,8 +1159,8 @@ function closePv() {
   renderPv();
 }
 
-async function openStart(title, go, then, label, series) {
-  pv = { title, settings: { kind: 'start', go, then, label, series, offers: await myOffers() } };
+async function openStart(title, go, then, label, series, on) {
+  pv = { title, settings: { kind: 'start', go, then, label, series, on, offers: await myOffers() } };
   renderPv();
   $('#slabel')?.focus();
 }
@@ -1238,7 +1238,7 @@ async function onAct(act, el, was) {
   if (act === 'menu-instance') {
     const busy = cur.s.instances.some(i => i.running) || cur.i.queued;
     openMenu(el, [
-      ['Rename', 'rename', '', busy && "Available when the series' run ends"], cur.s.single && ['Start another based on this', 'start-another'],
+      ['Rename', 'rename', '', busy && "Available when the series' run ends"], cur.s.single && ['Start another based on this', 'start-another'], data.runner.by === me.email && ['Logins it may use', 'ticks'],
       data.runner.by === me.email && ['-'], data.runner.by === me.email && ['Abandon', 'abandon', 'danger', data.run && 'Available when the run ends'],
     ]);
   }
@@ -1370,6 +1370,7 @@ async function onAct(act, el, was) {
     Object.assign(ui, { open: true, tab: 'conv', on: null, ref: null, focus: true });
     go(instance);
   }
+  if (act === 'ticks') await openStart(`Logins ${cur.i.label} may use`, 'Save', ({ logins }) => api(`${instPath()}/logins`, { method: 'POST', body: JSON.stringify({ logins }) }), undefined, undefined, data.runner.logins);
   if (act === 'start-another') await openStart(`Start another based on ${cur.i.label}`, 'Start', async ({ label, logins, name }) => {
     await api(`${seriesPath(cur)}/promote`, { method: 'POST', body: JSON.stringify({ name }) });
     return api(seriesPath(cur), { method: 'POST', body: JSON.stringify({ label, logins }) });

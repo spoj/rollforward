@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { closeSync, cpSync, createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, cpSync, createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { execFile } from 'node:child_process';
@@ -38,24 +38,31 @@ function freeName(t: Tree, ws: string, name: string): string {
   return n;
 }
 
-// Before v0.2.17 each workspace had an Ad hoc series of one-offs. Each of its instances becomes a task, a single series of its own
-// with a copy of the Ad hoc .pylib; a wake or a request to start an Ad hoc instance is dropped.
-{
-  const t = tree(), w8 = wakes();
-  for (const [aid, a] of Object.entries(t.series).filter(([, s]) => (s as { adhoc?: boolean }).adhoc)) {
-    const moved = labels(aid);
-    for (const l of moved) {
-      const sid = newId();
-      t.series[sid] = { name: freeName(t, a.workspace, l.label), workspace: a.workspace, single: true, ...(a.archived && { archived: true }) };
-      mkdirSync(seriesDir(sid));
-      if (existsSync(join(seriesDir(aid), '.pylib'))) cpSync(join(seriesDir(aid), '.pylib'), join(seriesDir(sid), '.pylib'), { recursive: true });
-      moveInstance(instance(l.id), sid);
-    }
-    console.log(`${t.workspaces[a.workspace].name}/Ad hoc: its ${moved.length} instances are tasks now`);
-    delete t.series[aid];
-    delete w8.pending[aid];
-    for (const [rid, r] of Object.entries(w8.requests)) if (r.series === aid) delete w8.requests[rid];
+// An update (scripts/update.ts) drains the server: it exits once the runs going end, or after 30 minutes, and systemd starts the new
+// release, which starts what queued meanwhile. Heard from the start, so one that comes as the server starts waits for it.
+process.on('SIGUSR2', () => {
+  drain(() => process.exit(0));
+  setTimeout(() => process.exit(0), 30 * 60_000);
+});
+
+// Before v0.2.17 each workspace had an Ad hoc series of one-offs. Each of its instances becomes a task, a single series of its own,
+// saved before the instance moves into it, so a stop midway loses nothing; an open one gets a copy of the Ad hoc .pylib. A wake or
+// a request to start an Ad hoc instance is dropped.
+for (const [aid, a] of Object.entries(tree().series).filter(([, s]) => (s as { adhoc?: boolean }).adhoc)) {
+  const moved = labels(aid);
+  for (const l of moved) {
+    const t = tree(), sid = newId();
+    t.series[sid] = { name: freeName(t, a.workspace, l.label), workspace: a.workspace, single: true, ...(a.archived && { archived: true }) };
+    mkdirSync(seriesDir(sid));
+    saveTree(t);
+    if (instance(l.id).doc.status === 'open' && existsSync(join(seriesDir(aid), '.pylib'))) cpSync(join(seriesDir(aid), '.pylib'), join(seriesDir(sid), '.pylib'), { recursive: true, mode: constants.COPYFILE_FICLONE });
+    moveInstance(instance(l.id), sid);
   }
+  const t = tree(), w8 = wakes();
+  console.log(`${t.workspaces[a.workspace].name}/Ad hoc: its ${moved.length} instances are tasks now`);
+  delete t.series[aid];
+  delete w8.pending[aid];
+  for (const [rid, r] of Object.entries(w8.requests)) if (r.series === aid) delete w8.requests[rid];
   saveTree(t);
   writeJson('wakes.json', w8);
 }
@@ -687,12 +694,6 @@ server.on('upgrade', (req, socket, head) => {
   const me = session(req), m = /^\/signins\/(\w+)\/(view\/(?:watch|drive))$/.exec(URL.parse(req.url!, 'http://x')?.pathname ?? '');
   if (!me || !m || !isSignIn(me.email, m[1])) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
   passUpgrade(req, socket, head, `/sessions/${m[1]}/${m[2]}`);
-});
-// An update (scripts/update.ts) drains the server: it exits once the runs going end, or after 30 minutes, and systemd starts the new
-// release, which starts what queued meanwhile.
-process.on('SIGUSR2', () => {
-  drain(() => process.exit(0));
-  setTimeout(() => process.exit(0), 30 * 60_000);
 });
 server.listen(port, host, () => {
   startWaking();
