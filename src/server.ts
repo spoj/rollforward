@@ -136,8 +136,8 @@ function guard(before: string[], after: string[], force: unknown) {
   if (lost.length && !force) throw new HttpError(409, `this would hide open instances from the people who run them, so their runs couldn't use their logins: ${lost.join('; ')}. Have someone who stays take them over first`);
 }
 
-// An instance as the sidebar shows it. What comes from its log and screen is kept until either moves on, so a listing reads each
-// instance's log once, not on every refresh.
+// An instance as the sidebar shows it. What comes from its log and screen is kept until either moves on, or its series' sharing,
+// which says whose entries are notes, changes, so a listing reads each instance's log once, not on every refresh.
 const kept = new WeakMap<Instance, { key: string; active: string; asks: string[]; runner: string; acted: string[]; cost: number }>();
 // Who runs an instance, by name, and the logins they ticked for it, by name while they still offer them.
 function runner(inst: Instance) {
@@ -150,7 +150,7 @@ function runner(inst: Instance) {
 const NEWS = ['done', 'report', 'comment', 'upload', 'takeover', 'close', 'abandon'];
 
 function summary(i: Instance, email: string, w8 = wakes(), us = users()) {
-  const key = `${i.log.length}:${i.doc.rev}`;
+  const key = `${i.log.length}:${i.doc.rev}:${seriesSettings(i.series()).shared?.by ?? ''}`;
   const news = i.log.findLast(e => e.by !== email && NEWS.includes(e.op)), s = seen(email);
   let k = kept.get(i);
   if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i).map(w => w.who), runner: runnerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: +i.log.reduce((t, e) => t + ((e.cost as number | undefined) ?? 0), 0).toFixed(4) });
