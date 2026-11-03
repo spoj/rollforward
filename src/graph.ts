@@ -32,8 +32,8 @@ export async function token(email: string): Promise<string> {
   }
 }
 
-// At the start, each Microsoft 365 login is renewed once, so one this server's app can no longer renew, as after the app or its
-// secret changed, shows as expired, for its person to sign in again, before a run needs it.
+// At the start, each Microsoft 365 login is renewed once, so one this server's app can no longer renew, as after the app changed,
+// shows as expired, for its person to sign in again, before a run needs it.
 export async function checkLogins() {
   for (const email of Object.keys(users())) if (current(email) && !current(email)!.expired) await token(email).catch(() => {});
 }

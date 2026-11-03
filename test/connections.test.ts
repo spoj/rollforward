@@ -67,6 +67,7 @@ before(async () => {
       req.on('data', c => (body += c)).on('end', () => {
         const f = new URLSearchParams(body);
         if (f.get('refresh_token') === 'old-app') return send({ error: 'invalid_client', error_description: "AADSTS7000215: Invalid client secret provided for a secret added to app 'old'." }, 401);
+        if (f.get('refresh_token') === 'our-secret') return send({ error: 'invalid_client', error_description: "AADSTS7000222: The provided client secret keys for app 'app' are expired." }, 401);
         if (f.get('grant_type') !== 'refresh_token' || f.get('refresh_token') !== `r${refreshes}`) return send({ error: 'invalid_grant', error_description: 'AADSTS700082: The refresh token has expired.' }, 400);
         refreshes++;
         send({ access_token: 'tok', refresh_token: `r${refreshes}`, expires_in: 3600 });
@@ -192,11 +193,18 @@ test('a login Microsoft no longer renews is marked expired, and the run is told 
   assert.equal(logins.logins(ALICE)[0].expired, true);
 });
 
-test("a login made through another app, or with a secret since replaced, shows as expired from the server's start", async () => {
+test("a login made through another app shows as expired from the server's start", async () => {
   logins.saveLogin(ALICE, { ...logins.logins(ALICE)[0], expired: false }, 'old-app');
   const fresh = await import(`../src/graph.ts?app=${Date.now()}`);
   await fresh.checkLogins();
   assert.equal(logins.logins(ALICE)[0].expired, true);
+});
+
+test("a refusal that names the server's own app, as when its secret expired, is the server's to mend: the login stays as it is", async () => {
+  logins.saveLogin(ALICE, { ...logins.logins(ALICE)[0], expired: false }, 'our-secret');
+  const fresh = await import(`../src/graph.ts?ours=${Date.now()}`);
+  await assert.rejects(fresh.token(ALICE), /Microsoft did not renew the login: AADSTS7000222/);
+  assert.equal(logins.logins(ALICE)[0].expired, false);
 });
 
 test('a push takes an id of letters, digits and dashes, and a SKILL.md; a push cut short leaves nothing behind', async () => {

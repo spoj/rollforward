@@ -1064,7 +1064,7 @@ function loginsHtml(s) {
   for (const l of s.logins.filter(l => l.kind === 'm365')) {
     h += `<h3>${esc(l.name)}</h3><div class="sub">${esc(l.account ?? '')}${l.account ? ' · ' : ''}${l.expired ? '<span class="q">expired: sign in again</span>' : `since ${esc(when(l.since))}`}</div>`
       + l.offers.map(o => `<div class="skill-row" style="display:flex;align-items:center"><span style="flex:1">${esc(o.name)}</span>${l.id === 'm365' ? `<button class="quiet" data-act="unoffer" data-id="${esc(o.id)}">Remove</button>` : ''}</div>`).join('');
-    if (l.id === 'm365') h += `<div class="sub">Add a mailbox by its address, yours or one you may read; a whole SharePoint site by its link; or a folder, with all under it, or a file, in SharePoint or anyone's OneDrive, by any link to it.</div>`
+    if (l.id === 'm365' && !l.expired) h += `<div class="sub">Add a mailbox by its address, yours or one you may read; a whole SharePoint site by its link; or a folder, with all under it, or a file, in SharePoint or anyone's OneDrive, by any link to it.</div>`
       + `<div class="row2"><input type="text" id="offer-add" placeholder="A mailbox or a link" style="flex:1"><button class="btn" data-act="offer-add">Add</button></div>`;
     h += `<div class="row2">${l.id === 'm365' && l.expired ? '<a class="btn primary" href="/logins/m365/connect">Sign in again</a>' : ''}<button class="btn" data-act="signout-login" data-id="${esc(l.id)}">Sign out</button></div>`;
   }
@@ -1441,8 +1441,10 @@ async function onAct(act, el, was) {
   if (act === 'offer-add') {
     const v = $('#offer-add').value.trim();
     if (!v) return;
-    await api('/logins/m365/offers', { method: 'POST', body: JSON.stringify({ add: v }) });
+    const failed = await api('/logins/m365/offers', { method: 'POST', body: JSON.stringify({ add: v }) }).then(() => null, e => e);
     pv.settings.logins = await api('/logins');
+    // A login Microsoft no longer renews shows as expired, with Sign in again, in place of the error; others leave the box as it was.
+    if (failed && !pv.settings.logins.find(l => l.id === 'm365')?.expired) throw failed;
     renderPv();
   }
   if (act === 'unoffer') {
