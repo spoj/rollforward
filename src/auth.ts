@@ -38,9 +38,14 @@ const spa = env.RF_OIDC_SPA === '1';
 const m365Redirect = spa ? `${oidc.publicUrl}/auth/m365` : oidc.redirect;
 const redirectPath = URL.canParse(oidc.redirect) ? new URL(oidc.redirect).pathname : '/auth/callback';
 export const mode: 'microsoft' | 'demo' = oidc.issuer ? 'microsoft' : 'demo';
-// A person's Microsoft 365 login asks the same app for delegated, read-only access to mail and files. The server keeps its refresh
-// token, which a Single-page application's redirect can't give it.
-const M365_SCOPES = ['openid', 'email', 'offline_access', ...['Mail.Read', 'Mail.Read.Shared', 'Files.Read.All', 'Sites.Read.All'].map(s => `https://graph.microsoft.com/${s}`)].join(' ');
+// A person's Microsoft 365 login asks the same app for delegated, read-only Graph access: RF_M365_SCOPES, by default mail, shared
+// mailboxes, files and sites. The server keeps its refresh token, which a Single-page application's redirect can't give it.
+export const graphScopes = (env.RF_M365_SCOPES ?? 'Mail.Read Mail.Read.Shared Files.Read.All Sites.Read.All').split(/[\s,]+/).filter(Boolean);
+const M365_SCOPES = ['openid', 'email', 'offline_access', ...graphScopes.map(s => `https://graph.microsoft.com/${s}`)].join(' ');
+// Refuses a read that needs a permission this server's logins don't ask for, saying which.
+export function needs(scope: string, what: string) {
+  if (!graphScopes.includes(scope)) throw new HttpError(409, `this server's Microsoft 365 logins don't read ${what}: RF_M365_SCOPES has no ${scope}`);
+}
 export const m365Ready = () => mode === 'microsoft' && (!spa || !!oidc.clientSecret);
 const admins = new Set([...(env.RF_ADMINS ?? '').split(','), ...(mode === 'demo' ? DEMO_ACCOUNTS.filter(a => a.role === 'admin').map(a => a.email) : [])].map(s => s.trim().toLowerCase()).filter(Boolean));
 const domains = (env.RF_ALLOWED_DOMAINS ?? '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
@@ -268,7 +273,10 @@ async function finishM365(req: IncomingMessage, res: ServerResponse, claims: any
   if (session(req)?.email !== p.m365) return page(res, 401, 'Sign in to rollforward first, then connect Microsoft 365.');
   if (email !== p.m365) return page(res, 403, `That was ${email}'s Microsoft account; connect your own, ${p.m365}.`);
   if (!refresh) return page(res, 502, 'Microsoft gave no refresh token, so the login could not be kept: the app needs offline_access.');
-  const own = [{ id: `m365:mail:${email}`, name: `Mailbox ${email}` }, { id: 'm365:onedrive', name: 'OneDrive' }];
+  const own = [
+    ...(graphScopes.includes('Mail.Read') ? [{ id: `m365:mail:${email}`, name: `Mailbox ${email}` }] : []),
+    ...(graphScopes.includes('Files.Read.All') ? [{ id: 'm365:onedrive', name: 'OneDrive' }] : []),
+  ];
   const added = (logins(email).find(l => l.id === 'm365')?.offers ?? []).filter(o => !own.some(x => x.id === o.id));
   saveLogin(email, { id: 'm365', kind: 'm365', name: 'Microsoft 365', account: email, since: new Date().toISOString(), offers: [...own, ...added] }, refresh);
   res.writeHead(302, { location: p.next, 'set-cookie': cookie(pendingCookie(p.state), '', 0) }).end();

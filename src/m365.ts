@@ -1,5 +1,6 @@
 import { HttpError, type Instance } from './store.ts';
 import { attachments, children, download, graph, messages, shared, type DriveItem } from './graph.ts';
+import { needs } from './auth.ts';
 import { logins, runnerOf, saveLogin, use } from './logins.ts';
 
 // The agent's reads through its runner's Microsoft 365 login, for skills to build on, each refused unless the instance's ticks
@@ -34,6 +35,7 @@ async function ownDrive(email: string): Promise<string> {
 
 // The item a link or ref names, if the instance's ticks offer where it lives: the runner's own OneDrive, or a SharePoint site.
 async function item(inst: Instance, linkOrRef: string): Promise<{ email: string; it: DriveItem }> {
+  needs('Files.Read.All', 'OneDrive or SharePoint files');
   const email = runnerOf(inst).by;
   let it: DriveItem;
   if (/^https?:\/\//i.test(linkOrRef)) it = await shared(email, linkOrRef);
@@ -67,6 +69,8 @@ export async function filesGet(inst: Instance, target: string): Promise<{ name: 
 // The mailbox a run reads: the one named, else its runner's own, if ticked.
 function mailbox(inst: Instance, args: Args): { email: string; mailbox: string } {
   const mailbox = (args.mailbox?.[0] ?? runnerOf(inst).by).toLowerCase();
+  needs('Mail.Read', 'mail');
+  if (mailbox !== runnerOf(inst).by) needs('Mail.Read.Shared', 'shared mailboxes');
   return { email: use(inst, `m365:mail:${mailbox}`).email, mailbox };
 }
 
@@ -93,11 +97,13 @@ export async function offer(email: string, what: { mailbox?: string; site?: stri
   if (!login) throw new HttpError(409, 'connect Microsoft 365 first');
   let add;
   if (what.mailbox) {
+    needs('Mail.Read.Shared', 'shared mailboxes');
     const box = what.mailbox.trim().toLowerCase();
     if (!/^[^@\s/]+@[^@\s/]+$/.test(box)) throw new HttpError(400, `not a mailbox address: ${box}`);
     await graph(email, `/users/${encodeURIComponent(box)}/mailFolders/inbox`);
     add = { id: `m365:mail:${box}`, name: `Mailbox ${box}` };
   } else {
+    needs('Sites.Read.All', 'SharePoint sites');
     const u = URL.canParse(what.site ?? '') ? new URL(what.site!) : undefined;
     const path = u?.pathname.match(/^\/(sites|teams)\/[^/]+/)?.[0];
     if (!u || !path) throw new HttpError(400, 'a SharePoint site link, such as https://contoso.sharepoint.com/sites/Finance');
