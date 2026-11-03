@@ -13,10 +13,11 @@ import { pushed, skill } from './skills.ts';
 const LIMIT_MS = Number(process.env.RF_LIMIT_MIN ?? 120) * 60_000;
 const MAX_RUNS = Number(process.env.RF_MAX_RUNS ?? 20);
 // Memory binds first: no run starts while less than RF_MIN_FREE_GB is free; waiting ones start as runs end, or at the next tick. Each
-// run started in the last minute asks 1 GB more, about what one takes as it loads, which free memory doesn't show yet.
+// run started in the last minute asks 1 GB more, about what one takes as it loads, which free memory doesn't show yet. 0 checks no
+// memory, as for tests on a small machine.
 const MIN_FREE = Number(process.env.RF_MIN_FREE_GB ?? 6) * 2 ** 30;
 const started: number[] = [];
-const full = () => active.size >= MAX_RUNS || freemem() < MIN_FREE + started.filter(t => t > Date.now() - 60_000).length * 2 ** 30;
+const full = () => active.size >= MAX_RUNS || (MIN_FREE > 0 && freemem() < MIN_FREE + started.filter(t => t > Date.now() - 60_000).length * 2 ** 30);
 export const MAX_OPEN = 3;
 const SPACING_MS = 15 * 60_000;
 

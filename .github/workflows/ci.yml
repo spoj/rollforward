@@ -28,6 +28,7 @@ jobs:
       - run: node --test test/*.test.ts
         env:
           RF_SANDBOX_SCOPE: ''
+          RF_MIN_FREE_GB: 0
           RF_SCRATCH: ${{ runner.temp }}/rollforward
       - if: startsWith(github.ref, 'refs/tags/v')
         env:

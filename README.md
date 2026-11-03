@@ -251,7 +251,7 @@ The [justfile](justfile) has these and more as recipes; `just` lists them. `just
   - `RF_SANDBOX_RO`, more folders runs may read, separated by `:`
   - `RF_BROWSER_URL` (`http://127.0.0.1:8797`) and `RF_BROWSER_KEY`, the browser service, for websites' browsers; their tests run only with these set
   - `RF_MODEL_URL` (`https://openrouter.ai/api`)
-  - `RF_MAX_RUNS` (20), runs at once across all series, and `RF_MIN_FREE_GB` (6), the free memory below which none starts, plus 1 GB for each run started in the last minute
+  - `RF_MAX_RUNS` (20), runs at once across all series, and `RF_MIN_FREE_GB` (6), the free memory below which none starts, plus 1 GB for each run started in the last minute; 0 checks no memory
   - `RF_OIDC_SCOPES` (`openid profile email`), sign-in's scopes, and `RF_M365_SCOPES` (`Mail.Read Mail.Read.Shared Files.Read.All Sites.Read.All`), the Graph permissions Microsoft 365 logins ask for
   - `RF_WAKE_TICK_MS` (60000), how often pending wakes are checked
 - **Websites** come from the browser service, a repo of its own ([spoj/rollforward-browser](https://github.com/spoj/rollforward-browser)), which runs next to the server as a user of its own; its README says what to install and how to run it. Give both the same key, its `BROWSER_KEY` and this server's `RF_BROWSER_KEY`, and set `RF_BROWSER_URL` if it isn't at `http://127.0.0.1:8797`, such as `https://browser.internal:8797` for one on a host of its own (`NODE_EXTRA_CA_CERTS` adds a private CA); nothing else changes, as runs and the page reach it only through this server. `just browser-check` answers `[]` once the server can reach it. Without it, all but website sign-ins and `rf browser` works. The Docker image doesn't include it.
