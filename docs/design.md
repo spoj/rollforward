@@ -47,7 +47,6 @@ Sources: [Layr design reference](https://layr.design/reference/layr-001-intentio
 Gemini 3.8 Flash reviewed the screenshots once.
 - **Taken:**
   - style cell references as addresses rather than red alerts;
-  - make Advanced light;
   - move the legend off the canvas;
   - anchor each card to its tile.
 - **Rejected, because they undo the owner's choices:**

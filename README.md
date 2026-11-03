@@ -6,7 +6,7 @@ Recurring tasks, files in and files out. People drop this period's input files i
 
 - **The agent** is [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent), run over RPC with read, bash, edit and write tools, in its series' folder, in a sandbox of its own. It copies and adapts the previous instance's scripts, so each instance's `working/` is a complete record of how its outputs were made.
 - **Inputs** are uploads, or sources a person points the agent to, such as a database, a mailbox folder or a web API. The agent keeps a frozen copy of what it read, and the tile shows where it came from.
-- **Skills** reach systems outside the series, for the series that choose them. They are each deployment's own, pushed by publishers with `rf skill push`; none ship with this repo.
+- **Skills** reach systems outside the series, and every run loads every live one. They are each deployment's own, pushed by publishers with `rf skill push`; none ship with this repo.
 - **Workspaces hold series,** such as one client's, and its owners and members see them.
 - **People sign in with Microsoft,** with one button, and **logins are each person's own:** a run reads Microsoft 365 and websites only through its runner's logins, and only those ticked for its instance.
 - **Wakes:** an agent sets when its instance, or its series' next period, runs again; nothing is scheduled.
@@ -117,7 +117,7 @@ Everything is files on the host's disk, in folders named by random ids, with no 
     agents/                   company.md, the company's AGENTS.md, and <workspace id>.md, each workspace's
     skills/                   versions/<id>/<n>/, each pushed version, and live/<id>, a link to the one runs use
     series/<id>/
-      series.json             {"skills": [ids], "wakes": {by, since, logins}}, read-only
+      series.json             {"shared": {by, since, logins}}, read-only
       .pylib/                 Python packages the series' scripts installed
     instances/<id>/
       instance.json           {"label", "series": id}, read-only

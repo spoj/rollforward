@@ -64,8 +64,6 @@ function message(inst: Instance, n: number, entries: Entry[]): string {
 // What a series' agent may read: the other series of its workspace, and those of any workspace that has everyone this one has, by
 // the same email or group, so nothing it reads reaches someone who couldn't see it already. A workspace with no one in it reads only
 // itself.
-// Reach is the workspace's: its agents read its series and those of every workspace that has everyone it has, never the reverse.
-// A workspace with no one in it reads only itself.
 export function wider(t: Tree, ws: string): string[] {
   const people = everyone(t.workspaces[ws]);
   return Object.keys(t.workspaces).filter(o => o !== ws && people.length > 0 && people.every(p => everyone(t.workspaces[o]).includes(p)));

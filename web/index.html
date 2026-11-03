@@ -1078,7 +1078,7 @@ function loginsHtml(s) {
   return h;
 }
 
-// Ticks: which of your logins an instance may use, asked whenever you start, copy or take over one, or allow wakes.
+// Ticks: which of your logins an instance may use, asked whenever you start, copy or take over one, or share a series.
 const ticksHtml = (offers, on = []) => offers.length ? offers.map(o => `<label class="skill-row"><input type="checkbox" class="tick" value="${esc(o.id)}" ${on.includes(o.id) ? 'checked' : ''}> ${esc(o.name)}</label>`).join('')
   : '<div class="sub">You have no logins yet; add them under <a data-act="logins">Logins</a>. The agent can still work with the files people bring.</div>';
 const ticked = () => [...document.querySelectorAll('#pv input.tick:checked')].map(i => i.value);
@@ -1094,7 +1094,7 @@ function startHtml(s) {
 const signInHtml = (id, name) => id === 'm365' ? '<a class="btn" href="/logins/m365/connect">Sign in again</a>'
   : `<button class="btn" data-act="web-signin" data-id="${esc(id.slice(4))}" data-name="${esc(name)}">Sign in again</button>`;
 
-// What waits on you: the agent's asks for you, requests to start a series you can see, and chains of wakes that broke.
+// What waits on you: the agent's asks and the notes for you, requests to start a series you can see, and your expired logins.
 function waiting() {
   const out = [], at = (w, s, i) => `<a href="#/${i?.id ?? w.id}">${esc(w.name)}${s.single ? '' : ' · ' + esc(s.name)}${i ? ' · ' + esc(i.label) : ''}</a>`;
   for (const w of tree.filter(w => !w.archived)) for (const s of w.series.filter(s => !s.archived)) {
