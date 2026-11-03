@@ -22,7 +22,8 @@ Sources: [Layr design reference](https://layr.design/reference/layr-001-intentio
   - a run in progress, with Close disabled until it ends;
   - what each question defaults to if it's still unanswered at close.
 - **The graph:** tiles in columns, inputs to steps, with Outputs in a column of their own that never scrolls away. Lines are thin gray curves behind the tiles, entering each tile at its own point and crossing a column only between tiles; hovering a tile turns its lineage black. Columns come from the longest path of steps; there is no layout library.
-- **The sidebar is a cascade:** workspace, series, instance, each level indented under a rule. A row's actions sit in its corner, ⋯ for settings and + for a new child, so the list holds only things and never grows a row of buttons.
+- **The sidebar is a cascade:** workspace, series, instance, each level indented under a rule. A row's actions sit in its corner, ⋯ for a menu and + for a new child, so the list holds only things and never grows a row of buttons. A row is a link all over, and shades under the pointer.
+- **Menus and dialogs are the page's own.** A ⋯ menu drops from its button, with a rule before Archive or Abandon. A dialog dims the page behind it and closes on Escape or a click beside it. Names change in place, and settings save as they change, with Saved in the dialog's header. Buttons darken under the pointer, and stay dimmed while what they started runs.
 - **Copy** names objects and consequences. There is no helper text that repeats a label. A legend in the sidebar teaches the colour code once.
 - **Light throughout.** A dark Advanced band looked like leftover developer scaffolding.
 

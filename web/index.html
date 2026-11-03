@@ -29,6 +29,11 @@ a { color: inherit; }
 .row.wake, .row.req { font-size: 12px; color: var(--ink-2); }
 .row .nm { flex: 0 1 auto; min-width: 45%; padding: 5px 0; text-decoration: none; overflow-wrap: anywhere; }
 .row .n { flex: 1 1 0; min-width: 0; color: var(--ink-3); font-size: 12px; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; padding-left: 6px; }
+/* A row with a link is a link all over, but for its buttons. */
+.row:has(> a.nm), a.row { position: relative; }
+.row > a.nm::before { content: ''; position: absolute; inset: 0; }
+.row > .add { position: relative; }
+.row:is(.ws, .ser, .waits):has(> a.nm):hover, a.row.inst:not(.on):hover { background: #eceff2; }
 .head { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
 .ws { font-size: 14px; font-weight: 600; }
 .tree { margin-left: 14px; padding-left: 4px; border-left: 1px solid var(--rule-2); }
@@ -45,6 +50,7 @@ a { color: inherit; }
 .add { all: unset; cursor: pointer; flex: none; width: 24px; height: 24px; display: grid; place-items: center; border-radius: var(--r1); color: var(--ink-3); font-size: 17px; line-height: 1; }
 .add:hover { background: var(--rule); color: var(--ink); }
 .quiet { display: block; padding: 5px 8px; font-size: 12px; color: var(--ink-3); background: none; border: 0; text-align: left; }
+.quiet:hover { color: var(--ink); }
 .vl { padding: 14px 16px; display: grid; gap: 10px; align-content: start; font-size: 13.5px; }
 .vl h3 { margin: 4px 0 0; font-size: 13px; font-weight: 600; }
 .vl .sub { color: var(--ink-3); font-size: 12.5px; }
@@ -63,9 +69,10 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .ut td, .ut th { border-top: 1px solid var(--rule); padding: 6px 6px 6px 0; text-align: left; vertical-align: top; }
 .ut th { font-weight: 500; color: var(--ink-3); }
 .ut select { max-width: 100px; }
-.acct { padding: 14px 8px 0; font-size: 12.5px; color: var(--ink-2); border-top: 1px solid var(--rule); margin-top: 10px; }
-.acct .mail { color: var(--ink-3); font-size: 12px; word-break: break-all; }
-.acct .quiet { display: inline-block; padding: 4px 10px 0 0; }
+.acct { padding-top: 10px; border-top: 1px solid var(--rule); margin-top: 10px; }
+.me { all: unset; box-sizing: border-box; display: grid; width: 100%; padding: 6px 8px; border-radius: var(--r1); font-size: 12.5px; color: var(--ink-2); cursor: pointer; }
+.me:hover { background: #eceff2; }
+.me .mail { color: var(--ink-3); font-size: 12px; word-break: break-all; }
 @media (max-width: 560px) { .ut th:nth-child(3), .ut td:nth-child(3), .ut th:nth-child(4), .ut td:nth-child(4) { display: none; } }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--note); display: inline-block; margin-left: 6px; vertical-align: 1px; }
 .dot.k { background: var(--ink); }
@@ -81,7 +88,8 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .crumb { font-size: 13px; color: var(--ink-3); }
 .bar h1 { margin: 2px 0 0; font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
 .ren { all: unset; cursor: pointer; color: var(--ink-3); font-size: 15px; font-weight: 400; margin-left: 6px; }
-.ren:hover { color: var(--ink); }
+.bar h1 .t { cursor: text; }
+.bar h1:hover .ren { color: var(--ink); }
 .state { margin-left: auto; font-size: 13px; color: var(--ink-2); display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 /* With a side panel open the bar's buttons come first; the run's state shows again on the sidebar and in Advanced. */
 @container main (min-width: 801px) and (max-width: 940px) { .state { display: none; } .bar > div:first-of-type { margin-right: auto; } }
@@ -91,6 +99,12 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .btn.danger { color: var(--note); border-color: var(--note); }
 .btn:disabled { background: var(--sheet); color: var(--ink-3); border-color: var(--rule-2); cursor: default; }
 .btn.sel { background: var(--paper); box-shadow: inset 0 1px 2px rgba(0,0,0,.08); }
+.btn:hover:not(:disabled) { border-color: var(--ink-3); background: var(--paper); }
+.btn.primary:hover:not(:disabled) { background: #2b3039; border-color: #2b3039; }
+.btn.commit:hover:not(:disabled) { background: #1a3eae; border-color: #1a3eae; }
+.btn.danger:hover:not(:disabled) { background: #fdf1f0; border-color: var(--note); }
+.choice:hover:not(:disabled) { border-color: var(--ink-3); }
+[aria-busy=true] { pointer-events: none; opacity: .6; cursor: progress; }
 
 .panes { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: minmax(0, 1fr); position: relative; padding-bottom: 46px; }
 .pane { padding: 22px 28px 20px; display: flex; flex-direction: column; position: relative; overflow: auto; min-width: 0; scrollbar-gutter: stable; }
@@ -141,7 +155,8 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 @keyframes ask { 50% { opacity: .3; } }
 .prog { margin-top: auto; height: 3px; background: var(--rule); border-radius: 2px; }
 .prog i { display: block; height: 100%; background: var(--person); border-radius: 2px; }
-#toasts { position: fixed; left: 50%; bottom: 64px; transform: translateX(-50%); z-index: 60; display: grid; gap: 6px; justify-items: center; }
+#toasts { position: fixed; inset: auto auto 64px 50%; transform: translateX(-50%); margin: 0; padding: 0; border: 0; background: none; overflow: visible; display: grid; gap: 6px; justify-items: center; }
+#toasts:not(:popover-open) { display: none; }
 .toast { background: var(--note); color: #fff; padding: 9px 14px; border-radius: var(--r1); font-size: 13px; max-width: min(560px, 92vw); white-space: pre-wrap; animation: fade 6s forwards; }
 .toast.ok { background: var(--ink); }
 @keyframes fade { 85% { opacity: 1; } to { opacity: 0; } }
@@ -151,9 +166,27 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .also { margin-top: 16px; font-size: 12.5px; display: grid; gap: 4px; }
 .also .ah { font-size: 12px; color: var(--ink-3); }
 .also .via { color: var(--ink-3); }
-a[data-act=preview], a[data-act=opencard] { text-decoration: underline; cursor: pointer; }
+a[data-act=preview], a[data-act=opencard], .vl a[data-act] { text-decoration: underline; cursor: pointer; }
 .cites { margin-top: 6px; font-size: 12px; display: flex; flex-wrap: wrap; gap: 4px 10px; }
-.pv { position: fixed; inset: 4vh 4vw; z-index: 40; background: var(--sheet); border: 1px solid var(--rule-2); border-radius: var(--r2); box-shadow: 0 6px 24px rgba(21,24,29,.18); display: flex; flex-direction: column; }
+.pv { position: fixed; inset: 4vh 4vw; margin: 0; width: auto; height: auto; background: var(--sheet); border-radius: var(--r2); box-shadow: 0 6px 24px rgba(21,24,29,.18); display: flex; flex-direction: column; }
+.pv:not([open]) { display: none; }
+dialog { padding: 0; border: 1px solid var(--rule-2); color: var(--ink); max-width: none; max-height: none; }
+dialog::backdrop { background: rgba(21,24,29,.3); }
+.saved { font-size: 12px; color: var(--ink-3); }
+.ask { width: min(400px, 92vw); padding: 18px 20px 16px; border-radius: var(--r2); box-shadow: 0 6px 24px rgba(21,24,29,.18); }
+.ask h3 { margin: 0 0 6px; font-size: 15px; font-weight: 600; }
+.ask p { margin: 0 0 12px; font-size: 13px; color: var(--ink-2); white-space: pre-wrap; }
+.ask input { width: 100%; font: inherit; padding: 7px 9px; border: 1px solid var(--rule-2); border-radius: var(--r1); }
+.ask .err { margin-top: 8px; font-size: 12.5px; color: var(--note); }
+.ask .err:empty { display: none; }
+.ask .foot { display: flex; flex-direction: row-reverse; gap: 8px; margin-top: 16px; }
+.pop { position: fixed; z-index: 70; min-width: 180px; padding: 4px; display: grid; background: var(--sheet); border: 1px solid var(--rule-2); border-radius: var(--r2); box-shadow: 0 6px 24px rgba(21,24,29,.16); }
+.pop button { all: unset; padding: 7px 10px; border-radius: var(--r1); font-size: 13px; color: var(--ink); cursor: pointer; }
+.pop button:is(:hover, :focus-visible):not(:disabled) { background: var(--paper); outline: none; }
+.pop button.danger { color: var(--note); }
+.pop button:disabled { color: var(--ink-3); cursor: default; }
+.pop hr { margin: 4px 0; border: 0; border-top: 1px solid var(--rule); }
+.inline { flex: 1; min-width: 8ch; field-sizing: content; font: inherit; padding: 0; border: 0; border-bottom: 1.5px solid var(--person); border-radius: 0; background: transparent; color: var(--ink); }
 .pvh { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--rule); }
 .pvh b { font-size: 13px; word-break: break-all; margin-right: auto; }
 .tabs { display: flex; gap: 6px; padding: 8px 14px; flex-wrap: wrap; border-bottom: 1px solid var(--rule); }
@@ -228,6 +261,11 @@ a[data-act=preview], a[data-act=opencard] { text-decoration: underline; cursor: 
 .compose { border-top: 1px solid var(--rule); background: var(--sheet); padding: 10px 28px 14px; display: flex; gap: 8px; }
 .compose input { flex: 1; min-width: 0; background: var(--sheet); border: 1px solid var(--rule-2); border-radius: var(--r1); padding: 8px 10px; font: inherit; }
 
+:focus-visible { outline: 2px solid var(--person); outline-offset: 1px; }
+:is(input:not([type=checkbox]), textarea, select):focus { outline: none; border-color: var(--person); box-shadow: 0 0 0 3px var(--person-bg); }
+.inline:focus { box-shadow: none; }
+input[type=checkbox] { accent-color: var(--ink); }
+
 .log { display: none; width: 352px; border-left: 1px solid var(--rule); background: var(--sheet); height: 100dvh; overflow: auto; }
 .log.open { display: block; }
 .conv { padding: 4px 20px 20px; display: grid; gap: 8px; }
@@ -278,7 +316,7 @@ a[data-act=preview], a[data-act=opencard] { text-decoration: underline; cursor: 
   .adv.open .body { height: auto; flex: 1; min-height: 0; }
   .trace, .compose { padding-left: 14px; padding-right: 14px; }
   .log.open { position: fixed; inset: 0; width: auto; z-index: 25; }
-  .pv { inset: 0; border-radius: 0; }
+  .pv, .pv.small { inset: 0; transform: none; width: auto; max-height: none; border: 0; border-radius: 0; }
   .sh td { max-width: 24ch; overflow: hidden; text-overflow: ellipsis; }
 }
 </style>
@@ -304,9 +342,11 @@ a[data-act=preview], a[data-act=opencard] { text-decoration: underline; cursor: 
   <aside class="log" id="log"></aside>
 </div>
 <div class="card" id="card" hidden></div>
-<div class="pv" id="pv" hidden></div>
+<dialog class="pv" id="pv"></dialog>
+<dialog class="ask" id="ask"></dialog>
+<div class="pop" id="pop" role="menu" hidden></div>
 <input type="file" id="picker" multiple hidden>
-<div id="toasts"></div>
+<div id="toasts" popover="manual"></div>
 <script>
 const $ = s => document.querySelector(s);
 const enc = encodeURIComponent;
@@ -334,10 +374,13 @@ function markSeen(items) {
   localStorage[`seen:${instPath()}`] = JSON.stringify(seen);
 }
 
+// Toasts sit in the top layer, shown again for each one, so they come above a dialog that opened since.
 function toast(text, kind = '') {
-  const el = Object.assign(document.createElement('div'), { className: `toast ${kind}`, textContent: text });
-  $('#toasts').append(el);
-  setTimeout(() => el.remove(), 6000);
+  const el = Object.assign(document.createElement('div'), { className: `toast ${kind}`, textContent: text }), box = $('#toasts');
+  box.append(el);
+  if (box.matches(':popover-open')) box.hidePopover();
+  box.showPopover();
+  setTimeout(() => { el.remove(); if (!box.children.length) box.hidePopover(); }, 6000);
 }
 const folds = new Map();
 const ui = { adv: false, log: false, conv: false, on: null, proc: false };
@@ -349,13 +392,15 @@ function put(el, html) {
   drawn.set(el, html);
 }
 
+// A call that fails throws the server's words; a toast shows them, unless the caller shows them itself.
 async function api(path, opts) {
   const r = await fetch(path, opts);
   const t = await r.text();
   if (r.status === 401) location.reload();
-  if (!r.ok) { toast(t); throw new Error(t); }
+  if (!r.ok) throw new Error(t);
   try { return JSON.parse(t); } catch { return t; }
 }
+addEventListener('unhandledrejection', e => toast(e.reason?.message ?? String(e.reason)));
 
 // The page's address is #/ID, of an instance, a series or a workspace; cur holds the tree's entries for them.
 const seriesPath = c => `/api/series/${c.s.id}`;
@@ -416,6 +461,7 @@ function render() {
 }
 
 function renderSide() {
+  if (editing) return;
   const listed = (x, on) => !x.archived || showArchived || on;
   const asks = s => !s.archived && s.instances.some(i => i.questions.length);
   const btn = (act, title, glyph) => `<button class="add" data-act="${act}" title="${title}">${glyph}</button>`;
@@ -425,8 +471,8 @@ function renderSide() {
   for (const w of tree) {
     const won = cur?.w.id === w.id;
     if (!listed(w, won)) continue;
-    h += `<div class="row ws ${w.archived ? 'archived' : ''}"><a class="nm" href="#/${w.id}">${esc(w.name)}${!won && w.series.some(asks) ? '<span class="dot"></span>' : ''}</a>`
-      + (won ? btn('workspace-settings', 'Workspace settings', '\u22EF') + btn('new-series', 'New series', '+') : w.archived ? '<span class="n">archived</span>' : '') + '</div>';
+    h += `<div class="row ws ${won ? 'on' : ''} ${w.archived ? 'archived' : ''}"><a class="nm" href="#/${w.id}">${esc(w.name)}${!won && w.series.some(asks) ? '<span class="dot"></span>' : ''}</a>`
+      + (won ? btn('menu-workspace', 'Rename, settings, archive', '\u22EF') + btn('new-series', 'New series', '+') : w.archived ? '<span class="n">archived</span>' : '') + '</div>';
     if (!won) continue;
     h += '<div class="tree">';
     for (const s of [...w.series.filter(s => !s.adhoc), ...w.series.filter(s => s.adhoc)]) {
@@ -436,7 +482,7 @@ function renderSide() {
       const broken = s.allow_wakes && !open.length && !s.wake && !s.requests.length;
       const note = s.archived ? 'archived' : broken ? '<span class="q">no wake set</span>' : s.requests.length ? `<span class="q">${s.requests.length} to start</span>` : open.length ? `${open.length} open` : s.wake ? `wakes ${when(s.wake.at)}` : '';
       h += `<div class="row ser ${on ? 'on' : ''} ${s.archived ? 'archived' : ''} ${s.adhoc ? 'adhoc' : ''}"><a class="nm" href="#/${s.id}">${esc(s.name)}${!on && asks(s) ? '<span class="dot"></span>' : ''}</a>`
-        + (on ? btn('settings', 'Series settings', '\u22EF') + btn('new-instance', 'New instance', '+') : `<span class="n">${note}</span>`) + '</div>';
+        + (on ? btn('menu-series', 'Rename, settings, archive', '\u22EF') + btn('new-instance', 'New instance', '+') : `<span class="n">${note}</span>`) + '</div>';
       if (!on) continue;
       const closed = s.instances.length - open.length;
       h += '<div class="tree">';
@@ -457,8 +503,7 @@ function renderSide() {
   const archived = tree.filter(w => w.archived).length + (cur?.w.series.filter(s => s.archived).length ?? 0);
   if (archived) h += `<button class="quiet" data-act="toggle-archived">${showArchived ? 'Hide' : 'Show'} archived (${archived})</button>`;
   h += `<div class="legend"><div><i class="p">Blue</i> uploaded by a person</div><div><i>Black</i> made by the agent</div><div><span class="tri"></span>a note, for information</div><div><span class="tri q"></span>a question for you</div><div><span class="dash"></span>expected, not there yet</div></div>`;
-  h += `<div class="acct"><div>${esc(me.name)}${me.role === 'user' ? '' : ' · ' + me.role}</div><div class="mail">${esc(me.email)}</div>`
-    + '<button class="quiet" data-act="logins">Logins</button><button class="quiet" data-act="tokens">Tokens</button><button class="quiet" data-act="guidance">Guidance</button><button class="quiet" data-act="skills">Skills</button>' + (me.role === 'admin' ? '<button class="quiet" data-act="people">People</button>' : '') + '<button class="quiet" data-act="signout">Sign out</button></div>';
+  h += `<div class="acct"><button class="me" data-act="menu-me" title="Logins, tokens, guidance, skills"><span>${esc(me.name)}${me.role === 'user' ? '' : ' · ' + me.role}</span><span class="mail">${esc(me.email)}</span></button></div>`;
   put($('#side'), h);
 }
 
@@ -467,8 +512,10 @@ function lastDone() { return data.log.findLast(e => e.op === 'done'); }
 const stepText = s => `${s.do}${s.target ? ` ${s.target}` : ''}${s.value !== undefined ? ` = "${s.value}"` : ''}`;
 
 function renderBar() {
+  if (editing) return;
+  const open = data?.doc.status === 'open', renamable = open && !cur.s.instances.some(i => i.running) && !cur.i.queued;
   let h = `<button class="menu" data-act="menu">☰</button>`;
-  h += `<div><div class="crumb">${esc(cur?.w.name ?? '')}${cur?.s ? ' · ' + esc(cur.s.name) : ''}</div><h1>${esc(cur?.i?.label ?? 'No instance')}${data?.doc.status === 'open' ? '<button class="ren" data-act="rename" title="Rename">\u270E</button>' : ''}</h1></div>`;
+  h += `<div><div class="crumb">${esc(cur?.w.name ?? '')}${cur?.s ? ' · ' + esc(cur.s.name) : ''}</div><h1>${renamable ? `<span class="t" data-act="rename" title="Rename">${esc(cur.i.label)}</span><button class="ren" data-act="rename" title="Rename">\u270E</button>` : esc(cur?.i?.label ?? 'No instance')}</h1></div>`;
   if (data) {
     const d = lastDone();
     const state = data.doc.status !== 'open' ? `${data.doc.status === 'closed' ? 'Closed' : 'Abandoned'} · read-only` : data.run ? `<span class="spin"></span>Agent working · run ${data.run.n}` : data.queued ? '\u29D7 Queued' : d ? `Agent idle · last run ${hhmm(d.at)}` : 'Waiting for files';
@@ -476,11 +523,10 @@ function renderBar() {
     const talk = threadsOf().filter(t => !t.resolved).length + openQuestions().length;
     h += `<button class="btn top ${ui.proc ? 'sel' : ''}" data-act="proc">Process</button><button class="btn top ${ui.conv ? 'sel' : ''}" data-act="conv">Conversation${talk ? ` (${talk})` : ''}</button><button class="btn top ${ui.log ? 'sel' : ''}" data-act="log">Ops log</button>`;
     const off = data.run ? 'disabled title="Available when the run ends"' : '';
-    if (data.doc.status === 'open') h += `<button class="btn danger top" data-act="abandon" ${off}>Abandon</button>`
-      + (data.runner.by === me.email ? `<button class="btn commit top" data-act="close" ${off}>Close instance</button>`
-        : `<button class="btn top" data-act="takeover" title="${esc(data.runner.by)} runs it: their logins, their sign-off. Taking over makes it yours.">Take over</button>`);
+    if (open) h += data.runner.by === me.email ? `<button class="btn commit top" data-act="close" ${off}>Close instance</button>`
+      : `<button class="btn top" data-act="takeover" title="${esc(data.runner.by)} runs it: their logins, their sign-off. Taking over makes it yours.">Take over</button>`;
     else h += `<button class="btn top" data-act="duplicate">Duplicate</button>`;
-    if (cur.s.adhoc) h += `<button class="btn top" data-act="promote" title="Move this one-off into a new series, as its first instance">Make it a series</button>`;
+    if (open || cur.s.adhoc) h += `<button class="btn top" data-act="menu-instance" title="${open ? 'Rename, abandon' : 'Make it a series'}">\u22EF</button>`;
   }
   put($('#bar'), h);
 }
@@ -853,10 +899,10 @@ function sheetTable(s, first) {
 }
 
 function renderPv() {
-  $('#pv').hidden = !pv;
-  if (!pv) return;
-  $('#pv').className = 'pv' + (pv.settings ? ' small' : '');
-  let h = `<div class="pvh"><b>${esc(pv.title)}</b>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${pv.path ? `<a class="btn" href="${fileUrl(pv.path)}">Download</a>` : ''}${pv.signin ? '<button class="btn primary" data-act="signin-save">Save login</button>' : ''}<button class="btn" data-act="unpv">${pv.signin ? 'Cancel' : 'Close'}</button></div>`;
+  const d = $('#pv');
+  if (!pv) return void (d.open && d.close());
+  d.className = 'pv' + (pv.settings ? ' small' : '');
+  let h = `<div class="pvh"><b>${esc(pv.title)}</b><span class="saved"></span>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${pv.path ? `<a class="btn" href="${fileUrl(pv.path)}">Download</a>` : ''}${pv.signin ? '<button class="btn primary" data-act="signin-save">Save login</button>' : ''}<button class="btn" data-act="unpv">${pv.signin ? 'Cancel' : 'Close'}</button></div>`;
   if (pv.sheets) {
     if (pv.sheets.length > 1) h += `<div class="tabs">${pv.sheets.map((s, k) => `<button class="btn ${k === pv.sheet ? 'sel' : ''}" data-act="sheet" data-k="${k}">${esc(s.name)}</button>`).join('')}</div>`;
     h += `<div class="pvb">${sheetTable(pv.sheets[pv.sheet], pv.sheet === 0)}</div>`;
@@ -876,24 +922,33 @@ function renderPv() {
   else if (pv.settings) {
     const s = pv.settings;
     h += '<div class="pvb vl">';
-    if (s.kind === 'workspace') h += peopleHtml(s)
+    if (s.kind === 'workspace') h += (s.manage ? `<h3>Name</h3><input type="text" id="wname" value="${esc(s.name)}">` : '') + peopleHtml(s)
       + `<h3>Reading</h3><div class="sub">Agents here read every series of this workspace${s.reads.length ? `, and of ${esc(s.reads.join(', '))}, which ${s.reads.length > 1 ? 'have' : 'has'} everyone this one has` : ''}. They write only here.${s.read_by.length ? ` Agents in ${esc(s.read_by.join(', '))}, whose people are all here, read this one.` : ''}</div>`
-      + guidanceHtml(s, 'Every agent in this workspace reads it at the start of each run: its conventions, and changes that cut across its series, such as a renamed entity.', s.manage) + '<hr>';
-    if (s.kind === 'series') h += `<h3>Name</h3><input type="text" id="sname" value="${esc(s.name)}" ${s.adhoc ? 'disabled title="The Ad hoc series keeps its name"' : ''}>`
-      + `<h3>Skill use</h3><div class="sub">What the agent may fetch or do for this series.</div>`
-      + s.skillList.map(k => `<label class="skill-row"><input type="checkbox" class="skill" value="${esc(k.id)}" ${s.skills.includes(k.id) ? 'checked' : ''}> ${esc(k.name)}</label>`
-        + `<div class="sub" style="margin:0 0 6px 22px">${esc(k.description.length > 180 ? k.description.slice(0, 180) + '…' : k.description)}</div>`).join('')
-      + `<h3>Wakes</h3><label class="skill-row"><input type="checkbox" id="swakes" ${s.allow_wakes ? 'checked' : ''}> Allow wakes</label>`
-      + `<div class="sub">${s.allow_wakes ? `Wakes start new instances of this series, run as ${esc(s.allow_wakes)}${s.allow_wakes === me.email ? ' (you)' : ''}. ` : 'An agent that wakes this series asks on this page instead, for someone to start the instance. Turned on, wakes run as you, with the logins ticked here.'}</div>`
-      + ticksHtml(s.offers) + (s.allow_wakes && s.allow_wakes !== me.email ? '<div><button class="btn" data-act="wakes-mine">Run wakes as me, with these logins</button></div>' : '')
-      + (s.wake ? `<div class="row2"><span class="sub">Next: starts ${esc(s.wake.label)}, ${esc(s.wake.reason)}</span></div><div class="row2"><input type="datetime-local" id="swake" value="${localInput(s.wake.at)}"><button class="btn" data-act="wake-move">Move</button><button class="btn" data-act="wake-cancel">Cancel wake</button></div>` : '<div class="sub">No wake pending. The agent sets the next one.</div>')
-      + `<h3>Cost</h3><div class="sub">This series' runs have cost ${usd(s.cost)} so far, ${usd(s.cost / Math.max(1, s.closed))} per closed instance.</div>`
-      + '<div><button class="btn primary" data-act="savesettings">Save</button></div><hr>';
-    h += `<h3>Archive</h3><div class="sub">${s.archived ? 'Archived: in the sidebar only under Show archived.' : `Hides the ${s.kind} from the sidebar, except under Show archived. Nothing in it changes.`}</div><div><button class="btn" data-act="archive">${s.archived ? 'Restore' : 'Archive'} ${s.kind}</button></div></div>`;
+      + guidanceHtml(s, 'Every agent in this workspace reads it at the start of each run: its conventions, and changes that cut across its series, such as a renamed entity.', s.manage);
+    if (s.kind === 'series') h += (s.adhoc ? '' : `<h3>Name</h3><input type="text" id="sname" value="${esc(s.name)}">`)
+      + `<h3>Skill use</h3>` + (s.skillList.length ? `<div class="sub">What the agent may fetch or do for this series.</div>`
+        + s.skillList.map(k => `<label class="skill-row"><input type="checkbox" class="skill" value="${esc(k.id)}" ${s.skills.includes(k.id) ? 'checked' : ''}> ${esc(k.name)}</label>`
+          + `<div class="sub" style="margin:0 0 6px 22px">${esc(k.description.length > 180 ? k.description.slice(0, 180) + '…' : k.description)}</div>`).join('')
+        : '<div class="sub">No skills yet: publishers push them with rf.</div>')
+      + `<h3>Wakes</h3>${wakesHtml(s)}`
+      + `<h3>Cost</h3><div class="sub">This series' runs have cost ${usd(s.cost)} so far, ${usd(s.cost / Math.max(1, s.closed))} per closed instance.</div>`;
+    h += '</div>';
   }
   else if (pv.loading) h += `<div class="pvb"><div class="empty">Loading…</div></div>`;
   else h += `<div class="pvb"><div class="empty">No preview for this kind of file. Download it instead.</div></div>`;
-  $('#pv').innerHTML = h + '<div class="pvn" id="pvn"></div>';
+  d.innerHTML = h + '<div class="pvn" id="pvn"></div>';
+  if (!d.open) d.showModal();
+}
+
+// Allow wakes hands a series' wakes your logins, so turning it on is a button; once they're yours, the ticks save as they change.
+function wakesHtml(s) {
+  const mine = s.allow_wakes === me.email;
+  return `<div class="sub">${s.allow_wakes ? `On: a wake starts a new instance by itself, run as ${mine ? 'you, with the logins ticked' : esc(s.allow_wakes)}.` : "Off: an agent's wake asks on this page for someone to start the instance."}</div>`
+    + (mine ? '' : `<div class="sub">${s.allow_wakes ? 'To run them as you instead' : 'Allowed, they run as you'}, with the logins ticked:</div>`)
+    + ticksHtml(s.offers, s.wake_logins)
+    + `<div class="row2">${mine ? '' : `<button class="btn" data-act="wakes-on">${s.allow_wakes ? 'Run wakes as me' : 'Allow wakes'}</button>`}${s.allow_wakes ? '<button class="btn" data-act="wakes-off">Turn off</button>' : ''}</div>`
+    + (s.wake ? `<div class="sub">Next: starts ${esc(s.wake.label)}, ${esc(when(s.wake.at))}: ${esc(s.wake.reason)}</div><div class="row2"><input type="datetime-local" id="swake" value="${localInput(s.wake.at)}"><button class="btn" data-act="wake-move">Move</button><button class="btn" data-act="wake-cancel">Cancel wake</button></div>`
+      : '<div class="sub">No wake pending: the agent sets the next one.</div>');
 }
 
 // Guidance, the company's or a workspace's: a text every agent in scope reads, which only admins, or the workspace's owners, change.
@@ -914,10 +969,23 @@ function peopleHtml(s) {
 // A datetime-local input's value, in the browser's time zone.
 const localInput = iso => new Date(new Date(iso).getTime() - new Date(iso).getTimezoneOffset() * 60e3).toISOString().slice(0, 16);
 
-async function openWorkspaceSettings() {
-  const w = cur.w;
-  pv = { title: 'Workspace settings', settings: { kind: 'workspace', archived: w.archived, owners: w.owners, members: w.members, manage: w.manage, guidance: w.guidance, reads: w.reads, read_by: w.read_by } };
+function openWorkspaceSettings() {
+  pv = { title: 'Workspace settings', settings: { ...cur.w, kind: 'workspace' } };
   renderPv();
+}
+
+async function openSeriesSettings() {
+  const s = cur.s, [offers, skillList] = await Promise.all([myOffers(), api('/skills')]);
+  pv = { title: 'Series settings', settings: { ...s, kind: 'series', offers, skillList, cost: s.instances.reduce((t, i) => t + i.cost, 0), closed: s.instances.filter(i => i.status === 'closed').length } };
+  renderPv();
+}
+
+// "Saved" in the dialog's header for a moment, after a change it saved as it was made.
+let savedFor;
+function saved() {
+  $('#pv .saved').textContent = 'Saved';
+  clearTimeout(savedFor);
+  savedFor = setTimeout(() => { $('#pv .saved').textContent = ''; }, 2000);
 }
 
 // Skills, read-only: publishers push them with rf; a series chooses which it uses under Skill use.
@@ -968,8 +1036,8 @@ function loginsHtml(s) {
 }
 
 // Ticks: which of your logins an instance may use, asked whenever you start, copy or take over one, or allow wakes.
-const ticksHtml = offers => offers.length ? offers.map(o => `<label class="skill-row"><input type="checkbox" class="tick" value="${esc(o.id)}"> ${esc(o.name)}</label>`).join('')
-  : '<div class="sub">You have no logins yet; add them under Logins. The agent can still work with the files people bring.</div>';
+const ticksHtml = (offers, on = []) => offers.length ? offers.map(o => `<label class="skill-row"><input type="checkbox" class="tick" value="${esc(o.id)}" ${on.includes(o.id) ? 'checked' : ''}> ${esc(o.name)}</label>`).join('')
+  : '<div class="sub">You have no logins yet; add them under <a data-act="logins">Logins</a>. The agent can still work with the files people bring.</div>';
 const ticked = () => [...document.querySelectorAll('#pv input.tick:checked')].map(i => i.value);
 const myOffers = async () => (await api('/logins')).flatMap(l => l.offers);
 
@@ -996,6 +1064,71 @@ async function openLogins() {
   const [logins, sites] = await Promise.all([api('/logins'), api('/websites')]);
   pv = { title: 'Logins', settings: { kind: 'logins', logins, sites } };
   renderPv();
+}
+
+// A menu under the button that opened it. Items are [label, act, class, why it's off], or ['-'] for a rule; an item does what a
+// button with its act does.
+function openMenu(btn, items) {
+  const m = $('#pop');
+  m.innerHTML = items.filter(Boolean).map(([label, act, cls = '', off]) => label === '-' ? '<hr>'
+    : `<button role="menuitem" class="${cls}" data-act="${act}" ${off ? `disabled title="${esc(off)}"` : ''}>${esc(label)}</button>`).join('');
+  m.dataset.by = btn.dataset.act;
+  m.hidden = false;
+  const r = btn.getBoundingClientRect();
+  m.style.left = `${Math.max(8, Math.min(r.left, innerWidth - m.offsetWidth - 8))}px`;
+  m.style.top = `${r.bottom + 4 + m.offsetHeight < innerHeight ? r.bottom + 4 : Math.max(8, r.top - 4 - m.offsetHeight)}px`;
+  m.querySelector('button:not(:disabled)')?.focus();
+}
+
+// The page's own dialog, to confirm or to ask for a name: it resolves with what act returns, or null if cancelled. Until act
+// succeeds it stays open, saying why it didn't.
+function ask({ title, text = '', value, placeholder = '', ok, kind = 'primary', act }) {
+  const d = $('#ask');
+  d.innerHTML = `<form method="dialog"><h3>${esc(title)}</h3>${text ? `<p>${esc(text)}</p>` : ''}`
+    + (value === undefined ? '' : `<input type="text" value="${esc(value)}" placeholder="${esc(placeholder)}" required autocomplete="off">`)
+    + `<div class="err"></div><div class="foot"><button class="btn ${kind}" value="ok">${esc(ok)}</button><button class="btn" formnovalidate>Cancel</button></div></form>`;
+  d.showModal();
+  d.querySelector('input')?.select();
+  return new Promise(done => {
+    d.onclose = () => done(null);
+    d.querySelector('form').onsubmit = async e => {
+      if (e.submitter.value !== 'ok') return;
+      e.preventDefault();
+      e.submitter.setAttribute('aria-busy', 'true');
+      try {
+        done(await act(value === undefined ? undefined : d.querySelector('input').value.trim()));
+        d.close();
+      } catch (err) {
+        d.querySelector('.err').textContent = err.message;
+      } finally {
+        e.submitter.removeAttribute('aria-busy');
+      }
+    };
+  });
+}
+
+// A name changes where it shows: Enter or leaving the field saves it, Escape keeps the old one. The bar and the sidebar wait.
+let editing = null;
+function editName(el, name, save) {
+  const input = Object.assign(document.createElement('input'), { type: 'text', className: 'inline', value: name }), host = el.closest('#bar, #side');
+  el.replaceWith(input);
+  editing = input;
+  input.select();
+  const end = async keep => {
+    if (editing !== input) return;
+    editing = null;
+    try {
+      if (keep && input.value.trim() && input.value.trim() !== name) await save(input.value.trim()).then(refresh);
+    } finally {
+      drawn.delete(host);
+      render();
+    }
+  };
+  input.onkeydown = e => {
+    if (e.key === 'Enter' && !e.isComposing) end(true);
+    if (e.key === 'Escape') { e.stopPropagation(); end(false); }
+  };
+  input.onblur = () => end(true);
 }
 
 // A sign-in's live browser; closing it otherwise than by Save login throws it away.
@@ -1046,6 +1179,8 @@ async function upload(files, pane, onto) {
 }
 
 document.addEventListener('click', async ev => {
+  const was = $('#pop').hidden ? null : $('#pop').dataset.by;
+  $('#pop').hidden = true;
   if (!ev.target.closest('#side, [data-act=menu]') || ev.target.closest('#side a')) $('#side').classList.remove('open');
   const sum = ev.target.closest('#trace summary');
   if (sum) {
@@ -1054,7 +1189,7 @@ document.addEventListener('click', async ev => {
   }
   const el = ev.target.closest('[data-act], .tile, #advbar');
   if (!el) {
-    if (!ev.target.closest('#card, #pv')) { openItem = null; renderCard(); renderPanes(); }
+    if (!ev.target.closest('#card, dialog, #pop')) { openItem = null; renderCard(); renderPanes(); }
     return;
   }
   if (el.id === 'advbar') { ui.adv = !ui.adv; if (ui.adv) lines = await api(instPath() + '/trace'); return renderAdv(); }
@@ -1064,8 +1199,31 @@ document.addEventListener('click', async ev => {
     renderPanes();
     return renderCard();
   }
-  const act = el.dataset.act;
+  // What a click starts holds its button until it's done, so a second click can't repeat it.
+  el.setAttribute('aria-busy', 'true');
+  try { await onAct(el.dataset.act, el, was); } finally { el.removeAttribute('aria-busy'); }
+});
+
+// What a click on an element with data-act does. A click on the button of the menu that's open only closes it.
+async function onAct(act, el, was) {
+  if (act.startsWith('menu-') && was === act) return;
   if (act === 'menu') $('#side').classList.toggle('open');
+  if (act === 'menu-workspace') openMenu(el, [
+    cur.w.manage && ['Rename', 'rename-workspace'], ['New series', 'new-series'], ['Settings', 'workspace-settings'],
+    cur.w.manage && ['-'], cur.w.manage && [cur.w.archived ? 'Restore workspace' : 'Archive workspace', 'archive-workspace'],
+  ]);
+  if (act === 'menu-series') openMenu(el, [
+    !cur.s.adhoc && ['Rename', 'rename-series'], ['New instance', 'new-instance'], ['Settings', 'settings'],
+    ['-'], [cur.s.archived ? 'Restore series' : 'Archive series', 'archive-series'],
+  ]);
+  if (act === 'menu-instance') {
+    const open = data.doc.status === 'open', busy = cur.s.instances.some(i => i.running) || cur.i.queued;
+    openMenu(el, [
+      open && ['Rename', 'rename', '', busy && "Available when the series' run ends"], cur.s.adhoc && ['Make it a series', 'promote'],
+      open && ['-'], open && ['Abandon', 'abandon', 'danger', data.run && 'Available when the run ends'],
+    ]);
+  }
+  if (act === 'menu-me') openMenu(el, [['Logins', 'logins'], ['Tokens', 'tokens'], ['Guidance', 'guidance'], ['Skills', 'skills'], me.role === 'admin' && ['People', 'people'], ['-'], ['Sign out', 'signout']]);
   if (act === 'log' || act === 'conv' || act === 'proc') {
     const open = !ui[act];
     $('#log').dataset.end = 'yes';
@@ -1092,13 +1250,9 @@ document.addEventListener('click', async ev => {
   if (act === 'opencard') { openItem = el.dataset.item; markSeen(data.doc.items.filter(i => i.id === openItem)); renderPanes(); renderCard(); }
   if (act === 'preview') await preview(el.dataset.file, data.doc.items.find(i => i.id === el.dataset.item));
   if (act === 'unpv') closePv();
-  if (act === 'settings') {
-    const s = cur.s, skillList = await api('/skills');
-    pv = { title: 'Series settings', settings: { kind: 'series', offers: await myOffers(), cost: s.instances.reduce((t, i) => t + i.cost, 0), closed: s.instances.filter(i => i.status === 'closed').length, id: s.id, allow_wakes: s.allow_wakes, wake: s.wake, adhoc: s.adhoc, name: s.name, skills: s.skills ?? [], skillList, reads: s.reads, archived: s.archived } };
-    renderPv();
-  }
+  if (act === 'settings') await openSeriesSettings();
   if (act === 'skills') await openSkills();
-  if (act === 'workspace-settings') await openWorkspaceSettings();
+  if (act === 'workspace-settings') openWorkspaceSettings();
   if (act === 'signout') location.href = (await api('/auth/logout', { method: 'POST' })).next;
   if (act === 'wadd' || act === 'wremove' || act === 'wrole') {
     const s = pv.settings, p = act === 'wadd' ? $('#wperson').value.trim().toLowerCase() : el.dataset.p;
@@ -1108,54 +1262,35 @@ document.addEventListener('click', async ev => {
     if (act === 'wrole') (s.owners.includes(p) ? members : owners).push(p);
     await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ owners, members }) });
     await refresh();
-    await openWorkspaceSettings();
+    openWorkspaceSettings();
+    saved();
   }
-  if (act === 'archive') {
-    const s = pv.settings;
-    await api(s.kind === 'series' ? seriesPath(cur) : `/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ archived: !s.archived }) });
-    pv = null;
-    renderPv();
+  if (act === 'archive-series' || act === 'archive-workspace') {
+    const x = act === 'archive-series' ? cur.s : cur.w, flip = () => api(act === 'archive-series' ? seriesPath(cur) : `/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ archived: !x.archived }) });
+    if (x.archived) await flip();
+    else if (!await ask({ title: `Archive ${x.name}?`, text: 'It leaves the sidebar, except under Show archived. Nothing in it changes.', ok: 'Archive', act: flip })) return;
     await refresh();
   }
-  if (act === 'savesettings') {
-    const name = $('#sname').value.trim();
-    const skills = [...document.querySelectorAll('#pv input.skill:checked')].map(i => i.value);
-    await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ name, skills, archived: pv.settings.archived, ...($('#swakes').checked !== !!pv.settings.allow_wakes && { allow_wakes: $('#swakes').checked, logins: ticked() }) }) });
-    pv = null;
-    renderPv();
-    await refresh();
+  if (act === 'rename') editName($('#bar h1 .t'), cur.i.label, label => api(`${instPath()}/rename?as=${enc(label)}`, { method: 'POST' }));
+  if (act === 'rename-series' || act === 'rename-workspace') {
+    $('#side').classList.add('open');
+    const series = act === 'rename-series';
+    editName($(series ? '#side .ser.on .nm' : '#side .ws.on .nm'), series ? cur.s.name : cur.w.name, name => api(series ? seriesPath(cur) : `/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ name }) }));
   }
-  if (act === 'rename') {
-    const label = (prompt('New label:', cur.i.label) || '').trim();
-    if (!label || label === cur.i.label) return;
-    await api(`${instPath()}/rename?as=${enc(label)}`, { method: 'POST' });
+  if (act === 'wakes-on' || act === 'wakes-off' || act === 'wake-move' || act === 'wake-cancel') {
+    if (act === 'wakes-on' || act === 'wakes-off') await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify(act === 'wakes-on' ? { allow_wakes: true, logins: ticked() } : { allow_wakes: false }) });
+    if (act === 'wake-move') await api(`/api/wakes/${cur.s.id}`, { method: 'PUT', body: JSON.stringify({ at: new Date($('#swake').value).toISOString() }) });
+    if (act === 'wake-cancel') await api(`/api/wakes/${cur.s.id}`, { method: 'DELETE' });
     await refresh();
-  }
-  if (act === 'wakes-mine') {
-    await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ allow_wakes: true, logins: ticked() }) });
-    pv = null;
-    renderPv();
-    await refresh();
-  }
-  if (act === 'wake-move' || act === 'wake-cancel') {
-    const id = pv.settings.id;
-    if (act === 'wake-move') await api(`/api/wakes/${id}`, { method: 'PUT', body: JSON.stringify({ at: new Date($('#swake').value).toISOString() }) });
-    else await api(`/api/wakes/${id}`, { method: 'DELETE' });
-    pv = null;
-    renderPv();
-    await refresh();
+    await openSeriesSettings();
+    saved();
   }
   if (act === 'req-start') await openStart('Start the instance asked for', 'Start', ({ logins }) => api(`/api/requests/${el.dataset.id}`, { method: 'POST', body: JSON.stringify({ logins }) }));
   if (act === 'req-drop') {
     await api(`/api/requests/${el.dataset.id}`, { method: 'DELETE' });
     await refresh();
   }
-  if (act === 'promote') {
-    const name = (prompt('Name of the new series, which later instances roll forward from:') || '').trim();
-    if (!name) return;
-    await api(`${instPath()}/promote`, { method: 'POST', body: JSON.stringify({ name }) });
-    await refresh();
-  }
+  if (act === 'promote' && await ask({ title: 'Make it a series', text: `${cur.i.label} becomes the first instance of a new series, which later instances roll forward from.`, value: '', placeholder: 'Name of the series', ok: 'Make it a series', act: name => api(`${instPath()}/promote`, { method: 'POST', body: JSON.stringify({ name }) }) })) await refresh();
   if (act === 'compare') {
     const p = pv;
     p.old ??= (await api(fileUrl(p.was, 'preview'))).sheets;
@@ -1193,16 +1328,10 @@ document.addEventListener('click', async ev => {
   }
   if (act === 'close') {
     const qs = data.doc.items.flatMap(i => i.notes ?? []).filter(n => n.options && questionState(n) === null);
-    const msg = `Close ${cur.i.label}? It becomes an example for later instances.` + (qs.length ? '\n\nUnanswered questions take their defaults:\n' + qs.map(n => `• ${n.options[n.default ?? 0]}`).join('\n') : '');
-    if (!confirm(msg)) return;
-    await api(`${instPath()}/close`, { method: 'POST' });
-    await refresh();
+    const text = 'It becomes an example for later instances.' + (qs.length ? '\n\nUnanswered questions take their defaults:\n' + qs.map(n => `• ${n.options[n.default ?? 0]}`).join('\n') : '');
+    if (await ask({ title: `Close ${cur.i.label}?`, text, ok: 'Close instance', kind: 'commit', act: () => api(`${instPath()}/close`, { method: 'POST' }) })) await refresh();
   }
-  if (act === 'abandon') {
-    if (!confirm(`Abandon ${cur.i.label}? It stays as it is, but isn't an example or a starting point for later instances.`)) return;
-    await api(`${instPath()}/abandon`, { method: 'POST' });
-    await refresh();
-  }
+  if (act === 'abandon' && await ask({ title: `Abandon ${cur.i.label}?`, text: "It stays as it is, but isn't an example or a starting point for later instances.", ok: 'Abandon', kind: 'danger', act: () => api(`${instPath()}/abandon`, { method: 'POST' }) })) await refresh();
   if (act === 'new-instance') await openStart('New instance', 'Start', ({ label, logins }) => api(seriesPath(cur), { method: 'POST', body: JSON.stringify({ label, logins }) }), '');
   if (act === 'takeover') await openStart(`Take over ${cur.i.label}`, 'Take over', ({ logins }) => api(`${instPath()}/takeover`, { method: 'POST', body: JSON.stringify({ logins }) }));
   if (act === 'start-go') {
@@ -1241,7 +1370,7 @@ document.addEventListener('click', async ev => {
     const text = $('#guidance').value;
     await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ guidance: text }) });
     pv.settings.guidance = text;
-    toast('Guidance saved', 'ok');
+    saved();
     await refresh();
   }
   if (act === 'offer-mailbox' || act === 'offer-site') {
@@ -1269,19 +1398,31 @@ document.addEventListener('click', async ev => {
     pv.settings.logins = await api('/logins');
     renderPv();
   }
-  if (act === 'new-series') {
-    const name = (prompt('Name of the new series:') || '').trim();
-    if (!name) return;
-    go((await api('/api/series', { method: 'POST', body: JSON.stringify({ workspace: cur.w.id, name }) })).id);
+  if (act === 'new-series' || act === 'new-workspace') {
+    const series = act === 'new-series', made = await ask(series
+      ? { title: 'New series', text: `In ${cur.w.name}.`, value: '', placeholder: 'Name, such as Bank rec', ok: 'Make series', act: name => api('/api/series', { method: 'POST', body: JSON.stringify({ workspace: cur.w.id, name }) }) }
+      : { title: 'New workspace', text: 'Such as a client. You become its owner.', value: '', placeholder: 'Name', ok: 'Make workspace', act: name => api('/api/workspaces', { method: 'POST', body: JSON.stringify({ name }) }) });
+    if (made) go(made.id);
   }
-  if (act === 'new-workspace') {
-    const name = (prompt('Name of the new workspace, such as a client:') || '').trim();
-    if (!name) return;
-    go((await api('/api/workspaces', { method: 'POST', body: JSON.stringify({ name }) })).id);
-  }
-});
+}
 
 $('#picker').addEventListener('change', e => upload([...e.target.files], e.target.dataset.pane, e.target.dataset.onto));
+// Settings save as they change: a name once it's left or Enter is pressed, a tick at once.
+document.addEventListener('change', async ev => {
+  const el = ev.target;
+  if (el.id === 'sname' || el.matches('#pv input.skill')) await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify(el.id === 'sname' ? { name: el.value.trim() } : { skills: [...document.querySelectorAll('#pv input.skill:checked')].map(i => i.value) }) });
+  else if (el.matches('#pv input.tick') && pv.settings.kind === 'series' && pv.settings.allow_wakes === me.email) await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ allow_wakes: true, logins: ticked() }) });
+  else if (el.id === 'wname') await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) });
+  else return;
+  saved();
+  await refresh();
+});
+// The dialog closes on Escape and on a click beside it, but a sign-in's only on Escape or its buttons.
+$('#pv').addEventListener('close', () => pv && closePv());
+$('#pv').addEventListener('click', e => {
+  const r = $('#pv').getBoundingClientRect();
+  if (e.target === $('#pv') && !pv.signin && (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom)) closePv();
+});
 $('#interrupt').addEventListener('click', async () => {
   if (!data?.run) return;
   await api(`${instPath()}/interrupt`, { method: 'POST' });
@@ -1319,8 +1460,17 @@ addEventListener('hashchange', () => {
   refresh();
 });
 addEventListener('keydown', e => {
-  if (e.key !== 'Escape') return;
-  if (pv) closePv();
+  if (!$('#pop').hidden && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+    const items = [...$('#pop').querySelectorAll('button:not(:disabled)')], k = items.indexOf(document.activeElement);
+    items.at((k + (e.key === 'ArrowDown' ? 1 : -1)) % items.length)?.focus();
+    e.preventDefault();
+  }
+  // Enter in a one-line field presses its button, as in a form.
+  if (e.key === 'Enter' && !e.isComposing && e.target.matches('.row2 input[type=text]')) e.target.closest('.row2').querySelector('.btn').click();
+  if (e.key === 'Enter' && !e.isComposing && e.target.id === 'slabel') $('[data-act=start-go]').click();
+  // A dialog closes itself on Escape.
+  if (e.key !== 'Escape' || document.querySelector('dialog[open]')) return;
+  if (!$('#pop').hidden) $('#pop').hidden = true;
   else if ($('#side').classList.contains('open')) $('#side').classList.remove('open');
   else if (openItem) { openItem = null; renderCard(); renderPanes(); }
   else if (ui.log || ui.conv || ui.proc) { ui.log = ui.conv = ui.proc = false; renderLog(); renderBar(); }

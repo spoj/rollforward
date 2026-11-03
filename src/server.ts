@@ -91,12 +91,15 @@ function listing(me: Me) {
   return Object.entries(t.workspaces).filter(([, w]) => canSee(me, w)).sort(byName).map(([id, w]) => ({
     id, name: w.name, archived: !!w.archived, owners: w.owners, members: w.members, manage: canManage(me, w), guidance: text(guidanceFile(id)),
     reads: wider(t, id).map(o => t.workspaces[o].name).sort(), read_by: Object.keys(t.workspaces).filter(o => wider(t, o).includes(id)).map(o => t.workspaces[o].name).sort(),
-    series: Object.entries(t.series).filter(([, s]) => s.workspace === id).sort(byName).map(([sid, s]) => ({
-      id: sid, name: s.name, archived: !!s.archived, adhoc: !!s.adhoc, skills: seriesSettings(seriesDir(sid)).skills, allow_wakes: seriesSettings(seriesDir(sid)).wakes?.by ?? null,
-      wake: w8.pending[sid] ?? null,
-      requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r })),
-      instances: instances(sid).map(i => summary(i, w8)),
-    })),
+    series: Object.entries(t.series).filter(([, s]) => s.workspace === id).sort(byName).map(([sid, s]) => {
+      const { skills, wakes: allowed } = seriesSettings(seriesDir(sid));
+      return {
+        id: sid, name: s.name, archived: !!s.archived, adhoc: !!s.adhoc, skills, allow_wakes: allowed?.by ?? null, wake_logins: allowed?.by === me.email ? allowed.logins : [],
+        wake: w8.pending[sid] ?? null,
+        requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r })),
+        instances: instances(sid).map(i => summary(i, w8)),
+      };
+    }),
   }));
 }
 

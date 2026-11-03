@@ -86,7 +86,8 @@ export function instances(seriesId: string): Instance[] {
 
 export function safeName(s: string): string {
   const name = s.replace(/[/\\\x00-\x1f]/g, '_');
-  if (!name || name.startsWith('.')) throw new HttpError(400, `bad name: ${s}`);
+  if (!name) throw new HttpError(400, 'a name is needed');
+  if (name.startsWith('.')) throw new HttpError(400, `a name can't start with a dot: ${s}`);
   return name;
 }
 

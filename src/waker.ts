@@ -104,7 +104,8 @@ function flush(a: Active) {
 async function start(inst: Instance) {
   const series = inst.seriesId;
   const seen = seenBefore(inst);
-  if (active.has(series) || !due(inst)) return;
+  // A kick that starts nothing ends the instance's queued state all the same: pages that showed it should hear.
+  if (active.has(series) || !due(inst)) return void changes.emit('change', inst.id);
   if (full()) return void waiting.add(inst);
   started.push(Date.now());
   started.splice(0, started.length - MAX_RUNS);
