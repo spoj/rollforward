@@ -88,7 +88,7 @@ Talk is threads only, as `comment` entries in the instance's `log.jsonl`: `{thre
 
 ## Runs
 
-- **What starts one:** a person's upload or comment, a new instance whose parent fetched inputs (its `create` entry carries `fetch`), or a wake. A burst of uploads starts one run, 1.5 s after the last. A person's upload or comment cancels the instance's pending wake.
+- **What starts one:** a person's upload or comment, a new instance whose parent fetched inputs (its `create` entry carries `fetch`), or a wake. A burst of uploads starts one run, 1.5 s after the last. A person's upload or comment cancels the instance's pending wake, unless it is a note for the runner, which starts nothing in its place.
 - **One run at a time per series,** at most `RF_MAX_RUNS` (20) at once, and none while less than `RF_MIN_FREE_GB` (6) of memory is free, plus 1 GB for each run started in the last minute; the rest queue. A run stops at `RF_LIMIT_MIN` (120 minutes). [src/waker.ts](src/waker.ts) decides what runs when; [src/runner.ts](src/runner.ts) runs one.
 - **One Pi session per instance:** each run is a prompt into it, so the agent remembers the instance's earlier runs, while a new instance starts afresh and finds what it needs in the files. Every prompt reads `Instance <label> (folder <label>/), run <n>. New log entries:`, then the log lines, as JSON, that the agent hasn't been sent, leaving out its own.
 - **During a run,** new entries reach the agent as a steer, after the current turn's tool calls; entries for another instance of the series wait for the run to end. The runner records the last entry the agent has received: when a run settles with people's entries after it, another starts at once, except after an Interrupt, which waits for the next act.

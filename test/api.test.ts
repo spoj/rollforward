@@ -348,6 +348,11 @@ test("people see and move a series' next wake, share it as themselves, and start
   assert.equal(listed.instances.find((i: { id: string }) => i.id === sep).wake, due);
   const later = new Date(Date.now() + 2 * 86_400_000).toISOString();
   assert.equal((await (await call('PUT', `/api/wakes/${s.id}`, JSON.stringify({ at: later }))).json()).at, later);
+  const ws = `/api/workspaces/${(await named('larkfield')).id}`, b = sessionOf(await login(bob))!;
+  assert.equal((await call('PUT', ws, JSON.stringify({ owners: [adminEmail], members: [bob] }))).status, 200);
+  assert.equal((await call('POST', `${await at(series, '2026-08-30 rework', 'comment')}`, JSON.stringify({ text: 'fyi' }), b)).status, 200);
+  assert.equal(JSON.parse(readFileSync(wakes, 'utf8')).pending[sep]?.at, due, "bob's note for the runner starts nothing, so the wake stays");
+  assert.equal((await call('PUT', ws, JSON.stringify({ owners: [], members: [] }))).status, 200);
   assert.equal((await call('POST', `${await at(series, '2026-08-30 rework', 'comment')}`, JSON.stringify({ text: 'go' }))).status, 200);
   assert.equal(JSON.parse(readFileSync(wakes, 'utf8')).pending[sep], undefined, "a person's act starts the run now, so the wake goes");
 

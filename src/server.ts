@@ -549,7 +549,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (action === 'close') closed(inst);
     return send(res, 200, 'ok');
   } else throw new HttpError(404, `no action ${action}`);
-  cancelWake(inst.id);
+  // An act that starts a run replaces the pending wake; a note for the runner starts nothing, so the wake stays.
+  if (!isNote(inst, inst.log.findLast(e => e.by === by)!)) cancelWake(inst.id);
   kick(inst);
   send(res, 200, 'ok');
 }
