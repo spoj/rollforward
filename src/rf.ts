@@ -31,7 +31,7 @@ const HELP: Record<string, string> = {
   PATH is Graph's own, query included, or an @odata.nextLink, under what is ticked for this instance: a mailbox's
   /me/messages, /me/mailFolders or /users/ADDRESS/messages; a site's /sites/ID; and files by /drives/ID, /shares/ID or /me/drive,
   within a ticked folder or file, or a ticked site's libraries. A search, /drives/ID/items/ID/search(q='...'), stays within its
-  folder; one across a whole drive needs the whole drive ticked. --header takes Accept, ConsistencyLevel, Prefer and Range.`,
+  folder; one across a whole drive, /drives/ID/root/search(q='...'), needs the whole drive ticked. --header takes Accept, ConsistencyLevel, Prefer and Range.`,
   browser: `rf browser open SITE
 rf browser get SITE PATH FILE
 rf browser expired SITE

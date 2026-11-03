@@ -14,7 +14,7 @@ export async function graphGet(inst: Instance, target: string, headers: Record<s
   if (u.origin !== base.origin || !u.pathname.startsWith(`${root}/`)) throw new HttpError(400, `a Graph path, such as /me/messages, or a link Graph gave: not ${target}`);
   const path = u.pathname.slice(root.length) + u.search, segments = path.split('?')[0].split('/').slice(1).map(s => decodeURIComponent(s));
   // /me is the runner, and mailFolders('inbox') is mailFolders.
-  const [top, id = '', part = ''] = (segments[0] === 'me' ? ['users', runner, ...segments.slice(1)] : segments).map(s => s.replace(/\(.*$/, ''));
+  const segs = segments[0] === 'me' ? ['users', runner, ...segments.slice(1)] : segments, [top, id = '', part = ''] = segs.map(s => s.replace(/\(.*$/, ''));
   let offer: string | undefined;
   if (top === 'users' && (part === 'messages' || part === 'mailFolders')) {
     needs('Mail.Read', 'mail');
@@ -23,6 +23,9 @@ export async function graphGet(inst: Instance, target: string, headers: Record<s
   } else if (top === 'drives' || top === 'shares' || (top === 'users' && part === 'drive')) {
     needs('Files.Read.All', 'OneDrive or SharePoint files');
     // A share's site and list are the whole site and library its item is in, past what is ticked.
+    // A drive's own search, recent, sharedWithMe and following list other drives' items too; a search under its root stays in it.
+    const of = segs[top === 'users' ? 3 : 2] ?? '';
+    if (top !== 'shares' && /(^|\.)(search|recent|sharedwithme|following)(\(|$)/i.test(of)) throw new HttpError(403, `${path.split('?')[0]}: a drive's ${of.replace(/\(.*$/, '')} lists other drives' items too; search under its root, as /drives/ID/root/search(q='...')`);
     if (top === 'shares' && !['', 'driveitem', 'root', 'items', 'listitem'].includes(part.toLowerCase())) throw new HttpError(403, `${path.split('?')[0]}: a share is read through its driveItem, root or items, not its ${part}, which reaches past what is ticked`);
     const item = await graph(runner, `${addressed(path.split('?')[0].replace(/^\/me\//, `/users/${runner}/`))}?$select=id,parentReference`);
     offer = await covering(runner, ticks, item.parentReference.driveId, item.id, item.parentReference.id);
