@@ -68,5 +68,6 @@ test("closing commits the folder in the runner's name; a commit that fails, here
   assert.equal(inst.log.at(-1)!.commit, git('rev-parse', 'HEAD'));
   assert.equal(git('log', '-1', '--format=%an <%ae>%n%B'), 'Alex <alex>\nClose m1\n\nSigned-off-by: Alex <alex>');
   assert.equal(git('show', 'HEAD:working/locked.csv'), 'x');
+  assert.match(git('count-objects', '-v'), /^count: 0\n[^]*^packs: 1$/m, 'closed, its history is one pack');
   rmSync(tmp, { recursive: true, force: true });
 });

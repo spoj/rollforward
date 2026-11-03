@@ -2,7 +2,7 @@ import { appendFileSync, chmodSync, closeSync, constants, cpSync, existsSync, fc
 import { createHash, randomBytes } from 'node:crypto';
 import { basename, extname, join, posix } from 'node:path';
 import { changes, tree } from './system.ts';
-import { commit, type Who } from './git.ts';
+import { commit, pack, type Who } from './git.ts';
 
 // Paths in the screen are /-separated on every system.
 const normalize = posix.normalize;
@@ -232,6 +232,7 @@ export class Instance {
       this.doc.status = 'open';
       throw e;
     });
+    await pack(this.dir);
     this.save();
     this.append(by.email, 'close', { ...(accepted.length && { accepted }), commit: hash });
   }

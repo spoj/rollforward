@@ -18,6 +18,10 @@ const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev
 const git = async (dir: string, ...args: string[]) => (await promisify(execFile)('git', args, { cwd: dir, env })).stdout.trim();
 const queue = new Map<string, Promise<unknown>>();
 
+// A closed instance's history no longer grows, so its objects go into one pack instead of a file each, and what a failed commit
+// left behind goes.
+export const pack = (dir: string) => git(dir, 'gc', '-q', '--prune=now');
+
 export function commit(dir: string, who: Who, message: string): Promise<string> {
   const next = (queue.get(dir) ?? Promise.resolve()).then(() => snapshot(dir, who, message));
   queue.set(dir, next.catch(() => {}));
