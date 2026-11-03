@@ -39,7 +39,7 @@ Sources: [Layr design reference](https://layr.design/reference/layr-001-intentio
 
     paper #f6f7f8   sheet #ffffff   rule #e3e6ea   rule-2 #cdd2d9
     ink #15181d     ink-2 #474e5b   ink-3 #6b7280
-    person #1f48c7  person-bg #eef2fc   note #d42a1e   edge #a3aab4
+    person #1f48c7  person-bg #eef2fc   red #d42a1e   edge #a3aab4
     radius 4px (tiles, buttons), 8px (cards)
 
 ## Outside critique
