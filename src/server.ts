@@ -19,7 +19,7 @@ import { Browsers, endSignIn, isSignIn, passUpgrade, startSignIn, viewPage } fro
 import { offer, unoffer } from './connections/graph.ts';
 import { seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, byToken, cancelWake, closed, drain, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, resolveFor, setWake, startWaking, starts, startWith, wakes, wider, type Active } from './waker.ts';
+import { active, byToken, cancelWake, closed, drain, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, resolveFor, setWake, startWaking, startWith, wakes, wider, type Active } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -606,8 +606,6 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (action === 'close') closed(inst, by);
     return send(res, 200, 'ok');
   } else throw new HttpError(404, `no action ${action}`);
-  // An act that starts a run replaces the pending wake; a note that starts nothing leaves it.
-  if (starts(inst, inst.log.findLast(e => e.by === by)!)) cancelWake(inst.id);
   kick(inst);
   send(res, 200, 'ok');
 }

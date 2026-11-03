@@ -358,7 +358,7 @@ test('everyone sees the skills, which every run loads; admins keep the connectio
   assert.deepEqual(await json('/connections', b), []);
 });
 
-test("people see and move a series' next wake, share it as themselves, and start or dismiss requests; acts cancel a wake", async () => {
+test("people see and move a series' next wake, share it as themselves, and start or dismiss requests; a wake stays pending whatever runs before it", async () => {
   const s = await shown(series), wakes = join(root, '.rf', 'wakes.json'), sep = await iid(series, '2026-08-30 rework');
   const due = new Date(Date.now() + 86_400_000).toISOString();
   writeFileSync(wakes, JSON.stringify({
@@ -380,7 +380,7 @@ test("people see and move a series' next wake, share it as themselves, and start
   assert.deepEqual(await asks(), [adminEmail], 'where the runner shares the series it is still a note for them');
   assert.equal((await call('PUT', await at(series), JSON.stringify({ share: false }))).status, 200);
   assert.equal((await call('POST', `${await at(series, '2026-08-30 rework', 'comment')}`, JSON.stringify({ text: 'go' }))).status, 200);
-  assert.equal(JSON.parse(readFileSync(wakes, 'utf8')).pending[sep], undefined, "a person's act starts the run now, so the wake goes");
+  assert.equal(JSON.parse(readFileSync(wakes, 'utf8')).pending[sep]?.at, due, "the runner's act starts a run now, and the wake still comes when it's due");
 
   assert.equal((await call('PUT', await at(series), JSON.stringify({ share: true }))).status, 200);
   assert.equal((await shown(series)).shared_by, adminEmail);
