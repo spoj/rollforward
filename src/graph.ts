@@ -7,22 +7,24 @@ import { logins, saveLogin, secret } from './logins.ts';
 // expired, for its person to sign in again on the Logins page.
 
 const GRAPH = 'https://graph.microsoft.com/v1.0';
-const tokens = new Map<string, { token: string; exp: number }>();
+const tokens = new Map<string, { token: string; exp: number; since: string }>();
 // Tests point this at a stand-in.
 export const endpoints = { graph: GRAPH };
 
 // The login as it is now: its person may change its offers, or sign out, while Microsoft answers.
 const current = (email: string) => logins(email).find(l => l.id === 'm365');
 
+// A token is kept until it expires, or its login is signed in to again, as to grant more, or signed out of.
 export async function token(email: string): Promise<string> {
-  const t = tokens.get(email);
-  if (t && t.exp > Date.now()) return t.token;
-  const login = current(email);
+  const t = tokens.get(email), login = current(email);
+  if (t && t.exp > Date.now() && t.since === login?.since) return t.token;
   if (!login || login.expired) throw Object.assign(new HttpError(409, `${email} has no current Microsoft 365 login: they sign in to it on the Logins page`), { login: 'm365' });
   try {
-    const r = await refreshM365(secret(email, 'm365')), now = current(email);
-    if (now) saveLogin(email, now, r.refresh);
-    tokens.set(email, { token: r.access, exp: r.expires });
+    // Until its person consents to what the server asks for anew, a login renews with what Microsoft last granted it.
+    const sealed = secret(email, 'm365'), r = await refreshM365(sealed).catch(e => e.consent && login.scopes ? refreshM365(sealed, login.scopes) : Promise.reject(e));
+    const now = current(email);
+    if (now) saveLogin(email, { ...now, ...(r.scopes && { scopes: r.scopes }) }, r.refresh);
+    tokens.set(email, { token: r.access, exp: r.expires, since: login.since });
     return r.access;
   } catch (e) {
     if ((e as HttpError).status !== 401) throw e;

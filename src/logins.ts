@@ -10,7 +10,8 @@ import { users } from './auth.ts';
 // saved browser state) is sealed in <login id>.sealed with AES-256-GCM, its person and id as authenticated data, so a record
 // copied into another person's folder won't open. A run uses only its runner's logins, and only the offers ticked for its instance.
 export type Offer = { id: string; name: string };
-export type Login = { id: string; kind: 'm365' | 'website'; name: string; account?: string; since: string; offers: Offer[]; expired?: boolean };
+// A Microsoft 365 login's scopes are the Graph permissions Microsoft last granted it.
+export type Login = { id: string; kind: 'm365' | 'website'; name: string; account?: string; since: string; offers: Offer[]; expired?: boolean; scopes?: string[] };
 
 const folder = (email: string) => join(rfDir(), 'people', createHash('sha256').update(email).digest('hex').slice(0, 16));
 const list = (email: string) => join(folder(email), 'logins.json');

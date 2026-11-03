@@ -67,6 +67,10 @@ before(async () => {
       let body = '';
       req.on('data', c => (body += c)).on('end', () => {
         const f = new URLSearchParams(body);
+        // A login made before the server asked for Mail.Send renews only with the permissions it was granted.
+        if (f.get('refresh_token') === 'unconsented') return f.get('scope')!.includes('Mail.Send')
+          ? send({ error: 'invalid_grant', suberror: 'consent_required', error_description: "AADSTS65001: The user or administrator has not consented to use the application with ID 'app'." }, 400)
+          : (refreshes++, send({ access_token: 'tok', refresh_token: 'unconsented', expires_in: 3600, scope: 'https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/Files.Read.All Sites.Read.All openid email' }));
         if (f.get('refresh_token') === 'old-app') return send({ error: 'invalid_client', error_description: "AADSTS7000215: Invalid client secret provided for a secret added to app 'old'." }, 401);
         if (f.get('refresh_token') === 'our-secret') return send({ error: 'invalid_client', error_description: "AADSTS7000222: The provided client secret keys for app 'app' are expired." }, 401);
         if (f.get('grant_type') !== 'refresh_token' || f.get('refresh_token') !== `r${refreshes}`) return send({ error: 'invalid_grant', error_description: 'AADSTS700082: The refresh token has expired.' }, 400);
@@ -324,3 +328,14 @@ test("rf graph's writes share nothing, and make, move or copy nothing outside th
   assert.equal((await graph(['PATCH', '/drives/b!d1/items/a', '--body', 'rename.json'], '{"name":"aging.csv"}')).status, 200, 'a rename in place');
 });
 
+test('a login Microsoft asks to consent to what the server asks for anew renews with what it has, and says what its person reconnects to grant', async () => {
+  const { ungranted } = await import('../src/auth.ts'), fresh = await import(`../src/graph.ts?consent=${Date.now()}`);
+  logins.saveLogin(ALICE, { ...logins.logins(ALICE)[0], expired: false, scopes: ['Mail.ReadWrite', 'Files.Read.All', 'Sites.Read.All'] }, 'unconsented');
+  assert.equal(await fresh.token(ALICE), 'tok');
+  assert.deepEqual(ungranted(logins.logins(ALICE)[0]), ['Mail.ReadWrite.Shared', 'Mail.Send', 'Mail.Send.Shared', 'Files.ReadWrite.All']);
+  const n = refreshes;
+  await fresh.token(ALICE);
+  logins.saveLogin(ALICE, { ...logins.logins(ALICE)[0], since: new Date().toISOString() });
+  await fresh.token(ALICE);
+  assert.equal(refreshes, n + 1, 'a token is kept until its login is signed in to again');
+});

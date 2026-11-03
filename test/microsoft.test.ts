@@ -82,8 +82,9 @@ before(async () => {
       if (!req.headers.origin) return void res.writeHead(400).end('{"error":"invalid_request","error_description":"AADSTS9002327: Tokens issued for the \'Single-Page Application\' client-type may only be redeemed via cross-origin requests."}');
       return send({ id_token: signed(claims) });
     }
-    // A refresh token only for a sign-in that asked offline_access, as Microsoft gives it.
-    send({ id_token: `${b64('{"alg":"none"}')}.${b64(JSON.stringify(claims))}.`, ...(c.scope.split(' ').includes('offline_access') && { refresh_token: `refresh-for-${c.email}` }) });
+    // A refresh token only for a sign-in that asked offline_access, as Microsoft gives it, with what this tenant grants: no sites.
+    const scope = c.scope.split(' ').filter((s: string) => s !== 'https://graph.microsoft.com/Sites.Read.All').join(' ');
+    send({ id_token: `${b64('{"alg":"none"}')}.${b64(JSON.stringify(claims))}.`, scope, ...(c.scope.split(' ').includes('offline_access') && { refresh_token: `refresh-for-${c.email}` }) });
   });
   await new Promise<void>(ok => idp.listen(0, '127.0.0.1', ok));
   idpBase = `http://127.0.0.1:${(idp.address() as { port: number }).port}`;
@@ -134,6 +135,7 @@ test("Connect Microsoft 365 asks the same app for read-only mail and files, and 
   assert.equal(back.headers.get('location'), '/#logins');
   const [login] = await (await fetch(`${confidential}/logins`, { headers: { cookie: s } })).json();
   assert.deepEqual([login.id, login.account, login.offers], ['m365', 'alex@acme.test', []], 'it offers nothing until its person adds it');
+  assert.deepEqual([login.scopes, login.missing], [['Mail.Read', 'Mail.Read.Shared', 'Files.Read.All'], ['Sites.Read.All']], 'what Microsoft granted, and what its person reconnects to grant');
   assert.equal((await (await fetch(`${spaClient}/me`, { headers: { cookie: s } })).status), 401, 'another server, another session');
 });
 

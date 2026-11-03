@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { agentsFile, createInstance, duplicateInstance, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, safeName, seriesDir, type Entry, type Instance } from './store.ts';
 import { socketDir } from './runner.ts';
 import { serveSandboxes } from './sandbox.ts';
-import { authenticate, checkConfig, connectM365, m365Ready, mode, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, upsertUser, users, type Me, type Role, type User } from './auth.ts';
+import { authenticate, checkConfig, connectM365, m365Ready, mode, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
 import { canManage, canSee, changes, everyone, initSystem, readJson, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
 import { checkTicks, logins, runnerOf, signOut } from './logins.ts';
 import { agentCall } from './agent-api.ts';
@@ -716,7 +716,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       if (req.method === 'DELETE') return send(res, 200, (revokeToken(own.email, decodeURIComponent(url.pathname.slice(8))), 'ok'));
       const { name, days } = await json(req);
       send(res, 200, { token: newToken(own.email, String(name ?? '').trim(), Number(days)) });
-    } else if (url.pathname === '/logins' && req.method === 'GET') send(res, 200, logins(me.email));
+    } else if (url.pathname === '/logins' && req.method === 'GET') send(res, 200, logins(me.email).map(l => ({ ...l, missing: ungranted(l) })));
     else if (url.pathname === '/logins/m365/connect') {
       // A link on another site must not start it: Microsoft may sign in again without asking.
       if (req.headers['sec-fetch-site'] && req.headers['sec-fetch-site'] !== 'same-origin') throw new HttpError(403, 'connect Microsoft 365 from the Logins page');

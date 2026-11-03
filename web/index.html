@@ -1102,10 +1102,11 @@ function loginsHtml(s) {
   if (!me.m365) h += `<h3>Microsoft 365</h3><div class="sub">Not set up on this server: it needs an app registered in Microsoft Entra ID, which an admin sets in the server's settings (README, Access).</div>`;
   for (const l of s.logins.filter(l => l.kind === 'm365')) {
     h += `<h3>${esc(l.name)}</h3><div class="sub">${esc(l.account ?? '')}${l.account ? ' · ' : ''}${l.expired ? '<span class="q">expired: sign in again</span>' : `since ${esc(when(l.since))}`}</div>`
+      + (l.missing.length && !l.expired ? `<div class="sub"><span class="q">Reconnect to let runs send and save</span>: Microsoft hasn't granted this login ${esc(l.missing.join(', '))}, which this server now asks for.</div>` : '')
       + l.offers.map(o => `<div class="skill-row" style="display:flex;align-items:center"><span style="flex:1">${esc(o.name)}</span>${l.id === 'm365' ? `<button class="quiet" data-act="unoffer" data-id="${esc(o.id)}">Remove</button>` : ''}</div>`).join('');
     if (l.id === 'm365' && !l.expired) h += `<div class="sub">Add a mailbox by its address, yours or one you may read; a whole SharePoint site by its link; or a folder, with all under it, or a file, in SharePoint or anyone's OneDrive, by any link to it.</div>`
       + `<div class="row2"><input type="text" id="offer-add" placeholder="A mailbox or a link" style="flex:1"><button class="btn" data-act="offer-add">Add</button></div>`;
-    h += `<div class="row2">${l.id === 'm365' && l.expired ? '<a class="btn primary" href="/logins/m365/connect">Sign in again</a>' : ''}<button class="btn" data-act="signout-login" data-id="${esc(l.id)}">Sign out</button></div>`;
+    h += `<div class="row2">${l.id === 'm365' && (l.expired || l.missing.length) ? `<a class="btn primary" href="/logins/m365/connect">${l.expired ? 'Sign in again' : 'Reconnect'}</a>` : ''}<button class="btn" data-act="signout-login" data-id="${esc(l.id)}">Sign out</button></div>`;
   }
   if (s.sites.length) h += `<h3>Websites</h3><div class="sub">Sign in yourself, in a browser shown here. Your login is what that browser keeps, its cookies, never your password; a run's browser starts from it and brings it back refreshed. It reaches only the hosts listed, but there it can do whatever you can: the agent is told only to read, and each run's log counts its writes.</div>`
     + s.sites.map(w => {
