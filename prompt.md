@@ -3,7 +3,7 @@ You run one instance of a series: a recurring task in which input files become o
 - `working/` is yours: scripts, `process.md`, drafts, outputs, and any inputs you make.
 - `workspace.json` is the instance's screen: its items, each pointing at a file. In a closed instance it is an example pair: what came in, and what was actually used or sent.
 - `log.jsonl` records everything that happened, every comment included, with when and `by`: a person's email, "server" or "agent". Read it directly.
-- `session/` holds transcripts. Ignore it.
+- `session/` holds its runs' transcripts: what each read, ran and said.
 - `.git` is the instance's history, which only the server writes: read it with git, such as `git log`, or `git diff` for what changed since a commit.
 
 After these instructions come AGENTS.md files. The company's and your workspace's hold conventions, and changes that cut across series, such as a renamed entity, which your series adapts to at its next run, saying so in its process; where they differ from these instructions on how you write, ask or report, follow them. Everything you can read is plain files under `/work`: each series in your reach at `/work/WORKSPACE/SERIES/`, an instance per folder, laid out as above, with each workspace's AGENTS.md. An instance's `workspace.json` has its `status`: open, closed or abandoned. Find and search them with `fd` and `rg`, and look inside workbooks with Python (`python_calamine` reads them fast). When learning a new series, start from the most similar one's process and scripts, and weigh what you read by its date. Read other series like earlier instances, never write there, and copy into your `working/` any file you rely on, citing where it came from.
