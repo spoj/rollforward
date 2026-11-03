@@ -90,3 +90,20 @@ test("migrate-fork copies the fork's root by id, with its talk as threads, numbe
   assert.throws(() => migrate('new'), /exists: migrate into a new folder/);
   rmSync(tmp, { recursive: true, force: true });
 });
+
+test('rename-person renames a person the fork named by name: who acted, whom a takeover was from and who set a wake, not a run or a label', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-')), log = join(tmp, 'instances', 'a', 'log.jsonl');
+  mkdirSync(dirname(log), { recursive: true });
+  const entries = [
+    { by: 'Ann Lee', op: 'create', from: 'Ann Lee' }, { by: 'bo@x.com', op: 'takeover', from: 'Ann Lee' },
+    { by: 'server', op: 'wake', from: 'Ann Lee' }, { by: 'server', op: 'wake', from: 'Acme/Weekly/Ann Lee' },
+  ];
+  writeFileSync(log, entries.map(e => JSON.stringify(e) + '\n').join(''));
+  assert.equal(execFileSync(process.execPath, ['scripts/rename-person.ts', tmp, 'Ann Lee', 'ann@x.com'], { encoding: 'utf8' }), 'a: 3 entries\n');
+  assert.deepEqual(readFileSync(log, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)), [
+    { by: 'ann@x.com', op: 'create', from: 'Ann Lee' }, { by: 'bo@x.com', op: 'takeover', from: 'ann@x.com' },
+    { by: 'server', op: 'wake', from: 'ann@x.com' }, { by: 'server', op: 'wake', from: 'Acme/Weekly/Ann Lee' },
+  ]);
+  assert.deepEqual(readdirSync(dirname(log)), ['log.jsonl'], 'written beside, then moved over');
+  rmSync(tmp, { recursive: true, force: true });
+});
