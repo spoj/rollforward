@@ -3,7 +3,7 @@ import { chmodSync, closeSync, constants, existsSync, ftruncateSync, mkdirSync, 
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PORT, sandboxArgs } from './sandbox.ts';
+import { listenRun, PORT, sandboxArgs, unlistenRun } from './sandbox.ts';
 import { skillsDir } from './skills.ts';
 import { openFile } from './store.ts';
 import { bundle } from './ca.ts';
@@ -15,7 +15,6 @@ const cliPath = join(dirname(fileURLToPath(import.meta.resolve('@earendil-works/
 const [provider, model] = (process.env.RF_MODEL ?? 'openrouter/anthropic/claude-opus-5.5').split(/\/(.*)/);
 // Where runs get their HOME and /tmp, and the folder of the server's socket for sandboxes.
 export const scratch = process.env.RF_SCRATCH ?? join(tmpdir(), 'rollforward');
-export const socketDir = join(scratch, 'socket');
 // Each run's own cgroup, where systemd runs the server; the container image sets this empty.
 const SCOPE = 'systemd-run --user --scope --quiet --collect --slice=rollforward-runs -p MemoryHigh=4G -p MemoryMax=8G --';
 
@@ -39,7 +38,9 @@ export type View = { cwd: string; instance: string; dir: string; pylib: string; 
 export function pi(o: { token: string; id: string; view: View; skills?: string[] }): RpcClient {
   const run = join(scratch, 'runs', o.token), home = join(run, 'home'), agentDir = join(home, '.pi', 'agent'), tmp = join(run, 'tmp');
   const { cwd, instance, dir, pylib } = o.view, working = join(dir, 'working'), session = join(dir, 'session');
-  for (const d of [agentDir, tmp, pylib, working, session]) mkdirSync(d, { recursive: true });
+  const socketDir = join(run, 'socket');
+  for (const d of [agentDir, tmp, pylib, working, session, socketDir]) mkdirSync(d, { recursive: true });
+  listenRun(join(socketDir, 'rf.sock'), o.token);
   for (const f of readdirSync(session).filter(f => f.endsWith('.jsonl'))) {
     const fd = openFile(session, f, constants.O_RDWR);
     if (fd === undefined) continue;
@@ -96,7 +97,7 @@ export async function startRun(o: Parameters<typeof pi>[0] & { message: string; 
   const client = pi(o), run = join(scratch, 'runs', o.token);
   // A run may leave folders it can't write in its home; they're made writable first, never through a link.
   const writable = (d: string) => { chmodSync(d, 0o700); for (const e of readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) writable(join(d, e.name)); };
-  const stop = async () => { await client.stop(); writable(run); rmSync(run, { recursive: true, force: true }); };
+  const stop = async () => { await client.stop(); unlistenRun(o.token); writable(run); rmSync(run, { recursive: true, force: true }); };
   const settled = new Promise<boolean>(resolve => client.onEvent(e => e.type === 'agent_settled' && resolve(e.aborted)));
   client.onEvent(o.onEvent);
   await client.start();

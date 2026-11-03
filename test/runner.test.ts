@@ -17,7 +17,7 @@ Object.assign(process.env, {
   OPENROUTER_API_KEY: 'the-real-key', RF_TEST_SECRET: 'server-only',
   RF_BROWSER_URL: `http://127.0.0.1:${(browsers.address() as { port: number }).port}`, RF_BROWSER_KEY: 'the-browser-key',
 });
-const { pi, socketDir } = await import('../src/runner.ts');
+const { pi } = await import('../src/runner.ts');
 const { serveSandboxes } = await import('../src/sandbox.ts');
 const { HttpError } = await import('../src/store.ts');
 const { openSkills, pushSkill } = await import('../src/skills.ts');
@@ -35,11 +35,12 @@ const lent = (site: string) => {
   return {};
 };
 const standIn = { lent, browser: async (site: string) => (lent(site), 'b1'), connected() {} } as unknown as import('../src/browsers.ts').Browsers;
-mkdirSync(socketDir, { recursive: true });
-const sockets = serveSandboxes(join(socketDir, 'rf.sock'), {
+// The server's runs: this one, and another going at the same time, OTHER, whose token this one's agent might have read.
+const OTHER = 'other-token';
+const sockets = serveSandboxes({
   agent: async (req, res) => void res.end(`agent API, as ${req.headers.authorization}`),
   // The server's answer for a connection's host, which here says what it was asked.
-  run: token => (token === TOKEN ? {
+  run: token => ([TOKEN, OTHER].includes(token) ? {
     egress: (host, allowed) => void egress.push([host, allowed]), browsers: () => standIn, intercepts: host => host === 'graph.microsoft.com',
     call: async (host, req, res) => void res.end(`${host} ${req.method} ${req.url} ${req.headers.authorization ?? '-'}`),
   } : undefined),
@@ -100,6 +101,14 @@ test('no key or server setting is inside: the model is reached through the socke
   assert.equal(await sh(`curl -s http://127.0.0.1:7000/model/${TOKEN}/chat`), 'model got /v1/chat with Bearer the-real-key');
   assert.equal(await sh('curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:7000/model/wrong/chat'), '404');
   assert.equal(await sh('rf show 2>&1 | head -1'), `agent API, as Bearer ${TOKEN}`);
+});
+
+test("the run's socket is its own: another run's token, as one it read in that run's transcript, opens nothing there", async () => {
+  assert.equal(await sh(`curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:7000/model/${OTHER}/chat`), '404');
+  assert.equal(await sh(`curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${OTHER}" http://127.0.0.1:7000/agent/delivered`), '401');
+  assert.equal(await sh(`curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:7000/browsers/${OTHER}/crm/json/version`), '404');
+  assert.match(await sh(`curl -s -m 10 -x http://rf:${OTHER}@127.0.0.1:7000 https://graph.microsoft.com/v1.0/me 2>&1; echo " exit $?"`), /exit [1-9]/);
+  assert.equal(await sh(`curl -s -m 10 https://graph.microsoft.com/v1.0/me`), 'graph.microsoft.com GET /v1.0/me -', 'its own token still does');
 });
 
 test("the network is the server's socket: allowed hosts through its proxy, never other hosts or private addresses", async () => {

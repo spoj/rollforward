@@ -26,13 +26,13 @@ export function parseArgs(words: string[]): { args: Args; rest: string[] } {
 }
 
 // The agent API on a port of its own, for one stand-in run: what `cli.ts try` and the tests use in place of the server.
-export async function serveAgent(inst: Instance): Promise<{ url: string; token: string; close(): Promise<void> }> {
-  const token = randomUUID(), a: AgentRun = { inst, n: 0 };
+export async function serveAgent(inst: Instance): Promise<{ url: string; token: string; browsers(): Browsers; close(): Promise<void> }> {
+  const token = randomUUID(), a: AgentRun = { inst, n: 0 }, browsers = () => (a.browsers ??= new Browsers(inst, 0));
   const server = createServer(async (req, res) => {
     const send = (status: number, data: unknown) => res.writeHead(status, { 'content-type': typeof data === 'string' ? 'text/plain; charset=utf-8' : 'application/json' }).end(typeof data === 'string' ? data : JSON.stringify(data, null, 1));
     try {
       const url = new URL(req.url!, 'http://x'), [, root, t, ...rest] = url.pathname.split('/');
-      if (root === 'browsers' && t === token) return await serveBrowsers(a.browsers ??= new Browsers(inst, 0), `/browsers/${token}`, rest, req, res);
+      if (root === 'browsers' && t === token) return await serveBrowsers(browsers(), `/browsers/${token}`, rest, req, res);
       if (req.headers.authorization !== `Bearer ${token}`) throw new HttpError(401, 'no run for this token');
       const r = await agentCall(a, url.pathname, req.method ?? 'GET', async () => { const c: Buffer[] = []; for await (const x of req) c.push(x as Buffer); return Buffer.concat(c); });
       if (!r) throw new HttpError(404, 'not found');
@@ -46,11 +46,11 @@ export async function serveAgent(inst: Instance): Promise<{ url: string; token: 
     socket.on('error', () => socket.destroy());
     const [, root, t, site, ...rest] = URL.parse(req.url!, 'http://x')?.pathname.split('/') ?? [];
     if (root !== 'browsers' || t !== token || !site || rest.length) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
-    upgradeBrowser(a.browsers ??= new Browsers(inst, 0), site, req, socket, head);
+    upgradeBrowser(browsers(), site, req, socket, head);
   });
   await new Promise<void>(ok => server.listen(0, '127.0.0.1', ok));
   return {
-    url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, token,
+    url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, token, browsers,
     async close() { await a.browsers?.end(); server.close(); server.closeAllConnections(); },
   };
 }

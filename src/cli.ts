@@ -44,7 +44,7 @@ async function tryIt(args: string[]) {
   const api = await serveAgent(inst);
   // The proxy a run has, on a port of its own, for the connections and the hosts runs may reach.
   const token = randomUUID(), run: CallRun = { inst: inst as unknown as Instance, n: 0, links: new Map() };
-  const proxy = serveSandboxes(0, { agent: async (_q, s) => void s.writeHead(404).end(), run: t => t === token ? { egress: () => {}, owns: () => false, intercepts: h => intercepts(run, h), call: (h, q, s) => call(run, h, q, s) } : undefined });
+  const proxy = serveSandboxes({ agent: async (_q, s) => void s.writeHead(404).end(), run: t => t === token ? { egress: () => {}, browsers: api.browsers, intercepts: h => intercepts(run, h), call: (h, q, s) => call(run, h, q, s) } : undefined }).listen(0);
   await once(proxy, 'listening');
   const via = `http://rf:${token}@127.0.0.1:${(proxy.address() as { port: number }).port}`;
   writeFileSync(join(out, 'ca.pem'), bundle());

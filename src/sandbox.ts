@@ -1,15 +1,15 @@
 import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from 'node:http';
 import { request as httpsRequest } from 'node:https';
-import { BlockList, connect } from 'node:net';
+import { BlockList, connect, createServer as createNetServer, type Server as NetServer } from 'node:net';
 import { lookup } from 'node:dns/promises';
 import { TLSSocket } from 'node:tls';
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { readJson } from './system.ts';
 import { serveBrowsers, upgradeBrowser, type Browsers } from './browsers.ts';
 import { contextFor } from './ca.ts';
 
 // Each run is a bubblewrap sandbox with no network of its own (bin/sandbox/node starts Pi in it, with sandboxArgs). Its one way
-// out is the socket served here, which socat inside offers at 127.0.0.1:PORT:
+// out is a socket of its own served here, which socat inside offers at 127.0.0.1:PORT:
 // - /agent/…: the agent API, as the run (rf);
 // - /model/<token>/…: the model, with the key added here, so no key is ever inside;
 // - /browsers/<token>/<NAME>: the run's browser on the website NAME, $RF_BROWSERS/NAME (see browsers.ts);
@@ -40,14 +40,30 @@ export const allowed = (host: string) =>
 // What the server knows of a run, by its token.
 export type SandboxRun = { egress(host: string, allowed: boolean): void; browsers(): Browsers; intercepts(host: string): boolean; call(host: string, req: IncomingMessage, res: ServerResponse): Promise<void> };
 
-export function serveSandboxes(path: string | number, o: { agent(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void>; run(token: string): SandboxRun | undefined }) {
-  if (typeof path === 'string' && existsSync(path)) rmSync(path);
+// A run's own socket, which only its sandbox holds: what comes in on it is that run's alone, so its token, which the agent sees and
+// may print where another run reads it, opens nothing from elsewhere. The sockets `cli.ts try` and the tests listen on are shared.
+const bound = new WeakMap<object, string>(), own = new Map<string, NetServer>();
+let sandboxes: ReturnType<typeof createServer>;
+export function listenRun(path: string, token: string) {
+  own.set(token, createNetServer(s => { bound.set(s, token); sandboxes.emit('connection', s); }).listen(path).unref());
+}
+export function unlistenRun(token: string) {
+  own.get(token)?.close();
+  own.delete(token);
+}
+
+export function serveSandboxes(o: { agent(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void>; run(token: string): SandboxRun | undefined }) {
+  const runOf = (socket: object, token: string) => ((bound.get(socket) ?? token) === token ? o.run(token) : undefined);
   // What comes in here is the agent's to shape, so a request the server can't parse is refused, never thrown.
-  const server = createServer(async (req, res) => {
+  const server = sandboxes = createServer(async (req, res) => {
     const url = URL.parse(req.url!, 'http://sandbox');
     if (!url) return void res.writeHead(400).end();
-    if (url.pathname.startsWith('/agent/') || url.pathname.startsWith('/api/')) return o.agent(req, res, url);
-    const [, root, token, ...rest] = url.pathname.split('/'), run = o.run(token);
+    if (url.pathname.startsWith('/agent/') || url.pathname.startsWith('/api/')) {
+      const token = bound.get(req.socket);
+      if (token && req.headers.authorization !== `Bearer ${token}`) return void res.writeHead(401).end('no run for this token');
+      return o.agent(req, res, url);
+    }
+    const [, root, token, ...rest] = url.pathname.split('/'), run = runOf(req.socket, token);
     if (root === 'browsers' && run) return serveBrowsers(run.browsers(), `/browsers/${token}`, rest, req, res).catch(e => res.headersSent ? res.destroy() : res.writeHead(e.status ?? 500).end(e.message));
     if (root !== 'model' || !run) return void res.writeHead(404).end();
     const target = new URL(`${MODEL_URL}/${rest.join('/')}${url.search}`);
@@ -60,7 +76,7 @@ export function serveSandboxes(path: string | number, o: { agent(req: IncomingMe
   });
   server.on('upgrade', (req, socket, head) => {
     socket.on('error', () => socket.destroy());
-    const [, root, token, site, ...rest] = URL.parse(req.url!, 'http://sandbox')?.pathname.split('/') ?? [], run = o.run(token);
+    const [, root, token, site, ...rest] = URL.parse(req.url!, 'http://sandbox')?.pathname.split('/') ?? [], run = runOf(socket, token);
     if (root !== 'browsers' || !run || !site || rest.length) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
     upgradeBrowser(run.browsers(), site, req, socket, head);
   });
@@ -68,7 +84,7 @@ export function serveSandboxes(path: string | number, o: { agent(req: IncomingMe
     let up: ReturnType<typeof connect> | undefined;
     client.on('error', () => up?.destroy());
     const token = Buffer.from(String(req.headers['proxy-authorization'] ?? '').replace(/^Basic /, ''), 'base64').toString().split(':')[1];
-    const run = o.run(token ?? ''), [host, port] = req.url!.split(':');
+    const run = runOf(client, token ?? ''), [host, port] = req.url!.split(':');
     const refuse = (why: string) => client.end(`HTTP/1.1 403 Forbidden\r\ncontent-type: text/plain\r\n\r\n${why}\n`);
     if (!run) return refuse('no run for this token');
     if (port === '443' && run.intercepts(host)) {
@@ -92,7 +108,6 @@ export function serveSandboxes(path: string | number, o: { agent(req: IncomingMe
     });
     up.on('error', () => client.destroy());
   });
-  server.listen(path);
   return server;
 }
 

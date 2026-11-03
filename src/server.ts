@@ -7,7 +7,6 @@ import { promisify } from 'node:util';
 import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { agentsFile, createInstance, duplicateInstance, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, safeName, seriesDir, type Entry, type Instance } from './store.ts';
-import { socketDir } from './runner.ts';
 import { commit } from './git.ts';
 import { serveSandboxes } from './sandbox.ts';
 import { authenticate, checkConfig, cli, connect, m365Ready, mode, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
@@ -676,8 +675,7 @@ async function connectionsRoute(me: Me, req: IncomingMessage, res: ServerRespons
   throw new HttpError(405, 'PUT or DELETE');
 }
 
-mkdirSync(socketDir, { recursive: true });
-serveSandboxes(join(socketDir, 'rf.sock'), {
+serveSandboxes({
   agent: async (req, res, url) => {
     try {
       await agent(req, res, url);

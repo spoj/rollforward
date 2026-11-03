@@ -181,15 +181,15 @@ before(async () => {
   ca = (await import('../src/ca.ts')).bundle();
   const callRuns = new Map<string, import('../src/connections.ts').CallRun>();
   sock = join(tmp, 'rf.sock');
-  proxy = serveSandboxes(sock, {
+  proxy = serveSandboxes({
     agent: async (_q, s) => void s.writeHead(404).end(),
     run: token => {
       if (!runs.has(token)) return undefined;
       if (!callRuns.has(token)) callRuns.set(token, { inst: runs.get(token)!, n: 1, links: new Map() });
       const r = callRuns.get(token)!;
-      return { egress() {}, owns: () => false, intercepts: h => c.intercepts(r, h), call: (h, q, s) => c.call(r, h, q, s) };
+      return { egress() {}, browsers: () => { throw new Error('no browsers here'); }, intercepts: h => c.intercepts(r, h), call: (h, q, s) => c.call(r, h, q, s) };
     },
-  });
+  }).listen(sock);
   runs.set('run', inst);
   call = (path, body) => agentCall(run, path, body === undefined ? 'GET' : 'POST', async () => Buffer.from(JSON.stringify(body ?? {})));
 });

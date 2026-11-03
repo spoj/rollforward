@@ -189,7 +189,7 @@ The runner, [src/runner.ts](src/runner.ts), drives Pi through Pi's `RpcClient`, 
 Each run's Pi is a bubblewrap sandbox ([src/sandbox.ts](src/sandbox.ts)), in a systemd scope of its own (`MemoryHigh` 4 GB, `MemoryMax` 8 GB, in `rollforward-runs.slice`). Anyone signed in can talk to the agents of their own workspaces, within these walls.
 
 - **What it sees:** the system, the app's code and the skills, read-only; under `/work`, its view of the data by name, built as it starts: `/work/<workspace>/<series>/<label>/` for every instance in its reach, read-only but for its own instance's `working/` and `session/` and its series' `.pylib`, and the AGENTS.md files, but no other series' `.pylib`, the code its runs installed, which a run in reach would run with its own runner's logins; `RF_SANDBOX_RO`, read-only; and a HOME and /tmp of its own on `RF_SCRATCH`, deleted when it ends. Never `.rf/`, the data root, a workspace outside its reach, or the server's environment.
-- **No network of its own.** Its one way out is the server's socket, `RF_SCRATCH/socket/rf.sock`, which socat offers at 127.0.0.1:7000 inside:
+- **No network of its own.** Its one way out is a socket of its own the server listens on, `RF_SCRATCH/runs/<token>/socket/rf.sock`, which socat offers at 127.0.0.1:7000 inside. What comes in on it is that run's alone: its token, which the agent sees, as in its HOME's path, and may print where another run reads it, opens nothing on another run's socket.
   - `/api/…` and `/agent/…`, as the run, by its token (`RF_URL`, `RF_TOKEN`), which ends with the run; the site itself serves no `/agent`;
   - `/model/<token>/…`, the model, with the key added on the way (`RF_MODEL_URL`);
   - `/browsers/<token>/<SITE>`, `$RF_BROWSERS/SITE`, the run's browser on a website: its CDP websocket, passed to the browser service with its key, and the files of its machine;
@@ -266,7 +266,7 @@ The [justfile](justfile) has these and more as recipes; `just` lists them. `just
   - `RF_LIMIT_MIN` (120)
   - `RF_PI_ARGS` (a JSON array of extra Pi arguments)
   - `RF_HOST` (`127.0.0.1`)
-  - `RF_SCRATCH` (the system's temp folder`/rollforward`), for each run's HOME and /tmp and the server's socket for runs
+  - `RF_SCRATCH` (the system's temp folder`/rollforward`), for each run's HOME, /tmp and socket; keep it short, as a socket's path, `RF_SCRATCH/runs/<token>/socket/rf.sock`, has at most 107 bytes
   - `RF_SANDBOX_SCOPE`, the command that gives each run its cgroup (a `systemd-run --user --scope` line; empty for none)
   - `RF_SANDBOX_RO`, more folders runs may read, separated by `:`
   - `RF_BROWSER_URL` (`http://127.0.0.1:8797`) and `RF_BROWSER_KEY`, the browser service, for websites' browsers; their tests run only with these set
