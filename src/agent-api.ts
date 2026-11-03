@@ -73,6 +73,9 @@ export async function agentCall(a: AgentRun, path: string, method: string, body:
     const { args, rest } = parseArgs(await words()), out = args.out?.[0];
     if (rest.length !== 1) throw new HttpError(400, "rf graph PATH [--out FILE] [--header 'NAME: VALUE']...");
     const headers = Object.fromEntries((args.header ?? []).map(h => [h.slice(0, h.indexOf(':')).trim().toLowerCase(), h.slice(h.indexOf(':') + 1).trim()]));
+    // Headers that shape the answer, never what the GET does: a Prefer that redeems a sharing link grants the runner access.
+    const bad = Object.entries(headers).find(([k, v]) => !['accept', 'consistencylevel', 'prefer', 'range'].includes(k) || (k === 'prefer' && /redeemsharinglink/i.test(v)));
+    if (bad) throw new HttpError(400, `rf graph takes the headers Accept, ConsistencyLevel, Prefer and Range, and no Prefer that redeems a sharing link: not ${bad[0]}: ${bad[1]}`);
     const r = await graphGet(a.inst, rest[0], headers), saved = out && r.status < 300 ? rel(out) : undefined;
     a.inst.append('agent', 'graph', { path: rest[0], status: r.status, bytes: r.bytes.length, ...(saved && { file: saved }) });
     if (saved) return { status: 200, data: { saved, data: data(r.bytes) } };

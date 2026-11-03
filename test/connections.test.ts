@@ -141,6 +141,9 @@ test("rf graph reaches only what's ticked: not the runner's OneDrive unticked, a
   await assert.rejects(graph('https://elsewhere.test/v1.0/me/messages'), /a Graph path/);
   for (const out of ["/sites/host,site1,web1/getByPath(path='/sites/HR')/drive/root/children", "/sites/host,site1,web1/microsoft.graph.getByPath(path='/sites/HR')"])
     await assert.rejects(graph(out), /getByPath reaches any site by its path/, out);
+  for (const header of ['Prefer: redeemSharingLink', 'X-HTTP-Method-Override: DELETE'])
+    await assert.rejects(call('/agent/graph', { args: ['/me/messages', '--header', header] }), /takes the headers Accept, ConsistencyLevel, Prefer and Range/, header);
+  assert.equal((await call('/agent/graph', { args: ['/me/messages', '--header', 'Prefer: outlook.body-content-type="text"'] }))!.status, 200);
 });
 
 test("rf graph reads a ticked mailbox whole: messages with their bodies, and a message's MIME, which rf saves", async () => {
