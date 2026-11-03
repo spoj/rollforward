@@ -423,9 +423,12 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       s.name = name;
     }
     if (change.archived !== undefined) s.archived = !!change.archived;
-    saveTree(t);
+    // Anyone may share it as themselves in place of whoever does; only they, or whoever manages the workspace, stop sharing it.
     const was = seriesSettings(seriesDir(id)).shared;
+    if (change.share !== undefined && !change.share && was && was.by !== by && !canManage(me, t.workspaces[s.workspace]))
+      throw new HttpError(403, `${was.by} shares it: they, or the workspace's owners, stop sharing it`);
     const shared = change.share === undefined ? was : change.share ? { by, since: new Date().toISOString(), logins: checkTicks(by, change.logins ?? []) } : undefined;
+    saveTree(t);
     replaceReadOnly(join(seriesDir(id), 'series.json'), JSON.stringify({ ...(shared && { shared }) }, null, 1));
     return send(res, 200, 'ok');
   }

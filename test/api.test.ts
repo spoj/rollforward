@@ -358,7 +358,6 @@ test("people see and move a series' next wake, share it as themselves, and start
   assert.equal((await call('PUT', ws, JSON.stringify({ owners: [adminEmail], members: [bob] }))).status, 200);
   assert.equal((await call('POST', `${await at(series, '2026-08-30 rework', 'comment')}`, JSON.stringify({ text: 'fyi' }), b)).status, 200);
   assert.equal(JSON.parse(readFileSync(wakes, 'utf8')).pending[sep]?.at, due, "bob's note for the runner starts nothing, so the wake stays");
-  assert.equal((await call('PUT', ws, JSON.stringify({ owners: [], members: [] }))).status, 200);
   assert.equal((await call('POST', `${await at(series, '2026-08-30 rework', 'comment')}`, JSON.stringify({ text: 'go' }))).status, 200);
   assert.equal(JSON.parse(readFileSync(wakes, 'utf8')).pending[sep], undefined, "a person's act starts the run now, so the wake goes");
 
@@ -367,6 +366,9 @@ test("people see and move a series' next wake, share it as themselves, and start
   assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(root, 'series', s.id, 'series.json'), 'utf8'))), ['shared']);
   assert.equal((await call('PUT', await at(series), JSON.stringify({ name: s.name }))).status, 200);
   assert.equal((await shown(series)).shared_by, adminEmail, 'other settings leave sharing as it was');
+  assert.equal((await call('PUT', await at(series), JSON.stringify({ share: false }), b)).status, 403, "a member doesn't stop another's sharing");
+  assert.equal((await shown(series)).shared_by, adminEmail);
+  assert.equal((await call('PUT', ws, JSON.stringify({ owners: [], members: [] }))).status, 200);
 
   const started = await call('POST', '/api/requests/r1');
   assert.equal(started.status, 200);
