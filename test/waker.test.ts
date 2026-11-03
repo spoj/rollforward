@@ -35,8 +35,10 @@ startWaking();
 
 after(() => rmSync(tmp, { recursive: true, force: true }));
 
-test('each message to a run names its runner, and since when', () => {
-  assert.match(message(oct, 3, []), new RegExp(`^Instance 2026-10 \\(folder 2026-10/\\), run 3\\. Its runner is .+ <${alice}>, since \\d{4}-.+\\. New log entries:`));
+test('a message names the runner and what they lend only where its entries set those', () => {
+  assert.match(message(oct, 1, oct.log), new RegExp(`^Instance 2026-10 \\(folder 2026-10/\\), run 1\\. Its runner is .+ <${alice}>, who lends you no connection\\. New log entries:`));
+  assert.match(message(oct, 2, []), /^Instance 2026-10 \(folder 2026-10\/\), run 2\. New log entries:/);
+  assert.match(message(oct, 3, [{ seq: 99, at: '', by: 'bob@demo.test', op: 'takeover', from: alice }]), new RegExp(`run 3\\. Its runner is now .+ <bob@demo\\.test>, taking over from .+ <${alice}>, who lends you no connection\\.`));
 });
 
 test('a run names a series or an instance by its folder, within its reach', () => {
@@ -141,7 +143,6 @@ test("a task's run sees its own instance alone in its series' folder, and the se
   const v = view(make('s4', 'Lunch'));
   assert.equal(v.cwd, '/work/Acme/Lunch');
   assert.deepEqual(v.ro.map(([, at]) => at).filter(at => at.startsWith('/work/Acme/Lunch/')), ['/work/Acme/Lunch/Lunch']);
-  assert.match(v.catalogue, /^- \.\.\/Bank rec: /m);
   const t = tree(), cut = instance(labels('s3').find(l => l.label === 'cut')!.id);
   saveTree({ ...t, workspaces: { ...t.workspaces, x: { ...t.workspaces.x, archived: true } } });
   setWake(cut.id, { at: new Date().toISOString(), reason: 'archived', from: 'x' });

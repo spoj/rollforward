@@ -141,11 +141,11 @@ test("the side panel opens on Conversation beside the instance; the Ops log fold
   await page.waitForSelector('#log.open .tab.sel:text-is("Conversation")');
   assert.equal(await page.locator('#bar [data-act=show-panel]').count(), 0, 'the bar offers the panel only while it is closed');
   await page.click('#log [data-tab=log]');
-  const work = page.locator('#log .e > div > details', { hasText: 'Agent showed 3 files, set up 3 items, removed 1 item' });
+  const work = page.locator('#log .e > div > details', { hasText: "alex's agent showed 3 files, set up 3 items, removed 1 item" });
   await work.waitFor();
   assert.deepEqual(await page.locator('#log .e > div').evaluateAll(es => es.map(e => (e as HTMLElement).innerText.split('\n')[0])), [
     'alex opened the instance', 'alex uploaded an input', 'Server showed u2', 'Run 1 started',
-    'Agent showed 3 files, set up 3 items, removed 1 item', 'Agent reported on run 1', 'Run 1 finished · 4m 0s · $0.21', 'alex closed the instance',
+    "alex's agent showed 3 files, set up 3 items, removed 1 item", "alex's agent reported on run 1", 'Run 1 finished · 4m 0s · $0.21', 'alex closed the instance',
   ]);
   await work.locator('summary').first().click();
   await page.waitForSelector('#log .ln:text("set up Borrowing base")');
@@ -158,11 +158,11 @@ test("a run's calls to a connection fold into its work in the Ops log, each with
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f01'; });
   await page.waitForSelector('#log.open');
   await page.click('#log [data-tab=log]');
-  const work = page.locator('#log .e > div > details', { hasText: 'Agent made 2 requests outside' });
+  const work = page.locator('#log .e > div > details', { hasText: 'Your agent made 2 requests outside' });
   await work.locator('summary').first().click();
   const [ok, refused] = (await work.locator('.ln').allInnerTexts()).slice(-2);
-  assert.equal(ok, 'Agent called adb: POST /api/2.0/sql/statements');
-  assert.match(refused, /^Agent called adb: POST \/api\/2\.0\/sql\/statements, refused/);
+  assert.equal(ok, 'Your agent called adb: POST /api/2.0/sql/statements');
+  assert.match(refused, /^Your agent called adb: POST \/api\/2\.0\/sql\/statements, refused/);
   assert.equal(await work.locator('.ln .d').last().innerText(), 'adb only reads: a statement starts with SELECT, not DROP');
 });
 
@@ -252,5 +252,5 @@ test("a sign-off the agent asks for shows louder, with Approve and Reject for it
   await post.waitFor();
   assert.match(await post.locator('.tm').innerText(), /commit [0-9a-f]{7}/);
   await page.click('#log [data-tab=log]');
-  await page.locator('#log .e', { hasText: 'admin@demo.test signed off' }).waitFor();
+  await page.locator('#log .e', { hasText: 'You signed off' }).waitFor();
 });

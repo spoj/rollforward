@@ -123,8 +123,8 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   let log = await runs(id, 2);
   assert.match(walls.prompt!, /Check what you can reach/);
   assert.ok(walls.system!.startsWith(readFileSync(join(app, 'prompt.md'), 'utf8').split('\n')[0]), "prompt.md is the system prompt, not added to Pi's own");
-  const order = ['Company: fiscal', 'Scenarios: amounts', '# What you can read', '- ../../Wide/Close: '].map(t => walls.system!.indexOf(t));
-  assert.ok(order[0] > 0 && order.every((at, k) => k === 0 || at > order[k - 1]), `the AGENTS.md files from /work down to the series folder, the catalogue last: ${walls.system}`);
+  const order = ['Company: fiscal', 'Scenarios: amounts'].map(t => walls.system!.indexOf(t));
+  assert.ok(order[0] > 0 && order[1] > order[0], `the AGENTS.md files from /work down to the workspace: ${walls.system}`);
   assert.match(walls.saw[0], /No such file or directory/, 'the data root is not in the sandbox');
   assert.match(walls.saw[1], /curl exit 7/, "the server's own port is not reachable");
   assert.match(walls.saw[2], /curl exit [1-9]/, 'nor an internal address');

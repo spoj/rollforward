@@ -28,9 +28,8 @@ export type Run = {
 
 // The run's view of the data, which the server builds: its series at cwd, such as /work/<workspace>/<series>, its own instance at
 // instance, from the folder dir, its series' .pylib from pylib, in ro, every instance in its reach, the .pylib of the other series
-// there and the AGENTS.md of the company and of each workspace there, each [host path, path inside], and the catalogue, cwd's own
-// AGENTS.md.
-export type View = { cwd: string; instance: string; dir: string; pylib: string; ro: [string, string][]; catalogue: string; env: Record<string, string> };
+// there and the AGENTS.md of the company and of each workspace there, each [host path, path inside]; and its environment.
+export type View = { cwd: string; instance: string; dir: string; pylib: string; ro: [string, string][]; env: Record<string, string> };
 
 // Pi for one run, in its sandbox (sandbox.ts): its view read-only but for the instance's working/ and session/ and the series'
 // .pylib, the live skills and nothing else of the host's. prompt.md is its system prompt, to which Pi adds the AGENTS.md
@@ -54,13 +53,12 @@ export function pi(o: { token: string; id: string; view: View; skills?: string[]
   const local = `http://127.0.0.1:${PORT}`, proxy = `http://rf:${o.token}@127.0.0.1:${PORT}`;
   writeFileSync(join(agentDir, 'models.json'), JSON.stringify({ providers: { [provider]: { baseUrl: `${local}/model/${o.token}`, apiKey: 'none' } } }));
   writeFileSync(join(agentDir, 'settings.json'), JSON.stringify({ steeringMode: 'all' }));
-  writeFileSync(join(run, 'AGENTS.md'), o.view.catalogue);
   // The authorities a run trusts, the system's and ours, whose certificates the proxy shows for connections' hosts.
   writeFileSync(join(home, 'ca.pem'), bundle());
   const args = sandboxArgs({
     cwd, home, tmp, socketDir,
     ro: [...['bin', 'src', 'node_modules', '.venv', 'package.json', 'prompt.md'].map(f => join(app, f)), dirname(process.execPath), pythonHome, ...(process.env.RF_SANDBOX_RO ?? '').split(delimiter)].filter(p => p && existsSync(p)),
-    work: { ro: [[join(run, 'AGENTS.md'), `${cwd}/AGENTS.md`], [dirname(skillsDir()), '/skills'], ...o.view.ro.filter(([src]) => existsSync(src))], rw: [[working, `${instance}/working`], [session, `${instance}/session`], [pylib, `${cwd}/.pylib`]] },
+    work: { ro: [[dirname(skillsDir()), '/skills'], ...o.view.ro.filter(([src]) => existsSync(src))], rw: [[working, `${instance}/working`], [session, `${instance}/session`], [pylib, `${cwd}/.pylib`]] },
     env: {
       PATH: [join(app, 'bin'), join(app, '.venv', 'bin'), dirname(process.execPath), '/usr/bin'].join(delimiter), LANG: 'C.UTF-8', PYTHONPATH: `${cwd}/.pylib`, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: '1', PI_TELEMETRY: '0',
       RF_URL: local, RF_TOKEN: o.token, RF_BROWSERS: `${local}/browsers/${o.token}`, RF_INSTANCE: o.id, RF_WORKING: `${instance}/working`, RF_SKILLS: '/skills/live', ...(process.env.RF_TODAY && { RF_TODAY: process.env.RF_TODAY }),

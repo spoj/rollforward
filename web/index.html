@@ -712,11 +712,16 @@ function drawEdges() {
 const logLine = e => `<div class="e"><span class="tm">${hhmm(e.at)}</span><div>${logText(e)}</div></div>`;
 
 const plural = (n, word) => `${n} ${word}${n > 1 ? 's' : ''}`;
-const actor = by => `<span class="w ${by !== 'server' && by !== 'agent' ? 'p' : ''}">${esc(by === 'agent' ? 'Agent' : by === 'server' ? 'Server' : by)}</span>`;
+// People by name, and the agent as its runner's at the time, on whose behalf it acted.
+const nm = by => by === me.email ? 'you' : data.names[by] || by;
+const actor = (by, at) => {
+  const r = by === 'agent' && data.log.findLast(x => x.at <= at && ['create', 'duplicate', 'takeover'].includes(x.op)).by;
+  return by === 'server' ? '<span class="w">Server</span>' : `<span class="w p" title="${esc(r ? `Acting for ${r}` : by)}">${esc(r ? (r === me.email ? 'Your agent' : `${nm(r)}'s agent`) : by === me.email ? 'You' : nm(by))}</span>`;
+};
 const shotsHtml = es => `<div class="shots">${es.map(e => `<img src="${fileUrl(e.file)}" loading="lazy" alt="" title="${esc(e.site)} \u00b7 ${hhmm(e.at)}" data-act="preview" data-file="${esc(e.file)}">`).join('')}</div>`;
 
 function logText(e) {
-  const w = actor(e.by);
+  const w = actor(e.by, e.at);
   const item = id => esc(data.doc.items.find(i => i.id === id)?.name ?? id);
   const f = e.file ? `<div class="f"><a data-act="preview" data-file="${esc(e.file)}">${esc(e.file)}</a></div>` : '';
   return {
@@ -732,12 +737,12 @@ function logText(e) {
     signoff: () => `${w} ${e.approved ? 'signed off' : 'rejected the sign-off'}<div class="d">${e.text ? `${esc(e.text)} · ` : ''}Commit <code>${e.commit.slice(0, 7)}</code></div>`,
     commit: () => `${w} committed the folder<div class="d">${esc(e.message)} · Commit <code>${e.commit.slice(0, 7)}</code></div>`,
     abandon: () => `${w} abandoned the instance`,
-    comment: () => `${w} ${e.note ? `left a note for ${esc(data.runner.by)}` : e.by !== 'agent' ? 'commented' : e.ask ? `asked${e.to ? ' ' + esc(e.to) : ''}` : 'said'}${e.item ? ` on ${item(e.item)}${e.ref ? ` at ${esc(e.ref)}` : ''}` : ''}<div class="d">${esc(e.text)}</div>`,
+    comment: () => `${w} ${e.note ? `left a note for ${esc(nm(data.runner.by))}` : e.by !== 'agent' ? 'commented' : e.ask ? `asked${e.to ? ' ' + esc(nm(e.to)) : ''}` : 'said'}${e.item ? ` on ${item(e.item)}${e.ref ? ` at ${esc(e.ref)}` : ''}` : ''}<div class="d">${esc(e.text)}</div>`,
     resolve: () => `${w} resolved a thread${e.text ? `<div class="d">${esc(e.text)}</div>` : ''}`,
     report: () => `${w} reported on run ${e.run}<div class="d">${md(e.text)}</div>`,
     wake: () => `${e.note ? `${esc(e.from)} would wake it: a note for ${esc(data.runner.by)}` : `Woken${e.from ? ` by ${esc(e.from)}` : ''}`}<div class="d">${esc(e.reason)}</div>`,
-    expired: () => `Waiting for ${esc(e.runner)} to sign in to ${esc(e.name ?? (e.login === 'm365' ? 'Microsoft 365' : e.login))} again${e.runner === me.email && !data.log.some(x => x.seq > e.seq && x.op === 'wake' && x.login === e.login) ? `<div>${signInHtml(e.login, e.name ?? e.login)}</div>` : ''}`,
-    takeover: () => `${w} took over from ${esc(e.from)}${e.logins?.length ? `<div class="d">Logins: ${esc(e.logins.join(', '))}</div>` : ''}`,
+    expired: () => `Waiting for ${esc(nm(e.runner))} to sign in to ${esc(e.name ?? (e.login === 'm365' ? 'Microsoft 365' : e.login))} again${e.runner === me.email && !data.log.some(x => x.seq > e.seq && x.op === 'wake' && x.login === e.login) ? `<div>${signInHtml(e.login, e.name ?? e.login)}</div>` : ''}`,
+    takeover: () => `${w} took over from ${esc(nm(e.from))}${e.logins?.length ? `<div class="d">Logins: ${esc(e.logins.join(', '))}</div>` : ''}`,
     promote: () => `${w} made it a series, ${esc(e.series)}`,
     logins: () => `${w} ticked logins: ${esc(e.logins.join(', ') || 'none')}`,
     egress: () => `Run ${e.run} ${e.allowed ? 'reached' : 'was refused'} ${esc(e.host)}`,
@@ -837,7 +842,7 @@ function rowHtml({ key, xs }, live) {
   const x = xs[0], line = x => x.op === 'shot' ? shotsHtml([x]) : x.op ? `<div class="ln">${logText(x)}</div>` : x.kind === 'say' ? `<div class="say">${md(x.text)}</div>` : lineHtml(x, x.i);
   if (xs.length === 1) return x.op ? logLine(x) : `<div class="e"><span class="tm">${hhmm(x.at)}</span><div>${line(x)}</div></div>`;
   const shots = xs.filter(x => x.op === 'shot');
-  const head = key === 'work' ? workHead(xs, live) : `${actor(x.by)} ${DID[x.op]?.(xs.length) ?? `${esc(x.op)} \u00D7${xs.length}`}`;
+  const head = key === 'work' ? workHead(xs, live) : `${actor(x.by, x.at)} ${DID[x.op]?.(xs.length) ?? `${esc(x.op)} \u00D7${xs.length}`}`;
   return `<div class="e"><span class="tm">${hhmm(x.at)}</span><div>${fold(`r${x.seq ?? 's' + x.i}`, false, head, xs.map(line).join(''))}${shots.length ? shotsHtml(shots) : ''}</div></div>`;
 }
 
@@ -848,7 +853,7 @@ function workHead(xs, live) {
     ...Object.entries(Object.groupBy(entries, e => e.action ?? e.op)).map(([k, g]) => DID[k]?.(g.length) ?? `${esc(k)} \u00D7${g.length}`),
   ];
   const bad = steps.filter(s => s.error).length + entries.filter(e => e.status >= 300 || e.allowed === false || e.op === 'browsers').length;
-  return `${actor('agent')} ${did.join(', ') || 'worked'}${bad ? ` \u00b7 <span class="bad">${bad} failed</span>` : ''}${live ? ' <span class="spin"></span>' : ''}`;
+  return `${actor('agent', xs[0].at)} ${did.join(', ') || 'worked'}${bad ? ` \u00b7 <span class="bad">${bad} failed</span>` : ''}${live ? ' <span class="spin"></span>' : ''}`;
 }
 
 // Process: the instance's working/process.md, redlined against the instance it was made from, else the series' latest closed before it.

@@ -1,7 +1,7 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { freemem } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { join, posix, relative } from 'node:path';
+import { join, posix } from 'node:path';
 import { agentsFile, createInstance, HttpError, instance, instanceDir, instances, isPerson, labels, newId, readFile, seriesDir, type Entry, type Instance } from './store.ts';
 import { startRun, type Run, type View } from './runner.ts';
 import { canSee, changes, everyone, readJson, tree, type Tree, writeJson } from './system.ts';
@@ -57,11 +57,13 @@ export function pending(inst: Instance, seen: number): Entry[] {
 // Whether an instance has something for a run: what came since its last run, or since an Interrupt, which waits for the next act.
 const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math.max(seenBefore(inst), inst.log.findLast(e => e.op === 'interrupt')?.seq ?? 0)).length > 0;
 
-// Each message names the runner, who answers sign-offs, closes the instance and whose logins the run uses, as it may change.
+// A message names the runner, on whose behalf the agent acts, and the connections they lend it, where its entries set those: the
+// first, a takeover and a runner's new ticks.
 export function message(inst: Instance, n: number, entries: Entry[]): string {
-  const { by } = runnerOf(inst), since = inst.log.findLast(e => ['create', 'duplicate', 'takeover'].includes(e.op))!;
-  return `Instance ${inst.label} (folder ${inst.label}/), run ${n}. Its runner is ${users()[by]?.name || by} <${by}>, since ${since.at}`
-    + `${since.op === 'takeover' ? `, taking over from ${since.from}` : ''}. New log entries:\n`
+  const made = entries.findLast(e => ['create', 'duplicate', 'takeover', 'logins'].includes(e.op)), us = users(), who = (by: string) => `${us[by]?.name || by} <${by}>`;
+  return `Instance ${inst.label} (folder ${inst.label}/), run ${n}.`
+    + (made ? ` Its runner is ${made.op === 'takeover' ? `now ${who(made.by)}, taking over from ${who(made.from as string)}` : who(made.by)}, who lends you ${reachable(inst).map(c => `${c.name} (${c.type})`).join(', ') || 'no connection'}.` : '')
+    + ' New log entries:\n'
     + entries.map(e => JSON.stringify(isNote(inst, e) ? { ...e, note: true } : e)).join('\n');
 }
 
@@ -81,8 +83,8 @@ export function reach(t: Tree, seriesId: string): string[] {
 export const named = (t: Tree, seriesId: string) => `${t.workspaces[t.series[seriesId].workspace].name}/${t.series[seriesId].name}`;
 
 // The run's view of the data, by name, built when it starts: /work/<workspace>/<series>/<label>/ for every instance in its reach,
-// the company's AGENTS.md at /work/AGENTS.md and each workspace's at /work/<workspace>/AGENTS.md, and the catalogue, which the
-// runner puts at its series folder's own AGENTS.md.
+// the company's AGENTS.md at /work/AGENTS.md and each workspace's at /work/<workspace>/AGENTS.md, and the environment its
+// runner's connections set.
 export function view(inst: Instance): View {
   const t = tree(), at = (id: string) => `/work/${named(t, id)}`, series = [inst.seriesId, ...reach(t, inst.seriesId)];
   const ro = series.flatMap(id => [
@@ -90,24 +92,10 @@ export function view(inst: Instance): View {
     ...(id === inst.seriesId ? [] : [[join(seriesDir(id), '.pylib'), `${at(id)}/.pylib`] as [string, string]]),
   ]);
   const agents = [...new Set(series.map(id => t.series[id].workspace))].map(w => [agentsFile(w), `/work/${t.workspaces[w].name}/AGENTS.md`] as [string, string]);
-  const catalogue = `# What you can read\n\nOne line per series, from its latest closed instance: what it delivers (its process.md's first line), its inputs and where they come from, who brings files and who answers, and its open instances, which are drafts.\n\n${series.map(id => line(t, id, at(inst.seriesId))).join('\n')}\n`;
-  // The connections its runner ticked a login of, each with its type's help, and what the type sets in the sandbox's environment.
-  const conns = reachable(inst), listed = conns.map(c => `- ${c.name}: ${types[c.type].help(c)}`).join('\n');
   return {
     cwd: at(inst.seriesId), instance: `${at(inst.seriesId)}/${inst.label}`, dir: inst.dir, pylib: join(inst.series(), '.pylib'), ro: [[agentsFile(), '/work/AGENTS.md'], ...agents, ...ro],
-    catalogue: `${catalogue}\n\n# Connections\n\nWhat you reach outside, as your runner:\n${listed || 'none: your runner ticked no login for this instance.'}\n`, env: Object.assign({}, ...conns.map(c => types[c.type].env?.(c))),
+    env: Object.assign({}, ...reachable(inst).map(c => types[c.type].env?.(c))),
   };
-}
-
-function line(t: Tree, id: string, cwd: string): string {
-  const all = instances(id), last = all.filter(i => i.doc.status === 'closed').sort((a, b) => a.closedAt().localeCompare(b.closedAt())).at(-1);
-  const purpose = last && readFile(last.dir, 'working/process.md')?.split('\n').map(l => l.replace(/^[#\s]+/, '').trim()).find(Boolean);
-  const inputs = last?.doc.items.filter(i => i.kind === 'input').map(i => `${i.name} (${i.source ?? (i.file?.startsWith('upload/') ? 'uploaded' : 'fetched')})`) ?? [];
-  const who = (op: string) => [...new Set(last?.log.filter(e => e.op === op && isPerson(e)).map(e => e.by))];
-  const open = all.filter(i => i.doc.status === 'open').map(i => i.label);
-  return `- ${relative(cwd, `/work/${named(t, id)}`) || '.'}: ${purpose ?? 'no process.md yet'}. `
-    + (last ? `Latest closed: ${last.label}. Inputs: ${inputs.join('; ') || 'none'}. Brings files: ${who('upload').join(', ') || 'nobody'}; answers: ${who('comment').join(', ') || 'nobody'}.` : 'Nothing closed yet.')
-    + (open.length ? ` Open: ${open.join(', ')}.` : '');
 }
 
 export function kick(inst: Instance) {

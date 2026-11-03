@@ -35,5 +35,4 @@ export default {
   check: async (c, _runner, _ticks, r) => check(c, r),
   links,
   env: c => ({ DATABRICKS_HOST: `https://${c.host}`, DATABRICKS_TOKEN: 'rf' }),
-  help: c => `Databricks, https://${c.host}, as your runner: SQL statements on warehouse ${c.warehouse} (POST /api/2.0/sql/statements; it fills warehouse_id), reading only, and the Unity Catalog's metadata (GET /api/2.1/unity-catalog/…). DATABRICKS_HOST and DATABRICKS_TOKEN are set for the CLI and SDK; the token is a stand-in, as the real one is added on the way.`,
 } satisfies Type;

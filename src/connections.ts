@@ -33,7 +33,6 @@ export type Type = {
   check?(c: Connection, runner: string, ticks: string[], r: Request): Promise<{ offer: string; json?: unknown }>;
   links?(answer: unknown): string[];
   env?(c: Connection): Record<string, string>;
-  help(c: Connection): string;
 };
 export const types: Record<string, Type> = { graph, databricks, website };
 

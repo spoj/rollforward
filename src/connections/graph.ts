@@ -83,7 +83,6 @@ export default {
   host: () => 'graph.microsoft.com',
   check: async (_, runner, ticks, r) => ({ offer: await check(runner, ticks, r) }),
   links,
-  help: () => "Microsoft Graph, https://graph.microsoft.com/v1.0, as your runner: the mailboxes, SharePoint sites, folders and files ticked for this instance, and, as the server allows, mail sent from a ticked mailbox and files saved within the ticks. Your runner's token replaces any Authorization you send.",
 } satisfies Type;
 
 // The item a path names or, for one a write is to make, the nearest folder above it.
