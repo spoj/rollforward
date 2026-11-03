@@ -13,7 +13,7 @@ Recurring tasks, files in and files out. People drop this period's input files i
 - **Talking is in comments,** on an item or the instance; the agent replies in the thread and ends each run with a report.
 - **Wakes:** an agent sets when its instance, or its series' next period, runs again; nothing is scheduled.
 - **Reach:** a series reads its own workspace, and any workspace whose people all belong to its own; every run also reads the company's and its workspace's guidance.
-- **rf** is people's command line, with a personal token: what the page does, plus pulling everything you can see, for your own desktop agent. Admin is rf, not the page.
+- **rf** is people's command line, with a personal token: what the page does, plus pulling everything you can see, for your own desktop agent. Admin is rf, not the page. Install it with `npm i -g @rfany/rf` ([cli/](cli/)).
 - **Everything is files on disk.** Each instance has `upload/` (people's files), `working/` (the agent's), `workspace.json` (what the screen shows) and `log.jsonl` (every event).
 
 | A tile's notes | Preview, compared with the file it replaced |

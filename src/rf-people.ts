@@ -1,5 +1,5 @@
 // rf for people: what the page does, from a shell or a desktop agent, as you, with a personal token made on the page (Tokens).
-// Needs Node 22.18 or later. PATH is workspace/series/label, as `rf ls` prints it.
+// Published to npm as @rfany/rf, from cli/. PATH is workspace/series/label, as `rf ls` prints it.
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
@@ -34,6 +34,10 @@ for (let i = 0; i < argv.length; i++) {
   const flag = argv[i].match(/^--(.+)$/)?.[1];
   if (!flag) args.push(argv[i]);
   else flags[flag] = flag === 'wait' || flag === 'output' ? true : argv[++i];
+}
+if (cmd !== 'login' && !existsSync(config)) {
+  console.error(`Sign in first, with a token made on the page under Tokens: rf login URL TOKEN\n\n${USAGE}`);
+  process.exit(2);
 }
 const { url, token } = cmd === 'login' ? { url: args[0], token: args[1] } : JSON.parse(readFileSync(config, 'utf8'));
 

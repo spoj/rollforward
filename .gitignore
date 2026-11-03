@@ -8,3 +8,5 @@ demo/run/
 data/
 .history/
 docs/try-output/
+cli/rf.mjs
+cli/LICENSE
