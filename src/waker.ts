@@ -57,8 +57,11 @@ export function pending(inst: Instance, seen: number): Entry[] {
 // Whether an instance has something for a run: what came since its last run, or since an Interrupt, which waits for the next act.
 const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math.max(seenBefore(inst), inst.log.findLast(e => e.op === 'interrupt')?.seq ?? 0)).length > 0;
 
-function message(inst: Instance, n: number, entries: Entry[]): string {
-  return `Instance ${inst.label} (folder ${inst.label}/), run ${n}. New log entries:\n`
+// Each message names the runner, who answers sign-offs, closes the instance and whose logins the run uses, as it may change.
+export function message(inst: Instance, n: number, entries: Entry[]): string {
+  const { by } = runnerOf(inst), since = inst.log.findLast(e => ['create', 'duplicate', 'takeover'].includes(e.op))!;
+  return `Instance ${inst.label} (folder ${inst.label}/), run ${n}. Its runner is ${users()[by]?.name || by} <${by}>, since ${since.at}`
+    + `${since.op === 'takeover' ? `, taking over from ${since.from}` : ''}. New log entries:\n`
     + entries.map(e => JSON.stringify(isNote(inst, e) ? { ...e, note: true } : e)).join('\n');
 }
 

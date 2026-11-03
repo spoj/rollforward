@@ -10,7 +10,7 @@ import type { Active } from '../src/waker.ts';
 // Wakes without a model: a run that a wake starts ends at once for want of a key, which is enough to see what started it.
 delete process.env.OPENROUTER_API_KEY;
 process.env.RF_WAKE_TICK_MS = '50';
-const { closed, drain, kick, queued, recover, resolveFor, setWake, startWaking, view, wakes } = await import('../src/waker.ts');
+const { closed, drain, kick, message, queued, recover, resolveFor, setWake, startWaking, view, wakes } = await import('../src/waker.ts');
 const { saveLogin } = await import('../src/logins.ts');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-wake-')), alice = 'alice@demo.test';
 initSystem(tmp);
@@ -34,6 +34,10 @@ const settle = () => new Promise(r => setTimeout(r, 2000));
 startWaking();
 
 after(() => rmSync(tmp, { recursive: true, force: true }));
+
+test('each message to a run names its runner, and since when', () => {
+  assert.match(message(oct, 3, []), new RegExp(`^Instance 2026-10 \\(folder 2026-10/\\), run 3\\. Its runner is .+ <${alice}>, since \\d{4}-.+\\. New log entries:`));
+});
 
 test('a run names a series or an instance by its folder, within its reach', () => {
   assert.equal(resolveFor(run, '2026-10'), oct.id);
