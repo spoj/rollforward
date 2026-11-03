@@ -540,7 +540,7 @@ function renderSide() {
   const chev = id => `<button class="chev" data-act="expand" data-id="${id}">${expanded.has(id) ? '\u25BE' : '\u25B8'}</button>`;
   const row = i => {
     const st = i.queued ? '\u29D7 queued' : i.asks.length ? `<span class="cnt" title="${i.asks.length} to answer">${i.asks.length}</span>` : i.wake ? `<span title="${when(i.wake)}">wakes ${soon(i.wake)}</span>` : i.status === 'open' ? '' : i.status;
-    return `<a class="row inst ${i.status} ${cur?.i?.id === i.id ? 'on' : ''}" href="#/${i.id}" title="${esc(i.label)}"><span class="nm ${i.unread ? 'b' : ''}"><span class="l">${esc(i.label)}</span>${i.runner === me.email ? '' : `<span class="who" title="${esc(i.runner_name)} runs it">${esc(initials(i.runner_name))}</span>`}${i.unread && !i.asks.length ? '<span class="dot u"></span>' : ''}</span><span class="n">${st}</span>${age(i.active, i.running)}</a>`;
+    return `<a class="row inst ${i.status} ${cur?.i?.id === i.id ? 'on' : ''}" href="#/${i.id}" title="${esc(i.label)}"><span class="nm ${i.unread ? 'b' : ''}"><span class="l">${esc(i.label)}</span>${i.runner === me.email ? '' : `<span class="who" title="${esc(nameOf(i.runner))} runs it">${esc(initials(nameOf(i.runner)))}</span>`}${i.unread && !i.asks.length ? '<span class="dot u"></span>' : ''}</span><span class="n">${st}</span>${age(i.active, i.running)}</a>`;
   };
   const waits = waiting().length;
   let h = waits ? `<div class="row waits"><a class="nm" data-act="waiting">Waiting on you<span class="q"> ${waits}</span></a></div>` : '';
@@ -603,7 +603,7 @@ function renderBar() {
     if (!ui.open) h += `<button class="btn top" data-act="show-panel">Conversation${talk ? ` (${talk})` : ''}</button>`;
     const off = data.run ? 'disabled title="Available when the run ends"' : '';
     if (open) h += data.runner.by === me.email ? `<button class="btn commit top" data-act="close" ${off}>${cur.s.single ? 'Close task' : 'Close instance'}</button>`
-      : `<button class="btn top" data-act="takeover" ${off || `title="${esc(data.runner.by)} runs it: their logins, their sign-off. Taking over makes it yours."`}>Take over</button>`;
+      : `<button class="btn top" data-act="takeover" ${off || `title="${esc(nameOf(data.runner.by))} runs it: their logins, their sign-off. Taking over makes it yours."`}>Take over</button>`;
     else h += cur.s.single ? '<button class="btn top" data-act="start-another">Start another based on this</button>' : '<button class="btn top" data-act="duplicate">Duplicate</button>';
     if (open) h += '<button class="btn top" data-act="menu-instance" title="Rename, abandon">\u22EF</button>';
   }
@@ -612,10 +612,10 @@ function renderBar() {
 
 // The runner's chip: Yours, or their name; on hover or a click, what that means, since when, and the logins they ticked.
 function owner() {
-  const r = data.runner, mine = r.by === me.email, who = mine ? 'You' : esc(r.name), e = data.log.findLast(e => ['create', 'duplicate', 'takeover'].includes(e.op));
-  const how = { create: 'Made it', duplicate: `Copied it from ${esc(e.from)}`, takeover: `Took it over from ${esc(e.from)}` }[e.op];
-  return `<span class="owner" tabindex="0">${mine ? 'Yours' : esc(r.name)}<span class="about">`
-    + (data.doc.status === 'open' ? `${who} run${mine ? '' : 's'} it: runs use ${mine ? 'your' : 'their'} logins, and only ${mine ? 'you' : 'they'} close it.` : `${who} ran it.`)
+  const r = data.runner, mine = r.by === me.email, name = mine ? 'You' : person(r.by), e = data.log.findLast(e => ['create', 'duplicate', 'takeover'].includes(e.op));
+  const how = { create: 'Made it', duplicate: `Copied it from ${esc(e.from)}`, takeover: `Took it over from ${who(e.from)}` }[e.op];
+  return `<span class="owner" tabindex="0">${mine ? 'Yours' : name}<span class="about">`
+    + (data.doc.status === 'open' ? `${name} run${mine ? '' : 's'} it: runs use ${mine ? 'your' : 'their'} logins, and only ${mine ? 'you' : 'they'} close it.` : `${name} ran it.`)
     + `<br>${how} ${when(e.at)}.<br>${r.ticked.length ? `Logins: ${esc(r.ticked.join(', '))}` : 'No logins ticked.'}</span></span>`;
 }
 
@@ -639,7 +639,7 @@ function tile(item) {
   }
   const p = provenance(item.file), sent = data.log.findLast(e => e.op === 'delivered' && e.item === item.id);
   const v = data.log.filter(e => e.op === 'point' && e.item === item.id && e.file).length;
-  return `<div class="tile ${p.person ? 'person' : 'agent'} ${openItem === item.id ? 'on' : ''} ${mark}" data-item="${esc(item.id)}">${corner}<div class="ext"><span>${esc(ext(item.file))}${v > 1 ? ' · v' + v : ''}</span><span class="nc ${open ? 'q' : ''}">${count}</span></div><div class="fn">${esc(item.name)}</div><div class="file">${esc(fname(item.file))}</div>${item.headline ? `<div class="hl">${esc(item.headline)}</div>` : ''}${item.source ? `<div class="src">${esc(item.source)}</div>` : ''}${item.destination ? `<div class="dst" title="${esc(item.destination)}">\u2192 ${esc(item.destination)}</div>` : ''}${sent ? `<div class="sent" title="${esc(sent.receipt)}">Sent ${hhmm(sent.at)} to ${esc(sent.to)}</div>` : ''}${from}<div class="meta"><b>${esc(p.by)}</b> · ${hhmm(p.at)}</div></div>`;
+  return `<div class="tile ${p.person ? 'person' : 'agent'} ${openItem === item.id ? 'on' : ''} ${mark}" data-item="${esc(item.id)}">${corner}<div class="ext"><span>${esc(ext(item.file))}${v > 1 ? ' · v' + v : ''}</span><span class="nc ${open ? 'q' : ''}">${count}</span></div><div class="fn">${esc(item.name)}</div><div class="file">${esc(fname(item.file))}</div>${item.headline ? `<div class="hl">${esc(item.headline)}</div>` : ''}${item.source ? `<div class="src">${esc(item.source)}</div>` : ''}${item.destination ? `<div class="dst" title="${esc(item.destination)}">\u2192 ${esc(item.destination)}</div>` : ''}${sent ? `<div class="sent" title="${esc(sent.receipt)}">Sent ${hhmm(sent.at)} to ${esc(sent.to)}</div>` : ''}${from}<div class="meta"><b>${person(p.by)}</b> · ${hhmm(p.at)}</div></div>`;
 }
 
 function renderPanes() {
@@ -712,11 +712,14 @@ function drawEdges() {
 const logLine = e => `<div class="e"><span class="tm">${hhmm(e.at)}</span><div>${logText(e)}</div></div>`;
 
 const plural = (n, word) => `${n} ${word}${n > 1 ? 's' : ''}`;
-// People by name, and the agent as its runner's at the time, on whose behalf it acted.
-const nm = by => by === me.email ? 'you' : data.names[by] || by;
+// People by name, with their email on hover, and Entra groups by label, with their id; anyone the page has no name for, as they
+// are. who and nameOf say you, and Agent; actor names the agent as its runner's at the time, on whose behalf it acted.
+const person = id => me.names[id] ? `<span title="${esc(id)}">${esc(me.names[id])}</span>` : esc(id);
+const who = id => id === 'agent' ? 'Agent' : id === me.email ? 'you' : person(id);
+const nameOf = id => id === 'agent' ? 'Agent' : id === me.email ? 'you' : me.names[id] ?? id;
 const actor = (by, at) => {
   const r = by === 'agent' && data.log.findLast(x => x.at <= at && ['create', 'duplicate', 'takeover'].includes(x.op)).by;
-  return by === 'server' ? '<span class="w">Server</span>' : `<span class="w p" title="${esc(r ? `Acting for ${r}` : by)}">${esc(r ? (r === me.email ? 'Your agent' : `${nm(r)}'s agent`) : by === me.email ? 'You' : nm(by))}</span>`;
+  return by === 'server' ? '<span class="w">Server</span>' : `<span class="w p" title="${esc(r ? `Acting for ${r}` : by)}">${esc(r ? (r === me.email ? 'Your agent' : `${nameOf(r)}'s agent`) : by === me.email ? 'You' : nameOf(by))}</span>`;
 };
 const shotsHtml = es => `<div class="shots">${es.map(e => `<img src="${fileUrl(e.file)}" loading="lazy" alt="" title="${esc(e.site)} \u00b7 ${hhmm(e.at)}" data-act="preview" data-file="${esc(e.file)}">`).join('')}</div>`;
 
@@ -737,12 +740,12 @@ function logText(e) {
     signoff: () => `${w} ${e.approved ? 'signed off' : 'rejected the sign-off'}<div class="d">${e.text ? `${esc(e.text)} · ` : ''}Commit <code>${e.commit.slice(0, 7)}</code></div>`,
     commit: () => `${w} committed the folder<div class="d">${esc(e.message)} · Commit <code>${e.commit.slice(0, 7)}</code></div>`,
     abandon: () => `${w} abandoned the instance`,
-    comment: () => `${w} ${e.note ? `left a note for ${esc(nm(data.runner.by))}` : e.by !== 'agent' ? 'commented' : e.ask ? `asked${e.to ? ' ' + esc(nm(e.to)) : ''}` : 'said'}${e.item ? ` on ${item(e.item)}${e.ref ? ` at ${esc(e.ref)}` : ''}` : ''}<div class="d">${esc(e.text)}</div>`,
+    comment: () => `${w} ${e.note ? `left a note for ${who(data.runner.by)}` : e.by !== 'agent' ? 'commented' : e.ask ? `asked${e.to ? ' ' + who(e.to) : ''}` : 'said'}${e.item ? ` on ${item(e.item)}${e.ref ? ` at ${esc(e.ref)}` : ''}` : ''}<div class="d">${esc(e.text)}</div>`,
     resolve: () => `${w} resolved a thread${e.text ? `<div class="d">${esc(e.text)}</div>` : ''}`,
     report: () => `${w} reported on run ${e.run}<div class="d">${md(e.text)}</div>`,
-    wake: () => `${e.note ? `${esc(e.from)} would wake it: a note for ${esc(data.runner.by)}` : `Woken${e.from ? ` by ${esc(e.from)}` : ''}`}<div class="d">${esc(e.reason)}</div>`,
-    expired: () => `Waiting for ${esc(nm(e.runner))} to sign in to ${esc(e.name ?? (e.login === 'm365' ? 'Microsoft 365' : e.login))} again${e.runner === me.email && !data.log.some(x => x.seq > e.seq && x.op === 'wake' && x.login === e.login) ? `<div>${signInHtml(e.login, e.name ?? e.login)}</div>` : ''}`,
-    takeover: () => `${w} took over from ${esc(nm(e.from))}${e.logins?.length ? `<div class="d">Logins: ${esc(e.logins.join(', '))}</div>` : ''}`,
+    wake: () => `${e.note ? `${person(e.from)} would wake it: a note for ${who(data.runner.by)}` : `Woken${e.from ? ` by ${who(e.from)}` : ''}`}<div class="d">${esc(e.reason)}</div>`,
+    expired: () => `Waiting for ${who(e.runner)} to sign in to ${esc(e.name ?? (e.login === 'm365' ? 'Microsoft 365' : e.login))} again${e.runner === me.email && !data.log.some(x => x.seq > e.seq && x.op === 'wake' && x.login === e.login) ? `<div>${signInHtml(e.login, e.name ?? e.login)}</div>` : ''}`,
+    takeover: () => `${w} took over from ${who(e.from)}${e.logins?.length ? `<div class="d">Logins: ${esc(e.logins.join(', '))}</div>` : ''}`,
     promote: () => `${w} made it a series, ${esc(e.series)}`,
     logins: () => `${w} ticked logins: ${esc(e.logins.join(', ') || 'none')}`,
     egress: () => `Run ${e.run} ${e.allowed ? 'reached' : 'was refused'} ${esc(e.host)}`,
@@ -752,7 +755,7 @@ function logText(e) {
     rename: () => e.by === 'server' ? `Named by its first prompt, from ${esc(e.from)}` : `${w} renamed the instance from ${esc(e.from)}`,
     duplicate: () => `${w} made this instance as a copy of ${esc(e.from)}`,
     browser: () => e.action === 'get' ? `${w} fetched ${esc(e.from)} from the browser on ${esc(e.site)}${f}`
-      : e.action === 'wait' ? `Run ${e.run} waits for ${esc(e.login)}'s ${esc(e.site)} browser, held by ${esc(e.held)}` : `${w} closed run ${e.run}'s browser${e.site ? ` on ${esc(e.site)}, in ${esc(e.login)}'s login` : ''}<div class="d">${e.error ? esc(e.error) : `${e.requests} requests${e.writes ? `, ${e.writes} writes` : ''}${e.blocked ? `, ${e.blocked} blocked` : ''}`}</div>${f}`,
+      : e.action === 'wait' ? `Run ${e.run} waits for ${person(e.login)}'s ${esc(e.site)} browser, held by ${esc(e.held)}` : `${w} closed run ${e.run}'s browser${e.site ? ` on ${esc(e.site)}, in ${person(e.login)}'s login` : ''}<div class="d">${e.error ? esc(e.error) : `${e.requests} requests${e.writes ? `, ${e.writes} writes` : ''}${e.blocked ? `, ${e.blocked} blocked` : ''}`}</div>${f}`,
     shot: () => `Run ${e.run}'s browser on ${esc(e.site)}${shotsHtml([e])}`,
     browsers: () => `Run ${e.run}'s browsers did not all close<div class="d">${esc(e.error)}</div>`,
   }[e.op]?.() ?? `${w} ${esc(e.op)}`;
@@ -905,14 +908,13 @@ function threadsOf() {
   return [...out.values()];
 }
 
-const who = by => by === 'agent' ? 'Agent' : by === me.email ? 'you' : by;
 const place = t => t.item ? `On <a data-act="opencard" data-item="${esc(t.item)}">${esc(data.doc.items.find(i => i.id === t.item)?.name ?? t.item)}</a>${t.ref ? ` at ${esc(t.ref)}` : ''}` : 'On the instance';
 
 function threadHtml(t) {
   const signoff = t.waits && t.last.signoff, off = data.run ? ' disabled title="Available when the run ends"' : '';
-  const state = signoff ? ` \u00b7 waits on ${t.waits === me.email ? 'your' : `${esc(t.waits)}'s`} sign-off` : t.waits ? ` \u00b7 waits on ${esc(who(t.waits))}` : t.pending ? ' \u00b7 <span class="spin"></span> the agent picks it up next' : t.resolved ? ` \u00b7 resolved by ${esc(who(t.last.by))}${t.last.text ? `: ${esc(t.last.text)}` : ''}` : '';
+  const state = signoff ? ` \u00b7 waits on ${t.waits === me.email ? 'your' : `${person(t.waits)}'s`} sign-off` : t.waits ? ` \u00b7 waits on ${who(t.waits)}` : t.pending ? ' \u00b7 <span class="spin"></span> the agent picks it up next' : t.resolved ? ` \u00b7 resolved by ${who(t.last.by)}${t.last.text ? `: ${esc(t.last.text)}` : ''}` : '';
   return `<div class="thread ${t.resolved ? 'resolved' : ''} ${t.waits ? 'waits' : ''} ${signoff ? 'signoff' : ''}" data-thread="${esc(t.id)}"><div class="on">${place(t)}${state}</div>`
-    + t.posts.map(p => `<div class="post ${p.ask ? 'ask' : ''} ${p.signoff ? 'signoff' : ''}"><b class="${p.by === 'agent' ? '' : 'p'}">${esc(who(p.by))}</b> <span class="tm">${hhmm(p.at)}${p.to ? ` \u00b7 to ${esc(who(p.to))}` : ''}${p.note ? ` \u00b7 a note for ${esc(who(data.runner.by))}` : ''}${p.commit ? ` \u00b7 commit <code>${p.commit.slice(0, 7)}</code>` : ''}</span><div>${p.by === 'agent' ? md(p.text) : esc(p.text)}</div>${(p.files ?? []).map(f => `<div class="f"><a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a></div>`).join('')}</div>`).join('')
+    + t.posts.map(p => `<div class="post ${p.ask ? 'ask' : ''} ${p.signoff ? 'signoff' : ''}"><b class="${p.by === 'agent' ? '' : 'p'}">${who(p.by)}</b> <span class="tm">${hhmm(p.at)}${p.to ? ` \u00b7 to ${who(p.to)}` : ''}${p.note ? ` \u00b7 a note for ${who(data.runner.by)}` : ''}${p.commit ? ` \u00b7 commit <code>${p.commit.slice(0, 7)}</code>` : ''}</span><div>${p.by === 'agent' ? md(p.text) : esc(p.text)}</div>${(p.files ?? []).map(f => `<div class="f"><a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a></div>`).join('')}</div>`).join('')
     + (data.doc.status !== 'open' || t.resolved ? ''
       : signoff ? (t.waits === me.email ? `<textarea rows="2" placeholder="A note, such as what to change"></textarea><div class="row2"><button class="btn commit" data-act="signoff" data-ok="1" data-thread="${esc(t.id)}"${off}>Approve</button><button class="btn" data-act="signoff" data-thread="${esc(t.id)}"${off}>Reject</button></div>` : '')
       : t.waits || replying.has(t.id) ? `<textarea rows="2" placeholder="Reply"></textarea><input type="file" multiple><div class="row2"><button class="btn" data-act="reply-thread" data-thread="${esc(t.id)}">Reply</button><button class="btn" data-act="resolve" data-thread="${esc(t.id)}" title="Done with it, without waking the agent">Resolve</button></div>`
@@ -931,7 +933,7 @@ function conversationHtml() {
   const first = data.runner.by === me.email && !data.log.some(e => e.op === 'run');
   if (open) h += `<h3>${ui.on ? `Comment on ${name(ui.on)}${ui.ref ? ` at ${esc(ui.ref)}` : ''}` : 'Comment on the instance'}</h3>`
     + (first && offers.length ? `<div class="ticks2">Logins it may use:${offers.map(o => `<label><input type="checkbox" class="ctick" value="${esc(o.id)}" ${data.runner.logins.includes(o.id) ? 'checked' : ''}> ${esc(o.name)}</label>`).join('')}</div>` : '')
-    + `<textarea id="newcomment" rows="3" placeholder="${first ? 'What should the agent do? Drop files here too' : data.runner.by === me.email || cur.s.shared_by === data.runner.by ? 'The agent replies in the thread' : `A note for ${esc(data.runner.by)}: the agent takes it up once they do`}"></textarea><input type="file" id="newfiles" multiple><div><button class="btn primary" data-act="comment">Comment</button></div>`;
+    + `<textarea id="newcomment" rows="3" placeholder="${first ? 'What should the agent do? Drop files here too' : data.runner.by === me.email || cur.s.shared_by === data.runner.by ? 'The agent replies in the thread' : `A note for ${esc(nameOf(data.runner.by))}: the agent takes it up once they do`}"></textarea><input type="file" id="newfiles" multiple><div><button class="btn primary" data-act="comment">Comment</button></div>`;
   return h + '</div>';
 }
 
@@ -943,16 +945,16 @@ function renderCard() {
   let h = `<div class="cf">${esc(item.file ? fname(item.file) : item.name)}</div>`;
   if (item.file) {
     const p = provenance(item.file);
-    h += `<div class="cp"><b class="${p.person ? 'p' : ''}">${esc(p.by)}</b> ${p.person ? 'uploaded' : 'made'} it at ${hhmm(p.at)} · ${esc(item.name)}${item.source ? `<br>${esc(item.source)}` : ''}`
+    h += `<div class="cp"><b class="${p.person ? 'p' : ''}">${person(p.by)}</b> ${p.person ? 'uploaded' : 'made'} it at ${hhmm(p.at)} · ${esc(item.name)}${item.source ? `<br>${esc(item.source)}` : ''}`
       + (item.kind === 'output' ? `<br>Destination: ${item.destination ? esc(item.destination) : 'stays here'}` : '')
       + data.log.filter(e => e.op === 'delivered' && e.item === item.id).map(e => `<br><span class="sent">Sent to ${esc(e.to)} ${when(e.at)} · ${esc(e.receipt)}</span>`).join('') + '</div>';
   } else h += `<div class="cp">${item.kind === 'input' ? 'Expected input, not there yet' : `${item.kind === 'step' ? 'Step' : 'Output'} not built yet`}</div>`;
   // The item's open threads, each as it began, with where it stands.
   for (const t of talkOn(item.id)) {
     const p = t.posts[0], more = t.posts.length - 1;
-    h += `<div class="nb ${t.waits ? 'waits' : ''}">${t.ref ? `<span class="ref">${esc(t.ref)}</span>` : ''}${p.by === 'agent' ? '' : `<b>${esc(who(p.by))}</b>: `}${esc(p.text)}`
+    h += `<div class="nb ${t.waits ? 'waits' : ''}">${t.ref ? `<span class="ref">${esc(t.ref)}</span>` : ''}${p.by === 'agent' ? '' : `<b>${who(p.by)}</b>: `}${esc(p.text)}`
       + (p.files?.length ? `<div class="cites">${p.files.map(f => `<a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a>`).join('')}</div>` : '')
-      + `<div class="by">${more ? `${more} repl${more > 1 ? 'ies' : 'y'} \u00b7 ` : ''}${t.waits ? `Waits on ${esc(who(t.waits))} \u00b7 ` : t.pending ? '<span class="spin"></span> the agent picks it up next \u00b7 ' : ''}<a data-act="thread" data-thread="${esc(t.id)}">${open ? 'Reply' : 'Open'}</a></div></div>`;
+      + `<div class="by">${more ? `${more} repl${more > 1 ? 'ies' : 'y'} \u00b7 ` : ''}${t.waits ? `Waits on ${who(t.waits)} \u00b7 ` : t.pending ? '<span class="spin"></span> the agent picks it up next \u00b7 ' : ''}<a data-act="thread" data-thread="${esc(t.id)}">${open ? 'Reply' : 'Open'}</a></div></div>`;
   }
   h += '<div class="acts">';
   if (item.file) h += `<button class="btn" data-act="preview" data-file="${esc(item.file)}" data-item="${esc(item.id)}">Preview</button><a class="btn" href="${fileUrl(item.file)}">Download</a>`;
@@ -984,7 +986,7 @@ function sheetTable(s, first) {
     const r = (t.ref ?? '').match(/^(?:'?([^'!]+)'?!)?\$?([A-Z]{1,3})\$?(\d+)/);
     if (!r || (r[1] ? r[1] !== s.name : !first)) continue;
     const key = `${+r[3] - 1},${[...r[2]].reduce((t, ch) => t * 26 + ch.charCodeAt(0) - 64, 0) - 1}`;
-    noted.set(key, (noted.has(key) ? noted.get(key) + '\n\n' : '') + t.posts.map(p => `${who(p.by)}: ${p.text}`).join('\n'));
+    noted.set(key, (noted.has(key) ? noted.get(key) + '\n\n' : '') + t.posts.map(p => `${nameOf(p.by)}: ${p.text}`).join('\n'));
     at.set(key, t.id);
     if (t.waits) asks.add(key);
   }
@@ -1051,7 +1053,7 @@ function renderPv() {
 // yours, the ticks save as they change.
 function startsHtml(s) {
   const mine = s.shared_by === me.email, ws = esc(cur.w.name), arm = `<button class="btn share ${pv.arming ? 'armed' : ''}" data-act="share-arm">${s.shared_by ? 'Start them as me instead' : `Let anyone in ${ws} start runs`}</button>`;
-  return `<div>${s.shared_by ? `Anyone in ${ws}, and its agents, start runs of this series as ${mine ? 'you, with these logins:' : esc(s.shared_by) + '.'}` : "Each instance's runner, and nobody else: others' comments are notes for them, and a wake asks someone to start the instance."}</div>`
+  return `<div>${s.shared_by ? `Anyone in ${ws}, and its agents, start runs of this series as ${mine ? 'you, with these logins:' : person(s.shared_by) + '.'}` : "Each instance's runner, and nobody else: others' comments are notes for them, and a wake asks someone to start the instance."}</div>`
     + (mine ? ticksHtml(s.offers, s.shared_logins) + '<div class="row2"><button class="btn" data-act="share-off">Stop</button></div>' : `<div class="row2">${arm}</div>`)
     + (pv.arming ? `<div class="warn">With these logins:${ticksHtml(s.offers)}You take on every run that anyone in ${ws}, or any of its agents, starts in this series: their comments, uploads and wakes in your instances, and the instances their wakes start, all run as you, with your logins.<div><button class="btn danger" data-act="share-on">Start their runs as me</button></div></div>` : '')
     + (s.wake ? `<div class="sub">Next: starts ${esc(s.wake.label)}, ${esc(when(s.wake.at))}: ${esc(s.wake.reason)}</div><div class="row2"><input type="datetime-local" id="swake" value="${localInput(s.wake.at)}"><button class="btn" data-act="wake-move">Move</button><button class="btn" data-act="wake-cancel">Cancel wake</button></div>`
@@ -1066,11 +1068,11 @@ const agentsHtml = (s, sub, edit) => `<h3>AGENTS.md</h3><div class="sub">${sub}<
 // A workspace's people, each an email or an Entra group's id: owners manage who is in it, and owners and members see and work in all
 // of it.
 function peopleHtml(s) {
-  const row = (p, owner) => `<tr><td>${esc(p)}</td><td>${owner ? 'Owner' : 'Member'}</td>`
+  const row = (p, owner) => `<tr><td>${person(p)}</td><td>${owner ? 'Owner' : 'Member'}</td>`
     + (s.manage ? `<td><div class="row2"><button class="btn" data-act="wrole" data-p="${esc(p)}">${owner ? 'Make member' : 'Make owner'}</button><button class="btn" data-act="wremove" data-p="${esc(p)}">Remove</button></div></td>` : '') + '</tr>';
   return `<h3>People</h3><div class="sub">Owners and members see and work in everything here, and its agents read across it. Owners manage who is in it.${s.owners.length + s.members.length ? '' : ' No one is in it yet, so only admins see it.'}</div>`
     + `<table class="ut">${s.owners.map(p => row(p, true)).join('')}${s.members.map(p => row(p, false)).join('')}</table>`
-    + (s.manage ? `<div class="row2"><input type="text" id="wperson" placeholder="name@example.com, or an Entra group's id" style="flex:1"><button class="btn primary" data-act="wadd">Add</button></div>` : '');
+    + (s.manage ? `<div class="row2"><input type="text" id="wperson" list="known" autocomplete="off" placeholder="A name or email, or an Entra group's id, as Finance HK <id>" style="flex:1"><datalist id="known">${Object.entries(me.names).map(([id, n]) => `<option value="${esc(`${n} <${id}>`)}">`).join('')}</datalist><button class="btn primary" data-act="wadd">Add</button></div>` : '');
 }
 
 // A datetime-local input's value, in the browser's time zone.
@@ -1119,7 +1121,7 @@ function loginsHtml(s) {
       if (me.m365) h += `<h3>${esc(c.login.name)}</h3><div class="sub">${c.type === 'graph' ? 'Only what you add once connected: mailboxes, SharePoint sites, and folders or files in SharePoint or OneDrive. A run reaches nothing else, and shares nothing.' : `Runs reach ${esc(c.name)} as you, with your own permissions there.`}</div><div><a class="btn primary" href="/logins/${enc(c.login.id)}/connect">Connect ${esc(c.login.name)}</a></div>`;
       continue;
     }
-    h += `<h3>${esc(l.name)}</h3><div class="sub">${esc(l.account ?? '')}${l.account ? ' · ' : ''}${l.expired ? '<span class="q">expired: sign in again</span>' : `since ${esc(when(l.since))}`}</div>`
+    h += `<h3>${esc(l.name)}</h3><div class="sub">${l.account ? `${person(l.account)} · ` : ''}${l.expired ? '<span class="q">expired: sign in again</span>' : `since ${esc(when(l.since))}`}</div>`
       + (l.missing.length && !l.expired ? `<div class="sub"><span class="q">Reconnect to let runs send and save</span>: Microsoft hasn't granted this login ${esc(l.missing.join(', '))}, which this server now asks for.</div>` : '')
       + l.offers.map(o => `<div class="skill-row" style="display:flex;align-items:center"><span style="flex:1">${esc(o.name)}</span>${l.id === 'm365' ? `<button class="quiet" data-act="unoffer" data-id="${esc(o.id)}">Remove</button>` : ''}</div>`).join('');
     if (l.id === 'm365' && !l.expired) h += `<div class="sub">Add a mailbox by its address, yours or one you may read; a whole SharePoint site by its link; or a folder, with all under it, or a file, in SharePoint or anyone's OneDrive, by any link to it.</div>`
@@ -1370,12 +1372,15 @@ async function onAct(act, el, was) {
   if (act === 'workspace-settings') openWorkspaceSettings();
   if (act === 'signout') location.href = (await api('/auth/logout', { method: 'POST' })).next;
   if (act === 'wadd' || act === 'wremove' || act === 'wrole') {
-    const s = pv.settings, p = act === 'wadd' ? $('#wperson').value.trim().toLowerCase() : el.dataset.p;
+    // An addition is an email or an Entra group's id, alone or as a suggestion shows it, NAME <ID>, where NAME labels a group.
+    const [, label, inside] = act === 'wadd' && /^(.*?)\s*<(.+)>$/.exec($('#wperson').value.trim()) || [];
+    const s = pv.settings, p = act === 'wadd' ? (inside ?? $('#wperson').value).trim().toLowerCase() : el.dataset.p;
     if (!p) return;
     const owners = s.owners.filter(x => x !== p), members = s.members.filter(x => x !== p);
-    if (act === 'wadd') members.push(p);
+    if (act === 'wadd') (s.owners.includes(p) ? owners : members).push(p);
     if (act === 'wrole') (s.owners.includes(p) ? members : owners).push(p);
-    await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ owners, members }) });
+    await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ owners, members, ...(label && !p.includes('@') && { groups: { [p]: label } }) }) });
+    me = await api('/me');
     await refresh();
     openWorkspaceSettings();
     saved();

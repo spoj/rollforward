@@ -11,7 +11,8 @@ import { join } from 'node:path';
 export type Workspace = { name: string; owners: string[]; members: string[]; archived?: boolean };
 // A task is a series marked single, holding one instance, named by its label until it is made a series.
 export type Series = { name: string; workspace: string; archived?: boolean; single?: boolean };
-export type Tree = { workspaces: Record<string, Workspace>; series: Record<string, Series> };
+// groups labels Entra groups by id, as people see them.
+export type Tree = { workspaces: Record<string, Workspace>; series: Record<string, Series>; groups?: Record<string, string> };
 
 let dir = '';
 

@@ -254,3 +254,26 @@ test("a sign-off the agent asks for shows louder, with Approve and Reject for it
   await page.click('#log [data-tab=log]');
   await page.locator('#log .e', { hasText: 'You signed off' }).waitFor();
 });
+
+test("people show by name, with their email on hover, and Entra groups by label; adding to a workspace suggests people by name and takes a group's label", async () => {
+  const bob = 'bob@demo.test', group = '6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b', url = (path: string) => new URL(path, page.url()).href;
+  const signin = await fetch(url('/auth/demo'), { method: 'POST', body: new URLSearchParams({ email: bob, next: '/' }), redirect: 'manual' });
+  const bobs = signin.headers.getSetCookie().find(c => c.startsWith('rf_session='))!.split(';')[0];
+  await page.reload();
+  await page.hover('.row.ws');
+  await page.click('.row.ws [data-act=workspace-settings]');
+  assert.deepEqual(await page.locator('#known option').evaluateAll(os => os.map(o => (o as HTMLOptionElement).value)), ['Demo Admin <admin@demo.test>', 'Bob <bob@demo.test>']);
+  await page.fill('#wperson', 'Bob <bob@demo.test>');
+  await page.click('[data-act=wadd]');
+  await page.waitForSelector(`#pv .ut span[title="${bob}"]:text-is("Bob")`);
+  await page.fill('#wperson', `Finance HK <${group}>`);
+  await page.click('[data-act=wadd]');
+  await page.waitForSelector(`#pv .ut span[title="${group}"]:text-is("Finance HK")`);
+  await page.mouse.click(5, 5);
+  assert.equal((await fetch(url('/api/instances/a5c0ff5e1f00/comment'), { method: 'POST', body: JSON.stringify({ text: 'The bank wants it by Friday.' }), headers: { cookie: bobs } })).status, 200);
+  await page.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
+  await page.click('#log [data-tab=conv]');
+  await page.waitForSelector(`#log .thread .post b.p span[title="${bob}"]:text-is("Bob")`);
+  await page.click('#log [data-tab=log]');
+  await page.locator('#log .e', { hasText: 'Bob left a note for you' }).waitFor();
+});

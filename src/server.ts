@@ -142,30 +142,40 @@ function guard(before: string[], after: string[], force: unknown) {
 // An instance as the sidebar shows it. What comes from its log and screen is kept until either moves on, or its series' sharing,
 // which says whose entries are notes, changes, so a listing reads each instance's log once, not on every refresh.
 const kept = new WeakMap<Instance, { key: string; active: string; asks: string[]; runner: string; acted: string[]; cost: number }>();
-// Who runs an instance, by name, and the logins they ticked for it, by name while they still offer them.
+// Who runs an instance, and the logins they ticked for it, by name while they still offer them.
 function runner(inst: Instance) {
   const r = runnerOf(inst), offers = logins(r.by).flatMap(l => l.offers);
-  return { ...r, name: users()[r.by]?.name || r.by, ticked: r.logins.map(id => offers.find(o => o.id === id)?.name ?? id) };
+  return { ...r, ticked: r.logins.map(id => offers.find(o => o.id === id)?.name ?? id) };
+}
+
+// Whom the page names: by their Entra names, the people `me` shares a workspace with, or everyone for an admin, and by their labels,
+// the Entra groups in the workspaces `me` sees.
+function names(me: Me) {
+  const t = tree(), seen = Object.values(t.workspaces).filter(w => canSee(me, w));
+  return Object.fromEntries([
+    ...Object.entries(t.groups ?? {}).filter(([g]) => seen.some(w => everyone(w).includes(g))),
+    ...Object.entries(users()).filter(([email, u]) => u.name && (me.role === 'admin' || seen.some(w => canSee({ email, role: u.role, groups: u.groups ?? [] }, w)))).map(([email, u]) => [email, u.name]),
+  ]);
 }
 
 // What makes an instance new to a person, when someone else or the agent did it: a run's end, a report, a comment, a sign-off, an
 // upload, a takeover, a close.
 const NEWS = ['done', 'report', 'comment', 'signoff', 'upload', 'takeover', 'close', 'abandon'];
 
-function summary(i: Instance, email: string, w8 = wakes(), us = users()) {
+function summary(i: Instance, email: string, w8 = wakes()) {
   const key = `${i.log.length}:${i.doc.rev}:${seriesSettings(i.series()).shared?.by ?? ''}`;
   const news = i.log.findLast(e => e.by !== email && NEWS.includes(e.op)), s = seen(email);
   let k = kept.get(i);
   if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i).map(w => w.who), runner: runnerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: +i.log.reduce((t, e) => t + ((e.cost as number | undefined) ?? 0), 0).toFixed(4) });
   return {
     id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(i.seriesId)?.inst === i, queued: !!queued(i),
-    asks: k.asks, wake: w8.pending[i.id]?.at ?? null, runner: k.runner, runner_name: us[k.runner]?.name || k.runner, cost: k.cost, active: k.active,
+    asks: k.asks, wake: w8.pending[i.id]?.at ?? null, runner: k.runner, cost: k.cost, active: k.active,
     unread: !!news && news.at > s.since && news.seq > (s.at[i.id] ?? 0),
   };
 }
 
 function listing(me: Me) {
-  const t = tree(), w8 = wakes(), us = users(), byName = (a: [string, { name: string }], b: [string, { name: string }]) => a[1].name.localeCompare(b[1].name);
+  const t = tree(), w8 = wakes(), byName = (a: [string, { name: string }], b: [string, { name: string }]) => a[1].name.localeCompare(b[1].name);
   return Object.entries(t.workspaces).filter(([, w]) => canSee(me, w)).sort(byName).map(([id, w]) => {
     const series = Object.entries(t.series).filter(([, s]) => s.workspace === id).sort(byName).map(([sid, s]) => {
       const { shared } = seriesSettings(seriesDir(sid));
@@ -173,7 +183,7 @@ function listing(me: Me) {
         id: sid, name: s.name, archived: !!s.archived, single: !!s.single, shared_by: shared?.by ?? null, shared_logins: shared?.by === me.email ? shared.logins : [],
         wake: w8.pending[sid] ?? null,
         requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r })),
-        instances: instances(sid).map(i => summary(i, me.email, w8, us)),
+        instances: instances(sid).map(i => summary(i, me.email, w8)),
       };
     });
     // Mine: a workspace you own, or one where you ran an instance, commented or uploaded; membership alone isn't.
@@ -380,6 +390,11 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       [w.owners, w.members] = people({ owners: w.owners, members: w.members, ...change });
       guard(before, hidden(t, users()), change.force);
     }
+    // Whoever manages a workspace labels its Entra groups, for everyone who sees one of them.
+    for (const [g, label] of Object.entries(change.groups ?? {})) {
+      if (g.includes('@') || !everyone(w).includes(g) || typeof label !== 'string' || !label.trim()) throw new HttpError(400, `a label is some text for an Entra group in this workspace: not ${g}: ${JSON.stringify(label)}`);
+      (t.groups ??= {})[g] = label.trim();
+    }
     if (change.archived !== undefined) w.archived = !!change.archived;
     if (change.agents !== undefined) writeFileSync(agentsFile(id), String(change.agents));
     saveTree(t);
@@ -474,8 +489,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   const a = active.get(inst.seriesId);
   const mine = a?.inst === inst ? a : undefined;
   if (!action) see(by, inst.id, inst.log.at(-1)!.seq);
-  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4) } : null, queued: !!queued(inst), runner: runner(inst),
-    names: Object.fromEntries(inst.log.flatMap(e => [e.by, e.from, e.to, e.runner]).filter(x => typeof x === 'string' && users()[x]).map(x => [x, users()[x as string].name])) });
+  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4) } : null, queued: !!queued(inst), runner: runner(inst) });
   if (action === 'trace') return send(res, 200, trace(inst));
   if (action === 'summary') return send(res, 200, summary(inst, by));
   // The screen: anyone who sees the instance reads it; only its own run writes it.
@@ -704,7 +718,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       res.end(readFileSync(page));
     } else if (url.pathname === '/me') {
       const { text, logo } = brand();
-      send(res, 200, { ...me, sign_in: mode, m365: m365Ready(), browsers: !!process.env.RF_BROWSER_URL, brand: { text: text || null, logo: !!logo } });
+      send(res, 200, { ...me, names: names(me), sign_in: mode, m365: m365Ready(), browsers: !!process.env.RF_BROWSER_URL, brand: { text: text || null, logo: !!logo } });
     } else if (url.pathname === '/brand' && req.method === 'PUT') {
       if (me.role !== 'admin') throw new HttpError(403, "the deployment's brand is the admins'");
       const { text, logo, clear } = await json(req), b = { ...(!clear && brand()) };

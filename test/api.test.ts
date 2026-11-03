@@ -162,7 +162,7 @@ test('rename relabels an open instance in its instance.json and logs it; an exis
 test("only the runner closes or abandons; taking over makes you the runner with your own logins ticked", async () => {
   const id = await iid(series, '2026-09-06'), offer = 'web:portal';
   const runner = async () => (await json(`/api/instances/${id}`)).runner;
-  assert.deepEqual(await runner(), { by: 'alex', logins: [], name: 'alex', ticked: [] }, 'whoever made it');
+  assert.deepEqual(await runner(), { by: 'alex', logins: [], ticked: [] }, 'whoever made it');
   assert.equal((await call('POST', await at(series, '2026-09-06', 'close'))).status, 403);
   assert.equal((await call('POST', await at(series, '2026-09-06', 'abandon'))).status, 403, 'nor abandons');
   assert.equal((await call('POST', await at(series, '2026-09-06', 'takeover'), JSON.stringify({ logins: [offer] }))).status, 400, 'not a login of yours');
@@ -172,7 +172,7 @@ test("only the runner closes or abandons; taking over makes you the runner with 
   saveLogin(adminEmail, { id: 'web', kind: 'website', name: 'Portal', since: new Date().toISOString(), offers: [{ id: offer, name: 'Portal' }] }, 'state');
   assert.deepEqual((await json('/logins')).map((l: { id: string }) => l.id), ['web']);
   assert.equal((await call('POST', await at(series, '2026-09-06', 'takeover'), JSON.stringify({ logins: [offer] }))).status, 200);
-  assert.deepEqual(await runner(), { by: adminEmail, logins: [offer], name: 'Demo Admin', ticked: ['Portal'] }, 'their logins by name');
+  assert.deepEqual(await runner(), { by: adminEmail, logins: [offer], ticked: ['Portal'] }, 'their logins by name');
   assert.equal((await json(`/api/instances/${id}`)).log.at(-1).from, 'alex');
   assert.equal((await call('DELETE', '/logins/web')).status, 200);
   assert.deepEqual(await json('/logins'), [], 'signing out deletes the record');
@@ -327,6 +327,23 @@ test("each person sees the workspaces they're in, by email or Entra group; owner
   assert.equal((await people('larkfield', { owners: [], members: [] })).status, 200);
   assert.equal((await call('GET', await at(series, '2026-08-30'), undefined, b)).status, 404);
   assert.deepEqual(await reads('larkfield'), [], 'a workspace with no one in it reads only itself');
+});
+
+test("the page names the people you share a workspace with, everyone for an admin, and the Entra groups you see, by the labels their workspaces' owners give", async () => {
+  const b = sessionOf(await login(bob))!, dana = 'dana@demo.test', group = '6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b', other = '7a2e3d4c-5b6f-4a71-9b8c-0d1e2f3a4b5c';
+  const users = join(root, '.rf', 'users.json'), names = async (cookie = admin) => (await json('/me', cookie)).names;
+  const people = async (ws: string, body: object, cookie = admin) => call('PUT', `/api/workspaces/${(await named(ws)).id}`, JSON.stringify(body), cookie);
+  writeFileSync(users, JSON.stringify({ ...JSON.parse(readFileSync(users, 'utf8')), [dana]: { name: 'Dana Tan', role: 'user' } }));
+  assert.equal((await names())[dana], 'Dana Tan', 'an admin has everyone');
+  assert.deepEqual(await names(b), { [adminEmail]: 'Demo Admin', [bob]: 'Bob' }, 'bob is in BobCo alone, which admins see');
+  assert.equal((await people('BobCo', { members: [dana, group], groups: { [group]: ' Finance HK' } }, b)).status, 200);
+  assert.deepEqual(await names(b), { [group]: 'Finance HK', [adminEmail]: 'Demo Admin', [bob]: 'Bob', [dana]: 'Dana Tan' });
+  for (const groups of [{ [dana]: 'Dana' }, { [other]: 'Payroll' }, { [group]: ' ' }])
+    assert.equal((await people('BobCo', { groups }, b)).status, 400, `${JSON.stringify(groups)}: only a group in the workspace, with some text`);
+  assert.equal((await people('Acme Payroll', { members: [other], groups: { [other]: 'Payroll team' } })).status, 200);
+  assert.equal((await names())[other], 'Payroll team');
+  assert.ok(!(other in await names(b)), "a group in a workspace bob doesn't see goes unnamed for him");
+  assert.deepEqual(JSON.parse(readFileSync(join(root, '.rf', 'tree.json'), 'utf8')).groups, { [group]: 'Finance HK', [other]: 'Payroll team' });
 });
 
 test('everyone sees the skills, which every run loads; admins keep the connections, which everyone sees with their logins', async () => {
