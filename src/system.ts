@@ -37,6 +37,24 @@ export function writeJson(name: string, data: unknown) {
 
 export const rfDir = () => dir;
 
+// What each person has seen of each instance, the last seq of its log they viewed, and since when, before which nothing is new to
+// them: .rf/seen/EMAIL.json.
+type Seen = { since: string; at: Record<string, number> };
+const seenBy = new Map<string, Seen>();
+export function seen(email: string): Seen {
+  if (!seenBy.has(email)) seenBy.set(email, readJson(`seen/${email}.json`, { since: new Date().toISOString(), at: {} }));
+  return seenBy.get(email)!;
+}
+
+// Written quietly, as no page shows what another has seen.
+export function see(email: string, id: string, seq: number) {
+  const s = seen(email);
+  if (s.at[id] === seq) return;
+  s.at[id] = seq;
+  mkdirSync(join(dir, 'seen'), { recursive: true });
+  writeFileSync(join(dir, 'seen', `${email}.json`), JSON.stringify(s));
+}
+
 // A 32-byte key. Where systemd runs the server, it's the credential of that name (LoadCredentialEncrypted=, sealed to the machine's
 // TPM), so a copy of the data holds only ciphertext; elsewhere, as in the container image, it's made once and kept in .rf/.
 export function key(name: string): Buffer {

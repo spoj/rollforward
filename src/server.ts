@@ -10,7 +10,7 @@ import { agentsFile, createInstance, duplicateInstance, moveInstance, renameInst
 import { socketDir } from './runner.ts';
 import { serveSandboxes } from './sandbox.ts';
 import { authenticate, checkConfig, connectM365, m365Ready, mode, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, upsertUser, users, type Me, type Role, type User } from './auth.ts';
-import { canManage, canSee, changes, everyone, initSystem, readJson, saveTree, tree, writeJson, type Tree, type Workspace } from './system.ts';
+import { canManage, canSee, changes, everyone, initSystem, readJson, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
 import { checkTicks, logins, runnerOf, signOut } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './graph.ts';
@@ -139,13 +139,19 @@ function guard(before: string[], after: string[], force: unknown) {
 // An instance as the sidebar shows it. What comes from its log and screen is kept until either moves on, so a listing reads each
 // instance's log once, not on every refresh.
 const kept = new WeakMap<Instance, { key: string; active: string; asks: string[]; runner: string; acted: string[]; cost: number }>();
-function summary(i: Instance, w8 = wakes()) {
+// What makes an instance new to a person, when someone else or the agent did it: a run's end, a report, a comment, an upload, a
+// takeover, a close.
+const NEWS = ['done', 'report', 'comment', 'upload', 'takeover', 'close', 'abandon'];
+
+function summary(i: Instance, email: string, w8 = wakes()) {
   const key = `${i.log.length}:${i.doc.rev}`;
+  const news = i.log.findLast(e => e.by !== email && NEWS.includes(e.op)), s = seen(email);
   let k = kept.get(i);
   if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i).map(w => w.who), runner: runnerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: +i.log.reduce((t, e) => t + ((e.cost as number | undefined) ?? 0), 0).toFixed(4) });
   return {
     id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(i.seriesId)?.inst === i, queued: !!queued(i),
     asks: k.asks, wake: w8.pending[i.id]?.at ?? null, runner: k.runner, cost: k.cost, active: k.active,
+    unread: !!news && news.at > s.since && news.seq > (s.at[i.id] ?? 0),
   };
 }
 
@@ -158,7 +164,7 @@ function listing(me: Me) {
         id: sid, name: s.name, archived: !!s.archived, single: !!s.single, shared_by: shared?.by ?? null, shared_logins: shared?.by === me.email ? shared.logins : [],
         wake: w8.pending[sid] ?? null,
         requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r })),
-        instances: instances(sid).map(i => summary(i, w8)),
+        instances: instances(sid).map(i => summary(i, me.email, w8)),
       };
     });
     // Mine: a workspace you own, or one where you ran an instance, commented or uploaded; membership alone isn't.
@@ -454,9 +460,10 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   if (!run) mustSee(me, t.workspaces[t.series[inst.seriesId].workspace]);
   const a = active.get(inst.seriesId);
   const mine = a?.inst === inst ? a : undefined;
+  if (!action) see(by, inst.id, inst.log.at(-1)!.seq);
   if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4) } : null, queued: !!queued(inst), runner: runnerOf(inst) });
   if (action === 'trace') return send(res, 200, trace(inst));
-  if (action === 'summary') return send(res, 200, summary(inst));
+  if (action === 'summary') return send(res, 200, summary(inst, by));
   // The screen: anyone who sees the instance reads it; only its own run writes it.
   if (action === 'screen' && req.method === 'GET') return send(res, 200, inst.doc);
   if (action === 'screen' && req.method === 'PUT' && run) return send(res, 200, `saved, rev ${inst.put((await body(req)).toString())}`);

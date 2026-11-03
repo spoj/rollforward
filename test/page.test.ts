@@ -178,10 +178,10 @@ test("the sidebar's and the side panel's inner edges drag their widths, within b
     await page.mouse.up();
   };
   await page.waitForSelector('#log.open');
-  assert.deepEqual(await widths(), [236, 352]);
+  assert.deepEqual(await widths(), [256, 352]);
   await drag('side', 100);
   await drag('panel', -150);
-  assert.deepEqual(await widths(), [336, 502]);
+  assert.deepEqual(await widths(), [356, 502]);
   await drag('side', 1000);
   assert.deepEqual(await widths(), [384, 502], 'the sidebar takes at most 30% of the window');
   await page.reload();
@@ -189,7 +189,7 @@ test("the sidebar's and the side panel's inner edges drag their widths, within b
   assert.deepEqual(await widths(), [384, 502]);
   await page.dblclick('.grip[data-pane=side]');
   await page.dblclick('.grip[data-pane=panel]');
-  assert.deepEqual(await widths(), [236, 352]);
+  assert.deepEqual(await widths(), [256, 352]);
 });
 
 test("what the session names, such as a tool call's name, shows as text in the Ops log, never as markup", async () => {

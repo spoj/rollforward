@@ -632,6 +632,20 @@ test('closing refuses a shown file the agent replaced after it was shown', async
   assert.equal((await call('POST', await at(series, 'tamper', 'close'))).status, 200);
 });
 
+test("an instance is new to a person while it has others' or the agent's news they haven't viewed; their own acts aren't news", async () => {
+  const { id } = await named('larkfield'), b = sessionOf(await login(bob))!;
+  assert.equal((await call('PUT', `/api/workspaces/${id}`, JSON.stringify({ owners: [adminEmail], members: [bob], force: true }))).status, 200);
+  const path = `/api/instances/${(await (await call('POST', '/api/series', JSON.stringify({ workspace: id, single: true }), b)).json()).instance}`;
+  const unread = async (cookie = admin) => (await json(`${path}/summary`, cookie)).unread;
+  await json(path, b);
+  assert.equal(await unread(b), false);
+  assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ text: 'have a look' }))).status, 200);
+  assert.deepEqual([await unread(b), await unread()], [true, false], "the admin's comment is news to bob, not to the admin");
+  await json(path, b);
+  assert.equal(await unread(b), false, 'viewing it marks it seen');
+  assert.equal((await call('PUT', `/api/workspaces/${id}`, JSON.stringify({ owners: [], members: [], force: true }))).status, 200);
+});
+
 // Last: a drained server starts no more runs.
 test('an update drains the server: GET /drained answers 200 once no run is going', async () => {
   assert.equal((await fetch(base + '/drained')).status, 503);

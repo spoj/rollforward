@@ -20,7 +20,7 @@
 body { margin: 0; font: 14px/1.45 var(--sans); color: var(--ink); background: var(--paper); font-variant-numeric: tabular-nums; }
 button { font: inherit; cursor: pointer; }
 a { color: inherit; }
-.app { --side: clamp(180px, var(--side-w, 236px), 30vw); --panel: clamp(280px, var(--panel-w, 352px), 50vw); display: grid; grid-template-columns: var(--side) 1fr auto; height: 100dvh; }
+.app { --side: clamp(180px, var(--side-w, 256px), 30vw); --panel: clamp(280px, var(--panel-w, 352px), 50vw); display: grid; grid-template-columns: var(--side) 1fr auto; height: 100dvh; }
 /* Pane widths: the sidebar's and the side panel's inner edges drag, between the bounds above, and a double-click resets them. */
 .grip { position: fixed; top: 0; bottom: 0; z-index: 5; width: 6px; cursor: col-resize; touch-action: none; }
 .grip:hover, .grip:active { background: var(--rule-2); }
@@ -34,6 +34,7 @@ a { color: inherit; }
 .chev:hover { background: var(--rule); color: var(--ink); }
 .row:is(.ws, .ser) > .add { display: none; }
 .row:is(.ws, .ser):is(:hover, .on) > .add { display: grid; }
+.row:is(.ws, .ser):is(:hover, .on) > .age { display: none; }
 .row.ws .nm { font-weight: 600; color: var(--ink); }
 .row.ser .nm { color: #1f5f8b; }
 .seg { display: flex; margin-left: auto; margin-right: 4px; border: 1px solid var(--rule-2); border-radius: var(--r1); overflow: hidden; }
@@ -44,8 +45,8 @@ a { color: inherit; }
 .row.grp .nm { font-style: italic; color: var(--ink-3); }
 .ticks2 { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 12.5px; color: var(--ink-2); margin: 6px 0; }
 .row.wake, .row.req { font-size: 12px; color: var(--ink-2); }
-.row .nm { flex: 0 1 auto; min-width: 45%; padding: 5px 0; text-decoration: none; overflow-wrap: anywhere; }
-.row .n { flex: 1 1 0; min-width: 0; color: var(--ink-3); font-size: 12px; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; padding-left: 6px; }
+.row .nm { flex: 1 1 0; min-width: 40%; padding: 5px 0; text-decoration: none; overflow-wrap: anywhere; }
+.row .n { flex: 0 1 auto; min-width: 0; color: var(--ink-3); font-size: 12px; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; padding-left: 6px; }
 /* A row with a link is a link all over, but for its buttons. */
 .row:has(> a.nm), a.row { position: relative; }
 .row > a.nm::before { content: ''; position: absolute; inset: 0; }
@@ -94,7 +95,9 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .me .mail { color: var(--ink-3); font-size: 12px; word-break: break-all; }
 @media (max-width: 560px) { .ut th:nth-child(3), .ut td:nth-child(3), .ut th:nth-child(4), .ut td:nth-child(4) { display: none; } }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--red); display: inline-block; margin-left: 6px; vertical-align: 1px; }
-.dot.k { background: var(--ink); }
+.dot.u { background: var(--person); }
+.row .nm.b { font-weight: 600; }
+.row .age { flex: none; min-width: 22px; text-align: right; font-size: 11.5px; color: var(--ink-3); padding-left: 4px; }
 .key { position: absolute; right: 16px; bottom: 12px; z-index: 4; font-size: 12px; color: var(--ink-3); background: var(--sheet); border: 1px solid var(--rule-2); border-radius: 12px; padding: 2px 10px; cursor: default; }
 .legend { display: none; position: absolute; right: 0; bottom: calc(100% + 6px); width: max-content; font-size: 12px; color: var(--ink-2); background: var(--sheet); border: 1px solid var(--rule-2); border-radius: var(--r1); box-shadow: 0 6px 20px rgba(21,24,29,.12); padding: 10px 12px; gap: 4px; }
 .key:is(:hover, :focus-within, .show) .legend { display: grid; }
@@ -428,6 +431,11 @@ const go = id => { location.hash = '#/' + id; };
 // workspace's newest series'. A series' instances keep their labels' order.
 const recent = i => i.running ? new Date().toISOString() : i.active, newest = xs => xs.reduce((m, x) => x > m ? x : m, '');
 const sAct = s => newest(s.instances.map(recent)), wAct = w => newest(w.series.map(sAct)), byAct = f => (a, b) => (f(b) > f(a)) - (f(b) < f(a));
+// How long ago, compactly, as a row's last activity: now, 5m, 3h, 2d, 7w.
+const ago = iso => {
+  const m = (Date.now() - Date.parse(iso)) / 60e3;
+  return m < 1 ? 'now' : m < 60 ? `${m | 0}m` : m < 1440 ? `${m / 60 | 0}h` : m < 10080 ? `${m / 1440 | 0}d` : `${m / 10080 | 0}w`;
+};
 
 async function refresh() {
   me ??= await api('/me');
@@ -467,11 +475,11 @@ function land(next, path, d, st) {
   if (next?.w && next.w.id !== cur?.w.id) expandRow(next.w.id, true);
   if (next?.s && next.s.id !== cur?.s?.id) expandRow(next.s.id, true);
   [cur, data, shown] = [next, d, path];
+  if (cur?.i) cur.i.unread = false;
   threads = threadsOf();
   if (st) [lines, linesKey] = st;
   const done = data && lastDone();
   if (done && was !== undefined && done.seq > was) toast(done.error ? `Run ${done.run} failed: ${done.error}` : `Run ${done.run} finished${done.summary ? ': ' + done.summary : ''}`, done.error ? '' : 'ok');
-  if (data) localStorage[`rev:${path}`] = data.doc.rev;
   render();
 }
 
@@ -504,14 +512,16 @@ function expandRow(id, open = !expanded.has(id)) {
 function renderSide() {
   if (editing) return;
   const listed = (x, on) => !x.archived || showArchived || on, mine = localStorage.workspaces !== 'all' && tree.some(w => w.mine);
-  const asks = s => !s.archived && s.instances.some(i => i.asks.length);
+  // A dot on a folded row: red for asks waiting on people, else blue for something new to you.
+  const asks = s => !s.archived && s.instances.some(i => i.asks.length), news = s => !s.archived && s.instances.some(i => i.unread);
+  const dot = (id, ss) => expanded.has(id) ? '' : ss.some(asks) ? '<span class="dot"></span>' : ss.some(news) ? '<span class="dot u"></span>' : '';
+  // A row's last activity, or a spinner while a run goes.
+  const age = (iso, running) => `<span class="age">${running ? '<span class="spin"></span>' : iso ? ago(iso) : ''}</span>`;
   const btn = (act, title, glyph, id = '') => `<button class="add" data-act="${act}" data-id="${id}" title="${title}">${glyph}</button>`;
   const chev = id => `<button class="chev" data-act="expand" data-id="${id}">${expanded.has(id) ? '\u25BE' : '\u25B8'}</button>`;
   const row = i => {
-    const st = i.running ? '<span class="spin"></span> running' : i.queued ? '\u29D7 queued' : i.asks.length ? `<span class="q">${i.asks.length} to answer</span>` : i.wake ? `wakes ${when(i.wake)}` : i.status === 'open' ? '' : i.status;
-    const k = `rev:/api/instances/${i.id}`;
-    localStorage[k] ??= i.rev;
-    return `<a class="row inst ${i.status} ${cur?.i?.id === i.id ? 'on' : ''}" href="#/${i.id}"><span class="nm">${esc(i.label)}${i.rev > +localStorage[k] ? '<span class="dot k"></span>' : ''}</span><span class="n">${st}</span></a>`;
+    const st = i.queued ? '\u29D7 queued' : i.asks.length ? `<span class="q">${i.asks.length} to answer</span>` : i.wake ? `wakes ${when(i.wake)}` : i.status === 'open' ? '' : i.status;
+    return `<a class="row inst ${i.status} ${cur?.i?.id === i.id ? 'on' : ''}" href="#/${i.id}"><span class="nm ${i.unread ? 'b' : ''}">${esc(i.label)}${i.unread && !i.asks.length ? '<span class="dot u"></span>' : ''}</span><span class="n">${st}</span>${age(i.active, i.running)}</a>`;
   };
   const waits = waiting().length;
   let h = waits ? `<div class="row waits"><a class="nm" data-act="waiting">Waiting on you<span class="q"> ${waits}</span></a></div>` : '';
@@ -519,16 +529,16 @@ function renderSide() {
   for (const w of [...tree].sort(byAct(wAct))) {
     const won = cur?.w.id === w.id;
     if (!listed(w, won) || (mine && !w.mine && !won)) continue;
-    h += `<div class="row ws ${won ? 'on' : ''} ${w.archived ? 'archived' : ''}">${chev(w.id)}<a class="nm" href="#/${w.id}">${esc(w.name)}${!expanded.has(w.id) && w.series.some(asks) ? '<span class="dot"></span>' : ''}</a>`
-      + (w.archived ? '<span class="n">archived</span>' : '') + btn('workspace-settings', 'Settings', '\u2699', w.id) + btn('new-task', 'New task', '+', w.id) + '</div>';
+    h += `<div class="row ws ${won ? 'on' : ''} ${w.archived ? 'archived' : ''}">${chev(w.id)}<a class="nm" href="#/${w.id}">${esc(w.name)}${dot(w.id, w.series)}</a>`
+      + `<span class="n">${w.archived ? 'archived' : ''}</span>${age(wAct(w), w.series.some(s => s.instances.some(i => i.running)))}` + btn('workspace-settings', 'Settings', '\u2699', w.id) + btn('new-task', 'New task', '+', w.id) + '</div>';
     if (!expanded.has(w.id)) continue;
     h += '<div class="tree">';
     for (const s of w.series.filter(s => !s.single).sort(byAct(sAct))) {
       const on = cur?.s?.id === s.id, open = s.instances.filter(i => i.status === 'open');
       if (!listed(s, on)) continue;
       const note = s.archived ? 'archived' : s.requests.length ? `<span class="q">${s.requests.length} to start</span>` : open.length ? `${open.length} open` : s.wake ? `wakes ${when(s.wake.at)}` : '';
-      h += `<div class="row ser ${on ? 'on' : ''} ${s.archived ? 'archived' : ''}">${chev(s.id)}<a class="nm" href="#/${s.id}">${esc(s.name)}${!expanded.has(s.id) && asks(s) ? '<span class="dot"></span>' : ''}</a>`
-        + `<span class="n">${note}</span>` + btn('settings', 'Settings', '\u2699', s.id) + btn('new-instance', 'New instance', '+', s.id) + '</div>';
+      h += `<div class="row ser ${on ? 'on' : ''} ${s.archived ? 'archived' : ''}">${chev(s.id)}<a class="nm" href="#/${s.id}">${esc(s.name)}${dot(s.id, [s])}</a>`
+        + `<span class="n">${note}</span>${age(sAct(s), s.instances.some(i => i.running))}` + btn('settings', 'Settings', '\u2699', s.id) + btn('new-instance', 'New instance', '+', s.id) + '</div>';
       if (!expanded.has(s.id)) continue;
       const closed = s.instances.length - open.length;
       h += '<div class="tree">';
@@ -1595,6 +1605,8 @@ events.onopen = () => { pend.add('tree'); drain(); };
 // The browser gives up on a stream that comes back with an error, as during a deploy or once the session has ended.
 events.onerror = () => events.readyState === EventSource.CLOSED && setTimeout(() => location.reload(), 5000);
 addEventListener('visibilitychange', drain);
+// The rows' ages move on as the minutes pass.
+setInterval(renderSide, 60_000);
 $('#log').addEventListener('scroll', e => { const el = e.currentTarget; el.dataset.end = el.scrollTop + el.clientHeight >= el.scrollHeight - 8 ? 'yes' : 'no'; });
 
 // Pane widths, kept in this browser: a grip's drag sets its pane's width, which the CSS bounds, and keeps what shows.
