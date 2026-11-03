@@ -5,4 +5,4 @@ People's command line for [rollforward](https://github.com/spoj/rollforward): wh
     npm i -g @rfany/rf
     rf login https://rollforward.example.com TOKEN
 
-Make the token on the page, under Tokens. `rf` alone lists the commands.
+Make the token on the page, under Tokens. `rf` alone lists the commands; `rf help` is the guide for an agent, read before it first uses rf.

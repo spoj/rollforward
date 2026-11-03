@@ -11,7 +11,7 @@ Recurring tasks, files in and files out. People drop this period's input files i
 - **People sign in with Microsoft,** with one button, and **logins are each person's own:** a run reads Microsoft 365 and websites only through its runner's logins, and only those ticked for its instance.
 - **Wakes:** an agent sets when its instance, or its series' next period, runs again; nothing is scheduled.
 - **AGENTS.md:** every run loads the company's and its workspace's, and a catalogue of the series it can read: its own workspace's, and those of any workspace whose people all belong to its own.
-- **rf** is people's command line, with a personal token: what the page does, plus pulling everything you can see, for your own desktop agent. Admin is rf, not the page. Install it with `npm i -g @rfany/rf` ([cli/](cli/)).
+- **rf** is people's command line, with a personal token: what the page does, plus `rf pull`, which copies what you can see as rsync does, for your own desktop agent, and `rf help`, its guide. Admin is rf, not the page. Install it with `npm i -g @rfany/rf` ([cli/](cli/)).
 - **Everything is files on disk,** with no database.
 
 | A tile's card and its threads | Preview, compared with the file it replaced |

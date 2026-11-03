@@ -1,12 +1,15 @@
 // rf for people: what the page does, from a shell or a desktop agent, as you, with a personal token made on the page (Tokens).
 // Published to npm as @rfany/rf, from cli/. PATH is workspace/series/label, as `rf ls` prints it.
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
 const USAGE = `rf login URL TOKEN
 rf ls
-rf pull DIR                       a read-only mirror of what you can see, in the layout agents see
+rf pull PATH DIR [--delete] [-n|--dry-run] [--exclude PATTERN]...
+                                  PATH's files into DIR as rsync copies them, whole, if their size or time differ: PATH/ fills DIR,
+                                  PATH makes DIR/<its name>, / is all you see; --delete removes what the server no longer has
+rf help                           how rollforward works and how to use rf, for an agent
 rf comment PATH TEXT [--item ID] [--ref REF] [--thread T] [--wait]   a new thread, or a reply in T, as to an agent's ask
 rf upload PATH FILE [--onto ITEM] [--output]
 rf wake PATH AT REASON [--label LABEL]   AT now, +<n>m|h|d or a date; PATH an open instance, or a series with LABEL
@@ -26,13 +29,52 @@ rf website set ID URL [--name NAME] [--hosts HOST,...]   a website people sign i
                                   such as sso.example.com or *.example.com; a run's browser on it reaches only those
 rf website remove ID`;
 
+const GUIDE = `rollforward runs a team's recurring work, such as a weekly borrowing base or a month-end reconciliation, with an agent
+that does each period's work and people who check it. rf does what its page does, as you.
+
+What there is
+- A workspace holds series, and its people. A series is one recurring job; an instance is one period of it, labelled such as
+  2026-08-23. PATH is workspace/series/label, as rf ls prints it; for rf pull it may go deeper, into an instance's files.
+- An instance's screen is its items: inputs, steps and outputs, each pointing at a file, with what it's made from. People upload
+  files and comment; each comment or upload starts a run of the agent, which reads it and carries on. The runner is the person whose
+  logins the runs use, and who closes the instance once they stand by it.
+- A comment starts a thread, on the instance or on an item, at a cell such as Base!C25, and others reply in it. An ask is the
+  agent's comment that waits on someone, the one it names or else the runner, until they reply or resolve it. rf ls says how many
+  asks wait in each instance.
+
+What rf pull copies, the folders as the agent sees them
+  AGENTS.md                  the company's conventions; <workspace>/AGENTS.md the workspace's
+  <workspace>/<series>/<label>/
+    workspace.json           the screen: {rev, status, items: [{id, name, kind, file, from, headline, source}]}
+    log.jsonl                every event, by seq: by is a person's email, "server" or "agent"; op is upload, comment (thread, item,
+                             ref, text, ask, to), resolve, point and item (the screen changing), run, report (the agent's account of
+                             a run), done (its cost, summary or error), close, and the rest
+    upload/                  what people uploaded, their comments' attachments in upload/attachments/
+    working/                 what the agent made, its scripts, and process.md, how it does this series
+    session/                 the agent's own session: every message and tool call of every run
+    browser/                 each run's browser requests, and its screenshots
+The copy is read-only, and only rf changes what's on the server: comment, upload and wake.
+
+Usual work
+- What waits on me: rf ls, then the asks in that instance's log.jsonl, ask true, whose thread has nothing after them.
+- Answer an ask: rf comment PATH TEXT --thread T --wait, which prints what the agent says back.
+- Give an input or a corrected output: rf upload PATH FILE [--onto ITEM] [--output].
+- Start an instance: rf wake SERIES now REASON --label LABEL; take one up later: rf wake PATH +2h REASON.
+- Read what a run did: rf pull PATH/ DIR, then its report and done entries in log.jsonl, the files in working/, and session/ for
+  every step.`;
+
 const config = join(homedir(), '.config', 'rollforward.json');
 const [cmd, ...argv] = process.argv.slice(2);
-const flags: Record<string, string | true> = {}, args: string[] = [];
+const flags: Record<string, string | true> = {}, excludes: string[] = [], args: string[] = [];
 for (let i = 0; i < argv.length; i++) {
-  const flag = argv[i].match(/^--(.+)$/)?.[1];
+  const flag = argv[i] === '-n' ? 'dry-run' : argv[i].match(/^--(.+)$/)?.[1];
   if (!flag) args.push(argv[i]);
-  else flags[flag] = flag === 'wait' || flag === 'output' ? true : argv[++i];
+  else if (flag === 'exclude') excludes.push(argv[++i]);
+  else flags[flag] = ['wait', 'output', 'delete', 'dry-run'].includes(flag) ? true : argv[++i];
+}
+if (cmd === 'help') {
+  console.log(GUIDE);
+  process.exit();
 }
 if (cmd !== 'login' && !existsSync(config)) {
   console.error(`Sign in first, with a token made on the page under Tokens: rf login URL TOKEN\n\n${USAGE}`);
@@ -55,56 +97,63 @@ async function find(path: string) {
   return { series, inst, at: inst ? `/api/instances/${inst.id}` : '' };
 }
 
-function write(path: string, data: string | Uint8Array) {
+function write(path: string, data: string | Uint8Array, mtime: string) {
   mkdirSync(dirname(path), { recursive: true });
   rmSync(path, { force: true });
   writeFileSync(path, data);
+  utimesSync(path, new Date(mtime), new Date(mtime));
   chmodSync(path, 0o444);
 }
 
 // A path the server named, under `base`, or undefined: on Windows a file's name may hold \ and lead out of it.
 const under = (base: string, rel: string) => resolve(base, rel).startsWith(resolve(base) + sep) ? resolve(base, rel) : undefined;
 
-// Pulls what changed since the last pull, by each instance's files' sizes and times, and removes what moved or went. A file that fails
-// is said and fetched again next time.
-async function pull(dir: string) {
-  const manifest = join(dir, '.rf-pull.json'), had = existsSync(manifest) ? JSON.parse(readFileSync(manifest, 'utf8')) : {};
-  const now: Record<string, { path: string; files: Record<string, string> }> = {}, tree = await get('/api');
-  write(join(dir, 'AGENTS.md'), (await get('/agents')).text);
-  for (const w of tree) {
-    write(join(dir, w.name, 'AGENTS.md'), w.agents);
-    for (const s of w.series) for (const i of s.instances) now[i.id] = { path: join(w.name, s.name, i.label), files: {} };
-  }
-  for (const [id, old] of Object.entries<{ path: string }>(had)) if (now[id]?.path !== old.path) rmSync(join(dir, old.path), { recursive: true, force: true });
-  let fetched = 0;
-  for (const [id, mine] of Object.entries(now)) {
-    const at = `/api/instances/${id}`, d = await get(at), was = had[id]?.path === mine.path ? had[id].files : {};
-    write(join(dir, mine.path, 'screen.json'), JSON.stringify(d.doc, null, 1));
-    write(join(dir, mine.path, 'log.jsonl'), d.log.map(e => JSON.stringify(e)).join('\n') + '\n');
-    write(join(dir, mine.path, 'trace.json'), JSON.stringify(await get(`${at}/trace`), null, 1));
-    for (const f of await get(`${at}/files`)) {
-      const path = under(join(dir, mine.path), f.path);
-      if (!path) {
-        console.error(`skipped ${mine.path}/${f.path}: it leads out of its folder`);
-        continue;
-      }
-      mine.files[f.path] = `${f.size} ${f.mtime}`;
-      if (was[f.path] === mine.files[f.path]) continue;
-      try {
-        write(path, new Uint8Array(await (await api(`/files/${id}/${f.path.split('/').map(encodeURIComponent).join('/')}`)).arrayBuffer()));
-        fetched++;
-      } catch (e) {
-        mine.files[f.path] = '';
-        console.error(`${mine.path}/${f.path}: ${(e as Error).message}`);
-      }
+// rsync's --exclude, simply: a pattern without / matches any one name on the path, one with / the path from the pull's top; * and ?
+// stop at /, ** doesn't. A folder it matches takes what's in it along.
+const globs = excludes.map(p => [p.replace(/^\/|\/$/g, '').includes('/'), new RegExp(`^${p.replace(/^\/|\/$/g, '').replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*/g, '\0').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]').replace(/\0/g, '.*')}$`)] as const);
+const excluded = (rel: string) => globs.some(([whole, re]) => rel.split('/').some((name, k, all) => re.test(whole ? all.slice(0, k + 1).join('/') : name)));
+
+// Copies PATH's files into DIR as rsync does, from the server only and whole: a file whose size or time differ from the server's is
+// fetched, and given the server's time, so the next pull compares against it. Nothing is kept besides the files.
+async function pull(path: string, dir: string) {
+  const at = path.replace(/^\/+/, ''), from = at.replace(/\/+$/, ''), dry = !!flags['dry-run'];
+  const list: { path: string; size: number; mtime: string; url?: string; text?: string }[] = await get(`/api/files?path=${encodeURIComponent(from)}`);
+  if (!list.length) throw new Error(`nothing you can see at ${path}`);
+  const into = !from || at.endsWith('/') ? resolve(dir) : join(resolve(dir), basename(from)), rel = (f: { path: string }) => f.path.slice(from ? from.length + 1 : 0);
+  let fetched = 0, same = 0, deleted = 0, failed = 0;
+  for (const f of list.filter(f => !excluded(rel(f)))) {
+    const local = rel(f) ? under(into, rel(f)) : into, st = local && existsSync(local) ? statSync(local) : undefined;
+    if (!local) {
+      console.error(`skipped ${f.path}: it leads out of ${into}`);
+      continue;
     }
-    for (const gone of Object.keys(was).filter(p => !(p in mine.files))) {
-      const path = under(join(dir, mine.path), gone);
-      if (path) rmSync(path, { force: true });
+    if (st && st.size === f.size && Math.floor(st.mtimeMs / 1000) === Math.floor(Date.parse(f.mtime) / 1000)) {
+      same++;
+      continue;
+    }
+    console.log(`${st ? 'changed' : 'new'}  ${f.path}`);
+    try {
+      if (!dry) write(local, f.text ?? new Uint8Array(await (await api(f.url!)).arrayBuffer()), f.mtime);
+      fetched++;
+    } catch (e) {
+      failed++;
+      console.error(`${f.path}: ${(e as Error).message}`);
     }
   }
-  writeFileSync(manifest, JSON.stringify(now));
-  console.log(`${Object.keys(now).length} instances, ${fetched} files fetched, into ${dir}`);
+  if (flags.delete && list.some(rel) && existsSync(into)) {
+    const keep = new Set(list.map(rel)), mine = (d: string): string[] => readdirSync(d, { withFileTypes: true }).flatMap(e => e.isDirectory() ? mine(join(d, e.name)) : [join(d, e.name)]);
+    for (const p of mine(into)) {
+      const r = relative(into, p).split(sep).join('/');
+      if (keep.has(r) || excluded(r)) continue;
+      console.log(`deleted  ${r}`);
+      deleted++;
+      if (!dry) rmSync(p, { force: true });
+    }
+    const prune = (d: string) => { for (const e of readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) prune(join(d, e.name)); if (d !== into && !readdirSync(d).length) rmdirSync(d); };
+    if (!dry) prune(into);
+  }
+  console.log(`${dry ? 'would fetch' : 'fetched'} ${fetched}, ${same} up to date${flags.delete ? `, ${dry ? 'would delete' : 'deleted'} ${deleted}` : ''}${failed ? `, ${failed} failed` : ''}, in ${into}`);
+  if (failed) process.exitCode = 1;
 }
 
 if (cmd === 'login' && url && token) {
@@ -117,7 +166,7 @@ if (cmd === 'login' && url && token) {
     console.log(`${w.name}/${s.name}${s.wake ? `  wakes ${s.wake.at} to start ${s.wake.label}: ${s.wake.reason}` : ''}${s.requests.length ? `  ${s.requests.length} asking to start` : ''}`);
     for (const i of s.instances) console.log(`${w.name}/${s.name}/${i.label}  ${i.status}${i.running ? ', running' : ''}${i.asks.length ? `, ${i.asks.length} asks waiting` : ''}${i.wake ? `, wakes ${i.wake}` : ''}, runner ${i.runner}`);
   }
-} else if (cmd === 'pull' && args[0]) await pull(args[0]);
+} else if (cmd === 'pull' && args.length === 2) await pull(args[0], args[1]);
 else if (cmd === 'comment' && args.length === 2) {
   const { at } = await find(args[0]);
   await post(`${at}/comment`, { text: args[1], item: flags.item, ref: flags.ref, thread: flags.thread });

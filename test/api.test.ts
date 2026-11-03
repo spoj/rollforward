@@ -226,14 +226,15 @@ test('a workspace can be made; a workspace or a series is archived and restored,
   assert.equal((await shown(series)).archived, false);
 });
 
-test('files: uploads download as attachments; paths outside upload/ and working/ are refused', async () => {
+test("files: an instance's own download as attachments, as rf pull fetches them; paths out of it are refused", async () => {
   const id = await iid(series, '2026-08-30'), file = (rel: string) => `/files/${id}/${encodeURIComponent(rel)}`;
   const name = 'Larkfield AR aging 083026.csv';
   const r = await call('GET', file(`upload/${name}`));
   assert.equal(r.status, 200);
   assert.match(r.headers.get('content-disposition')!, /^attachment/);
   assert.ok((Buffer.from(await r.arrayBuffer())).equals(readFileSync(join(root, 'instances', id, 'upload', name))));
-  for (const rel of ['upload/../../workspace.json', 'workspace.json', 'log.jsonl'])
+  assert.equal((await call('GET', file('log.jsonl'))).status, 200);
+  for (const rel of ['upload/../../workspace.json', '../x/log.jsonl', './log.jsonl'])
     assert.equal((await call('GET', file(rel))).status, 400, rel);
 });
 
@@ -248,8 +249,8 @@ test("a run's links, FIFOs and folders in working/ and session/ are never follow
   for (const rel of ['working/env.txt', 'working/inside.txt', 'working/pipe.txt', `working/up/instances/${id}/working/real.txt`])
     assert.equal((await call('GET', file(rel))).status, 404, rel);
   assert.equal(await (await call('GET', file('working/real.txt'))).text(), 'mine');
-  const listed = (await json(await at(series, '2026-08-30', 'files'))).map((f: { path: string }) => f.path);
-  assert.deepEqual(listed.filter((p: string) => /^working\/(env|inside|pipe|up|real)/.test(p)), ['working/real.txt'], 'only regular files, and never into a link');
+  const listed = (await json(`/api/files?path=${encodeURIComponent(`larkfield/${series}/2026-08-30/working`)}`)).map((f: { path: string }) => f.path);
+  assert.deepEqual(listed.filter((p: string) => /\/working\/(env|inside|pipe|up|real)/.test(p)), [`larkfield/${series}/2026-08-30/working/real.txt`], 'only regular files, and never into a link');
   assert.equal((await call('GET', await at(series, '2026-08-30', 'trace'))).status, 200, 'a FIFO among the session files is skipped');
   assert.equal((await call('POST', `${await at(series, '2026-08-30', 'duplicate')}?as=links`)).status, 200);
   assert.deepEqual(readdirSync(join(await dir(series, 'links'), 'working')).filter(f => /env|inside|pipe|up|real/.test(f)), ['real.txt'], 'a copy leaves them out');
@@ -457,7 +458,7 @@ test("personal tokens act as their person for rf, every use logged, until revoke
   assert.equal((await as('/me')).status, 401);
 });
 
-test('rf for people: ls, comment, and admins manage people from it', async () => {
+test('rf for people: ls, comment, pull as rsync does, and admins manage people from it', async () => {
   const { token } = await (await call('POST', '/tokens', JSON.stringify({ name: 'cli', days: 1 }))).json();
   const home = join(tmp, 'cli-home');
   mkdirSync(home);
@@ -475,9 +476,24 @@ test('rf for people: ls, comment, and admins manage people from it', async () =>
   assert.equal((await call('POST', '/tokens', JSON.stringify({ name: 'long', days: 365 }))).status, 400, 'at most 90 days');
   assert.match(await rf('ls'), /^larkfield\/Weekly borrowing base\/2026-08-30  closed/m);
   await rf('comment', `larkfield/${series}/talk`, 'From the shell');
-  assert.match(await rf('pull', join(tmp, 'pulled')), /instances, \d+ files fetched/);
-  assert.ok(existsSync(join(tmp, 'pulled', 'larkfield', series, '2026-08-30', 'screen.json')));
-  assert.deepEqual(['', 'larkfield'].map(d => readFileSync(join(tmp, 'pulled', d, 'AGENTS.md'), 'utf8')), ['Fiscal months end on the last Saturday.', 'Larkfield Ltd is now Larkfield Holdings.']);
+  const pulled = join(tmp, 'pulled'), week = `larkfield/${series}/2026-08-30`;
+  assert.match(await rf('pull', '/', pulled), /^new  larkfield\/AGENTS\.md$/m);
+  assert.deepEqual(['', 'larkfield'].map(d => readFileSync(join(pulled, d, 'AGENTS.md'), 'utf8')), ['Fiscal months end on the last Saturday.', 'Larkfield Ltd is now Larkfield Holdings.']);
+  assert.ok(['workspace.json', 'log.jsonl', 'session/main.jsonl', 'upload/Larkfield AR aging 083026.csv'].every(f => existsSync(join(pulled, week, f))), 'the folders as runs see them');
+  assert.match(await rf('pull', '/', pulled), /^fetched 0, \d+ up to date/m, 'a file keeps the time the server gave it, so the next pull compares against it');
+  await rf('pull', week, join(tmp, 'one'));
+  assert.ok(existsSync(join(tmp, 'one', '2026-08-30', 'log.jsonl')), 'PATH makes DIR/<its name>');
+  const two = join(tmp, 'two');
+  assert.match(await rf('pull', `${week}/`, two, '-n'), /^would fetch \d+, 0 up to date/m);
+  assert.ok(!existsSync(two), 'a dry run changes nothing');
+  await rf('pull', `${week}/`, two, '--exclude', 'session');
+  assert.ok(existsSync(join(two, 'log.jsonl')) && !existsSync(join(two, 'session')), 'PATH/ fills DIR; --exclude leaves a folder out');
+  writeFileSync(join(two, 'mine.txt'), 'local');
+  await rf('pull', `${week}/`, two, '--exclude', 'session');
+  assert.ok(existsSync(join(two, 'mine.txt')), 'nothing goes without --delete');
+  assert.match(await rf('pull', `${week}/`, two, '--exclude', 'session', '--delete'), /^deleted  mine\.txt$/m);
+  assert.ok(!existsSync(join(two, 'mine.txt')));
+  assert.match(await rf('help'), /What rf pull copies/);
   assert.equal((await json(await at(series, 'talk'))).log.at(-1).text, 'From the shell');
   await rf('user', 'add', 'carol@demo.test', 'publisher');
   assert.match(await rf('users'), /^carol@demo\.test\tpublisher/m);

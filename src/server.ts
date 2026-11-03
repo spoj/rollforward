@@ -1,12 +1,12 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { closeSync, createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { basename, dirname, join, posix, relative, resolve } from 'node:path';
+import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { agentsFile, createInstance, duplicateInstance, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instances, newId, openFile, openStore, readFile, safeName, seriesDir, type Instance } from './store.ts';
+import { agentsFile, createInstance, duplicateInstance, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, labels, newId, openFile, openStore, readFile, safeName, seriesDir, type Instance } from './store.ts';
 import { socketDir } from './runner.ts';
 import { serveSandboxes } from './sandbox.ts';
 import { authenticate, checkConfig, connectM365, m365Ready, mode, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, upsertUser, users, type Me, type Role } from './auth.ts';
@@ -129,10 +129,33 @@ function trace(inst: Instance) {
   return out;
 }
 
+// Files by hand, never into a link: a run may have made links anywhere in working/.
+const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(d => d.isDirectory() ? walk(join(dir, d.name)) : d.isFile() ? [join(dir, d.name)] : []);
+
+// What rf pull copies: every file under `path` that `me` sees, in the layout runs see (workspace/series/label/ and the instance's own
+// files), with its size and time; the AGENTS.md files whole, and each instance file at its /files address.
+function pullable(me: Me, path: string) {
+  const t = tree(), out: { path: string; size: number; mtime: string; url?: string; text?: string }[] = [];
+  const add = (at: string, file: string, more: { url?: string; text?: string }) => {
+    const st = statSync(file);
+    out.push({ path: at, size: st.size, mtime: st.mtime.toISOString(), ...more });
+  };
+  const near = (at: string) => !path || at === path || at.startsWith(path + '/') || path.startsWith(at + '/');
+  if (existsSync(agentsFile())) add('AGENTS.md', agentsFile(), { text: text(agentsFile()) });
+  for (const [wid, w] of Object.entries(t.workspaces).filter(([, w]) => canSee(me, w))) {
+    if (existsSync(agentsFile(wid))) add(`${w.name}/AGENTS.md`, agentsFile(wid), { text: text(agentsFile(wid)) });
+    for (const [sid, s] of Object.entries(t.series).filter(([, s]) => s.workspace === wid)) for (const l of labels(sid)) {
+      const at = `${w.name}/${s.name}/${l.label}`, dir = instanceDir(l.id);
+      if (near(at)) for (const f of walk(dir)) add(`${at}/${relative(dir, f).split(sep).join('/')}`, f, { url: `/files/${l.id}/${relative(dir, f).split(sep).map(encodeURIComponent).join('/')}` });
+    }
+  }
+  return out.filter(f => !path || f.path === path || f.path.startsWith(path + '/'));
+}
+
 async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
   const [id, ...rest] = url.pathname.split('/').slice(2).map(decodeURIComponent);
   const rel = rest.join('/');
-  if (posix.normalize(rel) !== rel || !/^(upload|working|browser)\//.test(rel) || rel.split('/').includes('..')) throw new HttpError(400, 'bad path');
+  if (posix.normalize(rel) !== rel || rel.split('/').includes('..')) throw new HttpError(400, 'bad path');
   const inst = instance(id);
   mustSee(me, tree().workspaces[tree().series[inst.seriesId].workspace]);
   const fd = openFile(inst.dir, rel);
@@ -297,14 +320,6 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   if (action === 'screen' && req.method === 'GET') return send(res, 200, inst.doc);
   if (action === 'screen' && req.method === 'PUT' && run) return send(res, 200, `saved, rev ${inst.put((await body(req)).toString())}`);
   if (action === 'screen') throw new HttpError(405, "GET, or PUT by the instance's own run");
-  if (action === 'files') {
-    // By hand, never into a link: a run may have made links anywhere in working/.
-    const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(d => d.isDirectory() ? walk(join(dir, d.name)) : d.isFile() ? [join(dir, d.name)] : []);
-    return send(res, 200, ['upload', 'working', 'browser'].filter(top => existsSync(join(inst.dir, top))).flatMap(top => walk(join(inst.dir, top)).map(p => {
-      const st = lstatSync(p);
-      return { path: relative(inst.dir, p), size: st.size, mtime: st.mtime.toISOString() };
-    })));
-  }
   if (req.method !== 'POST') throw new HttpError(405, 'POST only');
   if (action === 'duplicate') {
     if (inst.doc.status === 'open') throw new HttpError(409, 'only a closed or abandoned instance can be duplicated');
@@ -484,6 +499,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     } else if (url.pathname === '/me') send(res, 200, { ...me, sign_in: mode, m365: m365Ready(), browsers: !!process.env.RF_BROWSER_URL });
     else if (url.pathname === '/api/events') events(me, req, res);
     else if (url.pathname === '/api') send(res, 200, listing(me));
+    else if (url.pathname === '/api/files') send(res, 200, pullable(me, url.searchParams.get('path') ?? ''));
     else if (url.pathname.startsWith('/files/')) await file(me, res, url, false);
     else if (url.pathname.startsWith('/preview/')) await file(me, res, url, true);
     else if (url.pathname.startsWith('/api/')) await api(me, req, res, url);
