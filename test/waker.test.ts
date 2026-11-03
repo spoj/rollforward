@@ -93,15 +93,17 @@ test("closing an instance wakes the later open ones of its series, not the earli
   assert.equal(oct.log.findLast(e => e.op === 'wake')!.note, true);
 });
 
-test('a run a restart cut ends as aborted, with what it cost so far, and its instance is woken to carry on', async () => {
-  const cut = make('s3', 'cut'), reply = (at: string, total: number) => JSON.stringify({ type: 'message', timestamp: at, message: { role: 'assistant', usage: { cost: { total } } } });
-  const { at } = cut.append('server', 'run', { run: 1, upto: 1 });
-  mkdirSync(join(cut.dir, 'session'));
-  writeFileSync(join(cut.dir, 'session', 'main.jsonl'), [reply('2026-01-01T00:00:00.000Z', 5), reply(at, 0.25), reply(at, 0.5), '{"type":"mess'].join('\n'));
+test('a run a restart cut ends as aborted, with what its calls cost so far, and its instance is woken to carry on', async () => {
+  const cut = make('s3', 'cut');
+  cut.append('server', 'run', { run: 1, upto: 1 });
+  cut.append('agent', 'call', { run: 1, name: 'openrouter', cost: 5 });
+  cut.append('server', 'done', { run: 1, aborted: false, seen: 1, cost: 5, summary: null });
+  cut.append('server', 'run', { run: 2, upto: 1 });
+  for (const c of [{ name: 'openrouter', cost: 0.25 }, { name: 'graph' }, { name: 'exa', cost: 0.5 }]) cut.append('agent', 'call', { run: 2, ...c });
   recover();
   assert.deepEqual(cut.log.slice(-2).map(e => [e.op, e.error ?? e.reason, e.cost]), [['done', 'a restart cut the run', 0.75], ['wake', 'A restart cut your last run; carry on', undefined]]);
   await settle();
-  assert.equal(cut.log.filter(e => e.op === 'run').length, 2, 'started again');
+  assert.equal(cut.log.filter(e => e.op === 'run').length, 3, 'started again');
 });
 
 test('a run the move to 0.2.0 cut, which the move ended without a wake, is woken at the next start, once', async () => {

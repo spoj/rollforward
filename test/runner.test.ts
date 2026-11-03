@@ -6,15 +6,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // A run's Pi in its real sandbox, with stand-ins for the server's side of the socket: the agent API answers with the token it
-// saw, and the model and the browser service are local servers that echo the key they were sent.
+// saw, the browser service is a local server that echoes the key it was sent, and the connections' hosts say what they were asked.
 const tmp = mkdtempSync(join(tmpdir(), 'rf-')), root = join(tmp, 'data'), i = (id: string) => join(root, 'instances', id);
-const model = createServer((req, res) => res.end(`model got ${req.url} with ${req.headers.authorization}`));
 const browsers = createServer().on('upgrade', (req, socket) => socket.end(`HTTP/1.1 101 Switching Protocols\r\n\r\nbrowser service got ${req.url} with ${req.headers.authorization}`));
-await new Promise<void>(ok => model.listen(0, '127.0.0.1', ok));
 await new Promise<void>(ok => browsers.listen(0, '127.0.0.1', ok));
 Object.assign(process.env, {
-  RF_SCRATCH: join(tmp, 'scratch'), RF_MODEL_URL: `http://127.0.0.1:${(model.address() as { port: number }).port}/v1`,
-  OPENROUTER_API_KEY: 'the-real-key', RF_TEST_SECRET: 'server-only',
+  RF_SCRATCH: join(tmp, 'scratch'), OPENROUTER_API_KEY: 'the-real-key', RF_TEST_SECRET: 'server-only',
   RF_BROWSER_URL: `http://127.0.0.1:${(browsers.address() as { port: number }).port}`, RF_BROWSER_KEY: 'the-browser-key',
 });
 const { pi } = await import('../src/runner.ts');
@@ -42,7 +39,7 @@ const sockets = serveSandboxes({
   agent: async (req, res) => void res.end(`agent API, as ${req.headers.authorization}`),
   // The server's answer for a connection's host, which here says what it was asked.
   run: token => ([TOKEN, OTHER].includes(token) ? {
-    egress: (host, allowed) => void egress.push([host, allowed]), browsers: () => standIn, intercepts: host => host === 'graph.microsoft.com',
+    egress: (host, allowed) => void egress.push([host, allowed]), browsers: () => standIn, intercepts: host => ['graph.microsoft.com', 'openrouter.ai'].includes(host),
     call: async (host, req, res) => void res.end(`${host} ${req.method} ${req.url} ${req.headers.authorization ?? '-'}`),
   } : undefined),
 });
@@ -65,7 +62,6 @@ before(() => agent.start());
 after(async () => {
   await agent.stop();
   sockets.close();
-  model.close();
   browsers.close();
   rmSync(tmp, { recursive: true, force: true });
 });
@@ -96,16 +92,13 @@ test("writes land only in the instance's working/ and session/ and the series' .
     assert.match(await sh(`touch ${p} 2>&1`), /Read-only file system/, p);
 });
 
-test('no key or server setting is inside: the model is reached through the socket, which adds the key', async () => {
-  const env = await sh('env');
-  assert.doesNotMatch(env, /the-real-key|server-only/);
-  assert.equal(await sh(`curl -s http://127.0.0.1:7000/model/${TOKEN}/chat`), 'model got /v1/chat with Bearer the-real-key');
-  assert.equal(await sh('curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:7000/model/wrong/chat'), '404');
+test("no key or server setting is inside: OpenRouter is at its own address, through the proxy, with a stand-in key, which its SDKs take", async () => {
+  assert.doesNotMatch(await sh('env'), /the-real-key|server-only/);
+  assert.equal(await sh(`python -c "import os, openai; print(openai.OpenAI(base_url='https://openrouter.ai/api/v1', api_key=os.environ['OPENROUTER_API_KEY']).models.with_raw_response.list().text)"`), 'openrouter.ai GET /api/v1/models Bearer rf');
   assert.equal(await sh('rf show 2>&1 | head -1'), `agent API, as Bearer ${TOKEN}`);
 });
 
 test("the run's socket is its own: another run's token, as one it read in that run's transcript, opens nothing there", async () => {
-  assert.equal(await sh(`curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:7000/model/${OTHER}/chat`), '404');
   assert.equal(await sh(`curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${OTHER}" http://127.0.0.1:7000/agent/delivered`), '401');
   assert.equal(await sh(`curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:7000/browsers/${OTHER}/crm/json/version`), '404');
   assert.match(await sh(`curl -s -m 10 -x http://rf:${OTHER}@127.0.0.1:7000 https://graph.microsoft.com/v1.0/me 2>&1; echo " exit $?"`), /exit [1-9]/);

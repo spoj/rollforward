@@ -838,7 +838,7 @@ function opsHtml() {
     if (key && rows.at(-1)?.key === key) rows.at(-1).xs.push(x);
     else rows.push({ key, xs: [x] });
   }
-  const runs = data.log.filter(e => e.op === 'run').length, cost = data.log.reduce((t, e) => t + (e.cost ?? 0), 0) + (data.run?.cost ?? 0);
+  const runs = data.log.filter(e => e.op === 'run').length, cost = data.log.reduce((t, e) => t + (e.op === 'done' ? e.cost : 0), 0) + (data.run?.cost ?? 0);
   return (runs ? `<div class="tot">${plural(runs, 'run')}, ${usd(cost)}</div>` : '') + rows.map((r, k) => rowHtml(r, !!data.run && k === rows.length - 1)).join('');
 }
 

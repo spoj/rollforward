@@ -1,5 +1,4 @@
-import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from 'node:http';
-import { request as httpsRequest } from 'node:https';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { BlockList, connect, createServer as createNetServer, type Server as NetServer } from 'node:net';
 import { lookup } from 'node:dns/promises';
 import { TLSSocket } from 'node:tls';
@@ -12,11 +11,11 @@ import { contextFor } from './ca.ts';
 // Each run is a bubblewrap sandbox with no network of its own (bin/sandbox/node starts Pi in it, with sandboxArgs). Its one way
 // out is a socket of its own served here, which socat inside offers at 127.0.0.1:PORT:
 // - /agent/…: the agent API, as the run (rf);
-// - /model/<token>/…: the model, with the key added here, so no key is ever inside;
 // - /browsers/<token>/<NAME>: the run's browser on the website NAME, $RF_BROWSERS/NAME (see browsers.ts);
 // - CONNECT: an HTTPS proxy that lets through only the hosts allowed below or in .rf/egress.json, never to a private address,
 //   and logs each host a run asks for; but a connection's host, or a link one's answer gave the run, it ends here, as that host,
-//   for the run to forward each request (connections.ts).
+//   for the run to forward each request (connections.ts): OpenRouter's among them, which Pi's own calls to its model reach, so no
+//   key is ever inside.
 
 export const PORT = 7000;
 
@@ -25,7 +24,6 @@ const ALLOWED = [
   'github.com', '*.github.com', '*.githubusercontent.com',
   'docs.python.org', '*.readthedocs.io', 'pandas.pydata.org', 'nodejs.org', 'developer.mozilla.org', 'learn.microsoft.com',
 ];
-const MODEL_URL = process.env.RF_MODEL_URL ?? 'https://openrouter.ai/api';
 
 const PRIVATE = new BlockList();
 for (const [net, bits] of [['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.168.0.0', 16]] as const) PRIVATE.addSubnet(net, bits, 'ipv4');
@@ -66,14 +64,7 @@ export function serveSandboxes(o: { agent(req: IncomingMessage, res: ServerRespo
     }
     const [, root, token, ...rest] = url.pathname.split('/'), run = runOf(req.socket, token);
     if (root === 'browsers' && run) return serveBrowsers(run.browsers(), `/browsers/${token}`, rest, req, res).catch(e => res.headersSent ? res.destroy() : res.writeHead(e.status ?? 500).end(e.message));
-    if (root !== 'model' || !run) return void res.writeHead(404).end();
-    const target = new URL(`${MODEL_URL}/${rest.join('/')}${url.search}`);
-    const up = (target.protocol === 'https:' ? httpsRequest : httpRequest)(target, {
-      method: req.method,
-      headers: { ...req.headers, host: target.host, authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, ...(req.headers['x-api-key'] && { 'x-api-key': process.env.OPENROUTER_API_KEY }) },
-    }, r => { res.writeHead(r.statusCode!, r.headers); r.pipe(res); });
-    up.on('error', e => res.headersSent ? res.destroy() : res.writeHead(502).end(e.message));
-    req.pipe(up);
+    res.writeHead(404).end();
   });
   server.on('upgrade', (req, socket, head) => {
     socket.on('error', () => socket.destroy());

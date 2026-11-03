@@ -11,14 +11,14 @@ import type { Instance } from '../src/store.ts';
 import type { AgentRun } from '../src/agent-api.ts';
 
 // A stand-in for Microsoft's sign-in and Graph: a SharePoint library with a folder of years of reports, the runner's OneDrive,
-// someone else's OneDrive, and two mailboxes; and a Databricks warehouse. Each is reached as a run reaches it, through the sandbox's
-// proxy, with the host's own address and rollforward's certificate authority, and the runner's login put in on the way.
-// Every item names its parent, up to its drive's root.
+// someone else's OneDrive, and two mailboxes; a Databricks warehouse; and OpenRouter, the server's own. Each is reached as a run
+// reaches it, through the sandbox's proxy, with the host's own address and rollforward's certificate authority, and the runner's
+// login, or the server's key, put in on the way. Every item names its parent, up to its drive's root.
 const ALICE = 'alice@demo.test', AP = 'ap@demo.test';
 const tmp = mkdtempSync(join(tmpdir(), 'rf-conn-')), seriesDir = join(tmp, 'series', 'weekly'), instDir = join(tmp, 'instances', 'w1');
 const methods: string[] = [], log: { op: string; data: any }[] = [], writes: { method: string; path: string; auth?: string; type?: string; body: Buffer }[] = [];
 const statements: { statement: string; warehouse_id: string }[] = [];
-let graph: Server, refreshes = 0;
+let graph: Server, services: Server, refreshes = 0;
 const seen: string[] = [];
 
 const lib = { driveId: 'b!d1', driveType: 'documentLibrary', siteId: 'host,site1,web1' }, alices = { driveId: 'b!own', driveType: 'business', siteId: 'host,personal,alice' };
@@ -57,13 +57,16 @@ let call: (path: string, body?: unknown) => Promise<{ status: number; data: unkn
 let agentCall: typeof import('../src/agent-api.ts').agentCall;
 let logins: typeof import('../src/logins.ts');
 // The proxy's runs, by token, each the instance the run is for.
-const runs = new Map<string, Instance>();
+const runs = new Map<string, Instance>(), callRuns = new Map<string, import('../src/connections.ts').CallRun>();
+// What OpenRouter was asked; a stream holds after its first event until the test lets it go on.
+const asked: { path: string; auth?: string; key?: string | string[]; body: unknown }[] = [];
+let held = Promise.resolve();
 let sock = '', ca = '', proxy: Server;
 const m365 = () => logins.logins(ALICE).find(l => l.id === 'm365')!;
 
 // A request as a run's tool makes it: CONNECT through the proxy with the run's token, then TLS to the host, trusting what the run
-// trusts, and HTTP/1.1.
-async function via(method: string, url: string, o: { body?: string | Buffer; headers?: Record<string, string>; token?: string } = {}): Promise<{ status: number; text: string; headers: IncomingHttpHeaders }> {
+// trusts, and HTTP/1.1; `data` sees the answer as it comes.
+async function via(method: string, url: string, o: { body?: string | Buffer; headers?: Record<string, string>; token?: string; data?: (b: Buffer) => void } = {}): Promise<{ status: number; text: string; headers: IncomingHttpHeaders }> {
   const u = new URL(url), token = o.token ?? 'run';
   const socket = await new Promise<Socket>((ok, fail) => request({ socketPath: sock, method: 'CONNECT', path: `${u.hostname}:443`, headers: { 'proxy-authorization': `Basic ${Buffer.from(`rf:${token}`).toString('base64')}` } })
     .on('connect', (r, s) => r.statusCode === 200 ? ok(s) : fail(new Error(`CONNECT answered ${r.statusCode}`))).on('error', fail).end());
@@ -71,7 +74,7 @@ async function via(method: string, url: string, o: { body?: string | Buffer; hea
   return new Promise((ok, fail) => {
     const r = httpsRequest({ host: u.hostname, path: u.pathname + u.search, method, headers: { authorization: 'Bearer rf', ...o.headers }, createConnection: () => tls }, res => {
       const chunks: Buffer[] = [];
-      res.on('data', b => chunks.push(b)).on('end', () => ok({ status: res.statusCode!, text: Buffer.concat(chunks).toString(), headers: res.headers }));
+      res.on('data', b => { chunks.push(b); o.data?.(b); }).on('end', () => ok({ status: res.statusCode!, text: Buffer.concat(chunks).toString(), headers: res.headers }));
     });
     r.on('error', fail);
     r.end(o.body);
@@ -153,8 +156,23 @@ before(async () => {
     send({ error: { code: 'itemNotFound', message: 'not here' } }, 404);
   });
   await new Promise<void>(ok => graph.listen(0, '127.0.0.1', ok));
+  // OpenRouter, whose answers say what they cost: a chat completion whole, and a message and a response streamed.
+  services = createServer(async (req, res) => {
+    const chunks = await Array.fromAsync(req as AsyncIterable<Buffer>), body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined;
+    asked.push({ path: req.url!, auth: req.headers.authorization, key: req.headers['x-api-key'], body });
+    const stream = async (first: object, ...events: object[]) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' }).write(`: OPENROUTER PROCESSING\n\ndata: ${JSON.stringify(first)}\n\n`);
+      await held;
+      res.end(`${events.map(e => `data: ${JSON.stringify(e)}\n\n`).join('')}data: [DONE]\n\n`);
+    };
+    if (req.url === '/api/v1/messages') return stream({ type: 'message_start', message: { usage: { input_tokens: 0 } } }, { type: 'message_delta', usage: { output_tokens: 3, cost: 0.002 } }, { type: 'message_stop' });
+    if (req.url === '/api/v1/responses') return stream({ type: 'response.created', response: { usage: null } }, { type: 'response.completed', response: { usage: { cost: 0.004 } } });
+    const answer = req.url === '/api/v1/models' ? { data: [] } : { choices: [{ message: { content: 'Hello' } }], usage: { cost: 0.001 } };
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(answer));
+  });
+  await new Promise<void>(ok => services.listen(0, '127.0.0.1', ok));
   const base = `http://127.0.0.1:${(graph.address() as { port: number }).port}`;
-  Object.assign(process.env, { RF_OIDC_ISSUER: base, RF_OIDC_CLIENT_ID: 'app', RF_PUBLIC_URL: 'http://127.0.0.1:1', RF_M365_SCOPES: 'Mail.ReadWrite Mail.ReadWrite.Shared Mail.Send Mail.Send.Shared Files.ReadWrite.All Sites.Read.All' });
+  Object.assign(process.env, { OPENROUTER_API_KEY: 'the-openrouter-key', RF_OIDC_ISSUER: base, RF_OIDC_CLIENT_ID: 'app', RF_PUBLIC_URL: 'http://127.0.0.1:1', RF_M365_SCOPES: 'Mail.ReadWrite Mail.ReadWrite.Shared Mail.Send Mail.Send.Shared Files.ReadWrite.All Sites.Read.All' });
   const { initSystem, saveTree, writeJson } = await import('../src/system.ts');
   const { upsertUser } = await import('../src/auth.ts');
   const { openSkills, pushSkill } = await import('../src/skills.ts');
@@ -174,18 +192,18 @@ before(async () => {
   c.setConnection('adb', { type: 'databricks', host: 'adb-1.test', warehouse: 'wh1' }, 'admin');
   endpoints.graph = base;
   for (const host of ['graph.microsoft.com', 'adb-1.test', 'upload.test', 'blob.test']) c.upstreams[host] = base;
+  c.upstreams['openrouter.ai'] = `http://127.0.0.1:${(services.address() as { port: number }).port}`;
   logins.saveLogin(ALICE, { id: 'm365', kind: 'm365', name: 'Microsoft 365', account: ALICE, since: '2026-11-02T00:00:00Z', offers: [
     { id: `m365:mail:${ALICE}`, name: 'Mailbox' }, { id: 'm365:onedrive', name: 'OneDrive' }, { id: 'm365:site:host,site1,web1', name: 'SharePoint Reports' },
   ] }, 'r0');
   logins.saveLogin(ALICE, { id: 'adb', kind: 'databricks', name: 'Databricks adb', account: ALICE, since: '2026-11-03T00:00:00Z', offers: [{ id: 'adb', name: 'Databricks adb, warehouse wh1' }] }, 'dbx');
   ca = (await import('../src/ca.ts')).bundle();
-  const callRuns = new Map<string, import('../src/connections.ts').CallRun>();
   sock = join(tmp, 'rf.sock');
   proxy = serveSandboxes({
     agent: async (_q, s) => void s.writeHead(404).end(),
     run: token => {
       if (!runs.has(token)) return undefined;
-      if (!callRuns.has(token)) callRuns.set(token, { inst: runs.get(token)!, n: 1, links: new Map() });
+      if (!callRuns.has(token)) callRuns.set(token, { inst: runs.get(token)!, n: 1, links: new Map(), cost: 0 });
       const r = callRuns.get(token)!;
       return { egress() {}, browsers: () => { throw new Error('no browsers here'); }, intercepts: h => c.intercepts(r, h), call: (h, q, s) => c.call(r, h, q, s) };
     },
@@ -195,7 +213,7 @@ before(async () => {
 });
 
 after(() => {
-  for (const s of [graph, proxy]) {
+  for (const s of [graph, services, proxy]) {
     s.close();
     s.closeAllConnections();
   }
@@ -456,6 +474,36 @@ test('a run queries Databricks at its own address as the runner: statements on i
   assert.deepEqual([gone.status, gone.text], [409, "alice@demo.test's Databricks adb login has expired: they sign in to it again on the Logins page\n"]);
   assert.deepEqual(log.filter(e => e.op === 'expired').at(-1)!.data, { login: 'adb', name: 'Databricks adb', runner: ALICE }, 'the instance carries on once they sign in again');
   assert.equal(calls().at(-1)!.status, 409);
+});
+
+const O = 'https://openrouter.ai/api/v1';
+
+test("OpenRouter is every run's, with the server's key put in for the run's: its inference asks only for providers that don't collect its data, and what each answer cost, whole or streamed, adds to the run's", async () => {
+  const before = callRuns.get('run')?.cost ?? 0, ask = { model: 'openai/gpt-5-mini', messages: [{ role: 'user', content: 'Hi' }] };
+  const chat = await via('POST', `${O}/chat/completions`, json({ ...ask, provider: { sort: 'price', data_collection: 'allow' } }));
+  assert.deepEqual([chat.status, JSON.parse(chat.text).choices[0].message.content], [200, 'Hello']);
+  assert.deepEqual(asked.at(-1), { path: '/api/v1/chat/completions', auth: 'Bearer the-openrouter-key', key: 'the-openrouter-key', body: { ...ask, provider: { sort: 'price', data_collection: 'deny' } } });
+  assert.deepEqual(calls().at(-1), { run: 1, name: 'openrouter', method: 'POST', path: '/api/v1/chat/completions', status: 200, bytes: chat.text.length, model: 'openai/gpt-5-mini', cost: 0.001 });
+  let go!: () => void;
+  held = new Promise(ok => (go = ok));
+  const message = await via('POST', `${O}/messages`, { body: JSON.stringify({ model: 'anthropic/claude-opus-5.5', max_tokens: 9, messages: [], stream: true }), headers: { 'content-type': 'application/json', authorization: '', 'x-api-key': 'rf' }, data: b => String(b).includes('message_start') && go() });
+  assert.match(message.text, /^: OPENROUTER PROCESSING\n\ndata: \{"type":"message_start"[^]*data: \[DONE\]\n\n$/, 'the stream as it came, its first event before the rest was sent');
+  assert.deepEqual([asked.at(-1)!.key, (asked.at(-1)!.body as any).provider, calls().at(-1)!.cost], ['the-openrouter-key', { data_collection: 'deny' }, 0.002], "Anthropic's SDKs' x-api-key");
+  await via('POST', `${O}/responses`, json({ model: 'openai/gpt-5-mini', input: 'Hi', stream: true }));
+  assert.equal(calls().at(-1)!.cost, 0.004, "a response's, in its last event");
+  assert.deepEqual([(await via('GET', `${O}/models`)).status, calls().at(-1)!.cost], [200, 0]);
+  assert.equal(+(callRuns.get('run')!.cost - before).toFixed(6), 0.007);
+});
+
+test('OpenRouter takes nothing but inference and reads of the models: no keys or credits, and no body but a JSON object, which would pass by the rewrite', async () => {
+  const before = asked.length;
+  for (const [method, path] of [['GET', '/credits'], ['GET', '/key'], ['POST', '/keys'], ['DELETE', '/keys/k1'], ['GET', '/chat/completions'], ['POST', '/embeddings']]) {
+    const r = await via(method, `${O}${path}`, json({}));
+    assert.equal(r.status, 403, path);
+    assert.match(r.text, new RegExp(`^${method} /api/v1${path}: openrouter takes inference, POST /api/v1/chat/completions`), path);
+  }
+  assert.match((await via('POST', `${O}/chat/completions`, { body: '{"model":"x","provider":{"data_collection":"allow"}}' })).text, /its body is a JSON object, sent as application\/json/);
+  assert.equal(asked.length, before, 'none reached OpenRouter');
 });
 
 test('a login Microsoft asks to consent to what the server asks for anew renews with what it has, and says what its person reconnects to grant', async () => {

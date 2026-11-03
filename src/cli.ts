@@ -44,7 +44,7 @@ async function tryIt(args: string[]) {
   const inst = { dir: out, log: [{ op: 'create', by: as, logins: logins(as).flatMap(l => l.offers.map(o => o.id)) }], series: () => seriesDir, append: (_by: string, op: string, data: object) => { console.log(`  [log] ${op} ${JSON.stringify(data)}`); return { seq: 0 }; } } as unknown as Instance;
   const api = await serveAgent(inst);
   // The proxy a run has, on a port of its own, for the connections and the hosts runs may reach.
-  const token = randomUUID(), run: CallRun = { inst: inst as unknown as Instance, n: 0, links: new Map() };
+  const token = randomUUID(), run: CallRun = { inst: inst as unknown as Instance, n: 0, links: new Map(), cost: 0 };
   const proxy = serveSandboxes({ agent: async (_q, s) => void s.writeHead(404).end(), run: t => t === token ? { egress: () => {}, browsers: api.browsers, intercepts: h => intercepts(run, h), call: (h, q, s) => call(run, h, q, s) } : undefined }).listen(0);
   await once(proxy, 'listening');
   const via = `http://rf:${token}@127.0.0.1:${(proxy.address() as { port: number }).port}`;
@@ -55,7 +55,7 @@ async function tryIt(args: string[]) {
   const env = {
     PATH: [join(app, 'bin'), '/opt/venv/bin', '/usr/local/bin', '/usr/bin'].join(delimiter), LANG: 'C.UTF-8', TZ: Intl.DateTimeFormat().resolvedOptions().timeZone, HOME: home, OFFICECLI_NO_AUTO_RESIDENT: '1',
     RF_URL: api.url, RF_TOKEN: api.token, RF_BROWSERS: `${api.url}/browsers/${api.token}`, RF_WORKING: join(out, 'working'), RF_SKILLS: '/skills/live',
-    HTTPS_PROXY: via, https_proxy: via, NODE_USE_ENV_PROXY: '1', ...Object.assign({}, ...reachable(run.inst).map(c => types[c.type].env?.(c))), ...Object.fromEntries(['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS', 'CURL_CA_BUNDLE'].map(k => [k, join(out, 'ca.pem')])),
+    HTTPS_PROXY: via, https_proxy: via, NODE_USE_ENV_PROXY: '1', OPENROUTER_API_KEY: 'rf', ...Object.assign({}, ...reachable(run.inst).map(c => types[c.type].env?.(c))), ...Object.fromEntries(['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS', 'CURL_CA_BUNDLE'].map(k => [k, join(out, 'ca.pem')])),
   };
   const code = await new Promise<number>(done => spawn('bwrap', [
     '--unshare-all', '--share-net', '--die-with-parent', '--clearenv', ...userland(), '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--bind', home, home,

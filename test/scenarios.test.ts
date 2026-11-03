@@ -6,12 +6,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:f
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
-// Real runs, from a person's act down to Pi in its sandbox, with a scripted stand-in for the model: each run's prompt takes the next
-// script, bash commands and then the report, and the stand-in keeps what each command answered. So the walls a run meets, a wake
-// and a takeover are checked as a run meets them, at no model cost.
+// Real runs, from a person's act down to Pi in its sandbox, with a scripted stand-in for OpenRouter: each run's prompt takes the
+// next script, bash commands and then the report, and the stand-in keeps what each command answered. So the walls a run meets, a
+// wake and a takeover are checked as a run meets them, at no model cost.
 type Script = { bash: (string | (() => string))[]; report: string; prompt?: string; system?: string; saw: string[]; fail?: string };
-const scripts: Script[] = [], byPrompt = new Map<string, Script>();
+const scripts: Script[] = [], byPrompt = new Map<string, Script>(), providers: unknown[] = [];
 const app = join(import.meta.dirname, '..'), tmp = mkdtempSync(join(tmpdir(), 'rf-scenario-')), root = join(tmp, 'data');
 const ADMIN = 'admin@demo.test', BOB = 'bob@demo.test';
 let model: ReturnType<typeof createServer>, proc: ChildProcess, base = '', admin = '', bob = '';
@@ -19,9 +20,12 @@ let model: ReturnType<typeof createServer>, proc: ChildProcess, base = '', admin
 const text = (c: unknown): string => typeof c === 'string' ? c : (c as { type: string; text?: string; content?: unknown }[]).map(b => b.text ?? (b.content === undefined ? '' : text(b.content))).join('');
 const isResult = (m: { role: string; content: unknown }) => Array.isArray(m.content) && m.content.some((b: { type: string }) => b.type === 'tool_result');
 
-// The Anthropic Messages API, streamed, as Pi reaches OpenRouter's: the next step of the script for the latest prompt.
+// The Anthropic Messages API, streamed, as Pi reaches OpenRouter's: the next step of the script for the latest prompt, each answer
+// costing a cent; and a chat completion, for a script's own call.
 async function answer(req: IncomingMessage, res: ServerResponse) {
   const body = JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString());
+  providers.push(body.provider);
+  if (req.url!.endsWith('/chat/completions')) return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'A second opinion' } }], usage: { cost: 0.002 } }));
   const msgs: { role: string; content: unknown }[] = body.messages, at = msgs.findLastIndex(m => m.role === 'user' && !isResult(m));
   const key = text(msgs[at].content);
   if (!byPrompt.has(key)) byPrompt.set(key, Object.assign(scripts.shift()!, { prompt: key, system: text(body.system) }));
@@ -36,7 +40,7 @@ async function answer(req: IncomingMessage, res: ServerResponse) {
   send('content_block_start', { index: 0, content_block: block.type === 'text' ? { type: 'text', text: '' } : { ...block, input: {} } });
   send('content_block_delta', { index: 0, delta: block.type === 'text' ? { type: 'text_delta', text: block.text } : { type: 'input_json_delta', partial_json: JSON.stringify(block.input) } });
   send('content_block_stop', { index: 0 });
-  send('message_delta', { delta: { stop_reason: block.type === 'text' ? 'end_turn' : 'tool_use', stop_sequence: null }, usage: { output_tokens: 10 } });
+  send('message_delta', { delta: { stop_reason: block.type === 'text' ? 'end_turn' : 'tool_use', stop_sequence: null }, usage: { output_tokens: 10, cost: 0.01 } });
   send('message_stop', {});
   res.end();
 }
@@ -55,18 +59,17 @@ async function runs(id: string, n: number) {
 }
 
 before(async () => {
-  model = createServer((req, res) => (req.method === 'POST' && new URL(req.url!, 'http://x').pathname.endsWith('/messages') ? answer(req, res) : res.writeHead(404).end()));
+  model = createServer((req, res) => (req.method === 'POST' && /\/(messages|chat\/completions)$/.test(new URL(req.url!, 'http://x').pathname) ? answer(req, res) : res.writeHead(404).end()));
   await new Promise<void>(ok => model.listen(0, '127.0.0.1', ok));
   const probe = createServer();
   await new Promise<void>(ok => probe.listen(0, '127.0.0.1', ok));
   base = `http://127.0.0.1:${(probe.address() as { port: number }).port}`;
   await new Promise(ok => probe.close(ok));
   mkdirSync(join(tmp, 'home'));
-  proc = spawn(process.execPath, [join(app, 'src', 'server.ts'), root, new URL(base).port], {
-    env: {
-      ...process.env, HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch'), OPENROUTER_API_KEY: 'stand-in-key', RF_WAKE_TICK_MS: '300',
-      RF_MODEL_URL: `http://127.0.0.1:${(model.address() as { port: number }).port}`,
-    },
+  // The server sends what runs ask of openrouter.ai, Pi's own calls among them, to the stand-in.
+  const upstream = `import { upstreams } from ${JSON.stringify(pathToFileURL(join(app, 'src', 'connections.ts')).href)}; upstreams['openrouter.ai'] = 'http://127.0.0.1:${(model.address() as { port: number }).port}';`;
+  proc = spawn(process.execPath, ['--import', `data:text/javascript,${encodeURIComponent(upstream)}`, join(app, 'src', 'server.ts'), root, new URL(base).port], {
+    env: { ...process.env, HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch'), OPENROUTER_API_KEY: 'stand-in-key', RF_WAKE_TICK_MS: '300' },
     stdio: ['ignore', 'pipe', 'inherit'],
   });
   await new Promise((ok, fail) => {
@@ -112,6 +115,8 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
       'rf ask Is the bank file coming today? 2>&1',
       'rf say --on nope x 2>&1',
       'rf resolve c2 2>&1',
+      `curl -s -m 10 https://openrouter.ai/api/v1/chat/completions -H 'content-type: application/json' -d '{"model": "openai/gpt-5-mini", "messages": [{"role": "user", "content": "Is this right?"}]}'`,
+      'curl -s -m 10 https://openrouter.ai/api/v1/credits',
     ],
     report: 'Checked the walls, and woke myself for the bank file.', saw: [],
   };
@@ -130,7 +135,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.match(walls.saw[2], /curl exit [1-9]/, 'nor an internal address');
   assert.deepEqual(log.filter(e => e.op === 'egress').map(e => [e.run, e.host, e.allowed]), [[1, '10.1.2.3', false]]);
   assert.match(walls.saw[3], /m365:mail:ceo@demo.test is not ticked for this instance; its runner, admin@demo.test/, "Graph at its own address, through the server, which refuses what isn't ticked");
-  assert.deepEqual(log.filter(e => e.op === 'call').map(e => [e.run, e.name, e.path, e.status]), [[1, 'graph', '/v1.0/users/ceo@demo.test/messages', 403], [2, 'graph', '/v1.0/me/messages', 403]]);
+  assert.deepEqual(log.filter(e => e.op === 'call' && e.name === 'graph').map(e => [e.run, e.name, e.path, e.status]), [[1, 'graph', '/v1.0/users/ceo@demo.test/messages', 403], [2, 'graph', '/v1.0/me/messages', 403]]);
   assert.match(walls.saw[4], /^set: 2026-11 wakes at /);
   assert.match(walls.saw[5], /Wide\/Close is in another workspace: you can read it, not wake it/);
   assert.match(walls.saw[6], /at is now, \+<n>m\|h\|d, or a date/);
@@ -142,10 +147,16 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.match(walls.saw[12], /^asked in c\d+, seq \d+\s*$/);
   assert.match(walls.saw[13], /no item nope/);
   assert.match(walls.saw[14], /admin@demo.test started c2, and resolves it/);
+  assert.match(walls.saw[15], /"content":"A second opinion"/, 'any model, through OpenRouter, with the server\'s key');
+  assert.match(walls.saw[16], /^GET \/api\/v1\/credits: openrouter takes inference/);
+  const asked = log.filter(e => e.op === 'call' && e.name === 'openrouter'), pi = asked.filter(e => (e.path as string).startsWith('/api/v1/messages'));
+  assert.deepEqual(asked.filter(e => !pi.includes(e)).map(e => [e.run, e.method, e.path, e.status, e.model, e.cost]), [[1, 'POST', '/api/v1/chat/completions', 200, 'openai/gpt-5-mini', 0.002], [1, 'GET', '/api/v1/credits', 403, undefined, undefined]]);
+  assert.deepEqual(pi.map(e => [e.run, e.method, e.status, e.model, e.cost]), [...Array(walls.bash.length + 1).fill([1, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01]), ...Array(2).fill([2, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01])], "Pi's own calls, a step's each and the report's, through the same connection");
+  assert.ok(providers.length && providers.every(p => JSON.stringify(p) === '{"data_collection":"deny"}'), 'every call asked only for providers that collect no data');
   assert.deepEqual(log.filter(e => e.op === 'comment' && e.by === 'agent').map(e => [e.text, !!e.ask]), [['Walls checked.', false], ['Is the bank file coming today?', true]], "the agent's words are comments of its own, and an ask is marked");
   assert.match(woken.prompt!, /"op":"wake","from":"[^"]*\/2026-11"/, 'the wake started the next run, saying only who set it');
   assert.match(woken.saw[0], /m365:mail:admin@demo.test is not ticked/);
-  assert.deepEqual(log.filter(e => e.op === 'done').map(e => [e.run, e.aborted]), [[1, false], [2, false]]);
+  assert.deepEqual(log.filter(e => e.op === 'done').map(e => [e.run, e.aborted, e.cost]), [[1, false, +(walls.bash.length * 0.01 + 0.01 + 0.002).toFixed(4)], [2, false, 0.02]], "what its calls cost, Pi's and the script's");
   assert.deepEqual(log.filter(e => e.op === 'report').map(e => e.text), [walls.report, woken.report]);
 
   assert.equal((await call('POST', `/api/instances/${id}/takeover`, { logins: [] }, bob)).status, 200);

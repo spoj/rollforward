@@ -1,8 +1,7 @@
-import { existsSync, readdirSync } from 'node:fs';
 import { freemem } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
-import { agentsFile, createInstance, HttpError, instance, instanceDir, instances, isPerson, labels, newId, readFile, seriesDir, type Entry, type Instance } from './store.ts';
+import { agentsFile, createInstance, HttpError, instance, instanceDir, instances, isPerson, labels, newId, seriesDir, type Entry, type Instance } from './store.ts';
 import { startRun, type Run, type View } from './runner.ts';
 import { canSee, changes, everyone, readJson, tree, type Tree, writeJson } from './system.ts';
 import { users } from './auth.ts';
@@ -138,7 +137,6 @@ async function start(inst: Instance) {
         if (e.type === 'message_end' || e.type === 'tool_execution_end') changes.emit('change', inst.id); // the Ops log shows the run as it goes
         if (e.type === 'tool_execution_end') a.browsers?.shoot().catch(err => console.error(`run ${n} of ${inst.id}: no screenshot`, err));
         if (e.type === 'message_end' && e.message.role === 'assistant') {
-          a.cost += e.message.usage.cost.total;
           a.failed = e.message.stopReason === 'error' ? e.message.errorMessage ?? 'the model failed' : undefined; // a later success clears it
           const text = e.message.content.map(b => (b.type === 'text' ? b.text : '')).join('').trim();
           if (text) a.said = text;
@@ -282,21 +280,15 @@ function summaryOf(report: string): string {
   return (line.length > 200 ? line.split(/(?<=[.!?])\s/)[0] : line).slice(0, 200);
 }
 
-// What a run cost until a restart cut it: its agent's replies since it started, in its session, whose last line the cut may have
-// left half written.
-function costSince(inst: Instance, at: string): number {
-  const dir = join(inst.dir, 'session'), lines = existsSync(dir) ? readdirSync(dir).flatMap(f => readFile(inst.dir, `session/${f}`)?.split('\n') ?? []) : [];
-  return lines.map(l => { try { return JSON.parse(l); } catch { return {}; } })
-    .filter(e => e.type === 'message' && e.message.role === 'assistant' && e.timestamp >= at).reduce((t, e) => t + (e.message.usage?.cost?.total ?? 0), 0);
-}
-
-// A run a restart cut ends as aborted, with what it cost so far, and its instance is woken to carry on, so a deploy needn't wait
-// for quiet. A run the move from the team's fork cut has its done already, from scripts/migrate-fork.ts, and is woken the same way.
+// A run a restart cut ends as aborted, with what its calls cost so far, and its instance is woken to carry on, so a deploy needn't
+// wait for quiet. A run the move from the team's fork cut has its done already, from scripts/migrate-fork.ts, and is woken the
+// same way.
 export function recover() {
   for (const id of Object.keys(tree().series)) for (const inst of instances(id).filter(i => i.doc.status === 'open')) {
     const run = inst.log.findLast(e => e.op === 'run' || e.op === 'done');
     if (run?.op === 'run') {
-      inst.append('server', 'done', { run: run.run, aborted: true, seen: seenBefore(inst), cost: +costSince(inst, run.at).toFixed(4), summary: null, error: 'a restart cut the run' });
+      const cost = inst.log.reduce((t, e) => t + (e.op === 'call' && e.run === run.run ? (e.cost as number | undefined) ?? 0 : 0), 0);
+      inst.append('server', 'done', { run: run.run, aborted: true, seen: seenBefore(inst), cost: +cost.toFixed(4), summary: null, error: 'a restart cut the run' });
       inst.append('server', 'wake', { reason: 'A restart cut your last run; carry on', from: 'server' });
     }
     if (run?.error === 'cut by the move to 0.2.0' && !due(inst)) inst.append('server', 'wake', { reason: 'The move to 0.2.0 cut your last run; carry on', from: 'server' });
