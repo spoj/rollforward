@@ -20,7 +20,7 @@ import { call, intercepts, reachable, types, type CallRun } from './connections.
 //       runs COMMAND as a run would: the live skills under $RF_SKILLS, rf, the connections through the run's proxy, and working/
 //       under DIR (default ./try-output).
 //       Such as: try --as EMAIL -- python "$RF_SKILLS/aging/scripts/fetch.py"
-//                try --as EMAIL -- rf browser open portal
+//                try --as EMAIL -- python portal.py, which connects to $RF_BROWSERS/portal
 
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const [root, cmd, ...rest] = process.argv.slice(2);
@@ -55,7 +55,7 @@ async function tryIt(args: string[]) {
   const code = await new Promise<number>(done => spawn(words[0], words.slice(1), {
     stdio: 'inherit', cwd: app,
     env: {
-      ...process.env, RF_URL: api.url, RF_TOKEN: api.token, RF_WORKING: join(out, 'working'), RF_SKILLS: skillsDir(), PATH: [join(app, 'bin'), venv, process.env.PATH].join(delimiter),
+      ...process.env, RF_URL: api.url, RF_TOKEN: api.token, RF_BROWSERS: `${api.url}/browsers/${api.token}`, RF_WORKING: join(out, 'working'), RF_SKILLS: skillsDir(), PATH: [join(app, 'bin'), venv, process.env.PATH].join(delimiter),
       HTTPS_PROXY: via, https_proxy: via, NODE_USE_ENV_PROXY: '1', ...Object.assign({}, ...reachable(run.inst).map(c => types[c.type].env?.(c))), ...Object.fromEntries(['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS', 'CURL_CA_BUNDLE'].map(k => [k, join(out, 'ca.pem')])),
     },
   }).on('exit', c => done(c ?? 1)).on('error', e => { console.error(e.message); done(1); }));

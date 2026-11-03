@@ -19,6 +19,7 @@ Object.assign(process.env, {
 });
 const { pi, socketDir } = await import('../src/runner.ts');
 const { serveSandboxes } = await import('../src/sandbox.ts');
+const { HttpError } = await import('../src/store.ts');
 const { openSkills, pushSkill } = await import('../src/skills.ts');
 const { initSystem, writeJson } = await import('../src/system.ts');
 const { filesOf, standIns } = await import('./push.ts');
@@ -28,12 +29,18 @@ pushSkill('tool', filesOf(join(standIns, 'tool')), 'admin@demo.test');
 writeJson('egress.json', ['127.0.0.1.nip.io']);
 
 const TOKEN = 'run-token', egress: [string, boolean][] = [];
+// The run's browsers: one on erp, b1, and erp alone ticked.
+const lent = (site: string) => {
+  if (site !== 'erp') throw new HttpError(403, `web:${site} is not ticked for this instance`);
+  return {};
+};
+const standIn = { lent, browser: async (site: string) => (lent(site), 'b1'), connected() {} } as unknown as import('../src/browsers.ts').Browsers;
 mkdirSync(socketDir, { recursive: true });
 const sockets = serveSandboxes(join(socketDir, 'rf.sock'), {
   agent: async (req, res) => void res.end(`agent API, as ${req.headers.authorization}`),
   // The server's answer for a connection's host, which here says what it was asked.
   run: token => (token === TOKEN ? {
-    egress: (host, allowed) => void egress.push([host, allowed]), owns: id => id === 'b1', intercepts: host => host === 'graph.microsoft.com',
+    egress: (host, allowed) => void egress.push([host, allowed]), browsers: () => standIn, intercepts: host => host === 'graph.microsoft.com',
     call: async (host, req, res) => void res.end(`${host} ${req.method} ${req.url} ${req.headers.authorization ?? '-'}`),
   } : undefined),
 });
@@ -112,11 +119,12 @@ test("a connection's host is the server's to answer, with rollforward's own cert
   assert.equal(await sh('echo $DATABRICKS_HOST'), 'https://adb-1.test');
 });
 
-test("a browser the run opened is reached through the socket, with the browser service's key added there; no other", async () => {
-  const ws = (path: string) => sh(`curl -s -m 5 -N -H 'Connection: Upgrade' -H 'Upgrade: websocket' http://127.0.0.1:7000${path}`);
-  assert.equal(await ws(`/browser/${TOKEN}/b1`), 'browser service got /sessions/b1/cdp with Bearer the-browser-key');
-  assert.equal(await ws(`/browser/${TOKEN}/b2`), '');
-  assert.equal(await ws('/browser/wrong/b1'), '');
+test("the run's browser on a website is at $RF_BROWSERS/NAME, through the socket, with the browser service's key added there; no other", async () => {
+  const ws = (url: string) => sh(`curl -s -m 5 -N -H 'Connection: Upgrade' -H 'Upgrade: websocket' ${url}`);
+  assert.equal(await sh('curl -s $RF_BROWSERS/erp/json/version'), `{"webSocketDebuggerUrl":"ws://127.0.0.1:7000/browsers/${TOKEN}/erp"}`);
+  assert.equal(await ws('$RF_BROWSERS/erp'), 'browser service got /sessions/b1/cdp with Bearer the-browser-key');
+  assert.equal(await ws('$RF_BROWSERS/crm'), 'web:crm is not ticked for this instance');
+  assert.equal(await ws('http://127.0.0.1:7000/browsers/wrong/erp'), '');
 });
 
 test("the agent's python is the app's venv, with its packages", async () => {

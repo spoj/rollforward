@@ -746,7 +746,8 @@ function logText(e) {
     graph: () => `${w} ${e.method ? `sent ${esc(e.method)} ${esc(e.path)} to` : `read ${esc(e.path)} from`} Microsoft 365${e.status >= 300 ? `, which answered ${e.status}` : ''}${e.to && e.to !== e.path ? `<div class="d">${esc(e.to)}</div>` : ''}${[e.body, e.file].filter(Boolean).map(f => `<div class="f"><a data-act="preview" data-file="${esc(f)}">${esc(f)}</a></div>`).join('')}`,
     rename: () => e.by === 'server' ? `Named by its first prompt, from ${esc(e.from)}` : `${w} renamed the instance from ${esc(e.from)}`,
     duplicate: () => `${w} made this instance as a copy of ${esc(e.from)}`,
-    browser: () => e.action === 'get' ? `${w} fetched ${esc(e.from)} from the browser on ${esc(e.site)}${f}` : `${w} closed run ${e.run}'s browser${e.site ? ` on ${esc(e.site)}, in ${esc(e.login)}'s login` : ''}<div class="d">${e.error ? esc(e.error) : `${e.requests} requests${e.writes ? `, ${e.writes} writes` : ''}${e.blocked ? `, ${e.blocked} blocked` : ''}`}</div>${f}`,
+    browser: () => e.action === 'get' ? `${w} fetched ${esc(e.from)} from the browser on ${esc(e.site)}${f}`
+      : e.action === 'wait' ? `Run ${e.run} waits for ${esc(e.login)}'s ${esc(e.site)} browser, held by ${esc(e.held)}` : `${w} closed run ${e.run}'s browser${e.site ? ` on ${esc(e.site)}, in ${esc(e.login)}'s login` : ''}<div class="d">${e.error ? esc(e.error) : `${e.requests} requests${e.writes ? `, ${e.writes} writes` : ''}${e.blocked ? `, ${e.blocked} blocked` : ''}`}</div>${f}`,
     shot: () => `Run ${e.run}'s browser on ${esc(e.site)}${shotsHtml([e])}`,
     browsers: () => `Run ${e.run}'s browsers did not all close<div class="d">${esc(e.error)}</div>`,
   }[e.op]?.() ?? `${w} ${esc(e.op)}`;
@@ -809,7 +810,7 @@ function lineHtml(s, i) {
 // What a row of the agent's work did, by kind of entry, and what a person's entries of one kind in a row did.
 const DID = {
   call: n => `made ${plural(n, 'request')} outside`, graph: n => `read ${plural(n, 'path')} from Microsoft 365`, point: n => `showed ${plural(n, 'file')}`, item: n => `set up ${plural(n, 'item')}`,
-  remove: n => `removed ${plural(n, 'item')}`, get: n => `fetched ${plural(n, 'file')} from the browser`, browser: n => `closed ${plural(n, 'browser')}`,
+  remove: n => `removed ${plural(n, 'item')}`, get: n => `fetched ${plural(n, 'file')} from the browser`, browser: n => `closed ${plural(n, 'browser')}`, wait: n => `waited for ${plural(n, 'browser')}`,
   egress: n => `reached ${plural(n, 'host')}`, upload: n => `uploaded ${plural(n, 'file')}`, resolve: n => `resolved ${plural(n, 'thread')}`,
 };
 const ALONE = new Set(['comment', 'report', 'run', 'done']);
@@ -844,7 +845,7 @@ function workHead(xs, live) {
   const steps = xs.filter(x => !x.op && x.kind !== 'say'), entries = xs.filter(x => x.op && x.op !== 'shot');
   const did = [
     ...Object.entries(Object.groupBy(steps, s => s.kind)).map(([k, g]) => `${(VERB[k] ?? esc(k)).toLowerCase()} ${plural(g.length, NOUN[k] ?? 'call')}`),
-    ...Object.entries(Object.groupBy(entries, e => (e.action === 'get' ? 'get' : e.op))).map(([k, g]) => DID[k]?.(g.length) ?? `${esc(k)} \u00D7${g.length}`),
+    ...Object.entries(Object.groupBy(entries, e => e.action ?? e.op)).map(([k, g]) => DID[k]?.(g.length) ?? `${esc(k)} \u00D7${g.length}`),
   ];
   const bad = steps.filter(s => s.error).length + entries.filter(e => e.status >= 300 || e.allowed === false || e.op === 'browsers').length;
   return `${actor('agent')} ${did.join(', ') || 'worked'}${bad ? ` \u00b7 <span class="bad">${bad} failed</span>` : ''}${live ? ' <span class="spin"></span>' : ''}`;

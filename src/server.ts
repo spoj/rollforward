@@ -16,7 +16,7 @@ import { checkTicks, logins, runnerOf, signOut } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { byLogin, call, connections, convert, intercepts, loginOf, removeConnection, setConnection } from './connections.ts';
-import { endSignIn, isSignIn, passUpgrade, startSignIn, viewPage } from './browsers.ts';
+import { Browsers, endSignIn, isSignIn, passUpgrade, startSignIn, viewPage } from './browsers.ts';
 import { offer, unoffer } from './connections/graph.ts';
 import { seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
@@ -102,7 +102,7 @@ async function agent(req: IncomingMessage, res: ServerResponse, url: URL) {
   const a = byToken.get(req.headers.authorization?.replace('Bearer ', '') ?? '');
   if (!a) throw new HttpError(401, 'no run for this token');
   if (url.pathname.startsWith('/api/')) return api({ email: 'agent', name: 'Agent', role: 'user', groups: [], run: a }, req, res, url);
-  // Browsers and deliveries: rf browser, rf delivered (see agent-api.ts).
+  // Browsers and deliveries: rf expired, rf delivered (see agent-api.ts).
   // A login the run's runner must sign in to again is logged, so the instance carries on once they do.
   const r = await agentCall(a, url.pathname, req.method ?? 'GET', () => body(req)).catch((e: HttpError & { login?: string }) => {
     if (e.login) a.inst.append('server', 'expired', { login: e.login, name: byLogin(e.login) ? loginOf(byLogin(e.login)!).name : e.login, runner: runnerOf(a.inst).by });
@@ -683,7 +683,7 @@ serveSandboxes(join(socketDir, 'rf.sock'), {
         a.hosts.add(host);
         a.inst.append('server', 'egress', { run: a.n, host, allowed });
       },
-      owns: id => !!a.browsers?.owns(id),
+      browsers: () => (a.browsers ??= new Browsers(a.inst, a.n)),
       intercepts: host => intercepts(a, host),
       call: (host, req, res) => call(a, host, req, res),
     };

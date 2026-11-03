@@ -5,14 +5,14 @@ import { lookup } from 'node:dns/promises';
 import { TLSSocket } from 'node:tls';
 import { existsSync, rmSync } from 'node:fs';
 import { readJson } from './system.ts';
-import { passUpgrade } from './browsers.ts';
+import { serveBrowsers, upgradeBrowser, type Browsers } from './browsers.ts';
 import { contextFor } from './ca.ts';
 
 // Each run is a bubblewrap sandbox with no network of its own (bin/sandbox/node starts Pi in it, with sandboxArgs). Its one way
 // out is the socket served here, which socat inside offers at 127.0.0.1:PORT:
 // - /agent/…: the agent API, as the run (rf);
 // - /model/<token>/…: the model, with the key added here, so no key is ever inside;
-// - /browser/<token>/<id>: the CDP websocket of a browser the run opened (rf browser open), passed to the browser service;
+// - /browsers/<token>/<NAME>: the run's browser on the website NAME, $RF_BROWSERS/NAME (see browsers.ts);
 // - CONNECT: an HTTPS proxy that lets through only the hosts allowed below or in .rf/egress.json, never to a private address,
 //   and logs each host a run asks for; but a connection's host, or a link one's answer gave the run, it ends here, as that host,
 //   for the run to forward each request (connections.ts).
@@ -38,7 +38,7 @@ export const allowed = (host: string) =>
   [...ALLOWED, ...readJson<string[]>('egress.json', [])].some(p => (p.startsWith('*.') ? host.endsWith(p.slice(1)) : host === p));
 
 // What the server knows of a run, by its token.
-export type SandboxRun = { egress(host: string, allowed: boolean): void; owns(browser: string): boolean; intercepts(host: string): boolean; call(host: string, req: IncomingMessage, res: ServerResponse): Promise<void> };
+export type SandboxRun = { egress(host: string, allowed: boolean): void; browsers(): Browsers; intercepts(host: string): boolean; call(host: string, req: IncomingMessage, res: ServerResponse): Promise<void> };
 
 export function serveSandboxes(path: string | number, o: { agent(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void>; run(token: string): SandboxRun | undefined }) {
   if (typeof path === 'string' && existsSync(path)) rmSync(path);
@@ -47,8 +47,9 @@ export function serveSandboxes(path: string | number, o: { agent(req: IncomingMe
     const url = URL.parse(req.url!, 'http://sandbox');
     if (!url) return void res.writeHead(400).end();
     if (url.pathname.startsWith('/agent/') || url.pathname.startsWith('/api/')) return o.agent(req, res, url);
-    const [, root, token, ...rest] = url.pathname.split('/');
-    if (root !== 'model' || !o.run(token)) return void res.writeHead(404).end();
+    const [, root, token, ...rest] = url.pathname.split('/'), run = o.run(token);
+    if (root === 'browsers' && run) return serveBrowsers(run.browsers(), `/browsers/${token}`, rest, req, res).catch(e => res.headersSent ? res.destroy() : res.writeHead(e.status ?? 500).end(e.message));
+    if (root !== 'model' || !run) return void res.writeHead(404).end();
     const target = new URL(`${MODEL_URL}/${rest.join('/')}${url.search}`);
     const up = (target.protocol === 'https:' ? httpsRequest : httpRequest)(target, {
       method: req.method,
@@ -59,13 +60,9 @@ export function serveSandboxes(path: string | number, o: { agent(req: IncomingMe
   });
   server.on('upgrade', (req, socket, head) => {
     socket.on('error', () => socket.destroy());
-    const [, root, token, id] = URL.parse(req.url!, 'http://sandbox')?.pathname.split('/') ?? [];
-    try {
-      if (root !== 'browser' || !o.run(token)?.owns(id)) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
-    } catch (e) {
-      return socket.end(`HTTP/1.1 403 Forbidden\r\ncontent-type: text/plain\r\n\r\n${(e as Error).message}\n`);
-    }
-    passUpgrade(req, socket, head, `/sessions/${id}/cdp`);
+    const [, root, token, site, ...rest] = URL.parse(req.url!, 'http://sandbox')?.pathname.split('/') ?? [], run = o.run(token);
+    if (root !== 'browsers' || !run || !site || rest.length) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
+    upgradeBrowser(run.browsers(), site, req, socket, head);
   });
   server.on('connect', async (req: IncomingMessage, client, head: Buffer) => {
     let up: ReturnType<typeof connect> | undefined;

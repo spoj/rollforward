@@ -13,5 +13,5 @@ export default {
     return { url: input.url, hosts, ...(typeof input.title === 'string' && input.title.trim() && { title: input.title.trim() }), writeback: input.writeback !== false && input.writeback !== 'false' };
   },
   login: c => ({ id: `web:${c.name}`, kind: 'website', name: c.title ?? c.name, offers: [{ id: `web:${c.name}`, name: c.title ?? c.name }] }),
-  help: c => `the website ${c.url}, in a browser signed in as your runner (rf browser open ${c.name}), reaching ${[new URL(c.url).hostname, ...c.hosts].join(', ')}.`,
+  help: c => `the website ${c.url}, in a browser signed in as your runner at $RF_BROWSERS/${c.name}, reaching ${[new URL(c.url).hostname, ...c.hosts].join(', ')}.`,
 } satisfies Type;

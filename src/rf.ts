@@ -1,6 +1,5 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { request } from 'node:http';
-import { dirname, join } from 'node:path';
 
 // The agent's rf. For its own instance it calls the people's API (/api), as a run; /agent holds what only a run has.
 const HELP: Record<string, string> = {
@@ -35,16 +34,9 @@ const HELP: Record<string, string> = {
   delivered: `rf delivered ITEM --to WHERE --receipt WHAT
   Records that you delivered the output ITEM outside: where to, such as "E1, batch 4471" or the mail's recipients, and what
   proves it, such as the document number a website gave, or the Message-ID or the file's id and eTag Microsoft 365 gave.`,
-  browser: `rf browser open SITE
-rf browser get SITE PATH FILE
-rf browser expired SITE
-  open prints the CDP address of a browser on the website SITE, signed in with your runner's login if it is ticked for this
-  instance: one per website, open until the run ends, so each script can connect again. Connect with Playwright,
-  chromium.connect_over_cdp(address), and use browser.contexts[0], where the login is. It reaches only the website's hosts,
-  and logs every request. Fetch with the page's cookies inside the page (page.evaluate with fetch), not page.request. A
-  download lands inside the browser's machine: get saves its PATH (download.path()) as working/FILE. A site showing its sign-in
-  page means the login has expired: expired says so, closes that browser, and asks your runner to sign in again, after which the
-  instance carries on.`,
+  expired: `rf expired SITE
+  Says the website SITE signed your runner's login out, as when it shows its sign-in page: its browser closes, and your runner
+  is asked to sign in again, after which the instance carries on.`,
 };
 const USAGE = `${Object.values(HELP).map(h => h.split('\n  ')[0]).join('\n')}\nrf help COMMAND`;
 
@@ -59,14 +51,6 @@ const send = (method: string, path: string, body?: string | Buffer) => new Promi
 });
 const usage = (c?: string) => ({ ok: false, text: c && HELP[c] ? HELP[c] : USAGE });
 
-// FILE is a path under working/. rf reads and writes the files itself; they cross to the server as base64 (see agent-api.ts).
-const local = (f: string) => join(process.env.RF_WORKING!, f.replace(/^working\//, ''));
-const shown = (f: string) => `working/${f.replace(/^working\//, '')}`;
-function save(f: string, data: string): string {
-  mkdirSync(dirname(local(f)), { recursive: true });
-  writeFileSync(local(f), Buffer.from(data, 'base64'));
-  return shown(f);
-}
 const own = `api/instances/${process.env.RF_INSTANCE}`;
 
 // rf say and rf ask: a comment in a thread, or starting one on an item or the instance.
@@ -102,16 +86,8 @@ else if (cmd === 'say' || cmd === 'ask') res = await comment();
 else if (cmd === 'resolve' && args[0]) res = await send('POST', `${own}/resolve`, JSON.stringify({ thread: args[0], text: args.slice(1).join(' ') }));
 else if (cmd === 'wake') res = await wake();
 else if (cmd === 'commit' && args.length) res = await send('POST', `${own}/commit`, JSON.stringify({ message: args.join(' ') === '-' ? readFileSync(0, 'utf8') : args.join(' ') }));
-else if (['browser', 'delivered'].includes(cmd) && args.length >= 1) res = await send('POST', `agent/${cmd}`, JSON.stringify({ args }));
+else if (['expired', 'delivered'].includes(cmd) && args.length >= 1) res = await send('POST', `agent/${cmd}`, JSON.stringify({ args }));
 else if (cmd === 'help') res = { ok: true, text: HELP[args[0]] ?? USAGE };
 else res = usage(cmd);
-let text = res.text;
-// rf browser open answers a path on the server's socket: the CDP address is that path here.
-if (res.ok && cmd === 'browser' && args[0] === 'open') text = process.env.RF_URL!.replace(/^http/, 'ws') + text;
-// A file coming back is {saved, data}: rf saves it in the sandbox, as the server never writes the run's files.
-else if (res.ok && /^\{\s*"saved":/.test(text)) {
-  const { saved, data } = JSON.parse(text);
-  text = `saved ${save(saved, data)}`;
-}
-(res.ok ? console.log : console.error)(text);
+(res.ok ? console.log : console.error)(res.text);
 process.exitCode = res.ok ? 0 : 1;

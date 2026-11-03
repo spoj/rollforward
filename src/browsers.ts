@@ -2,12 +2,14 @@ import { connect, isIP } from 'node:net';
 import { connect as tlsConnect } from 'node:tls';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { request as httpRequest, type IncomingMessage } from 'node:http';
+import { request as httpRequest, STATUS_CODES, type IncomingMessage, type ServerResponse } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import type { Duplex } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { HttpError, replaceReadOnly, type Instance } from './store.ts';
 import { logins, saveLogin, secret, use } from './logins.ts';
 import { connections } from './connections.ts';
+import { tree } from './system.ts';
 
 // Browsers from the browser service (spoj/rollforward-browser, a repo of its own), whose one client is this server, with its key: a
 // throwaway container per session, driven over CDP, whose proxy keeps to a website's hosts and logs every request. A website login is
@@ -18,13 +20,14 @@ import { connections } from './connections.ts';
 const base = process.env.RF_BROWSER_URL ?? 'http://127.0.0.1:8797', u = new URL(base), tls = u.protocol === 'https:';
 const key = () => ({ authorization: `Bearer ${process.env.RF_BROWSER_KEY}` });
 
-function call(method: string, path: string, body?: unknown): Promise<Buffer> {
+// The service's answer, as it streams; a refusal is a 502.
+function request(method: string, path: string, body?: unknown): Promise<IncomingMessage> {
   return new Promise((ok, fail) => {
     const req = (tls ? httpsRequest : httpRequest)(base + path, { method, headers: key() }, res => {
+      if (res.statusCode! < 300) return ok(res);
       const chunks: Buffer[] = [];
       res.on('data', c => chunks.push(c)).on('end', () => {
         const data = Buffer.concat(chunks);
-        if (res.statusCode! < 300) return ok(data);
         // The service answers {error}; a proxy in front of it, such as one that ends TLS, may answer anything, and a throw here would
         // be outside the promise, ending the server.
         let why;
@@ -36,6 +39,7 @@ function call(method: string, path: string, body?: unknown): Promise<Buffer> {
     req.end(body === undefined || Buffer.isBuffer(body) ? body : JSON.stringify(body));
   });
 }
+const call = async (method: string, path: string, body?: unknown) => Buffer.concat(await Array.fromAsync(await request(method, path, body)));
 const json = async (method: string, path: string, body?: unknown) => JSON.parse((await call(method, path, body)).toString());
 // A file in a session's browser, its parts encoded and none . or .., which would lead out of the session to the service's other calls.
 export function files(id: string, path: string) {
@@ -102,14 +106,24 @@ export async function endSignIn(email: string, id: string, save: boolean) {
   if (save) saveLogin(email, { id: `web:${site}`, kind: 'website', name, since: new Date().toISOString(), offers: [{ id: `web:${site}`, name }] }, JSON.stringify(state));
 }
 
-// ---- A run's browsers, which close when it ends: one per website, from its runner's login if ticked for the instance. Closing one
-// seals its login again, refreshed, unless its person signed out or signed in to it anew meanwhile, and keeps its request log in the
-// instance's browser/,
-// which the agent can read but not change, beside the screenshots taken after each of the agent's tool calls.
+// ---- A run's browsers, at their fixed addresses, $RF_BROWSERS/NAME: one per website, opened from its runner's login, if ticked for
+// the instance, at the first connection, and kept for the later ones until the run ends. Closing one keeps its request log in the
+// instance's browser/, which the agent can read but not change, beside the screenshots taken after each of the agent's tool calls.
+// Where a website writes a browser's state back, its default, a person has one browser there at a time: a run connecting while
+// another holds it waits; the browser is released when its run ends, or after five minutes with no connection, and hands its login
+// back refreshed, unless its person signed out or signed in to it anew meanwhile. Elsewhere each run's browser starts from the login
+// as its person saved it, and nothing comes back.
+
+// The run holding each person's browser on a website that writes its state back, by person and website, and its release.
+const held = new Map<string, { run: Browsers; released: Promise<void>; release(): void }>();
+const IDLE_MS = Number(process.env.RF_BROWSER_IDLE_MS ?? 5 * 60_000);
+
 export class Browsers {
   inst: Instance;
   run: number;
-  bySite = new Map<string, { id: string; email: string; since: string; shot?: Buffer }>();
+  bySite = new Map<string, { id: string; email: string; since: string; writeback: boolean; conns: number; idle?: NodeJS.Timeout; shot?: Buffer }>();
+  private opening = new Map<string, Promise<string>>();
+  private closed = new Map<string, number>();
   shots = 0;
   constructor(inst: Instance, run: number) {
     this.inst = inst;
@@ -118,26 +132,65 @@ export class Browsers {
 
   // The login a browser on a website may use now, and the run's browser there if open: checked at every call and every new
   // connection, so a login its runner can no longer lend stops at the next one; a connection already open lasts until the run ends.
-  private lent(site: string) {
+  lent(site: string) {
     const { email, login } = use(this.inst, `web:${site}`), had = this.bySite.get(site);
     if (login.expired) throw Object.assign(new HttpError(409, `${email}'s login to ${login.name} has expired: they sign in to it again on the Logins page, and the instance carries on`), { login: login.id });
     if (had && had.email !== email) throw new HttpError(409, `this run's browser on ${site} is in ${had.email}'s login, and ${email} has taken the instance over: the next run opens one in theirs`);
     return { email, login, had };
   }
 
-  async browser(site: string): Promise<string> {
-    const { email, login, had } = this.lent(site);
-    if (had) return had.id;
-    const id = await open(website(site), 7200, JSON.parse(secret(email, login.id)));
-    this.bySite.set(site, { id, email, since: login.since });
-    return id;
+  // The run's browser on a website, for a connection `conn`: undefined if that went away while it waited.
+  async browser(site: string, conn?: Duplex): Promise<string | undefined> {
+    for (let waited = false; ; waited = true) {
+      const { email, login, had } = this.lent(site);
+      if (had) return had.id;
+      if (this.opening.has(site)) return this.opening.get(site);
+      const w = website(site), writeback = w.writeback, key = `${email} ${site}`, other = writeback ? held.get(key) : undefined;
+      if (other) {
+        if (!waited) this.inst.append('server', 'browser', { run: this.run, site, login: email, action: 'wait', held: `${tree().series[other.run.inst.seriesId]?.name}/${other.run.inst.label}` });
+        await Promise.race([other.released, new Promise(ok => conn?.once('close', ok))]);
+        if (conn?.destroyed) return undefined;
+        continue;
+      }
+      if (writeback) {
+        let release!: () => void;
+        held.set(key, { run: this, released: new Promise<void>(ok => { release = ok; }), release: () => release() });
+      }
+      const opening = open(w, 7200, JSON.parse(secret(email, login.id)));
+      this.opening.set(site, opening);
+      try {
+        const id = await opening, b = { id, email, since: login.since, writeback, conns: 0 };
+        this.bySite.set(site, b);
+        this.idle(site, b);
+        return id;
+      } catch (e) {
+        if (writeback) this.release(key);
+        throw e;
+      } finally {
+        this.opening.delete(site);
+      }
+    }
   }
 
-  // Whether `id` is one of this run's browsers; a 403 or 409 if its login may no longer be used.
-  owns(id: string): boolean {
-    const site = [...this.bySite].find(([, b]) => b.id === id)?.[0];
-    if (site) this.lent(site);
-    return !!site;
+  // A connection to the run's browser on `site`, which it holds while any is open.
+  connected(site: string, conn: Duplex) {
+    const b = this.bySite.get(site)!;
+    b.conns++;
+    clearTimeout(b.idle);
+    conn.on('close', () => {
+      if (!--b.conns && this.bySite.get(site) === b) this.idle(site, b);
+    });
+  }
+
+  private idle(site: string, b: { writeback: boolean; idle?: NodeJS.Timeout }) {
+    if (b.writeback) b.idle = setTimeout(() => this.close(site).catch(e => this.inst.append('server', 'browsers', { run: this.run, error: e.message })), IDLE_MS);
+  }
+
+  private release(key: string) {
+    const h = held.get(key);
+    if (h?.run !== this) return;
+    held.delete(key);
+    h.release();
   }
 
   // The agent found the website signed out: the runner's login is marked expired, for them to sign in again, which wakes the instance,
@@ -149,9 +202,24 @@ export class Browsers {
     throw Object.assign(new HttpError(409, `${email}'s login to ${login.name} has expired: they sign in to it again on the Logins page, and the instance carries on`), { login: login.id });
   }
 
-  async browserFile(site: string, path: string): Promise<Buffer> {
-    if (!this.bySite.has(site)) throw new HttpError(409, `no browser on ${site} in this run: rf browser open ${site} first`);
-    return call('GET', files(await this.browser(site), path));
+  // A file in the machine of the run's browser on `site`, such as a download where Playwright says it is, streamed, and logged as a
+  // call to the website, as a refusal is.
+  async download(site: string, path: string, res: ServerResponse) {
+    let status = 200, bytes = 0, refused: string | undefined;
+    try {
+      const { had } = this.lent(site);
+      if (!had) throw new HttpError(409, `no browser on ${site} in this run: connect to it at $RF_BROWSERS/${site} first`);
+      const file = await request('GET', files(had.id, path));
+      file.on('data', c => (bytes += c.length));
+      res.writeHead(200, { 'content-type': file.headers['content-type'] ?? 'application/octet-stream' });
+      await pipeline(file, res);
+    } catch (e) {
+      status = (e as HttpError).status ?? 500;
+      if (status === 403) refused = (e as Error).message;
+      throw e;
+    } finally {
+      this.inst.append('agent', 'call', { run: this.run, name: site, method: 'GET', path: `/downloads/${path}`, status, bytes, ...(refused && { refused }) });
+    }
   }
 
   // A screenshot of each browser's newest tab, unless it looks as it did at the last, logged as shot for the Ops log.
@@ -167,17 +235,48 @@ export class Browsers {
     }));
   }
 
-  // The run's browsers, or the one on `only`, close: each hands its login back refreshed, unless it expired or its person signed in to
-  // it anew since the browser opened, which a stale state would overwrite, and leaves its request log.
+  // The run's browsers, or the one on `only`, close: each leaves its request log, and one that writes its state back hands its login
+  // back refreshed, unless it expired or its person signed in to it anew since the browser opened, which a stale state would
+  // overwrite, and lets the next run have its person's browser there.
   async close(only?: string) {
-    await Promise.all([...this.bySite].filter(([site]) => !only || site === only).map(async ([site, { id, email, since }]) => {
+    await Promise.all([...this.bySite].filter(([site]) => !only || site === only).map(async ([site, { id, email, since, writeback, idle }]) => {
       this.bySite.delete(site);
-      const { state, log } = await close(id), login = logins(email).find(l => l.id === `web:${site}`), file = `browser/run ${this.run} ${site}.jsonl`;
-      if (state && login && !login.expired && login.since === since) saveLogin(email, login, JSON.stringify(state));
-      mkdirSync(join(this.inst.dir, 'browser'), { recursive: true });
-      replaceReadOnly(join(this.inst.dir, file), log.map(e => JSON.stringify(e) + '\n').join(''));
-      const writes = log.filter(e => !e.blocked && !['GET', 'HEAD', 'OPTIONS'].includes(e.method)).length;
-      this.inst.append('server', 'browser', { run: this.run, site, login: email, requests: log.length, writes, blocked: log.filter(e => e.blocked).length, file });
+      clearTimeout(idle);
+      try {
+        const { state, log } = await close(id), login = logins(email).find(l => l.id === `web:${site}`), n = (this.closed.get(site) ?? 0) + 1;
+        if (writeback && state && login && !login.expired && login.since === since) saveLogin(email, login, JSON.stringify(state));
+        this.closed.set(site, n);
+        const file = `browser/run ${this.run} ${site}${n > 1 ? ` ${n}` : ''}.jsonl`;
+        mkdirSync(join(this.inst.dir, 'browser'), { recursive: true });
+        replaceReadOnly(join(this.inst.dir, file), log.map(e => JSON.stringify(e) + '\n').join(''));
+        const writes = log.filter(e => !e.blocked && !['GET', 'HEAD', 'OPTIONS'].includes(e.method)).length;
+        this.inst.append('server', 'browser', { run: this.run, site, login: email, requests: log.length, writes, blocked: log.filter(e => e.blocked).length, file });
+      } finally {
+        if (writeback) this.release(`${email} ${site}`);
+      }
     }));
+  }
+}
+
+// A run's browsers at $RF_BROWSERS/NAME, its token's path: GET NAME/json/version, CDP's discovery, as Playwright's connect_over_cdp
+// asks it; GET NAME/downloads/PATH, a file in that browser's machine; and the CDP websocket at NAME itself, passed to the service.
+export async function serveBrowsers(b: Browsers, base: string, [site, what, ...path]: string[], req: IncomingMessage, res: ServerResponse) {
+  if (req.method === 'GET' && what === 'json' && path.join('/').replace(/\/$/, '') === 'version') {
+    b.lent(site);
+    return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ webSocketDebuggerUrl: `ws://${req.headers.host}${base}/${site}` }));
+  }
+  if (req.method === 'GET' && what === 'downloads') return b.download(site, path.map(decodeURIComponent).join('/'), res);
+  throw new HttpError(404, `$RF_BROWSERS/${site} is the CDP address of this run's browser there; GET $RF_BROWSERS/${site}/downloads/PATH gives a file from it`);
+}
+
+export async function upgradeBrowser(b: Browsers, site: string, req: IncomingMessage, socket: Duplex, head: Buffer) {
+  try {
+    const id = await b.browser(site, socket);
+    if (!id || socket.destroyed) return;
+    b.connected(site, socket);
+    passUpgrade(req, socket, head, `/sessions/${id}/cdp`);
+  } catch (e) {
+    const status = (e as HttpError).status ?? 500;
+    socket.end(`HTTP/1.1 ${status} ${STATUS_CODES[status]}\r\ncontent-type: text/plain\r\n\r\n${(e as Error).message}\n`);
   }
 }
