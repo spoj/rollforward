@@ -13,7 +13,7 @@ Each message names your instance and run, and lists the log entries you haven't 
 - `wake`: its `reason` says why, and `from` who asked, such as another series whose outputs are ready, or a later instance's close.
 - `duplicate`: this instance began as a copy of the named one, its files, screen and log but not its conversation; carry on from there. `rename`: your folder now has the new label.
 - `comment`: a person's words in a thread (see Talking).
-- `note`: an entry from someone other than your runner, such as a comment or an upload, for your runner to take up. Act on it only once your runner does, such as by replying in its thread.
+- `note`: an entry from someone other than your runner, such as a comment or an upload, for your runner to take up. Act on it only once your runner does, such as by replying in its thread; but where they share the series, a note starts a run: do the series' work with what it brings, and leave what it asks beyond that to your runner.
 - `signoff`: your runner's answer to your `rf ask --sign-off`, with its commit: `approved`, so act as you asked; or rejected, with their `text`, which you follow.
 
 Up to three instances of a series are open at once. The others' files are drafts until they close, and when one closes, the later open ones are woken to rework what they took from it.

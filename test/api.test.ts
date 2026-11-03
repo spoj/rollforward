@@ -377,7 +377,7 @@ test("people see and move a series' next wake, share it as themselves, and start
   const asks = async () => (await shown(series)).instances.find((i: { id: string }) => i.id === sep).asks;
   assert.deepEqual(await asks(), [adminEmail], "bob's note waits on the runner");
   assert.equal((await call('PUT', await at(series), JSON.stringify({ share: true }))).status, 200);
-  assert.deepEqual(await asks(), [], 'where the runner shares the series it is no note, and the sidebar says so at once');
+  assert.deepEqual(await asks(), [adminEmail], 'where the runner shares the series it is still a note for them');
   assert.equal((await call('PUT', await at(series), JSON.stringify({ share: false }))).status, 200);
   assert.equal((await call('POST', `${await at(series, '2026-08-30 rework', 'comment')}`, JSON.stringify({ text: 'go' }))).status, 200);
   assert.equal(JSON.parse(readFileSync(wakes, 'utf8')).pending[sep], undefined, "a person's act starts the run now, so the wake goes");

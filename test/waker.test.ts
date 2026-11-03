@@ -152,7 +152,7 @@ test("a task's run sees its own instance alone in its series' folder, and the se
   assert.ok(!cut.log.some(e => e.reason === 'archived'));
 });
 
-test("only an instance's runner starts its runs: others' comments and wakes are notes for them, unless the agent asked them or the runner shares the series", async () => {
+test("others' comments and wakes are notes for an instance's runner, unless the agent asked them, and start runs only where the runner shares the series, where comments stay notes", async () => {
   const bob = 'bob@demo.test', notes = make('s5', 'notes'), runs = (i: Instance) => i.log.filter(e => e.op === 'run').length;
   notes.append(bob, 'comment', { thread: 'n1', text: 'use the new rate' });
   setWake(notes.id, { at: new Date().toISOString(), reason: 'rates are out', from: bob });
@@ -170,6 +170,7 @@ test("only an instance's runner starts its runs: others' comments and wakes are 
   kick(shared);
   await settle();
   assert.equal(runs(shared), 1, 'in a series its runner shares, anyone starts runs');
+  assert.match(message(shared, 1, shared.log), /"by":"bob@demo\.test","op":"comment".*"note":true/, "and bob's comment still reaches the agent as a note");
 });
 
 // Last: a drained server starts no more runs.

@@ -41,17 +41,20 @@ function seenBefore(inst: Instance): number {
 }
 
 // Who starts an instance's runs: its runner, and anyone, people or agents, where the runner shares the series, and its own run's wakes
-// (fire). What others add is a note for the runner: it starts nothing, and the next run reads it marked as one. A reply from whom the
-// agent's ask named is no note.
+// (fire).
 export const starter = (inst: Instance, who: string) => {
   const runner = runnerOf(inst).by;
   return who === runner || seriesSettings(inst.series()).shared?.by === runner;
 };
-export const isNote = (inst: Instance, e: Entry) => !!e.note || (isPerson(e) && ['upload', 'comment'].includes(e.op) && !starter(inst, e.by)
+// What a person but the runner adds is a note, shared series or not: the agent reads it as context for its runner to take up, never as
+// the runner's word, though it runs on it where it may. A wake that starts nothing is one too. A reply from whom the agent's ask named
+// is no note.
+export const isNote = (inst: Instance, e: Entry) => !!e.note || (isPerson(e) && ['upload', 'comment'].includes(e.op) && e.by !== runnerOf(inst).by
   && !(e.op === 'comment' && inst.log.findLast(x => x.seq < e.seq && x.op === 'comment' && x.thread === e.thread && x.by === 'agent')?.to === e.by));
+export const starts = (inst: Instance, e: Entry) => !isNote(inst, e) || starter(inst, e.by);
 
 export function pending(inst: Instance, seen: number): Entry[] {
-  return inst.log.filter(e => e.seq > seen && !isNote(inst, e) && (e.op === 'wake' || (isPerson(e) && (['upload', 'comment', 'signoff'].includes(e.op) || (e.op === 'create' && e.fetch)))));
+  return inst.log.filter(e => e.seq > seen && starts(inst, e) && (e.op === 'wake' || (isPerson(e) && (['upload', 'comment', 'signoff'].includes(e.op) || (e.op === 'create' && e.fetch)))));
 }
 
 // Whether an instance has something for a run: what came since its last run, or since an Interrupt, which waits for the next act.
