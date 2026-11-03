@@ -639,7 +639,9 @@ function renderLog() {
     return put($('#log'), proc.html);
   }
   if (!ui.log) return;
-  put($('#log'), `<div class="lh"><b>Ops log</b><button class="btn" data-act="log">Close</button></div>` + [...data.log].reverse().map(logLine).join(''));
+  // Oldest first, opening at the latest, and kept there as entries come unless the reader has scrolled up.
+  put($('#log'), `<div class="lh"><b>Ops log</b><button class="btn" data-act="log">Close</button></div>` + data.log.map(logLine).join(''));
+  if ($('#log').dataset.end !== 'no') $('#log').scrollTop = $('#log').scrollHeight;
 }
 
 function renderAdv() {
@@ -874,7 +876,9 @@ function renderPv() {
   else if (pv.settings) {
     const s = pv.settings;
     h += '<div class="pvb vl">';
-    if (s.kind === 'workspace') h += peopleHtml(s) + guidanceHtml(s, 'Every agent in this workspace reads it at the start of each run: its conventions, and changes that cut across its series, such as a renamed entity.', s.manage) + '<hr>';
+    if (s.kind === 'workspace') h += peopleHtml(s)
+      + `<h3>Reading</h3><div class="sub">Agents here read every series of this workspace${s.reads.length ? `, and of ${esc(s.reads.join(', '))}, which ${s.reads.length > 1 ? 'have' : 'has'} everyone this one has` : ''}. They write only here.${s.read_by.length ? ` Agents in ${esc(s.read_by.join(', '))}, whose people are all here, read this one.` : ''}</div>`
+      + guidanceHtml(s, 'Every agent in this workspace reads it at the start of each run: its conventions, and changes that cut across its series, such as a renamed entity.', s.manage) + '<hr>';
     if (s.kind === 'series') h += `<h3>Name</h3><input type="text" id="sname" value="${esc(s.name)}" ${s.adhoc ? 'disabled title="The Ad hoc series keeps its name"' : ''}>`
       + `<h3>Skill use</h3><div class="sub">What the agent may fetch or do for this series.</div>`
       + s.skillList.map(k => `<label class="skill-row"><input type="checkbox" class="skill" value="${esc(k.id)}" ${s.skills.includes(k.id) ? 'checked' : ''}> ${esc(k.name)}</label>`
@@ -884,7 +888,6 @@ function renderPv() {
       + ticksHtml(s.offers) + (s.allow_wakes && s.allow_wakes !== me.email ? '<div><button class="btn" data-act="wakes-mine">Run wakes as me, with these logins</button></div>' : '')
       + (s.wake ? `<div class="row2"><span class="sub">Next: starts ${esc(s.wake.label)}, ${esc(s.wake.reason)}</span></div><div class="row2"><input type="datetime-local" id="swake" value="${localInput(s.wake.at)}"><button class="btn" data-act="wake-move">Move</button><button class="btn" data-act="wake-cancel">Cancel wake</button></div>` : '<div class="sub">No wake pending. The agent sets the next one.</div>')
       + `<h3>Cost</h3><div class="sub">This series' runs have cost ${usd(s.cost)} so far, ${usd(s.cost / Math.max(1, s.closed))} per closed instance.</div>`
-      + `<h3>Reading</h3><div class="sub">${s.reads.length ? `This series' agent can read ${esc(s.reads.join(', '))}: the other series of its workspace, and those of workspaces that have all its people.` : "This series' agent reads only this series."}</div>`
       + '<div><button class="btn primary" data-act="savesettings">Save</button></div><hr>';
     h += `<h3>Archive</h3><div class="sub">${s.archived ? 'Archived: in the sidebar only under Show archived.' : `Hides the ${s.kind} from the sidebar, except under Show archived. Nothing in it changes.`}</div><div><button class="btn" data-act="archive">${s.archived ? 'Restore' : 'Archive'} ${s.kind}</button></div></div>`;
   }
@@ -913,7 +916,7 @@ const localInput = iso => new Date(new Date(iso).getTime() - new Date(iso).getTi
 
 async function openWorkspaceSettings() {
   const w = cur.w;
-  pv = { title: 'Workspace settings', settings: { kind: 'workspace', archived: w.archived, owners: w.owners, members: w.members, manage: w.manage, guidance: w.guidance } };
+  pv = { title: 'Workspace settings', settings: { kind: 'workspace', archived: w.archived, owners: w.owners, members: w.members, manage: w.manage, guidance: w.guidance, reads: w.reads, read_by: w.read_by } };
   renderPv();
 }
 
@@ -1064,6 +1067,7 @@ document.addEventListener('click', async ev => {
   if (act === 'menu') $('#side').classList.toggle('open');
   if (act === 'log' || act === 'conv' || act === 'proc') {
     const open = !ui[act];
+    $('#log').dataset.end = 'yes';
     Object.assign(ui, { log: false, conv: false, proc: false, on: null, ref: null, [act]: open });
     renderLog(); renderBar(); placeCard();
   }
@@ -1307,6 +1311,7 @@ document.fonts.ready.then(drawEdges);
 addEventListener('hashchange', () => {
   openItem = null; folds.clear(); prevSigs = {};
   $('#panes').scrollTop = $('#flow').scrollTop = $('#flow').scrollLeft = $('#outs').scrollTop = $('#log').scrollTop = 0;
+  $('#log').dataset.end = 'yes';
   $('#trace').scrollTop = $('#trace').scrollHeight;
   closePv();
   $('#side').classList.remove('open');
@@ -1343,6 +1348,7 @@ events.onopen = () => { pend.add('tree'); drain(); };
 // The browser gives up on a stream that comes back with an error, as during a deploy or once the session has ended.
 events.onerror = () => events.readyState === EventSource.CLOSED && setTimeout(() => location.reload(), 5000);
 addEventListener('visibilitychange', drain);
+$('#log').addEventListener('scroll', e => { const el = e.currentTarget; el.dataset.end = el.scrollTop + el.clientHeight >= el.scrollHeight - 8 ? 'yes' : 'no'; });
 </script>
 </body>
 </html>

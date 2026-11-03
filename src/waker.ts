@@ -47,10 +47,16 @@ function message(inst: Instance, n: number, entries: Entry[]): string {
 // What a series' agent may read: the other series of its workspace, and those of any workspace that has everyone this one has, by
 // the same email or group, so nothing it reads reaches someone who couldn't see it already. A workspace with no one in it reads only
 // itself.
+// Reach is the workspace's: its agents read its series and those of every workspace that has everyone it has, never the reverse.
+// A workspace with no one in it reads only itself.
+export function wider(t: Tree, ws: string): string[] {
+  const people = everyone(t.workspaces[ws]);
+  return Object.keys(t.workspaces).filter(o => o !== ws && people.length > 0 && people.every(p => everyone(t.workspaces[o]).includes(p)));
+}
+
 export function reach(t: Tree, seriesId: string): string[] {
-  const ws = t.series[seriesId].workspace, people = everyone(t.workspaces[ws]);
-  const reads = (o: string) => o === ws || (people.length > 0 && people.every(p => everyone(t.workspaces[o]).includes(p)));
-  return Object.keys(t.series).filter(id => id !== seriesId && reads(t.series[id].workspace)).sort((a, b) => named(t, a).localeCompare(named(t, b)));
+  const ws = t.series[seriesId].workspace, read = [ws, ...wider(t, ws)];
+  return Object.keys(t.series).filter(id => id !== seriesId && read.includes(t.series[id].workspace)).sort((a, b) => named(t, a).localeCompare(named(t, b)));
 }
 
 export const named = (t: Tree, seriesId: string) => `${t.workspaces[t.series[seriesId].workspace].name}/${t.series[seriesId].name}`;

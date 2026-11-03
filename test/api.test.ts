@@ -193,17 +193,15 @@ test('close and abandon end an open instance; a closed one takes no actions', as
   assert.equal(ab.log.at(-1).op, 'abandon');
 });
 
-test("series settings write series.json; a rename edits .rf/tree.json; a series' agent reads the rest of its workspace", async () => {
+test("series settings write series.json; a rename edits .rf/tree.json", async () => {
   const put = async (name: string, body: object) => call('PUT', await at(name), JSON.stringify(body));
   const id = (await shown(series)).id;
   assert.equal((await put(series, { skills: [] })).status, 200);
   assert.deepEqual(JSON.parse(readFileSync(join(root, 'series', id, 'series.json'), 'utf8')), { skills: [] });
-  assert.deepEqual((await shown(monthly)).reads, ['larkfield / Ad hoc', `larkfield / ${series}`]);
 
   assert.equal((await put(series, { name: renamed })).status, 200);
   assert.equal(JSON.parse(readFileSync(join(root, '.rf', 'tree.json'), 'utf8')).series[id].name, renamed);
   assert.equal((await shown(renamed)).id, id);
-  assert.deepEqual((await shown(monthly)).reads, ['larkfield / Ad hoc', `larkfield / ${renamed}`]);
 
   assert.equal((await put(renamed, { name: monthly })).status, 409);
   assert.equal((await put(renamed, { name: series })).status, 200);
@@ -213,7 +211,7 @@ test('a workspace can be made; a workspace or a series is archived and restored,
   const acme = () => named('Acme');
   const { id } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Acme' }))).json();
   const { series: made, ...rest } = await acme();
-  assert.deepEqual(rest, { id, name: 'Acme', archived: false, owners: [adminEmail], members: [], manage: true, guidance: '' });
+  assert.deepEqual(rest, { id, name: 'Acme', archived: false, owners: [adminEmail], members: [], manage: true, guidance: '', reads: [], read_by: [] });
   assert.deepEqual(made.map((s: { name: string; adhoc: boolean }) => [s.name, s.adhoc]), [['Ad hoc', true]], 'a workspace starts with its Ad hoc series');
   assert.equal((await call('POST', '/api/workspaces', JSON.stringify({ name: 'Acme' }))).status, 409);
   assert.equal((await call('PUT', `/api/workspaces/${id}`, JSON.stringify({ archived: true }))).status, 200);
@@ -310,15 +308,17 @@ test("each person sees the workspaces they're in, by email or Entra group; owner
   assert.equal((await people('Acme Payroll', { members: [group] })).status, 200);
   assert.ok((await workspaces(b)).some((w: { name: string }) => w.name === 'Acme Payroll'), 'through the Entra group');
 
-  const reads = async (ws: string, name: string) => (await named(ws)).series.find((s: { name: string }) => s.name === name).reads;
-  assert.ok(!(await reads('larkfield', series)).includes('Acme Payroll / Payroll'), 'larkfield has bob by email, who Payroll has only by group');
+  // Reach is the workspace's: its agents read workspaces that have everyone it has.
+  const reads = async (ws: string) => (await named(ws)).reads;
+  assert.ok(!(await reads('larkfield')).includes('Acme Payroll'), 'larkfield has bob by email, who Payroll has only by group');
   assert.equal((await people('Acme Payroll', { members: [] })).status, 200);
-  assert.ok((await reads('Acme Payroll', 'Payroll')).includes(`larkfield / ${series}`), 'everyone in Payroll is in larkfield, so its agent reads larkfield');
-  assert.ok(!(await reads('larkfield', series)).includes('Acme Payroll / Payroll'), 'never the reverse');
+  assert.ok((await reads('Acme Payroll')).includes('larkfield'), 'everyone in Payroll is in larkfield, so its agents read larkfield');
+  assert.ok(!(await reads('larkfield')).includes('Acme Payroll'), 'never the reverse');
+  assert.ok((await named('larkfield')).read_by.includes('Acme Payroll'), "larkfield's owners see who reads it");
 
   assert.equal((await people('larkfield', { owners: [], members: [] })).status, 200);
   assert.equal((await call('GET', await at(series, '2026-08-30'), undefined, b)).status, 404);
-  assert.deepEqual(await reads('larkfield', series), ['larkfield / Ad hoc', `larkfield / ${monthly}`], 'a workspace with no one in it reads only itself');
+  assert.deepEqual(await reads('larkfield'), [], 'a workspace with no one in it reads only itself');
 });
 
 test('Skill use: a series chooses skills that exist; admins keep the websites, which everyone sees', async () => {

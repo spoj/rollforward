@@ -17,7 +17,7 @@ import { endSignIn, isSignIn, passUpgrade, removeWebsite, setWebsite, startSignI
 import { offer, unoffer } from './m365.ts';
 import { seriesSettings } from './series.ts';
 import { checkChosen, openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, byToken, cancelWake, closed, dropRequest, kick, MAX_OPEN, named, queued, reach, resolveFor, setWake, startWaking, startWith, wakes, type Active } from './waker.ts';
+import { active, byToken, cancelWake, closed, dropRequest, kick, MAX_OPEN, named, queued, resolveFor, setWake, startWaking, startWith, wakes, wider, type Active } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -90,9 +90,10 @@ function listing(me: Me) {
   const t = tree(), w8 = wakes(), byName = (a: [string, { name: string }], b: [string, { name: string }]) => a[1].name.localeCompare(b[1].name);
   return Object.entries(t.workspaces).filter(([, w]) => canSee(me, w)).sort(byName).map(([id, w]) => ({
     id, name: w.name, archived: !!w.archived, owners: w.owners, members: w.members, manage: canManage(me, w), guidance: text(guidanceFile(id)),
+    reads: wider(t, id).map(o => t.workspaces[o].name).sort(), read_by: Object.keys(t.workspaces).filter(o => wider(t, o).includes(id)).map(o => t.workspaces[o].name).sort(),
     series: Object.entries(t.series).filter(([, s]) => s.workspace === id).sort(byName).map(([sid, s]) => ({
       id: sid, name: s.name, archived: !!s.archived, adhoc: !!s.adhoc, skills: seriesSettings(seriesDir(sid)).skills, allow_wakes: seriesSettings(seriesDir(sid)).wakes?.by ?? null,
-      reads: reach(t, sid).map(r => named(t, r).replace('/', ' / ')), wake: w8.pending[sid] ?? null,
+      wake: w8.pending[sid] ?? null,
       requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r })),
       instances: instances(sid).map(i => summary(i, w8)),
     })),
