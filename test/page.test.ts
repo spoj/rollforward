@@ -30,6 +30,19 @@ before(async () => {
     { seq: 1, at: '2026-08-01T09:00:00.000Z', by: 'admin@demo.test', op: 'create', from: null, logins: [] },
     { seq: 2, at: '2026-08-01T09:05:00.000Z', by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'The pack is ready to send to the bank.', ask: true, signoff: true },
   ].map(e => JSON.stringify(e) + '\n').join(''));
+  // A closed instance of the same series, whose run called a connection.
+  const called = join(root, 'instances', 'a5c0ff5e1f01');
+  mkdirSync(join(called, 'working'), { recursive: true });
+  writeFileSync(join(called, 'instance.json'), JSON.stringify({ label: '2026-11', series: 'a5c0ff5e1fee' }));
+  writeFileSync(join(called, 'workspace.json'), JSON.stringify({ rev: 1, status: 'closed', items: [] }));
+  writeFileSync(join(called, 'log.jsonl'), [
+    { seq: 1, at: '2026-08-01T09:00:00.000Z', by: 'admin@demo.test', op: 'create', from: null, logins: ['adb'] },
+    { seq: 2, at: '2026-08-01T09:01:00.000Z', by: 'server', op: 'run', run: 1, upto: 1, skills: {} },
+    { seq: 3, at: '2026-08-01T09:02:00.000Z', by: 'agent', op: 'call', run: 1, name: 'adb', method: 'POST', path: '/api/2.0/sql/statements', status: 200, bytes: 512 },
+    { seq: 4, at: '2026-08-01T09:03:00.000Z', by: 'agent', op: 'call', run: 1, name: 'adb', method: 'POST', path: '/api/2.0/sql/statements', status: 403, bytes: 0, refused: 'adb only reads: a statement starts with SELECT, not DROP' },
+    { seq: 5, at: '2026-08-01T09:04:00.000Z', by: 'server', op: 'done', run: 1, aborted: false, seen: 4, cost: 0.01, summary: 'Read the ledger.' },
+    { seq: 6, at: '2026-08-01T09:05:00.000Z', by: 'admin@demo.test', op: 'close' },
+  ].map(e => JSON.stringify(e) + '\n').join(''));
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch') };
   mkdirSync(env.HOME!);
   delete env.OPENROUTER_API_KEY;
@@ -139,6 +152,18 @@ test("the side panel opens on Conversation beside the instance; the Ops log fold
   await page.click('#log [data-act=hide-panel]');
   await page.click('#bar [data-act=show-panel]');
   await page.waitForSelector('#log.open .tab.sel:text-is("Conversation")');
+});
+
+test("a run's calls to a connection fold into its work in the Ops log, each with its request, and a refusal with why", async () => {
+  await page.evaluate(() => { location.hash = '#/a5c0ff5e1f01'; });
+  await page.waitForSelector('#log.open');
+  await page.click('#log [data-tab=log]');
+  const work = page.locator('#log .e > div > details', { hasText: 'Agent made 2 requests outside' });
+  await work.locator('summary').first().click();
+  const [ok, refused] = (await work.locator('.ln').allInnerTexts()).slice(-2);
+  assert.equal(ok, 'Agent called adb: POST /api/2.0/sql/statements');
+  assert.match(refused, /^Agent called adb: POST \/api\/2\.0\/sql\/statements, refused/);
+  assert.equal(await work.locator('.ln .d').last().innerText(), 'adb only reads: a statement starts with SELECT, not DROP');
 });
 
 test("a row's chevron folds and opens it, selected or not, and selects nothing", async () => {

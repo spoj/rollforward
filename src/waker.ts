@@ -10,6 +10,7 @@ import type { Browsers } from './browsers.ts';
 import { seriesSettings } from './series.ts';
 import { pushed, skills } from './skills.ts';
 import { runnerOf } from './logins.ts';
+import { reachable, types } from './connections.ts';
 
 // What runs when: one run at a time per series, at most RF_MAX_RUNS at once, started by people's acts and by wakes.
 const LIMIT_MS = Number(process.env.RF_LIMIT_MIN ?? 120) * 60_000;
@@ -29,7 +30,7 @@ export function drain(exit: () => void) {
 }
 const SPACING_MS = 15 * 60_000;
 
-export type Active = { inst: Instance; n: number; token: string; view: View; run?: Run; sent: number; seen: number; texts: Map<string, number>; interrupted: boolean; done: boolean; cost: number; said: string; failed?: string; hosts: Set<string>; browsers?: Browsers; timer?: NodeJS.Timeout };
+export type Active = { inst: Instance; n: number; token: string; view: View; run?: Run; sent: number; seen: number; texts: Map<string, number>; interrupted: boolean; done: boolean; cost: number; said: string; failed?: string; hosts: Set<string>; links: Map<string, string>; browsers?: Browsers; timer?: NodeJS.Timeout };
 export const active = new Map<string, Active>();
 export const byToken = new Map<string, Active>();
 const debounce = new Map<string, NodeJS.Timeout>();
@@ -87,7 +88,12 @@ export function view(inst: Instance): View {
   ]);
   const agents = [...new Set(series.map(id => t.series[id].workspace))].map(w => [agentsFile(w), `/work/${t.workspaces[w].name}/AGENTS.md`] as [string, string]);
   const catalogue = `# What you can read\n\nOne line per series, from its latest closed instance: what it delivers (its process.md's first line), its inputs and where they come from, who brings files and who answers, and its open instances, which are drafts.\n\n${series.map(id => line(t, id, at(inst.seriesId))).join('\n')}\n`;
-  return { cwd: at(inst.seriesId), instance: `${at(inst.seriesId)}/${inst.label}`, dir: inst.dir, pylib: join(inst.series(), '.pylib'), ro: [[agentsFile(), '/work/AGENTS.md'], ...agents, ...ro], catalogue };
+  // The connections its runner ticked a login of, each with its type's help, and what the type sets in the sandbox's environment.
+  const conns = reachable(inst), listed = conns.map(c => `- ${c.name}: ${types[c.type].help(c)}`).join('\n');
+  return {
+    cwd: at(inst.seriesId), instance: `${at(inst.seriesId)}/${inst.label}`, dir: inst.dir, pylib: join(inst.series(), '.pylib'), ro: [[agentsFile(), '/work/AGENTS.md'], ...agents, ...ro],
+    catalogue: `${catalogue}\n\n# Connections\n\nWhat you reach outside, as your runner:\n${listed || 'none: your runner ticked no login for this instance.'}\n`, env: Object.assign({}, ...conns.map(c => types[c.type].env?.(c))),
+  };
 }
 
 function line(t: Tree, id: string, cwd: string): string {
@@ -128,7 +134,7 @@ async function start(inst: Instance) {
   const n = inst.log.filter(e => e.op === 'run').length + 1;
   const entries = inst.log.filter(e => e.seq > seen && e.by !== 'agent');
   const text = message(inst, n, entries);
-  const a: Active = { inst, n, token: randomUUID(), view: view(inst), sent: entries.at(-1)!.seq, seen, texts: new Map([[text, entries.at(-1)!.seq]]), interrupted: false, done: false, cost: 0, said: '', hosts: new Set() };
+  const a: Active = { inst, n, token: randomUUID(), view: view(inst), sent: entries.at(-1)!.seq, seen, texts: new Map([[text, entries.at(-1)!.seq]]), interrupted: false, done: false, cost: 0, said: '', hosts: new Set(), links: new Map() };
   active.set(series, a);
   byToken.set(a.token, a);
   const live = skills();

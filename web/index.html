@@ -741,7 +741,8 @@ function logText(e) {
     promote: () => `${w} made it a series, ${esc(e.series)}`,
     logins: () => `${w} ticked logins: ${esc(e.logins.join(', ') || 'none')}`,
     egress: () => `Run ${e.run} ${e.allowed ? 'reached' : 'was refused'} ${esc(e.host)}`,
-    delivered: () => `${w} delivered ${item(e.item)} to ${esc(e.to)}<div class="d">${e.via === 'graph' ? 'Through Microsoft 365' : 'Through a website'} · ${esc(e.receipt)}</div>`,
+    delivered: () => `${w} delivered ${item(e.item)} to ${esc(e.to)}<div class="d">${{ graph: 'Through Microsoft 365 · ', website: 'Through a website · ' }[e.via] ?? ''}${esc(e.receipt)}</div>`,
+    call: () => `${w} called ${esc(e.name)}: ${esc(e.method)} ${esc(e.path)}${e.refused || e.failed ? `, ${e.refused ? 'refused' : 'failed'}<div class="d">${esc(e.refused ?? e.failed)}</div>` : e.status >= 300 ? `, which answered ${e.status}` : ''}`,
     graph: () => `${w} ${e.method ? `sent ${esc(e.method)} ${esc(e.path)} to` : `read ${esc(e.path)} from`} Microsoft 365${e.status >= 300 ? `, which answered ${e.status}` : ''}${e.to && e.to !== e.path ? `<div class="d">${esc(e.to)}</div>` : ''}${[e.body, e.file].filter(Boolean).map(f => `<div class="f"><a data-act="preview" data-file="${esc(f)}">${esc(f)}</a></div>`).join('')}`,
     rename: () => e.by === 'server' ? `Named by its first prompt, from ${esc(e.from)}` : `${w} renamed the instance from ${esc(e.from)}`,
     duplicate: () => `${w} made this instance as a copy of ${esc(e.from)}`,
@@ -807,7 +808,7 @@ function lineHtml(s, i) {
 
 // What a row of the agent's work did, by kind of entry, and what a person's entries of one kind in a row did.
 const DID = {
-  graph: n => `read ${plural(n, 'path')} from Microsoft 365`, point: n => `showed ${plural(n, 'file')}`, item: n => `set up ${plural(n, 'item')}`,
+  call: n => `made ${plural(n, 'request')} outside`, graph: n => `read ${plural(n, 'path')} from Microsoft 365`, point: n => `showed ${plural(n, 'file')}`, item: n => `set up ${plural(n, 'item')}`,
   remove: n => `removed ${plural(n, 'item')}`, get: n => `fetched ${plural(n, 'file')} from the browser`, browser: n => `closed ${plural(n, 'browser')}`,
   egress: n => `reached ${plural(n, 'host')}`, upload: n => `uploaded ${plural(n, 'file')}`, resolve: n => `resolved ${plural(n, 'thread')}`,
 };
@@ -1104,24 +1105,30 @@ async function openTokens(made) {
 // Your logins, each with what it offers a run, which you tick when you start or take over an instance.
 function loginsHtml(s) {
   let h = `<div class="sub">Every login is yours alone. A run uses only its runner's logins, and only those ticked for its instance. Nothing here is a password: you sign in to each system yourself.</div>`;
-  const m365 = s.logins.find(l => l.id === 'm365');
-  if (me.m365 && !m365) h += `<h3>Microsoft 365</h3><div class="sub">Only what you add once connected: mailboxes, SharePoint sites, and folders or files in SharePoint or OneDrive. A run reaches nothing else, and shares nothing.</div><div><a class="btn primary" href="/logins/m365/connect">Connect Microsoft 365</a></div>`;
-  if (!me.m365) h += `<h3>Microsoft 365</h3><div class="sub">Not set up on this server: it needs an app registered in Microsoft Entra ID, which an admin sets in the server's settings (README, Access).</div>`;
-  for (const l of s.logins.filter(l => l.kind === 'm365')) {
+  const entra = s.connections.filter(c => c.login.scope), sites = s.connections.filter(c => c.type === 'website').map(c => ({ id: c.name, name: c.title ?? c.name, url: c.url, hosts: c.hosts }));
+  if (!me.m365 && entra.length) h += `<div class="sub">Microsoft sign-in isn't set up on this server: its logins need an app registered in Microsoft Entra ID, which an admin sets in the server's settings (README, Access).</div>`;
+  for (const c of entra) {
+    const l = s.logins.find(l => l.id === c.login.id);
+    if (!l) {
+      if (me.m365) h += `<h3>${esc(c.login.name)}</h3><div class="sub">${c.type === 'graph' ? 'Only what you add once connected: mailboxes, SharePoint sites, and folders or files in SharePoint or OneDrive. A run reaches nothing else, and shares nothing.' : `Runs reach ${esc(c.name)} as you, with your own permissions there.`}</div><div><a class="btn primary" href="/logins/${enc(c.login.id)}/connect">Connect ${esc(c.login.name)}</a></div>`;
+      continue;
+    }
     h += `<h3>${esc(l.name)}</h3><div class="sub">${esc(l.account ?? '')}${l.account ? ' · ' : ''}${l.expired ? '<span class="q">expired: sign in again</span>' : `since ${esc(when(l.since))}`}</div>`
       + (l.missing.length && !l.expired ? `<div class="sub"><span class="q">Reconnect to let runs send and save</span>: Microsoft hasn't granted this login ${esc(l.missing.join(', '))}, which this server now asks for.</div>` : '')
       + l.offers.map(o => `<div class="skill-row" style="display:flex;align-items:center"><span style="flex:1">${esc(o.name)}</span>${l.id === 'm365' ? `<button class="quiet" data-act="unoffer" data-id="${esc(o.id)}">Remove</button>` : ''}</div>`).join('');
     if (l.id === 'm365' && !l.expired) h += `<div class="sub">Add a mailbox by its address, yours or one you may read; a whole SharePoint site by its link; or a folder, with all under it, or a file, in SharePoint or anyone's OneDrive, by any link to it.</div>`
       + `<div class="row2"><input type="text" id="offer-add" placeholder="A mailbox or a link" style="flex:1"><button class="btn" data-act="offer-add">Add</button></div>`;
-    h += `<div class="row2">${l.id === 'm365' && (l.expired || l.missing.length) ? `<a class="btn primary" href="/logins/m365/connect">${l.expired ? 'Sign in again' : 'Reconnect'}</a>` : ''}<button class="btn" data-act="signout-login" data-id="${esc(l.id)}">Sign out</button></div>`;
+    h += `<div class="row2">${l.expired || l.missing.length ? `<a class="btn primary" href="/logins/${enc(l.id)}/connect">${l.expired ? 'Sign in again' : 'Reconnect'}</a>` : ''}<button class="btn" data-act="signout-login" data-id="${esc(l.id)}">Sign out</button></div>`;
   }
-  if (s.sites.length) h += `<h3>Websites</h3><div class="sub">Sign in yourself, in a browser shown here. Your login is what that browser keeps, its cookies, never your password; a run's browser starts from it and brings it back refreshed. It reaches only the hosts listed, but there it can do whatever you can: the agent is told only to read, and each run's log counts its writes.</div>`
-    + s.sites.map(w => {
+  const ids = new Set(s.connections.map(c => c.login.id));
+  for (const l of s.logins.filter(l => !ids.has(l.id))) h += `<h3>${esc(l.name)}</h3><div class="sub">No longer a connection on this server, so no run uses it.</div><div class="row2"><button class="btn" data-act="signout-login" data-id="${esc(l.id)}">Sign out</button></div>`;
+  if (sites.length) h += `<h3>Websites</h3><div class="sub">Sign in yourself, in a browser shown here. Your login is what that browser keeps, its cookies, never your password; a run's browser starts from it and brings it back refreshed. It reaches only the hosts listed, but there it can do whatever you can: the agent is told only to read, and each run's log counts its writes.</div>`
+    + sites.map(w => {
       const l = s.logins.find(l => l.id === `web:${w.id}`);
       return `<div class="skill-row" style="display:flex;align-items:center;gap:8px"><span style="flex:1">${esc(w.name)} <span class="sub">${esc([new URL(w.url).hostname, ...w.hosts].join(', '))}${l ? ` · since ${esc(when(l.since))}` : ''}</span></span>`
         + `<button class="btn" data-act="web-signin" data-id="${esc(w.id)}" data-name="${esc(w.name)}">${l ? 'Sign in again' : 'Sign in'}</button>${l ? `<button class="quiet" data-act="signout-login" data-id="${esc(l.id)}">Sign out</button>` : ''}</div>`;
     }).join('');
-  if (!s.sites.length) h += `<h3>Websites</h3><div class="sub">${me.browsers ? 'None yet: admins add a website with <code>rf website set ID URL --hosts ...</code>, and then everyone can sign in to it here.' : "Not set up on this server: website logins need the browser service (README, Websites), and then admins add websites with <code>rf website set</code>."}</div>`;
+  if (!sites.length) h += `<h3>Websites</h3><div class="sub">${me.browsers ? 'None yet: admins add a website with <code>rf connection set NAME website --url URL --hosts ...</code>, and then everyone can sign in to it here.' : "Not set up on this server: website logins need the browser service (README, Websites), and then admins add websites with <code>rf connection set NAME website</code>."}</div>`;
   return h;
 }
 
@@ -1138,7 +1145,7 @@ function startHtml(s) {
 }
 
 // Signing in again, from wherever a login is said to have expired: Microsoft's own page, or a website's live browser.
-const signInHtml = (id, name) => id === 'm365' ? '<a class="btn" href="/logins/m365/connect">Sign in again</a>'
+const signInHtml = (id, name) => !id.startsWith('web:') ? `<a class="btn" href="/logins/${enc(id)}/connect">Sign in again</a>`
   : `<button class="btn" data-act="web-signin" data-id="${esc(id.slice(4))}" data-name="${esc(name)}">Sign in again</button>`;
 
 // What waits on you: the agent's asks and the notes for you, requests to start a series you can see, and your expired logins.
@@ -1155,8 +1162,8 @@ function waiting() {
 }
 
 async function openLogins() {
-  const [logins, sites] = await Promise.all([api('/logins'), api('/websites')]);
-  pv = { title: 'Logins', settings: { kind: 'logins', logins, sites } };
+  const [logins, connections] = await Promise.all([api('/logins'), api('/connections')]);
+  pv = { title: 'Logins', settings: { kind: 'logins', logins, connections } };
   renderPv();
 }
 

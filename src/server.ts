@@ -10,13 +10,14 @@ import { agentsFile, createInstance, duplicateInstance, moveInstance, renameInst
 import { socketDir } from './runner.ts';
 import { commit } from './git.ts';
 import { serveSandboxes } from './sandbox.ts';
-import { authenticate, checkConfig, cli, connectM365, m365Ready, mode, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
+import { authenticate, checkConfig, cli, connect, m365Ready, mode, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
 import { canManage, canSee, changes, everyone, initSystem, readJson, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
 import { checkTicks, logins, runnerOf, signOut } from './logins.ts';
 import { agentCall } from './agent-api.ts';
-import { checkLogins } from './graph.ts';
-import { endSignIn, isSignIn, passUpgrade, removeWebsite, setWebsite, startSignIn, viewPage, websites } from './browsers.ts';
-import { offer, unoffer } from './m365.ts';
+import { checkLogins } from './entra.ts';
+import { byLogin, call, connections, convert, intercepts, loginOf, removeConnection, setConnection } from './connections.ts';
+import { endSignIn, isSignIn, passUpgrade, startSignIn, viewPage } from './browsers.ts';
+import { offer, unoffer } from './connections/graph.ts';
 import { seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
 import { active, byToken, cancelWake, closed, drain, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, resolveFor, setWake, startWaking, startWith, wakes, wider, type Active } from './waker.ts';
@@ -31,6 +32,7 @@ const host = process.env.RF_HOST ?? '127.0.0.1';
 const tmpDir = join(root, '.tmp');
 initSystem(root);
 openStore(root);
+convert();
 
 // A free name among a workspace's series: the name, else the name 2, 3 and on.
 function freeName(t: Tree, ws: string, name: string): string {
@@ -100,10 +102,10 @@ async function agent(req: IncomingMessage, res: ServerResponse, url: URL) {
   const a = byToken.get(req.headers.authorization?.replace('Bearer ', '') ?? '');
   if (!a) throw new HttpError(401, 'no run for this token');
   if (url.pathname.startsWith('/api/')) return api({ email: 'agent', name: 'Agent', role: 'user', groups: [], run: a }, req, res, url);
-  // Logins and browsers: rf graph, rf browser (see agent-api.ts).
+  // Browsers and deliveries: rf browser, rf delivered (see agent-api.ts).
   // A login the run's runner must sign in to again is logged, so the instance carries on once they do.
   const r = await agentCall(a, url.pathname, req.method ?? 'GET', () => body(req)).catch((e: HttpError & { login?: string }) => {
-    if (e.login) a.inst.append('server', 'expired', { login: e.login, name: e.login === 'm365' ? 'Microsoft 365' : websites()[e.login.slice(4)]?.name ?? e.login, runner: runnerOf(a.inst).by });
+    if (e.login) a.inst.append('server', 'expired', { login: e.login, name: byLogin(e.login) ? loginOf(byLogin(e.login)!).name : e.login, runner: runnerOf(a.inst).by });
     throw e;
   });
   if (r) return send(res, r.status, r.data);
@@ -653,13 +655,14 @@ async function skillsRoute(me: Me, req: IncomingMessage, res: ServerResponse, ur
   throw new HttpError(405, 'GET, or POST a version');
 }
 
-// Websites: anyone signed in may list them, to sign in to one on the Logins page; admins keep them, with rf.
-async function websitesRoute(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) {
-  const id = decodeURIComponent(url.pathname.slice(10));
-  if (!id && req.method === 'GET') return send(res, 200, Object.entries(websites()).map(([id, w]) => ({ id, ...w })));
-  if (me.role !== 'admin') throw new HttpError(403, 'admins keep websites');
-  if (req.method === 'PUT') return send(res, 200, setWebsite(id, await json(req), me.email));
-  if (req.method === 'DELETE') return send(res, 200, (removeWebsite(id), 'ok'));
+// Connections: anyone signed in may list them, each with its login, to connect or sign in on the Logins page; admins keep them,
+// with rf.
+async function connectionsRoute(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) {
+  const name = decodeURIComponent(url.pathname.slice(13));
+  if (!name && req.method === 'GET') return send(res, 200, connections().map(c => ({ ...c, login: loginOf(c) })));
+  if (me.role !== 'admin') throw new HttpError(403, 'admins keep connections');
+  if (req.method === 'PUT') return send(res, 200, setConnection(name, await json(req), me.email));
+  if (req.method === 'DELETE') return send(res, 200, (removeConnection(name), 'ok'));
   throw new HttpError(405, 'PUT or DELETE');
 }
 
@@ -681,6 +684,8 @@ serveSandboxes(join(socketDir, 'rf.sock'), {
         a.inst.append('server', 'egress', { run: a.n, host, allowed });
       },
       owns: id => !!a.browsers?.owns(id),
+      intercepts: host => intercepts(a, host),
+      call: (host, req, res) => call(a, host, req, res),
     };
   },
 });
@@ -739,10 +744,12 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       const { name, days } = await json(req);
       send(res, 200, { token: newToken(own.email, String(name ?? '').trim(), Number(days)) });
     } else if (url.pathname === '/logins' && req.method === 'GET') send(res, 200, logins(me.email).map(l => ({ ...l, missing: ungranted(l) })));
-    else if (url.pathname === '/logins/m365/connect') {
+    else if (/^\/logins\/[^/]+\/connect$/.test(url.pathname)) {
       // A link on another site must not start it: Microsoft may sign in again without asking.
-      if (req.headers['sec-fetch-site'] && req.headers['sec-fetch-site'] !== 'same-origin') throw new HttpError(403, 'connect Microsoft 365 from the Logins page');
-      await connectM365(res, me.email);
+      if (req.headers['sec-fetch-site'] && req.headers['sec-fetch-site'] !== 'same-origin') throw new HttpError(403, 'connect from the Logins page');
+      const c = byLogin(decodeURIComponent(url.pathname.split('/')[2])), login = c && loginOf(c);
+      if (!login?.scope) throw new HttpError(404, 'no connection signs in to Microsoft with that login');
+      await connect(res, me.email, login);
     }
     else if (url.pathname === '/logins/m365/offers' && req.method === 'POST') send(res, 200, (await offer(me.email, String((await json(req)).add ?? '')), 'ok'));
     else if (url.pathname.startsWith('/logins/m365/offers/') && req.method === 'DELETE') send(res, 200, (unoffer(me.email, decodeURIComponent(url.pathname.slice(20))), 'ok'));
@@ -755,7 +762,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     else if (url.pathname.startsWith('/logins/') && req.method === 'DELETE') send(res, 200, (signOut(me.email, decodeURIComponent(url.pathname.slice(8))), 'ok'));
     else if (url.pathname === '/users' || url.pathname.startsWith('/users/')) await admin(me, req, res, url);
     else if (url.pathname === '/skills' || url.pathname.startsWith('/skills/')) await skillsRoute(me, req, res, url);
-    else if (url.pathname === '/websites' || url.pathname.startsWith('/websites/')) await websitesRoute(me, req, res, url);
+    else if (url.pathname === '/connections' || url.pathname.startsWith('/connections/')) await connectionsRoute(me, req, res, url);
     else throw new HttpError(404, 'not found');
   } catch (err) {
     if (res.headersSent) res.destroy();
@@ -771,6 +778,6 @@ server.on('upgrade', (req, socket, head) => {
 });
 server.listen(port, host, () => {
   startWaking();
-  if (m365Ready()) checkLogins();
+  if (m365Ready()) checkLogins(connections().map(loginOf).flatMap(l => l.scope ? [l] : []));
   console.log(`rollforward on http://${host}:${port}, data in ${root}, sign-in ${mode}${process.env.RF_TODAY ? `, skills take today as ${process.env.RF_TODAY} (RF_TODAY)` : ''}`);
 });

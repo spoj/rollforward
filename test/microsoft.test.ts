@@ -12,8 +12,8 @@ import { fileURLToPath } from 'node:url';
 
 // With RF_OIDC_* set, the same Sign in with Microsoft button goes to Microsoft Entra ID. A stand-in provider plays Microsoft here:
 // it signs in whoever the login hint names, and checks the PKCE verifier, the redirect address and, for an app with one, its secret.
-// Four servers: an app with a client secret that registers /auth/callback; a public client, with no secret, that registers the site's
-// root; and two Single-page applications that register the site's root, one also with a secret and /auth/m365 as a Web redirect,
+// Four servers: an app with a client secret that registers /auth/callback; a public
+// client, with no secret, that registers the site's root; and two Single-page applications that register the site's root, one also with a secret and /auth/m365 as a Web redirect,
 // whose logins ask for mail alone, as the ReadWrite permissions a tenant granted.
 
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -137,6 +137,23 @@ test("Connect Microsoft 365 asks the same app for read-only mail and files, and 
   assert.deepEqual([login.id, login.account, login.offers], ['m365', 'alex@acme.test', []], 'it offers nothing until its person adds it');
   assert.deepEqual([login.scopes, login.missing], [['Mail.Read', 'Mail.Read.Shared', 'Files.Read.All'], ['Sites.Read.All']], 'what Microsoft granted, and what its person reconnects to grant');
   assert.equal((await (await fetch(`${spaClient}/me`, { headers: { cookie: s } })).status), 401, 'another server, another session');
+});
+
+test("a Databricks connection's Connect asks the same app for Azure Databricks as its person, and offers the connection's warehouse", async () => {
+  const x = await start(confidential, 'alex@acme.test'), admin = sessionOf(await fetch(x.back, { redirect: 'manual', headers: { cookie: x.cookie } }))!;
+  const set = await fetch(`${confidential}/connections/adb`, { method: 'PUT', headers: { cookie: admin, 'content-type': 'application/json' }, body: JSON.stringify({ type: 'databricks', host: 'adb-1.azuredatabricks.net', warehouse: 'wh1' }) });
+  assert.equal(set.status, 200);
+  const a = await start(confidential, 'lee@acme.test'), s = sessionOf(await fetch(a.back, { redirect: 'manual', headers: { cookie: a.cookie } }))!;
+  const listed = (await (await fetch(`${confidential}/connections`, { headers: { cookie: s } })).json()).find((c: { name: string }) => c.name === 'adb');
+  assert.deepEqual([listed.login.id, listed.login.name], ['adb', 'Databricks adb'], 'the Logins page offers it');
+  const out = await fetch(`${confidential}/logins/adb/connect`, { redirect: 'manual', headers: { cookie: s } });
+  const to = new URL(out.headers.get('location')!), pending = out.headers.getSetCookie()[0].split(';')[0];
+  assert.deepEqual(to.searchParams.get('scope')!.split(' ').sort(), ['2ff814a6-3304-4ab8-85cb-cd0e6f879c1d/user_impersonation', 'email', 'offline_access', 'openid']);
+  const back = await fetch((await fetch(to, { redirect: 'manual' })).headers.get('location')!, { redirect: 'manual', headers: { cookie: `${s}; ${pending}` } });
+  assert.equal(back.headers.get('location'), '/#logins');
+  const login = (await (await fetch(`${confidential}/logins`, { headers: { cookie: s } })).json()).find((l: { id: string }) => l.id === 'adb');
+  assert.deepEqual([login.kind, login.name, login.account, login.offers], ['databricks', 'Databricks adb', 'lee@acme.test', [{ id: 'adb', name: 'Databricks adb, warehouse wh1' }]]);
+  assert.equal((await fetch(`${confidential}/logins/portal/connect`, { redirect: 'manual', headers: { cookie: s } })).status, 404, 'no connection by that login');
 });
 
 test("a person signed in through an app since replaced keeps their account, known now by tenant and object id, which another can't take", async () => {

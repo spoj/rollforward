@@ -7,7 +7,7 @@ import { request as httpsRequest } from 'node:https';
 import type { Duplex } from 'node:stream';
 import { HttpError, replaceReadOnly, type Instance } from './store.ts';
 import { logins, saveLogin, secret, use } from './logins.ts';
-import { readJson, writeJson } from './system.ts';
+import { connections } from './connections.ts';
 
 // Browsers from the browser service (spoj/rollforward-browser, a repo of its own), whose one client is this server, with its key: a
 // throwaway container per session, driven over CDP, whose proxy keeps to a website's hosts and logs every request. A website login is
@@ -61,36 +61,18 @@ export function passUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, 
   socket.pipe(up).pipe(socket);
 }
 
-// ---- Websites, which admins keep with rf website set: each a name, the address where people sign in, and the other hosts its pages
-// need, such as single sign-on's. A browser on one reaches only those hosts; whatever its login may do there, the browser may, so
-// keeping to reads is the agent's, and its request log shows what it did.
+// ---- Websites, which admins keep as connections of type website (connections.ts): each a name, the address where people sign
+// in, and the other hosts its pages need, such as single sign-on's. A browser on one reaches only those hosts; whatever its login
+// may do there, the browser may, so keeping to reads is the agent's, and its request log shows what it did.
 
-export type Website = { name: string; url: string; hosts: string[]; updated_by: string; updated_at: string };
-export const websites = () => readJson<Record<string, Website>>('websites.json', {});
+export type Website = { name: string; url: string; hosts: string[]; writeback: boolean };
+export const websites = (): Record<string, Website> =>
+  Object.fromEntries(connections().filter(c => c.type === 'website').map(c => [c.name, { name: c.title ?? c.name, url: c.url, hosts: c.hosts, writeback: c.writeback }]));
 
 function website(id: string): Website {
   const w = websites()[id];
-  if (!w) throw new HttpError(404, `no website ${id}; there are ${Object.keys(websites()).join(', ') || 'none'}: an admin adds one with rf website set`);
+  if (!w) throw new HttpError(404, `no website ${id}; there are ${Object.keys(websites()).join(', ') || 'none'}: an admin adds one with rf connection set ${id} website`);
   return w;
-}
-
-export function setWebsite(id: string, input: { name?: unknown; url?: unknown; hosts?: unknown }, by: string): Website {
-  if (!/^[a-z0-9][a-z0-9-]*$/.test(id)) throw new HttpError(400, 'a website id is lowercase letters, digits and dashes');
-  if (typeof input.url !== 'string' || !/^https?:\/\/[^/]/.test(input.url)) throw new HttpError(400, 'url: an http(s) address, where sign-in starts');
-  const hosts = input.hosts ?? [];
-  if (!Array.isArray(hosts) || !hosts.every(h => typeof h === 'string' && /^(\*\.)?[a-z0-9.-]+$/i.test(h))) throw new HttpError(400, 'hosts: names such as sso.example.com, or *.example.com for any under it');
-  const all = websites();
-  all[id] = { name: typeof input.name === 'string' && input.name.trim() ? input.name.trim() : id, url: input.url, hosts, updated_by: by, updated_at: new Date().toISOString() };
-  writeJson('websites.json', all);
-  return all[id];
-}
-
-// People's logins to a website removed stay theirs to sign out of; no run can use them.
-export function removeWebsite(id: string) {
-  const all = websites();
-  if (!all[id]) throw new HttpError(404, `no website ${id}`);
-  delete all[id];
-  writeJson('websites.json', all);
 }
 
 // ---- Signing in: a browser on the website's address with nothing saved, shown to the person on the Logins page, for half an hour.

@@ -4,7 +4,7 @@ import { appendFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { HttpError } from './store.ts';
 import { forgetPerson, initSystem, key, readJson, rfDir, writeJson } from './system.ts';
-import { forgetLogins, logins, saveLogin } from './logins.ts';
+import { forgetLogins, logins, saveLogin, type Offer } from './logins.ts';
 
 // Sign-in with a Microsoft account. People press "Sign in with Microsoft" and type nothing. With RF_OIDC_ISSUER and the app's id set,
 // the button goes to Microsoft Entra ID (OpenID Connect, code flow with PKCE): the server redeems the code, with the app's secret if it
@@ -33,15 +33,14 @@ const oidc = {
 oidc.redirect = env.RF_OIDC_REDIRECT_URI ?? `${oidc.publicUrl}/auth/callback`;
 // The app registers its redirect as a Single-page application: Microsoft then lets only a browser redeem the code (see redeemInBrowser).
 const spa = env.RF_OIDC_SPA === '1';
-// Such an app with a client secret gives Microsoft 365 logins too: they come back to /auth/m365, which the app also registers as a
-// Web redirect, and the server redeems them with the secret, while sign-in stays the browser's.
+// Such an app with a client secret gives connections' Entra logins too, such as Microsoft 365's: they come back to /auth/m365, which
+// the app also registers as a Web redirect, and the server redeems them with the secret, while sign-in stays the browser's.
 const m365Redirect = spa ? `${oidc.publicUrl}/auth/m365` : oidc.redirect;
 const redirectPath = URL.canParse(oidc.redirect) ? new URL(oidc.redirect).pathname : '/auth/callback';
 export const mode: 'microsoft' | 'demo' = oidc.issuer ? 'microsoft' : 'demo';
 // A person's Microsoft 365 login asks the same app for delegated Graph access: RF_M365_SCOPES, by default reading mail, shared
 // mailboxes, files and sites. The server keeps its refresh token, which a Single-page application's redirect can't give it.
 export const graphScopes = (env.RF_M365_SCOPES ?? 'Mail.Read Mail.Read.Shared Files.Read.All Sites.Read.All').split(/[\s,]+/).filter(Boolean);
-const m365Scopes = (scopes: string[]) => ['openid', 'email', 'offline_access', ...scopes.map(s => `https://graph.microsoft.com/${s}`)].join(' ');
 // Whether logins ask for a Read permission, or the ReadWrite one that holds it, as a tenant may have granted only that.
 const grants = (scope: string) => graphScopes.includes(scope) || graphScopes.includes(scope.replace('.Read', '.ReadWrite'));
 // Refuses a request that needs a permission this server's logins don't ask for, saying which.
@@ -53,6 +52,11 @@ export function needs(scope: string, what: string) {
 const granted = (scope: string | undefined) => scope?.split(' ').map(s => s.replace(/^https:\/\/graph\.microsoft\.com\//i, '')).filter(s => s && !['openid', 'profile', 'email', 'offline_access'].includes(s.toLowerCase()));
 export const ungranted = (login: { scopes?: string[] }) => graphScopes.filter(s => login.scopes && !login.scopes.some(g => g.toLowerCase() === s.toLowerCase()));
 export const m365Ready = () => mode === 'microsoft' && (!spa || !!oidc.clientSecret);
+// What an Entra login asks for: OpenID's own scopes and its connection's, such as Graph's permissions.
+const entraScope = (scope: string[]) => ['openid', 'email', 'offline_access', ...scope].join(' ');
+// A connection's Entra login, as connections.ts describes it: its id, kind and name, its scope, and the offers it makes, unless
+// they are its person's to add, as Microsoft 365's are.
+export type EntraLogin = { id: string; kind: string; name: string; scope: string[]; offers?: Offer[] };
 const admins = new Set([...(env.RF_ADMINS ?? '').split(','), ...(mode === 'demo' ? DEMO_ACCOUNTS.filter(a => a.role === 'admin').map(a => a.email) : [])].map(s => s.trim().toLowerCase()).filter(Boolean));
 const domains = (env.RF_ALLOWED_DOMAINS ?? '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 const SESSION_MS = Number(env.RF_SESSION_HOURS ?? 12) * 3_600_000;
@@ -246,21 +250,21 @@ async function discovery() {
 // Each sign-in keeps its state in a cookie of its own, named by the state, so sign-ins started in several tabs don't overwrite each other.
 const pendingCookie = (state: string) => `rf_oidc_${state}`;
 
-// Sends the browser to Microsoft to sign in, or, with `m365`, for that signed-in person to give their Microsoft 365 login.
-async function microsoft(res: ServerResponse, next: string, m365?: string) {
+// Sends the browser to Microsoft to sign in, or, with `connect`, for that signed-in person to give a login of theirs.
+async function microsoft(res: ServerResponse, next: string, connect?: { login: EntraLogin; email: string }) {
   const d = await discovery();
   const state = randomBytes(16).toString('base64url'), nonce = randomBytes(16).toString('base64url'), verifier = randomBytes(32).toString('base64url');
-  const pending = b64(JSON.stringify({ state, nonce, verifier, next, exp: Date.now() + 600_000, ...(m365 && { m365 }) }));
+  const pending = b64(JSON.stringify({ state, nonce, verifier, next, exp: Date.now() + 600_000, ...connect }));
   const to = new URL(d.authorization_endpoint);
   for (const [k, v] of Object.entries({
-    response_type: 'code', client_id: oidc.clientId, redirect_uri: m365 ? m365Redirect : oidc.redirect, scope: m365 ? m365Scopes(graphScopes) : oidc.scopes, state, nonce,
-    code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256', ...(m365 ? { login_hint: m365 } : { prompt: 'select_account' }),
+    response_type: 'code', client_id: oidc.clientId, redirect_uri: connect ? m365Redirect : oidc.redirect, scope: connect ? entraScope(connect.login.scope) : oidc.scopes, state, nonce,
+    code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256', ...(connect ? { login_hint: connect.email } : { prompt: 'select_account' }),
   })) to.searchParams.set(k, v);
   res.writeHead(302, { location: to.href, 'set-cookie': cookie(pendingCookie(state), `${pending}.${mac(pending)}`, 600) });
   res.end();
 }
 
-type Pending = { state: string; nonce: string; verifier: string; next: string; exp: number; m365?: string };
+type Pending = { state: string; nonce: string; verifier: string; next: string; exp: number; login?: EntraLogin; email?: string };
 
 // The sign-in this browser started under `state`, if it is still good.
 function pendingOf(req: IncomingMessage, state: string): Pending | undefined {
@@ -290,11 +294,11 @@ async function callback(req: IncomingMessage, res: ServerResponse, url: URL) {
   if (!p) return expired(req, res);
   if (url.searchParams.get('error')) return page(res, 401, `Microsoft refused: ${url.searchParams.get('error_description') ?? url.searchParams.get('error')}`);
   const d = await discovery();
-  if (spa && !p.m365) return redeemInBrowser(res, url.searchParams.get('code') ?? '', p, d.token_endpoint);
+  if (spa && !p.login) return redeemInBrowser(res, url.searchParams.get('code') ?? '', p, d.token_endpoint);
   const r = await fetch(d.token_endpoint, {
     method: 'POST', signal: AbortSignal.timeout(15_000),
     body: new URLSearchParams({
-      grant_type: 'authorization_code', code: url.searchParams.get('code') ?? '', redirect_uri: p.m365 ? m365Redirect : oidc.redirect, client_id: oidc.clientId, code_verifier: p.verifier,
+      grant_type: 'authorization_code', code: url.searchParams.get('code') ?? '', redirect_uri: p.login ? m365Redirect : oidc.redirect, client_id: oidc.clientId, code_verifier: p.verifier,
       ...(oidc.clientSecret && { client_secret: oidc.clientSecret }),
     }),
   });
@@ -302,36 +306,36 @@ async function callback(req: IncomingMessage, res: ServerResponse, url: URL) {
   if (!r.ok || !t.id_token) return page(res, 401, `Microsoft did not sign you in: ${t.error_description ?? t.error ?? r.status}`);
   // Straight from the token endpoint over TLS, so the token's signature needn't be checked (OpenID Connect Core 3.1.3.7).
   const claims = JSON.parse(unb64(t.id_token.split('.')[1]));
-  if (p.m365) return finishM365(req, res, claims, t, p);
+  if (p.login) return finishLogin(req, res, claims, t, p);
   await finishSignIn(res, claims, p);
 }
 
-export async function connectM365(res: ServerResponse, email: string) {
-  if (!m365Ready()) throw new HttpError(409, 'Microsoft 365 logins need sign-in with Microsoft, through an app registered as a Web or public client, or as a Single-page application with its client secret');
-  await microsoft(res, '/#logins', email);
+export async function connect(res: ServerResponse, email: string, login: EntraLogin) {
+  if (!m365Ready()) throw new HttpError(409, 'Entra logins need sign-in with Microsoft, through an app registered as a Web or public client, or as a Single-page application with its client secret');
+  await microsoft(res, '/#logins', { login, email });
 }
 
-// Keeps the Microsoft 365 login of the person who asked for it, offering nothing until they add it, and on signing in again what
-// they had added.
-async function finishM365(req: IncomingMessage, res: ServerResponse, claims: any, t: { refresh_token?: string; scope?: string }, p: Pending) {
-  const email = String(claims.email ?? claims.preferred_username ?? claims.upn ?? '').toLowerCase();
-  if (session(req)?.email !== p.m365) return page(res, 401, 'Sign in to rollforward first, then connect Microsoft 365.');
-  if (email !== p.m365) return page(res, 403, `That was ${email}'s Microsoft account; connect your own, ${p.m365}.`);
+// Keeps the login of the person who asked for it, with the offers its connection makes, or, for Microsoft 365, nothing until they
+// add it, and on signing in again what they had added.
+async function finishLogin(req: IncomingMessage, res: ServerResponse, claims: any, t: { refresh_token?: string; scope?: string }, p: Pending) {
+  const email = String(claims.email ?? claims.preferred_username ?? claims.upn ?? '').toLowerCase(), { id, kind, name, offers } = p.login!;
+  if (session(req)?.email !== p.email) return page(res, 401, `Sign in to rollforward first, then connect ${name}.`);
+  if (email !== p.email) return page(res, 403, `That was ${email}'s Microsoft account; connect your own, ${p.email}.`);
   if (!t.refresh_token) return page(res, 502, 'Microsoft gave no refresh token, so the login could not be kept: the app needs offline_access.');
-  const offers = logins(email).find(l => l.id === 'm365')?.offers ?? [], scopes = granted(t.scope);
-  saveLogin(email, { id: 'm365', kind: 'm365', name: 'Microsoft 365', account: email, since: new Date().toISOString(), offers, ...(scopes && { scopes }) }, t.refresh_token);
+  const scopes = id === 'm365' && granted(t.scope);
+  saveLogin(email, { id, kind, name, account: email, since: new Date().toISOString(), offers: offers ?? logins(email).find(l => l.id === id)?.offers ?? [], ...(scopes && { scopes }) }, t.refresh_token);
   res.writeHead(302, { location: p.next, 'set-cookie': cookie(pendingCookie(p.state), '', 0) }).end();
 }
 
-// A fresh access token for a person's Microsoft 365 login, and the refresh token that replaces theirs. Microsoft refusing the login
-// answers 401, as for one expired, revoked or made through another app, for its person to sign in again. A refusal that names this
-// server's own app, as when its secret expired, is the server's to mend, and answers 502, as other failures do; one that wants the
-// person's consent to permissions the server asks for anew carries `consent`. It asks for `scopes`, by default the server's.
-export async function refreshM365(refreshToken: string, scopes = graphScopes): Promise<{ access: string; refresh: string; expires: number; scopes?: string[] }> {
+// A fresh access token for a person's login, and the refresh token that replaces theirs. Microsoft refusing the login answers 401,
+// as for one expired, revoked or made through another app, for its person to sign in again. A refusal that names this server's own
+// app, as when its secret expired, is the server's to mend, and answers 502, as other failures do; one that wants the person's
+// consent to permissions the server asks for anew carries `consent`.
+export async function renew(refreshToken: string, scope: string[]): Promise<{ access: string; refresh: string; expires: number; scopes?: string[] }> {
   const d = await discovery();
   const r = await fetch(d.token_endpoint, {
     method: 'POST', signal: AbortSignal.timeout(20_000),
-    body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: oidc.clientId, scope: m365Scopes(scopes), ...(oidc.clientSecret && { client_secret: oidc.clientSecret }) }),
+    body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: oidc.clientId, scope: entraScope(scope), ...(oidc.clientSecret && { client_secret: oidc.clientSecret }) }),
   });
   const t = await r.json().catch(() => ({}));
   const refused = ['invalid_grant', 'invalid_client', 'unauthorized_client'].includes(t.error) && !String(t.error_description).includes(`'${oidc.clientId}'`);

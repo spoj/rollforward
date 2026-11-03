@@ -89,6 +89,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Scenarios' })).json();
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB], agents: 'Scenarios: amounts in USD.' })).status, 200);
   assert.equal((await fetch(`${base}/agents`, { method: 'PUT', headers: { cookie: admin }, body: 'Company: fiscal months end on the last Saturday.' })).status, 200);
+  assert.equal((await call('PUT', '/connections/graph', { type: 'graph' })).status, 200);
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec' })).json();
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
   const { id: wide } = await (await call('POST', '/api/workspaces', { name: 'Wide' })).json();
@@ -99,7 +100,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
       `cat ${join(root, '.rf', 'seal.key')} 2>&1 | head -1`,
       `curl -s -m 5 ${base}/api 2>&1; echo "curl exit $?"`,
       'curl -s -m 5 https://10.1.2.3/ 2>&1; echo "curl exit $?"',
-      'rf graph /users/ceo@demo.test/messages 2>&1',
+      'curl -s -m 10 https://graph.microsoft.com/v1.0/users/ceo@demo.test/messages 2>&1',
       () => `rf wake 2026-11 ${new Date(Date.now() + 2500).toISOString()} the bank file comes later 2>&1`,
       'rf wake ../../Wide/Close now the close can start --label 2026-11 2>&1',
       'rf wake . soon why 2>&1',
@@ -114,8 +115,8 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
     ],
     report: 'Checked the walls, and woke myself for the bank file.', saw: [],
   };
-  const woken: Script = { bash: ['rf graph /me/messages 2>&1'], report: 'Woken; no mail is ticked.', saw: [] };
-  const takenOver: Script = { bash: ['rf graph /me/messages 2>&1'], report: 'Run as Bob.', saw: [] };
+  const woken: Script = { bash: ['curl -s -m 10 https://graph.microsoft.com/v1.0/me/messages 2>&1'], report: 'Woken; no mail is ticked.', saw: [] };
+  const takenOver: Script = { bash: ['curl -s -m 10 https://graph.microsoft.com/v1.0/me/messages 2>&1'], report: 'Run as Bob.', saw: [] };
   scripts.push(walls, woken, takenOver);
 
   assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Check what you can reach.' })).status, 200);
@@ -128,7 +129,8 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.match(walls.saw[1], /curl exit 7/, "the server's own port is not reachable");
   assert.match(walls.saw[2], /curl exit [1-9]/, 'nor an internal address');
   assert.deepEqual(log.filter(e => e.op === 'egress').map(e => [e.run, e.host, e.allowed]), [[1, '10.1.2.3', false]]);
-  assert.match(walls.saw[3], /m365:mail:ceo@demo.test is not ticked for this instance; its runner, admin@demo.test/);
+  assert.match(walls.saw[3], /m365:mail:ceo@demo.test is not ticked for this instance; its runner, admin@demo.test/, "Graph at its own address, through the server, which refuses what isn't ticked");
+  assert.deepEqual(log.filter(e => e.op === 'call').map(e => [e.run, e.name, e.path, e.status]), [[1, 'graph', '/v1.0/users/ceo@demo.test/messages', 403], [2, 'graph', '/v1.0/me/messages', 403]]);
   assert.match(walls.saw[4], /^set: 2026-11 wakes at /);
   assert.match(walls.saw[5], /Wide\/Close is in another workspace: you can read it, not wake it/);
   assert.match(walls.saw[6], /at is now, \+<n>m\|h\|d, or a date/);

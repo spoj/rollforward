@@ -16,7 +16,7 @@ rf upload PATH FILE [--onto ITEM] [--output]
 rf wake PATH AT REASON [--label LABEL]   AT now, +<n>m|h|d or a date; PATH an open instance, or a series with LABEL
 rf agents [WORKSPACE] [--set FILE|-]     the company's AGENTS.md, or a workspace's; setting the company's is for admins
 rf skills
-rf websites
+rf connections
 rf status [--long MIN] [--json]   what goes on and what's stuck: runs going, flagged past MIN minutes (30), and queued, with why;
                                   what waits on whom since when; open instances whose last run failed
 rf runs [PATH] [--since DATE] [--failed] [--running] [--long MIN] [--json]
@@ -35,9 +35,12 @@ Admins:
 rf people [--set FILE|-] [-n] [--force]   everyone as lines of ROLE EMAIL, each with a comment; --set sets the roles of the people
                                   listed and adds new ones, removing no one
 rf user add EMAIL [admin|publisher] | role EMAIL admin|publisher|user [--force] | disable EMAIL | enable EMAIL | signout EMAIL | remove EMAIL
-rf website set ID URL [--name NAME] [--hosts HOST,...]   a website people sign in to at URL, and the other hosts its pages need,
-                                  such as sso.example.com or *.example.com; a run's browser on it reaches only those
-rf website remove ID
+rf connection set NAME TYPE [--SETTING VALUE]...   an outside system runs reach as their runner, by a login each person makes:
+                                  graph, Microsoft 365, with no settings; databricks, --host HOST --warehouse ID, a workspace
+                                  and its SQL warehouse; website, --url URL [--hosts HOST,...] [--title TITLE] [--writeback
+                                  false], where people sign in, the other hosts its pages need, such as *.example.com, and
+                                  whether a run's browser writes its state back
+rf connection remove NAME
 rf brand [--text TEXT] [--logo FILE] [--clear]   the deployment's text and logo, a .png, .jpg, .gif, .webp or .svg, which top
                                   the sidebar and are the page's title and icon; --clear goes back to the plain look, and with
                                   no option it prints them`;
@@ -276,13 +279,13 @@ else if (cmd === 'comment' && args.length === 2) {
   console.log(await (await post(`/skills/${encodeURIComponent(args[1])}/versions`, { from: Number(args[2]) })).text());
 } else if (cmd === 'skills') {
   for (const s of await get('/skills')) console.log(`${s.id}  v${s.pushed.version} by ${s.pushed.by} ${s.pushed.at}  ${s.description}`);
-} else if (cmd === 'websites') {
-  for (const w of await get('/websites')) console.log(`${w.id}  ${w.url}  ${w.hosts.join(' ') || '-'}  ${w.name}`);
-} else if (cmd === 'website' && args[0] === 'set' && args.length === 3) {
-  await post(`/websites/${encodeURIComponent(args[1])}`, { url: args[2], name: flags.name, hosts: typeof flags.hosts === 'string' ? flags.hosts.split(',') : [] }, 'PUT');
+} else if (cmd === 'connections') {
+  for (const { name, type, login, updated_by, updated_at, ...settings } of await get('/connections')) console.log(`${name}  ${type}  ${JSON.stringify(settings)}`);
+} else if (cmd === 'connection' && args[0] === 'set' && args.length === 3) {
+  await post(`/connections/${encodeURIComponent(args[1])}`, { type: args[2], ...flags }, 'PUT');
   console.log('saved');
-} else if (cmd === 'website' && args[0] === 'remove' && args[1]) {
-  await api(`/websites/${encodeURIComponent(args[1])}`, { method: 'DELETE' });
+} else if (cmd === 'connection' && args[0] === 'remove' && args[1]) {
+  await api(`/connections/${encodeURIComponent(args[1])}`, { method: 'DELETE' });
   console.log('removed');
 } else if (cmd === 'status' && !args.length) {
   const s = await get('/api/status'), long = Number(flags.long ?? 30);

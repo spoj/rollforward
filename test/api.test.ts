@@ -274,7 +274,7 @@ test('a cross-site POST is refused, so another web page cannot talk to the agent
 test('without a session the site shows Sign in with Microsoft; in the demo that leads to a picker of the two demo accounts', async () => {
   assert.equal((await fetch(base + '/api')).status, 401);
   assert.match(await (await fetch(base + '/')).text(), /href="\/auth\/login[^"]*">[\s\S]*Sign in with Microsoft/);
-  assert.equal((await fetch(base + '/agent/graph', { method: 'POST' })).status, 401, "the agent API is only on the sandboxes' socket");
+  assert.equal((await fetch(base + '/agent/delivered', { method: 'POST' })).status, 401, "the agent API is only on the sandboxes' socket");
   assert.equal((await fetch(base + '/auth/login', { redirect: 'manual' })).headers.get('location'), '/auth/demo?next=%2F');
   const picker = await (await fetch(base + '/auth/demo')).text();
   assert.ok(picker.includes(adminEmail) && picker.includes(bob));
@@ -329,17 +329,17 @@ test("each person sees the workspaces they're in, by email or Entra group; owner
   assert.deepEqual(await reads('larkfield'), [], 'a workspace with no one in it reads only itself');
 });
 
-test('everyone sees the skills, which every run loads; admins keep the websites, which everyone sees', async () => {
+test('everyone sees the skills, which every run loads; admins keep the connections, which everyone sees with their logins', async () => {
   const b = sessionOf(await login(bob))!;
   const report = (list: { id: string }[]) => list.find(s => s.id === 'mail-report') as Record<string, unknown>;
   assert.deepEqual(Object.keys(report(await json('/skills', b))).sort(), ['description', 'id', 'name', 'pushed'], 'anyone signed in sees the skills');
-  assert.equal((await call('PUT', '/websites/portal', JSON.stringify({ url: 'https://portal.test/#/login' }), b)).status, 403);
-  assert.equal((await call('PUT', '/websites/portal', JSON.stringify({ url: 'https://portal.test/#/login', hosts: 'cdn.portal.test' }))).status, 400, 'hosts are a list');
-  const site = await (await call('PUT', '/websites/portal', JSON.stringify({ name: 'Portal', url: 'https://portal.test/#/login', hosts: ['cdn.portal.test'] }))).json();
-  assert.deepEqual([site.name, site.url, site.hosts, site.updated_by], ['Portal', 'https://portal.test/#/login', ['cdn.portal.test'], adminEmail]);
-  assert.deepEqual((await json('/websites', b)).map((w: { id: string }) => w.id), ['portal']);
-  assert.equal((await call('DELETE', '/websites/portal')).status, 200);
-  assert.deepEqual(await json('/websites', b), []);
+  assert.equal((await call('PUT', '/connections/portal', JSON.stringify({ type: 'website', url: 'https://portal.test/#/login' }), b)).status, 403);
+  assert.equal((await call('PUT', '/connections/portal', JSON.stringify({ type: 'website', url: 'https://portal.test/#/login', hosts: ['cdn.portal.test/x'] }))).status, 400);
+  const site = await (await call('PUT', '/connections/portal', JSON.stringify({ type: 'website', title: 'Portal', url: 'https://portal.test/#/login', hosts: 'cdn.portal.test' }))).json();
+  assert.deepEqual([site.title, site.url, site.hosts, site.writeback, site.updated_by], ['Portal', 'https://portal.test/#/login', ['cdn.portal.test'], true, adminEmail]);
+  assert.deepEqual((await json('/connections', b)).map((c: { name: string; login: { id: string } }) => [c.name, c.login.id]), [['portal', 'web:portal']]);
+  assert.equal((await call('DELETE', '/connections/portal')).status, 200);
+  assert.deepEqual(await json('/connections', b), []);
 });
 
 test("people see and move a series' next wake, share it as themselves, and start or dismiss requests; acts cancel a wake", async () => {

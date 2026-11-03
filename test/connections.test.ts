@@ -1,24 +1,25 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
-import { createServer, type Server } from 'node:http';
-import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createServer, request, type IncomingHttpHeaders, type Server } from 'node:http';
+import { request as httpsRequest } from 'node:https';
+import { connect as tlsConnect } from 'node:tls';
+import type { Socket } from 'node:net';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 import type { Instance } from '../src/store.ts';
 import type { AgentRun } from '../src/agent-api.ts';
 
 // A stand-in for Microsoft's sign-in and Graph: a SharePoint library with a folder of years of reports, the runner's OneDrive,
-// someone else's OneDrive, and two mailboxes. rf graph is called as a run's agent calls it, through its runner's Microsoft 365 login.
+// someone else's OneDrive, and two mailboxes; and a Databricks warehouse. Each is reached as a run reaches it, through the sandbox's
+// proxy, with the host's own address and rollforward's certificate authority, and the runner's login put in on the way.
 // Every item names its parent, up to its drive's root.
 const ALICE = 'alice@demo.test', AP = 'ap@demo.test';
-const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-conn-')), seriesDir = join(tmp, 'series', 'weekly'), instDir = join(tmp, 'instances', 'w1');
-const methods: string[] = [], log: { op: string; data: any }[] = [], writes: { method: string; path: string; auth?: string; type?: string; range?: string; body: Buffer }[] = [];
+const methods: string[] = [], log: { op: string; data: any }[] = [], writes: { method: string; path: string; auth?: string; type?: string; body: Buffer }[] = [];
+const statements: { statement: string; warehouse_id: string }[] = [];
 let graph: Server, refreshes = 0;
+const seen: string[] = [];
 
 const lib = { driveId: 'b!d1', driveType: 'documentLibrary', siteId: 'host,site1,web1' }, alices = { driveId: 'b!own', driveType: 'business', siteId: 'host,personal,alice' };
 const item = (id: string, name: string, modified: string, folder = false, parent = 'top', where = lib) =>
@@ -55,18 +56,43 @@ const run: AgentRun = { inst, n: 1, token: 'run' };
 let call: (path: string, body?: unknown) => Promise<{ status: number; data: unknown } | null>;
 let agentCall: typeof import('../src/agent-api.ts').agentCall;
 let logins: typeof import('../src/logins.ts');
+// The proxy's runs, by token, each the instance the run is for.
+const runs = new Map<string, Instance>();
+let sock = '', ca = '', proxy: Server;
+const m365 = () => logins.logins(ALICE).find(l => l.id === 'm365')!;
+
+// A request as a run's tool makes it: CONNECT through the proxy with the run's token, then TLS to the host, trusting what the run
+// trusts, and HTTP/1.1.
+async function via(method: string, url: string, o: { body?: string | Buffer; headers?: Record<string, string>; token?: string } = {}): Promise<{ status: number; text: string; headers: IncomingHttpHeaders }> {
+  const u = new URL(url), token = o.token ?? 'run';
+  const socket = await new Promise<Socket>((ok, fail) => request({ socketPath: sock, method: 'CONNECT', path: `${u.hostname}:443`, headers: { 'proxy-authorization': `Basic ${Buffer.from(`rf:${token}`).toString('base64')}` } })
+    .on('connect', (r, s) => r.statusCode === 200 ? ok(s) : fail(new Error(`CONNECT answered ${r.statusCode}`))).on('error', fail).end());
+  const tls = tlsConnect({ socket, servername: u.hostname, ca, ALPNProtocols: ['http/1.1'] });
+  return new Promise((ok, fail) => {
+    const r = httpsRequest({ host: u.hostname, path: u.pathname + u.search, method, headers: { authorization: 'Bearer rf', ...o.headers }, createConnection: () => tls }, res => {
+      const chunks: Buffer[] = [];
+      res.on('data', b => chunks.push(b)).on('end', () => ok({ status: res.statusCode!, text: Buffer.concat(chunks).toString(), headers: res.headers }));
+    });
+    r.on('error', fail);
+    r.end(o.body);
+  });
+}
+const G = 'https://graph.microsoft.com/v1.0', json = (body: unknown) => ({ body: JSON.stringify(body), headers: { 'content-type': 'application/json' } });
 
 before(async () => {
   mkdirSync(join(instDir, 'working'), { recursive: true });
   mkdirSync(seriesDir, { recursive: true });
   graph = createServer((req, res) => {
-    const u = new URL(req.url!, 'http://x'), path = decodeURIComponent(u.pathname), send = (body: unknown, status = 200) => res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body));
+    const u = new URL(req.url!, 'http://x'), path = decodeURIComponent(u.pathname).replace(/^\/v1\.0/, ''), send = (body: unknown, status = 200) => res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body));
     const base = `http://127.0.0.1:${(graph.address() as { port: number }).port}`;
     if (path === '/.well-known/openid-configuration') return send({ issuer: base, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token` });
     if (path === '/token') {
       let body = '';
       req.on('data', c => (body += c)).on('end', () => {
         const f = new URLSearchParams(body);
+        // A Databricks login renews as Azure Databricks.
+        if (f.get('scope')!.includes('2ff814a6-3304-4ab8-85cb-cd0e6f879c1d/user_impersonation'))
+          return f.get('refresh_token') === 'dbx' ? send({ access_token: 'dtok', refresh_token: 'dbx', expires_in: 3600 }) : send({ error: 'invalid_grant', error_description: 'AADSTS700082: The refresh token has expired.' }, 400);
         // A login made before the server asked for Mail.Send renews only with the permissions it was granted.
         if (f.get('refresh_token') === 'unconsented') return f.get('scope')!.includes('Mail.Send')
           ? send({ error: 'invalid_grant', suberror: 'consent_required', error_description: "AADSTS65001: The user or administrator has not consented to use the application with ID 'app'." }, 400)
@@ -79,32 +105,43 @@ before(async () => {
       });
       return;
     }
+    // Links an answer gave: an upload session's and a result's chunk, each carrying its own token.
+    if (path === '/download/a') return send({ downloaded: true, auth: req.headers.authorization ?? null });
+    if (path === '/blob/chunk0') return void res.writeHead(200, { 'content-type': 'text/csv', 'x-auth': String(req.headers.authorization) }).end('customer,open\nAcme,10\n');
+    // A Databricks warehouse: a statement's result as external links, and the catalogue.
+    if (path.startsWith('/api/')) {
+      if (req.headers.authorization !== 'Bearer dtok') return void res.writeHead(401).end();
+      const result = { statement_id: 's1', status: { state: 'SUCCEEDED' }, manifest: { schema: { columns: [{ name: 'customer' }, { name: 'open' }] } }, result: { external_links: [{ chunk_index: 0, external_link: 'https://blob.test/blob/chunk0?sig=x' }] } };
+      if (path === '/api/2.0/sql/statements' && req.method === 'POST') return void req.on('data', b => statements.push(JSON.parse(String(b)))).on('end', () => send(result));
+      if (path === '/api/2.0/sql/statements/s1') return send(result);
+      if (path === '/api/2.1/unity-catalog/catalogs') return send({ catalogs: [{ name: 'finance' }] });
+      return send({ error_code: 'NOT_FOUND' }, 404);
+    }
     methods.push(req.method!);
     if (req.method !== 'GET') {
       const chunks: Buffer[] = [];
       req.on('data', c => chunks.push(c)).on('end', () => {
-        const w = { method: req.method!, path, auth: req.headers.authorization, type: req.headers['content-type'], range: req.headers['content-range'], body: Buffer.concat(chunks) };
+        const w = { method: req.method!, path, auth: req.headers.authorization, type: req.headers['content-type'], body: Buffer.concat(chunks) };
         writes.push(w);
-        // An upload session's address carries its own token, and takes the file in pieces.
-        if (path === '/upload/s1') return /-(\d+)\/(\d+)$/.exec(w.range!)!.slice(1).map(Number).reduce((end, total) => end + 1 - total) ? send({ nextExpectedRanges: ['…'] }) : res.writeHead(201).end();
+        if (path === '/upload/s1') return res.writeHead(201).end();
         if (w.auth !== 'Bearer tok') return void res.writeHead(401).end();
-        if (path === '/drives/b!d1/items/y2026:/report.xlsx:/content') return send({ id: 'new1', name: 'report.xlsx', eTag: '"{NEW1},1"', webUrl: 'https://host/sites/reports/Shared%20Documents/LFM/2026/report.xlsx' }, 201);
-        if (path === '/drives/b!d1/items/a' && req.method === 'PATCH') return send({ id: 'a', eTag: '"{A},2"', webUrl: 'https://host/sites/reports/Shared%20Documents/LFM/2026/aging.csv' });
-        if (path === '/me/messages') return send({ id: 'd1', internetMessageId: '<d1@demo.test>' }, 201);
-        if (path === '/me/messages/d1/attachments/createUploadSession') return send({ uploadUrl: `${base}/upload/s1?authtoken=secret` }, 201);
+        if (path === '/drives/b!d1/items/y2026:/report.xlsx:/content') return send({ id: 'new1', name: 'report.xlsx', eTag: '"{NEW1},1"' }, 201);
+        if (path === '/drives/b!d1/items/a' && req.method === 'PATCH') return send({ id: 'a', eTag: '"{A},2"' });
+        if (path === '/me/messages') return send({ id: 'd1' }, 201);
+        if (path === '/me/messages/d1/attachments/createUploadSession') return send({ uploadUrl: 'https://upload.test/upload/s1?tempauth=secret' }, 201);
         if (path === '/me/sendMail' || path === '/me/messages/d1/send') return void res.writeHead(202).end();
         send({ error: { code: 'invalidRequest', message: 'not here' } }, 400);
       });
       return;
     }
+    seen.push(String(req.headers.authorization));
     if (req.headers.authorization !== 'Bearer tok') return void res.writeHead(401).end();
     let m;
-    if (path === '/me/messages/d1') return send({ toRecipients: [{ emailAddress: { address: 'controller@demo.test' } }], internetMessageId: '<d1@demo.test>' });
     if (path === '/me/drive') return send({ id: 'b!own' });
     if ((m = /^\/shares\/u!([\w-]+)\/driveItem$/.exec(path))) return send(shares[Buffer.from(m[1], 'base64url').toString()] ?? { error: { code: 'itemNotFound' } }, shares[Buffer.from(m[1], 'base64url').toString()] ? 200 : 404);
     if ((m = /^\/drives\/b!d1\/(?:items\/(\w+)|root)\/(?:children|search\(q='\w+'\))$/.exec(path))) return send({ value: folders[m[1] ?? 'root1'] ?? [] });
     if ((m = /^\/drives\/b!d1\/items\/(\w+)\/content$/.exec(path))) return void res.writeHead(200).end(content[m[1]]);
-    if ((m = /^\/drives\/b!d1\/items\/(\w+)$/.exec(path))) return send(m[1] === 'root1' ? roots['b!d1'] : [...Object.values(folders).flat()].find(i => i.id === m![1]));
+    if ((m = /^\/drives\/b!d1\/items\/(\w+)$/.exec(path))) return send(m[1] === 'root1' ? roots['b!d1'] : { ...[...Object.values(folders).flat()].find(i => i.id === m![1]), ...(m[1] === 'a' && { '@microsoft.graph.downloadUrl': 'https://upload.test/download/a?tempauth=t' }) });
     if ((m = /^\/(?:drives\/(b!\w+)|users\/alice@demo\.test\/drive)\/root$/.exec(path))) return send(roots[m[1] ?? 'b!own']);
     if ((m = /^\/drives\/(b!\w+)$/.exec(path)) && drives[m[1]]) return send({ id: m[1], ...drives[m[1]] });
     if (path === '/sites/host,site1,web1') return send({ id: 'host,site1,web1', displayName: 'Reports' });
@@ -116,15 +153,14 @@ before(async () => {
     send({ error: { code: 'itemNotFound', message: 'not here' } }, 404);
   });
   await new Promise<void>(ok => graph.listen(0, '127.0.0.1', ok));
-  Object.assign(process.env, {
-    RF_OIDC_ISSUER: `http://127.0.0.1:${(graph.address() as { port: number }).port}`, RF_OIDC_CLIENT_ID: 'app', RF_PUBLIC_URL: 'http://127.0.0.1:1',
-    RF_M365_SCOPES: 'Mail.ReadWrite Mail.ReadWrite.Shared Mail.Send Mail.Send.Shared Files.ReadWrite.All Sites.Read.All',
-  });
-  const { initSystem, saveTree } = await import('../src/system.ts');
+  const base = `http://127.0.0.1:${(graph.address() as { port: number }).port}`;
+  Object.assign(process.env, { RF_OIDC_ISSUER: base, RF_OIDC_CLIENT_ID: 'app', RF_PUBLIC_URL: 'http://127.0.0.1:1', RF_M365_SCOPES: 'Mail.ReadWrite Mail.ReadWrite.Shared Mail.Send Mail.Send.Shared Files.ReadWrite.All Sites.Read.All' });
+  const { initSystem, saveTree, writeJson } = await import('../src/system.ts');
   const { upsertUser } = await import('../src/auth.ts');
   const { openSkills, pushSkill } = await import('../src/skills.ts');
   const { filesOf, standIns } = await import('./push.ts');
-  const { endpoints } = await import('../src/graph.ts');
+  const { endpoints } = await import('../src/connections/graph.ts');
+  const c = await import('../src/connections.ts'), { serveSandboxes } = await import('../src/sandbox.ts');
   agentCall = (await import('../src/agent-api.ts')).agentCall;
   logins = await import('../src/logins.ts');
   initSystem(tmp);
@@ -132,60 +168,83 @@ before(async () => {
   upsertUser(ALICE, { role: 'user' });
   openSkills(tmp);
   for (const id of ['mail-report', 'onedrive-report', 'portal', 'tool']) pushSkill(id, filesOf(join(standIns, id)), ALICE);
-  endpoints.graph = process.env.RF_OIDC_ISSUER!;
+  // The websites kept before connections, which become connections at the start, with Microsoft 365's as graph.
+  writeJson('websites.json', { portal: { name: 'The Portal', url: 'https://portal.test/#/login', hosts: ['cdn.portal.test'], updated_by: 'admin', updated_at: '2026-10-01T00:00:00Z' } });
+  c.convert();
+  c.setConnection('adb', { type: 'databricks', host: 'adb-1.test', warehouse: 'wh1' }, 'admin');
+  endpoints.graph = base;
+  for (const host of ['graph.microsoft.com', 'adb-1.test', 'upload.test', 'blob.test']) c.upstreams[host] = base;
   logins.saveLogin(ALICE, { id: 'm365', kind: 'm365', name: 'Microsoft 365', account: ALICE, since: '2026-11-02T00:00:00Z', offers: [
     { id: `m365:mail:${ALICE}`, name: 'Mailbox' }, { id: 'm365:onedrive', name: 'OneDrive' }, { id: 'm365:site:host,site1,web1', name: 'SharePoint Reports' },
   ] }, 'r0');
+  logins.saveLogin(ALICE, { id: 'adb', kind: 'databricks', name: 'Databricks adb', account: ALICE, since: '2026-11-03T00:00:00Z', offers: [{ id: 'adb', name: 'Databricks adb, warehouse wh1' }] }, 'dbx');
+  ca = (await import('../src/ca.ts')).bundle();
+  const callRuns = new Map<string, import('../src/connections.ts').CallRun>();
+  sock = join(tmp, 'rf.sock');
+  proxy = serveSandboxes(sock, {
+    agent: async (_q, s) => void s.writeHead(404).end(),
+    run: token => {
+      if (!runs.has(token)) return undefined;
+      if (!callRuns.has(token)) callRuns.set(token, { inst: runs.get(token)!, n: 1, links: new Map() });
+      const r = callRuns.get(token)!;
+      return { egress() {}, owns: () => false, intercepts: h => c.intercepts(r, h), call: (h, q, s) => c.call(r, h, q, s) };
+    },
+  });
+  runs.set('run', inst);
   call = (path, body) => agentCall(run, path, body === undefined ? 'GET' : 'POST', async () => Buffer.from(JSON.stringify(body ?? {})));
 });
 
 after(() => {
-  graph.close();
-  graph.closeAllConnections();
+  for (const s of [graph, proxy]) {
+    s.close();
+    s.closeAllConnections();
+  }
   rmSync(tmp, { recursive: true, force: true, maxRetries: 3 });
 });
 
-test('rf graph reads a ticked SharePoint library as Graph answers: a sharing link, a folder, a file saved with --out; Graph is only read', async () => {
-  const graph = async (...args: string[]) => (await call('/agent/graph', { args }))!.data as any;
-  const folder = await graph(`/shares/u!${Buffer.from('https://share.test/reports').toString('base64url')}/driveItem`);
-  assert.deepEqual([folder.name, folder.parentReference.driveId], ['2026', 'b!d1']);
-  assert.deepEqual((await graph('/drives/b!d1/items/y2026/children')).value.map((i: any) => i.name), ['AGING_A_1.csv', 'AGING_B_2.csv', 'AGING_A_0.csv']);
-  const got = await graph('/drives/b!d1/items/a/content', '--out', 'aging.csv');
-  assert.deepEqual([got.saved, Buffer.from(got.data, 'base64').toString()], ['working/aging.csv', content.a], 'the bytes come back for rf to save');
-  await assert.rejects(graph('/drives/b!d1/items/a/content'), /save them with --out FILE/);
+const share = (link: string) => `/shares/u!${Buffer.from(link).toString('base64url')}`;
+const calls = () => log.filter(e => e.op === 'call').map(e => e.data);
+
+test("a run reads a ticked SharePoint library at Graph's own address, as Graph answers, with its runner's token put in for the run's own", async () => {
+  const folder = await via('GET', `${G}${share('https://share.test/reports')}/driveItem`);
+  assert.deepEqual([folder.status, JSON.parse(folder.text).name], [200, '2026']);
+  assert.deepEqual(JSON.parse((await via('GET', `${G}/drives/b!d1/items/y2026/children`)).text).value.map((i: any) => i.name), ['AGING_A_1.csv', 'AGING_B_2.csv', 'AGING_A_0.csv']);
+  assert.equal((await via('GET', `${G}/drives/b!d1/items/a/content`)).text, content.a);
+  assert.ok(seen.length && seen.every(a => a === 'Bearer tok'), "Graph saw the runner's token, never the run's stand-in");
+  assert.deepEqual(calls().at(-1), { run: 1, name: 'graph', method: 'GET', path: '/v1.0/drives/b!d1/items/a/content', status: 200, bytes: content.a.length });
   assert.ok(methods.length && methods.every(m => m === 'GET'));
   assert.equal(logins.secret(ALICE, 'm365'), 'r1', 'the refresh token turned over and was sealed again');
 });
 
-test("rf graph reaches only what's ticked: not the runner's OneDrive unticked, anyone else's, an unticked mailbox, a path climbing out, or the rest of Graph", async () => {
-  const graph = (path: string) => call('/agent/graph', { args: [path] });
-  await assert.rejects(graph('/me/drive/root/children'), /\/me\/drive\/root\/children is in no folder, file or SharePoint site ticked for this instance/);
-  await assert.rejects(graph(`/shares/u!${Buffer.from('https://share.test/bobs').toString('base64url')}/driveItem/content`), /is in no folder, file or SharePoint site ticked/);
-  await assert.rejects(graph(`/users/${AP}/messages`), /m365:mail:ap@demo.test is not ticked/);
-  await assert.rejects(graph(`/me/messages/../../users/${AP}/messages`), /m365:mail:ap@demo.test is not ticked/);
-  await assert.rejects(graph('/users'), /rf graph reaches mailboxes, and folders, files and SharePoint sites ticked for this instance, not \/users/);
-  await assert.rejects(graph('https://elsewhere.test/v1.0/me/messages'), /a Graph path/);
-  for (const out of ["/sites/host,site1,web1/getByPath(path='/sites/HR')/drive/root/children", "/sites/host,site1,web1/microsoft.graph.getByPath(path='/sites/HR')"])
-    await assert.rejects(graph(out), /getByPath reaches any site by its path/, out);
-  for (const out of ['/drives/b!d1/recent()', "/drives/b!d1/search(q='pay')", '/me/drive/sharedWithMe()', '/drives/b!d1/following'])
-    await assert.rejects(graph(out), /lists other drives' items too/, out);
-  for (const header of ['Prefer: redeemSharingLink', 'X-HTTP-Method-Override: DELETE'])
-    await assert.rejects(call('/agent/graph', { args: ['/me/messages', '--header', header] }), /takes the headers Accept, ConsistencyLevel, Content-Type, If-Match, Prefer and Range/, header);
-  assert.equal((await call('/agent/graph', { args: ['/me/messages', '--header', 'Prefer: outlook.body-content-type="text"'] }))!.status, 200);
+test("the proxy refuses, with a plain 403 and why, what isn't ticked: the runner's OneDrive unticked, anyone else's, an unticked mailbox, a path climbing out, the rest of Graph", async () => {
+  const refused = async (path: string, why: RegExp, headers?: Record<string, string>) => {
+    const r = await via('GET', path.startsWith('https:') ? path : `${G}${path}`, { headers });
+    assert.equal(r.status, 403, path);
+    assert.match(r.text, why, path);
+  };
+  await refused('/me/drive/root/children', /is in no folder, file or SharePoint site ticked for this instance/);
+  await refused(`${share('https://share.test/bobs')}/driveItem/content`, /is in no folder, file or SharePoint site ticked/);
+  await refused(`/users/${AP}/messages`, /m365:mail:ap@demo.test is not ticked/);
+  await refused(`/me/messages/../../users/${AP}/messages`, /m365:mail:ap@demo.test is not ticked/);
+  await refused('/users', /the graph connection reaches mailboxes, and folders, files and SharePoint sites ticked for this instance, not \/users/);
+  await refused('https://graph.microsoft.com/beta/me/messages', /Microsoft Graph v1.0/);
+  for (const out of ["/sites/host,site1,web1/getByPath(path='/sites/HR')/drive/root/children", "/sites/host,site1,web1/microsoft.graph.getByPath(path='/sites/HR')"]) await refused(out, /getByPath reaches any site by its path/);
+  for (const out of ['/drives/b!d1/recent()', "/drives/b!d1/search(q='pay')", '/me/drive/sharedWithMe()', '/drives/b!d1/following']) await refused(out, /lists other drives' items too/);
+  await refused('/me/messages', /no X-HTTP-Method header, and no Prefer that redeems a sharing link/, { prefer: 'redeemSharingLink' });
+  await refused('/me/messages', /no X-HTTP-Method header/, { 'x-http-method-override': 'DELETE' });
+  assert.deepEqual(calls().at(-1), { run: 1, name: 'graph', method: 'GET', path: '/v1.0/me/messages', status: 403, bytes: 0, refused: 'no X-HTTP-Method header, and no Prefer that redeems a sharing link' });
+  assert.equal((await via('GET', `${G}/me/messages`, { headers: { prefer: 'outlook.body-content-type="text"' } })).status, 200);
 });
 
-test("rf graph reads a ticked mailbox whole: messages with their bodies, and a message's MIME, which rf saves", async () => {
-  const { serveAgent } = await import('../src/agent-api.ts'), api = await serveAgent(inst);
-  const rf = async (...args: string[]) => (await promisify(execFile)(process.execPath, [join(app, 'src', 'rf.ts'), ...args], { env: { ...process.env, RF_URL: api.url, RF_TOKEN: api.token, RF_WORKING: join(instDir, 'working') } })).stdout;
-  assert.deepEqual(JSON.parse(await rf('graph', '/me/messages?$select=subject,body')).value.map((m: any) => m.body.content), ['The payment run is attached.', 'Lunch?']);
-  assert.equal((await rf('graph', '/me/messages/m1/$value', '--out', 'm1.eml')).trim(), 'saved working/m1.eml');
-  await api.close();
-  assert.equal(readFileSync(join(instDir, 'working', 'm1.eml'), 'utf8'), MIME);
-  assert.deepEqual(log.filter(e => e.op === 'graph').slice(-2).map(e => [e.data.path, e.data.status, e.data.file]), [['/me/messages?$select=subject,body', 200, undefined], ['/me/messages/m1/$value', 200, 'working/m1.eml']]);
+test("a run reads a ticked mailbox whole: messages with their bodies, and a message's MIME", async () => {
+  assert.deepEqual(JSON.parse((await via('GET', `${G}/me/messages?$select=subject,body`)).text).value.map((m: any) => m.body.content), ['The payment run is attached.', 'Lunch?']);
+  const mime = await via('GET', `${G}/me/messages/m1/$value`);
+  assert.deepEqual([mime.text, mime.headers['content-type']], [MIME, 'message/rfc822']);
+  assert.deepEqual(calls().slice(-2).map(e => e.path), ['/v1.0/me/messages?$select=subject,body', '/v1.0/me/messages/m1/$value']);
 });
 
 test('a person adds, in one box, a mailbox by its address, a site by its link, and a folder or file by any link to it', async () => {
-  const { offer } = await import('../src/m365.ts'), before = logins.logins(ALICE)[0].offers.length;
+  const { offer } = await import('../src/connections/graph.ts'), before = m365().offers.length;
   await offer(ALICE, 'AP@demo.test');
   await offer(ALICE, 'https://demo.sharepoint.com/sites/Finance/');
   await offer(ALICE, 'https://host/:f:/r/sites/reports/Shared%20Documents/LFM/2026?csf=1&web=1&e=abc');
@@ -196,7 +255,7 @@ test('a person adds, in one box, a mailbox by its address, a site by its link, a
   await assert.rejects(offer(ALICE, 'ceo@demo.test'), /404/);
   await assert.rejects(offer(ALICE, 'https://host/sites/reports/nothing/here'), /404/);
   await assert.rejects(offer(ALICE, 'Finance'), /a mailbox address, or a link/);
-  assert.deepEqual(logins.logins(ALICE)[0].offers.slice(before), [
+  assert.deepEqual(m365().offers.slice(before), [
     { id: `m365:mail:${AP}`, name: `Mailbox ${AP}` }, { id: 'm365:site:host,site2,web2', name: 'Site Finance' },
     { id: 'm365:item:b!d1/top', name: 'Folder LFM, Reports' }, { id: 'm365:item:b!d1/y2025', name: 'Folder 2025, Reports' },
     { id: 'm365:item:b!own/root2', name: "Alice Ames's OneDrive" }, { id: 'm365:item:b!d1/y2026', name: 'Folder 2026, Reports' },
@@ -204,38 +263,46 @@ test('a person adds, in one box, a mailbox by its address, a site by its link, a
 });
 
 test("a ticked folder reaches what's under it, at any depth, and a search within it; not its parent, a sibling, or a search of the whole drive", async () => {
-  const folder = { ...inst, log: [{ op: 'create', by: ALICE, logins: ['m365:item:b!d1/y2026'] }] };
-  const graph = async (...args: string[]) => (await agentCall({ inst: folder, n: 1, token: 'run2' }, '/agent/graph', 'POST', async () => Buffer.from(JSON.stringify({ args }))))!.data as any;
-  assert.deepEqual((await graph('/drives/b!d1/items/y2026/children')).value.map((i: any) => i.id), ['a', 'b', 'c']);
-  assert.equal(Buffer.from((await graph('/drives/b!d1/items/a/content', '--out', 'a.csv')).data, 'base64').toString(), content.a, 'a file under it');
-  assert.ok((await graph("/drives/b!d1/items/y2026/search(q='AGING')")).value);
+  runs.set('run2', { ...inst, log: [{ op: 'create', by: ALICE, logins: ['m365:item:b!d1/y2026'] }] } as unknown as Instance);
+  const get = (path: string) => via('GET', `${G}${path}`, { token: 'run2' });
+  assert.deepEqual(JSON.parse((await get('/drives/b!d1/items/y2026/children')).text).value.map((i: any) => i.id), ['a', 'b', 'c']);
+  assert.equal((await get('/drives/b!d1/items/a/content')).text, content.a, 'a file under it');
+  assert.equal((await get("/drives/b!d1/items/y2026/search(q='AGING')")).status, 200);
   for (const out of ['/drives/b!d1/items/top/children', '/drives/b!d1/items/y2025/children', "/drives/b!d1/root/search(q='AGING')", '/drives/b!d1/root:/LFM:/children'])
-    await assert.rejects(graph(out), /is in no folder, file or SharePoint site ticked/, out);
-  const share = `/shares/u!${Buffer.from('https://share.test/reports').toString('base64url')}`;
-  assert.equal((await graph(`${share}/driveItem`)).id, 'y2026', 'the ticked folder, shared');
-  for (const out of [`${share}/site/drive/root/children`, `${share}/list/items`, `${share}/Site/lists`])
-    await assert.rejects(graph(out), /reaches past what is ticked/, out);
+    assert.match((await get(out)).text, /is in no folder, file or SharePoint site ticked/, out);
+  assert.equal(JSON.parse((await get(`${share('https://share.test/reports')}/driveItem`)).text).id, 'y2026', 'the ticked folder, shared');
+  for (const out of [`${share('https://share.test/reports')}/site/drive/root/children`, `${share('https://share.test/reports')}/list/items`]) assert.match((await get(out)).text, /reaches past what is ticked/, out);
+});
+
+test("links an answer gave go through for that run alone, as they are, with no credential put in, and logged without their token", async () => {
+  const item = JSON.parse((await via('GET', `${G}/drives/b!d1/items/a`)).text);
+  const download = await via('GET', item['@microsoft.graph.downloadUrl'], { headers: { authorization: '' } });
+  assert.deepEqual(JSON.parse(download.text), { downloaded: true, auth: null });
+  assert.deepEqual(calls().at(-1), { run: 1, name: 'graph', method: 'GET', path: 'https://upload.test/download/a', status: 200, bytes: download.text.length });
+  runs.set('other', inst);
+  await assert.rejects(via('GET', item['@microsoft.graph.downloadUrl'], { token: 'other' }), /CONNECT answered 403/, "another run's, whose proxy doesn't end its host");
+  assert.equal((await via('GET', 'https://upload.test/download/b?tempauth=t')).status, 403, 'not a link an answer gave');
 });
 
 test('a login Microsoft no longer renews is marked expired, and the run is told its runner signs in again', async () => {
-  logins.saveLogin(ALICE, logins.logins(ALICE)[0], 'stale');
-  const fresh = await import(`../src/graph.ts?again=${Date.now()}`);
-  await assert.rejects(fresh.token(ALICE), /alice@demo.test's Microsoft 365 login has expired/);
-  assert.equal(logins.logins(ALICE)[0].expired, true);
+  logins.saveLogin(ALICE, m365(), 'stale');
+  const fresh = await import(`../src/entra.ts?again=${Date.now()}`);
+  await assert.rejects(fresh.token(ALICE, 'm365', []), /alice@demo.test's Microsoft 365 login has expired/);
+  assert.equal(m365().expired, true);
 });
 
 test("a login made through another app shows as expired from the server's start", async () => {
-  logins.saveLogin(ALICE, { ...logins.logins(ALICE)[0], expired: false }, 'old-app');
-  const fresh = await import(`../src/graph.ts?app=${Date.now()}`);
-  await fresh.checkLogins();
-  assert.equal(logins.logins(ALICE)[0].expired, true);
+  logins.saveLogin(ALICE, { ...m365(), expired: false }, 'old-app');
+  const fresh = await import(`../src/entra.ts?app=${Date.now()}`);
+  await fresh.checkLogins([{ id: 'm365', scope: [] }]);
+  assert.equal(m365().expired, true);
 });
 
 test("a refusal that names the server's own app, as when its secret expired, is the server's to mend: the login stays as it is", async () => {
-  logins.saveLogin(ALICE, { ...logins.logins(ALICE)[0], expired: false }, 'our-secret');
-  const fresh = await import(`../src/graph.ts?ours=${Date.now()}`);
-  await assert.rejects(fresh.token(ALICE), /Microsoft did not renew the login: AADSTS7000222/);
-  assert.equal(logins.logins(ALICE)[0].expired, false);
+  logins.saveLogin(ALICE, { ...m365(), expired: false }, 'our-secret');
+  const fresh = await import(`../src/entra.ts?ours=${Date.now()}`);
+  await assert.rejects(fresh.token(ALICE, 'm365', []), /Microsoft did not renew the login: AADSTS7000222/);
+  assert.equal(m365().expired, false);
 });
 
 test('a push takes an id of letters, digits and dashes, and a SKILL.md; a push cut short leaves nothing behind', async () => {
@@ -251,93 +318,115 @@ test('a push takes an id of letters, digits and dashes, and a SKILL.md; a push c
   assert.ok(!skills().some(s => s.id.includes('.')));
 });
 
-test('admins keep websites, each an address and the other hosts its pages need', async () => {
-  const { skills } = await import('../src/skills.ts');
-  const { removeWebsite, setWebsite, websites } = await import('../src/browsers.ts');
-  const ids = skills().map(s => s.id);
-  for (const id of ['onedrive-report', 'mail-report', 'portal', 'tool']) assert.ok(ids.includes(id), id);
-  assert.throws(() => setWebsite('Portal', { url: 'https://portal.test' }, 'admin'), /a website id is/);
-  assert.throws(() => setWebsite('portal', { url: 'portal.test' }, 'admin'), /an http\(s\) address/);
-  assert.throws(() => setWebsite('portal', { url: 'https://portal.test', hosts: ['cdn.portal.test/x'] }, 'admin'), /hosts: names/);
-  setWebsite('portal', { url: 'https://portal.test/#/login', hosts: ['cdn.portal.test', '*.sso.test'] }, 'admin');
-  const w = websites().portal;
-  assert.deepEqual([w.name, w.url, w.hosts, w.updated_by], ['portal', 'https://portal.test/#/login', ['cdn.portal.test', '*.sso.test'], 'admin']);
-  removeWebsite('portal');
-  assert.throws(() => removeWebsite('portal'), /no website portal/);
+test('admins keep connections, each a name, a type and its settings; the websites kept before became connections once, with Microsoft 365 as graph', async () => {
+  const { connections, removeConnection, setConnection } = await import('../src/connections.ts');
+  const { websites } = await import('../src/browsers.ts'), { existsSync } = await import('node:fs');
+  assert.deepEqual(connections().map(c => [c.name, c.type]), [['graph', 'graph'], ['portal', 'website'], ['adb', 'databricks']]);
+  assert.deepEqual(websites().portal, { name: 'The Portal', url: 'https://portal.test/#/login', hosts: ['cdn.portal.test'], writeback: true });
+  assert.ok(!existsSync(join(tmp, '.rf', 'websites.json')));
+  assert.throws(() => setConnection('Portal', { type: 'website', url: 'https://portal.test' }, 'admin'), /a connection's name is/);
+  assert.throws(() => setConnection('erp', { type: 'ftp' }, 'admin'), /type: one of graph, databricks, website/);
+  assert.throws(() => setConnection('erp', { type: 'website', url: 'portal.test' }, 'admin'), /an http\(s\) address/);
+  assert.throws(() => setConnection('erp', { type: 'website', url: 'https://erp.test', hosts: 'cdn.erp.test/x' }, 'admin'), /hosts: names/);
+  assert.throws(() => setConnection('wh', { type: 'databricks', host: 'adb-2.test' }, 'admin'), /warehouse: its SQL warehouse's id/);
+  setConnection('erp', { type: 'website', url: 'https://erp.test/', hosts: 'cdn.erp.test, *.sso.test', writeback: 'false' }, 'admin');
+  assert.deepEqual(websites().erp, { name: 'erp', url: 'https://erp.test/', hosts: ['cdn.erp.test', '*.sso.test'], writeback: false });
+  removeConnection('erp');
+  assert.throws(() => removeConnection('erp'), /no connection erp/);
 });
 
-test('rf graph reads nothing, not even what a tick is checked against, for a runner who can no longer lend their login', async () => {
+test('the proxy reaches nothing, not even what a tick is checked against, for a runner who can no longer lend their login', async () => {
   const { upsertUser } = await import('../src/auth.ts'), before = methods.length;
   upsertUser(ALICE, { disabled: true });
-  await assert.rejects(call('/agent/graph', { args: ['/drives/b!d1/items/y2026/children'] }), /can no longer run this instance/);
+  assert.match((await via('GET', `${G}/drives/b!d1/items/y2026/children`)).text, /can no longer run this instance/);
   upsertUser(ALICE, { disabled: false });
   assert.equal(methods.length, before, 'no request reached Graph');
 });
 
-test('rf delivered records an output delivered through a website, with where it went and its receipt', async () => {
+test('rf delivered records an output delivered, with where it went and its receipt', async () => {
   assert.equal((await call('/agent/delivered', { args: ['pack', '--to', 'E1, batch 4471', '--receipt', 'document 81234'] }))!.status, 200);
-  assert.deepEqual(log.at(-1), { op: 'delivered', data: { item: 'pack', to: 'E1, batch 4471', receipt: 'document 81234', via: 'website', run: 1 } });
+  assert.deepEqual(log.at(-1), { op: 'delivered', data: { item: 'pack', to: 'E1, batch 4471', receipt: 'document 81234', run: 1 } });
   await assert.rejects(call('/agent/delivered', { args: ['nope', '--to', 'x', '--receipt', 'y'] }), /nope is no output on the screen/);
   await assert.rejects(call('/agent/delivered', { args: ['pack', '--to', 'x'] }), /rf delivered ITEM --to WHERE --receipt WHAT/);
 });
 
-test('rf graph writes within the ticks: a file saved into a ticked folder and a message sent, each delivering an output, with its receipt', async () => {
-  const { serveAgent } = await import('../src/agent-api.ts');
-  const graph = async (args: string[], body?: string | Buffer) => (await call('/agent/graph', { args, ...(body !== undefined && { body: Buffer.from(body).toString('base64') }) }))!;
-  const xlsx = Buffer.from('PK report'), sha256 = createHash('sha256').update(xlsx).digest('hex'), api = await serveAgent(inst);
-  writeFileSync(join(instDir, 'working', 'report.xlsx'), xlsx);
-  const rf = await promisify(execFile)(process.execPath, [join(app, 'src', 'rf.ts'), 'graph', 'PUT', '/drives/b!d1/items/y2026:/report.xlsx:/content', '--body', 'report.xlsx', '--for', 'pack'], { env: { ...process.env, RF_URL: api.url, RF_TOKEN: api.token, RF_WORKING: join(instDir, 'working') } });
-  await api.close();
-  assert.equal(JSON.parse(rf.stdout).id, 'new1', 'a new file, by its path under a folder the ticked site holds');
-  const url = 'https://host/sites/reports/Shared%20Documents/LFM/2026/report.xlsx', [wrote, delivered] = log.slice(-2);
-  assert.deepEqual({ ...wrote, data: { ...wrote.data, bytes: 0 } }, { op: 'graph', data: { method: 'PUT', path: '/drives/b!d1/items/y2026:/report.xlsx:/content', status: 201, bytes: 0, body: 'working/report.xlsx', sha256, to: url, id: 'new1', etag: '"{NEW1},1"' } });
-  assert.deepEqual(delivered, { op: 'delivered', data: { item: 'pack', to: url, receipt: 'id new1, eTag "{NEW1},1"', via: 'graph', run: 0 } });
-  assert.deepEqual([writes.at(-1)!.type, writes.at(-1)!.body], ['application/octet-stream', xlsx]);
-
-  const mail = JSON.stringify({ message: { subject: 'Pack', toRecipients: [{ emailAddress: { address: 'controller@demo.test' } }], ccRecipients: [{ emailAddress: { address: 'cfo@demo.test' } }] } });
-  assert.deepEqual(await graph(['POST', '/me/sendMail', '--body', 'mail.json', '--for', 'pack'], mail), { status: 202, data: 'Graph answered 202: pack delivered to controller@demo.test, cfo@demo.test' });
-  assert.equal(writes.at(-1)!.type, 'application/json');
-  assert.deepEqual(log.at(-1), { op: 'delivered', data: { item: 'pack', to: 'controller@demo.test, cfo@demo.test', receipt: 'Graph answered 202', via: 'graph', run: 1 } });
-
-  // A large attachment: a draft, an upload session on it, the file in pieces, then the draft sent.
-  assert.equal((await graph(['POST', '/me/messages', '--body', 'draft.json'], JSON.stringify({ subject: 'Pack', toRecipients: [{ emailAddress: { address: 'controller@demo.test' } }] }))).status, 201);
-  const session = (await graph(['POST', '/me/messages/d1/attachments/createUploadSession', '--body', 'session.json'], JSON.stringify({ AttachmentItem: { attachmentType: 'file', name: 'pack.xlsx', size: 4_500_000 } }))).data as any;
-  const big = Buffer.alloc(4_500_000, 7), at = writes.length;
-  assert.equal((await graph(['PUT', session.uploadUrl, '--body', 'pack.xlsx'], big)).status, 201);
-  assert.deepEqual(writes.slice(at).map(w => [w.auth, w.range]), [[undefined, 'bytes 0-3932159/4500000'], [undefined, 'bytes 3932160-4499999/4500000']], 'in pieces, with no token of ours');
-  assert.deepEqual(Buffer.concat(writes.slice(at).map(w => w.body)), big);
-  assert.equal(log.at(-1)!.data.path, session.uploadUrl.split('?')[0], "the session's own token isn't logged");
-  assert.equal((await graph(['POST', '/me/messages/d1/send', '--for', 'pack'])).status, 202);
-  assert.deepEqual(log.at(-1)!.data, { item: 'pack', to: 'controller@demo.test', receipt: 'Message-ID <d1@demo.test>', via: 'graph', run: 1 });
+test('writes go within the ticks: a file saved into a ticked folder, a message sent from a ticked mailbox, and a large attachment through its upload session', async () => {
+  const saved = await via('PUT', `${G}/drives/b!d1/items/y2026:/report.xlsx:/content`, { body: 'PK report', headers: { 'content-type': 'application/octet-stream' } });
+  assert.deepEqual([saved.status, JSON.parse(saved.text).id, writes.at(-1)!.body.toString()], [201, 'new1', 'PK report'], 'a new file, by its path under a folder the ticked site holds');
+  assert.equal((await via('POST', `${G}/me/sendMail`, json({ message: { subject: 'Pack', toRecipients: [{ emailAddress: { address: 'controller@demo.test' } }] } }))).status, 202);
+  assert.equal((await via('POST', `${G}/me/messages`, json({ subject: 'Pack' }))).status, 201);
+  const session = JSON.parse((await via('POST', `${G}/me/messages/d1/attachments/createUploadSession`, json({ AttachmentItem: { attachmentType: 'file', name: 'pack.xlsx', size: 9 } }))).text);
+  assert.equal((await via('PUT', session.uploadUrl, { body: 'PK pack!!', headers: { 'content-range': 'bytes 0-8/9', authorization: '' } })).status, 201);
+  assert.deepEqual([writes.at(-1)!.path, writes.at(-1)!.auth], ['/upload/s1', undefined], 'the link as it is, with no token of ours');
+  assert.equal(calls().at(-1)!.path, 'https://upload.test/upload/s1', "the link's own token isn't logged");
+  assert.equal((await via('POST', `${G}/me/messages/d1/send`)).status, 202);
 });
 
-test("rf graph's writes share nothing, and make, move or copy nothing outside the ticks; another instance's upload session isn't its", async () => {
-  const folder = { ...inst, log: [{ op: 'create', by: ALICE, logins: ['m365:item:b!d1/y2026', `m365:mail:${ALICE}`] }] }, before = writes.length;
-  const graph = async (args: string[], body?: string) => (await agentCall({ inst: folder, n: 1, token: 'run3' }, '/agent/graph', 'POST', async () => Buffer.from(JSON.stringify({ args, ...(body && { body: Buffer.from(body).toString('base64') }) }))))!;
-  await assert.rejects(graph(['POST', '/drives/b!d1/items/a/createLink', '--body', 'link.json'], '{"type":"view","scope":"anonymous"}'), /would share it/);
-  await assert.rejects(graph(['POST', '/drives/b!d1/items/a/invite', '--body', 'invite.json'], '{"recipients":[]}'), /would share it/);
-  await assert.rejects(graph(['PATCH', '/drives/b!d1/items/a', '--body', 'move.json'], '{"parentReference":{"id":"y2025"}}'), /would put it in a folder no tick covers/);
-  await assert.rejects(graph(['POST', '/drives/b!d1/items/a/copy', '--body', 'copy.json'], '{"parentReference":{"driveId":"b!d1","id":"top"}}'), /would put it in a folder no tick covers/);
-  await assert.rejects(graph(['PATCH', '/drives/b!d1/items/a', '--body', 'move.json'], '{"parentReference":{"path":"/drives/b!own/root:"}}'), /name the folder by its parentReference's id/);
-  await assert.rejects(graph(['PUT', '/drives/b!d1/items/y2025:/x.csv:/content', '--body', 'x.csv'], 'x'), /is in no folder, file or SharePoint site ticked/);
-  await assert.rejects(graph(['POST', `/users/${AP}/sendMail`, '--body', 'mail.json'], '{}'), /m365:mail:ap@demo.test is not ticked/);
-  await assert.rejects(graph(['POST', '/me/sendMail', '--body', 'mail.json'], `{"message":{"from":{"emailAddress":{"address":"${AP}"}}}}`), /mail from alice@demo.test goes out as alice@demo.test/);
-  await assert.rejects(graph(['POST', '/me/mailFolders/inbox/messageRules', '--body', 'rule.json'], '{"actions":{"forwardTo":[]}}'), /would share it/);
-  await assert.rejects(graph(['POST', '/sites/host,site1,web1/lists/l1/items', '--body', 'row.json'], '{}'), /don't write SharePoint sites: RF_M365_SCOPES has no Sites.ReadWrite.All/);
-  await assert.rejects(graph(['/me/messages', '--for', 'pack']), /rf graph \[POST\|PATCH\|PUT\|DELETE\] PATH/);
-  await assert.rejects(graph(['PUT', `${process.env.RF_OIDC_ISSUER}/upload/s1?authtoken=secret`, '--body', 'x.csv'], 'x'), /not .*\/upload\/s1/, "another instance's session");
+test("writes share nothing, and make, move or copy nothing outside the ticks; mail goes out as the ticked mailbox, written as JSON", async () => {
+  runs.set('run3', { ...inst, log: [{ op: 'create', by: ALICE, logins: ['m365:item:b!d1/y2026', `m365:mail:${ALICE}`] }] } as unknown as Instance);
+  const write = (method: string, path: string, body: unknown) => via(method, `${G}${path}`, { token: 'run3', ...json(body) }), before = writes.length;
+  for (const [method, path, body, why] of [
+    ['POST', '/drives/b!d1/items/a/createLink', { type: 'view', scope: 'anonymous' }, /would share it/],
+    ['POST', '/drives/b!d1/items/a/invite', { recipients: [] }, /would share it/],
+    ['POST', '/me/mailFolders/inbox/messageRules', { actions: { forwardTo: [] } }, /would share it/],
+    ['PATCH', '/drives/b!d1/items/a', { parentReference: { id: 'y2025' } }, /would put it in a folder no tick covers/],
+    ['POST', '/drives/b!d1/items/a/copy', { parentReference: { driveId: 'b!d1', id: 'top' } }, /would put it in a folder no tick covers/],
+    ['PATCH', '/drives/b!d1/items/a', { parentReference: { path: '/drives/b!own/root:' } }, /name the folder by its parentReference's id/],
+    ['POST', `/users/${AP}/sendMail`, {}, /m365:mail:ap@demo.test is not ticked/],
+    ['POST', '/me/sendMail', { message: { from: { emailAddress: { address: AP } } } }, /mail from alice@demo.test goes out as alice@demo.test/],
+  ] as [string, string, unknown, RegExp][]) {
+    const r = await write(method, path, body);
+    assert.equal(r.status, 403, path);
+    assert.match(r.text, why, path);
+  }
+  const site = await write('POST', '/sites/host,site1,web1/lists/l1/items', {});
+  assert.deepEqual([site.status, site.text], [409, "this server's Microsoft 365 logins don't write SharePoint sites: RF_M365_SCOPES has no Sites.ReadWrite.All\n"], "the server's to change");
+  assert.match((await via('PUT', `${G}/drives/b!d1/items/y2025:/x.csv:/content`, { token: 'run3', body: 'x' })).text, /is in no folder, file or SharePoint site ticked/);
+  assert.match((await via('POST', `${G}/me/sendMail`, { token: 'run3', body: 'MIME', headers: { 'content-type': 'text/plain' } })).text, /write mail as JSON/);
   assert.equal(writes.length, before, 'none reached Graph');
-  assert.equal((await graph(['PATCH', '/drives/b!d1/items/a', '--body', 'rename.json'], '{"name":"aging.csv"}')).status, 200, 'a rename in place');
+  assert.equal((await write('PATCH', '/drives/b!d1/items/a', { name: 'aging.csv' })).status, 200, 'a rename in place');
+});
+
+test('a run queries Databricks at its own address as the runner: statements on its warehouse that only read, their results through the links they give, and the catalogue', async () => {
+  runs.set('dbx', { ...inst, log: [{ op: 'create', by: ALICE, logins: ['adb'] }] } as unknown as Instance);
+  const D = 'https://adb-1.test', go = (method: string, path: string, body?: unknown) => via(method, `${D}${path}`, { token: 'dbx', ...(body !== undefined && json(body)) });
+  const r = await go('POST', '/api/2.0/sql/statements', { statement: '-- open items\nSELECT customer, open FROM ar', disposition: 'EXTERNAL_LINKS', format: 'CSV' });
+  assert.equal(r.status, 200);
+  assert.deepEqual(statements.at(-1), { statement: '-- open items\nSELECT customer, open FROM ar', disposition: 'EXTERNAL_LINKS', format: 'CSV', warehouse_id: 'wh1' }, 'on its warehouse');
+  const chunk = await via('GET', JSON.parse(r.text).result.external_links[0].external_link, { token: 'dbx', headers: { authorization: '' } });
+  assert.deepEqual([chunk.text, chunk.headers['x-auth']], ['customer,open\nAcme,10\n', 'undefined'], 'the chunk as it is, with no token');
+  assert.equal((await go('GET', '/api/2.0/sql/statements/s1')).status, 200);
+  assert.deepEqual(JSON.parse((await go('GET', '/api/2.1/unity-catalog/catalogs')).text).catalogs, [{ name: 'finance' }]);
+  const before = statements.length;
+  for (const [method, path, body, why] of [
+    ['POST', '/api/2.0/sql/statements', { statement: 'DROP TABLE ar' }, /adb only reads: a statement starts with SELECT/],
+    ['POST', '/api/2.0/sql/statements', { statement: '/* tidy */ INSERT INTO ar VALUES (1)' }, /not INSERT/],
+    ['POST', '/api/2.0/sql/statements', { statement: 'SELECT 1', warehouse_id: 'other' }, /runs statements on its warehouse, wh1/],
+    ['POST', '/api/2.0/jobs/run-now', { job_id: 1 }, /adb takes statements/],
+    ['GET', '/api/2.0/clusters/list', undefined, /adb takes statements/],
+  ] as [string, string, unknown, RegExp][]) {
+    const x = await go(method, path, body);
+    assert.equal(x.status, 403, path);
+    assert.match(x.text, why, path);
+  }
+  assert.equal(statements.length, before, 'none reached the warehouse');
+  assert.match((await via('GET', `${D}/api/2.1/unity-catalog/catalogs`)).text, /adb is not ticked for this instance/, 'a run that ticked no Databricks login');
+  const adb = logins.logins(ALICE).find(l => l.id === 'adb')!;
+  logins.saveLogin(ALICE, { ...adb, since: new Date().toISOString() }, 'stale');
+  const gone = await go('GET', '/api/2.1/unity-catalog/catalogs');
+  assert.deepEqual([gone.status, gone.text], [409, "alice@demo.test's Databricks adb login has expired: they sign in to it again on the Logins page\n"]);
+  assert.deepEqual(log.filter(e => e.op === 'expired').at(-1)!.data, { login: 'adb', name: 'Databricks adb', runner: ALICE }, 'the instance carries on once they sign in again');
+  assert.equal(calls().at(-1)!.status, 409);
 });
 
 test('a login Microsoft asks to consent to what the server asks for anew renews with what it has, and says what its person reconnects to grant', async () => {
-  const { ungranted } = await import('../src/auth.ts'), fresh = await import(`../src/graph.ts?consent=${Date.now()}`);
-  logins.saveLogin(ALICE, { ...logins.logins(ALICE)[0], expired: false, scopes: ['Mail.ReadWrite', 'Files.Read.All', 'Sites.Read.All'] }, 'unconsented');
-  assert.equal(await fresh.token(ALICE), 'tok');
-  assert.deepEqual(ungranted(logins.logins(ALICE)[0]), ['Mail.ReadWrite.Shared', 'Mail.Send', 'Mail.Send.Shared', 'Files.ReadWrite.All']);
+  const { ungranted } = await import('../src/auth.ts'), fresh = await import(`../src/entra.ts?consent=${Date.now()}`), scope = ['https://graph.microsoft.com/Mail.Send'];
+  logins.saveLogin(ALICE, { ...m365(), expired: false, scopes: ['Mail.ReadWrite', 'Files.Read.All', 'Sites.Read.All'] }, 'unconsented');
+  assert.equal(await fresh.token(ALICE, 'm365', scope), 'tok');
+  assert.deepEqual(ungranted(m365()), ['Mail.ReadWrite.Shared', 'Mail.Send', 'Mail.Send.Shared', 'Files.ReadWrite.All']);
   const n = refreshes;
-  await fresh.token(ALICE);
-  logins.saveLogin(ALICE, { ...logins.logins(ALICE)[0], since: new Date().toISOString() });
-  await fresh.token(ALICE);
+  await fresh.token(ALICE, 'm365', scope);
+  logins.saveLogin(ALICE, { ...m365(), since: new Date().toISOString() });
+  await fresh.token(ALICE, 'm365', scope);
   assert.equal(refreshes, n + 1, 'a token is kept until its login is signed in to again');
 });

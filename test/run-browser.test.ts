@@ -63,7 +63,7 @@ test('an answer of the browser service that is no JSON, as a proxy in front of i
 
 test("closing a run's browser hands its login back refreshed, unless its person signed in to it anew since it opened", async () => {
   const alice = 'alice@demo.test', crm = (since: string) => ({ id: 'web:crm', kind: 'website' as const, name: 'CRM', since, offers: [{ id: 'web:crm', name: 'CRM' }] });
-  writeJson('websites.json', { crm: { name: 'CRM', url: 'https://crm.example.com', hosts: [], updated_by: alice, updated_at: '' } });
+  writeJson('connections.json', { crm: { type: 'website', title: 'CRM', url: 'https://crm.example.com', hosts: [], writeback: true, updated_by: alice, updated_at: '' } });
   saveLogin(alice, crm('t1'), '{"cookies":["old"]}');
   const browsers = new Browsers(createInstance('s', '2027-02', alice, ['web:crm']), 1);
   await browsers.browser('crm');

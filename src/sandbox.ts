@@ -2,9 +2,11 @@ import { createServer, request as httpRequest, type IncomingMessage, type Server
 import { request as httpsRequest } from 'node:https';
 import { BlockList, connect } from 'node:net';
 import { lookup } from 'node:dns/promises';
+import { TLSSocket } from 'node:tls';
 import { existsSync, rmSync } from 'node:fs';
 import { readJson } from './system.ts';
 import { passUpgrade } from './browsers.ts';
+import { contextFor } from './ca.ts';
 
 // Each run is a bubblewrap sandbox with no network of its own (bin/sandbox/node starts Pi in it, with sandboxArgs). Its one way
 // out is the socket served here, which socat inside offers at 127.0.0.1:PORT:
@@ -12,7 +14,8 @@ import { passUpgrade } from './browsers.ts';
 // - /model/<token>/…: the model, with the key added here, so no key is ever inside;
 // - /browser/<token>/<id>: the CDP websocket of a browser the run opened (rf browser open), passed to the browser service;
 // - CONNECT: an HTTPS proxy that lets through only the hosts allowed below or in .rf/egress.json, never to a private address,
-//   and logs each host a run asks for.
+//   and logs each host a run asks for; but a connection's host, or a link one's answer gave the run, it ends here, as that host,
+//   for the run to forward each request (connections.ts).
 
 export const PORT = 7000;
 
@@ -35,10 +38,10 @@ export const allowed = (host: string) =>
   [...ALLOWED, ...readJson<string[]>('egress.json', [])].some(p => (p.startsWith('*.') ? host.endsWith(p.slice(1)) : host === p));
 
 // What the server knows of a run, by its token.
-export type SandboxRun = { egress(host: string, allowed: boolean): void; owns(browser: string): boolean };
+export type SandboxRun = { egress(host: string, allowed: boolean): void; owns(browser: string): boolean; intercepts(host: string): boolean; call(host: string, req: IncomingMessage, res: ServerResponse): Promise<void> };
 
-export function serveSandboxes(path: string, o: { agent(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void>; run(token: string): SandboxRun | undefined }) {
-  if (existsSync(path)) rmSync(path);
+export function serveSandboxes(path: string | number, o: { agent(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void>; run(token: string): SandboxRun | undefined }) {
+  if (typeof path === 'string' && existsSync(path)) rmSync(path);
   // What comes in here is the agent's to shape, so a request the server can't parse is refused, never thrown.
   const server = createServer(async (req, res) => {
     const url = URL.parse(req.url!, 'http://sandbox');
@@ -71,6 +74,13 @@ export function serveSandboxes(path: string, o: { agent(req: IncomingMessage, re
     const run = o.run(token ?? ''), [host, port] = req.url!.split(':');
     const refuse = (why: string) => client.end(`HTTP/1.1 403 Forbidden\r\ncontent-type: text/plain\r\n\r\n${why}\n`);
     if (!run) return refuse('no run for this token');
+    if (port === '443' && run.intercepts(host)) {
+      client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      if (head.length) client.unshift(head);
+      const tls = new TLSSocket(client, { isServer: true, secureContext: contextFor(host), ALPNProtocols: ['http/1.1'] });
+      tls.on('error', () => client.destroy());
+      return void createServer((q, s) => void run.call(host, q, s)).emit('connection', tls);
+    }
     const listed = allowed(host) && port === '443';
     const addresses = listed ? await lookup(host, { all: true }).catch(() => []) : [];
     const open = addresses.length > 0 && !addresses.some(isPrivate);

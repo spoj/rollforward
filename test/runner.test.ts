@@ -31,7 +31,11 @@ const TOKEN = 'run-token', egress: [string, boolean][] = [];
 mkdirSync(socketDir, { recursive: true });
 const sockets = serveSandboxes(join(socketDir, 'rf.sock'), {
   agent: async (req, res) => void res.end(`agent API, as ${req.headers.authorization}`),
-  run: token => (token === TOKEN ? { egress: (host, allowed) => void egress.push([host, allowed]), owns: id => id === 'b1' } : undefined),
+  // The server's answer for a connection's host, which here says what it was asked.
+  run: token => (token === TOKEN ? {
+    egress: (host, allowed) => void egress.push([host, allowed]), owns: id => id === 'b1', intercepts: host => host === 'graph.microsoft.com',
+    call: async (host, req, res) => void res.end(`${host} ${req.method} ${req.url} ${req.headers.authorization ?? '-'}`),
+  } : undefined),
 });
 // Instances by id: w1 and w2 of the run's series, r1 of a series it may read, p1 of one it may not.
 for (const d of [i('w1/working'), i('w2/working'), i('r1/working'), i('p1/working'), join(root, 'series', 'weekly')]) mkdirSync(d, { recursive: true });
@@ -43,7 +47,7 @@ writeFileSync(i('w2/session/main.jsonl'), `${JSON.stringify({ type: 'session', i
 const cwd = '/work/ws/Weekly', at = `${cwd}/w2`;
 const agent = pi({
   token: TOKEN, id: 'w2', skills: ['tool'],
-  view: { cwd, instance: at, dir: i('w2'), pylib: join(root, 'series', 'weekly', '.pylib'), ro: [[i('w1'), `${cwd}/w1`], [i('w2'), at], [i('r1'), '/work/ws/Shared/r1']], catalogue: '# What you can read' },
+  view: { cwd, instance: at, dir: i('w2'), pylib: join(root, 'series', 'weekly', '.pylib'), ro: [[i('w1'), `${cwd}/w1`], [i('w2'), at], [i('r1'), '/work/ws/Shared/r1']], catalogue: '# What you can read', env: { DATABRICKS_HOST: 'https://adb-1.test' } },
 });
 const sh = async (command: string) => (await agent.bash(command)).output.trim();
 
@@ -98,6 +102,14 @@ test("the network is the server's socket: allowed hosts through its proxy, never
   assert.match(await sh('curl -s -m 10 -o /dev/null -w "%{http_code}" https://127.0.0.1.nip.io/ 2>&1'), /^000|^403/);
   assert.equal(await sh('curl -s -m 20 -o /dev/null -w "%{http_code}" https://pypi.org/simple/'), '200');
   assert.deepEqual(egress, [['example.org', false], ['127.0.0.1.nip.io', false], ['pypi.org', true]]);
+});
+
+test("a connection's host is the server's to answer, with rollforward's own certificate, which curl, Python and Node trust; its type's environment is set", async () => {
+  assert.equal(await sh('curl -s -m 10 -H "Authorization: Bearer rf" https://graph.microsoft.com/v1.0/me'), 'graph.microsoft.com GET /v1.0/me Bearer rf');
+  assert.equal(await sh(`python -c "import requests; print(requests.get('https://graph.microsoft.com/v1.0/me?\\$top=1').text)"`), 'graph.microsoft.com GET /v1.0/me?$top=1 -');
+  assert.equal(await sh(`python -c "import urllib.request as u; print(u.urlopen('https://graph.microsoft.com/v1.0/drives').read().decode())"`), 'graph.microsoft.com GET /v1.0/drives -');
+  assert.equal(await sh(`node -e "fetch('https://graph.microsoft.com/v1.0/sites', { method: 'POST' }).then(r => r.text()).then(console.log)"`), 'graph.microsoft.com POST /v1.0/sites -');
+  assert.equal(await sh('echo $DATABRICKS_HOST'), 'https://adb-1.test');
 });
 
 test("a browser the run opened is reached through the socket, with the browser service's key added there; no other", async () => {

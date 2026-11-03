@@ -68,7 +68,7 @@ describe('website logins', { skip: !process.env.RF_BROWSER_URL && 'needs the bro
     });
     [admin, bob] = [await login(ADMIN), await login('bob@demo.test')];
     assert.equal((await call('POST', '/skills/portal/versions', { files: filesOf(join(standIns, 'portal')) })).status, 200);
-    assert.equal((await call('PUT', '/websites/portal', { name: 'Portal', url: `${origin}/login` })).status, 200);
+    assert.equal((await call('PUT', '/connections/portal', { type: 'website', title: 'Portal', url: `${origin}/login` })).status, 200);
   });
 
   after(async () => {
@@ -80,7 +80,7 @@ describe('website logins', { skip: !process.env.RF_BROWSER_URL && 'needs the bro
   });
 
   test("a person signs in in the live view on the Logins page, and their login is that browser's state", async () => {
-    assert.equal((await (await call('GET', '/websites', undefined, bob)).json())[0].name, 'Portal', 'Logins lists the websites');
+    assert.equal((await (await call('GET', '/connections', undefined, bob)).json())[0].login.name, 'Portal', 'Logins lists the websites');
     const { id } = await (await call('POST', '/logins/web/portal')).json(), ws = `${base.replace('http', 'ws')}/signins/${id}/view`;
     assert.match(await (await call('GET', `/signins/${id}/view`)).text(), /Take control/);
     assert.equal((await call('GET', `/signins/${id}/view`, undefined, bob)).status, 404, "nobody else's sign-in");

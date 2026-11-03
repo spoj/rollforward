@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { PORT, sandboxArgs } from './sandbox.ts';
 import { skillsDir } from './skills.ts';
 import { openFile } from './store.ts';
+import { bundle } from './ca.ts';
 
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 // The Python the app's venv runs on, which uv keeps outside the app (the venv's pyvenv.cfg names it); runs must see it too.
@@ -29,7 +30,7 @@ export type Run = {
 // instance, from the folder dir, its series' .pylib from pylib, in ro, every instance in its reach, the .pylib of the other series
 // there and the AGENTS.md of the company and of each workspace there, each [host path, path inside], and the catalogue, cwd's own
 // AGENTS.md.
-export type View = { cwd: string; instance: string; dir: string; pylib: string; ro: [string, string][]; catalogue: string };
+export type View = { cwd: string; instance: string; dir: string; pylib: string; ro: [string, string][]; catalogue: string; env: Record<string, string> };
 
 // Pi for one run, in its sandbox (sandbox.ts): its view read-only but for the instance's working/ and session/ and the series'
 // .pylib, the live skills and nothing else of the host's. prompt.md is its system prompt, to which Pi adds the AGENTS.md
@@ -54,6 +55,8 @@ export function pi(o: { token: string; id: string; view: View; skills?: string[]
   writeFileSync(join(agentDir, 'models.json'), JSON.stringify({ providers: { [provider]: { baseUrl: `${local}/model/${o.token}`, apiKey: 'none' } } }));
   writeFileSync(join(agentDir, 'settings.json'), JSON.stringify({ steeringMode: 'all' }));
   writeFileSync(join(run, 'AGENTS.md'), o.view.catalogue);
+  // The authorities a run trusts, the system's and ours, whose certificates the proxy shows for connections' hosts.
+  writeFileSync(join(home, 'ca.pem'), bundle());
   const args = sandboxArgs({
     cwd, home, tmp, socketDir,
     ro: [...['bin', 'src', 'node_modules', '.venv', 'package.json', 'prompt.md'].map(f => join(app, f)), dirname(process.execPath), pythonHome, ...(process.env.RF_SANDBOX_RO ?? '').split(delimiter)].filter(p => p && existsSync(p)),
@@ -62,6 +65,7 @@ export function pi(o: { token: string; id: string; view: View; skills?: string[]
       PATH: [join(app, 'bin'), join(app, '.venv', 'bin'), dirname(process.execPath), '/usr/bin'].join(delimiter), LANG: 'C.UTF-8', PYTHONPATH: `${cwd}/.pylib`, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: '1', PI_TELEMETRY: '0',
       RF_URL: local, RF_TOKEN: o.token, RF_INSTANCE: o.id, RF_WORKING: `${instance}/working`, RF_SKILLS: '/skills/live', ...(process.env.RF_TODAY && { RF_TODAY: process.env.RF_TODAY }),
       HTTPS_PROXY: proxy, HTTP_PROXY: proxy, https_proxy: proxy, http_proxy: proxy, NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost', NODE_USE_ENV_PROXY: '1',
+      ...Object.fromEntries(['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS', 'CURL_CA_BUNDLE'].map(k => [k, join(home, 'ca.pem')])), ...o.view.env,
     },
   });
   writeFileSync(join(run, 'bwrap.args'), `${args.join('\0')}\0`);
