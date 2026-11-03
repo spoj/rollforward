@@ -138,8 +138,15 @@ function write(path: string, data: string | Uint8Array, mtime: string) {
   chmodSync(path, 0o444);
 }
 
-// A path the server named, under `base`, or undefined: on Windows a file's name may hold \ and lead out of it.
-const under = (base: string, rel: string) => resolve(base, rel).startsWith(resolve(base) + sep) ? resolve(base, rel) : undefined;
+// A path the server named, under `base`, or undefined where a name in it can't be one here: on Windows a name may hold \ or :, which
+// would put the file elsewhere, even in another workspace's folder, or another file's stream; or name a device, such as CON; or end
+// in a dot or a space, which Windows drops.
+const under = (base: string, rel: string) => {
+  const names = rel.split('/');
+  if (names.some(n => !n || n === '.' || n === '..' || basename(n) !== n
+    || (process.platform === 'win32' && (/[<>:"|?*\x00-\x1f]|[. ]$/.test(n) || /^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/i.test(n))))) return undefined;
+  return join(base, ...names);
+};
 
 // rsync's --exclude, simply: a pattern without / matches any one name on the path, one with / the path from the pull's top; * and ?
 // stop at /, ** doesn't. A folder it matches takes what's in it along.
@@ -152,12 +159,13 @@ async function pull(path: string, dir: string) {
   const at = path.replace(/^\/+/, ''), from = at.replace(/\/+$/, ''), dry = !!flags['dry-run'];
   const list: { path: string; size: number; mtime: string; url?: string; text?: string }[] = await get(`/api/files?path=${encodeURIComponent(from)}`);
   if (!list.length) throw new Error(`nothing you can see at ${path}`);
-  const into = !from || at.endsWith('/') ? resolve(dir) : join(resolve(dir), basename(from)), rel = (f: { path: string }) => f.path.slice(from ? from.length + 1 : 0);
+  const into = !from || at.endsWith('/') ? resolve(dir) : under(resolve(dir), from.slice(from.lastIndexOf('/') + 1)), rel = (f: { path: string }) => f.path.slice(from ? from.length + 1 : 0);
+  if (!into) throw new Error(`${from} can't be a name here: pull ${from}/ into a folder of your choosing`);
   let fetched = 0, same = 0, deleted = 0, failed = 0;
   for (const f of list.filter(f => !excluded(rel(f)))) {
     const local = rel(f) ? under(into, rel(f)) : into, st = local && existsSync(local) ? statSync(local) : undefined;
     if (!local) {
-      console.error(`skipped ${f.path}: it leads out of ${into}`);
+      console.error(`skipped ${f.path}: it can't be a file's name here`);
       continue;
     }
     if (st && st.size === f.size && Math.floor(st.mtimeMs / 1000) === Math.floor(Date.parse(f.mtime) / 1000)) {
