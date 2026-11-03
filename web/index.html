@@ -738,7 +738,8 @@ function traceHtml() {
     const said = s.kind === 'bash' && /\brf (say|ask)\b/.test(s.text);
     if (s.kind !== 'user' && s.kind !== 'say' && !said) return void g.push([s, i]);
     flush(false);
-    if (said) return void (h += `<div class="say reply">${md(entry(s.result)?.text ?? s.text)}</div>`);
+    // Each comment the command made, as its output names them by seq.
+    if (said) return void (h += [...(s.result ?? '').matchAll(/\bseq (\d+)/g)].map(m => entry(m[0])).filter(Boolean).map(e => `<div class="say reply">${md(e.text)}</div>`).join('') || `<div class="say reply">${md(s.text)}</div>`);
     if (s.kind === 'say') return void (h += `<div class="say">${md(s.text)}</div>`);
     const n = Number(s.text.match(/run (\d+)\./)?.[1]);
     if (n !== run) {
