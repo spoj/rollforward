@@ -167,3 +167,27 @@ test("the deployment's brand tops the sidebar and titles the page, its logo the 
   assert.equal(await page.locator('link[rel=icon]').count(), 0);
   assert.match(await page.title(), / rollforward$/);
 });
+
+test("the sidebar's and the side panel's inner edges drag their widths, within bounds, kept in this browser; a double-click resets them", async () => {
+  const widths = () => page.evaluate(() => [$('#side')!.offsetWidth, ($('#log') as HTMLElement).offsetWidth]);
+  const drag = async (pane: string, dx: number) => {
+    const b = (await page.locator(`.grip[data-pane=${pane}]`).boundingBox())!, x = b.x + b.width / 2;
+    await page.mouse.move(x, 300);
+    await page.mouse.down();
+    await page.mouse.move(x + dx, 300, { steps: 4 });
+    await page.mouse.up();
+  };
+  await page.waitForSelector('#log.open');
+  assert.deepEqual(await widths(), [236, 352]);
+  await drag('side', 100);
+  await drag('panel', -150);
+  assert.deepEqual(await widths(), [336, 502]);
+  await drag('side', 1000);
+  assert.deepEqual(await widths(), [384, 502], 'the sidebar takes at most 30% of the window');
+  await page.reload();
+  await page.waitForSelector('#log.open');
+  assert.deepEqual(await widths(), [384, 502]);
+  await page.dblclick('.grip[data-pane=side]');
+  await page.dblclick('.grip[data-pane=panel]');
+  assert.deepEqual(await widths(), [236, 352]);
+});

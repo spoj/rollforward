@@ -20,7 +20,13 @@
 body { margin: 0; font: 14px/1.45 var(--sans); color: var(--ink); background: var(--paper); font-variant-numeric: tabular-nums; }
 button { font: inherit; cursor: pointer; }
 a { color: inherit; }
-.app { display: grid; grid-template-columns: 236px 1fr auto; height: 100dvh; }
+.app { --side: clamp(180px, var(--side-w, 236px), 30vw); --panel: clamp(280px, var(--panel-w, 352px), 50vw); display: grid; grid-template-columns: var(--side) 1fr auto; height: 100dvh; }
+/* Pane widths: the sidebar's and the side panel's inner edges drag, between the bounds above, and a double-click resets them. */
+.grip { position: fixed; top: 0; bottom: 0; z-index: 5; width: 6px; cursor: col-resize; touch-action: none; }
+.grip:hover, .grip:active { background: var(--rule-2); }
+.grip[data-pane=side] { left: calc(var(--side) - 6px); }
+.grip[data-pane=panel] { right: calc(var(--panel) - 6px); }
+.log:not(.open) ~ .grip[data-pane=panel] { display: none; }
 
 .side { border-right: 1px solid var(--rule); padding: 14px 10px; display: flex; flex-direction: column; min-height: 0; background: var(--paper); }
 .side .scroll { flex: 1; min-height: 0; overflow: auto; }
@@ -273,7 +279,7 @@ details[open] + .shots { display: none; }
 .inline:focus { box-shadow: none; }
 input[type=checkbox] { accent-color: var(--ink); }
 
-.log { display: none; width: 352px; border-left: 1px solid var(--rule); background: var(--sheet); height: 100dvh; overflow: auto; }
+.log { display: none; width: var(--panel); border-left: 1px solid var(--rule); background: var(--sheet); height: 100dvh; overflow: auto; }
 .log.open { display: block; }
 .conv { padding: 4px 20px 20px; display: grid; gap: 8px; }
 .proc div { white-space: pre-wrap; font-size: 13px; line-height: 1.5; padding: 0 4px; }
@@ -306,6 +312,7 @@ input[type=checkbox] { accent-color: var(--ink); }
 
 @media (max-width: 800px) {
   .app { display: block; }
+  .grip { display: none; }
   .side { position: fixed; inset: 0 auto 0 0; width: 280px; z-index: 30; display: none; box-shadow: 0 0 40px rgba(0,0,0,.2); }
   .side.open { display: flex; }
   .menu { display: inline-block; }
@@ -344,6 +351,7 @@ input[type=checkbox] { accent-color: var(--ink); }
     </div>
   </main>
   <aside class="log" id="log"></aside>
+  <div class="grip" data-pane="side" title="Drag to resize; double-click to reset"></div><div class="grip" data-pane="panel" title="Drag to resize; double-click to reset"></div>
 </div>
 <div class="card" id="card" hidden></div>
 <dialog class="pv" id="pv"></dialog>
@@ -1586,6 +1594,29 @@ events.onopen = () => { pend.add('tree'); drain(); };
 events.onerror = () => events.readyState === EventSource.CLOSED && setTimeout(() => location.reload(), 5000);
 addEventListener('visibilitychange', drain);
 $('#log').addEventListener('scroll', e => { const el = e.currentTarget; el.dataset.end = el.scrollTop + el.clientHeight >= el.scrollHeight - 8 ? 'yes' : 'no'; });
+
+// Pane widths, kept in this browser: a grip's drag sets its pane's width, which the CSS bounds, and keeps what shows.
+{
+  const panes = { side: $('#side'), panel: $('#log') }, widths = JSON.parse(localStorage.widths ?? '{}');
+  const show = k => widths[k] ? $('.app').style.setProperty(`--${k}-w`, `${widths[k]}px`) : $('.app').style.removeProperty(`--${k}-w`);
+  const keep = k => { show(k); localStorage.widths = JSON.stringify(widths); };
+  for (const grip of document.querySelectorAll('.grip')) {
+    const k = grip.dataset.pane;
+    show(k);
+    grip.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      grip.setPointerCapture(e.pointerId);
+      const from = panes[k].offsetWidth, x = e.clientX;
+      grip.onpointermove = m => { widths[k] = from + (k === 'side' ? m.clientX - x : x - m.clientX); show(k); };
+    });
+    grip.addEventListener('lostpointercapture', () => {
+      grip.onpointermove = null;
+      if (widths[k]) widths[k] = panes[k].offsetWidth;
+      keep(k);
+    });
+    grip.addEventListener('dblclick', () => { delete widths[k]; keep(k); });
+  }
+}
 </script>
 </body>
 </html>
