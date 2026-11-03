@@ -236,6 +236,12 @@ test("the proxy refuses, with a plain 403 and why, what isn't ticked: the runner
   assert.equal((await via('GET', `${G}/me/messages`, { headers: { prefer: 'outlook.body-content-type="text"' } })).status, 200);
 });
 
+test('a request is for the host it was sent to: a target naming another, such as //elsewhere.test/…, is refused before anything is put in', async () => {
+  const before = seen.length, r = await via('GET', `${G.replace('/v1.0', '')}//elsewhere.test/v1.0/me/messages`);
+  assert.deepEqual([r.status, r.text], [403, 'graph.microsoft.com takes requests for graph.microsoft.com, not https://elsewhere.test\n']);
+  assert.equal(seen.length, before, 'nothing reached Graph, or went on with its token');
+});
+
 test("a run reads a ticked mailbox whole: messages with their bodies, and a message's MIME", async () => {
   assert.deepEqual(JSON.parse((await via('GET', `${G}/me/messages?$select=subject,body`)).text).value.map((m: any) => m.body.content), ['The payment run is attached.', 'Lunch?']);
   const mime = await via('GET', `${G}/me/messages/m1/$value`);

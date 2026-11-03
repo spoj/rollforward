@@ -95,6 +95,8 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
   const name = link ?? c?.name ?? host, path = link ? url.origin + url.pathname : url.pathname + url.search;
   const log = (status: number, bytes: number, why?: object) => a.inst.append('agent', 'call', { run: a.n, name, method, path, status, bytes, ...why });
   try {
+    // A target such as //elsewhere/… or https://elsewhere/… would take the request, and the credential put in, to another host.
+    if (url.host !== host) throw new HttpError(403, `${host} takes requests for ${host}, not ${url.origin}`);
     if (!link && !c) throw new HttpError(403, `${url.origin + url.pathname} is no link a connection's answer gave this run`);
     let body: Buffer | undefined, auth: string | undefined;
     if (c) {
