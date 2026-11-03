@@ -738,7 +738,7 @@ function logText(e) {
     logins: () => `${w} ticked logins: ${esc(e.logins.join(', ') || 'none')}`,
     egress: () => `Run ${e.run} ${e.allowed ? 'reached' : 'was refused'} ${esc(e.host)}`,
     delivered: () => `${w} delivered ${item(e.item)} to ${esc(e.to)}<div class="d">${e.via === 'graph' ? 'Through Microsoft 365' : 'Through a website'} · ${esc(e.receipt)}</div>`,
-    graph: () => `${w} read ${esc(e.path)} from Microsoft 365${e.status >= 300 ? `, which answered ${e.status}` : ''}${e.file ? `<div class="f"><a data-act="preview" data-file="${esc(e.file)}">${esc(e.file)}</a></div>` : ''}`,
+    graph: () => `${w} ${e.method ? `sent ${esc(e.method)} ${esc(e.path)} to` : `read ${esc(e.path)} from`} Microsoft 365${e.status >= 300 ? `, which answered ${e.status}` : ''}${e.to && e.to !== e.path ? `<div class="d">${esc(e.to)}</div>` : ''}${[e.body, e.file].filter(Boolean).map(f => `<div class="f"><a data-act="preview" data-file="${esc(f)}">${esc(f)}</a></div>`).join('')}`,
     rename: () => e.by === 'server' ? `Named by its first prompt, from ${esc(e.from)}` : `${w} renamed the instance from ${esc(e.from)}`,
     duplicate: () => `${w} made this instance as a copy of ${esc(e.from)}`,
     browser: () => e.action === 'get' ? `${w} fetched ${esc(e.from)} from the browser on ${esc(e.site)}${f}` : `${w} closed run ${e.run}'s browser${e.site ? ` on ${esc(e.site)}, in ${esc(e.login)}'s login` : ''}<div class="d">${e.error ? esc(e.error) : `${e.requests} requests${e.writes ? `, ${e.writes} writes` : ''}${e.blocked ? `, ${e.blocked} blocked` : ''}`}</div>${f}`,
@@ -1098,7 +1098,7 @@ async function openTokens(made) {
 function loginsHtml(s) {
   let h = `<div class="sub">Every login is yours alone. A run uses only its runner's logins, and only those ticked for its instance. Nothing here is a password: you sign in to each system yourself.</div>`;
   const m365 = s.logins.find(l => l.id === 'm365');
-  if (me.m365 && !m365) h += `<h3>Microsoft 365</h3><div class="sub">Read-only, and only what you add once connected: mailboxes, SharePoint sites, and folders or files in SharePoint or OneDrive.</div><div><a class="btn primary" href="/logins/m365/connect">Connect Microsoft 365</a></div>`;
+  if (me.m365 && !m365) h += `<h3>Microsoft 365</h3><div class="sub">Only what you add once connected: mailboxes, SharePoint sites, and folders or files in SharePoint or OneDrive. A run reaches nothing else, and shares nothing.</div><div><a class="btn primary" href="/logins/m365/connect">Connect Microsoft 365</a></div>`;
   if (!me.m365) h += `<h3>Microsoft 365</h3><div class="sub">Not set up on this server: it needs an app registered in Microsoft Entra ID, which an admin sets in the server's settings (README, Access).</div>`;
   for (const l of s.logins.filter(l => l.kind === 'm365')) {
     h += `<h3>${esc(l.name)}</h3><div class="sub">${esc(l.account ?? '')}${l.account ? ' · ' : ''}${l.expired ? '<span class="q">expired: sign in again</span>' : `since ${esc(when(l.since))}`}</div>`

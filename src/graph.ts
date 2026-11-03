@@ -38,15 +38,17 @@ export async function checkLogins() {
   for (const email of Object.keys(users())) if (current(email) && !current(email)!.expired) await token(email).catch(() => {});
 }
 
-// A GET, answered as Graph answers it. Only ever a GET: nothing here can change or delete a file or a message.
-export async function get(email: string, path: string, headers: Record<string, string> = {}): Promise<{ status: number; type: string; bytes: Buffer }> {
-  const r = await fetch(endpoints.graph + path, { method: 'GET', headers: { ...headers, authorization: `Bearer ${await token(email)}` }, signal: AbortSignal.timeout(120_000) });
-  return { status: r.status, type: r.headers.get('content-type') ?? '', bytes: Buffer.from(await r.arrayBuffer()) };
+export type Answer = { status: number; type: string; bytes: Buffer };
+export const answer = async (r: Response): Promise<Answer> => ({ status: r.status, type: r.headers.get('content-type') ?? '', bytes: Buffer.from(await r.arrayBuffer()) });
+
+// A request, answered as Graph answers it; m365.ts decides what may be asked.
+export async function request(email: string, method: string, path: string, headers: Record<string, string> = {}, body?: Buffer): Promise<Answer> {
+  return answer(await fetch(endpoints.graph + path, { method, headers: { ...headers, authorization: `Bearer ${await token(email)}` }, body, signal: AbortSignal.timeout(300_000) }));
 }
 
 // A GET's JSON; an error names what Microsoft said, such as no access to a mailbox.
 export async function graph(email: string, path: string): Promise<any> {
-  const r = await get(email, path), j = r.type.includes('json') ? JSON.parse(r.bytes.toString()) : {};
+  const r = await request(email, 'GET', path), j = r.type.includes('json') ? JSON.parse(r.bytes.toString()) : {};
   if (r.status >= 300) throw new HttpError(r.status === 404 || r.status === 403 ? r.status : 502, `Microsoft Graph answered ${r.status} ${j.error?.code ?? ''}: ${j.error?.message ?? ''}`);
   return j;
 }

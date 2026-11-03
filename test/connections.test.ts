@@ -2,6 +2,7 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -16,7 +17,7 @@ import type { AgentRun } from '../src/agent-api.ts';
 const ALICE = 'alice@demo.test', AP = 'ap@demo.test';
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-conn-')), seriesDir = join(tmp, 'series', 'weekly'), instDir = join(tmp, 'instances', 'w1');
-const methods: string[] = [], log: { op: string; data: any }[] = [];
+const methods: string[] = [], log: { op: string; data: any }[] = [], writes: { method: string; path: string; auth?: string; type?: string; range?: string; body: Buffer }[] = [];
 let graph: Server, refreshes = 0;
 
 const lib = { driveId: 'b!d1', driveType: 'documentLibrary', siteId: 'host,site1,web1' }, alices = { driveId: 'b!own', driveType: 'business', siteId: 'host,personal,alice' };
@@ -75,8 +76,26 @@ before(async () => {
       return;
     }
     methods.push(req.method!);
+    if (req.method !== 'GET') {
+      const chunks: Buffer[] = [];
+      req.on('data', c => chunks.push(c)).on('end', () => {
+        const w = { method: req.method!, path, auth: req.headers.authorization, type: req.headers['content-type'], range: req.headers['content-range'], body: Buffer.concat(chunks) };
+        writes.push(w);
+        // An upload session's address carries its own token, and takes the file in pieces.
+        if (path === '/upload/s1') return /-(\d+)\/(\d+)$/.exec(w.range!)!.slice(1).map(Number).reduce((end, total) => end + 1 - total) ? send({ nextExpectedRanges: ['…'] }) : res.writeHead(201).end();
+        if (w.auth !== 'Bearer tok') return void res.writeHead(401).end();
+        if (path === '/drives/b!d1/items/y2026:/report.xlsx:/content') return send({ id: 'new1', name: 'report.xlsx', eTag: '"{NEW1},1"', webUrl: 'https://host/sites/reports/Shared%20Documents/LFM/2026/report.xlsx' }, 201);
+        if (path === '/drives/b!d1/items/a' && req.method === 'PATCH') return send({ id: 'a', eTag: '"{A},2"', webUrl: 'https://host/sites/reports/Shared%20Documents/LFM/2026/aging.csv' });
+        if (path === '/me/messages') return send({ id: 'd1', internetMessageId: '<d1@demo.test>' }, 201);
+        if (path === '/me/messages/d1/attachments/createUploadSession') return send({ uploadUrl: `${base}/upload/s1?authtoken=secret` }, 201);
+        if (path === '/me/sendMail' || path === '/me/messages/d1/send') return void res.writeHead(202).end();
+        send({ error: { code: 'invalidRequest', message: 'not here' } }, 400);
+      });
+      return;
+    }
     if (req.headers.authorization !== 'Bearer tok') return void res.writeHead(401).end();
     let m;
+    if (path === '/me/messages/d1') return send({ toRecipients: [{ emailAddress: { address: 'controller@demo.test' } }], internetMessageId: '<d1@demo.test>' });
     if (path === '/me/drive') return send({ id: 'b!own' });
     if ((m = /^\/shares\/u!([\w-]+)\/driveItem$/.exec(path))) return send(shares[Buffer.from(m[1], 'base64url').toString()] ?? { error: { code: 'itemNotFound' } }, shares[Buffer.from(m[1], 'base64url').toString()] ? 200 : 404);
     if ((m = /^\/drives\/b!d1\/(?:items\/(\w+)|root)\/(?:children|search\(q='\w+'\))$/.exec(path))) return send({ value: folders[m[1] ?? 'root1'] ?? [] });
@@ -93,7 +112,10 @@ before(async () => {
     send({ error: { code: 'itemNotFound', message: 'not here' } }, 404);
   });
   await new Promise<void>(ok => graph.listen(0, '127.0.0.1', ok));
-  Object.assign(process.env, { RF_OIDC_ISSUER: `http://127.0.0.1:${(graph.address() as { port: number }).port}`, RF_OIDC_CLIENT_ID: 'app', RF_PUBLIC_URL: 'http://127.0.0.1:1' });
+  Object.assign(process.env, {
+    RF_OIDC_ISSUER: `http://127.0.0.1:${(graph.address() as { port: number }).port}`, RF_OIDC_CLIENT_ID: 'app', RF_PUBLIC_URL: 'http://127.0.0.1:1',
+    RF_M365_SCOPES: 'Mail.ReadWrite Mail.ReadWrite.Shared Mail.Send Mail.Send.Shared Files.ReadWrite.All Sites.Read.All',
+  });
   const { initSystem, saveTree } = await import('../src/system.ts');
   const { upsertUser } = await import('../src/auth.ts');
   const { openSkills, pushSkill } = await import('../src/skills.ts');
@@ -137,14 +159,14 @@ test("rf graph reaches only what's ticked: not the runner's OneDrive unticked, a
   await assert.rejects(graph(`/shares/u!${Buffer.from('https://share.test/bobs').toString('base64url')}/driveItem/content`), /is in no folder, file or SharePoint site ticked/);
   await assert.rejects(graph(`/users/${AP}/messages`), /m365:mail:ap@demo.test is not ticked/);
   await assert.rejects(graph(`/me/messages/../../users/${AP}/messages`), /m365:mail:ap@demo.test is not ticked/);
-  await assert.rejects(graph('/users'), /rf graph reads mailboxes, and folders, files and SharePoint sites ticked for this instance, not \/users/);
+  await assert.rejects(graph('/users'), /rf graph reaches mailboxes, and folders, files and SharePoint sites ticked for this instance, not \/users/);
   await assert.rejects(graph('https://elsewhere.test/v1.0/me/messages'), /a Graph path/);
   for (const out of ["/sites/host,site1,web1/getByPath(path='/sites/HR')/drive/root/children", "/sites/host,site1,web1/microsoft.graph.getByPath(path='/sites/HR')"])
     await assert.rejects(graph(out), /getByPath reaches any site by its path/, out);
   for (const out of ['/drives/b!d1/recent()', "/drives/b!d1/search(q='pay')", '/me/drive/sharedWithMe()', '/drives/b!d1/following'])
     await assert.rejects(graph(out), /lists other drives' items too/, out);
   for (const header of ['Prefer: redeemSharingLink', 'X-HTTP-Method-Override: DELETE'])
-    await assert.rejects(call('/agent/graph', { args: ['/me/messages', '--header', header] }), /takes the headers Accept, ConsistencyLevel, Prefer and Range/, header);
+    await assert.rejects(call('/agent/graph', { args: ['/me/messages', '--header', header] }), /takes the headers Accept, ConsistencyLevel, Content-Type, If-Match, Prefer and Range/, header);
   assert.equal((await call('/agent/graph', { args: ['/me/messages', '--header', 'Prefer: outlook.body-content-type="text"'] }))!.status, 200);
 });
 
@@ -254,3 +276,51 @@ test('rf delivered records an output delivered through a website, with where it 
   await assert.rejects(call('/agent/delivered', { args: ['nope', '--to', 'x', '--receipt', 'y'] }), /nope is no output on the screen/);
   await assert.rejects(call('/agent/delivered', { args: ['pack', '--to', 'x'] }), /rf delivered ITEM --to WHERE --receipt WHAT/);
 });
+
+test('rf graph writes within the ticks: a file saved into a ticked folder and a message sent, each delivering an output, with its receipt', async () => {
+  const { serveAgent } = await import('../src/agent-api.ts');
+  const graph = async (args: string[], body?: string | Buffer) => (await call('/agent/graph', { args, ...(body !== undefined && { body: Buffer.from(body).toString('base64') }) }))!;
+  const xlsx = Buffer.from('PK report'), sha256 = createHash('sha256').update(xlsx).digest('hex'), api = await serveAgent(inst);
+  writeFileSync(join(instDir, 'working', 'report.xlsx'), xlsx);
+  const rf = await promisify(execFile)(process.execPath, [join(app, 'src', 'rf.ts'), 'graph', 'PUT', '/drives/b!d1/items/y2026:/report.xlsx:/content', '--body', 'report.xlsx', '--for', 'pack'], { env: { ...process.env, RF_URL: api.url, RF_TOKEN: api.token, RF_WORKING: join(instDir, 'working') } });
+  await api.close();
+  assert.equal(JSON.parse(rf.stdout).id, 'new1', 'a new file, by its path under a folder the ticked site holds');
+  const url = 'https://host/sites/reports/Shared%20Documents/LFM/2026/report.xlsx', [wrote, delivered] = log.slice(-2);
+  assert.deepEqual({ ...wrote, data: { ...wrote.data, bytes: 0 } }, { op: 'graph', data: { method: 'PUT', path: '/drives/b!d1/items/y2026:/report.xlsx:/content', status: 201, bytes: 0, body: 'working/report.xlsx', sha256, to: url, id: 'new1', etag: '"{NEW1},1"' } });
+  assert.deepEqual(delivered, { op: 'delivered', data: { item: 'pack', to: url, receipt: 'id new1, eTag "{NEW1},1"', via: 'graph', run: 0 } });
+  assert.deepEqual([writes.at(-1)!.type, writes.at(-1)!.body], ['application/octet-stream', xlsx]);
+
+  const mail = JSON.stringify({ message: { subject: 'Pack', toRecipients: [{ emailAddress: { address: 'controller@demo.test' } }], ccRecipients: [{ emailAddress: { address: 'cfo@demo.test' } }] } });
+  assert.deepEqual(await graph(['POST', '/me/sendMail', '--body', 'mail.json', '--for', 'pack'], mail), { status: 202, data: 'Graph answered 202: pack delivered to controller@demo.test, cfo@demo.test' });
+  assert.equal(writes.at(-1)!.type, 'application/json');
+  assert.deepEqual(log.at(-1), { op: 'delivered', data: { item: 'pack', to: 'controller@demo.test, cfo@demo.test', receipt: 'Graph answered 202', via: 'graph', run: 1 } });
+
+  // A large attachment: a draft, an upload session on it, the file in pieces, then the draft sent.
+  assert.equal((await graph(['POST', '/me/messages', '--body', 'draft.json'], JSON.stringify({ subject: 'Pack', toRecipients: [{ emailAddress: { address: 'controller@demo.test' } }] }))).status, 201);
+  const session = (await graph(['POST', '/me/messages/d1/attachments/createUploadSession', '--body', 'session.json'], JSON.stringify({ AttachmentItem: { attachmentType: 'file', name: 'pack.xlsx', size: 4_500_000 } }))).data as any;
+  const big = Buffer.alloc(4_500_000, 7), at = writes.length;
+  assert.equal((await graph(['PUT', session.uploadUrl, '--body', 'pack.xlsx'], big)).status, 201);
+  assert.deepEqual(writes.slice(at).map(w => [w.auth, w.range]), [[undefined, 'bytes 0-3932159/4500000'], [undefined, 'bytes 3932160-4499999/4500000']], 'in pieces, with no token of ours');
+  assert.deepEqual(Buffer.concat(writes.slice(at).map(w => w.body)), big);
+  assert.equal(log.at(-1)!.data.path, session.uploadUrl.split('?')[0], "the session's own token isn't logged");
+  assert.equal((await graph(['POST', '/me/messages/d1/send', '--for', 'pack'])).status, 202);
+  assert.deepEqual(log.at(-1)!.data, { item: 'pack', to: 'controller@demo.test', receipt: 'Message-ID <d1@demo.test>', via: 'graph', run: 1 });
+});
+
+test("rf graph's writes share nothing, and make, move or copy nothing outside the ticks; another instance's upload session isn't its", async () => {
+  const folder = { ...inst, log: [{ op: 'create', by: ALICE, logins: ['m365:item:b!d1/y2026', `m365:mail:${ALICE}`] }] }, before = writes.length;
+  const graph = async (args: string[], body?: string) => (await agentCall({ inst: folder, n: 1, token: 'run3' }, '/agent/graph', 'POST', async () => Buffer.from(JSON.stringify({ args, ...(body && { body: Buffer.from(body).toString('base64') }) }))))!;
+  await assert.rejects(graph(['POST', '/drives/b!d1/items/a/createLink', '--body', 'link.json'], '{"type":"view","scope":"anonymous"}'), /would share it/);
+  await assert.rejects(graph(['POST', '/drives/b!d1/items/a/invite', '--body', 'invite.json'], '{"recipients":[]}'), /would share it/);
+  await assert.rejects(graph(['PATCH', '/drives/b!d1/items/a', '--body', 'move.json'], '{"parentReference":{"id":"y2025"}}'), /would put it in a folder no tick covers/);
+  await assert.rejects(graph(['POST', '/drives/b!d1/items/a/copy', '--body', 'copy.json'], '{"parentReference":{"driveId":"b!d1","id":"top"}}'), /would put it in a folder no tick covers/);
+  await assert.rejects(graph(['PATCH', '/drives/b!d1/items/a', '--body', 'move.json'], '{"parentReference":{"path":"/drives/b!own/root:"}}'), /name the folder by its parentReference's id/);
+  await assert.rejects(graph(['PUT', '/drives/b!d1/items/y2025:/x.csv:/content', '--body', 'x.csv'], 'x'), /is in no folder, file or SharePoint site ticked/);
+  await assert.rejects(graph(['POST', `/users/${AP}/sendMail`, '--body', 'mail.json'], '{}'), /m365:mail:ap@demo.test is not ticked/);
+  await assert.rejects(graph(['POST', '/sites/host,site1,web1/lists/l1/items', '--body', 'row.json'], '{}'), /don't write SharePoint sites: RF_M365_SCOPES has no Sites.ReadWrite.All/);
+  await assert.rejects(graph(['/me/messages', '--for', 'pack']), /rf graph \[POST\|PATCH\|PUT\|DELETE\] PATH/);
+  await assert.rejects(graph(['PUT', `${process.env.RF_OIDC_ISSUER}/upload/s1?authtoken=secret`, '--body', 'x.csv'], 'x'), /not .*\/upload\/s1/, "another instance's session");
+  assert.equal(writes.length, before, 'none reached Graph');
+  assert.equal((await graph(['PATCH', '/drives/b!d1/items/a', '--body', 'rename.json'], '{"name":"aging.csv"}')).status, 200, 'a rename in place');
+});
+

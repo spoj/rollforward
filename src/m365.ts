@@ -1,41 +1,102 @@
 import { HttpError, type Instance } from './store.ts';
-import { endpoints, get, graph } from './graph.ts';
+import { answer, endpoints, graph, request, type Answer } from './graph.ts';
 import { needs } from './auth.ts';
 import { lender, logins, saveLogin, use, type Offer } from './logins.ts';
 
-// rf graph: a GET to Microsoft Graph as the instance's runner, answered as Graph answers it, as far as the instance's ticks reach:
-// /me/… or /users/ADDRESS/… for a mailbox's messages and folders; /drives/ID/…, /shares/ID/…, /me/drive/… or /users/ADDRESS/drive/…
-// for files, within a ticked folder, a ticked file, a ticked site's libraries or, as before, the runner's ticked OneDrive; and
-// /sites/ID/… for a ticked site. PATH may be a whole @odata.nextLink, and is read as Graph reads it, dot segments resolved.
-export async function graphGet(inst: Instance, target: string, headers: Record<string, string>) {
+// rf graph: a request to Microsoft Graph as the instance's runner, answered as Graph answers it, as far as the instance's ticks
+// reach: /me/… or /users/ADDRESS/… for a mailbox's messages and folders, and its sendMail; /drives/ID/…, /shares/ID/…, /me/drive/…
+// or /users/ADDRESS/drive/… for files, within a ticked folder, a ticked file, a ticked site's libraries or, as before, the runner's
+// ticked OneDrive; and /sites/ID/… for a ticked site. PATH may be a whole @odata.nextLink, and is read as Graph reads it, dot
+// segments resolved. A write, a POST, PATCH, PUT or DELETE, reaches only what a read does: a file it makes, moves or copies lands
+// within the ticks, and it shares nothing. A write's answer says where it went, `to`, and Graph's `id` and `etag` for what it made.
+export async function graphCall(inst: Instance, method: string, target: string, headers: Record<string, string>, body?: Buffer): Promise<Answer & { path: string; to?: string; id?: string; etag?: string; mid?: string }> {
   // The runner may lend their login before it reads anything, even what an item's ticks are checked against.
   const base = new URL(endpoints.graph), root = base.pathname.replace(/\/$/, ''), { by: runner, logins: ticks } = lender(inst);
+  // An upload session Graph opened for this instance takes a file, at an address that carries its own token, which isn't logged.
+  if (uploads.get(target) === inst) {
+    if (method !== 'PUT' || !body) throw new HttpError(400, 'an upload session takes a file: rf graph PUT UPLOADURL --body FILE');
+    return outcome(inst, await upload(target, body), target.split('?')[0]);
+  }
   const u = new URL(target.startsWith('/') ? endpoints.graph + target : target);
-  if (u.origin !== base.origin || !u.pathname.startsWith(`${root}/`)) throw new HttpError(400, `a Graph path, such as /me/messages, or a link Graph gave: not ${target}`);
-  const path = u.pathname.slice(root.length) + u.search, segments = path.split('?')[0].split('/').slice(1).map(s => decodeURIComponent(s));
+  if (u.origin !== base.origin || !u.pathname.startsWith(`${root}/`)) throw new HttpError(400, `a Graph path, such as /me/messages, a link Graph gave or an upload session it opened: not ${target}`);
+  const path = u.pathname.slice(root.length) + u.search, bare = path.split('?')[0], segments = bare.split('/').slice(1).map(s => decodeURIComponent(s));
   // /me is the runner, and mailFolders('inbox') is mailFolders.
   const segs = segments[0] === 'me' ? ['users', runner, ...segments.slice(1)] : segments, [top, id = '', part = ''] = segs.map(s => s.replace(/\(.*$/, ''));
-  let offer: string | undefined;
-  if (top === 'users' && (part === 'messages' || part === 'mailFolders')) {
-    needs('Mail.Read', 'mail');
-    if (id.toLowerCase() !== runner) needs('Mail.Read.Shared', 'shared mailboxes');
+  const write = method !== 'GET', actions = segs.map(s => s.replace(/\(.*$/, '').replace(/^microsoft\.graph\./i, '').toLowerCase()), action = actions.at(-1);
+  let json: any;
+  if (['POST', 'PATCH'].includes(method) && body && headers['content-type']?.includes('json')) {
+    try { json = JSON.parse(body.toString()); } catch { throw new HttpError(400, 'the body is no JSON'); }
+  }
+  let offer: string | undefined, mail = false;
+  if (top === 'users' && (part === 'messages' || part === 'mailFolders' || (write && actions[2] === 'sendmail'))) {
+    const scope = !write ? 'Mail.Read' : ['sendmail', 'send', 'reply', 'replyall', 'forward'].includes(action!) ? 'Mail.Send' : 'Mail.ReadWrite';
+    const what = { 'Mail.Read': ['read mail', 'read shared mailboxes'], 'Mail.Send': ['send mail', 'send from shared mailboxes'], 'Mail.ReadWrite': ['write mail', 'write to shared mailboxes'] }[scope];
+    needs(scope, what[0]);
+    if (id.toLowerCase() !== runner) needs(`${scope}.Shared`, what[1]);
     offer = `m365:mail:${id.toLowerCase()}`;
+    mail = true;
   } else if (top === 'drives' || top === 'shares' || (top === 'users' && part === 'drive')) {
-    needs('Files.Read.All', 'OneDrive or SharePoint files');
+    needs(write ? 'Files.ReadWrite.All' : 'Files.Read.All', `${write ? 'save' : 'read'} OneDrive or SharePoint files`);
     // A share's site and list are the whole site and library its item is in, past what is ticked.
     // A drive's own search, recent, sharedWithMe and following list other drives' items too; a search under its root stays in it.
     const of = segs[top === 'users' ? 3 : 2] ?? '';
-    if (top !== 'shares' && /(^|\.)(search|recent|sharedwithme|following)(\(|$)/i.test(of)) throw new HttpError(403, `${path.split('?')[0]}: a drive's ${of.replace(/\(.*$/, '')} lists other drives' items too; search under its root, as /drives/ID/root/search(q='...')`);
-    if (top === 'shares' && !['', 'driveitem', 'root', 'items', 'listitem'].includes(part.toLowerCase())) throw new HttpError(403, `${path.split('?')[0]}: a share is read through its driveItem, root or items, not its ${part}, which reaches past what is ticked`);
-    const item = await graph(runner, `${addressed(path.split('?')[0].replace(/^\/me\//, `/users/${runner}/`))}?$select=id,parentReference`);
+    if (top !== 'shares' && /(^|\.)(search|recent|sharedwithme|following)(\(|$)/i.test(of)) throw new HttpError(403, `${bare}: a drive's ${of.replace(/\(.*$/, '')} lists other drives' items too; search under its root, as /drives/ID/root/search(q='...')`);
+    if (top === 'shares' && !['', 'driveitem', 'root', 'items', 'listitem'].includes(part.toLowerCase())) throw new HttpError(403, `${bare}: a share is read through its driveItem, root or items, not its ${part}, which reaches past what is ticked`);
+    const item = await located(runner, addressed(bare.replace(/^\/me\//, `/users/${runner}/`)));
     offer = await covering(runner, ticks, item.parentReference.driveId, item.id, item.parentReference.id);
-    if (!offer) throw new HttpError(403, `${path.split('?')[0]} is in no folder, file or SharePoint site ticked for this instance`);
+    if (!offer) throw new HttpError(403, `${bare} is in no folder, file or SharePoint site ticked for this instance`);
   } else if (top === 'sites') {
-    needs('Sites.Read.All', 'SharePoint sites');
-    if (segments.some(s => /(^|\.)getbypath\(/i.test(s))) throw new HttpError(403, `${path.split('?')[0]}: getByPath reaches any site by its path; read the ticked one by its id`);
+    needs(!write ? 'Sites.Read.All' : segs.some(s => /^drives?$/i.test(s)) ? 'Files.ReadWrite.All' : 'Sites.ReadWrite.All', `${write ? 'write' : 'read'} SharePoint sites`);
+    if (segments.some(s => /(^|\.)getbypath\(/i.test(s))) throw new HttpError(403, `${bare}: getByPath reaches any site by its path; read the ticked one by its id`);
     offer = `m365:site:${id}`;
-  } else throw new HttpError(403, `rf graph reads mailboxes, and folders, files and SharePoint sites ticked for this instance, not ${path}`);
-  return get(use(inst, offer).email, path, headers);
+  } else throw new HttpError(403, `rf graph reaches mailboxes, and folders, files and SharePoint sites ticked for this instance, not ${path}`);
+  if (write && !mail) {
+    if (actions.some(a => ['createlink', 'invite', 'grant', 'permissions'].includes(a))) throw new HttpError(403, `${bare} would share it: rf graph shares nothing, past the ticks or within them`);
+    // A move, a copy or a restore names its folder in the body, which a tick covers too.
+    const to = json?.parentReference;
+    if (to && (to.path || !to.id)) throw new HttpError(400, `${bare}: name the folder by its parentReference's id, and driveId for another drive`);
+    if (to) {
+      const drive = to.driveId ?? (await graph(runner, `${method === 'PATCH' ? bare : bare.replace(/\/[^/]+$/, '')}?$select=parentReference`)).parentReference.driveId;
+      const folder = await graph(runner, `/drives/${encodeURIComponent(drive)}/items/${encodeURIComponent(to.id)}?$select=id,parentReference`);
+      if (!await covering(runner, ticks, folder.parentReference.driveId, folder.id, folder.parentReference.id)) throw new HttpError(403, `${bare} would put it in a folder no tick covers`);
+    }
+  }
+  const email = use(inst, offer).email;
+  if (!write) return { ...await request(email, method, path, headers), path: target };
+  // A message sent says whom to, as the request or, for a draft, the message says.
+  const sent = mail && action === 'send' && !json ? await graph(email, `${bare.replace(/\/[^/]+$/, '')}?$select=toRecipients,ccRecipients,bccRecipients,internetMessageId`) : json?.message ?? json;
+  const to = mail ? ['toRecipients', 'ccRecipients', 'bccRecipients'].flatMap(k => sent?.[k] ?? []).map((r: any) => r.emailAddress?.address).join(', ') : '';
+  return { ...outcome(inst, await request(email, method, path, headers, body), target, to || undefined), mid: sent?.internetMessageId };
+}
+
+// What a write's answer says: an upload session it opened, kept for the instance; where it went, by its web address or `to`; and
+// what Graph made of it.
+function outcome(inst: Instance, r: Answer, path: string, to?: string) {
+  const j = r.status < 300 && r.type.includes('json') ? JSON.parse(r.bytes.toString()) : {};
+  if (j.uploadUrl) uploads.set(j.uploadUrl, inst);
+  return { ...r, path, to: j.webUrl ?? to ?? path, id: j.id, etag: j.eTag ?? j['@odata.etag'] };
+}
+
+// Upload sessions, each the instance's whose write opened it. A file goes in pieces of 3.75 MiB, as OneDrive's and Outlook's both
+// take them.
+const uploads = new Map<string, Instance>(), PIECE = 12 * 327_680;
+async function upload(url: string, bytes: Buffer): Promise<Answer> {
+  for (let at = 0; ; at += PIECE) {
+    const piece = bytes.subarray(at, at + PIECE);
+    const r = await fetch(url, { method: 'PUT', headers: { 'content-range': `bytes ${at}-${at + piece.length - 1}/${bytes.length}` }, body: piece, signal: AbortSignal.timeout(300_000) });
+    if (at + PIECE >= bytes.length || !r.ok) return answer(r);
+    await r.arrayBuffer();
+  }
+}
+
+// The item a path names or, for one a write is to make, the nearest folder above it.
+async function located(email: string, at: string): Promise<any> {
+  return graph(email, `${at}?$select=id,parentReference`).catch(e => {
+    const m = /^(.*?):(\/.*):$/.exec(at);
+    if ((e as HttpError).status !== 404 || !m) throw e;
+    const up = m[2].replace(/\/[^/]*$/, '');
+    return located(email, up ? `${m[1]}:${up}:` : m[1]);
+  });
 }
 
 // The item a files path is about: one in a drive, by id or by path, the item a share names, or the root of a drive, for anything
@@ -88,8 +149,8 @@ export async function offer(email: string, add: string): Promise<void> {
   let o: Offer;
   if (/^[^@\s/]+@[^@\s/]+$/.test(v)) {
     const box = v.toLowerCase();
-    if (box === email) needs('Mail.Read', 'mail');
-    else needs('Mail.Read.Shared', 'shared mailboxes');
+    if (box === email) needs('Mail.Read', 'read mail');
+    else needs('Mail.Read.Shared', 'read shared mailboxes');
     await graph(email, `/users/${encodeURIComponent(box)}/mailFolders/inbox`);
     o = { id: `m365:mail:${box}`, name: `Mailbox ${box}` };
   } else {
@@ -99,11 +160,11 @@ export async function offer(email: string, add: string): Promise<void> {
     const link = id ? u.origin + encodeURI(id) : /^\/:\w:\/r\//.test(u.pathname) ? u.origin + u.pathname.replace(/^\/:\w:\/r/, '') : v;
     const path = new URL(link).pathname.replace(/\/$/, '');
     if (/^\/(sites|teams)\/[^/]+$/.test(path)) {
-      needs('Sites.Read.All', 'SharePoint sites');
+      needs('Sites.Read.All', 'read SharePoint sites');
       const site = await graph(email, `/sites/${u.hostname}:${path}`);
       o = { id: `m365:site:${site.id}`, name: `Site ${site.displayName ?? path}` };
     } else {
-      needs('Files.Read.All', 'OneDrive or SharePoint files');
+      needs('Files.Read.All', 'read OneDrive or SharePoint files');
       const item = await graph(email, `/shares/u!${Buffer.from(link).toString('base64url')}/driveItem?$select=id,name,root,folder,parentReference`);
       const d = await graph(email, `/drives/${encodeURIComponent(item.parentReference.driveId)}?$select=driveType,owner,sharePointIds`), s = d.sharePointIds;
       const where = d.driveType === 'business' ? `${d.owner?.user?.displayName ?? 'Someone'}'s OneDrive` : (await graph(email, `/sites/${new URL(s.siteUrl).hostname},${s.siteId},${s.webId}?$select=displayName`)).displayName;

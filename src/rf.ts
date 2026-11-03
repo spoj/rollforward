@@ -26,15 +26,19 @@ const HELP: Record<string, string> = {
   +<n>m, +<n>h, +<n>d, or a date and time with its offset, such as 2026-09-14T07:00+08:00. A target has one wake pending (a new
   one replaces it), at least 15 minutes after its last. A closed instance can't be woken: to correct one, wake its series
   with --label <its label>-r2.`,
-  graph: `rf graph PATH [--out FILE] [--header 'NAME: VALUE']...
-  A GET to Microsoft Graph v1.0 as your runner, answered as Graph answers it, or with --out its bytes saved as working/FILE.
-  PATH is Graph's own, query included, or an @odata.nextLink, under what is ticked for this instance: a mailbox's
-  /me/messages, /me/mailFolders or /users/ADDRESS/messages; a site's /sites/ID; and files by /drives/ID, /shares/ID or /me/drive,
-  within a ticked folder or file, or a ticked site's libraries. A search, /drives/ID/items/ID/search(q='...'), stays within its
-  folder; one across a whole drive, /drives/ID/root/search(q='...'), needs the whole drive ticked. --header takes Accept, ConsistencyLevel, Prefer and Range.`,
+  graph: `rf graph [POST|PATCH|PUT|DELETE] PATH [--body FILE] [--for ITEM] [--out FILE] [--header 'NAME: VALUE']...
+  A request to Microsoft Graph v1.0 as your runner, a GET unless named, answered as Graph answers it, or with --out its bytes
+  saved as working/FILE. PATH is Graph's own, query included, or an @odata.nextLink, under what is ticked for this instance: a
+  mailbox's /me/messages, /me/mailFolders, /me/sendMail or /users/ADDRESS/...; a site's /sites/ID; and files by /drives/ID,
+  /shares/ID or /me/drive, within a ticked folder or file, or a ticked site's libraries. A search,
+  /drives/ID/items/ID/search(q='...'), stays within its folder; one across a whole drive, /drives/ID/root/search(q='...'), needs
+  the whole drive ticked. A write sends working/FILE as its body, as JSON if FILE ends in .json. What it makes, moves or copies
+  stays within the ticks, and it shares nothing. A createUploadSession's uploadUrl is a PATH too: PUT it a file of any size.
+  --for ITEM records the write as delivering the output ITEM, with where it went and Graph's receipt. --header takes Accept,
+  ConsistencyLevel, Content-Type, If-Match, Prefer and Range.`,
   delivered: `rf delivered ITEM --to WHERE --receipt WHAT
   Records that you delivered the output ITEM outside, through a website: where to, such as "E1, batch 4471", and what proves
-  it, such as the document number the site gave. A delivery through rf graph is recorded by itself.`,
+  it, such as the document number the site gave. A delivery through rf graph is recorded by its --for ITEM.`,
   browser: `rf browser open SITE
 rf browser get SITE PATH FILE
 rf browser expired SITE
@@ -100,7 +104,10 @@ else if (cmd === 'put' && args[0]) res = await send('PUT', `${own}/screen`, read
 else if (cmd === 'say' || cmd === 'ask') res = await comment();
 else if (cmd === 'resolve' && args[0]) res = await send('POST', `${own}/resolve`, JSON.stringify({ thread: args[0], text: args.slice(1).join(' ') }));
 else if (cmd === 'wake') res = await wake();
-else if (['graph', 'browser', 'delivered'].includes(cmd) && args.length >= 1) res = await send('POST', `agent/${cmd}`, JSON.stringify({ args }));
+else if (['graph', 'browser', 'delivered'].includes(cmd) && args.length >= 1) {
+  const i = args.indexOf('--body'), body = cmd === 'graph' && i >= 0 && args[i + 1] ? readFileSync(local(args[i + 1])).toString('base64') : undefined;
+  res = await send('POST', `agent/${cmd}`, JSON.stringify({ args, body }));
+}
 else if (cmd === 'help') res = { ok: true, text: HELP[args[0]] ?? USAGE };
 else res = usage(cmd);
 let text = res.text;

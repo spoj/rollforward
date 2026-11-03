@@ -38,16 +38,15 @@ const spa = env.RF_OIDC_SPA === '1';
 const m365Redirect = spa ? `${oidc.publicUrl}/auth/m365` : oidc.redirect;
 const redirectPath = URL.canParse(oidc.redirect) ? new URL(oidc.redirect).pathname : '/auth/callback';
 export const mode: 'microsoft' | 'demo' = oidc.issuer ? 'microsoft' : 'demo';
-// A person's Microsoft 365 login asks the same app for delegated, read-only Graph access: RF_M365_SCOPES, by default mail, shared
+// A person's Microsoft 365 login asks the same app for delegated Graph access: RF_M365_SCOPES, by default reading mail, shared
 // mailboxes, files and sites. The server keeps its refresh token, which a Single-page application's redirect can't give it.
 export const graphScopes = (env.RF_M365_SCOPES ?? 'Mail.Read Mail.Read.Shared Files.Read.All Sites.Read.All').split(/[\s,]+/).filter(Boolean);
 const M365_SCOPES = ['openid', 'email', 'offline_access', ...graphScopes.map(s => `https://graph.microsoft.com/${s}`)].join(' ');
-// Whether logins ask for a Read permission, or the ReadWrite one that holds it, as a tenant may have granted only that: the server
-// still only reads, as graph.ts sends only GETs.
+// Whether logins ask for a Read permission, or the ReadWrite one that holds it, as a tenant may have granted only that.
 const grants = (scope: string) => graphScopes.includes(scope) || graphScopes.includes(scope.replace('.Read', '.ReadWrite'));
-// Refuses a read that needs a permission this server's logins don't ask for, saying which.
+// Refuses a request that needs a permission this server's logins don't ask for, saying which.
 export function needs(scope: string, what: string) {
-  if (!grants(scope)) throw new HttpError(409, `this server's Microsoft 365 logins don't read ${what}: RF_M365_SCOPES has no ${scope}`);
+  if (!grants(scope)) throw new HttpError(409, `this server's Microsoft 365 logins don't ${what}: RF_M365_SCOPES has no ${scope}`);
 }
 export const m365Ready = () => mode === 'microsoft' && (!spa || !!oidc.clientSecret);
 const admins = new Set([...(env.RF_ADMINS ?? '').split(','), ...(mode === 'demo' ? DEMO_ACCOUNTS.filter(a => a.role === 'admin').map(a => a.email) : [])].map(s => s.trim().toLowerCase()).filter(Boolean));
