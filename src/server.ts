@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { basename, dirname, join, posix, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createInstance, duplicateInstance, guidanceFile, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instances, newId, openFile, openStore, readFile, safeName, seriesDir, type Instance } from './store.ts';
+import { agentsFile, createInstance, duplicateInstance, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instances, newId, openFile, openStore, readFile, safeName, seriesDir, type Instance } from './store.ts';
 import { socketDir } from './runner.ts';
 import { serveSandboxes } from './sandbox.ts';
 import { authenticate, checkConfig, connectM365, m365Ready, mode, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, upsertUser, users, type Me, type Role } from './auth.ts';
@@ -89,7 +89,7 @@ function summary(i: Instance, w8 = wakes()) {
 function listing(me: Me) {
   const t = tree(), w8 = wakes(), byName = (a: [string, { name: string }], b: [string, { name: string }]) => a[1].name.localeCompare(b[1].name);
   return Object.entries(t.workspaces).filter(([, w]) => canSee(me, w)).sort(byName).map(([id, w]) => ({
-    id, name: w.name, archived: !!w.archived, owners: w.owners, members: w.members, manage: canManage(me, w), guidance: text(guidanceFile(id)),
+    id, name: w.name, archived: !!w.archived, owners: w.owners, members: w.members, manage: canManage(me, w), agents: text(agentsFile(id)),
     reads: wider(t, id).map(o => t.workspaces[o].name).sort(), read_by: Object.keys(t.workspaces).filter(o => wider(t, o).includes(id)).map(o => t.workspaces[o].name).sort(),
     series: Object.entries(t.series).filter(([, s]) => s.workspace === id).sort(byName).map(([sid, s]) => {
       const { skills, wakes: allowed } = seriesSettings(seriesDir(sid));
@@ -215,7 +215,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     }
     if (change.owners !== undefined || change.members !== undefined) [w.owners, w.members] = people({ owners: w.owners, members: w.members, ...change });
     if (change.archived !== undefined) w.archived = !!change.archived;
-    if (change.guidance !== undefined) writeFileSync(guidanceFile(id), String(change.guidance));
+    if (change.agents !== undefined) writeFileSync(agentsFile(id), String(change.agents));
     saveTree(t);
     return send(res, 200, 'ok');
   }
@@ -487,10 +487,10 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     else if (url.pathname.startsWith('/files/')) await file(me, res, url, false);
     else if (url.pathname.startsWith('/preview/')) await file(me, res, url, true);
     else if (url.pathname.startsWith('/api/')) await api(me, req, res, url);
-    else if (url.pathname === '/guidance' && req.method === 'GET') send(res, 200, { text: text(guidanceFile()) });
-    else if (url.pathname === '/guidance' && req.method === 'PUT') {
-      if (me.role !== 'admin') throw new HttpError(403, "the company's guidance is the admins'");
-      writeFileSync(guidanceFile(), (await body(req)).toString());
+    else if (url.pathname === '/agents' && req.method === 'GET') send(res, 200, { text: text(agentsFile()) });
+    else if (url.pathname === '/agents' && req.method === 'PUT') {
+      if (me.role !== 'admin') throw new HttpError(403, "the company's AGENTS.md is the admins'");
+      writeFileSync(agentsFile(), (await body(req)).toString());
       send(res, 200, 'ok');
     } else if (url.pathname === '/tokens' && req.method === 'GET') send(res, 200, myTokens(me.email));
     else if ((url.pathname === '/tokens' && req.method === 'POST') || (url.pathname.startsWith('/tokens/') && req.method === 'DELETE')) {

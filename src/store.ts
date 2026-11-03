@@ -58,15 +58,15 @@ export function openStore(dataRoot: string) {
   cache.clear();
   mkdirSync(join(root, 'instances'), { recursive: true });
   mkdirSync(join(root, 'series'), { recursive: true });
-  mkdirSync(join(root, 'guidance'), { recursive: true });
+  mkdirSync(join(root, 'agents'), { recursive: true });
   for (const id of readdirSync(join(root, 'instances'))) index.set(id, JSON.parse(readFileSync(join(root, 'instances', id, 'instance.json'), 'utf8')));
 }
 
 export const newId = () => randomBytes(6).toString('hex');
 export const seriesDir = (id: string) => join(root, 'series', id);
 export const instanceDir = (id: string) => join(root, 'instances', id);
-// Guidance: guidance/company.md, the admins', and guidance/<workspace id>.md, each workspace's owners', read by every agent in scope.
-export const guidanceFile = (id = 'company') => join(root, 'guidance', `${id}.md`);
+// AGENTS.md files: agents/company.md, the admins', and agents/<workspace id>.md, each workspace's owners'.
+export const agentsFile = (id = 'company') => join(root, 'agents', `${id}.md`);
 
 export function instance(id: string): Instance {
   if (!index.has(id)) throw new HttpError(404, `no instance ${id}`);

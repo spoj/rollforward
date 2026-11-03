@@ -10,7 +10,7 @@ rf pull DIR                       a read-only mirror of what you can see, in the
 rf comment PATH TEXT [--item ID] [--ref REF] [--thread T] [--wait]   a new thread, or a reply in T, as to an agent's ask
 rf upload PATH FILE [--onto ITEM] [--output]
 rf wake PATH AT REASON [--label LABEL]   AT now, +<n>m|h|d or a date; PATH an open instance, or a series with LABEL
-rf guidance [WORKSPACE] [--set FILE|-]   the company's, or a workspace's; setting the company's is for admins
+rf agents [WORKSPACE] [--set FILE|-]     the company's AGENTS.md, or a workspace's; setting the company's is for admins
 rf skills
 rf websites
 
@@ -70,9 +70,9 @@ const under = (base: string, rel: string) => resolve(base, rel).startsWith(resol
 async function pull(dir: string) {
   const manifest = join(dir, '.rf-pull.json'), had = existsSync(manifest) ? JSON.parse(readFileSync(manifest, 'utf8')) : {};
   const now: Record<string, { path: string; files: Record<string, string> }> = {}, tree = await get('/api');
-  write(join(dir, 'GUIDANCE.md'), (await get('/guidance')).text);
+  write(join(dir, 'AGENTS.md'), (await get('/agents')).text);
   for (const w of tree) {
-    write(join(dir, w.name, 'GUIDANCE.md'), w.guidance);
+    write(join(dir, w.name, 'AGENTS.md'), w.agents);
     for (const s of w.series) for (const i of s.instances) now[i.id] = { path: join(w.name, s.name, i.label), files: {} };
   }
   for (const [id, old] of Object.entries<{ path: string }>(had)) if (now[id]?.path !== old.path) rmSync(join(dir, old.path), { recursive: true, force: true });
@@ -142,13 +142,13 @@ else if (cmd === 'comment' && args.length === 2) {
   const at = args[1] === 'now' ? Date.now() : args[1].startsWith('+') ? Date.now() + Number(args[1].slice(1, -1)) * { m: 60e3, h: 3600e3, d: 86400e3 }[args[1].at(-1)!]! : Date.parse(args[1]);
   const w = await (await post(`/api/wakes/${inst?.id ?? series.id}`, { at: new Date(at).toISOString(), reason: args.slice(2).join(' '), label: flags.label }, 'PUT')).json();
   console.log(`wakes at ${w.at}`);
-} else if (cmd === 'guidance' && args.length <= 1) {
+} else if (cmd === 'agents' && args.length <= 1) {
   const ws = args[0] === undefined ? undefined : (await get('/api')).find(w => w.name === args[0]);
   if (args[0] !== undefined && !ws) throw new Error(`no workspace ${args[0]}`);
-  if (typeof flags.set !== 'string') console.log(ws ? ws.guidance : (await get('/guidance')).text);
+  if (typeof flags.set !== 'string') console.log(ws ? ws.agents : (await get('/agents')).text);
   else {
     const text = readFileSync(flags.set === '-' ? 0 : flags.set, 'utf8');
-    await (ws ? post(`/api/workspaces/${ws.id}`, { guidance: text }, 'PUT') : api('/guidance', { method: 'PUT', body: text }));
+    await (ws ? post(`/api/workspaces/${ws.id}`, { agents: text }, 'PUT') : api('/agents', { method: 'PUT', body: text }));
     console.log('saved');
   }
 } else if (cmd === 'skill' && args[0] === 'push' && args[1]) {

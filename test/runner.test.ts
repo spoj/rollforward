@@ -72,8 +72,8 @@ test('the sandbox shows its view of the data by name, and nothing else of the da
   assert.equal(await sh('pwd'), cwd);
   assert.equal(await sh('cat ../Shared/r1/working/rates.csv'), 'usd,1');
   assert.equal(await sh('ls /work/ws'), 'Shared\nWeekly');
-  assert.equal(await sh('cat /work/CATALOGUE.md'), '# What you can read');
-  for (const p of [root, '/root', '/var', join(import.meta.dirname, '..', 'demo')]) assert.match(await sh(`ls ${p} 2>&1`), /No such file/, p);
+  assert.equal(await sh('cat AGENTS.md'), '# What you can read', "the catalogue is the series folder's AGENTS.md");
+  for (const p of [root, '/root', '/var', import.meta.dirname]) assert.match(await sh(`ls ${p} 2>&1`), /No such file/, p);
   assert.equal(JSON.parse(readFileSync(i('w2/session/main.jsonl'), 'utf8').split('\n')[0]).cwd, cwd, 'its session moved to the names of today, so Pi resumes it');
 });
 

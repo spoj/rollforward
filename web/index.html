@@ -507,7 +507,7 @@ function renderSide() {
   const archived = tree.filter(w => w.archived).length + (cur?.w.series.filter(s => s.archived).length ?? 0);
   if (archived) h += `<button class="quiet" data-act="toggle-archived">${showArchived ? 'Hide' : 'Show'} archived (${archived})</button>`;
   h += `<div class="legend"><div><i class="p">Blue</i> uploaded by a person</div><div><i>Black</i> made by the agent</div><div><span class="tri"></span>comments</div><div><span class="tri q"></span>waiting on a reply</div><div><span class="dash"></span>expected, not there yet</div></div>`;
-  h += `<div class="acct"><button class="me" data-act="menu-me" title="Logins, tokens, guidance, skills"><span>${esc(me.name)}${me.role === 'user' ? '' : ' · ' + me.role}</span><span class="mail">${esc(me.email)}</span></button></div>`;
+  h += `<div class="acct"><button class="me" data-act="menu-me" title="Logins, tokens, AGENTS.md, skills"><span>${esc(me.name)}${me.role === 'user' ? '' : ' · ' + me.role}</span><span class="mail">${esc(me.email)}</span></button></div>`;
   put($('#side'), h);
 }
 
@@ -915,14 +915,14 @@ function renderPv() {
   else if (pv.settings?.kind === 'people') h += `<div class="pvb vl"><div class="sub">Everyone who can sign in. Admins manage people with rf (Tokens): rf users, rf user add|role|disable|enable|signout|remove.</div><table class="ut"><tr><th>Person</th><th>Role</th><th>Workspaces</th><th>Last in</th></tr>${pv.settings.users.map(u => `<tr><td>${esc(u.name ?? '')}<div class="sub">${esc(u.email)}${u.disabled ? ' · disabled' : ''}</div></td><td>${esc(u.role)}</td><td class="sub">${esc(u.workspaces.join(', ')) || 'none'}</td><td class="sub">${esc(u.last_login ? when(u.last_login) : 'never')}</td></tr>`).join('')}</table></div>`;
   else if (pv.settings?.kind === 'logins') h += `<div class="pvb vl">${loginsHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'waiting') h += `<div class="pvb vl">${waiting().join('') || '<div class="sub">Nothing waits on you.</div>'}</div>`;
-  else if (pv.settings?.kind === 'guidance') h += `<div class="pvb vl">${guidanceHtml(pv.settings, "Every agent reads it at the start of each run, in every workspace: the company's conventions, and changes that cut across many series. Admins set it with rf.", false)}</div>`;
+  else if (pv.settings?.kind === 'agents') h += `<div class="pvb vl">${agentsHtml(pv.settings, "Every agent reads it at the start of each run, in every workspace: the company's conventions, and changes that cut across many series. Admins set it with rf.", false)}</div>`;
   else if (pv.settings?.kind === 'start') h += `<div class="pvb vl">${startHtml(pv.settings)}</div>`;
   else if (pv.settings) {
     const s = pv.settings;
     h += '<div class="pvb vl">';
     if (s.kind === 'workspace') h += (s.manage ? `<h3>Name</h3><input type="text" id="wname" value="${esc(s.name)}">` : '') + peopleHtml(s)
       + `<h3>Reading</h3><div class="sub">Agents here read every series of this workspace${s.reads.length ? `, and of ${esc(s.reads.join(', '))}, which ${s.reads.length > 1 ? 'have' : 'has'} everyone this one has` : ''}. They write only here.${s.read_by.length ? ` Agents in ${esc(s.read_by.join(', '))}, whose people are all here, read this one.` : ''}</div>`
-      + guidanceHtml(s, 'Every agent in this workspace reads it at the start of each run: its conventions, and changes that cut across its series, such as a renamed entity.', s.manage);
+      + agentsHtml(s, 'Every agent in this workspace reads it at the start of each run: its conventions, and changes that cut across its series, such as a renamed entity.', s.manage);
     if (s.kind === 'series') h += (s.adhoc ? '' : `<h3>Name</h3><input type="text" id="sname" value="${esc(s.name)}">`)
       + `<h3>Skill use</h3>` + (s.skillList.length ? `<div class="sub">What the agent may fetch or do for this series.</div>`
         + s.skillList.map(k => `<label class="skill-row"><input type="checkbox" class="skill" value="${esc(k.id)}" ${s.skills.includes(k.id) ? 'checked' : ''}> ${esc(k.name)}</label>`
@@ -949,10 +949,10 @@ function wakesHtml(s) {
       : '<div class="sub">No wake pending: the agent sets the next one.</div>');
 }
 
-// Guidance, the company's or a workspace's: a text every agent in scope reads, which only admins, or the workspace's owners, change.
-const guidanceHtml = (s, sub, edit) => `<h3>Guidance</h3><div class="sub">${sub}</div>`
-  + (edit ? `<textarea id="guidance" rows="8" placeholder="Such as: Fiscal months end on the last Saturday.">${esc(s.guidance)}</textarea><div><button class="btn" data-act="save-guidance">Save guidance</button></div>`
-    : `<div class="sub">${s.guidance ? esc(s.guidance) : 'None yet.'}</div>`);
+// AGENTS.md, the company's or a workspace's: a text every agent in scope reads, which only admins, or the workspace's owners, change.
+const agentsHtml = (s, sub, edit) => `<h3>AGENTS.md</h3><div class="sub">${sub}</div>`
+  + (edit ? `<textarea id="agents" rows="8" placeholder="Such as: Fiscal months end on the last Saturday.">${esc(s.agents)}</textarea><div><button class="btn" data-act="save-agents">Save AGENTS.md</button></div>`
+    : `<div class="sub">${s.agents ? esc(s.agents) : 'None yet.'}</div>`);
 
 // A workspace's people, each an email or an Entra group's id: owners manage who is in it, and owners and members see and work in all
 // of it.
@@ -994,7 +994,7 @@ const skillsHtml = s => `<div class="sub">What each skill fetches or does, for e
 
 // Personal tokens: rf, on your own machine or for your desktop agent, acts as you with one.
 function tokensHtml(s) {
-  return `<div class="sub">rf does what this page does, from a shell or your desktop agent, as you: list and pull what you can see, comment and reply, upload and wake${me.role === 'user' ? '' : `, and ${me.role === 'admin' ? "manage people, skills and the company's guidance" : 'push skills'}`}. Install it with <code>npm i -g @rfany/rf</code> (Node 22 or later), make a token, then: <code>rf login ${esc(location.origin)} TOKEN</code>.</div>`
+  return `<div class="sub">rf does what this page does, from a shell or your desktop agent, as you: list and pull what you can see, comment and reply, upload and wake${me.role === 'user' ? '' : `, and ${me.role === 'admin' ? "manage people, skills and the company's AGENTS.md" : 'push skills'}`}. Install it with <code>npm i -g @rfany/rf</code> (Node 22 or later), make a token, then: <code>rf login ${esc(location.origin)} TOKEN</code>.</div>`
     + (s.made ? `<h3>Your new token</h3><div class="sub">Copy it now: it isn't shown again.</div><input type="text" readonly value="${esc(s.made)}" onclick="this.select()">` : '')
     + (s.tokens.length ? `<h3>Your tokens</h3>` + s.tokens.map(t => `<div class="wt">${esc(t.name)} <span class="sub">made ${esc(when(t.created))}, ${t.expires < new Date().toISOString() ? 'expired' : 'until ' + esc(when(t.expires))}</span><button class="quiet" data-act="revoke-token" data-id="${esc(t.id)}">Revoke</button></div>`).join('') : '')
     + `<h3>New token</h3><div class="row2"><input type="text" id="tname" placeholder="Name, such as laptop" style="flex:1"><select id="tdays"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option></select><button class="btn primary" data-act="new-token">Make</button></div>`;
@@ -1221,7 +1221,7 @@ async function onAct(act, el, was) {
       open && ['-'], open && ['Abandon', 'abandon', 'danger', data.run && 'Available when the run ends'],
     ]);
   }
-  if (act === 'menu-me') openMenu(el, [['Logins', 'logins'], ['Tokens', 'tokens'], ['Guidance', 'guidance'], ['Skills', 'skills'], me.role === 'admin' && ['People', 'people'], ['-'], ['Sign out', 'signout']]);
+  if (act === 'menu-me') openMenu(el, [['Logins', 'logins'], ['Tokens', 'tokens'], ['AGENTS.md', 'agents'], ['Skills', 'skills'], me.role === 'admin' && ['People', 'people'], ['-'], ['Sign out', 'signout']]);
   if (act === 'log' || act === 'conv' || act === 'proc') {
     const open = !ui[act];
     $('#log').dataset.end = 'yes';
@@ -1367,14 +1367,14 @@ async function onAct(act, el, was) {
     pv = { title: 'Waiting on you', settings: { kind: 'waiting' } };
     renderPv();
   }
-  if (act === 'guidance') {
-    pv = { title: "The company's guidance", settings: { kind: 'guidance', guidance: (await api('/guidance')).text } };
+  if (act === 'agents') {
+    pv = { title: "The company's AGENTS.md", settings: { kind: 'agents', agents: (await api('/agents')).text } };
     renderPv();
   }
-  if (act === 'save-guidance') {
-    const text = $('#guidance').value;
-    await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ guidance: text }) });
-    pv.settings.guidance = text;
+  if (act === 'save-agents') {
+    const text = $('#agents').value;
+    await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ agents: text }) });
+    pv.settings.agents = text;
     saved();
     await refresh();
   }
