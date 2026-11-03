@@ -247,6 +247,8 @@ test("a run's links, FIFOs and folders in working/ and session/ are never follow
   symlinkSync('../..', join(d, 'working', 'up'));
   symlinkSync('../..', join(d, 'working', 'up2'));
   execFileSync('mkfifo', [join(d, 'working', 'pipe.txt'), join(d, 'session', 'zz.jsonl')]);
+  const latin1 = Buffer.concat([Buffer.from(join(d, 'working', 'r')), Buffer.from([0xe9]), Buffer.from('sum\u00e9.txt')]);
+  writeFileSync(latin1, 'not UTF-8');
   for (const rel of ['working/env.txt', 'working/inside.txt', 'working/pipe.txt', `working/up/instances/${id}/working/real.txt`])
     assert.equal((await call('GET', file(rel))).status, 404, rel);
   assert.equal(await (await call('GET', file('working/real.txt'))).text(), 'mine');
@@ -258,6 +260,7 @@ test("a run's links, FIFOs and folders in working/ and session/ are never follow
   assert.equal((await call('POST', `${await at(series, '2026-08-30', 'duplicate')}?as=links`)).status, 200);
   assert.deepEqual(readdirSync(join(await dir(series, 'links'), 'working')).filter(f => /env|inside|pipe|up|real/.test(f)), ['real.txt'], 'a copy leaves them out');
   for (const f of ['real.txt', 'env.txt', 'inside.txt', 'up', 'up2', 'pipe.txt']) rmSync(join(d, 'working', f));
+  rmSync(latin1);
   rmSync(join(d, 'session', 'zz.jsonl'));
   rmSync(join(d, 'session', 'zy.jsonl'));
   assert.equal((await call('POST', `${await at(series, 'links', 'abandon')}`)).status, 200);

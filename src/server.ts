@@ -243,9 +243,10 @@ const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }
 // files), with its size and time; the AGENTS.md files whole, and each instance file at its /files address.
 function pullable(me: Me, path: string) {
   const t = tree(), out: { path: string; size: number; mtime: string; url?: string; text?: string }[] = [];
+  // A name that isn't UTF-8, as unzipping an old archive leaves, reads back as another name, which no file has: it is left out.
   const add = (at: string, file: string, more: { url?: string; text?: string }) => {
-    const st = statSync(file);
-    out.push({ path: at, size: st.size, mtime: st.mtime.toISOString(), ...more });
+    const st = statSync(file, { throwIfNoEntry: false });
+    if (st) out.push({ path: at, size: st.size, mtime: st.mtime.toISOString(), ...more });
   };
   const near = (at: string) => !path || at === path || at.startsWith(path + '/') || path.startsWith(at + '/');
   if (existsSync(agentsFile())) add('AGENTS.md', agentsFile(), { text: text(agentsFile()) });

@@ -133,8 +133,12 @@ export function moveInstance(inst: Instance, seriesId: string) {
 
 export function duplicateInstance(src: Instance, label: string, by: string, logins: string[]): Instance {
   const name = freeLabel(src.seriesId, label), id = newId(), dir = instanceDir(id);
-  // Files and folders only, sharing blocks where the disk can: a run may have left links or FIFOs in working/.
-  cpSync(src.dir, dir, { recursive: true, mode: constants.COPYFILE_FICLONE, filter: p => p !== join(src.dir, 'session') && (lstatSync(p).isFile() || lstatSync(p).isDirectory()) });
+  // Files and folders only, sharing blocks where the disk can: a run may have left links or FIFOs in working/, or a name that isn't
+  // UTF-8, which reads back as another name, which no file has.
+  cpSync(src.dir, dir, { recursive: true, mode: constants.COPYFILE_FICLONE, filter: p => {
+    const st = lstatSync(p, { throwIfNoEntry: false });
+    return p !== join(src.dir, 'session') && !!st && (st.isFile() || st.isDirectory());
+  } });
   setMeta(id, { label: name, series: src.seriesId });
   const inst = instance(id);
   inst.doc.status = 'open';
