@@ -43,9 +43,9 @@ function freeName(t: Tree, ws: string, name: string): string {
   return n;
 }
 
-// An update (scripts/update.ts) drains the server before it moves the checkout: no run starts, and once those going end, and the
-// indexing's slice going, or after 30 minutes, GET /drained answers 200, for the update to move it and restart the server, which
-// starts what queued meanwhile. Heard from the start, so a drain asked as the server starts waits for it.
+// An update (scripts/update.ts) drains the server before it moves the checkout: no run starts, and once those going end and
+// indexing stops after its slice going, or after 30 minutes, GET /drained answers 200, for the update to move it and restart the
+// server, which starts what queued meanwhile. Heard from the start, so a drain asked as the server starts waits for it.
 let drained = false;
 process.on('SIGUSR2', () => {
   drain(() => stopIndexing().then(() => { drained = true; }));

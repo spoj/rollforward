@@ -4,6 +4,7 @@ import { createServer } from 'node:http';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { zstdCompressSync } from 'node:zlib';
 
 // A run's Pi in its real sandbox, with stand-ins for the server's side of the socket: the agent API answers with the token it
 // saw, the browser service is a local server that echoes the key it was sent, and the connections' hosts say what they were asked.
@@ -48,12 +49,15 @@ for (const d of [i('w1/working'), i('w2/working'), i('r1/working'), i('p1/workin
 writeFileSync(join(root, '.rf', 'session.key'), 'secret');
 writeFileSync(i('r1/working/rates.csv'), 'usd,1');
 writeFileSync(i('p1/working/payroll.csv'), 'names');
+// The index of a ticked library, as the server writes it before the run starts.
+mkdirSync(join(tmp, 'index'));
+writeFileSync(join(tmp, 'index', 'LFM.ndjson.zst'), zstdCompressSync(`${JSON.stringify({ id: 'f1', name: 'aging.xlsx', size: 1200 })}\n${JSON.stringify({ id: 'f2', name: 'march.xlsx', size: 800 })}\n`));
 mkdirSync(i('w2/session'));
 writeFileSync(i('w2/session/main.jsonl'), `${JSON.stringify({ type: 'session', id: 'main', cwd: '/work/ws/Old name' })}\n`);
 const cwd = '/work/ws/Weekly: AR', at = `${cwd}/w2`;
 const agent = pi({
   token: TOKEN, id: 'w2', skills: ['tool'],
-  view: { cwd, instance: at, dir: i('w2'), pylib: join(root, 'series', 'weekly', '.pylib'), ro: [[i('w1'), `${cwd}/w1`], [i('w2'), at], [i('r1'), '/work/ws/Shared/r1']], env: { DATABRICKS_HOST: 'https://adb-1.test' } },
+  view: { cwd, instance: at, dir: i('w2'), pylib: join(root, 'series', 'weekly', '.pylib'), ro: [[i('w1'), `${cwd}/w1`], [i('w2'), at], [i('r1'), '/work/ws/Shared/r1'], [join(tmp, 'index'), '/index']], env: { DATABRICKS_HOST: 'https://adb-1.test', RF_INDEX: '/index' } },
 });
 const sh = async (command: string) => (await agent.bash(command)).output.trim();
 
@@ -133,6 +137,12 @@ test("the run's browser on a website is at $RF_BROWSERS/NAME, through the socket
   assert.equal(await ws('$RF_BROWSERS/erp'), 'browser service got /sessions/b1/cdp with Bearer the-browser-key');
   assert.equal(await ws('$RF_BROWSERS/crm'), 'web:crm is not ticked for this instance');
   assert.equal(await ws('http://127.0.0.1:7000/browsers/wrong/erp'), '');
+});
+
+test('an index is at $RF_INDEX, read-only, for zstdcat with jq and for duckdb', async () => {
+  assert.equal(await sh('zstdcat "$RF_INDEX/LFM.ndjson.zst" | jq -r .name'), 'aging.xlsx\nmarch.xlsx');
+  assert.equal(await sh(`python -c "import duckdb; print(duckdb.sql(\\"SELECT sum(size) FROM read_json('$RF_INDEX/LFM.ndjson.zst')\\").fetchall()[0][0])"`), '2000');
+  assert.match(await sh('touch "$RF_INDEX/new" 2>&1'), /Read-only/);
 });
 
 test("the agent's python is the image's venv, with its packages", async () => {
