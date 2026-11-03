@@ -148,14 +148,9 @@ function runner(inst: Instance) {
   return { ...r, ticked: r.logins.map(id => offers.find(o => o.id === id)?.name ?? id) };
 }
 
-// Whom the page names: by their Entra names, the people `me` shares a workspace with, or everyone for an admin, and by their labels,
-// the Entra groups in the workspaces `me` sees.
-function names(me: Me) {
-  const t = tree(), seen = Object.values(t.workspaces).filter(w => canSee(me, w));
-  return Object.fromEntries([
-    ...Object.entries(t.groups ?? {}).filter(([g]) => seen.some(w => everyone(w).includes(g))),
-    ...Object.entries(users()).filter(([email, u]) => u.name && (me.role === 'admin' || seen.some(w => canSee({ email, role: u.role, groups: u.groups ?? [] }, w)))).map(([email, u]) => [email, u.name]),
-  ]);
+// Whom the page names, for everyone, as colleagues see each other: whoever has signed in, by their Entra name, and the labelled groups.
+function names() {
+  return { ...tree().groups, ...Object.fromEntries(Object.entries(users()).filter(([, u]) => u.name).map(([email, u]) => [email, u.name])) };
 }
 
 // What makes an instance new to a person, when someone else or the agent did it: a run's end, a report, a comment, a sign-off, an
@@ -718,7 +713,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       res.end(readFileSync(page));
     } else if (url.pathname === '/me') {
       const { text, logo } = brand();
-      send(res, 200, { ...me, names: names(me), sign_in: mode, m365: m365Ready(), browsers: !!process.env.RF_BROWSER_URL, brand: { text: text || null, logo: !!logo } });
+      send(res, 200, { ...me, names: names(), sign_in: mode, m365: m365Ready(), browsers: !!process.env.RF_BROWSER_URL, brand: { text: text || null, logo: !!logo } });
     } else if (url.pathname === '/brand' && req.method === 'PUT') {
       if (me.role !== 'admin') throw new HttpError(403, "the deployment's brand is the admins'");
       const { text, logo, clear } = await json(req), b = { ...(!clear && brand()) };
