@@ -31,7 +31,7 @@ function seenBefore(inst: Instance): number {
 }
 
 function pending(inst: Instance, seen: number): Entry[] {
-  return inst.log.filter(e => e.seq > seen && (e.op === 'wake' || (isPerson(e) && (['upload', 'answer', 'comment'].includes(e.op) || (e.op === 'create' && e.fetch)))));
+  return inst.log.filter(e => e.seq > seen && (e.op === 'wake' || (isPerson(e) && (['upload', 'comment'].includes(e.op) || (e.op === 'create' && e.fetch)))));
 }
 
 // Whether an instance has something for a run: what came since its last run, or since an Interrupt, which waits for the next act.

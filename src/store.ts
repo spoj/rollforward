@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, closeSync, constants, cpSync, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, closeSync, constants, cpSync, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { basename, extname, join, posix } from 'node:path';
 import { changes, tree } from './system.ts';
@@ -30,8 +30,7 @@ export function readFile(base: string, rel: string): string | undefined {
   try { return readFileSync(fd, 'utf8'); } finally { closeSync(fd); }
 }
 
-export type Note = { id?: string; ref?: string; text: string; files?: string[]; options?: string[]; default?: number; ask?: string };
-export type Item = { id: string; name: string; kind: 'input' | 'step' | 'output'; file: string | null; from?: string[]; headline?: string; source?: string; notes?: Note[] };
+export type Item = { id: string; name: string; kind: 'input' | 'step' | 'output'; file: string | null; from?: string[]; headline?: string; source?: string };
 export type Doc = { rev: number; status: 'open' | 'closed' | 'abandoned'; items: Item[] };
 export type Entry = { seq: number; at: string; by: string; op: string; [k: string]: unknown };
 
@@ -117,7 +116,7 @@ export function createInstance(seriesId: string, label: string, by: string, logi
   mkdirSync(join(dir, 'working'));
   setMeta(id, { label: name, series: seriesId });
   const inst = instance(id);
-  inst.doc.items = (from?.doc.items ?? []).map(({ id, name, kind, from }) => ({ id, name, kind, file: null, from, notes: [] }));
+  inst.doc.items = (from?.doc.items ?? []).map(({ id, name, kind, from }) => ({ id, name, kind, file: null, from }));
   inst.save();
   const fetch = from?.doc.items.some(i => i.kind === 'input' && i.file?.startsWith('working/'));
   inst.append(by, 'create', { from: from?.label ?? null, ...(fetch && { fetch }), logins });
@@ -193,25 +192,26 @@ export class Instance {
     const up = this.append(by, 'upload', { file, pane, onto, sha256 });
     let id = `u${up.seq}`;
     for (let n = 2; this.doc.items.some(i => i.id === id); n++) id = `u${up.seq}_${n}`;
-    this.doc.items.push({ id, name: stem, kind: pane === 'in' ? 'input' : 'output', file, notes: [] });
+    this.doc.items.push({ id, name: stem, kind: pane === 'in' ? 'input' : 'output', file });
     this.append('server', 'point', { item: id, file });
     this.save();
   }
 
-  answer(by: string, noteId: string, choice: number) {
-    if (this.answered(noteId)) throw new HttpError(409, `${noteId} is already answered`);
-    const note = this.doc.items.flatMap(i => i.notes ?? []).find(n => n.id === noteId && n.options);
-    if (!note) throw new HttpError(400, `no question ${noteId}`);
-    if (!note.options![choice]) throw new HttpError(400, `no option ${choice}`);
-    this.append(by, 'answer', { note: noteId, choice, text: note.options![choice] });
+  // Each thread's comments and resolves, in order. A comment starts a thread, on an item (at a ref) or on the instance, and later
+  // comments reply in it.
+  threads(): Map<string, Entry[]> {
+    const out = new Map<string, Entry[]>();
+    for (const e of this.log) if (e.op === 'comment' || e.op === 'resolve') out.set(e.thread as string, [...(out.get(e.thread as string) ?? []), e]);
+    return out;
   }
 
-  answered(noteId: string): boolean {
-    return this.log.some(e => e.op === 'answer' && e.note === noteId);
+  // The agent's asks still waiting on people: threads whose last word is an ask.
+  asking(): Entry[] {
+    return [...this.threads().values()].map(t => t.at(-1)!).filter(e => e.op === 'comment' && e.by === 'agent' && e.ask);
   }
 
   // Closing signs off what people saw: a shown file in working/ must still be what its point logged. Its folder is the run's, so
-  // read-only alone doesn't stop a file being replaced.
+  // read-only alone doesn't stop a file being replaced. The asks still waiting are accepted as the agent said it did them.
   close(by: string) {
     for (const i of this.doc.items.filter(i => i.file?.startsWith('working/'))) {
       const fd = openFile(this.dir, i.file!), logged = this.log.findLast(e => e.op === 'point' && e.file === i.file && e.sha256)?.sha256;
@@ -219,12 +219,10 @@ export class Instance {
       if (fd !== undefined) closeSync(fd);
       if (logged && now !== logged) throw new HttpError(409, `${i.file} changed after it was shown: the agent shows the new version under a new name, and you review that`);
     }
-    for (const n of this.doc.items.flatMap(i => i.notes ?? []))
-      if (n.id && n.options && !this.answered(n.id))
-        this.append('server', 'answer', { note: n.id, choice: n.default ?? 0, text: n.options[n.default ?? 0], default: true });
+    const accepted = this.asking().map(e => e.thread);
     this.doc.status = 'closed';
     this.save();
-    this.append(by, 'close');
+    this.append(by, 'close', accepted.length ? { accepted } : {});
   }
 
   abandon(by: string) {
@@ -239,7 +237,7 @@ export class Instance {
     if (doc.rev !== this.doc.rev) throw new HttpError(409, `stale rev ${doc.rev}: the workspace is now at rev ${this.doc.rev}. Run rf show and merge.`);
     if (doc.status !== undefined && doc.status !== this.doc.status) throw new HttpError(400, 'status is set by the server; leave it out or as it is');
     if (!Array.isArray(doc.items)) throw new HttpError(400, 'items must be an array');
-    const errors: string[] = [], ids = new Set<string>(), questions = new Set<string>(), sums = new Map<string, string | undefined>();
+    const errors: string[] = [], ids = new Set<string>(), sums = new Map<string, string | undefined>();
     const old = new Map(this.doc.items.map(i => [i.id, i]));
     for (const i of doc.items) {
       if (typeof i.id !== 'string' || !i.id || ids.has(i.id)) errors.push(`item id missing or repeated: ${JSON.stringify(i.id)}`);
@@ -261,20 +259,6 @@ export class Instance {
           if (fd !== undefined) closeSync(fd);
         }
       }
-      for (const n of i.notes ?? []) {
-        if (typeof n.text !== 'string' || !n.text) errors.push(`${i.id}: a note has no text`);
-        for (const f of n.files ?? []) {
-          const path = this.cited(f);
-          if (!path) errors.push(`${i.id}: cited file ${JSON.stringify(f)} must be under upload/ or working/ of this instance or another of its series, such as ../<label>/working/...`);
-          else if (!existsSync(path) || !statSync(path).isFile()) errors.push(`${i.id}: no file ${f}`);
-        }
-        if (n.options) {
-          if (!n.id || questions.has(n.id)) errors.push(`${i.id}: question id missing or repeated: ${JSON.stringify(n.id)}`);
-          questions.add(n.id!);
-          if (!Array.isArray(n.options) || n.options.length < 2 || !n.options[n.default ?? 0]) errors.push(`${i.id}: question ${n.id} needs 2+ options and a valid default`);
-          if (n.ask !== undefined && !/^[^\s@]+@[^\s@]+$/.test(n.ask)) errors.push(`${i.id}: question ${n.id}'s "ask" is a person's email`);
-        }
-      }
     }
     const from = new Map(doc.items.map(i => [i.id, Array.isArray(i.from) ? i.from : []]));
     for (const [id, fs] of from) for (const f of fs) if (!from.has(f)) errors.push(`${id}: from names no item ${JSON.stringify(f)}`);
@@ -292,10 +276,6 @@ export class Instance {
       } else if (i.file === null && o?.file) this.append('agent', 'point', { item: i.id, file: null, was: o.file });
       if (!o || o.name !== i.name || o.kind !== i.kind || JSON.stringify(o.from) !== JSON.stringify(i.from) || o.headline !== i.headline || o.source !== i.source)
         this.append('agent', 'item', { item: i.id, name: i.name, kind: i.kind, from: i.from, headline: i.headline, source: i.source });
-      const before = new Set((o?.notes ?? []).map(n => JSON.stringify(n)));
-      const after = new Set((i.notes ?? []).map(n => JSON.stringify(n)));
-      for (const n of after) if (!before.has(n)) this.append('agent', 'note', { item: i.id, note: JSON.parse(n) });
-      for (const n of before) if (!after.has(n)) this.append('agent', 'unnote', { item: i.id, note: JSON.parse(n) });
     }
     for (const o of this.doc.items) if (!ids.has(o.id)) this.append('agent', 'remove', { item: o.id });
     this.doc = { rev: this.doc.rev, status: this.doc.status, items: doc.items };
@@ -303,7 +283,8 @@ export class Instance {
     return this.doc.rev;
   }
 
-  // Where a note's cited file is: under upload/ or working/ of this instance, or of another of its series as ../<label>/....
+  // Where a file the agent cites in a comment is: under upload/ or working/ of this instance, or of another of its series as
+  // ../<label>/....
   cited(f: unknown): string | undefined {
     const m = typeof f === 'string' && normalize(f) === f ? f.match(/^(?:\.\.\/([^/]+)\/)?((?:upload|working)\/.+)$/) : null;
     const id = m && (m[1] === undefined ? this.id : labels(this.seriesId).find(l => l.label === m[1])?.id);

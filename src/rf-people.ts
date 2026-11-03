@@ -7,8 +7,7 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 const USAGE = `rf login URL TOKEN
 rf ls
 rf pull DIR                       a read-only mirror of what you can see, in the layout agents see
-rf comment PATH TEXT [--item ID] [--ref REF] [--thread T] [--wait]
-rf answer PATH NOTE CHOICE        CHOICE the option's number, from 0
+rf comment PATH TEXT [--item ID] [--ref REF] [--thread T] [--wait]   a new thread, or a reply in T, as to an agent's ask
 rf upload PATH FILE [--onto ITEM] [--output]
 rf wake PATH AT REASON [--label LABEL]   AT now, +<n>m|h|d or a date; PATH an open instance, or a series with LABEL
 rf guidance [WORKSPACE] [--set FILE|-]   the company's, or a workspace's; setting the company's is for admins
@@ -116,7 +115,7 @@ if (cmd === 'login' && url && token) {
 } else if (cmd === 'ls') {
   for (const w of await get('/api')) for (const s of w.series) {
     console.log(`${w.name}/${s.name}${s.wake ? `  wakes ${s.wake.at} to start ${s.wake.label}: ${s.wake.reason}` : ''}${s.requests.length ? `  ${s.requests.length} asking to start` : ''}`);
-    for (const i of s.instances) console.log(`${w.name}/${s.name}/${i.label}  ${i.status}${i.running ? ', running' : ''}${i.questions.length ? `, ${i.questions.length} questions` : ''}${i.wake ? `, wakes ${i.wake}` : ''}, runner ${i.runner}`);
+    for (const i of s.instances) console.log(`${w.name}/${s.name}/${i.label}  ${i.status}${i.running ? ', running' : ''}${i.asks.length ? `, ${i.asks.length} asks waiting` : ''}${i.wake ? `, wakes ${i.wake}` : ''}, runner ${i.runner}`);
   }
 } else if (cmd === 'pull' && args[0]) await pull(args[0]);
 else if (cmd === 'comment' && args.length === 2) {
@@ -130,13 +129,10 @@ else if (cmd === 'comment' && args.length === 2) {
     const log = (await get(at)).log, done = log.find(e => e.op === 'done' && e.seen >= seq);
     if (!done) continue;
     const from = Math.max(seq, log.find(e => e.op === 'run' && e.run === done.run).seq);
-    for (const e of log.filter(e => e.seq > from && e.seq < done.seq && ((e.op === 'comment' && e.by === 'agent') || e.op === 'report'))) console.log(`${e.op === 'comment' ? `In thread ${e.thread}` : 'Report'}:\n${e.text}\n`);
+    for (const e of log.filter(e => e.seq > from && e.seq < done.seq && ((e.op === 'comment' && e.by === 'agent') || e.op === 'report'))) console.log(`${e.op === 'report' ? 'Report' : `${e.ask ? 'Asks' : 'Says'} in ${e.thread}`}:\n${e.text}\n`);
     if (done.error) console.log(`The run failed: ${done.error}`);
     break;
   }
-} else if (cmd === 'answer' && args.length === 3) {
-  await post(`${(await find(args[0])).at}/answer`, { note: args[1], choice: Number(args[2]) });
-  console.log('answered');
 } else if (cmd === 'upload' && args.length === 2) {
   const q = new URLSearchParams({ name: basename(args[1]), pane: flags.output ? 'out' : 'in', ...(typeof flags.onto === 'string' && { onto: flags.onto }) });
   await api(`${(await find(args[0])).at}/upload?${q}`, { method: 'POST', body: readFileSync(args[1]) });

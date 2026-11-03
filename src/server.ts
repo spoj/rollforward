@@ -67,22 +67,22 @@ function mustSee(me: Me, w: Workspace | undefined): Workspace {
   return w;
 }
 
-// The open questions of an open instance, each with whom it asks: a named person, else the runner.
-function questions(inst: Instance): string[] {
+// Whom each of an open instance's asks still waits on: the person it names, else the runner.
+function asks(inst: Instance): string[] {
   if (inst.doc.status !== 'open') return [];
-  return inst.doc.items.flatMap(i => i.notes ?? []).filter(n => n.id && n.options && !inst.answered(n.id)).map(n => n.ask ?? runnerOf(inst).by);
+  return inst.asking().map(e => (e.to as string | undefined) ?? runnerOf(inst).by);
 }
 
 // An instance as the sidebar shows it. What comes from its log and screen is kept until either moves on, so a listing reads each
 // instance's log once, not on every refresh.
-const kept = new WeakMap<Instance, { key: string; questions: string[]; runner: string; cost: number }>();
+const kept = new WeakMap<Instance, { key: string; asks: string[]; runner: string; cost: number }>();
 function summary(i: Instance, w8 = wakes()) {
   const key = `${i.log.length}:${i.doc.rev}`;
   let k = kept.get(i);
-  if (k?.key !== key) kept.set(i, k = { key, questions: questions(i), runner: runnerOf(i).by, cost: +i.log.reduce((t, e) => t + ((e.cost as number | undefined) ?? 0), 0).toFixed(4) });
+  if (k?.key !== key) kept.set(i, k = { key, asks: asks(i), runner: runnerOf(i).by, cost: +i.log.reduce((t, e) => t + ((e.cost as number | undefined) ?? 0), 0).toFixed(4) });
   return {
     id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(i.seriesId)?.inst === i, queued: queued(i),
-    questions: k.questions, wake: w8.pending[i.id]?.at ?? null, runner: k.runner, cost: k.cost,
+    asks: k.asks, wake: w8.pending[i.id]?.at ?? null, runner: k.runner, cost: k.cost,
   };
 }
 
@@ -167,7 +167,6 @@ function events(me: Me, req: IncomingMessage, res: ServerResponse) {
   req.on('close', () => { changes.off('change', on); clearInterval(beat); for (const t of due.values()) clearTimeout(t); });
 }
 
-const threads = (inst: Instance) => [...new Set(inst.log.filter(e => e.op === 'comment').map(e => e.thread as string))];
 const text = (path: string) => (existsSync(path) ? readFileSync(path, 'utf8') : '');
 const json = async (req: IncomingMessage) => {
   try { return JSON.parse((await body(req)).toString() || '{}'); } catch { throw new HttpError(400, 'the body is JSON'); }
@@ -185,7 +184,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   // A run reads and writes its own instance's screen and threads, sets wakes in its own workspace, and finds what a folder it can
   // read names; nothing else here.
   const run = me.run;
-  if (run && !(kind === 'instances' && id === run.inst.id && (action === 'screen' || action === 'comment')) && !(kind === 'wakes' && req.method === 'PUT') && kind !== 'resolve')
+  if (run && !(kind === 'instances' && id === run.inst.id && ['screen', 'comment', 'resolve'].includes(action)) && !(kind === 'wakes' && req.method === 'PUT') && kind !== 'resolve')
     throw new HttpError(404, 'not found');
   // The body before the tree: a request held open must not save a tree from before others' changes, such as an owner's removal.
   const payload = ['upload', 'attach', 'screen'].includes(action) ? {} : await json(req);
@@ -345,25 +344,33 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     } finally {
       rmSync(tmp, { force: true });
     }
-  } else if (action === 'answer') {
-    const { note, choice } = payload;
-    inst.answer(by, note, choice);
   } else if (action === 'comment') {
-    // A comment starts a thread, on an item (at a ref, such as a cell, if given) or on the instance, or replies in one.
-    const { thread, item, ref, text, files = [] } = payload;
+    // A comment starts a thread, on an item (at a ref, such as a cell, if given) or on the instance, or replies in one. A person's
+    // starts a run. The agent's starts nothing: it says something, or asks, and then the thread waits on a person's reply, from the
+    // one it names or else the runner.
+    const { thread, item, ref, text, files = [], ask, to } = payload, threads = inst.threads();
     if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a comment has text');
-    for (const f of files) if (typeof f !== 'string' || !f.startsWith('upload/attachments/') || f.includes('..') || !existsSync(join(inst.dir, f))) throw new HttpError(400, `no attachment ${f}`);
-    if (thread !== undefined && !threads(inst).includes(thread)) throw new HttpError(400, `no thread ${thread}; this instance's threads: ${threads(inst).join(', ') || 'none yet'}`);
-    if (item !== undefined && !inst.doc.items.some(i => i.id === item)) throw new HttpError(400, `no item ${item}`);
-    // The agent answers in a thread people started, and its words wake nothing.
-    if (run && thread === undefined) throw new HttpError(400, `rf say THREAD TEXT, THREAD one of this instance's threads: ${threads(inst).join(', ') || 'none yet'}`);
-    const said = inst.append(by, 'comment', { thread: thread ?? `c${inst.log.length + 1}`, ...(thread === undefined && { item: item ?? null, ref: ref ?? null }), text: text.trim(), ...(files.length && { files }) });
-    if (run) return send(res, 200, `said, seq ${said.seq}`);
+    if (thread !== undefined && !threads.has(thread)) throw new HttpError(400, `no thread ${thread}; this instance's threads: ${[...threads.keys()].join(', ') || 'none yet'}`);
+    if (thread === undefined && item != null && !inst.doc.items.some(i => i.id === item)) throw new HttpError(400, `no item ${item}; the screen's items: ${inst.doc.items.map(i => i.id).join(', ')}`);
+    for (const f of files) {
+      const ok = run ? inst.cited(f) && existsSync(inst.cited(f)!) : typeof f === 'string' && f.startsWith('upload/attachments/') && !f.includes('..') && existsSync(join(inst.dir, f));
+      if (!ok) throw new HttpError(400, run ? `no file ${f}: cite one under upload/ or working/ of this instance, or of another of its series as ../<label>/...` : `no attachment ${f}`);
+    }
+    const who = typeof to === 'string' ? to.toLowerCase() : undefined, u = who && users()[who];
+    if (who && !(u && canSee({ email: who, role: u.role, groups: u.groups ?? [] }, t.workspaces[t.series[inst.seriesId].workspace])))
+      throw new HttpError(400, `${to} can't see this instance; ask its runner, ${runnerOf(inst).by}, or someone in its workspace`);
+    const said = inst.append(by, 'comment', {
+      thread: thread ?? `c${inst.log.length + 1}`, ...(thread === undefined && { item: item ?? null, ref: ref ?? null }), text: text.trim(), ...(files.length && { files }),
+      ...(run && ask && { ask: true, ...(who && { to: who }) }),
+    });
+    if (run) return send(res, 200, `${ask ? 'asked' : 'said'} in ${said.thread}, seq ${said.seq}`);
   } else if (action === 'resolve') {
-    const { thread } = payload;
-    if (!threads(inst).includes(thread)) throw new HttpError(400, `no thread ${thread}`);
-    inst.append(by, 'resolve', { thread });
-    return send(res, 200, 'ok');
+    // Anyone resolves a thread, and nothing wakes; the agent only one it started, once it no longer applies.
+    const { thread, text } = payload, posts = inst.threads().get(thread);
+    if (!posts) throw new HttpError(400, `no thread ${thread}`);
+    if (run && posts[0].by !== 'agent') throw new HttpError(403, `${posts[0].by} started ${thread}, and resolves it; reply in it with rf say --in ${thread}`);
+    inst.append(by, 'resolve', { thread, ...(typeof text === 'string' && text.trim() && { text: text.trim() }) });
+    return send(res, 200, `resolved ${thread}`);
   } else if (action === 'interrupt') {
     if (!mine?.run) throw new HttpError(409, 'no run going');
     inst.append(by, 'interrupt');

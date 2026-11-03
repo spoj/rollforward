@@ -16,12 +16,24 @@ test('a put takes steps and from, and a new instance carries the graph; from mus
   assert.deepEqual(inst.log.filter(e => e.op === 'item').map(e => e.from), [undefined, ['ar'], ['el']]);
   assert.throws(() => put([ar, { id: 'bb', name: 'BB', kind: 'output', file: null, from: ['nope'] }]), /bb: from names no item "nope"/);
   assert.throws(() => put([{ ...ar, from: ['bb'] }, { id: 'bb', name: 'BB', kind: 'output', file: null, from: ['ar'] }]), /circle among ar, bb/);
-  const ask = (who: string) => put([{ ...ar, notes: [{ id: 'q1', text: 'Which?', options: ['a', 'b'], default: 0, ask: who }] }]);
-  assert.throws(() => ask('sam'), /question q1's "ask" is a person's email/);
-  ask('sam@example.com');
-  assert.equal(inst.doc.items[0].notes![0].ask, 'sam@example.com', 'a question may name who answers it');
   put([ar, { id: 'el', name: 'Eligible AR', kind: 'step', file: 'working/eligible.csv', from: ['ar'] }, { id: 'bb', name: 'Borrowing base', kind: 'output', file: null, from: ['el'] }]);
   inst.close('alex');
   assert.deepEqual(createInstance(series, 'w2', 'alex', []).doc.items.map(i => [i.id, i.kind, i.file, i.from]), [['ar', 'input', null, undefined], ['el', 'step', null, ['ar']], ['bb', 'output', null, ['el']]]);
+  rmSync(tmp, { recursive: true, force: true });
+});
+
+test("an ask waits on people until someone replies or resolves it, and closing accepts the ones still waiting", () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-')), sam = 'sam@example.com';
+  openStore(tmp);
+  const inst = createInstance('weekly', 'w1', 'alex', []);
+  inst.append('agent', 'comment', { thread: 'c1', item: null, ref: null, text: 'The snapshot is a week old; I used it.', ask: true });
+  inst.append('agent', 'comment', { thread: 'c2', item: null, ref: null, text: 'Carried the rate from w0.' });
+  inst.append('agent', 'comment', { thread: 'c3', item: null, ref: null, text: 'One-off, or from now on?', ask: true, to: sam });
+  inst.append(sam, 'comment', { thread: 'c3', text: 'From now on.' });
+  inst.append('agent', 'comment', { thread: 'c4', item: null, ref: null, text: 'Which file is right?', ask: true });
+  inst.append(sam, 'resolve', { thread: 'c4' });
+  assert.deepEqual(inst.asking().map(e => e.thread), ['c1']);
+  inst.close('alex');
+  assert.deepEqual(inst.log.at(-1)!.accepted, ['c1']);
   rmSync(tmp, { recursive: true, force: true });
 });

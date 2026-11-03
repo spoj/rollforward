@@ -103,9 +103,13 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
       'rf wake ../../Wide/Close now the close can start --label 2026-11 2>&1',
       'rf wake . soon why 2>&1',
       'rf wake . +1d the next month 2>&1',
-      'rf say c2 Walls checked. 2>&1',
-      'rf say c9 x 2>&1',
+      'rf say --in c2 Walls checked. 2>&1',
+      'rf say --in c9 x 2>&1',
       'rf show 2>&1 | head -c 200',
+      'rf ask --to stranger@example.com Which bank? 2>&1',
+      'rf ask Is the bank file coming today? 2>&1',
+      'rf say --on nope x 2>&1',
+      'rf resolve c2 2>&1',
     ],
     report: 'Checked the walls, and woke myself for the bank file.', saw: [],
   };
@@ -125,10 +129,14 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.match(walls.saw[5], /Wide\/Close is in another workspace: you can read it, not wake it/);
   assert.match(walls.saw[6], /at is now, \+<n>m\|h\|d, or a date/);
   assert.match(walls.saw[7], /name it with a label/);
-  assert.match(walls.saw[8], /^said, seq \d+\s*$/);
+  assert.match(walls.saw[8], /^said in c2, seq \d+\s*$/);
   assert.match(walls.saw[9], /no thread c9; this instance's threads: c2/);
   assert.match(walls.saw[10], /"rev": \d+,\s+"status": "open"/);
-  assert.deepEqual(log.filter(e => e.op === 'comment' && e.by === 'agent').map(e => [e.thread, e.text]), [['c2', 'Walls checked.']], "the agent's reply is a comment of its own");
+  assert.match(walls.saw[11], /stranger@example.com can't see this instance; ask its runner, admin@demo.test/);
+  assert.match(walls.saw[12], /^asked in c\d+, seq \d+\s*$/);
+  assert.match(walls.saw[13], /no item nope/);
+  assert.match(walls.saw[14], /admin@demo.test started c2, and resolves it/);
+  assert.deepEqual(log.filter(e => e.op === 'comment' && e.by === 'agent').map(e => [e.text, !!e.ask]), [['Walls checked.', false], ['Is the bank file coming today?', true]], "the agent's words are comments of its own, and an ask is marked");
   assert.match(woken.prompt!, /"op":"wake".*the bank file comes later/, 'the wake started the next run');
   assert.match(woken.saw[0], /m365:mail:admin@demo.test is not ticked/);
   assert.deepEqual(log.filter(e => e.op === 'done').map(e => [e.run, e.aborted]), [[1, false], [2, false]]);
