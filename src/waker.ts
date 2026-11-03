@@ -87,10 +87,7 @@ export const named = (t: Tree, seriesId: string) => `${t.workspaces[t.series[ser
 // runner's connections set.
 export function view(inst: Instance): View {
   const t = tree(), at = (id: string) => `/work/${named(t, id)}`, series = [inst.seriesId, ...reach(t, inst.seriesId)];
-  const ro = series.flatMap(id => [
-    ...labels(id).map(l => [instanceDir(l.id), `${at(id)}/${l.label}`] as [string, string]),
-    ...(id === inst.seriesId ? [] : [[join(seriesDir(id), '.pylib'), `${at(id)}/.pylib`] as [string, string]]),
-  ]);
+  const ro = series.flatMap(id => labels(id).map(l => [instanceDir(l.id), `${at(id)}/${l.label}`] as [string, string]));
   const agents = [...new Set(series.map(id => t.series[id].workspace))].map(w => [agentsFile(w), `/work/${t.workspaces[w].name}/AGENTS.md`] as [string, string]);
   return {
     cwd: at(inst.seriesId), instance: `${at(inst.seriesId)}/${inst.label}`, dir: inst.dir, pylib: join(inst.series(), '.pylib'), ro: [[agentsFile(), '/work/AGENTS.md'], ...agents, ...ro],

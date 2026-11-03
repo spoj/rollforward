@@ -27,8 +27,9 @@ export type Run = {
 };
 
 // The run's view of the data, which the server builds: its series at cwd, such as /work/<workspace>/<series>, its own instance at
-// instance, from the folder dir, its series' .pylib from pylib, in ro, every instance in its reach, the .pylib of the other series
-// there and the AGENTS.md of the company and of each workspace there, each [host path, path inside]; and its environment.
+// instance, from the folder dir, its series' .pylib from pylib, in ro, every instance in its reach and the AGENTS.md of the
+// company and of each workspace there, each [host path, path inside]; and its environment. Another series' .pylib isn't there:
+// what its runs installed is theirs to run, never a run of another series, with its runner's logins.
 export type View = { cwd: string; instance: string; dir: string; pylib: string; ro: [string, string][]; env: Record<string, string> };
 
 // Pi for one run, in its sandbox (sandbox.ts): its view read-only but for the instance's working/ and session/ and the series'

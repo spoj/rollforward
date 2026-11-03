@@ -139,10 +139,11 @@ test('after a restart every open instance with something for a run starts; an In
   assert.ok(!ops(held).includes('run'), 'interrupted, it waits for the next act');
 });
 
-test("a task's run sees its own instance alone in its series' folder, and the series in reach; a wake in an archived workspace is dropped", async () => {
+test("a task's run sees its own instance alone in its series' folder, and the series in reach, not their packages; a wake in an archived workspace is dropped", async () => {
   const v = view(make('s4', 'Lunch'));
   assert.equal(v.cwd, '/work/Acme/Lunch');
   assert.deepEqual(v.ro.map(([, at]) => at).filter(at => at.startsWith('/work/Acme/Lunch/')), ['/work/Acme/Lunch/Lunch']);
+  assert.ok(v.ro.some(([, at]) => at.startsWith('/work/Acme/Bank rec/')) && !v.ro.some(([, at]) => at.endsWith('/.pylib')), "another series' .pylib is its own runs' code");
   const t = tree(), cut = instance(labels('s3').find(l => l.label === 'cut')!.id);
   saveTree({ ...t, workspaces: { ...t.workspaces, x: { ...t.workspaces.x, archived: true } } });
   setWake(cut.id, { at: new Date().toISOString(), reason: 'archived', from: 'x' });
