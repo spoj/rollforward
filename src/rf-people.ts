@@ -43,7 +43,7 @@ that does each period's work and people who check it. rf does what its page does
 
 What there is
 - A workspace holds series, and its people. A series is one recurring job; an instance is one period of it, labelled such as
-  2026-08-23. PATH is workspace/series/label, as rf ls prints it; for rf pull it may go deeper, into an instance's files.
+  2026-08-23. A task is a one-off: a series of one instance, named by its label, until someone makes it a series. PATH is workspace/series/label, as rf ls prints it; for rf pull it may go deeper, into an instance's files.
 - An instance's screen is its items: inputs, steps and outputs, each pointing at a file, with what it's made from. People upload
   files and comment; each comment or upload starts a run of the agent, which reads it and carries on. The runner is the person whose
   logins the runs use, and who closes the instance once they stand by it.

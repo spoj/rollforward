@@ -106,11 +106,11 @@ function freeLabel(seriesId: string, label: string): string {
   return name;
 }
 
-// A new instance starts from its series' latest closed one, but in a workspace's Ad hoc series, where each is a one-off ask. `by` is
-// its runner, and `logins` the offers of their logins they ticked for it (logins.ts).
+// A new instance starts from its series' latest closed one. `by` is its runner, and `logins` the offers of their logins they ticked
+// for it (logins.ts).
 export function createInstance(seriesId: string, label: string, by: string, logins: string[]): Instance {
   const name = freeLabel(seriesId, label), id = newId(), dir = instanceDir(id);
-  const closed = tree().series[seriesId]?.adhoc ? [] : instances(seriesId).filter(i => i.doc.status === 'closed').sort((a, b) => a.closedAt().localeCompare(b.closedAt()));
+  const closed = instances(seriesId).filter(i => i.doc.status === 'closed').sort((a, b) => a.closedAt().localeCompare(b.closedAt()));
   const from = closed.at(-1);
   mkdirSync(join(dir, 'upload'), { recursive: true });
   mkdirSync(join(dir, 'working'));

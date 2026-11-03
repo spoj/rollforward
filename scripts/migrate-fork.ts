@@ -1,6 +1,6 @@
 // One-off: copies a data root of the team's fork (its main at a1fa8db) into a new data root, reading the old one only.
-// <workspace>/<series>/<label>/ become series/<id>/ and instances/<id>/ named in .rf/tree.json, each workspace gets its Ad hoc
-// series, people keep their roles and workspaces their owners, talk becomes threads, and no skill comes across. Ids come from
+// <workspace>/<series>/<label>/ become series/<id>/ and instances/<id>/ named in .rf/tree.json, people keep
+// their roles and workspaces their owners, talk becomes threads, and no skill comes across. Ids come from
 // the old paths, so a rerun into a fresh NEW gives the same links. Run it with the old server stopped:
 //   node scripts/migrate-fork.ts OLD NEW
 import { constants, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
@@ -78,8 +78,6 @@ let instances = 0;
 for (const ws of folders(old)) {
   const wid = id(ws), wsDir = join(old, ws), owner = owners[ws]?.owner;
   t.workspaces[wid] = { name: ws, owners: owner ? [owner] : [], members: [], ...(existsSync(join(wsDir, '.archived')) && { archived: true }) };
-  t.series[id(`${ws} Ad hoc`)] = { name: 'Ad hoc', workspace: wid, adhoc: true };
-  mkdirSync(join(root, 'series', id(`${ws} Ad hoc`)));
   left(wsDir, ['.archived', ...folders(wsDir)]);
   for (const series of folders(wsDir)) {
     const sid = id(`${ws}/${series}`), sDir = join(wsDir, series), labels = folders(sDir).filter(l => existsSync(join(sDir, l, 'workspace.json')));
@@ -102,4 +100,4 @@ for (const ws of folders(old)) {
   }
 }
 writeFileSync(join(root, '.rf', 'tree.json'), JSON.stringify(t, null, 1), { mode: 0o600 });
-console.log(`${Object.keys(t.workspaces).length} workspaces, ${Object.keys(t.series).length} series with an Ad hoc in each workspace, ${instances} instances`);
+console.log(`${Object.keys(t.workspaces).length} workspaces, ${Object.keys(t.series).length} series, ${instances} instances`);

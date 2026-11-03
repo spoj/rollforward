@@ -9,7 +9,8 @@ import { join } from 'node:path';
 // A workspace's people are each an email or an Entra group's id. Owners manage who is in it; owners and members see and work in all
 // of it. A workspace with neither is the admins'.
 export type Workspace = { name: string; owners: string[]; members: string[]; archived?: boolean };
-export type Series = { name: string; workspace: string; archived?: boolean; adhoc?: boolean };
+// A task is a series marked single, holding one instance, named by its label until it is made a series.
+export type Series = { name: string; workspace: string; archived?: boolean; single?: boolean };
 export type Tree = { workspaces: Record<string, Workspace>; series: Record<string, Series> };
 
 let dir = '';

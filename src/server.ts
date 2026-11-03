@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { closeSync, createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, cpSync, createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { execFile } from 'node:child_process';
@@ -10,7 +10,7 @@ import { agentsFile, createInstance, duplicateInstance, moveInstance, renameInst
 import { socketDir } from './runner.ts';
 import { serveSandboxes } from './sandbox.ts';
 import { authenticate, checkConfig, connectM365, m365Ready, mode, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, upsertUser, users, type Me, type Role, type User } from './auth.ts';
-import { canManage, canSee, changes, everyone, initSystem, saveTree, tree, type Tree, type Workspace } from './system.ts';
+import { canManage, canSee, changes, everyone, initSystem, saveTree, tree, writeJson, type Tree, type Workspace } from './system.ts';
 import { checkTicks, logins, runnerOf, signOut } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { endSignIn, isSignIn, passUpgrade, removeWebsite, setWebsite, startSignIn, viewPage, websites } from './browsers.ts';
@@ -29,6 +29,36 @@ const host = process.env.RF_HOST ?? '127.0.0.1';
 const tmpDir = join(root, '.tmp');
 initSystem(root);
 openStore(root);
+
+// A free name among a workspace's series: the name, else the name 2, 3 and on.
+function freeName(t: Tree, ws: string, name: string): string {
+  const taken = new Set(Object.values(t.series).filter(s => s.workspace === ws).map(s => s.name));
+  let n = name;
+  for (let k = 2; taken.has(n); k++) n = `${name} ${k}`;
+  return n;
+}
+
+// Before v0.2.17 each workspace had an Ad hoc series of one-offs. Each of its instances becomes a task, a single series of its own
+// with a copy of the Ad hoc .pylib; a wake or a request to start an Ad hoc instance is dropped.
+{
+  const t = tree(), w8 = wakes();
+  for (const [aid, a] of Object.entries(t.series).filter(([, s]) => (s as { adhoc?: boolean }).adhoc)) {
+    const moved = labels(aid);
+    for (const l of moved) {
+      const sid = newId();
+      t.series[sid] = { name: freeName(t, a.workspace, l.label), workspace: a.workspace, single: true, ...(a.archived && { archived: true }) };
+      mkdirSync(seriesDir(sid));
+      if (existsSync(join(seriesDir(aid), '.pylib'))) cpSync(join(seriesDir(aid), '.pylib'), join(seriesDir(sid), '.pylib'), { recursive: true });
+      moveInstance(instance(l.id), sid);
+    }
+    console.log(`${t.workspaces[a.workspace].name}/Ad hoc: its ${moved.length} instances are tasks now`);
+    delete t.series[aid];
+    delete w8.pending[aid];
+    for (const [rid, r] of Object.entries(w8.requests)) if (r.series === aid) delete w8.requests[rid];
+  }
+  saveTree(t);
+  writeJson('wakes.json', w8);
+}
 openSkills(root);
 checkConfig(host);
 rmSync(tmpDir, { recursive: true, force: true });
@@ -108,7 +138,7 @@ function listing(me: Me) {
     const series = Object.entries(t.series).filter(([, s]) => s.workspace === id).sort(byName).map(([sid, s]) => {
       const { shared } = seriesSettings(seriesDir(sid));
       return {
-        id: sid, name: s.name, archived: !!s.archived, adhoc: !!s.adhoc, shared_by: shared?.by ?? null, shared_logins: shared?.by === me.email ? shared.logins : [],
+        id: sid, name: s.name, archived: !!s.archived, single: !!s.single, shared_by: shared?.by ?? null, shared_logins: shared?.by === me.email ? shared.logins : [],
         wake: w8.pending[sid] ?? null,
         requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r })),
         instances: instances(sid).map(i => summary(i, w8)),
@@ -287,10 +317,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   if (kind === 'workspaces' && !id && req.method === 'POST') {
     const name = safeName(String(payload.name ?? ''));
     if (Object.values(t.workspaces).some(w => w.name === name)) throw new HttpError(409, `the name ${name} is taken; choose another`);
-    const wid = newId(), adhoc = newId();
+    const wid = newId();
     t.workspaces[wid] = { name, owners: [me.email], members: [] };
-    t.series[adhoc] = { name: 'Ad hoc', workspace: wid, adhoc: true };
-    mkdirSync(seriesDir(adhoc));
     saveTree(t);
     return send(res, 200, { id: wid });
   }
@@ -322,18 +350,32 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     return send(res, 200, 'ok');
   }
   if (kind === 'series' && !id && req.method === 'POST') {
-    const { workspace, name: asked } = payload, name = safeName(String(asked ?? ''));
+    // A series, or a task: a single series named Untitled, until its first prompt or a rename names it, and its one instance.
+    const { workspace, name: asked, single, logins } = payload;
     mustSee(me, t.workspaces[workspace]);
+    const name = single ? freeName(t, workspace, 'Untitled') : safeName(String(asked ?? ''));
     if (Object.values(t.series).some(s => s.workspace === workspace && s.name === name)) throw new HttpError(409, `${name} exists`);
-    const sid = newId();
-    t.series[sid] = { name, workspace };
+    const ticks = checkTicks(by, logins ?? []), sid = newId();
+    t.series[sid] = { name, workspace, ...(single && { single: true }) };
     mkdirSync(seriesDir(sid));
     saveTree(t);
-    return send(res, 200, { id: sid });
+    return send(res, 200, { id: sid, ...(single && { instance: createInstance(sid, name, by, ticks).id }) });
   }
   if (kind === 'series') {
     const s = t.series[id];
     mustSee(me, s && t.workspaces[s.workspace]);
+    if (action === 'promote') {
+      // A task made a series, as it is, under a name of its own: later instances roll forward from its first.
+      if (!s.single) throw new HttpError(400, `${s.name} is a series already`);
+      const name = safeName(String(payload.name ?? ''));
+      if (name !== s.name && Object.values(t.series).some(x => x.workspace === s.workspace && x.name === name)) throw new HttpError(409, `${name} exists`);
+      s.name = name;
+      delete s.single;
+      saveTree(t);
+      instances(id)[0].append(by, 'promote', { series: name });
+      return send(res, 200, 'ok');
+    }
+    if (s.single) throw new HttpError(400, `${s.name} is a task, with one instance and no settings: Start another based on this makes it a series`);
     if (req.method === 'POST') {
       if (instances(id).filter(i => i.doc.status === 'open').length >= MAX_OPEN) throw new HttpError(409, `${MAX_OPEN} instances are open; close one first`);
       const { label, logins: ticks } = payload;
@@ -345,7 +387,6 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const change = payload;
     if (change.name !== undefined && change.name !== s.name) {
       const name = safeName(String(change.name));
-      if (s.adhoc) throw new HttpError(400, 'the Ad hoc series keeps its name');
       if (Object.values(t.series).some(x => x.workspace === s.workspace && x.name === name)) throw new HttpError(409, `${name} exists`);
       s.name = name;
     }
@@ -361,6 +402,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // A person moves or cancels a pending wake, or sets one, as an agent's rf wake does: an open instance continues, a series starts LABEL.
     // A run wakes only in its own workspace: it reads wider ones, never acts there.
     const target = t.series[id] ? id : instance(id).seriesId, wake = wakes().pending[id];
+    if (t.series[id]?.single) throw new HttpError(400, `${t.series[id].name} is a task, with one instance: wake that`);
     if (!run) mustSee(me, t.workspaces[t.series[target].workspace]);
     else if (t.series[target].workspace !== t.series[run.inst.seriesId].workspace) throw new HttpError(403, `${named(t, target)} is in another workspace: you can read it, not wake it`);
     if (req.method === 'DELETE' && !wake) throw new HttpError(404, 'no wake pending');
@@ -401,23 +443,10 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   if (action === 'screen') throw new HttpError(405, "GET, or PUT by the instance's own run");
   if (req.method !== 'POST') throw new HttpError(405, 'POST only');
   if (action === 'duplicate') {
+    if (t.series[inst.seriesId].single) throw new HttpError(400, 'a task has one instance: Start another based on this makes it a series');
     if (inst.doc.status === 'open') throw new HttpError(409, 'only a closed or abandoned instance can be duplicated');
     if (instances(inst.seriesId).filter(i => i.doc.status === 'open').length >= MAX_OPEN) throw new HttpError(409, `${MAX_OPEN} instances are open; close one first`);
     return send(res, 200, { id: duplicateInstance(inst, url.searchParams.get('as') ?? '', by, checkTicks(by, payload.logins ?? [])).id });
-  }
-  if (action === 'promote') {
-    // Make it a series: a one-off ask of Ad hoc becomes the first instance of a new series, which later instances roll forward from.
-    if (!t.series[inst.seriesId].adhoc) throw new HttpError(400, 'only an Ad hoc instance can be made a series');
-    if (a || queued(inst)) throw new HttpError(409, "wait for the series' run to end");
-    const ws = t.series[inst.seriesId].workspace, name = safeName(String(payload.name ?? ''));
-    if (Object.values(t.series).some(x => x.workspace === ws && x.name === name)) throw new HttpError(409, `${name} exists`);
-    const sid = newId();
-    t.series[sid] = { name, workspace: ws };
-    mkdirSync(seriesDir(sid));
-    saveTree(t);
-    moveInstance(inst, sid);
-    inst.append(by, 'promote', { from: 'Ad hoc', series: name });
-    return send(res, 200, { id: sid });
   }
   if (inst.doc.status !== 'open') throw new HttpError(409, `instance is ${inst.doc.status}`);
   if (action === 'attach') {
@@ -458,6 +487,15 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       ...(run && ask && { ask: true, ...(who && { to: who }) }),
     });
     if (run) return send(res, 200, `${ask ? 'asked' : 'said'} in ${said.thread}, seq ${said.seq}`);
+    // Until a task is renamed, its first prompt's opening words name it.
+    const s = t.series[inst.seriesId], words = text.trim().split(/\s+/).slice(0, 6).join(' ').replace(/^\.+/, '').slice(0, 60);
+    if (s.single && words && !inst.log.some(e => e.op === 'rename' || (e.op === 'comment' && e !== said && isPerson(e)))) {
+      const from = inst.label;
+      s.name = freeName(t, s.workspace, safeName(words));
+      saveTree(t);
+      renameInstance(inst, s.name);
+      inst.append('server', 'rename', { from });
+    }
   } else if (action === 'resolve') {
     // Anyone resolves a thread, and nothing wakes; the agent only one it started, once it no longer applies.
     const { thread, text } = payload, posts = inst.threads().get(thread);
@@ -473,9 +511,20 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     return send(res, 200, 'ok');
   } else if (action === 'rename') {
     if (a || queued(inst)) throw new HttpError(409, "wait for the series' run to end");
-    const from = inst.label;
-    renameInstance(inst, url.searchParams.get('as') ?? '');
+    const from = inst.label, s = t.series[inst.seriesId], to = safeName(url.searchParams.get('as') ?? '');
+    // A task's name is its label.
+    if (s.single && to !== s.name && Object.values(t.series).some(x => x.workspace === s.workspace && x.name === to)) throw new HttpError(409, `${to} exists`);
+    renameInstance(inst, to);
+    if (s.single) {
+      s.name = to;
+      saveTree(t);
+    }
     inst.append(by, 'rename', { from });
+    return send(res, 200, 'ok');
+  } else if (action === 'logins') {
+    // The runner ticks the instance's logins anew, as before its first prompt.
+    if (runnerOf(inst).by !== by) throw new HttpError(403, `${runnerOf(inst).by} runs it, and ticks its logins`);
+    inst.append(by, 'logins', { logins: checkTicks(by, payload.logins ?? []) });
     return send(res, 200, 'ok');
   } else if (action === 'takeover') {
     // Taking over makes you the runner from now on, with your own logins ticked; whoever closes answers for the whole instance.

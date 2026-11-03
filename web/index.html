@@ -34,8 +34,9 @@ a { color: inherit; }
 .seg button { all: unset; cursor: pointer; padding: 1px 7px; font-size: 11.5px; color: var(--ink-3); }
 .seg button.sel { background: var(--sheet); color: var(--ink); }
 .row { display: flex; align-items: center; gap: 2px; min-height: 30px; padding: 0 4px 0 8px; border-radius: var(--r1); text-decoration: none; }
-.row.adhoc { margin-top: 6px; border-top: 1px solid var(--rule); border-radius: 0; }
-.row.adhoc .nm { font-style: italic; }
+.row.grp { margin-top: 6px; border-top: 1px solid var(--rule); border-radius: 0; }
+.row.grp .nm { font-style: italic; color: var(--ink-3); }
+.ticks2 { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 12.5px; color: var(--ink-2); margin: 6px 0; }
 .row.wake, .row.req { font-size: 12px; color: var(--ink-2); }
 .row .nm { flex: 0 1 auto; min-width: 45%; padding: 5px 0; text-decoration: none; overflow-wrap: anywhere; }
 .row .n { flex: 1 1 0; min-width: 0; color: var(--ink-3); font-size: 12px; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; padding-left: 6px; }
@@ -361,7 +362,7 @@ function fileUrl(path, kind = 'files') {
 }
 const ext = f => (f && f.includes('.') ? f.split('.').pop() : '').toUpperCase();
 
-let tree = [], expired = [], cur = null, data = null, lines = [], linesKey = '', openItem = null, hover = null, showClosed = false, showArchived = false, pv = null, me = null;
+let tree = [], expired = [], offers = [], cur = null, data = null, lines = [], linesKey = '', openItem = null, hover = null, showClosed = false, showArchived = false, pv = null, me = null;
 let seen = {}, prevSigs = {}, uploads = [], shown = '', refreshes = 0, threads = [];
 // Threads with a reply box open: those waiting on people have one anyway, the others once Reply is clicked.
 const replying = new Set();
@@ -408,16 +409,21 @@ const seriesPath = c => `/api/series/${c.s.id}`;
 const instPath = () => `/api/instances/${cur.i.id}`;
 const go = id => { location.hash = '#/' + id; };
 
+// Newest activity first, as in a chat: an instance's latest log entry, now while it runs; a series' newest instance's, and a
+// workspace's newest series'. A series' instances keep their labels' order.
+const recent = i => i.running ? new Date().toISOString() : i.active, newest = xs => xs.reduce((m, x) => x > m ? x : m, '');
+const sAct = s => newest(s.instances.map(recent)), wAct = w => newest(w.series.map(sAct)), byAct = f => (a, b) => (f(b) > f(a)) - (f(b) < f(a));
+
 async function refresh() {
   me ??= await api('/me');
   const n = ++refreshes, [t, mine] = await Promise.all([api('/api'), api('/logins')]);
   const id = location.hash.slice(2), all = t.flatMap(w => [[w], ...w.series.flatMap(s => [[w, s], ...s.instances.map(i => [w, s, i])])]);
   let [w, s, i] = all.find(e => e.at(-1).id === id) ?? [t.find(w => !w.archived)];
-  s ??= w?.series.find(s => !s.archived && !s.adhoc) ?? w?.series.find(s => !s.archived);
+  s ??= w?.series.filter(s => !s.archived).sort(byAct(sAct))[0];
   i ??= s?.instances.find(i => i.status === 'open') ?? s?.instances.at(-1);
   const path = i ? `/api/instances/${i.id}` : '', [d, st] = path ? await fetchInstance(path) : [null, null];
   if (n !== refreshes) return;
-  [tree, expired] = [t, mine.filter(l => l.expired)];
+  [tree, expired, offers] = [t, mine.filter(l => l.expired), mine.flatMap(l => l.offers)];
   land(w && { w, s, i }, path, d, st);
 }
 
@@ -477,10 +483,12 @@ function renderSide() {
   const asks = s => !s.archived && s.instances.some(i => i.asks.length);
   const btn = (act, title, glyph, id = '') => `<button class="add" data-act="${act}" data-id="${id}" title="${title}">${glyph}</button>`;
   const chev = id => `<button class="chev" data-act="expand" data-id="${id}">${expanded.has(id) ? '\u25BE' : '\u25B8'}</button>`;
-  // Newest activity first, as in a chat: an instance's latest log entry, now while it runs; a series' newest instance's, and a
-  // workspace's newest series'. A series' instances keep their labels' order, and Ad hoc comes last, its asks newest first.
-  const now = new Date().toISOString(), recent = i => i.running ? now : i.active, newest = xs => xs.reduce((m, x) => x > m ? x : m, '');
-  const sAct = s => newest(s.instances.map(recent)), wAct = w => newest(w.series.map(sAct)), byAct = f => (a, b) => (f(b) > f(a)) - (f(b) < f(a));
+  const row = i => {
+    const st = i.running ? '<span class="spin"></span> running' : i.queued ? '\u29D7 queued' : i.asks.length ? `<span class="q">${i.asks.length} to answer</span>` : i.wake ? `wakes ${when(i.wake)}` : i.status === 'open' ? '' : i.status;
+    const k = `rev:/api/instances/${i.id}`;
+    localStorage[k] ??= i.rev;
+    return `<a class="row inst ${i.status} ${cur?.i?.id === i.id ? 'on' : ''}" href="#/${i.id}"><span class="nm">${esc(i.label)}${i.rev > +localStorage[k] ? '<span class="dot k"></span>' : ''}</span><span class="n">${st}</span></a>`;
+  };
   const waits = waiting().length;
   let h = waits ? `<div class="row waits"><a class="nm" data-act="waiting">Waiting on you<span class="q"> ${waits}</span></a></div>` : '';
   h += `<div class="row head"><span class="nm">Workspaces</span><span class="seg">${['mine', 'all'].map(v => `<button class="${(v === 'mine') === mine ? 'sel' : ''}" data-act="workspaces" data-id="${v}">${v === 'mine' ? 'Mine' : 'All'}</button>`).join('')}</span>${btn('new-workspace', 'New workspace', '+')}</div>`;
@@ -488,16 +496,16 @@ function renderSide() {
     const won = cur?.w.id === w.id;
     if (!listed(w, won) || (mine && !w.mine && !won)) continue;
     h += `<div class="row ws ${won ? 'on' : ''} ${w.archived ? 'archived' : ''}">${chev(w.id)}<a class="nm" href="#/${w.id}">${esc(w.name)}${!expanded.has(w.id) && w.series.some(asks) ? '<span class="dot"></span>' : ''}</a>`
-      + (w.archived ? '<span class="n">archived</span>' : '') + btn('workspace-settings', 'Settings', '\u2699', w.id) + btn('new-series', 'New series', '+', w.id) + '</div>';
+      + (w.archived ? '<span class="n">archived</span>' : '') + btn('workspace-settings', 'Settings', '\u2699', w.id) + btn('new-task', 'New task', '+', w.id) + '</div>';
     if (!expanded.has(w.id)) continue;
     h += '<div class="tree">';
-    for (const s of [...w.series.filter(s => !s.adhoc).sort(byAct(sAct)), ...w.series.filter(s => s.adhoc)]) {
+    for (const s of w.series.filter(s => !s.single).sort(byAct(sAct))) {
       const on = cur?.s?.id === s.id, open = s.instances.filter(i => i.status === 'open');
       if (!listed(s, on)) continue;
       // A series that wakes itself but has nothing open and no wake set has a broken chain.
       const broken = s.shared_by && !open.length && !s.wake && !s.requests.length;
       const note = s.archived ? 'archived' : broken ? '<span class="q">no wake set</span>' : s.requests.length ? `<span class="q">${s.requests.length} to start</span>` : open.length ? `${open.length} open` : s.wake ? `wakes ${when(s.wake.at)}` : '';
-      h += `<div class="row ser ${on ? 'on' : ''} ${s.archived ? 'archived' : ''} ${s.adhoc ? 'adhoc' : ''}">${chev(s.id)}<a class="nm" href="#/${s.id}">${esc(s.name)}${!expanded.has(s.id) && asks(s) ? '<span class="dot"></span>' : ''}</a>`
+      h += `<div class="row ser ${on ? 'on' : ''} ${s.archived ? 'archived' : ''}">${chev(s.id)}<a class="nm" href="#/${s.id}">${esc(s.name)}${!expanded.has(s.id) && asks(s) ? '<span class="dot"></span>' : ''}</a>`
         + `<span class="n">${note}</span>` + btn('settings', 'Settings', '\u2699', s.id) + btn('new-instance', 'New instance', '+', s.id) + '</div>';
       if (!expanded.has(s.id)) continue;
       const closed = s.instances.length - open.length;
@@ -505,15 +513,14 @@ function renderSide() {
       if (s.wake) h += `<div class="row wake"><span class="nm">Starts ${esc(s.wake.label)} ${when(s.wake.at)}</span><span class="n" title="${esc(s.wake.reason)}">wake</span></div>`;
       for (const r of s.requests) h += `<div class="row req"><span class="nm" title="${esc(r.reason)}">${esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)}</span>`
         + `<button class="add" data-act="req-start" data-id="${r.id}" title="Start it">\u25B6</button><button class="add" data-act="req-drop" data-id="${r.id}" title="Dismiss">\u00D7</button></div>`;
-      for (const i of s.instances.filter(i => i.status === 'open' || showClosed || i.id === cur?.i?.id).sort(s.adhoc ? byAct(recent) : () => 0)) {
-        const st = i.running ? '<span class="spin"></span> running' : i.queued ? '\u29D7 queued' : i.asks.length ? `<span class="q">${i.asks.length} to answer</span>` : i.wake ? `wakes ${when(i.wake)}` : i.status === 'open' ? '' : i.status;
-        const k = `rev:/api/instances/${i.id}`;
-        localStorage[k] ??= i.rev;
-        h += `<a class="row inst ${i.status} ${cur?.i?.id === i.id ? 'on' : ''}" href="#/${i.id}"><span class="nm">${esc(i.label)}${i.rev > +localStorage[k] ? '<span class="dot k"></span>' : ''}</span><span class="n">${st}</span></a>`;
-      }
+      h += s.instances.filter(i => i.status === 'open' || showClosed || i.id === cur?.i?.id).map(row).join('');
       if (closed) h += `<button class="quiet" data-act="toggle-closed">${showClosed ? 'Hide' : 'Show'} closed (${closed})</button>`;
       h += '</div>';
     }
+    // Tasks, each a series of its one instance, listed under a heading that is no series.
+    const tasks = w.series.filter(s => s.single && listed(s, cur?.s?.id === s.id)).map(s => s.instances[0]).sort(byAct(recent)), done = tasks.filter(i => i.status !== 'open').length;
+    if (tasks.length) h += '<div class="row grp"><span class="nm">Ungrouped</span></div>' + tasks.filter(i => i.status === 'open' || showClosed || i.id === cur?.i?.id).map(row).join('')
+      + (done ? `<button class="quiet" data-act="toggle-closed">${showClosed ? 'Hide' : 'Show'} closed (${done})</button>` : '');
     h += '</div>';
   }
   const archived = tree.filter(w => w.archived).length + tree.filter(w => expanded.has(w.id)).flatMap(w => w.series).filter(s => s.archived).length;
@@ -531,7 +538,7 @@ function renderBar() {
   if (editing) return;
   const open = data?.doc.status === 'open', renamable = open && !cur.s.instances.some(i => i.running) && !cur.i.queued;
   let h = `<button class="menu" data-act="menu">☰</button>`;
-  h += `<div><div class="crumb">${esc(cur?.w.name ?? '')}${cur?.s ? ' · ' + esc(cur.s.name) : ''}</div><h1>${renamable ? `<span class="t" data-act="rename" title="Rename">${esc(cur.i.label)}</span><button class="ren" data-act="rename" title="Rename">\u270E</button>` : esc(cur?.i?.label ?? 'No instance')}</h1></div>`;
+  h += `<div><div class="crumb">${esc(cur?.w.name ?? '')}${cur?.s ? ' · ' + esc(cur.s.single ? 'Ungrouped' : cur.s.name) : ''}</div><h1>${renamable ? `<span class="t" data-act="rename" title="Rename">${esc(cur.i.label)}</span><button class="ren" data-act="rename" title="Rename">\u270E</button>` : esc(cur?.i?.label ?? 'No instance')}</h1></div>`;
   if (data) {
     const d = lastDone(), talk = threads.filter(t => t.waits).length;
     const state = data.doc.status !== 'open' ? `${data.doc.status === 'closed' ? 'Closed' : 'Abandoned'} · read-only`
@@ -541,10 +548,10 @@ function renderBar() {
     h += `<div class="state">${state}</div>`;
     if (!ui.open) h += `<button class="btn top" data-act="show-panel">Conversation${talk ? ` (${talk})` : ''}</button>`;
     const off = data.run ? 'disabled title="Available when the run ends"' : '';
-    if (open) h += data.runner.by === me.email ? `<button class="btn commit top" data-act="close" ${off}>Close instance</button>`
+    if (open) h += data.runner.by === me.email ? `<button class="btn commit top" data-act="close" ${off}>${cur.s.single ? 'Close task' : 'Close instance'}</button>`
       : `<button class="btn top" data-act="takeover" ${off || `title="${esc(data.runner.by)} runs it: their logins, their sign-off. Taking over makes it yours."`}>Take over</button>`;
-    else h += `<button class="btn top" data-act="duplicate">Duplicate</button>`;
-    if (open || cur.s.adhoc) h += `<button class="btn top" data-act="menu-instance" title="${open ? 'Rename, abandon' : 'Make it a series'}">\u22EF</button>`;
+    else h += cur.s.single ? '<button class="btn top" data-act="start-another">Start another based on this</button>' : '<button class="btn top" data-act="duplicate">Duplicate</button>';
+    if (open) h += '<button class="btn top" data-act="menu-instance" title="Rename, abandon">\u22EF</button>';
   }
   put($('#bar'), h);
 }
@@ -666,10 +673,11 @@ function logText(e) {
     wake: () => `${e.note ? `${esc(e.from)} would wake it: a note for ${esc(data.runner.by)}` : `Woken${e.from ? ` by ${esc(e.from)}` : ''}`}<div class="d">${esc(e.reason)}</div>`,
     expired: () => `Waiting for ${esc(e.runner)} to sign in to ${esc(e.name ?? (e.login === 'm365' ? 'Microsoft 365' : e.login))} again${e.runner === me.email && !data.log.some(x => x.seq > e.seq && x.op === 'wake' && x.login === e.login) ? `<div>${signInHtml(e.login, e.name ?? e.login)}</div>` : ''}`,
     takeover: () => `${w} took over from ${esc(e.from)}${e.logins?.length ? `<div class="d">Logins: ${esc(e.logins.join(', '))}</div>` : ''}`,
-    promote: () => `${w} made this one-off the first instance of ${esc(e.series)}`,
+    promote: () => `${w} made it a series, ${esc(e.series)}`,
+    logins: () => `${w} ticked logins: ${esc(e.logins.join(', ') || 'none')}`,
     egress: () => `Run ${e.run} ${e.allowed ? 'reached' : 'was refused'} ${esc(e.host)}`,
     graph: () => `${w} read ${esc(e.path)} from Microsoft 365${e.status >= 300 ? `, which answered ${e.status}` : ''}${e.file ? `<div class="f"><a data-act="preview" data-file="${esc(e.file)}">${esc(e.file)}</a></div>` : ''}`,
-    rename: () => `${w} renamed the instance from ${esc(e.from)}`,
+    rename: () => e.by === 'server' ? `Named by its first prompt, from ${esc(e.from)}` : `${w} renamed the instance from ${esc(e.from)}`,
     duplicate: () => `${w} made this instance as a copy of ${esc(e.from)}`,
     browser: () => e.action === 'get' ? `${w} fetched ${esc(e.from)} from the browser on ${esc(e.site)}${f}` : `${w} closed run ${e.run}'s browser${e.site ? ` on ${esc(e.site)}, in ${esc(e.login)}'s login` : ''}<div class="d">${e.error ? esc(e.error) : `${e.requests} requests${e.writes ? `, ${e.writes} writes` : ''}${e.blocked ? `, ${e.blocked} blocked` : ''}`}</div>${f}`,
     shot: () => `Run ${e.run}'s browser on ${esc(e.site)}${shotsHtml([e])}`,
@@ -688,7 +696,11 @@ function renderLog() {
   if (!data || !ui.open) return;
   // A half-written comment or reply, or files picked for one, holds the conversation still until it's sent or cleared.
   const drafting = [...$('#log').querySelectorAll('textarea')].some(t => t.value.trim()) || [...$('#log').querySelectorAll('input[type=file]')].some(f => f.files.length);
-  if (ui.tab === 'conv') return drafting || put($('#log'), tabsHtml() + conversationHtml());
+  if (ui.tab === 'conv') {
+    if (!drafting) put($('#log'), tabsHtml() + conversationHtml());
+    if (ui.focus) $('#newcomment')?.focus();
+    return void (ui.focus = false);
+  }
   if (ui.tab === 'proc') {
     const key = `${cur.i.id}:${data.doc.rev}`;
     if (proc.key !== key) loadProcess(key);
@@ -839,7 +851,11 @@ function conversationHtml() {
   if (threads.some(t => t.waits)) h += `<h3>Waiting on people</h3>` + threads.filter(t => t.waits).map(threadHtml).join('');
   if (report) h += `<h3>Report, run ${report.run}</h3><div class="post">${md(report.text)}</div>`;
   if (rest.length) h += `<h3>Threads</h3>` + rest.map(threadHtml).join('');
-  if (open) h += `<h3>${ui.on ? `Comment on ${name(ui.on)}${ui.ref ? ` at ${esc(ui.ref)}` : ''}` : 'Comment on the instance'}</h3><textarea id="newcomment" rows="3" placeholder="${data.runner.by === me.email || cur.s.shared_by === data.runner.by ? 'The agent replies in the thread' : `A note for ${esc(data.runner.by)}: the agent takes it up once they do`}"></textarea><input type="file" id="newfiles" multiple><div><button class="btn primary" data-act="comment">Comment</button></div>`;
+  // Before its first run, its runner may tick its logins anew where they write its first prompt.
+  const first = data.runner.by === me.email && !data.log.some(e => e.op === 'run');
+  if (open) h += `<h3>${ui.on ? `Comment on ${name(ui.on)}${ui.ref ? ` at ${esc(ui.ref)}` : ''}` : 'Comment on the instance'}</h3>`
+    + (first && offers.length ? `<div class="ticks2">Logins it may use:${offers.map(o => `<label><input type="checkbox" class="ctick" value="${esc(o.id)}" ${data.runner.logins.includes(o.id) ? 'checked' : ''}> ${esc(o.name)}</label>`).join('')}</div>` : '')
+    + `<textarea id="newcomment" rows="3" placeholder="${first ? 'What should the agent do? Drop files here too' : data.runner.by === me.email || cur.s.shared_by === data.runner.by ? 'The agent replies in the thread' : `A note for ${esc(data.runner.by)}: the agent takes it up once they do`}"></textarea><input type="file" id="newfiles" multiple><div><button class="btn primary" data-act="comment">Comment</button></div>`;
   return h + '</div>';
 }
 
@@ -943,7 +959,7 @@ function renderPv() {
       + `<h3>Reading</h3><div class="sub">Agents here read every series of this workspace${s.reads.length ? `, and of ${esc(s.reads.join(', '))}, which ${s.reads.length > 1 ? 'have' : 'has'} everyone this one has` : ''}. They write only here.${s.read_by.length ? ` Agents in ${esc(s.read_by.join(', '))}, whose people are all here, read this one.` : ''}</div>`
       + agentsHtml(s, 'Every agent in this workspace reads it at the start of each run: its conventions, and changes that cut across its series, such as a renamed entity.', s.manage)
       + (s.manage ? `<div class="row2"><button class="btn danger" data-act="archive-workspace">${s.archived ? 'Restore workspace' : 'Archive workspace'}</button></div>` : '');
-    if (s.kind === 'series') h += (s.adhoc ? '' : `<h3>Name</h3><input type="text" id="sname" value="${esc(s.name)}">`)
+    if (s.kind === 'series') h += `<h3>Name</h3><input type="text" id="sname" value="${esc(s.name)}">`
       + `<h3>Who starts runs</h3>${startsHtml(s)}`
       + `<h3>Cost</h3><div class="sub">This series' runs have cost ${usd(s.cost)} so far, ${usd(s.cost / Math.max(1, s.closed))} per closed instance.</div>`
       + `<div class="row2"><button class="btn danger" data-act="archive-series">${s.archived ? 'Restore series' : 'Archive series'}</button></div>`;
@@ -1057,7 +1073,8 @@ const ticked = () => [...document.querySelectorAll('#pv input.tick:checked')].ma
 const myOffers = async () => (await api('/logins')).flatMap(l => l.offers);
 
 function startHtml(s) {
-  return (s.label !== undefined ? `<h3>Label</h3><input type="text" id="slabel" value="${esc(s.label)}" placeholder="such as a date">` : '')
+  return (s.series !== undefined ? `<h3>Series</h3><div class="sub">This task becomes its first instance, which the new one rolls forward from.</div><input type="text" id="sseries" value="${esc(s.series)}">` : '')
+    + (s.label !== undefined ? `<h3>${s.series !== undefined ? 'The new instance' : 'Label'}</h3><input type="text" id="slabel" value="${esc(s.label)}" placeholder="such as a date">` : '')
     + `<h3>Logins this instance may use</h3>` + ticksHtml(s.offers) + `<div><button class="btn primary" data-act="start-go">${esc(s.go)}</button></div>`;
 }
 
@@ -1067,7 +1084,7 @@ const signInHtml = (id, name) => id === 'm365' ? '<a class="btn" href="/logins/m
 
 // What waits on you: the agent's asks for you, requests to start a series you can see, and chains of wakes that broke.
 function waiting() {
-  const out = [], at = (w, s, i) => `<a href="#/${i?.id ?? w.id}">${esc(w.name)} · ${esc(s.name)}${i ? ' · ' + esc(i.label) : ''}</a>`;
+  const out = [], at = (w, s, i) => `<a href="#/${i?.id ?? w.id}">${esc(w.name)}${s.single ? '' : ' · ' + esc(s.name)}${i ? ' · ' + esc(i.label) : ''}</a>`;
   for (const w of tree.filter(w => !w.archived)) for (const s of w.series.filter(s => !s.archived)) {
     for (const i of s.instances) {
       const n = i.asks.filter(e => e === me.email).length;
@@ -1101,21 +1118,21 @@ function openMenu(btn, items) {
 
 // The page's own dialog, to confirm or to ask for a name: it resolves with what act returns, or null if cancelled. Until act
 // succeeds it stays open, saying why it didn't.
-function ask({ title, text = '', value, placeholder = '', ok, kind = 'primary', act }) {
+function ask({ title, text = '', value, placeholder = '', ok, alt, kind = 'primary', act }) {
   const d = $('#ask');
   d.innerHTML = `<form method="dialog"><h3>${esc(title)}</h3>${text ? `<p>${esc(text)}</p>` : ''}`
     + (value === undefined ? '' : `<input type="text" value="${esc(value)}" placeholder="${esc(placeholder)}" required autocomplete="off">`)
-    + `<div class="err"></div><div class="foot"><button class="btn ${kind}" value="ok">${esc(ok)}</button><button class="btn" formnovalidate>Cancel</button></div></form>`;
+    + `<div class="err"></div><div class="foot"><button class="btn ${kind}" value="ok" ${alt ? 'formnovalidate' : ''}>${esc(ok)}</button>${alt ? `<button class="btn" value="alt">${esc(alt)}</button>` : ''}<button class="btn" formnovalidate>Cancel</button></div></form>`;
   d.showModal();
   d.querySelector('input')?.select();
   return new Promise(done => {
     d.onclose = () => done(null);
     d.querySelector('form').onsubmit = async e => {
-      if (e.submitter.value !== 'ok') return;
+      if (!['ok', 'alt'].includes(e.submitter.value)) return;
       e.preventDefault();
       e.submitter.setAttribute('aria-busy', 'true');
       try {
-        done(await act(value === undefined ? undefined : d.querySelector('input').value.trim()));
+        done(await act(value === undefined ? undefined : d.querySelector('input').value.trim(), e.submitter.value === 'alt'));
         d.close();
       } catch (err) {
         d.querySelector('.err').textContent = err.message;
@@ -1157,8 +1174,8 @@ function closePv() {
   renderPv();
 }
 
-async function openStart(title, go, then, label) {
-  pv = { title, settings: { kind: 'start', go, then, label, offers: await myOffers() } };
+async function openStart(title, go, then, label, series) {
+  pv = { title, settings: { kind: 'start', go, then, label, series, offers: await myOffers() } };
   renderPv();
   $('#slabel')?.focus();
 }
@@ -1229,15 +1246,15 @@ async function onAct(act, el, was) {
   if (act === 'expand') { expandRow(el.dataset.id); renderSide(); }
   if (act === 'workspaces') { localStorage.workspaces = el.dataset.id; renderSide(); }
   // A row's settings and + act on that row, which they open first.
-  if (['workspace-settings', 'new-series', 'settings', 'new-instance'].includes(act) && el.dataset.id && ![cur?.w.id, cur?.s?.id].includes(el.dataset.id)) {
+  if (['workspace-settings', 'new-task', 'settings', 'new-instance'].includes(act) && el.dataset.id && ![cur?.w.id, cur?.s?.id].includes(el.dataset.id)) {
     location.hash = `#/${el.dataset.id}`;
     await refresh();
   }
   if (act === 'menu-instance') {
-    const open = data.doc.status === 'open', busy = cur.s.instances.some(i => i.running) || cur.i.queued;
+    const busy = cur.s.instances.some(i => i.running) || cur.i.queued;
     openMenu(el, [
-      open && ['Rename', 'rename', '', busy && "Available when the series' run ends"], cur.s.adhoc && ['Make it a series', 'promote'],
-      open && data.runner.by === me.email && ['-'], open && data.runner.by === me.email && ['Abandon', 'abandon', 'danger', data.run && 'Available when the run ends'],
+      ['Rename', 'rename', '', busy && "Available when the series' run ends"], cur.s.single && ['Start another based on this', 'start-another'],
+      data.runner.by === me.email && ['-'], data.runner.by === me.email && ['Abandon', 'abandon', 'danger', data.run && 'Available when the run ends'],
     ]);
   }
   if (act === 'tab') {
@@ -1309,7 +1326,6 @@ async function onAct(act, el, was) {
     await api(`/api/requests/${el.dataset.id}`, { method: 'DELETE' });
     await refresh();
   }
-  if (act === 'promote' && await ask({ title: 'Make it a series', text: `${cur.i.label} becomes the first instance of a new series, which later instances roll forward from.`, value: '', placeholder: 'Name of the series', ok: 'Make it a series', act: name => api(`${instPath()}/promote`, { method: 'POST', body: JSON.stringify({ name }) }) })) await refresh();
   if (act === 'compare') {
     const p = pv;
     p.old ??= (await api(fileUrl(p.was, 'preview'))).sheets;
@@ -1353,16 +1369,33 @@ async function onAct(act, el, was) {
   }
   if (act === 'close') {
     const waits = threads.filter(t => t.waits);
-    const text = 'It becomes an example for later instances.' + (waits.length ? '\n\nClosing accepts what the agent did for each ask still waiting:\n' + waits.map(t => `• ${firstLine(t.last.text)}`).join('\n') : '');
-    if (await ask({ title: `Close ${cur.i.label}?`, text, ok: 'Close instance', kind: 'commit', act: () => api(`${instPath()}/close`, { method: 'POST' }) })) await refresh();
+    const task = cur.s.single, text = (task ? 'If it will recur, make it a series under the name below: this task becomes its first instance, which later ones roll forward from.' : 'It becomes an example for later instances.')
+      + (waits.length ? '\n\nClosing accepts what the agent did for each ask still waiting:\n' + waits.map(t => `• ${firstLine(t.last.text)}`).join('\n') : '');
+    const close = async (name, promote) => {
+      if (promote) await api(`${seriesPath(cur)}/promote`, { method: 'POST', body: JSON.stringify({ name }) });
+      return api(`${instPath()}/close`, { method: 'POST' });
+    };
+    if (await ask({ title: `Close ${cur.i.label}?`, text, ...(task && { value: cur.i.label, alt: 'Make it a series and close' }), ok: task ? 'Close task' : 'Close instance', kind: 'commit', act: close })) await refresh();
   }
   if (act === 'abandon' && await ask({ title: `Abandon ${cur.i.label}?`, text: "It stays as it is, but isn't an example or a starting point for later instances.", ok: 'Abandon', kind: 'danger', act: () => api(`${instPath()}/abandon`, { method: 'POST' }) })) await refresh();
   if (act === 'new-instance') await openStart('New instance', 'Start', ({ label, logins }) => api(seriesPath(cur), { method: 'POST', body: JSON.stringify({ label, logins }) }), '');
+  // A task starts at once, Untitled, with the logins last ticked, on its conversation, ready for the prompt that starts its run.
+  if (act === 'new-task') {
+    const offers = new Set((await myOffers()).map(o => o.id)), logins = JSON.parse(localStorage.ticks ?? '[]').filter(id => offers.has(id));
+    const { instance } = await api('/api/series', { method: 'POST', body: JSON.stringify({ workspace: cur.w.id, single: true, logins }) });
+    Object.assign(ui, { open: true, tab: 'conv', on: null, ref: null, focus: true });
+    go(instance);
+  }
+  if (act === 'start-another') await openStart(`Start another based on ${cur.i.label}`, 'Start', async ({ label, logins, name }) => {
+    await api(`${seriesPath(cur)}/promote`, { method: 'POST', body: JSON.stringify({ name }) });
+    return api(seriesPath(cur), { method: 'POST', body: JSON.stringify({ label, logins }) });
+  }, '', cur.i.label);
   if (act === 'takeover') await openStart(`Take over ${cur.i.label}`, 'Take over', ({ logins }) => api(`${instPath()}/takeover`, { method: 'POST', body: JSON.stringify({ logins }) }));
   if (act === 'start-go') {
     const s = pv.settings, label = $('#slabel')?.value.trim();
     if (label === '') return toast('Give it a label');
-    const r = await s.then({ label, logins: ticked() });
+    localStorage.ticks = JSON.stringify(ticked());
+    const r = await s.then({ label, logins: ticked(), name: $('#sseries')?.value.trim() });
     pv = null;
     renderPv();
     if (r?.id) go(r.id);
@@ -1423,10 +1456,8 @@ async function onAct(act, el, was) {
     pv.settings.logins = await api('/logins');
     renderPv();
   }
-  if (act === 'new-series' || act === 'new-workspace') {
-    const series = act === 'new-series', made = await ask(series
-      ? { title: 'New series', text: `In ${cur.w.name}.`, value: '', placeholder: 'Name, such as Bank rec', ok: 'Make series', act: name => api('/api/series', { method: 'POST', body: JSON.stringify({ workspace: cur.w.id, name }) }) }
-      : { title: 'New workspace', text: 'Such as a client. You become its owner.', value: '', placeholder: 'Name', ok: 'Make workspace', act: name => api('/api/workspaces', { method: 'POST', body: JSON.stringify({ name }) }) });
+  if (act === 'new-workspace') {
+    const made = await ask({ title: 'New workspace', text: 'Such as a client. You become its owner.', value: '', placeholder: 'Name', ok: 'Make workspace', act: name => api('/api/workspaces', { method: 'POST', body: JSON.stringify({ name }) }) });
     if (made) go(made.id);
   }
 }
@@ -1438,6 +1469,12 @@ document.addEventListener('change', async ev => {
   if (el.id === 'sname') await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) });
   else if (el.matches('#pv input.tick') && pv.settings.kind === 'series' && pv.settings.shared_by === me.email) await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ share: true, logins: ticked() }) });
   else if (el.id === 'wname') await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) });
+  else if (el.matches('#log input.ctick')) {
+    const logins = [...document.querySelectorAll('#log input.ctick:checked')].map(i => i.value);
+    localStorage.ticks = JSON.stringify(logins);
+    await api(`${instPath()}/logins`, { method: 'POST', body: JSON.stringify({ logins }) });
+    return refresh();
+  }
   else return;
   saved();
   await refresh();
@@ -1457,6 +1494,14 @@ for (const type of ['dragover', 'dragleave', 'drop']) {
     document.querySelectorAll('.drag').forEach(x => x.classList.remove('drag'));
     if (type === 'dragover') (t ?? pane).classList.add('drag');
     if (type === 'drop') upload([...e.dataTransfer.files], pane.dataset.pane, t?.dataset.item);
+  });
+}
+// A comment's box takes dropped files as its attachments.
+for (const type of ['dragover', 'drop']) {
+  $('#log').addEventListener(type, e => {
+    if (!e.target.closest('#newcomment, #newfiles') || !e.dataTransfer.types.includes('Files')) return;
+    e.preventDefault();
+    if (type === 'drop') $('#newfiles').files = e.dataTransfer.files;
   });
 }
 addEventListener('dragover', e => { if (!e.defaultPrevented) { e.preventDefault(); e.dataTransfer.dropEffect = 'none'; } });

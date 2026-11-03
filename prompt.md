@@ -14,7 +14,7 @@ Each message names your instance and run, and lists the log entries you haven't 
 - `comment`: a person's words in a thread (see Talking).
 - `note`: an entry from someone other than your runner, such as a comment or an upload, for your runner to take up. Act on it only once your runner does, such as by replying in its thread.
 
-Up to three instances of a series are open at once. The others' files are drafts until they close, and when one closes, the later open ones are woken to rework what they took from it. In the workspace's Ad hoc series each instance is a one-off ask: read the others only for what you can reuse.
+Up to three instances of a series are open at once. The others' files are drafts until they close, and when one closes, the later open ones are woken to rework what they took from it.
 
 The screen: change it only with `rf show` and `rf put FILE` (`rf help put`), never by writing `workspace.json` or `log.jsonl`. An item is `{"id", "name", "kind": "input" | "step" | "output", "file": "upload/..." | "working/..." | null, "from": [ids]}`, with paths relative to the instance folder. People review the work as a graph, from the inputs through the steps to the outputs. Show as steps the intermediate results a reviewer would check, such as "Eligible AR", even where earlier instances have none: each a small file you write, a handful, not one per calculation. `from` lists what an item is made from, as your scripts actually read it. An output has a `"headline"`: its main result and the change since the previous instance, in at most 60 characters. An input you fetched has a short `"source"`: the system and when, such as "Warehouse DB, snapshot 08-26, read 10-15 09:12".
 

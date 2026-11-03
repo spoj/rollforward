@@ -57,9 +57,9 @@ export function checkTicks(email: string, ticks: unknown): string[] {
   return ticks;
 }
 
-// An instance's runner is whoever made it, copied it or last took it over, with the offers they ticked for it then.
+// An instance's runner is whoever made it, copied it or last took it over, with the offers they ticked for it then or since.
 export function runnerOf(inst: Instance): { by: string; logins: string[] } {
-  const e = inst.log.findLast(e => e.op === 'create' || e.op === 'duplicate' || e.op === 'takeover')!;
+  const e = inst.log.findLast(e => ['create', 'duplicate', 'takeover', 'logins'].includes(e.op))!;
   return { by: e.by, logins: (e.logins as string[] | undefined) ?? [] };
 }
 

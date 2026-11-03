@@ -71,15 +71,25 @@ test("a series' gear opens its settings, which save as they change; a click besi
   await page.waitForSelector('#pv:not([open])', { state: 'attached' });
 });
 
-test('a new series asks for its name, says in the dialog why one is refused, and lists after those with activity', async () => {
-  await page.click('[data-act=new-series]');
-  await page.keyboard.type('Weekly borrowing base');
-  await page.keyboard.press('Enter');
-  await page.waitForSelector('#ask .err:text("exists")');
-  await page.fill('#ask input', 'Bank rec');
-  await page.keyboard.press('Enter');
-  await page.waitForSelector('.row.ser.on .nm:text-is("Bank rec")');
-  assert.deepEqual(await page.locator('.row.ser .nm').allTextContents(), ['Weekly borrowing base', 'Bank rec', 'Ad hoc'], 'newest activity first: a new series has none yet, and Ad hoc comes last');
+test("the workspace's + starts a task at once, which its first prompt names, newest first under Ungrouped; closing makes it a series if asked", async () => {
+  for (const prompt of ['Apple orchard audit for 2026', 'Zebra crossing survey']) {
+    await page.hover('.row.ws.on');
+    await page.click('.row.ws.on [data-act=new-task]');
+    await page.waitForSelector('#bar h1 .t:text-is("Untitled")');
+    assert.equal(await page.evaluate(() => document.activeElement?.id), 'newcomment', 'its conversation waits for the prompt');
+    await page.keyboard.type(prompt);
+    await page.click('[data-act=comment]');
+    await page.waitForSelector(`#bar h1 .t:text-is("${prompt}")`);
+  }
+  assert.equal(await page.textContent('#bar .crumb'), 'larkfield · Ungrouped');
+  assert.deepEqual(await page.locator('.row.grp ~ a.row.inst .nm').allTextContents(), ['Zebra crossing survey', 'Apple orchard audit for 2026']);
+  await page.waitForSelector('#bar .state .bad:text("Run 1 failed")');
+  await page.click('#bar [data-act=close]');
+  await page.fill('#ask input', 'Zebra surveys');
+  await page.click('#ask button:text-is("Make it a series and close")');
+  await page.waitForSelector('.row.ser .nm:text-is("Zebra surveys")');
+  assert.deepEqual(await page.locator('.row.ser .nm').allTextContents(), ['Zebra surveys', 'Weekly borrowing base'], 'series too come newest activity first');
+  assert.deepEqual(await page.locator('.row.grp ~ a.row.inst .nm').allTextContents(), ['Apple orchard audit for 2026']);
 });
 
 test('only the runner abandons, and abandoning asks first, in the page', async () => {

@@ -213,7 +213,7 @@ test('a workspace can be made; a workspace or a series is archived and restored,
   const { id } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Acme' }))).json();
   const { series: made, ...rest } = await acme();
   assert.deepEqual(rest, { id, name: 'Acme', archived: false, owners: [adminEmail], members: [], manage: true, agents: '', mine: true, reads: [], read_by: [] });
-  assert.deepEqual(made.map((s: { name: string; adhoc: boolean }) => [s.name, s.adhoc]), [['Ad hoc', true]], 'a workspace starts with its Ad hoc series');
+  assert.deepEqual(made, [], 'a workspace starts empty');
   assert.equal((await call('POST', '/api/workspaces', JSON.stringify({ name: 'Acme' }))).status, 409);
   assert.equal((await call('PUT', `/api/workspaces/${id}`, JSON.stringify({ archived: true }))).status, 200);
   assert.equal((await acme()).archived, true);
@@ -380,20 +380,27 @@ test("AGENTS.md: the company's is the admins', a workspace's its owners', and bo
   assert.equal(readFileSync(join(root, 'agents', `${ws.id}.md`), 'utf8'), 'Larkfield Ltd is now Larkfield Holdings.');
 });
 
-test('each workspace has an Ad hoc series of one-off asks; Make it a series moves one into a series of its own', async () => {
+test('a task is a series of one instance, Untitled until its first prompt or a rename names it; made a series, it keeps its id, files and log', async () => {
   const { id } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Solo' }))).json();
-  const adhoc = (await named('Solo')).series.find((s: { adhoc: boolean }) => s.adhoc);
-  assert.equal(adhoc.name, 'Ad hoc');
-  assert.equal((await call('PUT', `/api/series/${adhoc.id}`, JSON.stringify({ name: 'Mine' }))).status, 400);
-  const ask = (await (await call('POST', `/api/series/${adhoc.id}`, JSON.stringify({ label: 'cash forecast' }))).json()).id;
-  assert.equal((await json(`/api/instances/${ask}`)).log[0].from, null);
-  await new Promise(r => setTimeout(r, 1700));
-  assert.equal((await call('POST', `/api/instances/${ask}/promote`, JSON.stringify({ name: 'Cash forecast' }))).status, 200);
-  const moved = (await named('Solo')).series.find((s: { name: string }) => s.name === 'Cash forecast');
-  assert.deepEqual(moved.instances.map((i: { id: string }) => i.id), [ask]);
-  assert.equal((await json(`/api/instances/${ask}`)).log.at(-1).op, 'promote');
-  assert.equal((await call('POST', `/api/instances/${ask}/promote`, JSON.stringify({ name: 'Again' }))).status, 400);
-  assert.ok(id);
+  const task = async () => (await (await call('POST', '/api/series', JSON.stringify({ workspace: id, single: true }))).json());
+  const solo = async () => (await named('Solo')).series.map((s: { id: string; name: string; single: boolean; instances: { label: string }[] }) => [s.id, s.name, s.single, s.instances.map(i => i.label)]);
+  const one = await task(), two = await task();
+  assert.deepEqual(await solo(), [[one.id, 'Untitled', true, ['Untitled']], [two.id, 'Untitled 2', true, ['Untitled 2']]]);
+  assert.equal((await call('POST', `/api/series/${one.id}`, JSON.stringify({ label: 'more' }))).status, 400, 'one instance');
+  assert.equal((await call('PUT', `/api/series/${one.id}`, JSON.stringify({ name: 'Mine' }))).status, 400, 'no settings');
+  await call('POST', `/api/instances/${one.instance}/comment`, JSON.stringify({ text: 'Forecast cash for the next 13 weeks from the bank exports' }));
+  await call('POST', `/api/instances/${one.instance}/comment`, JSON.stringify({ text: 'And by currency' }));
+  assert.deepEqual((await solo())[0], [one.id, 'Forecast cash for the next 13', true, ['Forecast cash for the next 13']], 'its first prompt names it, the next one nothing');
+  await new Promise(r => setTimeout(r, 2500));
+  assert.equal((await call('POST', `/api/instances/${one.instance}/rename?as=${encodeURIComponent('Untitled 2')}`)).status, 409, 'a task is named as a series is');
+  assert.equal((await call('POST', `/api/instances/${one.instance}/rename?as=${encodeURIComponent('Cash forecast')}`)).status, 200);
+  assert.equal((await call('POST', `/api/instances/${one.instance}/close`)).status, 200);
+  assert.equal((await call('POST', `/api/series/${one.id}/promote`, JSON.stringify({ name: 'Cash forecasts' }))).status, 200);
+  assert.deepEqual((await solo())[0], [one.id, 'Cash forecasts', false, ['Cash forecast']]);
+  assert.equal((await json(`/api/instances/${one.instance}`)).log.at(-1).op, 'promote');
+  const next = (await (await call('POST', `/api/series/${one.id}`, JSON.stringify({ label: 'week 2' }))).json()).id;
+  assert.equal((await json(`/api/instances/${next}`)).log[0].from, 'Cash forecast', 'the next instance rolls forward from the first');
+  assert.equal((await call('POST', `/api/series/${one.id}/promote`, JSON.stringify({ name: 'Again' }))).status, 400);
 });
 
 test('an admin can disable someone, which ends their sessions and stops their sign-in; the CLI does the same', async () => {
@@ -518,18 +525,18 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   const file = join(tmp, 'people.txt'), b = sessionOf(await login(bob))!;
   writeFileSync(file, `owner ${adminEmail}\nmember ${bob}  # he runs one\n`);
   assert.match(await rf('people', 'Guarded', '--set', file), /^\+ member bob@demo\.test\nsaved$/m);
-  const adhoc = (await named('Guarded')).series[0].id;
-  assert.equal((await call('POST', `/api/series/${adhoc}`, JSON.stringify({ label: 'one' }), b)).status, 200);
-  assert.match(await rf('people', 'Guarded'), /^member +bob@demo\.test +# last in [\d-]+ [\d:]+; runs Ad hoc\/one$/m);
+  const { id: weekly } = await (await call('POST', '/api/series', JSON.stringify({ workspace: (await named('Guarded')).id, name: 'Weekly' }))).json();
+  assert.equal((await call('POST', `/api/series/${weekly}`, JSON.stringify({ label: 'one' }), b)).status, 200);
+  assert.match(await rf('people', 'Guarded'), /^member +bob@demo\.test +# last in [\d-]+ [\d:]+; runs Weekly\/one$/m);
   writeFileSync(file, `owner ${adminEmail}\n`);
   assert.match(await rf('people', 'Guarded', '--set', file, '-n'), /^- member bob@demo\.test$/m);
-  await assert.rejects(rf('people', 'Guarded', '--set', file), /hide open instances from the people who run them.*Guarded\/Ad hoc\/one, run by bob@demo\.test/);
+  await assert.rejects(rf('people', 'Guarded', '--set', file), /hide open instances from the people who run them.*Guarded\/Weekly\/one, run by bob@demo\.test/);
   assert.equal((await named('Guarded')).members.length, 1, 'refused, it changed nothing');
   assert.match(await rf('people', 'Guarded', '--set', file, '--force'), /saved/);
-  assert.match(await rf('people'), /^user +bob@demo\.test +# last in .*; runs outside them: Guarded\/Ad hoc\/one$/m);
+  assert.match(await rf('people'), /^user +bob@demo\.test +# last in .*; runs outside them: Guarded\/Weekly\/one$/m);
   await rf('user', 'role', bob, 'admin');
   writeFileSync(file, `user ${bob}\n`);
-  await assert.rejects(rf('people', '--set', file), /Guarded\/Ad hoc\/one, run by bob@demo\.test/);
+  await assert.rejects(rf('people', '--set', file), /Guarded\/Weekly\/one, run by bob@demo\.test/);
   assert.match(await rf('people', '--set', file, '--force'), /^bob@demo\.test: admin -> user\nsaved$/m);
 });
 

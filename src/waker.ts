@@ -50,7 +50,7 @@ export function pending(inst: Instance, seen: number): Entry[] {
 const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math.max(seenBefore(inst), inst.log.findLast(e => e.op === 'interrupt')?.seq ?? 0)).length > 0;
 
 function message(inst: Instance, n: number, entries: Entry[]): string {
-  return `Instance ${inst.label} (folder ${inst.label}/)${tree().series[inst.seriesId].adhoc ? ", a one-off ask in the workspace's Ad hoc series" : ''}, run ${n}. New log entries:\n`
+  return `Instance ${inst.label} (folder ${inst.label}/), run ${n}. New log entries:\n`
     + entries.map(e => JSON.stringify(isNote(inst, e) ? { ...e, note: true } : e)).join('\n');
 }
 
@@ -74,7 +74,7 @@ export const named = (t: Tree, seriesId: string) => `${t.workspaces[t.series[ser
 // The run's view of the data, by name, built when it starts: /work/<workspace>/<series>/<label>/ for every instance in its reach,
 // the company's AGENTS.md at /work/AGENTS.md and each workspace's at /work/<workspace>/AGENTS.md, and the catalogue, which the
 // runner puts at its series folder's own AGENTS.md.
-function view(inst: Instance): View {
+export function view(inst: Instance): View {
   const t = tree(), at = (id: string) => `/work/${named(t, id)}`, series = [inst.seriesId, ...reach(t, inst.seriesId)];
   const ro = series.flatMap(id => [
     ...labels(id).map(l => [instanceDir(l.id), `${at(id)}/${l.label}`] as [string, string]),
@@ -197,7 +197,6 @@ export function queued(inst: Instance): { why: string; since: string } | undefin
 
 // Closing an instance wakes its series' later open instances, which may have used its draft.
 export function closed(inst: Instance) {
-  if (tree().series[inst.seriesId].adhoc) return;
   for (const later of instances(inst.seriesId).filter(i => i.doc.status === 'open' && i.label.localeCompare(inst.label, 'en', { numeric: true }) > 0)) {
     later.append('server', 'wake', { reason: `${inst.label} closed: its final figures may differ from the draft you read`, from: inst.label });
     kick(later);

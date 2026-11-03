@@ -55,10 +55,10 @@ test("migrate-fork copies the fork's root by id, with its talk as threads, numbe
   const migrate = (to: string) => execFileSync(process.execPath, ['scripts/migrate-fork.ts', old, join(tmp, to)], { encoding: 'utf8', stdio: 'pipe' });
   const out = migrate('new');
   assert.match(out, /left in \S+\.rf: session\.key/);
-  assert.match(out, /1 workspaces, 3 series with an Ad hoc in each workspace, 2 instances/);
+  assert.match(out, /1 workspaces, 2 series, 2 instances/);
   const root = join(tmp, 'new'), t: Tree = JSON.parse(readFileSync(join(root, '.rf', 'tree.json'), 'utf8'));
   assert.deepEqual(Object.values(t.workspaces), [{ name: 'Acme', owners: ['ann@x.com'], members: [] }]);
-  assert.deepEqual(Object.values(t.series).map(s => [s.name, !!s.adhoc, !!s.archived]).sort(), [['AR weekly', false, false], ['Ad hoc', true, false], ['Old', false, true]]);
+  assert.deepEqual(Object.values(t.series).map(s => [s.name, !!s.archived]).sort(), [['AR weekly', false], ['Old', true]]);
   assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(root, '.rf', 'users.json'), 'utf8'))), ['ann@x.com', 'bo@x.com']);
 
   openStore(root);

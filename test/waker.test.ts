@@ -10,7 +10,7 @@ import type { Active } from '../src/waker.ts';
 // Wakes without a model: a run that a wake starts ends at once for want of a key, which is enough to see what started it.
 delete process.env.OPENROUTER_API_KEY;
 process.env.RF_WAKE_TICK_MS = '50';
-const { closed, kick, recover, resolveFor, setWake, startWaking, wakes } = await import('../src/waker.ts');
+const { closed, kick, recover, resolveFor, setWake, startWaking, view, wakes } = await import('../src/waker.ts');
 const { saveLogin } = await import('../src/logins.ts');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-wake-')), alice = 'alice@demo.test';
 initSystem(tmp);
@@ -19,7 +19,7 @@ saveTree({
   workspaces: { w: { name: 'Acme', owners: [alice], members: [] }, x: { name: 'Hidden', owners: ['zed@demo.test'], members: [] }, m: { name: 'Main', owners: [alice, 'zed@demo.test'], members: [] } },
   series: {
     s1: { name: 'Bank rec', workspace: 'w' }, s2: { name: 'Borrowing base', workspace: 'w' }, s3: { name: 'Payroll', workspace: 'x' },
-    s4: { name: 'Ad hoc', workspace: 'w', adhoc: true }, s5: { name: 'Close', workspace: 'm' }, s6: { name: 'Queue', workspace: 'w' },
+    s4: { name: 'Lunch', workspace: 'w', single: true }, s5: { name: 'Close', workspace: 'm' }, s6: { name: 'Queue', workspace: 'w' },
   },
 });
 writeJson('users.json', { [alice]: { role: 'user' } });
@@ -120,11 +120,11 @@ test('after a restart every open instance with something for a run starts; an In
   assert.ok(!ops(held).includes('run'), 'interrupted, it waits for the next act');
 });
 
-test('closing an Ad hoc instance wakes no other; a wake in an archived workspace is dropped', async () => {
-  const first = make('s4', 'ask 1'), second = make('s4', 'ask 2');
-  first.close(alice);
-  closed(first);
-  assert.ok(!ops(second).includes('wake'));
+test("a task's run sees its own instance alone in its series' folder, and the series in reach; a wake in an archived workspace is dropped", async () => {
+  const v = view(make('s4', 'Lunch'));
+  assert.equal(v.cwd, '/work/Acme/Lunch');
+  assert.deepEqual(v.ro.map(([, at]) => at).filter(at => at.startsWith('/work/Acme/Lunch/')), ['/work/Acme/Lunch/Lunch']);
+  assert.match(v.catalogue, /^- \.\.\/Bank rec: /m);
   const t = tree(), cut = instance(labels('s3').find(l => l.label === 'cut')!.id);
   saveTree({ ...t, workspaces: { ...t.workspaces, x: { ...t.workspaces.x, archived: true } } });
   setWake(cut.id, { at: new Date().toISOString(), reason: 'archived', from: 'x' });

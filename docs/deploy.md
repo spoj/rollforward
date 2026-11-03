@@ -78,7 +78,7 @@ Run the image under podman, as a systemd service. The image pins Node, Python, b
 
 A data root of the team's fork (its main at a1fa8db, with folders `<workspace>/<series>/<label>/`) moves with `node scripts/migrate-fork.ts OLD NEW`. It reads OLD only and writes NEW, which mustn't exist yet. Ids come from the old paths, so a rerun into a fresh NEW gives the same links: try it on a copy while the fork runs, then again with the fork stopped, and point the proxy at the new server.
 
-- **It carries** people with their roles, workspaces with their owners and an Ad hoc series each, series with their `.pylib`, and instances with `upload/`, `working/` and the agent's session. Notes become the agent's comments and questions its asks, with their options in the text; steers and answers become people's replies, and a question closing defaulted is one the close accepted.
+- **It carries** people with their roles, workspaces with their owners, series with their `.pylib`, and instances with `upload/`, `working/` and the agent's session. Notes become the agent's comments and questions its asks, with their options in the text; steers and answers become people's replies, and a question closing defaulted is one the close accepted.
 - **It leaves** the fork's skills, its Microsoft 365 connections and vendor passwords, and its keys: people sign in again, series start with no skills, and publishers push them again. It prints anything else it left.
 - **The new server starts no run** for the old logs: a run cut short gets its `done`.
 - **Some of the fork's people are names, not emails,** in its logs, so their instances have a runner no one signs in as. With the server stopped, `node scripts/rename-person.ts DATA NAME EMAIL` renames one, and prints the instances it changed.
@@ -111,6 +111,6 @@ A data root of the team's fork (its main at a1fa8db, with folders `<workspace>/<
 
 1. `podman logs rollforward` says `sign-in microsoft`. If it says `demo`, anyone who reaches the site can sign in as an admin: stop it and set the `RF_OIDC_*` lines.
 2. From the rollforward host, `curl -fsS -H "authorization: Bearer $RF_BROWSER_KEY" $RF_BROWSER_URL/sessions` answers `[]`.
-3. Sign in at `RF_PUBLIC_URL` as one of `RF_ADMINS` and make a workspace. In its Ad hoc series, start an instance and comment "Reply OK". The run ends within a few minutes, for about $0.05.
+3. Sign in at `RF_PUBLIC_URL` as one of `RF_ADMINS` and make a workspace. With its +, start a task and comment "Reply OK". The run ends within a few minutes, for about $0.05.
 4. Under Logins, Connect Microsoft 365.
 5. Add a website with `rf website set` (rf and a token come from Tokens), sign in to it from Logins, and save the login.
