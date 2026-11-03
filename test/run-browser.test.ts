@@ -154,3 +154,27 @@ test("$RF_BROWSERS/NAME is the run's browser there: its CDP discovery, its webso
   ]);
   await api.close();
 });
+
+test("a browser refused for its runner's expired login is logged as expired, so the instance carries on once they sign in again", async () => {
+  writeJson('connections.json', { crm: { type: 'website', title: 'CRM', url: 'https://crm.example.com', hosts: [], writeback: true, updated_by: alice, updated_at: '' } });
+  saveLogin(alice, { ...website('crm', 'CRM'), expired: true }, '{}');
+  const inst = createInstance('s', '2027-08', alice, ['web:crm']), browsers = new Browsers(inst, 1);
+  await assert.rejects(browsers.browser('crm'), (e: { status: number; login: string }) => e.status === 409 && e.login === 'web:crm');
+  assert.deepEqual(inst.log.filter(e => e.op === 'expired').map(e => [e.login, e.name, e.runner]), [['web:crm', 'CRM', alice]]);
+  saveLogin(alice, website('crm', 'CRM'), '{}');
+});
+
+test("a run that ended while its connection waited for its person's browser opens none, and holds nothing, once the browser is released", async () => {
+  const one = new Browsers(createInstance('s', '2027-09', alice, ['web:crm']), 1), two = new Browsers(createInstance('s', '2027-10', alice, ['web:crm']), 1);
+  states.length = 0;
+  await one.browser('crm');
+  const waiting = two.browser('crm', new PassThrough());
+  await sleep(50);
+  await two.end();
+  await one.close();
+  assert.equal(await waiting, undefined);
+  assert.equal(states.length, 1, 'no browser opened for the run that ended');
+  const three = new Browsers(createInstance('s', '2027-11', alice, ['web:crm']), 1);
+  assert.equal(await Promise.race([three.browser('crm'), sleep(200).then(() => 'still held')]), 'b9', "the person's browser there is free");
+  await three.close();
+});

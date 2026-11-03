@@ -167,7 +167,7 @@ function finish(a: Active, aborted: boolean, error?: string) {
   const series = a.inst.seriesId;
   active.delete(series);
   a.run?.stop().catch(e => console.error(`run ${a.n} of ${a.inst.id} left its scratch folder`, e));
-  a.browsers?.close().catch(e => a.inst.append('server', 'browsers', { run: a.n, error: e.message }));
+  a.browsers?.end().catch(e => a.inst.append('server', 'browsers', { run: a.n, error: e.message }));
   // The agent's last words in a run are its report to the instance's people; its first line is the run's summary.
   if (a.said && !aborted) a.inst.append('agent', 'report', { run: a.n, text: a.said });
   a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(4), summary: a.said && !aborted ? summaryOf(a.said) : null, ...(error && { error }) });

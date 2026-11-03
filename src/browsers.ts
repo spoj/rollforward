@@ -7,7 +7,7 @@ import { request as httpsRequest } from 'node:https';
 import type { Duplex } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { HttpError, replaceReadOnly, type Instance } from './store.ts';
-import { logins, saveLogin, secret, use } from './logins.ts';
+import { logins, runnerOf, saveLogin, secret, use } from './logins.ts';
 import { connections } from './connections.ts';
 import { tree } from './system.ts';
 
@@ -124,6 +124,7 @@ export class Browsers {
   bySite = new Map<string, { id: string; email: string; since: string; writeback: boolean; conns: number; idle?: NodeJS.Timeout; shot?: Buffer }>();
   private opening = new Map<string, Promise<string>>();
   private closed = new Map<string, number>();
+  private ended = false;
   shots = 0;
   constructor(inst: Instance, run: number) {
     this.inst = inst;
@@ -132,16 +133,24 @@ export class Browsers {
 
   // The login a browser on a website may use now, and the run's browser there if open: checked at every call and every new
   // connection, so a login its runner can no longer lend stops at the next one; a connection already open lasts until the run ends.
+  // One its runner must sign in to again is logged, as the agent API logs it, so the instance carries on once they do.
   lent(site: string) {
-    const { email, login } = use(this.inst, `web:${site}`), had = this.bySite.get(site);
-    if (login.expired) throw Object.assign(new HttpError(409, `${email}'s login to ${login.name} has expired: they sign in to it again on the Logins page, and the instance carries on`), { login: login.id });
-    if (had && had.email !== email) throw new HttpError(409, `this run's browser on ${site} is in ${had.email}'s login, and ${email} has taken the instance over: the next run opens one in theirs`);
-    return { email, login, had };
+    try {
+      const { email, login } = use(this.inst, `web:${site}`), had = this.bySite.get(site);
+      if (login.expired) throw Object.assign(new HttpError(409, `${email}'s login to ${login.name} has expired: they sign in to it again on the Logins page, and the instance carries on`), { login: login.id });
+      if (had && had.email !== email) throw new HttpError(409, `this run's browser on ${site} is in ${had.email}'s login, and ${email} has taken the instance over: the next run opens one in theirs`);
+      return { email, login, had };
+    } catch (e) {
+      const { login } = e as { login?: string };
+      if (login) this.inst.append('server', 'expired', { login, name: websites()[site]?.name ?? site, runner: runnerOf(this.inst).by });
+      throw e;
+    }
   }
 
   // The run's browser on a website, for a connection `conn`: undefined if that went away while it waited.
   async browser(site: string, conn?: Duplex): Promise<string | undefined> {
     for (let waited = false; ; waited = true) {
+      if (this.ended) return undefined;
       const { email, login, had } = this.lent(site);
       if (had) return had.id;
       if (this.opening.has(site)) return this.opening.get(site);
@@ -220,6 +229,12 @@ export class Browsers {
     } finally {
       this.inst.append('agent', 'call', { run: this.run, name: site, method: 'GET', path: `/downloads/${path}`, status, bytes, ...(refused && { refused }) });
     }
+  }
+
+  // The run ended: its browsers close, and a connection still waiting for its person's browser on a website gets none.
+  end() {
+    this.ended = true;
+    return this.close();
   }
 
   // A screenshot of each browser's newest tab, unless it looks as it did at the last, logged as shot for the Ops log.

@@ -51,7 +51,7 @@ export async function serveAgent(inst: Instance): Promise<{ url: string; token: 
   await new Promise<void>(ok => server.listen(0, '127.0.0.1', ok));
   return {
     url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, token,
-    async close() { await a.browsers?.close(); server.close(); server.closeAllConnections(); },
+    async close() { await a.browsers?.end(); server.close(); server.closeAllConnections(); },
   };
 }
 
