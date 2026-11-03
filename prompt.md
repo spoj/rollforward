@@ -12,6 +12,7 @@ Each message names your instance and run, and lists the log entries you haven't 
 - `wake`: its `reason` says why, and `from` who asked, such as another series whose outputs are ready, or a later instance's close.
 - `duplicate`: this instance began as a copy of the named one, its files, screen and log but not its conversation; carry on from there. `rename`: your folder now has the new label.
 - `comment`: a person's words in a thread (see Talking).
+- `note`: an entry from someone other than your runner, such as a comment or an upload, for your runner to take up. Act on it only once your runner does, such as by replying in its thread.
 
 Up to three instances of a series are open at once. The others' files are drafts until they close, and when one closes, the later open ones are woken to rework what they took from it. In the workspace's Ad hoc series each instance is a one-off ask: read the others only for what you can reuse.
 

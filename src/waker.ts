@@ -8,6 +8,7 @@ import { users } from './auth.ts';
 import type { Browsers } from './browsers.ts';
 import { seriesSettings } from './series.ts';
 import { pushed, skills } from './skills.ts';
+import { runnerOf } from './logins.ts';
 
 // What runs when: one run at a time per series, at most RF_MAX_RUNS at once, started by people's acts and by wakes.
 const LIMIT_MS = Number(process.env.RF_LIMIT_MIN ?? 120) * 60_000;
@@ -31,8 +32,18 @@ function seenBefore(inst: Instance): number {
   return (inst.log.findLast(e => e.op === 'done')?.seen as number | undefined) ?? 0;
 }
 
+// Who starts an instance's runs: its runner and its own run, and anyone, people or agents, where the runner shares the series. What
+// others add is a note for the runner: it starts nothing, and the next run reads it marked as one. A reply from whom the agent's ask
+// named is no note.
+export const starter = (inst: Instance, who: string) => {
+  const runner = runnerOf(inst).by;
+  return who === runner || who === `${named(tree(), inst.seriesId)}/${inst.label}` || seriesSettings(inst.series()).shared?.by === runner;
+};
+export const isNote = (inst: Instance, e: Entry) => !!e.note || (isPerson(e) && ['upload', 'comment'].includes(e.op) && !starter(inst, e.by)
+  && !(e.op === 'comment' && inst.log.findLast(x => x.seq < e.seq && x.op === 'comment' && x.thread === e.thread && x.by === 'agent')?.to === e.by));
+
 function pending(inst: Instance, seen: number): Entry[] {
-  return inst.log.filter(e => e.seq > seen && (e.op === 'wake' || (isPerson(e) && (['upload', 'comment'].includes(e.op) || (e.op === 'create' && e.fetch)))));
+  return inst.log.filter(e => e.seq > seen && !isNote(inst, e) && (e.op === 'wake' || (isPerson(e) && (['upload', 'comment'].includes(e.op) || (e.op === 'create' && e.fetch)))));
 }
 
 // Whether an instance has something for a run: what came since its last run, or since an Interrupt, which waits for the next act.
@@ -40,7 +51,7 @@ const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math
 
 function message(inst: Instance, n: number, entries: Entry[]): string {
   return `Instance ${inst.label} (folder ${inst.label}/)${tree().series[inst.seriesId].adhoc ? ", a one-off ask in the workspace's Ad hoc series" : ''}, run ${n}. New log entries:\n`
-    + entries.map(e => JSON.stringify(e)).join('\n');
+    + entries.map(e => JSON.stringify(isNote(inst, e) ? { ...e, note: true } : e)).join('\n');
 }
 
 // What a series' agent may read: the other series of its workspace, and those of any workspace that has everyone this one has, by
@@ -191,7 +202,7 @@ export function closed(inst: Instance) {
 }
 
 // Wakes (.rf/wakes.json): at most one pending per target, an instance or a series by id, fired by the clock at least 15 minutes after
-// the target's last, and the requests to start an instance that a series without Allow wakes, or with 3 open, got instead.
+// the target's last, and the requests to start an instance that a series no one shares, or with 3 open, got instead.
 export type Wake = { at: string; reason: string; from: string; label?: string };
 export type Request = { series: string; label: string; reason: string; from: string; at: string };
 type Wakes = { pending: Record<string, Wake>; fired: Record<string, string>; requests: Record<string, Request> };
@@ -241,15 +252,15 @@ function fire() {
     if (!t.series[target]) {
       const inst = instance(target);
       if (inst.doc.status !== 'open') continue;
-      inst.append('server', 'wake', { reason: wake.reason, from: wake.from });
+      inst.append('server', 'wake', { reason: wake.reason, from: wake.from, ...(!starter(inst, wake.from) && { note: true }) });
       kick(inst);
       continue;
     }
-    const allow = seriesSettings(seriesDir(target)).wakes, u = allow && users()[allow.by];
-    const runs = u && !u.disabled && canSee({ email: allow.by, role: u.role, groups: u.groups ?? [] }, t.workspaces[t.series[target].workspace]);
+    const shared = seriesSettings(seriesDir(target)).shared, u = shared && users()[shared.by];
+    const runs = u && !u.disabled && canSee({ email: shared.by, role: u.role, groups: u.groups ?? [] }, t.workspaces[t.series[target].workspace]);
     try {
-      if (!runs) throw new Error('no Allow wakes');
-      startWith(target, wake.label!, allow.by, allow.logins, { reason: wake.reason, from: wake.from });
+      if (!runs) throw new Error('not shared');
+      startWith(target, wake.label!, shared.by, shared.logins, { reason: wake.reason, from: wake.from });
     } catch {
       w.requests[newId()] = { series: target, label: wake.label!, reason: wake.reason, from: wake.from, at: now };
     }

@@ -95,6 +95,9 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .btn.primary { background: var(--ink); border-color: var(--ink); color: #fff; }
 .btn.commit { background: var(--person); border-color: var(--person); color: #fff; }
 .btn.danger { color: var(--red); border-color: var(--red); }
+.btn.share { background: var(--person); border-color: var(--person); color: #fff; transition: background .3s, border-color .3s; }
+.btn.share.armed { background: #b45309; border-color: #b45309; }
+.warn { display: grid; gap: 8px; border: 1px solid #b45309; background: #fff7ed; border-radius: var(--r1); padding: 10px 12px; font-size: 13px; }
 .btn:disabled { background: var(--sheet); color: var(--ink-3); border-color: var(--rule-2); cursor: default; }
 .btn.sel { background: var(--paper); box-shadow: inset 0 1px 2px rgba(0,0,0,.08); }
 .btn:hover:not(:disabled) { border-color: var(--ink-3); background: var(--paper); }
@@ -462,7 +465,7 @@ function renderSide() {
       const on = cur.s?.id === s.id, open = s.instances.filter(i => i.status === 'open');
       if (!listed(s, on)) continue;
       // A series that wakes itself but has nothing open and no wake set has a broken chain.
-      const broken = s.allow_wakes && !open.length && !s.wake && !s.requests.length;
+      const broken = s.shared_by && !open.length && !s.wake && !s.requests.length;
       const note = s.archived ? 'archived' : broken ? '<span class="q">no wake set</span>' : s.requests.length ? `<span class="q">${s.requests.length} to start</span>` : open.length ? `${open.length} open` : s.wake ? `wakes ${when(s.wake.at)}` : '';
       h += `<div class="row ser ${on ? 'on' : ''} ${s.archived ? 'archived' : ''} ${s.adhoc ? 'adhoc' : ''}"><a class="nm" href="#/${s.id}">${esc(s.name)}${!on && asks(s) ? '<span class="dot"></span>' : ''}</a>`
         + (on ? btn('menu-series', 'Rename, settings, archive', '\u22EF') + btn('new-instance', 'New instance', '+') : `<span class="n">${note}</span>`) + '</div>';
@@ -509,7 +512,7 @@ function renderBar() {
     if (!ui.open) h += `<button class="btn top" data-act="show-panel">Conversation${talk ? ` (${talk})` : ''}</button>`;
     const off = data.run ? 'disabled title="Available when the run ends"' : '';
     if (open) h += data.runner.by === me.email ? `<button class="btn commit top" data-act="close" ${off}>Close instance</button>`
-      : `<button class="btn top" data-act="takeover" title="${esc(data.runner.by)} runs it: their logins, their sign-off. Taking over makes it yours.">Take over</button>`;
+      : `<button class="btn top" data-act="takeover" ${off || `title="${esc(data.runner.by)} runs it: their logins, their sign-off. Taking over makes it yours."`}>Take over</button>`;
     else h += `<button class="btn top" data-act="duplicate">Duplicate</button>`;
     if (open || cur.s.adhoc) h += `<button class="btn top" data-act="menu-instance" title="${open ? 'Rename, abandon' : 'Make it a series'}">\u22EF</button>`;
   }
@@ -627,10 +630,10 @@ function logText(e) {
     interrupt: () => `${w} interrupted the run`,
     close: () => `${w} closed the instance${e.accepted ? `<div class="d">Accepting what the agent did for ${e.accepted.length} ask${e.accepted.length > 1 ? 's' : ''} still waiting</div>` : ''}`,
     abandon: () => `${w} abandoned the instance`,
-    comment: () => `${w} ${e.by !== 'agent' ? 'commented' : e.ask ? `asked${e.to ? ' ' + esc(e.to) : ''}` : 'said'}${e.item ? ` on ${item(e.item)}${e.ref ? ` at ${esc(e.ref)}` : ''}` : ''}<div class="d">${esc(e.text)}</div>`,
+    comment: () => `${w} ${e.note ? `left a note for ${esc(data.runner.by)}` : e.by !== 'agent' ? 'commented' : e.ask ? `asked${e.to ? ' ' + esc(e.to) : ''}` : 'said'}${e.item ? ` on ${item(e.item)}${e.ref ? ` at ${esc(e.ref)}` : ''}` : ''}<div class="d">${esc(e.text)}</div>`,
     resolve: () => `${w} resolved a thread${e.text ? `<div class="d">${esc(e.text)}</div>` : ''}`,
     report: () => `${w} reported on run ${e.run}<div class="d">${md(e.text)}</div>`,
-    wake: () => `Woken${e.from ? ` by ${esc(e.from)}` : ''}<div class="d">${esc(e.reason)}</div>`,
+    wake: () => `${e.note ? `${esc(e.from)} would wake it: a note for ${esc(data.runner.by)}` : `Woken${e.from ? ` by ${esc(e.from)}` : ''}`}<div class="d">${esc(e.reason)}</div>`,
     expired: () => `Waiting for ${esc(e.runner)} to sign in to ${esc(e.name ?? (e.login === 'm365' ? 'Microsoft 365' : e.login))} again${e.runner === me.email && !data.log.some(x => x.seq > e.seq && x.op === 'wake' && x.login === e.login) ? `<div>${signInHtml(e.login, e.name ?? e.login)}</div>` : ''}`,
     takeover: () => `${w} took over from ${esc(e.from)}${e.logins?.length ? `<div class="d">Logins: ${esc(e.logins.join(', '))}</div>` : ''}`,
     promote: () => `${w} made this one-off the first instance of ${esc(e.series)}`,
@@ -780,8 +783,8 @@ function threadsOf() {
   }
   for (const t of out.values()) Object.assign(t, {
     resolved: t.last.op === 'resolve',
-    waits: open && t.last.op === 'comment' && t.last.ask ? t.last.to ?? data.runner.by : null,
-    pending: open && t.last.op === 'comment' && t.last.by !== 'agent',
+    waits: open && t.last.op === 'comment' && (t.last.ask || t.last.note) ? t.last.to ?? data.runner.by : null,
+    pending: open && t.last.op === 'comment' && t.last.by !== 'agent' && !t.last.note,
   });
   return [...out.values()];
 }
@@ -792,7 +795,7 @@ const place = t => t.item ? `On <a data-act="opencard" data-item="${esc(t.item)}
 function threadHtml(t) {
   const state = t.waits ? ` \u00b7 waits on ${esc(who(t.waits))}` : t.pending ? ' \u00b7 <span class="spin"></span> the agent picks it up next' : t.resolved ? ` \u00b7 resolved by ${esc(who(t.last.by))}${t.last.text ? `: ${esc(t.last.text)}` : ''}` : '';
   return `<div class="thread ${t.resolved ? 'resolved' : ''} ${t.waits ? 'waits' : ''}" data-thread="${esc(t.id)}"><div class="on">${place(t)}${state}</div>`
-    + t.posts.map(p => `<div class="post ${p.ask ? 'ask' : ''}"><b class="${p.by === 'agent' ? '' : 'p'}">${esc(who(p.by))}</b> <span class="tm">${hhmm(p.at)}${p.to ? ` \u00b7 to ${esc(who(p.to))}` : ''}</span><div>${p.by === 'agent' ? md(p.text) : esc(p.text)}</div>${(p.files ?? []).map(f => `<div class="f"><a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a></div>`).join('')}</div>`).join('')
+    + t.posts.map(p => `<div class="post ${p.ask ? 'ask' : ''}"><b class="${p.by === 'agent' ? '' : 'p'}">${esc(who(p.by))}</b> <span class="tm">${hhmm(p.at)}${p.to ? ` \u00b7 to ${esc(who(p.to))}` : ''}${p.note ? ` \u00b7 a note for ${esc(who(data.runner.by))}` : ''}</span><div>${p.by === 'agent' ? md(p.text) : esc(p.text)}</div>${(p.files ?? []).map(f => `<div class="f"><a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a></div>`).join('')}</div>`).join('')
     + (data.doc.status !== 'open' || t.resolved ? ''
       : t.waits || replying.has(t.id) ? `<textarea rows="2" placeholder="Reply"></textarea><input type="file" multiple><div class="row2"><button class="btn" data-act="reply-thread" data-thread="${esc(t.id)}">Reply</button><button class="btn" data-act="resolve" data-thread="${esc(t.id)}" title="Done with it, without waking the agent">Resolve</button></div>`
       : `<div class="row2"><button class="quiet" data-act="thread" data-thread="${esc(t.id)}">Reply</button><button class="quiet" data-act="resolve" data-thread="${esc(t.id)}" title="Done with it, without waking the agent">Resolve</button></div>`) + '</div>';
@@ -806,7 +809,7 @@ function conversationHtml() {
   if (threads.some(t => t.waits)) h += `<h3>Waiting on people</h3>` + threads.filter(t => t.waits).map(threadHtml).join('');
   if (report) h += `<h3>Report, run ${report.run}</h3><div class="post">${md(report.text)}</div>`;
   if (rest.length) h += `<h3>Threads</h3>` + rest.map(threadHtml).join('');
-  if (open) h += `<h3>${ui.on ? `Comment on ${name(ui.on)}${ui.ref ? ` at ${esc(ui.ref)}` : ''}` : 'Comment on the instance'}</h3><textarea id="newcomment" rows="3" placeholder="The agent replies in the thread"></textarea><input type="file" id="newfiles" multiple><div><button class="btn primary" data-act="comment">Comment</button></div>`;
+  if (open) h += `<h3>${ui.on ? `Comment on ${name(ui.on)}${ui.ref ? ` at ${esc(ui.ref)}` : ''}` : 'Comment on the instance'}</h3><textarea id="newcomment" rows="3" placeholder="${data.runner.by === me.email || cur.s.shared_by === data.runner.by ? 'The agent replies in the thread' : `A note for ${esc(data.runner.by)}: the agent takes it up once they do`}"></textarea><input type="file" id="newfiles" multiple><div><button class="btn primary" data-act="comment">Comment</button></div>`;
   return h + '</div>';
 }
 
@@ -907,7 +910,7 @@ function renderPv() {
       + `<h3>Reading</h3><div class="sub">Agents here read every series of this workspace${s.reads.length ? `, and of ${esc(s.reads.join(', '))}, which ${s.reads.length > 1 ? 'have' : 'has'} everyone this one has` : ''}. They write only here.${s.read_by.length ? ` Agents in ${esc(s.read_by.join(', '))}, whose people are all here, read this one.` : ''}</div>`
       + agentsHtml(s, 'Every agent in this workspace reads it at the start of each run: its conventions, and changes that cut across its series, such as a renamed entity.', s.manage);
     if (s.kind === 'series') h += (s.adhoc ? '' : `<h3>Name</h3><input type="text" id="sname" value="${esc(s.name)}">`)
-      + `<h3>Wakes</h3>${wakesHtml(s)}`
+      + `<h3>Who starts runs</h3>${startsHtml(s)}`
       + `<h3>Cost</h3><div class="sub">This series' runs have cost ${usd(s.cost)} so far, ${usd(s.cost / Math.max(1, s.closed))} per closed instance.</div>`;
     h += '</div>';
   }
@@ -917,13 +920,13 @@ function renderPv() {
   if (!d.open) d.showModal();
 }
 
-// Allow wakes hands a series' wakes your logins, so turning it on is a button; once they're yours, the ticks save as they change.
-function wakesHtml(s) {
-  const mine = s.allow_wakes === me.email;
-  return `<div class="sub">${s.allow_wakes ? `On: a wake starts a new instance by itself, run as ${mine ? 'you, with the logins ticked' : esc(s.allow_wakes)}.` : "Off: an agent's wake asks on this page for someone to start the instance."}</div>`
-    + (mine ? '' : `<div class="sub">${s.allow_wakes ? 'To run them as you instead' : 'Allowed, they run as you'}, with the logins ticked:</div>`)
-    + ticksHtml(s.offers, s.wake_logins)
-    + `<div class="row2">${mine ? '' : `<button class="btn" data-act="wakes-on">${s.allow_wakes ? 'Run wakes as me' : 'Allow wakes'}</button>`}${s.allow_wakes ? '<button class="btn" data-act="wakes-off">Turn off</button>' : ''}</div>`
+// Sharing a series lends your logins to whoever starts its runs, so it takes two clicks, the second saying what you take on. Once it's
+// yours, the ticks save as they change.
+function startsHtml(s) {
+  const mine = s.shared_by === me.email, ws = esc(cur.w.name), arm = `<button class="btn share ${pv.arming ? 'armed' : ''}" data-act="share-arm">${s.shared_by ? 'Start them as me instead' : `Let anyone in ${ws} start runs`}</button>`;
+  return `<div>${s.shared_by ? `Anyone in ${ws}, and its agents, start runs of this series as ${mine ? 'you, with these logins:' : esc(s.shared_by) + '.'}` : "Each instance's runner, and nobody else: others' comments are notes for them, and a wake asks someone to start the instance."}</div>`
+    + (mine ? ticksHtml(s.offers, s.shared_logins) + '<div class="row2"><button class="btn" data-act="share-off">Stop</button></div>' : `<div class="row2">${arm}</div>`)
+    + (pv.arming ? `<div class="warn">With these logins:${ticksHtml(s.offers)}You take on every run that anyone in ${ws}, or any of its agents, starts in this series: their comments, uploads and wakes in your instances, and the instances their wakes start, all run as you, with your logins.<div><button class="btn danger" data-act="share-on">Start their runs as me</button></div></div>` : '')
     + (s.wake ? `<div class="sub">Next: starts ${esc(s.wake.label)}, ${esc(when(s.wake.at))}: ${esc(s.wake.reason)}</div><div class="row2"><input type="datetime-local" id="swake" value="${localInput(s.wake.at)}"><button class="btn" data-act="wake-move">Move</button><button class="btn" data-act="wake-cancel">Cancel wake</button></div>`
       : '<div class="sub">No wake pending: the agent sets the next one.</div>');
 }
@@ -1036,7 +1039,7 @@ function waiting() {
       if (n) out.push(`<div class="wt">${at(w, s, i)}: ${n} ask${n > 1 ? 's' : ''} for you</div>`);
     }
     for (const r of s.requests) out.push(`<div class="wt">${at(w, s)}: ${esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)} <button class="btn" data-act="req-start" data-id="${esc(r.id)}">Start</button></div>`);
-    if (s.allow_wakes === me.email && !s.instances.some(i => i.status === 'open') && !s.wake && !s.requests.length) out.push(`<div class="wt">${at(w, s)}: wakes itself, but nothing is open and no wake is set</div>`);
+    if (s.shared_by === me.email && !s.instances.some(i => i.status === 'open') && !s.wake && !s.requests.length) out.push(`<div class="wt">${at(w, s)}: wakes itself, but nothing is open and no wake is set</div>`);
   }
   return [...out, ...expired.map(l => `<div class="wt">Your ${esc(l.name)} login has expired. ${signInHtml(l.id, l.name)}</div>`)];
 }
@@ -1200,7 +1203,7 @@ async function onAct(act, el, was) {
     const open = data.doc.status === 'open', busy = cur.s.instances.some(i => i.running) || cur.i.queued;
     openMenu(el, [
       open && ['Rename', 'rename', '', busy && "Available when the series' run ends"], cur.s.adhoc && ['Make it a series', 'promote'],
-      open && ['-'], open && ['Abandon', 'abandon', 'danger', data.run && 'Available when the run ends'],
+      open && data.runner.by === me.email && ['-'], open && data.runner.by === me.email && ['Abandon', 'abandon', 'danger', data.run && 'Available when the run ends'],
     ]);
   }
   if (act === 'menu-me') openMenu(el, [['Logins', 'logins'], ['Tokens', 'tokens'], ['AGENTS.md', 'agents'], ['Skills', 'skills'], me.role === 'admin' && ['People', 'people'], ['-'], ['Sign out', 'signout']]);
@@ -1263,8 +1266,9 @@ async function onAct(act, el, was) {
     const series = act === 'rename-series';
     editName($(series ? '#side .ser.on .nm' : '#side .ws.on .nm'), series ? cur.s.name : cur.w.name, name => api(series ? seriesPath(cur) : `/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ name }) }));
   }
-  if (act === 'wakes-on' || act === 'wakes-off' || act === 'wake-move' || act === 'wake-cancel') {
-    if (act === 'wakes-on' || act === 'wakes-off') await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify(act === 'wakes-on' ? { allow_wakes: true, logins: ticked() } : { allow_wakes: false }) });
+  if (act === 'share-arm') { pv.arming = !pv.arming; renderPv(); }
+  if (act === 'share-on' || act === 'share-off' || act === 'wake-move' || act === 'wake-cancel') {
+    if (act === 'share-on' || act === 'share-off') await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify(act === 'share-on' ? { share: true, logins: ticked() } : { share: false }) });
     if (act === 'wake-move') await api(`/api/wakes/${cur.s.id}`, { method: 'PUT', body: JSON.stringify({ at: new Date($('#swake').value).toISOString() }) });
     if (act === 'wake-cancel') await api(`/api/wakes/${cur.s.id}`, { method: 'DELETE' });
     await refresh();
@@ -1403,7 +1407,7 @@ $('#picker').addEventListener('change', e => upload([...e.target.files], e.targe
 document.addEventListener('change', async ev => {
   const el = ev.target;
   if (el.id === 'sname') await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) });
-  else if (el.matches('#pv input.tick') && pv.settings.kind === 'series' && pv.settings.allow_wakes === me.email) await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ allow_wakes: true, logins: ticked() }) });
+  else if (el.matches('#pv input.tick') && pv.settings.kind === 'series' && pv.settings.shared_by === me.email) await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ share: true, logins: ticked() }) });
   else if (el.id === 'wname') await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) });
   else return;
   saved();

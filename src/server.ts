@@ -17,7 +17,7 @@ import { endSignIn, isSignIn, passUpgrade, removeWebsite, setWebsite, startSignI
 import { offer, unoffer } from './m365.ts';
 import { seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, byToken, cancelWake, closed, dropRequest, kick, MAX_OPEN, named, queued, resolveFor, setWake, startWaking, startWith, wakes, wider, type Active } from './waker.ts';
+import { active, byToken, cancelWake, closed, dropRequest, isNote, kick, MAX_OPEN, named, queued, resolveFor, setWake, startWaking, startWith, wakes, wider, type Active } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -68,9 +68,11 @@ function mustSee(me: Me, w: Workspace | undefined): Workspace {
 }
 
 // Whom each of an open instance's asks still waits on: the person it names, else the runner.
+// Whom an open instance waits on: each ask's person, else the runner, and the runner for each thread a note ends.
 function asks(inst: Instance): string[] {
   if (inst.doc.status !== 'open') return [];
-  return inst.asking().map(e => (e.to as string | undefined) ?? runnerOf(inst).by);
+  const runner = runnerOf(inst).by, notes = [...inst.threads().values()].filter(t => isNote(inst, t.at(-1)!)).map(() => runner);
+  return [...inst.asking().map(e => (e.to as string | undefined) ?? runner), ...notes];
 }
 
 // An instance as the sidebar shows it. What comes from its log and screen is kept until either moves on, so a listing reads each
@@ -92,9 +94,9 @@ function listing(me: Me) {
     id, name: w.name, archived: !!w.archived, owners: w.owners, members: w.members, manage: canManage(me, w), agents: text(agentsFile(id)),
     reads: wider(t, id).map(o => t.workspaces[o].name).sort(), read_by: Object.keys(t.workspaces).filter(o => wider(t, o).includes(id)).map(o => t.workspaces[o].name).sort(),
     series: Object.entries(t.series).filter(([, s]) => s.workspace === id).sort(byName).map(([sid, s]) => {
-      const { wakes: allowed } = seriesSettings(seriesDir(sid));
+      const { shared } = seriesSettings(seriesDir(sid));
       return {
-        id: sid, name: s.name, archived: !!s.archived, adhoc: !!s.adhoc, allow_wakes: allowed?.by ?? null, wake_logins: allowed?.by === me.email ? allowed.logins : [],
+        id: sid, name: s.name, archived: !!s.archived, adhoc: !!s.adhoc, shared_by: shared?.by ?? null, shared_logins: shared?.by === me.email ? shared.logins : [],
         wake: w8.pending[sid] ?? null,
         requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r })),
         instances: instances(sid).map(i => summary(i, w8)),
@@ -272,9 +274,9 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     }
     if (change.archived !== undefined) s.archived = !!change.archived;
     saveTree(t);
-    const allowed = seriesSettings(seriesDir(id)).wakes;
-    const wakesBy = change.allow_wakes === undefined ? allowed : change.allow_wakes ? { by, since: new Date().toISOString(), logins: checkTicks(by, change.logins ?? []) } : undefined;
-    replaceReadOnly(join(seriesDir(id), 'series.json'), JSON.stringify({ ...(wakesBy && { wakes: wakesBy }) }, null, 1));
+    const was = seriesSettings(seriesDir(id)).shared;
+    const shared = change.share === undefined ? was : change.share ? { by, since: new Date().toISOString(), logins: checkTicks(by, change.logins ?? []) } : undefined;
+    replaceReadOnly(join(seriesDir(id), 'series.json'), JSON.stringify({ ...(shared && { shared }) }, null, 1));
     return send(res, 200, 'ok');
   }
   // A pending wake, which people may move or cancel, and a request to start an instance, which they start or dismiss.
@@ -313,7 +315,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   if (!run) mustSee(me, t.workspaces[t.series[inst.seriesId].workspace]);
   const a = active.get(inst.seriesId);
   const mine = a?.inst === inst ? a : undefined;
-  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log, run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4) } : null, queued: queued(inst), runner: runnerOf(inst) });
+  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4) } : null, queued: queued(inst), runner: runnerOf(inst) });
   if (action === 'trace') return send(res, 200, trace(inst));
   if (action === 'summary') return send(res, 200, summary(inst));
   // The screen: anyone who sees the instance reads it; only its own run writes it.
@@ -400,11 +402,12 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     return send(res, 200, 'ok');
   } else if (action === 'takeover') {
     // Taking over makes you the runner from now on, with your own logins ticked; whoever closes answers for the whole instance.
+    if (mine) throw new HttpError(409, 'wait for the run to end');
     inst.append(by, 'takeover', { from: runnerOf(inst).by, logins: checkTicks(by, payload.logins ?? []) });
     return send(res, 200, 'ok');
   } else if (action === 'close' || action === 'abandon') {
     if (mine) throw new HttpError(409, 'wait for the run to end');
-    if (action === 'close' && runnerOf(inst).by !== by) throw new HttpError(403, `only the runner, ${runnerOf(inst).by}, closes it, as closing signs it off; take it over first`);
+    if (runnerOf(inst).by !== by) throw new HttpError(403, `only the runner, ${runnerOf(inst).by}, ${action === 'close' ? 'closes it, as closing signs it off' : 'abandons it'}; take it over first`);
     inst[action](by);
     cancelWake(inst.id);
     if (action === 'close') closed(inst);

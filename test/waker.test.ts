@@ -10,7 +10,7 @@ import type { Active } from '../src/waker.ts';
 // Wakes without a model: a run that a wake starts ends at once for want of a key, which is enough to see what started it.
 delete process.env.OPENROUTER_API_KEY;
 process.env.RF_WAKE_TICK_MS = '50';
-const { closed, recover, resolveFor, setWake, startWaking, wakes } = await import('../src/waker.ts');
+const { closed, kick, recover, resolveFor, setWake, startWaking, wakes } = await import('../src/waker.ts');
 const { saveLogin } = await import('../src/logins.ts');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-wake-')), alice = 'alice@demo.test';
 initSystem(tmp);
@@ -47,23 +47,23 @@ test('a run names a series or an instance by its folder, within its reach', () =
   assert.throws(() => resolveFor(run, '2026-13'), /no instance 2026-13 in Bank rec/);
 });
 
-test('a due wake continues an open instance, as a reply does; one more than 15 minutes after its last is moved', async () => {
-  setWake(oct.id, { at: new Date().toISOString(), reason: 'statement arrived', from: 'Acme/Bank rec/2026-09' });
+test('a due wake its own run set continues an open instance, as a reply does; one more than 15 minutes after its last is moved', async () => {
+  setWake(oct.id, { at: new Date().toISOString(), reason: 'statement arrived', from: 'Acme/Bank rec/2026-10' });
   await settle();
-  assert.deepEqual(oct.log.filter(e => e.op === 'wake').map(e => [e.reason, e.from]), [['statement arrived', 'Acme/Bank rec/2026-09']]);
+  assert.deepEqual(oct.log.filter(e => e.op === 'wake').map(e => [e.reason, e.from, e.note]), [['statement arrived', 'Acme/Bank rec/2026-10', undefined]]);
   assert.ok(ops(oct).includes('run'), 'it started a run');
   assert.equal(wakes().pending[oct.id], undefined);
   const next = setWake(oct.id, { at: new Date().toISOString(), reason: 'again', from: 'x' });
   assert.ok(Date.parse(next.at) - Date.parse(wakes().fired[oct.id]) >= 15 * 60_000);
 });
 
-test("a series' wake starts an instance as whoever allowed wakes; without Allow wakes, or with 3 open, it's a request", async () => {
+test("a series' wake starts an instance as whoever shares the series; unshared, or with 3 open, it's a request", async () => {
   setWake('s2', { at: new Date().toISOString(), reason: 'rec done', from: 'Acme/Bank rec/2026-09', label: '2026-10' });
   await settle();
   assert.deepEqual(Object.values(wakes().requests).map(r => [r.series, r.label, r.reason]), [['s2', '2026-10', 'rec done']]);
   assert.equal(labels('s2').length, 0);
 
-  writeFileSync(join(tmp, 'series', 's2', 'series.json'), JSON.stringify({ skills: [], wakes: { by: alice, since: new Date().toISOString(), logins: [] } }));
+  writeFileSync(join(tmp, 'series', 's2', 'series.json'), JSON.stringify({ shared: { by: alice, since: new Date().toISOString(), logins: [] } }));
   writeJson('wakes.json', { ...readJson('wakes.json', {}), fired: {} });
   setWake('s2', { at: new Date().toISOString(), reason: 'rec done', from: 'Acme/Bank rec/2026-09', label: '2026-11' });
   await settle();
@@ -131,4 +131,24 @@ test('closing an Ad hoc instance wakes no other; a wake in an archived workspace
   await settle();
   assert.equal(wakes().pending[cut.id], undefined);
   assert.ok(!cut.log.some(e => e.reason === 'archived'));
+});
+
+test("only an instance's runner starts its runs: others' comments and wakes are notes for them, unless the agent asked them or the runner shares the series", async () => {
+  const bob = 'bob@demo.test', notes = make('s5', 'notes'), runs = (i: Instance) => i.log.filter(e => e.op === 'run').length;
+  notes.append(bob, 'comment', { thread: 'n1', text: 'use the new rate' });
+  setWake(notes.id, { at: new Date().toISOString(), reason: 'rates are out', from: bob });
+  kick(notes);
+  await settle();
+  assert.deepEqual([runs(notes), notes.log.at(-1)!.op, notes.log.at(-1)!.note], [0, 'wake', true], "bob's comment and wake are notes for alice");
+  notes.append('agent', 'comment', { thread: 'q1', text: 'Which rate?', ask: true, to: bob });
+  notes.append(bob, 'comment', { thread: 'q1', text: 'the new one' });
+  kick(notes);
+  await settle();
+  assert.equal(runs(notes), 1, 'the agent asked bob, so his reply starts a run');
+  writeFileSync(join(tmp, 'series', 's5', 'series.json'), JSON.stringify({ shared: { by: alice, since: new Date().toISOString(), logins: [] } }));
+  const shared = make('s5', 'shared');
+  shared.append(bob, 'comment', { thread: 'n2', text: 'go' });
+  kick(shared);
+  await settle();
+  assert.equal(runs(shared), 1, 'in a series its runner shares, anyone starts runs');
 });

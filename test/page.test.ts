@@ -82,8 +82,14 @@ test('a new series asks for its name, and says in the dialog why one is refused'
   await page.waitForSelector('.row.ser.on .nm:text-is("Bank rec")');
 });
 
-test('abandoning asks first, in the page', async () => {
+test('only the runner abandons, and abandoning asks first, in the page', async () => {
   await page.click('.row.ser .nm:text-is("Weekly borrowing base")');
+  await page.click('[data-act=menu-instance]');
+  assert.equal(await page.locator('#pop [data-act=abandon]').count(), 0, 'alex runs it');
+  await page.keyboard.press('Escape');
+  await page.click('[data-act=takeover]');
+  await page.click('[data-act=start-go]');
+  await page.waitForSelector('#bar [data-act=close]');
   await page.click('[data-act=menu-instance]');
   await page.click('#pop [data-act=abandon]');
   await page.click('#ask button:text-is("Cancel")');

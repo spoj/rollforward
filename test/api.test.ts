@@ -159,11 +159,12 @@ test('rename relabels an open instance in its instance.json and logs it; an exis
   assert.equal((await rename('2026-08-30 rework', '2026-09-06')).status, 409);
 });
 
-test("only the runner closes, as closing signs it off; taking over makes you the runner with your own logins ticked", async () => {
+test("only the runner closes or abandons; taking over makes you the runner with your own logins ticked", async () => {
   const id = await iid(series, '2026-09-06'), offer = 'web:portal';
   const runner = async () => (await json(`/api/instances/${id}`)).runner;
   assert.deepEqual(await runner(), { by: 'alex', logins: [] }, 'whoever made it');
   assert.equal((await call('POST', await at(series, '2026-09-06', 'close'))).status, 403);
+  assert.equal((await call('POST', await at(series, '2026-09-06', 'abandon'))).status, 403, 'nor abandons');
   assert.equal((await call('POST', await at(series, '2026-09-06', 'takeover'), JSON.stringify({ logins: [offer] }))).status, 400, 'not a login of yours');
   const { saveLogin } = await import('../src/logins.ts');
   const { initSystem } = await import('../src/system.ts');
@@ -194,9 +195,9 @@ test('close and abandon end an open instance; a closed one takes no actions', as
 test("series settings write series.json; a rename edits .rf/tree.json", async () => {
   const put = async (name: string, body: object) => call('PUT', await at(name), JSON.stringify(body));
   const id = (await shown(series)).id;
-  assert.equal((await put(series, { allow_wakes: true })).status, 200);
-  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(root, 'series', id, 'series.json'), 'utf8'))), ['wakes']);
-  assert.equal((await put(series, { allow_wakes: false })).status, 200);
+  assert.equal((await put(series, { share: true })).status, 200);
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(root, 'series', id, 'series.json'), 'utf8'))), ['shared']);
+  assert.equal((await put(series, { share: false })).status, 200);
   assert.deepEqual(JSON.parse(readFileSync(join(root, 'series', id, 'series.json'), 'utf8')), {});
 
   assert.equal((await put(series, { name: renamed })).status, 200);
@@ -335,7 +336,7 @@ test('everyone sees the skills, which every run loads; admins keep the websites,
   assert.deepEqual(await json('/websites', b), []);
 });
 
-test("people see and move a series' next wake, turn Allow wakes on as themselves, and start or dismiss requests; acts cancel a wake", async () => {
+test("people see and move a series' next wake, share it as themselves, and start or dismiss requests; acts cancel a wake", async () => {
   const s = await shown(series), wakes = join(root, '.rf', 'wakes.json'), sep = await iid(series, '2026-08-30 rework');
   const due = new Date(Date.now() + 86_400_000).toISOString();
   writeFileSync(wakes, JSON.stringify({
@@ -343,18 +344,18 @@ test("people see and move a series' next wake, turn Allow wakes on as themselves
     fired: {}, requests: { r1: { series: s.id, label: '2026-09-27', reason: 'rec done', from: 'larkfield/Bank rec/2026-09', at: due } },
   }));
   const listed = await shown(series);
-  assert.deepEqual([listed.wake.label, listed.requests.map((r: { id: string }) => r.id), listed.allow_wakes], ['2026-09-20', ['r1'], null]);
+  assert.deepEqual([listed.wake.label, listed.requests.map((r: { id: string }) => r.id), listed.shared_by], ['2026-09-20', ['r1'], null]);
   assert.equal(listed.instances.find((i: { id: string }) => i.id === sep).wake, due);
   const later = new Date(Date.now() + 2 * 86_400_000).toISOString();
   assert.equal((await (await call('PUT', `/api/wakes/${s.id}`, JSON.stringify({ at: later }))).json()).at, later);
   assert.equal((await call('POST', `${await at(series, '2026-08-30 rework', 'comment')}`, JSON.stringify({ text: 'go' }))).status, 200);
   assert.equal(JSON.parse(readFileSync(wakes, 'utf8')).pending[sep], undefined, "a person's act starts the run now, so the wake goes");
 
-  assert.equal((await call('PUT', await at(series), JSON.stringify({ allow_wakes: true }))).status, 200);
-  assert.equal((await shown(series)).allow_wakes, adminEmail);
-  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(root, 'series', s.id, 'series.json'), 'utf8'))), ['wakes']);
+  assert.equal((await call('PUT', await at(series), JSON.stringify({ share: true }))).status, 200);
+  assert.equal((await shown(series)).shared_by, adminEmail);
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(root, 'series', s.id, 'series.json'), 'utf8'))), ['shared']);
   assert.equal((await call('PUT', await at(series), JSON.stringify({ name: s.name }))).status, 200);
-  assert.equal((await shown(series)).allow_wakes, adminEmail, 'other settings leave Allow wakes as it was');
+  assert.equal((await shown(series)).shared_by, adminEmail, 'other settings leave sharing as it was');
 
   const started = await call('POST', '/api/requests/r1');
   assert.equal(started.status, 200);
@@ -364,7 +365,7 @@ test("people see and move a series' next wake, turn Allow wakes on as themselves
   assert.equal((await call('POST', await at(series), JSON.stringify({ label: 'fourth' }))).status, 409, '3 open already');
   assert.equal((await call('DELETE', `/api/wakes/${s.id}`)).status, 200);
   assert.equal((await shown(series)).wake, null);
-  assert.equal((await call('PUT', await at(series), JSON.stringify({ allow_wakes: false }))).status, 200);
+  assert.equal((await call('PUT', await at(series), JSON.stringify({ share: false }))).status, 200);
   for (const label of ['2026-09-27', 'third']) assert.equal((await call('POST', `${await at(series, label, 'abandon')}`)).status, 200);
 });
 
