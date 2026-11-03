@@ -9,7 +9,7 @@ import { graphGet } from './m365.ts';
 // an admin run a skill's steps without the model.
 //   POST /agent/graph {args}       rf graph PATH …: a GET to Microsoft Graph through the runner's Microsoft 365 login, as far as the
 //                                  instance's ticks reach, answered as Graph answers it
-//   POST /agent/browser {args}     rf browser open SITE | get SITE PATH FILE: a browser on a website, in the runner's login
+//   POST /agent/browser {args}     rf browser open SITE | get SITE PATH FILE | expired SITE: a browser on a website, in the runner's login
 // The server never reads or writes the run's files: rf does, in the sandbox. A file coming back travels as `data`, base64, in the
 // answer, with `saved`, the FILE rf saves it as.
 
@@ -89,7 +89,8 @@ export async function agentCall(a: AgentRun, path: string, method: string, body:
       a.inst.append('agent', 'browser', { action: 'get', site, from, file: rel(to) });
       return { status: 200, data: { saved: rel(to), data: data(bytes) } };
     }
-    throw new HttpError(400, 'rf browser open SITE | rf browser get SITE PATH FILE');
+    if (cmd === 'expired' && site) return a.browsers.expire(site);
+    throw new HttpError(400, 'rf browser open SITE | rf browser get SITE PATH FILE | rf browser expired SITE');
   }
   return null;
 }

@@ -133,6 +133,7 @@ export class Browsers {
   // connection, so a login its runner can no longer lend stops at the next one; a connection already open lasts until the run ends.
   private lent(site: string) {
     const { email, login } = use(this.inst, `web:${site}`), had = this.bySite.get(site);
+    if (login.expired) throw Object.assign(new HttpError(409, `${email}'s login to ${login.name} has expired: they sign in to it again on the Logins page, and the instance carries on`), { login: login.id });
     if (had && had.email !== email) throw new HttpError(409, `this run's browser on ${site} is in ${had.email}'s login, and ${email} has taken the instance over: the next run opens one in theirs`);
     return { email, login, had };
   }
@@ -150,6 +151,15 @@ export class Browsers {
     const site = [...this.bySite].find(([, b]) => b.id === id)?.[0];
     if (site) this.lent(site);
     return !!site;
+  }
+
+  // The agent found the website signed out: the runner's login is marked expired, for them to sign in again, which wakes the instance,
+  // and its browser closes.
+  async expire(site: string): Promise<never> {
+    const { email, login } = use(this.inst, `web:${site}`);
+    saveLogin(email, { ...login, expired: true });
+    await this.close(site);
+    throw Object.assign(new HttpError(409, `${email}'s login to ${login.name} has expired: they sign in to it again on the Logins page, and the instance carries on`), { login: login.id });
   }
 
   async browserFile(site: string, path: string): Promise<Buffer> {
@@ -170,15 +180,16 @@ export class Browsers {
     }));
   }
 
-  async close() {
-    await Promise.all([...this.bySite].map(async ([site, { id, email }]) => {
+  // The run's browsers, or the one on `only`, close: each hands its login back refreshed, unless it expired, and leaves its request log.
+  async close(only?: string) {
+    await Promise.all([...this.bySite].filter(([site]) => !only || site === only).map(async ([site, { id, email }]) => {
+      this.bySite.delete(site);
       const { state, log } = await close(id), login = logins(email).find(l => l.id === `web:${site}`), file = `browser/run ${this.run} ${site}.jsonl`;
-      if (state && login) saveLogin(email, login, JSON.stringify(state));
+      if (state && login && !login.expired) saveLogin(email, login, JSON.stringify(state));
       mkdirSync(join(this.inst.dir, 'browser'), { recursive: true });
       replaceReadOnly(join(this.inst.dir, file), log.map(e => JSON.stringify(e) + '\n').join(''));
       const writes = log.filter(e => !e.blocked && !['GET', 'HEAD', 'OPTIONS'].includes(e.method)).length;
       this.inst.append('server', 'browser', { run: this.run, site, login: email, requests: log.length, writes, blocked: log.filter(e => e.blocked).length, file });
     }));
-    this.bySite.clear();
   }
 }

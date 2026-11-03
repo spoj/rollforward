@@ -72,6 +72,6 @@ export function use(inst: Instance, offer: string): { email: string; login: Logi
     throw new HttpError(403, `${by} can no longer run this instance, so their logins aren't used: someone in its workspace takes it over`);
   if (!ticked.includes(offer)) throw new HttpError(403, `${offer} is not ticked for this instance; its runner, ${by}, ticks logins when starting or taking it over`);
   const login = logins(by).find(l => l.offers.some(o => o.id === offer));
-  if (!login) throw new HttpError(403, `${by} no longer has a login offering ${offer}; they sign in again on the Logins page`);
+  if (!login) throw Object.assign(new HttpError(409, `${by} no longer has a login offering ${offer}: they sign in again on the Logins page, and the instance carries on`), { login: offer.startsWith('m365') ? 'm365' : offer });
   return { email: by, login };
 }

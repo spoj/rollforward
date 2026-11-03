@@ -32,12 +32,14 @@ const HELP: Record<string, string> = {
   /me/mailFolders, /users/ADDRESS/messages, /me/drive, /drives/ID, /sites/ID and /shares/ID.`,
   browser: `rf browser open SITE
 rf browser get SITE PATH FILE
+rf browser expired SITE
   open prints the CDP address of a browser on the website SITE, signed in with your runner's login if it is ticked for this
   instance: one per website, open until the run ends, so each script can connect again. Connect with Playwright,
   chromium.connect_over_cdp(address), and use browser.contexts[0], where the login is. It reaches only the website's hosts,
   and logs every request. Fetch with the page's cookies inside the page (page.evaluate with fetch), not page.request. A
   download lands inside the browser's machine: get saves its PATH (download.path()) as working/FILE. A site showing its sign-in
-  page means the login has expired.`,
+  page means the login has expired: expired says so, closes that browser, and asks your runner to sign in again, after which the
+  instance carries on.`,
 };
 const USAGE = `${Object.values(HELP).map(h => h.split('\n  ')[0]).join('\n')}\nrf help COMMAND`;
 

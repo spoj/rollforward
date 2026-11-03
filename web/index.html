@@ -631,7 +631,7 @@ function logText(e) {
     resolve: () => `${w} resolved a thread${e.text ? `<div class="d">${esc(e.text)}</div>` : ''}`,
     report: () => `${w} reported on run ${e.run}<div class="d">${md(e.text)}</div>`,
     wake: () => `Woken${e.from ? ` by ${esc(e.from)}` : ''}<div class="d">${esc(e.reason)}</div>`,
-    expired: () => `Waiting for ${esc(e.runner)} to sign in to ${e.login === 'm365' ? 'Microsoft 365' : esc(e.login)} again`,
+    expired: () => `Waiting for ${esc(e.runner)} to sign in to ${esc(e.name ?? (e.login === 'm365' ? 'Microsoft 365' : e.login))} again${e.runner === me.email && !data.log.some(x => x.seq > e.seq && x.op === 'wake' && x.login === e.login) ? `<div>${signInHtml(e.login, e.name ?? e.login)}</div>` : ''}`,
     takeover: () => `${w} took over from ${esc(e.from)}${e.logins?.length ? `<div class="d">Logins: ${esc(e.logins.join(', '))}</div>` : ''}`,
     promote: () => `${w} made this one-off the first instance of ${esc(e.series)}`,
     egress: () => `Run ${e.run} ${e.allowed ? 'reached' : 'was refused'} ${esc(e.host)}`,
@@ -891,7 +891,7 @@ function renderPv() {
     const m = pv.email;
     h += `<div class="pvb"><pre>${esc(Object.entries(m.headers).map(([k, v]) => `${k}: ${v}`).join('\n') + (m.attachments.length ? `\nAttachments: ${m.attachments.join(', ')}` : '') + '\n\n' + m.text)}</pre></div>`;
   } else if (pv.image) h += `<div class="pvb"><img src="${fileUrl(pv.path)}" alt=""></div>`;
-  else if (pv.signin) h += `<div class="sub" style="padding:8px 14px">Take control, sign in as you always do, then Save login. Only you see this browser.</div><div class="pvb"><iframe src="/signins/${pv.signin}/view" style="width:100%;height:100%;border:0"></iframe></div>`;
+  else if (pv.signin) h += `<div class="sub" style="padding:8px 14px">Sign in as you always do, then Save login. Only you see this browser.</div><div class="pvb"><iframe src="/signins/${pv.signin}/view?drive" style="width:100%;height:100%;border:0"></iframe></div>`;
   else if (pv.text !== undefined) h += `<div class="pvb">${pv.md ? `<div class="say">${md(pv.text)}</div>` : `<pre>${esc(pv.text)}</pre>`}</div>`;
   else if (pv.settings?.kind === 'skills') h += `<div class="pvb vl">${skillsHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'tokens') h += `<div class="pvb vl">${tokensHtml(pv.settings)}</div>`;
@@ -1023,6 +1023,10 @@ function startHtml(s) {
     + `<h3>Logins this instance may use</h3>` + ticksHtml(s.offers) + `<div><button class="btn primary" data-act="start-go">${esc(s.go)}</button></div>`;
 }
 
+// Signing in again, from wherever a login is said to have expired: Microsoft's own page, or a website's live browser.
+const signInHtml = (id, name) => id === 'm365' ? '<a class="btn" href="/logins/m365/connect">Sign in again</a>'
+  : `<button class="btn" data-act="web-signin" data-id="${esc(id.slice(4))}" data-name="${esc(name)}">Sign in again</button>`;
+
 // What waits on you: the agent's asks for you, requests to start a series you can see, and chains of wakes that broke.
 function waiting() {
   const out = [], at = (w, s, i) => `<a href="#/${i?.id ?? w.id}">${esc(w.name)} · ${esc(s.name)}${i ? ' · ' + esc(i.label) : ''}</a>`;
@@ -1034,7 +1038,7 @@ function waiting() {
     for (const r of s.requests) out.push(`<div class="wt">${at(w, s)}: ${esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)} <button class="btn" data-act="req-start" data-id="${esc(r.id)}">Start</button></div>`);
     if (s.allow_wakes === me.email && !s.instances.some(i => i.status === 'open') && !s.wake && !s.requests.length) out.push(`<div class="wt">${at(w, s)}: wakes itself, but nothing is open and no wake is set</div>`);
   }
-  return [...out, ...expired.map(l => `<div class="wt">Your ${esc(l.name)} login has expired: <a data-act="logins">sign in again</a></div>`)];
+  return [...out, ...expired.map(l => `<div class="wt">Your ${esc(l.name)} login has expired. ${signInHtml(l.id, l.name)}</div>`)];
 }
 
 async function openLogins() {

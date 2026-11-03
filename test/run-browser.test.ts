@@ -5,19 +5,24 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInstance, openStore } from '../src/store.ts';
-import { initSystem, saveTree } from '../src/system.ts';
+import { initSystem, saveTree, writeJson } from '../src/system.ts';
 
-// A run's screenshots, from a stand-in browser service whose page changes only when the test says.
+// A run's browsers, from a stand-in browser service whose page changes only when the test says.
 let page = Buffer.from('page 1');
-const service = createServer((req, res) => res.writeHead(req.url === '/sessions/b1/screenshot' ? 200 : 404).end(page));
+const service = createServer((req, res) => {
+  if (req.method === 'DELETE') return res.writeHead(200).end(JSON.stringify({ state: { cookies: [] }, log: [{ method: 'GET' }] }));
+  res.writeHead(req.url === '/sessions/b1/screenshot' ? 200 : 404).end(page);
+});
 await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
 process.env.RF_BROWSER_URL = `http://127.0.0.1:${(service.address() as { port: number }).port}`;
 const { Browsers } = await import('../src/browsers.ts');
+const { logins, saveLogin } = await import('../src/logins.ts');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-shots-'));
 initSystem(tmp);
 openStore(tmp);
 saveTree({ workspaces: { w: { name: 'Acme', owners: ['alice@demo.test'], members: [] } }, series: { s: { name: 'Portal pull', workspace: 'w' } } });
 mkdirSync(join(tmp, 'series', 's'), { recursive: true });
+writeJson('users.json', { 'alice@demo.test': { role: 'admin' } });
 
 after(() => {
   service.close();
@@ -35,4 +40,16 @@ test("after each tool call, each of the run's browsers is shot unless its page l
   assert.deepEqual(shots.map(e => [e.by, e.run, e.site, e.file]), [['server', 2, 'erp', 'browser/run 2 erp 1.png'], ['server', 2, 'erp', 'browser/run 2 erp 2.png']]);
   assert.equal(readFileSync(join(inst.dir, 'browser/run 2 erp 2.png'), 'utf8'), 'page 2');
   assert.equal(statSync(join(inst.dir, 'browser/run 2 erp 1.png')).mode & 0o222, 0, 'the agent reads it but cannot change it');
+});
+
+test("the agent says a website signed it out: its runner's login is marked expired and its browser closes, keeping its request log", async () => {
+  const alice = 'alice@demo.test', erp = { id: 'web:erp', kind: 'website' as const, name: 'ERP', since: '', offers: [{ id: 'web:erp', name: 'ERP' }] };
+  saveLogin(alice, erp, '{}');
+  const inst = createInstance('s', '2026-12', alice, ['web:erp']), browsers = new Browsers(inst, 1);
+  browsers.bySite.set('erp', { id: 'b1', email: alice });
+  await assert.rejects(browsers.expire('erp'), (e: { status: number; login: string }) => e.status === 409 && e.login === 'web:erp');
+  assert.equal(logins(alice).find(l => l.id === 'web:erp')!.expired, true);
+  assert.equal(browsers.bySite.size, 0);
+  assert.deepEqual(inst.log.filter(e => e.op === 'browser').map(e => [e.site, e.requests]), [['erp', 1]]);
+  await assert.rejects(browsers.browser('erp'), (e: { status: number; login: string }) => e.status === 409 && e.login === 'web:erp', 'no browser opens in it until they sign in again');
 });

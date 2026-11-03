@@ -55,7 +55,7 @@ async function agent(req: IncomingMessage, res: ServerResponse, url: URL) {
   // Logins and browsers: rf graph, rf browser (see agent-api.ts).
   // A login the run's runner must sign in to again is logged, so the instance carries on once they do.
   const r = await agentCall(a, url.pathname, req.method ?? 'GET', () => body(req)).catch((e: HttpError & { login?: string }) => {
-    if (e.login) a.inst.append('server', 'expired', { login: e.login, runner: runnerOf(a.inst).by });
+    if (e.login) a.inst.append('server', 'expired', { login: e.login, name: e.login === 'm365' ? 'Microsoft 365' : websites()[e.login.slice(4)]?.name ?? e.login, runner: runnerOf(a.inst).by });
     throw e;
   });
   if (r) return send(res, r.status, r.data);
