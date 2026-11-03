@@ -201,7 +201,7 @@ export function queued(inst: Instance): { why: string; since: string } | undefin
 // Closing an instance wakes its series' later open instances, which may have used its draft; a note for those the closer doesn't start.
 export function closed(inst: Instance, by: string) {
   for (const later of instances(inst.seriesId).filter(i => i.doc.status === 'open' && i.label.localeCompare(inst.label, 'en', { numeric: true }) > 0)) {
-    later.append('server', 'wake', { reason: `${inst.label} closed: its final figures may differ from the draft you read`, from: inst.label, ...(!starter(later, by) && { note: true }) });
+    later.append('server', 'wake', { reason: `${inst.label} closed: its final figures may differ from the draft you read`, from: `${named(tree(), inst.seriesId)}/${inst.label}`, ...(!starter(later, by) && { note: true }) });
     kick(later);
   }
 }
@@ -253,12 +253,14 @@ function fire() {
   for (const [target, wake] of due) {
     delete w.pending[target];
     w.fired[target] = now;
+    // Where the run that set it is now, though it was renamed or moved since.
+    const from = wake.inst ? `${named(t, instance(wake.inst).seriesId)}/${instance(wake.inst).label}` : wake.from;
     const s = t.series[t.series[target] ? target : instance(target).seriesId];
     if (s.archived || t.workspaces[s.workspace].archived) continue;
     if (!t.series[target]) {
       const inst = instance(target);
       if (inst.doc.status !== 'open') continue;
-      inst.append('server', 'wake', { from: wake.from, ...(wake.inst !== inst.id && !starter(inst, wake.from) && { note: true }) });
+      inst.append('server', 'wake', { from, ...(wake.inst !== inst.id && !starter(inst, wake.from) && { note: true }) });
       kick(inst);
       continue;
     }
@@ -266,9 +268,9 @@ function fire() {
     const runs = u && !u.disabled && canSee({ email: shared.by, role: u.role, groups: u.groups ?? [] }, t.workspaces[t.series[target].workspace]);
     try {
       if (!runs) throw new Error('not shared');
-      startWith(target, wake.label!, shared.by, shared.logins, { from: wake.from });
+      startWith(target, wake.label!, shared.by, shared.logins, { from });
     } catch {
-      w.requests[newId()] = { series: target, label: wake.label!, from: wake.from, at: now };
+      w.requests[newId()] = { series: target, label: wake.label!, from, at: now };
     }
   }
   saveWakes(w);

@@ -51,10 +51,10 @@ test('a run names a series or an instance by its folder, within its reach', () =
   assert.throws(() => resolveFor(run, '2026-13'), /no instance 2026-13 in Bank rec/);
 });
 
-test('a due wake its own run set continues an open instance, as a reply does, though it was renamed since; one more than 15 minutes after its last is moved', async () => {
+test('a due wake its own run set continues an open instance, as a reply does, though it was renamed since, and names where that run is now; one more than 15 minutes after its last is moved', async () => {
   setWake(oct.id, { at: new Date().toISOString(), from: 'Acme/Bank rec/October', inst: oct.id });
   await settle();
-  assert.deepEqual(oct.log.filter(e => e.op === 'wake').map(e => [e.from, e.note]), [['Acme/Bank rec/October', undefined]]);
+  assert.deepEqual(oct.log.filter(e => e.op === 'wake').map(e => [e.from, e.note]), [['Acme/Bank rec/2026-10', undefined]]);
   assert.ok(ops(oct).includes('run'), 'it started a run');
   assert.equal(wakes().pending[oct.id], undefined);
   const next = setWake(oct.id, { at: new Date().toISOString(), from: 'x' });
