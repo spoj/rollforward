@@ -121,6 +121,11 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .ren { all: unset; cursor: pointer; color: var(--ink-3); font-size: 15px; font-weight: 400; margin-left: 6px; }
 .bar h1 .t { cursor: text; }
 .bar h1:hover .ren { color: var(--ink); }
+/* Whose an instance is: a chip by its title, which tells more on hover or a click, and their initials on others' rows. */
+.owner { position: relative; display: inline-block; vertical-align: 3px; margin-left: 10px; padding: 1px 9px; border-radius: 10px; font-size: 12.5px; font-weight: 500; letter-spacing: 0; color: var(--person); background: var(--person-bg); cursor: default; }
+.owner .about { display: none; position: absolute; left: 0; top: calc(100% + 6px); z-index: 5; width: max-content; max-width: 340px; font-weight: 400; color: var(--ink-2); background: var(--sheet); border: 1px solid var(--rule-2); border-radius: var(--r1); box-shadow: 0 6px 20px rgba(21,24,29,.12); padding: 8px 12px; line-height: 1.5; }
+.owner:is(:hover, :focus-within) .about { display: block; }
+.who { display: inline-block; margin-left: 6px; padding: 0 4px; border-radius: 6px; font-size: 10px; font-weight: 600; line-height: 15px; vertical-align: 1px; color: var(--person); background: var(--person-bg); }
 .state { margin-left: auto; font-size: 13px; color: var(--ink-2); display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .btn { border: 1px solid var(--rule-2); background: var(--sheet); color: var(--ink); border-radius: var(--r1); padding: 7px 12px; font-size: 13px; font-weight: 500; white-space: nowrap; text-decoration: none; display: inline-block; }
 .btn.primary { background: var(--ink); border-color: var(--ink); color: #fff; }
@@ -432,6 +437,10 @@ const go = id => { location.hash = '#/' + id; };
 const recent = i => i.running ? new Date().toISOString() : i.active, newest = xs => xs.reduce((m, x) => x > m ? x : m, '');
 const sAct = s => newest(s.instances.map(recent)), wAct = w => newest(w.series.map(sAct)), byAct = f => (a, b) => (f(b) > f(a)) - (f(b) < f(a));
 // How long ago, compactly, as a row's last activity: now, 5m, 3h, 2d, 7w.
+const initials = name => {
+  const w = name.match(/\p{L}+/gu);
+  return (w.length > 1 ? w[0][0] + w[1][0] : w[0].slice(0, 2)).toUpperCase();
+};
 const ago = iso => {
   const m = (Date.now() - Date.parse(iso)) / 60e3;
   return m < 1 ? 'now' : m < 60 ? `${m | 0}m` : m < 1440 ? `${m / 60 | 0}h` : m < 10080 ? `${m / 1440 | 0}d` : `${m / 10080 | 0}w`;
@@ -521,7 +530,7 @@ function renderSide() {
   const chev = id => `<button class="chev" data-act="expand" data-id="${id}">${expanded.has(id) ? '\u25BE' : '\u25B8'}</button>`;
   const row = i => {
     const st = i.queued ? '\u29D7 queued' : i.asks.length ? `<span class="q">${i.asks.length} to answer</span>` : i.wake ? `wakes ${when(i.wake)}` : i.status === 'open' ? '' : i.status;
-    return `<a class="row inst ${i.status} ${cur?.i?.id === i.id ? 'on' : ''}" href="#/${i.id}"><span class="nm ${i.unread ? 'b' : ''}">${esc(i.label)}${i.unread && !i.asks.length ? '<span class="dot u"></span>' : ''}</span><span class="n">${st}</span>${age(i.active, i.running)}</a>`;
+    return `<a class="row inst ${i.status} ${cur?.i?.id === i.id ? 'on' : ''}" href="#/${i.id}"><span class="nm ${i.unread ? 'b' : ''}">${esc(i.label)}${i.runner === me.email ? '' : `<span class="who" title="${esc(i.runner_name)} runs it">${esc(initials(i.runner_name))}</span>`}${i.unread && !i.asks.length ? '<span class="dot u"></span>' : ''}</span><span class="n">${st}</span>${age(i.active, i.running)}</a>`;
   };
   const waits = waiting().length;
   let h = waits ? `<div class="row waits"><a class="nm" data-act="waiting">Waiting on you<span class="q"> ${waits}</span></a></div>` : '';
@@ -573,7 +582,7 @@ function renderBar() {
   if (editing) return;
   const open = data?.doc.status === 'open', renamable = open && !cur.s.instances.some(i => i.running) && !cur.i.queued;
   let h = `<button class="menu" data-act="menu">☰</button>`;
-  h += `<div><div class="crumb">${esc(cur?.w.name ?? '')}${cur?.s ? ' · ' + esc(cur.s.single ? 'Ungrouped' : cur.s.name) : ''}</div><h1>${renamable ? `<span class="t" data-act="rename" title="Rename">${esc(cur.i.label)}</span><button class="ren" data-act="rename" title="Rename">\u270E</button>` : esc(cur?.i?.label ?? 'No instance')}</h1></div>`;
+  h += `<div><div class="crumb">${esc(cur?.w.name ?? '')}${cur?.s ? ' · ' + esc(cur.s.single ? 'Ungrouped' : cur.s.name) : ''}</div><h1>${renamable ? `<span class="t" data-act="rename" title="Rename">${esc(cur.i.label)}</span><button class="ren" data-act="rename" title="Rename">\u270E</button>` : esc(cur?.i?.label ?? 'No instance')}${data ? owner() : ''}</h1></div>`;
   if (data) {
     const d = lastDone(), talk = threads.filter(t => t.waits).length;
     const state = data.doc.status !== 'open' ? `${data.doc.status === 'closed' ? 'Closed' : 'Abandoned'} · read-only`
@@ -589,6 +598,15 @@ function renderBar() {
     if (open) h += '<button class="btn top" data-act="menu-instance" title="Rename, abandon">\u22EF</button>';
   }
   put($('#bar'), h);
+}
+
+// The runner's chip: Yours, or their name; on hover or a click, what that means, since when, and the logins they ticked.
+function owner() {
+  const r = data.runner, mine = r.by === me.email, who = mine ? 'You' : esc(r.name), e = data.log.findLast(e => ['create', 'duplicate', 'takeover'].includes(e.op));
+  const how = { create: 'Made it', duplicate: `Copied it from ${esc(e.from)}`, takeover: `Took it over from ${esc(e.from)}` }[e.op];
+  return `<span class="owner" tabindex="0">${mine ? 'Yours' : esc(r.name)}<span class="about">`
+    + (data.doc.status === 'open' ? `${who} run${mine ? '' : 's'} it: runs use ${mine ? 'your' : 'their'} logins, and only ${mine ? 'you' : 'they'} close it.` : `${who} ran it.`)
+    + `<br>${how} ${when(e.at)}.<br>${r.ticked.length ? `Logins: ${esc(r.ticked.join(', '))}` : 'No logins ticked.'}</span></span>`;
 }
 
 function provenance(file) {

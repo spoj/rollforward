@@ -139,24 +139,30 @@ function guard(before: string[], after: string[], force: unknown) {
 // An instance as the sidebar shows it. What comes from its log and screen is kept until either moves on, so a listing reads each
 // instance's log once, not on every refresh.
 const kept = new WeakMap<Instance, { key: string; active: string; asks: string[]; runner: string; acted: string[]; cost: number }>();
+// Who runs an instance, by name, and the logins they ticked for it, by name while they still offer them.
+function runner(inst: Instance) {
+  const r = runnerOf(inst), offers = logins(r.by).flatMap(l => l.offers);
+  return { ...r, name: users()[r.by]?.name || r.by, ticked: r.logins.map(id => offers.find(o => o.id === id)?.name ?? id) };
+}
+
 // What makes an instance new to a person, when someone else or the agent did it: a run's end, a report, a comment, an upload, a
 // takeover, a close.
 const NEWS = ['done', 'report', 'comment', 'upload', 'takeover', 'close', 'abandon'];
 
-function summary(i: Instance, email: string, w8 = wakes()) {
+function summary(i: Instance, email: string, w8 = wakes(), us = users()) {
   const key = `${i.log.length}:${i.doc.rev}`;
   const news = i.log.findLast(e => e.by !== email && NEWS.includes(e.op)), s = seen(email);
   let k = kept.get(i);
   if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i).map(w => w.who), runner: runnerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: +i.log.reduce((t, e) => t + ((e.cost as number | undefined) ?? 0), 0).toFixed(4) });
   return {
     id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(i.seriesId)?.inst === i, queued: !!queued(i),
-    asks: k.asks, wake: w8.pending[i.id]?.at ?? null, runner: k.runner, cost: k.cost, active: k.active,
+    asks: k.asks, wake: w8.pending[i.id]?.at ?? null, runner: k.runner, runner_name: us[k.runner]?.name || k.runner, cost: k.cost, active: k.active,
     unread: !!news && news.at > s.since && news.seq > (s.at[i.id] ?? 0),
   };
 }
 
 function listing(me: Me) {
-  const t = tree(), w8 = wakes(), byName = (a: [string, { name: string }], b: [string, { name: string }]) => a[1].name.localeCompare(b[1].name);
+  const t = tree(), w8 = wakes(), us = users(), byName = (a: [string, { name: string }], b: [string, { name: string }]) => a[1].name.localeCompare(b[1].name);
   return Object.entries(t.workspaces).filter(([, w]) => canSee(me, w)).sort(byName).map(([id, w]) => {
     const series = Object.entries(t.series).filter(([, s]) => s.workspace === id).sort(byName).map(([sid, s]) => {
       const { shared } = seriesSettings(seriesDir(sid));
@@ -164,7 +170,7 @@ function listing(me: Me) {
         id: sid, name: s.name, archived: !!s.archived, single: !!s.single, shared_by: shared?.by ?? null, shared_logins: shared?.by === me.email ? shared.logins : [],
         wake: w8.pending[sid] ?? null,
         requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r })),
-        instances: instances(sid).map(i => summary(i, me.email, w8)),
+        instances: instances(sid).map(i => summary(i, me.email, w8, us)),
       };
     });
     // Mine: a workspace you own, or one where you ran an instance, commented or uploaded; membership alone isn't.
@@ -461,7 +467,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   const a = active.get(inst.seriesId);
   const mine = a?.inst === inst ? a : undefined;
   if (!action) see(by, inst.id, inst.log.at(-1)!.seq);
-  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4) } : null, queued: !!queued(inst), runner: runnerOf(inst) });
+  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4) } : null, queued: !!queued(inst), runner: runner(inst) });
   if (action === 'trace') return send(res, 200, trace(inst));
   if (action === 'summary') return send(res, 200, summary(inst, by));
   // The screen: anyone who sees the instance reads it; only its own run writes it.

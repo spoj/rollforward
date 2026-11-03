@@ -162,7 +162,7 @@ test('rename relabels an open instance in its instance.json and logs it; an exis
 test("only the runner closes or abandons; taking over makes you the runner with your own logins ticked", async () => {
   const id = await iid(series, '2026-09-06'), offer = 'web:portal';
   const runner = async () => (await json(`/api/instances/${id}`)).runner;
-  assert.deepEqual(await runner(), { by: 'alex', logins: [] }, 'whoever made it');
+  assert.deepEqual(await runner(), { by: 'alex', logins: [], name: 'alex', ticked: [] }, 'whoever made it');
   assert.equal((await call('POST', await at(series, '2026-09-06', 'close'))).status, 403);
   assert.equal((await call('POST', await at(series, '2026-09-06', 'abandon'))).status, 403, 'nor abandons');
   assert.equal((await call('POST', await at(series, '2026-09-06', 'takeover'), JSON.stringify({ logins: [offer] }))).status, 400, 'not a login of yours');
@@ -172,7 +172,7 @@ test("only the runner closes or abandons; taking over makes you the runner with 
   saveLogin(adminEmail, { id: 'web', kind: 'website', name: 'Portal', since: new Date().toISOString(), offers: [{ id: offer, name: 'Portal' }] }, 'state');
   assert.deepEqual((await json('/logins')).map((l: { id: string }) => l.id), ['web']);
   assert.equal((await call('POST', await at(series, '2026-09-06', 'takeover'), JSON.stringify({ logins: [offer] }))).status, 200);
-  assert.deepEqual(await runner(), { by: adminEmail, logins: [offer] });
+  assert.deepEqual(await runner(), { by: adminEmail, logins: [offer], name: 'Demo Admin', ticked: ['Portal'] }, 'their logins by name');
   assert.equal((await json(`/api/instances/${id}`)).log.at(-1).from, 'alex');
   assert.equal((await call('DELETE', '/logins/web')).status, 200);
   assert.deepEqual(await json('/logins'), [], 'signing out deletes the record');
