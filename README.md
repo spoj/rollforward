@@ -37,7 +37,7 @@ For scale, a weekly borrowing base's runs cost about $0.20–0.60 each with Clau
 
 ## Concepts
 
-- **People** sign in with a Microsoft account. Each is a **user**, a **publisher**, who also pushes skills, or an **admin**.
+- **People** sign in with a Microsoft account. Each is a **user**, a **publisher**, who also pushes skills, which every run in every workspace loads, so a publisher is trusted with every runner's ticked logins, or an **admin**.
 - **Workspace:** a folder of series, usually one entity's work, such as its bank rec, inventory rec and borrowing base. It is the only unit of sharing: its **members** see and work in every series in it, and its **owners** also manage who is in it, each a person by email or an Entra group by id. An area that needs hiding, such as payroll, is a workspace of its own with fewer people. A workspace with no one in it is the admins'.
 - **Series:** a recurring transform, such as "Weekly borrowing base": each instance's input files become its output files. What an instance should contain comes from earlier instances, not from a declaration. A **task** is a one-off: a series marked single, holding one instance and named by its label, Untitled until its first prompt or a rename names it, with no settings. Made a series, as it closes or with **Start another based on this**, which also starts a second instance rolling forward from it, it keeps its id, files and log.
 - **Instance:** one pass through a series, under a label people choose, such as "2026-08-24" or "Larkfield refinancing"; instances sort by label. Up to three of a series are open at once. An instance ends **closed**, its runner's sign-off, or **abandoned**.
