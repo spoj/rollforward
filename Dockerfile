@@ -1,15 +1,11 @@
-FROM node:26-slim
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv poppler-utils sqlite3 ca-certificates curl libreoffice-calc-nogui \
-    git jq zip unzip ripgrep fd-find fonts-noto-cjk bubblewrap socat \
- && rm -rf /var/lib/apt/lists/*
-RUN ln -sf /bin/bash /bin/sh && ln -s /usr/bin/fdfind /usr/bin/fd
+# The server, on the agent image, which is also its runs' userland (RF_AGENT_ROOT=/): build agent/ first, as rollforward-agent.
+FROM rollforward-agent
+RUN apt-get update && apt-get install -y --no-install-recommends bubblewrap && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
-COPY requirements.txt ./
-RUN python3 -m venv .venv && .venv/bin/pip install --no-cache-dir -r requirements.txt
 COPY . .
 # Runs are sandboxes without a systemd scope of their own here.
-ENV RF_HOST=0.0.0.0 RF_SANDBOX_SCOPE=
+ENV RF_HOST=0.0.0.0 RF_SANDBOX_SCOPE= RF_AGENT_ROOT=/
 EXPOSE 8780
 CMD ["node", "src/server.ts", "/data", "8780"]

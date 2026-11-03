@@ -1,16 +1,17 @@
 // Moves this checkout to the newest release CI made, once the server's runs going have ended, then restarts it: a systemd timer runs it
 // (docs/deploy.md), and never twice at once. A release is taken once every check on its commit has passed, and never past a prerelease, which a tag with
-// a Manual: line makes for a release that needs a person first. What it installs is fetched before the server drains, so a failure
-// there, as without the network, changes nothing, and the next tick tries again. If the server doesn't answer HEALTH after the move,
-// the checkout goes back, and that release isn't tried again; if going back fails too, the server restarts as the checkout is, never
-// left drained.
+// a Manual: line makes for a release that needs a person first. What it installs, its packages and its agent image, is fetched
+// before the server drains, so a failure there, as without the network, changes nothing, and the next tick tries again. If the
+// server doesn't answer HEALTH after the move, the checkout goes back, and that release isn't tried again; if going back fails too,
+// the server restarts as the checkout is, never left drained.
 //   node scripts/update.ts HEALTH
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { AGENTS, agentId, download, id, remove, unpack } from '../src/agent.ts';
 
 const repo = 'spoj/rollforward', health = process.argv[2];
 const app = join(dirname(fileURLToPath(import.meta.url)), '..'), state = join(homedir(), '.local', 'state', 'rollforward-update.json');
@@ -55,7 +56,6 @@ async function move(from: string, to: string) {
   }
   sh('git', 'checkout', '-q', '--detach', to);
   if (changed(from, to, 'package-lock.json')) sh('npm', 'ci', '--omit=dev', '--no-audit', '--no-fund', '--offline');
-  if (changed(from, to, 'requirements.txt')) sh('uv', 'pip', 'install', '--offline', '--python', '.venv/bin/python', '-r', 'requirements.txt');
   sh('systemctl', '--user', 'restart', 'rollforward');
 }
 const changed = (from: string, to: string, file: string) => !!sh('git', 'diff', '--name-only', from, to, '--', file);
@@ -70,17 +70,18 @@ async function answers() {
 
 console.log(`${current} -> ${target}`);
 sh('git', 'fetch', '-q', '--tags', 'origin');
-// What the target installs, into npm's and uv's caches, from which the move installs it, and the move back what this one has.
+// What the target installs: its packages into npm's cache, from which the move installs them, and the move back what this one has;
+// and its agent image, unpacked beside this one's, which a move back still has.
 const tmp = mkdtempSync(join(tmpdir(), 'rollforward-update-'));
+const image = agentId(sh('git', 'ls-tree', '--name-only', target, 'agent/').split('\n').map(f => [basename(f), execFileSync('git', ['show', `${target}:${f}`], { cwd: app })]));
 try {
   if (changed(current, target, 'package-lock.json')) {
     for (const f of ['package.json', 'package-lock.json']) writeFileSync(join(tmp, f), sh('git', 'show', `${target}:${f}`));
     sh('npm', 'ci', '--omit=dev', '--no-audit', '--no-fund', '--prefix', tmp);
   }
-  if (changed(current, target, 'requirements.txt')) {
-    writeFileSync(join(tmp, 'requirements.txt'), sh('git', 'show', `${target}:requirements.txt`));
-    sh('uv', 'venv', '-q', '--python', '.venv/bin/python', join(tmp, '.venv'));
-    sh('uv', 'pip', 'install', '-q', '--python', join(tmp, '.venv', 'bin', 'python'), '-r', join(tmp, 'requirements.txt'));
+  if (!existsSync(join(AGENTS, image))) {
+    if (!(await download(image, join(tmp, 'agent.tar.zst')))) throw new Error(`agent-${image}, which ${target} runs, isn't published`);
+    await unpack(image, join(tmp, 'agent.tar.zst'));
   }
 } finally {
   rmSync(tmp, { recursive: true, force: true });
@@ -88,6 +89,8 @@ try {
 try {
   await move(current, target);
   if (await answers()) {
+    // Only this image and the one before, for a person's move back, are kept.
+    for (const d of readdirSync(AGENTS)) if (![image, id].includes(d)) remove(join(AGENTS, d));
     console.log(`on ${target}`);
     process.exit(0);
   }

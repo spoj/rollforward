@@ -1,3 +1,4 @@
+# The server's image is built on the agent image: docker build -t rollforward-agent agent, first.
 services:
   rollforward:
     build: .

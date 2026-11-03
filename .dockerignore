@@ -1,5 +1,5 @@
 .git
 .env
 node_modules
-.venv
+.agent
 **/__pycache__

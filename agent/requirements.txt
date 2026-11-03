@@ -2,7 +2,7 @@ pip
 openpyxl
 pandas
 xlrd
-extract-msg
+extract-msg==0.58.1
 defusedxml
 requests
 beautifulsoup4
@@ -12,3 +12,5 @@ pdfplumber
 python-docx
 python-calamine
 playwright
+pypdf
+pymupdf

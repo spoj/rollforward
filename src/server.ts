@@ -8,7 +8,8 @@ import { basename, dirname, join, posix, relative, resolve, sep } from 'node:pat
 import { fileURLToPath } from 'node:url';
 import { agentsFile, createInstance, duplicateInstance, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, safeName, seriesDir, type Entry, type Instance } from './store.ts';
 import { commit } from './git.ts';
-import { serveSandboxes } from './sandbox.ts';
+import { serveSandboxes, userland } from './sandbox.ts';
+import { agentRoot, id as agentId } from './agent.ts';
 import { authenticate, checkConfig, cli, connect, m365Ready, mode, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
 import { canManage, canSee, changes, everyone, initSystem, readJson, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
 import { checkTicks, logins, runnerOf, signOut } from './logins.ts';
@@ -24,11 +25,11 @@ import { active, byToken, cancelWake, closed, drain, dropRequest, isNote, kick, 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const page = join(app, 'web', 'index.html');
-const python = join(app, '.venv', ...(process.platform === 'win32' ? ['Scripts', 'python.exe'] : ['bin', 'python']));
 const exec = promisify(execFile);
 const port = Number(process.argv[3] ?? 8780);
 const host = process.env.RF_HOST ?? '127.0.0.1';
 const tmpDir = join(root, '.tmp');
+if (!existsSync(join(agentRoot, 'usr'))) throw new Error(`no agent image at ${agentRoot}: node scripts/agent.ts unpacks agent-${agentId}, which this checkout runs`);
 initSystem(root);
 openStore(root);
 convert();
@@ -304,7 +305,11 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
   const fd = openFile(inst.dir, rel);
   if (fd === undefined) throw new HttpError(404, 'no such file');
   if (preview) {
-    const bytes = readFileSync(fd), run = exec(python, [join(app, 'src', 'preview.py'), basename(rel)], { timeout: 30_000, maxBuffer: 64e6 });
+    // preview.py runs in the agent's userland, with no network and nothing of the host's: the file comes on its stdin.
+    const bytes = readFileSync(fd), run = exec('bwrap', [
+      '--unshare-all', '--die-with-parent', '--new-session', '--clearenv', ...userland(), '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
+      '--ro-bind', join(app, 'src', 'preview.py'), '/preview.py', '--setenv', 'HOME', '/tmp', '--setenv', 'LANG', 'C.UTF-8', '--', '/opt/venv/bin/python', '/preview.py', basename(rel),
+    ], { timeout: 30_000, maxBuffer: 64e6 });
     closeSync(fd);
     run.child.stdin!.end(bytes);
     const { stdout } = await run;

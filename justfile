@@ -4,12 +4,11 @@ set dotenv-load
 default:
     @just --list
 
-# Install the Node and Python dependencies, and the Chromium that the page's tests drive
+# Install the Node dependencies, the Chromium that the page's tests drive, and the agent image this checkout runs
 setup:
     npm install
     npx playwright install chromium
-    uv venv --allow-existing .venv
-    uv pip install --python .venv/bin/python -r requirements.txt
+    node scripts/agent.ts
 
 # Serve a data root at http://127.0.0.1:PORT
 start root port="8780":
@@ -46,6 +45,7 @@ logs:
 deploy:
     git -C {{cache}}/repo fetch -q {{justfile_directory()}} main
     git -C {{cache}}/repo checkout -q --detach FETCH_HEAD
+    podman build -q -t rollforward-agent {{cache}}/repo/agent
     podman build -q -t rollforward-public {{cache}}/repo
     podman rm -f {{live}}
     podman run -d --name {{live}} --init --restart=always --security-opt 'unmask=/proc/*' -p 127.0.0.1:8790:8780 --env-file {{cache}}/env -v {{live}}-data:/data rollforward-public

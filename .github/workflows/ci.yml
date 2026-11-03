@@ -1,6 +1,8 @@
-# The tests on every push and pull request. A tag's run, once they pass, makes its GitHub Release, which the hosts' updaters
-# deploy (docs/deploy.md); a tag whose message has a line starting "Manual:" makes a prerelease, which they stop at. Only the
-# release job may write to the repository: the tests, and the packages they install, only read it.
+# The tests on every push and pull request, in the agent image the commit runs (src/agent.ts): its published tarball, else one
+# built here. A tag's run, once they pass, makes its GitHub Release, which the hosts' updaters deploy (docs/deploy.md), and the
+# image's prerelease agent-<id> if it's the first to run that image; a tag whose message has a line starting "Manual:" makes a
+# prerelease, which they stop at. Only the release job may write to the repository: the tests, and the packages they install,
+# only read it.
 name: ci
 on:
   push:
@@ -17,15 +19,20 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 26
-      - uses: astral-sh/setup-uv@v6
       # Runs are bubblewrap sandboxes, which Ubuntu's AppArmor keeps from making user namespaces unless told.
       - run: |
-          sudo apt-get update -q && sudo apt-get install -yq --no-install-recommends bubblewrap socat
+          sudo apt-get update -q && sudo apt-get install -yq --no-install-recommends bubblewrap
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - id: agent
+        run: echo "id=$(node -e "import('./src/agent.ts').then(m => console.log(m.id))")" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: agent-${{ steps.agent.outputs.id }}.tar.zst
+          key: agent-${{ steps.agent.outputs.id }}
       - run: |
           npm ci
           npx playwright install --with-deps chromium
-          uv venv --python 3.13 .venv && uv pip install --python .venv/bin/python -r requirements.txt
+          node scripts/agent.ts agent-${{ steps.agent.outputs.id }}.tar.zst
       - run: node --test test/*.test.ts
         env:
           RF_SANDBOX_SCOPE: ''
@@ -39,9 +46,24 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+      - id: agent
+        run: echo "id=$(node -e "import('./src/agent.ts').then(m => console.log(m.id))")" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        with:
+          path: agent-${{ steps.agent.outputs.id }}.tar.zst
+          key: agent-${{ steps.agent.outputs.id }}
       - env:
           GH_TOKEN: ${{ github.token }}
+          AGENT: agent-${{ steps.agent.outputs.id }}
         run: |
+          if ! gh release view "$AGENT" > /dev/null 2>&1; then
+            [ -f "$AGENT.tar.zst" ] || node scripts/agent.ts "$AGENT.tar.zst"
+            sha256sum "$AGENT.tar.zst" > "$AGENT.tar.zst.sha256"
+            gh release create "$AGENT" --prerelease --target "$GITHUB_SHA" --title "$AGENT" --notes "The agent image of agent/ at $GITHUB_SHA." "$AGENT.tar.zst" "$AGENT.tar.zst.sha256"
+          fi
           git fetch -q -f origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
           notes=$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")
           gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes "$notes" $(grep -q '^Manual:' <<< "$notes" && echo --prerelease)

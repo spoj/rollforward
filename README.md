@@ -24,8 +24,9 @@ Recurring tasks, files in and files out. People drop this period's input files i
 
 ## Try it
 
-    cp .env.example .env          # set OPENROUTER_API_KEY
-    docker compose up --build     # then open http://127.0.0.1:8780
+    cp .env.example .env                  # set OPENROUTER_API_KEY
+    docker build -t rollforward-agent agent
+    docker compose up --build             # then open http://127.0.0.1:8780
 
 The image starts empty. Until an app is registered (see Access), Sign in with Microsoft offers two demo accounts: take the admin.
 
@@ -188,7 +189,9 @@ The runner, [src/runner.ts](src/runner.ts), drives Pi through Pi's `RpcClient`, 
 
 Each run's Pi is a bubblewrap sandbox ([src/sandbox.ts](src/sandbox.ts)), in a systemd scope of its own (`MemoryHigh` 4 GB, `MemoryMax` 8 GB, in `rollforward-runs.slice`). Anyone signed in can talk to the agents of their own workspaces, within these walls.
 
-- **What it sees:** the system, the app's code and the skills, read-only; under `/work`, its view of the data by name, built as it starts: `/work/<workspace>/<series>/<label>/` for every instance in its reach, read-only but for its own instance's `working/` and `session/` and its series' `.pylib`, where a plain `pip install` puts packages, built for the app's Python, and the AGENTS.md files, but no other series' `.pylib`, the code its runs installed, which a run in reach would run with its own runner's logins; `RF_SANDBOX_RO`, read-only; and a HOME and /tmp of its own on `RF_SCRATCH`, deleted when it ends. Never `.rf/`, the data root, a workspace outside its reach, or the server's environment.
+- **Its userland is the agent image,** never the host's: [agent/Containerfile](agent/Containerfile), Debian with Node 26, Python 3.13 and its venv at `/opt/venv` ([agent/requirements.txt](agent/requirements.txt)), headless LibreOffice, poppler, tesseract with English and Chinese, officecli, CJK fonts and the usual command-line tools. Pi itself runs on its node. The image's id hashes the folder's files ([src/agent.ts](src/agent.ts)); CI publishes each id's root once, as `agent-<id>.tar.zst` in the GitHub prerelease `agent-<id>`, and every checkout, a host's or the tests', unpacks that same tarball into `.agent/<id>` with `node scripts/agent.ts`, which builds one with podman or docker if the id isn't published yet. The sandbox has the image's `/usr`, `/etc`, `/opt` and `/var`, with only the host's `/etc/passwd`, `/etc/group` and time zone; the server won't start without the image its checkout names. Previews of spreadsheets and emails ([src/preview.py](src/preview.py)) and `cli.ts try` run in it too, so the host itself runs no Python.
+
+- **What it sees:** the agent image, the app's code and the skills, read-only; under `/work`, its view of the data by name, built as it starts: `/work/<workspace>/<series>/<label>/` for every instance in its reach, read-only but for its own instance's `working/` and `session/` and its series' `.pylib`, where a plain `pip install` puts packages, built for the image's Python, and the AGENTS.md files, but no other series' `.pylib`, the code its runs installed, which a run in reach would run with its own runner's logins; `RF_SANDBOX_RO`, read-only; and a HOME and /tmp of its own on `RF_SCRATCH`, deleted when it ends. Never `.rf/`, the data root, a workspace outside its reach, or the server's environment.
 - **No network of its own.** Its one way out is a socket of its own the server listens on, `RF_SCRATCH/runs/<token>/socket/rf.sock`, which socat offers at 127.0.0.1:7000 inside. What comes in on it is that run's alone: its token, which the agent sees, as in its HOME's path, and may print where another run reads it, opens nothing on another run's socket.
   - `/api/…` and `/agent/…`, as the run, by its token (`RF_URL`, `RF_TOKEN`), which ends with the run; the site itself serves no `/agent`;
   - `/model/<token>/…`, the model, with the key added on the way (`RF_MODEL_URL`);
@@ -250,10 +253,10 @@ To reach it from the internet, run `tailscale funnel --bg 8780`, with Microsoft 
 
 ## Without Docker
 
-You need Node 26, uv, bubblewrap, socat, ripgrep and fd, and a systemd user session for each run's memory limits (or `RF_SANDBOX_SCOPE=` without). LibreOffice is optional, for recalculating formula workbooks.
+You need Node 26, bubblewrap and tar, and a systemd user session for each run's memory limits (or `RF_SANDBOX_SCOPE=` without); everything a run uses comes in the agent image.
 
     npm install
-    uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt
+    node scripts/agent.ts        # the agent image this checkout runs, published or built with podman or docker
     node src/server.ts DATA_ROOT [PORT]
 
 The [justfile](justfile) has these and more as recipes; `just` lists them. `just test` runs the tests.
@@ -269,6 +272,7 @@ The [justfile](justfile) has these and more as recipes; `just` lists them. `just
   - `RF_SCRATCH` (the system's temp folder`/rollforward`), for each run's HOME, /tmp and socket; keep it short, as a socket's path, `RF_SCRATCH/runs/<token>/socket/rf.sock`, has at most 107 bytes
   - `RF_SANDBOX_SCOPE`, the command that gives each run its cgroup (a `systemd-run --user --scope` line; empty for none)
   - `RF_SANDBOX_RO`, more folders runs may read, separated by `:`
+  - `RF_AGENT_ROOT`, the agent image's root where it isn't the checkout's `.agent/<id>`, as in the container, which is the image
   - `RF_BROWSER_URL` (`http://127.0.0.1:8797`) and `RF_BROWSER_KEY`, the browser service, for websites' browsers; their tests run only with these set
   - `RF_BROWSER_IDLE_MS` (300000), how long a run's browser on a website that writes its state back stays with no connection before it's released
   - `RF_MODEL_URL` (`https://openrouter.ai/api`)
@@ -280,10 +284,10 @@ The [justfile](justfile) has these and more as recipes; `just` lists them. `just
 
 ## Code
 
-TypeScript on Node, with `node:http` and no framework or build step; the agent's scripts are Python, from `.venv`.
+TypeScript on Node, with `node:http` and no framework or build step; the agent's scripts are Python, in the agent image.
 
 - [src/server.ts](src/server.ts): the site, its API and the sandboxes' socket; [src/store.ts](src/store.ts): instances, their screens and logs.
-- [src/waker.ts](src/waker.ts): what runs when, wakes, and each run's view; [src/runner.ts](src/runner.ts) and [src/sandbox.ts](src/sandbox.ts): Pi in its sandbox.
+- [src/waker.ts](src/waker.ts): what runs when, wakes, and each run's view; [src/runner.ts](src/runner.ts) and [src/sandbox.ts](src/sandbox.ts): Pi in its sandbox; [agent/](agent), [src/agent.ts](src/agent.ts) and [scripts/agent.ts](scripts/agent.ts): the agent image.
 - [src/rf.ts](src/rf.ts): the agent's rf, and [src/agent-api.ts](src/agent-api.ts), what only a run has; [src/rf-people.ts](src/rf-people.ts): people's rf.
 - [src/auth.ts](src/auth.ts), [src/logins.ts](src/logins.ts), [src/entra.ts](src/entra.ts), [src/browsers.ts](src/browsers.ts), [src/skills.ts](src/skills.ts): sign-in, logins, Entra logins' tokens, websites and skills.
 - [src/connections.ts](src/connections.ts): connections and the calls runs make to them, a module each type under [src/connections/](src/connections), and [src/ca.ts](src/ca.ts), the runs' certificate authority.

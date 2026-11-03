@@ -9,8 +9,6 @@ import { openFile } from './store.ts';
 import { bundle } from './ca.ts';
 
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
-// The Python the app's venv runs on, which uv keeps outside the app (the venv's pyvenv.cfg names it); runs must see it too.
-const pythonHome = dirname(readFileSync(join(app, '.venv', 'pyvenv.cfg'), 'utf8').match(/^home\s*=\s*(.+)$/m)![1].trim());
 const cliPath = join(dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent'))), 'cli.js');
 const [provider, model] = (process.env.RF_MODEL ?? 'openrouter/anthropic/claude-opus-5.5').split(/\/(.*)/);
 // Where runs get their HOME and /tmp, and the folder of the server's socket for sandboxes.
@@ -61,16 +59,19 @@ export function pi(o: { token: string; id: string; view: View; skills?: string[]
   const local = `http://127.0.0.1:${PORT}`, proxy = `http://rf:${o.token}@127.0.0.1:${PORT}`;
   writeFileSync(join(agentDir, 'models.json'), JSON.stringify({ providers: { [provider]: { baseUrl: `${local}/model/${o.token}`, apiKey: 'none' } } }));
   writeFileSync(join(agentDir, 'settings.json'), JSON.stringify({ steeringMode: 'all' }));
+  mkdirSync(join(home, '.officecli'));
+  writeFileSync(join(home, '.officecli', 'config.json'), JSON.stringify({ autoUpdate: false }));
   // The authorities a run trusts, the system's and ours, whose certificates the proxy shows for connections' hosts.
   writeFileSync(join(home, 'ca.pem'), bundle());
   const args = sandboxArgs({
     cwd, home, tmp, socketDir,
-    ro: [...['bin', 'src', 'node_modules', '.venv', 'package.json', 'prompt.md'].map(f => join(app, f)), dirname(process.execPath), pythonHome, ...(process.env.RF_SANDBOX_RO ?? '').split(delimiter)].filter(p => p && existsSync(p)),
+    ro: [...['bin', 'src', 'node_modules', 'package.json', 'prompt.md'].map(f => join(app, f)), ...(process.env.RF_SANDBOX_RO ?? '').split(delimiter)].filter(p => p && existsSync(p)),
     work: { ro: [[dirname(skillsDir()), '/skills'], ...o.view.ro.filter(([src]) => existsSync(src))], rw: [[working, `${instance}/working`], [session, `${instance}/session`], [pylib, `${cwd}/.pylib`]] },
     env: {
-      PATH: [join(app, 'bin'), join(app, '.venv', 'bin'), dirname(process.execPath), '/usr/bin'].join(delimiter), LANG: 'C.UTF-8', PYTHONPATH: join(home, 'pylib'),
+      // The image's node, its venv's python and pip, and its programs; the host's time zone.
+      PATH: [join(app, 'bin'), '/opt/venv/bin', '/usr/local/bin', '/usr/bin'].join(delimiter), LANG: 'C.UTF-8', TZ: Intl.DateTimeFormat().resolvedOptions().timeZone, PYTHONPATH: join(home, 'pylib'),
       // A plain pip install, the venv's, lands in the series' .pylib, built for the Python runs use.
-      PIP_TARGET: `${cwd}/.pylib`, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: '1', PI_TELEMETRY: '0',
+      PIP_TARGET: `${cwd}/.pylib`, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: '1', PI_TELEMETRY: '0', OFFICECLI_NO_AUTO_RESIDENT: '1',
       RF_URL: local, RF_TOKEN: o.token, RF_BROWSERS: `${local}/browsers/${o.token}`, RF_INSTANCE: o.id, RF_WORKING: `${instance}/working`, RF_SKILLS: '/skills/live', ...(process.env.RF_TODAY && { RF_TODAY: process.env.RF_TODAY }),
       HTTPS_PROXY: proxy, HTTP_PROXY: proxy, https_proxy: proxy, http_proxy: proxy, NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost', NODE_USE_ENV_PROXY: '1',
       ...Object.fromEntries(['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS', 'CURL_CA_BUNDLE'].map(k => [k, join(home, 'ca.pem')])), ...o.view.env,

@@ -3,7 +3,8 @@ import { request as httpsRequest } from 'node:https';
 import { BlockList, connect, createServer as createNetServer, type Server as NetServer } from 'node:net';
 import { lookup } from 'node:dns/promises';
 import { TLSSocket } from 'node:tls';
-import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { agentRoot } from './agent.ts';
 import { readJson } from './system.ts';
 import { serveBrowsers, upgradeBrowser, type Browsers } from './browsers.ts';
 import { contextFor } from './ca.ts';
@@ -111,15 +112,21 @@ export function serveSandboxes(o: { agent(req: IncomingMessage, res: ServerRespo
   return server;
 }
 
-// bubblewrap's arguments for a run: the system read-only, `ro` read-only and `rw` writable at their own paths, HOME and /tmp on
+// The agent image's userland (agent.ts), read-only, with the host's users, whose uids the sandbox keeps: none of the host's programs.
+export const userland = () => [
+  ...['usr', 'etc', 'opt', 'var'].flatMap(d => ['--ro-bind', join(agentRoot, d), `/${d}`]),
+  '--symlink', 'usr/bin', '/bin', '--symlink', 'usr/sbin', '/sbin', '--symlink', 'usr/lib', '/lib', '--symlink', 'usr/lib64', '/lib64',
+  '--ro-bind', '/etc/passwd', '/etc/passwd', '--ro-bind', '/etc/group', '/etc/group',
+];
+
+// bubblewrap's arguments for a run: the agent's userland, `ro` read-only and `rw` writable at their own paths, HOME and /tmp on
 // the run's scratch, the socket's folder at /run/rf, and `env` as its whole environment. Nothing else of the host is there.
 // The run's data is a tree of its own under /work, read-only but for the binds in rw, each [host path, path inside].
 export function sandboxArgs(o: { cwd: string; socketDir: string; home: string; tmp: string; ro: string[]; work: { ro: [string, string][]; rw: [string, string][] }; env: Record<string, string> }): string[] {
   const bind = (flag: string, paths: string[]) => paths.flatMap(p => [flag, p, p]);
   return [
     '--unshare-all', '--die-with-parent', '--new-session', '--clearenv',
-    '--ro-bind', '/usr', '/usr', '--symlink', 'usr/bin', '/bin', '--symlink', 'usr/bin', '/sbin', '--symlink', 'usr/lib', '/lib', '--symlink', 'usr/lib64', '/lib64',
-    ...bind('--ro-bind', ['/etc/ssl', '/etc/ca-certificates', '/etc/fonts', '/etc/passwd', '/etc/group', '/etc/localtime', '/etc/mime.types'].filter(existsSync)),
+    ...userland(),
     '--proc', '/proc', '--dev', '/dev', '--bind', o.tmp, '/tmp', '--bind', o.home, o.home, '--ro-bind', o.socketDir, '/run/rf',
     ...bind('--ro-bind', o.ro),
     '--tmpfs', '/work', ...o.work.ro.flatMap(([src, dst]) => ['--ro-bind', src, dst]), ...o.work.rw.flatMap(([src, dst]) => ['--bind', src, dst]), '--remount-ro', '/work',

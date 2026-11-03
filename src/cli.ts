@@ -11,14 +11,15 @@ import { logins } from './logins.ts';
 import { users } from './auth.ts';
 import { serveAgent } from './agent-api.ts';
 import { openSkills, skillsDir } from './skills.ts';
-import { serveSandboxes } from './sandbox.ts';
+import { serveSandboxes, userland } from './sandbox.ts';
 import { bundle } from './ca.ts';
 import { call, intercepts, reachable, types, type CallRun } from './connections.ts';
 
 // An admin's shell into the skills, with what DATA_ROOT has set up, and no model, as the admin EMAIL with all their logins ticked:
 //   node --env-file=.env src/cli.ts DATA_ROOT try --as EMAIL [--out DIR] -- COMMAND ...
-//       runs COMMAND as a run would: the live skills under $RF_SKILLS, rf, the connections through the run's proxy, and working/
-//       under DIR (default ./try-output).
+//       runs COMMAND as a run would: in the agent's userland, with the live skills under $RF_SKILLS, rf, the connections through
+//       the run's proxy, and working/ under DIR (default ./try-output); and, unlike a run, this folder read-only and the host's
+//       network, where that proxy is.
 //       Such as: try --as EMAIL -- python "$RF_SKILLS/aging/scripts/fetch.py"
 //                try --as EMAIL -- python portal.py, which connects to $RF_BROWSERS/portal
 
@@ -48,20 +49,23 @@ async function tryIt(args: string[]) {
   await once(proxy, 'listening');
   const via = `http://rf:${token}@127.0.0.1:${(proxy.address() as { port: number }).port}`;
   writeFileSync(join(out, 'ca.pem'), bundle());
-  let words = args.slice(dash + 1);
-  const venv = join(app, '.venv', process.platform === 'win32' ? 'Scripts' : 'bin');
-  if (words[0] === 'rf') words = [process.execPath, join(app, 'src', 'rf.ts'), ...words.slice(1)];
-  if (words[0] === 'python') words = [join(venv, process.platform === 'win32' ? 'python.exe' : 'python'), ...words.slice(1)];
-  const code = await new Promise<number>(done => spawn(words[0], words.slice(1), {
-    stdio: 'inherit', cwd: app,
-    env: {
-      ...process.env, RF_URL: api.url, RF_TOKEN: api.token, RF_BROWSERS: `${api.url}/browsers/${api.token}`, RF_WORKING: join(out, 'working'), RF_SKILLS: skillsDir(), PATH: [join(app, 'bin'), venv, process.env.PATH].join(delimiter),
-      HTTPS_PROXY: via, https_proxy: via, NODE_USE_ENV_PROXY: '1', ...Object.assign({}, ...reachable(run.inst).map(c => types[c.type].env?.(c))), ...Object.fromEntries(['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS', 'CURL_CA_BUNDLE'].map(k => [k, join(out, 'ca.pem')])),
-    },
-  }).on('exit', c => done(c ?? 1)).on('error', e => { console.error(e.message); done(1); }));
+  const home = mkdtempSync(join(tmpdir(), 'rf-try-home-')), here = process.cwd();
+  mkdirSync(join(home, '.officecli'));
+  writeFileSync(join(home, '.officecli', 'config.json'), JSON.stringify({ autoUpdate: false }));
+  const env = {
+    PATH: [join(app, 'bin'), '/opt/venv/bin', '/usr/local/bin', '/usr/bin'].join(delimiter), LANG: 'C.UTF-8', TZ: Intl.DateTimeFormat().resolvedOptions().timeZone, HOME: home, OFFICECLI_NO_AUTO_RESIDENT: '1',
+    RF_URL: api.url, RF_TOKEN: api.token, RF_BROWSERS: `${api.url}/browsers/${api.token}`, RF_WORKING: join(out, 'working'), RF_SKILLS: '/skills/live',
+    HTTPS_PROXY: via, https_proxy: via, NODE_USE_ENV_PROXY: '1', ...Object.assign({}, ...reachable(run.inst).map(c => types[c.type].env?.(c))), ...Object.fromEntries(['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS', 'CURL_CA_BUNDLE'].map(k => [k, join(out, 'ca.pem')])),
+  };
+  const code = await new Promise<number>(done => spawn('bwrap', [
+    '--unshare-all', '--share-net', '--die-with-parent', '--clearenv', ...userland(), '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--bind', home, home,
+    ...['bin', 'src', 'node_modules', 'package.json'].flatMap(f => ['--ro-bind', join(app, f), join(app, f)]), '--ro-bind', dirname(skillsDir()), '/skills',
+    '--ro-bind', here, here, '--bind', out, out, ...Object.entries(env).flatMap(([k, v]) => ['--setenv', k, v]), '--chdir', here, '--', ...args.slice(dash + 1),
+  ], { stdio: 'inherit' }).on('exit', c => done(c ?? 1)).on('error', e => { console.error(e.message); done(1); }));
   await api.close();
   proxy.close();
   rmSync(seriesDir, { recursive: true, force: true });
+  rmSync(home, { recursive: true, force: true });
   console.log(`\nExit ${code}. In ${join(out, 'working')}: ${readdirSync(join(out, 'working')).join(', ') || 'nothing'}`);
   process.exitCode = code;
 }

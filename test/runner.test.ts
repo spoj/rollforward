@@ -1,7 +1,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -18,6 +18,7 @@ Object.assign(process.env, {
   RF_BROWSER_URL: `http://127.0.0.1:${(browsers.address() as { port: number }).port}`, RF_BROWSER_KEY: 'the-browser-key',
 });
 const { pi } = await import('../src/runner.ts');
+const { agentRoot } = await import('../src/agent.ts');
 const { serveSandboxes } = await import('../src/sandbox.ts');
 const { HttpError } = await import('../src/store.ts');
 const { openSkills, pushSkill } = await import('../src/skills.ts');
@@ -84,7 +85,7 @@ test('the sandbox shows its view of the data by name, and nothing else of the da
   assert.equal(await sh('pwd'), cwd);
   assert.equal(await sh('cat ../Shared/r1/working/rates.csv'), 'usd,1');
   assert.equal(await sh('ls /work/ws'), 'Shared\nWeekly: AR');
-  for (const p of [root, '/root', '/var', import.meta.dirname]) assert.match(await sh(`ls ${p} 2>&1`), /No such file/, p);
+  for (const p of [root, '/root', import.meta.dirname]) assert.match(await sh(`ls ${p} 2>&1`), /No such file/, p);
   assert.equal(JSON.parse(readFileSync(i('w2/session/main.jsonl'), 'utf8').split('\n')[0]).cwd, cwd, 'its session moved to the names of today, so Pi resumes it');
 });
 
@@ -120,7 +121,7 @@ test("the network is the server's socket: allowed hosts through its proxy, never
 });
 
 test("a plain pip install lands in the series' .pylib, for the Python runs use, where later commands import it, a colon in its path and all", async () => {
-  assert.match(await sh('pip --version'), /\/\.venv\/lib\/python3\.\d+\/site-packages\/pip /, "the venv's pip");
+  assert.match(await sh('pip --version'), /^pip [\d.]+ from \/opt\/venv\/lib\/python3\.13\/site-packages\/pip /, "the image's venv's pip");
   assert.match(await sh('pip install -q --no-deps six 2>&1; python -c "import six, os; print(os.path.realpath(six.__file__))"'), /^\/work\/ws\/Weekly: AR\/\.pylib\/six\.py$/);
 });
 
@@ -140,8 +141,26 @@ test("the run's browser on a website is at $RF_BROWSERS/NAME, through the socket
   assert.equal(await ws('http://127.0.0.1:7000/browsers/wrong/erp'), '');
 });
 
-test("the agent's python is the app's venv, with its packages", async () => {
+test("the agent's python is the image's venv, with its packages", async () => {
   const { exitCode, output } = await agent.bash('python -c "import openpyxl, sys; print(sys.prefix)"');
   assert.equal(exitCode, 0, output);
-  assert.match(output, /\.venv/);
+  assert.equal(output.trim(), '/opt/venv');
+});
+
+// sample.msg is TxtSampleEmail.msg from MsgReader's tests (github.com/kenjiuno/MSGReader, MIT).
+test("the agent's userland is the agent image: its programs, LibreOffice recalculating a workbook and rendering Chinese to PDF, poppler's, and Python's PDF and Outlook readers", async () => {
+  const programs = 'timeout grep head cat ls tail sed cp rm mkdir cut unzip zip wc diff cmp which sort sha256sum pwd find xargs git curl jq fd rg file zstd sqlite3 soffice pdftotext pdfinfo pdftoppm tesseract officecli node python pip';
+  assert.equal(await sh('cat /etc/debian_version'), readFileSync(join(agentRoot, 'etc', 'debian_version'), 'utf8').trim(), "the image's /etc, on any host");
+  assert.equal(await sh(`for p in ${programs}; do command -v $p > /dev/null || echo $p; done`), '', 'none missing');
+  assert.match(await sh('tesseract --list-langs'), /chi_sim\nchi_tra\neng/);
+  assert.equal(await sh('officecli --version && jq -r .autoUpdate ~/.officecli/config.json && echo $OFFICECLI_NO_AUTO_RESIDENT'), '1.0.160\nfalse\n1', "officecli, which neither updates itself nor stays resident");
+  copyFileSync(join(import.meta.dirname, 'sample.msg'), i('w2/working/sample.msg'));
+  await sh(`cd "$RF_WORKING" && python -c "
+import openpyxl
+wb = openpyxl.Workbook()
+wb.active['A1'], wb.active['A2'], wb.active['A3'], wb.active['B1'] = 2, 3, '=A1*A2', '應收帳款'
+wb.save('book.xlsx')" && soffice --headless --convert-to pdf --outdir out book.xlsx && soffice --headless --convert-to xlsx --outdir out book.xlsx`);
+  assert.equal(await sh(`python -c "import openpyxl; print(openpyxl.load_workbook('$RF_WORKING/out/book.xlsx', data_only=True).active['A3'].value)"`), '6', 'recalculated');
+  assert.match(await sh('pdftotext "$RF_WORKING/out/book.pdf" -'), /應收帳款/);
+  assert.equal(await sh(`python -W ignore -c "import pypdf, fitz, extract_msg; print(len(pypdf.PdfReader('$RF_WORKING/out/book.pdf').pages), fitz.open('$RF_WORKING/out/book.pdf').page_count, extract_msg.openMsg('$RF_WORKING/sample.msg').subject)"`), '1 1 TxtSampleEmail');
 });

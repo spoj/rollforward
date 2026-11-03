@@ -29,9 +29,9 @@ rollforward runs on one host and the browser service ([spoj/rollforward-browser]
 
 ## The rollforward host
 
-Run the image under podman, as a systemd service. The image pins Node, Python, bubblewrap and LibreOffice together, and an update is a rebuild and a restart. Running without Docker (README) would instead give each run a memory cap of its own and seal the keys to the TPM, at the cost of more to install and keep current.
+Run the image under podman, as a systemd service. The image is the agent image, the runs' userland ([agent/](../agent)), with the server on it, and an update is a rebuild and a restart. Running without Docker (README) would instead give each run a memory cap of its own and seal the keys to the TPM, and updates come by themselves; its runs use the same agent image, which CI publishes.
 
-1. Give the service a user of its own, with lingering on, and install rootless podman. Check out a tagged commit of this repo, and build it with `podman build -t rollforward .`.
+1. Give the service a user of its own, with lingering on, and install rootless podman. Check out a tagged commit of this repo, and build the agent image, then the server's on it: `podman build -t rollforward-agent agent && podman build -t rollforward .`.
 2. Make an empty data folder, `~/rollforward-data`.
 3. Write `~/.config/rollforward.env` with:
    - `OPENROUTER_API_KEY`;
@@ -67,11 +67,10 @@ Run the image under podman, as a systemd service. The image pins Node, Python, b
 
    A proxy that buffers, such as nginx, needs `proxy_buffering off` for the page's live updates and `client_max_body_size 0` for uploads. nginx also passes websockets, which the live view of a website's sign-in uses, only when told: `proxy_http_version 1.1`, `proxy_set_header Upgrade $http_upgrade` and `proxy_set_header Connection "upgrade"`.
 
-**Where the image can't be built,** such as on a host whose filter blocks Debian's mirrors, run the server as README's Without Docker says, as a systemd user service of the same user:
+**Where the image can't be built,** such as on a host whose filter blocks Debian's mirrors, run the server as README's Without Docker says, as a systemd user service of the same user. The host's own programs don't matter to runs, whose userland is the agent image, never the host's:
 
-- Node 26 beside the system's, such as in `/opt/node-v26`: a run binds node's own folder.
-- socat, ripgrep and fd from the distribution (on EL9, ripgrep and fd-find come from EPEL): a run sees `/usr`, with `/usr/bin` on its PATH, but not `/usr/local/bin` or `/opt`.
-- `npm ci --omit=dev`, then `uv venv --python 3.13 .venv && uv pip install --python .venv/bin/python -r requirements.txt`, as EL9's python3 is too old. Under `sudo -i`, `/usr/local/bin` isn't on PATH, so give uv's whole path.
+- Node 26 beside the system's, such as in `/opt/node-v26`, bubblewrap, and GNU tar; no zstd, Python or LibreOffice.
+- `npm ci --omit=dev`, then `/opt/node-v26/bin/node scripts/agent.ts`, which unpacks the agent image the checkout runs, CI's `agent-<id>` prerelease, into `.agent/<id>` (about 500 MB to fetch, 1.6 GB unpacked).
 - The unit `~/.config/systemd/user/rollforward.service` has `WorkingDirectory=%h/rollforward`, `ExecStart=/opt/node-v26/bin/node --env-file=%h/.config/rollforward.env src/server.ts %h/rollforward-data 8780` and `Restart=always`; `systemctl --user set-property rollforward-runs.slice MemoryMax=24G` caps all runs together.
 
 ## Moving from the team's fork
@@ -87,7 +86,7 @@ A data root of the team's fork (its main at a1fa8db, with folders `<workspace>/<
 
 - **Keys:** `.rf/session.key` signs sessions, and `.rf/seal.key` encrypts everyone's logins. Back up the data folder nightly without them, and keep a copy of both elsewhere. Without seal.key, people sign in to their logins again.
 - **Updates:** `systemctl --user kill --kill-whom=main --signal=SIGUSR2 rollforward` first: the server starts no more runs, and once those going end, or after 30 minutes, `GET /drained` answers 200. Then check out the next tag, rebuild, and `systemctl --user restart rollforward`, which starts what queued meanwhile. A restart without the drain cuts the runs going on, which carry on by themselves, their cost so far recorded.
-- **Updates without the image** come by themselves: `scripts/update.ts` moves the checkout to the newest GitHub Release once every check on its commit has passed. It first fetches what the release installs into npm's and uv's caches, while the server runs on, so a failure there, as without the network, changes nothing and the next tick tries again; then it drains the server, moves the checkout, installs what changed from those caches (`npm ci`, `uv pip install`), restarts the server, and goes back if it doesn't answer, never trying that release again; if going back fails too, it restarts the server as the checkout is, so it never stays drained. A checkout on no release tag, as after a person's fix by hand, stops updates until one is checked out again. CI makes a Release from each tag whose tests pass; a tag with a `Manual:` line in its message makes a prerelease, which the updater stops before, for a person to deploy by hand. It asks GitHub without a token, so every 15 minutes, as a timer of the same user:
+- **Updates without the image** come by themselves: `scripts/update.ts` moves the checkout to the newest GitHub Release once every check on its commit has passed. It first fetches what the release installs, its packages into npm's cache and its agent image, unpacked beside the one running if its id is new, while the server runs on, so a failure there, as without the network, changes nothing and the next tick tries again; then it drains the server, moves the checkout, installs what changed from that cache (`npm ci`), restarts the server, keeping only the agent image it runs and the one before, and goes back if it doesn't answer, never trying that release again; if going back fails too, it restarts the server as the checkout is, so it never stays drained. A checkout on no release tag, as after a person's fix by hand, stops updates until one is checked out again. CI makes a Release from each tag whose tests pass; a tag with a `Manual:` line in its message makes a prerelease, which the updater stops before, for a person to deploy by hand. It asks GitHub without a token, so every 15 minutes, as a timer of the same user:
 
        # ~/.config/systemd/user/rollforward-update.service
        [Service]

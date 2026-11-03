@@ -1,0 +1,16 @@
+# The agent's userland: the /usr, /etc, /opt and /var of every run's sandbox (src/sandbox.ts). Its id is a hash of this folder
+# (src/agent.ts), and the tarball CI publishes for an id is the one every host and test uses.
+FROM docker.io/library/node:26-trixie-slim@sha256:e4db4c914bf8ad241bd24804fc25d272d89bad97e68cdc8a1414862790a02c39
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 python3-venv libreoffice-calc-nogui libreoffice-writer-nogui poppler-utils \
+    tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim tesseract-ocr-chi-tra \
+    fonts-noto-cjk fonts-liberation fonts-crosextra-carlito fonts-crosextra-caladea \
+    git curl jq fd-find ripgrep unzip zip file zstd socat sqlite3 ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && ln -s /usr/bin/fdfind /usr/bin/fd && ln -sf bash /usr/bin/sh
+# officecli, iOfficeAI/OfficeCLI's own build; runs keep it from updating itself or staying resident (src/runner.ts).
+RUN curl -fsSL -o /usr/local/bin/officecli https://github.com/iOfficeAI/OfficeCLI/releases/download/v1.0.160/officecli-linux-x64 \
+ && echo 'baa084b64ec634bd9d41a0592db3ed85f11658b358bab898679537ea7f3e73a9  /usr/local/bin/officecli' | sha256sum -c - \
+ && chmod 755 /usr/local/bin/officecli
+COPY requirements.txt /opt/venv/requirements.txt
+RUN python3 -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir -r /opt/venv/requirements.txt
