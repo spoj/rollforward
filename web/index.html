@@ -202,6 +202,8 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 @keyframes fade { 85% { opacity: 1; } to { opacity: 0; } }
 .hint { margin-top: auto; padding-top: 18px; font-size: 12px; color: var(--ink-3); }
 .hl { font-size: 12px; line-height: 1.35; }
+.dst, .sent { font-size: 11.5px; color: var(--ink-2); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.sent { color: #1f6f43; }
 .src { font-size: 11.5px; color: var(--ink-3); word-break: break-all; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .also { margin-top: 16px; font-size: 12.5px; display: grid; gap: 4px; }
 .also .ah { font-size: 12px; color: var(--ink-3); }
@@ -633,9 +635,9 @@ function tile(item) {
   if (!item.file) {
     return `<div class="tile ghost ${mark}" data-item="${esc(item.id)}">${corner}<div class="ext"><span>${esc(item.kind.toUpperCase())}</span><span class="nc ${open ? 'q' : ''}">${count}</span></div><div class="fn">${esc(item.name)}</div>${from}<div class="meta">${item.kind === 'input' ? 'Missing' : 'Not built yet'}</div></div>`;
   }
-  const p = provenance(item.file);
+  const p = provenance(item.file), sent = data.log.findLast(e => e.op === 'delivered' && e.item === item.id);
   const v = data.log.filter(e => e.op === 'point' && e.item === item.id && e.file).length;
-  return `<div class="tile ${p.person ? 'person' : 'agent'} ${openItem === item.id ? 'on' : ''} ${mark}" data-item="${esc(item.id)}">${corner}<div class="ext"><span>${esc(ext(item.file))}${v > 1 ? ' · v' + v : ''}</span><span class="nc ${open ? 'q' : ''}">${count}</span></div><div class="fn">${esc(item.name)}</div><div class="file">${esc(fname(item.file))}</div>${item.headline ? `<div class="hl">${esc(item.headline)}</div>` : ''}${item.source ? `<div class="src">${esc(item.source)}</div>` : ''}${from}<div class="meta"><b>${esc(p.by)}</b> · ${hhmm(p.at)}</div></div>`;
+  return `<div class="tile ${p.person ? 'person' : 'agent'} ${openItem === item.id ? 'on' : ''} ${mark}" data-item="${esc(item.id)}">${corner}<div class="ext"><span>${esc(ext(item.file))}${v > 1 ? ' · v' + v : ''}</span><span class="nc ${open ? 'q' : ''}">${count}</span></div><div class="fn">${esc(item.name)}</div><div class="file">${esc(fname(item.file))}</div>${item.headline ? `<div class="hl">${esc(item.headline)}</div>` : ''}${item.source ? `<div class="src">${esc(item.source)}</div>` : ''}${item.destination ? `<div class="dst" title="${esc(item.destination)}">\u2192 ${esc(item.destination)}</div>` : ''}${sent ? `<div class="sent" title="${esc(sent.receipt)}">Sent ${hhmm(sent.at)} to ${esc(sent.to)}</div>` : ''}${from}<div class="meta"><b>${esc(p.by)}</b> · ${hhmm(p.at)}</div></div>`;
 }
 
 function renderPanes() {
@@ -719,7 +721,7 @@ function logText(e) {
     create: () => `${w} opened the instance${e.from ? `<div class="d">Items carried over from ${esc(e.from)}.${e.fetch ? ' The agent starts fetching its inputs.' : ''}</div>` : ''}`,
     upload: () => `${w} uploaded ${e.pane === 'out' ? 'an output' : 'an input'}${e.onto ? ' onto ' + item(e.onto) : ''}${f}`,
     point: () => `${w} ${e.file ? 'showed' : 'cleared'} ${item(e.item)}${e.was ? `<div class="d">Replacing ${esc(fname(e.was))}</div>` : ''}${f}`,
-    item: () => `${w} set up ${esc(e.name)}${e.from?.length ? `<div class="d">From ${e.from.map(item).join(', ')}</div>` : ''}${e.headline ? `<div class="d">${esc(e.headline)}</div>` : ''}${e.source ? `<div class="d">Source: ${esc(e.source)}</div>` : ''}`,
+    item: () => `${w} set up ${esc(e.name)}${e.from?.length ? `<div class="d">From ${e.from.map(item).join(', ')}</div>` : ''}${e.headline ? `<div class="d">${esc(e.headline)}</div>` : ''}${e.source ? `<div class="d">Source: ${esc(e.source)}</div>` : ''}${e.destination ? `<div class="d">Destination: ${esc(e.destination)}</div>` : ''}`,
     remove: () => `${w} removed ${esc(e.item)} from the screen`,
     run: () => `Run ${e.run} started${data.run?.n === e.run ? ` \u00b7 ${usd(data.run.cost)} so far` : ''}`,
     done: () => `Run ${e.run} finished${e.aborted ? ' (stopped)' : ''} · ${took(e)} · ${usd(e.cost)}${e.summary ? `<div class="d">${esc(e.summary)}</div>` : ''}${e.error ? `<div class="d">${esc(e.error)}</div>` : ''}`,
@@ -735,6 +737,7 @@ function logText(e) {
     promote: () => `${w} made it a series, ${esc(e.series)}`,
     logins: () => `${w} ticked logins: ${esc(e.logins.join(', ') || 'none')}`,
     egress: () => `Run ${e.run} ${e.allowed ? 'reached' : 'was refused'} ${esc(e.host)}`,
+    delivered: () => `${w} delivered ${item(e.item)} to ${esc(e.to)}<div class="d">${e.via === 'graph' ? 'Through Microsoft 365' : 'Through a website'} · ${esc(e.receipt)}</div>`,
     graph: () => `${w} read ${esc(e.path)} from Microsoft 365${e.status >= 300 ? `, which answered ${e.status}` : ''}${e.file ? `<div class="f"><a data-act="preview" data-file="${esc(e.file)}">${esc(e.file)}</a></div>` : ''}`,
     rename: () => e.by === 'server' ? `Named by its first prompt, from ${esc(e.from)}` : `${w} renamed the instance from ${esc(e.from)}`,
     duplicate: () => `${w} made this instance as a copy of ${esc(e.from)}`,
@@ -926,7 +929,9 @@ function renderCard() {
   let h = `<div class="cf">${esc(item.file ? fname(item.file) : item.name)}</div>`;
   if (item.file) {
     const p = provenance(item.file);
-    h += `<div class="cp"><b class="${p.person ? 'p' : ''}">${esc(p.by)}</b> ${p.person ? 'uploaded' : 'made'} it at ${hhmm(p.at)} · ${esc(item.name)}${item.source ? `<br>${esc(item.source)}` : ''}</div>`;
+    h += `<div class="cp"><b class="${p.person ? 'p' : ''}">${esc(p.by)}</b> ${p.person ? 'uploaded' : 'made'} it at ${hhmm(p.at)} · ${esc(item.name)}${item.source ? `<br>${esc(item.source)}` : ''}`
+      + (item.kind === 'output' ? `<br>Destination: ${item.destination ? esc(item.destination) : 'stays here'}` : '')
+      + data.log.filter(e => e.op === 'delivered' && e.item === item.id).map(e => `<br><span class="sent">Sent to ${esc(e.to)} ${when(e.at)} · ${esc(e.receipt)}</span>`).join('') + '</div>';
   } else h += `<div class="cp">${item.kind === 'input' ? 'Expected input, not there yet' : `${item.kind === 'step' ? 'Step' : 'Output'} not built yet`}</div>`;
   // The item's open threads, each as it began, with where it stands.
   for (const t of talkOn(item.id)) {

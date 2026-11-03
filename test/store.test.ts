@@ -22,6 +22,19 @@ test('a put takes steps and from, and a new instance carries the graph; from mus
   rmSync(tmp, { recursive: true, force: true });
 });
 
+test("an output's destination is free text, logged as it changes and carried to the next instance", () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-')), series = 'monthly';
+  openStore(tmp);
+  const inst = createInstance(series, 'm1', 'alex', []);
+  const put = (items: object[]) => inst.put(JSON.stringify({ rev: inst.doc.rev, status: 'open', items }));
+  assert.throws(() => put([{ id: 'pack', name: 'Pack', kind: 'output', file: null, destination: 3 }]), /pack: destination must be a string/);
+  put([{ id: 'pack', name: 'Pack', kind: 'output', file: null, destination: 'Mail to ap@demo.test' }]);
+  assert.equal(inst.log.findLast(e => e.op === 'item')!.destination, 'Mail to ap@demo.test');
+  inst.close('alex');
+  assert.equal(createInstance(series, 'm2', 'alex', []).doc.items[0].destination, 'Mail to ap@demo.test');
+  rmSync(tmp, { recursive: true, force: true });
+});
+
 test("an ask waits on people until someone replies or resolves it, and closing accepts the ones still waiting", () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-')), sam = 'sam@example.com';
   openStore(tmp);

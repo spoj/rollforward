@@ -32,6 +32,9 @@ const HELP: Record<string, string> = {
   /me/messages, /me/mailFolders or /users/ADDRESS/messages; a site's /sites/ID; and files by /drives/ID, /shares/ID or /me/drive,
   within a ticked folder or file, or a ticked site's libraries. A search, /drives/ID/items/ID/search(q='...'), stays within its
   folder; one across a whole drive, /drives/ID/root/search(q='...'), needs the whole drive ticked. --header takes Accept, ConsistencyLevel, Prefer and Range.`,
+  delivered: `rf delivered ITEM --to WHERE --receipt WHAT
+  Records that you delivered the output ITEM outside, through a website: where to, such as "E1, batch 4471", and what proves
+  it, such as the document number the site gave. A delivery through rf graph is recorded by itself.`,
   browser: `rf browser open SITE
 rf browser get SITE PATH FILE
 rf browser expired SITE
@@ -97,7 +100,7 @@ else if (cmd === 'put' && args[0]) res = await send('PUT', `${own}/screen`, read
 else if (cmd === 'say' || cmd === 'ask') res = await comment();
 else if (cmd === 'resolve' && args[0]) res = await send('POST', `${own}/resolve`, JSON.stringify({ thread: args[0], text: args.slice(1).join(' ') }));
 else if (cmd === 'wake') res = await wake();
-else if (['graph', 'browser'].includes(cmd) && args.length >= 1) res = await send('POST', `agent/${cmd}`, JSON.stringify({ args }));
+else if (['graph', 'browser', 'delivered'].includes(cmd) && args.length >= 1) res = await send('POST', `agent/${cmd}`, JSON.stringify({ args }));
 else if (cmd === 'help') res = { ok: true, text: HELP[args[0]] ?? USAGE };
 else res = usage(cmd);
 let text = res.text;

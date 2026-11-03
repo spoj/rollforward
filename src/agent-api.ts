@@ -95,5 +95,13 @@ export async function agentCall(a: AgentRun, path: string, method: string, body:
     if (cmd === 'expired' && site) return a.browsers.expire(site);
     throw new HttpError(400, 'rf browser open SITE | rf browser get SITE PATH FILE | rf browser expired SITE');
   }
+  // The agent's word for an output it delivered through a website; the browser's request log bears it out.
+  if (path === '/agent/delivered' && method === 'POST') {
+    const { args, rest } = parseArgs(await words()), [to, receipt] = [args.to?.[0], args.receipt?.[0]];
+    if (rest.length !== 1 || !to || !receipt) throw new HttpError(400, 'rf delivered ITEM --to WHERE --receipt WHAT');
+    if (!a.inst.doc.items.some(i => i.id === rest[0] && i.kind === 'output')) throw new HttpError(400, `${rest[0]} is no output on the screen`);
+    a.inst.append('agent', 'delivered', { item: rest[0], to, receipt, via: 'website', run: a.n });
+    return { status: 200, data: `recorded: ${rest[0]} delivered to ${to}` };
+  }
   return null;
 }

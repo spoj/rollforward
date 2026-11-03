@@ -30,7 +30,7 @@ export function readFile(base: string, rel: string): string | undefined {
   try { return readFileSync(fd, 'utf8'); } finally { closeSync(fd); }
 }
 
-export type Item = { id: string; name: string; kind: 'input' | 'step' | 'output'; file: string | null; from?: string[]; headline?: string; source?: string };
+export type Item = { id: string; name: string; kind: 'input' | 'step' | 'output'; file: string | null; from?: string[]; headline?: string; source?: string; destination?: string };
 export type Doc = { rev: number; status: 'open' | 'closed' | 'abandoned'; items: Item[] };
 export type Entry = { seq: number; at: string; by: string; op: string; [k: string]: unknown };
 
@@ -116,7 +116,7 @@ export function createInstance(seriesId: string, label: string, by: string, logi
   mkdirSync(join(dir, 'working'));
   setMeta(id, { label: name, series: seriesId });
   const inst = instance(id);
-  inst.doc.items = (from?.doc.items ?? []).map(({ id, name, kind, from }) => ({ id, name, kind, file: null, from }));
+  inst.doc.items = (from?.doc.items ?? []).map(({ id, name, kind, from, destination }) => ({ id, name, kind, file: null, from, destination }));
   inst.save();
   const fetch = from?.doc.items.some(i => i.kind === 'input' && i.file?.startsWith('working/'));
   inst.append(by, 'create', { from: from?.label ?? null, ...(fetch && { fetch }), logins });
@@ -249,7 +249,7 @@ export class Instance {
       if (typeof i.name !== 'string' || !i.name) errors.push(`${i.id}: name missing`);
       if (!['input', 'step', 'output'].includes(i.kind)) errors.push(`${i.id}: kind must be "input", "step" or "output"`);
       if (i.from !== undefined && !Array.isArray(i.from)) errors.push(`${i.id}: from must be a list of item ids`);
-      for (const k of ['headline', 'source'] as const) if (i[k] !== undefined && typeof i[k] !== 'string') errors.push(`${i.id}: ${k} must be a string`);
+      for (const k of ['headline', 'source', 'destination'] as const) if (i[k] !== undefined && typeof i[k] !== 'string') errors.push(`${i.id}: ${k} must be a string`);
       if (i.file !== null) {
         const ok = typeof i.file === 'string' && normalize(i.file) === i.file && /^(upload|working)\/./.test(i.file) && !i.file.split('/').includes('..');
         if (!ok) errors.push(`${i.id}: file must be null or a path under upload/ or working/, relative to the instance folder`);
@@ -278,8 +278,8 @@ export class Instance {
       if (i.file !== (o?.file ?? null) && i.file !== null) {
         this.append('agent', 'point', { item: i.id, file: i.file, was: o?.file ?? null, sha256: sums.get(i.id) });
       } else if (i.file === null && o?.file) this.append('agent', 'point', { item: i.id, file: null, was: o.file });
-      if (!o || o.name !== i.name || o.kind !== i.kind || JSON.stringify(o.from) !== JSON.stringify(i.from) || o.headline !== i.headline || o.source !== i.source)
-        this.append('agent', 'item', { item: i.id, name: i.name, kind: i.kind, from: i.from, headline: i.headline, source: i.source });
+      if (!o || o.name !== i.name || o.kind !== i.kind || JSON.stringify(o.from) !== JSON.stringify(i.from) || o.headline !== i.headline || o.source !== i.source || o.destination !== i.destination)
+        this.append('agent', 'item', { item: i.id, name: i.name, kind: i.kind, from: i.from, headline: i.headline, source: i.source, destination: i.destination });
     }
     for (const o of this.doc.items) if (!ids.has(o.id)) this.append('agent', 'remove', { item: o.id });
     this.doc = { rev: this.doc.rev, status: this.doc.status, items: doc.items };

@@ -49,7 +49,7 @@ const mail = [
 ];
 const MIME = 'Subject: FW: Request successfully processed\r\n\r\nThe payment run is attached.\r\n';
 const ticks = ['m365:mail:alice@demo.test', 'm365:site:host,site1,web1'];
-const inst = { dir: instDir, seriesId: 'weekly', log: [{ op: 'create', by: ALICE, logins: ticks }], series: () => seriesDir, append: (_by: string, op: string, data: any) => { log.push({ op, data }); return { seq: log.length }; } } as unknown as Instance;
+const inst = { dir: instDir, seriesId: 'weekly', log: [{ op: 'create', by: ALICE, logins: ticks }], doc: { items: [{ id: 'pack', name: 'Pack', kind: 'output', file: null }] }, series: () => seriesDir, append: (_by: string, op: string, data: any) => { log.push({ op, data }); return { seq: log.length }; } } as unknown as Instance;
 const run: AgentRun = { inst, n: 1, token: 'run' };
 let call: (path: string, body?: unknown) => Promise<{ status: number; data: unknown } | null>;
 let agentCall: typeof import('../src/agent-api.ts').agentCall;
@@ -246,4 +246,11 @@ test('rf graph reads nothing, not even what a tick is checked against, for a run
   await assert.rejects(call('/agent/graph', { args: ['/drives/b!d1/items/y2026/children'] }), /can no longer run this instance/);
   upsertUser(ALICE, { disabled: false });
   assert.equal(methods.length, before, 'no request reached Graph');
+});
+
+test('rf delivered records an output delivered through a website, with where it went and its receipt', async () => {
+  assert.equal((await call('/agent/delivered', { args: ['pack', '--to', 'E1, batch 4471', '--receipt', 'document 81234'] }))!.status, 200);
+  assert.deepEqual(log.at(-1), { op: 'delivered', data: { item: 'pack', to: 'E1, batch 4471', receipt: 'document 81234', via: 'website', run: 1 } });
+  await assert.rejects(call('/agent/delivered', { args: ['nope', '--to', 'x', '--receipt', 'y'] }), /nope is no output on the screen/);
+  await assert.rejects(call('/agent/delivered', { args: ['pack', '--to', 'x'] }), /rf delivered ITEM --to WHERE --receipt WHAT/);
 });
