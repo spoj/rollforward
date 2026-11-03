@@ -97,8 +97,12 @@ const flags: Record<string, string | true> = {}, excludes: string[] = [], args: 
 for (let i = 0; i < argv.length; i++) {
   const flag = argv[i] === '-n' ? 'dry-run' : argv[i].match(/^--(.+)$/)?.[1];
   if (!flag) args.push(argv[i]);
-  else if (flag === 'exclude') excludes.push(argv[++i]);
-  else flags[flag] = ['wait', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear'].includes(flag) ? true : argv[++i];
+  else if (['wait', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear'].includes(flag)) flags[flag] = true;
+  else if (argv[i + 1] === undefined) {
+    console.error(`--${flag} takes a value\n\n${USAGE}`);
+    process.exit(2);
+  } else if (flag === 'exclude') excludes.push(argv[++i]);
+  else flags[flag] = argv[++i];
 }
 if (cmd === 'help') {
   console.log(GUIDE);

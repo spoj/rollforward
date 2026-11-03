@@ -520,6 +520,7 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   assert.match(await rf('pull', `${week}/`, two, '--exclude', 'session', '--delete'), /^deleted  mine\.txt$/m);
   assert.ok(!existsSync(join(two, 'mine.txt')));
   assert.match(await rf('help'), /What rf pull copies/);
+  await assert.rejects(rf('pull', `${week}/`, join(tmp, 'three'), '--exclude'), /--exclude takes a value/);
   assert.equal((await json(await at(series, 'talk'))).log.findLast((e: { op: string }) => e.op === 'comment').text, 'From the shell');
   const runs = JSON.parse(await rf('runs', `larkfield/${series}`, '--json'));
   assert.ok(runs.every((r: { path: string }) => r.path.startsWith(`larkfield/${series}/`)));
