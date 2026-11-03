@@ -24,8 +24,12 @@ function call(method: string, path: string, body?: unknown): Promise<Buffer> {
       const chunks: Buffer[] = [];
       res.on('data', c => chunks.push(c)).on('end', () => {
         const data = Buffer.concat(chunks);
-        if (res.statusCode! < 300) ok(data);
-        else fail(new HttpError(502, `browser service: ${JSON.parse(data.toString()).error}`));
+        if (res.statusCode! < 300) return ok(data);
+        // The service answers {error}; a proxy in front of it, such as one that ends TLS, may answer anything, and a throw here would
+        // be outside the promise, ending the server.
+        let why;
+        try { why = JSON.parse(data.toString()).error; } catch { why = `${res.statusCode} ${data.toString().slice(0, 200)}`; }
+        fail(new HttpError(502, `browser service: ${why}`));
       });
     });
     req.on('error', e => fail(new HttpError(502, `the browser service at ${base} does not answer: ${e.message}`)));

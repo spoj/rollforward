@@ -53,3 +53,9 @@ test("the agent says a website signed it out: its runner's login is marked expir
   assert.deepEqual(inst.log.filter(e => e.op === 'browser').map(e => [e.site, e.requests]), [['erp', 1]]);
   await assert.rejects(browsers.browser('erp'), (e: { status: number; login: string }) => e.status === 409 && e.login === 'web:erp', 'no browser opens in it until they sign in again');
 });
+
+test('an answer of the browser service that is no JSON, as a proxy in front of it may give, fails that call alone', async () => {
+  const inst = createInstance('s', '2027-01', 'alice@demo.test', []), browsers = new Browsers(inst, 3);
+  browsers.bySite.set('erp', { id: 'gone', email: 'alice@demo.test' });
+  await assert.rejects(browsers.shoot(), (e: { status: number; message: string }) => e.status === 502 && e.message.startsWith('browser service: 404 page'));
+});
