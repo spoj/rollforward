@@ -42,9 +42,12 @@ export const mode: 'microsoft' | 'demo' = oidc.issuer ? 'microsoft' : 'demo';
 // mailboxes, files and sites. The server keeps its refresh token, which a Single-page application's redirect can't give it.
 export const graphScopes = (env.RF_M365_SCOPES ?? 'Mail.Read Mail.Read.Shared Files.Read.All Sites.Read.All').split(/[\s,]+/).filter(Boolean);
 const M365_SCOPES = ['openid', 'email', 'offline_access', ...graphScopes.map(s => `https://graph.microsoft.com/${s}`)].join(' ');
+// Whether logins ask for a Read permission, or the ReadWrite one that holds it, as a tenant may have granted only that: the server
+// still only reads, as graph.ts sends only GETs.
+const grants = (scope: string) => graphScopes.includes(scope) || graphScopes.includes(scope.replace('.Read', '.ReadWrite'));
 // Refuses a read that needs a permission this server's logins don't ask for, saying which.
 export function needs(scope: string, what: string) {
-  if (!graphScopes.includes(scope)) throw new HttpError(409, `this server's Microsoft 365 logins don't read ${what}: RF_M365_SCOPES has no ${scope}`);
+  if (!grants(scope)) throw new HttpError(409, `this server's Microsoft 365 logins don't read ${what}: RF_M365_SCOPES has no ${scope}`);
 }
 export const m365Ready = () => mode === 'microsoft' && (!spa || !!oidc.clientSecret);
 const admins = new Set([...(env.RF_ADMINS ?? '').split(','), ...(mode === 'demo' ? DEMO_ACCOUNTS.filter(a => a.role === 'admin').map(a => a.email) : [])].map(s => s.trim().toLowerCase()).filter(Boolean));
@@ -274,8 +277,8 @@ async function finishM365(req: IncomingMessage, res: ServerResponse, claims: any
   if (email !== p.m365) return page(res, 403, `That was ${email}'s Microsoft account; connect your own, ${p.m365}.`);
   if (!refresh) return page(res, 502, 'Microsoft gave no refresh token, so the login could not be kept: the app needs offline_access.');
   const own = [
-    ...(graphScopes.includes('Mail.Read') ? [{ id: `m365:mail:${email}`, name: `Mailbox ${email}` }] : []),
-    ...(graphScopes.includes('Files.Read.All') ? [{ id: 'm365:onedrive', name: 'OneDrive' }] : []),
+    ...(grants('Mail.Read') ? [{ id: `m365:mail:${email}`, name: `Mailbox ${email}` }] : []),
+    ...(grants('Files.Read.All') ? [{ id: 'm365:onedrive', name: 'OneDrive' }] : []),
   ];
   const added = (logins(email).find(l => l.id === 'm365')?.offers ?? []).filter(o => !own.some(x => x.id === o.id));
   saveLogin(email, { id: 'm365', kind: 'm365', name: 'Microsoft 365', account: email, since: new Date().toISOString(), offers: [...own, ...added] }, refresh);

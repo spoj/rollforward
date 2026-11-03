@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 // it signs in whoever the login hint names, and checks the PKCE verifier, the redirect address and, for an app with one, its secret.
 // Four servers: an app with a client secret that registers /auth/callback; a public client, with no secret, that registers the site's
 // root; and two Single-page applications that register the site's root, one also with a secret and /auth/m365 as a Web redirect,
-// whose logins ask for mail alone.
+// whose logins ask for mail alone, as the ReadWrite permissions a tenant granted.
 
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-ms-'));
@@ -91,7 +91,7 @@ before(async () => {
     serve({ RF_OIDC_CLIENT_ID: 'rf-test', RF_OIDC_CLIENT_SECRET: 'shh' }),
     serve({ RF_OIDC_CLIENT_ID: 'rf-public', RF_OIDC_REDIRECT_URI: '{base}' }),
     serve({ RF_OIDC_CLIENT_ID: 'rf-spa', RF_OIDC_REDIRECT_URI: '{base}', RF_OIDC_SPA: '1' }),
-    serve({ RF_OIDC_CLIENT_ID: 'rf-spa-web', RF_OIDC_REDIRECT_URI: '{base}', RF_OIDC_SPA: '1', RF_OIDC_CLIENT_SECRET: 'shh2', RF_M365_SCOPES: 'Mail.Read Mail.Read.Shared' }),
+    serve({ RF_OIDC_CLIENT_ID: 'rf-spa-web', RF_OIDC_REDIRECT_URI: '{base}', RF_OIDC_SPA: '1', RF_OIDC_CLIENT_SECRET: 'shh2', RF_M365_SCOPES: 'Mail.ReadWrite,Mail.ReadWrite.Shared' }),
   ]);
 });
 
@@ -180,7 +180,7 @@ test('a Single-page application app: the browser redeems the code, and the serve
   assert.deepEqual([me.email, me.sign_in, me.m365], ['kim@acme.test', 'microsoft', false]);
 });
 
-test("a Single-page application with its secret: sign-in stays the browser's, and Microsoft 365 comes back to /auth/m365, asking for mail alone", async () => {
+test("a Single-page application with its secret: sign-in stays the browser's, and Microsoft 365 comes back to /auth/m365, asking for mail alone, granted as ReadWrite", async () => {
   const a = await start(spaWeb, 'kim@acme.test'), page = await (await fetch(a.back, { headers: { cookie: a.cookie } })).text();
   const endpoint = JSON.parse(page.match(/fetch\(("[^"]+")/)![1]), form = JSON.parse(page.match(/new URLSearchParams\((\{.*?\})\)/)![1]);
   const { id_token } = await (await fetch(endpoint, { method: 'POST', body: new URLSearchParams(form), headers: { origin: spaWeb } })).json();
@@ -190,7 +190,7 @@ test("a Single-page application with its secret: sign-in stays the browser's, an
   const out = await fetch(`${spaWeb}/logins/m365/connect`, { redirect: 'manual', headers: { cookie: s } });
   const to = new URL(out.headers.get('location')!), pending = out.headers.getSetCookie()[0].split(';')[0];
   assert.equal(to.searchParams.get('redirect_uri'), `${spaWeb}/auth/m365`);
-  assert.deepEqual(to.searchParams.get('scope')!.split(' ').sort(), ['email', 'https://graph.microsoft.com/Mail.Read', 'https://graph.microsoft.com/Mail.Read.Shared', 'offline_access', 'openid']);
+  assert.deepEqual(to.searchParams.get('scope')!.split(' ').sort(), ['email', 'https://graph.microsoft.com/Mail.ReadWrite', 'https://graph.microsoft.com/Mail.ReadWrite.Shared', 'offline_access', 'openid']);
   const back = await fetch((await fetch(to, { redirect: 'manual' })).headers.get('location')!, { redirect: 'manual', headers: { cookie: `${s}; ${pending}` } });
   assert.equal(back.headers.get('location'), '/#logins');
   const [login] = await (await fetch(`${spaWeb}/logins`, { headers: { cookie: s } })).json();
