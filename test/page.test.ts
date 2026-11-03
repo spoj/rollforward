@@ -2,7 +2,7 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { cpSync, mkdirSync, mkdtempSync } from 'node:fs';
+import { appendFileSync, cpSync, mkdirSync, mkdtempSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -190,4 +190,13 @@ test("the sidebar's and the side panel's inner edges drag their widths, within b
   await page.dblclick('.grip[data-pane=side]');
   await page.dblclick('.grip[data-pane=panel]');
   assert.deepEqual(await widths(), [236, 352]);
+});
+
+test("what the session names, such as a tool call's name, shows as text in the Ops log, never as markup", async () => {
+  appendFileSync(join(root, 'instances', '3d70f7ca6f20', 'session', 'main.jsonl'), JSON.stringify({ type: 'message', id: 'x1', parentId: 'm2', timestamp: '2026-08-30T23:03:00.000Z', message: { role: 'assistant', content: [{ type: 'toolCall', id: 't1', name: '<img src=x onerror="window.pwned=1">', arguments: {} }] } }) + '\n');
+  await page.evaluate(() => { location.hash = '#/3d70f7ca6f20'; });
+  await page.waitForSelector('#log.open');
+  await page.click('#log [data-tab=log]');
+  await page.locator('#log .e > div > details', { hasText: '<img src=x onerror="window.pwned=1"> 1 call' }).waitFor();
+  assert.equal(await page.evaluate(() => (window as unknown as { pwned?: number }).pwned), undefined);
 });

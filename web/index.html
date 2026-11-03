@@ -801,7 +801,7 @@ function rowHtml({ key, xs }, live) {
 function workHead(xs, live) {
   const steps = xs.filter(x => !x.op && x.kind !== 'say'), entries = xs.filter(x => x.op && x.op !== 'shot');
   const did = [
-    ...Object.entries(Object.groupBy(steps, s => s.kind)).map(([k, g]) => `${(VERB[k] ?? k).toLowerCase()} ${plural(g.length, NOUN[k] ?? 'call')}`),
+    ...Object.entries(Object.groupBy(steps, s => s.kind)).map(([k, g]) => `${(VERB[k] ?? esc(k)).toLowerCase()} ${plural(g.length, NOUN[k] ?? 'call')}`),
     ...Object.entries(Object.groupBy(entries, e => (e.action === 'get' ? 'get' : e.op))).map(([k, g]) => DID[k]?.(g.length) ?? `${esc(k)} \u00D7${g.length}`),
   ];
   const bad = steps.filter(s => s.error).length + entries.filter(e => e.status >= 300 || e.allowed === false || e.op === 'browsers').length;
