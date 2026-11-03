@@ -48,8 +48,9 @@ What there is
 - A workspace holds series, and its people. A series is one recurring job; an instance is one period of it, labelled such as
   2026-08-23. A task is a one-off: a series of one instance, named by its label, until someone makes it a series. PATH is workspace/series/label, as rf ls prints it; for rf pull it may go deeper, into an instance's files.
 - An instance's screen is its items: inputs, steps and outputs, each pointing at a file, with what it's made from. People upload
-  files and comment; each comment or upload starts a run of the agent, which reads it and carries on. The runner is the person whose
-  logins the runs use, and who closes the instance once they stand by it.
+  files and comment. The runner is the person whose logins the runs use, and who closes the instance once they stand by it. Their
+  comments and uploads start a run of the agent, which reads them and carries on, as do everyone's where the runner shares the
+  series, and a reply from whom an ask names; anyone else's is a note, which the agent takes up once the runner does.
 - A comment starts a thread, on the instance or on an item, at a cell such as Base!C25, and others reply in it. An ask is the
   agent's comment that waits on someone, the one it names or else the runner, until they reply or resolve it. rf ls says how many
   asks wait in each instance.
@@ -71,7 +72,8 @@ Usual work
 - What waits on me: rf ls, then the asks in that instance's log.jsonl, ask true, whose thread has nothing after them.
 - Answer an ask: rf comment PATH TEXT --thread T --wait, which prints what the agent says back.
 - Give an input or a corrected output: rf upload PATH FILE [--onto ITEM] [--output].
-- Start an instance: rf wake SERIES now REASON --label LABEL; take one up later: rf wake PATH +2h REASON.
+- Start an instance: rf wake SERIES now REASON --label LABEL, which starts it as whoever shares the series, else asks on the page for
+  someone to start it; take one you run up later: rf wake PATH +2h REASON.
 - Read what a run did: rf pull PATH/ DIR, then its report and done entries in log.jsonl, the files in working/, and session/ for
   every step.
 
@@ -211,8 +213,9 @@ if (cmd === 'login' && url && token) {
 else if (cmd === 'comment' && args.length === 2) {
   const { at } = await find(args[0]);
   await post(`${at}/comment`, { text: args[1], item: flags.item, ref: flags.ref, thread: flags.thread });
-  const seq = (await get(at)).log.at(-1).seq;
-  if (!flags.wait) console.log(`commented, seq ${seq}`);
+  const { log, runner } = await get(at), { seq, note } = log.at(-1);
+  if (note) console.log(`a note for the runner, ${runner.by}, seq ${seq}: it starts no run until they act`);
+  else if (!flags.wait) console.log(`commented, seq ${seq}`);
   else for (;;) {
     // The run that saw the comment, and what it said from then on: a run ending as it came may not have.
     await new Promise(r => setTimeout(r, 5000));
