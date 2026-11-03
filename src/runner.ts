@@ -32,7 +32,7 @@ export type Run = {
 export type View = { cwd: string; instance: string; dir: string; pylib: string; ro: [string, string][]; catalogue: string };
 
 // Pi for one run, in its sandbox (sandbox.ts): its view read-only but for the instance's working/ and session/ and the series'
-// .pylib, the skills the series chose and nothing else of the host's. prompt.md is its system prompt, to which Pi adds the AGENTS.md
+// .pylib, the live skills and nothing else of the host's. prompt.md is its system prompt, to which Pi adds the AGENTS.md
 // files from / down to cwd. A session started under other names is moved to these, as Pi resumes only a session whose folder it
 // recorded.
 export function pi(o: { token: string; id: string; view: View; skills?: string[] }): RpcClient {

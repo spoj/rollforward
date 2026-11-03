@@ -924,10 +924,6 @@ function renderPv() {
       + `<h3>Reading</h3><div class="sub">Agents here read every series of this workspace${s.reads.length ? `, and of ${esc(s.reads.join(', '))}, which ${s.reads.length > 1 ? 'have' : 'has'} everyone this one has` : ''}. They write only here.${s.read_by.length ? ` Agents in ${esc(s.read_by.join(', '))}, whose people are all here, read this one.` : ''}</div>`
       + agentsHtml(s, 'Every agent in this workspace reads it at the start of each run: its conventions, and changes that cut across its series, such as a renamed entity.', s.manage);
     if (s.kind === 'series') h += (s.adhoc ? '' : `<h3>Name</h3><input type="text" id="sname" value="${esc(s.name)}">`)
-      + `<h3>Skill use</h3>` + (s.skillList.length ? `<div class="sub">What the agent may fetch or do for this series.</div>`
-        + s.skillList.map(k => `<label class="skill-row"><input type="checkbox" class="skill" value="${esc(k.id)}" ${s.skills.includes(k.id) ? 'checked' : ''}> ${esc(k.name)}</label>`
-          + `<div class="sub" style="margin:0 0 6px 22px">${esc(k.description.length > 180 ? k.description.slice(0, 180) + '…' : k.description)}</div>`).join('')
-        : '<div class="sub">No skills yet: publishers push them with rf.</div>')
       + `<h3>Wakes</h3>${wakesHtml(s)}`
       + `<h3>Cost</h3><div class="sub">This series' runs have cost ${usd(s.cost)} so far, ${usd(s.cost / Math.max(1, s.closed))} per closed instance.</div>`;
     h += '</div>';
@@ -973,8 +969,8 @@ function openWorkspaceSettings() {
 }
 
 async function openSeriesSettings() {
-  const s = cur.s, [offers, skillList] = await Promise.all([myOffers(), api('/skills')]);
-  pv = { title: 'Series settings', settings: { ...s, kind: 'series', offers, skillList, cost: s.instances.reduce((t, i) => t + i.cost, 0), closed: s.instances.filter(i => i.status === 'closed').length } };
+  const s = cur.s, offers = await myOffers();
+  pv = { title: 'Series settings', settings: { ...s, kind: 'series', offers, cost: s.instances.reduce((t, i) => t + i.cost, 0), closed: s.instances.filter(i => i.status === 'closed').length } };
   renderPv();
 }
 
@@ -986,8 +982,8 @@ function saved() {
   savedFor = setTimeout(() => { $('#pv .saved').textContent = ''; }, 2000);
 }
 
-// Skills, read-only: publishers push them with rf; a series chooses which it uses under Skill use.
-const skillsHtml = s => `<div class="sub">What each skill fetches or does, for every series that chooses it. Publishers push skills with rf (Tokens).</div>`
+// Skills, read-only: publishers push them with rf, and every run loads every live one.
+const skillsHtml = s => `<div class="sub">What each skill fetches or does. Every run loads every skill here. Publishers push skills with rf (Tokens).</div>`
   + `<table class="ut"><tr><th>Skill</th><th>Version</th></tr>`
   + s.list.map(x => `<tr><td><b>${esc(x.name)}</b><div class="sub">${esc(x.description)}</div></td>`
     + `<td class="sub">${x.pushed.version}, ${esc(when(x.pushed.at))} by ${esc(x.pushed.by)}</td></tr>`).join('') + '</table>';
@@ -1415,7 +1411,7 @@ $('#picker').addEventListener('change', e => upload([...e.target.files], e.targe
 // Settings save as they change: a name once it's left or Enter is pressed, a tick at once.
 document.addEventListener('change', async ev => {
   const el = ev.target;
-  if (el.id === 'sname' || el.matches('#pv input.skill')) await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify(el.id === 'sname' ? { name: el.value.trim() } : { skills: [...document.querySelectorAll('#pv input.skill:checked')].map(i => i.value) }) });
+  if (el.id === 'sname') await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) });
   else if (el.matches('#pv input.tick') && pv.settings.kind === 'series' && pv.settings.allow_wakes === me.email) await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ allow_wakes: true, logins: ticked() }) });
   else if (el.id === 'wname') await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) });
   else return;

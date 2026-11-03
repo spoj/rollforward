@@ -164,11 +164,9 @@ test('a push takes an id of letters, digits and dashes, and a SKILL.md; a push c
   assert.ok(!skills().some(s => s.id.includes('.')));
 });
 
-test('admins keep websites, each an address and the other hosts its pages need; a series picks skills that exist', async () => {
-  const { checkChosen, skills } = await import('../src/skills.ts');
+test('admins keep websites, each an address and the other hosts its pages need', async () => {
+  const { skills } = await import('../src/skills.ts');
   const { removeWebsite, setWebsite, websites } = await import('../src/browsers.ts');
-  assert.deepEqual(checkChosen(['mail-report', 'mail-report']), ['mail-report']);
-  assert.throws(() => checkChosen(['nope']), /no skill nope/);
   const ids = skills().map(s => s.id);
   for (const id of ['onedrive-report', 'mail-report', 'portal', 'tool']) assert.ok(ids.includes(id), id);
   assert.throws(() => setWebsite('Portal', { url: 'https://portal.test' }, 'admin'), /a website id is/);

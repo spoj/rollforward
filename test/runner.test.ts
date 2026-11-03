@@ -57,7 +57,7 @@ after(async () => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-test('a run offers the agent the skills its series chose, and not the others', async () => {
+test('a run offers the agent the skills it is given, and not the others', async () => {
   const offered = (await agent.getCommands()).filter(c => c.source === 'skill').map(c => c.name);
   assert.ok(offered.includes('skill:tool'), `offered: ${offered.join(', ') || 'none'}`);
   assert.ok(!offered.includes('skill:mail-report'), `offered: ${offered.join(', ')}`);

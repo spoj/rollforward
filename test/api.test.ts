@@ -194,8 +194,10 @@ test('close and abandon end an open instance; a closed one takes no actions', as
 test("series settings write series.json; a rename edits .rf/tree.json", async () => {
   const put = async (name: string, body: object) => call('PUT', await at(name), JSON.stringify(body));
   const id = (await shown(series)).id;
-  assert.equal((await put(series, { skills: [] })).status, 200);
-  assert.deepEqual(JSON.parse(readFileSync(join(root, 'series', id, 'series.json'), 'utf8')), { skills: [] });
+  assert.equal((await put(series, { allow_wakes: true })).status, 200);
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(root, 'series', id, 'series.json'), 'utf8'))), ['wakes']);
+  assert.equal((await put(series, { allow_wakes: false })).status, 200);
+  assert.deepEqual(JSON.parse(readFileSync(join(root, 'series', id, 'series.json'), 'utf8')), {});
 
   assert.equal((await put(series, { name: renamed })).status, 200);
   assert.equal(JSON.parse(readFileSync(join(root, '.rf', 'tree.json'), 'utf8')).series[id].name, renamed);
@@ -319,7 +321,7 @@ test("each person sees the workspaces they're in, by email or Entra group; owner
   assert.deepEqual(await reads('larkfield'), [], 'a workspace with no one in it reads only itself');
 });
 
-test('Skill use: a series chooses skills that exist; admins keep the websites, which everyone sees', async () => {
+test('everyone sees the skills, which every run loads; admins keep the websites, which everyone sees', async () => {
   const b = sessionOf(await login(bob))!;
   const report = (list: { id: string }[]) => list.find(s => s.id === 'mail-report') as Record<string, unknown>;
   assert.deepEqual(Object.keys(report(await json('/skills', b))).sort(), ['description', 'id', 'name', 'pushed'], 'anyone signed in sees the skills');
@@ -330,16 +332,6 @@ test('Skill use: a series chooses skills that exist; admins keep the websites, w
   assert.deepEqual((await json('/websites', b)).map((w: { id: string }) => w.id), ['portal']);
   assert.equal((await call('DELETE', '/websites/portal')).status, 200);
   assert.deepEqual(await json('/websites', b), []);
-
-  assert.deepEqual((await shown(series)).skills, []);
-  const put = async (body: object) => call('PUT', await at(series), JSON.stringify(body));
-  assert.equal((await put({ skills: ['nope'] })).status, 400);
-  assert.equal((await put({ skills: ['mail-report', 'onedrive-report'] })).status, 200);
-  assert.deepEqual((await shown(series)).skills, ['mail-report', 'onedrive-report']);
-  assert.equal((await put({})).status, 200);
-  assert.deepEqual((await shown(series)).skills, ['mail-report', 'onedrive-report'], 'a save without skills leaves Skill use as it was');
-  assert.equal((await put({ skills: [] })).status, 200);
-  assert.deepEqual((await shown(series)).skills, [], 'none, once a series has chosen');
 });
 
 test("people see and move a series' next wake, turn Allow wakes on as themselves, and start or dismiss requests; acts cancel a wake", async () => {
@@ -359,8 +351,8 @@ test("people see and move a series' next wake, turn Allow wakes on as themselves
 
   assert.equal((await call('PUT', await at(series), JSON.stringify({ allow_wakes: true }))).status, 200);
   assert.equal((await shown(series)).allow_wakes, adminEmail);
-  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(root, 'series', s.id, 'series.json'), 'utf8'))), ['skills', 'wakes']);
-  assert.equal((await call('PUT', await at(series), JSON.stringify({ skills: [] }))).status, 200);
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(root, 'series', s.id, 'series.json'), 'utf8'))), ['wakes']);
+  assert.equal((await call('PUT', await at(series), JSON.stringify({ name: s.name }))).status, 200);
   assert.equal((await shown(series)).allow_wakes, adminEmail, 'other settings leave Allow wakes as it was');
 
   const started = await call('POST', '/api/requests/r1');

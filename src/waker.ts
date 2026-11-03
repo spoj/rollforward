@@ -7,7 +7,7 @@ import { canSee, changes, everyone, readJson, tree, type Tree, writeJson } from 
 import { users } from './auth.ts';
 import type { Browsers } from './browsers.ts';
 import { seriesSettings } from './series.ts';
-import { pushed, skill } from './skills.ts';
+import { pushed, skills } from './skills.ts';
 
 // What runs when: one run at a time per series, at most RF_MAX_RUNS at once, started by people's acts and by wakes.
 const LIMIT_MS = Number(process.env.RF_LIMIT_MIN ?? 120) * 60_000;
@@ -115,12 +115,12 @@ async function start(inst: Instance) {
   const a: Active = { inst, n, token: randomUUID(), view: view(inst), sent: entries.at(-1)!.seq, seen, texts: new Map([[text, entries.at(-1)!.seq]]), interrupted: false, done: false, cost: 0, said: '', hosts: new Set() };
   active.set(series, a);
   byToken.set(a.token, a);
-  const chosen = seriesSettings(inst.series()).skills.filter(id => skill(id));
-  inst.append('server', 'run', { run: n, upto: a.sent, skills: Object.fromEntries(chosen.map(id => [id, pushed(skill(id)!).version])) });
+  const live = skills();
+  inst.append('server', 'run', { run: n, upto: a.sent, skills: Object.fromEntries(live.map(s => [s.id, pushed(s).version])) });
   try {
     a.run = await startRun({
       token: a.token, id: inst.id, view: a.view,
-      message: text, skills: chosen,
+      message: text, skills: live.map(s => s.id),
       onEvent: e => {
         if (e.type === 'message_end' || e.type === 'tool_execution_end') changes.emit('change', inst.id); // Advanced shows the run as it goes
         if (e.type === 'message_end' && e.message.role === 'assistant') {

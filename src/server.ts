@@ -16,7 +16,7 @@ import { agentCall } from './agent-api.ts';
 import { endSignIn, isSignIn, passUpgrade, removeWebsite, setWebsite, startSignIn, viewPage, websites } from './browsers.ts';
 import { offer, unoffer } from './m365.ts';
 import { seriesSettings } from './series.ts';
-import { checkChosen, openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
+import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
 import { active, byToken, cancelWake, closed, dropRequest, kick, MAX_OPEN, named, queued, resolveFor, setWake, startWaking, startWith, wakes, wider, type Active } from './waker.ts';
 
 const root = resolve(process.argv[2]);
@@ -92,9 +92,9 @@ function listing(me: Me) {
     id, name: w.name, archived: !!w.archived, owners: w.owners, members: w.members, manage: canManage(me, w), agents: text(agentsFile(id)),
     reads: wider(t, id).map(o => t.workspaces[o].name).sort(), read_by: Object.keys(t.workspaces).filter(o => wider(t, o).includes(id)).map(o => t.workspaces[o].name).sort(),
     series: Object.entries(t.series).filter(([, s]) => s.workspace === id).sort(byName).map(([sid, s]) => {
-      const { skills, wakes: allowed } = seriesSettings(seriesDir(sid));
+      const { wakes: allowed } = seriesSettings(seriesDir(sid));
       return {
-        id: sid, name: s.name, archived: !!s.archived, adhoc: !!s.adhoc, skills, allow_wakes: allowed?.by ?? null, wake_logins: allowed?.by === me.email ? allowed.logins : [],
+        id: sid, name: s.name, archived: !!s.archived, adhoc: !!s.adhoc, allow_wakes: allowed?.by ?? null, wake_logins: allowed?.by === me.email ? allowed.logins : [],
         wake: w8.pending[sid] ?? null,
         requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r })),
         instances: instances(sid).map(i => summary(i, w8)),
@@ -249,9 +249,9 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     }
     if (change.archived !== undefined) s.archived = !!change.archived;
     saveTree(t);
-    const { wakes: allowed, ...settings } = seriesSettings(seriesDir(id));
+    const allowed = seriesSettings(seriesDir(id)).wakes;
     const wakesBy = change.allow_wakes === undefined ? allowed : change.allow_wakes ? { by, since: new Date().toISOString(), logins: checkTicks(by, change.logins ?? []) } : undefined;
-    replaceReadOnly(join(seriesDir(id), 'series.json'), JSON.stringify({ ...settings, ...(change.skills !== undefined && { skills: checkChosen(change.skills) }), ...(wakesBy && { wakes: wakesBy }) }, null, 1));
+    replaceReadOnly(join(seriesDir(id), 'series.json'), JSON.stringify({ ...(wakesBy && { wakes: wakesBy }) }, null, 1));
     return send(res, 200, 'ok');
   }
   // A pending wake, which people may move or cancel, and a request to start an instance, which they start or dismiss.
@@ -426,7 +426,7 @@ async function admin(me: Me, req: IncomingMessage, res: ServerResponse, url: URL
   send(res, 200, 'ok');
 }
 
-// Skills: anyone signed in may list them, to choose a series' Skill use. Publishers and admins push versions, with rf.
+// Skills: anyone signed in may list them; every run loads every live one. Publishers and admins push versions, with rf.
 async function skillsRoute(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) {
   const [id = '', action] = url.pathname.split('/').slice(2).map(decodeURIComponent);
   if (!id && req.method === 'GET') return send(res, 200, skills().map(s => ({ id: s.id, name: s.name, description: s.description, pushed: pushed(s) })));

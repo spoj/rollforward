@@ -48,7 +48,7 @@ For scale, a weekly borrowing base's runs cost about $0.20–0.60 each with Clau
 - **Thread:** people and the agent talking about one point, on a cell, an item or the instance (see Talking).
 - **Runner:** whoever made the instance, copied it or last took it over; for an instance a wake started, whoever turned on Allow wakes. Runs use the runner's logins, and only the runner closes.
 - **Login:** a person's own sign-in to a system, Microsoft 365 or a website, offering runs what it reaches: mailboxes, files, a site. A run uses only its runner's logins, only those ticked for its instance, and none once the runner is disabled or out of the instance's workspace, until someone takes it over.
-- **Skill:** what the agent knows how to fetch or do, and how, whole in a folder, such as the day's AR aging from OneDrive. A series' **Skill use** is the skills its agent loads. Nothing writes to a system outside rollforward: a write the work needs, such as vouchers for the ERP, is an output people take onward.
+- **Skill:** what the agent knows how to fetch or do, and how, whole in a folder, such as the day's AR aging from OneDrive. Every run loads every live skill, so the company's skills are few and chosen with care. Nothing writes to a system outside rollforward: a write the work needs, such as vouchers for the ERP, is an output people take onward.
 - **Reach:** a workspace's agents read its other series, and those of any workspace that has everyone it has, by the same email or group, so reading never widens who sees what: a payroll workspace's agent reads the entity's main workspace, never the reverse. They never write there.
 - **AGENTS.md:** the company's, the admins', and each workspace's, its owners': conventions, and changes that cut across series, such as a renamed entity, which each series adapts to at its next run.
 - **Archive:** a workspace or a series no longer in use leaves the sidebar, but for "Show archived", until it's restored; nothing in it changes.
@@ -65,7 +65,7 @@ For scale, a weekly borrowing base's runs cost about $0.20–0.60 each with Clau
 - **Advanced,** along the bottom, shows the agent's work, live during a run: what started each run, with its time and cost, the agent's messages, and each tool call as one line that expands to its output. **Interrupt** stops the run.
 - **Close instance** is the runner's "I've reviewed this and stand by it", for the whole instance; others see **Take over**, which makes them the runner, with their own logins ticked. **Abandon**, in the ⋯ menu, ends it otherwise: it is neither an example nor a starting point. Both wait for the run to end. A closed or abandoned instance can be **duplicated** into an open one, without its agent session. An instance's label changes by clicking it, between runs.
 - **Starting an instance** asks for its label and which of your logins it may use, every time, as do copying and taking over.
-- **Series settings:** its name, its Skill use, its wakes and its cost. The next wake can be moved or cancelled, and **Allow wakes** lets a wake start an instance, run as you with the logins you tick. **Workspace settings:** its name, its people, what its agents read and who reads it, and its AGENTS.md.
+- **Series settings:** its name, its wakes and its cost. The next wake can be moved or cancelled, and **Allow wakes** lets a wake start an instance, run as you with the logins you tick. **Workspace settings:** its name, its people, what its agents read and who reads it, and its AGENTS.md.
 - **On a phone,** Outputs come first, then the other tiles, each saying what it's made from.
 
 ## Talking
@@ -101,7 +101,7 @@ Talk is threads only, as `comment` entries in the instance's `log.jsonl`: `{thre
 
 - `rf show` prints the screen, `workspace.json`, with its `rev`; `rf put FILE` replaces it. A put is refused if its `rev` isn't current, as people may have uploaded meanwhile, and unless every item has a unique id, a name and a kind; `from` names items, never in a circle; `file` is null or an existing file under `upload/` or `working/`; and `status` is left as it is. The server logs each change (`point`, `item`, `remove`) and freezes each newly shown file, logging its sha256.
 - `rf say`, `rf ask` and `rf resolve` (see Talking), and `rf wake` (see Runs).
-- `rf graph PATH [--out FILE]` is a GET to Microsoft Graph through the runner's login, answered as Graph answers it, anywhere under the mailboxes, OneDrive and SharePoint sites ticked for the instance: messages with their bodies, a message's MIME, folders, `$search`, files and paging. `rf browser open|get` drives a website (see Skill use). The agent never sees a password or a Microsoft token.
+- `rf graph PATH [--out FILE]` is a GET to Microsoft Graph through the runner's login, answered as Graph answers it, anywhere under the mailboxes, OneDrive and SharePoint sites ticked for the instance: messages with their bodies, a message's MIME, folders, `$search`, files and paging. `rf browser open|get` drives a website (see Skills). The agent never sees a password or a Microsoft token.
 
 ## Storage
 
@@ -171,7 +171,7 @@ The runner, [src/runner.ts](src/runner.ts), drives Pi through Pi's `RpcClient`, 
 - **One process per run,** stopped at `agent_settled`, or after an abort at the time limit.
 - **Sessions are found by folder:** Pi reopens `main` only if the folder in its first line is its working folder, so a run whose names changed since rewrites that line first.
 - **The model key,** `OPENROUTER_API_KEY`, stays with the server, which adds it to each model request a run sends through its socket. A server without one ends each run at once with that error.
-- **`--skill`** loads each skill the series chose, and `--no-skills` keeps out the Pi skills of whoever runs the server.
+- **`--skill`** loads each live skill, and `--no-skills` keeps out the Pi skills of whoever runs the server.
 - **`RpcClient` starts `node`** from the `PATH` it's given; the runner puts [bin/sandbox](bin/sandbox) first, whose `node` starts Pi in the run's sandbox.
 
 ## Sandboxes
@@ -208,9 +208,9 @@ People sign in with one button, **Sign in with Microsoft**, and type nothing.
 
 Sessions last 12 hours (`RF_SESSION_HOURS`). The people, the workspaces' people and everyone's logins are in `.rf/` in the data root, the logins sealed with `seal.key`. Where systemd runs the server, give it `session.key` and `seal.key` as credentials (`systemd-creds encrypt --with-key=tpm2 …`, then `LoadCredentialEncrypted=`), so a copy of the data holds only ciphertext; otherwise they are made in `.rf/`.
 
-## Skill use
+## Skills
 
-A series picks, in its settings, the **skills** its agent may use; choosing none is fine. A skill is what to fetch or do, and how, whole in a folder that a publisher pushes with `rf skill push DIR`, live at once; each push is a version, and `rf skill rollback ID N` brings an earlier one back. It is a Pi skill: a `SKILL.md` for the agent, with the links and website it uses written in it, and the scripts it runs. A run loads the skills its series chose, from `/skills/live/<id>`, and its scripts reach them through `RF_SKILLS`; each run's `run` entry names the versions it loaded.
+Every run loads every live **skill**: a website's skill, with its guardrails, is there wherever a runner's login to that website is ticked, so the company's skills are few and chosen with care. A skill is what to fetch or do, and how, whole in a folder that a publisher pushes with `rf skill push DIR`, live at once; each push is a version, and `rf skill rollback ID N` brings an earlier one back. It is a Pi skill: a `SKILL.md` for the agent, with the links and website it uses written in it, and the scripts it runs. A run loads them from `/skills/live/<id>`, and its scripts reach them through `RF_SKILLS`; each run's `run` entry names the versions it loaded.
 
 | Kind of skill | Reads through | Fetches, for example |
 | --- | --- | --- |
@@ -224,7 +224,7 @@ Microsoft 365 is nobody's but each person's: a run reads mail and files only thr
 
 Websites are the admins' to list and each person's to sign in to. `rf website set ID URL [--name NAME] [--hosts HOST,...]` adds one: the address where people sign in, and the other hosts its pages need, such as single sign-on's (`*.example.com` for any under it). Under Logins, Websites, people sign in themselves in a live browser on the page, and that browser's state is their login, sealed in `.rf/`; no password is stored. A run's scripts open a browser on a website with `rf browser open SITE`, from the runner's login if ticked, and drive it with Playwright over CDP. The browsers come from the browser service, a repo of its own (`RF_BROWSER_URL`, `RF_BROWSER_KEY`): each stays on its website's hosts and logs every request, which the instance keeps under `browser/`. A browser can do whatever its login can: the agent is told to only read, and each run's writes are counted in its log.
 
-From a shell, without the model: `node --env-file=.env src/cli.ts DATA_ROOT try aging --as EMAIL -- python "$RF_SKILLS/aging/scripts/fetch.py"` (or `try portal --as EMAIL -- rf browser open portal`) runs a skill as a run with it would, with the logins of EMAIL, an admin: how a skill is tested. Set `RF_TODAY` in `.env` to test against a day that has data.
+From a shell, without the model: `node --env-file=.env src/cli.ts DATA_ROOT try --as EMAIL -- python "$RF_SKILLS/aging/scripts/fetch.py"` (or `try --as EMAIL -- rf browser open portal`) runs a skill as a run would, with the logins of EMAIL, an admin: how a skill is tested. Set `RF_TODAY` in `.env` to test against a day that has data.
 
 To reach it from the internet, run `tailscale funnel --bg 8780`, with Microsoft sign-in configured. For a server in podman behind Tailscale Funnel, the justfile has `just invite EMAIL [admin]`, `just revoke EMAIL`, `just people`, `just logs`, and `just deploy`, which rebuilds it from the committed main branch.
 

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,18 +8,18 @@ import { initSystem } from './system.ts';
 import { logins } from './logins.ts';
 import { users } from './auth.ts';
 import { serveAgent } from './agent-api.ts';
-import { checkChosen, openSkills, skillsDir } from './skills.ts';
+import { openSkills, skillsDir } from './skills.ts';
 
 // An admin's shell into the skills, with what DATA_ROOT has set up, and no model, as the admin EMAIL with all their logins ticked:
-//   node --env-file=.env src/cli.ts DATA_ROOT try SKILL[,SKILL...] --as EMAIL [--out DIR] -- COMMAND ...
-//       runs COMMAND as a run of a series with those skills would: rf reaching them, and working/ under DIR (default ./try-output).
-//       Such as: try aging -- python "$RF_SKILLS/aging/scripts/fetch.py"
-//                try portal -- rf browser open portal
+//   node --env-file=.env src/cli.ts DATA_ROOT try --as EMAIL [--out DIR] -- COMMAND ...
+//       runs COMMAND as a run would: the live skills under $RF_SKILLS, rf, and working/ under DIR (default ./try-output).
+//       Such as: try --as EMAIL -- python "$RF_SKILLS/aging/scripts/fetch.py"
+//                try --as EMAIL -- rf browser open portal
 
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const [root, cmd, ...rest] = process.argv.slice(2);
 if (!root || !cmd) {
-  console.error('usage: node src/cli.ts DATA_ROOT try SKILL[,SKILL...] --as EMAIL [--out DIR] -- COMMAND ...');
+  console.error('usage: node src/cli.ts DATA_ROOT try --as EMAIL [--out DIR] -- COMMAND ...');
   process.exit(2);
 }
 initSystem(resolve(root));
@@ -27,14 +27,13 @@ openSkills(resolve(root));
 
 const as = rest.includes('--as') ? rest[rest.indexOf('--as') + 1] : '';
 
-async function tryIt(chosen: string, args: string[]) {
+async function tryIt(args: string[]) {
   const dash = args.indexOf('--');
-  if (!chosen || dash < 0 || dash === args.length - 1) throw new Error('try SKILL[,SKILL...] [--out DIR] -- COMMAND ...');
+  if (dash < 0 || dash === args.length - 1) throw new Error('try --as EMAIL [--out DIR] -- COMMAND ...');
   const at = args.indexOf('--out'), out = resolve(at >= 0 && at < dash ? args[at + 1] : 'try-output');
   mkdirSync(join(out, 'working'), { recursive: true });
-  // A stand-in series with those skills, and a stand-in instance: what the agent API needs of one, its log printed rather than kept.
+  // A stand-in series and instance: what the agent API needs of one, its log printed rather than kept.
   const seriesDir = mkdtempSync(join(tmpdir(), 'rf-try-'));
-  writeFileSync(join(seriesDir, 'series.json'), JSON.stringify({ skills: checkChosen(chosen.split(',')) }));
   const inst = { dir: out, log: [{ op: 'create', by: as, logins: logins(as).flatMap(l => l.offers.map(o => o.id)) }], series: () => seriesDir, append: (_by: string, op: string, data: object) => { console.log(`  [log] ${op} ${JSON.stringify(data)}`); return { seq: 0 }; } } as unknown as Instance;
   const api = await serveAgent(inst);
   let words = args.slice(dash + 1);
@@ -54,7 +53,7 @@ async function tryIt(chosen: string, args: string[]) {
 try {
   // A try's instance is in no workspace, and only admins see every one (logins.ts use()).
   if (users()[as]?.role !== 'admin') throw new Error('--as EMAIL: an admin, whose logins to use');
-  if (cmd === 'try') await tryIt(rest[0], rest.slice(1));
+  if (cmd === 'try') await tryIt(rest);
   else throw new Error(`no command ${cmd}`);
 } catch (e) {
   console.error((e as Error).message);

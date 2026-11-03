@@ -78,8 +78,3 @@ export const skill = (id: string) => skills().find(s => s.id === id);
 // ---- A series' choice.
 
 // The skill ids a series may save: ones that exist.
-export function checkChosen(input: unknown): string[] {
-  if (!Array.isArray(input) || !input.every(x => typeof x === 'string')) throw new HttpError(400, 'skills is a list of skill ids');
-  for (const id of input) if (!skill(id)) throw new HttpError(400, `no skill ${id}; there are ${skills().map(x => x.id).join(', ')}`);
-  return [...new Set(input as string[])];
-}

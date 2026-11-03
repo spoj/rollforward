@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -106,7 +106,6 @@ describe('website logins', { skip: !process.env.RF_BROWSER_URL && 'needs the bro
     openSkills(root);
     const seriesDir = join(tmp, 'series'), log: Record<string, unknown>[] = [];
     mkdirSync(seriesDir);
-    writeFileSync(join(seriesDir, 'series.json'), JSON.stringify({ skills: ['portal'] }));
     const { id: workspace } = await (await call('POST', '/api/workspaces', { name: 'Portal work' })).json();
     const { id: seriesId } = await (await call('POST', '/api/series', { workspace, name: 'Invoices' })).json();
     const stand = (dir: string, ticks: string[]) => ({ dir, seriesId, log: [{ op: 'create', by: ADMIN, logins: ticks }], series: () => seriesDir, append: (_by: string, op: string, data: object) => (log.push({ op, ...data }), { seq: log.length }) }) as unknown as Instance;
