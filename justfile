@@ -4,9 +4,10 @@ set dotenv-load
 default:
     @just --list
 
-# Install the Node and Python dependencies
+# Install the Node and Python dependencies, and the Chromium that the page's tests drive
 setup:
     npm install
+    npx playwright install chromium
     uv venv --allow-existing .venv
     uv pip install --python .venv/bin/python -r requirements.txt
 
