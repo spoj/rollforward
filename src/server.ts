@@ -39,11 +39,13 @@ function freeName(t: Tree, ws: string, name: string): string {
   return n;
 }
 
-// An update (scripts/update.ts) drains the server: it exits once the runs going end, or after 30 minutes, and systemd starts the new
-// release, which starts what queued meanwhile. Heard from the start, so one that comes as the server starts waits for it.
+// An update (scripts/update.ts) drains the server before it moves the checkout: no run starts, and once those going end, or after 30
+// minutes, GET /drained answers 200, for the update to move it and restart the server, which starts what queued meanwhile. Heard
+// from the start, so a drain asked as the server starts waits for it.
+let drained = false;
 process.on('SIGUSR2', () => {
-  drain(() => process.exit(0));
-  setTimeout(() => process.exit(0), 30 * 60_000);
+  drain(() => { drained = true; });
+  setTimeout(() => { drained = true; }, 30 * 60_000);
 });
 
 // Before v0.2.17 each workspace had an Ad hoc series of one-offs. Each of its instances becomes a task, a single series of its own,
@@ -640,6 +642,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     const url = new URL(req.url!, 'http://x');
     const site = req.headers['sec-fetch-site'];
     if (req.method !== 'GET' && site && site !== 'same-origin') throw new HttpError(403, 'cross-site request refused');
+    if (url.pathname === '/drained') return send(res, drained ? 200 : 503, drained ? 'drained' : 'not drained');
     const me = await authenticate(req, res, url);
     if (!me) return;
     if (url.pathname === '/') {

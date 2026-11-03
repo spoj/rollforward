@@ -620,3 +620,11 @@ test('closing refuses a shown file the agent replaced after it was shown', async
   renameSync(join(d, 'working', 'swap.tmp'), join(d, shownFile));
   assert.equal((await call('POST', await at(series, 'tamper', 'close'))).status, 200);
 });
+
+// Last: a drained server starts no more runs.
+test('an update drains the server: GET /drained answers 200 once no run is going', async () => {
+  assert.equal((await fetch(base + '/drained')).status, 503);
+  process.kill(proc.pid!, 'SIGUSR2');
+  for (let i = 0; i < 50 && (await fetch(base + '/drained')).status !== 200; i++) await new Promise(r => setTimeout(r, 100));
+  assert.equal((await fetch(base + '/drained')).status, 200);
+});

@@ -1,4 +1,4 @@
-// Moves this checkout to the newest release CI made, then restarts the server once the runs going end: a systemd timer runs it
+// Moves this checkout to the newest release CI made, once the server's runs going have ended, then restarts it: a systemd timer runs it
 // (docs/deploy.md), and never twice at once. A release is taken once every check on its commit has passed, and never past a prerelease, which a tag with
 // a Manual: line makes for a release that needs a person first. If the server doesn't answer HEALTH after the move, the checkout
 // goes back, and that release isn't tried again.
@@ -35,16 +35,20 @@ if (!checks.length || checks.some((c: any) => c.status !== 'completed' || !['suc
   process.exit(0);
 }
 
-// The checkout at `to`, with what changed since `from` installed, and the server restarted. It drains first, on SIGUSR2: no run
-// starts, and it exits once those going end, or after 30 minutes, for systemd to start it again; a stopped one is started.
+// The checkout at `to`, with what changed since `from` installed, and the server restarted. The server drains first, on SIGUSR2, so
+// the runs going end on the release they started on, with its files: it starts no run, and says on /drained when those going have
+// ended, or 30 minutes have passed. One that restarted meanwhile, as a release before /drained did by itself, or that doesn't
+// answer within 35 minutes, is restarted all the same.
 async function move(from: string, to: string) {
+  const pid = () => sh('systemctl', '--user', 'show', '--property=MainPID', '--value', 'rollforward'), was = pid();
+  if (was !== '0') {
+    sh('systemctl', '--user', 'kill', '--kill-whom=main', '--signal=SIGUSR2', 'rollforward');
+    for (let i = 0; i < 420 && pid() === was && !(await fetch(new URL('/drained', health)).then(r => r.ok, () => false)); i++) await sleep(5000);
+  }
   sh('git', 'checkout', '-q', '--detach', to);
   if (sh('git', 'diff', '--name-only', from, to, '--', 'package-lock.json')) sh('npm', 'ci', '--omit=dev', '--no-audit', '--no-fund');
   if (sh('git', 'diff', '--name-only', from, to, '--', 'requirements.txt')) sh('uv', 'pip', 'install', '--python', '.venv/bin/python', '-r', 'requirements.txt');
-  const pid = () => sh('systemctl', '--user', 'show', '--property=MainPID', '--value', 'rollforward'), was = pid();
-  if (was === '0') return void sh('systemctl', '--user', 'restart', 'rollforward');
-  sh('systemctl', '--user', 'kill', '--kill-whom=main', '--signal=SIGUSR2', 'rollforward');
-  while (pid() === was) await sleep(5000);
+  sh('systemctl', '--user', 'restart', 'rollforward');
 }
 // A start may take a while, as one that moves data does.
 async function answers() {
