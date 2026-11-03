@@ -33,12 +33,15 @@ const oidc = {
 oidc.redirect = env.RF_OIDC_REDIRECT_URI ?? `${oidc.publicUrl}/auth/callback`;
 // The app registers its redirect as a Single-page application: Microsoft then lets only a browser redeem the code (see redeemInBrowser).
 const spa = env.RF_OIDC_SPA === '1';
+// Such an app with a client secret gives Microsoft 365 logins too: they come back to /auth/m365, which the app also registers as a
+// Web redirect, and the server redeems them with the secret, while sign-in stays the browser's.
+const m365Redirect = spa ? `${oidc.publicUrl}/auth/m365` : oidc.redirect;
 const redirectPath = URL.canParse(oidc.redirect) ? new URL(oidc.redirect).pathname : '/auth/callback';
 export const mode: 'microsoft' | 'demo' = oidc.issuer ? 'microsoft' : 'demo';
 // A person's Microsoft 365 login asks the same app for delegated, read-only access to mail and files. The server keeps its refresh
-// token, which an app registered as a Single-page application can't give it.
+// token, which a Single-page application's redirect can't give it.
 const M365_SCOPES = ['openid', 'email', 'offline_access', ...['Mail.Read', 'Mail.Read.Shared', 'Files.Read.All', 'Sites.Read.All'].map(s => `https://graph.microsoft.com/${s}`)].join(' ');
-export const m365Ready = () => mode === 'microsoft' && !spa;
+export const m365Ready = () => mode === 'microsoft' && (!spa || !!oidc.clientSecret);
 const admins = new Set([...(env.RF_ADMINS ?? '').split(','), ...(mode === 'demo' ? DEMO_ACCOUNTS.filter(a => a.role === 'admin').map(a => a.email) : [])].map(s => s.trim().toLowerCase()).filter(Boolean));
 const domains = (env.RF_ALLOWED_DOMAINS ?? '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 const SESSION_MS = Number(env.RF_SESSION_HOURS ?? 12) * 3_600_000;
@@ -200,7 +203,7 @@ async function microsoft(res: ServerResponse, next: string, m365?: string) {
   const pending = b64(JSON.stringify({ state, nonce, verifier, next, exp: Date.now() + 600_000, ...(m365 && { m365 }) }));
   const to = new URL(d.authorization_endpoint);
   for (const [k, v] of Object.entries({
-    response_type: 'code', client_id: oidc.clientId, redirect_uri: oidc.redirect, scope: m365 ? M365_SCOPES : oidc.scopes, state, nonce,
+    response_type: 'code', client_id: oidc.clientId, redirect_uri: m365 ? m365Redirect : oidc.redirect, scope: m365 ? M365_SCOPES : oidc.scopes, state, nonce,
     code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256', ...(m365 ? { login_hint: m365 } : { prompt: 'select_account' }),
   })) to.searchParams.set(k, v);
   res.writeHead(302, { location: to.href, 'set-cookie': cookie(pendingCookie(state), `${pending}.${mac(pending)}`, 600) });
@@ -237,11 +240,11 @@ async function callback(req: IncomingMessage, res: ServerResponse, url: URL) {
   if (!p) return expired(req, res);
   if (url.searchParams.get('error')) return page(res, 401, `Microsoft refused: ${url.searchParams.get('error_description') ?? url.searchParams.get('error')}`);
   const d = await discovery();
-  if (spa) return redeemInBrowser(res, url.searchParams.get('code') ?? '', p, d.token_endpoint);
+  if (spa && !p.m365) return redeemInBrowser(res, url.searchParams.get('code') ?? '', p, d.token_endpoint);
   const r = await fetch(d.token_endpoint, {
     method: 'POST', signal: AbortSignal.timeout(15_000),
     body: new URLSearchParams({
-      grant_type: 'authorization_code', code: url.searchParams.get('code') ?? '', redirect_uri: oidc.redirect, client_id: oidc.clientId, code_verifier: p.verifier,
+      grant_type: 'authorization_code', code: url.searchParams.get('code') ?? '', redirect_uri: p.m365 ? m365Redirect : oidc.redirect, client_id: oidc.clientId, code_verifier: p.verifier,
       ...(oidc.clientSecret && { client_secret: oidc.clientSecret }),
     }),
   });
@@ -254,7 +257,7 @@ async function callback(req: IncomingMessage, res: ServerResponse, url: URL) {
 }
 
 export async function connectM365(res: ServerResponse, email: string) {
-  if (!m365Ready()) throw new HttpError(409, 'Microsoft 365 logins need sign-in with Microsoft, through an app registered as a Web or public client');
+  if (!m365Ready()) throw new HttpError(409, 'Microsoft 365 logins need sign-in with Microsoft, through an app registered as a Web or public client, or as a Single-page application with its client secret');
   await microsoft(res, '/#logins', email);
 }
 
@@ -354,7 +357,7 @@ export async function authenticate(req: IncomingMessage, res: ServerResponse, ur
     const account = DEMO_ACCOUNTS.find(a => a.email === form.get('email'));
     if (!account) return page(res, 400, 'Pick one of the demo accounts.'), null;
     admit(res, account.email, account.name, undefined, undefined, nextOf(form));
-  } else if (mode === 'microsoft' && url.pathname === redirectPath && url.searchParams.has('state') && (url.searchParams.has('code') || url.searchParams.has('error'))) {
+  } else if (mode === 'microsoft' && (url.pathname === redirectPath || (spa && url.pathname === '/auth/m365')) && url.searchParams.has('state') && (url.searchParams.has('code') || url.searchParams.has('error'))) {
     // Microsoft's return, which may be the site's own root if that is what the app registers.
     await callback(req, res, url);
   } else if (mode === 'microsoft' && spa && url.pathname === '/auth/token' && req.method === 'POST') await tokenFromBrowser(req, res);

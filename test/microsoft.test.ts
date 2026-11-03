@@ -12,12 +12,12 @@ import { fileURLToPath } from 'node:url';
 
 // With RF_OIDC_* set, the same Sign in with Microsoft button goes to Microsoft Entra ID. A stand-in provider plays Microsoft here:
 // it signs in whoever the login hint names, and checks the PKCE verifier, the redirect address and, for an app with one, its secret.
-// Two servers: one for an app with a client secret that registers /auth/callback, and one for a public client, with no secret, that
-// registers the site's root.
+// Four servers: an app with a client secret that registers /auth/callback; a public client, with no secret, that registers the site's
+// root; and two Single-page applications that register the site's root, one also with a secret and /auth/m365 as a Web redirect.
 
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-ms-'));
-const SECRETS: Record<string, string | undefined> = { 'rf-test': 'shh', 'rf-public': undefined, 'rf-spa': undefined };
+const SECRETS: Record<string, string | undefined> = { 'rf-test': 'shh', 'rf-public': undefined, 'rf-spa': undefined, 'rf-spa-web': 'shh2' };
 // The provider signs ID tokens with this key and publishes it; the other key stands in for a forger.
 const signer = generateKeyPairSync('rsa', { modulusLength: 2048 }), forger = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const signed = (claims: object, key = signer.privateKey) => {
@@ -56,7 +56,7 @@ async function start(base: string, email: string) {
   return { cookie: out.headers.getSetCookie()[0].split(';')[0], back: (await fetch(to, { redirect: 'manual' })).headers.get('location')! };
 }
 
-let confidential = '', publicClient = '', spaClient = '';
+let confidential = '', publicClient = '', spaClient = '', spaWeb = '';
 
 before(async () => {
   idp = createServer(async (req, res) => {
@@ -70,11 +70,13 @@ before(async () => {
     let body = '';
     for await (const c of req) body += c;
     const f = new URLSearchParams(body), c = JSON.parse(Buffer.from(f.get('code')!, 'base64url').toString());
-    const bad = f.get('client_id') !== c.client || f.get('redirect_uri') !== c.redirect || (f.get('client_secret') ?? undefined) !== SECRETS[c.client]
+    // A code for a Single-page application's redirect is a browser's to redeem, with no secret; one for a Web redirect, the server's.
+    const web = !c.client.startsWith('rf-spa') || c.redirect.endsWith('/auth/m365');
+    const bad = f.get('client_id') !== c.client || f.get('redirect_uri') !== c.redirect || (f.get('client_secret') ?? undefined) !== (web ? SECRETS[c.client] : undefined)
       || createHash('sha256').update(f.get('code_verifier')!).digest('base64url') !== c.challenge;
     if (bad) return void res.writeHead(400).end('{"error":"invalid_grant","error_description":"AADSTS-like: the code, verifier, redirect or secret does not match"}');
     const claims = { iss: idpBase, aud: c.client, exp: Date.now() / 1000 + 300, nonce: c.nonce, email: c.email, name: 'Alex', sub: `sub-${c.email}` };
-    if (c.client === 'rf-spa') {
+    if (!web) {
       // As Microsoft does for a Single-page application: only a cross-origin request, from a browser, may redeem the code.
       if (!req.headers.origin) return void res.writeHead(400).end('{"error":"invalid_request","error_description":"AADSTS9002327: Tokens issued for the \'Single-Page Application\' client-type may only be redeemed via cross-origin requests."}');
       return send({ id_token: signed(claims) });
@@ -84,10 +86,11 @@ before(async () => {
   });
   await new Promise<void>(ok => idp.listen(0, '127.0.0.1', ok));
   idpBase = `http://127.0.0.1:${(idp.address() as { port: number }).port}`;
-  [confidential, publicClient, spaClient] = await Promise.all([
+  [confidential, publicClient, spaClient, spaWeb] = await Promise.all([
     serve({ RF_OIDC_CLIENT_ID: 'rf-test', RF_OIDC_CLIENT_SECRET: 'shh' }),
     serve({ RF_OIDC_CLIENT_ID: 'rf-public', RF_OIDC_REDIRECT_URI: '{base}' }),
     serve({ RF_OIDC_CLIENT_ID: 'rf-spa', RF_OIDC_REDIRECT_URI: '{base}', RF_OIDC_SPA: '1' }),
+    serve({ RF_OIDC_CLIENT_ID: 'rf-spa-web', RF_OIDC_REDIRECT_URI: '{base}', RF_OIDC_SPA: '1', RF_OIDC_CLIENT_SECRET: 'shh2' }),
   ]);
 });
 
@@ -173,5 +176,21 @@ test('a Single-page application app: the browser redeems the code, and the serve
   const r = await post(id_token);
   assert.equal(r.headers.get('location'), '/');
   const me = await (await fetch(`${spaClient}/me`, { headers: { cookie: sessionOf(r)! } })).json();
-  assert.deepEqual([me.email, me.sign_in], ['kim@acme.test', 'microsoft']);
+  assert.deepEqual([me.email, me.sign_in, me.m365], ['kim@acme.test', 'microsoft', false]);
+});
+
+test("a Single-page application with its secret: sign-in stays the browser's, and Microsoft 365 comes back to /auth/m365, for the server", async () => {
+  const a = await start(spaWeb, 'kim@acme.test'), page = await (await fetch(a.back, { headers: { cookie: a.cookie } })).text();
+  const endpoint = JSON.parse(page.match(/fetch\(("[^"]+")/)![1]), form = JSON.parse(page.match(/new URLSearchParams\((\{.*?\})\)/)![1]);
+  const { id_token } = await (await fetch(endpoint, { method: 'POST', body: new URLSearchParams(form), headers: { origin: spaWeb } })).json();
+  const signedIn = await fetch(`${spaWeb}/auth/token`, { method: 'POST', redirect: 'manual', headers: { cookie: a.cookie }, body: new URLSearchParams({ state: page.match(/name="state" value="([^"]+)"/)![1], id_token }) });
+  const s = sessionOf(signedIn)!;
+  assert.equal((await (await fetch(`${spaWeb}/me`, { headers: { cookie: s } })).json()).m365, true);
+  const out = await fetch(`${spaWeb}/logins/m365/connect`, { redirect: 'manual', headers: { cookie: s } });
+  const to = new URL(out.headers.get('location')!), pending = out.headers.getSetCookie()[0].split(';')[0];
+  assert.equal(to.searchParams.get('redirect_uri'), `${spaWeb}/auth/m365`);
+  const back = await fetch((await fetch(to, { redirect: 'manual' })).headers.get('location')!, { redirect: 'manual', headers: { cookie: `${s}; ${pending}` } });
+  assert.equal(back.headers.get('location'), '/#logins');
+  const [login] = await (await fetch(`${spaWeb}/logins`, { headers: { cookie: s } })).json();
+  assert.deepEqual([login.id, login.account], ['m365', 'kim@acme.test']);
 });
