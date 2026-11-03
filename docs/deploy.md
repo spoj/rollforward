@@ -81,6 +81,7 @@ A data root of the team's fork (its main at a1fa8db, with folders `<workspace>/<
 - **It carries** people with their roles, workspaces with their owners and an Ad hoc series each, series with their `.pylib`, and instances with `upload/`, `working/` and the agent's session. Notes become the agent's comments and questions its asks, with their options in the text; steers and answers become people's replies, and a question closing defaulted is one the close accepted.
 - **It leaves** the fork's skills, its Microsoft 365 connections and vendor passwords, and its keys: people sign in again, series start with no skills, and publishers push them again. It prints anything else it left.
 - **The new server starts no run** for the old logs: a run cut short gets its `done`.
+- **Some of the fork's people are names, not emails,** in its logs, so their instances have a runner no one signs in as. With the server stopped, `node scripts/rename-person.ts DATA NAME EMAIL` renames one, and prints the instances it changed.
 
 ## Keys, backups and updates
 
