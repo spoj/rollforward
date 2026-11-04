@@ -855,19 +855,22 @@ serveSandboxes({
       send(res, err instanceof HttpError ? err.status : 500, (err as Error).message);
     }
   },
-  run: token => {
-    const a = byToken.get(token);
-    return a && {
-      egress(host, allowed) {
-        if (a.hosts.has(host)) return;
-        a.hosts.add(host);
-        a.inst.append('server', 'egress', { run: a.n, host, allowed });
-      },
-      browsers: () => (a.browsers ??= new Browsers(a.inst, a.n)),
-      intercepts: host => intercepts(a, host),
-      call: (host, req, res) => call(a, host, req, res),
-    };
-  },
+  // The run its token is as each request comes, which a later turn of the same Pi makes another run, over a connection kept open
+  // across them; none while the Pi is idle.
+  run: token => byToken.has(token) ? {
+    egress(host, allowed) {
+      const a = byToken.get(token);
+      if (!a || a.hosts.has(host)) return;
+      a.hosts.add(host);
+      a.inst.append('server', 'egress', { run: a.n, host, allowed });
+    },
+    browsers: () => { const a = byToken.get(token)!; return (a.browsers ??= new Browsers(a.inst, a.n)); },
+    intercepts: host => intercepts(byToken.get(token)!, host),
+    call: async (host, req, res) => {
+      const a = byToken.get(token);
+      return a ? call(a, host, req, res) : void res.writeHead(409).end('its run has ended');
+    },
+  } : undefined,
 });
 
 const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) => {
