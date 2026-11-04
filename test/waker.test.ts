@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createInstance, instance, labels, openStore, type Instance } from '../src/store.ts';
+import { createInstance, instance, labels, openStore, renameInstance, type Instance } from '../src/store.ts';
 import { initSystem, readJson, saveTree, tree, writeJson } from '../src/system.ts';
 import type { Active } from '../src/waker.ts';
 
 // Wakes without a model: a run that a wake starts ends at once for want of a key, which is enough to see what started it.
 delete process.env.OPENROUTER_API_KEY;
 process.env.RF_WAKE_TICK_MS = '50';
-const { closed, kick, message, recover, resolveFor, setWake, startWaking, view, wakes } = await import('../src/waker.ts');
+const { citedFor, closed, kick, message, recover, resolveFor, setWake, startWaking, view, wakes } = await import('../src/waker.ts');
 const { saveLogin } = await import('../src/logins.ts');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-wake-')), alice = 'alice@demo.test';
 initSystem(tmp);
@@ -28,7 +28,7 @@ const make = (series: string, label: string) => createInstance(series, label, al
 const aug = make('s1', '2026-08');
 await aug.close({ email: alice, name: 'Alice' });
 const sep = make('s1', '2026-09'), oct = make('s1', '2026-10');
-const run = { inst: sep, view: { instance: '/work/Acme/Bank rec/2026-09' } } as unknown as Active;
+const run = { inst: sep, view: view(sep) } as unknown as Active;
 const ops = (i: Instance) => i.log.map(e => e.op);
 const settle = () => new Promise(r => setTimeout(r, 2000));
 startWaking();
@@ -36,9 +36,9 @@ startWaking();
 after(() => rmSync(tmp, { recursive: true, force: true }));
 
 test("a run's first message names the runner and what they lend, as does a later one only where its entries change those", () => {
-  assert.match(message(oct, 1, oct.log, true), new RegExp(`^Instance 2026-10 \\(folder 2026-10/\\), run 1\\. Its runner is .+ <${alice}>, who lends you no connection\\. New log entries:`));
-  assert.match(message(oct, 2, [{ seq: 98, at: '', by: alice, op: 'comment', text: 'go' }], true), /^Instance 2026-10 \(folder 2026-10\/\), run 2\. Its runner is /, 'every run is a new conversation');
-  assert.match(message(oct, 2, []), /^Instance 2026-10 \(folder 2026-10\/\), run 2\. New log entries:/);
+  assert.match(message(oct, 1, oct.log, true), new RegExp(`^Instance 2026-10, run 1\\. Its runner is .+ <${alice}>, who lends you no connection\\. New log entries:`));
+  assert.match(message(oct, 2, [{ seq: 98, at: '', by: alice, op: 'comment', text: 'go' }], true), /^Instance 2026-10, run 2\. Its runner is /, 'every run is a new conversation');
+  assert.match(message(oct, 2, []), /^Instance 2026-10, run 2\. New log entries:/);
   assert.match(message(oct, 3, [{ seq: 99, at: '', by: 'bob@demo.test', op: 'takeover', from: alice }]), new RegExp(`run 3\\. Its runner is now .+ <bob@demo\\.test>, taking over from .+ <${alice}>, who lends you no connection\\.`));
 });
 
@@ -51,6 +51,22 @@ test("a run names a series or an instance by its folder, from its own instance's
   assert.throws(() => resolveFor(run, '../../../Hidden/Payroll'), /no series you can read/);
   assert.throws(() => resolveFor(run, '../../../../x/Acme/Bank rec'), /no series you can read/);
   assert.throws(() => resolveFor(run, '../2026-13'), /no instance 2026-13 in Bank rec/);
+});
+
+test('a run names folders, and cites files, by the names it started with, though people renamed them since', () => {
+  const nov = make('s1', '2026-11'), started = { inst: sep, view: view(sep) } as unknown as Active, t = tree();
+  writeFileSync(join(nov.dir, 'working', 'x.csv'), '1');
+  renameInstance(nov, 'November');
+  saveTree({ ...t, series: { ...t.series, s2: { ...t.series.s2, name: 'BB' } } });
+  assert.equal(resolveFor(started, '../2026-11'), nov.id);
+  assert.equal(resolveFor(started, '../../Borrowing base'), 's2');
+  assert.throws(() => resolveFor(started, '../November'), /no instance November in Bank rec/);
+  assert.throws(() => resolveFor(started, '../../BB'), /no series you can read/);
+  assert.deepEqual(citedFor(started, '../2026-11/working/x.csv'), { inst: nov.id, path: 'working/x.csv' }, "kept by the instance's id");
+  assert.deepEqual(citedFor(started, 'upload/../working/x.csv'), undefined);
+  assert.deepEqual(citedFor(started, '../2026-11/working/y.csv'), undefined, 'a file that is there');
+  assert.deepEqual(citedFor(started, '../../Borrowing base/working/x.csv'), undefined, 'of its own series');
+  saveTree(t);
 });
 
 test('a due wake its own run set continues an open instance, as a reply does, though it was renamed since, and names where that run is now; one more than 15 minutes after its last is moved', async () => {

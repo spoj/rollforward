@@ -57,7 +57,9 @@ writeFileSync(join(tmp, 'index', 'LFM.ndjson.zst'), Buffer.concat([{ id: 'f1', n
 const series = '/work/ws/Weekly: AR', at = `${series}/w2`;
 const agent = pi({
   token: TOKEN, id: 'w2', n: 1, skills: skills().filter(s => s.id === 'tool').map(s => ({ ...s, dir: realpathSync(s.dir) })),
-  view: { instance: at, dir: i('w2'), pylib: join(root, 'series', 'weekly', '.pylib'), ro: [[i('w1'), `${series}/w1`], [i('w2'), at], [i('r1'), '/work/ws/Shared/r1'], [join(tmp, 'index'), '/index']], env: { DATABRICKS_HOST: 'https://adb-1.test', RF_INDEX: '/index' } },
+  view: {
+    instance: at, dir: i('w2'), pylib: join(root, 'series', 'weekly', '.pylib'), ro: [[i('w1'), `${series}/w1`], [i('w2'), at], [i('r1'), '/work/ws/Shared/r1'], [join(tmp, 'index'), '/index']],
+    names: { [`${series}/w1`]: 'w1', [at]: 'w2', '/work/ws/Shared/r1': 'r1' }, series: { [series]: 'weekly', '/work/ws/Shared': 'shared' }, env: { DATABRICKS_HOST: 'https://adb-1.test', RF_INDEX: '/index' } },
 });
 const sh = async (command: string) => (await agent.bash(command)).output.trim();
 
@@ -87,6 +89,7 @@ test('the sandbox shows its view of the data by name, and nothing else of the da
   assert.equal(await sh('cat ../../Shared/r1/working/rates.csv'), 'usd,1');
   assert.equal(await sh('echo $HOME; ls /app; ls /skills'), '/home/agent\nbin\nnode_modules\npackage.json\nprompt.md\nsrc\ntool', "the app at /app, and only the skills given, at /skills/<id>");
   assert.equal(await sh('ls /work/ws'), 'Shared\nWeekly: AR');
+  assert.equal(await sh('cat names.tsv'), `w1\t${series}/w1\nw2\t${at}\nr1\t/work/ws/Shared/r1`, "the instances in reach by id, at their folders by the names the run started with");
   for (const p of [root, '/root', import.meta.dirname]) assert.match(await sh(`ls ${p} 2>&1`), /No such file/, p);
 });
 
@@ -98,7 +101,7 @@ test("git finds the instance's repository from working/, across the mount betwee
 test("writes land only in the instance's working/ and session/ and the series' .pylib", async () => {
   assert.equal(await sh('touch working/out.csv ../.pylib/pkg.py && echo ok'), 'ok');
   assert.ok(existsSync(i('w2/working/out.csv')) && existsSync(join(root, 'series', 'weekly', '.pylib', 'pkg.py')));
-  for (const p of ['../w1/working/x.csv', '../notes.md', 'screen.json', '../../Shared/r1/working/x.csv', '/work/x', '/app/x', '/skills/x'])
+  for (const p of ['../w1/working/x.csv', '../notes.md', 'screen.json', 'names.tsv', '../../Shared/r1/working/x.csv', '/work/x', '/app/x', '/skills/x'])
     assert.match(await sh(`touch ${p} 2>&1`), /Read-only file system/, p);
 });
 

@@ -1,5 +1,5 @@
 import { freemem } from 'node:os';
-import { realpathSync, rmSync } from 'node:fs';
+import { existsSync, realpathSync, rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
 import { agentsFile, createInstance, HttpError, instance, instanceDir, instances, isPerson, labels, newId, seriesDir, type Entry, type Instance } from './store.ts';
@@ -59,7 +59,7 @@ const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math
 // whose entries change those: a takeover and a runner's new ticks.
 export function message(inst: Instance, n: number, entries: Entry[], first = false): string {
   const made = entries.findLast(e => ['takeover', 'logins'].includes(e.op)), us = users(), who = (by: string) => `${us[by]?.name || by} <${by}>`;
-  return `Instance ${inst.label} (folder ${inst.label}/), run ${n}.`
+  return `Instance ${inst.label}, run ${n}.`
     + (first || made ? ` Its runner is ${made?.op === 'takeover' ? `now ${who(made.by)}, taking over from ${who(made.from as string)}` : who(runnerOf(inst).by)}, who lends you ${reachable(inst).map(c => `${c.name} (${c.type})`).join(', ') || 'no connection'}.` : '')
     + ' New log entries:\n'
     + entries.map(e => JSON.stringify(isNote(inst, e) ? { ...e, note: true } : e)).join('\n');
@@ -85,11 +85,12 @@ export const named = (t: Tree, seriesId: string) => `${t.workspaces[t.series[ser
 // runner's connections set.
 export function view(inst: Instance): View {
   const t = tree(), at = (id: string) => `/work/${named(t, id)}`, series = [inst.seriesId, ...reach(t, inst.seriesId)];
-  const ro = series.flatMap(id => labels(id).map(l => [instanceDir(l.id), `${at(id)}/${l.label}`] as [string, string]));
+  const names = Object.fromEntries(series.flatMap(id => labels(id).map(l => [`${at(id)}/${l.label}`, l.id])));
   const agents = [...new Set(series.map(id => t.series[id].workspace))].map(w => [agentsFile(w), `/work/${t.workspaces[w].name}/AGENTS.md`] as [string, string]);
   return {
-    instance: `${at(inst.seriesId)}/${inst.label}`, dir: inst.dir, pylib: join(inst.series(), '.pylib'), ro: [[agentsFile(), '/work/AGENTS.md'], ...agents, ...ro],
-    env: Object.assign({}, ...reachable(inst).map(c => types[c.type].env?.(c))),
+    instance: `${at(inst.seriesId)}/${inst.label}`, dir: inst.dir, pylib: join(inst.series(), '.pylib'),
+    ro: [[agentsFile(), '/work/AGENTS.md'], ...agents, ...Object.entries(names).map(([path, id]) => [instanceDir(id), path] as [string, string])],
+    names, series: Object.fromEntries(series.map(id => [at(id), id])), env: Object.assign({}, ...reachable(inst).map(c => types[c.type].env?.(c))),
   };
 }
 
@@ -315,14 +316,19 @@ export function startWaking() {
   setInterval(fire, Number(process.env.RF_WAKE_TICK_MS ?? 60_000)).unref();
 }
 
-// A folder as a run sees it from its instance's: an instance, such as . for its own, ../<label> or ../../<series>/<label>, or a
-// series, such as .., ../../<series> or ../../../<workspace>/<series>; answered by id, if the run can read it.
+// A folder as a run sees it from its instance's, by the names it started with: an instance, such as . for its own, ../<label> or
+// ../../<series>/<label>, or a series, such as .., ../../<series> or ../../../<workspace>/<series>; answered by id.
 export function resolveFor(a: Active, folder: string): string {
-  const t = tree(), full = posix.normalize(posix.join(a.view.instance, folder)).split('/'), path = full.slice(2);
-  const sid = Object.keys(t.series).find(id => t.series[id].name === path[1] && t.workspaces[t.series[id].workspace].name === path[0]);
-  if (full[1] !== 'work' || path.length < 2 || path.length > 3 || !sid || (sid !== a.inst.seriesId && !reach(t, a.inst.seriesId).includes(sid))) throw new HttpError(404, `no series you can read at ${folder}`);
-  if (path.length === 2) return sid;
-  const id = labels(sid).find(l => l.label === path[2])?.id;
-  if (!id) throw new HttpError(404, `no instance ${path[2]} in ${t.series[sid].name}`);
-  return id;
+  const path = posix.normalize(posix.join(a.view.instance, folder)), id = a.view.series[path] ?? a.view.names[path];
+  if (id) return id;
+  if (a.view.series[posix.dirname(path)]) throw new HttpError(404, `no instance ${posix.basename(path)} in ${posix.basename(posix.dirname(path))}`);
+  throw new HttpError(404, `no series you can read at ${folder}`);
+}
+
+// A file a run cites in a comment, under upload/ or working/ of its instance, or of another of its series as ../<label>/...: its
+// instance's id, by the names the run started with, and its path there.
+export function citedFor(a: Active, f: unknown): { inst: string; path: string } | undefined {
+  const m = typeof f === 'string' && posix.normalize(f) === f ? f.match(/^(?:\.\.\/([^/]+)\/)?((?:upload|working)\/.+)$/) : null;
+  const inst = m && (m[1] === undefined ? a.inst.id : a.view.names[posix.join(posix.dirname(a.view.instance), m[1])]);
+  return inst && !m[2].split('/').includes('..') && existsSync(join(instanceDir(inst), m[2])) ? { inst, path: m[2] } : undefined;
 }

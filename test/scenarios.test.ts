@@ -154,6 +154,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
       () => `rf resolve ${thread} 2>&1`,
       `curl -s -m 10 https://openrouter.ai/api/v1/chat/completions -H 'content-type: application/json' -d '{"model": "openai/gpt-5-mini", "messages": [{"role": "user", "content": "Is this right?"}]}'`,
       'curl -s -m 10 https://openrouter.ai/api/v1/credits',
+      'echo 1 > working/x.csv && rf say --file working/x.csv --file ../2026-11/working/x.csv Cited. 2>&1',
     ],
     report: 'Checked the walls, and woke myself for the bank file.', saw: [],
   };
@@ -186,14 +187,15 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.match(walls.saw[14], new RegExp(`admin@demo.test started ${thread}, and resolves it`));
   assert.match(walls.saw[15], /"content":"A second opinion"/, 'any model, through OpenRouter, with the server\'s key');
   assert.match(walls.saw[16], /^GET \/api\/v1\/credits: openrouter takes inference/);
+  assert.deepEqual(log.findLast(e => e.text === 'Cited.')!.files, [{ inst: id, path: 'working/x.csv' }, { inst: id, path: 'working/x.csv' }], "a cited file is kept by its instance's id");
   const asked = log.filter(e => e.op === 'call' && e.name === 'openrouter'), pi = asked.filter(e => (e.path as string).startsWith('/api/v1/messages'));
   assert.deepEqual(asked.filter(e => !pi.includes(e)).map(e => [e.run, e.method, e.path, e.status, e.model, e.cost]), [[2, 'POST', '/api/v1/chat/completions', 200, 'openai/gpt-5-mini', 0.002], [2, 'GET', '/api/v1/credits', 403, undefined, undefined]]);
   assert.deepEqual(pi.map(e => [e.run, e.method, e.status, e.model, e.cost]), [[1, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01], ...Array(walls.bash.length + 1).fill([2, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01]), ...Array(2).fill([3, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01])], "Pi's own calls, a step's each and the report's, through the same connection");
   assert.ok(providers.length && providers.every(p => JSON.stringify(p) === '{"data_collection":"deny"}'), 'every call asked only for providers that collect no data');
-  assert.deepEqual(log.filter(e => e.op === 'comment' && e.by === 'agent').map(e => [e.text, !!e.ask]), [['Walls checked.', false], ['Is the bank file coming today?', true]], "the agent's words are comments of its own, and an ask is marked");
+  assert.deepEqual(log.filter(e => e.op === 'comment' && e.by === 'agent').map(e => [e.text, !!e.ask]), [['Walls checked.', false], ['Is the bank file coming today?', true], ['Cited.', false]], "the agent's words are comments of its own, and an ask is marked");
   assert.match(woken.prompt!, /"op":"wake","from":"[^"]*\/2026-11"/, 'the wake started the next run, saying only who set it');
   assert.deepEqual([walls.first, woken.first], [1, 1], 'each run a new conversation, of its own prompt alone');
-  assert.match(woken.prompt!, /^Instance 2026-11 \(folder 2026-11\/\), run 3\. Its runner is Demo Admin <admin@demo\.test>, who lends you /, 'which names the runner');
+  assert.match(woken.prompt!, /^Instance 2026-11, run 3\. Its runner is Demo Admin <admin@demo\.test>, who lends you /, 'which names the runner');
   const transcripts = readdirSync(join(root, 'instances', id, 'session'));
   assert.ok(['run-2', 'run-3'].every(r => transcripts.some(f => f.endsWith(`_${r}.jsonl`))), `a transcript per run: ${transcripts}`);
   assert.match(woken.saw[0], /m365:mail:admin@demo.test is not ticked/);

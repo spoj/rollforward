@@ -26,12 +26,11 @@ const HELP: Record<string, string> = {
   resolve: `rf resolve THREAD [TEXT]
   Resolves a thread you started, once it no longer applies, saying why.`,
   wake: `rf wake TARGET AT [--label LABEL]
-  Starts a run later, which sees who woke it. TARGET is a folder as you see it: an open instance, such as . for your own, ../<label>
-  or ../../<series>/<label>, which the wake continues; or a series, such as .. or ../../<series>, which it starts a new instance
-  of, labelled LABEL. AT is now,
-  +<n>m, +<n>h, +<n>d, or a date and time with its offset, such as 2026-09-14T07:00+08:00. A target has one wake pending (a new
-  one replaces it), at least 15 minutes after its last. A closed instance can't be woken: to correct one, wake its series
-  with --label <its label>-r2.`,
+  Starts a run later, which sees who woke it. TARGET is a folder as you see it, by the names your run started with: an open
+  instance, such as . for your own, ../<label> or ../../<series>/<label>, which the wake continues; or a series, such as .. or
+  ../../<series>, which it starts a new instance of, labelled LABEL. AT is now, +<n>m, +<n>h, +<n>d, or a date and time with
+  its offset, such as 2026-09-14T07:00+08:00. A target has one wake pending (a new one replaces it), at least 15 minutes after
+  its last. A closed instance can't be woken: to correct one, wake its series with --label <its label>-r2.`,
   delivered: `rf delivered ITEM --to WHERE --receipt WHAT
   Records that you delivered the output ITEM outside: where to, such as "E1, batch 4471" or the mail's recipients, and what
   proves it, such as the document number a website gave, or the Message-ID or the file's id and eTag Microsoft 365 gave.`,

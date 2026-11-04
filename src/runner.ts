@@ -28,8 +28,10 @@ export type Run = {
 // The run's view of the data, which the server builds: its own instance at instance, such as /work/<workspace>/<series>/<label>,
 // its working folder, from the folder dir, its series' .pylib from pylib, in ro, every instance in its reach and the AGENTS.md of
 // the company and of each workspace there, each [host path, path inside]; and its environment. Another series' .pylib isn't
-// there: what its runs installed is theirs to run, never a run of another series, with its runner's logins.
-export type View = { instance: string; dir: string; pylib: string; ro: [string, string][]; env: Record<string, string> };
+// there: what its runs installed is theirs to run, never a run of another series, with its runner's logins. names and series are
+// the ids of the folders of the instances and series in reach, by the names the run starts with, which stay its names to the end:
+// what it hands the server is read by them, and its instance's names.tsv lists the instances', for whoever reads its files.
+export type View = { instance: string; dir: string; pylib: string; ro: [string, string][]; names: Record<string, string>; series: Record<string, string>; env: Record<string, string> };
 
 // Pi for one run, in its sandbox (sandbox.ts): its view read-only but for the instance's working/ and session/ and the series'
 // .pylib, the live skills and nothing else of the host's. prompt.md is its system prompt, to which Pi adds the AGENTS.md
@@ -44,6 +46,7 @@ export function pi(o: { token: string; id: string; n: number; view: View; skills
   rmSync(join(dir, 'skills'), { recursive: true, force: true });
   mkdirSync(join(dir, 'skills'));
   for (const s of o.skills) cpSync(s.dir, join(dir, 'skills', s.id), { recursive: true, mode: constants.COPYFILE_FICLONE });
+  writeFileSync(join(dir, 'names.tsv'), Object.entries(o.view.names).map(([at, id]) => `${id}\t${at}\n`).join(''));
   // PYTHONPATH reaches the series' .pylib through a link in HOME, as a colon in its path, such as in a task named by its first
   // prompt, would split it.
   symlinkSync(lib, join(home, 'pylib'));

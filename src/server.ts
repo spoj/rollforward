@@ -21,7 +21,7 @@ import { offer, unoffer } from './connections/graph.ts';
 import { forget, indexes, startIndexing, track } from './indexes.ts';
 import { seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, byToken, cancelWake, closed, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, resolveFor, setWake, startWaking, startWith, wakes, wider, type Active } from './waker.ts';
+import { active, byToken, cancelWake, citedFor, closed, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, resolveFor, setWake, startWaking, startWith, wakes, wider, type Active } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -457,7 +457,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const { at: when = '', label } = payload, w = String(when);
     const at = w === 'now' ? Date.now() : /^\+\d+[mhd]$/.test(w) ? Date.now() + Number(w.slice(1, -1)) * { m: 60e3, h: 3600e3, d: 86400e3 }[w.at(-1) as 'm'] : Date.parse(w);
     if (req.method !== 'PUT' || Number.isNaN(at)) throw new HttpError(400, 'PUT {"at", "label" for a series}, or DELETE; at is now, +<n>m|h|d, or a date and time such as 2026-09-14T07:00+08:00');
-    if (!wake && t.series[id] && !label) throw new HttpError(400, `waking a series starts a new instance: name it with a label${run ? `; to wake your own instance, name its folder: ${run.inst.label}` : ''}`);
+    if (!wake && t.series[id] && !label) throw new HttpError(400, `waking a series starts a new instance: name it with a label${run ? '; to wake your own instance, name its folder: .' : ''}`);
     if (!t.series[id] && instance(id).doc.status !== 'open') throw new HttpError(409, `${instance(id).label} is ${instance(id).doc.status}: to correct it, wake its series with the label ${instance(id).label}-r2`);
     const from = run ? `${named(t, run.inst.seriesId)}/${run.inst.label}` : by;
     return send(res, 200, setWake(id, { ...wake, at: new Date(at).toISOString(), from, inst: run?.inst.id, ...(label && { label }) }));
@@ -523,15 +523,17 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a comment has text');
     if (thread !== undefined && !threads.has(thread)) throw new HttpError(400, `no thread ${thread}; this instance's threads: ${[...threads.keys()].join(', ') || 'none yet'}`);
     if (thread === undefined && item != null && !inst.doc.items.some(i => i.id === item)) throw new HttpError(400, `no item ${item}; the screen's items: ${inst.doc.items.map(i => i.id).join(', ')}`);
-    for (const f of files) {
-      const ok = run ? inst.cited(f) && existsSync(inst.cited(f)!) : typeof f === 'string' && f.startsWith('upload/attachments/') && !f.includes('..') && existsSync(join(inst.dir, f));
+    // A run's citation keeps its instance's id, so a rename of that instance leaves it found.
+    const kept = files.map((f: unknown) => {
+      const ok = run ? citedFor(run, f) : typeof f === 'string' && f.startsWith('upload/attachments/') && !f.includes('..') && existsSync(join(inst.dir, f)) && f;
       if (!ok) throw new HttpError(400, run ? `no file ${f}: cite one under upload/ or working/ of this instance, or of another of its series as ../<label>/...` : `no attachment ${f}`);
-    }
+      return ok;
+    });
     const who = typeof to === 'string' ? to.toLowerCase() : undefined, u = who && users()[who];
     if (who && !(u && canSee({ email: who, role: u.role, groups: u.groups ?? [] }, t.workspaces[t.series[inst.seriesId].workspace])))
       throw new HttpError(400, `${to} can't see this instance; ask its runner, ${runnerOf(inst).by}, or someone in its workspace`);
     const said = inst.append(by, 'comment', {
-      thread: thread ?? `c${inst.log.length + 1}`, ...(thread === undefined && { item: item ?? null, ref: ref ?? null }), text: text.trim(), ...(files.length && { files }),
+      thread: thread ?? `c${inst.log.length + 1}`, ...(thread === undefined && { item: item ?? null, ref: ref ?? null }), text: text.trim(), ...(kept.length && { files: kept }),
       ...(run && ask && { ask: true, ...(who && { to: who }), ...(signoff && { signoff: true }) }),
     });
     if (run) return send(res, 200, `${ask ? 'asked' : 'said'} in ${said.thread}, seq ${said.seq}`);

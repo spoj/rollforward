@@ -892,14 +892,14 @@ function redline(a, b) {
 
 // Threads from the log: a comment starts one, on an item (at a ref) or the instance, and later comments reply in it. In an open
 // instance it waits on a person while its last word is the agent's ask, on whom the ask names or else the runner, and on the
-// agent while its last word is a person's.
+// agent while its last word is a person's. A file a run cited is kept by its instance's id, and shown by that instance's label now.
 function threadsOf() {
   const out = new Map(), open = data?.doc.status === 'open';
   for (const e of data?.log ?? []) {
     if (!['comment', 'resolve', 'signoff'].includes(e.op)) continue;
     if (!out.has(e.thread)) out.set(e.thread, { id: e.thread, item: e.item, ref: e.ref, posts: [] });
     const t = out.get(e.thread);
-    if (e.op === 'comment') t.posts.push(e);
+    if (e.op === 'comment') t.posts.push({ ...e, files: e.files?.map(f => !f.inst ? f : f.inst === cur.i.id ? f.path : `../${cur.s.instances.find(i => i.id === f.inst)?.label}/${f.path}`) });
     if (e.op === 'signoff') t.posts.push({ ...e, text: `${e.approved ? 'Signed off' : 'Rejected'}${e.text ? `: ${e.text}` : ''}` });
     t.last = e;
   }

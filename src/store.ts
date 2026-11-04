@@ -291,14 +291,6 @@ export class Instance {
     return this.doc.rev;
   }
 
-  // Where a file the agent cites in a comment is: under upload/ or working/ of this instance, or of another of its series as
-  // ../<label>/....
-  cited(f: unknown): string | undefined {
-    const m = typeof f === 'string' && normalize(f) === f ? f.match(/^(?:\.\.\/([^/]+)\/)?((?:upload|working)\/.+)$/) : null;
-    const id = m && (m[1] === undefined ? this.id : labels(this.seriesId).find(l => l.label === m[1])?.id);
-    return id && !m[2].split('/').includes('..') ? join(instanceDir(id), m[2]) : undefined;
-  }
-
   get meta(): Meta {
     return index.get(this.id)!;
   }
