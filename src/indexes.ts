@@ -251,7 +251,8 @@ export async function prepare(inst: Instance, to: string): Promise<boolean> {
         await slice(id, by, Date.now() + RUN_MS);
         await check(db, o.id, by, Date.now() - DAY);
       }).catch(e => console.error(`index of ${o.id} for ${by}: no refresh`, e));
-      const rows = db.prepare('SELECT rowid, json FROM items WHERE rowid > ? AND root IN (SELECT root FROM access WHERE person = ? AND ok) ORDER BY rowid LIMIT 5000');
+      // 1,000 rows at a time, each read on the server's one thread: a big mailbox's are 15 MB, about 100 ms.
+      const rows = db.prepare('SELECT rowid, json FROM items WHERE rowid > ? AND root IN (SELECT root FROM access WHERE person = ? AND ok) ORDER BY rowid LIMIT 1000');
       await pipeline(async function* () {
         for (let last = 0, page: { rowid: number; json: string }[]; (page = rows.all(last, by) as typeof page).length; last = page.at(-1)!.rowid) yield page.map(r => `${r.json}\n`).join('');
       }, createZstdCompress(), createWriteStream(join(to, `${name}.ndjson.zst`)));
