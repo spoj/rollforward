@@ -18,7 +18,7 @@ import { checkLogins } from './entra.ts';
 import { byLogin, call, connections, convert, intercepts, loginOf, removeConnection, setConnection } from './connections.ts';
 import { Browsers, endSignIn, isSignIn, passUpgrade, startSignIn, viewPage } from './browsers.ts';
 import { offer, unoffer } from './connections/graph.ts';
-import { indexes, startIndexing, stopIndexing, track } from './indexes.ts';
+import { forget, indexes, startIndexing, stopIndexing, track } from './indexes.ts';
 import { seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
 import { active, byToken, cancelWake, closed, drain, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, resolveFor, setWake, startWaking, startWith, wakes, wider, type Active } from './waker.ts';
@@ -773,14 +773,14 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       await connect(res, me.email, login);
     }
     else if (url.pathname === '/logins/m365/offers' && req.method === 'POST') send(res, 200, (await offer(me.email, String((await json(req)).add ?? '')), track(me.email), 'ok'));
-    else if (url.pathname.startsWith('/logins/m365/offers/') && req.method === 'DELETE') send(res, 200, (unoffer(me.email, decodeURIComponent(url.pathname.slice(20))), 'ok'));
+    else if (url.pathname.startsWith('/logins/m365/offers/') && req.method === 'DELETE') send(res, 200, (unoffer(me.email, decodeURIComponent(url.pathname.slice(20))), forget(me.email, decodeURIComponent(url.pathname.slice(20))), 'ok'));
     else if (url.pathname.startsWith('/logins/web/') && req.method === 'POST') send(res, 200, { id: await startSignIn(me.email, decodeURIComponent(url.pathname.slice(12))) });
     else if (/^\/signins\/\w+\/view$/.test(url.pathname) && req.method === 'GET') {
       const html = await viewPage(me.email, url.pathname.split('/')[2]);
       res.writeHead(200, { 'content-type': 'text/html' }).end(html);
     }
     else if (/^\/signins\/\w+$/.test(url.pathname) && (req.method === 'POST' || req.method === 'DELETE')) send(res, 200, (await endSignIn(me.email, url.pathname.slice(9), req.method === 'POST'), 'ok'));
-    else if (url.pathname.startsWith('/logins/') && req.method === 'DELETE') send(res, 200, (signOut(me.email, decodeURIComponent(url.pathname.slice(8))), 'ok'));
+    else if (url.pathname.startsWith('/logins/') && req.method === 'DELETE') send(res, 200, (signOut(me.email, decodeURIComponent(url.pathname.slice(8))), url.pathname === '/logins/m365' && forget(me.email), 'ok'));
     else if (url.pathname === '/users' || url.pathname.startsWith('/users/')) await admin(me, req, res, url);
     else if (url.pathname === '/skills' || url.pathname.startsWith('/skills/')) await skillsRoute(me, req, res, url);
     else if (url.pathname === '/connections' || url.pathname.startsWith('/connections/')) await connectionsRoute(me, req, res, url);
@@ -798,8 +798,8 @@ server.on('upgrade', (req, socket, head) => {
   passUpgrade(req, socket, head, `/sessions/${m[1]}/${m[2]}`);
 });
 server.listen(port, host, () => {
-  startWaking();
   startIndexing();
+  startWaking();
   if (m365Ready()) checkLogins(connections().map(loginOf).flatMap(l => l.scope ? [l] : []));
   console.log(`rollforward on http://${host}:${port}, data in ${root}, sign-in ${mode}${process.env.RF_TODAY ? `, skills take today as ${process.env.RF_TODAY} (RF_TODAY)` : ''}`);
 });

@@ -3,18 +3,17 @@ import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
-import { zstdDecompressSync } from 'node:zlib';
+import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 import type { Instance } from '../src/store.ts';
 
 // A stand-in for Microsoft's sign-in and Graph: a library whose ticked folder has a subfolder shared with Bob, who sees only what is
 // under it; a bigger library for a crawl cut by a restart; and a shared mailbox. Each person's access token is their refresh token,
 // which is their address. Delta pages hold three items, or two messages; a cursor's token says where it is.
 const ALICE = 'alice@demo.test', BOB = 'bob@demo.test', CAROL = 'carol@demo.test', DAN = 'dan@demo.test', BOX = 'team@demo.test';
-const FOLDER = 'm365:item:b!d/top', BIG = 'm365:item:b!big/bigtop', MAIL = `m365:mail:${BOX}`, SITE = 'm365:site:host,s1,w1';
+const FOLDER = 'm365:item:b!d/top', PUB = 'm365:item:b!d/pub', BIG = 'm365:item:b!big/bigtop', MAIL = `m365:mail:${BOX}`, SITE = 'm365:site:host,s1,w1';
 const tmp = mkdtempSync(join(tmpdir(), 'rf-index-'));
 let graph: Server, base = '', ix: typeof import('../src/indexes.ts'), logins: typeof import('../src/logins.ts');
 
@@ -26,35 +25,34 @@ const file = (d: string, id: string, name: string, parent: string, more = {}) =>
 const folder = (d: string, id: string, name: string, parent: string, more = {}) => ({ id, name, folder: {}, parentReference: { driveId: d, id: parent }, ...more });
 const parentOf = (d: string, id: string) => state[d].get(id)?.parentReference?.id;
 const under = (d: string, id: string, top: string) => { for (let x: string | undefined = id; x; x = parentOf(d, x)) if (x === top) return true; return false; };
-const sees = (who: string, d: string, id: string) => who !== BOB || under(d, id, 'pub');
+const locked = new Set<string>();
+const sees = (who: string, d: string, id: string) => !locked.has(who) && (who !== BOB || under(d, id, 'pub'));
 
 // What each person asked: each request inside a $batch, with its Prefer, and each $batch's size. `hold` keeps a page unanswered,
-// for a crawl to be cut; `once` answers a person's next delta request with a status or a poisoned page instead.
+// for a crawl to be cut; `once` answers a person's next delta request with a status instead.
 const asked: { who: string; url: string; prefer?: string }[] = [], batches: number[] = [];
 let hold: { token: string; reached: () => void } | undefined;
-const once = new Map<string, number | 'poison'>();
+const once = new Map<string, number>();
 
 function delta(who: string, d: string, scope: string | undefined, token: string | null): { status: number; headers?: Record<string, string>; body: any } {
-  const link = (t: string) => `${base}/v1.0/drives/${d}/${scope ? `items/${scope}` : 'root'}/delta?token=${t}`, trick = once.get(who);
+  const link = (t: string) => `${base}/v1.0/drives/${d}/${scope ? `items/${scope}` : 'root'}/delta?token=${t}`;
   if (token === 'gone') return { status: 410, body: { error: { code: 'resyncRequired' } } };
   if (scope && !sees(who, d, scope)) return { status: 403, body: { error: { code: 'accessDenied' } } };
-  if (typeof trick === 'number') return once.delete(who), { status: trick, headers: { 'Retry-After': '120' }, body: { error: { code: 'activityLimitReached' } } };
+  const trick = once.get(who);
+  if (trick) return once.delete(who), { status: trick, headers: { 'Retry-After': '120' }, body: { error: { code: 'activityLimitReached' } } };
   const inScope = (id: string) => !scope || under(d, id, scope);
-  if (token === 'latest') return { status: 200, body: { value: [], '@odata.deltaLink': link(`s${seq}`) } };
   if (token?.startsWith('s')) {
     const ids = [...new Set(changed.filter(c => c.at === d && c.seq > Number(token.slice(1))).map(c => c.id))];
-    const value: any[] = ids.map(id => state[d].get(id)!).filter(it => it.deleted || (inScope(it.id) && sees(who, d, it.id)));
-    if (trick === 'poison') once.delete(who), value.push(null);
-    return { status: 200, body: { value, '@odata.deltaLink': link(`s${seq}`) } };
+    return { status: 200, body: { value: ids.map(id => state[d].get(id)!).filter(it => it.deleted || (inScope(it.id) && sees(who, d, it.id))), '@odata.deltaLink': link(`s${seq}`) } };
   }
   const [at, from] = token ? token.slice(1).split('.').map(Number) : [0, seq];
   const all = [...state[d].values()].filter(it => !it.deleted && inScope(it.id) && sees(who, d, it.id)), page = all.slice(at, at + 3);
   return { status: 200, body: { value: page, ...(at + 3 < all.length ? { '@odata.nextLink': link(`c${at + 3}.${from}`) } : { '@odata.deltaLink': link(`s${from}`) }) } };
 }
 
-// The shared mailbox: its folders, then each folder's messages; Carol isn't a member.
-function mail(who: string, fid: string | undefined, token: string | null): { status: number; body: any } {
-  if (who === CAROL) return { status: 403, body: { error: { code: 'ErrorAccessDenied' } } };
+// The shared mailbox: its folders, then each folder's messages; a folder that's gone answers 404.
+function mail(fid: string | undefined, token: string | null): { status: number; body: any } {
+  if (fid && state.mail.get(fid)?.['@removed']) return { status: 404, body: { error: { code: 'ErrorItemNotFound' } } };
   const where = fid ?? '', link = (t: string) => `${base}/v1.0/users/${encodeURIComponent(BOX)}/mailFolders/${fid ? `${fid}/messages/` : ''}delta?$deltatoken=${t}`;
   if (token?.startsWith('s')) {
     const ids = [...new Set(changed.filter(c => c.at === 'mail' && c.where === where && c.seq > Number(token.slice(1))).map(c => c.id))];
@@ -70,9 +68,7 @@ function answer(who: string, url: string, prefer?: string): { status: number; he
   const u = new URL(url, 'http://x'), path = decodeURIComponent(u.pathname).replace(/^\/v1\.0/, ''), token = u.searchParams.get('token') ?? u.searchParams.get('$deltatoken');
   let m;
   if ((m = /^\/drives\/([^/]+)\/(?:items\/([^/]+)|root)\/delta$/.exec(path))) return delta(who, m[1], m[2], token);
-  if ((m = /^\/drives\/([^/]+)\/items\/([^/]+)$/.exec(path))) return !state[m[1]]?.has(m[2]) ? { status: 404, body: {} } : sees(who, m[1], m[2]) ? { status: 200, body: { id: m[2] } } : { status: 403, body: {} };
-  if ((m = /^\/users\/[^/]+\/mailFolders\/(?:([^/]+)\/messages\/)?delta$/.exec(path))) return mail(who, m[1], token);
-  if (/^\/users\/[^/]+\/mailFolders\/msgfolderroot$/.test(path)) return who === CAROL ? { status: 403, body: {} } : { status: 200, body: { id: 'root' } };
+  if ((m = /^\/users\/[^/]+\/mailFolders\/(?:([^/]+)\/messages\/)?delta$/.exec(path))) return mail(m[1], token);
   if (path === '/sites/host,s1,w1/drives') return { status: 200, body: { value: [{ id: 'b!d' }] } };
   return { status: 404, body: { error: { code: 'itemNotFound', message: path } } };
 }
@@ -84,16 +80,12 @@ before(async () => {
       const send = (status: number, b: unknown, headers = {}) => res.writeHead(status, { 'content-type': 'application/json', ...headers }).end(JSON.stringify(b));
       const path = new URL(req.url!, 'http://x').pathname, who = (req.headers.authorization ?? '').replace('Bearer ', '');
       if (path === '/.well-known/openid-configuration') return send(200, { issuer: base, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token` });
-      if (path === '/token') {
-        const r = new URLSearchParams(body).get('refresh_token')!;
-        return r === 'expired' ? send(400, { error: 'invalid_grant', error_description: 'AADSTS700082: The refresh token has expired.' }) : send(200, { access_token: r, refresh_token: r, expires_in: 3600 });
-      }
+      if (path === '/token') return send(200, { access_token: new URLSearchParams(body).get('refresh_token'), expires_in: 3600 });
       if (path === '/v1.0/$batch') {
         const requests = JSON.parse(body).requests as { id: string; url: string; headers?: { prefer?: string } }[];
         batches.push(requests.length);
         const responses = requests.map(r => ({ id: r.id, ...answer(who, r.url, r.headers?.prefer) }));
-        const held = hold && requests.find(r => r.url.includes(`token=${hold!.token}`));
-        if (held) return hold!.reached();
+        if (hold && requests.some(r => r.url.includes(`token=${hold!.token}`))) return hold.reached();
         return send(200, { responses });
       }
       const a = answer(who, req.url!);
@@ -130,19 +122,18 @@ after(() => { graph.close(); rmSync(tmp, { recursive: true, force: true }); });
 
 const offer = (who: string, offers: { id: string; name: string }[], since = '2026-11-01T00:00:00Z') =>
   logins.saveLogin(who, { id: 'm365', kind: 'm365', name: 'Microsoft 365', account: who, since, offers }, who);
-const source = (offerId: string) => new DatabaseSync(join(tmp, '.rf', 'index', `${createHash('sha256').update(offerId).digest('hex').slice(0, 16)}.sqlite`));
-const cursor = (offerId: string, who: string, part = '') => source(offerId).prepare('SELECT * FROM cursors WHERE person = ? AND part = ?').get(who, part) as any;
-const ids = (offerId: string) => (source(offerId).prepare('SELECT id FROM items ORDER BY id').all() as { id: string }[]).map(r => r.id);
+const at = (who: string, offerId: string) => join(logins.personDir(who), 'index', createHash('sha256').update(offerId).digest('hex').slice(0, 16));
+const cache = (who: string, offerId: string) => JSON.parse(readFileSync(`${at(who, offerId)}.json`, 'utf8'));
+const feed = (f: string) => (existsSync(f) ? zstdDecompressSync(readFileSync(f)).toString().split('\n').filter(Boolean).map(l => JSON.parse(l)) : []);
+// What a feed says now: a later line for an id replaces an earlier one, and a deleted or @removed one removes it.
+const now = (lines: Item[]) => { const m = new Map<string, Item>(); for (const l of lines) l.deleted || l['@removed'] ? m.delete(l.id) : m.set(l.id, l); return [...m.keys()].sort(); };
+const settle = () => new Promise(ok => setTimeout(ok, 50));
 
 // A run of `who`'s with these offers ticked, and what it reads at $RF_INDEX.
 async function run(who: string, ticked: string[]) {
-  const to = mkdtempSync(join(tmp, 'run-')), inst = { seriesId: 'weekly', log: [{ seq: 1, at: '', by: who, op: 'create', logins: ticked }] } as unknown as Instance;
+  const to = join(tmp, '.rf', 'runs', `run-${Math.random()}`), inst = { seriesId: 'weekly', log: [{ seq: 1, at: '', by: who, op: 'create', logins: ticked }] } as unknown as Instance;
   assert.equal(await ix.prepare(inst, to), true);
-  const read = (name: string) => ({
-    items: zstdDecompressSync(readFileSync(join(to, `${name}.ndjson.zst`))).toString().split('\n').filter(Boolean).map(l => JSON.parse(l)),
-    meta: JSON.parse(readFileSync(join(to, `${name}.json`), 'utf8')),
-  });
-  return { to, read };
+  return (name: string) => ({ lines: feed(join(to, `${name}.ndjson.zst`)), meta: JSON.parse(readFileSync(join(to, `${name}.json`), 'utf8')), file: join(to, `${name}.ndjson.zst`) });
 }
 
 test('a crawl cut by a restart goes on at the page it was on, with nothing else in memory', async () => {
@@ -158,147 +149,156 @@ test('a crawl cut by a restart goes on at the page it was on, with nothing else 
   first.kill('SIGKILL');
   await new Promise(ok => first.on('exit', ok));
   hold = undefined;
-  assert.match(cursor(BIG, DAN).link, /token=c6\./, 'the cursor is at the third page');
-  assert.equal(ids(BIG).length, 6, 'two pages were written');
+  assert.match(cache(DAN, BIG).parts[''].link, /token=c6\./, 'the cursor is at the third page');
+  assert.equal(feed(`${at(DAN, BIG)}.ndjson.zst`).length, 6, 'two pages were written');
   const from = asked.length, second = child();
-  for (let i = 0; i < 100 && !cursor(BIG, DAN).delta; i++) await new Promise(ok => setTimeout(ok, 100));
+  for (let i = 0; i < 100 && !cache(DAN, BIG).parts[''].delta; i++) await new Promise(ok => setTimeout(ok, 100));
   second.kill('SIGKILL');
-  const again = asked.filter((a, i) => i >= from && a.who === DAN && a.url.includes('/delta'));
-  assert.match(again[0].url, /token=c6\./, 'the restart asked for the third page first');
-  assert.equal(ids(BIG).length, 9);
-  assert.ok(cursor(BIG, DAN).as_of);
+  assert.match(asked.filter((a, i) => i >= from && a.who === DAN)[0].url, /token=c6\./, 'the restart asked for the third page first');
+  assert.equal(feed(`${at(DAN, BIG)}.ndjson.zst`).length, 9);
 });
 
-test("each person's copy holds only what is under the roots their own token opens", async () => {
+test("each person's cache is their own delta feed, and a run gets a copy of it", async () => {
   offer(ALICE, [{ id: FOLDER, name: 'Folder LFM, Reports' }]);
-  offer(BOB, [{ id: FOLDER, name: 'Folder LFM, Reports' }]);
-  const a = (await run(ALICE, [FOLDER])).read('Folder LFM, Reports');
-  assert.deepEqual(a.items.map(i => i.id).sort(), ['f1', 'f2', 'f3', 'pub', 'sub', 'top']);
-  assert.deepEqual(a.items.find(i => i.id === 'pub'), state['b!d'].get('pub'), "Graph's own JSON, verbatim");
-  assert.equal(a.meta.source, FOLDER);
-  assert.ok(a.meta.as_of);
-  assert.deepEqual(a.meta.deltaLinks, [`${base}/v1.0/drives/b!d/items/top/delta?token=s${seq}`]);
-  assert.ok(asked.filter(q => q.who === ALICE && q.url.includes('/delta')).every(q => q.prefer === 'hierarchicalsharing'));
-  // Bob can't open the folder, so its delta refuses him: he follows the drive's, and sees only what's under the folder shared with him.
-  const b = (await run(BOB, [FOLDER])).read('Folder LFM, Reports');
-  assert.deepEqual(b.items.map(i => i.id).sort(), ['f3', 'pub']);
-  assert.match(cursor(FOLDER, BOB).link, /\/drives\/b!d\/root\/delta\?token=s/);
-  assert.deepEqual(ids(FOLDER), ['f1', 'f2', 'f3', 'pub', 'sub', 'top'], 'the union, nothing outside the folder kept in a copy');
+  const a = (await run(ALICE, [FOLDER]))('Folder LFM, Reports');
+  assert.deepEqual(a.lines.map(i => i.id), ['top', 'f1', 'sub', 'f2', 'pub', 'f3']);
+  assert.deepEqual(a.lines[4], state['b!d'].get('pub'), "Graph's own JSON, verbatim");
+  assert.deepEqual(a.meta, { source: FOLDER, as_of: cache(ALICE, FOLDER).parts[''].as_of, deltaLinks: [`${base}/v1.0/drives/b!d/items/top/delta?token=s${seq}`] });
+  assert.notEqual(statSync(a.file).ino, statSync(`${at(ALICE, FOLDER)}.ndjson.zst`).ino, 'a copy, not the cache itself');
+  assert.ok(asked.filter(q => q.who === ALICE).every(q => q.prefer === 'deltashowremovedasdeleted'));
+  // Bob can't open the folder, so he has no cache of it; the folder shared with him he has, as his token sees it.
+  offer(BOB, [{ id: FOLDER, name: 'Folder LFM, Reports' }, { id: PUB, name: 'Folder Shared with Bob, Reports' }]);
+  const b = await run(BOB, [FOLDER, PUB]);
+  assert.deepEqual(b('Folder LFM, Reports').lines, []);
+  assert.equal(b('Folder LFM, Reports').meta.as_of, null);
+  assert.match(cache(BOB, FOLDER).parts[''].error, /403/);
+  assert.deepEqual(b('Folder Shared with Bob, Reports').lines.map(i => i.id), ['pub', 'f3']);
 });
 
-test('someone whose roots match a finished crawl starts at token=latest', async () => {
-  offer(CAROL, [{ id: FOLDER, name: 'Folder LFM, Reports' }]);
-  const c = (await run(CAROL, [FOLDER])).read('Folder LFM, Reports');
-  assert.deepEqual(c.items.map(i => i.id).sort(), ['f1', 'f2', 'f3', 'pub', 'sub', 'top']);
-  assert.deepEqual(asked.filter(q => q.who === CAROL && q.url.includes('/delta')).map(q => new URL(q.url, base).search), ['?token=latest']);
-});
-
-test('changes follow: an edit, a deletion, and a folder moved under a shared one, whose subtree goes with it', async () => {
+test('changes are appended, a later line winning, and a run starting catches up first', async () => {
   put('b!d', { ...state['b!d'].get('f1')!, name: 'aging v2.xlsx' });
   put('b!d', { id: 'f3', deleted: {} });
-  put('b!d', { ...state['b!d'].get('sub')!, parentReference: { driveId: 'b!d', id: 'pub' } });
-  const a = (await run(ALICE, [FOLDER])).read('Folder LFM, Reports');
-  assert.equal(a.items.find(i => i.id === 'f1').name, 'aging v2.xlsx');
-  assert.ok(!a.items.some(i => i.id === 'f3'));
-  // Alice's delta sent the moved folder alone; march.xlsx under it is now under the shared folder, for Bob too.
-  assert.equal((source(FOLDER).prepare(`SELECT root FROM items WHERE id = 'f2'`).get() as { root: string }).root, 'pub');
-  const b = (await run(BOB, [FOLDER])).read('Folder LFM, Reports');
-  assert.deepEqual(b.items.map(i => i.id).sort(), ['f2', 'pub', 'sub']);
+  const a = (await run(ALICE, [FOLDER]))('Folder LFM, Reports');
+  assert.deepEqual(a.lines.slice(6), [state['b!d'].get('f1'), { id: 'f3', deleted: {} }]);
+  assert.deepEqual(now(a.lines), ['f1', 'f2', 'pub', 'sub', 'top']);
 });
 
-test('a page that breaks midway leaves nothing and moves no cursor, and a replayed page changes nothing', async () => {
+test('a crash after a batch is appended but before its .json is replaced replays the batch and nothing else', async () => {
+  const c = cache(ALICE, FOLDER), f = `${at(ALICE, FOLDER)}.ndjson.zst`;
+  appendFileSync(f, zstdCompressSync(`${JSON.stringify({ id: 'f4', name: 'half-written.xlsx' })}\n`));
   put('b!d', file('b!d', 'f4', 'april.xlsx', 'top'));
-  const link = cursor(FOLDER, ALICE).link;
-  once.set(ALICE, 'poison');
   await run(ALICE, [FOLDER]);
-  assert.ok(!ids(FOLDER).includes('f4'), "the page's first item was rolled back");
-  assert.equal(cursor(FOLDER, ALICE).link, link);
-  assert.equal(cursor(FOLDER, ALICE).tries, 1);
-  assert.ok(cursor(FOLDER, ALICE).error);
-  await run(ALICE, [FOLDER]);
-  assert.ok(ids(FOLDER).includes('f4'));
-  assert.equal(cursor(FOLDER, ALICE).error, null);
-  const rows = () => JSON.stringify(source(FOLDER).prepare('SELECT * FROM items ORDER BY id').all());
-  const was = rows();
-  source(FOLDER).prepare(`UPDATE cursors SET link = ? WHERE person = ?`).run(`${base}/v1.0/drives/b!d/items/top/delta?token=s0`, ALICE);
-  await run(ALICE, [FOLDER]);
-  assert.equal(rows(), was);
+  const lines = feed(f);
+  assert.equal(lines.length, c.lines + 1);
+  assert.deepEqual(lines.at(-1), state['b!d'].get('f4'));
+  assert.equal(statSync(f).size, cache(ALICE, FOLDER).length);
 });
 
-test('a 410 crawls again with the rows kept', async () => {
-  source(FOLDER).prepare('UPDATE cursors SET link = ? WHERE person = ?').run(`${base}/v1.0/drives/b!d/items/top/delta?token=gone`, ALICE);
-  const from = asked.length, a = (await run(ALICE, [FOLDER])).read('Folder LFM, Reports');
-  assert.deepEqual(asked.slice(from).filter(q => q.who === ALICE && q.url.includes('/delta')).map(q => new URL(q.url, base).search).slice(0, 2), ['?token=gone', '']);
-  assert.equal(a.items.length, 6);
-  assert.ok(cursor(FOLDER, ALICE).delta);
+test('a 410 crawls again, appending', async () => {
+  const c = cache(ALICE, FOLDER);
+  c.parts[''].link = `${base}/v1.0/drives/b!d/items/top/delta?token=gone`;
+  writeFileSync(`${at(ALICE, FOLDER)}.json`, JSON.stringify(c));
+  const a = (await run(ALICE, [FOLDER]))('Folder LFM, Reports');
+  assert.equal(a.lines.length, c.lines + 6);
+  assert.deepEqual(now(a.lines), ['f1', 'f2', 'f4', 'pub', 'sub', 'top']);
+  assert.ok(cache(ALICE, FOLDER).parts[''].delta);
+});
+
+test('the tidy-up rewrites a feed without what later lines replaced or removed', async () => {
+  const c = cache(ALICE, FOLDER);
+  c.parts[''].due = Date.now();
+  writeFileSync(`${at(ALICE, FOLDER)}.json`, JSON.stringify(c));
+  const worker = await import(`../src/indexes.ts?worker=${Date.now()}`);
+  worker.startIndexing();
+  for (let i = 0; i < 100 && !cache(ALICE, FOLDER).base; i++) await settle();
+  await worker.stopIndexing();
+  const lines = feed(`${at(ALICE, FOLDER)}.ndjson.zst`);
+  assert.deepEqual(lines.map(l => l.id).sort(), ['f1', 'f2', 'f4', 'pub', 'sub', 'top']);
+  assert.equal(lines.find(l => l.id === 'f1').name, 'aging v2.xlsx');
+  assert.equal(cache(ALICE, FOLDER).lines, 6);
 });
 
 test('a 429 waits as Retry-After says, at the same page, and the run still gets its copy', async () => {
-  const link = cursor(FOLDER, ALICE).link;
+  const link = cache(ALICE, FOLDER).parts[''].link;
   once.set(ALICE, 429);
-  const a = (await run(ALICE, [FOLDER])).read('Folder LFM, Reports');
-  assert.equal(a.items.length, 6);
-  const c = cursor(FOLDER, ALICE);
-  assert.equal(c.link, link);
-  assert.match(c.error, /429/);
-  assert.ok(Math.abs(c.due - (Date.now() + 120_000)) < 10_000);
+  const a = (await run(ALICE, [FOLDER]))('Folder LFM, Reports');
+  assert.equal(a.lines.length, 6);
+  const p = cache(ALICE, FOLDER).parts[''];
+  assert.equal(p.link, link);
+  assert.match(p.error, /429/);
+  assert.ok(Math.abs(p.due - (Date.now() + 120_000)) < 10_000);
 });
 
-test('an expired login pauses its cursors until its person signs in again, then they go on at the same page', async () => {
-  const l = logins.logins(ALICE).find(l => l.id === 'm365')!, link = cursor(FOLDER, ALICE).link;
+test('an expired login pauses its cache until its person signs in again, then it goes on at the same page', async () => {
+  const l = logins.logins(ALICE).find(l => l.id === 'm365')!, link = cache(ALICE, FOLDER).parts[''].link;
   logins.saveLogin(ALICE, { ...l, since: '2026-11-04T00:00:00Z', expired: true });
-  const a = (await run(ALICE, [FOLDER])).read('Folder LFM, Reports');
-  assert.equal(a.items.length, 6, 'the run gets the copy there is');
-  assert.equal(cursor(FOLDER, ALICE).due, null);
-  assert.match(cursor(FOLDER, ALICE).error, /login/);
+  const a = (await run(ALICE, [FOLDER]))('Folder LFM, Reports');
+  assert.equal(a.lines.length, 6, 'the run gets the copy there is');
+  assert.equal(cache(ALICE, FOLDER).parts[''].due, null);
+  assert.match(cache(ALICE, FOLDER).parts[''].error, /login/);
   logins.saveLogin(ALICE, { ...l, since: '2026-11-04T01:00:00Z', expired: false }, ALICE);
-  assert.ok(cursor(FOLDER, ALICE).due <= Date.now());
-  assert.equal(cursor(FOLDER, ALICE).link, link);
+  await settle();
+  assert.ok(cache(ALICE, FOLDER).parts[''].due <= Date.now());
+  assert.equal(cache(ALICE, FOLDER).parts[''].link, link);
 });
 
-test("a mailbox: its folder list, then every folder's messages, 20 folders to a $batch, and removals", async () => {
-  offer(ALICE, [{ id: FOLDER, name: 'Folder LFM, Reports' }, { id: MAIL, name: `Mailbox ${BOX}` }]);
-  const from = batches.length, a = (await run(ALICE, [MAIL])).read(`Mailbox ${BOX}`);
-  assert.deepEqual(a.items.map(i => i.id).sort(), ['farc', 'fin', 'fsub', 'm1', 'm2', 'm3', 'm4', 'm5']);
+test('losing the source deletes the cache', async () => {
+  locked.add(ALICE);
+  const a = (await run(ALICE, [FOLDER]))('Folder LFM, Reports');
+  locked.delete(ALICE);
+  assert.deepEqual(a.lines, []);
+  assert.equal(existsSync(`${at(ALICE, FOLDER)}.ndjson.zst`), false);
+  assert.equal(cache(ALICE, FOLDER).length, 0);
+  assert.match(cache(ALICE, FOLDER).parts[''].error, /403/);
+});
+
+test("a mailbox: its folder list, then every folder's messages, 20 folders to a $batch, and what goes", async () => {
+  offer(CAROL, [{ id: MAIL, name: `Mailbox ${BOX}` }]);
+  const from = batches.length, c = (await run(CAROL, [MAIL]))(`Mailbox ${BOX}`);
+  assert.deepEqual(now(c.lines), ['farc', 'fin', 'fsub', 'm1', 'm2', 'm3', 'm4', 'm5']);
   assert.ok(batches.slice(from).includes(3), "the folder list's second page and two folders' first pages went in one $batch");
-  assert.ok(asked.filter(q => q.who === ALICE && q.url.includes('/messages/delta')).every(q => q.prefer?.includes('outlook.body-content-type="text"')));
-  assert.equal(a.meta.deltaLinks.length, 4);
+  assert.ok(asked.filter(q => q.who === CAROL).every(q => q.prefer?.includes('outlook.body-content-type="text"')));
+  assert.equal(c.meta.deltaLinks.length, 4);
   put('mail', { id: 'm1', '@removed': { reason: 'deleted' } }, 'fin');
-  put('mail', { id: 'farc', '@removed': { reason: 'deleted' } }, '');
-  const again = (await run(ALICE, [MAIL])).read(`Mailbox ${BOX}`);
-  assert.deepEqual(again.items.map(i => i.id).sort(), ['fin', 'fsub', 'm2', 'm3', 'm4']);
-  assert.equal(cursor(MAIL, ALICE, 'farc'), undefined);
-  // Messages have no token=latest, so another member crawls it too.
-  offer(BOB, [{ id: FOLDER, name: 'Folder LFM, Reports' }, { id: MAIL, name: `Mailbox ${BOX}` }]);
-  const b = (await run(BOB, [MAIL])).read(`Mailbox ${BOX}`);
-  assert.equal(b.items.length, 5);
-  assert.ok(!asked.some(q => q.who === BOB && q.url.includes('latest')));
+  put('mail', { id: 'fsub', '@removed': { reason: 'deleted' } }, '');
+  const again = (await run(CAROL, [MAIL]))(`Mailbox ${BOX}`);
+  assert.deepEqual(now(again.lines), ['farc', 'fin', 'm2', 'm3', 'm4', 'm5'], "a removed folder's messages go at the tidy-up");
+  assert.equal(cache(CAROL, MAIL).parts.fsub, undefined);
+  // A folder its person can no longer read goes, with its messages, at the tidy-up.
+  state.mail.set('farc', { ...state.mail.get('farc'), '@removed': { reason: 'deleted' } });
+  const last = (await run(CAROL, [MAIL]))(`Mailbox ${BOX}`);
+  assert.deepEqual(now(last.lines), ['fin', 'm2', 'm3', 'm4', 'm5']);
+  assert.equal(cache(CAROL, MAIL).parts.farc, undefined);
+  const due = cache(CAROL, MAIL);
+  due.parts[''].due = Date.now();
+  writeFileSync(`${at(CAROL, MAIL)}.json`, JSON.stringify(due));
+  const worker = await import(`../src/indexes.ts?mail=${Date.now()}`);
+  worker.startIndexing();
+  for (let i = 0; i < 100 && !cache(CAROL, MAIL).base; i++) await settle();
+  await worker.stopIndexing();
+  assert.deepEqual(feed(`${at(CAROL, MAIL)}.ndjson.zst`).map(l => l.id).sort(), ['fin', 'm2', 'm3']);
 });
 
-test("a site: each library's root delta, its root the library's", async () => {
-  offer(CAROL, [{ id: FOLDER, name: 'Folder LFM, Reports' }, { id: SITE, name: 'Site Reports' }]);
-  const c = (await run(CAROL, [SITE])).read('Site Reports');
-  assert.deepEqual(c.items.map(i => i.id).sort(), ['droot', 'f1', 'f2', 'f4', 'out', 'pub', 'sub', 'top']);
-  assert.equal(cursor(SITE, CAROL, 'b!d').link.split('?')[0], `${base}/v1.0/drives/b!d/root/delta`);
+test("a site: each library's root delta", async () => {
+  offer(CAROL, [{ id: MAIL, name: `Mailbox ${BOX}` }, { id: SITE, name: 'Site Reports' }]);
+  const c = (await run(CAROL, [SITE]))('Site Reports');
+  assert.deepEqual(now(c.lines), ['droot', 'f1', 'f2', 'f4', 'out', 'pub', 'sub', 'top']);
+  assert.equal(cache(CAROL, SITE).parts['b!d'].link.split('?')[0], `${base}/v1.0/drives/b!d/root/delta`);
 });
 
-test('rf indexes: each source, its items and size, and how each person goes', () => {
-  const folderIx = ix.indexes().find(x => x.source === FOLDER)!;
-  assert.equal(folderIx.kind, 'folder');
-  assert.equal(folderIx.items, 6);
-  assert.ok(folderIx.bytes > 0);
-  assert.deepEqual(folderIx.people.map(p => [p.who, p.phase]).sort(), [[ALICE, 'follow'], [BOB, 'follow'], [CAROL, 'follow']]);
-  assert.ok(folderIx.people.find(p => p.who === BOB)!.pages >= 1);
+test('rf indexes: each cache, its lines and bytes, and how it goes', () => {
+  const site = ix.indexes().find(x => x.source === SITE && x.people[0].who === CAROL)!;
+  assert.equal(site.kind, 'site');
+  assert.equal(site.items, 8);
+  assert.equal(site.bytes, statSync(`${at(CAROL, SITE)}.ndjson.zst`).size);
+  assert.deepEqual(site.people.map(p => [p.who, p.phase, p.pages]), [[CAROL, 'follow', 3]]);
+  assert.equal(ix.indexes().find(x => x.source === FOLDER && x.people[0].who === BOB)!.people[0].phase, 'crawl');
 });
 
-test("a file that fails its integrity check moves aside for a fresh one, whose people's sources start again", async () => {
-  const f = join(tmp, '.rf', 'index', `${createHash('sha256').update(BIG).digest('hex').slice(0, 16)}.sqlite`);
-  for (const s of ['-wal', '-shm']) rmSync(f + s, { force: true });
-  writeFileSync(f, 'not a database');
-  const fresh = await import(`../src/indexes.ts?fresh=${Date.now()}`);
-  fresh.track(DAN);
-  assert.ok(existsSync(`${f}.aside`));
-  for (let i = 0; i < 100 && !cursor(BIG, DAN); i++) await new Promise(ok => setTimeout(ok, 50));
-  assert.ok(cursor(BIG, DAN), 'its person starts again');
-  assert.equal(ids(BIG).length, 0);
+test('removing an offer deletes its cache', async () => {
+  ix.forget(CAROL, SITE);
+  await settle();
+  assert.equal(existsSync(`${at(CAROL, SITE)}.json`), false);
+  assert.equal(existsSync(`${at(CAROL, SITE)}.ndjson.zst`), false);
+  assert.ok(existsSync(`${at(CAROL, MAIL)}.json`));
 });

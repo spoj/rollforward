@@ -49,9 +49,9 @@ for (const d of [i('w1/working'), i('w2/working'), i('r1/working'), i('p1/workin
 writeFileSync(join(root, '.rf', 'session.key'), 'secret');
 writeFileSync(i('r1/working/rates.csv'), 'usd,1');
 writeFileSync(i('p1/working/payroll.csv'), 'names');
-// The index of a ticked library, as the server writes it before the run starts.
+// A ticked library's cache, a zstd frame per batch, as the server copies it before the run starts.
 mkdirSync(join(tmp, 'index'));
-writeFileSync(join(tmp, 'index', 'LFM.ndjson.zst'), zstdCompressSync(`${JSON.stringify({ id: 'f1', name: 'aging.xlsx', size: 1200 })}\n${JSON.stringify({ id: 'f2', name: 'march.xlsx', size: 800 })}\n`));
+writeFileSync(join(tmp, 'index', 'LFM.ndjson.zst'), Buffer.concat([{ id: 'f1', name: 'aging.xlsx', size: 1200 }, { id: 'f2', name: 'march.xlsx', size: 800 }].map(i => zstdCompressSync(`${JSON.stringify(i)}\n`))));
 mkdirSync(i('w2/session'));
 writeFileSync(i('w2/session/main.jsonl'), `${JSON.stringify({ type: 'session', id: 'main', cwd: '/work/ws/Old name' })}\n`);
 const cwd = '/work/ws/Weekly: AR', at = `${cwd}/w2`;

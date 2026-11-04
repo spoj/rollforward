@@ -14,8 +14,8 @@ export type Offer = { id: string; name: string };
 // A Microsoft 365 login's scopes are the Graph permissions Microsoft last granted it.
 export type Login = { id: string; kind: string; name: string; account?: string; since: string; offers: Offer[]; expired?: boolean; scopes?: string[] };
 
-const folder = (email: string) => join(rfDir(), 'people', createHash('sha256').update(email).digest('hex').slice(0, 16));
-const list = (email: string) => join(folder(email), 'logins.json');
+export const personDir = (email: string) => join(rfDir(), 'people', createHash('sha256').update(email).digest('hex').slice(0, 16));
+const list = (email: string) => join(personDir(email), 'logins.json');
 
 export function logins(email: string): Login[] {
   return existsSync(list(email)) ? JSON.parse(readFileSync(list(email), 'utf8')) : [];
@@ -24,18 +24,18 @@ export function logins(email: string): Login[] {
 // A login that becomes usable, new or signed in again after it expired, wakes the runs that waited for it (waker.ts).
 export function saveLogin(email: string, login: Login, secret?: string) {
   const was = logins(email).find(l => l.id === login.id);
-  mkdirSync(folder(email), { recursive: true, mode: 0o700 });
+  mkdirSync(personDir(email), { recursive: true, mode: 0o700 });
   if (secret !== undefined) {
     const iv = randomBytes(12), c = createCipheriv('aes-256-gcm', key('seal.key'), iv).setAAD(Buffer.from(`${email}\n${login.id}`));
     const body = Buffer.concat([c.update(secret, 'utf8'), c.final()]);
-    writeFileSync(join(folder(email), `${login.id}.sealed`), Buffer.concat([iv, c.getAuthTag(), body]), { mode: 0o600 });
+    writeFileSync(join(personDir(email), `${login.id}.sealed`), Buffer.concat([iv, c.getAuthTag(), body]), { mode: 0o600 });
   }
   writeFileSync(list(email), JSON.stringify([...logins(email).filter(l => l.id !== login.id), login], null, 1), { mode: 0o600 });
   if ((!was || was.expired) && !login.expired) changes.emit('login', email, login.id, login.name);
 }
 
 export function secret(email: string, id: string): string {
-  const b = readFileSync(join(folder(email), `${id}.sealed`));
+  const b = readFileSync(join(personDir(email), `${id}.sealed`));
   const d = createDecipheriv('aes-256-gcm', key('seal.key'), b.subarray(0, 12)).setAAD(Buffer.from(`${email}\n${id}`));
   d.setAuthTag(b.subarray(12, 28));
   return Buffer.concat([d.update(b.subarray(28)), d.final()]).toString('utf8');
@@ -44,12 +44,12 @@ export function secret(email: string, id: string): string {
 // Signing out deletes the record.
 export function signOut(email: string, id: string) {
   if (!logins(email).some(l => l.id === id)) throw new HttpError(404, `you have no login ${id}`);
-  rmSync(join(folder(email), `${id}.sealed`), { force: true });
+  rmSync(join(personDir(email), `${id}.sealed`), { force: true });
   writeFileSync(list(email), JSON.stringify(logins(email).filter(l => l.id !== id), null, 1), { mode: 0o600 });
 }
 
 export function forgetLogins(email: string) {
-  rmSync(folder(email), { recursive: true, force: true });
+  rmSync(personDir(email), { recursive: true, force: true });
 }
 
 // Ticks name offers of the person's own logins.
