@@ -164,7 +164,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
       `curl -s -m 5 ${base}/api 2>&1; echo "curl exit $?"`,
       'curl -s -m 5 https://10.1.2.3/ 2>&1; echo "curl exit $?"',
       'curl -s -m 10 https://graph.microsoft.com/v1.0/users/ceo@demo.test/messages 2>&1',
-      () => `rf wake . ${new Date(Date.now() + 2500).toISOString()} 2>&1`,
+      () => `rf wake . ${new Date(Date.now() + 8000).toISOString()} 2>&1`,
       'rf wake ../../../Wide/Close now --label 2026-11 2>&1',
       'rf wake . soon 2>&1',
       'rf wake .. +1d 2>&1',
