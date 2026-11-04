@@ -780,6 +780,9 @@ test('the second audit: a bad request line, a bad workbook and a slow body hurt 
   const layout = (await (await preview('pack.docx?layout=1')).json()).pdf;
   assert.deepEqual([layout.pages, Object.keys(layout.shown)], [1, ['1']], 'and as LibreOffice lays it out');
   rmSync(bad.replace('bad.xlsx', 'pack.docx'));
+  writeFileSync(bad.replace('bad.xlsx', 'gb.csv'), Buffer.from('d4c2b7dd3bbacfbcc60a323032362d30383b350a', 'hex'));
+  assert.deepEqual((await (await preview('gb.csv')).json()).sheets[0].rows, [['月份', '合计'], ['2026-08', '5']], 'a CSV in GB18030, by semicolons');
+  rmSync(bad.replace('bad.xlsx', 'gb.csv'));
   truncateSync(bad, 100e6 + 1);
   const big = await preview('bad.xlsx');
   assert.deepEqual([big.status, await big.text()], [413, 'bad.xlsx is over 100 MB, too big to preview: download it']);

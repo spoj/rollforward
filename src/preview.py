@@ -347,7 +347,16 @@ def preview(name, data, q):
         book = xlrd.open_workbook(file_contents=data)
         return {'sheets': [sheet(s.name, (s.row_values(i) for i in range(s.nrows))) for s in book.sheets()]}
     if ext == '.csv':
-        return {'sheets': [sheet(name, csv.reader(io.StringIO(data.decode('utf-8-sig', errors='replace'), newline='')))]}
+        # UTF-8, or else GB18030, as a Chinese Excel saves it; and its delimiter, as it looks.
+        try:
+            text = data.decode('utf-8-sig')
+        except UnicodeDecodeError:
+            text = data.decode('gb18030', errors='replace')
+        try:
+            dialect = csv.Sniffer().sniff(text[:65536], delimiters=',;\t|')
+        except csv.Error:
+            dialect = csv.excel
+        return {'sheets': [sheet(name, csv.reader(io.StringIO(text, newline=''), dialect))]}
     if ext == '.eml':
         return eml(data, q)
     if ext == '.msg':
