@@ -291,6 +291,11 @@ iframe.mail { width: 100%; border: 0; background: #fff; }
 
 .card { position: fixed; z-index: 20; width: 396px; max-height: 80dvh; overflow: auto; background: var(--sheet); border: 1px solid var(--rule-2); border-radius: var(--r2); box-shadow: 0 3px 10px rgba(21,24,29,.10); padding: 14px 16px 12px; }
 .card .cf { font-weight: 600; font-size: 13px; word-break: break-word; }
+.card.wide { width: 600px; }
+.cpv { display: flex; flex-direction: column; height: 340px; margin: 4px 0 2px; border: 1px solid var(--rule); border-radius: var(--r1); overflow: hidden; }
+.cpv .tabs { padding: 6px 8px; }
+.card .full { margin-bottom: 8px; font-size: 12px; text-align: right; }
+.card .full a { text-decoration: underline; cursor: pointer; }
 .card .cp { font-size: 12px; color: var(--ink-3); margin: 2px 0 10px; }
 .card .cp b { font-weight: 500; color: var(--ink); }
 .card .cp b.p { color: var(--person); }
@@ -456,6 +461,7 @@ function fileUrl(path, kind = 'files') {
 }
 const ext = f => (f && f.includes('.') ? f.split('.').pop() : '').toUpperCase();
 
+let cardPv = null;
 let tree = [], expired = [], myLogins = [], cur = null, data = null, lines = [], linesKey = '', openItem = null, hover = null, showClosed = false, showArchived = false, pv = null, me = null;
 let seen = {}, prevSigs = {}, uploads = [], shown = '', refreshes = 0, threads = [];
 // Threads with a reply box open: those waiting on people have one anyway, the others once Reply is clicked.
@@ -1039,8 +1045,18 @@ function conversationHtml() {
 function renderCard() {
   const card = $('#card');
   const item = openItem && data?.doc.items.find(i => i.id === openItem);
-  if (!item) { card.hidden = true; return; }
-  const open = data.doc.status === 'open';
+  if (!item) {
+    card.hidden = true;
+    cardPv = null;
+    return;
+  }
+  // On a desktop, the card shows its file's preview, which scrolls inside it; a phone's opens it in full.
+  const open = data.doc.status === 'open', wide = item.file && innerWidth > 800;
+  if (wide && cardPv?.path !== item.file) {
+    const p = cardPv = previewOf(item.file, item);
+    load(p).then(() => cardPv === p && renderCard());
+  }
+  card.classList.toggle('wide', !!wide);
   let h = `<div class="cf">${esc(item.file ? fname(item.file) : item.name)}</div>`;
   if (item.file) {
     const p = provenance(item.file);
@@ -1048,6 +1064,8 @@ function renderCard() {
       + (item.kind === 'output' ? `<br>Destination: ${item.destination ? esc(item.destination) : 'stays here'}` : '')
       + data.log.filter(e => e.op === 'delivered' && e.item === item.id).map(e => `<br><span class="sent">Sent to ${esc(e.to)} ${when(e.at)} · ${esc(e.receipt)}</span>`).join('') + '</div>';
   } else h += `<div class="cp">${item.kind === 'input' ? 'Expected input, not there yet' : `${item.kind === 'step' ? 'Step' : 'Output'} not built yet`}</div>`;
+  if (wide) h += `<div class="cpv">${cardPv.att ? `<div class="sub"><a data-act="attachment-back">\u2190 ${esc(cardPv.title)}</a> \u00b7 ${esc(cardPv.att.title)}</div>` : ''}${previewBody(cardPv.att ?? cardPv)}</div>`
+    + `<div class="full"><a data-act="preview" data-file="${esc(item.file)}" data-item="${esc(item.id)}">Open full</a></div>`;
   // The item's open threads, each as it began, with where it stands.
   for (const t of talkOn(item.id)) {
     const p = t.posts[0], more = t.posts.length - 1;
@@ -1056,13 +1074,14 @@ function renderCard() {
       + `<div class="by">${more ? `${more} repl${more > 1 ? 'ies' : 'y'} \u00b7 ` : ''}${t.waits ? `Waits on ${who(t.waits)} \u00b7 ` : t.pending ? '<span class="spin"></span> the agent picks it up next \u00b7 ' : ''}<a data-act="thread" data-thread="${esc(t.id)}">${open ? 'Reply' : 'Open'}</a></div></div>`;
   }
   h += '<div class="acts">';
-  if (item.file) h += `<button class="btn" data-act="preview" data-file="${esc(item.file)}" data-item="${esc(item.id)}">Preview</button><a class="btn" href="${fileUrl(item.file)}">Download</a>`;
-  if (open) h += `<button class="btn" data-act="add" data-item="${esc(item.id)}" data-pane="${item.kind === 'output' ? 'out' : 'in'}">Upload…</button>`;
+  if (item.file) h += `${wide ? '' : `<button class="btn" data-act="preview" data-file="${esc(item.file)}" data-item="${esc(item.id)}">Preview</button>`}<a class="btn" href="${fileUrl(item.file)}">Download</a>`;
+  if (open && !wide) h += `<button class="btn" data-act="add" data-item="${esc(item.id)}" data-pane="${item.kind === 'output' ? 'out' : 'in'}">Upload…</button>`;
   if (open) h += `<button class="btn" data-act="comment-on" data-item="${esc(item.id)}">Comment</button>`;
   if (data.doc.status === 'closed') h += `<button class="btn" data-act="correct" data-item="${esc(item.id)}">Correct\u2026</button>`;
   h += `<button class="btn" data-act="uncard" style="margin-left:auto">Close</button></div>`;
   put(card, h);
   card.hidden = false;
+  if (wide && (cardPv.att ?? cardPv).pdf) watchPages(card, cardPv.att ?? cardPv);
   placeCard();
 }
 
@@ -1436,7 +1455,7 @@ function previewBody(p) {
     : b.li !== undefined ? `<p class="li" style="margin-left:${18 + b.level * 18}px">${esc(b.li)}</p>` : `<p>${esc(b.p)}</p>`).join('')}</div>`;
   if (p.pdf) return `<div class="pvb pages">${Array.from({ length: p.pdf.pages }, (_, k) => `<img data-page="${k + 1}" alt="Page ${k + 1}"${p.pdf.shown[k + 1] ? ` src="${esc(p.pdf.shown[k + 1])}"` : ''}>`).join('')}</div>`;
   if (p.text !== undefined) return `<div class="pvb">${p.md ? `<div class="say">${md(p.text)}</div>` : `<pre>${esc(p.text)}</pre>`}</div>`;
-  return `<div class="pvb"><div class="empty">${p.loading ? 'Loading…' : 'No preview for this kind of file. Download it instead.'}</div></div>`;
+  return `<div class="pvb"><div class="empty">${p.loading ? 'Loading…' : p.error ? esc(p.error) : 'No preview for this kind of file. Download it instead.'}</div></div>`;
 }
 // A PDF's pages, each fetched as it scrolls into view.
 function watchPages(at, p) {
@@ -1449,18 +1468,32 @@ function watchPages(at, p) {
 }
 const MAIL = `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'"><base target="_blank"><style>body { font: 14px/1.5 system-ui, sans-serif; margin: 14px 18px; }</style>`;
 
-async function preview(path, item) {
-  const sheet = /\.(xlsx|xlsm|xls|csv|eml|msg|pdf|docx)$/i.test(path), text = /\.(md|txt|json|py|sql|log)$/i.test(path);
-  const p = pv = { title: fname(path), path, src: fileUrl(path, 'preview'), item: item?.id, threads: item ? talkOn(item.id) : [], sheet: 0, image: /\.(png|jpe?g|gif|webp|svg)$/i.test(path) && fileUrl(path), was: item && data.log.findLast(e => e.op === 'point' && e.item === item.id && e.file === path)?.was, md: /\.md$/i.test(path), loading: sheet || text };
-  renderPv();
+// A preview of a file, an item's or not, before what it shows is fetched (load), for the dialog or an item's card.
+function previewOf(path, item) {
+  return {
+    title: fname(path), path, src: fileUrl(path, 'preview'), item: item?.id, threads: item ? talkOn(item.id) : [], sheet: 0, image: /\.(png|jpe?g|gif|webp|svg)$/i.test(path) && fileUrl(path),
+    was: item && data.log.findLast(e => e.op === 'point' && e.item === item.id && e.file === path)?.was, md: /\.md$/i.test(path), loading: /\.(xlsx|xlsm|xls|csv|eml|msg|pdf|docx|md|txt|json|py|sql|log)$/i.test(path),
+  };
+}
+
+// What a preview shows: a text file as it is, a file of a kind the server reads, or any attachment, as the server reads it.
+async function load(p) {
   try {
-    if (sheet) Object.assign(p, await api(p.src));
+    if (/\.(md|txt|json|py|sql|log)$/i.test(p.path)) p.text = await (await fetch(fileUrl(p.path))).text();
+    else if (!p.path || /\.(xlsx|xlsm|xls|csv|eml|msg|pdf|docx)$/i.test(p.path)) Object.assign(p, await api(p.src));
     if (p.sheets) p.sheet = p.sheets.findIndex(s => s.rows);
-    if (text) p.text = await (await fetch(fileUrl(path))).text();
+  } catch (e) {
+    p.error = e.message;
   } finally {
     p.loading = false;
-    if (pv === p) renderPv();
   }
+}
+
+async function preview(path, item) {
+  const p = pv = previewOf(path, item);
+  renderPv();
+  await load(p);
+  if (pv === p) renderPv();
 }
 
 async function upload(files, pane, onto) {
@@ -1507,6 +1540,9 @@ document.addEventListener('click', async ev => {
   el.setAttribute('aria-busy', 'true');
   try { await onAct(el.dataset.act, el); } finally { el.removeAttribute('aria-busy'); }
 });
+
+// The preview a control is in, the dialog's or an item card's, and what shows it again.
+const holder = el => (el.closest('#card') ? [cardPv, renderCard] : [pv, renderPv]);
 
 // What a click on an element with data-act does.
 async function onAct(act, el) {
@@ -1653,29 +1689,31 @@ async function onAct(act, el) {
   }
   if (act === 'duplicate') await openStart(`Copy ${cur.i.label}`, 'Copy', ({ label, logins }) => api(`${instPath()}/duplicate?as=${enc(label)}`, { method: 'POST', body: JSON.stringify({ logins }) }), `${cur.i.label} copy`);
   if (act === 'sheet') {
-    const p = Object.assign(pv.att ?? pv, { sheet: Number(el.dataset.k) });
+    const [top, render] = holder(el), p = Object.assign(top.att ?? top, { sheet: Number(el.dataset.k) });
     await loadSheets(p);
-    if (pv) renderPv();
+    render();
   }
   // An email's attachment shows in its place, as a file of its own would, back to the email from above it.
   if (act === 'attachment') {
-    const of = pv.att ?? pv, p = pv, att = p.att = { title: of.email.attachments.find(a => a.k === +el.dataset.k).name, src: `${of.src}${of.src.includes('?') ? '&' : '?'}attachment=${el.dataset.k}`, sheet: 0, loading: true };
-    renderPv();
-    Object.assign(att, await api(att.src), { loading: false });
-    if (att.sheets) att.sheet = att.sheets.findIndex(s => s.rows);
-    if (pv === p && p.att === att) renderPv();
+    const [top, render] = holder(el), of = top.att ?? top;
+    const att = top.att = { title: of.email.attachments.find(a => a.k === +el.dataset.k).name, src: `${of.src}${of.src.includes('?') ? '&' : '?'}attachment=${el.dataset.k}`, sheet: 0, loading: true };
+    render();
+    await load(att);
+    render();
   }
   // A Word document as LibreOffice lays it out, its pages as a PDF's.
   if (act === 'layout') {
-    const p = pv.att ?? pv;
+    const [top, render] = holder(el), p = top.att ?? top;
     Object.assign(p, await api(`${p.src}${p.src.includes('?') ? '&' : '?'}layout=1`), { doc: null });
-    if (pv) renderPv();
+    render();
   }
   if (act === 'attachment-back') {
-    pv.att = null;
-    renderPv();
+    const [top, render] = holder(el);
+    top.att = null;
+    render();
   }
-  if (act === 'cell') {
+  if (act === 'cell' && el.closest('#card')) await preview(cardPv.path, data.doc.items.find(i => i.id === cardPv.item));
+  else if (act === 'cell') {
     // A cell's threads and what changed there; on an item's file in an open instance, a reply there, or a new comment.
     const on = data?.doc.status === 'open' && pv.item, t = el.dataset.thread;
     const go = t ? `<button class="btn" data-act="thread" data-thread="${esc(t)}">${on ? 'Reply' : 'Open the thread'}</button>` : on ? `<button class="btn" data-act="comment-cell" data-ref="${esc(el.dataset.ref)}">Comment on ${esc(el.dataset.ref)}</button>` : '';

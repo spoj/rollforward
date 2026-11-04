@@ -556,3 +556,17 @@ test('a Word document previews as its headings, paragraphs, lists and tables, an
   await page.keyboard.press('Escape');
 });
 
+test("an item's card shows its file's preview on a desktop, to scroll in place or open in full, with Download and Comment under it and no Upload", async () => {
+  await page.evaluate(() => location.hash === '#/c0f4e4f28232' || new Promise(ok => { addEventListener('hashchange', ok, { once: true }); location.hash = '#/c0f4e4f28232'; }));
+  await page.waitForSelector('#bar h1 .t:text-is("2026-08-23")');
+  await page.click('.tile .fn:text-is("AR aging")');
+  await page.waitForSelector('#card.wide .cpv table.sh td');
+  assert.equal(await page.locator('#card .cpv table.sh tr').nth(1).locator('td').nth(1).textContent(), 'Customer');
+  const acts = await page.locator('#card .acts .btn').allTextContents();
+  assert.ok(acts.includes('Download') && !acts.includes('Preview') && !acts.includes('Upload…'), acts.join());
+  await page.click('#card .full [data-act=preview]');
+  await page.waitForSelector('#pv table.sh td');
+  await page.keyboard.press('Escape');
+  await page.click('#card [data-act=uncard]');
+});
+
