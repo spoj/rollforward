@@ -361,10 +361,14 @@ test('admins keep connections, each a name, a type and its settings; the website
   assert.throws(() => setConnection('erp', { type: 'website', url: 'https://erp.test', keepalive: '/app/' }, 'admin'), /keepalive and every go together/);
   assert.throws(() => setConnection('erp', { type: 'website', url: 'https://erp.test', people: 'Treasury' }, 'admin'), /people: who alone may use it/);
   assert.throws(() => setConnection('erp', { type: 'website', url: 'https://erp.test', keepalive: '/app/', every: '10' }, 'admin'), /every: minutes or hours/);
+  for (const keepalive of ['https://sso.test/app/', 'C:/Program Files/Git/app/'])
+    assert.throws(() => setConnection('erp', { type: 'website', url: 'https://erp.test', keepalive, every: '10m' }, 'admin'), /keepalive: a page of the website, by its address or path/, `${keepalive}: another host's, or a path Git Bash rewrote`);
   assert.throws(() => setConnection('erp', { type: 'website', url: 'https://erp.test', keepalive: '/app/', every: '10m', hours: '8-19' }, 'admin'), /hours: from and to/);
   assert.throws(() => setConnection('wh', { type: 'databricks', host: 'adb-2.test' }, 'admin'), /warehouse: its SQL warehouse's id/);
   setConnection('erp', { type: 'website', url: 'https://erp.test/', hosts: 'cdn.erp.test, *.sso.test', writeback: 'false', header: 'x-bot-token', keepalive: '/app/', every: '1h', hours: '08:00-19:00', people: 'Ann@x.test, 0b1c2d3e-0000-4000-8000-000000000001' }, 'admin');
   assert.deepEqual(websites().erp, { name: 'erp', url: 'https://erp.test/', hosts: ['cdn.erp.test', '*.sso.test'], writeback: false, header: 'x-bot-token', keepalive: '/app/', every: 60, hours: '08:00-19:00', people: ['ann@x.test', '0b1c2d3e-0000-4000-8000-000000000001'] });
+  setConnection('erp', { type: 'website', url: 'https://erp.test/', keepalive: 'https://erp.test/app/', every: '10m' }, 'admin');
+  assert.equal(websites().erp.keepalive, 'https://erp.test/app/', 'a page by its address, as given');
   removeConnection('erp');
   assert.throws(() => removeConnection('erp'), /no connection erp/);
 });
