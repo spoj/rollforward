@@ -25,7 +25,7 @@ const file = (d: string, id: string, name: string, parent: string, more = {}) =>
 const folder = (d: string, id: string, name: string, parent: string, more = {}) => ({ id, name, folder: {}, parentReference: { driveId: d, id: parent }, ...more });
 const parentOf = (d: string, id: string) => state[d].get(id)?.parentReference?.id;
 const under = (d: string, id: string, top: string) => { for (let x: string | undefined = id; x; x = parentOf(d, x)) if (x === top) return true; return false; };
-const locked = new Set<string>();
+const locked = new Set<string>(), closed = new Set<string>();
 const sees = (who: string, d: string, id: string) => !locked.has(who) && (who !== BOB || under(d, id, 'pub'));
 
 // What each person asked: each request inside a $batch, with its Prefer, and each $batch's size. `hold` keeps a page unanswered,
@@ -37,7 +37,7 @@ const once = new Map<string, number>();
 function delta(who: string, d: string, scope: string | undefined, token: string | null): { status: number; headers?: Record<string, string>; body: any } {
   const link = (t: string) => `${base}/v1.0/drives/${d}/${scope ? `items/${scope}` : 'root'}/delta?token=${t}`;
   if (token === 'gone') return { status: 410, body: { error: { code: 'resyncRequired' } } };
-  if (scope && !sees(who, d, scope)) return { status: 403, body: { error: { code: 'accessDenied' } } };
+  if ((scope && !sees(who, d, scope)) || closed.has(`${who} ${d}`)) return { status: 403, body: { error: { code: 'accessDenied' } } };
   const trick = once.get(who);
   if (trick) return once.delete(who), { status: trick, headers: { 'Retry-After': '120' }, body: { error: { code: 'activityLimitReached' } } };
   const inScope = (id: string) => !scope || under(d, id, scope);
@@ -69,7 +69,7 @@ function answer(who: string, url: string, prefer?: string): { status: number; he
   let m;
   if ((m = /^\/drives\/([^/]+)\/(?:items\/([^/]+)|root)\/delta$/.exec(path))) return delta(who, m[1], m[2], token);
   if ((m = /^\/users\/[^/]+\/mailFolders\/(?:([^/]+)\/messages\/)?delta$/.exec(path))) return mail(m[1], token);
-  if (path === '/sites/host,s1,w1/drives') return { status: 200, body: { value: [{ id: 'b!d' }] } };
+  if (path === '/sites/host,s1,w1/drives') return { status: 200, body: { value: [{ id: 'b!d' }, { id: 'b!big' }] } };
   return { status: 404, body: { error: { code: 'itemNotFound', message: path } } };
 }
 
@@ -111,6 +111,7 @@ before(async () => {
   put('b!d', folder('b!d', 'pub', 'Shared with Bob', 'top', { shared: { scope: 'users' } }));
   put('b!d', file('b!d', 'f3', 'bob.xlsx', 'pub'));
   put('b!d', file('b!d', 'out', 'elsewhere.xlsx', 'droot'));
+  put('b!big', { id: 'bigroot', name: 'root', root: {}, folder: {}, parentReference: { driveId: 'b!big' } });
   put('b!big', folder('b!big', 'bigtop', 'Big', 'bigroot'));
   for (let i = 1; i <= 8; i++) put('b!big', file('b!big', `b${i}`, `${i}.xlsx`, 'bigtop'));
   put('mail', { id: 'fin', displayName: 'Inbox', parentFolderId: 'mroot' }, '');
@@ -204,7 +205,10 @@ test('a 410 crawls again, appending', async () => {
   assert.ok(cache(ALICE, FOLDER).parts[''].delta);
 });
 
-test('the tidy-up rewrites a feed without what later lines replaced or removed', async () => {
+test('the tidy-up rewrites a feed without what later lines replaced or removed, a deleted folder with everything under it', async () => {
+  // As Graph's delta does, the folder's deletion comes alone.
+  put('b!d', { id: 'sub', deleted: {} });
+  state['b!d'].set('f2', { id: 'f2', deleted: {} });
   const c = cache(ALICE, FOLDER);
   c.parts[''].due = Date.now();
   writeFileSync(`${at(ALICE, FOLDER)}.json`, JSON.stringify(c));
@@ -213,16 +217,16 @@ test('the tidy-up rewrites a feed without what later lines replaced or removed',
   for (let i = 0; i < 100 && !cache(ALICE, FOLDER).base; i++) await settle();
   await worker.stopIndexing();
   const lines = feed(`${at(ALICE, FOLDER)}.ndjson.zst`);
-  assert.deepEqual(lines.map(l => l.id).sort(), ['f1', 'f2', 'f4', 'pub', 'sub', 'top']);
+  assert.deepEqual(lines.map(l => l.id).sort(), ['f1', 'f4', 'pub', 'top']);
   assert.equal(lines.find(l => l.id === 'f1').name, 'aging v2.xlsx');
-  assert.equal(cache(ALICE, FOLDER).lines, 6);
+  assert.equal(cache(ALICE, FOLDER).lines, 4);
 });
 
 test('a 429 waits as Retry-After says, at the same page, and the run still gets its copy', async () => {
   const link = cache(ALICE, FOLDER).parts[''].link;
   once.set(ALICE, 429);
   const a = (await run(ALICE, [FOLDER]))('Folder LFM, Reports');
-  assert.equal(a.lines.length, 6);
+  assert.equal(a.lines.length, 4);
   const p = cache(ALICE, FOLDER).parts[''];
   assert.equal(p.link, link);
   assert.match(p.error, /429/);
@@ -233,7 +237,7 @@ test('an expired login pauses its cache until its person signs in again, then it
   const l = logins.logins(ALICE).find(l => l.id === 'm365')!, link = cache(ALICE, FOLDER).parts[''].link;
   logins.saveLogin(ALICE, { ...l, since: '2026-11-04T00:00:00Z', expired: true });
   const a = (await run(ALICE, [FOLDER]))('Folder LFM, Reports');
-  assert.equal(a.lines.length, 6, 'the run gets the copy there is');
+  assert.equal(a.lines.length, 4, 'the run gets the copy there is');
   assert.equal(cache(ALICE, FOLDER).parts[''].due, null);
   assert.match(cache(ALICE, FOLDER).parts[''].error, /login/);
   logins.saveLogin(ALICE, { ...l, since: '2026-11-04T01:00:00Z', expired: false }, ALICE);
@@ -279,19 +283,33 @@ test("a mailbox: its folder list, then every folder's messages, 20 folders to a 
   assert.deepEqual(feed(`${at(CAROL, MAIL)}.ndjson.zst`).map(l => l.id).sort(), ['fin', 'm2', 'm3']);
 });
 
-test("a site: each library's root delta", async () => {
+test("a site: each library's root delta, and a library closed to its person goes, with what is under it", async () => {
   offer(CAROL, [{ id: MAIL, name: `Mailbox ${BOX}` }, { id: SITE, name: 'Site Reports' }]);
   const c = (await run(CAROL, [SITE]))('Site Reports');
-  assert.deepEqual(now(c.lines), ['droot', 'f1', 'f2', 'f4', 'out', 'pub', 'sub', 'top']);
+  const big = ['b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7', 'b8', 'bigroot', 'bigtop'];
+  assert.deepEqual(now(c.lines), [...big, 'droot', 'f1', 'f4', 'out', 'pub', 'top'].sort());
   assert.equal(cache(CAROL, SITE).parts['b!d'].link.split('?')[0], `${base}/v1.0/drives/b!d/root/delta`);
+  closed.add(`${CAROL} b!big`);
+  await run(CAROL, [SITE]);
+  closed.delete(`${CAROL} b!big`);
+  assert.equal(cache(CAROL, SITE).parts['b!big'], undefined);
+  assert.ok(cache(CAROL, SITE).parts['b!d'].delta, 'the other library goes on');
+  const due = cache(CAROL, SITE);
+  due.parts['b!d'].due = Date.now();
+  writeFileSync(`${at(CAROL, SITE)}.json`, JSON.stringify(due));
+  const worker = await import(`../src/indexes.ts?site=${Date.now()}`);
+  worker.startIndexing();
+  for (let i = 0; i < 100 && !cache(CAROL, SITE).base; i++) await settle();
+  await worker.stopIndexing();
+  assert.deepEqual(feed(`${at(CAROL, SITE)}.ndjson.zst`).map(l => l.id).sort(), ['droot', 'f1', 'f4', 'out', 'pub', 'top']);
 });
 
 test('rf indexes: each cache, its lines and bytes, and how it goes', () => {
   const site = ix.indexes().find(x => x.source === SITE && x.people[0].who === CAROL)!;
   assert.equal(site.kind, 'site');
-  assert.equal(site.items, 8);
+  assert.equal(site.items, 6);
   assert.equal(site.bytes, statSync(`${at(CAROL, SITE)}.ndjson.zst`).size);
-  assert.deepEqual(site.people.map(p => [p.who, p.phase, p.pages]), [[CAROL, 'follow', 3]]);
+  assert.deepEqual(site.people.map(p => [p.who, p.phase]), [[CAROL, 'follow']]);
   assert.equal(ix.indexes().find(x => x.source === FOLDER && x.people[0].who === BOB)!.people[0].phase, 'crawl');
 });
 

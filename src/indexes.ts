@@ -85,7 +85,8 @@ function failed(p: Part, e: any, link: string) {
 
 // A person's due parts of a cache, 20 to a $batch, a page each, until none is due or `until` passes: a part is due again at once
 // while its round has a next page, and an hour after it reaches its deltaLink. A mailbox's folder list adds and drops its folders'
-// parts. A 403 or 404 means they can no longer read it: for a mail folder, its line is removed; for the source, the cache goes.
+// parts. A 403 or 404 means they can no longer read it: a mail folder or a site's library is removed, with what is under it at the
+// tidy-up; for the source itself, the cache goes.
 async function slice(person: string, offer: string, until: number): Promise<void> {
   const file = `${at(person, offer)}.ndjson.zst`, mail = offer.startsWith('m365:mail:');
   for (;;) {
@@ -106,7 +107,7 @@ async function slice(person: string, offer: string, until: number): Promise<void
       if (a.status !== 200) {
         const why = offer.startsWith('m365:item:') && !p.pages && (a.status === 400 || a.status === 501) ? '; Graph keeps no delta for this folder, so offer its library instead' : '';
         const e = Object.assign(new Error(`Microsoft Graph answered ${a.status}: ${JSON.stringify(a.body).slice(0, 300)}${why}`), { status: a.status, after: Number(a.headers?.['Retry-After']) || 60 });
-        if ((a.status === 403 || a.status === 404) && mail && part) {
+        if ((a.status === 403 || a.status === 404) && part) {
           delete c.parts[part];
           lines.push(`${JSON.stringify({ id: part, '@removed': { reason: 'deleted' } })}\n`);
           c.base = 0;
@@ -145,8 +146,8 @@ async function slice(person: string, offer: string, until: number): Promise<void
   }
 }
 
-// Once what later lines replaced or removed reaches a quarter of the feed, it's rewritten without them, and without the items of a
-// removed folder, into a file that replaces it.
+// Once what later lines replaced or removed reaches a quarter of the feed, it's rewritten without them, and without what is under a
+// removed folder or library, as delta sends only the folder, into a file that replaces it. A library's root item has its drive as parent.
 async function tidy(c: Cache) {
   const file = `${at(c.person, c.source)}.ndjson.zst`;
   const read = () => createInterface({ input: createReadStream(file, { end: c.length - 1 }).pipe(createZstdDecompress()), crlfDelay: Infinity });
@@ -156,13 +157,22 @@ async function tidy(c: Cache) {
     last.set(it.id, ids.push(it.id) - 1);
     if (it.deleted || it['@removed']) gone.add(it.id);
     else gone.delete(it.id);
-    parent.set(it.id, it.parentFolderId ?? it.parentReference?.id);
+    parent.set(it.id, it.parentFolderId ?? it.parentReference?.id ?? it.parentReference?.driveId);
   }
+  const dead = new Map<string, boolean>();
+  const under = (id: string | undefined): boolean => {
+    if (id === undefined) return false;
+    if (!dead.has(id)) {
+      dead.set(id, false);
+      dead.set(id, gone.has(id) || under(parent.get(id)));
+    }
+    return dead.get(id)!;
+  };
   let i = 0, kept = 0;
   await pipeline(async function* () {
     for await (const line of read()) {
       const id = ids[i];
-      if (last.get(id) === i++ && !gone.has(id) && !gone.has(parent.get(id)!)) {
+      if (last.get(id) === i++ && !under(id)) {
         kept++;
         yield `${line}\n`;
       }
@@ -238,8 +248,8 @@ export async function prepare(inst: Instance, to: string): Promise<boolean> {
 let stopping = false, worker: Promise<void> | undefined, poke = () => {};
 const rest = (ms: number) => new Promise<void>(ok => { poke = ok; setTimeout(ok, Math.max(0, Math.min(ms, 60_000))).unref(); });
 export function startIndexing() {
-  // Copies of runs cut short; and before v0.2.40, the indexes were SQLite files in .rf/index/.
-  for (const d of ['runs', 'index']) rmSync(join(rfDir(), d), { recursive: true, force: true });
+  // Copies of runs cut short.
+  rmSync(join(rfDir(), 'runs'), { recursive: true, force: true });
   for (const email of Object.keys(users())) track(email);
   worker = (async () => {
     while (!stopping) {
