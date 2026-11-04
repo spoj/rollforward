@@ -146,6 +146,9 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .creds:hover { color: var(--ink); border-color: var(--edge); }
 .who { flex: none; display: inline-block; margin-left: 6px; padding: 0 4px; border-radius: 6px; font-size: 10px; font-weight: 600; line-height: 15px; vertical-align: 1px; color: var(--person); background: var(--person-bg); }
 .state { margin-left: auto; font-size: 13px; color: var(--ink-2); display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.ptog { position: relative; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 1px solid var(--rule-2); border-radius: var(--r1); background: var(--sheet); color: var(--ink-3); cursor: pointer; }
+.ptog:hover, .ptog.on { color: var(--ink); }
+.ptog .badge { position: absolute; top: -7px; right: -7px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--red); color: #fff; font: 600 10.5px/16px var(--sans); }
 .btn { border: 1px solid var(--rule-2); background: var(--sheet); color: var(--ink); border-radius: var(--r1); padding: 7px 12px; font-size: 13px; font-weight: 500; white-space: nowrap; text-decoration: none; display: inline-block; }
 .btn.primary { background: var(--ink); border-color: var(--ink); color: #fff; }
 .btn.commit { background: var(--person); border-color: var(--person); color: #fff; }
@@ -349,7 +352,8 @@ input[type=checkbox] { accent-color: var(--ink); }
 .tab:hover, .log .lh .x:hover { color: var(--ink); }
 .log .lh b { margin: 0 auto 9px 8px; font-size: 13px; font-weight: 600; }
 .log .lh .quiet { margin-bottom: 6px; }
-.log .lh .x { margin: 0 0 6px auto; border: 0; background: none; padding: 2px 6px; font-size: 20px; line-height: 1; color: var(--ink-3); cursor: pointer; }
+/* Where the panel covers the page, as on a phone, it closes itself; elsewhere the bar's toggle does. */
+.log .lh .x { display: none; margin: 0 0 6px auto; border: 0; background: none; padding: 2px 6px; font-size: 20px; line-height: 1; color: var(--ink-3); cursor: pointer; }
 .e { display: grid; grid-template-columns: 46px minmax(0, 1fr); gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--rule); font-size: 13px; }
 .e > div { min-width: 0; }
 .e .tm { color: var(--ink-3); font-size: 12px; padding-top: 1px; }
@@ -382,6 +386,7 @@ input[type=checkbox] { accent-color: var(--ink); }
   .hint { display: none; }
   .card { left: 0 !important; right: 0; bottom: 0; top: auto !important; width: auto; max-height: 75dvh; border-radius: 12px 12px 0 0; padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
   .log.open { position: fixed; inset: 0; width: auto; z-index: 25; }
+  .log .lh .x { display: block; }
   .pv, .pv.small { inset: 0; transform: none; width: auto; max-height: none; border: 0; border-radius: 0; }
   .sh td { max-width: 24ch; overflow: hidden; text-overflow: ellipsis; }
 }
@@ -642,11 +647,12 @@ function renderBar() {
       : d ? `Agent idle · last run ${hhmm(d.at)}` : 'Waiting for files';
     const wake = open ? `<span>\u00b7 <a data-act="wakes">${cur.i.wakes[0] ? `next wake ${when(cur.i.wakes[0].at)}` : 'no wake'}</a></span>` : '';
     h += `<div class="state">${state}${wake}</div>`;
-    if (!ui.open) h += `<button class="btn top" data-act="show-panel">Conversation${talk ? ` (${talk})` : ''}</button>`;
     const off = data.run ? 'disabled title="Available when the run ends"' : '';
     if (open) h += data.runner.by === me.email ? `<button class="btn commit top" data-act="close" ${off}>${cur.s.single ? 'Close task' : 'Close instance'}</button>`
       : `<button class="btn top" data-act="takeover" ${off || `title="${esc(nameOf(data.runner.by))} runs it: their logins, their sign-off. Taking over makes it yours."`}>Take over</button>`;
     else h += cur.s.single ? '<button class="btn top" data-act="start-series">Start series</button>' : '<button class="btn top" data-act="duplicate">Duplicate</button>';
+    // One control opens and closes the side panel, where it stays, with what waits there as its badge.
+    h += `<button class="ptog ${ui.open ? 'on' : ''}" data-act="panel" title="${ui.open ? 'Close' : 'Open'} the conversation"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M10 2.5v11"/>${ui.open ? '<rect x="10" y="2.5" width="4.5" height="11" fill="currentColor" stroke="none" opacity=".35"/>' : ''}</svg>${talk ? `<span class="badge">${talk}</span>` : ''}</button>`;
   }
   put($('#bar'), h);
 }
@@ -835,7 +841,7 @@ function renderLog() {
   // A half-written comment or reply, or files picked for one, holds the conversation still until it's sent or cleared.
   const drafting = [...$('#log').querySelectorAll('textarea')].some(t => t.value.trim()) || [...$('#log').querySelectorAll('input[type=file]')].some(f => f.files.length);
   const focused = document.activeElement?.id === 'newcomment';
-  if (!drafting) put($('#log'), `<div class="lh"><b>Conversation</b><button class="quiet" data-act="audit">${ui.audit ? 'Hide the audit' : 'Audit'}</button><button class="x" data-act="hide-panel" title="Close">\u00D7</button></div>` + conversationHtml());
+  if (!drafting) put($('#log'), `<div class="lh"><b>Conversation</b><button class="quiet" data-act="audit">${ui.audit ? 'Hide the audit' : 'Audit'}</button><button class="x" data-act="panel" title="Close">\u00D7</button></div>` + conversationHtml());
   // Only on the instance it's for: a render for the one before, as the page catches up, leaves it. The box keeps the focus it had.
   if (focused) $('#newcomment')?.focus();
   if (ui.focus !== cur.i.id) return;
@@ -1437,8 +1443,8 @@ async function onAct(act, el) {
     renderLog();
     $('#log details[data-key=process]').scrollIntoView({ block: 'start' });
   }
-  if (act === 'show-panel' || act === 'hide-panel') {
-    Object.assign(ui, { open: act === 'show-panel', on: null, ref: null });
+  if (act === 'panel') {
+    Object.assign(ui, { open: !ui.open, on: null, ref: null });
     renderLog(); renderBar(); placeCard();
   }
   if (act === 'interrupt') { await api(`${instPath()}/interrupt`, { method: 'POST' }); await refresh(); }

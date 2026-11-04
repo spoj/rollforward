@@ -164,8 +164,9 @@ test("only the runner abandons, from the Close dialog, whose buttons for a task 
 
 test("the side panel is the instance's conversation, a run a line among its threads; the audit, a drawer closed until asked for, has the log and the agent's steps, a plain line each", async () => {
   await page.evaluate(() => { location.hash = '#/3d70f7ca6f20'; });
+  await page.waitForSelector('#bar h1 .t:text-is("2026-08-30")');
   await page.waitForSelector('#log.open .lh b:text-is("Conversation")');
-  assert.equal(await page.locator('#bar [data-act=show-panel]').count(), 0, 'the bar offers the panel only while it is closed');
+  assert.equal(await page.getAttribute('#bar [data-act=panel]', 'title'), 'Close the conversation', 'one toggle, in the bar, open or closed');
   const run = page.locator('#log details.runl');
   assert.equal(await run.locator('summary').innerText(), 'Run 1 · done · 4m 0s · $0.21');
   assert.match(await run.locator('.post').innerText(), /^Borrowing base for 08-30: excess 180,542\.50/, 'the latest run open to its report');
@@ -178,8 +179,10 @@ test("the side panel is the instance's conversation, a run a line among its thre
   assert.ok(rows.includes("alex's agent said Borrowing base for 08-30: excess 180,542.50, up 6,742.50."), "and the agent's session");
   await page.click('#audit [data-act=audit]');
   assert.equal(await page.locator('#audit').isVisible(), false);
-  await page.click('#log [data-act=hide-panel]');
-  await page.click('#bar [data-act=show-panel]');
+  await page.click('#bar [data-act=panel]');
+  await page.waitForSelector('#log:not(.open)', { state: 'attached' });
+  assert.equal(await page.getAttribute('#bar [data-act=panel]', 'title'), 'Open the conversation');
+  await page.click('#bar [data-act=panel]');
   await page.waitForSelector('#log.open .lh b:text-is("Conversation")');
 });
 
@@ -289,6 +292,7 @@ test("a sign-off the agent asks for shows louder, above the instance and in its 
   assert.equal(await page.locator('#needs').innerText(), 'Sign-off\nThe pack is ready to send to the bank.\nReview');
   const thread = page.locator('#log .thread.waits.signoff');
   await thread.waitFor();
+  assert.equal(await page.textContent('#bar .ptog .badge'), String(await page.locator('#log .thread.waits').count()), "the panel's toggle counts what waits there");
   assert.match(await thread.locator('.on').innerText(), /waits on your sign-off/);
   assert.deepEqual(await thread.locator('button').allInnerTexts(), ['Approve', 'Reject']);
   await thread.locator('textarea').fill('Looks right.');
