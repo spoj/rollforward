@@ -311,7 +311,7 @@ export class Browsers {
     return this.close();
   }
 
-  // A screenshot of each browser's newest tab, unless it looks as it did at the last, logged as shot for the Ops log.
+  // A screenshot of each browser's newest tab, unless it looks as it did at the last, logged as shot for the audit.
   async shoot() {
     await Promise.all([...this.bySite].map(async ([site, b]) => {
       const png = await call('GET', `/sessions/${b.id}/screenshot`);

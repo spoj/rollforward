@@ -274,9 +274,6 @@ dialog::backdrop { background: rgba(21,24,29,.3); }
 .by { font-size: 11.5px; color: var(--ink-3); white-space: normal; margin-top: 4px; }
 .acts { display: flex; flex-wrap: wrap; gap: 8px; border-top: 1px solid var(--rule); padding-top: 10px; margin-top: 8px; }
 
-.log details { color: var(--ink-2); }
-.log details :is(details, .ln, .say, .shots) { margin: 4px 0 0 14px; font-size: 12.5px; }
-.log .say { color: var(--ink); white-space: pre-wrap; }
 .say table { border-collapse: collapse; margin: 4px 0; white-space: normal; }
 .say td { border: 1px solid var(--rule); padding: 3px 8px; font-size: 12.5px; }
 .say tr:first-child td { font-weight: 600; background: var(--sheet); }
@@ -285,17 +282,23 @@ dialog::backdrop { background: rgba(21,24,29,.3); }
 .log summary::before { content: '▸'; display: inline-block; width: 14px; color: var(--ink-3); vertical-align: top; }
 .log details[open] > summary::before { content: '▾'; }
 .log summary b { color: var(--ink); font-weight: 500; }
-.log .cmd { display: inline-block; max-width: calc(100% - 20px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: top; }
-.log code, .log .res { font: 12px var(--mono); }
-.log .res { color: var(--ink-3); padding-left: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.log pre { margin: 4px 0 8px 14px; padding: 8px 10px; background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r1); white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow: auto; font: 11.5px/1.5 var(--mono); }
+.log code, .audit code { font: 12px var(--mono); }
 .bad { color: var(--red); }
-.ln { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ln :is(.d, .f) { display: inline; margin-left: 6px; white-space: nowrap; }
 .shots { display: flex; gap: 6px; overflow-x: auto; margin-top: 6px; }
 .shots img { width: 112px; border: 1px solid var(--rule); border-radius: var(--r1); cursor: zoom-in; flex-shrink: 0; }
-details[open] + .shots { display: none; }
-.tot { padding: 10px 20px; font-size: 12.5px; color: var(--ink-3); border-bottom: 1px solid var(--rule); }
+.needs { display: grid; gap: 6px; padding: 8px 28px; border-bottom: 1px solid var(--rule); background: #fff8f6; font-size: 13px; }
+.needs > div { display: flex; align-items: center; gap: 10px; }
+.needs > div > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.needs b { color: var(--red); font-weight: 600; }
+.audit { height: 40%; flex-shrink: 0; overflow: auto; border-top: 1px solid var(--rule-2); background: var(--sheet); }
+.audit .lh { display: flex; align-items: center; gap: 10px; padding: 6px 12px 6px 20px; border-bottom: 1px solid var(--rule); position: sticky; top: 0; background: var(--sheet); }
+.audit .lh .x { margin-left: auto; border: 0; background: none; font-size: 20px; line-height: 1; color: var(--ink-3); cursor: pointer; }
+.audit .e { padding: 4px 20px; font-size: 12.5px; }
+.runl { font-size: 12.5px; color: var(--ink-3); border-top: 1px solid var(--rule); padding-top: 6px; }
+.runl .post { color: var(--ink); margin-top: 4px; font-size: 13.5px; }
+.sect > summary { font-size: 13px; color: var(--ink-3); margin-top: 8px; }
+.sect .post { margin-top: 6px; }
+.pnote { font-size: 12px; }
 .spin { display: inline-block; width: 8px; height: 8px; border: 2px solid var(--rule-2); border-top-color: var(--ink); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -1px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -328,6 +331,8 @@ input[type=checkbox] { accent-color: var(--ink); }
 .tab { border: 0; border-bottom: 2px solid transparent; background: none; padding: 8px 8px 9px; margin-bottom: -1px; font-family: inherit; font-size: 13px; font-weight: 500; color: var(--ink-3); cursor: pointer; white-space: nowrap; }
 .tab.sel { color: var(--ink); border-bottom-color: var(--ink); }
 .tab:hover, .log .lh .x:hover { color: var(--ink); }
+.log .lh b { margin: 0 auto 9px 8px; font-size: 13px; font-weight: 600; }
+.log .lh .quiet { margin-bottom: 6px; }
 .log .lh .x { margin: 0 0 6px auto; border: 0; background: none; padding: 2px 6px; font-size: 20px; line-height: 1; color: var(--ink-3); cursor: pointer; }
 .e { display: grid; grid-template-columns: 46px 1fr; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--rule); font-size: 13px; }
 .e > div { min-width: 0; }
@@ -370,12 +375,14 @@ input[type=checkbox] { accent-color: var(--ink); }
   <aside class="side" id="side"><div class="brand" id="brand"></div><div class="scroll" id="tree"></div><div class="acct" id="acct"></div></aside>
   <main class="main">
     <div class="bar" id="bar"></div>
+    <div class="needs" id="needs" hidden></div>
     <div class="panes" id="panes">
       <section class="pane outs" id="outs" data-pane="out"></section>
       <section class="pane flow" id="flow" data-pane="in"></section>
       <svg class="edges" id="edges"></svg>
-      <div class="key" tabindex="0">Key<div class="legend"><div><i class="p">Blue</i> uploaded by a person</div><div><i>Black</i> made by the agent</div><div><span class="tri"></span>comments</div><div><span class="tri q"></span>waiting on a reply</div><div><span class="dash"></span>expected, not there yet</div><div class="keys"><div><kbd>j k</kbd> move through the sidebar, <kbd>h l</kbd> fold and open, <kbd>Enter</kbd> go</div><div><kbd>1 2 3</kbd> the panel's tabs, <kbd>c</kbd> the comment box</div><div><kbd>Ctrl Enter</kbd> sends, <kbd>Esc</kbd> leaves a field, <kbd>?</kbd> shows this</div></div></div></div>
+      <div class="key" tabindex="0">Key<div class="legend"><div><i class="p">Blue</i> uploaded by a person</div><div><i>Black</i> made by the agent</div><div><span class="tri"></span>comments</div><div><span class="tri q"></span>waiting on a reply</div><div><span class="dash"></span>expected, not there yet</div><div class="keys"><div><kbd>j k</kbd> move through the sidebar, <kbd>h l</kbd> fold and open, <kbd>Enter</kbd> go</div><div><kbd>1 2 3</kbd> the conversation, its process, the audit, <kbd>c</kbd> the comment box</div><div><kbd>Ctrl Enter</kbd> sends, <kbd>Esc</kbd> leaves a field, <kbd>?</kbd> shows this</div></div></div></div>
     </div>
+    <section class="audit" id="audit" hidden></section>
   </main>
   <aside class="log" id="log"></aside>
   <div class="grip" data-pane="side" title="Drag to resize; double-click to reset"></div><div class="grip" data-pane="panel" title="Drag to resize; double-click to reset"></div>
@@ -425,10 +432,11 @@ function toast(text, kind = '') {
   box.showPopover();
   setTimeout(() => { el.remove(); if (!box.children.length) box.hidePopover(); }, 6000);
 }
-const folds = new Map();
-// The side panel opens beside the instance where there's room for both, on Conversation.
-const ui = { open: innerWidth > 800, tab: 'conv', on: null, ref: null };
-let proc = { key: '', html: '' };
+// The side panel opens beside the instance where there's room for both; the audit is closed until asked for. sect holds which of the
+// panel's folds are open, where someone opened or closed them.
+const ui = { open: innerWidth > 800, on: null, ref: null, audit: false, sect: {} };
+// The review sheet, where it's a text, and the process, as the conversation shows them.
+let docs = { key: '' };
 const drawn = new WeakMap();
 
 function put(el, html) {
@@ -493,10 +501,10 @@ async function patch(ids) {
   land(cur, path, d, st);
 }
 
-// An instance's data, and its trace when the Ops log shows and the trace may have moved.
+// An instance's data, and its trace while the audit shows and the trace may have moved.
 async function fetchInstance(path) {
   const d = await api(path), key = `${path}:${d.log.length}`;
-  return [d, ui.open && ui.tab === 'log' && (d.run || key !== linesKey) ? [await api(path + '/trace'), key] : null];
+  return [d, ui.audit && (d.run || key !== linesKey) ? [await api(path + '/trace'), key] : null];
 }
 
 function land(next, path, d, st) {
@@ -519,7 +527,9 @@ function render() {
   renderBrand();
   renderSide();
   renderBar();
+  renderNeeds();
   renderPanes();
+  renderAudit();
   renderLog();
   renderCard();
 }
@@ -722,8 +732,6 @@ function drawEdges() {
   $('#edges').innerHTML = `<defs>${['arrow', 'arrow-hot'].map(id => `<marker id="${id}" viewBox="0 0 8 8" refX="8" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0 8,4 0,8z"/></marker>`).join('')}</defs>${h}`;
 }
 
-const logLine = e => `<div class="e"><span class="tm">${hhmm(e.at)}</span><div>${logText(e)}</div></div>`;
-
 const plural = (n, word) => `${n} ${word}${n > 1 ? 's' : ''}`;
 // People by name, with their email on hover, and Entra groups by label, with their id; a name that two of them share, with the email
 // or id beside it, so no one passes for another; anyone the page has no name for, as they are. who and nameOf say you, and Agent;
@@ -779,36 +787,59 @@ function logText(e) {
   }[e.op]?.() ?? `${w} ${esc(e.op)}`;
 }
 
-// The side panel's tabs: Conversation, Process and the Ops log.
-function tabsHtml() {
-  const talk = threads.filter(t => t.waits).length;
-  return `<div class="lh">${[['conv', `Conversation${talk ? ` (${talk})` : ''}`], ['proc', 'Process'], ['log', 'Ops log']].map(([t, name]) => `<button class="tab ${ui.tab === t ? 'sel' : ''}" data-act="tab" data-tab="${t}">${name}</button>`).join('')}<button class="x" data-act="hide-panel" title="Close">\u00D7</button></div>`;
+// What this instance waits on you for, above it: the threads that wait on you, an ask, a note or a sign-off, and your logins that
+// expired under it. Most of the time there is nothing.
+function renderNeeds() {
+  const held = new Map(data?.log.filter(e => e.op === 'expired' && e.runner === me.email && !data.log.some(x => x.seq > e.seq && x.op === 'wake' && x.login === e.login)).map(e => [e.login, e]));
+  const h = (data ? threads.filter(t => t.waits === me.email) : []).map(t => `<div><b>${t.last.signoff ? 'Sign-off' : t.last.note ? 'Note' : 'Ask'}</b><span>${esc(firstLine(t.last.text))}</span>`
+    + `<button class="btn" data-act="thread" data-thread="${esc(t.id)}">${t.last.signoff ? 'Review' : 'Reply'}</button></div>`).join('')
+    + [...held.values()].map(e => `<div><b>Login</b><span>${e.login === 'openrouter' ? 'Your OpenRouter key is out of credits' : `Your ${esc(e.name)} login has expired`}: this instance waits for it</span>${signInHtml(e.login, e.name)}</div>`).join('');
+  $('#needs').hidden = !h;
+  put($('#needs'), h);
 }
 
 function renderLog() {
   $('#log').className = 'log' + (ui.open && data ? ' open' : '');
   if (!data || !ui.open) return;
+  const key = `${cur.i.id}:${data.doc.rev}:${lastDone()?.seq}`;
+  if (docs.key !== key) loadDocs(key);
   // A half-written comment or reply, or files picked for one, holds the conversation still until it's sent or cleared.
   const drafting = [...$('#log').querySelectorAll('textarea')].some(t => t.value.trim()) || [...$('#log').querySelectorAll('input[type=file]')].some(f => f.files.length);
-  if (ui.tab === 'conv') {
-    if (!drafting) put($('#log'), tabsHtml() + conversationHtml());
-    // Only on the instance it's for: a render for the one before, as the page catches up, leaves it.
-    if (ui.focus !== cur.i.id) return;
-    $('#newcomment')?.focus();
-    return void (ui.focus = false);
-  }
-  if (ui.tab === 'proc') {
-    const key = `${cur.i.id}:${data.doc.rev}`;
-    if (proc.key !== key) loadProcess(key);
-    return put($('#log'), tabsHtml() + proc.html);
-  }
-  // Oldest first, opening at the latest, and kept there as entries come unless the reader has scrolled up.
-  put($('#log'), tabsHtml() + opsHtml());
-  if ($('#log').dataset.end !== 'no') $('#log').scrollTop = $('#log').scrollHeight;
+  const focused = document.activeElement?.id === 'newcomment';
+  if (!drafting) put($('#log'), `<div class="lh"><b>Conversation</b><button class="quiet" data-act="audit">${ui.audit ? 'Hide the audit' : 'Audit'}</button><button class="x" data-act="hide-panel" title="Close">\u00D7</button></div>` + conversationHtml());
+  // Only on the instance it's for: a render for the one before, as the page catches up, leaves it. The box keeps the focus it had.
+  if (focused) $('#newcomment')?.focus();
+  if (ui.focus !== cur.i.id) return;
+  $('#newcomment')?.focus();
+  ui.focus = false;
+}
+
+// The audit, under the instance once asked for: the log and the agent's session, oldest first, one plain line each, opening at the
+// latest and kept there as entries come unless the reader has scrolled up.
+function renderAudit() {
+  $('#audit').hidden = !(ui.audit && data);
+  if ($('#audit').hidden) return;
+  const res = s => s.result === undefined ? (data.run ? '<span class="spin"></span>' : 'no result') : s.error ? `<span class="bad">${esc(firstLine(s.result) || 'failed')}</span>`
+    : s.kind === 'read' ? `${s.lines} lines` : firstLine(s.result) ? esc(firstLine(s.result)) + (s.lines > 1 ? ` +${s.lines - 1} lines` : '') : 'no output';
+  const steps = lines.filter(s => s.kind !== 'user').map(s => ({ at: s.at, html: s.kind === 'say' ? `${actor('agent', s.at)} said ${esc(firstLine(s.text))}`
+    : `<b>${VERB[s.kind] ?? esc(s.kind)}</b> <code>${esc(firstLine(s.kind === 'bash' ? s.text : s.text.split(`/${cur.s.name}/`).pop()))}</code> \u23BF ${res(s)}` }));
+  const rows = [...data.log.map(e => ({ at: e.at, html: logText(e) })), ...steps].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  const runs = data.log.filter(e => e.op === 'run').length, cost = data.log.reduce((t, e) => t + (e.op === 'done' ? e.cost : 0), 0) + (data.run?.cost ?? 0);
+  put($('#audit'), `<div class="lh"><b>Audit</b><span class="sub">${plural(runs, 'run')}, ${usd(cost)}</span><button class="x" data-act="audit" title="Close">\u00D7</button></div>`
+    + rows.map(r => `<div class="e"><span class="tm">${hhmm(r.at)}</span><div>${r.html}</div></div>`).join(''));
+  if ($('#audit').dataset.end !== 'no') $('#audit').scrollTop = $('#audit').scrollHeight;
+}
+
+// The audit opens with the session's steps, fetched for it, and closes.
+async function toggleAudit() {
+  ui.audit = !ui.audit;
+  if (ui.audit) [lines, linesKey] = [await api(instPath() + '/trace'), `${instPath()}:${data.log.length}`];
+  $('#audit').dataset.end = 'yes';
+  renderAudit();
+  renderLog();
 }
 
 const VERB = { read: 'Read', bash: 'Ran', edit: 'Edited', write: 'Wrote' };
-const NOUN = { read: 'file', bash: 'command', edit: 'file', write: 'file' };
 const firstLine = t => t.trim().split('\n')[0];
 const inline = s => s.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>');
 
@@ -823,75 +854,23 @@ function md(text) {
   table();
   return h.trimEnd();
 }
-const fold = (key, dflt, head, body) => `<details data-key="${key}" ${folds.get(key) ?? dflt ? 'open' : ''}><summary>${head}</summary>${body}</details>`;
-
-function lineHtml(s, i) {
-  const res = s.result === undefined ? (data.run ? '<span class="spin"></span>' : 'no result')
-    : s.error ? `<span class="bad">${esc(firstLine(s.result) || 'failed')}</span>`
-    : s.kind === 'read' ? `${s.lines} lines`
-    : firstLine(s.result) ? esc(firstLine(s.result)) + (s.lines > 1 ? ` +${s.lines - 1} lines` : '') : 'no output';
-  const target = s.kind === 'bash' ? s.text : s.text.split(`/${cur.s.name}/`).pop();
-  return fold(`s${i}`, false, `<span class="cmd"><b>${VERB[s.kind] ?? esc(s.kind)}</b> <code>${esc(firstLine(target))}</code></span><div class="res">⎿ ${res}</div>`,
-    `<pre>${esc(s.text)}</pre>${s.result ? `<pre class="${s.error ? 'bad' : ''}">${esc(s.result)}</pre>` : ''}`);
-}
-
-// What a row of the agent's work did, by kind of entry, and what a person's entries of one kind in a row did.
-const DID = {
-  call: n => `made ${plural(n, 'request')} outside`, send: n => `sent ${plural(n, 'request')} with no answer logged`, model: n => `asked a model ${n} time${n > 1 ? 's' : ''}`, graph: n => `read ${plural(n, 'path')} from Microsoft 365`, point: n => `showed ${plural(n, 'file')}`, item: n => `set up ${plural(n, 'item')}`,
-  remove: n => `removed ${plural(n, 'item')}`, get: n => `fetched ${plural(n, 'file')} from the browser`, browser: n => `closed ${plural(n, 'browser')}`, wait: n => `waited for ${plural(n, 'browser')}`,
-  egress: n => `reached ${plural(n, 'host')}`, upload: n => `uploaded ${plural(n, 'file')}`, resolve: n => `resolved ${plural(n, 'thread')}`,
-};
-const ALONE = new Set(['comment', 'report', 'run', 'done']);
-
-// The Ops log: the log's entries and, from the agent's session, its messages and tool calls, in time order. What the agent does
-// between comments, reports and a run's start and end folds into one row, with what the server logged of the run, such as each
-// screenshot of its browser, which the row shows; a person's entries of one kind in a row fold too. A run's trigger and the rf
-// say and ask calls are left out, as their entries show them, and so is its last message, which is its report; and a request sent,
-// once its answer is logged.
-function opsHtml() {
-  const reported = new Set(data.log.filter(e => e.op === 'report').map(e => e.text)), answered = new Set(data.log.map(e => e.sent));
-  const steps = lines.map((s, i) => ({ ...s, i })).filter(s => s.kind !== 'user' && !(s.kind === 'bash' && /\brf (say|ask)\b/.test(s.text)) && !(s.kind === 'say' && reported.has(s.text.trim())));
-  const rows = [];
-  for (const x of [...steps, ...data.log.filter(e => e.op !== 'send' || !answered.has(e.seq))].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))) {
-    const key = ALONE.has(x.op) ? '' : !x.op || x.by === 'agent' || (x.by === 'server' && x.run) ? 'work' : `${x.op} ${x.by}`;
-    if (key && rows.at(-1)?.key === key) rows.at(-1).xs.push(x);
-    else rows.push({ key, xs: [x] });
-  }
-  const runs = data.log.filter(e => e.op === 'run').length, cost = data.log.reduce((t, e) => t + (e.op === 'done' ? e.cost : 0), 0) + (data.run?.cost ?? 0);
-  return (runs ? `<div class="tot">${plural(runs, 'run')}, ${usd(cost)}</div>` : '') + rows.map((r, k) => rowHtml(r, !!data.run && k === rows.length - 1)).join('');
-}
-
-// A row of the Ops log: an entry or a step, or a fold of several, which opens to one line each.
-function rowHtml({ key, xs }, live) {
-  const x = xs[0], line = x => x.op === 'shot' ? shotsHtml([x]) : x.op ? `<div class="ln">${logText(x)}</div>` : x.kind === 'say' ? `<div class="say">${md(x.text)}</div>` : lineHtml(x, x.i);
-  if (xs.length === 1) return x.op ? logLine(x) : `<div class="e"><span class="tm">${hhmm(x.at)}</span><div>${line(x)}</div></div>`;
-  const shots = xs.filter(x => x.op === 'shot');
-  const head = key === 'work' ? workHead(xs, live) : `${actor(x.by, x.at)} ${DID[x.op]?.(xs.length) ?? `${esc(x.op)} \u00D7${xs.length}`}`;
-  return `<div class="e"><span class="tm">${hhmm(x.at)}</span><div>${fold(`r${x.seq ?? 's' + x.i}`, false, head, xs.map(line).join(''))}${shots.length ? shotsHtml(shots) : ''}</div></div>`;
-}
-
-function workHead(xs, live) {
-  const steps = xs.filter(x => !x.op && x.kind !== 'say'), entries = xs.filter(x => x.op && x.op !== 'shot');
-  const did = [
-    ...Object.entries(Object.groupBy(steps, s => s.kind)).map(([k, g]) => `${(VERB[k] ?? esc(k)).toLowerCase()} ${plural(g.length, NOUN[k] ?? 'call')}`),
-    ...Object.entries(Object.groupBy(entries, e => e.op === 'call' && e.model ? 'model' : e.action ?? e.op)).map(([k, g]) => DID[k]?.(g.length) ?? `${esc(k)} \u00D7${g.length}`),
-  ];
-  const bad = steps.filter(s => s.error).length + entries.filter(e => e.status >= 300 || e.allowed === false || e.op === 'browsers').length;
-  return `${actor('agent', xs[0].at)} ${did.join(', ') || 'worked'}${bad ? ` \u00b7 <span class="bad">${bad} failed</span>` : ''}${live ? ' <span class="spin"></span>' : ''}`;
-}
-
-// Process: the instance's working/process.md, redlined against the series' latest closed instance before it by label.
-async function loadProcess(key) {
-  proc.key = key;
-  const prev = cur.s.instances.filter(i => i.status === 'closed' && i.label < cur.i.label).map(i => i.label).sort().at(-1);
+// The review sheet, the output item review, as text where it's one, its first line its verdict; and the process, the instance's
+// working/process.md, redlined against the series' latest closed instance before it by label.
+async function loadDocs(key) {
+  // The instance's own, until they're read again, as after a run; another's never.
+  docs = docs.key.startsWith(`${cur.i.id}:`) ? { ...docs, key } : { key };
+  const review = data.doc.items.find(i => i.id === 'review' && i.file), prev = cur.s.instances.filter(i => i.status === 'closed' && i.label < cur.i.label).map(i => i.label).sort().at(-1);
   const get = async path => { const r = await fetch(fileUrl(path)); return r.ok ? r.text() : ''; };
-  const [now, was] = await Promise.all([get('working/process.md'), prev ? get(`../${prev}/working/process.md`) : '']);
+  const [now, was, sheet] = await Promise.all([get('working/process.md'), prev ? get(`../${prev}/working/process.md`) : '', /\.(md|txt)$/i.test(review?.file) ? get(review.file) : null]);
+  if (docs.key !== key) return;
   // Until this instance's agent writes its own, the process is still the one before it.
   const lines = now ? redline(was, now) : redline('', was), changed = lines.some(([k]) => k);
-  proc.html = '<div class="conv">'
-    + `<div class="sub">${!now && !was ? 'No process.md yet: the agent writes it as it learns the series.' : !now ? `As of ${esc(prev)}, until the agent updates it here.` : prev ? (changed ? `Changes since ${esc(prev)} are marked.` : `Unchanged since ${esc(prev)}.`) : 'The series\' first process.'}</div>`
-    + `<div class="proc">${lines.map(([k, l]) => `<div class="${k}">${md(l) || '&nbsp;'}</div>`).join('')}</div></div>`;
-  if (ui.tab === 'proc' && proc.key === key) renderLog();
+  docs = {
+    key, review, verdict: sheet ? firstLine(sheet).replace(/^#+\s*/, '') : review?.headline, sheet: sheet && md(sheet.trim().split('\n').slice(1).join('\n').trim()), changed,
+    process: (now || was) && `<div class="sub">${!now ? `As of ${esc(prev)}, until the agent updates it here.` : prev ? (changed ? `Changes since ${esc(prev)} are marked.` : `Unchanged since ${esc(prev)}.`) : 'The series\' first process.'}</div>`
+      + `<div class="proc">${lines.map(([k, l]) => `<div class="${k}">${md(l) || '&nbsp;'}</div>`).join('')}</div>`,
+  };
+  renderLog();
 }
 
 function redline(a, b) {
@@ -934,6 +913,7 @@ function threadHtml(t) {
   const signoff = t.waits && t.last.signoff, off = data.run ? ' disabled title="Available when the run ends"' : '';
   const state = signoff ? ` \u00b7 waits on ${t.waits === me.email ? 'your' : `${person(t.waits)}'s`} sign-off` : t.waits ? ` \u00b7 waits on ${who(t.waits)}` : t.pending ? ' \u00b7 <span class="spin"></span> the agent picks it up next' : t.resolved ? ` \u00b7 resolved by ${who(t.last.by)}${t.last.text ? `: ${esc(t.last.text)}` : ''}` : '';
   return `<div class="thread ${t.resolved ? 'resolved' : ''} ${t.waits ? 'waits' : ''} ${signoff ? 'signoff' : ''}" data-thread="${esc(t.id)}"><div class="on">${place(t)}${state}</div>`
+    + data.log.filter(e => e.op === 'done' && e.rules && e.thread === t.id).map(processNote).join('')
     + t.posts.map(p => `<div class="post ${p.ask ? 'ask' : ''} ${p.signoff ? 'signoff' : ''}"><b class="${p.by === 'agent' ? '' : 'p'}">${who(p.by)}</b> <span class="tm">${hhmm(p.at)}${p.to ? ` \u00b7 to ${who(p.to)}` : ''}${p.note ? ` \u00b7 a note for ${who(data.runner.by)}` : ''}${p.commit ? ` \u00b7 commit <code>${p.commit.slice(0, 7)}</code>` : ''}</span><div>${p.by === 'agent' ? md(p.text) : esc(p.text)}</div>${(p.files ?? []).map(f => `<div class="f"><a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a></div>`).join('')}</div>`).join('')
     + (data.doc.status !== 'open' || t.resolved ? ''
       : signoff ? (t.waits === me.email ? `<textarea rows="2" placeholder="A note, such as what to change"></textarea><div class="row2"><button class="btn commit" data-act="signoff" data-ok="1" data-thread="${esc(t.id)}"${off}>Approve</button><button class="btn" data-act="signoff" data-thread="${esc(t.id)}"${off}>Reject</button></div>` : '')
@@ -941,21 +921,33 @@ function threadHtml(t) {
       : `<div class="row2"><button class="quiet" data-act="thread" data-thread="${esc(t.id)}">Reply</button><button class="quiet" data-act="resolve" data-thread="${esc(t.id)}" title="Done with it, without waking the agent">Resolve</button></div>`) + '</div>';
 }
 
-// The conversation: the threads waiting on people, the agent's latest report, then the other threads, the resolved last.
+// The rules a run added to the process, or reworded, on the thread whose entry started it, or else on its line.
+const processNote = d => `<div class="pnote"><a data-act="process">Process: +${plural(d.rules, 'rule')}</a> in run ${d.run}</div>`;
+
+// A run, as one line among the threads: how it ended, how long it took and what it cost, opening to its report or why it failed.
+function runHtml(r, latest) {
+  const d = data.log.find(e => e.op === 'done' && e.run === r.run), report = data.log.find(e => e.op === 'report' && e.run === r.run);
+  const line = `Run ${r.run} \u00b7 ${!d ? `<span class="spin"></span> going \u00b7 ${usd(data.run?.cost ?? 0)}` : `${d.error ? '<span class="bad">failed</span>' : d.aborted ? 'stopped' : 'done'} \u00b7 ${took(d)} \u00b7 ${usd(d.cost)}`}`;
+  const body = (report ? `<div class="post">${md(report.text)}</div>` : d?.error ? `<div class="post bad">${esc(d.error)}</div>` : '') + (d?.rules && !d.thread ? processNote(d) : '');
+  return body ? `<details class="runl" data-key="run${r.run}" ${ui.sect[`run${r.run}`] ?? latest ? 'open' : ''}><summary>${line}</summary>${body}</details>` : `<div class="runl">${line}</div>`;
+}
+
+// The conversation: the review sheet and the process, open for the runner, folded for others; a box to comment on the instance; then
+// the threads and the runs among them, newest first, a thread where its last word is and a run where it ended.
 function conversationHtml() {
-  const open = data.doc.status === 'open', name = id => esc(data.doc.items.find(i => i.id === id)?.name ?? id);
-  const report = data.log.findLast(e => e.op === 'report'), rest = threads.filter(t => !t.waits).sort((a, b) => a.resolved - b.resolved);
-  const moved = data.log.findLast(e => e.op === 'move');
+  const open = data.doc.status === 'open', name = id => esc(data.doc.items.find(i => i.id === id)?.name ?? id), mine = data.runner.by === me.email;
+  const fold = (key, head, body) => `<details class="sect" data-key="${key}" ${ui.sect[key] ?? mine ? 'open' : ''}><summary>${head}</summary>${body}</details>`;
+  const moved = data.log.findLast(e => e.op === 'move'), runs = data.log.filter(e => e.op === 'run');
   let h = '<div class="conv">' + (moved ? `<div class="sub">Moved ${when(moved.at)} from ${esc(moved.from)} to ${esc(moved.to)}, ${who(moved.accepted_by)} accepting.</div>` : '');
-  if (threads.some(t => t.waits)) h += `<h3>Waiting on people</h3>` + threads.filter(t => t.waits).map(threadHtml).join('');
-  if (report) h += `<h3>Report, run ${report.run}</h3><div class="post">${md(report.text)}</div>`;
-  if (rest.length) h += `<h3>Threads</h3>` + rest.map(threadHtml).join('');
+  if (docs.review) h += fold('review', `<b>Review sheet</b>${docs.verdict ? ` \u00b7 ${esc(docs.verdict)}` : ''}`, docs.sheet ? `<div class="post">${docs.sheet}</div>` : `<div><a data-act="preview" data-file="${esc(docs.review.file)}">Open ${esc(fname(docs.review.file))}</a></div>`);
+  if (docs.process) h += fold('process', `<b>Process</b>${docs.changed ? ' \u00b7 changed' : ''}`, docs.process);
   // Before its first run, its runner may tick its logins anew where they write its first prompt.
-  const first = data.runner.by === me.email && !data.log.some(e => e.op === 'run');
+  const first = mine && !runs.length;
   if (open) h += `<h3>${ui.on ? `Comment on ${name(ui.on)}${ui.ref ? ` at ${esc(ui.ref)}` : ''}` : 'Comment on the instance'}</h3>`
     + (first && myLogins.some(l => l.offers.length) ? `<div class="ticks2">Logins it may use:${ticksHtml(myLogins, data.runner.logins)}</div>` : '')
-    + `<textarea id="newcomment" rows="3" placeholder="${first ? 'What should the agent do? Drop files here too' : data.runner.by === me.email || cur.s.shared_by === data.runner.by ? 'The agent replies in the thread' : `A note for ${esc(nameOf(data.runner.by))}: the agent takes it up once they do`}"></textarea><input type="file" id="newfiles" multiple><div><button class="btn primary" data-act="comment">Comment</button></div>`;
-  return h + '</div>';
+    + `<textarea id="newcomment" rows="3" placeholder="${first ? 'What should the agent do? Drop files here too' : mine || cur.s.shared_by === data.runner.by ? 'The agent replies in the thread' : `A note for ${esc(nameOf(data.runner.by))}: the agent takes it up once they do`}"></textarea><input type="file" id="newfiles" multiple><div><button class="btn primary" data-act="comment">Comment</button></div>`;
+  const ended = r => data.log.find(e => e.op === 'done' && e.run === r.run)?.seq ?? Infinity;
+  return h + [...threads.map(t => [t.last.seq, threadHtml(t)]), ...runs.map(r => [ended(r), runHtml(r, r === runs.at(-1))])].sort((a, b) => b[0] - a[0]).map(([, x]) => x).join('') + '</div>';
 }
 
 function renderCard() {
@@ -1373,10 +1365,11 @@ document.addEventListener('click', async ev => {
   const was = $('#pop').hidden ? null : $('#pop').dataset.by;
   $('#pop').hidden = true;
   if (!ev.target.closest('#side, [data-act=menu]') || ev.target.closest('#side a')) $('#side').classList.remove('open');
-  const sum = ev.target.closest('#log summary');
+  // A fold opened or closed stays so as the panel is drawn again, which, the page now differing from what was drawn, it next is.
+  const sum = ev.target.closest('#log details[data-key] > summary');
   if (sum) {
-    folds.set(sum.parentElement.dataset.key, !sum.parentElement.open);
-    return void drawn.set($('#log'), tabsHtml() + opsHtml());
+    ui.sect[sum.parentElement.dataset.key] = !sum.parentElement.open;
+    drawn.delete($('#log'));
   }
   const el = ev.target.closest('[data-act], .tile');
   if (!el) {
@@ -1413,18 +1406,19 @@ async function onAct(act, el, was) {
       data.runner.by === me.email && ['-'], data.runner.by === me.email && ['Abandon', 'abandon', 'danger', data.run && 'Available when the run ends'],
     ]);
   }
-  if (act === 'tab') {
-    if (el.dataset.tab === 'log') [lines, linesKey] = [await api(instPath() + '/trace'), `${instPath()}:${data.log.length}`];
-    $('#log').dataset.end = 'yes';
-    Object.assign(ui, { tab: el.dataset.tab, on: null, ref: null });
+  if (act === 'audit') await toggleAudit();
+  // A rule the process gained: the Process fold, open, in view.
+  if (act === 'process') {
+    ui.sect.process = true;
     renderLog();
+    $('#log details[data-key=process]').scrollIntoView({ block: 'start' });
   }
   if (act === 'show-panel' || act === 'hide-panel') {
-    Object.assign(ui, { open: act === 'show-panel', tab: 'conv', on: null, ref: null });
+    Object.assign(ui, { open: act === 'show-panel', on: null, ref: null });
     renderLog(); renderBar(); placeCard();
   }
   if (act === 'interrupt') { await api(`${instPath()}/interrupt`, { method: 'POST' }); await refresh(); }
-  if (act === 'comment-on') { Object.assign(ui, { open: true, tab: 'conv', on: el.dataset.item, ref: null }); renderLog(); renderBar(); $('#newcomment')?.focus(); }
+  if (act === 'comment-on') { Object.assign(ui, { open: true, on: el.dataset.item, ref: null }); renderLog(); renderBar(); $('#newcomment')?.focus(); }
   if (act === 'comment' || act === 'reply-thread') {
     const box = act === 'comment' ? $('#newcomment') : el.closest('.thread').querySelector('textarea'), text = box.value.trim();
     const picked = act === 'comment' ? $('#newfiles') : el.closest('.thread').querySelector('input[type=file]');
@@ -1549,7 +1543,7 @@ async function onAct(act, el, was) {
   if (act === 'thread') {
     replying.add(el.dataset.thread);
     closePv();
-    Object.assign(ui, { open: true, tab: 'conv', on: null, ref: null });
+    Object.assign(ui, { open: true, on: null, ref: null });
     renderLog(); renderBar();
     const box = document.querySelector(`#log .thread[data-thread="${CSS.escape(el.dataset.thread)}"]`);
     box?.scrollIntoView({ block: 'center' });
@@ -1559,7 +1553,7 @@ async function onAct(act, el, was) {
     const item = pv.item;
     pv = null;
     renderPv();
-    Object.assign(ui, { open: true, tab: 'conv', on: item, ref: el.dataset.ref });
+    Object.assign(ui, { open: true, on: item, ref: el.dataset.ref });
     renderLog(); renderBar();
     $('#newcomment')?.focus();
   }
@@ -1589,7 +1583,7 @@ async function onAct(act, el, was) {
   if (act === 'new-task') {
     const offers = new Set((await api('/logins')).filter(l => !l.expired).flatMap(l => l.offers.map(o => o.id))), logins = JSON.parse(localStorage.ticks ?? '[]').filter(id => offers.has(id));
     const { instance } = await api('/api/series', { method: 'POST', body: JSON.stringify({ workspace: cur.w.id, single: true, logins }) });
-    Object.assign(ui, { open: true, tab: 'conv', on: null, ref: null, focus: instance });
+    Object.assign(ui, { open: true, on: null, ref: null, focus: instance });
     go(instance);
   }
   if (act === 'ticks') await openStart(`Logins ${cur.i.label} may use`, 'Save', ({ logins }) => api(`${instPath()}/logins`, { method: 'POST', body: JSON.stringify({ logins }) }), undefined, undefined, data.runner.logins);
@@ -1735,15 +1729,16 @@ new ResizeObserver(() => { placeCard(); drawEdges(); }).observe($('#panes'));
 document.fonts.ready.then(drawEdges);
 
 addEventListener('hashchange', () => {
-  openItem = null; folds.clear(); prevSigs = {};
+  openItem = null; ui.sect = {}; prevSigs = {};
   $('#panes').scrollTop = $('#flow').scrollTop = $('#flow').scrollLeft = $('#outs').scrollTop = $('#log').scrollTop = 0;
-  $('#log').dataset.end = 'yes';
+  $('#audit').dataset.end = 'yes';
   closePv();
   $('#side').classList.remove('open');
   refresh();
 });
 // Keys, while no field has the focus: j and k (or the arrows) move through the sidebar's rows, l opens a row or goes into it, h
-// folds it or goes to its parent, Enter goes to it; 1, 2 and 3 pick the panel's tab, c goes to the comment box, ? shows the keys.
+// folds it or goes to its parent, Enter goes to it; 1 opens the conversation, 2 its process, 3 the audit, c goes to the comment box,
+// ? shows the keys.
 function navigate(e) {
   const rows = [...$('#tree').querySelectorAll('a[href]')], at = rows.indexOf(document.activeElement), row = document.activeElement.closest('#tree .row');
   const chev = row?.querySelector('.chev'), open = chev?.textContent === '\u25BE', key = { ArrowDown: 'j', ArrowUp: 'k', ArrowRight: 'l', ArrowLeft: 'h' }[e.key] ?? e.key;
@@ -1751,8 +1746,10 @@ function navigate(e) {
   if (key === 'j' || key === 'k') (at < 0 ? rows.find(r => r.closest('.on')) ?? rows[0] : rows[at + (key === 'j' ? 1 : -1)])?.focus();
   else if (key === 'l' && chev) open ? rows[at + 1]?.focus() : chev.click();
   else if (key === 'h' && row) open ? chev.click() : row.closest('.tree')?.previousElementSibling.querySelector('a[href]').focus();
-  else if (['1', '2', '3', 'c'].includes(key) && data) {
-    Object.assign(ui, { open: true, tab: key === 'c' ? 'conv' : ['conv', 'proc', 'log'][key - 1], on: null, ref: null, focus: key === 'c' && cur.i.id });
+  else if (key === '3' && data) toggleAudit();
+  else if (['1', '2', 'c'].includes(key) && data) {
+    Object.assign(ui, { open: true, on: null, ref: null, focus: key === 'c' && cur.i.id });
+    if (key === '2') ui.sect.process = true;
     renderLog(); renderBar(); placeCard();
   } else if (key === '?') $('.key').classList.toggle('show');
   else return;
@@ -1807,7 +1804,7 @@ events.onerror = () => events.readyState === EventSource.CLOSED && setTimeout(()
 addEventListener('visibilitychange', drain);
 // The rows' ages move on as the minutes pass.
 setInterval(renderSide, 60_000);
-$('#log').addEventListener('scroll', e => { const el = e.currentTarget; el.dataset.end = el.scrollTop + el.clientHeight >= el.scrollHeight - 8 ? 'yes' : 'no'; });
+$('#audit').addEventListener('scroll', e => { const el = e.currentTarget; el.dataset.end = el.scrollTop + el.clientHeight >= el.scrollHeight - 8 ? 'yes' : 'no'; });
 
 // Pane widths, kept in this browser: a grip's drag sets its pane's width, which the CSS bounds, and keeps what shows.
 {

@@ -411,3 +411,21 @@ test("a person's own OpenRouter key, checked as it's saved, goes in for the runs
   log = await runs(id, 3);
   assert.deepEqual([log.findLast(e => e.op === 'run')!.key, [...new Set(keys)], log.findLast(e => e.op === 'report')!.text], ['shared', ['stand-in-key'], 'On the shared key.']);
 });
+
+test("a run that adds rules to the process, or rewords them, says how many in its done entry, with the thread whose comment started it", async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Rules' })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Ruled' })).json();
+  scripts.push({ bash: ["mkdir -p working && printf 'Delivers the pack.\\n- Read the ledger.\\n- Never write to it.\\n' > working/process.md"], report: 'Wrote the process.', saw: [] });
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: 'r1', logins: [] })).json();
+  let log = await runs(id, 1);
+  assert.deepEqual([log.find(e => e.op === 'done')!.rules, log.find(e => e.op === 'done')!.thread], [2, undefined], 'a wake started it, no thread');
+  scripts.push({ bash: ["sed -i 's/Never write to it/Never write to it, nor delete/' working/process.md && printf -- '- Round to the cent.\\n' >> working/process.md"], report: 'Two rules.', saw: [] });
+  await call('POST', `/api/instances/${id}/comment`, { text: 'Round to the cent, and never delete either.' });
+  log = await runs(id, 2);
+  const asked = log.findLast(e => e.op === 'comment' && e.by !== 'agent')!, done = log.findLast(e => e.op === 'done')!;
+  assert.deepEqual([done.rules, done.thread], [2, asked.thread], 'one added, one reworded, in the thread that asked');
+  scripts.push({ bash: [], report: 'Nothing new.', saw: [] });
+  await call('POST', `/api/instances/${id}/comment`, { text: 'Thanks.' });
+  log = await runs(id, 3);
+  assert.equal(log.findLast(e => e.op === 'done')!.rules, undefined, 'none, none said');
+});

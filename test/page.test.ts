@@ -32,18 +32,22 @@ before(async () => {
     { seq: 1, at: '2026-08-01T09:00:00.000Z', by: 'admin@demo.test', op: 'create', from: null, logins: [] },
     { seq: 2, at: '2026-08-01T09:05:00.000Z', by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'The pack is ready to send to the bank.', ask: true, signoff: true },
   ].map(e => JSON.stringify(e) + '\n').join(''));
-  // A closed instance of the same series, whose run called a connection.
+  // A closed instance of the same series, with its review sheet, whose run, asked to, called a connection and added a rule to its
+  // process.
   const called = join(root, 'instances', 'a5c0ff5e1f01');
   mkdirSync(join(called, 'working'), { recursive: true });
   writeFileSync(join(called, 'instance.json'), JSON.stringify({ label: '2026-11', series: 'a5c0ff5e1fee' }));
-  writeFileSync(join(called, 'screen.json'), JSON.stringify({ rev: 1, status: 'closed', items: [] }));
+  writeFileSync(join(called, 'screen.json'), JSON.stringify({ rev: 1, status: 'closed', items: [{ id: 'review', name: 'Review sheet', kind: 'output', file: 'working/review.md' }] }));
+  writeFileSync(join(called, 'working', 'review.md'), '2 need you: C12, C15\n\nThe ledger is off by 4.00.\n');
+  writeFileSync(join(called, 'working', 'process.md'), 'The year-end pack for the bank.\n- Read the ledger; never write to it.\n');
   writeFileSync(join(called, 'log.jsonl'), [
     { seq: 1, at: '2026-08-01T09:00:00.000Z', by: 'admin@demo.test', op: 'create', from: null, logins: ['adb'] },
-    { seq: 2, at: '2026-08-01T09:01:00.000Z', by: 'server', op: 'run', run: 1, upto: 1, skills: {} },
-    { seq: 3, at: '2026-08-01T09:02:00.000Z', by: 'agent', op: 'call', run: 1, name: 'adb', method: 'POST', path: '/api/2.0/sql/statements', status: 200, bytes: 512 },
-    { seq: 4, at: '2026-08-01T09:03:00.000Z', by: 'agent', op: 'call', run: 1, name: 'adb', method: 'POST', path: '/api/2.0/sql/statements', status: 403, bytes: 0, refused: 'adb only reads: a statement starts with SELECT, not DROP' },
-    { seq: 5, at: '2026-08-01T09:04:00.000Z', by: 'server', op: 'done', run: 1, aborted: false, seen: 4, cost: 0.01, summary: 'Read the ledger.' },
-    { seq: 6, at: '2026-08-01T09:05:00.000Z', by: 'admin@demo.test', op: 'close' },
+    { seq: 2, at: '2026-08-01T09:00:30.000Z', by: 'admin@demo.test', op: 'comment', thread: 'c9', item: null, ref: null, text: 'Read the ledger, and only read it.' },
+    { seq: 3, at: '2026-08-01T09:01:00.000Z', by: 'server', op: 'run', run: 1, upto: 2, skills: {} },
+    { seq: 4, at: '2026-08-01T09:02:00.000Z', by: 'agent', op: 'call', run: 1, name: 'adb', method: 'POST', path: '/api/2.0/sql/statements', status: 200, bytes: 512 },
+    { seq: 5, at: '2026-08-01T09:03:00.000Z', by: 'agent', op: 'call', run: 1, name: 'adb', method: 'POST', path: '/api/2.0/sql/statements', status: 403, bytes: 0, refused: 'adb only reads: a statement starts with SELECT, not DROP' },
+    { seq: 6, at: '2026-08-01T09:04:00.000Z', by: 'server', op: 'done', run: 1, aborted: false, seen: 5, cost: 0.01, summary: 'Read the ledger.', rules: 1, thread: 'c9' },
+    { seq: 7, at: '2026-08-01T09:05:00.000Z', by: 'admin@demo.test', op: 'close' },
   ].map(e => JSON.stringify(e) + '\n').join(''));
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch') };
   mkdirSync(env.HOME!);
@@ -141,34 +145,46 @@ test('only the runner abandons, and abandoning asks first, in the page', async (
   assert.deepEqual(native, [], "the browser's own dialogs never show");
 });
 
-test("the side panel opens on Conversation beside the instance; the Ops log folds the agent's work between a run's start and its report", async () => {
+test("the side panel is the instance's conversation, a run a line among its threads; the audit, a drawer closed until asked for, has the log and the agent's steps, a plain line each", async () => {
   await page.evaluate(() => { location.hash = '#/3d70f7ca6f20'; });
-  await page.waitForSelector('#log.open .tab.sel:text-is("Conversation")');
+  await page.waitForSelector('#log.open .lh b:text-is("Conversation")');
   assert.equal(await page.locator('#bar [data-act=show-panel]').count(), 0, 'the bar offers the panel only while it is closed');
-  await page.click('#log [data-tab=log]');
-  const work = page.locator('#log .e > div > details', { hasText: "alex's agent showed 3 files, set up 3 items, removed 1 item" });
-  await work.waitFor();
-  assert.deepEqual(await page.locator('#log .e > div').evaluateAll(es => es.map(e => (e as HTMLElement).innerText.split('\n')[0])), [
-    'alex opened the instance', 'alex uploaded an input', 'Server showed u2', 'Run 1 started',
-    "alex's agent showed 3 files, set up 3 items, removed 1 item", "alex's agent reported on run 1", 'Run 1 finished · 4m 0s · $0.21', 'alex closed the instance',
-  ]);
-  await work.locator('summary').first().click();
-  await page.waitForSelector('#log .ln:text("set up Borrowing base")');
+  const run = page.locator('#log details.runl');
+  assert.equal(await run.locator('summary').innerText(), 'Run 1 · done · 4m 0s · $0.21');
+  assert.match(await run.locator('.post').innerText(), /^Borrowing base for 08-30: excess 180,542\.50/, 'the latest run open to its report');
+  assert.equal(await page.locator('#audit').isVisible(), false);
+  await page.click('#log [data-act=audit]');
+  await page.waitForSelector('#audit .e');
+  const rows = await page.locator('#audit .e > div').evaluateAll(es => es.map(e => (e as HTMLElement).innerText.split('\n')[0]));
+  assert.deepEqual([...rows.slice(0, 4), rows.at(-1)], ['alex opened the instance', 'alex uploaded an input', 'Server showed u2', 'Run 1 started', 'alex closed the instance']);
+  assert.ok(rows.includes('Run 1 finished · 4m 0s · $0.21') && rows.includes("alex's agent set up Borrowing base"), 'each entry a line');
+  assert.ok(rows.includes("alex's agent said Borrowing base for 08-30: excess 180,542.50, up 6,742.50."), "and the agent's session");
+  await page.click('#audit [data-act=audit]');
+  assert.equal(await page.locator('#audit').isVisible(), false);
   await page.click('#log [data-act=hide-panel]');
   await page.click('#bar [data-act=show-panel]');
-  await page.waitForSelector('#log.open .tab.sel:text-is("Conversation")');
+  await page.waitForSelector('#log.open .lh b:text-is("Conversation")');
 });
 
-test("a run's calls to a connection fold into its work in the Ops log, each with its request, and a refusal with why", async () => {
+test("the runner sees the review sheet, its verdict first, and the process, open; a thread whose entry started a run that added a rule says so, opening the process; the run's calls to a connection are in the audit, a refusal with why", async () => {
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f01'; });
-  await page.waitForSelector('#log.open');
-  await page.click('#log [data-tab=log]');
-  const work = page.locator('#log .e > div > details', { hasText: 'Your agent made 2 requests outside' });
-  await work.locator('summary').first().click();
-  const [ok, refused] = (await work.locator('.ln').allInnerTexts()).slice(-2);
+  await page.waitForSelector('#log details[data-key=review][open]');
+  assert.equal(await page.locator('#log details[data-key=review] summary').innerText(), 'Review sheet · 2 need you: C12, C15');
+  assert.equal(await page.locator('#log details[data-key=review] .post').innerText(), 'The ledger is off by 4.00.');
+  assert.equal(await page.locator('#log details[data-key=process]').evaluate(d => (d as HTMLDetailsElement).open), true);
+  await page.click('#log details[data-key=process] > summary');
+  const note = page.locator('#log .thread[data-thread=c9] .pnote');
+  assert.equal(await note.innerText(), 'Process: +1 rule in run 1');
+  await note.locator('a').click();
+  await page.waitForSelector('#log details[data-key=process][open]');
+  await page.click('#log [data-act=audit]');
+  const calls = page.locator('#audit .e', { hasText: 'called adb' });
+  await calls.first().waitFor();
+  const [ok, refused] = await calls.locator('> div').allInnerTexts();
   assert.equal(ok, 'Your agent called adb: POST /api/2.0/sql/statements');
   assert.match(refused, /^Your agent called adb: POST \/api\/2\.0\/sql\/statements, refused/);
-  assert.equal(await work.locator('.ln .d').last().innerText(), 'adb only reads: a statement starts with SELECT, not DROP');
+  assert.equal(await calls.last().locator('.d').innerText(), 'adb only reads: a statement starts with SELECT, not DROP');
+  await page.click('#audit [data-act=audit]');
 });
 
 test("a row's chevron folds and opens it, selected or not, and selects nothing", async () => {
@@ -234,19 +250,20 @@ test("the sidebar's and the side panel's inner edges drag their widths, within b
   assert.deepEqual(await widths(), [256, 352]);
 });
 
-test("what the session names, such as a tool call's name, shows as text in the Ops log, never as markup", async () => {
+test("what the session names, such as a tool call's name, shows as text in the audit, never as markup", async () => {
   appendFileSync(join(root, 'instances', '3d70f7ca6f20', 'session', 'main.jsonl'), JSON.stringify({ type: 'message', id: 'x1', parentId: 'm2', timestamp: '2026-08-30T23:03:00.000Z', message: { role: 'assistant', content: [{ type: 'toolCall', id: 't1', name: '<img src=x onerror="window.pwned=1">', arguments: {} }] } }) + '\n');
   await page.evaluate(() => { location.hash = '#/3d70f7ca6f20'; });
   await page.waitForSelector('#log.open');
-  await page.click('#log [data-tab=log]');
-  await page.locator('#log .e > div > details', { hasText: '<img src=x onerror="window.pwned=1"> 1 call' }).waitFor();
+  await page.click('#log [data-act=audit]');
+  await page.locator('#audit .e', { hasText: '<img src=x onerror="window.pwned=1">' }).waitFor();
   assert.equal(await page.evaluate(() => (window as unknown as { pwned?: number }).pwned), undefined);
+  await page.click('#audit [data-act=audit]');
 });
 
-test("a sign-off the agent asks for shows louder, with Approve and Reject for its runner; approving commits the folder, as the thread and the Ops log say", async () => {
+test("a sign-off the agent asks for shows louder, above the instance and in its thread, with Approve and Reject for its runner; approving commits the folder, as the thread and the audit say", async () => {
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
   await page.waitForSelector('#log.open');
-  await page.click('#log [data-tab=conv]');
+  assert.equal(await page.locator('#needs').innerText(), 'Sign-off\nThe pack is ready to send to the bank.\nReview');
   const thread = page.locator('#log .thread.waits.signoff');
   await thread.waitFor();
   assert.match(await thread.locator('.on').innerText(), /waits on your sign-off/);
@@ -256,8 +273,10 @@ test("a sign-off the agent asks for shows louder, with Approve and Reject for it
   const post = page.locator('#log .thread .post', { hasText: 'Signed off: Looks right.' });
   await post.waitFor();
   assert.match(await post.locator('.tm').innerText(), /commit [0-9a-f]{7}/);
-  await page.click('#log [data-tab=log]');
-  await page.locator('#log .e', { hasText: 'You signed off' }).waitFor();
+  await page.waitForSelector('#needs', { state: 'hidden' });
+  await page.click('#log [data-act=audit]');
+  await page.locator('#audit .e', { hasText: 'You signed off' }).waitFor();
+  await page.click('#audit [data-act=audit]');
 });
 
 test("people show by name, with their email on hover, and Entra groups by label; adding to a workspace suggests people by name and takes a group's label", async () => {
@@ -277,10 +296,11 @@ test("people show by name, with their email on hover, and Entra groups by label;
   await page.mouse.click(5, 5);
   assert.equal((await fetch(url('/api/instances/a5c0ff5e1f00/comment'), { method: 'POST', body: JSON.stringify({ text: 'The bank wants it by Friday.' }), headers: { cookie: bobs } })).status, 200);
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
-  await page.click('#log [data-tab=conv]');
   await page.waitForSelector(`#log .thread .post b.p span[title="${bob}"]:text-is("Bob")`);
-  await page.click('#log [data-tab=log]');
-  await page.locator('#log .e', { hasText: 'Bob left a note for you' }).waitFor();
+  assert.equal(await page.locator('#needs').innerText(), 'Note\nThe bank wants it by Friday.\nReply');
+  await page.click('#log [data-act=audit]');
+  await page.locator('#audit .e', { hasText: 'Bob left a note for you' }).waitFor();
+  await page.click('#audit [data-act=audit]');
 });
 
 test("a name two people share shows with their email, a group among a workspace's people is marked as one, and a person's request to start a series names them", async () => {

@@ -17,10 +17,10 @@ Recurring tasks, files in and files out. People drop this period's input files i
 | A tile's card and its threads | Preview, compared with the file it replaced |
 |---|---|
 | ![A tile's card](docs/screenshots/card.png) | ![Preview](docs/screenshots/preview.png) |
-| **Conversation: what waits on people, the report and the threads** | **Process, marked against the previous instance** |
+| **What needs you, above; the review sheet and the process, open for the runner; then the threads and runs** | **Process, marked against the previous instance** |
 | ![Conversation](docs/screenshots/conversation.png) | ![Process](docs/screenshots/process.png) |
-| **Ops log: a run's work in one row, open to each tool call** | **Phone** |
-| ![Ops log](docs/screenshots/ops-log.png) | ![Phone](docs/screenshots/phone.png) |
+| **The audit: the log and the agent's steps, a plain line each** | **Phone** |
+| ![Audit](docs/screenshots/audit.png) | ![Phone](docs/screenshots/phone.png) |
 
 ## Try it
 
@@ -63,10 +63,11 @@ For scale, a weekly borrowing base's runs cost about $0.20–0.60 each with Clau
 - **Drops are hints.** Outputs and the rest are the two drop zones. The server adds each dropped file as an item at once, even mid-run: an output if it was dropped on Outputs, else an input. The agent decides what it is, such as a replacement for an input's file.
 - **Preview** shows a spreadsheet with its threads' cells marked; a click on a cell comments on it or opens its thread. "Compare with previous" marks the cells that changed since the file it replaced.
 - **Sources and destinations:** an input says where it came from, uploaded by whom and when, or the agent's `source`, the system or earlier instance it fetched it from; an output may say where it goes, its `destination`, free text the agent writes as the series' instructions name it, such as a mailbox and its recipients or a SharePoint folder, and stays here without one. Each delivery is a `delivered` entry, with where it went and its receipt, which the agent records with `rf delivered ITEM --to WHERE --receipt WHAT`, such as a message's Message-ID or a website's document number; the run's `call` entries, or its browser's requests, bear it out. The output's tile shows its destination and last delivery, and its card every delivery.
-- **The side panel,** beside the instance where there's room for both, has three tabs: Conversation, Process and the Ops log. × closes it, and the bar's Conversation button, with the count waiting on people, opens it again; on a phone it covers the page. Its inner edge and the sidebar's drag to widen or narrow them, within bounds, and the browser keeps the widths; a double-click on an edge resets it.
-- **Conversation:** the threads waiting on people first, then the agent's latest report, then the other threads, and a box to comment on the instance.
+- **Needs you,** a strip above the instance, there only when something is: each thread waiting on you, an ask, a note or a sign-off, with a button to it, and each login of yours that expired under the instance, to sign in to again.
+- **The side panel,** beside the instance where there's room for both, is its conversation. × closes it, and the bar's Conversation button, with the count waiting on people, opens it again; on a phone it covers the page. Its inner edge and the sidebar's drag to widen or narrow them, within bounds, and the browser keeps the widths; a double-click on an edge resets it.
+- **Conversation:** the review sheet and the process, open for the runner and folded for everyone else; a box to comment on the instance; then the threads and the runs, newest first, a thread where its last word is and a run where it ended. A run is one line, "Run 5 · done · 2m 0s · $0.40", opening to its report or why it failed, the latest open. Where a run added rules to the process, or reworded them, the thread whose entry started it says "Process: +1 rule", which opens the process.
 - **Process:** the instance's `working/process.md`, redlined against the series' latest closed instance before it by label, so a reviewer sees what changed in the method, not only in the figures.
-- **Ops log:** who did what and when, oldest first, opening at the latest, under what the runs have cost: the log, and from the agent's sessions their messages and tool calls. What the agent does between comments, reports and a run's start and end is one row, such as "Agent ran 14 commands, showed 4 files · 1 failed", which opens to a line per step, each opening to its output; a person's entries of one kind in a row fold too. A screenshot of the run's browser, taken after each tool call that changed its page, shows on its row and opens in Preview, as earlier files do.
+- **Audit,** from the panel's header, a drawer under the instance, closed until asked for: who did what and when, oldest first, opening at the latest, under what the runs have cost: the log, and from the agent's sessions their messages and tool calls, one plain line each, a step with its output's first line. A screenshot of the run's browser, taken after each tool call that changed its page, shows on its line and opens in Preview, as earlier files do.
 - **The bar** says what the agent is doing: working on run N, with **Interrupt**, which stops the run; queued; idle since its last run; or that its last run failed, with why on hover.
 - **Close instance** is the runner's "I've reviewed this and stand by it", for the whole instance; others see **Take over**, which makes them the runner, with their own logins ticked. **Abandon**, in the runner's ⋯ menu, ends it otherwise: it is neither an example nor a starting point. All three wait for the run to end. A closed or abandoned instance can be **duplicated** into an open one, without its agent session. An instance's label changes by clicking it, in any status, even mid-run, as a series' and a workspace's names do in their settings; a former name is free for another.
 - **Starting an instance** asks for its label and which of your logins it may use, every time, as do copying and taking over. The ticks go by kind: Microsoft 365's sources under a tick of their own, which ticks them all, folded unless some are ticked and some not; an expired login is flagged, its ticks off.
@@ -89,8 +90,8 @@ Talk is threads only, as `comment` entries in the instance's `log.jsonl`: `{thre
 - **Who a thread waits on:** people, while its last comment is the agent's ask, on `to` or else the runner; the agent, while its last comment is a person's. Anyone resolves a thread, the agent only one it started, and resolving starts no run. On the page, a thread that waits on no one shows a quiet Reply, and a tile's card and Preview open its threads.
 - **Sign-offs are git commits.** A sign-off waits on the runner, louder than an ask, and listed under Waiting on you; others see whose sign-off it waits on. The runner approves or rejects it, with a note: either commits the instance's folder in their name, its message the ask and the note and, for an approval, their `Signed-off-by:`, then logs `signoff` `{thread, approved, text?, commit}` and starts a run, as a reply does. What needs a sign-off is the business's call, written in the series' instructions.
 - **Closing** is the runner's sign-off: it lists the asks still waiting and accepts what the agent said it did for each, and commits the folder as an approval does; the log records `close` with `accepted`, their threads, and the `commit`.
-- **The report** is the agent's last message of each run, logged as `report`: what the run did, its first line the run's summary in the ops log.
-- **The review sheet,** an output of every instance, gives the key figures against the previous instance with the reasons, and the checks. Open points are asks, carried values are says, and sources stay on the items.
+- **The report** is the agent's last message of each run, logged as `report`: what the run did, its first line the run's summary.
+- **The review sheet,** an output of every instance, the item `review`, last among the outputs, opens with a one-line verdict, such as "11 checks pass" or "2 need you: C12, C15", which heads it in the conversation; then the key figures against the previous instance with the reasons, and the checks. Open points are asks, carried values are says, and sources stay on the items. A workbook opens in Preview.
 
 ## Runs
 
@@ -134,7 +135,7 @@ Everything is files on the host's disk, in folders named by random ids, with no 
       working/                the agent's: scripts, process.md, drafts, outputs, and inputs it fetched or made
       screen.json             the screen, read-only
       log.jsonl               every event, written by the server
-      session/                each run's Pi session, <time>_run-<n>.jsonl, which the Ops log shows
+      session/                each run's Pi session, <time>_run-<n>.jsonl, which the audit shows
       skills/                 the skills the latest run loaded, copied in as it started
       names.tsv               the latest run's names: each instance in its reach, id<TAB>/work/<workspace>/<series>/<label>
       browser/                each run's browser requests, one line per request, and its screenshots

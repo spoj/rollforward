@@ -2,7 +2,7 @@ import { freemem } from 'node:os';
 import { existsSync, realpathSync, rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
-import { agentsFile, createInstance, HttpError, instance, instanceDir, instances, isPerson, labels, newId, seriesDir, type Entry, type Instance } from './store.ts';
+import { agentsFile, createInstance, HttpError, instance, instanceDir, instances, isPerson, labels, newId, readFile, seriesDir, type Entry, type Instance } from './store.ts';
 import { startRun, type Run, type View } from './runner.ts';
 import { prepare } from './indexes.ts';
 import { canSee, changes, everyone, readJson, rfDir, tree, type Tree, writeJson } from './system.ts';
@@ -26,7 +26,7 @@ const full = () => active.size >= MAX_RUNS || (MIN_FREE > 0 && freemem() < MIN_F
 export const MAX_OPEN = 3;
 const SPACING_MS = 15 * 60_000;
 
-export type Active = { inst: Instance; n: number; token: string; view: View; run?: Run; sent: number; seen: number; texts: Map<string, number>; interrupted: boolean; done: boolean; cost: number; said: string; failed?: string; hosts: Set<string>; links: Map<string, string>; browsers?: Browsers; timer?: NodeJS.Timeout };
+export type Active = { inst: Instance; n: number; token: string; view: View; run?: Run; sent: number; seen: number; texts: Map<string, number>; interrupted: boolean; done: boolean; cost: number; said: string; failed?: string; hosts: Set<string>; links: Map<string, string>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string };
 export const active = new Map<string, Active>();
 export const byToken = new Map<string, Active>();
 const debounce = new Map<string, NodeJS.Timeout>();
@@ -126,7 +126,10 @@ async function start(inst: Instance) {
   const n = inst.log.filter(e => e.op === 'run').length + 1;
   const entries = inst.log.filter(e => e.seq > seen && e.by !== 'agent');
   const text = message(inst, n, entries, true);
-  const a: Active = { inst, n, token: randomUUID(), view: view(inst), sent: entries.at(-1)!.seq, seen, texts: new Map([[text, entries.at(-1)!.seq]]), interrupted: false, done: false, cost: 0, said: '', hosts: new Set(), links: new Map() };
+  const a: Active = {
+    inst, n, token: randomUUID(), view: view(inst), sent: entries.at(-1)!.seq, seen, texts: new Map([[text, entries.at(-1)!.seq]]), interrupted: false, done: false, cost: 0, said: '', hosts: new Set(), links: new Map(),
+    process: processOf(inst), thread: pending(inst, seen)[0]?.thread as string | undefined,
+  };
   active.set(series, a);
   byToken.set(a.token, a);
   // The versions live now, which the run uses to its end.
@@ -145,7 +148,7 @@ async function start(inst: Instance) {
       token: a.token, id: inst.id, n, view: a.view,
       message: text, skills: live,
       onEvent: e => {
-        if (e.type === 'message_end' || e.type === 'tool_execution_end') changes.emit('change', inst.id); // the Ops log shows the run as it goes
+        if (e.type === 'message_end' || e.type === 'tool_execution_end') changes.emit('change', inst.id); // the audit shows the run as it goes
         if (e.type === 'tool_execution_end') a.browsers?.shoot().catch(err => console.error(`run ${n} of ${inst.id}: no screenshot`, err));
         if (e.type === 'message_end' && e.message.role === 'assistant') {
           a.failed = e.message.stopReason === 'error' ? e.message.errorMessage ?? 'the model failed' : undefined; // a later success clears it
@@ -171,6 +174,17 @@ async function start(inst: Instance) {
   a.run.settled.then(aborted => finish(a, aborted, a.failed));
 }
 
+// The process a run starts from: its instance's working/process.md, or, until it has one, that of the series' latest closed instance
+// before it by label, as the page redlines it. A rule is one of its list items.
+function processOf(inst: Instance): string {
+  const prev = instances(inst.seriesId).filter(i => i.doc.status === 'closed' && i.label < inst.label).at(-1);
+  return readFile(inst.dir, 'working/process.md') ?? (prev && readFile(prev.dir, 'working/process.md')) ?? '';
+}
+const rules = (was: string, now: string) => {
+  const old = new Set(was.split('\n').map(l => l.trim()));
+  return now.split('\n').filter(l => /^\s*([-*+]|\d+[.)])\s/.test(l) && !old.has(l.trim())).length;
+};
+
 function finish(a: Active, aborted: boolean, error?: string) {
   if (a.done) return;
   a.done = true;
@@ -182,8 +196,9 @@ function finish(a: Active, aborted: boolean, error?: string) {
   a.browsers?.end().catch(e => a.inst.append('server', 'browsers', { run: a.n, error: e.message }));
   // The agent's last words in a run are its report to the instance's people; its first line is the run's summary.
   if (a.said && !aborted) a.inst.append('agent', 'report', { run: a.n, text: a.said });
-  const summary = a.said && !aborted ? summaryOf(a.said) : null;
-  a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(4), summary, ...(error && { error }) });
+  const summary = a.said && !aborted ? summaryOf(a.said) : null, added = rules(a.process, readFile(a.inst.dir, 'working/process.md') ?? a.process);
+  // The rules it added to the process, or reworded, for the thread whose entry started it, where they were likely agreed.
+  a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(4), summary, ...(error && { error }), ...(added && { rules: added, thread: a.thread }) });
   // Once its sandbox has stopped, the run's changes are one commit, with the names.tsv they were written under, which the instance's
   // next run and its other commits wait for.
   const stopped = a.run?.stop().catch(e => console.error(`run ${a.n} of ${a.inst.id} left its scratch folder`, e));
@@ -343,7 +358,7 @@ function fire() {
   saveWakes(w);
 }
 
-// The ops log's line for a run: the report's first line, plain, or its first sentence when that line runs long.
+// A run's summary: the report's first line, plain, or its first sentence when that line runs long.
 function summaryOf(report: string): string {
   const line = report.split('\n')[0].replace(/\*+|^#+/g, '').trim();
   return (line.length > 200 ? line.split(/(?<=[.!?])\s/)[0] : line).slice(0, 200);
