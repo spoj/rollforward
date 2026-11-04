@@ -409,6 +409,7 @@ export async function authenticate(req: IncomingMessage, res: ServerResponse, ur
 }
 
 export function checkConfig() {
+  if (![undefined, '0', '1'].includes(env.RF_AUTO_PROVISION)) throw new Error(`RF_AUTO_PROVISION is 0 or 1, not ${JSON.stringify(env.RF_AUTO_PROVISION)}`);
   if (!oidc.issuer || !oidc.clientId || !oidc.publicUrl || !URL.canParse(oidc.redirect)) throw new Error('sign-in needs an app registered in Microsoft Entra ID: RF_OIDC_ISSUER, RF_OIDC_CLIENT_ID and RF_PUBLIC_URL (and RF_OIDC_CLIENT_SECRET unless the app is a public client)');
 }
 

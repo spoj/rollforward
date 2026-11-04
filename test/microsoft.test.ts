@@ -118,6 +118,8 @@ test('the button goes to Microsoft, and back with a session; without an app the 
   const bare = spawnSync(process.execPath, [join(app, 'src', 'server.ts'), join(tmp, 'bare'), '0'], { env: { ...process.env, HOME: tmp, RF_OIDC_ISSUER: '' }, encoding: 'utf8' });
   assert.notEqual(bare.status, 0);
   assert.match(bare.stderr, /sign-in needs an app registered in Microsoft Entra ID/);
+  const loose = spawnSync(process.execPath, [join(app, 'src', 'server.ts'), join(tmp, 'bare'), '0'], { env: { ...process.env, HOME: tmp, RF_OIDC_ISSUER: idpBase, RF_OIDC_CLIENT_ID: 'rf-test', RF_PUBLIC_URL: confidential, RF_AUTO_PROVISION: 'no' }, encoding: 'utf8' });
+  assert.match(loose.stderr, /RF_AUTO_PROVISION is 0 or 1, not "no"/, 'nor with a provisioning setting it would read as on');
 });
 
 test("Connect Microsoft 365 asks the same app for read-only mail and files, and keeps the person's own login, sealed", async () => {
