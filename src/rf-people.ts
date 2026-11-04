@@ -30,6 +30,7 @@ rf people WORKSPACE [--set FILE|-] [-n] [--force]   its owners and admins: its p
 
 Publishers and admins:
 rf skill push DIR                 DIR/SKILL.md and the rest become the newest version of the skill named DIR's name, live at once
+rf skill pull ID [DIR] [--version N]   the newest version, or N, into DIR, ./ID by default, new or empty, as push reads it
 rf skill versions ID
 rf skill rollback ID N            pushes version N again, as the newest
 
@@ -287,6 +288,17 @@ else if (cmd === 'comment' && args.length === 2) {
   const files = Object.fromEntries(readdirSync(args[1], { recursive: true, withFileTypes: true }).filter(d => d.isFile())
     .map(d => [relative(args[1], join(d.parentPath, d.name)).split(sep).join('/'), readFileSync(join(d.parentPath, d.name)).toString('base64')]));
   console.log(await (await post(`/skills/${encodeURIComponent(basename(resolve(args[1])))}/versions`, { files })).text());
+} else if (cmd === 'skill' && args[0] === 'pull' && args[1] && args.length <= 3) {
+  const id = encodeURIComponent(args[1]), dir = resolve(args[2] ?? args[1]), n = flags.version ?? (await get(`/skills/${id}/versions`)).at(-1)?.version;
+  if (n === undefined) throw new Error(`no skill ${args[1]}`);
+  if (existsSync(dir) && readdirSync(dir).length) throw new Error(`${dir} isn't empty: pull into a new folder, so nothing stale goes along when you push it`);
+  for (const [rel, data] of Object.entries<string>(await get(`/skills/${id}/versions/${n}`))) {
+    const path = under(dir, rel);
+    if (!path) throw new Error(`${rel} can't be a file's name here`);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, Buffer.from(data, 'base64'));
+  }
+  console.log(`pulled ${args[1]} version ${n} into ${dir}`);
 } else if (cmd === 'skill' && args[0] === 'versions' && args[1]) {
   for (const v of await get(`/skills/${encodeURIComponent(args[1])}/versions`)) console.log(`${v.version}  ${v.at}  ${v.by}`);
 } else if (cmd === 'skill' && args[0] === 'rollback' && args.length === 3) {

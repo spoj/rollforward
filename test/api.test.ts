@@ -504,6 +504,8 @@ test('skills are pushed by publishers and admins, each push a version live at on
   assert.deepEqual((await json('/skills/tool/versions')).map((v: { version: number }) => v.version), [1, 2, 3]);
   assert.equal((await push({ files: { '../x': 'eA==', 'SKILL.md': 'eA==' } })).status, 400);
   authCli('role', bob, 'user');
+  assert.deepEqual(await json('/skills/tool/versions/2', b), changed, 'anyone signed in reads a version');
+  assert.equal((await call('GET', '/skills/tool/versions/9', undefined, b)).status, 404);
 });
 
 test("personal tokens act as their person for rf, every use logged, until revoked", async () => {
@@ -558,6 +560,13 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   assert.match(await rf('pull', `${week}/`, two, '--exclude', 'session', '--delete'), /^deleted  mine\.txt$/m);
   assert.ok(!existsSync(join(two, 'mine.txt')));
   assert.match(await rf('help'), /What rf pull copies/);
+  const tool = join(tmp, 'skill', 'tool');
+  assert.match(await rf('skill', 'pull', 'tool', tool), /^pulled tool version 3 into /);
+  assert.match(await rf('skill', 'push', tool), /^pushed tool version 4, live now/);
+  assert.deepEqual(await json('/skills/tool/versions/4'), await json('/skills/tool/versions/3'), 'pulled as push reads it');
+  await assert.rejects(rf('skill', 'pull', 'tool', tool), /isn't empty/);
+  await rf('skill', 'pull', 'tool', join(tmp, 'second'), '--version', '2');
+  assert.match(readFileSync(join(tmp, 'second', 'SKILL.md'), 'utf8'), /description: the second/);
   await assert.rejects(rf('pull', `${week}/`, join(tmp, 'three'), '--exclude'), /--exclude takes a value/);
   assert.equal((await json(await at(series, 'talk'))).log.findLast((e: { op: string }) => e.op === 'comment').text, 'From the shell');
   const runs = JSON.parse(await rf('runs', `larkfield/${series}`, '--json'));

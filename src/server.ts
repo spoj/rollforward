@@ -653,8 +653,9 @@ async function admin(me: Me, req: IncomingMessage, res: ServerResponse, url: URL
 
 // Skills: anyone signed in may list them; every run loads every live one. Publishers and admins push versions, with rf.
 async function skillsRoute(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) {
-  const [id = '', action] = url.pathname.split('/').slice(2).map(decodeURIComponent);
+  const [id = '', action, n] = url.pathname.split('/').slice(2).map(decodeURIComponent);
   if (!id && req.method === 'GET') return send(res, 200, skills().map(s => ({ id: s.id, name: s.name, description: s.description, pushed: pushed(s) })));
+  if (action === 'versions' && n && req.method === 'GET') return send(res, 200, versionFiles(id, Number(n)));
   if (action === 'versions' && req.method === 'GET') return send(res, 200, versionsOf(id));
   if (action === 'versions' && req.method === 'POST') {
     if (me.role !== 'admin' && me.role !== 'publisher') throw new HttpError(403, 'publishers and admins push skills');
