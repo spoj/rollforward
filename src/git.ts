@@ -1,7 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { closeSync, constants, createReadStream, existsSync, fstatSync, openSync, readdirSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, constants, createReadStream, existsSync, fstatSync, openSync, readdirSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
@@ -46,10 +46,22 @@ const ident = (w: Who) => `${w.name.replace(/[<>\n]/g, '')} <${w.email.replace(/
 const quote = (b: Buffer) => (!b.includes(10) && b[0] !== 34 ? b
   : Buffer.concat([Buffer.from('"'), Buffer.from([...b].flatMap(c => (c === 10 ? [92, 110] : c === 34 || c === 92 ? [92, c] : [c]))), Buffer.from('"')]));
 const SLASH = Buffer.from('/');
-// What can't be read, such as a file a run made unreadable, fails the commit, by its path in the folder.
+// What can't be read fails the commit, by its path in the folder.
 const read = <T>(path: Buffer, f: () => T): T => {
   try { return f(); } catch (e) { throw new Error(`${path} can't be read: ${(e as NodeJS.ErrnoException).code}`); }
 };
+// A file or folder as it was listed, never a link. One a run made unreadable, as it may what it wrote, is the server's own, so is
+// made readable first, u+r, or u+rx for a folder: through a descriptor of that very one, Linux's O_PATH, so a link swapped in
+// meanwhile passes nothing on.
+const O_PATH = 0o10000000;
+const open = (path: Buffer, at: Buffer, flags: number, need: number) => read(path, () => {
+  const p = openSync(at, O_PATH | constants.O_NOFOLLOW), self = `/proc/self/fd/${p}`;
+  try {
+    const { mode } = fstatSync(p);
+    if ((mode & need) !== need) chmodSync(self, (mode | need) & 0o7777);
+    return openSync(self, flags);
+  } finally { closeSync(p); }
+});
 
 // What the last commit read of each file, by its path: its inode, size, modification and change times and mode, and its blob. A file
 // whose are the same is that blob, unread, as git's index does it: a run can set a file's modification time, never its change time.
@@ -65,13 +77,13 @@ async function* files(dfd: number, rel: Buffer, seen: Seen, now: Seen): AsyncGen
     const name = d.name as unknown as Buffer, path = rel.length ? Buffer.concat([rel, SLASH, name]) : name;
     if (refused(name.toString('latin1'), d.isSymbolicLink())) continue;
     if (d.isDirectory()) {
-      const sub = read(path, () => openSync(at(name), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW));
+      const sub = open(path, at(name), constants.O_RDONLY | constants.O_DIRECTORY, 0o500);
       try { yield* files(sub, path, seen, now); } finally { closeSync(sub); }
     } else if (d.isSymbolicLink()) {
       const to = read(path, () => readlinkSync(at(name), { encoding: 'buffer' }));
       yield Buffer.concat([Buffer.from('M 120000 inline '), quote(path), Buffer.from(`\ndata ${to.length}\n`), to, Buffer.from('\n')]);
     } else if (d.isFile()) {
-      const fd = read(path, () => openSync(at(name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)), st = fstatSync(fd, { bigint: true });
+      const fd = open(path, at(name), constants.O_RDONLY | constants.O_NONBLOCK, 0o400), st = fstatSync(fd, { bigint: true });
       const mode = st.mode & 0o111n ? '100755' : '100644', key = path.toString('latin1'), stat = `${st.ino} ${st.size} ${st.mtimeNs} ${st.ctimeNs} ${mode}`;
       const was = seen.get(key), size = Number(st.size), fresh = st.ctimeNs > BigInt(Date.now() - 1000) * 1_000_000n;
       if (!st.isFile() || !size || was?.[0] === stat) closeSync(fd);

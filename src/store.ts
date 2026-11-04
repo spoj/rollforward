@@ -16,13 +16,18 @@ export function replaceReadOnly(path: string, data: string | Buffer) {
 }
 
 // Opens `rel` under `base` where a run may have put anything: only a regular file reached without a link, else undefined. The real
-// path of what was opened is checked, so a folder swapped for a link meanwhile is refused too.
+// path of what was opened is checked, so a folder swapped for a link meanwhile is refused too; and what a run made unreadable, or
+// changed as it was opened, is none either.
 export function openFile(base: string, rel: string): number | undefined {
   const path = join(base, rel);
-  if (!lstatSync(path, { throwIfNoEntry: false })?.isFile()) return undefined;
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  if (fstatSync(fd).isFile() && readlinkSync(`/proc/self/fd/${fd}`) === join(realpathSync(base), rel)) return fd;
-  closeSync(fd);
+  try {
+    if (!lstatSync(path, { throwIfNoEntry: false })?.isFile()) return undefined;
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    if (fstatSync(fd).isFile() && readlinkSync(`/proc/self/fd/${fd}`) === join(realpathSync(base), rel)) return fd;
+    closeSync(fd);
+  } catch (e) {
+    if (!['EACCES', 'ELOOP', 'ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code!)) throw e;
+  }
 }
 
 export function readFile(base: string, rel: string): string | undefined {

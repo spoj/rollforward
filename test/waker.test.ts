@@ -1,11 +1,12 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInstance, instance, labels, openStore, renameInstance, type Instance } from '../src/store.ts';
 import { initSystem, readJson, saveTree, tree, writeJson } from '../src/system.ts';
 import type { Active } from '../src/waker.ts';
+import { committed } from '../src/git.ts';
 import { idp } from './idp.ts';
 
 // Wakes without a model: a run that a wake starts ends at once for want of a key, which is enough to see what started it.
@@ -24,11 +25,12 @@ saveTree({
   series: {
     s1: { name: 'Bank rec', workspace: 'w' }, s2: { name: 'Borrowing base', workspace: 'w' }, s3: { name: 'Payroll', workspace: 'x' },
     s4: { name: 'Lunch', workspace: 'w', single: true }, s5: { name: 'Close', workspace: 'm' }, s6: { name: 'Queue', workspace: 'w' }, s7: { name: 'Leaver', workspace: 'l' },
+    s8: { name: 'Locked', workspace: 'w' },
   },
 });
 writeJson('users.json', { [alice]: { role: 'user' } });
 keepSignIn(alice, entra.refresh(alice));
-for (const s of ['s1', 's2', 's3', 's4', 's5', 's6', 's7']) mkdirSync(join(tmp, 'series', s), { recursive: true });
+for (const s of ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8']) mkdirSync(join(tmp, 'series', s), { recursive: true });
 const make = (series: string, label: string) => createInstance(series, label, alice, []);
 const aug = make('s1', '2026-08');
 await aug.close({ email: alice, name: 'Alice' });
@@ -93,6 +95,17 @@ test("a wake a person set fires only while they may see its workspace, and a tar
   assert.throws(() => setWake(lunch.id, { at: new Date(2031, 1, 1).toISOString(), from: alice }), /20 wakes are pending for it: cancel one first/);
   assert.equal(setWake(lunch.id, { at: new Date(2031, 0, 1).toISOString(), from: alice }).at, new Date(2031, 0, 1).toISOString(), 'the same again is one');
   cancelWakes([lunch.id]);
+});
+
+test('a process.md a run made unreadable is none to the server, so the next run starts all the same, and its commit makes it readable again', async () => {
+  const locked = make('s8', 'locked'), md = join(locked.dir, 'working', 'process.md');
+  writeFileSync(md, '- a rule\n');
+  chmodSync(md, 0);
+  locked.append(alice, 'comment', { thread: 'n1', text: 'go' });
+  kick(locked);
+  while (!locked.log.some(e => e.op === 'done')) await new Promise(r => setTimeout(r, 5));
+  await committed(locked.dir);
+  assert.equal(statSync(md).mode & 0o777, 0o400);
 });
 
 test("a series' wake starts an instance as whoever shares the series; unshared, or with 3 open, it's a request", async () => {
