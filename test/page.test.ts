@@ -69,6 +69,8 @@ before(async () => {
   browser = await chromium.launch();
   page = await browser.newPage();
   page.on('dialog', d => { native.push(d.message()); d.dismiss(); });
+  // So a test that times out in CI shows what the page threw, such as a request the server refused.
+  page.on('pageerror', e => console.error('page error:', e.message));
   entra.who.as = 'admin@demo.test';
   await page.goto(`http://127.0.0.1:${port}/auth/login`);
   await page.waitForSelector('#bar h1 .t'); // once the start's kick of the open instance has passed
