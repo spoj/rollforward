@@ -350,13 +350,14 @@ iframe.mail { width: 100%; border: 0; background: #fff; }
 input[type=checkbox] { accent-color: var(--ink); }
 
 .log { display: none; width: var(--panel); border-left: 1px solid var(--rule); background: var(--sheet); height: 100dvh; overflow: auto; }
-.log.open { display: block; }
-.conv { padding: 4px 20px 20px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; overflow-wrap: anywhere; }
+.log.open { display: flex; flex-direction: column; }
+.conv { flex: 1 0 auto; padding: 4px 20px 0; display: flex; flex-direction: column; gap: 8px; overflow-wrap: anywhere; }
 .conv table { display: block; max-width: 100%; overflow-x: auto; }
 .proc div { white-space: pre-wrap; font-size: 13px; line-height: 1.5; padding: 0 4px; }
 .proc .ins { background: #e6f4ea; }
 .proc .del { background: #fdecea; text-decoration: line-through; color: var(--ink-3); }
-.conv h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-3); margin: 12px 0 0; }
+.conv h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-3); margin: 0; }
+.conv .compose { position: sticky; bottom: 0; z-index: 1; margin: auto -20px 0; padding: 10px 20px 16px; display: grid; gap: 8px; background: var(--sheet); border-top: 1px solid var(--rule); }
 .conv textarea { font: inherit; padding: 7px 9px; border: 1px solid var(--rule-2); border-radius: var(--r1); resize: vertical; width: 100%; }
 .conv input[type=file] { font-size: 12px; color: var(--ink-3); }
 .thumbs { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -435,7 +436,7 @@ input[type=checkbox] { accent-color: var(--ink); }
     </div>
     <div class="player" id="player" hidden></div>
   </main>
-  <aside class="log" id="log"><div class="lh" id="lh"></div><div id="conv"></div><section class="audit" id="audit" hidden></section></aside>
+  <aside class="log" id="log"><div class="lh" id="lh"></div><div class="conv" id="conv"></div><section class="audit" id="audit" hidden></section></aside>
   <div class="grip" data-pane="side" title="Drag to resize; double-click to reset"></div><div class="grip" data-pane="panel" title="Drag to resize; double-click to reset"></div>
 </div>
 <div class="card" id="card" hidden></div>
@@ -874,6 +875,8 @@ function renderNeeds() {
 const seeHtml = see => see ? ` \u00b7 see <a href="#/${esc(see.inst)}">${esc(see.label)}</a>${see.thread ? ` ${esc(see.thread)}` : ''}` : '';
 
 function renderLog() {
+  // Either side opens at its latest, as the panel does, and keeps there as posts come, unless the reader has scrolled up.
+  if (ui.open && data && !$('#log').classList.contains('open')) $('#log').dataset.end = 'yes';
   $('#log').className = 'log' + (ui.open && data ? ' open' : '');
   if (!data || !ui.open) return;
   const key = `${cur.i.id}:${data.doc.rev}:${lastDone()?.seq}`;
@@ -886,6 +889,7 @@ function renderLog() {
     + '<button class="x" data-act="panel" title="Close">\u00D7</button>');
   $('#conv').hidden = ui.audit;
   if (!drafting) put($('#conv'), conversationHtml());
+  if (!ui.audit && $('#log').dataset.end !== 'no') $('#log').scrollTop = $('#log').scrollHeight;
   // Only on the instance it's for: a render for the one before, as the page catches up, leaves it. The box keeps the focus it had.
   if (focused) $('#newcomment')?.focus();
   if (ui.focus !== cur.i.id) return;
@@ -893,8 +897,7 @@ function renderLog() {
   ui.focus = false;
 }
 
-// The audit, the panel's other side: the log and the agent's session, oldest first, one plain line each, opening at the latest and
-// kept there as entries come unless the reader has scrolled up.
+// The audit, the panel's other side: the log and the agent's session, oldest first, one plain line each.
 function renderAudit() {
   $('#audit').hidden = !(ui.audit && data);
   if ($('#audit').hidden) return;
@@ -920,14 +923,13 @@ function renderPlayer() {
     + (folded ? '' : `<iframe src="/runs/${cur.i.id}/${enc(site)}/view?watch" title="Run ${data.run.n}'s browser on ${esc(site)}"></iframe>`));
 }
 
-// The audit shows with the session's steps, fetched for it, at its latest; the conversation, back, at its top.
+// The audit shows with the session's steps, fetched for it.
 async function toggleAudit() {
   ui.audit = !ui.audit;
   if (ui.audit) [lines, linesKey] = [await api(instPath() + '/trace'), `${instPath()}:${data.log.length}`];
   $('#log').dataset.end = 'yes';
   renderLog();
   renderAudit();
-  if (!ui.audit) $('#log').scrollTop = 0;
 }
 
 const VERB = { read: 'Read', bash: 'Ran', edit: 'Edited', write: 'Wrote' };
@@ -1023,23 +1025,25 @@ function runHtml(r, latest) {
   return body ? `<details class="runl" data-key="run${r.run}" ${ui.sect[`run${r.run}`] ?? latest ? 'open' : ''}><summary>${line}</summary>${body}</details>` : `<div class="runl">${line}</div>`;
 }
 
-// The conversation: the review sheet and the process, open for the runner, folded for others; a box to comment on the instance; then
-// the threads and the runs among them, newest first, a thread where its last word is and a run where it ended.
+// The conversation, as a chat reads: the review sheet and the process, open for the runner, folded for others; the threads and the
+// runs among them, oldest first, a thread where its last word is and a run where it ended; and at the panel's foot, kept there as it
+// scrolls, the box to comment on the instance.
 function conversationHtml() {
   const open = data.doc.status === 'open', name = id => esc(data.doc.items.find(i => i.id === id)?.name ?? id), mine = data.runner.by === me.email;
   const fold = (key, head, body) => `<details class="sect" data-key="${key}" ${ui.sect[key] ?? mine ? 'open' : ''}><summary>${head}</summary>${body}</details>`;
   const moved = data.log.findLast(e => e.op === 'move'), runs = data.log.filter(e => e.op === 'run');
-  let h = '<div class="conv">' + (moved ? `<div class="sub">Moved ${when(moved.at)} from ${esc(moved.from)} to ${esc(moved.to)}, ${who(moved.accepted_by)} accepting.</div>` : '');
+  let h = moved ? `<div class="sub">Moved ${when(moved.at)} from ${esc(moved.from)} to ${esc(moved.to)}, ${who(moved.accepted_by)} accepting.</div>` : '';
   if (docs.review) h += fold('review', `<b>Review sheet</b>${docs.verdict ? ` \u00b7 ${esc(docs.verdict)}` : ''}`, docs.sheet ? `<div class="post">${docs.sheet}</div>` : `<div><a data-act="preview" data-file="${esc(docs.review.file)}">Open ${esc(fname(docs.review.file))}</a></div>`);
   if (docs.process) h += fold('process', `<b>Process</b>${docs.changed ? ' \u00b7 changed' : ''}`, docs.process);
+  const ended = r => data.log.find(e => e.op === 'done' && e.run === r.run)?.seq ?? Infinity;
+  h += [...threads.map(t => [t.last.seq, threadHtml(t)]), ...runs.map(r => [ended(r), runHtml(r, r === runs.at(-1))])].sort((a, b) => a[0] - b[0]).map(([, x]) => x).join('');
   // Before its first run, its runner may tick its logins anew where they write its first prompt.
   const first = mine && !runs.length, lends = first && myLogins.some(l => l.offers.length);
-  if (open) h += `<h3>${ui.on ? `Comment on ${name(ui.on)}${ui.ref ? ` at ${esc(ui.ref)}` : ''}` : 'Comment on the instance'}</h3>`
+  if (open) h += `<div class="compose"><h3>${ui.on ? `Comment on ${name(ui.on)}${ui.ref ? ` at ${esc(ui.ref)}` : ''}` : 'Comment on the instance'}</h3>`
     + (lends ? `<div class="ticks2">Credentials:${ticksHtml(myLogins, data.runner.logins)}</div>` : '')
-    + `<textarea id="newcomment" rows="3" placeholder="${first ? 'What should the agent do? Drop files here too' : mine || cur.s.shared_by === data.runner.by ? 'The agent replies in the thread' : `A note for ${esc(nameOf(data.runner.by))}: the agent takes it up once they do`}"></textarea><input type="file" id="newfiles" multiple>${lends ? '<div class="consent">By clicking Comment, you agree that agents carry these credentials while acting as you.</div>' : ''}<div><button class="btn primary" data-act="comment">Comment</button></div>`;
-  if (data.doc.status === 'closed') h += '<div><button class="btn" data-act="correct">Add a correction</button></div>';
-  const ended = r => data.log.find(e => e.op === 'done' && e.run === r.run)?.seq ?? Infinity;
-  return h + [...threads.map(t => [t.last.seq, threadHtml(t)]), ...runs.map(r => [ended(r), runHtml(r, r === runs.at(-1))])].sort((a, b) => b[0] - a[0]).map(([, x]) => x).join('') + '</div>';
+    + `<textarea id="newcomment" rows="3" placeholder="${first ? 'What should the agent do? Drop files here too' : mine || cur.s.shared_by === data.runner.by ? 'The agent replies in the thread' : `A note for ${esc(nameOf(data.runner.by))}: the agent takes it up once they do`}"></textarea><input type="file" id="newfiles" multiple>${lends ? '<div class="consent">By clicking Comment, you agree that agents carry these credentials while acting as you.</div>' : ''}<div><button class="btn primary" data-act="comment">Comment</button></div></div>`;
+  if (data.doc.status === 'closed') h += '<div class="compose"><div><button class="btn" data-act="correct">Add a correction</button></div></div>';
+  return h;
 }
 
 function renderCard() {
@@ -1948,7 +1952,7 @@ document.fonts.ready.then(drawEdges);
 
 addEventListener('hashchange', () => {
   openItem = null; ui.sect = {}; prevSigs = {};
-  $('#panes').scrollTop = $('#flow').scrollTop = $('#flow').scrollLeft = $('#outs').scrollTop = $('#log').scrollTop = 0;
+  $('#panes').scrollTop = $('#flow').scrollTop = $('#flow').scrollLeft = $('#outs').scrollTop = 0;
   $('#log').dataset.end = 'yes';
   closePv();
   $('#side').classList.remove('open');

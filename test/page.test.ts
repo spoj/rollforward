@@ -335,6 +335,37 @@ test("people show by name, with their email on hover, and Entra groups by label;
   assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('#needs, #log')].map(e => e.scrollWidth <= e.clientWidth).concat([...document.querySelectorAll('#needs .btn')].map(b => b.getBoundingClientRect().right <= document.querySelector('#needs')!.getBoundingClientRect().right))), [true, true, true, true], 'a long line ends in an ellipsis, and its Reply shows; the panel keeps its width');
 });
 
+test("the conversation reads as a chat: its folds at the top, then oldest first, a run below the comment that started it and a thread where its last post is, and the box to comment at the panel's foot; it opens at the latest and keeps there as posts come, unless the reader has scrolled up", async () => {
+  const url = (path: string) => new URL(path, page.url()).href, signin = await entra.signIn(new URL(page.url()).origin, 'bob@demo.test');
+  const bobs = signin.headers.getSetCookie().find(c => c.startsWith('rf_session='))!.split(';')[0];
+  const note = async (text: string, thread?: string) => {
+    assert.equal((await fetch(url('/api/instances/a5c0ff5e1f00/comment'), { method: 'POST', body: JSON.stringify({ text, thread }), headers: { cookie: bobs } })).status, 200);
+    await page.locator('#log .thread', { hasText: text }).waitFor();
+  };
+  const order = () => page.$$eval('#conv > *', es => es.map(e => (e as HTMLElement).dataset.key ?? (e as HTMLElement).dataset.thread ?? e.className));
+  const where = () => page.$eval('#log', l => [l.scrollTop + l.clientHeight >= l.scrollHeight - 1 ? 'latest' : l.scrollTop === 0 ? 'top' : 'between',
+    Math.round(l.querySelector('.compose')!.getBoundingClientRect().bottom - l.getBoundingClientRect().bottom)]);
+  await page.setViewportSize({ width: 1280, height: 420 });
+  await page.evaluate(() => { location.hash = '#/a5c0ff5e1f01'; });
+  await page.waitForSelector('#bar h1 .t:text-is("2026-11")');
+  await page.waitForSelector('#log details[data-key=review][open]');
+  assert.deepEqual(await order(), ['review', 'process', 'c9', 'runl', 'c10', 'compose']);
+  assert.deepEqual(await where(), ['latest', 0]);
+  await page.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
+  await page.waitForSelector('#bar h1 .t:text-is("2026-12")');
+  await page.waitForSelector('#newcomment');
+  await note('First, the ledger.');
+  const first = await page.locator('#log .thread', { hasText: 'First, the ledger.' }).getAttribute('data-thread');
+  await note('Then the bank.');
+  assert.deepEqual(await where(), ['latest', 0], 'kept at the latest as posts come');
+  await note('The ledger is in.', first!);
+  assert.deepEqual((await order()).slice(-2), [first, 'compose'], 'a reply takes its thread to the foot');
+  await page.evaluate(() => new Promise(ok => { const l = document.querySelector('#log')!; l.addEventListener('scroll', ok, { once: true }); l.scrollTop = 0; }));
+  await note('Friday at the latest.');
+  assert.deepEqual(await where(), ['top', 0], 'scrolled up, the reader stays where they are, the box still at the foot');
+  await page.setViewportSize({ width: 1280, height: 720 });
+});
+
 test("a name two people share shows with their email, a group among a workspace's people is marked as one, and a person's request to start a series names them", async () => {
   const bob = 'bob@demo.test', users = join(root, '.rf', 'users.json'), group = '6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b';
   writeFileSync(join(root, '.rf', 'wakes.json'), JSON.stringify({ pending: {}, fired: {}, requests: { r9: { series: 'a5c0ff5e1fee', label: '2027-01', from: bob, at: new Date().toISOString() } } }));
