@@ -38,7 +38,7 @@ before(async () => {
   mkdirSync(join(called, 'working'), { recursive: true });
   writeFileSync(join(called, 'instance.json'), JSON.stringify({ label: '2026-11', series: 'a5c0ff5e1fee' }));
   writeFileSync(join(called, 'screen.json'), JSON.stringify({ rev: 1, status: 'closed', items: [{ id: 'review', name: 'Review sheet', kind: 'output', file: 'working/review.md' }] }));
-  writeFileSync(join(called, 'working', 'review.md'), '2 need you: C12, C15\n\nThe ledger is off by 4.00.\n');
+  writeFileSync(join(called, 'working', 'review.md'), '2 need you: C12, C15\n\nThe ledger is off by 4.00.\n\n| ![Ledger](working/months.png) | ![Months](../2026-11/working/months.png) |\n');
   writeFileSync(join(called, 'working', 'process.md'), 'The year-end pack for the bank.\n- Read the ledger; never write to it.\n');
   writeFileSync(join(called, 'working', 'months.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64'));
   writeFileSync(join(called, 'working', 'ledger.csv'), 'month,total\n');
@@ -193,7 +193,12 @@ test("the runner sees the review sheet, its verdict first, and the process, open
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f01'; });
   await page.waitForSelector('#log details[data-key=review][open]');
   assert.equal(await page.locator('#log details[data-key=review] summary').innerText(), 'Review sheet · 2 need you: C12, C15');
-  assert.equal(await page.locator('#log details[data-key=review] .post').innerText(), 'The ledger is off by 4.00.');
+  assert.match(await page.locator('#log details[data-key=review] .post').innerText(), /^The ledger is off by 4\.00\.\s*$/);
+  const pictured = page.locator('#log details[data-key=review] .post td img');
+  assert.deepEqual(await pictured.evaluateAll(is => is.map(i => i.getAttribute('src'))), ['/files/a5c0ff5e1f01/working/months.png', '/files/a5c0ff5e1f01/working/months.png'], "the review sheet's images show side by side, by their paths in the instance");
+  await pictured.first().click();
+  await page.waitForSelector('#pv img');
+  await page.keyboard.press('Escape');
   assert.equal(await page.locator('#log details[data-key=process]').evaluate(d => (d as HTMLDetailsElement).open), true);
   await page.click('#log details[data-key=process] > summary');
   const shown = page.locator('#log .thread[data-thread=c10] .post .f');

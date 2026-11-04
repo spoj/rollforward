@@ -374,7 +374,7 @@ input[type=checkbox] { accent-color: var(--ink); }
 .thread.waits.signoff { border: 2px solid var(--red); }
 .thread .on, .post .tm { color: var(--ink-3); font-size: 12px; }
 .post b.p { color: var(--person, #1d4ed8); }
-.post .f img { display: block; max-width: 100%; max-height: 240px; margin-top: 4px; border: 1px solid var(--rule); border-radius: var(--r1); cursor: zoom-in; }
+.post .f img, img.md { display: block; max-width: 100%; max-height: 240px; margin-top: 4px; border: 1px solid var(--rule); border-radius: var(--r1); cursor: zoom-in; }
 .log .lh { display: flex; align-items: center; gap: 4px; padding: 8px 12px; border-bottom: 1px solid var(--rule); position: sticky; top: 0; z-index: 1; background: var(--sheet); }
 .tab { border: 0; border-bottom: 2px solid transparent; background: none; padding: 8px 8px 9px; margin-bottom: -1px; font-family: inherit; font-size: 13px; font-weight: 500; color: var(--ink-3); cursor: pointer; white-space: nowrap; }
 .tab.sel { color: var(--ink); border-bottom-color: var(--ink); }
@@ -935,7 +935,9 @@ async function toggleAudit() {
 
 const VERB = { read: 'Read', bash: 'Ran', edit: 'Edited', write: 'Wrote' };
 const firstLine = t => t.trim().split('\n')[0];
-const inline = s => s.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>');
+// An image in the agent's markdown, ![name](working/x.png), by its path in the instance, shows as a thread's file does.
+const inline = s => s.replace(/!\[([^\]]*)\]\(([^)\s&]+\.(?:png|jpe?g|gif|webp|svg))\)/gi, (_, alt, f) => `<img class="md" src="${fileUrl(f)}" loading="lazy" alt="${alt}" title="${alt}" data-act="preview" data-file="${f}">`)
+  .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>');
 
 function md(text) {
   let h = '', rows = [];
