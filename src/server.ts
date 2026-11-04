@@ -10,7 +10,7 @@ import { agentsFile, createInstance, duplicateInstance, moveInstance, renameInst
 import { AGENT, commit } from './git.ts';
 import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
-import { authenticate, checkConfig, cli, connect, m365Ready, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
+import { asPerson, authenticate, checkConfig, cli, connect, m365Ready, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
 import { canManage, canSee, changes, everyone, initSystem, isIn, isPeople, readJson, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
 import { checkTicks, logins, runnerOf, saveLogin, signOut } from './logins.ts';
 import { agentCall } from './agent-api.ts';
@@ -140,8 +140,8 @@ function asked(r: Request): string | null {
 // The open instances whose runner couldn't see them with this tree and these people: their runs can't use the runner's logins.
 function hidden(t: Tree, us: Record<string, User>): string[] {
   return Object.entries(t.series).flatMap(([sid, s]) => instances(sid).filter(i => {
-    const by = runnerOf(i).by, u = us[by];
-    return i.doc.status === 'open' && (!u || !canSee({ email: by, role: u.role, groups: u.groups ?? [] }, t.workspaces[s.workspace]));
+    const by = runnerOf(i).by, p = asPerson(by, us[by]);
+    return i.doc.status === 'open' && (!p || !canSee(p, t.workspaces[s.workspace]));
   }).map(i => {
     const by = runnerOf(i).by;
     return `${named(t, sid)}/${i.label}, run by ${us[by]?.name ? `${us[by].name} <${by}>` : by}`;
@@ -194,8 +194,8 @@ const fresh = (at: string) => Date.now() - Date.parse(at) < 7 * 86400e3;
 // The proposals open, each by the id of the workspace it merges or moves a series out of, into the one it names, while whoever
 // proposed it still manages that workspace.
 const proposals = (t: Tree) => Object.entries(t.workspaces).filter(([, w]) => {
-  const u = w.proposal && fresh(w.proposal.at) && users()[w.proposal.by];
-  return !!u && !u.disabled && canManage({ email: w.proposal!.by, role: u.role, groups: u.groups ?? [] }, w);
+  const by = w.proposal && fresh(w.proposal.at) && asPerson(w.proposal.by);
+  return !!by && canManage(by, w);
 }).map(([id, w]) => {
   const p = w.proposal!;
   return { id, into: p.to, kind: p.kind, from: w.name, to: t.workspaces[p.to].name, series: p.series ? t.series[p.series].name : null, by: p.by, at: p.at };
@@ -484,8 +484,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     });
     // Who joins: everyone in a workspace merged, as members; for a series moved, whoever runs its open instances but can't see the
     // other, whom its managers may add.
-    const us = users(), joining = p.kind === 'merge' ? everyone(a).filter(x => !everyone(b).includes(x))
-      : [...new Set(instances(moving[0]).filter(i => i.doc.status === 'open').map(i => runnerOf(i).by))].filter(x => !us[x] || !canSee({ email: x, role: us[x].role, groups: us[x].groups ?? [] }, b));
+    const joining = p.kind === 'merge' ? everyone(a).filter(x => !everyone(b).includes(x))
+      : [...new Set(instances(moving[0]).filter(i => i.doc.status === 'open').map(i => runnerOf(i).by))].filter(x => { const q = asPerson(x); return !q || !canSee(q, b); });
     // What the one accepting sees first: for a merge, the series made since it was proposed marked so, and the AGENTS.md it adds.
     if (req.method === 'GET') return send(res, 200, {
       ...p, series: move(structuredClone(t)).map(s => ({ ...s, ...(a.proposal!.had && !a.proposal!.had.includes(s.id) && { since: true }) })), people: joining,
@@ -675,8 +675,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       if (!ok) throw new HttpError(400, run ? `no file ${f}: cite one under upload/ or working/ of this instance, or of another of its series as ../<label>/...` : `no attachment ${f}`);
       return ok;
     });
-    const who = typeof to === 'string' ? to.toLowerCase() : undefined, u = who && users()[who];
-    if (who && !(u && canSee({ email: who, role: u.role, groups: u.groups ?? [] }, t.workspaces[t.series[inst.seriesId].workspace])))
+    const who = typeof to === 'string' ? to.toLowerCase() : undefined, p = who && asPerson(who);
+    if (who && !(p && canSee(p, t.workspaces[t.series[inst.seriesId].workspace])))
       throw new HttpError(400, `${to} can't see this instance; ask its runner, ${runnerOf(inst).by}, or someone in its workspace`);
     const said = inst.append(by, 'comment', {
       thread: thread ?? `c${inst.log.length + 1}`, ...(thread === undefined && { item: item ?? null, ref: ref ?? null }), text: text.trim(), ...(kept.length && { files: kept }),

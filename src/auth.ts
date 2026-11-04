@@ -102,13 +102,18 @@ export function revokeToken(email: string, id: string) {
   writeJson('tokens.json', Object.fromEntries(Object.entries(tokens()).filter(([, t]) => t.email !== email || t.id !== id)));
 }
 
+// A person as the server knows them now, an admin where RF_ADMINS says so; no one once removed or disabled.
+export function asPerson(email: string, u = users()[email]): Me | null {
+  return u && !u.disabled ? { email, name: u.name ?? email, role: admins.has(email) ? 'admin' : u.role, groups: u.groups ?? [] } : null;
+}
+
 function bearer(req: IncomingMessage, url: URL): Me | null {
   const token = /^Bearer (rft_\S+)$/.exec(req.headers.authorization ?? '')?.[1];
   if (!token) return null;
   const t = tokens()[digest(token)], u = t && users()[t.email];
   if (!u || u.disabled || (u.epoch ?? 0) !== t.epoch || t.expires < new Date().toISOString()) throw new HttpError(401, 'this token has expired or was revoked');
   appendFileSync(join(rfDir(), 'token-uses.jsonl'), JSON.stringify({ at: new Date().toISOString(), token: t.id, email: t.email, method: req.method, path: url.pathname }) + '\n');
-  return { email: t.email, name: u.name ?? t.email, role: admins.has(t.email) ? 'admin' : u.role, groups: u.groups ?? [] };
+  return asPerson(t.email, u);
 }
 
 export function signOutEverywhere(email: string) {
@@ -135,8 +140,8 @@ function cookie(name: string, value: string, maxAge: number, path = '/') {
 export function session(req: IncomingMessage): Me | null {
   const [email = '', exp = '', sig = ''] = (cookies(req).rf_session ?? '').split('.');
   const id = unb64(email), u = users()[id];
-  if (!u || u.disabled || !(Number(exp) > Date.now()) || !same(sig, mac(`${id} ${exp} ${u.epoch ?? 0}`))) return null;
-  return { email: id, name: u.name ?? id, role: admins.has(id) ? 'admin' : u.role, groups: u.groups ?? [] };
+  if (!u || !(Number(exp) > Date.now()) || !same(sig, mac(`${id} ${exp} ${u.epoch ?? 0}`))) return null;
+  return asPerson(id, u);
 }
 
 // Lets someone in whom Microsoft has vouched for: records them, with the Entra groups their token names (once the

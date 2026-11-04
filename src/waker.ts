@@ -6,7 +6,7 @@ import { agentsFile, createInstance, HttpError, instance, instanceDir, instances
 import { startRun, type Run, type View } from './runner.ts';
 import { prepare } from './indexes.ts';
 import { canSee, changes, everyone, readJson, rfDir, tree, type Tree, writeJson } from './system.ts';
-import { users } from './auth.ts';
+import { asPerson, users } from './auth.ts';
 import { scoped, type Browsers } from './browsers.ts';
 import { seriesSettings } from './series.ts';
 import { pushed, skills } from './skills.ts';
@@ -367,8 +367,8 @@ function fire() {
     const { target, days, label } = wake;
     if (Date.parse(w.fired[target] ?? '1970-01-01') + SPACING_MS > Date.parse(now)) continue;
     // One a person set goes only while they may see its workspace: once they can't, as when they've left, it's gone.
-    const setter = users()[wake.from], ws = t.workspaces[t.series[t.series[target] ? target : instance(target).seriesId].workspace];
-    if (!wake.inst && wake.from.includes('@') && !(setter && !setter.disabled && canSee({ email: wake.from, role: setter.role, groups: setter.groups ?? [] }, ws))) {
+    const setter = asPerson(wake.from), ws = t.workspaces[t.series[t.series[target] ? target : instance(target).seriesId].workspace];
+    if (!wake.inst && wake.from.includes('@') && !(setter && canSee(setter, ws))) {
       delete w.pending[id];
       console.log(`a wake ${wake.from} set went unfired, as they can no longer see ${ws.name}`);
       continue;
@@ -393,8 +393,8 @@ function fire() {
       kick(inst);
       continue;
     }
-    const shared = seriesSettings(seriesDir(target)).shared, u = shared && users()[shared.by];
-    const runs = u && !u.disabled && canSee({ email: shared.by, role: u.role, groups: u.groups ?? [] }, t.workspaces[t.series[target].workspace]);
+    const shared = seriesSettings(seriesDir(target)).shared, sharer = shared && asPerson(shared.by);
+    const runs = sharer && canSee(sharer, t.workspaces[t.series[target].workspace]);
     try {
       if (!runs) throw new Error('not shared');
       startWith(target, label!, shared.by, shared.logins.filter(t => !scoped(t)), { from });
