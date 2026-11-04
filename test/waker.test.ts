@@ -133,6 +133,17 @@ test('a run a restart cut ends as aborted, with what its calls cost so far, and 
   assert.equal(cut.log.filter(e => e.op === 'run').length, 3, 'started again');
 });
 
+test("an act just after a run ends, as its folder is committed, starts the next run, though the last never started", async () => {
+  const late = make('s2', 'late');
+  late.append(alice, 'comment', { thread: 't1', text: 'go' });
+  kick(late);
+  while (!late.log.some(e => e.op === 'done')) await new Promise(r => setTimeout(r, 5));
+  late.append(alice, 'comment', { thread: 't1', text: 'and this' });
+  kick(late);
+  await settle();
+  assert.equal(late.log.filter(e => e.op === 'run').length, 2);
+});
+
 test("an instance whose run met its runner's expired login carries on when they sign in again, once", async () => {
   const waits = make('s2', 'waits');
   waits.append('server', 'expired', { login: 'm365', runner: alice });

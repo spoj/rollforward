@@ -50,12 +50,11 @@ async function answer(req: IncomingMessage, res: ServerResponse) {
 const call = (method: string, path: string, body?: unknown, cookie = admin) => fetch(base + path, { method, headers: { cookie }, body: body === undefined ? undefined : JSON.stringify(body) });
 const login = async (email: string) => (await fetch(`${base}/auth/demo`, { method: 'POST', body: new URLSearchParams({ email, next: '/' }), redirect: 'manual' }))
   .headers.getSetCookie().find(c => c.startsWith('rf_session='))!.split(';')[0];
-// The instance's log once its run n has ended and committed.
 async function runs(id: string, n: number) {
-  let log: { op: string; [k: string]: unknown }[] = [], run: { n: number } | null = null;
-  for (let i = 0; i < 300 && (log.filter(e => e.op === 'done').length < n || run?.n === n); i++) {
+  let log: { op: string; [k: string]: unknown }[] = [];
+  for (let i = 0; i < 300 && log.filter(e => e.op === 'done').length < n; i++) {
     await new Promise(ok => setTimeout(ok, 200));
-    ({ log, run } = await (await call('GET', `/api/instances/${id}`)).json());
+    ({ log } = await (await call('GET', `/api/instances/${id}`)).json());
   }
   assert.ok(log.filter(e => e.op === 'done').length >= n, `run ${n} never finished: ${JSON.stringify(log)}`);
   return log;
@@ -236,11 +235,13 @@ test('people rename the instance, its series and its workspace mid-run: the run 
   assert.match(during.saw[1], /^set: \. wakes at .*\nsaid in c\d+, seq \d+\s*$/);
   assert.deepEqual((await (await call('GET', `/api/instances/${id}`)).json()).log.findLast((e: { op: string }) => e.op === 'comment').files, [{ inst: id, path: 'working/x.csv' }]);
   const git = (...args: string[]) => execFileSync('git', args, { cwd: join(root, 'instances', id), encoding: 'utf8' });
+  await until("run 2's commit", () => git('log', '-1', '--format=%s').startsWith('Run 2:'));
   assert.ok(git('show', 'HEAD:names.tsv').includes(`${id}\t/work/Named/Before/2026-11\n`), "the run's commit holds the names its changes were written under");
   assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Again.' })).status, 200);
   await runs(id, 3);
   const [now, ...renamed] = next.saw[0].trim().split('\n');
   assert.deepEqual([now, renamed.filter(l => l.startsWith(id))], ['/work/Renamed/After/November', [`${id}\t/work/Renamed/After/November`]]);
+  await until("run 3's commit", () => git('log', '-1', '--format=%s').startsWith('Run 3:'));
   assert.ok(git('show', 'HEAD:names.tsv').includes(`${id}\t/work/Renamed/After/November\n`));
 });
 
@@ -273,7 +274,7 @@ test('sign-offs are git commits: the agent commits a moment worth keeping, the r
   assert.match(ask.saw[2], /Read-only file system|Permission denied|unable to/i, 'and never writes it');
   assert.match(ask.saw[3], /a sign-off is the runner's, admin@demo.test: leave out --to/);
   assert.match(ask.saw[4], /^asked in c\d+/);
-  assert.deepEqual(log.filter(e => e.op === 'commit').map(e => [e.by, e.run, e.message, e.commit]), [['agent', 2, 'Draft pack built', git('rev-parse', 'HEAD~1')]]);
+  assert.deepEqual(log.filter(e => e.op === 'commit').map(e => [e.by, e.run, e.message, e.commit]), [['agent', 2, 'Draft pack built', git('rev-parse', ':/^Draft pack built')]]);
   const thread = log.findLast(e => e.op === 'comment')!.thread as string, signoff = (body: object, cookie = admin) => call('POST', `/api/instances/${id}/signoff`, { thread, ...body }, cookie);
   assert.equal(log.findLast(e => e.op === 'comment')!.signoff, true);
 

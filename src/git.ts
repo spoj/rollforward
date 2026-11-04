@@ -23,11 +23,15 @@ const queue = new Map<string, Promise<unknown>>();
 // left behind goes.
 export const pack = (dir: string) => git(dir, 'gc', '-q', '--prune=now');
 
-export function commit(dir: string, who: Who, message: string): Promise<string> {
-  const next = (queue.get(dir) ?? Promise.resolve()).then(() => snapshot(dir, who, message));
+// `after`, such as a run's sandbox stopping, comes first: the commit, and those queued after it, wait for it.
+export function commit(dir: string, who: Who, message: string, after?: Promise<unknown>): Promise<string> {
+  const next = (queue.get(dir) ?? Promise.resolve()).then(() => after).then(() => snapshot(dir, who, message));
   queue.set(dir, next.catch(() => {}));
   return next;
 }
+
+// Once the folder's commits queued so far are done.
+export const committed = (dir: string) => queue.get(dir);
 
 // The names git refuses, as its verify_path() does with core.protectNTFS, its default: .git in any case, or its short name git~1,
 // with trailing dots or spaces or an NTFS stream, also after any backslash but a leading one; and a link named .gitmodules, or a
