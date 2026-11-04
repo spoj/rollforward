@@ -7,7 +7,7 @@ import { HttpError, type Instance } from './store.ts';
 import { readJson, rfDir, writeJson } from './system.ts';
 import { m365Ready, type EntraLogin } from './auth.ts';
 import { token } from './entra.ts';
-import { lender, runnerOf, use, type Offer } from './logins.ts';
+import { lender, logins, runnerOf, saveLogin, secret, use, type Offer } from './logins.ts';
 import graph from './connections/graph.ts';
 import databricks from './connections/databricks.ts';
 import website from './connections/website.ts';
@@ -99,6 +99,8 @@ const HOP = ['authorization', 'connection', 'host', 'keep-alive', 'proxy-authori
 
 export async function call(a: CallRun, host: string, req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url!, `https://${host}`), method = req.method!, link = a.links.get(url.href), s = link ? undefined : own(host);
+  // The runner's own OpenRouter key, where they use it, in place of the server's, never falling back to it.
+  const runner = runnerOf(a.inst).by, mine = s === openrouter ? logins(runner).find(l => l.id === 'openrouter' && l.enabled) : undefined;
   const c = link || s ? undefined : connections().find(c => types[c.type].host?.(c) === host);
   const name = link ?? c?.name ?? s?.name ?? host, path = link ? url.origin + url.pathname : url.pathname + url.search;
   // A request that may write, to anything but the server's own services, is logged as it goes too, so a cut leaves it as sent.
@@ -107,6 +109,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
   try {
     // A target such as //elsewhere/… or https://elsewhere/… would take the request, and the credential put in, to another host.
     if (url.host !== host) throw new HttpError(403, `${host} takes requests for ${host}, not ${url.origin}`);
+    if (mine?.expired) throw Object.assign(new HttpError(409, `${runner}'s own OpenRouter key is out of credits: they save another, or stop using it, on the Logins page, and the instance carries on`), { login: 'openrouter' });
     if (!link && !c && !s) throw new HttpError(403, `${url.origin + url.pathname} is no link a connection's answer gave this run`);
     // A POST's or PATCH's body, or a JSON one, is read whole, for the policy; a JSON body goes on as the JSON it read, as it rewrote
     // it, never as bytes another parser might read otherwise, such as a key twice. Anything else, such as a file's content, streams.
@@ -122,7 +125,8 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     if (s) {
       // The key goes in both headers SDKs send one in: Authorization, and x-api-key, as Anthropic's, Pi's among them, and Exa's do.
       out = s.check(r);
-      auth = { authorization: `Bearer ${process.env[s.key]}`, 'x-api-key': process.env[s.key]! };
+      const k = mine ? secret(runner, 'openrouter') : process.env[s.key]!;
+      auth = { authorization: `Bearer ${k}`, 'x-api-key': k };
     }
     const body = out === undefined ? raw : Buffer.from(JSON.stringify(out));
     if (!s && !['GET', 'HEAD'].includes(method)) sent = a.inst.append('agent', 'send', { run: a.n, name, method, path }).seq;
@@ -134,6 +138,10 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       .map(e => s.cost(JSON.parse(e))).findLast(x => x !== undefined) ?? 0;
     a.cost += cost;
     log(answer.status, answer.bytes, s ? { ...(json?.model && { model: json.model }), cost } : undefined);
+    if (mine && answer.status === 402) {
+      saveLogin(runner, { ...mine, expired: true });
+      a.inst.append('server', 'expired', { login: 'openrouter', name: 'OpenRouter', runner });
+    }
   } catch (e) {
     // A refusal, or an expired login, is the server's answer; anything else, a failure to reach the host.
     const err = e as Error & { status?: number; login?: string }, status = e instanceof HttpError ? err.status! : 502;

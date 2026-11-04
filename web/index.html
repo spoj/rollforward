@@ -746,7 +746,7 @@ function logText(e) {
     resolve: () => `${w} resolved a thread${e.text ? `<div class="d">${esc(e.text)}</div>` : ''}`,
     report: () => `${w} reported on run ${e.run}<div class="d">${md(e.text)}</div>`,
     wake: () => `${e.note ? `${person(e.from)} would wake it: a note for ${who(data.runner.by)}` : `Woken${e.from ? ` by ${who(e.from)}` : ''}`}${e.reason ? `<div class="d">${esc(e.reason)}</div>` : ''}`,
-    expired: () => `Waiting for ${who(e.runner)} to sign in to ${esc(e.name ?? (e.login === 'm365' ? 'Microsoft 365' : e.login))} again${e.runner === me.email && !data.log.some(x => x.seq > e.seq && x.op === 'wake' && x.login === e.login) ? `<div>${signInHtml(e.login, e.name ?? e.login)}</div>` : ''}`,
+    expired: () => `Waiting for ${who(e.runner)} ${e.login === 'openrouter' ? 'to save another OpenRouter key, or stop using their own, out of credits' : `to sign in to ${esc(e.name ?? (e.login === 'm365' ? 'Microsoft 365' : e.login))} again`}${e.runner === me.email && !data.log.some(x => x.seq > e.seq && x.op === 'wake' && x.login === e.login) ? `<div>${signInHtml(e.login, e.name ?? e.login)}</div>` : ''}`,
     takeover: () => `${w} took over from ${who(e.from)}${e.logins?.length ? `<div class="d">Logins: ${esc(e.logins.join(', '))}</div>` : ''}`,
     promote: () => `${w} made it a series, ${esc(e.series)}`,
     logins: () => `${w} ticked logins: ${esc(e.logins.join(', ') || 'none')}`,
@@ -1145,7 +1145,10 @@ function loginsHtml(s) {
       + `<div class="row2"><input type="text" id="offer-add" placeholder="A mailbox or a link" style="flex:1"><button class="btn" data-act="offer-add">Add</button></div>`;
     h += `<div class="row2">${l.expired || l.missing.length ? `<a class="btn primary" href="/logins/${enc(l.id)}/connect">${l.expired ? 'Sign in again' : 'Reconnect'}</a>` : ''}<button class="btn" data-act="signout-login" data-id="${esc(l.id)}">Sign out</button></div>`;
   }
-  const ids = new Set(s.connections.map(c => c.login.id));
+  const ids = new Set([...s.connections.map(c => c.login.id), 'openrouter']), k = s.logins.find(l => l.id === 'openrouter');
+  h += `<h3>Model key</h3><div class="sub">${k?.enabled && k.expired ? '<span class="q">Your key is out of credits: save another, or stop using it</span>' : "Runs you run use the server's OpenRouter key, or your own: on yours, one that runs out of credits waits for you."}</div>`
+    + `<div class="row2"><input type="password" id="orkey" placeholder="${k ? 'A new OpenRouter key, if any' : 'Your OpenRouter key'}" autocomplete="off" style="flex:1"><button class="btn" data-act="orkey-save">Save</button>${k ? '<button class="quiet" data-act="signout-login" data-id="openrouter">Remove</button>' : ''}</div>`
+    + (k ? `<label class="skill-row"><input type="checkbox" id="oruse" ${k.enabled ? 'checked' : ''}> Use my key for my runs</label>` : '');
   for (const l of s.logins.filter(l => !ids.has(l.id))) h += `<h3>${esc(l.name)}</h3><div class="sub">No longer a connection on this server, so no run uses it.</div><div class="row2"><button class="btn" data-act="signout-login" data-id="${esc(l.id)}">Sign out</button></div>`;
   if (sites.length) h += `<h3>Websites</h3><div class="sub">Sign in yourself, in a browser shown here. Your login is what that browser keeps, its cookies, never your password; a run's browser starts from it and brings it back refreshed. It reaches only the hosts listed, but there it can do whatever you can: the agent is told only to read, and each run's log counts its writes.${sites.some(w => w.header) ? " Where a site's sign-in needs a token, give it in the box under its name: it goes only to that sign-in, never to a run's browser, and is kept, sealed, for the next." : ''}</div>`
     + sites.map(w => {
@@ -1171,7 +1174,8 @@ function startHtml(s) {
 }
 
 // Signing in again, from wherever a login is said to have expired: Microsoft's own page, or a website's live browser.
-const signInHtml = (id, name) => !id.startsWith('web:') ? `<a class="btn" href="/logins/${enc(id)}/connect">Sign in again</a>`
+const signInHtml = (id, name) => id === 'openrouter' ? '<button class="btn" data-act="logins">Your model key</button>'
+  : !id.startsWith('web:') ? `<a class="btn" href="/logins/${enc(id)}/connect">Sign in again</a>`
   : `<button class="btn" data-act="web-signin" data-id="${esc(id.slice(4))}" data-name="${esc(name)}">Sign in again</button>`;
 
 // What waits on you: the agent's asks and the notes for you, requests to start a series you can see, and your expired logins.
@@ -1185,6 +1189,14 @@ function waiting() {
     for (const r of s.requests.filter(r => (r.who ?? me.email) === me.email)) out.push(`<div class="wt">${at(w, s)}: ${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)} <button class="btn" data-act="req-start" data-id="${esc(r.id)}">Start</button></div>`);
   }
   return [...out, ...expired.map(l => `<div class="wt">Your ${esc(l.name)} login has expired. ${signInHtml(l.id, l.name)}</div>`)];
+}
+
+// Your own OpenRouter key, if a new one is given, and whether your runs use it; a first one is used at once.
+async function saveKey() {
+  const k = pv.settings.logins.find(l => l.id === 'openrouter');
+  await api('/logins/openrouter', { method: 'PUT', body: JSON.stringify({ key: $('#orkey').value, enabled: $('#oruse')?.checked ?? !k }) });
+  await openLogins();
+  saved();
 }
 
 async function openLogins() {
@@ -1561,6 +1573,7 @@ async function onAct(act, el, was) {
     await api(`/signins/${pv.signin}`, { method: 'POST' });
     await openLogins();
   }
+  if (act === 'orkey-save') await saveKey();
   if (act === 'signout-login') {
     await api(`/logins/${enc(el.dataset.id)}`, { method: 'DELETE' });
     pv.settings.logins = await api('/logins');
@@ -1579,6 +1592,7 @@ document.addEventListener('change', async ev => {
   if (el.id === 'sname') await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) });
   else if (el.matches('#pv input.tick') && pv.settings.kind === 'series' && pv.settings.shared_by === me.email) await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ share: true, logins: ticked() }) });
   else if (el.id === 'wname') await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) });
+  else if (el.id === 'oruse') await saveKey();
   else if (el.matches('#log input.ctick')) {
     const logins = [...document.querySelectorAll('#log input.ctick:checked')].map(i => i.value);
     localStorage.ticks = JSON.stringify(logins);

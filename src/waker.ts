@@ -11,7 +11,7 @@ import { scoped, type Browsers } from './browsers.ts';
 import { seriesSettings } from './series.ts';
 import { pushed, skills } from './skills.ts';
 import { AGENT, commit, committed } from './git.ts';
-import { runnerOf } from './logins.ts';
+import { logins, runnerOf } from './logins.ts';
 import { reachable, types } from './connections.ts';
 
 // What runs when: one run at a time per series, at most RF_MAX_RUNS at once, started by people's acts and by wakes.
@@ -131,7 +131,9 @@ async function start(inst: Instance) {
   byToken.set(a.token, a);
   // The versions live now, which the run uses to its end.
   const live = skills().map(s => ({ ...s, dir: realpathSync(s.dir) }));
-  inst.append('server', 'run', { run: n, upto: a.sent, skills: Object.fromEntries(live.map(s => [s.id, pushed(s).version])) });
+  // Whose OpenRouter key it starts with, its runner's own or the server's (connections.ts), never the key.
+  const key = logins(runnerOf(inst).by).some(l => l.id === 'openrouter' && l.enabled) ? 'own' : 'shared';
+  inst.append('server', 'run', { run: n, upto: a.sent, skills: Object.fromEntries(live.map(s => [s.id, pushed(s).version])), key });
   try {
     // Copies of the indexes of what its runner ticked, on the indexes' own disk, read-only at $RF_INDEX.
     const index = join(rfDir(), 'runs', a.token);

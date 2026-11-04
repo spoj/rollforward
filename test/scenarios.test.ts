@@ -12,7 +12,7 @@ import { pathToFileURL } from 'node:url';
 // next script, bash commands and then the report, and the stand-in keeps what each command answered. So the walls a run meets, a
 // wake and a takeover are checked as a run meets them, at no model cost.
 type Script = { bash: (string | (() => string | Promise<string>))[]; report: string; prompt?: string; system?: string; first?: number; saw: string[]; fail?: string; hold?: () => void };
-const scripts: Script[] = [], byPrompt = new Map<string, Script>(), providers: unknown[] = [];
+const scripts: Script[] = [], byPrompt = new Map<string, Script>(), providers: unknown[] = [], keys: string[] = [];
 const app = join(import.meta.dirname, '..'), tmp = mkdtempSync(join(tmpdir(), 'rf-scenario-')), root = join(tmp, 'data');
 const ADMIN = 'admin@demo.test', BOB = 'bob@demo.test';
 let model: ReturnType<typeof createServer>, proc: ChildProcess, base = '', admin = '', bob = '';
@@ -21,9 +21,11 @@ const text = (c: unknown): string => typeof c === 'string' ? c : (c as { type: s
 const isResult = (m: { role: string; content: unknown }) => Array.isArray(m.content) && m.content.some((b: { type: string }) => b.type === 'tool_result');
 
 // The Anthropic Messages API, streamed, as Pi reaches OpenRouter's: the next step of the script for the latest prompt, each answer
-// costing a cent; and a chat completion, for a script's own call.
+// costing a cent, unless the key is out of credits; and a chat completion, for a script's own call.
 async function answer(req: IncomingMessage, res: ServerResponse) {
   const body = JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString());
+  keys.push(String(req.headers['x-api-key']));
+  if (keys.at(-1) === 'sk-or-broke') return void res.writeHead(402, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: 'Insufficient credits', code: 402 } }));
   providers.push(body.provider);
   if (req.url!.endsWith('/chat/completions')) return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'A second opinion' } }], usage: { cost: 0.002 } }));
   const msgs: { role: string; content: unknown }[] = body.messages, at = msgs.findLastIndex(m => m.role === 'user' && !isResult(m));
@@ -61,7 +63,9 @@ async function runs(id: string, n: number) {
 }
 
 before(async () => {
-  model = createServer((req, res) => (req.method === 'POST' && /\/(messages|chat\/completions)$/.test(new URL(req.url!, 'http://x').pathname) ? answer(req, res) : res.writeHead(404).end()));
+  // OpenRouter's GET /api/v1/key answers for a key it knows, as it checks one being saved.
+  model = createServer((req, res) => (req.method === 'POST' && /\/(messages|chat\/completions)$/.test(new URL(req.url!, 'http://x').pathname) ? answer(req, res)
+    : res.writeHead(req.url === '/api/v1/key' && String(req.headers.authorization).startsWith('Bearer sk-or-') ? 200 : 404).end('{}')));
   await new Promise<void>(ok => model.listen(0, '127.0.0.1', ok));
   const probe = createServer();
   await new Promise<void>(ok => probe.listen(0, '127.0.0.1', ok));
@@ -378,4 +382,30 @@ test('a cut anywhere leaves the instance right, its log whole, and the next run 
   log = await runs(id, 8);
   assert.match(afterUpload.saw[0], /small\.csv/);
   assert.ok(readdirSync(join(dir, 'session')).every(f => readFileSync(join(dir, 'session', f), 'utf8').trimEnd().split('\n').every(l => JSON.parse(l))), "the agent's session parses too");
+});
+
+test("a person's own OpenRouter key, checked as it's saved, goes in for the runs they run instead of the server's, each run logging whose; out of credits, the run fails as credits and the instance waits for them until they stop using it, which wakes it", async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Keys' })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Mine' })).json();
+  assert.equal((await call('PUT', '/logins/openrouter', { key: 'nope' })).status, 400);
+  assert.equal((await call('PUT', '/logins/openrouter', { key: 'sk-or-mine' })).status, 200);
+  assert.deepEqual((await (await call('GET', '/logins')).json()).find((l: { id: string }) => l.id === 'openrouter').enabled, false, 'until they tick it');
+  assert.equal((await call('PUT', '/logins/openrouter', { enabled: true })).status, 200);
+  keys.length = 0;
+  scripts.push({ bash: [], report: 'On my own key.', saw: [] });
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: 'k1', logins: [] })).json();
+  let log = await runs(id, 1);
+  assert.deepEqual([log.find(e => e.op === 'run')!.key, [...new Set(keys)]], ['own', ['sk-or-mine']]);
+  assert.equal((await call('PUT', '/logins/openrouter', { key: 'sk-or-broke', enabled: true })).status, 200);
+  await call('POST', `/api/instances/${id}/comment`, { text: 'Again.' });
+  log = await runs(id, 2);
+  assert.ok(log.some(e => e.op === 'expired' && e.login === 'openrouter'), 'the instance waits for them');
+  const failed = (await (await call('GET', '/api/runs')).json()).find((r: { path: string; run: number }) => r.path.endsWith('/k1') && r.run === 2);
+  assert.deepEqual([failed.outcome, failed.failure], ['failed', 'credits']);
+  assert.equal((await (await call('GET', '/logins')).json()).find((l: { id: string }) => l.id === 'openrouter').expired, true);
+  keys.length = 0;
+  scripts.push({ bash: [], report: 'On the shared key.', saw: [] });
+  assert.equal((await call('PUT', '/logins/openrouter', { enabled: false })).status, 200);
+  log = await runs(id, 3);
+  assert.deepEqual([log.findLast(e => e.op === 'run')!.key, [...new Set(keys)], log.findLast(e => e.op === 'report')!.text], ['shared', ['stand-in-key'], 'On the shared key.']);
 });

@@ -5,14 +5,15 @@ import { HttpError, type Instance } from './store.ts';
 import { canSee, changes, key, rfDir, tree } from './system.ts';
 import { users } from './auth.ts';
 
-// Every login is personal: a person's own sign-in to Microsoft 365, Databricks or a website, kept in .rf/people/<id>/. logins.json
+// Every login is personal: a person's own sign-in to Microsoft 365, Databricks or a website, or their own OpenRouter key, which,
+// `enabled`, their runs use in place of the server's (connections.ts), kept in .rf/people/<id>/. logins.json
 // lists them, each with what it offers a run, such as a mailbox, a site or a SQL warehouse; each login's secret (Microsoft's refresh
 // token, a website's saved browser state) is sealed in <login id>.sealed with AES-256-GCM, its person and id as authenticated data,
 // so a record copied into another person's folder won't open. A run uses only its runner's logins, and only the offers ticked for
 // its instance.
 export type Offer = { id: string; name: string };
 // A Microsoft 365 login's scopes are the Graph permissions Microsoft last granted it.
-export type Login = { id: string; kind: string; name: string; account?: string; since: string; offers: Offer[]; expired?: boolean; scopes?: string[] };
+export type Login = { id: string; kind: string; name: string; account?: string; since: string; offers: Offer[]; expired?: boolean; scopes?: string[]; enabled?: boolean };
 
 export const personDir = (email: string) => join(rfDir(), 'people', createHash('sha256').update(email).digest('hex').slice(0, 16));
 const list = (email: string) => join(personDir(email), 'logins.json');
