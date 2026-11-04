@@ -344,7 +344,7 @@ test("the conversation reads as a chat: its folds at the top, then oldest first,
   };
   const order = () => page.$$eval('#conv > *', es => es.map(e => (e as HTMLElement).dataset.key ?? (e as HTMLElement).dataset.thread ?? e.className));
   const where = () => page.$eval('#log', l => [l.scrollTop + l.clientHeight >= l.scrollHeight - 1 ? 'latest' : l.scrollTop === 0 ? 'top' : 'between',
-    Math.round(l.querySelector('.compose')!.getBoundingClientRect().bottom - l.getBoundingClientRect().bottom)]);
+    Math.round(l.querySelector('.compose')!.getBoundingClientRect().bottom - l.getBoundingClientRect().bottom) + 0]);
   await page.setViewportSize({ width: 1280, height: 420 });
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f01'; });
   await page.waitForSelector('#bar h1 .t:text-is("2026-11")');

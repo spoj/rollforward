@@ -54,8 +54,8 @@ function stale(i: Idle): boolean {
   return Date.now() - i.since > IDLE_MS || i.inst.doc.status !== 'open' || !(runner && canSee(runner, t.workspaces[t.series[i.inst.seriesId].workspace]))
     || i.inst.log.some(e => e.seq > i.seq && ['takeover', 'logins'].includes(e.op)) || startsFrom(i.inst) !== i.shape;
 }
-// A run's Pi stopped, if it started, and its copies of indexes gone.
-const end = (token: string, run?: Run) => Promise.resolve(run?.stop()).catch(e => console.error('a run left its scratch folder', e))
+// A run's Pi stopped, and its copies of indexes gone.
+const end = (token: string, run: Run) => run.stop().catch(e => console.error('a run left its scratch folder', e))
   .finally(() => rmSync(join(rfDir(), 'runs', token), { recursive: true, force: true }));
 function drop(id: string) {
   const i = idle.get(id)!;
@@ -281,7 +281,8 @@ function finish(a: Active, aborted: boolean, error?: string) {
   }
   // The run's changes are one commit, with the names.tsv they were written under, which the instance's next run and its other
   // commits wait for: once its sandbox has stopped, or, idle, as it is, nothing running in it.
-  const stopped = keep ? undefined : end(a.token, a.run);
+  if (!a.run) rmSync(join(rfDir(), 'runs', a.token), { recursive: true, force: true });
+  const stopped = keep || !a.run ? undefined : end(a.token, a.run);
   commit(a.inst.dir, AGENT, [`Run ${a.n}`, summary ?? error].filter(Boolean).join(': '), stopped).catch(e => a.inst.append('server', 'commit', { run: a.n, error: e.message }));
   if (a.run) { // one that never started, as with a missing API key, waits for the next act or a restart rather than retrying at once
     const next = due(a.inst) ? a.inst : instances(series).find(i => i !== a.inst && due(i));
