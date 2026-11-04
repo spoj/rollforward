@@ -138,29 +138,30 @@ function now(feed: Item[]) {
   const dead = (id: string | undefined): boolean => id !== undefined && (gone.has(id) || (m.has(id) && dead(up(m.get(id)!))));
   return [...m.keys()].filter(id => !dead(up(m.get(id)!))).sort();
 }
-const settle = () => new Promise(ok => setTimeout(ok, 20));
-// The worker catches a person's caches up now, as it would within the hour; done when none is due.
+const until = async (done: () => boolean) => { for (let i = 0; !done(); i++) { assert.ok(i < 3000, 'it never happened'); await new Promise(ok => setTimeout(ok, 20)); } };
+// The worker runs until `done`, then stops once what it's doing ends, so that what a test writes next doesn't race it.
+async function work(done: () => boolean) {
+  ix.startIndexing();
+  await until(done);
+  await ix.stopIndexing();
+}
+const caughtUp = (who: string, ...offerIds: string[]) => () =>
+  offerIds.every(o => existsSync(`${at(who, o)}.json`) && Object.values(cache(who, o).parts).every((p: any) => p.due === null || p.due > Date.now()));
+// The worker catches a person's caches up now, as it would within the hour.
 async function due(who: string, ...offerIds: string[]) {
   for (const o of offerIds) {
     const c = cache(who, o);
     for (const p of Object.values(c.parts) as { due: number | null }[]) p.due = Date.now();
     writeFileSync(`${at(who, o)}.json`, JSON.stringify(c));
   }
-  ix.track(who);
-  await idle(who, ...offerIds);
-}
-async function idle(who: string, ...offerIds: string[]) {
-  for (let i = 0; i < 250; i++) {
-    await settle();
-    if (offerIds.every(o => existsSync(`${at(who, o)}.json`) && Object.values(cache(who, o).parts).every((p: any) => p.due === null || p.due > Date.now()))) return;
-  }
-  assert.fail(`${who}'s caches never caught up`);
+  await work(caughtUp(who, ...offerIds));
 }
 
 // A run of `who`'s with these offers ticked, and what it reads at $RF_INDEX: it never waits.
+const instance = (who: string, ticked: string[]) => ({ seriesId: 'weekly', log: [{ seq: 1, at: '', by: who, op: 'create', logins: ticked }] }) as unknown as Instance;
 function run(who: string, ticked: string[]) {
-  const to = join(tmp, '.rf', 'runs', `run-${Math.random()}`), inst = { seriesId: 'weekly', log: [{ seq: 1, at: '', by: who, op: 'create', logins: ticked }] } as unknown as Instance;
-  ix.prepare(inst, to);
+  const to = join(tmp, '.rf', 'runs', `run-${Math.random()}`);
+  ix.prepare(instance(who, ticked), to);
   return (name: string) => ({ lines: lines(join(to, `${name}.ndjson.zst`)), meta: existsSync(join(to, `${name}.json`)) ? JSON.parse(readFileSync(join(to, `${name}.json`), 'utf8')) : null, file: join(to, `${name}.ndjson.zst`) });
 }
 
@@ -185,18 +186,16 @@ test('a crawl cut by a restart goes on at the page it was on, and meanwhile a ru
   assert.equal(d.lines.length, 6, 'two pages were committed');
   assert.equal(d.meta.as_of, null, 'still being built');
   const from = asked.length, second = child();
-  for (let i = 0; i < 100 && !cache(DAN, BIG).parts[''].delta; i++) await new Promise(ok => setTimeout(ok, 100));
+  await until(() => !!cache(DAN, BIG).parts[''].delta);
   second.kill('SIGKILL');
   await new Promise(ok => second.on('exit', ok));
   assert.match(asked.filter((a, i) => i >= from && a.who === DAN)[0].url, /token=c6\./, 'the restart asked for the third page first');
   assert.deepEqual(now(lines(feedOf(DAN, BIG))), ['b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7', 'b8', 'bigtop']);
-  ix.startIndexing();
 });
 
 test("each person's cache is their own delta feed, and a run gets a copy of it", async () => {
   offer(ALICE, [{ id: FOLDER, name: 'Folder LFM, Reports' }]);
-  ix.track(ALICE);
-  await idle(ALICE, FOLDER);
+  await work(caughtUp(ALICE, FOLDER));
   const a = run(ALICE, [FOLDER])('Folder LFM, Reports');
   assert.deepEqual(now(a.lines), ['f1', 'f2', 'f3', 'pub', 'sub', 'top']);
   assert.deepEqual(a.lines.find(l => l.id === 'pub'), state['b!d'].get('pub'), "Graph's own JSON, verbatim");
@@ -205,8 +204,7 @@ test("each person's cache is their own delta feed, and a run gets a copy of it",
   assert.ok(asked.filter(q => q.who === ALICE).every(q => q.prefer === 'deltashowremovedasdeleted'));
   // Bob can't open the folder, so he has no cache of it; the folder shared with him he has, as his token sees it.
   offer(BOB, [{ id: FOLDER, name: 'Folder LFM, Reports' }, { id: PUB, name: 'Folder Shared with Bob, Reports' }]);
-  ix.track(BOB);
-  await idle(BOB, FOLDER, PUB);
+  await work(caughtUp(BOB, FOLDER, PUB));
   const b = run(BOB, [FOLDER, PUB]);
   assert.deepEqual(b('Folder LFM, Reports').lines, []);
   assert.equal(b('Folder LFM, Reports').meta.as_of, null);
@@ -247,25 +245,32 @@ test('a 410 crawls again, appending', async () => {
   assert.ok(cache(ALICE, FOLDER).parts[''].delta);
 });
 
-test('the tidy-up writes a new feed without what later lines replaced or removed, a deleted folder with everything under it, and a run copying meanwhile gets the old or the new', async () => {
+test('the tidy-up writes a new feed without what later lines replaced or removed, a deleted folder with everything under it, and a run copying it meanwhile gets the old feed or the new', async () => {
   // As Graph's delta does, the folder's deletion comes alone.
   put('b!d', { id: 'sub', deleted: {} });
   state['b!d'].set('f2', { id: 'f2', deleted: {} });
   await due(ALICE, FOLDER);
   // Many lines to fold, so the tidy-up takes a while.
-  const c = cache(ALICE, FOLDER), f = feedOf(ALICE, FOLDER), extra = zstdCompressSync(Array.from({ length: 20_000 }, () => `${JSON.stringify(state['b!d'].get('f1'))}\n`).join(''));
-  appendFileSync(f, extra);
-  Object.assign(c, { length: c.length + extra.length, lines: c.lines + 20_000 });
-  const old = c.lines;
+  const c = cache(ALICE, FOLDER), f = feedOf(ALICE, FOLDER), next = `${at(ALICE, FOLDER)}.${c.gen + 1}.ndjson.zst`;
+  appendFileSync(f, zstdCompressSync(Array.from({ length: 20_000 }, () => `${JSON.stringify(state['b!d'].get('f1'))}\n`).join('')));
+  Object.assign(c, { length: statSync(f).size, lines: c.lines + 20_000 });
   writeFileSync(`${at(ALICE, FOLDER)}.json`, JSON.stringify(c));
-  const seen = new Set<number>();
-  const copying = (async () => { for (let i = 0; i < 500 && cache(ALICE, FOLDER).gen === c.gen; i++) { seen.add(run(ALICE, [FOLDER])('Folder LFM, Reports').lines.length); await new Promise(setImmediate); } })();
+  const old = readFileSync(f), copies: { racing: boolean; bytes: Buffer }[] = [];
+  const copy = () => {
+    const racing = existsSync(next), to = join(tmp, '.rf', 'runs', `race-${copies.length}`);
+    ix.prepare(instance(ALICE, [FOLDER]), to);
+    copies.push({ racing, bytes: readFileSync(join(to, 'Folder LFM, Reports.ndjson.zst')) });
+  };
+  let done = false;
+  const copying = (async () => { while (!done) copy(), await new Promise(setImmediate); })();
   await due(ALICE, FOLDER);
-  for (let i = 0; i < 250 && cache(ALICE, FOLDER).gen === c.gen; i++) await settle();
+  done = true;
   await copying;
-  seen.add(run(ALICE, [FOLDER])('Folder LFM, Reports').lines.length);
-  assert.deepEqual([...seen].sort((x, y) => x - y), [4, old].filter(n => seen.has(n)), `each copy was the old feed or the new: ${[...seen]}`);
-  assert.ok(seen.has(4));
+  copy();
+  const tidied = readFileSync(feedOf(ALICE, FOLDER));
+  assert.ok(copies.every(x => x.bytes.equals(old) || x.bytes.equals(tidied)), 'each copy was the old feed or the new');
+  assert.ok(copies.some(x => x.racing && x.bytes.equals(old)), 'some while the new feed was being written');
+  assert.ok(copies.at(-1)!.bytes.equals(tidied));
   assert.equal(existsSync(f), false, 'the old feed is gone');
   const feed = lines(feedOf(ALICE, FOLDER));
   assert.deepEqual(feed.map(l => l.id).sort(), ['f1', 'f4', 'pub', 'top']);
@@ -292,9 +297,8 @@ test('an expired login pauses its cache until its person signs in again, then it
   assert.equal(run(ALICE, [FOLDER])('Folder LFM, Reports').lines.length, 4, 'a run gets what there is');
   const from = asked.length;
   offer(ALICE, [{ id: FOLDER, name: 'Folder LFM, Reports' }], '2026-11-04T01:00:00Z');
-  await idle(ALICE, FOLDER);
+  await work(() => cache(ALICE, FOLDER).parts[''].error === null);
   assert.equal(asked.slice(from).find(q => q.who === ALICE)!.url, link.slice(`${base}/v1.0`.length));
-  assert.equal(cache(ALICE, FOLDER).parts[''].error, null);
 });
 
 test('losing the source deletes the cache', async () => {
@@ -313,8 +317,7 @@ test('losing the source deletes the cache', async () => {
 test("a mailbox: its folder list, then every folder's messages, 20 folders to a $batch, and what goes", async () => {
   offer(CAROL, [{ id: MAIL, name: `Mailbox ${BOX}` }]);
   const from = batches.length;
-  ix.track(CAROL);
-  await idle(CAROL, MAIL);
+  await work(caughtUp(CAROL, MAIL));
   const c = run(CAROL, [MAIL])(`Mailbox ${BOX}`);
   assert.deepEqual(now(c.lines), ['farc', 'fin', 'fsub', 'm1', 'm2', 'm3', 'm4', 'm5']);
   assert.ok(batches.slice(from).includes(3), "the folder list's second page and two folders' first pages went in one $batch");
@@ -329,15 +332,12 @@ test("a mailbox: its folder list, then every folder's messages, 20 folders to a 
   state.mail.set('farc', { ...state.mail.get('farc'), '@removed': { reason: 'deleted' } });
   await due(CAROL, MAIL);
   assert.equal(cache(CAROL, MAIL).parts.farc, undefined);
-  for (let i = 0; i < 250 && cache(CAROL, MAIL).base === 0; i++) await settle();
   assert.deepEqual(lines(feedOf(CAROL, MAIL)).map(l => l.id).sort(), ['fin', 'm2', 'm3'], 'tidied');
 });
 
 test("a site: each library's root delta, and a library closed to its person goes, with what is under it", async () => {
   offer(CAROL, [{ id: MAIL, name: `Mailbox ${BOX}` }, { id: SITE, name: 'Site Reports' }]);
-  ix.track(CAROL);
-  for (let i = 0; i < 100 && !existsSync(`${at(CAROL, SITE)}.json`); i++) await settle();
-  await idle(CAROL, SITE);
+  await work(caughtUp(CAROL, SITE));
   const big = ['b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7', 'b8', 'bigroot', 'bigtop'];
   assert.deepEqual(now(run(CAROL, [SITE])('Site Reports').lines), [...big, 'droot', 'f1', 'f4', 'out', 'pub', 'top'].sort());
   assert.equal(cache(CAROL, SITE).parts['b!d'].link.split('?')[0], `${base}/v1.0/drives/b!d/root/delta`);
@@ -346,7 +346,7 @@ test("a site: each library's root delta, and a library closed to its person goes
   closed.delete(`${CAROL} b!big`);
   assert.equal(cache(CAROL, SITE).parts['b!big'], undefined);
   assert.ok(cache(CAROL, SITE).parts['b!d'].delta, 'the other library goes on');
-  assert.deepEqual(now(lines(feedOf(CAROL, SITE))), ['droot', 'f1', 'f4', 'out', 'pub', 'top']);
+  assert.deepEqual(lines(feedOf(CAROL, SITE)).map(l => l.id).sort(), ['droot', 'f1', 'f4', 'out', 'pub', 'top'], 'tidied');
 });
 
 test('rf indexes: each cache, its lines and bytes, and how it goes', () => {
@@ -361,8 +361,7 @@ test('rf indexes: each cache, its lines and bytes, and how it goes', () => {
 test('removing an offer deletes its cache', async () => {
   const f = feedOf(CAROL, SITE);
   ix.forget(CAROL, SITE);
-  await settle();
-  assert.equal(existsSync(`${at(CAROL, SITE)}.json`), false);
+  await until(() => !existsSync(`${at(CAROL, SITE)}.json`));
   assert.equal(existsSync(f), false);
   assert.ok(existsSync(`${at(CAROL, MAIL)}.json`));
 });

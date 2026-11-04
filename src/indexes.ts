@@ -246,6 +246,7 @@ export function prepare(inst: Instance, to: string): boolean {
 let stopping = false, worker: Promise<void> | undefined, poke = () => {};
 const rest = (ms: number) => new Promise<void>(ok => { poke = ok; setTimeout(ok, Math.max(0, Math.min(ms, 60_000))).unref(); });
 export function startIndexing() {
+  stopping = false;
   // Copies of runs cut short.
   rmSync(join(rfDir(), 'runs'), { recursive: true, force: true });
   for (const email of Object.keys(users())) track(email);
