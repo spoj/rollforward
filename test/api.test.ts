@@ -600,6 +600,8 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   await rf('skill', 'pull', 'tool', join(tmp, 'second'), '--version', '2');
   assert.match(readFileSync(join(tmp, 'second', 'SKILL.md'), 'utf8'), /description: the second/);
   await assert.rejects(rf('pull', `${week}/`, join(tmp, 'three'), '--exclude'), /--exclude takes a value/);
+  assert.match(await rf('pull', `${week}/`, join(tmp, 'four'), '--max-size', '1'), /^skipped  .+: \d+ bytes, over --max-size$[\s\S]*^fetched \d+, 0 up to date, \d+ over 1, in /m);
+  await assert.rejects(rf('pull', `${week}/`, join(tmp, 'four'), '--max-size', '5X'), /--max-size: a size such as 500K, 50M or 2G, not 5X/);
   assert.equal((await json(await at(series, 'talk'))).log.findLast((e: { op: string }) => e.op === 'comment').text, 'From the shell');
   const runs = JSON.parse(await rf('runs', `larkfield/${series}`, '--json'));
   assert.ok(runs.every((r: { path: string }) => r.path.startsWith(`larkfield/${series}/`)));

@@ -7,9 +7,10 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
 const USAGE = `rf login URL [TOKEN]                without a TOKEN, through the browser: allow it on the page, where it shows rf's code
 rf ls
-rf pull PATH DIR [--delete] [-n|--dry-run] [--exclude PATTERN]...
+rf pull PATH DIR [--delete] [-n|--dry-run] [--exclude PATTERN]... [--max-size SIZE]
                                   PATH's files into DIR as rsync copies them, whole, if their size or time differ: PATH/ fills DIR,
-                                  PATH makes DIR/<its name>, / is all you see; --delete removes what the server no longer has
+                                  PATH makes DIR/<its name>, / is all you see; --delete removes what the server no longer has;
+                                  --max-size skips files bigger than SIZE, such as 50M
 rf help                           how rollforward works and how to use rf, for an agent
 rf comment PATH TEXT [--item ID] [--ref REF] [--thread T] [--wait]   a new thread, or a reply in T, as to an agent's ask
 rf upload PATH FILE [--onto ITEM] [--output]
@@ -195,11 +196,14 @@ const excluded = (rel: string) => globs.some(([whole, re]) => rel.split('/').som
 // fetched, and given the server's time, so the next pull compares against it. Nothing is kept besides the files.
 async function pull(path: string, dir: string) {
   const at = path.replace(/^\/+/, ''), from = at.replace(/\/+$/, ''), dry = !!flags['dry-run'];
+  const size = /^(\d+)([KMG]?)$/i.exec(String(flags['max-size'] ?? '0'));
+  if (!size) throw new Error(`--max-size: a size such as 500K, 50M or 2G, not ${flags['max-size']}`);
+  const max = flags['max-size'] === undefined ? Infinity : Number(size[1]) * 1024 ** ' KMG'.indexOf(size[2].toUpperCase() || ' ');
   const list: { path: string; size: number; mtime: string; url?: string; text?: string }[] = await get(`/api/files?path=${encodeURIComponent(from)}`);
   if (!list.length) throw new Error(`nothing you can see at ${path}`);
   const into = !from || at.endsWith('/') ? resolve(dir) : under(resolve(dir), from.slice(from.lastIndexOf('/') + 1)), rel = (f: { path: string }) => f.path.slice(from ? from.length + 1 : 0);
   if (!into) throw new Error(`${from} can't be a name here: pull ${from}/ into a folder of your choosing`);
-  let fetched = 0, same = 0, deleted = 0, failed = 0;
+  let fetched = 0, same = 0, deleted = 0, failed = 0, big = 0;
   for (const f of list.filter(f => !excluded(rel(f)))) {
     const local = rel(f) ? under(into, rel(f)) : into, st = local && existsSync(local) ? statSync(local) : undefined;
     if (!local) {
@@ -208,6 +212,11 @@ async function pull(path: string, dir: string) {
     }
     if (st && st.size === f.size && Math.floor(st.mtimeMs / 1000) === Math.floor(Date.parse(f.mtime) / 1000)) {
       same++;
+      continue;
+    }
+    if (f.size > max) {
+      console.log(`skipped  ${f.path}: ${f.size} bytes, over --max-size`);
+      big++;
       continue;
     }
     console.log(`${st ? 'changed' : 'new'}  ${f.path}`);
@@ -231,7 +240,7 @@ async function pull(path: string, dir: string) {
     const prune = (d: string) => { for (const e of readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) prune(join(d, e.name)); if (d !== into && !readdirSync(d).length) rmdirSync(d); };
     if (!dry) prune(into);
   }
-  console.log(`${dry ? 'would fetch' : 'fetched'} ${fetched}, ${same} up to date${flags.delete ? `, ${dry ? 'would delete' : 'deleted'} ${deleted}` : ''}${failed ? `, ${failed} failed` : ''}, in ${into}`);
+  console.log(`${dry ? 'would fetch' : 'fetched'} ${fetched}, ${same} up to date${big ? `, ${big} over ${flags['max-size']}` : ''}${flags.delete ? `, ${dry ? 'would delete' : 'deleted'} ${deleted}` : ''}${failed ? `, ${failed} failed` : ''}, in ${into}`);
   if (failed) process.exitCode = 1;
 }
 
