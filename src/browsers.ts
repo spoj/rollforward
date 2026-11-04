@@ -1,13 +1,13 @@
 import { connect, isIP } from 'node:net';
 import { connect as tlsConnect } from 'node:tls';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { request as httpRequest, STATUS_CODES, type IncomingMessage, type ServerResponse } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import type { Duplex } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { HttpError, replaceReadOnly, type Instance } from './store.ts';
-import { logins, runnerOf, saveLogin, secret, use } from './logins.ts';
+import { logins, personDir, runnerOf, saveLogin, seal, secret, use } from './logins.ts';
 import { connections } from './connections.ts';
 import { tree } from './system.ts';
 
@@ -48,8 +48,8 @@ export function files(id: string, path: string) {
   return `/sessions/${id}/files/${parts.map(encodeURIComponent).join('/')}`;
 }
 
-const open = async (w: Website, ttl_s: number, state?: unknown): Promise<string> =>
-  (await json('POST', '/sessions', { site: { hosts: [new URL(w.url).hostname, ...w.hosts], start_url: w.url }, state, ttl_s })).id;
+const open = async (w: Website, ttl_s: number, state?: unknown, headers?: Record<string, string>): Promise<string> =>
+  (await json('POST', '/sessions', { site: { hosts: [new URL(w.url).hostname, ...w.hosts], start_url: w.url, headers }, state, ttl_s })).id;
 const close = (id: string): Promise<{ state: unknown; log: { method: string; blocked?: string }[] }> => json('DELETE', `/sessions/${id}`);
 
 // A websocket passed through to the service's `path`, with the key added.
@@ -69,9 +69,9 @@ export function passUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, 
 // in, and the other hosts its pages need, such as single sign-on's. A browser on one reaches only those hosts; whatever its login
 // may do there, the browser may, so keeping to reads is the agent's, and its request log shows what it did.
 
-export type Website = { name: string; url: string; hosts: string[]; writeback: boolean };
+export type Website = { name: string; url: string; hosts: string[]; writeback: boolean; header?: string };
 export const websites = (): Record<string, Website> =>
-  Object.fromEntries(connections().filter(c => c.type === 'website').map(c => [c.name, { name: c.title ?? c.name, url: c.url, hosts: c.hosts, writeback: c.writeback }]));
+  Object.fromEntries(connections().filter(c => c.type === 'website').map(c => [c.name, { name: c.title ?? c.name, url: c.url, hosts: c.hosts, writeback: c.writeback, header: c.header }]));
 
 function website(id: string): Website {
   const w = websites()[id];
@@ -80,12 +80,23 @@ function website(id: string): Website {
 }
 
 // ---- Signing in: a browser on the website's address with nothing saved, shown to the person on the Logins page, for half an hour.
+// A website that names a header, such as Retail Link's x-bot-token, which its sign-in needs and its pages never send, has the
+// person's token for it on that browser's requests to its address, put there by the browser service, so the browser never holds
+// it. It is sealed with their login as they save it, and used again when they sign in again without a new one; never sent for a
+// run's browser.
 
-const signIns = new Map<string, { email: string; site: string; name: string }>();
+const signIns = new Map<string, { email: string; site: string; name: string; token?: string }>();
 
-export async function startSignIn(email: string, site: string): Promise<string> {
-  const w = website(site), id = await open(w, 1800);
-  signIns.set(id, { email, site, name: w.name });
+export async function startSignIn(email: string, site: string, given: string): Promise<string> {
+  const w = website(site), kept = `web:${site}.header`;
+  let token;
+  if (w.header) {
+    token = given.trim() || (existsSync(join(personDir(email), `${kept}.sealed`)) ? secret(email, kept) : '');
+    if (!token) throw new HttpError(400, `${w.name} needs your ${w.header} to sign in: give it in the box under its name, on the Logins page`);
+    if (/[^\x20-\x7e]/.test(token)) throw new HttpError(400, `${w.header}: letters, digits and punctuation`);
+  }
+  const id = await open(w, 1800, undefined, token && { [w.header!]: token });
+  signIns.set(id, { email, site, name: w.name, token });
   return id;
 }
 
@@ -101,9 +112,11 @@ export async function viewPage(email: string, id: string): Promise<string> {
 export async function endSignIn(email: string, id: string, save: boolean) {
   if (!isSignIn(email, id)) throw new HttpError(404, 'no such sign-in');
   if (save && !(await json('GET', `/sessions/${id}/log`)).some((e: { live?: true }) => e.live)) throw new HttpError(409, 'Take control and sign in first, then Save login.');
-  const { site, name } = signIns.get(id)!, { state } = await close(id);
+  const { site, name, token } = signIns.get(id)!, { state } = await close(id);
   signIns.delete(id);
-  if (save) saveLogin(email, { id: `web:${site}`, kind: 'website', name, since: new Date().toISOString(), offers: [{ id: `web:${site}`, name }] }, JSON.stringify(state));
+  if (!save) return;
+  saveLogin(email, { id: `web:${site}`, kind: 'website', name, since: new Date().toISOString(), offers: [{ id: `web:${site}`, name }] }, JSON.stringify(state));
+  if (token) seal(email, `web:${site}.header`, token);
 }
 
 // ---- A run's browsers, at their fixed addresses, $RF_BROWSERS/NAME: one per website, opened from its runner's login, if ticked for

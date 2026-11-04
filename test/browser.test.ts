@@ -11,8 +11,9 @@ import type { Instance } from '../src/store.ts';
 import { filesOf, standIns } from './push.ts';
 
 // Website logins and a run's browser, through the browser service (RF_BROWSER_URL and RF_BROWSER_KEY, else skipped), on a
-// stand-in portal behind a sign-in: a person signs in in the live view the server passes through, and a run's browser starts from
-// that login, counts its writes, takes and gives files, and hands the login back refreshed.
+// stand-in portal behind a sign-in that, as Retail Link's, needs a token its page never sends: a person signs in in the live view
+// the server passes through, and a run's browser starts from that login, counts its writes, takes and gives files, and hands the
+// login back refreshed.
 const app = join(import.meta.dirname, '..'), ADMIN = 'admin@demo.test';
 const tmp = mkdtempSync(join(tmpdir(), 'rf-browser-')), root = join(tmp, 'data');
 after(() => rmSync(tmp, { recursive: true, force: true }));
@@ -30,10 +31,10 @@ function standIn(): Server {
   return createServer(async (req, res) => {
     const u = new URL(req.url!, 'http://x'), signedIn = /\bsid=s1\b/.test(req.headers.cookie ?? '');
     const page = (title: string, body = '') => res.writeHead(200, { 'content-type': 'text/html' }).end(`<!doctype html><title>${title}</title><h1>${title}</h1>${body}`);
-    seen.push(`${req.method} ${u.pathname}`);
+    seen.push(`${req.method} ${u.pathname}${req.headers['x-bot-token'] ? ` with ${req.headers['x-bot-token']}` : ''}`);
     if (u.pathname === '/login' && req.method === 'POST') {
       const f = new URLSearchParams(await text(req));
-      if (f.get('user') !== 'alice' || f.get('pass') !== 'pw') return page('Wrong');
+      if (f.get('user') !== 'alice' || f.get('pass') !== 'pw' || req.headers['x-bot-token'] !== 'jwt-1') return page('Wrong');
       return void res.writeHead(302, { location: '/invoices', 'set-cookie': 'sid=s1; Path=/; Max-Age=86400' }).end();
     }
     if (!signedIn) return page('Sign in', '<form method="post" action="/login"><input name="user"><input name="pass" type="password"><button>Sign in</button></form>');
@@ -75,7 +76,7 @@ describe('website logins', { skip: !process.env.RF_BROWSER_URL && 'needs the bro
     });
     [admin, bob] = [await login(ADMIN), await login('bob@demo.test')];
     assert.equal((await call('POST', '/skills/portal/versions', { files: filesOf(join(standIns, 'portal')) })).status, 200);
-    assert.equal((await call('PUT', '/connections/portal', { type: 'website', title: 'Portal', url: `${origin}/login` })).status, 200);
+    assert.equal((await call('PUT', '/connections/portal', { type: 'website', title: 'Portal', url: `${origin}/login`, header: 'x-bot-token' })).status, 200);
   });
 
   after(async () => {
@@ -88,7 +89,7 @@ describe('website logins', { skip: !process.env.RF_BROWSER_URL && 'needs the bro
 
   test("a person signs in in the live view on the Logins page, and their login is that browser's state", async () => {
     assert.equal((await (await call('GET', '/connections', undefined, bob)).json())[0].login.name, 'Portal', 'Logins lists the websites');
-    const { id } = await (await call('POST', '/logins/web/portal')).json(), ws = `${base.replace('http', 'ws')}/signins/${id}/view`;
+    const { id } = await (await call('POST', '/logins/web/portal', { header: 'jwt-1' })).json(), ws = `${base.replace('http', 'ws')}/signins/${id}/view`;
     assert.match(await (await call('GET', `/signins/${id}/view`)).text(), /Take control/);
     assert.equal((await call('GET', `/signins/${id}/view`, undefined, bob)).status, 404, "nobody else's sign-in");
     await assert.rejects(chromium.connectOverCDP(`${ws}/drive`, { headers: { cookie: bob } }), /404/);
@@ -104,6 +105,7 @@ describe('website logins', { skip: !process.env.RF_BROWSER_URL && 'needs the bro
     const logins = await (await call('GET', '/logins')).json();
     assert.deepEqual(logins.map((l: { id: string; kind: string; offers: { id: string }[] }) => [l.id, l.kind, l.offers.map(o => o.id)]), [['web:portal', 'website', ['web:portal']]]);
     assert.equal((await call('POST', `/signins/${id}`)).status, 404, 'a sign-in ends once');
+    assert.ok(seen.includes('POST /login with jwt-1'), "the token went with the sign-in, which the page's own requests lack");
   });
 
   test("a run's browser is at $RF_BROWSERS/NAME: opened from its runner's login if ticked at the first connection and kept for the later ones, with its downloads fetched from its machine, its writes counted, and the login handed back refreshed, with its request log", async () => {
@@ -111,7 +113,7 @@ describe('website logins', { skip: !process.env.RF_BROWSER_URL && 'needs the bro
     const { serveAgent } = await import('../src/agent-api.ts'), { secret } = await import('../src/logins.ts');
     initSystem(root);
     openSkills(root);
-    const seriesDir = join(tmp, 'series'), log: Record<string, unknown>[] = [];
+    const seriesDir = join(tmp, 'series'), log: Record<string, unknown>[] = [], from = seen.length;
     mkdirSync(seriesDir);
     const { id: workspace } = await (await call('POST', '/api/workspaces', { name: 'Portal work' })).json();
     const { id: seriesId } = await (await call('POST', '/api/series', { workspace, name: 'Invoices' })).json();
@@ -139,6 +141,7 @@ describe('website logins', { skip: !process.env.RF_BROWSER_URL && 'needs the bro
     await api.close();
 
     assert.ok(seen.includes('POST /save'));
+    assert.ok(!seen.slice(from).some(s => s.includes(' with ')), "a run's browser never has the token");
     assert.deepEqual(log.filter(e => e.op === 'call').map(e => [e.name, e.status, e.bytes]), [['portal', 200, 15], ['portal', 403, 0]], 'each fetch is logged');
     const entry = log.findLast(e => e.op === 'browser')!;
     assert.deepEqual([entry.run, entry.site, entry.login, entry.writes, entry.file], [0, 'portal', ADMIN, 1, 'browser/run 0 portal.jsonl']);

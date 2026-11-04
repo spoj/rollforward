@@ -758,7 +758,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     }
     else if (url.pathname === '/logins/m365/offers' && req.method === 'POST') send(res, 200, (await offer(me.email, String((await json(req)).add ?? '')), track(me.email), 'ok'));
     else if (url.pathname.startsWith('/logins/m365/offers/') && req.method === 'DELETE') send(res, 200, (unoffer(me.email, decodeURIComponent(url.pathname.slice(20))), forget(me.email, decodeURIComponent(url.pathname.slice(20))), 'ok'));
-    else if (url.pathname.startsWith('/logins/web/') && req.method === 'POST') send(res, 200, { id: await startSignIn(me.email, decodeURIComponent(url.pathname.slice(12))) });
+    else if (url.pathname.startsWith('/logins/web/') && req.method === 'POST') send(res, 200, { id: await startSignIn(me.email, decodeURIComponent(url.pathname.slice(12)), String((await json(req)).header ?? '')) });
     else if (/^\/signins\/\w+\/view$/.test(url.pathname) && req.method === 'GET') {
       const html = await viewPage(me.email, url.pathname.split('/')[2]);
       res.writeHead(200, { 'content-type': 'text/html' }).end(html);

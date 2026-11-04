@@ -25,13 +25,16 @@ export function logins(email: string): Login[] {
 export function saveLogin(email: string, login: Login, secret?: string) {
   const was = logins(email).find(l => l.id === login.id);
   mkdirSync(personDir(email), { recursive: true, mode: 0o700 });
-  if (secret !== undefined) {
-    const iv = randomBytes(12), c = createCipheriv('aes-256-gcm', key('seal.key'), iv).setAAD(Buffer.from(`${email}\n${login.id}`));
-    const body = Buffer.concat([c.update(secret, 'utf8'), c.final()]);
-    writeFileSync(join(personDir(email), `${login.id}.sealed`), Buffer.concat([iv, c.getAuthTag(), body]), { mode: 0o600 });
-  }
+  if (secret !== undefined) seal(email, login.id, secret);
   writeFileSync(list(email), JSON.stringify([...logins(email).filter(l => l.id !== login.id), login], null, 1), { mode: 0o600 });
   if ((!was || was.expired) && !login.expired) changes.emit('login', email, login.id, login.name);
+}
+
+// A secret of a person's, in their folder, which `secret` reads back.
+export function seal(email: string, id: string, secret: string) {
+  const iv = randomBytes(12), c = createCipheriv('aes-256-gcm', key('seal.key'), iv).setAAD(Buffer.from(`${email}\n${id}`));
+  const body = Buffer.concat([c.update(secret, 'utf8'), c.final()]);
+  writeFileSync(join(personDir(email), `${id}.sealed`), Buffer.concat([iv, c.getAuthTag(), body]), { mode: 0o600 });
 }
 
 export function secret(email: string, id: string): string {
@@ -41,10 +44,10 @@ export function secret(email: string, id: string): string {
   return Buffer.concat([d.update(b.subarray(28)), d.final()]).toString('utf8');
 }
 
-// Signing out deletes the record.
+// Signing out deletes the record, and a website's token with it.
 export function signOut(email: string, id: string) {
   if (!logins(email).some(l => l.id === id)) throw new HttpError(404, `you have no login ${id}`);
-  rmSync(join(personDir(email), `${id}.sealed`), { force: true });
+  for (const s of [id, `${id}.header`]) rmSync(join(personDir(email), `${s}.sealed`), { force: true });
   writeFileSync(list(email), JSON.stringify(logins(email).filter(l => l.id !== id), null, 1), { mode: 0o600 });
 }
 

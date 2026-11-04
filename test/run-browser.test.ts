@@ -3,30 +3,33 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { connect } from 'node:net';
 import { PassThrough } from 'node:stream';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInstance, openStore } from '../src/store.ts';
 import { initSystem, saveTree, writeJson } from '../src/system.ts';
 
-// A run's browsers, from a stand-in browser service whose page changes only when the test says, and which keeps the states it was
-// given and answers a browser's state as `back` says.
+// A run's browsers, from a stand-in browser service whose page changes only when the test says, and which keeps the states and
+// headers it was given and answers a browser's state as `back` says.
 let page = Buffer.from('page 1'), back: unknown = { cookies: [] };
-const states: unknown[] = [];
+const states: unknown[] = [], headers: unknown[] = [];
 const service = createServer(async (req, res) => {
   if (req.method === 'DELETE') return res.writeHead(200).end(JSON.stringify({ state: back, log: [{ method: 'GET' }] }));
   if (req.method === 'POST') {
-    states.push(JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString()).state);
+    const { state, site } = JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString());
+    states.push(state);
+    headers.push(site.headers);
     return res.writeHead(201).end(JSON.stringify({ id: 'b9' }));
   }
+  if (req.url === '/sessions/b9/log') return res.writeHead(200).end('[{"live":true}]');
   if (req.url!.startsWith('/sessions/b9/files/')) return res.writeHead(200).end(`file at ${req.url}`);
   res.writeHead(req.url === '/sessions/b1/screenshot' ? 200 : 404).end(page);
 }).on('upgrade', (req, socket) => socket.end(`HTTP/1.1 101 Switching Protocols\r\n\r\nservice got ${req.url}`));
 await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
 Object.assign(process.env, { RF_BROWSER_URL: `http://127.0.0.1:${(service.address() as { port: number }).port}`, RF_BROWSER_IDLE_MS: '300' });
-const { Browsers } = await import('../src/browsers.ts');
+const { Browsers, endSignIn, startSignIn } = await import('../src/browsers.ts');
 const { serveAgent } = await import('../src/agent-api.ts');
-const { logins, saveLogin, secret } = await import('../src/logins.ts');
+const { logins, personDir, saveLogin, secret, signOut } = await import('../src/logins.ts');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-shots-'));
 initSystem(tmp);
 openStore(tmp);
@@ -86,6 +89,25 @@ test("closing a run's browser hands its login back refreshed, unless its person 
 
 const sleep = (ms: number) => new Promise(ok => setTimeout(ok, ms));
 const alice = 'alice@demo.test', website = (id: string, name: string) => ({ id: `web:${id}`, kind: 'website' as const, name, since: 't1', offers: [{ id: `web:${id}`, name }] });
+
+test("a website's header goes, with its person's value, to their sign-in's browser alone: sealed as they save the login, used again when they sign in again with none, replaced by a new one, and gone as they sign out", async () => {
+  writeJson('connections.json', { rl: { type: 'website', title: 'Retail Link', url: 'https://rl.example.com/login', hosts: [], writeback: true, header: 'x-bot-token', updated_by: alice, updated_at: '' } });
+  headers.length = 0;
+  await assert.rejects(startSignIn(alice, 'rl', ''), /Retail Link needs your x-bot-token to sign in/);
+  await assert.rejects(startSignIn(alice, 'rl', 'jwt\r\nx: 1'), /x-bot-token: letters, digits and punctuation/);
+  await endSignIn(alice, await startSignIn(alice, 'rl', 'jwt-1\n'), false);
+  await assert.rejects(startSignIn(alice, 'rl', ''), /needs your x-bot-token/, 'kept only with a saved login');
+  await endSignIn(alice, await startSignIn(alice, 'rl', 'jwt-1'), true);
+  await endSignIn(alice, await startSignIn(alice, 'rl', ''), false);
+  const browsers = new Browsers(createInstance('s', '2027-12', alice, ['web:rl']), 1);
+  await browsers.browser('rl');
+  await browsers.close();
+  assert.deepEqual(headers, [{ 'x-bot-token': 'jwt-1' }, { 'x-bot-token': 'jwt-1' }, { 'x-bot-token': 'jwt-1' }, undefined], "the sign-ins', never the run's browser");
+  await endSignIn(alice, await startSignIn(alice, 'rl', 'jwt-2'), true);
+  assert.equal(secret(alice, 'web:rl.header'), 'jwt-2');
+  signOut(alice, 'web:rl');
+  assert.ok(!existsSync(join(personDir(alice), 'web:rl.header.sealed')));
+});
 
 test("a person has one browser at a time on a website that writes its state back: another run waits, logged, and opens from the state handed back; elsewhere runs open at once from the saved login, which stays", async () => {
   writeJson('connections.json', {

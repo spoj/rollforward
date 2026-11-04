@@ -1116,7 +1116,7 @@ async function openTokens(made) {
 // Your logins, each with what it offers a run, which you tick when you start or take over an instance.
 function loginsHtml(s) {
   let h = `<div class="sub">Every login is yours alone. A run uses only its runner's logins, and only those ticked for its instance. Nothing here is a password: you sign in to each system yourself.</div>`;
-  const entra = s.connections.filter(c => c.login.scope), sites = s.connections.filter(c => c.type === 'website').map(c => ({ id: c.name, name: c.title ?? c.name, url: c.url, hosts: c.hosts }));
+  const entra = s.connections.filter(c => c.login.scope), sites = s.connections.filter(c => c.type === 'website').map(c => ({ id: c.name, name: c.title ?? c.name, url: c.url, hosts: c.hosts, header: c.header }));
   if (!me.m365 && entra.length) h += `<div class="sub">Microsoft sign-in isn't set up on this server: its logins need an app registered in Microsoft Entra ID, which an admin sets in the server's settings (README, Access).</div>`;
   for (const c of entra) {
     const l = s.logins.find(l => l.id === c.login.id);
@@ -1134,10 +1134,11 @@ function loginsHtml(s) {
   }
   const ids = new Set(s.connections.map(c => c.login.id));
   for (const l of s.logins.filter(l => !ids.has(l.id))) h += `<h3>${esc(l.name)}</h3><div class="sub">No longer a connection on this server, so no run uses it.</div><div class="row2"><button class="btn" data-act="signout-login" data-id="${esc(l.id)}">Sign out</button></div>`;
-  if (sites.length) h += `<h3>Websites</h3><div class="sub">Sign in yourself, in a browser shown here. Your login is what that browser keeps, its cookies, never your password; a run's browser starts from it and brings it back refreshed. It reaches only the hosts listed, but there it can do whatever you can: the agent is told only to read, and each run's log counts its writes.</div>`
+  if (sites.length) h += `<h3>Websites</h3><div class="sub">Sign in yourself, in a browser shown here. Your login is what that browser keeps, its cookies, never your password; a run's browser starts from it and brings it back refreshed. It reaches only the hosts listed, but there it can do whatever you can: the agent is told only to read, and each run's log counts its writes.${sites.some(w => w.header) ? " Where a site's sign-in needs a token, give it in the box under its name: it goes only to that sign-in, never to a run's browser, and is kept, sealed, for the next." : ''}</div>`
     + sites.map(w => {
       const l = s.logins.find(l => l.id === `web:${w.id}`);
-      return `<div class="skill-row" style="display:flex;align-items:center;gap:8px"><span style="flex:1">${esc(w.name)} <span class="sub">${esc([new URL(w.url).hostname, ...w.hosts].join(', '))}${l ? ` · since ${esc(when(l.since))}` : ''}</span></span>`
+      return `<div class="skill-row" style="display:flex;align-items:center;gap:8px"><span style="flex:1">${esc(w.name)} <span class="sub">${esc([new URL(w.url).hostname, ...w.hosts].join(', '))}${l ? ` · since ${esc(when(l.since))}` : ''}</span>`
+        + `${w.header ? `<input type="password" id="hdr-${esc(w.id)}" placeholder="${l ? `New ${esc(w.header)}, if any` : `Your ${esc(w.header)}`}" autocomplete="off" style="display:block;width:100%;margin-top:6px">` : ''}</span>`
         + `<button class="btn" data-act="web-signin" data-id="${esc(w.id)}" data-name="${esc(w.name)}">${l ? 'Sign in again' : 'Sign in'}</button>${l ? `<button class="quiet" data-act="signout-login" data-id="${esc(l.id)}">Sign out</button>` : ''}</div>`;
     }).join('');
   if (!sites.length) h += `<h3>Websites</h3><div class="sub">${me.browsers ? 'None yet: admins add a website with <code>rf connection set NAME website --url URL --hosts ...</code>, and then everyone can sign in to it here.' : "Not set up on this server: website logins need the browser service (README, Websites), and then admins add websites with <code>rf connection set NAME website</code>."}</div>`;
@@ -1528,7 +1529,8 @@ async function onAct(act, el, was) {
     renderPv();
   }
   if (act === 'web-signin') {
-    pv = { title: `Sign in to ${el.dataset.name}`, signin: (await api(`/logins/web/${enc(el.dataset.id)}`, { method: 'POST' })).id };
+    const header = document.getElementById(`hdr-${el.dataset.id}`)?.value ?? '';
+    pv = { title: `Sign in to ${el.dataset.name}`, signin: (await api(`/logins/web/${enc(el.dataset.id)}`, { method: 'POST', body: JSON.stringify({ header }) })).id };
     renderPv();
   }
   if (act === 'signin-save') {
