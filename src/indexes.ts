@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { closeSync, constants, copyFileSync, createReadStream, createWriteStream, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, truncateSync, writeFileSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { createInterface } from 'node:readline';
 import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
 import { createZstdCompress, createZstdDecompress, zstdCompress } from 'node:zlib';
@@ -25,6 +24,9 @@ const SLICE_MS = 5_000, REFRESH_MS = 60 * 60_000, TRIES = 5;
 type Part = { link: string; delta: string | null; as_of: string | null; pages: number; due: number | null; error: string | null; tries: number };
 type Cache = { person: string; source: string; name: string; gen: number; length: number; lines: number; base: number; parts: Record<string, Part> };
 
+// A feed line, U+2028 and U+2029 escaped: JSON.stringify leaves them raw, and line readers such as node's readline and Python's
+// splitlines() end a line at them.
+const ndjson = (json: string) => `${json.replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029')}\n`;
 const kind = (offer: string) => /^m365:(\w+):?(.*)$/.exec(offer)!.slice(1) as [string, string];
 const m365 = (email: string) => logins(email).find(l => l.id === 'm365');
 const indexed = (o: Offer) => /^m365:(item:|site:|mail:|onedrive$)/.test(o.id) && !o.name.startsWith('File ');
@@ -115,14 +117,14 @@ async function slice(person: string, offer: string, until: number): Promise<void
         const e = Object.assign(new Error(`Microsoft Graph answered ${a.status}: ${JSON.stringify(a.body).slice(0, 300)}${why}`), { status: a.status, after: Number(a.headers?.['Retry-After']) || 60 });
         if ((a.status === 403 || a.status === 404) && part) {
           delete c.parts[part];
-          lines.push(`${JSON.stringify({ id: part, '@removed': { reason: 'deleted' } })}\n`);
+          lines.push(ndjson(JSON.stringify({ id: part, '@removed': { reason: 'deleted' } })));
           c.base = 0;
         } else if (a.status === 403 || a.status === 404) lost = [part, p, e];
         else failed(p, e, start(offer, part));
         continue;
       }
       for (const it of a.body.value) {
-        lines.push(`${JSON.stringify(it)}\n`);
+        lines.push(ndjson(JSON.stringify(it)));
         if (mail && !part) {
           if (it['@removed']) delete c.parts[it.id];
           else c.parts[it.id] ??= fresh(start(offer, it.id));
@@ -157,7 +159,14 @@ async function slice(person: string, offer: string, until: number): Promise<void
 // drive as parent.
 async function tidy(c: Cache) {
   const file = feed(c), next = feed({ ...c, gen: c.gen + 1 });
-  const read = () => createInterface({ input: createReadStream(file, { end: c.length - 1 }).pipe(createZstdDecompress()), crlfDelay: Infinity });
+  const read = async function* () {
+    let rest = '';
+    for await (const chunk of createReadStream(file, { end: c.length - 1 }).pipe(createZstdDecompress()).setEncoding('utf8')) {
+      const ls = (rest + chunk).split('\n');
+      rest = ls.pop()!;
+      yield* ls;
+    }
+  };
   const ids: string[] = [], last = new Map<string, number>(), gone = new Set<string>(), parent = new Map<string, string>();
   for await (const line of read()) {
     const it = JSON.parse(line);
@@ -181,7 +190,7 @@ async function tidy(c: Cache) {
       const id = ids[i];
       if (last.get(id) === i++ && !under(id)) {
         kept++;
-        yield `${line}\n`;
+        yield ndjson(line);
       }
     }
   }, createZstdCompress(), createWriteStream(next));

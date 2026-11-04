@@ -305,6 +305,23 @@ test('an expired login pauses its cache until its person signs in again, then it
   assert.equal(asked.slice(from).find(q => q.who === ALICE)!.url, link.slice(`${base}/v1.0`.length));
 });
 
+test('a line holding U+2028 or U+2029 stays one line: the tidy-up reads it whole, and the feed escapes them', async () => {
+  const name = 'line\u2028and\u2029paragraph.xlsx', item = file('b!d', 'f5', name, 'top');
+  // A feed written before they were escaped holds them raw, as JSON.stringify leaves them.
+  const c = cache(ALICE, FOLDER), f = feedOf(ALICE, FOLDER);
+  appendFileSync(f, zstdCompressSync(`${JSON.stringify(item)}\n`));
+  Object.assign(c, { length: statSync(f).size, lines: c.lines + 1, base: 0 });
+  writeFileSync(`${at(ALICE, FOLDER)}.json`, JSON.stringify(c));
+  put('b!d', item);
+  await due(ALICE, FOLDER);
+  assert.ok(cache(ALICE, FOLDER).gen > c.gen, 'tidied');
+  const text = zstdDecompressSync(readFileSync(feedOf(ALICE, FOLDER))).toString();
+  assert.ok(!/[\u2028\u2029]/.test(text) && text.includes('\\u2028') && text.includes('\\u2029'));
+  assert.deepEqual(lines(feedOf(ALICE, FOLDER)).filter(l => l.id === 'f5').map(l => l.name), [name]);
+  put('b!d', { id: 'f5', deleted: {} });
+  await due(ALICE, FOLDER);
+});
+
 test('losing the source deletes the cache', async () => {
   const f = feedOf(ALICE, FOLDER);
   locked.add(ALICE);
