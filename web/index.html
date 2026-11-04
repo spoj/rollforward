@@ -325,6 +325,8 @@ input[type=checkbox] { accent-color: var(--ink); }
 .conv h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-3); margin: 12px 0 0; }
 .conv textarea { font: inherit; padding: 7px 9px; border: 1px solid var(--rule-2); border-radius: var(--r1); resize: vertical; width: 100%; }
 .conv input[type=file] { font-size: 12px; color: var(--ink-3); }
+.thumbs { display: flex; flex-wrap: wrap; gap: 6px; }
+.thumbs img { max-width: 120px; max-height: 72px; border: 1px solid var(--rule); border-radius: var(--r1); }
 .conv .post { white-space: pre-wrap; }
 .thread { border: 1px solid var(--rule); border-radius: var(--r1); padding: 8px 10px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
 .thread.waits { border-color: var(--red); }
@@ -1455,6 +1457,7 @@ async function onAct(act, el, was) {
     for (const f of picked.files) files.push((await api(`${instPath()}/attach?name=${enc(f.name)}`, { method: 'POST', body: f })).file);
     await api(`${instPath()}/comment`, { method: 'POST', body: JSON.stringify(act === 'comment' ? { text, files, ...(ui.on && { item: ui.on }), ...(ui.ref && { ref: ui.ref }) } : { thread: el.dataset.thread, text, files }) });
     box.value = '';
+    thumbs(picked, new DataTransfer().files);
     replying.delete(el.dataset.thread);
     ui.on = ui.ref = null;
     await refresh();
@@ -1743,9 +1746,26 @@ for (const type of ['dragover', 'drop']) {
   $('#log').addEventListener(type, e => {
     if (!e.target.closest('#newcomment, #newfiles') || !e.dataTransfer.types.includes('Files')) return;
     e.preventDefault();
-    if (type === 'drop') $('#newfiles').files = e.dataTransfer.files;
+    if (type === 'drop') thumbs($('#newfiles'), e.dataTransfer.files);
   });
 }
+// A comment's or a reply's files, as its images look, under the box: picked, dropped or pasted.
+function thumbs(input, files) {
+  input.files = files;
+  input.nextElementSibling?.matches('.thumbs') && input.nextElementSibling.remove();
+  const images = [...files].filter(f => f.type.startsWith('image/'));
+  if (images.length) input.insertAdjacentHTML('afterend', `<div class="thumbs">${images.map(f => `<img src="${URL.createObjectURL(f)}" alt="${esc(f.name)}" title="${esc(f.name)}">`).join('')}</div>`);
+}
+$('#log').addEventListener('change', e => e.target.matches('input[type=file]') && thumbs(e.target, e.target.files));
+// Pasting files into a comment or a reply adds them to its own, a screenshot named for when it was pasted; text pastes as text.
+$('#log').addEventListener('paste', e => {
+  const input = e.target.matches('textarea') && e.target.nextElementSibling?.matches('input[type=file]') ? e.target.nextElementSibling : null, pasted = [...e.clipboardData.files];
+  if (!input || !pasted.length || e.clipboardData.types.includes('text/plain')) return;
+  e.preventDefault();
+  const all = new DataTransfer(), at = new Date().toTimeString().slice(0, 8).replaceAll(':', '-');
+  for (const f of [...input.files, ...pasted.map(f => /^image\.\w+$/.test(f.name) ? new File([f], `screenshot ${at}.${f.name.split('.').pop()}`, { type: f.type }) : f)]) all.items.add(f);
+  thumbs(input, all.files);
+});
 addEventListener('dragover', e => { if (!e.defaultPrevented) { e.preventDefault(); e.dataTransfer.dropEffect = 'none'; } });
 addEventListener('drop', e => e.preventDefault());
 $('#panes').addEventListener('scroll', () => { placeCard(); drawEdges(); }, true);

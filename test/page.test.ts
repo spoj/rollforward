@@ -399,3 +399,28 @@ test("while a run's browser is open it plays in a corner of the instance, to wat
   assert.deepEqual(stops, ['POST'], 'Stop browser is the Interrupt');
   for (const url of [at, '**/runs/**', `${at}/interrupt`]) await page.unroute(url);
 });
+
+test("a picture pasted into a comment, or a reply, goes with it, shown under the box until it's sent, a screenshot named for when it was pasted; pasted text stays text", async () => {
+  await page.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
+  await page.waitForSelector('#newcomment');
+  const paste = (at: string, text = '') => page.evaluate(([at, text]) => {
+    const dt = new DataTransfer();
+    dt.items.add(new File([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='), c => c.charCodeAt(0))], 'image.png', { type: 'image/png' }));
+    if (text) dt.setData('text/plain', text);
+    document.querySelector(at)!.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+  }, [at, text]);
+  const names = (at: string) => page.evaluate(at => [...(document.querySelector(at) as HTMLInputElement).files!].map(f => f.name), at);
+  await paste('#newcomment', 'Cells, as text');
+  assert.deepEqual(await names('#newfiles'), [], 'text pastes as text');
+  await paste('#newcomment');
+  assert.match((await names('#newfiles')).join(), /^screenshot \d\d-\d\d-\d\d\.png$/);
+  await page.waitForSelector('#newfiles + .thumbs img');
+  const reply = '#log .thread textarea[placeholder=Reply]';
+  await paste(reply);
+  assert.match((await names(`${reply} + input[type=file]`)).join(), /^screenshot /, "a reply's too");
+  await page.evaluate(at => { const i = document.querySelector(at) as HTMLInputElement; i.files = new DataTransfer().files; i.dispatchEvent(new Event('change', { bubbles: true })); }, `${reply} + input[type=file]`);
+  await page.fill('#newcomment', 'As on screen.');
+  await page.click('[data-act=comment]');
+  await page.waitForSelector('#log .thread .post .f img[alt^="screenshot "]');
+});
+
