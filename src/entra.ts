@@ -1,6 +1,9 @@
+import { existsSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { HttpError } from './store.ts';
-import { renew, users } from './auth.ts';
-import { logins, saveLogin, secret } from './logins.ts';
+import { changes } from './system.ts';
+import { renew, upsertUser, users } from './auth.ts';
+import { logins, personDir, saveLogin, seal, secret } from './logins.ts';
 
 // A person's Entra logins, each a connection's (connections.ts), such as Microsoft 365's: each access token comes from the login's
 // sealed refresh token, which turns over as it's used and is sealed again. A login Microsoft no longer renews is marked expired,
@@ -28,6 +31,33 @@ export async function token(email: string, id: string, scope: string[]): Promise
     const now = current(email, id);
     if (now) saveLogin(email, { ...now, expired: true });
     throw Object.assign(new HttpError(409, `${email}'s ${login.name} login has expired: they sign in to it again on the Logins page`), { login: id });
+  }
+}
+
+// A person's sign-in to rollforward, kept as its refresh token, which signing in again replaces, waking what waited for it (waker.ts).
+export function keepSignIn(email: string, refresh: string) {
+  mkdirSync(personDir(email), { recursive: true, mode: 0o700 });
+  seal(email, 'entra', refresh);
+  changes.emit('login', email, 'entra', 'rollforward');
+}
+
+// Whether Microsoft still signs the person in, as each run of theirs asks before it starts: their sign-in renews, or, until they
+// next sign in, their Microsoft 365 login, each refresh token turning over as it does. Microsoft refusing it answers 401, as for
+// one expired or revoked, for its person to sign in again; one disabled here, or that Microsoft says is disabled or gone
+// (AADSTS50057, AADSTS50034), carries `left`, and is disabled here too. Other failures, as when Microsoft can't be reached, throw
+// as they come.
+export async function confirm(email: string) {
+  const id = existsSync(join(personDir(email), 'entra.sealed')) ? 'entra' : 'm365', m365 = current(email, 'm365');
+  if (users()[email]?.disabled) throw Object.assign(new HttpError(401, `${email} is disabled here`), { left: true });
+  if (id === 'm365' && (!m365 || m365.expired)) throw new HttpError(401, `${email} hasn't signed in to rollforward since sign-ins are kept`);
+  try {
+    const r = await renew(secret(email, id), []);
+    if (id === 'entra') seal(email, id, r.refresh);
+    else if (current(email, id)) saveLogin(email, current(email, id)!, r.refresh);
+  } catch (e) {
+    if (!/AADSTS(50057|50034)\b/.test((e as Error).message)) throw e;
+    upsertUser(email, { disabled: true });
+    throw Object.assign(e as Error, { left: true });
   }
 }
 

@@ -12,6 +12,7 @@ import { seriesSettings } from './series.ts';
 import { pushed, skills } from './skills.ts';
 import { AGENT, commit, committed } from './git.ts';
 import { logins, runnerOf } from './logins.ts';
+import { confirm } from './entra.ts';
 import { reachable, types } from './connections.ts';
 
 // What runs when: one run at a time per series, at most RF_MAX_RUNS at once, started by people's acts and by wakes.
@@ -119,6 +120,22 @@ async function start(inst: Instance) {
   const series = inst.seriesId;
   const seen = seenBefore(inst);
   // A kick that starts nothing ends the instance's queued state all the same: pages that showed it should hear.
+  if (active.has(series) || !due(inst)) return void changes.emit('change', inst.id);
+  if (full()) return void waiting.add(inst);
+  // A run starts only for a runner Microsoft still signs in (entra.ts): one it no longer does waits for them to sign in again, and
+  // one who has left, for someone to take the instance over. Microsoft unreachable, it tries again in a minute.
+  const runner = runnerOf(inst).by, hit = inst.log.findLast(e => e.op === 'expired' && e.login === 'entra' && e.runner === runner);
+  if (hit && !inst.log.some(e => e.seq > hit.seq && e.op === 'wake' && e.login === 'entra')) return void changes.emit('change', inst.id);
+  try {
+    await confirm(runner);
+  } catch (e) {
+    if ((e as HttpError).status !== 401) {
+      console.error(`a run of ${inst.id} waits a minute: Microsoft didn't confirm ${runner}'s sign-in`, e);
+      return void setTimeout(() => kick(inst), 60_000).unref();
+    }
+    inst.append('server', 'expired', { login: 'entra', name: 'rollforward', runner, error: (e as Error).message, ...((e as { left?: boolean }).left && { left: true }) });
+    return void changes.emit('change', inst.id);
+  }
   if (active.has(series) || !due(inst)) return void changes.emit('change', inst.id);
   if (full()) return void waiting.add(inst);
   started.push(Date.now());

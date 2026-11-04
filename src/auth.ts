@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { HttpError } from './store.ts';
 import { forgetPerson, initSystem, key, readJson, rfDir, writeJson } from './system.ts';
 import { forgetLogins, logins, saveLogin, type Offer } from './logins.ts';
+import { keepSignIn } from './entra.ts';
 
 // Sign-in with a Microsoft account. People press "Sign in with Microsoft" and type nothing: the button goes to Microsoft Entra ID
 // (OpenID Connect, code flow with PKCE), at RF_OIDC_ISSUER, for the app RF_OIDC_CLIENT_ID, which the server needs to start. The server
@@ -151,6 +152,7 @@ function admit(res: ServerResponse, email: string, name: string | undefined, who
   const exp = String(Date.now() + SESSION_MS);
   res.writeHead(302, { location: next, 'set-cookie': [cookie('rf_session', `${b64(email)}.${exp}.${mac(`${email} ${exp} ${u.epoch ?? 0}`)}`, SESSION_MS / 1000), ...extra] });
   res.end();
+  return true;
 }
 
 const LOGO = '<svg width="20" height="20" viewBox="0 0 21 21" aria-hidden="true"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>';
@@ -238,7 +240,7 @@ async function microsoft(res: ServerResponse, next: string, connect?: { login: E
   const pending = b64(JSON.stringify({ state, nonce, verifier, next, exp: Date.now() + 600_000, ...connect }));
   const to = new URL(d.authorization_endpoint);
   for (const [k, v] of Object.entries({
-    response_type: 'code', client_id: oidc.clientId, redirect_uri: connect ? m365Redirect : oidc.redirect, scope: connect ? entraScope(connect.login.scope) : oidc.scopes, state, nonce,
+    response_type: 'code', client_id: oidc.clientId, redirect_uri: connect ? m365Redirect : oidc.redirect, scope: connect ? entraScope(connect.login.scope) : `${oidc.scopes} offline_access`, state, nonce,
     code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256', ...(connect ? { login_hint: connect.email } : { prompt: 'select_account' }),
   })) to.searchParams.set(k, v);
   res.writeHead(302, { location: to.href, 'set-cookie': cookie(pendingCookie(state), `${pending}.${mac(pending)}`, 600) });
@@ -260,14 +262,15 @@ function expired(req: IncomingMessage, res: ServerResponse) {
   page(res, 400, 'The sign-in took too long or came from another browser. Try again.');
 }
 
-// Checks an ID token's claims against this sign-in, then lets its person in.
-async function finishSignIn(res: ServerResponse, claims: any, p: Pending) {
+// Checks an ID token's claims against this sign-in, then lets its person in, keeping the sign-in itself, which each of their runs
+// renews first (entra.ts).
+async function finishSignIn(res: ServerResponse, claims: any, p: Pending, refresh?: string) {
   const d = await discovery(), aud = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
   if (claims.iss !== d.issuer || !aud.includes(oidc.clientId) || !(claims.exp * 1000 > Date.now()) || claims.nonce !== p.nonce) return page(res, 401, 'The sign-in token did not check out.');
   const email = String(claims.email ?? claims.preferred_username ?? claims.upn ?? '').toLowerCase();
   if (!email.includes('@')) return page(res, 403, 'Your account has no email address.');
   if (domains.length && !domains.includes(email.split('@')[1])) return page(res, 403, `${email} is not in an allowed domain.`);
-  admit(res, email, claims.name, { sub: claims.sub, ...(claims.oid && { oid: `${claims.tid}/${claims.oid}` }) }, Array.isArray(claims.groups) ? claims.groups.map(String) : undefined, p.next, [cookie(pendingCookie(p.state), '', 0)]);
+  if (admit(res, email, claims.name, { sub: claims.sub, ...(claims.oid && { oid: `${claims.tid}/${claims.oid}` }) }, Array.isArray(claims.groups) ? claims.groups.map(String) : undefined, p.next, [cookie(pendingCookie(p.state), '', 0)]) && refresh) keepSignIn(email, refresh);
 }
 
 async function callback(req: IncomingMessage, res: ServerResponse, url: URL) {
@@ -288,7 +291,7 @@ async function callback(req: IncomingMessage, res: ServerResponse, url: URL) {
   // Straight from the token endpoint over TLS, so the token's signature needn't be checked (OpenID Connect Core 3.1.3.7).
   const claims = JSON.parse(unb64(t.id_token.split('.')[1]));
   if (p.login) return finishLogin(req, res, claims, t, p);
-  await finishSignIn(res, claims, p);
+  await finishSignIn(res, claims, p, t.refresh_token);
 }
 
 export async function connect(res: ServerResponse, email: string, login: EntraLogin) {
@@ -384,10 +387,8 @@ const nextOf = (url: URL | URLSearchParams) => {
 
 // Who is asking. Answers the sign-in routes itself, and shows the sign-in page to anyone not signed in, then returns null.
 export async function authenticate(req: IncomingMessage, res: ServerResponse, url: URL): Promise<Me | null> {
-  if (url.pathname === '/auth/login') {
-    if (session(req)) res.writeHead(302, { location: nextOf(url) }).end();
-    else await microsoft(res, nextOf(url));
-  } else if ((url.pathname === redirectPath || (spa && url.pathname === '/auth/m365')) && url.searchParams.has('state') && (url.searchParams.has('code') || url.searchParams.has('error'))) {
+  if (url.pathname === '/auth/login') await microsoft(res, nextOf(url));
+  else if ((url.pathname === redirectPath || (spa && url.pathname === '/auth/m365')) && url.searchParams.has('state') && (url.searchParams.has('code') || url.searchParams.has('error'))) {
     // Microsoft's return, which may be the site's own root if that is what the app registers.
     await callback(req, res, url);
   } else if (spa && url.pathname === '/auth/token' && req.method === 'POST') await tokenFromBrowser(req, res);

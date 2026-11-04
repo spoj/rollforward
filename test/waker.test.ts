@@ -6,24 +6,29 @@ import { join } from 'node:path';
 import { createInstance, instance, labels, openStore, renameInstance, type Instance } from '../src/store.ts';
 import { initSystem, readJson, saveTree, tree, writeJson } from '../src/system.ts';
 import type { Active } from '../src/waker.ts';
+import { idp } from './idp.ts';
 
 // Wakes without a model: a run that a wake starts ends at once for want of a key, which is enough to see what started it.
 delete process.env.OPENROUTER_API_KEY;
 process.env.RF_WAKE_TICK_MS = '50';
+const entra = await idp();
+Object.assign(process.env, entra.env('http://127.0.0.1:1'));
 const { cancelWakes, citedFor, closed, kick, message, recover, resolveFor, setWake, startWaking, view, wakes, wakesOf, weekly } = await import('../src/waker.ts');
 const { saveLogin } = await import('../src/logins.ts');
+const { keepSignIn } = await import('../src/entra.ts');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-wake-')), alice = 'alice@demo.test';
 initSystem(tmp);
 openStore(tmp);
 saveTree({
-  workspaces: { w: { name: 'Acme', owners: [alice], members: [] }, x: { name: 'Hidden', owners: ['zed@demo.test'], members: [] }, m: { name: 'Main', owners: [alice, 'zed@demo.test'], members: [] } },
+  workspaces: { w: { name: 'Acme', owners: [alice], members: [] }, x: { name: 'Hidden', owners: ['zed@demo.test'], members: [] }, m: { name: 'Main', owners: [alice, 'zed@demo.test'], members: [] }, l: { name: 'Leavers', owners: ['lee@demo.test'], members: [] } },
   series: {
     s1: { name: 'Bank rec', workspace: 'w' }, s2: { name: 'Borrowing base', workspace: 'w' }, s3: { name: 'Payroll', workspace: 'x' },
-    s4: { name: 'Lunch', workspace: 'w', single: true }, s5: { name: 'Close', workspace: 'm' }, s6: { name: 'Queue', workspace: 'w' },
+    s4: { name: 'Lunch', workspace: 'w', single: true }, s5: { name: 'Close', workspace: 'm' }, s6: { name: 'Queue', workspace: 'w' }, s7: { name: 'Leaver', workspace: 'l' },
   },
 });
 writeJson('users.json', { [alice]: { role: 'user' } });
-for (const s of ['s1', 's2', 's3', 's4', 's5', 's6']) mkdirSync(join(tmp, 'series', s), { recursive: true });
+keepSignIn(alice, entra.refresh(alice));
+for (const s of ['s1', 's2', 's3', 's4', 's5', 's6', 's7']) mkdirSync(join(tmp, 'series', s), { recursive: true });
 const make = (series: string, label: string) => createInstance(series, label, alice, []);
 const aug = make('s1', '2026-08');
 await aug.close({ email: alice, name: 'Alice' });
@@ -33,7 +38,7 @@ const ops = (i: Instance) => i.log.map(e => e.op);
 const settle = () => new Promise(r => setTimeout(r, 2000));
 startWaking();
 
-after(() => rmSync(tmp, { recursive: true, force: true }));
+after(() => (entra.close(), rmSync(tmp, { recursive: true, force: true })));
 
 test("a run's first message names the runner and what they lend, as does a later one only where its entries change those", () => {
   assert.match(message(oct, 1, oct.log, true), new RegExp(`^Instance 2026-10, run 1\\. Its runner is .+ <${alice}>, who lends you no connection\\. New log entries:`));
@@ -197,6 +202,35 @@ test("others' comments and wakes are notes for an instance's runner, unless the 
   await settle();
   assert.equal(runs(shared), 1, 'in a series its runner shares, anyone starts runs');
   assert.match(message(shared, 1, shared.log), /"by":"bob@demo\.test","op":"comment".*"note":true/, "and bob's comment still reaches the agent as a note");
+});
+
+test("a run starts only for a runner Microsoft still signs in: one it no longer does waits for them to sign in again, which wakes it, and one disabled or gone is disabled here too; while Microsoft can't be reached, nothing starts", async () => {
+  const lee = 'lee@demo.test', inst = createInstance('s7', 'books', lee, []), runs = () => inst.log.filter(e => e.op === 'run').length;
+  const go = async () => (inst.append(lee, 'comment', { thread: 'g', text: 'go' }), kick(inst), await settle());
+  await go();
+  assert.deepEqual([runs(), inst.log.at(-1)!.op, inst.log.at(-1)!.error], [0, 'expired', "lee@demo.test hasn't signed in to rollforward since sign-ins are kept"], 'no sign-in kept, nor a Microsoft 365 login');
+  keepSignIn(lee, entra.refresh(lee));
+  await settle();
+  assert.deepEqual([runs(), entra.who.renewed.at(-1)], [1, lee], 'signing in wakes it, and its run renews the sign-in first');
+  entra.who.stale.add(lee);
+  await go();
+  assert.match(inst.log.at(-1)!.error as string, /AADSTS700082/);
+  const asked = entra.who.renewed.length;
+  await go();
+  assert.deepEqual([runs(), inst.log.filter(e => e.op === 'expired').length, entra.who.renewed.length], [1, 2, asked], 'it waits for them, asking Microsoft no more');
+  entra.who.stale.delete(lee);
+  entra.who.down = true;
+  keepSignIn(lee, entra.refresh(lee));
+  await settle();
+  assert.deepEqual([runs(), inst.log.at(-1)!.op], [1, 'wake'], "Microsoft unreachable, it doesn't start, and tries again in a minute");
+  entra.who.down = false;
+  kick(inst);
+  await settle();
+  assert.equal(runs(), 2);
+  entra.who.gone.add(lee);
+  await go();
+  const { users } = await import('../src/auth.ts');
+  assert.deepEqual([runs(), inst.log.at(-1)!.left, users()[lee].disabled], [2, true, true], 'Microsoft says the account is disabled: so is its person here');
 });
 
 test("a weekly wake's days are such as mon-fri or mon,wed,fri, and it first fires on one of them; a series' label holds the date it fires or the one before that it fires on", () => {

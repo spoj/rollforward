@@ -297,7 +297,7 @@ test('without a session the site shows Sign in with Microsoft, which goes to Mic
   assert.equal((await fetch(base + '/api', { headers: { cookie: admin.replace(/.$/, c => (c === 'A' ? 'B' : 'A')) } })).status, 401, 'a tampered cookie is refused');
   const me = await json('/me');
   assert.deepEqual([me.email, me.role], [adminEmail, 'admin']);
-  assert.equal((await fetch(base + '/auth/login', { redirect: 'manual', headers: { cookie: admin } })).headers.get('location'), '/', 'signed in already');
+  assert.match((await fetch(base + '/auth/login', { redirect: 'manual', headers: { cookie: admin } })).headers.get('location')!, /\/authorize\?.*scope=openid\+profile\+email\+offline_access&/, 'signed in already, it signs in again, as Sign in again asks, keeping the sign-in');
 });
 
 test("each person sees the workspaces they're in, by email or Entra group; owners and admins manage who is in", async () => {
