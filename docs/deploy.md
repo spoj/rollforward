@@ -108,7 +108,7 @@ A data root of the team's fork (its main at a1fa8db, with folders `<workspace>/<
 
 ## Check
 
-1. `podman logs rollforward` says `sign-in microsoft`. If it says `demo`, anyone who reaches the site can sign in as an admin: stop it and set the `RF_OIDC_*` lines.
+1. `podman logs rollforward` says `rollforward on`. Without the `RF_OIDC_*` lines and `RF_PUBLIC_URL` it doesn't start, and says which are missing.
 2. From the rollforward host, `curl -fsS -H "authorization: Bearer $RF_BROWSER_KEY" $RF_BROWSER_URL/sessions` answers `[]`.
 3. Sign in at `RF_PUBLIC_URL` as one of `RF_ADMINS` and make a workspace. With its +, start a task and comment "Reply OK". The run ends within a few minutes, for about $0.05.
 4. Under Logins, Connect Microsoft 365.

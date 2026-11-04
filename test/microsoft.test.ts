@@ -1,6 +1,6 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -106,16 +106,18 @@ after(async () => {
   rmSync(tmp, { recursive: true, force: true, maxRetries: 3 });
 });
 
-test('the button goes to Microsoft, and back with a session; the demo picker is gone', async () => {
+test('the button goes to Microsoft, and back with a session; without an app the server does not start', async () => {
   const out = await fetch(`${confidential}/auth/login`, { redirect: 'manual' });
   assert.ok(out.headers.get('location')!.startsWith(`${idpBase}/authorize?`));
   assert.equal(new URL(out.headers.get('location')!).searchParams.get('code_challenge_method'), 'S256');
   assert.equal(new URL(out.headers.get('location')!).searchParams.get('redirect_uri'), `${confidential}/auth/callback`);
-  assert.equal((await fetch(`${confidential}/auth/demo`, { method: 'POST', body: new URLSearchParams({ email: 'admin@demo.test' }) })).status, 401);
   const a = await start(confidential, 'alex@acme.test');
   const s = sessionOf(await fetch(a.back, { redirect: 'manual', headers: { cookie: a.cookie } }))!;
   const me = await (await fetch(`${confidential}/me`, { headers: { cookie: s } })).json();
-  assert.deepEqual([me.email, me.name, me.role, me.sign_in], ['alex@acme.test', 'Alex', 'admin', 'microsoft']);
+  assert.deepEqual([me.email, me.name, me.role], ['alex@acme.test', 'Alex', 'admin']);
+  const bare = spawnSync(process.execPath, [join(app, 'src', 'server.ts'), join(tmp, 'bare'), '0'], { env: { ...process.env, HOME: tmp, RF_OIDC_ISSUER: '' }, encoding: 'utf8' });
+  assert.notEqual(bare.status, 0);
+  assert.match(bare.stderr, /sign-in needs an app registered in Microsoft Entra ID/);
 });
 
 test("Connect Microsoft 365 asks the same app for read-only mail and files, and keeps the person's own login, sealed", async () => {
@@ -182,7 +184,7 @@ test('a public client with no secret, whose app registers the site\'s root, sign
   const r = await fetch(a.back, { redirect: 'manual', headers: { cookie: a.cookie } });
   assert.equal(r.headers.get('location'), '/');
   const me = await (await fetch(`${publicClient}/me`, { headers: { cookie: sessionOf(r)! } })).json();
-  assert.deepEqual([me.email, me.sign_in], ['sam@acme.test', 'microsoft']);
+  assert.equal(me.email, 'sam@acme.test');
   assert.equal((await fetch(`${publicClient}/`, { redirect: 'manual' })).status, 200, 'the root without a code is still the sign-in page');
 });
 
@@ -207,7 +209,7 @@ test('a Single-page application app: the browser redeems the code, and the serve
   const r = await post(id_token);
   assert.equal(r.headers.get('location'), '/');
   const me = await (await fetch(`${spaClient}/me`, { headers: { cookie: sessionOf(r)! } })).json();
-  assert.deepEqual([me.email, me.sign_in, me.m365], ['kim@acme.test', 'microsoft', false]);
+  assert.deepEqual([me.email, me.m365], ['kim@acme.test', false]);
 });
 
 test("a Single-page application with its secret: sign-in stays the browser's, and Microsoft 365 comes back to /auth/m365, asking for mail alone, granted as ReadWrite", async () => {

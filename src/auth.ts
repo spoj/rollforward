@@ -6,21 +6,16 @@ import { HttpError } from './store.ts';
 import { forgetPerson, initSystem, key, readJson, rfDir, writeJson } from './system.ts';
 import { forgetLogins, logins, saveLogin, type Offer } from './logins.ts';
 
-// Sign-in with a Microsoft account. People press "Sign in with Microsoft" and type nothing. With RF_OIDC_ISSUER and the app's id set,
-// the button goes to Microsoft Entra ID (OpenID Connect, code flow with PKCE): the server redeems the code, with the app's secret if it
-// has one, or, for an app registered as a Single-page application (RF_OIDC_SPA=1), the browser does and the server checks the token's
-// signature. Without them it goes to a demo account picker that offers the two demo accounts below, so keep a demo on localhost.
+// Sign-in with a Microsoft account. People press "Sign in with Microsoft" and type nothing: the button goes to Microsoft Entra ID
+// (OpenID Connect, code flow with PKCE), at RF_OIDC_ISSUER, for the app RF_OIDC_CLIENT_ID, which the server needs to start. The server
+// redeems the code, with the app's secret if it has one, or, for an app registered as a Single-page application (RF_OIDC_SPA=1), the
+// browser does and the server checks the token's signature.
 
 // Admins manage people and skills, from rf, and grant users capabilities (server.ts).
 export type Role = 'admin' | 'user';
 export const ROLES: Role[] = ['admin', 'user'];
 export type User = { name?: string; role: Role; disabled?: boolean; sub?: string; oid?: string; groups?: string[]; epoch?: number; created?: string; last_login?: string };
 export type Me = { email: string; name: string; role: Role; groups: string[] };
-
-export const DEMO_ACCOUNTS: { email: string; name: string; role: Role }[] = [
-  { email: 'admin@demo.test', name: 'Demo Admin', role: 'admin' },
-  { email: 'bob@demo.test', name: 'Bob', role: 'user' },
-];
 
 const env = process.env;
 const oidc = {
@@ -37,7 +32,6 @@ const spa = env.RF_OIDC_SPA === '1';
 // the app also registers as a Web redirect, and the server redeems them with the secret, while sign-in stays the browser's.
 const m365Redirect = spa ? `${oidc.publicUrl}/auth/m365` : oidc.redirect;
 const redirectPath = URL.canParse(oidc.redirect) ? new URL(oidc.redirect).pathname : '/auth/callback';
-export const mode: 'microsoft' | 'demo' = oidc.issuer ? 'microsoft' : 'demo';
 // A person's Microsoft 365 login asks the same app for delegated Graph access: RF_M365_SCOPES, by default reading mail, shared
 // mailboxes, files and sites. The server keeps its refresh token, which a Single-page application's redirect can't give it.
 export const graphScopes = (env.RF_M365_SCOPES ?? 'Mail.Read Mail.Read.Shared Files.Read.All Sites.Read.All').split(/[\s,]+/).filter(Boolean);
@@ -51,13 +45,13 @@ export function needs(scope: string, what: string) {
 // which its person reconnects to grant.
 const granted = (scope: string | undefined) => scope?.split(' ').map(s => s.replace(/^https:\/\/graph\.microsoft\.com\//i, '')).filter(s => s && !['openid', 'profile', 'email', 'offline_access'].includes(s.toLowerCase()));
 export const ungranted = (login: { scopes?: string[] }) => graphScopes.filter(s => login.scopes && !login.scopes.some(g => g.toLowerCase() === s.toLowerCase()));
-export const m365Ready = () => mode === 'microsoft' && (!spa || !!oidc.clientSecret);
+export const m365Ready = () => !spa || !!oidc.clientSecret;
 // What an Entra login asks for: OpenID's own scopes and its connection's, such as Graph's permissions.
 const entraScope = (scope: string[]) => ['openid', 'email', 'offline_access', ...scope].join(' ');
 // A connection's Entra login, as connections.ts describes it: its id, kind and name, its scope, and the offers it makes, unless
 // they are its person's to add, as Microsoft 365's are.
 export type EntraLogin = { id: string; kind: string; name: string; scope: string[]; offers?: Offer[] };
-const admins = new Set([...(env.RF_ADMINS ?? '').split(','), ...(mode === 'demo' ? DEMO_ACCOUNTS.filter(a => a.role === 'admin').map(a => a.email) : [])].map(s => s.trim().toLowerCase()).filter(Boolean));
+const admins = new Set((env.RF_ADMINS ?? '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
 const domains = (env.RF_ALLOWED_DOMAINS ?? '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 const SESSION_MS = Number(env.RF_SESSION_HOURS ?? 12) * 3_600_000;
 const secure = oidc.publicUrl.startsWith('https:');
@@ -144,7 +138,7 @@ export function session(req: IncomingMessage): Me | null {
   return { email: id, name: u.name ?? id, role: admins.has(id) ? 'admin' : u.role, groups: u.groups ?? [] };
 }
 
-// Lets someone in whom Microsoft (or the demo picker) has vouched for: records them, with the Entra groups their token names (once the
+// Lets someone in whom Microsoft has vouched for: records them, with the Entra groups their token names (once the
 // app is set to send them), then sets the session cookie. Entra's sub differs for each app, but its tenant and object ids (oid, kept as
 // tid/oid) name the person whatever the app, so a record from before them, made through an app since replaced, takes them at its
 // next sign-in; another issuer's sub must match.
@@ -169,10 +163,7 @@ h1 { font-size: 22px; font-weight: 600; margin: 0 0 6px; } p { margin: 0 0 22px;
 .ms { display: flex; align-items: center; justify-content: center; gap: 12px; width: 100%; padding: 11px 12px; font: 600 15px "Segoe UI", "IBM Plex Sans", sans-serif;
   color: #5e5e5e; background: #fff; border: 1px solid #8c8c8c; border-radius: 2px; text-decoration: none; cursor: pointer; }
 .ms:hover { background: #f3f3f3; }
-.acct { display: flex; align-items: center; gap: 14px; width: 100%; padding: 12px 10px; background: none; border: 0; border-top: 1px solid #e3e6ea; text-align: left; font: inherit; cursor: pointer; }
-.acct:hover { background: #f3f3f3; } .acct b { display: block; font-weight: 500; } .acct small { color: #6b7280; font-size: 13px; }
-.av { flex: none; width: 36px; height: 36px; border-radius: 50%; background: #e7eaee; display: grid; place-items: center; font-weight: 600; color: #474e5b; }
-.note { margin: 18px 0 0; font-size: 12.5px; color: #6b7280; } .brand { display: flex; align-items: center; gap: 8px; color: #5e5e5e; font-weight: 600; margin-bottom: 18px; }</style>`;
+</style>`;
 
 function page(res: ServerResponse, status: number, text: string) {
   res.writeHead(status, { 'content-type': 'text/html; charset=utf-8' });
@@ -223,16 +214,6 @@ export async function cli(req: IncomingMessage, res: ServerResponse, url: URL) {
   if (req.method === 'POST') return show(`<p>${a.token ? `${esc(a.name)} is signed in as you. You can close this tab; the token is under Tokens, where you can revoke it.` : 'Denied. rf is not signed in.'}</p>`);
   show(`<p><b>${esc(a.name)}</b> asks to act as you, ${esc(own.email)}, for 30 days: what you do on this site, from a shell or a desktop agent. Allow it only if rf shows the code <b>${esc(a.code)}</b>.</p>
 <form method="post" action="/cli"><input type="hidden" name="code" value="${esc(a.code)}"><button class="ms" name="allow" value="yes">Allow</button><p></p><button class="ms" name="allow" value="no">Deny</button></form>`);
-}
-
-// The demo's stand-in for Microsoft's account picker: the two demo accounts, one click each.
-function demoPicker(res: ServerResponse, next: string) {
-  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-  res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Pick an account</title>${STYLE}
-<div class="box"><div class="brand">${LOGO}Microsoft</div><h1>Pick an account</h1><p>to continue to rollforward</p>
-<form method="post" action="/auth/demo"><input type="hidden" name="next" value="${esc(next)}">
-${DEMO_ACCOUNTS.map(a => `<button class="acct" name="email" value="${esc(a.email)}"><span class="av">${esc(a.name[0])}</span><span><b>${esc(a.name)}</b><small>${esc(a.email)} · ${a.role}</small></span></button>`).join('')}
-</form><p class="note">Demo accounts. Set RF_OIDC_ISSUER and RF_OIDC_CLIENT_ID (see .env.example) to sign in with real Microsoft accounts instead.</p></div>`);
 }
 
 let discovered: { issuer: string; authorization_endpoint: string; token_endpoint: string; jwks_uri?: string; end_session_endpoint?: string } | undefined;
@@ -405,22 +386,15 @@ const nextOf = (url: URL | URLSearchParams) => {
 export async function authenticate(req: IncomingMessage, res: ServerResponse, url: URL): Promise<Me | null> {
   if (url.pathname === '/auth/login') {
     if (session(req)) res.writeHead(302, { location: nextOf(url) }).end();
-    else if (mode === 'microsoft') await microsoft(res, nextOf(url));
-    else res.writeHead(302, { location: `/auth/demo?next=${encodeURIComponent(nextOf(url))}` }).end();
-  } else if (url.pathname === '/auth/demo' && mode === 'demo') {
-    if (req.method !== 'POST') return demoPicker(res, nextOf(url)), null;
-    const form = new URLSearchParams(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString());
-    const account = DEMO_ACCOUNTS.find(a => a.email === form.get('email'));
-    if (!account) return page(res, 400, 'Pick one of the demo accounts.'), null;
-    admit(res, account.email, account.name, {}, undefined, nextOf(form));
-  } else if (mode === 'microsoft' && (url.pathname === redirectPath || (spa && url.pathname === '/auth/m365')) && url.searchParams.has('state') && (url.searchParams.has('code') || url.searchParams.has('error'))) {
+    else await microsoft(res, nextOf(url));
+  } else if ((url.pathname === redirectPath || (spa && url.pathname === '/auth/m365')) && url.searchParams.has('state') && (url.searchParams.has('code') || url.searchParams.has('error'))) {
     // Microsoft's return, which may be the site's own root if that is what the app registers.
     await callback(req, res, url);
-  } else if (mode === 'microsoft' && spa && url.pathname === '/auth/token' && req.method === 'POST') await tokenFromBrowser(req, res);
+  } else if (spa && url.pathname === '/auth/token' && req.method === 'POST') await tokenFromBrowser(req, res);
   else if (url.pathname === '/auth/cli' && req.method === 'POST') await ask(req, res);
   else if (url.pathname === '/auth/cli/poll' && req.method === 'POST') await collect(req, res);
   else if (url.pathname === '/auth/logout' && req.method === 'POST') {
-    const end = mode === 'microsoft' ? (await discovery().catch(() => undefined))?.end_session_endpoint : undefined;
+    const end = (await discovery().catch(() => undefined))?.end_session_endpoint;
     res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': cookie('rf_session', '', 0) });
     res.end(JSON.stringify({ next: end ? `${end}?post_logout_redirect_uri=${encodeURIComponent(oidc.publicUrl + '/')}` : '/' }));
   } else {
@@ -432,9 +406,8 @@ export async function authenticate(req: IncomingMessage, res: ServerResponse, ur
   return null;
 }
 
-export function checkConfig(host: string) {
-  if (mode === 'microsoft' && (!oidc.clientId || !oidc.publicUrl || !URL.canParse(oidc.redirect))) throw new Error('RF_OIDC_ISSUER needs RF_OIDC_CLIENT_ID and RF_PUBLIC_URL (and RF_OIDC_CLIENT_SECRET unless the app is a public client)');
-  if (mode === 'demo' && !['127.0.0.1', 'localhost', '::1'].includes(host)) console.warn(`Demo sign-in: anyone who reaches ${host} can sign in as a demo admin. Set RF_OIDC_ISSUER for Microsoft accounts.`);
+export function checkConfig() {
+  if (!oidc.issuer || !oidc.clientId || !oidc.publicUrl || !URL.canParse(oidc.redirect)) throw new Error('sign-in needs an app registered in Microsoft Entra ID: RF_OIDC_ISSUER, RF_OIDC_CLIENT_ID and RF_PUBLIC_URL (and RF_OIDC_CLIENT_SECRET unless the app is a public client)');
 }
 
 if (import.meta.main) {

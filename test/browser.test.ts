@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { chromium } from 'playwright';
 import type { Instance } from '../src/store.ts';
 import { filesOf, standIns } from './push.ts';
+import { idp } from './idp.ts';
 
 // Website logins and a run's browser, through the browser service (RF_BROWSER_URL and RF_BROWSER_KEY, else skipped), on a
 // stand-in portal behind a sign-in that, as Retail Link's, needs a token its page never sends: a person signs in in the live view
@@ -18,13 +19,12 @@ const app = join(import.meta.dirname, '..'), ADMIN = 'admin@demo.test';
 const tmp = mkdtempSync(join(tmpdir(), 'rf-browser-')), root = join(tmp, 'data');
 after(() => rmSync(tmp, { recursive: true, force: true }));
 const seen: string[] = [];
-let portal: Server, origin = '', proc: ChildProcess, base = '', admin = '', bob = '', visits = 0, uploaded = 0;
+let portal: Server, origin = '', proc: ChildProcess, base = '', admin = '', bob = '', visits = 0, uploaded = 0, entra: Awaited<ReturnType<typeof idp>>;
 // A stand-in instance of a series of the portal's, its log kept in `log`, which the first run's test makes.
 let stand: (dir: string, ticks: string[], log: Record<string, unknown>[]) => Instance;
 
 const call = (method: string, path: string, body?: unknown, cookie = admin) => fetch(base + path, { method, headers: { cookie }, body: body === undefined ? undefined : JSON.stringify(body) });
-const login = async (email: string) => (await fetch(`${base}/auth/demo`, { method: 'POST', body: new URLSearchParams({ email, next: '/' }), redirect: 'manual' }))
-  .headers.getSetCookie().find(c => c.startsWith('rf_session='))!.split(';')[0];
+const login = async (email: string) => (await entra.signIn(base, email)).headers.getSetCookie().find(c => c.startsWith('rf_session='))!.split(';')[0];
 const text = async (req: IncomingMessage) => Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString();
 
 function standIn(): Server {
@@ -67,8 +67,9 @@ describe('website logins', { skip: !process.env.RF_BROWSER_URL && 'needs the bro
     base = `http://127.0.0.1:${(probe.address() as { port: number }).port}`;
     await new Promise(ok => probe.close(ok));
     mkdirSync(join(tmp, 'home'));
+    entra = await idp();
     proc = spawn(process.execPath, [join(app, 'src', 'server.ts'), root, new URL(base).port], {
-      env: { ...process.env, HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch') }, stdio: ['ignore', 'pipe', 'inherit'],
+      env: { ...process.env, HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch'), ...entra.env(base), RF_ADMINS: ADMIN }, stdio: ['ignore', 'pipe', 'inherit'],
     });
     await new Promise((ok, fail) => {
       proc.stdout!.on('data', d => String(d).includes('rollforward on') && ok(null));
@@ -85,10 +86,11 @@ describe('website logins', { skip: !process.env.RF_BROWSER_URL && 'needs the bro
       await once(proc, 'exit');
     }
     portal.close();
+    entra.close();
   });
 
   test("a person signs in in the live view on the Logins page, and their login is that browser's state", async () => {
-    assert.equal((await (await call('GET', '/connections', undefined, bob)).json())[0].login.name, 'Portal', 'Logins lists the websites');
+    assert.equal((await (await call('GET', '/connections', undefined, bob)).json()).find((c: { name: string }) => c.name === 'portal').login.name, 'Portal', 'Logins lists the websites');
     const { id } = await (await call('POST', '/logins/web/portal', { header: 'jwt-1' })).json(), ws = `${base.replace('http', 'ws')}/signins/${id}/view`;
     assert.match(await (await call('GET', `/signins/${id}/view`)).text(), /Take control/);
     assert.equal((await call('GET', `/signins/${id}/view`, undefined, bob)).status, 404, "nobody else's sign-in");

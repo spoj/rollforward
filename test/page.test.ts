@@ -9,12 +9,13 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
+import { idp } from './idp.ts';
 
 // The page in a browser, on a copy of the test fixture: menus, names changed in place, settings that save as they change, and the page's
 // own dialogs, never the browser's.
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-page-')), root = join(tmp, 'data');
-let proc: ChildProcess, browser: Browser, page: Page;
+let proc: ChildProcess, browser: Browser, page: Page, entra: Awaited<ReturnType<typeof idp>>;
 const native: string[] = [];
 
 before(async () => {
@@ -51,6 +52,8 @@ before(async () => {
   await new Promise(ok => probe.listen(0, '127.0.0.1', ok));
   const port = (probe.address() as { port: number }).port;
   await new Promise(ok => probe.close(ok));
+  entra = await idp();
+  Object.assign(env, entra.env(`http://127.0.0.1:${port}`), { RF_ADMINS: 'admin@demo.test' });
   proc = spawn(process.execPath, [join(app, 'src', 'server.ts'), root, String(port)], { env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'inherit'] });
   await new Promise((ok, fail) => {
     proc.stdout!.on('data', d => String(d).includes('rollforward on') && ok(null));
@@ -59,8 +62,8 @@ before(async () => {
   browser = await chromium.launch();
   page = await browser.newPage();
   page.on('dialog', d => { native.push(d.message()); d.dismiss(); });
-  await page.request.post(`http://127.0.0.1:${port}/auth/demo`, { form: { email: 'admin@demo.test', next: '/' }, maxRedirects: 0 });
-  await page.goto(`http://127.0.0.1:${port}/`);
+  entra.who.as = 'admin@demo.test';
+  await page.goto(`http://127.0.0.1:${port}/auth/login`);
   await page.waitForSelector('#bar h1 .t'); // once the start's kick of the open instance has passed
 });
 
@@ -69,6 +72,7 @@ after(async () => {
   if (process.platform === 'win32') proc.kill();
   else process.kill(-proc.pid!, 'SIGTERM');
   await once(proc, 'exit');
+  entra.close();
 });
 
 test("an instance's label changes in place: Enter saves, Escape keeps the old one", async () => {
@@ -258,7 +262,7 @@ test("a sign-off the agent asks for shows louder, with Approve and Reject for it
 
 test("people show by name, with their email on hover, and Entra groups by label; adding to a workspace suggests people by name and takes a group's label", async () => {
   const bob = 'bob@demo.test', group = '6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b', url = (path: string) => new URL(path, page.url()).href;
-  const signin = await fetch(url('/auth/demo'), { method: 'POST', body: new URLSearchParams({ email: bob, next: '/' }), redirect: 'manual' });
+  const signin = await entra.signIn(new URL(page.url()).origin, bob);
   const bobs = signin.headers.getSetCookie().find(c => c.startsWith('rf_session='))!.split(';')[0];
   await page.reload();
   await page.hover('.row.ws');

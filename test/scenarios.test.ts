@@ -7,6 +7,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { idp } from './idp.ts';
 
 // Real runs, from a person's act down to Pi in its sandbox, with a scripted stand-in for OpenRouter: each run's prompt takes the
 // next script, bash commands and then the report, and the stand-in keeps what each command answered. So the walls a run meets, a
@@ -50,8 +51,8 @@ async function answer(req: IncomingMessage, res: ServerResponse) {
 }
 
 const call = (method: string, path: string, body?: unknown, cookie = admin) => fetch(base + path, { method, headers: { cookie }, body: body === undefined ? undefined : JSON.stringify(body) });
-const login = async (email: string) => (await fetch(`${base}/auth/demo`, { method: 'POST', body: new URLSearchParams({ email, next: '/' }), redirect: 'manual' }))
-  .headers.getSetCookie().find(c => c.startsWith('rf_session='))!.split(';')[0];
+const entra = await idp();
+const login = async (email: string) => (await entra.signIn(base, email)).headers.getSetCookie().find(c => c.startsWith('rf_session='))!.split(';')[0];
 async function runs(id: string, n: number) {
   let log: { op: string; [k: string]: unknown }[] = [];
   for (let i = 0; i < 300 && log.filter(e => e.op === 'done').length < n; i++) {
@@ -95,7 +96,7 @@ exec ${git} "$@"
 async function serve() {
   const upstream = `import { upstreams } from ${JSON.stringify(pathToFileURL(join(app, 'src', 'connections.ts')).href)}; upstreams['openrouter.ai'] = 'http://127.0.0.1:${(model.address() as { port: number }).port}';`;
   proc = spawn(process.execPath, ['--import', `data:text/javascript,${encodeURIComponent(upstream)}`, join(app, 'src', 'server.ts'), root, new URL(base).port], {
-    env: { ...process.env, PATH: `${join(tmp, 'bin')}:${process.env.PATH}`, RF_HOLD_GIT: join(tmp, 'hold-git'), HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch'), OPENROUTER_API_KEY: 'stand-in-key', RF_WAKE_TICK_MS: '300' },
+    env: { ...process.env, PATH: `${join(tmp, 'bin')}:${process.env.PATH}`, RF_HOLD_GIT: join(tmp, 'hold-git'), HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch'), OPENROUTER_API_KEY: 'stand-in-key', RF_WAKE_TICK_MS: '300', ...entra.env(base), RF_ADMINS: ADMIN },
     stdio: ['ignore', 'pipe', 'inherit'],
   });
   await new Promise((ok, fail) => {
@@ -122,6 +123,7 @@ after(async () => {
     await once(proc, 'exit');
   }
   model.close();
+  entra.close();
   rmSync(tmp, { recursive: true, force: true });
 });
 

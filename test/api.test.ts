@@ -10,20 +10,21 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { filesOf, standIns } from './push.ts';
+import { idp } from './idp.ts';
 
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const series = 'Weekly borrowing base', monthly = 'Monthly rec', renamed = 'Weekly BB';
 
 const tmp = mkdtempSync(join(tmpdir(), 'rf-')), root = join(tmp, 'data');
-let proc: ChildProcess, base: string, admin = '';
+let proc: ChildProcess, base: string, admin = '', entra: Awaited<ReturnType<typeof idp>>;
 const adminEmail = 'admin@demo.test', bob = 'bob@demo.test';
 
 const json = async (path: string, cookie = admin) => (await fetch(base + path, { headers: { cookie } })).json();
 const call = (method: string, path: string, body?: BodyInit, cookie = admin) => fetch(base + path, { method, body, headers: { cookie } });
 const authCli = (...args: string[]) => execFileSync(process.execPath, [join(app, 'src', 'auth.ts'), root, ...args], { encoding: 'utf8' });
 const sessionOf = (r: Response) => r.headers.getSetCookie().find(c => c.startsWith('rf_session='))?.split(';')[0];
-// Signs in the way the demo does: Sign in with Microsoft, then a click on a demo account in the picker.
-const login = (email: string) => fetch(`${base}/auth/demo`, { method: 'POST', body: new URLSearchParams({ email, next: '/' }), redirect: 'manual' });
+// Signs in as a browser does: Sign in with Microsoft, at a stand-in for Microsoft that signs in whoever it's told.
+const login = (email: string) => entra.signIn(base, email);
 const workspaces = (cookie = admin) => json('/api', cookie);
 const named = async (name: string) => (await workspaces()).find((w: { name: string }) => w.name === name);
 const seriesList = async () => (await named('larkfield')).series;
@@ -63,6 +64,8 @@ before(async () => {
   const port = (probe.address() as { port: number }).port;
   await new Promise(ok => probe.close(ok));
   base = `http://127.0.0.1:${port}`;
+  entra = await idp();
+  Object.assign(env, entra.env(base), { RF_ADMINS: adminEmail });
   proc = spawn(process.execPath, [join(app, 'src', 'server.ts'), root, String(port)], { env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'inherit'] });
   await new Promise((ok, fail) => {
     proc.stdout!.on('data', d => String(d).includes('rollforward on') && ok(null));
@@ -76,6 +79,7 @@ after(async () => {
   if (process.platform === 'win32') proc.kill();
   else process.kill(-proc.pid!, 'SIGTERM');
   await once(proc, 'exit');
+  entra.close();
   rmSync(tmp, { recursive: true, force: true, maxRetries: 3 });
 });
 
@@ -285,17 +289,14 @@ test('a cross-site POST is refused, so another web page cannot talk to the agent
   assert.equal(r.status, 403);
 });
 
-test('without a session the site shows Sign in with Microsoft; in the demo that leads to a picker of the two demo accounts', async () => {
+test('without a session the site shows Sign in with Microsoft, which goes to Microsoft', async () => {
   assert.equal((await fetch(base + '/api')).status, 401);
   assert.match(await (await fetch(base + '/')).text(), /href="\/auth\/login[^"]*">[\s\S]*Sign in with Microsoft/);
   assert.equal((await fetch(base + '/agent/delivered', { method: 'POST' })).status, 401, "the agent API is only on the sandboxes' socket");
-  assert.equal((await fetch(base + '/auth/login', { redirect: 'manual' })).headers.get('location'), '/auth/demo?next=%2F');
-  const picker = await (await fetch(base + '/auth/demo')).text();
-  assert.ok(picker.includes(adminEmail) && picker.includes(bob));
-  assert.equal((await login('someone@else.test')).status, 400, 'only the demo accounts');
+  assert.match((await fetch(base + '/auth/login', { redirect: 'manual' })).headers.get('location')!, /^http:\/\/127\.0\.0\.1:\d+\/authorize\?/);
   assert.equal((await fetch(base + '/api', { headers: { cookie: admin.replace(/.$/, c => (c === 'A' ? 'B' : 'A')) } })).status, 401, 'a tampered cookie is refused');
   const me = await json('/me');
-  assert.deepEqual([me.email, me.role, me.sign_in], [adminEmail, 'admin', 'demo']);
+  assert.deepEqual([me.email, me.role], [adminEmail, 'admin']);
   assert.equal((await fetch(base + '/auth/login', { redirect: 'manual', headers: { cookie: admin } })).headers.get('location'), '/', 'signed in already');
 });
 
@@ -378,15 +379,16 @@ test('everyone sees the skills, which every run loads; admins keep the connectio
   assert.equal((await call('PUT', '/connections/portal', JSON.stringify({ type: 'website', url: 'https://portal.test/#/login', hosts: ['cdn.portal.test/x'] }))).status, 400);
   const site = await (await call('PUT', '/connections/portal', JSON.stringify({ type: 'website', title: 'Portal', url: 'https://portal.test/#/login', hosts: 'cdn.portal.test' }))).json();
   assert.deepEqual([site.title, site.url, site.hosts, site.writeback, site.updated_by], ['Portal', 'https://portal.test/#/login', ['cdn.portal.test'], true, adminEmail]);
-  assert.deepEqual((await json('/connections', b)).map((c: { name: string; login: { id: string }; allowed: boolean }) => [c.name, c.login.id, c.allowed]), [['portal', 'web:portal', true]]);
+  assert.deepEqual((await json('/connections', b)).map((c: { name: string; login: { id: string }; allowed: boolean }) => [c.name, c.login.id, c.allowed]), [['graph', 'm365', undefined], ['portal', 'web:portal', true]]);
   assert.equal((await call('PUT', '/connections/portal', JSON.stringify({ type: 'website', url: 'https://portal.test/#/login', people: adminEmail }))).status, 200);
-  assert.deepEqual([(await json('/connections', b))[0].allowed, (await json('/connections'))[0].allowed], [false, true], 'only the people it lists');
+  const portal = async (cookie?: string) => (await json('/connections', cookie)).find((c: { name: string }) => c.name === 'portal').allowed;
+  assert.deepEqual([await portal(b), await portal()], [false, true], 'only the people it lists');
   const { saveLogin } = await import('../src/logins.ts');
   saveLogin(adminEmail, { id: 'web:portal', kind: 'website', name: 'Portal', since: new Date().toISOString(), offers: [{ id: 'web:portal', name: 'Portal' }] }, 'state');
   assert.equal((await call('PUT', await at(series), JSON.stringify({ share: true, logins: ['web:portal'] }))).status, 400, 'never lent through a shared series');
   assert.equal((await call('DELETE', '/logins/web:portal')).status, 200);
   assert.equal((await call('DELETE', '/connections/portal')).status, 200);
-  assert.deepEqual(await json('/connections', b), []);
+  assert.deepEqual((await json('/connections', b)).map((c: { name: string }) => c.name), ['graph']);
 });
 
 test("people see, set, move and cancel wakes, one-off or weekly, share a series as themselves, and start or dismiss requests; a wake stays pending whatever runs before it", async () => {

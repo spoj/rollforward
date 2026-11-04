@@ -28,7 +28,7 @@ Recurring tasks, files in and files out. People drop this period's input files i
     docker build -t rollforward-agent agent
     docker compose up --build             # then open http://127.0.0.1:8780
 
-The image starts empty. Until an app is registered (see Access), Sign in with Microsoft offers two demo accounts: take the admin.
+The image starts empty. It signs people in through an app registered in Microsoft Entra ID, which it needs to start (see Access): set its `RF_OIDC_*` lines and `RF_PUBLIC_URL` in `.env`, and `RF_ADMINS` to your own address.
 
 - **A new series:** make a workspace (+ by Workspaces, for admins and those granted create), a series in it, and an instance for a past period. Drop its inputs on the left and what was actually sent on the right. The agent rebuilds each output from the inputs and says what it couldn't derive; close the instance once it's right. Import a few periods this way, oldest first.
 - **The next period:** a new instance starts empty and runs at once: the agent rolls forward from the instances before it, fetches what it can and sets up the screen, its tiles dashed until their files come. Drop this period's files: the agent builds the outputs, asks what a reviewer might decide differently, and ends each run with a report.
@@ -208,8 +208,7 @@ Each run's Pi is a bubblewrap sandbox ([src/sandbox.ts](src/sandbox.ts)), in a s
 
 People sign in with one button, **Sign in with Microsoft**, and type nothing.
 
-- **Demo (the default):** the button leads to a picker of two demo accounts: `admin@demo.test`, an admin, and `bob@demo.test`, a user. Anyone who reaches the site can be the demo admin, so keep it on localhost.
-- **Your organisation's Microsoft accounts:** with an app registered in Microsoft Entra ID, set in `.env` (see `.env.example`) `RF_OIDC_ISSUER` (`https://login.microsoftonline.com/<tenant id>/v2.0`), `RF_OIDC_CLIENT_ID` and `RF_PUBLIC_URL`, then match the app's registration:
+- **Your organisation's Microsoft accounts:** with an app registered in Microsoft Entra ID, which the server needs to start, set in `.env` (see `.env.example`) `RF_OIDC_ISSUER` (`https://login.microsoftonline.com/<tenant id>/v2.0`), `RF_OIDC_CLIENT_ID` and `RF_PUBLIC_URL`, then match the app's registration:
   - its redirect: `RF_OIDC_REDIRECT_URI`, exactly as registered (by default `RF_PUBLIC_URL/auth/callback`; the site's root works too);
   - a **Web** app: its client secret in `RF_OIDC_CLIENT_SECRET`. A public client (Mobile and desktop) needs none;
   - a **Single-page application**: `RF_OIDC_SPA=1`. The browser then redeems the sign-in, as Microsoft requires, and the server checks the token's signature.
