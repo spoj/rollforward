@@ -28,7 +28,7 @@ const make = (series: string, label: string) => createInstance(series, label, al
 const aug = make('s1', '2026-08');
 await aug.close({ email: alice, name: 'Alice' });
 const sep = make('s1', '2026-09'), oct = make('s1', '2026-10');
-const run = { inst: sep, view: { cwd: '/work/Acme/Bank rec' } } as unknown as Active;
+const run = { inst: sep, view: { instance: '/work/Acme/Bank rec/2026-09' } } as unknown as Active;
 const ops = (i: Instance) => i.log.map(e => e.op);
 const settle = () => new Promise(r => setTimeout(r, 2000));
 startWaking();
@@ -42,14 +42,15 @@ test("a run's first message names the runner and what they lend, as does a later
   assert.match(message(oct, 3, [{ seq: 99, at: '', by: 'bob@demo.test', op: 'takeover', from: alice }]), new RegExp(`run 3\\. Its runner is now .+ <bob@demo\\.test>, taking over from .+ <${alice}>, who lends you no connection\\.`));
 });
 
-test('a run names a series or an instance by its folder, within its reach', () => {
-  assert.equal(resolveFor(run, '2026-10'), oct.id);
-  assert.equal(resolveFor(run, '.'), 's1');
-  assert.equal(resolveFor(run, '../Borrowing base'), 's2');
-  assert.equal(resolveFor(run, '../../Main/Close'), 's5', 'a wider workspace is in reach');
-  assert.throws(() => resolveFor(run, '../../Hidden/Payroll'), /no series you can read/);
-  assert.throws(() => resolveFor(run, '../../../x/Acme/Bank rec'), /no series you can read/);
-  assert.throws(() => resolveFor(run, '2026-13'), /no instance 2026-13 in Bank rec/);
+test("a run names a series or an instance by its folder, from its own instance's", () => {
+  assert.equal(resolveFor(run, '.'), sep.id);
+  assert.equal(resolveFor(run, '../2026-10'), oct.id);
+  assert.equal(resolveFor(run, '..'), 's1');
+  assert.equal(resolveFor(run, '../../Borrowing base'), 's2');
+  assert.equal(resolveFor(run, '../../../Main/Close'), 's5', 'a wider workspace is in reach');
+  assert.throws(() => resolveFor(run, '../../../Hidden/Payroll'), /no series you can read/);
+  assert.throws(() => resolveFor(run, '../../../../x/Acme/Bank rec'), /no series you can read/);
+  assert.throws(() => resolveFor(run, '../2026-13'), /no instance 2026-13 in Bank rec/);
 });
 
 test('a due wake its own run set continues an open instance, as a reply does, though it was renamed since, and names where that run is now; one more than 15 minutes after its last is moved', async () => {
@@ -142,7 +143,7 @@ test('after a restart every open instance with something for a run starts; an In
 
 test("a task's run sees its own instance alone in its series' folder, and the series in reach, not their packages; a wake in an archived workspace is dropped", async () => {
   const v = view(make('s4', 'Lunch'));
-  assert.equal(v.cwd, '/work/Acme/Lunch');
+  assert.equal(v.instance, '/work/Acme/Lunch/Lunch');
   assert.deepEqual(v.ro.map(([, at]) => at).filter(at => at.startsWith('/work/Acme/Lunch/')), ['/work/Acme/Lunch/Lunch']);
   assert.ok(v.ro.some(([, at]) => at.startsWith('/work/Acme/Bank rec/')) && !v.ro.some(([, at]) => at.endsWith('/.pylib')), "another series' .pylib is its own runs' code");
   const t = tree(), cut = instance(labels('s3').find(l => l.label === 'cut')!.id);

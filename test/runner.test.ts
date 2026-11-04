@@ -1,7 +1,8 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
@@ -19,12 +20,13 @@ const { pi } = await import('../src/runner.ts');
 const { agentRoot } = await import('../src/agent.ts');
 const { serveSandboxes } = await import('../src/sandbox.ts');
 const { HttpError } = await import('../src/store.ts');
-const { openSkills, pushSkill } = await import('../src/skills.ts');
+const { openSkills, pushSkill, skills } = await import('../src/skills.ts');
 const { initSystem, writeJson } = await import('../src/system.ts');
 const { filesOf, standIns } = await import('./push.ts');
 initSystem(root);
 openSkills(root);
 pushSkill('tool', filesOf(join(standIns, 'tool')), 'admin@demo.test');
+pushSkill('mail-report', filesOf(join(standIns, 'mail-report')), 'admin@demo.test');
 writeJson('egress.json', ['127.0.0.1.nip.io']);
 
 const TOKEN = 'run-token', egress: [string, boolean][] = [];
@@ -52,10 +54,10 @@ writeFileSync(i('p1/working/payroll.csv'), 'names');
 // A ticked library's cache, a zstd frame per batch, as the server copies it before the run starts.
 mkdirSync(join(tmp, 'index'));
 writeFileSync(join(tmp, 'index', 'LFM.ndjson.zst'), Buffer.concat([{ id: 'f1', name: 'aging.xlsx', size: 1200 }, { id: 'f2', name: 'march.xlsx', size: 800 }].map(i => zstdCompressSync(`${JSON.stringify(i)}\n`))));
-const cwd = '/work/ws/Weekly: AR', at = `${cwd}/w2`;
+const series = '/work/ws/Weekly: AR', at = `${series}/w2`;
 const agent = pi({
-  token: TOKEN, id: 'w2', n: 1, skills: ['tool'],
-  view: { cwd, instance: at, dir: i('w2'), pylib: join(root, 'series', 'weekly', '.pylib'), ro: [[i('w1'), `${cwd}/w1`], [i('w2'), at], [i('r1'), '/work/ws/Shared/r1'], [join(tmp, 'index'), '/index']], env: { DATABRICKS_HOST: 'https://adb-1.test', RF_INDEX: '/index' } },
+  token: TOKEN, id: 'w2', n: 1, skills: skills().filter(s => s.id === 'tool').map(s => ({ ...s, dir: realpathSync(s.dir) })),
+  view: { instance: at, dir: i('w2'), pylib: join(root, 'series', 'weekly', '.pylib'), ro: [[i('w1'), `${series}/w1`], [i('w2'), at], [i('r1'), '/work/ws/Shared/r1'], [join(tmp, 'index'), '/index']], env: { DATABRICKS_HOST: 'https://adb-1.test', RF_INDEX: '/index' } },
 });
 const sh = async (command: string) => (await agent.bash(command)).output.trim();
 
@@ -72,6 +74,7 @@ test('a run offers the agent the skills it is given, and not the others', async 
   const offered = (await agent.getCommands()).filter(c => c.source === 'skill').map(c => c.name);
   assert.ok(offered.includes('skill:tool'), `offered: ${offered.join(', ') || 'none'}`);
   assert.ok(!offered.includes('skill:mail-report'), `offered: ${offered.join(', ')}`);
+  assert.ok(existsSync(i('w2/skills/tool/SKILL.md')) && !existsSync(i('w2/skills/mail-report')), "copied into the instance's skills/, which its commits hold");
 });
 
 test("the agent's scripts reach a skill's files through $RF_SKILLS", async () => {
@@ -80,16 +83,22 @@ test("the agent's scripts reach a skill's files through $RF_SKILLS", async () =>
 });
 
 test('the sandbox shows its view of the data by name, and nothing else of the data or the host', async () => {
-  assert.equal(await sh('pwd'), cwd);
-  assert.equal(await sh('cat ../Shared/r1/working/rates.csv'), 'usd,1');
+  assert.equal(await sh('pwd'), at, "its working directory is its own instance's folder");
+  assert.equal(await sh('cat ../../Shared/r1/working/rates.csv'), 'usd,1');
+  assert.equal(await sh('echo $HOME; ls /app; ls /skills'), '/home/agent\nbin\nnode_modules\npackage.json\nprompt.md\nsrc\ntool', "the app at /app, and only the skills given, at /skills/<id>");
   assert.equal(await sh('ls /work/ws'), 'Shared\nWeekly: AR');
   for (const p of [root, '/root', import.meta.dirname]) assert.match(await sh(`ls ${p} 2>&1`), /No such file/, p);
 });
 
+test("git finds the instance's repository from working/, across the mount between them", async () => {
+  execFileSync('git', ['init', '-q'], { cwd: i('w2') });
+  assert.equal(await sh('cd working && git rev-parse --show-toplevel 2>&1'), at);
+});
+
 test("writes land only in the instance's working/ and session/ and the series' .pylib", async () => {
-  assert.equal(await sh('touch w2/working/out.csv .pylib/pkg.py && echo ok'), 'ok');
+  assert.equal(await sh('touch working/out.csv ../.pylib/pkg.py && echo ok'), 'ok');
   assert.ok(existsSync(i('w2/working/out.csv')) && existsSync(join(root, 'series', 'weekly', '.pylib', 'pkg.py')));
-  for (const p of ['w1/working/x.csv', 'notes.md', 'w2/workspace.json', '../Shared/r1/working/x.csv', '/work/x'])
+  for (const p of ['../w1/working/x.csv', '../notes.md', 'screen.json', '../../Shared/r1/working/x.csv', '/work/x', '/app/x', '/skills/x'])
     assert.match(await sh(`touch ${p} 2>&1`), /Read-only file system/, p);
 });
 

@@ -94,7 +94,7 @@ for (const ws of folders(old)) {
       mkdirSync(to);
       for (const d of ['upload', 'working', 'session']) copy(join(from, d), join(to, d));
       const { rev, status, items } = json(join(from, 'workspace.json'));
-      writeFileSync(join(to, 'workspace.json'), JSON.stringify({ rev, status, items: items.map(({ notes: _, ...i }: { notes?: Note[] }) => i) }, null, 1), { mode: 0o444 });
+      writeFileSync(join(to, 'screen.json'), JSON.stringify({ rev, status, items: items.map(({ notes: _, ...i }: { notes?: Note[] }) => i) }, null, 1), { mode: 0o444 });
       writeFileSync(join(to, 'instance.json'), JSON.stringify({ label, series: sid }), { mode: 0o444 });
       const log = readFileSync(join(from, 'log.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l) as Entry);
       writeFileSync(join(to, 'log.jsonl'), convert(log).map(e => JSON.stringify(e) + '\n').join(''));

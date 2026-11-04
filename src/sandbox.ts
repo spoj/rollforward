@@ -113,15 +113,15 @@ export const userland = () => [
 // bubblewrap's arguments for a run: the agent's userland, `ro` read-only and `rw` writable at their own paths, HOME and /tmp on
 // the run's scratch, the socket's folder at /run/rf, and `env` as its whole environment. Nothing else of the host is there.
 // The run's data is a tree of its own under /work, read-only but for the binds in rw, each [host path, path inside].
-export function sandboxArgs(o: { cwd: string; socketDir: string; home: string; tmp: string; ro: string[]; work: { ro: [string, string][]; rw: [string, string][] }; env: Record<string, string> }): string[] {
-  const bind = (flag: string, paths: string[]) => paths.flatMap(p => [flag, p, p]);
+export function sandboxArgs(o: { cwd: string; socketDir: string; home: string; tmp: string; ro: [string, string][]; work: { ro: [string, string][]; rw: [string, string][] }; env: Record<string, string> }): string[] {
   return [
     '--unshare-all', '--die-with-parent', '--new-session', '--clearenv',
     ...userland(),
-    '--proc', '/proc', '--dev', '/dev', '--bind', o.tmp, '/tmp', '--bind', o.home, o.home, '--ro-bind', o.socketDir, '/run/rf',
-    ...bind('--ro-bind', o.ro),
+    '--proc', '/proc', '--dev', '/dev', '--bind', o.tmp, '/tmp', '--bind', o.home, '/home/agent', '--ro-bind', o.socketDir, '/run/rf',
+    // /app holds only what is bound there, read-only, as /work does.
+    '--tmpfs', '/app', ...o.ro.flatMap(([src, dst]) => ['--ro-bind', src, dst]), '--remount-ro', '/app',
     '--tmpfs', '/work', ...o.work.ro.flatMap(([src, dst]) => ['--ro-bind', src, dst]), ...o.work.rw.flatMap(([src, dst]) => ['--bind', src, dst]), '--remount-ro', '/work',
-    ...Object.entries({ ...o.env, HOME: o.home, TMPDIR: '/tmp' }).flatMap(([k, v]) => ['--setenv', k, v]),
+    ...Object.entries({ ...o.env, HOME: '/home/agent', TMPDIR: '/tmp' }).flatMap(([k, v]) => ['--setenv', k, v]),
     '--chdir', o.cwd,
   ];
 }

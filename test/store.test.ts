@@ -1,12 +1,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createInstance, openStore } from '../src/store.ts';
+import { createInstance, instance, openStore } from '../src/store.ts';
 
 const alex = { email: 'alex', name: 'Alex' };
+
+test("an instance's screen kept as workspace.json, as before v0.2.44, is screen.json from the start", () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-')), inst = (openStore(tmp), createInstance('weekly', 'w1', 'alex', []));
+  renameSync(join(inst.dir, 'screen.json'), join(inst.dir, 'workspace.json'));
+  openStore(tmp);
+  assert.deepEqual([existsSync(join(inst.dir, 'workspace.json')), instance(inst.id).doc], [false, inst.doc]);
+  rmSync(tmp, { recursive: true, force: true });
+});
 
 test('a put takes steps and from; from must name items and not go round in a circle', async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-')), series = 'weekly';
@@ -56,7 +64,7 @@ test("closing commits the folder in the runner's name; a commit that fails, here
   writeFileSync(locked, 'x\n');
   chmodSync(locked, 0);
   await assert.rejects(inst.close(alex), /working\/locked.csv can't be read: EACCES/);
-  assert.deepEqual([inst.doc.status, JSON.parse(readFileSync(join(inst.dir, 'workspace.json'), 'utf8')).status, inst.log.at(-1)!.op], ['open', 'open', 'create']);
+  assert.deepEqual([inst.doc.status, JSON.parse(readFileSync(join(inst.dir, 'screen.json'), 'utf8')).status, inst.log.at(-1)!.op], ['open', 'open', 'create']);
   chmodSync(locked, 0o644);
   await inst.close(alex);
   const git = (...args: string[]) => execFileSync('git', args, { cwd: inst.dir, encoding: 'utf8' }).trim();

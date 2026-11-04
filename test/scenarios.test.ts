@@ -141,10 +141,10 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
       `curl -s -m 5 ${base}/api 2>&1; echo "curl exit $?"`,
       'curl -s -m 5 https://10.1.2.3/ 2>&1; echo "curl exit $?"',
       'curl -s -m 10 https://graph.microsoft.com/v1.0/users/ceo@demo.test/messages 2>&1',
-      () => `rf wake 2026-11 ${new Date(Date.now() + 2500).toISOString()} 2>&1`,
-      'rf wake ../../Wide/Close now --label 2026-11 2>&1',
+      () => `rf wake . ${new Date(Date.now() + 2500).toISOString()} 2>&1`,
+      'rf wake ../../../Wide/Close now --label 2026-11 2>&1',
       'rf wake . soon 2>&1',
-      'rf wake . +1d 2>&1',
+      'rf wake .. +1d 2>&1',
       () => `rf say --in ${thread} Walls checked. 2>&1`,
       'rf say --in c99 x 2>&1',
       'rf show 2>&1 | head -c 200',
@@ -173,7 +173,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.deepEqual(log.filter(e => e.op === 'egress').map(e => [e.run, e.host, e.allowed]), [[2, '10.1.2.3', false]]);
   assert.match(walls.saw[3], /m365:mail:ceo@demo.test is not ticked for this instance; its runner, admin@demo.test/, "Graph at its own address, through the server, which refuses what isn't ticked");
   assert.deepEqual(log.filter(e => e.op === 'call' && e.name === 'graph').map(e => [e.run, e.name, e.path, e.status]), [[2, 'graph', '/v1.0/users/ceo@demo.test/messages', 403], [3, 'graph', '/v1.0/me/messages', 403]]);
-  assert.match(walls.saw[4], /^set: 2026-11 wakes at /);
+  assert.match(walls.saw[4], /^set: \. wakes at /);
   assert.match(walls.saw[5], /Wide\/Close is in another workspace: you can read it, not wake it/);
   assert.match(walls.saw[6], /at is now, \+<n>m\|h\|d, or a date/);
   assert.match(walls.saw[7], /name it with a label/);
@@ -222,9 +222,9 @@ test('sign-offs are git commits: the agent commits a moment worth keeping, the r
   const dir = join(root, 'instances', id), git = (...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
   const ask: Script = {
     bash: [
-      'echo 100 > 2026-12/working/pack.csv && rf commit Draft pack built 2>&1',
-      "git -C 2026-12 log --format='%an|%s' 2>&1; echo 200 > 2026-12/working/pack.csv; git -C 2026-12 status --short 2>&1",
-      'git -C 2026-12 commit --allow-empty -qm mine 2>&1 | head -1',
+      'echo 100 > working/pack.csv && rf commit Draft pack built 2>&1',
+      "git log --format='%an|%s' 2>&1; echo 200 > working/pack.csv; git status --short 2>&1",
+      'git commit --allow-empty -qm mine 2>&1 | head -1',
       'rf ask --sign-off --to bob@demo.test Send it? 2>&1',
       'rf ask --sign-off The pack is ready to send to the bank. 2>&1',
     ],
@@ -292,20 +292,19 @@ test('a cut anywhere leaves the instance right, its log whole, and the next run 
     return log;
   };
 
-  let reached!: () => void;
-  const held = new Promise<void>(ok => (reached = ok));
-  scripts.push({ bash: [], report: 'Never said.', saw: [], hold: () => reached() });
+  let reached = false;
+  scripts.push({ bash: [], report: 'Never said.', saw: [], hold: () => { reached = true; } });
   await call('POST', `/api/instances/${id}/comment`, { text: 'Build it.' });
-  await held;
+  await until('the model call', () => reached);
   const afterModel: Script = { bash: [], report: 'Carried on after a cut mid model call.', saw: [] };
   scripts.push(afterModel);
   await cut();
   await carriedOn(2, afterModel);
 
-  scripts.push({ bash: ['touch 2026-11/working/started && sleep 120'], report: 'Never said.', saw: [] });
+  scripts.push({ bash: ['touch working/started && sleep 120'], report: 'Never said.', saw: [] });
   await call('POST', `/api/instances/${id}/comment`, { text: 'Go on.' });
   await until('the tool call', () => existsSync(join(dir, 'working', 'started')));
-  const afterTool: Script = { bash: ['ls 2026-11/working'], report: 'Carried on after a cut mid tool call.', saw: [] };
+  const afterTool: Script = { bash: ['ls working'], report: 'Carried on after a cut mid tool call.', saw: [] };
   scripts.push(afterTool);
   await cut();
   await carriedOn(4, afterTool);
@@ -333,7 +332,7 @@ test('a cut anywhere leaves the instance right, its log whole, and the next run 
   stop.abort();
   await upload;
   assert.deepEqual([readdirSync(join(root, '.tmp')), existsSync(join(dir, 'upload', 'big.bin')), entries().length], [[], false, before], 'nothing of it is left, nor logged');
-  const afterUpload: Script = { bash: ['ls 2026-11/upload'], report: 'Read the upload.', saw: [] };
+  const afterUpload: Script = { bash: ['ls upload'], report: 'Read the upload.', saw: [] };
   scripts.push(afterUpload);
   assert.equal((await fetch(`${base}/api/instances/${id}/upload?pane=in&name=small.csv`, { method: 'POST', body: 'a\n', headers: { cookie: admin } })).status, 200);
   log = await runs(id, 8);

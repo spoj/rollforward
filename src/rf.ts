@@ -20,14 +20,15 @@ const HELP: Record<string, string> = {
   folder in their name (rf help commit) and starts a run, and the log's signoff entry says which, with the commit. The rest as
   rf say.`,
   commit: `rf commit MESSAGE|-
-  Commits your instance's whole folder as it is now, in your name, to its history: the repository .git in the folder, which you
-  read with git, such as git -C <label> log, or diff to see what changed since. A sign-off and closing commit it too, in the
-  name of whoever signed.`,
+  Commits your instance's whole folder as it is now, in your name, to its history: the folder is a repository, which only the
+  server commits; read it with git log, show or diff, such as git diff HEAD -- working. A sign-off and closing commit it too, in
+  the name of whoever signed.`,
   resolve: `rf resolve THREAD [TEXT]
   Resolves a thread you started, once it no longer applies, saying why.`,
   wake: `rf wake TARGET AT [--label LABEL]
-  Starts a run later, which sees who woke it. TARGET is a folder as you see it: an open instance, such as your own label or ../<series>/<label>, which
-  the wake continues; or a series, such as . or ../<series>, which it starts a new instance of, labelled LABEL. AT is now,
+  Starts a run later, which sees who woke it. TARGET is a folder as you see it: an open instance, such as . for your own, ../<label>
+  or ../../<series>/<label>, which the wake continues; or a series, such as .. or ../../<series>, which it starts a new instance
+  of, labelled LABEL. AT is now,
   +<n>m, +<n>h, +<n>d, or a date and time with its offset, such as 2026-09-14T07:00+08:00. A target has one wake pending (a new
   one replaces it), at least 15 minutes after its last. A closed instance can't be woken: to correct one, wake its series
   with --label <its label>-r2.`,

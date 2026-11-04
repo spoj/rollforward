@@ -60,7 +60,11 @@ export function openStore(dataRoot: string) {
   mkdirSync(join(root, 'instances'), { recursive: true });
   mkdirSync(join(root, 'series'), { recursive: true });
   mkdirSync(join(root, 'agents'), { recursive: true });
-  for (const id of readdirSync(join(root, 'instances'))) index.set(id, JSON.parse(readFileSync(join(root, 'instances', id, 'instance.json'), 'utf8')));
+  for (const id of readdirSync(join(root, 'instances'))) {
+    index.set(id, JSON.parse(readFileSync(join(root, 'instances', id, 'instance.json'), 'utf8')));
+    // Before v0.2.44 the screen was workspace.json.
+    if (existsSync(join(root, 'instances', id, 'workspace.json'))) renameSync(join(root, 'instances', id, 'workspace.json'), join(root, 'instances', id, 'screen.json'));
+  }
 }
 
 export const newId = () => randomBytes(6).toString('hex');
@@ -153,7 +157,7 @@ export class Instance {
   constructor(dir: string) {
     this.dir = dir;
     this.id = basename(dir);
-    const ws = join(dir, 'workspace.json'), log = join(dir, 'log.jsonl');
+    const ws = join(dir, 'screen.json'), log = join(dir, 'log.jsonl');
     this.doc = existsSync(ws) ? JSON.parse(readFileSync(ws, 'utf8')) : { rev: 0, status: 'open', items: [] };
     this.log = existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : [];
   }
@@ -168,7 +172,7 @@ export class Instance {
 
   save() {
     this.doc.rev++;
-    replaceReadOnly(join(this.dir, 'workspace.json'), JSON.stringify(this.doc, null, 1));
+    replaceReadOnly(join(this.dir, 'screen.json'), JSON.stringify(this.doc, null, 1));
     changes.emit('change', this.id);
   }
 

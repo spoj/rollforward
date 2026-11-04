@@ -1,14 +1,14 @@
 import { RpcClient, type JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
-import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, constants, cpSync, existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, join } from 'node:path';
+import { delimiter, dirname, join, posix, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { listenRun, PORT, sandboxArgs, unlistenRun } from './sandbox.ts';
-import { skillsDir } from './skills.ts';
 import { bundle } from './ca.ts';
 
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
-const cliPath = join(dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent'))), 'cli.js');
+// Inside, the app is at /app, read-only.
+const cliPath = `/app/${relative(app, join(dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent'))), 'cli.js'))}`;
 const [provider, model] = (process.env.RF_MODEL ?? 'openrouter/anthropic/claude-opus-5.5').split(/\/(.*)/);
 // Where runs get their HOME and /tmp, and the folder of the server's socket for sandboxes.
 export const scratch = process.env.RF_SCRATCH ?? join(tmpdir(), 'rollforward');
@@ -25,23 +25,28 @@ export type Run = {
   settled: Promise<boolean>;
 };
 
-// The run's view of the data, which the server builds: its series at cwd, such as /work/<workspace>/<series>, its own instance at
-// instance, from the folder dir, its series' .pylib from pylib, in ro, every instance in its reach and the AGENTS.md of the
-// company and of each workspace there, each [host path, path inside]; and its environment. Another series' .pylib isn't there:
-// what its runs installed is theirs to run, never a run of another series, with its runner's logins.
-export type View = { cwd: string; instance: string; dir: string; pylib: string; ro: [string, string][]; env: Record<string, string> };
+// The run's view of the data, which the server builds: its own instance at instance, such as /work/<workspace>/<series>/<label>,
+// its working folder, from the folder dir, its series' .pylib from pylib, in ro, every instance in its reach and the AGENTS.md of
+// the company and of each workspace there, each [host path, path inside]; and its environment. Another series' .pylib isn't
+// there: what its runs installed is theirs to run, never a run of another series, with its runner's logins.
+export type View = { instance: string; dir: string; pylib: string; ro: [string, string][]; env: Record<string, string> };
 
 // Pi for one run, in its sandbox (sandbox.ts): its view read-only but for the instance's working/ and session/ and the series'
 // .pylib, the live skills and nothing else of the host's. prompt.md is its system prompt, to which Pi adds the AGENTS.md
-// files from / down to cwd. Each run, `n`, is a new session, its transcript in the instance's session/ beside the earlier runs'.
-export function pi(o: { token: string; id: string; n: number; view: View; skills?: string[] }): RpcClient {
+// files from / down to the instance. Each run, `n`, is a new session, its transcript in the instance's session/ beside the earlier
+// runs'. The skills are the versions live as it starts, copied into the instance's skills/ by reflink, which the folder's commits
+// hold, and read-only at /skills/<id>, so a push applies from the next run.
+export function pi(o: { token: string; id: string; n: number; view: View; skills: { id: string; dir: string }[] }): RpcClient {
   const run = join(scratch, 'runs', o.token), home = join(run, 'home'), agentDir = join(home, '.pi', 'agent'), tmp = join(run, 'tmp');
-  const { cwd, instance, dir, pylib } = o.view, working = join(dir, 'working'), session = join(dir, 'session');
+  const { instance, dir, pylib } = o.view, working = join(dir, 'working'), session = join(dir, 'session'), lib = `${posix.dirname(instance)}/.pylib`;
   const socketDir = join(run, 'socket');
   for (const d of [agentDir, tmp, pylib, working, session, socketDir]) mkdirSync(d, { recursive: true });
+  rmSync(join(dir, 'skills'), { recursive: true, force: true });
+  mkdirSync(join(dir, 'skills'));
+  for (const s of o.skills) cpSync(s.dir, join(dir, 'skills', s.id), { recursive: true, mode: constants.COPYFILE_FICLONE });
   // PYTHONPATH reaches the series' .pylib through a link in HOME, as a colon in its path, such as in a task named by its first
   // prompt, would split it.
-  symlinkSync(`${cwd}/.pylib`, join(home, 'pylib'));
+  symlinkSync(lib, join(home, 'pylib'));
   listenRun(join(socketDir, 'rf.sock'), o.token);
   const local = `http://127.0.0.1:${PORT}`, proxy = `http://rf:${o.token}@127.0.0.1:${PORT}`;
   writeFileSync(join(agentDir, 'settings.json'), JSON.stringify({ steeringMode: 'all' }));
@@ -50,27 +55,32 @@ export function pi(o: { token: string; id: string; n: number; view: View; skills
   // The authorities a run trusts, the system's and ours, whose certificates the proxy shows for connections' hosts.
   writeFileSync(join(home, 'ca.pem'), bundle());
   const args = sandboxArgs({
-    cwd, home, tmp, socketDir,
-    ro: [...['bin', 'src', 'node_modules', 'package.json', 'prompt.md'].map(f => join(app, f)), ...(process.env.RF_SANDBOX_RO ?? '').split(delimiter)].filter(p => p && existsSync(p)),
-    work: { ro: [[dirname(skillsDir()), '/skills'], ...o.view.ro.filter(([src]) => existsSync(src))], rw: [[working, `${instance}/working`], [session, `${instance}/session`], [pylib, `${cwd}/.pylib`]] },
+    cwd: instance, home, tmp, socketDir,
+    ro: [
+      ...['bin', 'src', 'node_modules', 'package.json', 'prompt.md'].map(f => [join(app, f), `/app/${f}`] as [string, string]), [join(dir, 'skills'), '/skills'] as [string, string],
+      ...(process.env.RF_SANDBOX_RO ?? '').split(delimiter).map(p => [p, p] as [string, string]),
+    ].filter(([p]) => p && existsSync(p)),
+    work: { ro: o.view.ro.filter(([src]) => existsSync(src)), rw: [[working, `${instance}/working`], [session, `${instance}/session`], [pylib, lib]] },
     env: {
       // The image's node, its venv's python and pip, and its programs; the host's time zone.
-      PATH: [join(app, 'bin'), '/opt/venv/bin', '/usr/local/bin', '/usr/bin'].join(delimiter), LANG: 'C.UTF-8', TZ: Intl.DateTimeFormat().resolvedOptions().timeZone, PYTHONPATH: join(home, 'pylib'),
+      PATH: ['/app/bin', '/opt/venv/bin', '/usr/local/bin', '/usr/bin'].join(delimiter), LANG: 'C.UTF-8', TZ: Intl.DateTimeFormat().resolvedOptions().timeZone, PYTHONPATH: '/home/agent/pylib',
       // A plain pip install, the venv's, lands in the series' .pylib, built for the Python runs use.
-      PIP_TARGET: `${cwd}/.pylib`, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: '1', PI_TELEMETRY: '0', OFFICECLI_NO_AUTO_RESIDENT: '1',
-      RF_URL: local, RF_TOKEN: o.token, RF_BROWSERS: `${local}/browsers/${o.token}`, RF_INSTANCE: o.id, RF_WORKING: `${instance}/working`, RF_SKILLS: '/skills/live', ...(process.env.RF_TODAY && { RF_TODAY: process.env.RF_TODAY }),
+      PIP_TARGET: lib, PI_CODING_AGENT_DIR: '/home/agent/.pi/agent', PI_OFFLINE: '1', PI_TELEMETRY: '0', OFFICECLI_NO_AUTO_RESIDENT: '1',
+      // git reads the instance's repository from working/, across the mount between them.
+      GIT_DISCOVERY_ACROSS_FILESYSTEM: '1',
+      RF_URL: local, RF_TOKEN: o.token, RF_BROWSERS: `${local}/browsers/${o.token}`, RF_INSTANCE: o.id, RF_WORKING: `${instance}/working`, RF_SKILLS: '/skills', ...(process.env.RF_TODAY && { RF_TODAY: process.env.RF_TODAY }),
       HTTPS_PROXY: proxy, HTTP_PROXY: proxy, https_proxy: proxy, http_proxy: proxy, NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost', NODE_USE_ENV_PROXY: '1',
       // Stand-ins for the keys of the server's own connections, which its proxy puts in: Pi's own calls to OpenRouter take this one.
       OPENROUTER_API_KEY: 'rf', ...(process.env.EXA_API_KEY && { EXA_API_KEY: 'rf' }),
-      ...Object.fromEntries(['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS', 'CURL_CA_BUNDLE'].map(k => [k, join(home, 'ca.pem')])), ...o.view.env,
+      ...Object.fromEntries(['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS', 'CURL_CA_BUNDLE'].map(k => [k, '/home/agent/ca.pem'])), ...o.view.env,
     },
   });
   writeFileSync(join(run, 'bwrap.args'), `${args.join('\0')}\0`);
   return new RpcClient({
     cliPath, cwd: dir, provider, model,
     env: { PATH: [join(app, 'bin', 'sandbox'), process.env.PATH].join(delimiter), RF_SANDBOX_ARGS: join(run, 'bwrap.args'), RF_SANDBOX_SCOPE: process.env.RF_SANDBOX_SCOPE ?? SCOPE },
-    args: ['--no-extensions', '--no-skills', '--no-mcp', '--no-prompt-templates', ...(o.skills ?? []).flatMap(id => ['--skill', `/skills/live/${id}`]),
-      '--tools', 'read,bash,edit,write', '--system-prompt', join(app, 'prompt.md'),
+    args: ['--no-extensions', '--no-skills', '--no-mcp', '--no-prompt-templates', ...o.skills.flatMap(s => ['--skill', `/skills/${s.id}`]),
+      '--tools', 'read,bash,edit,write', '--system-prompt', '/app/prompt.md',
       '--thinking', process.env.RF_THINKING ?? 'high',
       '--session-dir', `${instance}/session`, '--session-id', `run-${o.n}`,
       ...JSON.parse(process.env.RF_PI_ARGS ?? '[]')],

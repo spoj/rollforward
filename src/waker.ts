@@ -1,5 +1,5 @@
 import { freemem } from 'node:os';
-import { rmSync } from 'node:fs';
+import { realpathSync, rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
 import { agentsFile, createInstance, HttpError, instance, instanceDir, instances, isPerson, labels, newId, seriesDir, type Entry, type Instance } from './store.ts';
@@ -88,7 +88,7 @@ export function view(inst: Instance): View {
   const ro = series.flatMap(id => labels(id).map(l => [instanceDir(l.id), `${at(id)}/${l.label}`] as [string, string]));
   const agents = [...new Set(series.map(id => t.series[id].workspace))].map(w => [agentsFile(w), `/work/${t.workspaces[w].name}/AGENTS.md`] as [string, string]);
   return {
-    cwd: at(inst.seriesId), instance: `${at(inst.seriesId)}/${inst.label}`, dir: inst.dir, pylib: join(inst.series(), '.pylib'), ro: [[agentsFile(), '/work/AGENTS.md'], ...agents, ...ro],
+    instance: `${at(inst.seriesId)}/${inst.label}`, dir: inst.dir, pylib: join(inst.series(), '.pylib'), ro: [[agentsFile(), '/work/AGENTS.md'], ...agents, ...ro],
     env: Object.assign({}, ...reachable(inst).map(c => types[c.type].env?.(c))),
   };
 }
@@ -123,7 +123,8 @@ async function start(inst: Instance) {
   const a: Active = { inst, n, token: randomUUID(), view: view(inst), sent: entries.at(-1)!.seq, seen, texts: new Map([[text, entries.at(-1)!.seq]]), interrupted: false, done: false, cost: 0, said: '', hosts: new Set(), links: new Map() };
   active.set(series, a);
   byToken.set(a.token, a);
-  const live = skills();
+  // The versions live now, which the run uses to its end.
+  const live = skills().map(s => ({ ...s, dir: realpathSync(s.dir) }));
   inst.append('server', 'run', { run: n, upto: a.sent, skills: Object.fromEntries(live.map(s => [s.id, pushed(s).version])) });
   try {
     // Copies of the indexes of what its runner ticked, on the indexes' own disk, read-only at $RF_INDEX.
@@ -134,7 +135,7 @@ async function start(inst: Instance) {
     }
     a.run = await startRun({
       token: a.token, id: inst.id, n, view: a.view,
-      message: text, skills: live.map(s => s.id),
+      message: text, skills: live,
       onEvent: e => {
         if (e.type === 'message_end' || e.type === 'tool_execution_end') changes.emit('change', inst.id); // the Ops log shows the run as it goes
         if (e.type === 'tool_execution_end') a.browsers?.shoot().catch(err => console.error(`run ${n} of ${inst.id}: no screenshot`, err));
@@ -314,10 +315,10 @@ export function startWaking() {
   setInterval(fire, Number(process.env.RF_WAKE_TICK_MS ?? 60_000)).unref();
 }
 
-// A folder as a run sees it: an instance, such as its own label or ../<series>/<label>, or a series, such as . or ../<series> or
-// ../../<workspace>/<series>; answered by id, if the run can read it.
+// A folder as a run sees it from its instance's: an instance, such as . for its own, ../<label> or ../../<series>/<label>, or a
+// series, such as .., ../../<series> or ../../../<workspace>/<series>; answered by id, if the run can read it.
 export function resolveFor(a: Active, folder: string): string {
-  const t = tree(), full = posix.normalize(posix.join(a.view.cwd, folder)).split('/'), path = full.slice(2);
+  const t = tree(), full = posix.normalize(posix.join(a.view.instance, folder)).split('/'), path = full.slice(2);
   const sid = Object.keys(t.series).find(id => t.series[id].name === path[1] && t.workspaces[t.series[id].workspace].name === path[0]);
   if (full[1] !== 'work' || path.length < 2 || path.length > 3 || !sid || (sid !== a.inst.seriesId && !reach(t, a.inst.seriesId).includes(sid))) throw new HttpError(404, `no series you can read at ${folder}`);
   if (path.length === 2) return sid;

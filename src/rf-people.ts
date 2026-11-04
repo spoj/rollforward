@@ -65,14 +65,14 @@ What there is
 What rf pull copies, the folders as the agent sees them
   AGENTS.md                  the company's conventions; <workspace>/AGENTS.md the workspace's
   <workspace>/<series>/<label>/
-    workspace.json           the screen: {rev, status, items: [{id, name, kind, file, from, headline, source}]}
+    screen.json              the screen: {rev, status, items: [{id, name, kind, file, from, headline, source}]}
     log.jsonl                every event, by seq: by is a person's email, "server" or "agent"; op is upload, comment (thread, item,
                              ref, text, ask, to, signoff), resolve, signoff (the runner's answer, with its commit), commit, point and
                              item (the screen changing), run, report (the agent's account of a run), done (its cost, summary or
                              error), close, and the rest
     upload/                  what people uploaded, their comments' attachments in upload/attachments/
     working/                 what the agent made, its scripts, and process.md, how it does this series
-    session/                 the agent's own session: every message and tool call of every run
+    session/                 each run's session: every message and tool call of it
     browser/                 each run's browser requests, and its screenshots
 The copy is read-only, and only rf changes what's on the server: comment, upload and wake.
 

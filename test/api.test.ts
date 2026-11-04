@@ -244,7 +244,7 @@ test("files: an instance's own download as attachments, as rf pull fetches them;
   assert.match(r.headers.get('content-disposition')!, /^attachment/);
   assert.ok((Buffer.from(await r.arrayBuffer())).equals(readFileSync(join(root, 'instances', id, 'upload', name))));
   assert.equal((await call('GET', file('log.jsonl'))).status, 200);
-  for (const rel of ['upload/../../workspace.json', '../x/log.jsonl', './log.jsonl'])
+  for (const rel of ['upload/../../screen.json', '../x/log.jsonl', './log.jsonl'])
     assert.equal((await call('GET', file(rel))).status, 400, rel);
 });
 
@@ -532,7 +532,7 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   const pulled = join(tmp, 'pulled'), week = `larkfield/${series}/2026-08-30`;
   assert.match(await rf('pull', '/', pulled), /^new  larkfield\/AGENTS\.md$/m);
   assert.deepEqual(['', 'larkfield'].map(d => readFileSync(join(pulled, d, 'AGENTS.md'), 'utf8')), ['Fiscal months end on the last Saturday.', 'Larkfield Ltd is now Larkfield Holdings.']);
-  assert.ok(['workspace.json', 'log.jsonl', 'session/main.jsonl', 'upload/Larkfield AR aging 083026.csv'].every(f => existsSync(join(pulled, week, f))), 'the folders as runs see them');
+  assert.ok(['screen.json', 'log.jsonl', 'session/main.jsonl', 'upload/Larkfield AR aging 083026.csv'].every(f => existsSync(join(pulled, week, f))), 'the folders as runs see them');
   assert.match(await rf('pull', '/', pulled), /^fetched 0, \d+ up to date/m, 'a file keeps the time the server gave it, so the next pull compares against it');
   await rf('pull', week, join(tmp, 'one'));
   assert.ok(existsSync(join(tmp, 'one', '2026-08-30', 'log.jsonl')), 'PATH makes DIR/<its name>');
@@ -656,7 +656,7 @@ test('the second audit: a bad request line, a bad workbook and a slow body hurt 
 
 test('closing refuses a shown file the agent replaced after it was shown', async () => {
   assert.equal((await call('POST', `${await at(series, '2026-08-30', 'duplicate')}?as=tamper`)).status, 200);
-  const d = await dir(series, 'tamper'), doc = JSON.parse(readFileSync(join(d, 'workspace.json'), 'utf8'));
+  const d = await dir(series, 'tamper'), doc = JSON.parse(readFileSync(join(d, 'screen.json'), 'utf8'));
   const shownFile = doc.items.find((i: { file: string | null }) => i.file?.startsWith('working/')).file, was = readFileSync(join(d, shownFile));
   writeFileSync(join(d, 'working', 'swap.tmp'), 'other bytes');
   renameSync(join(d, 'working', 'swap.tmp'), join(d, shownFile));

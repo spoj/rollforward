@@ -25,7 +25,7 @@ before(async () => {
   mkdirSync(join(root, 'series', 'a5c0ff5e1fee'));
   mkdirSync(join(signed, 'working'), { recursive: true });
   writeFileSync(join(signed, 'instance.json'), JSON.stringify({ label: '2026-12', series: 'a5c0ff5e1fee' }));
-  writeFileSync(join(signed, 'workspace.json'), JSON.stringify({ rev: 1, status: 'open', items: [] }));
+  writeFileSync(join(signed, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [] }));
   writeFileSync(join(signed, 'log.jsonl'), [
     { seq: 1, at: '2026-08-01T09:00:00.000Z', by: 'admin@demo.test', op: 'create', from: null, logins: [] },
     { seq: 2, at: '2026-08-01T09:05:00.000Z', by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'The pack is ready to send to the bank.', ask: true, signoff: true },
@@ -34,7 +34,7 @@ before(async () => {
   const called = join(root, 'instances', 'a5c0ff5e1f01');
   mkdirSync(join(called, 'working'), { recursive: true });
   writeFileSync(join(called, 'instance.json'), JSON.stringify({ label: '2026-11', series: 'a5c0ff5e1fee' }));
-  writeFileSync(join(called, 'workspace.json'), JSON.stringify({ rev: 1, status: 'closed', items: [] }));
+  writeFileSync(join(called, 'screen.json'), JSON.stringify({ rev: 1, status: 'closed', items: [] }));
   writeFileSync(join(called, 'log.jsonl'), [
     { seq: 1, at: '2026-08-01T09:00:00.000Z', by: 'admin@demo.test', op: 'create', from: null, logins: ['adb'] },
     { seq: 2, at: '2026-08-01T09:01:00.000Z', by: 'server', op: 'run', run: 1, upto: 1, skills: {} },
