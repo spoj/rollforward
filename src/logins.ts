@@ -56,6 +56,13 @@ export function forgetLogins(email: string) {
   rmSync(personDir(email), { recursive: true, force: true });
 }
 
+// An offer its person added, such as a Microsoft 365 source or a Databricks warehouse, taken off their login.
+export function unoffer(email: string, id: string, offer: string) {
+  const login = logins(email).find(l => l.id === id);
+  if (!login) throw new HttpError(404, `you have no login ${id}`);
+  saveLogin(email, { ...login, offers: login.offers.filter(o => o.id !== offer) });
+}
+
 // Ticks name offers of the person's own logins.
 export function checkTicks(email: string, ticks: unknown): string[] {
   const mine = new Set(logins(email).flatMap(l => l.offers.map(o => o.id)));
@@ -83,6 +90,6 @@ export function use(inst: Instance, offer: string): { email: string; login: Logi
   const { by, logins: ticked } = lender(inst);
   if (!ticked.includes(offer)) throw new HttpError(403, `${offer} is not ticked for this instance; its runner, ${by}, ticks logins when starting or taking it over`);
   const login = logins(by).find(l => l.offers.some(o => o.id === offer));
-  if (!login) throw Object.assign(new HttpError(409, `${by} no longer has a login offering ${offer}: they sign in again on the Logins page, and the instance carries on`), { login: offer.startsWith('m365') ? 'm365' : offer });
+  if (!login) throw Object.assign(new HttpError(409, `${by} no longer has a login offering ${offer}: they sign in again on the Logins page, and the instance carries on`), { login: offer.startsWith('web:') ? offer : offer.split(':')[0] });
   return { email: by, login };
 }

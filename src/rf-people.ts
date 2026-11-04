@@ -48,10 +48,10 @@ rf people [--set FILE|-] [-n] [--force]   everyone as lines of ROLE EMAIL, each 
                                   listed and adds new ones, removing no one
 rf user add EMAIL [admin] | role EMAIL admin|user [--force] | disable EMAIL | enable EMAIL | signout EMAIL | remove EMAIL
 rf connection set NAME TYPE [--SETTING VALUE]...   an outside system runs reach as their runner, by a login each person makes:
-                                  graph, Microsoft 365, with no settings; databricks, --host HOST --warehouse ID, a workspace
-                                  and its SQL warehouse; website, --url URL [--hosts HOST,...] [--title TITLE] [--writeback
-                                  false] [--header NAME] [--keepalive PAGE --every 10m [--hours 08:00-19:00]] [--people
-                                  EMAIL|GROUP,...], where people sign in, the other hosts its pages need, such as
+                                  graph, Microsoft 365, and databricks, Azure Databricks, each with no settings, as each
+                                  person adds what their login offers; website, --url URL [--hosts HOST,...] [--title TITLE]
+                                  [--writeback false] [--header NAME] [--keepalive PAGE --every 10m [--hours 08:00-19:00]]
+                                  [--people EMAIL|GROUP,...], where people sign in, the other hosts its pages need, such as
                                   *.example.com, whether a run's browser writes its state back, a header its sign-in needs
                                   that its pages never send, such as x-bot-token, whose value each person gives, a page, by
                                   its address or path, such as https://patriarch.patrina.net/PatriArchMVC/, to load in each

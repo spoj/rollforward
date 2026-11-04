@@ -125,9 +125,9 @@ test("Connect Microsoft 365 asks the same app for read-only mail and files, and 
   assert.equal((await (await fetch(`${publicClient}/me`, { headers: { cookie: s } })).status), 401, 'another server, another session');
 });
 
-test("a Databricks connection's Connect asks the same app for Azure Databricks as its person, and offers the connection's warehouse", async () => {
+test("a Databricks connection's Connect asks the same app for Azure Databricks as its person, whose login then offers the warehouses they add by their links", async () => {
   const x = await start(confidential, 'alex@acme.test'), admin = sessionOf(await fetch(x.back, { redirect: 'manual', headers: { cookie: x.cookie } }))!;
-  const set = await fetch(`${confidential}/connections/adb`, { method: 'PUT', headers: { cookie: admin, 'content-type': 'application/json' }, body: JSON.stringify({ type: 'databricks', host: 'adb-1.azuredatabricks.net', warehouse: 'wh1' }) });
+  const set = await fetch(`${confidential}/connections/adb`, { method: 'PUT', headers: { cookie: admin, 'content-type': 'application/json' }, body: JSON.stringify({ type: 'databricks' }) });
   assert.equal(set.status, 200);
   const a = await start(confidential, 'lee@acme.test'), s = sessionOf(await fetch(a.back, { redirect: 'manual', headers: { cookie: a.cookie } }))!;
   const listed = (await (await fetch(`${confidential}/connections`, { headers: { cookie: s } })).json()).find((c: { name: string }) => c.name === 'adb');
@@ -138,7 +138,10 @@ test("a Databricks connection's Connect asks the same app for Azure Databricks a
   const back = await fetch((await fetch(to, { redirect: 'manual' })).headers.get('location')!, { redirect: 'manual', headers: { cookie: `${s}; ${pending}` } });
   assert.equal(back.headers.get('location'), '/#logins');
   const login = (await (await fetch(`${confidential}/logins`, { headers: { cookie: s } })).json()).find((l: { id: string }) => l.id === 'adb');
-  assert.deepEqual([login.kind, login.name, login.account, login.offers], ['databricks', 'Databricks adb', 'lee@acme.test', [{ id: 'adb', name: 'Databricks adb, warehouse wh1' }]]);
+  assert.deepEqual([login.kind, login.name, login.account, login.offers], ['databricks', 'Databricks adb', 'lee@acme.test', []]);
+  const add = await fetch(`${confidential}/logins/adb/offers`, { method: 'POST', headers: { cookie: s, 'content-type': 'application/json' }, body: JSON.stringify({ add: 'https://adb-1.test/sql/warehouses/wh1' }) });
+  assert.deepEqual([add.status, await add.text()], [400, 'a link to a SQL warehouse of an Azure Databricks workspace, such as https://adb-123.4.azuredatabricks.net/sql/warehouses/1a2b3c4d5e6f7a8b']);
+  assert.equal((await fetch(`${confidential}/logins/adb/offers/${encodeURIComponent('adb:adb-1.azuredatabricks.net/wh1')}`, { method: 'DELETE', headers: { cookie: s } })).status, 200);
   assert.equal((await fetch(`${confidential}/logins/portal/connect`, { redirect: 'manual', headers: { cookie: s } })).status, 404, 'no connection by that login');
 });
 

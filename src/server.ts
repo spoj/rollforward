@@ -12,12 +12,13 @@ import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
 import { asPerson, authenticate, checkConfig, cli, connect, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
 import { canManage, canSee, changes, everyone, initSystem, isIn, isPeople, readJson, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
-import { checkTicks, logins, runnerOf, saveLogin, signOut } from './logins.ts';
+import { checkTicks, logins, runnerOf, saveLogin, signOut, unoffer } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { byLogin, call, connections, convert, intercepts, loginOf, removeConnection, setConnection, upstreams } from './connections.ts';
 import { allowed, Browsers, endSignIn, isSignIn, keepAlive, passUpgrade, reap, scoped, startSignIn, viewPage, websites } from './browsers.ts';
-import { offer, unoffer } from './connections/graph.ts';
+import { offer } from './connections/graph.ts';
+import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, startIndexing, track } from './indexes.ts';
 import { seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
@@ -932,9 +933,17 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       if (!login?.scope) throw new HttpError(404, 'no connection signs in to Microsoft with that login');
       await connect(res, me.email, login);
     }
-    else if (url.pathname === '/logins/m365/offers' && req.method === 'POST') send(res, 200, (await offer(me.email, String((await json(req)).add ?? '')), track(me.email), 'ok'));
-    else if (url.pathname.startsWith('/logins/m365/offers/') && req.method === 'DELETE') send(res, 200, (unoffer(me.email, decodeURIComponent(url.pathname.slice(20))), forget(me.email, decodeURIComponent(url.pathname.slice(20))), 'ok'));
     else if (url.pathname.startsWith('/logins/web/') && req.method === 'POST') send(res, 200, { id: await startSignIn(me.email, decodeURIComponent(url.pathname.slice(12)), String((await json(req)).header ?? '')) });
+    // What a person's login offers that they add themselves: Microsoft 365's sources and Databricks' warehouses.
+    else if (/^\/logins\/[^/]+\/offers$/.test(url.pathname) && req.method === 'POST') {
+      const id = decodeURIComponent(url.pathname.split('/')[2]), add = String((await json(req)).add ?? '');
+      await (id === 'm365' ? offer(me.email, add) : addWarehouse(me.email, id, add));
+      send(res, 200, (track(me.email), 'ok'));
+    }
+    else if (/^\/logins\/[^/]+\/offers\/[^/]+$/.test(url.pathname) && req.method === 'DELETE') {
+      const [, , id, , o] = url.pathname.split('/').map(decodeURIComponent);
+      send(res, 200, (unoffer(me.email, id, o), forget(me.email, o), 'ok'));
+    }
     else if (/^\/signins\/\w+\/view$/.test(url.pathname) && req.method === 'GET') {
       const id = url.pathname.split('/')[2];
       if (!isSignIn(me.email, id)) throw new HttpError(404, 'no such sign-in');

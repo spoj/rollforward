@@ -16,7 +16,8 @@ import * as exa from './connections/exa.ts';
 
 // Connections: the outside systems runs reach, which admins keep with rf connection set NAME TYPE: each a name, a type and the
 // type's settings, in .rf/connections.json. A type is a module under connections/, saying how its person signs in and what that
-// login offers runs; for a system reached over HTTPS, its host, which requests to it may go and the links its answers hold.
+// login offers runs; for a system reached over HTTPS, the hosts it serves, which requests to them may go and the links its answers
+// hold.
 //
 // A run reaches those hosts as they are, with real tools and the vendors' own docs: the sandbox's proxy ends TLS for them, as the
 // host, with rollforward's own certificate authority (ca.ts), which runs trust. Each request is checked against the type's policy
@@ -34,11 +35,12 @@ export type Type = {
   settings(input: Record<string, unknown>): Record<string, unknown>;
   // Its person's login: an Entra login, with its scope, or a website's, which they sign in to in a live browser.
   login(c: Connection): (EntraLogin | { id: string; kind: string; name: string; scope?: undefined; offers: Offer[] });
-  host?(c: Connection): string;
+  serves?(c: Connection, host: string): boolean;
   // The offer a request needs ticked, and its JSON body as it goes on, if the type rewrote it; or a refusal.
   check?(c: Connection, runner: string, ticks: string[], r: Request): Promise<{ offer: string; json?: unknown }>;
   links?(answer: any, path: string, email: string, ticks: string[]): string[] | Promise<string[]>;
-  env?(c: Connection): Record<string, string>;
+  // What a run's environment holds for it, given the instance's ticks.
+  env?(c: Connection, ticks: string[]): Record<string, string>;
 };
 export const types: Record<string, Type> = { graph, databricks, website };
 
@@ -92,7 +94,7 @@ export const upstreams: Record<string, string> = {};
 const own = (host: string) => [openrouter, exa].find(s => s.host === host && process.env[s.key]);
 
 export const intercepts = (a: CallRun, host: string) =>
-  !!own(host) || connections().some(c => types[c.type].host?.(c) === host) || [...a.links.keys()].some(u => new URL(u).host === host);
+  !!own(host) || connections().some(c => types[c.type].serves?.(c, host)) || [...a.links.keys()].some(u => new URL(u).host === host);
 
 const HOP = ['authorization', 'connection', 'host', 'keep-alive', 'proxy-authorization', 'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade'];
 
@@ -100,7 +102,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
   const url = new URL(req.url!, `https://${host}`), method = req.method!, link = a.links.get(url.href), s = link ? undefined : own(host);
   // The runner's own OpenRouter key, where they use it, in place of the server's, never falling back to it.
   const runner = runnerOf(a.inst).by, mine = s === openrouter ? logins(runner).find(l => l.id === 'openrouter' && l.enabled) : undefined;
-  const c = link || s ? undefined : connections().find(c => types[c.type].host?.(c) === host);
+  const c = link || s ? undefined : connections().find(c => types[c.type].serves?.(c, host));
   const name = link ?? c?.name ?? s?.name ?? host, path = link ? url.origin + url.pathname : url.pathname + url.search;
   // A request that may write, to anything but the server's own services, is logged as it goes too, so a cut leaves it as sent.
   let sent: number | undefined;

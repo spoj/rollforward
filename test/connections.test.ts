@@ -118,6 +118,7 @@ before(async () => {
       if (path === '/api/2.0/sql/statements' && req.method === 'POST') return void req.on('data', b => statements.push(JSON.parse(String(b)))).on('end', () => send(result));
       if (path === '/api/2.0/sql/statements/s1') return send(result);
       if (path === '/api/2.1/unity-catalog/catalogs') return send({ catalogs: [{ name: 'finance' }] });
+      if (path === '/api/2.0/sql/warehouses/wh1') return send({ id: 'wh1', name: 'Finance' });
       return send({ error_code: 'NOT_FOUND' }, 404);
     }
     methods.push(req.method!);
@@ -189,14 +190,14 @@ before(async () => {
   // The websites kept before connections, which become connections at the start, with Microsoft 365's as graph.
   writeJson('websites.json', { portal: { name: 'The Portal', url: 'https://portal.test/#/login', hosts: ['cdn.portal.test'], updated_by: 'admin', updated_at: '2026-10-01T00:00:00Z' } });
   c.convert();
-  c.setConnection('adb', { type: 'databricks', host: 'adb-1.test', warehouse: 'wh1' }, 'admin');
+  c.setConnection('adb', { type: 'databricks' }, 'admin');
   endpoints.graph = base;
-  for (const host of ['graph.microsoft.com', 'adb-1.test', 'host', 'outlook.office.com', 'dbstorage1.blob.core.windows.net']) c.upstreams[host] = base;
+  for (const host of ['graph.microsoft.com', 'adb-1.azuredatabricks.net', 'host', 'outlook.office.com', 'dbstorage1.blob.core.windows.net']) c.upstreams[host] = base;
   for (const host of ['openrouter.ai', 'api.exa.ai']) c.upstreams[host] = `http://127.0.0.1:${(services.address() as { port: number }).port}`;
   logins.saveLogin(ALICE, { id: 'm365', kind: 'm365', name: 'Microsoft 365', account: ALICE, since: '2026-11-02T00:00:00Z', offers: [
     { id: `m365:mail:${ALICE}`, name: 'Mailbox' }, { id: 'm365:onedrive', name: 'OneDrive' }, { id: 'm365:site:host,site1,web1', name: 'SharePoint Reports' },
   ] }, 'r0');
-  logins.saveLogin(ALICE, { id: 'adb', kind: 'databricks', name: 'Databricks adb', account: ALICE, since: '2026-11-03T00:00:00Z', offers: [{ id: 'adb', name: 'Databricks adb, warehouse wh1' }] }, 'dbx');
+  logins.saveLogin(ALICE, { id: 'adb', kind: 'databricks', name: 'Databricks adb', account: ALICE, since: '2026-11-03T00:00:00Z', offers: [{ id: 'adb:adb-1.azuredatabricks.net/wh1', name: 'Warehouse Finance, adb-1.azuredatabricks.net' }] }, 'dbx');
   ca = (await import('../src/ca.ts')).bundle();
   sock = join(tmp, 'rf.sock');
   proxy = serveSandboxes({
@@ -373,7 +374,6 @@ test('admins keep connections, each a name, a type and its settings; the website
   for (const keepalive of ['https://sso.test/app/', 'C:/Program Files/Git/app/'])
     assert.throws(() => setConnection('erp', { type: 'website', url: 'https://erp.test', keepalive, every: '10m' }, 'admin'), /keepalive: a page of the website, by its address or path/, `${keepalive}: another host's, or a path Git Bash rewrote`);
   assert.throws(() => setConnection('erp', { type: 'website', url: 'https://erp.test', keepalive: '/app/', every: '10m', hours: '8-19' }, 'admin'), /hours: from and to/);
-  assert.throws(() => setConnection('wh', { type: 'databricks', host: 'adb-2.test' }, 'admin'), /warehouse: its SQL warehouse's id/);
   setConnection('erp', { type: 'website', url: 'https://erp.test/', hosts: 'cdn.erp.test, *.sso.test', writeback: 'false', header: 'x-bot-token', keepalive: '/app/', every: '1h', hours: '08:00-19:00', people: 'Ann@x.test, 0b1c2d3e-0000-4000-8000-000000000001' }, 'admin');
   assert.deepEqual(websites().erp, { name: 'erp', url: 'https://erp.test/', hosts: ['cdn.erp.test', '*.sso.test'], writeback: false, header: 'x-bot-token', keepalive: '/app/', every: 60, hours: '08:00-19:00', people: ['ann@x.test', '0b1c2d3e-0000-4000-8000-000000000001'] });
   setConnection('erp', { type: 'website', url: 'https://erp.test/', keepalive: 'https://erp.test/app/', every: '10m' }, 'admin');
@@ -483,21 +483,32 @@ test("writes share nothing, and make, move or copy nothing outside the ticks; ma
   assert.equal((await write('PATCH', '/drives/b!d1/items/a', { name: 'aging.csv' })).status, 200, 'a rename in place');
 });
 
-test('a run queries Databricks at its own address as the runner: statements on its warehouse that only read, their results through the links they give, and the catalogue', async () => {
-  runs.set('dbx', { ...inst, log: [{ op: 'create', by: ALICE, logins: ['adb'] }] } as unknown as Instance);
-  const D = 'https://adb-1.test', go = (method: string, path: string, body?: unknown) => via(method, `${D}${path}`, { token: 'dbx', ...(body !== undefined && json(body)) });
-  const r = await go('POST', '/api/2.0/sql/statements', { statement: '-- open items\nSELECT customer, open FROM ar', disposition: 'EXTERNAL_LINKS', format: 'CSV' });
+test("a person adds a SQL warehouse to their Databricks login by its link, checked by reading it as them", async () => {
+  const { addWarehouse } = await import('../src/connections/databricks.ts');
+  await addWarehouse(ALICE, 'adb', 'https://adb-1.azuredatabricks.net/sql/warehouses/wh1?o=123');
+  assert.deepEqual(logins.logins(ALICE).find(l => l.id === 'adb')!.offers, [{ id: 'adb:adb-1.azuredatabricks.net/wh1', name: 'Warehouse Finance, adb-1.azuredatabricks.net' }], 'the same twice is one');
+  await assert.rejects(addWarehouse(ALICE, 'adb', 'https://adb-1.azuredatabricks.net/sql/warehouses/nope'), /Databricks answered 404 NOT_FOUND/);
+  for (const link of ['https://adb-1.test/sql/warehouses/wh1', 'https://adb-1.azuredatabricks.net/jobs/1'])
+    await assert.rejects(addWarehouse(ALICE, 'adb', link), /a link to a SQL warehouse of an Azure Databricks workspace/, link);
+});
+
+test("a run queries Databricks at its own address as the runner: statements on a warehouse ticked for its instance, whatever they do, as the runner's own grants allow, their results through the links they give, and the catalogue", async () => {
+  runs.set('dbx', { ...inst, log: [{ op: 'create', by: ALICE, logins: ['adb:adb-1.azuredatabricks.net/wh1'] }] } as unknown as Instance);
+  const D = 'https://adb-1.azuredatabricks.net', go = (method: string, path: string, body?: unknown) => via(method, `${D}${path}`, { token: 'dbx', ...(body !== undefined && json(body)) });
+  const r = await go('POST', '/api/2.0/sql/statements', { statement: '-- open items\nSELECT customer, open FROM ar', warehouse_id: 'wh1', disposition: 'EXTERNAL_LINKS', format: 'CSV' });
   assert.equal(r.status, 200);
-  assert.deepEqual(statements.at(-1), { statement: '-- open items\nSELECT customer, open FROM ar', disposition: 'EXTERNAL_LINKS', format: 'CSV', warehouse_id: 'wh1' }, 'on its warehouse');
+  assert.deepEqual(statements.at(-1), { statement: '-- open items\nSELECT customer, open FROM ar', warehouse_id: 'wh1', disposition: 'EXTERNAL_LINKS', format: 'CSV' }, 'as the run sent it');
   const chunk = await via('GET', JSON.parse(r.text).result.external_links[0].external_link, { token: 'dbx', headers: { authorization: '' } });
   assert.deepEqual([chunk.text, chunk.headers['x-auth']], ['customer,open\nAcme,10\n', 'undefined'], 'the chunk as it is, with no token');
   assert.equal((await go('GET', '/api/2.0/sql/statements/s1')).status, 200);
   assert.deepEqual(JSON.parse((await go('GET', '/api/2.1/unity-catalog/catalogs')).text).catalogs, [{ name: 'finance' }]);
+  assert.equal((await go('POST', '/api/2.0/sql/statements', { statement: 'DROP TABLE ar_old', warehouse_id: 'wh1' })).status, 200, 'whatever it does, Unity Catalog deciding');
+  const { types } = await import('../src/connections.ts');
+  assert.deepEqual(types.databricks.env!({ name: 'adb', type: 'databricks' } as never, ['m365:onedrive', 'adb:adb-1.azuredatabricks.net/wh1']), { DATABRICKS_TOKEN: 'rf', DATABRICKS_HOST: 'https://adb-1.azuredatabricks.net', DATABRICKS_WAREHOUSE_ID: 'wh1' }, "its CLI's and SDK's, the first warehouse ticked");
   const before = statements.length;
   for (const [method, path, body, why] of [
-    ['POST', '/api/2.0/sql/statements', { statement: 'DROP TABLE ar' }, /adb only reads: a statement starts with SELECT/],
-    ['POST', '/api/2.0/sql/statements', { statement: '/* tidy */ INSERT INTO ar VALUES (1)' }, /not INSERT/],
-    ['POST', '/api/2.0/sql/statements', { statement: 'SELECT 1', warehouse_id: 'other' }, /runs statements on its warehouse, wh1/],
+    ['POST', '/api/2.0/sql/statements', { statement: 'SELECT 1', warehouse_id: 'other' }, /adb:adb-1\.azuredatabricks\.net\/other is not ticked for this instance/],
+    ['POST', '/api/2.0/sql/statements', { statement: 'SELECT 1' }, /a statement names its warehouse_id, one ticked for the instance: wh1/],
     ['POST', '/api/2.0/jobs/run-now', { job_id: 1 }, /adb takes statements/],
     ['GET', '/api/2.0/clusters/list', undefined, /adb takes statements/],
   ] as [string, string, unknown, RegExp][]) {
@@ -506,7 +517,7 @@ test('a run queries Databricks at its own address as the runner: statements on i
     assert.match(x.text, why, path);
   }
   assert.equal(statements.length, before, 'none reached the warehouse');
-  assert.match((await via('GET', `${D}/api/2.1/unity-catalog/catalogs`)).text, /adb is not ticked for this instance/, 'a run that ticked no Databricks login');
+  assert.match((await via('GET', `${D}/api/2.1/unity-catalog/catalogs`)).text, /adb:adb-1\.azuredatabricks\.net is not ticked for this instance/, 'a run that ticked no warehouse there');
   const adb = logins.logins(ALICE).find(l => l.id === 'adb')!;
   logins.saveLogin(ALICE, { ...adb, since: new Date().toISOString() }, 'stale');
   const gone = await go('GET', '/api/2.1/unity-catalog/catalogs');

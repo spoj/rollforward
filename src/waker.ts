@@ -101,7 +101,7 @@ export function view(inst: Instance): View {
   return {
     instance: `${at(inst.seriesId)}/${inst.label}`, dir: inst.dir, pylib: join(inst.series(), '.pylib'),
     ro: [[agentsFile(), '/work/AGENTS.md'], ...agents, ...Object.entries(names).map(([path, id]) => [instanceDir(id), path] as [string, string])],
-    names, series: Object.fromEntries(series.map(id => [at(id), id])), env: Object.assign({}, ...reachable(inst).map(c => types[c.type].env?.(c))),
+    names, series: Object.fromEntries(series.map(id => [at(id), id])), env: Object.assign({}, ...reachable(inst).map(c => types[c.type].env?.(c, runnerOf(inst).logins))),
   };
 }
 

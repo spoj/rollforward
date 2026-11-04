@@ -128,7 +128,7 @@ async function links(j: any, path: string, email: string, ticks: string[]): Prom
 export default {
   settings: () => ({}),
   login: () => ({ id: 'm365', kind: 'm365', name: 'Microsoft 365', scope: scope() }),
-  host: () => 'graph.microsoft.com',
+  serves: (_, host) => host === 'graph.microsoft.com',
   check: async (_, runner, ticks, r) => ({ offer: await check(runner, ticks, r) }),
   links,
 } satisfies Type;
@@ -219,10 +219,4 @@ export async function offer(email: string, add: string): Promise<void> {
     }
   }
   saveLogin(email, { ...login, offers: [...login.offers.filter(x => x.id !== o.id), o] });
-}
-
-export function unoffer(email: string, id: string) {
-  const login = logins(email).find(l => l.id === 'm365');
-  if (!login) throw new HttpError(404, 'no Microsoft 365 login');
-  saveLogin(email, { ...login, offers: login.offers.filter(o => o.id !== id) });
 }
