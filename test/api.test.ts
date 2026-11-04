@@ -754,7 +754,9 @@ test('the second audit: a bad request line, a bad workbook and a slow body hurt 
   writeFileSync(join(root, '.previews', kept[0]), '{"sheets":[{"name":"kept","rows":[],"truncated":false}]}');
   assert.equal((await (await preview('fine.csv')).json()).sheets[0].name, 'kept', 'and the same file previews from it');
   cpSync(join(app, 'test', 'formats.xlsx'), bad.replace('bad.xlsx', 'formats.xlsx'));
-  const [summary] = (await (await preview('formats.xlsx')).json()).sheets, shown = (...at: string[]) => at.map(k => summary.look[k].t);
+  const book = (await (await preview('formats.xlsx')).json()).sheets.map((s: { name: string; at: number; state?: string; rows?: unknown[] }) => [s.name, s.at, s.state, !!s.rows]);
+  assert.deepEqual(book, [['Summary', 0, undefined, false], ['Other', 2, undefined, true], ['Hidden', 1, 'hidden', false]], 'its sheets, the hidden after the others, and the one it opens on read');
+  const summary = await (await preview('formats.xlsx?sheet=0')).json(), shown = (...at: string[]) => at.map(k => summary.look[k].t);
   assert.deepEqual(shown('1,1', '1,2', '1,3', '1,4', '2,1', '2,3', '2,4'), ['1,234,567.89', '25.6%', '(1,500.50)', '30-Aug-26 2:05 PM', ' - ', '3K', '2026-09-30'], 'as its number formats show it');
   assert.deepEqual([summary.look['0,0'], summary.look['0,1'], summary.look['0,2'], summary.look['1,4'].r], [{ b: true }, { bg: '#FFFF00' }, { bg: '#B9CDE5' }, true], 'bold, fills, a theme colour tinted, and dates to the right');
   assert.deepEqual([summary.rows[3], summary.merged, summary.hidden, summary.widths['0']], [[{ f: '=SUM(B2:B3)' }], [[4, 0, 4, 2]], { rows: [2], cols: [3] }, 20]);

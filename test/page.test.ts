@@ -488,12 +488,12 @@ test("a closed instance is read with its corrections: one added on an item's car
 });
 
 test("a sheet shows as its workbook does: number formats, bold, colours, column widths and merged cells, without its hidden rows and columns", async () => {
-  await page.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
+  await page.evaluate(() => location.hash === '#/a5c0ff5e1f00' || new Promise(ok => { addEventListener('hashchange', ok, { once: true }); location.hash = '#/a5c0ff5e1f00'; }));
   await page.waitForSelector('#log.open');
-  await page.route('**/preview/**', r => r.fulfill({ json: { sheets: [{
-    name: 'Summary', truncated: false, rows: [['Month', 'Total', 'Hidden', 'Delta'], ['Aug', 1234.5, 1, -1500.5], ['Sep', 2, 3, 4], ['merged']],
+  await page.route('**/preview/**', r => r.fulfill({ json: new URL(r.request().url()).searchParams.get('sheet') === '1' ? { name: 'Notes', truncated: false, rows: [['later']] } : { sheets: [{
+    name: 'Summary', at: 0, truncated: false, rows: [['Month', 'Total', 'Hidden', 'Delta'], ['Aug', 1234.5, 1, -1500.5], ['Sep', 2, 3, 4], ['merged']],
     look: { '0,0': { b: true }, '0,1': { bg: '#FFFF00', fg: '#C00000' }, '1,1': { t: '1,234.50' }, '1,3': { t: '(1,500.50)' } }, merged: [[3, 0, 3, 3]], widths: { 0: 20 }, hidden: { rows: [2], cols: [2] },
-  }] } }));
+  }, { name: 'Notes', at: 1, state: 'hidden' }] } }));
   await page.evaluate(() => preview('working/formats.xlsx'));
   const table = page.locator('#pv table.sh');
   await table.waitFor();
@@ -503,6 +503,8 @@ test("a sheet shows as its workbook does: number formats, bold, colours, column 
   assert.deepEqual(await table.evaluate(t => [
     getComputedStyle(t.querySelector('[data-ref="Summary!A1"]')!).fontWeight, getComputedStyle(t.querySelector('[data-ref="Summary!B1"]')!).backgroundColor,
     getComputedStyle(t.querySelector('[data-ref="Summary!B1"]')!).color, (t.querySelector('col:nth-child(2)') as HTMLElement).style.width]), ['600', 'rgb(255, 255, 0)', 'rgb(192, 0, 0)', '145px']);
+  await page.click('#pv .tabs .btn.dim:text-is("Notes")');
+  await page.locator('#pv table.sh td', { hasText: 'later' }).waitFor();
   await page.unroute('**/preview/**');
   await page.keyboard.press('Escape');
 });

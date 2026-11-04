@@ -8,7 +8,7 @@ from pathlib import Path
 resource.setrlimit(resource.RLIMIT_AS, (2 << 30, 2 << 30))
 
 ROWS, COLS = 2000, 100
-name = sys.argv[1]
+name, part = sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else ''
 ext = Path(name).suffix.lower()
 data = sys.stdin.buffer.read()
 
@@ -220,7 +220,14 @@ def workbook():
                 out['merged'].append([r1 - 1, c1 - 1, r2 - 1, c2 - 1])
         return out
 
-    return {'sheets': [read(ws) for ws in wb.worksheets]}
+    # The sheets' names, the hidden ones after the others, and the sheet the workbook opens on, read; or, asked for by its place, one
+    # other sheet.
+    if part:
+        return read(wb.worksheets[int(part)])
+    sheets = wb.worksheets
+    active = sheets.index(wb.active) if wb.active in sheets else 0
+    return {'sheets': [{'name': sheets[k].title, 'at': k, **({'state': sheets[k].sheet_state} if sheets[k].sheet_state != 'visible' else {}), **(read(sheets[k]) if k == active else {})}
+                       for k in sorted(range(len(sheets)), key=lambda k: sheets[k].sheet_state != 'visible')]}
 
 
 if ext in ('.xlsx', '.xlsm'):

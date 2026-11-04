@@ -255,6 +255,7 @@ dialog::backdrop { background: rgba(21,24,29,.3); }
 .pvh b { font-size: 13px; word-break: break-all; margin-right: auto; }
 .tabs { display: flex; gap: 6px; padding: 8px 14px; flex-wrap: wrap; border-bottom: 1px solid var(--rule); }
 .tabs .btn { padding: 4px 9px; font-size: 12px; }
+.tabs .btn.dim { color: var(--ink-3); font-style: italic; }
 .pvb { flex: 1; min-height: 0; overflow: auto; }
 .pvb .say { padding: 14px 18px; white-space: pre-wrap; font-size: 13.5px; }
 .pvb pre { white-space: pre-wrap; word-break: break-word; font: 12.5px/1.5 var(--mono); padding: 14px 16px; margin: 0; }
@@ -1075,7 +1076,7 @@ function sheetTable(s, first) {
     at.set(key, t.id);
     if (t.waits) asks.add(key);
   }
-  const old = pv.cmp && (pv.old.find(o => o.name === s.name) ?? pv.old[pv.sheets.indexOf(s)]);
+  const old = pv.cmp && oldOf(pv);
   const rows = Array.from({ length: Math.max(s.rows.length, old?.rows.length ?? 0) }, (_, r) => s.rows[r] ?? []);
   const width = Math.max(0, ...rows.map(r => r.length), ...(old?.rows ?? []).map(r => r.length));
   // As the workbook shows it: its number formats, bold, font colours and fills, column widths, merged cells, and no hidden rows or
@@ -1114,8 +1115,8 @@ function renderPv() {
   const account = [['logins', 'Logins'], ['tokens', 'Tokens'], ...(me.role === 'admin' ? [['people', 'People']] : [])];
   if (account.some(([k]) => k === pv.settings?.kind)) h += `<div class="pvtabs">${account.map(([k, name]) => `<button class="tab ${pv.settings.kind === k ? 'sel' : ''}" data-act="${k}">${name}</button>`).join('')}</div>`;
   if (pv.sheets) {
-    if (pv.sheets.length > 1) h += `<div class="tabs">${pv.sheets.map((s, k) => `<button class="btn ${k === pv.sheet ? 'sel' : ''}" data-act="sheet" data-k="${k}">${esc(s.name)}</button>`).join('')}</div>`;
-    h += `<div class="pvb">${sheetTable(pv.sheets[pv.sheet], pv.sheet === 0)}</div>`;
+    if (pv.sheets.length > 1) h += `<div class="tabs">${pv.sheets.map((s, k) => `<button class="btn ${k === pv.sheet ? 'sel' : ''} ${s.state ? 'dim' : ''}" data-act="sheet" data-k="${k}"${s.state ? ' title="Hidden in the workbook"' : ''}>${esc(s.name)}</button>`).join('')}</div>`;
+    h += `<div class="pvb">${sheetTable(pv.sheets[pv.sheet], (pv.sheets[pv.sheet].at ?? pv.sheet) === 0)}</div>`;
   } else if (pv.email) {
     const m = pv.email;
     h += `<div class="pvb"><pre>${esc(Object.entries(m.headers).map(([k, v]) => `${k}: ${v}`).join('\n') + (m.attachments.length ? `\nAttachments: ${m.attachments.join(', ')}` : '') + '\n\n' + m.text)}</pre></div>`;
@@ -1403,12 +1404,21 @@ async function openStart(title, go, then, label, on) {
   $('#slabel')?.focus();
 }
 
+// The earlier file's sheet of the same name, compared with the one shown.
+const oldOf = p => p.old.find(o => o.name === p.sheets[p.sheet].name) ?? p.old[p.sheet];
+
+// A workbook's sheets are read as they're first shown, as is, comparing, the earlier file's.
+async function loadSheets(p) {
+  for (const [path, s] of [[p.path, p.sheets[p.sheet]], [p.was, p.cmp && oldOf(p)]]) if (s && !s.rows) Object.assign(s, await api(`${fileUrl(path, 'preview')}?sheet=${s.at}`));
+}
+
 async function preview(path, item) {
   const sheet = /\.(xlsx|xlsm|xls|csv|eml)$/i.test(path), text = /\.(md|txt|json|py|sql|log)$/i.test(path);
   const p = pv = { title: fname(path), path, item: item?.id, threads: item ? talkOn(item.id) : [], sheet: 0, image: /\.(png|jpe?g|gif|webp|svg)$/i.test(path), was: item && data.log.findLast(e => e.op === 'point' && e.item === item.id && e.file === path)?.was, md: /\.md$/i.test(path), loading: sheet || text };
   renderPv();
   try {
     if (sheet) Object.assign(p, await api(fileUrl(path, 'preview')));
+    if (p.sheets) p.sheet = p.sheets.findIndex(s => s.rows);
     if (text) p.text = await (await fetch(fileUrl(path))).text();
   } finally {
     p.loading = false;
@@ -1601,10 +1611,15 @@ async function onAct(act, el) {
     const p = pv;
     p.old ??= (await api(fileUrl(p.was, 'preview'))).sheets;
     p.cmp = !p.cmp;
+    await loadSheets(p);
     if (pv === p) renderPv();
   }
   if (act === 'duplicate') await openStart(`Copy ${cur.i.label}`, 'Copy', ({ label, logins }) => api(`${instPath()}/duplicate?as=${enc(label)}`, { method: 'POST', body: JSON.stringify({ logins }) }), `${cur.i.label} copy`);
-  if (act === 'sheet') { pv.sheet = Number(el.dataset.k); renderPv(); }
+  if (act === 'sheet') {
+    const p = Object.assign(pv, { sheet: Number(el.dataset.k) });
+    await loadSheets(p);
+    if (pv === p) renderPv();
+  }
   if (act === 'cell') {
     // A cell's threads and what changed there; on an item's file in an open instance, a reply there, or a new comment.
     const on = data?.doc.status === 'open' && pv.item, t = el.dataset.thread;
@@ -1780,8 +1795,9 @@ document.addEventListener('change', async ev => {
   saved();
   await refresh();
 });
-// The dialog closes on Escape and on a click beside it, but a sign-in's only on Escape or its buttons.
-$('#pv').addEventListener('close', () => pv && closePv());
+// The dialog closes on Escape and on a click beside it, but a sign-in's only on Escape or its buttons. Its close event comes after,
+// when another may have opened in it.
+$('#pv').addEventListener('close', () => pv && !$('#pv').open && closePv());
 $('#pv').addEventListener('click', e => {
   const r = $('#pv').getBoundingClientRect();
   if (e.target === $('#pv') && !pv.signin && (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom)) closePv();
