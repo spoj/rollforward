@@ -26,9 +26,10 @@ export function initSystem(root: string) {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
 }
 
+// Its objects have no prototype, so a key a request names, such as __proto__ or constructor, finds nothing that isn't there.
 export function readJson<T>(name: string, fallback: T): T {
   const p = join(dir, name);
-  return existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : fallback;
+  return JSON.parse(existsSync(p) ? readFileSync(p, 'utf8') : JSON.stringify(fallback), (_, v) => v?.constructor === Object ? Object.setPrototypeOf(v, null) : v);
 }
 
 export function writeJson(name: string, data: unknown) {

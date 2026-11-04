@@ -302,6 +302,11 @@ test('without a session the site shows Sign in with Microsoft, which goes to Mic
   assert.match((await fetch(base + '/auth/login', { redirect: 'manual', headers: { cookie: admin } })).headers.get('location')!, /\/authorize\?.*scope=openid\+profile\+email\+offline_access&/, 'signed in already, it signs in again, as Sign in again asks, keeping the sign-in');
 });
 
+test('an id that every object has a property by, such as __proto__, names nothing, for admins too', async () => {
+  for (const [method, path, body] of [['PUT', '/api/workspaces/__proto__', { name: 'Polluted' }], ['POST', '/api/series', { workspace: '__proto__', name: 'Polluted' }], ['POST', '/api/requests/__proto__', {}], ['PUT', '/api/workspaces/constructor', { name: 'Polluted' }]] as const)
+    assert.equal((await call(method, path, JSON.stringify(body))).status, 404, `${method} ${path}`);
+});
+
 test("each person sees the workspaces they're in, by email or Entra group; owners and admins manage who is in", async () => {
   const b = sessionOf(await login(bob))!;
   const people = async (ws: string, body: object, cookie = admin) => call('PUT', `/api/workspaces/${(await named(ws)).id}`, JSON.stringify(body), cookie);
