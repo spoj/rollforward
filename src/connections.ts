@@ -37,7 +37,7 @@ export type Type = {
   host?(c: Connection): string;
   // The offer a request needs ticked, and its JSON body as it goes on, if the type rewrote it; or a refusal.
   check?(c: Connection, runner: string, ticks: string[], r: Request): Promise<{ offer: string; json?: unknown }>;
-  links?(answer: unknown): string[];
+  links?(answer: any, path: string): string[];
   env?(c: Connection): Record<string, string>;
 };
 export const types: Record<string, Type> = { graph, databricks, website };
@@ -134,7 +134,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     const answer = await forward(`${upstreams[host] ?? url.origin}${url.pathname}${url.search}`, req, res, { auth, body, keep: !link });
     // An answer's links go through for this run; what a service's answer cost, whole or in the last event of its stream that says,
     // adds to the run's as it comes.
-    if (c && answer.type.includes('json')) for (const l of types[c.type].links?.(JSON.parse(answer.text || 'null')) ?? []) a.links.set(new URL(l).href, c.name);
+    if (c && answer.type.includes('json')) for (const l of types[c.type].links?.(JSON.parse(answer.text || 'null'), url.pathname) ?? []) a.links.set(new URL(l).href, c.name);
     const cost = !s ? 0 : (answer.text.trimStart().startsWith('{') ? [answer.text] : answer.text.split('\n').filter(l => l.startsWith('data: {')).map(l => l.slice(6)))
       .map(e => s.cost(JSON.parse(e))).findLast(x => x !== undefined) ?? 0;
     a.cost += cost;

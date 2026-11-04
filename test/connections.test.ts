@@ -39,7 +39,7 @@ const folders: Record<string, ReturnType<typeof item>[]> = {
   top: [item('y2026', '2026', '2026-01-02T00:00:00Z', true), item('y2025', '2025', '2025-01-02T00:00:00Z', true)],
   y2026: [item('a', 'AGING_A_1.csv', '2026-10-20T12:00:00Z', false, 'y2026'), item('b', 'AGING_B_2.csv', '2026-10-20T12:30:00Z', false, 'y2026'), item('c', 'AGING_A_0.csv', '2026-10-19T12:00:00Z', false, 'y2026')],
 };
-const content: Record<string, string> = { a: 'As-Of Date,10/20/2026\nCustomer,Open\nAcme,10\n' };
+const content: Record<string, string> = { a: 'As-Of Date,10/20/2026\nCustomer,Open\nAcme,10\n', c: '{"@microsoft.graph.downloadUrl":"https://contoso.sharepoint.com/download/b?tempauth=t","uploadUrl":"https://outlook.office.com/upload/s9"}' };
 const drives: Record<string, any> = {
   'b!d1': { driveType: 'documentLibrary', sharePointIds: { siteUrl: 'https://host/sites/reports', siteId: 'site1', webId: 'web1' } },
   'b!own': { driveType: 'business', owner: { user: { displayName: 'Alice Ames' } }, sharePointIds: { siteUrl: 'https://host-my/personal/alice', siteId: 'personal', webId: 'alice' } },
@@ -114,7 +114,7 @@ before(async () => {
     // A Databricks warehouse: a statement's result as external links, and the catalogue.
     if (path.startsWith('/api/')) {
       if (req.headers.authorization !== 'Bearer dtok') return void res.writeHead(401).end();
-      const result = { statement_id: 's1', status: { state: 'SUCCEEDED' }, manifest: { schema: { columns: [{ name: 'customer' }, { name: 'open' }] } }, result: { external_links: [{ chunk_index: 0, external_link: 'https://blob.test/blob/chunk0?sig=x' }] } };
+      const result = { statement_id: 's1', status: { state: 'SUCCEEDED' }, manifest: { schema: { columns: [{ name: 'customer' }, { name: 'open' }] } }, result: { external_links: [{ chunk_index: 0, external_link: 'https://dbstorage1.blob.core.windows.net/blob/chunk0?sig=x' }] } };
       if (path === '/api/2.0/sql/statements' && req.method === 'POST') return void req.on('data', b => statements.push(JSON.parse(String(b)))).on('end', () => send(result));
       if (path === '/api/2.0/sql/statements/s1') return send(result);
       if (path === '/api/2.1/unity-catalog/catalogs') return send({ catalogs: [{ name: 'finance' }] });
@@ -131,7 +131,7 @@ before(async () => {
         if (path === '/drives/b!d1/items/y2026:/report.xlsx:/content') return send({ id: 'new1', name: 'report.xlsx', eTag: '"{NEW1},1"' }, 201);
         if (path === '/drives/b!d1/items/a' && req.method === 'PATCH') return send({ id: 'a', eTag: '"{A},2"' });
         if (path === '/me/messages') return send({ id: 'd1' }, 201);
-        if (path === '/me/messages/d1/attachments/createUploadSession') return send({ uploadUrl: 'https://upload.test/upload/s1?tempauth=secret' }, 201);
+        if (path === '/me/messages/d1/attachments/createUploadSession') return send({ uploadUrl: 'https://outlook.office.com/upload/s1?tempauth=secret' }, 201);
         if (path === '/me/sendMail' || path === '/me/messages/d1/send') return void res.writeHead(202).end();
         send({ error: { code: 'invalidRequest', message: 'not here' } }, 400);
       });
@@ -143,8 +143,8 @@ before(async () => {
     if (path === '/me/drive') return send({ id: 'b!own' });
     if ((m = /^\/shares\/u!([\w-]+)\/driveItem$/.exec(path))) return send(shares[Buffer.from(m[1], 'base64url').toString()] ?? { error: { code: 'itemNotFound' } }, shares[Buffer.from(m[1], 'base64url').toString()] ? 200 : 404);
     if ((m = /^\/drives\/b!d1\/(?:items\/(\w+)|root)\/(?:children|search\(q='\w+'\))$/.exec(path))) return send({ value: folders[m[1] ?? 'root1'] ?? [] });
-    if ((m = /^\/drives\/b!d1\/items\/(\w+)\/content$/.exec(path))) return void res.writeHead(200).end(content[m[1]]);
-    if ((m = /^\/drives\/b!d1\/items\/(\w+)$/.exec(path))) return send(m[1] === 'root1' ? roots['b!d1'] : { ...[...Object.values(folders).flat()].find(i => i.id === m![1]), ...(m[1] === 'a' && { '@microsoft.graph.downloadUrl': 'https://upload.test/download/a?tempauth=t' }) });
+    if ((m = /^\/drives\/b!d1\/items\/(\w+)\/content$/.exec(path))) return void res.writeHead(200, m[1] === 'c' ? { 'content-type': 'application/json' } : {}).end(content[m[1]]);
+    if ((m = /^\/drives\/b!d1\/items\/(\w+)$/.exec(path))) return send(m[1] === 'root1' ? roots['b!d1'] : { ...[...Object.values(folders).flat()].find(i => i.id === m![1]), ...(m[1] === 'a' && { '@microsoft.graph.downloadUrl': 'https://contoso.sharepoint.com/download/a?tempauth=t' }) });
     if ((m = /^\/(?:drives\/(b!\w+)|users\/alice@demo\.test\/drive)\/root$/.exec(path))) return send(roots[m[1] ?? 'b!own']);
     if ((m = /^\/drives\/(b!\w+)$/.exec(path)) && drives[m[1]]) return send({ id: m[1], ...drives[m[1]] });
     if (path === '/sites/host,site1,web1') return send({ id: 'host,site1,web1', displayName: 'Reports' });
@@ -191,7 +191,7 @@ before(async () => {
   c.convert();
   c.setConnection('adb', { type: 'databricks', host: 'adb-1.test', warehouse: 'wh1' }, 'admin');
   endpoints.graph = base;
-  for (const host of ['graph.microsoft.com', 'adb-1.test', 'upload.test', 'blob.test']) c.upstreams[host] = base;
+  for (const host of ['graph.microsoft.com', 'adb-1.test', 'contoso.sharepoint.com', 'outlook.office.com', 'dbstorage1.blob.core.windows.net']) c.upstreams[host] = base;
   for (const host of ['openrouter.ai', 'api.exa.ai']) c.upstreams[host] = `http://127.0.0.1:${(services.address() as { port: number }).port}`;
   logins.saveLogin(ALICE, { id: 'm365', kind: 'm365', name: 'Microsoft 365', account: ALICE, since: '2026-11-02T00:00:00Z', offers: [
     { id: `m365:mail:${ALICE}`, name: 'Mailbox' }, { id: 'm365:onedrive', name: 'OneDrive' }, { id: 'm365:site:host,site1,web1', name: 'SharePoint Reports' },
@@ -310,10 +310,11 @@ test("links an answer gave go through for that run alone, as they are, with no c
   const item = JSON.parse((await via('GET', `${G}/drives/b!d1/items/a`)).text);
   const download = await via('GET', item['@microsoft.graph.downloadUrl'], { headers: { authorization: '' } });
   assert.deepEqual(JSON.parse(download.text), { downloaded: true, auth: null });
-  assert.deepEqual(calls().at(-1), { run: 1, name: 'graph', method: 'GET', path: 'https://upload.test/download/a', status: 200, bytes: download.text.length });
+  assert.deepEqual(calls().at(-1), { run: 1, name: 'graph', method: 'GET', path: 'https://contoso.sharepoint.com/download/a', status: 200, bytes: download.text.length });
   runs.set('other', inst);
   await assert.rejects(via('GET', item['@microsoft.graph.downloadUrl'], { token: 'other' }), /CONNECT answered 403/, "another run's, whose proxy doesn't end its host");
-  assert.equal((await via('GET', 'https://upload.test/download/b?tempauth=t')).status, 403, 'not a link an answer gave');
+  assert.equal((await via('GET', `${G}/drives/b!d1/items/c/content`)).status, 200, 'a JSON file of links');
+  assert.equal((await via('GET', 'https://contoso.sharepoint.com/download/b?tempauth=t')).status, 403, "not a link an answer gave, only a file's content");
 });
 
 test('a login Microsoft no longer renews is marked expired, and the run is told its runner signs in again', async () => {
@@ -401,7 +402,7 @@ test('writes go within the ticks: a file saved into a ticked folder, a message s
   const session = JSON.parse((await via('POST', `${G}/me/messages/d1/attachments/createUploadSession`, json({ AttachmentItem: { attachmentType: 'file', name: 'pack.xlsx', size: 9 } }))).text);
   assert.equal((await via('PUT', session.uploadUrl, { body: 'PK pack!!', headers: { 'content-range': 'bytes 0-8/9', authorization: '' } })).status, 201);
   assert.deepEqual([writes.at(-1)!.path, writes.at(-1)!.auth], ['/upload/s1', undefined], 'the link as it is, with no token of ours');
-  assert.equal(calls().at(-1)!.path, 'https://upload.test/upload/s1', "the link's own token isn't logged");
+  assert.equal(calls().at(-1)!.path, 'https://outlook.office.com/upload/s1', "the link's own token isn't logged");
   assert.equal((await via('POST', `${G}/me/messages/d1/send`)).status, 202);
 });
 

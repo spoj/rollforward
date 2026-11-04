@@ -21,8 +21,9 @@ function check(c: Connection, { method, url, json }: Request): { offer: string; 
   throw new HttpError(403, `${method} ${p}: ${c.name} takes statements, ${STATEMENTS}, and reads of the catalogue, GET /api/2.1/unity-catalog/…`);
 }
 
-// A result's external links, chunks the run then fetches as they are, with no credential.
-const links = (j: unknown): string[] => !j || typeof j !== 'object' ? [] : Object.entries(j).flatMap(([k, v]) => k === 'external_link' && typeof v === 'string' ? [v] : links(v));
+// A statement result's external links, chunks the run then fetches as they are, with no credential: https, to Azure's storage.
+const links = (j: any, path: string): string[] => !path.startsWith('/api/2.0/sql/statements') ? [] : [...(j?.result?.external_links ?? []), ...(j?.external_links ?? [])]
+  .map(l => l?.external_link).filter(u => typeof u === 'string' && /^https:\/\/[\w-]+\.(blob|dfs)\.core\.windows\.net\//i.test(u));
 
 export default {
   settings(input) {

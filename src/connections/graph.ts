@@ -101,8 +101,15 @@ async function check(runner: string, ticks: string[], { method, url, headers, js
   return offer;
 }
 
-// Links an answer holds, which the run may then use as they are: an upload session's, and a file's download address.
-const links = (j: unknown): string[] => !j || typeof j !== 'object' ? [] : Object.entries(j).flatMap(([k, v]) => ['uploadUrl', '@microsoft.graph.downloadUrl'].includes(k) && typeof v === 'string' ? [v] : links(v));
+// Links an answer gives, which the run may then use as they are: an upload session's, from the answer that makes it, and a file's
+// download address, on the driveItems an answer about files gives, never what a file's or a message's content holds; each https,
+// to Microsoft's own hosts for files and mail.
+const LINKED = /^https:\/\/(([\w-]+\.)*(sharepoint\.com|svc\.ms)|outlook\.office(365)?\.com)\//i;
+const links = (j: any, path: string): string[] => {
+  const action = path.split('/').at(-1)!.replace(/\(.*$/, '').split('.').pop()!.toLowerCase();
+  const given = action === 'createuploadsession' ? [j?.uploadUrl] : ['content', '$value'].includes(action) ? [] : [j, ...(Array.isArray(j?.value) ? j.value : [])].map(i => i?.['@microsoft.graph.downloadUrl']);
+  return given.filter(u => typeof u === 'string' && LINKED.test(u));
+};
 
 export default {
   settings: () => ({}),
