@@ -188,15 +188,29 @@ type Asked = { name: string; code: string; at: number; token?: string; denied?: 
 const asked = new Map<string, Asked>();
 const pending = (match: (id: string, a: Asked) => boolean) => [...asked].find(([id, a]) => Date.now() - a.at < 600_000 && match(id, a));
 
+// A body before its sender is known, of 64 KB at most.
+async function small(req: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const c of req as AsyncIterable<Buffer>) {
+    if ((size += c.length) > 65_536) throw new HttpError(413, 'over 64 KB');
+    chunks.push(c);
+  }
+  return Buffer.concat(chunks).toString();
+}
+
+// Up to 1,000 requests wait at once, each for 10 minutes.
 async function ask(req: IncomingMessage, res: ServerResponse) {
-  const { name } = JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString() || '{}');
+  const { name } = JSON.parse(await small(req) || '{}');
+  for (const [id, a] of asked) if (Date.now() - a.at >= 600_000) asked.delete(id);
+  if (asked.size >= 1000) throw new HttpError(429, 'too many sign-in requests wait: try again in a few minutes');
   const id = randomBytes(24).toString('base64url'), letters = [...randomBytes(8)].map(b => 'BCDFGHJKLMNPQRSTVWXZ'[b % 20]).join('');
   asked.set(id, { name: String(name || 'rf').slice(0, 80), code: `${letters.slice(0, 4)}-${letters.slice(4)}`, at: Date.now() });
   res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ id, code: asked.get(id)!.code }));
 }
 
 async function collect(req: IncomingMessage, res: ServerResponse) {
-  const { id } = JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString() || '{}'), a = pending(i => i === id)?.[1];
+  const { id } = JSON.parse(await small(req) || '{}'), a = pending(i => i === id)?.[1];
   const [status, text] = !a ? [410, 'the sign-in request expired: run rf login URL again'] : a.denied ? [403, 'denied on the page'] : !a.token ? [202, 'waiting'] : [200, JSON.stringify({ token: a.token })];
   if (status !== 202) asked.delete(id);
   res.writeHead(status, { 'content-type': status === 200 ? 'application/json' : 'text/plain' }).end(text);
@@ -206,7 +220,7 @@ async function collect(req: IncomingMessage, res: ServerResponse) {
 export async function cli(req: IncomingMessage, res: ServerResponse, url: URL) {
   const own = session(req);
   if (!own) throw new HttpError(403, 'tokens are made on the page');
-  const form = req.method === 'POST' ? new URLSearchParams(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString()) : url.searchParams;
+  const form = req.method === 'POST' ? new URLSearchParams(await small(req)) : url.searchParams;
   const a = pending((_, a) => a.code === form.get('code'))?.[1];
   const show = (body: string) => res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
     .end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>rf login · rollforward</title>${STYLE}<div class="box"><h1>rollforward</h1>${body}</div>`);
@@ -378,7 +392,7 @@ async function verified(token: string): Promise<any> {
 
 // The ID token a browser redeemed, posted back with its sign-in's state.
 async function tokenFromBrowser(req: IncomingMessage, res: ServerResponse) {
-  const form = new URLSearchParams(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString());
+  const form = new URLSearchParams(await small(req));
   const p = pendingOf(req, form.get('state') ?? '');
   if (!p) return expired(req, res);
   await finishSignIn(res, await verified(form.get('id_token') ?? ''), p);

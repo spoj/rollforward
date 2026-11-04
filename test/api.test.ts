@@ -824,6 +824,7 @@ test("rf login without a token signs in through the browser: the person allows r
   const { id } = await (await fetch(`${base}/auth/cli`, { method: 'POST', body: '{}' })).json();
   assert.equal((await fetch(`${base}/auth/cli/poll`, { method: 'POST', body: JSON.stringify({ id }) })).status, 202);
   assert.equal((await fetch(`${base}/auth/cli/poll`, { method: 'POST', body: JSON.stringify({ id: 'made-up' }) })).status, 410);
+  for (const path of ['/auth/cli', '/auth/cli/poll']) assert.equal((await fetch(`${base}${path}`, { method: 'POST', body: ' '.repeat(65_537) })).status, 413, `${path} takes 64 KB at most`);
 });
 
 test("a workspace's owners propose to merge it into another or move a series there, whose owners accept or decline within a week; what moves keeps its ids, and both sides hear of it", async () => {
