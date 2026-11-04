@@ -1764,7 +1764,11 @@ for (const type of ['dragover', 'drop']) {
 // A comment's or a reply's files, as its images look, under the box: picked, dropped or pasted.
 function thumbs(input, files) {
   input.files = files;
-  input.nextElementSibling?.matches('.thumbs') && input.nextElementSibling.remove();
+  const old = input.nextElementSibling?.matches('.thumbs') && input.nextElementSibling;
+  if (old) {
+    for (const img of old.querySelectorAll('img')) URL.revokeObjectURL(img.src);
+    old.remove();
+  }
   const images = [...files].filter(f => f.type.startsWith('image/'));
   if (images.length) input.insertAdjacentHTML('afterend', `<div class="thumbs">${images.map(f => `<img src="${URL.createObjectURL(f)}" alt="${esc(f.name)}" title="${esc(f.name)}">`).join('')}</div>`);
 }
