@@ -349,6 +349,8 @@ test('a cut anywhere leaves the instance right, its log whole, and the next run 
   await carriedOn(4, afterTool);
   assert.match(afterTool.saw[0], /started/, 'with what the cut tool call wrote');
 
+  // The hold is for the agent's commit mid-run, so the last run's own commit comes first.
+  await until("run 5's commit", () => commits()[0].startsWith('Run 5:'));
   writeFileSync(join(tmp, 'hold-git'), '');
   scripts.push({ bash: ['rf commit Before the cut 2>&1'], report: 'Never said.', saw: [] });
   await call('POST', `/api/instances/${id}/comment`, { text: 'Commit it.' });
