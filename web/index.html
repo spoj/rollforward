@@ -1461,14 +1461,19 @@ function previewBody(p) {
   if (p.text !== undefined) return `<div class="pvb">${p.md ? `<div class="say">${md(p.text)}</div>` : `<pre>${esc(p.text)}</pre>`}</div>`;
   return `<div class="pvb"><div class="empty">${p.loading ? 'Loading…' : p.error ? esc(p.error) : 'No preview for this kind of file. Download it instead.'}</div></div>`;
 }
-// A PDF's pages, each fetched as it scrolls into view.
+// A PDF's pages, each fetched as it scrolls into view and kept apart from those the preview came with, so a card drawn again on each
+// event draws the same, keeping its place; each watched once.
 function watchPages(at, p) {
-  const seen = new IntersectionObserver(es => es.forEach(async e => {
+  const more = p.pdf.more ??= {}, seen = new IntersectionObserver(es => es.forEach(async e => {
     if (!e.isIntersecting) return;
     seen.unobserve(e.target);
-    e.target.src = p.pdf.shown[e.target.dataset.page] = (await api(`${p.src}${p.src.includes('?') ? '&' : '?'}page=${e.target.dataset.page}`)).image;
+    e.target.src = more[e.target.dataset.page] = (await api(`${p.src}${p.src.includes('?') ? '&' : '?'}page=${e.target.dataset.page}`)).image;
   }), { root: at.querySelector('.pages'), rootMargin: '600px' });
-  for (const img of at.querySelectorAll('.pages img:not([src])')) seen.observe(img);
+  for (const img of at.querySelectorAll('.pages img:not([src]):not([data-w])')) {
+    img.dataset.w = '';
+    if (more[img.dataset.page]) img.src = more[img.dataset.page];
+    else seen.observe(img);
+  }
 }
 const MAIL = `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'"><base target="_blank"><style>body { font: 14px/1.5 system-ui, sans-serif; margin: 14px 18px; }</style>`;
 
