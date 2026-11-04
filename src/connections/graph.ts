@@ -61,17 +61,12 @@ async function check(runner: string, ticks: string[], { method, url, headers, js
   if (write && body && !object && !mailbox && !(method === 'PUT' && action === 'content')) throw new HttpError(403, `${bare}: a write's body is a JSON object, but a file's content, with PUT …/content, or mail as MIME`);
   let offer: string | undefined, mail = false;
   if (mailbox) {
-    const scope = !write ? 'Mail.Read' : ['sendmail', 'send', 'reply', 'replyall', 'forward'].includes(action!) ? 'Mail.Send' : 'Mail.ReadWrite';
-    const what = { 'Mail.Read': ['read mail', 'read shared mailboxes'], 'Mail.Send': ['send mail', 'send from shared mailboxes'], 'Mail.ReadWrite': ['write mail', 'write to shared mailboxes'] }[scope];
-    needs(scope, what[0]);
-    if (id.toLowerCase() !== runner) needs(`${scope}.Shared`, what[1]);
     offer = `m365:mail:${id.toLowerCase()}`;
     mail = true;
     if (write && body && !object) mime(String(headers['content-type']).startsWith('text/plain') ? raw : undefined, id.toLowerCase(), bare);
     const as = json?.message ?? json;
     if ([as?.from, as?.sender].some(x => x && x.emailAddress?.address?.toLowerCase() !== id.toLowerCase())) throw new HttpError(403, `${bare}: mail from ${id} goes out as ${id}`);
   } else if (top === 'drives' || top === 'shares' || (top === 'users' && part === 'drive')) {
-    needs(write ? 'Files.ReadWrite.All' : 'Files.Read.All', `${write ? 'save' : 'read'} OneDrive or SharePoint files`);
     // A share's site and list are the whole site and library its item is in, past what is ticked.
     // A drive's own search, recent, sharedWithMe and following list other drives' items too; a search under its root stays in it.
     const of = segs[top === 'users' ? 3 : 2] ?? '';
@@ -81,7 +76,6 @@ async function check(runner: string, ticks: string[], { method, url, headers, js
     offer = await covering(runner, ticks, item.parentReference.driveId, item.id, item.parentReference.id);
     if (!offer) throw new HttpError(403, `${bare} is in no folder, file or SharePoint site ticked for this instance`);
   } else if (top === 'sites') {
-    needs(!write ? 'Sites.Read.All' : segs.some(s => /^drives?$/i.test(s)) ? 'Files.ReadWrite.All' : 'Sites.ReadWrite.All', `${write ? 'write' : 'read'} SharePoint sites`);
     if (segments.some(s => /(^|\.)getbypath\(/i.test(s))) throw new HttpError(403, `${bare}: getByPath reaches any site by its path; read the ticked one by its id`);
     offer = `m365:site:${id}`;
   } else throw new HttpError(403, `the graph connection reaches mailboxes, and folders, files and SharePoint sites ticked for this instance, not ${path}`);
