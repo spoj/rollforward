@@ -44,6 +44,7 @@ a { color: inherit; }
 .row.grp { margin-top: 6px; border-top: 1px solid var(--rule); border-radius: 0; }
 .row.grp .nm { font-style: italic; color: var(--ink-3); }
 .ticks2 { display: grid; gap: 4px; font-size: 12.5px; color: var(--ink-2); margin: 6px 0; }
+.consent { color: var(--red); font-size: 12.5px; margin: 6px 0; }
 .ticks2 label { display: flex; align-items: center; gap: 6px; }
 .lline { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--rule); }
 .lline b { flex: 0 0 9.5em; font-weight: 600; }
@@ -969,10 +970,10 @@ function conversationHtml() {
   if (docs.review) h += fold('review', `<b>Review sheet</b>${docs.verdict ? ` \u00b7 ${esc(docs.verdict)}` : ''}`, docs.sheet ? `<div class="post">${docs.sheet}</div>` : `<div><a data-act="preview" data-file="${esc(docs.review.file)}">Open ${esc(fname(docs.review.file))}</a></div>`);
   if (docs.process) h += fold('process', `<b>Process</b>${docs.changed ? ' \u00b7 changed' : ''}`, docs.process);
   // Before its first run, its runner may tick its logins anew where they write its first prompt.
-  const first = mine && !runs.length;
+  const first = mine && !runs.length, lends = first && myLogins.some(l => l.offers.length);
   if (open) h += `<h3>${ui.on ? `Comment on ${name(ui.on)}${ui.ref ? ` at ${esc(ui.ref)}` : ''}` : 'Comment on the instance'}</h3>`
-    + (first && myLogins.some(l => l.offers.length) ? `<div class="ticks2">Logins it may use:${ticksHtml(myLogins, data.runner.logins)}</div>` : '')
-    + `<textarea id="newcomment" rows="3" placeholder="${first ? 'What should the agent do? Drop files here too' : mine || cur.s.shared_by === data.runner.by ? 'The agent replies in the thread' : `A note for ${esc(nameOf(data.runner.by))}: the agent takes it up once they do`}"></textarea><input type="file" id="newfiles" multiple><div><button class="btn primary" data-act="comment">Comment</button></div>`;
+    + (lends ? `<div class="ticks2">Credentials:${ticksHtml(myLogins, data.runner.logins)}</div>` : '')
+    + `<textarea id="newcomment" rows="3" placeholder="${first ? 'What should the agent do? Drop files here too' : mine || cur.s.shared_by === data.runner.by ? 'The agent replies in the thread' : `A note for ${esc(nameOf(data.runner.by))}: the agent takes it up once they do`}"></textarea><input type="file" id="newfiles" multiple>${lends ? '<div class="consent">By clicking Comment, you agree that agents carry these credentials while acting as you.</div>' : ''}<div><button class="btn primary" data-act="comment">Comment</button></div>`;
   const ended = r => data.log.find(e => e.op === 'done' && e.run === r.run)?.seq ?? Infinity;
   return h + [...threads.map(t => [t.last.seq, threadHtml(t)]), ...runs.map(r => [ended(r), runHtml(r, r === runs.at(-1))])].sort((a, b) => b[0] - a[0]).map(([, x]) => x).join('') + '</div>';
 }
@@ -1094,10 +1095,10 @@ function renderPv() {
 // Sharing a series lends your logins to whoever starts its runs, so it takes two clicks, the second saying what you take on. Once it's
 // yours, the ticks save as they change.
 function startsHtml(s) {
-  const mine = s.shared_by === me.email, ws = esc(cur.w.name), arm = `<button class="btn share ${pv.arming ? 'armed' : ''}" data-act="share-arm">${s.shared_by ? 'Start them as me instead' : `Let anyone in ${ws} start runs`}</button>`;
-  return `<div>${s.shared_by ? `Anyone in ${ws}, and its agents, start runs of this series as ${mine ? 'you, with these logins:' : person(s.shared_by) + '.'}` : "Each instance's runner, and nobody else: others' comments are notes for them, and a wake asks someone to start the instance."}</div>`
+  const mine = s.shared_by === me.email, ws = esc(cur.w.name), arm = `<button class="btn share ${pv.arming ? 'armed' : ''}" data-act="share-arm">${s.shared_by ? 'Have them wake it as me instead' : `Let ${ws} wake this series`}</button>`;
+  return `<div>${s.shared_by ? `People in ${ws} and their agents wake this series, as ${mine ? 'you, with these credentials:' : person(s.shared_by) + '.'}` : "Each instance's runner, and nobody else: others' comments are notes for them, and a wake asks someone to start the instance."}</div>`
     + (mine ? ticksHtml(s.logins, s.shared_logins) + '<div class="row2"><button class="btn" data-act="share-off">Stop</button></div>' : `<div class="row2">${arm}</div>`)
-    + (pv.arming ? `<div class="warn">With these logins:${ticksHtml(s.logins)}You take on every run that anyone in ${ws}, or any of its agents, starts in this series: their comments, uploads and wakes in your instances, and the instances their wakes start, all run as you, with your logins.<div><button class="btn danger" data-act="share-on">Start their runs as me</button></div></div>` : '');
+    + (pv.arming ? `<div class="warn"><h3>Credentials</h3>${ticksHtml(s.logins)}<div class="consent">By allowing, people in ${ws} and their agents can wake this series: start or continue its instances, with a short reason, and add notes and files. Those runs act as you, using the selected credentials, and do the series' usual work.</div><div><button class="btn danger" data-act="share-on">Allow ${ws} to wake this series</button></div></div>` : '');
 }
 
 // Wakes for an instance or a series, each one-off or weekly on the days ticked at its time, editable in place, and a row to add one.
@@ -1239,7 +1240,9 @@ const ticked = () => [...document.querySelectorAll('#pv input.tick:checked')].ma
 function startHtml(s) {
   return (s.series !== undefined ? `<h3>Series</h3><div class="sub">This task becomes its first instance.</div><input type="text" id="sseries" value="${esc(s.series)}">` : '')
     + (s.label !== undefined ? `<h3>${s.series !== undefined ? 'The new instance' : 'Label'}</h3><input type="text" id="slabel" value="${esc(s.label)}" placeholder="such as a date">` : '')
-    + `<h3>Logins this instance may use</h3>` + ticksHtml(s.logins, s.on) + `<div><button class="btn primary" data-act="start-go">${esc(s.go)}</button></div>`;
+    + `<h3>Credentials</h3>` + ticksHtml(s.logins, s.on)
+    + (s.logins.some(l => l.offers.length) ? `<div class="consent">By clicking ${esc(s.go)}, you agree that agents carry these credentials while acting as you.</div>` : '')
+    + `<div><button class="btn primary" data-act="start-go">${esc(s.go)}</button></div>`;
 }
 
 // Signing in again, from wherever a login is said to have expired: Microsoft's own page, or a website's live browser.
@@ -1430,7 +1433,7 @@ async function onAct(act, el, was) {
   }
   if (act === 'menu-instance') {
     openMenu(el, [
-      ['Rename', 'rename'], ['Wakes', 'wakes'], cur.s.single && ['Start another based on this', 'start-another'], data.runner.by === me.email && ['Logins it may use', 'ticks'],
+      ['Rename', 'rename'], ['Wakes', 'wakes'], cur.s.single && ['Start another based on this', 'start-another'], data.runner.by === me.email && ['Credentials', 'ticks'],
       data.runner.by === me.email && ['-'], data.runner.by === me.email && ['Abandon', 'abandon', 'danger', data.run && 'Available when the run ends'],
     ]);
   }
@@ -1618,7 +1621,7 @@ async function onAct(act, el, was) {
     Object.assign(ui, { open: true, on: null, ref: null, focus: instance });
     go(instance);
   }
-  if (act === 'ticks') await openStart(`Logins ${cur.i.label} may use`, 'Save', ({ logins }) => api(`${instPath()}/logins`, { method: 'POST', body: JSON.stringify({ logins }) }), undefined, undefined, data.runner.logins);
+  if (act === 'ticks') await openStart('Credentials', 'Save', ({ logins }) => api(`${instPath()}/logins`, { method: 'POST', body: JSON.stringify({ logins }) }), undefined, undefined, data.runner.logins);
   if (act === 'start-another') await openStart(`Start another based on ${cur.i.label}`, 'Start', async ({ label, logins, name }) => {
     await api(`${seriesPath(cur)}/promote`, { method: 'POST', body: JSON.stringify({ name }) });
     return api(seriesPath(cur), { method: 'POST', body: JSON.stringify({ label, logins }) });

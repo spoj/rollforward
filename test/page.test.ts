@@ -104,6 +104,10 @@ test("a series' gear opens its settings, which save as they change; a click besi
   await page.press('#sname', 'Enter');
   await page.waitForSelector('#pv .saved:text-is("Saved")');
   await page.waitForSelector('.row.ser.on .l:text-is("Weekly borrowing base")');
+  const ws = /^Let (.+) wake this series$/.exec((await page.textContent('#pv [data-act=share-arm]'))!)![1];
+  await page.click('#pv [data-act=share-arm]');
+  assert.deepEqual([await page.textContent('#pv .warn h3'), await page.textContent('#pv [data-act=share-on]'), await page.textContent('#pv .warn .consent')], ['Credentials', `Allow ${ws} to wake this series`,
+    `By allowing, people in ${ws} and their agents can wake this series: start or continue its instances, with a short reason, and add notes and files. Those runs act as you, using the selected credentials, and do the series' usual work.`]);
   await page.mouse.click(5, 5);
   await page.waitForSelector('#pv:not([open])', { state: 'attached' });
 });
@@ -364,6 +368,7 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   assert.deepEqual((await ticks()).slice(0, 3), ['all:true', 'm365:onedrive:true', 'm365:site:s1:true'], "the group's tick ticks its sources");
   await page.click('#pv details.tgroup input[value="m365:onedrive"]');
   assert.deepEqual((await ticks()).slice(0, 3), ['all:false', 'm365:onedrive:false', 'm365:site:s1:true'], 'and follows them');
+  assert.deepEqual([await page.locator('#pv h3').allTextContents(), await page.textContent('#pv .consent')], [['Label', 'Credentials'], 'By clicking Start, you agree that agents carry these credentials while acting as you.']);
   await page.mouse.click(5, 5);
   rmSync(join(rf, 'connections.json'));
   rmSync(mine, { recursive: true });
