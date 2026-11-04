@@ -590,9 +590,9 @@ const stepText = s => `${s.do}${s.target ? ` ${s.target}` : ''}${s.value !== und
 
 function renderBar() {
   if (editing) return;
-  const open = data?.doc.status === 'open', renamable = open && !cur.s.instances.some(i => i.running) && !cur.i.queued;
+  const open = data?.doc.status === 'open';
   let h = `<button class="menu" data-act="menu">☰</button>`;
-  h += `<div><div class="crumb">${esc(cur?.w.name ?? '')}${cur?.s ? ' · ' + esc(cur.s.single ? 'Ungrouped' : cur.s.name) : ''}</div><h1>${renamable ? `<span class="t" data-act="rename" title="Rename">${esc(cur.i.label)}</span><button class="ren" data-act="rename" title="Rename">\u270E</button>` : esc(cur?.i?.label ?? 'No instance')}${data ? owner() : ''}</h1></div>`;
+  h += `<div><div class="crumb">${esc(cur?.w.name ?? '')}${cur?.s ? ' · ' + esc(cur.s.single ? 'Ungrouped' : cur.s.name) : ''}</div><h1>${data ? `<span class="t" data-act="rename" title="Rename">${esc(cur.i.label)}</span><button class="ren" data-act="rename" title="Rename">\u270E</button>` : esc(cur?.i?.label ?? 'No instance')}${data ? owner() : ''}</h1></div>`;
   if (data) {
     const d = lastDone(), talk = threads.filter(t => t.waits).length;
     const state = data.doc.status !== 'open' ? `${data.doc.status === 'closed' ? 'Closed' : 'Abandoned'} · read-only`
@@ -1329,9 +1329,8 @@ async function onAct(act, el, was) {
     await refresh();
   }
   if (act === 'menu-instance') {
-    const busy = cur.s.instances.some(i => i.running) || cur.i.queued;
     openMenu(el, [
-      ['Rename', 'rename', '', busy && "Available when the series' run ends"], cur.s.single && ['Start another based on this', 'start-another'], data.runner.by === me.email && ['Logins it may use', 'ticks'],
+      ['Rename', 'rename'], cur.s.single && ['Start another based on this', 'start-another'], data.runner.by === me.email && ['Logins it may use', 'ticks'],
       data.runner.by === me.email && ['-'], data.runner.by === me.email && ['Abandon', 'abandon', 'danger', data.run && 'Available when the run ends'],
     ]);
   }

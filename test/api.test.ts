@@ -159,13 +159,18 @@ test('duplicate copies a closed instance into an open one, once', async () => {
   assert.equal((await call('POST', dup)).status, 409);
 });
 
-test('rename relabels an open instance in its instance.json and logs it; an existing label is refused', async () => {
+test('rename relabels an instance in any status in its instance.json and logs it; an existing label is refused, a former one free', async () => {
   const rename = async (label: string, to: string) => call('POST', `${await at(series, label, 'rename')}?as=${encodeURIComponent(to)}`);
   const id = await iid(series, '2026-08-30 copy');
   assert.equal((await rename('2026-08-30 copy', '2026-08-30 rework')).status, 200);
   assert.deepEqual(JSON.parse(readFileSync(join(root, 'instances', id, 'instance.json'), 'utf8')), { label: '2026-08-30 rework', series: (await shown(series)).id });
   assert.deepEqual((await json(await at(series, '2026-08-30 rework'))).log.at(-1).from, '2026-08-30 copy');
   assert.equal((await rename('2026-08-30 rework', '2026-09-06')).status, 409);
+  assert.equal((await rename('scratch', 'scratch 2')).status, 200, 'abandoned, or closed');
+  assert.deepEqual((await json(await at(series, 'scratch 2'))).log.at(-1).from, 'scratch');
+  assert.equal((await rename('2026-08-30 rework', 'scratch')).status, 200);
+  assert.equal((await rename('scratch', '2026-08-30 rework')).status, 200);
+  assert.equal((await rename('scratch 2', 'scratch')).status, 200);
 });
 
 test("only the runner closes or abandons; taking over makes you the runner with your own logins ticked", async () => {

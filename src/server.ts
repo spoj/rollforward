@@ -495,6 +495,19 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (instances(inst.seriesId).filter(i => i.doc.status === 'open').length >= MAX_OPEN) throw new HttpError(409, `${MAX_OPEN} instances are open; close one first`);
     return send(res, 200, { id: duplicateInstance(inst, url.searchParams.get('as') ?? '', by, checkTicks(by, payload.logins ?? [])).id });
   }
+  if (action === 'rename') {
+    // In any status, and mid-run: a run keeps the names it started with (view()).
+    const from = inst.label, s = t.series[inst.seriesId], to = safeName(url.searchParams.get('as') ?? '');
+    // A task's name is its label.
+    if (s.single && to !== s.name && Object.values(t.series).some(x => x.workspace === s.workspace && x.name === to)) throw new HttpError(409, `${to} exists`);
+    renameInstance(inst, to);
+    if (s.single) {
+      s.name = to;
+      saveTree(t);
+    }
+    inst.append(by, 'rename', { from });
+    return send(res, 200, 'ok');
+  }
   if (inst.doc.status !== 'open') throw new HttpError(409, `instance is ${inst.doc.status}`);
   if (action === 'attach') {
     // A comment's attachment, kept in upload/attachments/ and named in the comment that follows; it starts nothing by itself.
@@ -576,18 +589,6 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     inst.append(by, 'interrupt');
     mine.interrupted = true;
     await mine.run.interrupt();
-    return send(res, 200, 'ok');
-  } else if (action === 'rename') {
-    if (a || queued(inst)) throw new HttpError(409, "wait for the series' run to end");
-    const from = inst.label, s = t.series[inst.seriesId], to = safeName(url.searchParams.get('as') ?? '');
-    // A task's name is its label.
-    if (s.single && to !== s.name && Object.values(t.series).some(x => x.workspace === s.workspace && x.name === to)) throw new HttpError(409, `${to} exists`);
-    renameInstance(inst, to);
-    if (s.single) {
-      s.name = to;
-      saveTree(t);
-    }
-    inst.append(by, 'rename', { from });
     return send(res, 200, 'ok');
   } else if (action === 'logins') {
     // The runner ticks the instance's logins anew, as before its first prompt.

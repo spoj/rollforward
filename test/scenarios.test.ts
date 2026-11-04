@@ -11,7 +11,7 @@ import { pathToFileURL } from 'node:url';
 // Real runs, from a person's act down to Pi in its sandbox, with a scripted stand-in for OpenRouter: each run's prompt takes the
 // next script, bash commands and then the report, and the stand-in keeps what each command answered. So the walls a run meets, a
 // wake and a takeover are checked as a run meets them, at no model cost.
-type Script = { bash: (string | (() => string))[]; report: string; prompt?: string; system?: string; first?: number; saw: string[]; fail?: string; hold?: () => void };
+type Script = { bash: (string | (() => string | Promise<string>))[]; report: string; prompt?: string; system?: string; first?: number; saw: string[]; fail?: string; hold?: () => void };
 const scripts: Script[] = [], byPrompt = new Map<string, Script>(), providers: unknown[] = [];
 const app = join(import.meta.dirname, '..'), tmp = mkdtempSync(join(tmpdir(), 'rf-scenario-')), root = join(tmp, 'data');
 const ADMIN = 'admin@demo.test', BOB = 'bob@demo.test';
@@ -35,7 +35,7 @@ async function answer(req: IncomingMessage, res: ServerResponse) {
   if (s.hold) return void s.hold();
   if (s.fail) return void res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: s.fail } }));
   const step = s.bash[results.length], bash = body.tools.find((t: { name: string }) => /bash/i.test(t.name)).name;
-  const block = step === undefined ? { type: 'text', text: s.report } : { type: 'tool_use', id: `toolu_${Date.now()}`, name: bash, input: { command: typeof step === 'string' ? step : step() } };
+  const block = step === undefined ? { type: 'text', text: s.report } : { type: 'tool_use', id: `toolu_${Date.now()}`, name: bash, input: { command: typeof step === 'string' ? step : await step() } };
   const send = (type: string, data: object) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
   res.writeHead(200, { 'content-type': 'text/event-stream' });
   send('message_start', { message: { id: 'msg', type: 'message', role: 'assistant', model: body.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 } } });
@@ -212,6 +212,32 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Once more.' }, bob)).status, 200);
   log = await runs(id, 5);
   assert.match(String(log.findLast(e => e.op === 'done')!.error), /the model said no/, "a model's failure is the run's error");
+});
+
+test('people rename the instance, its series and its workspace mid-run: the run carries on by the names it started with, and the next run has the new ones', async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Named' })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Before' })).json();
+  scripts.push({ bash: [], report: 'Nothing to roll forward yet.', saw: [] });
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
+  await runs(id, 1);
+  const rename = async () => {
+    for (const [path, body] of [[`/api/instances/${id}/rename?as=November`], [`/api/series/${series}`, { name: 'After' }], [`/api/workspaces/${ws}`, { name: 'Renamed' }]] as const)
+      assert.equal((await call(body ? 'PUT' : 'POST', path, body)).status, 200, path);
+    return 'pwd; cat names.tsv';
+  };
+  const during: Script = { bash: [rename, 'rf wake . +1d 2>&1; echo 1 > working/x.csv; rf say --file ../2026-11/working/x.csv Cited. 2>&1'], report: 'Renamed under me.', saw: [] };
+  const next: Script = { bash: ['pwd; cat names.tsv'], report: 'New names.', saw: [] };
+  scripts.push(during, next);
+  assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Go.' })).status, 200);
+  await runs(id, 2);
+  const [pwd, ...names] = during.saw[0].trim().split('\n');
+  assert.deepEqual([pwd, names.filter(l => l.startsWith(id))], ['/work/Named/Before/2026-11', [`${id}\t/work/Named/Before/2026-11`]]);
+  assert.match(during.saw[1], /^set: \. wakes at .*\nsaid in c\d+, seq \d+\s*$/);
+  assert.deepEqual((await (await call('GET', `/api/instances/${id}`)).json()).log.findLast((e: { op: string }) => e.op === 'comment').files, [{ inst: id, path: 'working/x.csv' }]);
+  assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Again.' })).status, 200);
+  await runs(id, 3);
+  const [now, ...renamed] = next.saw[0].trim().split('\n');
+  assert.deepEqual([now, renamed.filter(l => l.startsWith(id))], ['/work/Renamed/After/November', [`${id}\t/work/Renamed/After/November`]]);
 });
 
 test('sign-offs are git commits: the agent commits a moment worth keeping, the runner approves or rejects in their name, and closing commits as theirs', async () => {
