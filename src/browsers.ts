@@ -115,7 +115,7 @@ export const viewPage = async (id: string) => (await call('GET', `/sessions/${id
 
 // Ends a sign-in; with `save`, what the browser holds becomes the person's login to the site, replacing any before. Signing in
 // takes requests the person makes in control of the browser, so with none there is nothing to save yet. What its browser did is
-// one line of the server's output, its addresses without their queries, which may hold codes or tokens.
+// one line of the server's output, its addresses as their hosts alone, as a path or a query may hold codes or tokens.
 export async function endSignIn(email: string, id: string, save: boolean) {
   if (!isSignIn(email, id)) throw new HttpError(404, 'no such sign-in');
   if (save && !(await json('GET', `/sessions/${id}/log`)).some((e: { live?: true }) => e.live)) throw new HttpError(409, 'Take control and sign in first, then Save login.');
@@ -123,13 +123,13 @@ export async function endSignIn(email: string, id: string, save: boolean) {
   signIns.delete(id);
   const requests: Record<string, Record<number, number>> = {}, blocked = { count: 0, hosts: [] as string[] }, failed: string[] = [];
   for (const e of log) {
-    const u = URL.parse(e.url), host = u?.host ?? e.url.split(/[?#]/)[0];
+    const host = URL.parse(e.url)?.host || 'an address that does not parse';
     if (e.blocked) {
       blocked.count++;
       if (!blocked.hosts.includes(host)) blocked.hosts.push(host);
     } else {
       (requests[host] ??= {})[e.status] = (requests[host][e.status] ?? 0) + 1;
-      if (e.status >= 400) failed.push(`${e.method} ${host}${u?.pathname ?? ''} ${e.status}${e.error ? ` ${e.error}` : ''}`);
+      if (e.status >= 400) failed.push(`${e.method} ${host} ${e.status}${e.error ? ` ${e.error}` : ''}`);
     }
   }
   console.log(`sign-in ended ${JSON.stringify({ id, site, email, saved: save, seconds: Math.round((Date.now() - since) / 1000), requests, blocked, failed })}`);
@@ -173,8 +173,12 @@ function keep(inst: Instance, b: Opened, { state, log }: { state: unknown; log: 
 export async function reap() {
   const left = journal();
   for (const { id } of await json('GET', '/sessions')) {
-    const closed = await close(id);
-    if (left[id]) keep(instance(left[id].inst), left[id], closed);
+    try {
+      const closed = await close(id);
+      if (left[id]) keep(instance(left[id].inst), left[id], closed);
+    } catch (e) {
+      console.error(`the browser service: browser ${id}, left open by a restart, did not close cleanly`, e);
+    }
   }
   const all = journal();
   for (const id in left) delete all[id];

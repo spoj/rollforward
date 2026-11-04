@@ -119,7 +119,7 @@ test("a website's header goes, with its person's value, to their sign-in's brows
   assert.ok(!existsSync(join(personDir(alice), 'web:rl.header.sealed')));
 });
 
-test("a sign-in that ends, saved or not, leaves a line in the server's output of what its browser did, its addresses without their queries", async t => {
+test("a sign-in that ends, saved or not, leaves a line in the server's output of what its browser did, its addresses as their hosts alone", async t => {
   writeJson('connections.json', { pa: { type: 'website', title: 'PatriArch', url: 'https://pa.example.com/', hosts: ['sso.example.com'], writeback: true, updated_by: alice, updated_at: '' } });
   const said = t.mock.method(console, 'log', () => {});
   requested = [
@@ -129,14 +129,15 @@ test("a sign-in that ends, saved or not, leaves a line in the server's output of
     { method: 'GET', url: 'https://cdn.example.com/app.js', status: 403, blocked: 'host not on the list' },
     { method: 'GET', url: 'https://cdn.example.com/app.css', status: 403, blocked: 'host not on the list' },
     { method: 'GET', url: 'https://pa.example.com/home?code=secret', status: 502, error: 'socket hang up' },
+    { method: 'GET', url: 'https://sso.example.com/magic/secret;jsessionid=secret', status: 404 },
   ];
   await endSignIn(alice, await startSignIn(alice, 'pa', ''), false);
   requested = plain;
   await endSignIn(alice, await startSignIn(alice, 'pa', ''), true);
   const lines = said.mock.calls.map(c => String(c.arguments[0]));
   assert.equal(lines[0], `sign-in ended ${JSON.stringify({
-    id: 'b9', site: 'pa', email: alice, saved: false, seconds: 0, requests: { 'pa.example.com': { 302: 1, 502: 1 }, 'sso.example.com': { 200: 1, 401: 1 } },
-    blocked: { count: 2, hosts: ['cdn.example.com'] }, failed: ['POST sso.example.com/login 401', 'GET pa.example.com/home 502 socket hang up'],
+    id: 'b9', site: 'pa', email: alice, saved: false, seconds: 0, requests: { 'pa.example.com': { 302: 1, 502: 1 }, 'sso.example.com': { 200: 1, 401: 1, 404: 1 } },
+    blocked: { count: 2, hosts: ['cdn.example.com'] }, failed: ['POST sso.example.com 401', 'GET pa.example.com 502 socket hang up', 'GET sso.example.com 404'],
   })}`);
   assert.match(lines[1], /^sign-in ended \{"id":"b9","site":"pa","email":"alice@demo.test","saved":true,/);
   assert.equal(lines.length, 2);
@@ -308,16 +309,19 @@ test("a website that lists its people lets only them use it, admins no more than
   writeJson('users.json', { [alice]: { role: 'admin' } });
 });
 
-test("as the server starts, the browsers a restart left open on the service close: a run's keeps its request log and hands its login back, as its run would have, and a sign-in's just goes", async () => {
+test("as the server starts, the browsers a restart left open on the service close: a run's keeps its request log and hands its login back, as its run would have, and a sign-in's just goes", async t => {
   writeJson('connections.json', { crm: { type: 'website', title: 'CRM', url: 'https://crm.example.com', hosts: [], writeback: true, updated_by: alice, updated_at: '' } });
   saveLogin(alice, website('crm', 'CRM'), '{"cookies":["before"]}');
   const inst = createInstance('s', '2027-12b', alice, ['web:crm']), cut = new Browsers(inst, 4);
   await cut.browser('crm');
   clearTimeout(cut.bySite.get('crm')!.idle);
-  [listed, back] = [['b9', 'signin'], { cookies: ['as it was cut'] }];
+  // One whose instance is gone closes all the same, and the rest after it.
+  writeJson('browsers.json', { ...JSON.parse(readFileSync(join(tmp, '.rf', 'browsers.json'), 'utf8')), lost: { inst: 'gone', run: 1, site: 'crm', email: alice, since: '', writeback: false, file: 'browser/run 1 crm.jsonl' } });
+  [listed, back] = [['lost', 'b9', 'signin'], { cookies: ['as it was cut'] }];
   deleted.length = 0;
+  t.mock.method(console, 'error', () => {});
   await reap();
-  assert.deepEqual(deleted, ['b9', 'signin']);
+  assert.deepEqual(deleted, ['lost', 'b9', 'signin']);
   assert.deepEqual(inst.log.filter(e => e.op === 'browser').map(e => [e.run, e.site, e.requests, e.writes, e.file]), [[4, 'crm', 1, 0, 'browser/run 4 crm.jsonl']]);
   assert.equal(readFileSync(join(inst.dir, 'browser/run 4 crm.jsonl'), 'utf8'), `${JSON.stringify(plain[0])}\n`);
   assert.deepEqual(JSON.parse(secret(alice, 'web:crm')), { cookies: ['as it was cut'] });
