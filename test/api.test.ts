@@ -215,7 +215,7 @@ test('a closed instance takes corrections, later entries, each its own commit, s
   const r = await fix('2026-09-06', { kind: 'wrong', text: ' The rate was a day stale. ', see });
   assert.match(await r.text(), /^2026-09-06 is marked wrong, seq \d+$/);
   const { log } = await json(await at(series, '2026-09-06')), e = log.at(-1);
-  assert.deepEqual([e.by, e.op, e.kind, e.text, e.see], [adminEmail, 'correction', 'wrong', 'The rate was a day stale.', { inst: see }]);
+  assert.deepEqual([e.by, e.op, e.kind, e.text, e.see], [adminEmail, 'correction', 'wrong', 'The rate was a day stale.', { inst: see, label: '2026-09-13' }]);
   const back = (await json(await at(series, '2026-09-13'))).log.at(-1), head = async () => execFileSync('git', ['log', '-1', '--format=%an %s'], { cwd: await dir(series, '2026-09-06'), encoding: 'utf8' });
   assert.deepEqual([back.op, back.inst, back.seq, back.kind], ['corrected', await iid(series, '2026-09-06'), e.seq, 'wrong'], 'the instance it names points back');
   for (let i = 0; i < 50 && !(await head()).includes('Correction'); i++) await new Promise(ok => setTimeout(ok, 100));

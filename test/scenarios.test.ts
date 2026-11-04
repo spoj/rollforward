@@ -459,7 +459,7 @@ test("a later run corrects a closed instance, never changing it, linking the thr
   assert.match(fixing.saw[1], /^rf correct PATH/, 'no text, its usage');
   assert.match(fixing.saw[2], /^m2 is open: only a closed instance takes corrections/);
   const fix = (await (await call('GET', `/api/instances/${first}`)).json()).log.at(-1);
-  assert.deepEqual([fix.by, fix.op, fix.kind, fix.text, fix.see], ['agent', 'correction', 'wrong', 'The rate was a day stale.', { inst: second, thread: said.thread }]);
+  assert.deepEqual([fix.by, fix.op, fix.kind, fix.text, fix.see], ['agent', 'correction', 'wrong', 'The rate was a day stale.', { inst: second, label: 'm2', thread: said.thread }]);
   assert.deepEqual(log.filter(e => e.op === 'corrected').map(e => [e.inst, e.seq, e.kind]), [[first, fix.seq, 'wrong']]);
   const next: Script = { bash: [], report: 'Rolled forward.', saw: [] };
   scripts.push(next);

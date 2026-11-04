@@ -65,8 +65,8 @@ export function message(inst: Instance, n: number, entries: Entry[], first = fal
   // The corrections on the instances before it, so an error isn't rolled forward.
   const fixed = !first ? [] : instances(inst.seriesId).filter(i => i.doc.status === 'closed' && i.label.localeCompare(inst.label, 'en', { numeric: true }) < 0)
     .flatMap(i => i.log.filter(e => e.op === 'correction').map(e => {
-      const see = e.see as { inst: string; thread?: string } | undefined;
-      return `${i.label}${e.item ? ` ${e.item}${e.ref ? `@${e.ref}` : ''}` : ''} is ${e.kind}, ${JSON.stringify(e.text)}${see ? `, see ${instance(see.inst).label}${see.thread ? ` ${see.thread}` : ''}` : ''}`;
+      const see = e.see as { label: string; thread?: string } | undefined;
+      return `${i.label}${e.item ? ` ${e.item}${e.ref ? `@${e.ref}` : ''}` : ''} is ${e.kind}, ${JSON.stringify(e.text)}${see ? `, see ${see.label}${see.thread ? ` ${see.thread}` : ''}` : ''}`;
     }));
   return `Instance ${inst.label}, run ${n}.`
     + (first || made ? ` Its runner is ${made?.op === 'takeover' ? `now ${who(made.by)}, taking over from ${who(made.from as string)}` : who(runnerOf(inst).by)}, who lends you ${reachable(inst).map(c => `${c.name} (${c.type})`).join(', ') || 'no connection'}.` : '')
@@ -262,13 +262,14 @@ export function closed(inst: Instance, by: string) {
 }
 
 // A correction: a closed instance is never changed, but takes later entries saying that one of its items, or itself, is wrong or
-// superseded, and where the change is, `see`, an instance and its thread, which notes it too. Each is a commit of the closed
-// instance's own.
+// superseded, and where the change is, `see`, an instance, by its id and its label then, and its thread, which notes it too. Each is
+// a commit of each closed instance it lands in; an open one's next run commits it.
 export function correct(inst: Instance, by: string, c: { kind: string; item?: string; ref?: string; text: string; see?: Instance; thread?: string }) {
-  const e = inst.append(by, 'correction', { kind: c.kind, ...(c.item && { item: c.item }), ...(c.ref && { ref: c.ref }), text: c.text, ...(c.see && { see: { inst: c.see.id, ...(c.thread && { thread: c.thread }) } }) });
-  c.see?.append(by, 'corrected', { inst: inst.id, seq: e.seq, kind: c.kind, ...(c.item && { item: c.item }) });
+  const e = inst.append(by, 'correction', { kind: c.kind, ...(c.item && { item: c.item }), ...(c.ref && { ref: c.ref }), text: c.text, ...(c.see && { see: { inst: c.see.id, label: c.see.label, ...(c.thread && { thread: c.thread }) } }) });
+  c.see?.append(by, 'corrected', { inst: inst.id, label: inst.label, seq: e.seq, kind: c.kind, ...(c.item && { item: c.item }) });
   const who = by === 'agent' ? AGENT : by === 'server' ? { name: 'rollforward', email: 'server@rollforward' } : { name: users()[by]?.name ?? by, email: by };
-  commit(inst.dir, who, `Correction: ${c.item ?? inst.label} is ${c.kind}${c.see ? `, see ${c.see.label}` : ''}`).catch(err => inst.append('server', 'commit', { error: err.message }));
+  for (const [i, m] of [[inst, `Correction: ${c.item ?? inst.label} is ${c.kind}${c.see ? `, see ${c.see.label}` : ''}`], [c.see, `Corrected: ${inst.label}${c.item ? ` ${c.item}` : ''} is ${c.kind}`]] as const)
+    if (i?.doc.status === 'closed') commit(i.dir, who, m).catch(err => i.append('server', 'commit', { error: err.message }));
   return e;
 }
 
