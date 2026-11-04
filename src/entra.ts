@@ -55,6 +55,7 @@ export async function confirm(email: string) {
     if (id === 'entra') seal(email, id, r.refresh);
     else if (current(email, id)) saveLogin(email, current(email, id)!, r.refresh);
   } catch (e) {
+    if (id === 'm365' && (e as HttpError).status === 401 && current(email, id)) saveLogin(email, { ...current(email, id)!, expired: true });
     if (!/AADSTS(50057|50034)\b/.test((e as Error).message)) throw e;
     upsertUser(email, { disabled: true });
     throw Object.assign(e as Error, { left: true });
