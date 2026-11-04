@@ -2,7 +2,7 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,7 +11,7 @@ import { pathToFileURL } from 'node:url';
 // Real runs, from a person's act down to Pi in its sandbox, with a scripted stand-in for OpenRouter: each run's prompt takes the
 // next script, bash commands and then the report, and the stand-in keeps what each command answered. So the walls a run meets, a
 // wake and a takeover are checked as a run meets them, at no model cost.
-type Script = { bash: (string | (() => string))[]; report: string; prompt?: string; system?: string; saw: string[]; fail?: string };
+type Script = { bash: (string | (() => string))[]; report: string; prompt?: string; system?: string; saw: string[]; fail?: string; hold?: () => void };
 const scripts: Script[] = [], byPrompt = new Map<string, Script>(), providers: unknown[] = [];
 const app = join(import.meta.dirname, '..'), tmp = mkdtempSync(join(tmpdir(), 'rf-scenario-')), root = join(tmp, 'data');
 const ADMIN = 'admin@demo.test', BOB = 'bob@demo.test';
@@ -31,6 +31,8 @@ async function answer(req: IncomingMessage, res: ServerResponse) {
   if (!byPrompt.has(key)) byPrompt.set(key, Object.assign(scripts.shift()!, { prompt: key, system: text(body.system) }));
   const s = byPrompt.get(key)!, results = msgs.slice(at + 1).filter(isResult).flatMap(m => (m.content as { type: string; content: unknown }[]).filter(b => b.type === 'tool_result'));
   s.saw = results.map(r => text(r.content));
+  // A held answer never comes, for a cut mid model call.
+  if (s.hold) return void s.hold();
   if (s.fail) return void res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: s.fail } }));
   const step = s.bash[results.length], bash = body.tools.find((t: { name: string }) => /bash/i.test(t.name)).name;
   const block = step === undefined ? { type: 'text', text: s.report } : { type: 'tool_use', id: `toolu_${Date.now()}`, name: bash, input: { command: typeof step === 'string' ? step : step() } };
@@ -66,18 +68,48 @@ before(async () => {
   base = `http://127.0.0.1:${(probe.address() as { port: number }).port}`;
   await new Promise(ok => probe.close(ok));
   mkdirSync(join(tmp, 'home'));
-  // The server sends what runs ask of openrouter.ai, Pi's own calls among them, to the stand-in.
+  // The server's git, but that a commit's read-tree, while the file $RF_HOLD_GIT exists, takes the index's lock and holds it, as git
+  // does as it writes, until the server is gone: a cut mid commit.
+  mkdirSync(join(tmp, 'bin'));
+  writeFileSync(join(tmp, 'bin', 'git'), `#!/bin/sh
+if [ "$1" = read-tree ] && [ -e "$RF_HOLD_GIT" ]; then
+  : > .git/index.lock
+  : > "$RF_HOLD_GIT.held"
+  while kill -0 "$PPID" 2>/dev/null; do sleep 0.05; done
+  exit 1
+fi
+exec ${execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()} "$@"
+`);
+  chmodSync(join(tmp, 'bin', 'git'), 0o755);
+  await serve();
+  [admin, bob] = [await login(ADMIN), await login(BOB)];
+});
+
+// The server on the data root, as a restart starts it again. The server sends what runs ask of openrouter.ai, Pi's own calls among
+// them, to the stand-in.
+async function serve() {
   const upstream = `import { upstreams } from ${JSON.stringify(pathToFileURL(join(app, 'src', 'connections.ts')).href)}; upstreams['openrouter.ai'] = 'http://127.0.0.1:${(model.address() as { port: number }).port}';`;
   proc = spawn(process.execPath, ['--import', `data:text/javascript,${encodeURIComponent(upstream)}`, join(app, 'src', 'server.ts'), root, new URL(base).port], {
-    env: { ...process.env, HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch'), OPENROUTER_API_KEY: 'stand-in-key', RF_WAKE_TICK_MS: '300' },
+    env: { ...process.env, PATH: `${join(tmp, 'bin')}:${process.env.PATH}`, RF_HOLD_GIT: join(tmp, 'hold-git'), HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch'), OPENROUTER_API_KEY: 'stand-in-key', RF_WAKE_TICK_MS: '300' },
     stdio: ['ignore', 'pipe', 'inherit'],
   });
   await new Promise((ok, fail) => {
     proc.stdout!.on('data', d => String(d).includes('rollforward on') && ok(null));
     proc.on('exit', code => fail(new Error(`server exited with ${code}`)));
   });
-  [admin, bob] = [await login(ADMIN), await login(BOB)];
-});
+}
+// A cut, as a crash or an update that restarts at once makes: the server killed where it stands, and started again.
+async function cut() {
+  proc.kill('SIGKILL');
+  await once(proc, 'exit');
+  await serve();
+}
+const until = async (what: string, done: () => boolean) => {
+  for (let i = 0; !done(); i++) {
+    assert.ok(i < 300, `${what} never happened`);
+    await new Promise(ok => setTimeout(ok, 200));
+  }
+};
 
 after(async () => {
   if (proc.exitCode === null) {
@@ -235,4 +267,71 @@ test('sign-offs are git commits: the agent commits a moment worth keeping, the r
   assert.ok(pulled.length && !pulled.some((f: { path: string }) => f.path.includes('/.git/')), 'rf pull leaves the history out');
   const { id: copy } = await (await call('POST', `/api/instances/${id}/duplicate?as=copy`, { logins: [] })).json();
   assert.ok(!existsSync(join(root, 'instances', copy, '.git')), 'a duplicate starts afresh');
+});
+
+test('a cut anywhere leaves the instance right, its log whole, and the next run carries on: mid model call, mid tool call, mid commit and mid upload', async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Cuts' })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec' })).json();
+  scripts.push({ bash: [], report: 'Nothing to roll forward yet.', saw: [] });
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
+  await runs(id, 1);
+  const dir = join(root, 'instances', id), entries = () => readFileSync(join(dir, 'log.jsonl'), 'utf8').trimEnd().split('\n').map(l => JSON.parse(l));
+  // The run a cut cut short ends as aborted, and the start wakes its instance, whose next run carries on to its report.
+  const carriedOn = async (n: number, next: Script) => {
+    const log = await runs(id, n + 1);
+    assert.deepEqual(entries(), log, 'the log parses, every line of it');
+    const done = log.filter(e => e.op === 'done');
+    assert.deepEqual([done.at(-2)!.aborted, done.at(-2)!.error, done.at(-1)!.aborted], [true, 'a restart cut the run', false]);
+    assert.ok(log.some(e => e.op === 'wake' && e.reason === 'A restart cut your last run; carry on'));
+    assert.equal(log.findLast(e => e.op === 'report')!.text, next.report);
+    return log;
+  };
+
+  let reached!: () => void;
+  const held = new Promise<void>(ok => (reached = ok));
+  scripts.push({ bash: [], report: 'Never said.', saw: [], hold: () => reached() });
+  await call('POST', `/api/instances/${id}/comment`, { text: 'Build it.' });
+  await held;
+  const afterModel: Script = { bash: [], report: 'Carried on after a cut mid model call.', saw: [] };
+  scripts.push(afterModel);
+  await cut();
+  await carriedOn(2, afterModel);
+
+  scripts.push({ bash: ['touch 2026-11/working/started && sleep 120'], report: 'Never said.', saw: [] });
+  await call('POST', `/api/instances/${id}/comment`, { text: 'Go on.' });
+  await until('the tool call', () => existsSync(join(dir, 'working', 'started')));
+  const afterTool: Script = { bash: ['ls 2026-11/working'], report: 'Carried on after a cut mid tool call.', saw: [] };
+  scripts.push(afterTool);
+  await cut();
+  await carriedOn(4, afterTool);
+  assert.match(afterTool.saw[0], /started/, 'with what the cut tool call wrote');
+
+  writeFileSync(join(tmp, 'hold-git'), '');
+  scripts.push({ bash: ['rf commit Before the cut 2>&1'], report: 'Never said.', saw: [] });
+  await call('POST', `/api/instances/${id}/comment`, { text: 'Commit it.' });
+  await until('the commit', () => existsSync(join(tmp, 'hold-git.held')));
+  rmSync(join(tmp, 'hold-git'));
+  const afterCommit: Script = { bash: ['rf commit After the cut 2>&1'], report: 'Committed after a cut mid commit.', saw: [] };
+  scripts.push(afterCommit);
+  await cut();
+  let log = await carriedOn(6, afterCommit);
+  assert.match(afterCommit.saw[0], /^committed [0-9a-f]{40}\s*$/, "the cut commit's lock is gone");
+  assert.deepEqual(log.filter(e => e.op === 'commit').map(e => e.message), ['After the cut']);
+
+  // A body that stops after its first MiB, as a slow one does.
+  let sent = false;
+  const body = new ReadableStream({ pull: c => (sent ? new Promise(() => {}) : void ((sent = true), c.enqueue(new Uint8Array(1 << 20)))) }), stop = new AbortController();
+  const upload = fetch(`${base}/api/instances/${id}/upload?pane=in&name=big.bin`, { method: 'POST', body, duplex: 'half', headers: { cookie: admin }, signal: stop.signal } as RequestInit).catch(() => {});
+  await until('the upload', () => readdirSync(join(root, '.tmp')).length > 0);
+  const before = entries().length;
+  await cut();
+  stop.abort();
+  await upload;
+  assert.deepEqual([readdirSync(join(root, '.tmp')), existsSync(join(dir, 'upload', 'big.bin')), entries().length], [[], false, before], 'nothing of it is left, nor logged');
+  const afterUpload: Script = { bash: ['ls 2026-11/upload'], report: 'Read the upload.', saw: [] };
+  scripts.push(afterUpload);
+  assert.equal((await fetch(`${base}/api/instances/${id}/upload?pane=in&name=small.csv`, { method: 'POST', body: 'a\n', headers: { cookie: admin } })).status, 200);
+  log = await runs(id, 8);
+  assert.match(afterUpload.saw[0], /small\.csv/);
+  assert.ok(readdirSync(join(dir, 'session')).every(f => readFileSync(join(dir, 'session', f), 'utf8').trimEnd().split('\n').every(l => JSON.parse(l))), "the agent's session parses too");
 });
