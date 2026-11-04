@@ -774,6 +774,12 @@ test('the second audit: a bad request line, a bad workbook and a slow body hurt 
   assert.deepEqual([pack.pages, Object.keys(pack.shown)], [3, ['1']], 'its pages, the first shown');
   assert.match((await (await preview('pack.pdf?page=3')).json()).image, /^data:image\/png;base64,/, 'and another as asked');
   rmSync(bad.replace('bad.xlsx', 'pack.pdf'));
+  cpSync(join(app, 'test', 'pack.docx'), bad.replace('bad.xlsx', 'pack.docx'));
+  assert.deepEqual((await (await preview('pack.docx')).json()).doc, [{ h: 1, text: 'Aging pack' }, { p: 'The aging as of August.' }, { li: 'Receivables over 90 days', level: 0 },
+    { li: 'Disputed items', level: 0 }, { h: 2, text: 'Totals' }, { table: [['Bucket', 'Amount'], ['90+', '1,234']] }], 'a document, as headings, paragraphs, list items and tables');
+  const layout = (await (await preview('pack.docx?layout=1')).json()).pdf;
+  assert.deepEqual([layout.pages, Object.keys(layout.shown)], [1, ['1']], 'and as LibreOffice lays it out');
+  rmSync(bad.replace('bad.xlsx', 'pack.docx'));
   truncateSync(bad, 100e6 + 1);
   const big = await preview('bad.xlsx');
   assert.deepEqual([big.status, await big.text()], [413, 'bad.xlsx is over 100 MB, too big to preview: download it']);

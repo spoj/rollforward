@@ -309,6 +309,35 @@ def page(n):
     return uri('page.png', Path('/tmp/page.png').read_bytes())
 
 
+# A Word document's headings, paragraphs, list items and tables, in order; or, for its exact layout, LibreOffice's PDF of it, every
+# page shown, up to 40.
+def document(data, q):
+    if 'layout' in dict(q):
+        Path('/tmp/in.docx').write_bytes(data)
+        subprocess.run(['/usr/bin/soffice', '--headless', '--norestore', '--convert-to', 'pdf', '--outdir', '/tmp', '/tmp/in.docx'], capture_output=True, check=True)
+        pages = int(re.search(r'^Pages:\s+(\d+)', subprocess.run(['/usr/bin/pdfinfo', '/tmp/in.pdf'], capture_output=True, text=True, check=True).stdout, re.M).group(1))
+        return {'pdf': {'pages': min(pages, 40), 'shown': {k: page(k) for k in range(1, min(pages, 40) + 1)}}}
+    from docx import Document
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+    d, out = Document(io.BytesIO(data)), []
+    for el in d.element.body.iterchildren():
+        tag = el.tag.rpartition('}')[2]
+        if tag == 'tbl':
+            out.append({'table': [[c.text for c in row.cells][:COLS] for row in Table(el, d).rows][:ROWS]})
+        elif tag == 'p':
+            p = Paragraph(el, d)
+            style, numbered = p.style.name if p.style is not None else '', el.pPr is not None and el.pPr.numPr is not None
+            heading = re.fullmatch(r'Heading ([1-6])', style) or (style == 'Title' and ['', '1'])
+            if heading:
+                out.append({'h': int(heading[1]), 'text': p.text})
+            elif numbered or style.startswith('List'):
+                out.append({'li': p.text, 'level': int(el.pPr.numPr.ilvl.val) if numbered and el.pPr.numPr.ilvl is not None else 0})
+            elif p.text.strip():
+                out.append({'p': p.text})
+    return {'doc': out}
+
+
 def preview(name, data, q):
     ext = Path(name).suffix.lower()
     if ext in ('.xlsx', '.xlsm'):
@@ -326,6 +355,8 @@ def preview(name, data, q):
         return msg(extract_msg.openMsg(data), q)
     if ext == '.pdf':
         return pdf(data, q)
+    if ext == '.docx':
+        return document(data, q)
     if ext in ('.png', '.jpg', '.jpeg', '.gif', '.webp'):
         return {'image': uri(name, data)}
     if ext in ('.md', '.txt', '.json', '.py', '.sql', '.log'):

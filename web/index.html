@@ -265,6 +265,12 @@ dialog::backdrop { background: rgba(21,24,29,.3); }
 .mh .atts { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px; }
 .pv a[data-act^=attachment] { text-decoration: underline; cursor: pointer; }
 iframe.mail { width: 100%; border: 0; background: #fff; }
+.doc { padding: 6px 22px 18px; font-size: 14px; line-height: 1.5; }
+.doc h1, .doc h2, .doc h3, .doc h4, .doc h5, .doc h6 { margin: 16px 0 6px; font-weight: 600; }
+.doc p { margin: 6px 0; }
+.doc .li::before { content: '\2022'; margin: 0 8px 0 -14px; color: var(--ink-3); }
+.doc table { border-collapse: collapse; margin: 10px 0; font-size: 13px; }
+.doc td { border: 1px solid var(--rule); padding: 3px 8px; vertical-align: top; }
 .pages { background: var(--paper); padding: 4px 0; }
 .pages img { width: min(100% - 24px, 900px); margin: 12px auto; background: #fff; box-shadow: 0 1px 3px rgba(21, 24, 29, .12); }
 .pages img:not([src]) { aspect-ratio: 210 / 297; }
@@ -1118,7 +1124,7 @@ function renderPv() {
   const d = $('#pv');
   if (!pv) return void (d.open && d.close());
   d.className = 'pv' + (pv.settings ? ' small' : '');
-  let h = `<div class="pvh"><b>${esc(pv.title)}</b><span class="saved"></span>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${pv.path ? `<a class="btn" href="${fileUrl(pv.path)}">Download</a>` : ''}${pv.signin ? '<button class="btn primary" data-act="signin-save">Save login</button>' : ''}<button class="btn" data-act="unpv">${pv.signin ? 'Cancel' : 'Close'}</button></div>`;
+  let h = `<div class="pvh"><b>${esc(pv.title)}</b><span class="saved"></span>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${(pv.att ?? pv).doc ? '<button class="btn" data-act="layout">Exact layout</button>' : ''}${pv.path ? `<a class="btn" href="${fileUrl(pv.path)}">Download</a>` : ''}${pv.signin ? '<button class="btn primary" data-act="signin-save">Save login</button>' : ''}<button class="btn" data-act="unpv">${pv.signin ? 'Cancel' : 'Close'}</button></div>`;
   // Your account's dialog: Logins, Tokens and, for admins, People, as tabs.
   const account = [['logins', 'Logins'], ['tokens', 'Tokens'], ...(me.role === 'admin' ? [['people', 'People']] : [])];
   if (account.some(([k]) => k === pv.settings?.kind)) h += `<div class="pvtabs">${account.map(([k, name]) => `<button class="tab ${pv.settings.kind === k ? 'sel' : ''}" data-act="${k}">${name}</button>`).join('')}</div>`;
@@ -1426,6 +1432,8 @@ function previewBody(p) {
       + (m.html == null ? `<div class="pvb"><pre>${esc(m.text)}</pre></div>` : `<iframe class="pvb mail" sandbox="allow-popups allow-popups-to-escape-sandbox" srcdoc="${esc(MAIL + m.html)}"></iframe>`);
   }
   if (p.image) return `<div class="pvb"><img src="${esc(p.image)}" alt=""></div>`;
+  if (p.doc) return `<div class="pvb doc">${p.doc.map(b => b.h ? `<h${b.h}>${esc(b.text)}</h${b.h}>` : b.table ? `<table>${b.table.map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</table>`
+    : b.li !== undefined ? `<p class="li" style="margin-left:${18 + b.level * 18}px">${esc(b.li)}</p>` : `<p>${esc(b.p)}</p>`).join('')}</div>`;
   if (p.pdf) return `<div class="pvb pages">${Array.from({ length: p.pdf.pages }, (_, k) => `<img data-page="${k + 1}" alt="Page ${k + 1}"${p.pdf.shown[k + 1] ? ` src="${esc(p.pdf.shown[k + 1])}"` : ''}>`).join('')}</div>`;
   if (p.text !== undefined) return `<div class="pvb">${p.md ? `<div class="say">${md(p.text)}</div>` : `<pre>${esc(p.text)}</pre>`}</div>`;
   return `<div class="pvb"><div class="empty">${p.loading ? 'Loading…' : 'No preview for this kind of file. Download it instead.'}</div></div>`;
@@ -1442,7 +1450,7 @@ function watchPages(at, p) {
 const MAIL = `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'"><base target="_blank"><style>body { font: 14px/1.5 system-ui, sans-serif; margin: 14px 18px; }</style>`;
 
 async function preview(path, item) {
-  const sheet = /\.(xlsx|xlsm|xls|csv|eml|msg|pdf)$/i.test(path), text = /\.(md|txt|json|py|sql|log)$/i.test(path);
+  const sheet = /\.(xlsx|xlsm|xls|csv|eml|msg|pdf|docx)$/i.test(path), text = /\.(md|txt|json|py|sql|log)$/i.test(path);
   const p = pv = { title: fname(path), path, src: fileUrl(path, 'preview'), item: item?.id, threads: item ? talkOn(item.id) : [], sheet: 0, image: /\.(png|jpe?g|gif|webp|svg)$/i.test(path) && fileUrl(path), was: item && data.log.findLast(e => e.op === 'point' && e.item === item.id && e.file === path)?.was, md: /\.md$/i.test(path), loading: sheet || text };
   renderPv();
   try {
@@ -1656,6 +1664,12 @@ async function onAct(act, el) {
     Object.assign(att, await api(att.src), { loading: false });
     if (att.sheets) att.sheet = att.sheets.findIndex(s => s.rows);
     if (pv === p && p.att === att) renderPv();
+  }
+  // A Word document as LibreOffice lays it out, its pages as a PDF's.
+  if (act === 'layout') {
+    const p = pv.att ?? pv;
+    Object.assign(p, await api(`${p.src}${p.src.includes('?') ? '&' : '?'}layout=1`), { doc: null });
+    if (pv) renderPv();
   }
   if (act === 'attachment-back') {
     pv.att = null;

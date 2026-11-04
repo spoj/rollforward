@@ -543,3 +543,16 @@ test("a PDF previews as its pages, each fetched as it comes into view", async ()
   await page.keyboard.press('Escape');
 });
 
+test('a Word document previews as its headings, paragraphs, lists and tables, and as LibreOffice lays it out on asking', async () => {
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  await page.route('**/preview/**', r => r.fulfill({ json: new URL(r.request().url()).searchParams.get('layout')
+    ? { pdf: { pages: 1, shown: { 1: png } } } : { doc: [{ h: 1, text: 'Aging pack' }, { li: 'Over 90 days', level: 0 }, { table: [['Bucket', 'Amount']] }] } }));
+  await page.evaluate(() => preview('working/pack.docx'));
+  await page.waitForSelector('#pv .doc h1');
+  assert.deepEqual(await page.locator('#pv .doc').evaluate(d => [...d.children].map(c => c.tagName + ' ' + c.textContent)), ['H1 Aging pack', 'P Over 90 days', 'TABLE BucketAmount']);
+  await page.click('#pv [data-act=layout]');
+  await page.waitForSelector('#pv .pages img[data-page="1"][src]');
+  await page.unroute('**/preview/**');
+  await page.keyboard.press('Escape');
+});
+
