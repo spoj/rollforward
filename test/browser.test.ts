@@ -4,7 +4,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
 import type { Instance } from '../src/store.ts';
@@ -60,8 +60,10 @@ test("a path in a session's browser stays inside that session, never reaching th
 describe('website logins', { skip: !process.env.RF_BROWSER_URL && 'needs the browser service: RF_BROWSER_URL and RF_BROWSER_KEY' }, () => {
   before(async () => {
     portal = standIn();
-    await new Promise<void>(ok => portal.listen(0, '127.0.0.1', ok));
-    origin = `http://127.0.0.1:${(portal.address() as { port: number }).port}`;
+    // At this machine's address on its network, an intranet's to the browser service, as no website reaches a loopback address.
+    const here = Object.values(networkInterfaces()).flat().find(a => a!.family === 'IPv4' && !a!.internal)!.address;
+    await new Promise<void>(ok => portal.listen(0, here, ok));
+    origin = `http://${here}:${(portal.address() as { port: number }).port}`;
     const probe = createServer();
     await new Promise<void>(ok => probe.listen(0, '127.0.0.1', ok));
     base = `http://127.0.0.1:${(probe.address() as { port: number }).port}`;
