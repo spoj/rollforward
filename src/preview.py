@@ -3,7 +3,7 @@ import csv, email, io, json, sys
 from email import policy
 from pathlib import Path
 
-ROWS, COLS = 2000, 40
+ROWS, COLS = 2000, 100
 name = sys.argv[1]
 ext = Path(name).suffix.lower()
 data = sys.stdin.buffer.read()
