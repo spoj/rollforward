@@ -753,6 +753,12 @@ test('the second audit: a bad request line, a bad workbook and a slow body hurt 
   assert.equal(kept.length, 1, 'a preview is kept, one that failed not');
   writeFileSync(join(root, '.previews', kept[0]), '{"sheets":[{"name":"kept","rows":[],"truncated":false}]}');
   assert.equal((await (await preview('fine.csv')).json()).sheets[0].name, 'kept', 'and the same file previews from it');
+  cpSync(join(app, 'test', 'formats.xlsx'), bad.replace('bad.xlsx', 'formats.xlsx'));
+  const [summary] = (await (await preview('formats.xlsx')).json()).sheets, shown = (...at: string[]) => at.map(k => summary.look[k].t);
+  assert.deepEqual(shown('1,1', '1,2', '1,3', '1,4', '2,1', '2,3', '2,4'), ['1,234,567.89', '25.6%', '(1,500.50)', '30-Aug-26 2:05 PM', ' - ', '3K', '2026-09-30'], 'as its number formats show it');
+  assert.deepEqual([summary.look['0,0'], summary.look['0,1'], summary.look['0,2'], summary.look['1,4'].r], [{ b: true }, { bg: '#FFFF00' }, { bg: '#B9CDE5' }, true], 'bold, fills, a theme colour tinted, and dates to the right');
+  assert.deepEqual([summary.rows[3], summary.merged, summary.hidden, summary.widths['0']], [[{ f: '=SUM(B2:B3)' }], [[4, 0, 4, 2]], { rows: [2], cols: [3] }, 20]);
+  rmSync(bad.replace('bad.xlsx', 'formats.xlsx'));
   truncateSync(bad, 100e6 + 1);
   const big = await preview('bad.xlsx');
   assert.deepEqual([big.status, await big.text()], [413, 'bad.xlsx is over 100 MB, too big to preview: download it']);

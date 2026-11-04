@@ -1078,15 +1078,27 @@ function sheetTable(s, first) {
   const old = pv.cmp && (pv.old.find(o => o.name === s.name) ?? pv.old[pv.sheets.indexOf(s)]);
   const rows = Array.from({ length: Math.max(s.rows.length, old?.rows.length ?? 0) }, (_, r) => s.rows[r] ?? []);
   const width = Math.max(0, ...rows.map(r => r.length), ...(old?.rows ?? []).map(r => r.length));
-  let h = `<table class="sh"><tr><th></th>${Array.from({ length: width }, (_, c) => `<th>${colName(c)}</th>`).join('')}</tr>`;
+  // As the workbook shows it: its number formats, bold, font colours and fills, column widths, merged cells, and no hidden rows or
+  // columns.
+  const look = s.look ?? {}, hidden = { rows: new Set(s.hidden?.rows), cols: new Set(s.hidden?.cols) }, span = new Map(), covered = new Set();
+  const cols = Array.from({ length: width }, (_, c) => c).filter(c => !hidden.cols.has(c));
+  for (const [r1, c1, r2, c2] of s.merged ?? []) {
+    for (let r = r1; r <= r2; r++) for (let c = c1; c <= c2; c++) if (r > r1 || c > c1) covered.add(`${r},${c}`);
+    span.set(`${r1},${c1}`, [rows.slice(r1, r2 + 1).filter((_, k) => !hidden.rows.has(r1 + k)).length, cols.filter(c => c >= c1 && c <= c2).length]);
+  }
+  let h = `<table class="sh"><colgroup><col>${cols.map(c => s.widths?.[c] ? `<col style="width:${Math.round(s.widths[c] * 7 + 5)}px">` : '<col>').join('')}</colgroup>`
+    + `<tr><th></th>${cols.map(c => `<th>${colName(c)}</th>`).join('')}</tr>`;
   rows.forEach((row, r) => {
+    if (hidden.rows.has(r)) return;
     h += `<tr><td class="rn">${r + 1}</td>`;
-    for (let c = 0; c < width; c++) {
-      const v = row[c], was = old?.rows[r]?.[c] ?? null;
+    for (const c of cols) {
+      if (covered.has(`${r},${c}`)) continue;
+      const v = row[c], was = old?.rows[r]?.[c] ?? null, lk = look[`${r},${c}`] ?? {}, sp = span.get(`${r},${c}`);
       const changed = old && JSON.stringify(was) !== JSON.stringify(v ?? null);
       const note = [noted.get(`${r},${c}`), changed ? `Was: ${cellText(was) || '(empty)'}` : ''].filter(Boolean).join('\n\n');
-      const cls = `${typeof v === 'number' ? 'num' : ''} ${v && typeof v === 'object' ? 'fx' : ''} ${noted.has(`${r},${c}`) ? 'noted' : ''} ${asks.has(`${r},${c}`) ? 'q' : ''} ${changed ? 'chg' : ''}`.trim();
-      h += `<td${cls ? ` class="${cls}"` : ''} data-act="cell" data-ref="${esc(`${s.name}!${colName(c)}${r + 1}`)}"${note ? ` data-note="${esc(note)}"` : ''}${at.has(`${r},${c}`) ? ` data-thread="${esc(at.get(`${r},${c}`))}"` : ''}>${esc(cellText(v))}</td>`;
+      const cls = `${typeof v === 'number' || lk.r ? 'num' : ''} ${v && typeof v === 'object' ? 'fx' : ''} ${noted.has(`${r},${c}`) ? 'noted' : ''} ${asks.has(`${r},${c}`) ? 'q' : ''} ${changed ? 'chg' : ''}`.trim();
+      const style = `${lk.b ? 'font-weight:600;' : ''}${lk.fg ? `color:${lk.fg};` : ''}${lk.bg && !changed ? `background:${lk.bg};` : ''}`;
+      h += `<td${cls ? ` class="${cls}"` : ''}${sp ? ` rowspan="${sp[0]}" colspan="${sp[1]}"` : ''}${style ? ` style="${esc(style)}"` : ''} data-act="cell" data-ref="${esc(`${s.name}!${colName(c)}${r + 1}`)}"${note ? ` data-note="${esc(note)}"` : ''}${at.has(`${r},${c}`) ? ` data-thread="${esc(at.get(`${r},${c}`))}"` : ''}>${esc(lk.t ?? cellText(v))}</td>`;
     }
     h += '</tr>';
   });
