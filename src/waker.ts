@@ -1,5 +1,5 @@
 import { freemem } from 'node:os';
-import { existsSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
 import { agentsFile, createInstance, HttpError, instance, instanceDir, instances, isPerson, labels, newId, readFile, seriesDir, type Entry, type Instance } from './store.ts';
@@ -202,10 +202,15 @@ async function start(inst: Instance) {
   inst.append('server', 'run', { run: n, upto: a.sent, skills: a.skills, key, ...(kept && { continues: kept.session }) });
   let settled: Promise<boolean>;
   try {
-    // A continued run's index copies are made again, in the folder its Pi reads them from, so it reads what's indexed since.
+    // A continued run's index copies are made again, in the folder its Pi reads them from, so it reads what's indexed since, and
+    // nothing of a source no longer ticked.
     if (kept) {
       a.run = kept.run;
-      if (a.view.env.RF_INDEX) prepare(inst, join(rfDir(), 'runs', a.token));
+      const index = join(rfDir(), 'runs', a.token);
+      if (a.view.env.RF_INDEX) {
+        for (const f of readdirSync(index)) rmSync(join(index, f), { recursive: true });
+        prepare(inst, index);
+      }
     } else {
       // Copies of the indexes of what its runner ticked, on the indexes' own disk, read-only at $RF_INDEX.
       const index = join(rfDir(), 'runs', a.token);

@@ -180,9 +180,9 @@ function signInPage(res: ServerResponse, next: string) {
 }
 
 // rf login URL, without a token, signs in through the browser, as gh auth login --web does: rf asks for a request, whose code the
-// person matches and allows on the page (/cli) within 10 minutes, and rf collects the token that makes. Only rf holds the
-// request's id, which collects it; the page shows its code.
-type Asked = { name: string; code: string; at: number; token?: string; denied?: boolean };
+// person types on the page (/cli) and allows within 10 minutes, and rf collects the token that makes. Only rf holds the request's
+// id, which collects it, and only its terminal shows the code, never a link, so a link someone sends allows nothing.
+type Asked = { name: string; code: string; at: number; from: string; token?: string; denied?: boolean };
 const asked = new Map<string, Asked>();
 const pending = (match: (id: string, a: Asked) => boolean) => [...asked].find(([id, a]) => Date.now() - a.at < 600_000 && match(id, a));
 
@@ -203,7 +203,8 @@ async function ask(req: IncomingMessage, res: ServerResponse) {
   for (const [id, a] of asked) if (Date.now() - a.at >= 600_000) asked.delete(id);
   if (asked.size >= 1000) throw new HttpError(429, 'too many sign-in requests wait: try again in a few minutes');
   const id = randomBytes(24).toString('base64url'), letters = [...randomBytes(8)].map(b => 'BCDFGHJKLMNPQRSTVWXZ'[b % 20]).join('');
-  asked.set(id, { name: String(name || 'rf').slice(0, 80), code: `${letters.slice(0, 4)}-${letters.slice(4)}`, at: Date.now() });
+  const from = String(req.headers['x-forwarded-for'] ?? req.socket.remoteAddress).split(',').at(-1)!.trim();
+  asked.set(id, { name: String(name || 'rf').slice(0, 80), code: `${letters.slice(0, 4)}-${letters.slice(4)}`, at: Date.now(), from });
   res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ id, code: asked.get(id)!.code }));
 }
 
@@ -218,15 +219,17 @@ async function collect(req: IncomingMessage, res: ServerResponse) {
 export async function cli(req: IncomingMessage, res: ServerResponse, url: URL) {
   const own = session(req);
   if (!own) throw new HttpError(403, 'tokens are made on the page');
-  const form = req.method === 'POST' ? new URLSearchParams(await small(req)) : url.searchParams;
-  const a = pending((_, a) => a.code === form.get('code'))?.[1];
+  const form = req.method === 'POST' ? new URLSearchParams(await small(req)) : new URLSearchParams();
+  const typed = (form.get('code') ?? '').toUpperCase().replace(/[^A-Z]/g, ''), a = typed && pending((_, a) => a.code.replace('-', '') === typed)?.[1];
   const show = (body: string) => res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
     .end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>rf login · rollforward</title>${STYLE}<div class="box"><h1>rollforward</h1>${body}</div>`);
-  if (!a) return show('<p class="bad">This sign-in request has expired, or was answered. Run rf login URL again.</p>');
-  if (req.method === 'POST' && form.get('allow') === 'yes') a.token = newToken(own.email, a.name, 30);
-  else if (req.method === 'POST') a.denied = true;
-  if (req.method === 'POST') return show(`<p>${a.token ? `${esc(a.name)} is signed in as you. You can close this tab; the token is under Tokens, where you can revoke it.` : 'Denied. rf is not signed in.'}</p>`);
-  show(`<p><b>${esc(a.name)}</b> asks to act as you, ${esc(own.email)}, for 30 days: what you do on this site, from a shell or a desktop agent. Allow it only if rf shows the code <b>${esc(a.code)}</b>.</p>
+  if (!typed) return show(`<form method="post" action="/cli"><p>Type the code rf shows you.</p><input name="code" required autofocus autocomplete="off" placeholder="ABCD-EFGH" style="width:100%;margin:0 0 14px;padding:10px;font:600 18px monospace;letter-spacing:2px;text-transform:uppercase"><button class="ms">Next</button></form>
+<p class="bad" style="margin:16px 0 0">Type only a code rf showed on your own computer. Anyone who asks you to type theirs is asking for your access.</p>`);
+  if (!a) return show('<p class="bad">No sign-in request has that code: it expired, was answered, or was mistyped. Run rf login URL again.</p>');
+  if (form.get('allow') === 'yes') a.token = newToken(own.email, a.name, 30);
+  else if (form.get('allow')) a.denied = true;
+  if (form.get('allow')) return show(`<p>${a.token ? `${esc(a.name)} is signed in as you. You can close this tab; the token is under Tokens, where you can revoke it.` : 'Denied. rf is not signed in.'}</p>`);
+  show(`<p><b>${esc(a.name)}</b>, asking from ${esc(a.from)} ${Math.round((Date.now() - a.at) / 60_000) || 'under a'} min ago, asks to act as you, ${esc(own.email)}, for 30 days: what you do on this site, from a shell or a desktop agent. Its name is what it says of itself.</p>
 <form method="post" action="/cli"><input type="hidden" name="code" value="${esc(a.code)}"><button class="ms" name="allow" value="yes">Allow</button><p></p><button class="ms" name="allow" value="no">Deny</button></form>`);
 }
 

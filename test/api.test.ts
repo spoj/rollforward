@@ -848,9 +848,11 @@ test("rf login without a token signs in through the browser: the person allows r
   p.stdout.on('data', d => (out += d));
   while (!/code ([A-Z]{4}-[A-Z]{4})/.test(out)) await new Promise(r => setTimeout(r, 50));
   const code = /code ([A-Z]{4}-[A-Z]{4})/.exec(out)![1];
-  assert.match(out, new RegExp(`Open ${base}/cli\\?code=${code}`));
-  assert.equal((await fetch(`${base}/cli?code=${code}`)).status, 200, 'not signed in, the page offers to sign in');
-  assert.match(await (await call('GET', `/cli?code=${code}`)).text(), new RegExp(`rf on .+ asks to act as you, ${adminEmail}, for 30 days.+${code}`, 's'));
+  assert.match(out, new RegExp(`Open ${base}/cli\nand type the code ${code} there`), 'the link carries no code');
+  assert.equal((await fetch(`${base}/cli`)).status, 200, 'not signed in, the page offers to sign in');
+  assert.match(await (await call('GET', `/cli?code=${code}`)).text(), /Type the code rf shows you.+Anyone who asks you to type theirs/s, "a code in a link is no code typed");
+  const typed = await fetch(`${base}/cli`, { method: 'POST', body: new URLSearchParams({ code: code.toLowerCase().replace('-', ' ') }), headers: { cookie: admin, 'sec-fetch-site': 'same-origin' } });
+  assert.match(await typed.text(), new RegExp(`rf on .+, asking from [0-9a-f.:]+ under a min ago, asks to act as you, ${adminEmail}, for 30 days`, 's'), 'typed, in any case and spacing, it says where the request came from');
   const allow = await fetch(`${base}/cli`, { method: 'POST', body: new URLSearchParams({ code, allow: 'yes' }), headers: { cookie: admin, 'sec-fetch-site': 'same-origin' } });
   assert.match(await allow.text(), /is signed in as you/);
   await once(p, 'exit');

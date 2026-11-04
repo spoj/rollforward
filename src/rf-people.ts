@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { homedir, hostname } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
-const USAGE = `rf login URL [TOKEN]                without a TOKEN, through the browser: allow it on the page, where it shows rf's code
+const USAGE = `rf login URL [TOKEN]                without a TOKEN, through the browser: type rf's code on the page, and allow it
 rf ls
 rf pull PATH DIR [--delete] [-n|--dry-run] [--exclude PATTERN]... [--max-size SIZE]
                                   PATH's files into DIR as rsync copies them, whole, if their size or time differ: PATH/ fills DIR,
@@ -256,8 +256,8 @@ async function pull(path: string, dir: string) {
 // The browser's sign-in: the server makes a request, the person allows it on the page, which shows its code, and rf collects the token.
 async function browserToken(): Promise<string> {
   const { id, code } = await (await fetch(`${url}/auth/cli`, { method: 'POST', body: JSON.stringify({ name: `rf on ${hostname()}` }) })).json();
-  const link = `${url}/cli?code=${code}`;
-  console.log(`Open ${link}\nand allow rf there if the page shows the code ${code}.`);
+  const link = `${url}/cli`;
+  console.log(`Open ${link}\nand type the code ${code} there.`);
   spawn(process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open', [link], { stdio: 'ignore', detached: true }).on('error', () => {}).unref();
   for (;;) {
     await new Promise(ok => setTimeout(ok, 2000));
