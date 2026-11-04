@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { closeSync, constants, cpSync, createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, cpSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { execFile } from 'node:child_process';
@@ -345,14 +345,17 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
   const fd = openFile(inst.dir, rel);
   if (fd === undefined) throw new HttpError(404, 'no such file');
   if (preview) {
-    // preview.py runs in the agent's userland, with no network and nothing of the host's: the file comes on its stdin.
-    const bytes = readFileSync(fd), run = exec('bwrap', [
+    // preview.py runs in the agent's userland, with no network and nothing of the host's: the file, up to 100 MB, streams to its
+    // stdin.
+    if (fstatSync(fd).size > 100e6) {
+      closeSync(fd);
+      throw new HttpError(413, `${basename(rel)} is over 100 MB, too big to preview: download it`);
+    }
+    const run = exec('bwrap', [
       '--unshare-all', '--die-with-parent', '--new-session', '--clearenv', ...userland(), '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
       '--ro-bind', join(app, 'src', 'preview.py'), '/preview.py', '--setenv', 'HOME', '/tmp', '--setenv', 'LANG', 'C.UTF-8', '--', '/opt/venv/bin/python', '/preview.py', basename(rel),
     ], { timeout: 30_000, maxBuffer: 64e6 });
-    closeSync(fd);
-    run.child.stdin!.end(bytes);
-    const { stdout } = await run;
+    const [{ stdout }] = await Promise.all([run, pipeline(createReadStream('', { fd }), run.child.stdin!)]);
     res.writeHead(200, { 'content-type': 'application/json' });
     return void res.end(stdout);
   }

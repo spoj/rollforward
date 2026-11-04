@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -744,8 +744,15 @@ test('the second audit: a bad request line, a bad workbook and a slow body hurt 
   raw.destroy();
   const bad = join(await dir(series, '2026-08-30'), 'working', 'bad.xlsx');
   writeFileSync(bad, 'not a workbook');
-  assert.equal((await call('GET', `/preview/${await iid(series, '2026-08-30')}/working/bad.xlsx`)).status, 500);
+  const preview = async (name: string) => call('GET', `/preview/${await iid(series, '2026-08-30')}/working/${name}`);
+  assert.equal((await preview('bad.xlsx')).status, 500);
+  writeFileSync(bad.replace('bad.xlsx', 'fine.csv'), 'month,total\n2026-08,5\n');
+  assert.deepEqual((await (await preview('fine.csv')).json()).sheets[0].rows, [['month', 'total'], ['2026-08', '5']]);
+  truncateSync(bad, 100e6 + 1);
+  const big = await preview('bad.xlsx');
+  assert.deepEqual([big.status, await big.text()], [413, 'bad.xlsx is over 100 MB, too big to preview: download it']);
   rmSync(bad);
+  rmSync(bad.replace('bad.xlsx', 'fine.csv'));
   assert.equal((await call('GET', '/me')).status, 200, 'the server is still up');
 
   const b = sessionOf(await login(bob))!, { token } = await (await call('POST', '/tokens', JSON.stringify({ name: 'mine', days: 7 }))).json();

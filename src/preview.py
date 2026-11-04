@@ -1,7 +1,10 @@
-"""Print a JSON preview of one file, read from stdin and named by the argument: spreadsheet values, or an email's plain text."""
-import csv, email, io, json, sys
+"""Print a JSON preview of one file, read from stdin and named by the argument: spreadsheet values, or an email's plain text. It
+holds 2 GB at most, so a workbook that unpacks to more, as a zip bomb does, fails here."""
+import csv, email, io, json, resource, sys
 from email import policy
 from pathlib import Path
+
+resource.setrlimit(resource.RLIMIT_AS, (2 << 30, 2 << 30))
 
 ROWS, COLS = 2000, 100
 name = sys.argv[1]
