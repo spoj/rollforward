@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib';
 import { HttpError, type Instance } from './store.ts';
 import { readJson, rfDir, writeJson } from './system.ts';
-import { m365Ready, type EntraLogin } from './auth.ts';
+import type { EntraLogin } from './auth.ts';
 import { token } from './entra.ts';
 import { lender, logins, runnerOf, saveLogin, secret, use, type Offer } from './logins.ts';
 import graph from './connections/graph.ts';
@@ -62,13 +62,12 @@ export function removeConnection(name: string) {
   writeJson('connections.json', all);
 }
 
-// Once, at the start: the websites kept before connections become website connections, and where people sign in with Microsoft,
-// Microsoft 365 is the graph connection.
+// Once, at the start: the websites kept before connections become website connections, and Microsoft 365 is the graph connection.
 export function convert() {
   if (existsSync(join(rfDir(), 'connections.json'))) return;
   const sites = readJson<Record<string, { name: string; url: string; hosts: string[]; updated_by: string; updated_at: string }>>('websites.json', {});
   writeJson('connections.json', {
-    ...(m365Ready() && { graph: { type: 'graph', updated_by: 'server', updated_at: new Date().toISOString() } }),
+    graph: { type: 'graph', updated_by: 'server', updated_at: new Date().toISOString() },
     ...Object.fromEntries(Object.entries(sites).map(([id, w]) => [id, { type: 'website', url: w.url, hosts: w.hosts, ...(w.name !== id && { title: w.name }), writeback: true, updated_by: w.updated_by, updated_at: w.updated_at }])),
   });
   rmSync(join(rfDir(), 'websites.json'), { force: true });

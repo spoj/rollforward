@@ -10,7 +10,7 @@ import { agentsFile, createInstance, duplicateInstance, moveInstance, renameInst
 import { AGENT, commit } from './git.ts';
 import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
-import { asPerson, authenticate, checkConfig, cli, connect, m365Ready, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
+import { asPerson, authenticate, checkConfig, cli, connect, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
 import { canManage, canSee, changes, everyone, initSystem, isIn, isPeople, readJson, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
 import { checkTicks, logins, runnerOf, saveLogin, signOut } from './logins.ts';
 import { agentCall } from './agent-api.ts';
@@ -843,7 +843,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       res.end(readFileSync(page));
     } else if (url.pathname === '/me') {
       const { text, logo } = brand();
-      send(res, 200, { ...me, names: names(me), m365: m365Ready(), browsers: !!process.env.RF_BROWSER_URL, brand: { text: text || null, logo: !!logo }, can: CAPS.filter(c => can(me, c)) });
+      send(res, 200, { ...me, names: names(me), browsers: !!process.env.RF_BROWSER_URL, brand: { text: text || null, logo: !!logo }, can: CAPS.filter(c => can(me, c)) });
     } else if (url.pathname === '/capabilities') {
       if (me.role !== 'admin') throw new HttpError(403, 'admins grant capabilities');
       if (req.method === 'PUT') {
@@ -954,6 +954,6 @@ server.listen(port, host, () => {
   startIndexing();
   startWaking();
   if (process.env.RF_BROWSER_URL) setInterval(() => keepAlive().catch(e => console.error('keeping logins alive:', e)), 60_000).unref();
-  if (m365Ready()) checkLogins(connections().map(loginOf).flatMap(l => l.scope ? [l] : []));
+  checkLogins(connections().map(loginOf).flatMap(l => l.scope ? [l] : []));
   console.log(`rollforward on http://${host}:${port}, data in ${root}${process.env.RF_TODAY ? `, skills take today as ${process.env.RF_TODAY} (RF_TODAY)` : ''}`);
 });

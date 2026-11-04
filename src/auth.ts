@@ -1,4 +1,4 @@
-import { createHash, createHmac, createPublicKey, randomBytes, timingSafeEqual, verify } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { appendFileSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -9,8 +9,7 @@ import { keepSignIn } from './entra.ts';
 
 // Sign-in with a Microsoft account. People press "Sign in with Microsoft" and type nothing: the button goes to Microsoft Entra ID
 // (OpenID Connect, code flow with PKCE), at RF_OIDC_ISSUER, for the app RF_OIDC_CLIENT_ID, which the server needs to start. The server
-// redeems the code, with the app's secret if it has one, or, for an app registered as a Single-page application (RF_OIDC_SPA=1), the
-// browser does and the server checks the token's signature.
+// redeems the code, with the app's secret if it has one.
 
 // Admins manage people and skills, from rf, and grant users capabilities (server.ts).
 export type Role = 'admin' | 'user';
@@ -27,14 +26,9 @@ const oidc = {
   redirect: '',
 };
 oidc.redirect = env.RF_OIDC_REDIRECT_URI ?? `${oidc.publicUrl}/auth/callback`;
-// The app registers its redirect as a Single-page application: Microsoft then lets only a browser redeem the code (see redeemInBrowser).
-const spa = env.RF_OIDC_SPA === '1';
-// Such an app with a client secret gives connections' Entra logins too, such as Microsoft 365's: they come back to /auth/m365, which
-// the app also registers as a Web redirect, and the server redeems them with the secret, while sign-in stays the browser's.
-const m365Redirect = spa ? `${oidc.publicUrl}/auth/m365` : oidc.redirect;
 const redirectPath = URL.canParse(oidc.redirect) ? new URL(oidc.redirect).pathname : '/auth/callback';
 // A person's Microsoft 365 login asks the same app for delegated Graph access: RF_M365_SCOPES, by default reading mail, shared
-// mailboxes, files and sites. The server keeps its refresh token, which a Single-page application's redirect can't give it.
+// mailboxes, files and sites. The server keeps its refresh token.
 export const graphScopes = (env.RF_M365_SCOPES ?? 'Mail.Read Mail.Read.Shared Files.Read.All Sites.Read.All').split(/[\s,]+/).filter(Boolean);
 // Whether logins ask for a Read permission, or the ReadWrite one that holds it, as a tenant may have granted only that.
 const grants = (scope: string) => graphScopes.includes(scope) || graphScopes.includes(scope.replace('.Read', '.ReadWrite'));
@@ -46,7 +40,6 @@ export function needs(scope: string, what: string) {
 // which its person reconnects to grant.
 const granted = (scope: string | undefined) => scope?.split(' ').map(s => s.replace(/^https:\/\/graph\.microsoft\.com\//i, '')).filter(s => s && !['openid', 'profile', 'email', 'offline_access'].includes(s.toLowerCase()));
 export const ungranted = (login: { scopes?: string[] }) => graphScopes.filter(s => login.scopes && !login.scopes.some(g => g.toLowerCase() === s.toLowerCase()));
-export const m365Ready = () => !spa || !!oidc.clientSecret;
 // What an Entra login asks for: OpenID's own scopes and its connection's, such as Graph's permissions.
 const entraScope = (scope: string[]) => ['openid', 'email', 'offline_access', ...scope].join(' ');
 // A connection's Entra login, as connections.ts describes it: its id, kind and name, its scope, and the offers it makes, unless
@@ -237,7 +230,7 @@ export async function cli(req: IncomingMessage, res: ServerResponse, url: URL) {
 <form method="post" action="/cli"><input type="hidden" name="code" value="${esc(a.code)}"><button class="ms" name="allow" value="yes">Allow</button><p></p><button class="ms" name="allow" value="no">Deny</button></form>`);
 }
 
-let discovered: { issuer: string; authorization_endpoint: string; token_endpoint: string; jwks_uri?: string; end_session_endpoint?: string } | undefined;
+let discovered: { issuer: string; authorization_endpoint: string; token_endpoint: string; end_session_endpoint?: string } | undefined;
 
 async function discovery() {
   if (discovered) return discovered;
@@ -260,7 +253,7 @@ async function microsoft(res: ServerResponse, next: string, connect?: { login: E
   const pending = b64(JSON.stringify({ state, nonce, verifier, next, exp: Date.now() + 600_000, ...connect, ...(silent && { silent }) }));
   const to = new URL(d.authorization_endpoint);
   for (const [k, v] of Object.entries({
-    response_type: 'code', client_id: oidc.clientId, redirect_uri: connect ? m365Redirect : oidc.redirect, scope: connect ? entraScope(connect.login.scope) : `${oidc.scopes} offline_access`, state, nonce,
+    response_type: 'code', client_id: oidc.clientId, redirect_uri: oidc.redirect, scope: connect ? entraScope(connect.login.scope) : `${oidc.scopes} offline_access`, state, nonce,
     code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256', ...(connect ? { login_hint: connect.email } : silent ? { login_hint: silent, prompt: 'none' } : { prompt: 'select_account' }),
   })) to.searchParams.set(k, v);
   res.writeHead(302, { location: to.href, 'set-cookie': [cookie(pendingCookie(state), `${pending}.${mac(pending)}`, 600), ...(silent ? [cookie('rf_silent', '1', SESSION_MS / 1000)] : [])] });
@@ -301,11 +294,10 @@ async function callback(req: IncomingMessage, res: ServerResponse, url: URL) {
   if (url.searchParams.get('error') && p.silent) return void res.writeHead(302, { location: p.next, 'set-cookie': cookie(pendingCookie(p.state), '', 0) }).end();
   if (url.searchParams.get('error')) return page(res, 401, `Microsoft refused: ${url.searchParams.get('error_description') ?? url.searchParams.get('error')}`);
   const d = await discovery();
-  if (spa && !p.login) return redeemInBrowser(res, url.searchParams.get('code') ?? '', p, d.token_endpoint);
   const r = await fetch(d.token_endpoint, {
     method: 'POST', signal: AbortSignal.timeout(15_000),
     body: new URLSearchParams({
-      grant_type: 'authorization_code', code: url.searchParams.get('code') ?? '', redirect_uri: p.login ? m365Redirect : oidc.redirect, client_id: oidc.clientId, code_verifier: p.verifier,
+      grant_type: 'authorization_code', code: url.searchParams.get('code') ?? '', redirect_uri: oidc.redirect, client_id: oidc.clientId, code_verifier: p.verifier,
       ...(oidc.clientSecret && { client_secret: oidc.clientSecret }),
     }),
   });
@@ -318,7 +310,6 @@ async function callback(req: IncomingMessage, res: ServerResponse, url: URL) {
 }
 
 export async function connect(res: ServerResponse, email: string, login: EntraLogin) {
-  if (!m365Ready()) throw new HttpError(409, 'Entra logins need sign-in with Microsoft, through an app registered as a Web or public client, or as a Single-page application with its client secret');
   await microsoft(res, '/#logins', { login, email });
 }
 
@@ -350,59 +341,6 @@ export async function renew(refreshToken: string, scope: string[]): Promise<{ ac
   return { access: t.access_token, refresh: t.refresh_token ?? refreshToken, expires: Date.now() + (Number(t.expires_in ?? 3600) - 120) * 1000, scopes: granted(t.scope) };
 }
 
-// An app registered as a Single-page application lets only a browser redeem its codes, by a cross-origin request. So the server
-// hands the browser the code and this sign-in's PKCE verifier; the page redeems them and posts the ID token back to /auth/token.
-function redeemInBrowser(res: ServerResponse, code: string, p: Pending, tokenEndpoint: string) {
-  const js = (v: unknown) => JSON.stringify(v).replace(/</g, '\\u003c');
-  const form = { grant_type: 'authorization_code', code, redirect_uri: oidc.redirect, client_id: oidc.clientId, code_verifier: p.verifier, scope: oidc.scopes };
-  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
-  res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Signing in · rollforward</title>${STYLE}
-<div class="box"><h1>rollforward</h1><p id="m">Signing you in…</p></div>
-<form id="f" method="post" action="/auth/token"><input type="hidden" name="state" value="${esc(p.state)}"><input type="hidden" name="id_token"></form>
-<script>
-history.replaceState(null, '', '/');
-const fail = text => { document.getElementById('m').className = 'bad'; document.getElementById('m').textContent = 'Microsoft did not sign you in: ' + text; document.querySelector('.box').insertAdjacentHTML('beforeend', '<a class="ms" href="/auth/login">Sign in again</a>'); };
-fetch(${js(tokenEndpoint)}, { method: 'POST', body: new URLSearchParams(${js(form)}) })
-  .then(r => r.json().then(t => {
-    if (!t.id_token) return fail(t.error_description || t.error || r.status);
-    const f = document.getElementById('f');
-    f.id_token.value = t.id_token;
-    f.submit();
-  }))
-  .catch(e => fail(String(e)));
-</script>`);
-}
-
-let keys: { kid: string; kty: string; n: string; e: string }[] = [];
-
-// Checks an RS256 ID token's signature against the provider's published keys, fetching them again once for a key it doesn't know.
-async function verified(token: string): Promise<any> {
-  const [h, payload, sig] = token.split('.'), header = JSON.parse(unb64(h ?? ''));
-  if (header.alg !== 'RS256' || !payload || !sig) throw new HttpError(401, 'The sign-in token is not signed the way Microsoft signs.');
-  const d = await discovery();
-  for (let fresh = false; ; fresh = true) {
-    if (fresh || !keys.length) {
-      const r = await fetch(d.jwks_uri!, { signal: AbortSignal.timeout(15_000) });
-      keys = r.ok ? (await r.json()).keys ?? [] : [];
-    }
-    const k = keys.find(k => k.kid === header.kid);
-    if (k) {
-      const ok = verify('RSA-SHA256', Buffer.from(`${h}.${payload}`), createPublicKey({ key: { kty: k.kty, n: k.n, e: k.e }, format: 'jwk' }), Buffer.from(sig, 'base64url'));
-      if (!ok) throw new HttpError(401, 'The sign-in token\'s signature did not check out.');
-      return JSON.parse(unb64(payload));
-    }
-    if (fresh) throw new HttpError(401, 'The sign-in token was signed with a key Microsoft does not publish.');
-  }
-}
-
-// The ID token a browser redeemed, posted back with its sign-in's state.
-async function tokenFromBrowser(req: IncomingMessage, res: ServerResponse) {
-  const form = new URLSearchParams(await small(req));
-  const p = pendingOf(req, form.get('state') ?? '');
-  if (!p) return expired(req, res);
-  await finishSignIn(res, await verified(form.get('id_token') ?? ''), p);
-}
-
 // Where a sign-in goes once done: a path on this site, as a browser reads it, which takes \ for / and drops tabs and line breaks.
 const nextOf = (url: URL | URLSearchParams) => {
   const n = (url instanceof URL ? url.searchParams : url).get('next') ?? '/';
@@ -412,11 +350,10 @@ const nextOf = (url: URL | URLSearchParams) => {
 // Who is asking. Answers the sign-in routes itself, and shows the sign-in page to anyone not signed in, then returns null.
 export async function authenticate(req: IncomingMessage, res: ServerResponse, url: URL): Promise<Me | null> {
   if (url.pathname === '/auth/login') await microsoft(res, nextOf(url));
-  else if ((url.pathname === redirectPath || (spa && url.pathname === '/auth/m365')) && url.searchParams.has('state') && (url.searchParams.has('code') || url.searchParams.has('error'))) {
+  else if (url.pathname === redirectPath && url.searchParams.has('state') && (url.searchParams.has('code') || url.searchParams.has('error'))) {
     // Microsoft's return, which may be the site's own root if that is what the app registers.
     await callback(req, res, url);
-  } else if (spa && url.pathname === '/auth/token' && req.method === 'POST') await tokenFromBrowser(req, res);
-  else if (url.pathname === '/auth/cli' && req.method === 'POST') await ask(req, res);
+  } else if (url.pathname === '/auth/cli' && req.method === 'POST') await ask(req, res);
   else if (url.pathname === '/auth/cli/poll' && req.method === 'POST') await collect(req, res);
   else if (url.pathname === '/auth/logout' && req.method === 'POST') {
     const end = (await discovery().catch(() => undefined))?.end_session_endpoint;

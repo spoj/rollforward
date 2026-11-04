@@ -1198,11 +1198,10 @@ function loginsHtml(s) {
   ];
   let h = `<div class="sub">Every login is yours alone. A run uses only its runner's logins, and only those ticked for its instance. Nothing here is a password: you sign in to each system yourself.</div>`
     + (needs.length ? `<h3>Needs you</h3>${needs.join('')}<h3>All</h3>` : '');
-  if (!me.m365 && entra.length) h += `<div class="sub">Microsoft sign-in isn't set up on this server: its logins need an app registered in Microsoft Entra ID, which an admin sets in the server's settings (README, Access).</div>`;
   for (const c of entra) {
     const l = mine(c.login.id);
     if (!l) {
-      if (me.m365) h += line(c.login.name, c.type === 'graph' ? 'Only what you add once connected: mailboxes, SharePoint sites, and folders or files in SharePoint or OneDrive. A run reaches nothing else, and shares nothing.' : `Runs reach ${esc(c.name)} as you, with your own permissions there.`, `<a class="btn primary" href="/logins/${enc(c.login.id)}/connect">Connect</a>`);
+      h += line(c.login.name, c.type === 'graph' ? 'Only what you add once connected: mailboxes, SharePoint sites, and folders or files in SharePoint or OneDrive. A run reaches nothing else, and shares nothing.' : `Runs reach ${esc(c.name)} as you, with your own permissions there.`, `<a class="btn primary" href="/logins/${enc(c.login.id)}/connect">Connect</a>`);
       continue;
     }
     const sources = l.id === 'm365' ? ` · ${l.offers.length} source${l.offers.length === 1 ? '' : 's'}` : '';
