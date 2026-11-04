@@ -25,7 +25,7 @@ const MIN_FREE = Number(process.env.RF_MIN_FREE_GB ?? 6) * 2 ** 30;
 const started: number[] = [];
 const full = () => active.size >= MAX_RUNS || (MIN_FREE > 0 && freemem() < MIN_FREE + started.filter(t => t > Date.now() - 60_000).length * 2 ** 30);
 export const MAX_OPEN = 3;
-const SPACING_MS = 15 * 60_000;
+const SPACING_MS = 15 * 60_000, MAX_WAKES = 20;
 
 export type Active = { inst: Instance; n: number; token: string; view: View; run?: Run; sent: number; seen: number; texts: Map<string, number>; interrupted: boolean; done: boolean; cost: number; said: string; failed?: string; hosts: Set<string>; links: Map<string, string>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string };
 export const active = new Map<string, Active>();
@@ -313,13 +313,14 @@ export function weekly(text: string, at: Date, label?: string): string[] | undef
 }
 
 // A series' one-off wake for a label pending already moves it, or is one a weekly wake starting that label has made; any other adds
-// up, unless the same is pending.
+// up, unless the same is pending, to 20 a target.
 export function setWake(target: string, wake: Omit<Wake, 'target'>): Wake & { id: string } {
   const w = wakes(), k: Wake = { ...wake, target }, labelled = k.label !== undefined && !k.days;
   // A weekly one keeps its time of day; fire() spaces it.
   if (!k.days) k.at = new Date(Math.max(Date.parse(k.at), Date.parse(w.fired[target] ?? '1970-01-01') + SPACING_MS)).toISOString();
   const [id = newId(), was] = Object.entries(w.pending).find(([, p]) => p.target === target && p.label === k.label
     && (labelled || (p.at === k.at && String(p.days) === String(k.days)))) ?? [];
+  if (!was && Object.values(w.pending).filter(p => p.target === target).length >= MAX_WAKES) throw new HttpError(409, `${MAX_WAKES} wakes are pending for it: cancel one first`);
   if (!(labelled && was?.days)) w.pending[id] = k;
   saveWakes(w);
   return { id, ...w.pending[id] };
@@ -365,6 +366,13 @@ function fire() {
   for (const [id, wake] of due) {
     const { target, days, label } = wake;
     if (Date.parse(w.fired[target] ?? '1970-01-01') + SPACING_MS > Date.parse(now)) continue;
+    // One a person set goes only while they may see its workspace: once they can't, as when they've left, it's gone.
+    const setter = users()[wake.from], ws = t.workspaces[t.series[t.series[target] ? target : instance(target).seriesId].workspace];
+    if (!wake.inst && wake.from.includes('@') && !(setter && !setter.disabled && canSee({ email: wake.from, role: setter.role, groups: setter.groups ?? [] }, ws))) {
+      delete w.pending[id];
+      console.log(`a wake ${wake.from} set went unfired, as they can no longer see ${ws.name}`);
+      continue;
+    }
     w.fired[target] = now;
     delete w.pending[id];
     if (days) {

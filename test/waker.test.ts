@@ -84,6 +84,17 @@ test('a due wake its own run set continues an open instance, as a reply does, th
   assert.ok(Date.parse(next.at) - Date.parse(wakes().fired[oct.id]) >= 15 * 60_000);
 });
 
+test("a wake a person set fires only while they may see its workspace, and a target has 20 wakes at most", async t => {
+  const lunch = make('s6', 'lunch'), said = t.mock.method(console, 'log', () => {});
+  setWake(lunch.id, { at: new Date().toISOString(), from: 'zed@demo.test' });
+  await settle();
+  assert.deepEqual([ops(lunch).includes('wake'), wakesOf(lunch.id), said.mock.calls.map(c => String(c.arguments[0]))], [false, [], ['a wake zed@demo.test set went unfired, as they can no longer see Acme']]);
+  for (let d = 1; d <= 20; d++) setWake(lunch.id, { at: new Date(2031, 0, d).toISOString(), from: alice });
+  assert.throws(() => setWake(lunch.id, { at: new Date(2031, 1, 1).toISOString(), from: alice }), /20 wakes are pending for it: cancel one first/);
+  assert.equal(setWake(lunch.id, { at: new Date(2031, 0, 1).toISOString(), from: alice }).at, new Date(2031, 0, 1).toISOString(), 'the same again is one');
+  cancelWakes([lunch.id]);
+});
+
 test("a series' wake starts an instance as whoever shares the series; unshared, or with 3 open, it's a request", async () => {
   setWake('s2', { at: new Date().toISOString(), from: 'Acme/Bank rec/2026-09', label: '2026-10' });
   await settle();
@@ -185,6 +196,8 @@ test("a task's run sees its own instance alone in its series' folder, and the se
 
 test("others' comments and wakes are notes for an instance's runner, unless the agent asked them, and start runs only where the runner shares the series, where comments stay notes", async () => {
   const bob = 'bob@demo.test', notes = make('s5', 'notes'), runs = (i: Instance) => i.log.filter(e => e.op === 'run').length;
+  writeJson('users.json', { ...readJson('users.json', {}), [bob]: { role: 'user' } });
+  saveTree({ ...tree(), workspaces: { ...tree().workspaces, m: { ...tree().workspaces.m, members: [bob] } } });
   notes.append(bob, 'comment', { thread: 'n1', text: 'use the new rate' });
   setWake(notes.id, { at: new Date().toISOString(), from: bob });
   kick(notes);
