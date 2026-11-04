@@ -316,6 +316,25 @@ test('without a session the site shows Sign in with Microsoft, which goes to Mic
   for (const next of ['/#/abc', '//evil.com', '/\\evil.com', '/\t/evil.com', 'https://evil.com'])
     assert.equal((await entra.signIn(base, adminEmail, `/auth/login?next=${encodeURIComponent(next)}`)).headers.get('location'), next === '/#/abc' ? next : '/', `a sign-in goes on only to this site: ${JSON.stringify(next)}`);
   assert.match((await fetch(base + '/auth/login', { redirect: 'manual', headers: { cookie: admin } })).headers.get('location')!, /\/authorize\?.*scope=openid\+profile\+email\+offline_access&/, 'signed in already, it signs in again, as Sign in again asks, keeping the sign-in');
+  // Signed in before sign-ins were kept, they keep theirs as the page loads, once a session, if Microsoft asks nothing of them.
+  const kept = join(root, '.rf', 'people', createHash('sha256').update(adminEmail).digest('hex').slice(0, 16), 'entra.sealed');
+  const load = async (cookie: string) => {
+    const page = await fetch(base + '/', { redirect: 'manual', headers: { cookie } }), to = page.headers.get('location');
+    if (!to) return { status: page.status };
+    const back = (await fetch(to, { redirect: 'manual' })).headers.get('location')!, cookies = page.headers.getSetCookie().map(c => c.split(';')[0]);
+    return { to, cookies, done: (await fetch(back, { redirect: 'manual', headers: { cookie: [cookie, ...cookies].join('; ') } })).headers.get('location') };
+  };
+  rmSync(kept);
+  const quiet = await load(admin);
+  assert.match(quiet.to!, /\/authorize\?.*&login_hint=admin%40demo\.test&prompt=none$/);
+  assert.deepEqual([quiet.done, existsSync(kept)], ['/', true], 'kept, and back where they were');
+  rmSync(kept);
+  entra.who.ask.add(adminEmail);
+  const asked = await load(admin);
+  assert.deepEqual([asked.done, existsSync(kept)], ['/', false], 'where Microsoft would ask, they carry on as they were, with no error');
+  assert.equal((await load(`${admin}; ${asked.cookies!.find(c => c.startsWith('rf_silent='))}`)).status, 200, 'once a session');
+  entra.who.ask.delete(adminEmail);
+  await login(adminEmail);
 });
 
 test('an id that every object has a property by, such as __proto__, names nothing, for admins too', async () => {
