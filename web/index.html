@@ -778,7 +778,9 @@ function renderLog() {
   const drafting = [...$('#log').querySelectorAll('textarea')].some(t => t.value.trim()) || [...$('#log').querySelectorAll('input[type=file]')].some(f => f.files.length);
   if (ui.tab === 'conv') {
     if (!drafting) put($('#log'), tabsHtml() + conversationHtml());
-    if (ui.focus) $('#newcomment')?.focus();
+    // Only on the instance it's for: a render for the one before, as the page catches up, leaves it.
+    if (ui.focus !== cur.i.id) return;
+    $('#newcomment')?.focus();
     return void (ui.focus = false);
   }
   if (ui.tab === 'proc') {
@@ -1491,7 +1493,7 @@ async function onAct(act, el, was) {
   if (act === 'new-task') {
     const offers = new Set((await myOffers()).map(o => o.id)), logins = JSON.parse(localStorage.ticks ?? '[]').filter(id => offers.has(id));
     const { instance } = await api('/api/series', { method: 'POST', body: JSON.stringify({ workspace: cur.w.id, single: true, logins }) });
-    Object.assign(ui, { open: true, tab: 'conv', on: null, ref: null, focus: true });
+    Object.assign(ui, { open: true, tab: 'conv', on: null, ref: null, focus: instance });
     go(instance);
   }
   if (act === 'ticks') await openStart(`Logins ${cur.i.label} may use`, 'Save', ({ logins }) => api(`${instPath()}/logins`, { method: 'POST', body: JSON.stringify({ logins }) }), undefined, undefined, data.runner.logins);
@@ -1641,7 +1643,7 @@ function navigate(e) {
   else if (key === 'l' && chev) open ? rows[at + 1]?.focus() : chev.click();
   else if (key === 'h' && row) open ? chev.click() : row.closest('.tree')?.previousElementSibling.querySelector('a[href]').focus();
   else if (['1', '2', '3', 'c'].includes(key) && data) {
-    Object.assign(ui, { open: true, tab: key === 'c' ? 'conv' : ['conv', 'proc', 'log'][key - 1], on: null, ref: null, focus: key === 'c' });
+    Object.assign(ui, { open: true, tab: key === 'c' ? 'conv' : ['conv', 'proc', 'log'][key - 1], on: null, ref: null, focus: key === 'c' && cur.i.id });
     renderLog(); renderBar(); placeCard();
   } else if (key === '?') $('.key').classList.toggle('show');
   else return;
