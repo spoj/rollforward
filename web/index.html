@@ -134,6 +134,7 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .menu { display: none; border: 1px solid var(--rule-2); background: var(--sheet); border-radius: var(--r1); padding: 6px 10px; }
 .crumb { font-size: 13px; color: var(--ink-3); }
 .bar h1 { margin: 2px 0 0; font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
+.bar .ttl { flex: 1 1 0; }
 .ren { all: unset; cursor: pointer; color: var(--ink-3); font-size: 15px; font-weight: 400; margin-left: 6px; }
 .bar h1 .t { cursor: text; }
 .bar h1:hover .ren { color: var(--ink); }
@@ -141,6 +142,8 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .owner { position: relative; display: inline-block; vertical-align: 3px; margin-left: 10px; padding: 1px 9px; border-radius: 10px; font-size: 12.5px; font-weight: 500; letter-spacing: 0; color: var(--person); background: var(--person-bg); cursor: default; }
 .owner .about { display: none; position: absolute; left: 0; top: calc(100% + 6px); z-index: 5; width: max-content; max-width: 340px; font-weight: 400; color: var(--ink-2); background: var(--sheet); border: 1px solid var(--rule-2); border-radius: var(--r1); box-shadow: 0 6px 20px rgba(21,24,29,.12); padding: 8px 12px; line-height: 1.5; }
 .owner:is(:hover, :focus-within) .about { display: block; }
+.creds { vertical-align: 3px; margin-left: 6px; padding: 1px 9px; border: 1px solid var(--rule-2); border-radius: 10px; background: var(--sheet); font: 500 12.5px var(--sans); color: var(--ink-2); cursor: pointer; }
+.creds:hover { color: var(--ink); border-color: var(--edge); }
 .who { flex: none; display: inline-block; margin-left: 6px; padding: 0 4px; border-radius: 6px; font-size: 10px; font-weight: 600; line-height: 15px; vertical-align: 1px; color: var(--person); background: var(--person-bg); }
 .state { margin-left: auto; font-size: 13px; color: var(--ink-2); display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .btn { border: 1px solid var(--rule-2); background: var(--sheet); color: var(--ink); border-radius: var(--r1); padding: 7px 12px; font-size: 13px; font-weight: 500; white-space: nowrap; text-decoration: none; display: inline-block; }
@@ -220,7 +223,7 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .also { margin-top: 16px; font-size: 12.5px; display: grid; gap: 4px; }
 .also .ah { font-size: 12px; color: var(--ink-3); }
 .also .via { color: var(--ink-3); }
-a[data-act=preview], a[data-act=opencard], .vl a[data-act] { text-decoration: underline; cursor: pointer; }
+a[data-act=preview], a[data-act=opencard], .vl a[data-act], .state a[data-act] { text-decoration: underline; cursor: pointer; }
 .cites { margin-top: 6px; font-size: 12px; display: flex; flex-wrap: wrap; gap: 4px 10px; }
 .pv { position: fixed; inset: 4vh 4vw; margin: 0; width: auto; height: auto; background: var(--sheet); border-radius: var(--r2); box-shadow: 0 6px 24px rgba(21,24,29,.18); display: flex; flex-direction: column; }
 .pv:not([open]) { display: none; }
@@ -241,12 +244,6 @@ dialog::backdrop { background: rgba(21,24,29,.3); }
 .dlg pre.agents { max-height: 200px; overflow: auto; white-space: pre-wrap; font: 12px/1.45 var(--mono); background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r1); padding: 8px 10px; }
 .dlg .err:empty { display: none; }
 .dlg .foot { display: flex; flex-direction: row-reverse; gap: 8px; margin-top: 16px; }
-.pop { position: fixed; z-index: 70; min-width: 180px; padding: 4px; display: grid; background: var(--sheet); border: 1px solid var(--rule-2); border-radius: var(--r2); box-shadow: 0 6px 24px rgba(21,24,29,.16); }
-.pop button { all: unset; padding: 7px 10px; border-radius: var(--r1); font-size: 13px; color: var(--ink); cursor: pointer; }
-.pop button:is(:hover, :focus-visible):not(:disabled) { background: var(--paper); outline: none; }
-.pop button.danger { color: var(--red); }
-.pop button:disabled { color: var(--ink-3); cursor: default; }
-.pop hr { margin: 4px 0; border: 0; border-top: 1px solid var(--rule); }
 .inline { flex: 1; min-width: 8ch; field-sizing: content; font: inherit; padding: 0; border: 0; border-bottom: 1.5px solid var(--person); border-radius: 0; background: transparent; color: var(--ink); }
 .pvh { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--rule); }
 .pvh b { font-size: 13px; word-break: break-all; margin-right: auto; }
@@ -411,7 +408,6 @@ input[type=checkbox] { accent-color: var(--ink); }
 <div class="card" id="card" hidden></div>
 <dialog class="pv" id="pv"></dialog>
 <dialog class="dlg" id="ask"></dialog>
-<div class="pop" id="pop" role="menu" hidden></div>
 <input type="file" id="picker" multiple hidden>
 <div id="toasts" popover="manual"></div>
 <script>
@@ -637,20 +633,20 @@ function renderBar() {
   if (editing) return;
   const open = data?.doc.status === 'open';
   let h = `<button class="menu" data-act="menu">☰</button>`;
-  h += `<div><div class="crumb">${esc(cur?.w.name ?? '')}${cur?.s ? ' · ' + esc(cur.s.single ? 'Ungrouped' : cur.s.name) : ''}</div><h1>${data ? `<span class="t" data-act="rename" title="Rename">${esc(cur.i.label)}</span><button class="ren" data-act="rename" title="Rename">\u270E</button>` : esc(cur?.i?.label ?? 'No instance')}${data ? owner() : ''}</h1></div>`;
+  h += `<div class="ttl"><div class="crumb">${esc(cur?.w.name ?? '')}${cur?.s ? ' · ' + esc(cur.s.single ? 'Ungrouped' : cur.s.name) : ''}</div><h1>${data ? `<span class="t" data-act="rename" title="Rename">${esc(cur.i.label)}</span><button class="ren" data-act="rename" title="Rename">\u270E</button>` : esc(cur?.i?.label ?? 'No instance')}${data ? owner() : ''}</h1></div>`;
   if (data) {
     const d = lastDone(), talk = threads.filter(t => t.waits).length;
     const state = data.doc.status !== 'open' ? `${data.doc.status === 'closed' ? 'Closed' : 'Abandoned'} · read-only`
       : data.run ? `<span class="spin"></span>Agent working · run ${data.run.n}<button class="quiet" data-act="interrupt">Interrupt</button>`
       : data.queued ? '\u29D7 Queued' : d?.error ? `<span class="bad" title="${esc(d.error)}">Run ${d.run} failed · ${hhmm(d.at)}</span>`
       : d ? `Agent idle · last run ${hhmm(d.at)}` : 'Waiting for files';
-    h += `<div class="state">${state}</div>`;
+    const wake = open ? `<span>\u00b7 <a data-act="wakes">${cur.i.wakes[0] ? `next wake ${when(cur.i.wakes[0].at)}` : 'no wake'}</a></span>` : '';
+    h += `<div class="state">${state}${wake}</div>`;
     if (!ui.open) h += `<button class="btn top" data-act="show-panel">Conversation${talk ? ` (${talk})` : ''}</button>`;
     const off = data.run ? 'disabled title="Available when the run ends"' : '';
     if (open) h += data.runner.by === me.email ? `<button class="btn commit top" data-act="close" ${off}>${cur.s.single ? 'Close task' : 'Close instance'}</button>`
       : `<button class="btn top" data-act="takeover" ${off || `title="${esc(nameOf(data.runner.by))} runs it: their logins, their sign-off. Taking over makes it yours."`}>Take over</button>`;
     else h += cur.s.single ? '<button class="btn top" data-act="start-series">Start series</button>' : '<button class="btn top" data-act="duplicate">Duplicate</button>';
-    if (open) h += '<button class="btn top" data-act="menu-instance" title="Rename, wakes, credentials">\u22EF</button>';
   }
   put($('#bar'), h);
 }
@@ -661,7 +657,18 @@ function owner() {
   const how = { create: 'Made it', duplicate: `Copied it from ${esc(e.from)}`, takeover: `Took it over from ${who(e.from)}` }[e.op];
   return `<span class="owner" tabindex="0">${mine ? 'Yours' : name}<span class="about">`
     + (data.doc.status === 'open' ? `${name} run${mine ? '' : 's'} it: runs use ${mine ? 'your' : 'their'} logins, and only ${mine ? 'you' : 'they'} close it.` : `${name} ran it.`)
-    + `<br>${how} ${when(e.at)}.<br>${r.ticked.length ? `Logins: ${esc(r.ticked.join(', '))}` : 'No logins ticked.'}</span></span>`;
+    + `<br>${how} ${when(e.at)}.<br>${r.ticked.length ? `Credentials: ${esc(r.ticked.join(', '))}` : 'No credentials ticked.'}</span></span>`
+    + (mine && data.doc.status === 'open' ? `<button class="creds" data-act="ticks" title="${esc(r.ticked.join(', '))}">Credentials: ${credentials(r)}</button>` : '');
+}
+
+// The runner's ticks at a glance, by kind, such as "Mail · 2 folders".
+function credentials(r) {
+  const n = {}, say = { mail: ['Mail', 'mailboxes'], site: ['1 site', 'sites'], folder: ['1 folder', 'folders'], file: ['1 file', 'files'], website: ['1 website', 'websites'], warehouse: ['1 warehouse', 'warehouses'] };
+  r.logins.forEach((id, k) => {
+    const kind = id.startsWith('m365:mail:') ? 'mail' : id.startsWith('m365:site:') ? 'site' : id.startsWith('m365:') ? (r.ticked[k].startsWith('File ') ? 'file' : 'folder') : id.startsWith('web:') ? 'website' : 'warehouse';
+    n[kind] = (n[kind] ?? 0) + 1;
+  });
+  return Object.entries(n).map(([k, c]) => (c === 1 ? say[k][0] : `${c} ${say[k][1]}`)).join(' \u00b7 ') || 'none';
 }
 
 function provenance(file) {
@@ -1286,18 +1293,6 @@ async function openLogins() {
 
 // A menu under the button that opened it. Items are [label, act, class, why it's off], or ['-'] for a rule; an item does what a
 // button with its act does.
-function openMenu(btn, items) {
-  const m = $('#pop');
-  m.innerHTML = items.filter(Boolean).map(([label, act, cls = '', off]) => label === '-' ? '<hr>'
-    : `<button role="menuitem" class="${cls}" data-act="${act}" ${off ? `disabled title="${esc(off)}"` : ''}>${esc(label)}</button>`).join('');
-  m.dataset.by = btn.dataset.act;
-  m.hidden = false;
-  const r = btn.getBoundingClientRect();
-  m.style.left = `${Math.max(8, Math.min(r.left, innerWidth - m.offsetWidth - 8))}px`;
-  m.style.top = `${r.bottom + 4 + m.offsetHeight < innerHeight ? r.bottom + 4 : Math.max(8, r.top - 4 - m.offsetHeight)}px`;
-  m.querySelector('button:not(:disabled)')?.focus();
-}
-
 // The page's own dialog, to confirm or to ask for a name: it resolves with what act returns, or null if cancelled. Until act
 // succeeds it stays open, saying why it didn't.
 // A dialog's buttons that have a value act, with the text it asks for, if any, and that value; `html` may hold more of them.
@@ -1398,8 +1393,6 @@ async function upload(files, pane, onto) {
 }
 
 document.addEventListener('click', async ev => {
-  const was = $('#pop').hidden ? null : $('#pop').dataset.by;
-  $('#pop').hidden = true;
   if (!ev.target.closest('#side, [data-act=menu]') || ev.target.closest('#side a')) $('#side').classList.remove('open');
   // A fold opened or closed stays so as the panel is drawn again, which, the page now differing from what was drawn, it next is.
   const sum = ev.target.closest('#log details[data-key] > summary');
@@ -1409,7 +1402,7 @@ document.addEventListener('click', async ev => {
   }
   const el = ev.target.closest('[data-act], .tile');
   if (!el) {
-    if (!ev.target.closest('#card, dialog, #pop')) { openItem = null; renderCard(); renderPanes(); }
+    if (!ev.target.closest('#card, dialog')) { openItem = null; renderCard(); renderPanes(); }
     return;
   }
   if (el.classList.contains('tile')) {
@@ -1420,12 +1413,11 @@ document.addEventListener('click', async ev => {
   }
   // What a click starts holds its button until it's done, so a second click can't repeat it.
   el.setAttribute('aria-busy', 'true');
-  try { await onAct(el.dataset.act, el, was); } finally { el.removeAttribute('aria-busy'); }
+  try { await onAct(el.dataset.act, el); } finally { el.removeAttribute('aria-busy'); }
 });
 
-// What a click on an element with data-act does. A click on the button of the menu that's open only closes it.
-async function onAct(act, el, was) {
-  if (act.startsWith('menu-') && was === act) return;
+// What a click on an element with data-act does.
+async function onAct(act, el) {
   if (act === 'menu') $('#side').classList.toggle('open');
   if (act === 'expand') { expandRow(el.dataset.id); renderSide(); }
   if (act === 'workspaces') { localStorage.workspaces = el.dataset.id; renderSide(); }
@@ -1435,11 +1427,6 @@ async function onAct(act, el, was) {
     location.hash = `#/${el.dataset.id}`;
     await new Promise(ok => addEventListener('hashchange', ok, { once: true }));
     await refresh();
-  }
-  if (act === 'menu-instance') {
-    openMenu(el, [
-      ['Rename', 'rename'], ['Wakes', 'wakes'], data.runner.by === me.email && ['Credentials', 'ticks'],
-    ]);
   }
   if (act === 'audit') await toggleAudit();
   if (act === 'watch') { ui.site = el.dataset.site; renderPlayer(); }
@@ -1827,19 +1814,13 @@ addEventListener('keydown', e => {
     return (e.target.id === 'newcomment' ? $('#log [data-act=comment]') : e.target.closest('.thread').querySelector('[data-act=reply-thread]'))?.click();
   }
   if (e.key === 'Escape' && e.target.matches('textarea, input:not(.inline)') && !document.querySelector('dialog[open]')) return e.target.blur();
-  if ($('#pop').hidden && !e.target.matches('input, textarea, select') && !e.ctrlKey && !e.metaKey && !e.altKey && !document.querySelector('dialog[open]')) navigate(e);
-  if (!$('#pop').hidden && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
-    const items = [...$('#pop').querySelectorAll('button:not(:disabled)')], k = items.indexOf(document.activeElement);
-    items.at((k + (e.key === 'ArrowDown' ? 1 : -1)) % items.length)?.focus();
-    e.preventDefault();
-  }
+  if (!e.target.matches('input, textarea, select') && !e.ctrlKey && !e.metaKey && !e.altKey && !document.querySelector('dialog[open]')) navigate(e);
   // Enter in a one-line field presses its button, as in a form.
   if (e.key === 'Enter' && !e.isComposing && e.target.matches('.row2 input[type=text]')) e.target.closest('.row2').querySelector('.btn').click();
   if (e.key === 'Enter' && !e.isComposing && e.target.id === 'slabel') $('[data-act=start-go]').click();
   // A dialog closes itself on Escape.
   if (e.key !== 'Escape' || document.querySelector('dialog[open]')) return;
-  if (!$('#pop').hidden) $('#pop').hidden = true;
-  else if ($('#side').classList.contains('open')) $('#side').classList.remove('open');
+  if ($('#side').classList.contains('open')) $('#side').classList.remove('open');
   else if (openItem) { openItem = null; renderCard(); renderPanes(); }
   else if (ui.open) { ui.open = false; renderLog(); renderBar(); placeCard(); }
 });

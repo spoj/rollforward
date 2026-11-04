@@ -135,9 +135,16 @@ test("the workspace's + starts a task at once, which its first prompt names, new
 
 test("only the runner abandons, from the Close dialog, whose buttons for a task weigh the same, the series' name with the one that makes it", async () => {
   await page.click('.row.ser .l:text-is("Weekly borrowing base")');
-  assert.equal(await page.locator('#bar [data-act=close]').count(), 0, 'alex runs it');
+  await page.waitForSelector('#bar [data-act=takeover]');
+  assert.deepEqual([await page.locator('#bar .btn').allTextContents(), await page.textContent('#bar .state'), await page.locator('#bar .creds').count()], [['Take over'], 'Waiting for files· no wake', 0], 'alex runs it');
+  await page.click('#bar .state [data-act=wakes]');
+  assert.equal(await page.textContent('#pv .pvh b'), 'Wakes of 2026-09-06 b', 'anyone in its workspace sets its wakes');
+  await page.mouse.click(5, 5);
   await page.click('[data-act=takeover]');
   await page.click('[data-act=start-go]');
+  await page.click('#bar .creds:text-is("Credentials: none")');
+  await page.waitForSelector('#pv .pvh b:text-is("Credentials")');
+  await page.mouse.click(5, 5);
   await page.click('#bar [data-act=close]');
   assert.deepEqual(await page.locator('#ask button').allTextContents(), ['Abandon instead', 'Close instance', 'Cancel']);
   await page.click('#ask button:text-is("Cancel")');
