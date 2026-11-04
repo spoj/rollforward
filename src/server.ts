@@ -21,7 +21,7 @@ import { offer, unoffer } from './connections/graph.ts';
 import { forget, indexes, startIndexing, track } from './indexes.ts';
 import { seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, byToken, cancelWake, cancelWakes, citedFor, closed, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, resolveFor, setWake, startWaking, startWith, wakes, wakesOf, weekly, wider, type Active } from './waker.ts';
+import { active, byToken, cancelWake, cancelWakes, citedFor, closed, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, resolveFor, setWake, startWaking, startWith, wakes, wakesOf, weekly, wider, type Active, type Request } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -120,6 +120,13 @@ function waits(inst: Instance): { who: string; e: Entry }[] {
   return [...inst.asking().map(e => ({ who: (e.to as string | undefined) ?? runner, e })), ...notes.map(e => ({ who: runner, e }))];
 }
 
+// Whom a request to start an instance of a series waits on: whoever shares it, else the runner of its newest instance, else the
+// person who asked, if a person did; no one in particular, who anyone in its workspace may answer, else.
+function asked(r: Request): string | null {
+  const newest = instances(r.series).at(-1);
+  return seriesSettings(seriesDir(r.series)).shared?.by ?? (newest ? runnerOf(newest).by : r.from.includes('@') ? r.from : null);
+}
+
 // The open instances whose runner couldn't see them with this tree and these people: their runs can't use the runner's logins.
 function hidden(t: Tree, us: Record<string, User>): string[] {
   return Object.entries(t.series).flatMap(([sid, s]) => instances(sid).filter(i => {
@@ -180,7 +187,7 @@ function listing(me: Me) {
       return {
         id: sid, name: s.name, archived: !!s.archived, single: !!s.single, shared_by: shared?.by ?? null, shared_logins: shared?.by === me.email ? shared.logins : [],
         wakes: wakesOf(sid, w8),
-        requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r })),
+        requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r, who: asked(r) })),
         instances: instances(sid).map(i => summary(i, me.email, w8)),
       };
     });
@@ -230,7 +237,7 @@ function status(me: Me) {
         return hit && !i.log.some(e => e.seq > hit.seq && e.op === 'wake' && e.login === l.id);
       }).map(path),
     }))),
-    requests: Object.values(w8.requests).filter(r => seen.some(([sid]) => sid === r.series)).map(r => ({ path: named(t, r.series), label: r.label, from: r.from, at: r.at })),
+    requests: Object.values(w8.requests).filter(r => seen.some(([sid]) => sid === r.series)).map(r => ({ who: asked(r), path: named(t, r.series), label: r.label, from: r.from, at: r.at })),
     failed: open.filter(i => active.get(i.seriesId)?.inst !== i).flatMap(i => {
       const d = i.log.findLast(e => e.op === 'done');
       return d?.error ? [{ path: path(i), run: d.run as number, at: d.at, error: d.error as string }] : [];

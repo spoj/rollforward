@@ -336,9 +336,9 @@ else if (cmd === 'comment' && args.length === 2) {
       [`Running`, s.running.map(r => `${r.path}  run ${r.run}  for ${took((Date.now() - Date.parse(r.at)) / 1000)}  ${usd(r.cost)}${Date.now() - Date.parse(r.at) > long * 60e3 ? `  LONG, past ${long}m` : ''}`)],
       [`Queued`, s.queued.map(q => `${q.path}  since ${when(q.since)}: ${q.why}`)],
       [`Waiting`, [
-        ...s.asks.sort((a, b) => a.who.localeCompare(b.who) || a.since.localeCompare(b.since)).map(a => `${a.who}  ${a.signoff ? 'a sign-off' : a.note ? 'a note' : 'an ask'} in ${a.path} since ${when(a.since)}: ${a.text.split('\n')[0].slice(0, 80)}`),
+        ...[...s.asks, ...s.requests.map(r => ({ ...r, who: r.who ?? 'anyone', since: r.at, text: `${r.from} asks to start ${r.label}`, request: true }))]
+          .sort((a, b) => a.who.localeCompare(b.who) || a.since.localeCompare(b.since)).map(a => `${a.who}  ${a.request ? 'a request' : a.signoff ? 'a sign-off' : a.note ? 'a note' : 'an ask'} in ${a.path} since ${when(a.since)}: ${a.text.split('\n')[0].slice(0, 80)}`),
         ...s.expired.map(e => `${e.who}  their ${e.login} login expired${e.holding.length ? `, holding ${e.holding.join(', ')}` : ''}`),
-        ...s.requests.map(r => `${r.path}  ${r.from} asks to start ${r.label}, since ${when(r.at)}`),
       ]],
       [`Last run failed`, s.failed.map(f => `${f.path}  run ${f.run} at ${when(f.at)}: ${f.error}`)],
       [`Indexes crawling or failing`, ix.filter(x => x.people.some(p => p.phase === 'crawl' || p.error)).map(x => `${x.name}  ${x.people.filter(p => p.phase === 'crawl' || p.error)

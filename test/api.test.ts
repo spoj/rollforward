@@ -399,6 +399,7 @@ test("people see, set, move and cancel wakes, one-off or weekly, share a series 
   const listed = await shown(series);
   assert.deepEqual([listed.wakes.map((k: { id: string; label: string }) => [k.id, k.label]), listed.requests.map((r: { id: string }) => r.id), listed.shared_by], [[['k1', '2026-09-20']], ['r1'], null]);
   assert.deepEqual(listed.instances.find((i: { id: string }) => i.id === sep).wakes.map((k: { at: string }) => k.at), [due]);
+  assert.equal(listed.requests[0].who, listed.instances.at(-1).runner, "a request waits on the runner of the series' newest instance");
   const later = new Date(Date.now() + 2 * 86_400_000).toISOString(), set = (target: string, body: object) => call('PUT', `/api/wakes/${target}`, JSON.stringify(body));
   assert.deepEqual(await (await set(s.id, { at: later, label: '2026-09-20' })).json(), { id: 'k1', target: s.id, at: later, from: adminEmail, label: '2026-09-20' }, 'the same label moves it');
   assert.equal((await set(s.id, { at: '2030-01-07T08:00', label: '2030-01-05', days: 'mon-fri' })).status, 400, "a weekly wake's label holds the day it fires or the one before that it fires on");
@@ -421,6 +422,7 @@ test("people see, set, move and cancel wakes, one-off or weekly, share a series 
 
   assert.equal((await call('PUT', await at(series), JSON.stringify({ share: true }))).status, 200);
   assert.equal((await shown(series)).shared_by, adminEmail);
+  assert.deepEqual((await json('/api/status')).requests.map((r: { who: string; label: string }) => [r.who, r.label]), [[adminEmail, '2026-09-27']], 'or on whoever shares it');
   assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(root, 'series', s.id, 'series.json'), 'utf8'))), ['shared']);
   assert.equal((await call('PUT', await at(series), JSON.stringify({ name: s.name }))).status, 200);
   assert.equal((await shown(series)).shared_by, adminEmail, 'other settings leave sharing as it was');

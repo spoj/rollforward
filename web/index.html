@@ -1180,7 +1180,7 @@ function waiting() {
       const n = i.asks.filter(e => e === me.email).length;
       if (n) out.push(`<div class="wt">${at(w, s, i)}: ${n} ask${n > 1 ? 's' : ''} for you</div>`);
     }
-    for (const r of s.requests) out.push(`<div class="wt">${at(w, s)}: ${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)} <button class="btn" data-act="req-start" data-id="${esc(r.id)}">Start</button></div>`);
+    for (const r of s.requests.filter(r => (r.who ?? me.email) === me.email)) out.push(`<div class="wt">${at(w, s)}: ${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)} <button class="btn" data-act="req-start" data-id="${esc(r.id)}">Start</button></div>`);
   }
   return [...out, ...expired.map(l => `<div class="wt">Your ${esc(l.name)} login has expired. ${signInHtml(l.id, l.name)}</div>`)];
 }
