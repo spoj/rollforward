@@ -298,9 +298,8 @@ dialog::backdrop { background: rgba(21,24,29,.3); }
 .needs > div { display: flex; align-items: center; gap: 10px; }
 .needs > div > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .needs b { color: var(--red); font-weight: 600; }
-.audit { height: 40%; flex-shrink: 0; overflow: auto; border-top: 1px solid var(--rule-2); background: var(--sheet); }
-.audit .lh { display: flex; align-items: center; gap: 10px; padding: 6px 12px 6px 20px; border-bottom: 1px solid var(--rule); position: sticky; top: 0; background: var(--sheet); }
-.audit .lh .x { margin-left: auto; border: 0; background: none; font-size: 20px; line-height: 1; color: var(--ink-3); cursor: pointer; }
+.audit { padding-bottom: 12px; }
+.audit > .sub { padding: 10px 20px 4px; }
 .audit .e { padding: 4px 20px; font-size: 12.5px; }
 .player { position: absolute; right: 16px; bottom: 16px; z-index: 5; width: 440px; background: var(--sheet); border: 1px solid var(--rule-2); border-radius: var(--r2); box-shadow: 0 6px 24px rgba(21,24,29,.16); overflow: hidden; }
 .player .plh { display: flex; align-items: center; gap: 8px; padding: 2px 4px 2px 12px; font-size: 12.5px; }
@@ -346,14 +345,15 @@ input[type=checkbox] { accent-color: var(--ink); }
 .thread .on, .post .tm { color: var(--ink-3); font-size: 12px; }
 .post b.p { color: var(--person, #1d4ed8); }
 .post .f img { display: block; max-width: 100%; max-height: 240px; margin-top: 4px; border: 1px solid var(--rule); border-radius: var(--r1); cursor: zoom-in; }
-.log .lh { display: flex; align-items: flex-end; gap: 4px; padding: 8px 12px 0; border-bottom: 1px solid var(--rule); position: sticky; top: 0; z-index: 1; background: var(--sheet); }
+.log .lh { display: flex; align-items: center; gap: 4px; padding: 8px 12px; border-bottom: 1px solid var(--rule); position: sticky; top: 0; z-index: 1; background: var(--sheet); }
 .tab { border: 0; border-bottom: 2px solid transparent; background: none; padding: 8px 8px 9px; margin-bottom: -1px; font-family: inherit; font-size: 13px; font-weight: 500; color: var(--ink-3); cursor: pointer; white-space: nowrap; }
 .tab.sel { color: var(--ink); border-bottom-color: var(--ink); }
 .tab:hover, .log .lh .x:hover { color: var(--ink); }
-.log .lh b { margin: 0 auto 9px 8px; font-size: 13px; font-weight: 600; }
-.log .lh .quiet { margin-bottom: 6px; }
+.log .lh .seg { margin: 0 0 0 8px; background: var(--paper); }
+.log .lh .seg button { padding: 3px 12px; font-size: 12.5px; font-weight: 500; }
+.log .lh .seg button.sel { box-shadow: inset 0 0 0 1px var(--rule-2); border-radius: var(--r1); }
 /* Where the panel covers the page, as on a phone, it closes itself; elsewhere the bar's toggle does. */
-.log .lh .x { display: none; margin: 0 0 6px auto; border: 0; background: none; padding: 2px 6px; font-size: 20px; line-height: 1; color: var(--ink-3); cursor: pointer; }
+.log .lh .x { display: none; margin: 0 0 0 auto; border: 0; background: none; padding: 2px 6px; font-size: 20px; line-height: 1; color: var(--ink-3); cursor: pointer; }
 .e { display: grid; grid-template-columns: 46px minmax(0, 1fr); gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--rule); font-size: 13px; }
 .e > div { min-width: 0; }
 .e .tm { color: var(--ink-3); font-size: 12px; padding-top: 1px; }
@@ -402,12 +402,11 @@ input[type=checkbox] { accent-color: var(--ink); }
       <section class="pane outs" id="outs" data-pane="out"></section>
       <section class="pane flow" id="flow" data-pane="in"></section>
       <svg class="edges" id="edges"></svg>
-      <div class="key" tabindex="0">Key<div class="legend"><div><i class="p">Blue</i> uploaded by a person</div><div><i>Black</i> made by the agent</div><div><span class="tri"></span>comments</div><div><span class="tri q"></span>waiting on a reply</div><div><span class="dash"></span>expected, not there yet</div><div class="keys"><div><kbd>j k</kbd> move through the sidebar, <kbd>h l</kbd> fold and open, <kbd>Enter</kbd> go</div><div><kbd>1 2 3</kbd> the conversation, its process, the audit, <kbd>c</kbd> the comment box</div><div><kbd>Ctrl Enter</kbd> sends, <kbd>Esc</kbd> leaves a field, <kbd>?</kbd> shows this</div></div></div></div>
+      <div class="key" tabindex="0">Key<div class="legend"><div><i class="p">Blue</i> uploaded by a person</div><div><i>Black</i> made by the agent</div><div><span class="tri"></span>comments</div><div><span class="tri q"></span>waiting on a reply</div><div><span class="dash"></span>expected, not there yet</div><div class="keys"><div><kbd>j k</kbd> move through the sidebar, <kbd>h l</kbd> fold and open, <kbd>Enter</kbd> go</div><div><kbd>c</kbd> the comment box</div><div><kbd>Ctrl Enter</kbd> sends, <kbd>Esc</kbd> leaves a field, <kbd>?</kbd> shows this</div></div></div></div>
     </div>
-    <section class="audit" id="audit" hidden></section>
     <div class="player" id="player" hidden></div>
   </main>
-  <aside class="log" id="log"></aside>
+  <aside class="log" id="log"><div class="lh" id="lh"></div><div id="conv"></div><section class="audit" id="audit" hidden></section></aside>
   <div class="grip" data-pane="side" title="Drag to resize; double-click to reset"></div><div class="grip" data-pane="panel" title="Drag to resize; double-click to reset"></div>
 </div>
 <div class="card" id="card" hidden></div>
@@ -839,9 +838,13 @@ function renderLog() {
   const key = `${cur.i.id}:${data.doc.rev}:${lastDone()?.seq}`;
   if (docs.key !== key) loadDocs(key);
   // A half-written comment or reply, or files picked for one, holds the conversation still until it's sent or cleared.
-  const drafting = [...$('#log').querySelectorAll('textarea')].some(t => t.value.trim()) || [...$('#log').querySelectorAll('input[type=file]')].some(f => f.files.length);
+  const drafting = [...$('#conv').querySelectorAll('textarea')].some(t => t.value.trim()) || [...$('#conv').querySelectorAll('input[type=file]')].some(f => f.files.length);
   const focused = document.activeElement?.id === 'newcomment';
-  if (!drafting) put($('#log'), `<div class="lh"><b>Conversation</b><button class="quiet" data-act="audit">${ui.audit ? 'Hide the audit' : 'Audit'}</button><button class="x" data-act="panel" title="Close">\u00D7</button></div>` + conversationHtml());
+  // Its two sides, the conversation and the audit, one shown at a time: a half-written comment waits on the other's.
+  put($('#lh'), `<span class="seg">${[['Conversation', !ui.audit], ['Audit', ui.audit]].map(([side, on]) => `<button class="${on ? 'sel' : ''}" ${on ? '' : 'data-act="audit"'}>${side}</button>`).join('')}</span>`
+    + '<button class="x" data-act="panel" title="Close">\u00D7</button>');
+  $('#conv').hidden = ui.audit;
+  if (!drafting) put($('#conv'), conversationHtml());
   // Only on the instance it's for: a render for the one before, as the page catches up, leaves it. The box keeps the focus it had.
   if (focused) $('#newcomment')?.focus();
   if (ui.focus !== cur.i.id) return;
@@ -849,8 +852,8 @@ function renderLog() {
   ui.focus = false;
 }
 
-// The audit, under the instance once asked for: the log and the agent's session, oldest first, one plain line each, opening at the
-// latest and kept there as entries come unless the reader has scrolled up.
+// The audit, the panel's other side: the log and the agent's session, oldest first, one plain line each, opening at the latest and
+// kept there as entries come unless the reader has scrolled up.
 function renderAudit() {
   $('#audit').hidden = !(ui.audit && data);
   if ($('#audit').hidden) return;
@@ -860,9 +863,8 @@ function renderAudit() {
     : `<b>${VERB[s.kind] ?? esc(s.kind)}</b> <code>${esc(firstLine(s.kind === 'bash' ? s.text : s.text.split(`/${cur.s.name}/`).pop()))}</code> \u23BF ${res(s)}` }));
   const rows = [...data.log.map(e => ({ at: e.at, html: logText(e) })), ...steps].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
   const runs = data.log.filter(e => e.op === 'run').length, cost = data.log.reduce((t, e) => t + (e.op === 'done' ? e.cost : 0), 0) + (data.run?.cost ?? 0);
-  put($('#audit'), `<div class="lh"><b>Audit</b><span class="sub">${plural(runs, 'run')}, ${usd(cost)}</span><button class="x" data-act="audit" title="Close">\u00D7</button></div>`
-    + rows.map(r => `<div class="e"><span class="tm">${hhmm(r.at)}</span><div>${r.html}</div></div>`).join(''));
-  if ($('#audit').dataset.end !== 'no') $('#audit').scrollTop = $('#audit').scrollHeight;
+  put($('#audit'), `<div class="sub">${plural(runs, 'run')}, ${usd(cost)}</div>` + rows.map(r => `<div class="e"><span class="tm">${hhmm(r.at)}</span><div>${r.html}</div></div>`).join(''));
+  if ($('#log').dataset.end !== 'no') $('#log').scrollTop = $('#log').scrollHeight;
 }
 
 // A run's browser, live while it's open, for anyone who sees the instance to watch, never drive, but on a website that lists its
@@ -877,13 +879,14 @@ function renderPlayer() {
     + (folded ? '' : `<iframe src="/runs/${cur.i.id}/${enc(site)}/view?watch" title="Run ${data.run.n}'s browser on ${esc(site)}"></iframe>`));
 }
 
-// The audit opens with the session's steps, fetched for it, and closes.
+// The audit shows with the session's steps, fetched for it, at its latest; the conversation, back, at its top.
 async function toggleAudit() {
   ui.audit = !ui.audit;
   if (ui.audit) [lines, linesKey] = [await api(instPath() + '/trace'), `${instPath()}:${data.log.length}`];
-  $('#audit').dataset.end = 'yes';
-  renderAudit();
+  $('#log').dataset.end = 'yes';
   renderLog();
+  renderAudit();
+  if (!ui.audit) $('#log').scrollTop = 0;
 }
 
 const VERB = { read: 'Read', bash: 'Ran', edit: 'Edited', write: 'Wrote' };
@@ -1404,7 +1407,7 @@ document.addEventListener('click', async ev => {
   const sum = ev.target.closest('#log details[data-key] > summary');
   if (sum) {
     ui.sect[sum.parentElement.dataset.key] = !sum.parentElement.open;
-    drawn.delete($('#log'));
+    drawn.delete($('#conv'));
   }
   const el = ev.target.closest('[data-act], .tile');
   if (!el) {
@@ -1788,14 +1791,13 @@ document.fonts.ready.then(drawEdges);
 addEventListener('hashchange', () => {
   openItem = null; ui.sect = {}; prevSigs = {};
   $('#panes').scrollTop = $('#flow').scrollTop = $('#flow').scrollLeft = $('#outs').scrollTop = $('#log').scrollTop = 0;
-  $('#audit').dataset.end = 'yes';
+  $('#log').dataset.end = 'yes';
   closePv();
   $('#side').classList.remove('open');
   refresh();
 });
 // Keys, while no field has the focus: j and k (or the arrows) move through the sidebar's rows, l opens a row or goes into it, h
-// folds it or goes to its parent, Enter goes to it; 1 opens the conversation, 2 its process, 3 the audit, c goes to the comment box,
-// ? shows the keys.
+// folds it or goes to its parent, Enter goes to it; c goes to the comment box, ? shows the keys.
 function navigate(e) {
   const rows = [...$('#tree').querySelectorAll('a[href]')], at = rows.indexOf(document.activeElement), row = document.activeElement.closest('#tree .row');
   const chev = row?.querySelector('.chev'), open = chev?.textContent === '\u25BE', key = { ArrowDown: 'j', ArrowUp: 'k', ArrowRight: 'l', ArrowLeft: 'h' }[e.key] ?? e.key;
@@ -1803,11 +1805,9 @@ function navigate(e) {
   if (key === 'j' || key === 'k') (at < 0 ? rows.find(r => r.closest('.on')) ?? rows[0] : rows[at + (key === 'j' ? 1 : -1)])?.focus();
   else if (key === 'l' && chev) open ? rows[at + 1]?.focus() : chev.click();
   else if (key === 'h' && row) open ? chev.click() : row.closest('.tree')?.previousElementSibling.querySelector('a[href]').focus();
-  else if (key === '3' && data) toggleAudit();
-  else if (['1', '2', 'c'].includes(key) && data) {
-    Object.assign(ui, { open: true, on: null, ref: null, focus: key === 'c' && cur.i.id });
-    if (key === '2') ui.sect.process = true;
-    renderLog(); renderBar(); placeCard();
+  else if (key === 'c' && data) {
+    Object.assign(ui, { open: true, audit: false, on: null, ref: null, focus: cur.i.id });
+    renderLog(); renderBar(); renderAudit(); placeCard();
   } else if (key === '?') $('.key').classList.toggle('show');
   else return;
   e.preventDefault();
@@ -1855,7 +1855,7 @@ events.onerror = () => events.readyState === EventSource.CLOSED && setTimeout(()
 addEventListener('visibilitychange', drain);
 // The rows' ages move on as the minutes pass.
 setInterval(renderSide, 60_000);
-$('#audit').addEventListener('scroll', e => { const el = e.currentTarget; el.dataset.end = el.scrollTop + el.clientHeight >= el.scrollHeight - 8 ? 'yes' : 'no'; });
+$('#log').addEventListener('scroll', e => { const el = e.currentTarget; el.dataset.end = el.scrollTop + el.clientHeight >= el.scrollHeight - 8 ? 'yes' : 'no'; });
 
 // Pane widths, kept in this browser: a grip's drag sets its pane's width, which the CSS bounds, and keeps what shows.
 {

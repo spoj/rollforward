@@ -162,28 +162,29 @@ test("only the runner abandons, from the Close dialog, whose buttons for a task 
   assert.deepEqual(native, [], "the browser's own dialogs never show");
 });
 
-test("the side panel is the instance's conversation, a run a line among its threads; the audit, a drawer closed until asked for, has the log and the agent's steps, a plain line each", async () => {
+test("the side panel is the instance's conversation, a run a line among its threads, or its audit, by the switch at its top: the log and the agent's steps, a plain line each", async () => {
   await page.evaluate(() => { location.hash = '#/3d70f7ca6f20'; });
   await page.waitForSelector('#bar h1 .t:text-is("2026-08-30")');
-  await page.waitForSelector('#log.open .lh b:text-is("Conversation")');
+  await page.waitForSelector('#log.open .seg .sel:text-is("Conversation")');
   assert.equal(await page.getAttribute('#bar [data-act=panel]', 'title'), 'Close the conversation', 'one toggle, in the bar, open or closed');
   const run = page.locator('#log details.runl');
   assert.equal(await run.locator('summary').innerText(), 'Run 1 · done · 4m 0s · $0.21');
   assert.match(await run.locator('.post').innerText(), /^Borrowing base for 08-30: excess 180,542\.50/, 'the latest run open to its report');
   assert.equal(await page.locator('#audit').isVisible(), false);
-  await page.click('#log [data-act=audit]');
+  await page.click('#log .seg [data-act=audit]');
   await page.waitForSelector('#audit .e');
+  assert.deepEqual([await page.textContent('#log .seg .sel'), await page.locator('#conv').isVisible()], ['Audit', false], 'in place of the conversation');
   const rows = await page.locator('#audit .e > div').evaluateAll(es => es.map(e => (e as HTMLElement).innerText.split('\n')[0]));
   assert.deepEqual([...rows.slice(0, 4), rows.at(-1)], ['alex opened the instance', 'alex uploaded an input', 'Server showed u2', 'Run 1 started', 'alex closed the instance']);
   assert.ok(rows.includes('Run 1 finished · 4m 0s · $0.21') && rows.includes("alex's agent set up Borrowing base"), 'each entry a line');
   assert.ok(rows.includes("alex's agent said Borrowing base for 08-30: excess 180,542.50, up 6,742.50."), "and the agent's session");
-  await page.click('#audit [data-act=audit]');
+  await page.click('#log .seg [data-act=audit]');
   assert.equal(await page.locator('#audit').isVisible(), false);
   await page.click('#bar [data-act=panel]');
   await page.waitForSelector('#log:not(.open)', { state: 'attached' });
   assert.equal(await page.getAttribute('#bar [data-act=panel]', 'title'), 'Open the conversation');
   await page.click('#bar [data-act=panel]');
-  await page.waitForSelector('#log.open .lh b:text-is("Conversation")');
+  await page.waitForSelector('#log.open .seg .sel:text-is("Conversation")');
 });
 
 test("the runner sees the review sheet, its verdict first, and the process, open; a thread whose entry started a run that added a rule says so, opening the process; the run's calls to a connection are in the audit, a refusal with why", async () => {
@@ -209,7 +210,7 @@ test("the runner sees the review sheet, its verdict first, and the process, open
   assert.equal(ok, 'Your agent called adb: POST /api/2.0/sql/statements');
   assert.match(refused, /^Your agent called adb: POST \/api\/2\.0\/sql\/statements, refused/);
   assert.equal(await calls.last().locator('.d').innerText(), 'adb only reads: a statement starts with SELECT, not DROP');
-  await page.click('#audit [data-act=audit]');
+  await page.click('#log .seg [data-act=audit]');
 });
 
 test("a row's chevron folds and opens it, selected or not, and selects nothing", async () => {
@@ -282,7 +283,7 @@ test("what the session names, such as a tool call's name, shows as text in the a
   await page.click('#log [data-act=audit]');
   await page.locator('#audit .e', { hasText: '<img src=x onerror="window.pwned=1">' }).waitFor();
   assert.equal(await page.evaluate(() => (window as unknown as { pwned?: number }).pwned), undefined);
-  await page.click('#audit [data-act=audit]');
+  await page.click('#log .seg [data-act=audit]');
 });
 
 test("a sign-off the agent asks for shows louder, above the instance and in its thread, with Approve and Reject for its runner; approving commits the folder, as the thread and the audit say", async () => {
@@ -303,7 +304,7 @@ test("a sign-off the agent asks for shows louder, above the instance and in its 
   await page.waitForSelector('#needs', { state: 'hidden' });
   await page.click('#log [data-act=audit]');
   await page.locator('#audit .e', { hasText: 'You signed off' }).waitFor();
-  await page.click('#audit [data-act=audit]');
+  await page.click('#log .seg [data-act=audit]');
 });
 
 test("people show by name, with their email on hover, and Entra groups by label; adding to a workspace suggests people by name and takes a group's label", async () => {
@@ -327,7 +328,7 @@ test("people show by name, with their email on hover, and Entra groups by label;
   assert.equal(await page.locator('#needs').innerText(), 'Note\nThe bank wants it by Friday.\nReply');
   await page.click('#log [data-act=audit]');
   await page.locator('#audit .e', { hasText: 'Bob left a note for you' }).waitFor();
-  await page.click('#audit [data-act=audit]');
+  await page.click('#log .seg [data-act=audit]');
   const long = `Wide${'_'.repeat(400)}`;
   assert.equal((await fetch(url('/api/instances/a5c0ff5e1f00/comment'), { method: 'POST', body: JSON.stringify({ text: long }), headers: { cookie: bobs } })).status, 200);
   await page.waitForSelector(`#needs span:text-is("${long}")`);
