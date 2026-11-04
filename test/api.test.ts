@@ -33,15 +33,24 @@ const iid = async (name: string, label: string) => (await shown(name)).instances
 const at = async (name: string, label?: string, action?: string) => (label ? `/api/instances/${await iid(name, label)}${action ? `/${action}` : ''}` : `/api/series/${(await shown(name)).id}`);
 const dir = async (name: string, label: string) => join(root, 'instances', await iid(name, label));
 const create = async (name: string, label: string, cookie = admin) => call('POST', await at(name), JSON.stringify({ label }), cookie);
-// An instance's log once its nth run has ended.
-async function ran(name: string, label: string, n = 1) {
+// An instance's log, by its path, once its nth run has ended.
+async function ran(path: string, n = 1) {
   let log: { op: string; [k: string]: any }[] = [];
   for (let i = 0; log.filter(e => e.op === 'done').length < n && i < 240; i++) {
     await new Promise(r => setTimeout(r, 250));
-    ({ log } = await json(await at(name, label)));
+    ({ log } = await json(path));
   }
   assert.ok(log.filter(e => e.op === 'done').length >= n, `run ${n} ended`);
   return log;
+}
+// Once no run goes or waits, in all an admin sees.
+async function quiet() {
+  for (let i = 0; i < 240; i++) {
+    const { running, queued } = await json('/api/status');
+    if (!running.length && !queued.length) return;
+    await new Promise(r => setTimeout(r, 250));
+  }
+  assert.fail('the runs never settled');
 }
 
 before(async () => {
@@ -86,7 +95,7 @@ test('a new instance of a series starts empty and runs at once; a new series can
     { seq: 1, at: undefined, by: adminEmail, op: 'create', logins: [] },
     { seq: 2, at: undefined, by: 'server', op: 'wake', from: adminEmail },
   ]);
-  await ran(series, '2026-09-13');
+  await ran(await at(series, '2026-09-13'));
 
   const made = await call('POST', '/api/series', JSON.stringify({ workspace: (await named('larkfield')).id, name: monthly }));
   assert.equal(made.status, 200);
@@ -97,7 +106,7 @@ test('a new instance of a series starts empty and runs at once; a new series can
 test('an upload lands read-only, becomes an item, and starts one run that ends with an error; a drop onto an item is only a hint', async () => {
   const bytes = 'a,b\n1,2\n', label = '2026-09-13';
   assert.equal((await create(monthly, label)).status, 200);
-  await ran(monthly, label);
+  await ran(await at(monthly, label));
   assert.equal((await call('POST', `${await at(monthly, label, 'upload')}?by=t&pane=in&name=x.csv`, bytes)).status, 200);
   const file = join(await dir(monthly, label), 'upload', 'x.csv');
   assert.equal(readFileSync(file, 'utf8'), bytes);
@@ -113,7 +122,7 @@ test('an upload lands read-only, becomes an item, and starts one run that ends w
   assert.equal(second.doc.items.find((i: { id: string }) => i.id === x.id).file, 'upload/x.csv', 'the agent decides what a drop replaces');
   assert.ok(second.doc.items.some((i: { file: string }) => i.file === 'upload/x_2.csv'));
 
-  assert.ok((await ran(monthly, label, 2)).findLast(e => e.op === 'done')!.error, 'no model reachable, so the run carries an error');
+  assert.ok((await ran(await at(monthly, label), 2)).findLast(e => e.op === 'done')!.error, 'no model reachable, so the run carries an error');
   await new Promise(r => setTimeout(r, 1000));
   assert.equal((await json(await at(monthly, label))).log.filter((e: { op: string }) => e.op === 'run').length, 2, "the making's and the uploads': a run that never started is not retried");
 });
@@ -121,7 +130,7 @@ test('an upload lands read-only, becomes an item, and starts one run that ends w
 test('an upload streams to disk as it arrives, and is refused if its instance closes meanwhile', async () => {
   const label = '2026-09-20';
   assert.equal((await create(monthly, label)).status, 200);
-  await ran(monthly, label);
+  await ran(await at(monthly, label));
   let release!: () => void, sent = false;
   const held = new Promise<void>(ok => { release = ok; });
   const body = new ReadableStream({ async pull(c) { if (!sent) { sent = true; c.enqueue(new Uint8Array(1 << 20)); } else { await held; c.close(); } } });
@@ -433,7 +442,7 @@ test('a task is a series of one instance, Untitled until its first prompt or a r
   assert.deepEqual((await solo())[0], [one.id, 'Cash forecasts', false, ['Cash forecast']]);
   assert.equal((await json(`/api/instances/${one.instance}`)).log.at(-1).op, 'promote');
   const next = (await (await call('POST', `/api/series/${one.id}`, JSON.stringify({ label: 'week 2' }))).json()).id;
-  assert.deepEqual((await json(`/api/instances/${next}`)).log.map((e: { op: string }) => e.op).slice(0, 2), ['create', 'wake'], 'the next instance is a plain one, which runs at once');
+  assert.deepEqual((await ran(`/api/instances/${next}`)).map(e => e.op).slice(0, 3), ['create', 'wake', 'run'], 'the next instance is a plain one, which runs at once');
   assert.equal((await call('POST', `/api/series/${one.id}/promote`, JSON.stringify({ name: 'Again' }))).status, 400);
 });
 
@@ -518,6 +527,8 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   assert.equal((await call('POST', '/tokens', JSON.stringify({ name: 'long', days: 365 }))).status, 400, 'at most 90 days');
   assert.match(await rf('ls'), /^larkfield\/Weekly borrowing base\/2026-08-30  closed/m);
   await rf('comment', `larkfield/${series}/talk`, 'From the shell');
+  // A run writing meanwhile would change what the second pull finds.
+  await quiet();
   const pulled = join(tmp, 'pulled'), week = `larkfield/${series}/2026-08-30`;
   assert.match(await rf('pull', '/', pulled), /^new  larkfield\/AGENTS\.md$/m);
   assert.deepEqual(['', 'larkfield'].map(d => readFileSync(join(pulled, d, 'AGENTS.md'), 'utf8')), ['Fiscal months end on the last Saturday.', 'Larkfield Ltd is now Larkfield Holdings.']);
@@ -577,7 +588,7 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   writeFileSync(file, `owner ${adminEmail}\nmember ${bob}  # he runs one\n`);
   assert.match(await rf('people', 'Guarded', '--set', file), /^\+ member bob@demo\.test\nsaved$/m);
   const { id: weekly } = await (await call('POST', '/api/series', JSON.stringify({ workspace: (await named('Guarded')).id, name: 'Weekly' }))).json();
-  assert.equal((await call('POST', `/api/series/${weekly}`, JSON.stringify({ label: 'one' }), b)).status, 200);
+  await ran(`/api/instances/${(await (await call('POST', `/api/series/${weekly}`, JSON.stringify({ label: 'one' }), b)).json()).id}`);
   assert.match(await rf('people', 'Guarded'), /^member +bob@demo\.test +# last in [\d-]+ [\d:]+; runs Weekly\/one$/m);
   writeFileSync(file, `owner ${adminEmail}\n`);
   assert.match(await rf('people', 'Guarded', '--set', file, '-n'), /^- member bob@demo\.test$/m);
