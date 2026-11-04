@@ -16,7 +16,7 @@ import { checkTicks, logins, runnerOf, signOut } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { byLogin, call, connections, convert, intercepts, loginOf, removeConnection, setConnection } from './connections.ts';
-import { Browsers, endSignIn, isSignIn, passUpgrade, reap, startSignIn, viewPage } from './browsers.ts';
+import { Browsers, endSignIn, isSignIn, keepAlive, passUpgrade, reap, startSignIn, viewPage } from './browsers.ts';
 import { offer, unoffer } from './connections/graph.ts';
 import { forget, indexes, startIndexing, track } from './indexes.ts';
 import { seriesSettings } from './series.ts';
@@ -788,6 +788,7 @@ if (process.env.RF_BROWSER_URL) reap().catch(e => console.error('the browser ser
 server.listen(port, host, () => {
   startIndexing();
   startWaking();
+  if (process.env.RF_BROWSER_URL) setInterval(() => keepAlive().catch(e => console.error('keeping logins alive:', e)), 60_000).unref();
   if (m365Ready()) checkLogins(connections().map(loginOf).flatMap(l => l.scope ? [l] : []));
   console.log(`rollforward on http://${host}:${port}, data in ${root}, sign-in ${mode}${process.env.RF_TODAY ? `, skills take today as ${process.env.RF_TODAY} (RF_TODAY)` : ''}`);
 });

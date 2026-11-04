@@ -10,9 +10,10 @@ import { createInstance, openStore } from '../src/store.ts';
 import { initSystem, saveTree, writeJson } from '../src/system.ts';
 
 // A run's browsers, from a stand-in browser service whose page changes only when the test says, and which keeps the states and
-// headers it was given and the sessions it closed, lists those in `listed`, and answers a browser's state as `back` says.
-let page = Buffer.from('page 1'), back: unknown = { cookies: [] }, listed: string[] = [];
-const states: unknown[] = [], headers: unknown[] = [], deleted: string[] = [];
+// headers it was given and the sessions it closed, lists those in `listed`, and answers a browser's state as `back` says and its
+// tab as `shown` does.
+let page = Buffer.from('page 1'), back: unknown = { cookies: [] }, listed: string[] = [], shown = { url: '', password: false };
+const states: unknown[] = [], headers: unknown[] = [], deleted: string[] = [], starts: string[] = [];
 const service = createServer(async (req, res) => {
   if (req.method === 'DELETE') {
     deleted.push(req.url!.split('/')[2]);
@@ -22,16 +23,18 @@ const service = createServer(async (req, res) => {
     const { state, site } = JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString());
     states.push(state);
     headers.push(site.headers);
+    starts.push(`${site.start_url} ${site.hosts.join(',')}`);
     return res.writeHead(201).end(JSON.stringify({ id: 'b9' }));
   }
   if (req.url === '/sessions') return res.writeHead(200).end(JSON.stringify(listed.map(id => ({ id }))));
+  if (req.url === '/sessions/b9/page') return res.writeHead(200).end(JSON.stringify(shown));
   if (req.url === '/sessions/b9/log') return res.writeHead(200).end('[{"live":true}]');
   if (req.url!.startsWith('/sessions/b9/files/')) return res.writeHead(200).end(`file at ${req.url}`);
   res.writeHead(req.url === '/sessions/b1/screenshot' ? 200 : 404).end(page);
 }).on('upgrade', (req, socket) => socket.end(`HTTP/1.1 101 Switching Protocols\r\n\r\nservice got ${req.url}`));
 await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
 Object.assign(process.env, { RF_BROWSER_URL: `http://127.0.0.1:${(service.address() as { port: number }).port}`, RF_BROWSER_IDLE_MS: '300' });
-const { Browsers, endSignIn, reap, startSignIn } = await import('../src/browsers.ts');
+const { Browsers, endSignIn, keepAlive, reap, startSignIn } = await import('../src/browsers.ts');
 const { serveAgent } = await import('../src/agent-api.ts');
 const { logins, personDir, saveLogin, secret, signOut } = await import('../src/logins.ts');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-shots-'));
@@ -203,6 +206,35 @@ test("a run that ended while its connection waited for its person's browser open
   const three = new Browsers(createInstance('s', '2027-11', alice, ['web:crm']), 1);
   assert.equal(await Promise.race([three.browser('crm'), sleep(200).then(() => 'still held')]), 'b9', "the person's browser there is free");
   await three.close();
+});
+
+test("a website's keepalive loads its page every so often in office hours, in the browser of each person running an open instance with it ticked, its state the login again, until a sign-in shows, which marks the login expired", async () => {
+  writeJson('connections.json', { pa: { type: 'website', title: 'PatriArch', url: 'https://pa.example.com/PatriArchMVC/Account/Login', hosts: ['sso.example.com'], writeback: true, keepalive: '/PatriArchMVC/', every: 10, hours: '08:00-19:00', updated_by: alice, updated_at: '' } });
+  saveLogin(alice, website('pa', 'PatriArch'), '{"cookies":["signed in"]}');
+  saveLogin('bob@demo.test', website('pa', 'PatriArch'), '{"cookies":["bob, running nothing"]}');
+  createInstance('s', 'k1', alice, ['web:pa']);
+  const monday = (h: number, m = 0) => new Date(2026, 10, 2, h, m), turns = () => starts.filter(s => s.startsWith('https://pa.example.com/PatriArchMVC/ ')).length;
+  [starts.length, states.length, back, shown] = [0, 0, { cookies: ['kept alive'] }, { url: 'https://pa.example.com/PatriArchMVC/Home', password: false }];
+  await keepAlive(monday(7, 59));
+  assert.equal(turns(), 0, 'before office hours');
+  await keepAlive(monday(8));
+  assert.deepEqual([starts, states], [['https://pa.example.com/PatriArchMVC/ pa.example.com'], [{ cookies: ['signed in'] }]], "the page's host alone, in alice's browser, not bob's");
+  assert.deepEqual(JSON.parse(secret(alice, 'web:pa')), { cookies: ['kept alive'] });
+  await keepAlive(monday(8, 9));
+  await keepAlive(new Date(2026, 10, 7, 10));
+  assert.equal(turns(), 1, 'every 10 minutes, on weekdays');
+  const run = new Browsers(createInstance('s', 'k2', alice, ['web:pa']), 1);
+  await run.browser('pa');
+  await keepAlive(monday(8, 10));
+  assert.equal(turns(), 1, "a run holds alice's browser there");
+  await run.close();
+  [shown, back] = [{ url: 'https://pa.example.com/PatriArchMVC/Account/Login', password: true }, { cookies: ['signed out'] }];
+  await keepAlive(monday(8, 20));
+  assert.equal(turns(), 2);
+  assert.equal(logins(alice).find(l => l.id === 'web:pa')!.expired, true, 'a sign-in page: the login expired');
+  assert.deepEqual(JSON.parse(secret(alice, 'web:pa')), { cookies: ['kept alive'] }, 'and its state stays');
+  await keepAlive(monday(8, 30));
+  assert.equal(turns(), 2, 'nothing for an expired login');
 });
 
 test("as the server starts, the browsers a restart left open on the service close: a run's keeps its request log and hands its login back, as its run would have, and a sign-in's just goes", async () => {

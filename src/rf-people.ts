@@ -40,9 +40,11 @@ rf user add EMAIL [admin|publisher] | role EMAIL admin|publisher|user [--force] 
 rf connection set NAME TYPE [--SETTING VALUE]...   an outside system runs reach as their runner, by a login each person makes:
                                   graph, Microsoft 365, with no settings; databricks, --host HOST --warehouse ID, a workspace
                                   and its SQL warehouse; website, --url URL [--hosts HOST,...] [--title TITLE] [--writeback
-                                  false] [--header NAME], where people sign in, the other hosts its pages need, such as
-                                  *.example.com, whether a run's browser writes its state back, and a header its sign-in
-                                  needs that its pages never send, such as x-bot-token, whose value each person gives
+                                  false] [--header NAME] [--keepalive PATH --every 10m [--hours 08:00-19:00]], where people
+                                  sign in, the other hosts its pages need, such as *.example.com, whether a run's browser
+                                  writes its state back, a header its sign-in needs that its pages never send, such as
+                                  x-bot-token, whose value each person gives, and a page to load in each live login's
+                                  browser every so often, in office hours on weekdays if given, so idle sessions stay alive
 rf connection remove NAME
 rf brand [--text TEXT] [--logo FILE] [--clear]   the deployment's text and logo, a .png, .jpg, .gif, .webp or .svg, which top
                                   the sidebar and are the page's title and icon; --clear goes back to the plain look, and with

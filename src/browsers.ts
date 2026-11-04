@@ -6,7 +6,7 @@ import { request as httpRequest, STATUS_CODES, type IncomingMessage, type Server
 import { request as httpsRequest } from 'node:https';
 import type { Duplex } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { HttpError, instance, replaceReadOnly, type Instance } from './store.ts';
+import { HttpError, instance, instances, replaceReadOnly, type Instance } from './store.ts';
 import { logins, personDir, runnerOf, saveLogin, seal, secret, use } from './logins.ts';
 import { connections } from './connections.ts';
 import { readJson, rfDir, tree } from './system.ts';
@@ -69,9 +69,10 @@ export function passUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, 
 // in, and the other hosts its pages need, such as single sign-on's. A browser on one reaches only those hosts; whatever its login
 // may do there, the browser may, so keeping to reads is the agent's, and its request log shows what it did.
 
-export type Website = { name: string; url: string; hosts: string[]; writeback: boolean; header?: string };
-export const websites = (): Record<string, Website> =>
-  Object.fromEntries(connections().filter(c => c.type === 'website').map(c => [c.name, { name: c.title ?? c.name, url: c.url, hosts: c.hosts, writeback: c.writeback, header: c.header }]));
+export type Website = { name: string; url: string; hosts: string[]; writeback: boolean; header?: string; keepalive?: string; every?: number; hours?: string };
+export const websites = (): Record<string, Website> => Object.fromEntries(connections().filter(c => c.type === 'website').map(c => [c.name, {
+  name: c.title ?? c.name, url: c.url, hosts: c.hosts, writeback: c.writeback, header: c.header, keepalive: c.keepalive, every: c.every, hours: c.hours,
+}]));
 
 function website(id: string): Website {
   const w = websites()[id];
@@ -127,8 +128,9 @@ export async function endSignIn(email: string, id: string, save: boolean) {
 // back refreshed, unless its person signed out or signed in to it anew meanwhile. Elsewhere each run's browser starts from the login
 // as its person saved it, and nothing comes back.
 
-// The run holding each person's browser on a website that writes its state back, by person and website, and its release.
-const held = new Map<string, { run: Browsers; released: Promise<void>; release(): void }>();
+// The run holding each person's browser on a website that writes its state back, by person and website, or none for a keepalive's
+// turn, and its release.
+const held = new Map<string, { run?: Browsers; released: Promise<void>; release(): void }>();
 const IDLE_MS = Number(process.env.RF_BROWSER_IDLE_MS ?? 5 * 60_000);
 
 // The runs' browsers open on the service, by id, in .rf/browsers.json, so those a restart cut from their runs still leave what
@@ -199,7 +201,7 @@ export class Browsers {
       if (this.opening.has(site)) return this.opening.get(site);
       const w = website(site), writeback = w.writeback, key = `${email} ${site}`, other = writeback ? held.get(key) : undefined;
       if (other) {
-        if (!waited) this.inst.append('server', 'browser', { run: this.run, site, login: email, action: 'wait', held: `${tree().series[other.run.inst.seriesId]?.name}/${other.run.inst.label}` });
+        if (!waited) this.inst.append('server', 'browser', { run: this.run, site, login: email, action: 'wait', held: other.run ? `${tree().series[other.run.inst.seriesId]?.name}/${other.run.inst.label}` : 'keepalive' });
         await Promise.race([other.released, new Promise(ok => conn?.once('close', ok))]);
         if (conn?.destroyed) return undefined;
         continue;
@@ -312,6 +314,48 @@ export class Browsers {
         if (writeback) this.release(`${email} ${site}`);
       }
     }));
+  }
+}
+
+// ---- Keeping logins alive: a website whose sessions end when left idle, as PatriArch's after 12 minutes, may name a page to load
+// every so many minutes, in office hours if it names them: on weekdays, in the server's time zone. Each turn loads it in the browser
+// of each person whose login there is live and who runs an open instance with it ticked, unless a run of theirs holds that browser;
+// where the website writes its state back, the turn holds it, so a run that connects meanwhile waits. The browser reaches only that
+// page's host, so a sign-in elsewhere, as single sign-on would make one, never stretches a session past what the site allows: a page
+// asking for a password, or one elsewhere, means the login expired, as rf expired says, and else the browser's state is the login.
+const lastTurn = new Map<string, number>();
+
+export async function keepAlive(now = new Date()) {
+  const going = Object.keys(tree().series).flatMap(sid => instances(sid).filter(i => i.doc.status === 'open'));
+  for (const [site, w] of Object.entries(websites())) {
+    const [from, to] = w.hours?.split('-') ?? [], at = now.toTimeString().slice(0, 5);
+    if (!w.keepalive || now.getTime() - (lastTurn.get(site) ?? 0) < w.every! * 60_000 || (w.hours && (now.getDay() % 6 === 0 || at < from || at >= to))) continue;
+    lastTurn.set(site, now.getTime());
+    for (const email of new Set(going.map(runnerOf).filter(r => r.logins.includes(`web:${site}`)).map(r => r.by))) {
+      const login = logins(email).find(l => l.id === `web:${site}`), key = `${email} ${site}`;
+      if (!login || login.expired || held.has(key)) continue;
+      let release!: () => void;
+      if (w.writeback) held.set(key, { released: new Promise<void>(ok => { release = ok; }), release: () => release() });
+      try {
+        const page = new URL(w.keepalive, w.url), id = await open({ ...w, url: page.href, hosts: [] }, 300, JSON.parse(secret(email, login.id)));
+        let shown: { url: string; password: boolean }, state: unknown;
+        try {
+          shown = await json('GET', `/sessions/${id}/page`);
+        } finally {
+          ({ state } = await close(id));
+        }
+        // Unless they signed in anew or out meanwhile.
+        const after = logins(email).find(l => l.id === login.id);
+        if (after?.since !== login.since || after.expired) continue;
+        const over = shown.password || new URL(shown.url).origin !== page.origin;
+        saveLogin(email, over ? { ...after, expired: true } : after, over ? undefined : JSON.stringify(state));
+      } finally {
+        if (w.writeback) {
+          held.delete(key);
+          release();
+        }
+      }
+    }
   }
 }
 
