@@ -10,7 +10,7 @@ import { HttpError, instance, instances, isPerson, replaceReadOnly, type Instanc
 import { lender, logins, personDir, runnerOf, saveLogin, seal, secret, use } from './logins.ts';
 import { connections } from './connections.ts';
 import { users } from './auth.ts';
-import { readJson, rfDir, tree } from './system.ts';
+import { changes, readJson, rfDir, tree } from './system.ts';
 
 // Browsers from the browser service (spoj/rollforward-browser, a repo of its own), whose one client is this server, with its key: a
 // throwaway container per session, driven over CDP, whose proxy keeps to a website's hosts and logs every request. A website login is
@@ -111,10 +111,7 @@ export async function startSignIn(email: string, site: string, given: string): P
 
 export const isSignIn = (email: string, id: string) => signIns.get(id)?.email === email;
 
-export async function viewPage(email: string, id: string): Promise<string> {
-  if (!isSignIn(email, id)) throw new HttpError(404, 'no such sign-in');
-  return (await call('GET', `/sessions/${id}/view`)).toString();
-}
+export const viewPage = async (id: string) => (await call('GET', `/sessions/${id}/view`)).toString();
 
 // Ends a sign-in; with `save`, what the browser holds becomes the person's login to the site, replacing any before. Signing in
 // takes requests the person makes in control of the browser, so with none there is nothing to save yet. What its browser did is
@@ -243,6 +240,7 @@ export class Browsers {
         const b = { id, email, since: login.since, writeback, file, conns: 0 };
         this.opens.set(site, n);
         this.bySite.set(site, b);
+        changes.emit('change', this.inst.id); // for its instance's page to show it
         setJournal({ ...journal(), [id]: { inst: this.inst.id, run: this.run, site, email, since: login.since, writeback, file } });
         this.idle(site, b);
         return id;
@@ -274,6 +272,13 @@ export class Browsers {
     if (h?.run !== this) return;
     held.delete(key);
     h.release();
+  }
+
+  // The run's open browsers that someone who sees its instance may watch, by website, with their sessions: on a website that lists
+  // its people, only if they're among them.
+  watchable(email: string): Map<string, string> {
+    const all = websites();
+    return new Map([...this.bySite].filter(([site]) => all[site] && allowed(all[site], email)).map(([site, b]) => [site, b.id]));
   }
 
   // The agent found the website signed out: the runner's login is marked expired, for them to sign in again, which wakes the instance,

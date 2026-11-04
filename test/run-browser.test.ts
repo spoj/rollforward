@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } fr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInstance, openStore } from '../src/store.ts';
-import { initSystem, saveTree, tree, writeJson } from '../src/system.ts';
+import { changes, initSystem, saveTree, tree, writeJson } from '../src/system.ts';
 
 // A run's browsers, from a stand-in browser service whose page changes only when the test says, and which keeps the states and
 // headers it was given and the sessions it closed, lists those in `listed`, and answers a browser's state as `back` says and its
@@ -289,8 +289,11 @@ test("a website that lists its people lets only them use it, admins no more than
   assert.ok(scoped('web:bank') && !scoped('m365:mail:x'), 'never lent through a shared series');
   await assert.rejects(new Browsers(createInstance('s', 'b1', alice, ['web:bank']), 1).browser('bank'), /Bank is only for the people its connection lists, and alice@demo.test, who runs this instance, is not among them/);
   await assert.rejects(startSignIn(alice, 'bank', ''), /Bank is only for the people its connection lists/);
-  const his = createInstance('s', 'b2', bob, ['web:bank']), run = new Browsers(his, 1);
+  const his = createInstance('s', 'b2', bob, ['web:bank']), run = new Browsers(his, 1), heard: string[] = [], hear = (id: string) => heard.push(id);
+  changes.on('change', hear);
   assert.equal(await run.browser('bank'), 'b9', 'bob, by his Entra group');
+  changes.off('change', hear);
+  assert.deepEqual([heard, [...run.watchable(bob)], [...run.watchable(alice)]], [[his.id], [['bank', 'b9']], []], "its instance's page hears it opened, for bob to watch, and not alice, an admin, who sees the instance");
   await run.close();
   his.append(alice, 'comment', { thread: 't1', text: 'Fetch the balance.' });
   const next = new Browsers(his, 2);

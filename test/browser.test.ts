@@ -94,9 +94,9 @@ describe('website logins', { skip: !process.env.RF_BROWSER_URL && 'needs the bro
     const { id } = await (await call('POST', '/logins/web/portal', { header: 'jwt-1' })).json(), ws = `${base.replace('http', 'ws')}/signins/${id}/view`;
     assert.match(await (await call('GET', `/signins/${id}/view`)).text(), /Take control/);
     assert.equal((await call('GET', `/signins/${id}/view`, undefined, bob)).status, 404, "nobody else's sign-in");
-    await assert.rejects(chromium.connectOverCDP(`${ws}/drive`, { headers: { cookie: bob } }), /404/);
+    await assert.rejects(chromium.connectOverCDP(`${ws}/drive`, { headers: { cookie: bob, origin: base } }), /404/);
     assert.equal(await (await call('POST', `/signins/${id}`)).text(), 'Take control and sign in first, then Save login.', 'nothing to save before the person signs in');
-    const person = await chromium.connectOverCDP(`${ws}/drive`, { headers: { cookie: admin } });
+    const person = await chromium.connectOverCDP(`${ws}/drive`, { headers: { cookie: admin, origin: base } });
     const page = person.contexts()[0].pages()[0];
     await page.fill('input[name=user]', 'alice');
     await page.fill('input[name=pass]', 'pw');

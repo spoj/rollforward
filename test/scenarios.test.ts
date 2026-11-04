@@ -4,6 +4,7 @@ import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -16,7 +17,14 @@ type Script = { bash: (string | (() => string | Promise<string>))[]; report: str
 const scripts: Script[] = [], byPrompt = new Map<string, Script>(), providers: unknown[] = [], keys: string[] = [];
 const app = join(import.meta.dirname, '..'), tmp = mkdtempSync(join(tmpdir(), 'rf-scenario-')), root = join(tmp, 'data');
 const ADMIN = 'admin@demo.test', BOB = 'bob@demo.test';
-let model: ReturnType<typeof createServer>, proc: ChildProcess, base = '', admin = '', bob = '';
+let model: ReturnType<typeof createServer>, proc: ChildProcess, base = '', admin = '', bob = '', sessions = 0;
+// The browser service, a stand-in: the browsers it opens are b1, b2…, each with a person in control and a live view, and a websocket
+// to one answers with the path it reached.
+const service = createServer((req, res) => {
+  if (req.method === 'POST') return void res.writeHead(201).end(JSON.stringify({ id: `b${++sessions}` }));
+  if (req.method === 'DELETE') return void res.end('{"state":{"cookies":[]},"log":[]}');
+  res.end(req.url === '/sessions' ? '[]' : req.url!.endsWith('/log') ? '[{"live":true}]' : req.url!.endsWith('/view') ? 'the live view' : '');
+}).on('upgrade', (req, socket) => socket.end(`HTTP/1.1 101 Switching Protocols\r\n\r\nservice got ${req.url}`));
 
 const text = (c: unknown): string => typeof c === 'string' ? c : (c as { type: string; text?: string; content?: unknown }[]).map(b => b.text ?? (b.content === undefined ? '' : text(b.content))).join('');
 const isResult = (m: { role: string; content: unknown }) => Array.isArray(m.content) && m.content.some((b: { type: string }) => b.type === 'tool_result');
@@ -68,6 +76,7 @@ before(async () => {
   model = createServer((req, res) => (req.method === 'POST' && /\/(messages|chat\/completions)$/.test(new URL(req.url!, 'http://x').pathname) ? answer(req, res)
     : res.writeHead(req.url === '/api/v1/key' && String(req.headers.authorization).startsWith('Bearer sk-or-') ? 200 : 404).end('{}')));
   await new Promise<void>(ok => model.listen(0, '127.0.0.1', ok));
+  await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
   const probe = createServer();
   await new Promise<void>(ok => probe.listen(0, '127.0.0.1', ok));
   base = `http://127.0.0.1:${(probe.address() as { port: number }).port}`;
@@ -96,7 +105,8 @@ exec ${git} "$@"
 async function serve() {
   const upstream = `import { upstreams } from ${JSON.stringify(pathToFileURL(join(app, 'src', 'connections.ts')).href)}; upstreams['openrouter.ai'] = 'http://127.0.0.1:${(model.address() as { port: number }).port}';`;
   proc = spawn(process.execPath, ['--import', `data:text/javascript,${encodeURIComponent(upstream)}`, join(app, 'src', 'server.ts'), root, new URL(base).port], {
-    env: { ...process.env, PATH: `${join(tmp, 'bin')}:${process.env.PATH}`, RF_HOLD_GIT: join(tmp, 'hold-git'), HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch'), OPENROUTER_API_KEY: 'stand-in-key', RF_WAKE_TICK_MS: '300', ...entra.env(base), RF_ADMINS: ADMIN },
+    env: { ...process.env, PATH: `${join(tmp, 'bin')}:${process.env.PATH}`, RF_HOLD_GIT: join(tmp, 'hold-git'), HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch'), OPENROUTER_API_KEY: 'stand-in-key', RF_WAKE_TICK_MS: '300',
+      RF_BROWSER_URL: `http://127.0.0.1:${(service.address() as { port: number }).port}`, RF_BROWSER_KEY: 'stand-in', ...entra.env(base), RF_ADMINS: ADMIN },
     stdio: ['ignore', 'pipe', 'inherit'],
   });
   await new Promise((ok, fail) => {
@@ -123,6 +133,7 @@ after(async () => {
     await once(proc, 'exit');
   }
   model.close();
+  service.close();
   entra.close();
   rmSync(tmp, { recursive: true, force: true });
 });
@@ -428,4 +439,38 @@ test("a run that adds rules to the process, or rewords them, says how many in it
   await call('POST', `/api/instances/${id}/comment`, { text: 'Thanks.' });
   log = await runs(id, 3);
   assert.equal(log.findLast(e => e.op === 'done')!.rules, undefined, 'none, none said');
+});
+
+// A websocket's opening, as a page at `origin` asks for it, and all that came back.
+const upgrade = (path: string, cookie: string, origin = base) => new Promise<string>(ok => {
+  let got = '';
+  connect(Number(new URL(base).port), '127.0.0.1').on('data', d => { got += d; }).on('close', () => ok(got))
+    .write(`GET ${path} HTTP/1.1\r\nhost: x\r\nconnection: upgrade\r\nupgrade: websocket\r\ncookie: ${cookie}\r\norigin: ${origin}\r\n\r\n`);
+});
+
+test("whoever sees an instance watches its run's browser live from the page, never driving it, and their Stop browser interrupts the run, closing it", async () => {
+  const carol = await login('carol@demo.test');
+  assert.equal((await call('PUT', '/connections/portal', { type: 'website', title: 'Portal', url: 'https://portal.example.com/', writeback: false })).status, 200);
+  const { id: signIn } = await (await call('POST', '/logins/web/portal', {})).json();
+  assert.match(await upgrade(`/signins/${signIn}/view/drive`, admin), /service got \/sessions\/b1\/view\/drive$/, 'a sign-in is its person\'s to drive');
+  assert.match(await upgrade(`/signins/${signIn}/view/drive`, admin, 'https://evil.example.com'), /^HTTP\/1.1 404/, "only from the server's own pages");
+  assert.equal((await call('POST', `/signins/${signIn}`)).status, 200);
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Watching' })).json();
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB] })).status, 200);
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Portal pull' })).json();
+  scripts.push({ bash: ['curl -s -m 5 -H "connection: upgrade" -H "upgrade: websocket" "$RF_BROWSERS/portal"; touch working/opened; sleep 120'], report: 'Never said.', saw: [] });
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: ['web:portal'] })).json(), view = `/runs/${id}/portal/view`;
+  await until('the browser', () => existsSync(join(root, 'instances', id, 'working', 'opened')));
+  assert.deepEqual((await (await call('GET', `/api/instances/${id}`, undefined, bob)).json()).run.browsers, ['portal'], 'the page shows it to bob, who sees the instance');
+  assert.equal(await (await call('GET', view, undefined, bob)).text(), 'the live view');
+  assert.match(await upgrade(`${view}/watch`, bob), /service got \/sessions\/b2\/view\/watch$/);
+  for (const [path, cookie, origin, why] of [[`${view}/drive`, bob, base, 'never to drive'], [`${view}/watch`, bob, 'https://evil.example.com', "only from the server's own pages"], [`${view}/watch`, carol, base, 'nor for anyone who sees no instance']])
+    assert.match(await upgrade(path, cookie, origin), /^HTTP\/1.1 404/, why);
+  assert.equal((await call('GET', view, undefined, carol)).status, 404);
+  assert.equal((await call('POST', `/api/instances/${id}/interrupt`, undefined, bob)).status, 200, 'Stop browser');
+  const done = (await runs(id, 1)).find(e => e.op === 'done')!;
+  assert.equal(done.aborted, true);
+  await until('the browser closed', () => readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').includes('"op":"browser"'));
+  const { log, run } = await (await call('GET', `/api/instances/${id}`, undefined, bob)).json();
+  assert.deepEqual([log.find((e: { op: string }) => e.op === 'interrupt').by, log.find((e: { op: string }) => e.op === 'browser').site, run], [BOB, 'portal', null], "logged as bob's, and the browser gone");
 });

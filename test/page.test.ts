@@ -364,3 +364,34 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   rmSync(join(rf, 'connections.json'));
   rmSync(mine, { recursive: true });
 });
+
+test("while a run's browser is open it plays in a corner of the instance, to watch: one website at a time, folded as the person last left it, and Stop browser interrupts the run", async () => {
+  let browsers = ['portal', 'bank'];
+  const stops: string[] = [], at = '**/api/instances/a5c0ff5e1f00';
+  await page.route(at, async r => {
+    const res = await r.fetch();
+    await r.fulfill({ response: res, json: { ...await res.json(), run: browsers.length ? { n: 3, cost: 0.1, browsers } : null } });
+  });
+  await page.route('**/runs/**', r => r.fulfill({ contentType: 'text/html', body: 'watching' }));
+  await page.route(`${at}/interrupt`, r => (stops.push(r.request().method()), r.fulfill({ body: 'ok' })));
+  await page.evaluate(() => { location.hash = '#/a5c0ff5e1f01'; });
+  await page.waitForSelector('#player', { state: 'hidden' });
+  await page.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
+  const player = page.locator('#player'), src = () => player.locator('iframe').getAttribute('src');
+  await player.locator('iframe').waitFor();
+  assert.deepEqual([await src(), await player.locator('.seg button').allInnerTexts()], ['/runs/a5c0ff5e1f00/portal/view?watch', ['portal', 'bank']]);
+  await player.locator('[data-site=bank]').click();
+  assert.equal(await src(), '/runs/a5c0ff5e1f00/bank/view?watch');
+  await player.locator('[data-act=player]').click();
+  assert.equal(await player.locator('iframe').count(), 0, 'folded');
+  await page.reload();
+  await player.locator('.plh').waitFor();
+  assert.equal(await player.locator('iframe').count(), 0, 'still folded, as this browser remembers');
+  await player.locator('[data-act=player]').click();
+  await player.locator('iframe').waitFor();
+  browsers = [];
+  await player.locator('[data-act=interrupt]').click();
+  await player.waitFor({ state: 'hidden' });
+  assert.deepEqual(stops, ['POST'], 'Stop browser is the Interrupt');
+  for (const url of [at, '**/runs/**', `${at}/interrupt`]) await page.unroute(url);
+});

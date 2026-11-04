@@ -294,6 +294,13 @@ dialog::backdrop { background: rgba(21,24,29,.3); }
 .audit .lh { display: flex; align-items: center; gap: 10px; padding: 6px 12px 6px 20px; border-bottom: 1px solid var(--rule); position: sticky; top: 0; background: var(--sheet); }
 .audit .lh .x { margin-left: auto; border: 0; background: none; font-size: 20px; line-height: 1; color: var(--ink-3); cursor: pointer; }
 .audit .e { padding: 4px 20px; font-size: 12.5px; }
+.player { position: absolute; right: 16px; bottom: 16px; z-index: 5; width: 440px; background: var(--sheet); border: 1px solid var(--rule-2); border-radius: var(--r2); box-shadow: 0 6px 24px rgba(21,24,29,.16); overflow: hidden; }
+.player .plh { display: flex; align-items: center; gap: 8px; padding: 2px 4px 2px 12px; font-size: 12.5px; }
+.player .plh span { color: var(--ink-3); }
+.player .plh .seg { margin: 0; }
+.player .plh .quiet { margin-left: auto; }
+.player .plh .x { border: 0; background: none; padding: 4px 8px; color: var(--ink-3); cursor: pointer; }
+.player iframe { display: block; width: 100%; height: 314px; border: 0; background: #222; }
 .runl { font-size: 12.5px; color: var(--ink-3); border-top: 1px solid var(--rule); padding-top: 6px; }
 .runl .post { color: var(--ink); margin-top: 4px; font-size: 13.5px; }
 .sect > summary { font-size: 13px; color: var(--ink-3); margin-top: 8px; }
@@ -354,6 +361,7 @@ input[type=checkbox] { accent-color: var(--ink); }
   .state { margin-left: 0; order: 5; width: 100%; }
   .bar .btn.top { padding: 6px 9px; font-size: 12px; }
   .panes { display: block; overflow: auto; }
+  .player { left: 8px; right: 8px; bottom: 8px; width: auto; }
   .pane { padding: 16px 14px; overflow: clip; }
   .ph { position: static; margin: 0 0 4px; padding: 0; background: none; }
   .outs { border-left: 0; border-bottom: 1px solid var(--rule); }
@@ -384,6 +392,7 @@ input[type=checkbox] { accent-color: var(--ink); }
       <div class="key" tabindex="0">Key<div class="legend"><div><i class="p">Blue</i> uploaded by a person</div><div><i>Black</i> made by the agent</div><div><span class="tri"></span>comments</div><div><span class="tri q"></span>waiting on a reply</div><div><span class="dash"></span>expected, not there yet</div><div class="keys"><div><kbd>j k</kbd> move through the sidebar, <kbd>h l</kbd> fold and open, <kbd>Enter</kbd> go</div><div><kbd>1 2 3</kbd> the conversation, its process, the audit, <kbd>c</kbd> the comment box</div><div><kbd>Ctrl Enter</kbd> sends, <kbd>Esc</kbd> leaves a field, <kbd>?</kbd> shows this</div></div></div></div>
     </div>
     <section class="audit" id="audit" hidden></section>
+    <div class="player" id="player" hidden></div>
   </main>
   <aside class="log" id="log"></aside>
   <div class="grip" data-pane="side" title="Drag to resize; double-click to reset"></div><div class="grip" data-pane="panel" title="Drag to resize; double-click to reset"></div>
@@ -434,8 +443,8 @@ function toast(text, kind = '') {
   setTimeout(() => { el.remove(); if (!box.children.length) box.hidePopover(); }, 6000);
 }
 // The side panel opens beside the instance where there's room for both; the audit is closed until asked for. sect holds which of the
-// panel's folds are open, where someone opened or closed them.
-const ui = { open: innerWidth > 800, on: null, ref: null, audit: false, sect: {} };
+// panel's folds are open, where someone opened or closed them; site, which of the run's browsers the player shows.
+const ui = { open: innerWidth > 800, on: null, ref: null, audit: false, sect: {}, site: null };
 // The review sheet, where it's a text, and the process, as the conversation shows them.
 let docs = { key: '' };
 const drawn = new WeakMap();
@@ -531,6 +540,7 @@ function render() {
   renderNeeds();
   renderPanes();
   renderAudit();
+  renderPlayer();
   renderLog();
   renderCard();
 }
@@ -829,6 +839,18 @@ function renderAudit() {
   put($('#audit'), `<div class="lh"><b>Audit</b><span class="sub">${plural(runs, 'run')}, ${usd(cost)}</span><button class="x" data-act="audit" title="Close">\u00D7</button></div>`
     + rows.map(r => `<div class="e"><span class="tm">${hhmm(r.at)}</span><div>${r.html}</div></div>`).join(''));
   if ($('#audit').dataset.end !== 'no') $('#audit').scrollTop = $('#audit').scrollHeight;
+}
+
+// A run's browser, live while it's open, for anyone who sees the instance to watch, never drive, but on a website that lists its
+// people only for them: one at a time, the others a click away, folded or open as the person last left it, in this browser. Stop
+// browser interrupts the run, which closes its browsers.
+function renderPlayer() {
+  const sites = data?.run?.browsers ?? [], site = sites.includes(ui.site) ? ui.site : sites[0], folded = localStorage.player === 'folded';
+  $('#player').hidden = !site;
+  // Emptied as it hides, so a browser opened again is a new view.
+  put($('#player'), !site ? '' : `<div class="plh"><b>Run ${data.run.n}'s browser</b>${sites.length > 1 ? `<span class="seg">${sites.map(s => `<button class="${s === site ? 'sel' : ''}" data-act="watch" data-site="${esc(s)}">${esc(s)}</button>`).join('')}</span>` : `<span>on ${esc(site)}</span>`}`
+    + `<button class="quiet" data-act="interrupt" title="Interrupts the run, which closes its browsers">Stop browser</button><button class="x" data-act="player" title="${folded ? 'Open' : 'Fold'}">${folded ? '\u25B4' : '\u25BE'}</button></div>`
+    + (folded ? '' : `<iframe src="/runs/${cur.i.id}/${enc(site)}/view?watch" title="Run ${data.run.n}'s browser on ${esc(site)}"></iframe>`));
 }
 
 // The audit opens with the session's steps, fetched for it, and closes.
@@ -1408,6 +1430,8 @@ async function onAct(act, el, was) {
     ]);
   }
   if (act === 'audit') await toggleAudit();
+  if (act === 'watch') { ui.site = el.dataset.site; renderPlayer(); }
+  if (act === 'player') { localStorage.player = localStorage.player === 'folded' ? 'open' : 'folded'; renderPlayer(); }
   // A rule the process gained: the Process fold, open, in view.
   if (act === 'process') {
     ui.sect.process = true;
