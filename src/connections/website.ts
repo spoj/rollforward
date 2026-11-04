@@ -1,4 +1,5 @@
 import { HttpError } from '../store.ts';
+import { isPeople } from '../system.ts';
 import type { Type } from '../connections.ts';
 
 // A website people sign in to themselves, in a live browser on the page: `url`, where sign-in starts, `hosts`, the others its pages
@@ -15,7 +16,7 @@ export default {
     if (![undefined, true, false, 'true', 'false'].includes(input.writeback as never)) throw new HttpError(400, 'writeback: true or false');
     if (input.header !== undefined && !/^[a-z0-9-]+$/i.test(String(input.header))) throw new HttpError(400, 'header: the name of a header its sign-in needs, such as x-bot-token');
     const people = typeof input.people === 'string' ? input.people.split(',').map(p => p.trim()).filter(Boolean) : input.people;
-    if (people !== undefined && !(Array.isArray(people) && people.length && people.every(p => typeof p === 'string' && /^[^@\s]+@[^@\s]+$|^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(p))))
+    if (people !== undefined && !(isPeople(people) && people.length))
       throw new HttpError(400, 'people: who alone may use it, emails and Entra group ids, such as ann@example.com,<group id>');
     const every = /^(\d+)([mh])$/.exec(String(input.every ?? ''));
     if ((input.keepalive === undefined) !== (input.every === undefined) || (input.hours !== undefined && input.keepalive === undefined)) throw new HttpError(400, 'keepalive and every go together, and hours with them: a page of the website to load, by its address or path, such as https://patriarch.patrina.net/PatriArchMVC/, how often, such as 10m, and office hours, such as 08:00-19:00');

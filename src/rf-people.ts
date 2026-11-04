@@ -51,7 +51,9 @@ rf connection set NAME TYPE [--SETTING VALUE]...   an outside system runs reach 
 rf connection remove NAME
 rf brand [--text TEXT] [--logo FILE] [--clear]   the deployment's text and logo, a .png, .jpg, .gif, .webp or .svg, which top
                                   the sidebar and are the page's title and icon; --clear goes back to the plain look, and with
-                                  no option it prints them`;
+                                  no option it prints them
+rf creators [EMAIL|GROUP,...] [--clear]   who besides admins makes workspaces, by email or Entra group id: a list replaces
+                                  the one before, --clear leaves it to admins, and with neither it prints it`;
 
 const GUIDE = `rollforward runs a team's recurring work, such as a weekly borrowing base or a month-end reconciliation, with an agent
 that does each period's work and people who check it. rf does what its page does, as you.
@@ -388,6 +390,10 @@ else if (cmd === 'comment' && args.length === 2) {
     const { text, logo } = (await get('/me')).brand;
     console.log(text || logo ? `${text ?? 'no text'}, ${logo ? 'with a logo' : 'no logo'}` : 'no brand: the plain look');
   }
+} else if (cmd === 'creators' && args.length <= 1) {
+  const list = flags.clear ? [] : args[0]?.split(',').map(p => p.trim()).filter(Boolean);
+  const now: string[] = await (await (list ? post('/creators', { creators: list }, 'PUT') : api('/creators'))).json();
+  console.log(now.length ? now.join('\n') : 'only admins make workspaces');
 } else if (cmd === 'user' && args.length >= 2) {
   const [what, email, role] = args, at = `/users/${encodeURIComponent(email)}`;
   if (what === 'add') await post('/users', { roles: { [email]: role ?? 'user' } }, 'PUT');

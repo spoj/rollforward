@@ -30,7 +30,7 @@ Recurring tasks, files in and files out. People drop this period's input files i
 
 The image starts empty. Until an app is registered (see Access), Sign in with Microsoft offers two demo accounts: take the admin.
 
-- **A new series:** make a workspace (+ by Workspaces), a series in it, and an instance for a past period. Drop its inputs on the left and what was actually sent on the right. The agent rebuilds each output from the inputs and says what it couldn't derive; close the instance once it's right. Import a few periods this way, oldest first.
+- **A new series:** make a workspace (+ by Workspaces, for admins and those they name), a series in it, and an instance for a past period. Drop its inputs on the left and what was actually sent on the right. The agent rebuilds each output from the inputs and says what it couldn't derive; close the instance once it's right. Import a few periods this way, oldest first.
 - **The next period:** a new instance starts empty and runs at once: the agent rolls forward from the instances before it, fetches what it can and sets up the screen, its tiles dashed until their files come. Drop this period's files: the agent builds the outputs, asks what a reviewer might decide differently, and ends each run with a report.
 - **A one-off task:** the workspace's + starts one at once, Untitled, on its conversation: write what you need and drop files there, and the first comment starts the run and names the task. If it turns out to recur, make it a series as you close it, or later with Start another based on this.
 
@@ -38,7 +38,7 @@ For scale, a weekly borrowing base's runs cost about $0.20–0.60 each with Clau
 
 ## Concepts
 
-- **People** sign in with a Microsoft account. Each is a **user**, a **publisher**, who also pushes skills, which every run in every workspace loads, so a publisher is trusted with every runner's ticked logins, or an **admin**.
+- **People** sign in with a Microsoft account. Each is a **user**, a **publisher**, who also pushes skills, which every run in every workspace loads, so a publisher is trusted with every runner's ticked logins, or an **admin**. Making a workspace is for admins and the people or Entra groups they name with `rf creators`, apart from publishing; anyone else asks an admin, and the + by Workspaces isn't there for them. Who is in a workspace, and all else in one, stays as its owners keep it.
 - **Workspace:** a folder of series, usually one entity's work, such as its bank rec, inventory rec and borrowing base. It is the only unit of sharing: its **members** see and work in every series in it, and its **owners** also manage who is in it, each a person by email or an Entra group by id; whoever adds a group may label it, such as Finance HK. An area that needs hiding, such as payroll, is a workspace of its own with fewer people. A workspace with no one in it is the admins'.
 - **Series:** a recurring transform, such as "Weekly borrowing base": each instance's input files become its output files. What an instance should contain comes from earlier instances, not from a declaration. A **task** is a one-off: a series marked single, holding one instance and named by its label, Untitled until its first prompt or a rename names it, with no settings. Made a series, as it closes or with **Start another based on this**, which also starts a second instance, it keeps its id, files and log.
 - **Instance:** one pass through a series, under a label people choose, such as "2026-08-24" or "Larkfield refinancing"; instances sort by label. Up to three of a series are open at once. An instance ends **closed**, its runner's sign-off, or **abandoned**.
@@ -117,7 +117,7 @@ Everything is files on the host's disk, in folders named by random ids, with no 
     .rf/                      the server's own: users.json, tree.json, people/<sha256(email)[:16]>/ (each person's logins,
                               and in index/ their caches, see Indexes),
                               connections.json, ca/ (the runs' certificate authority), wakes.json (pending wakes and requests), egress.json (hosts runs may reach), browsers.json (the runs' browsers open on the browser service),
-                              tokens.json and token-uses.jsonl, brand.json (the deployment's logo and text), runs/ (runs' copies of indexes,
+                              tokens.json and token-uses.jsonl, brand.json (the deployment's logo and text), creators.json (who besides admins makes workspaces), runs/ (runs' copies of indexes,
                               see Indexes), and the keys session.key and seal.key
       tree.json               {"workspaces": {id: {name, owners, members, archived?}}, "series": {id: {name, workspace, archived?, single?}},
                               "groups": {Entra group id: label}}

@@ -305,7 +305,13 @@ test("each person sees the workspaces they're in, by email or Entra group; owner
   const make = (name: string, cookie = admin) => call('POST', '/api/workspaces', JSON.stringify({ name }), cookie);
   assert.equal((await json('/me', b)).role, 'user');
   assert.deepEqual(await workspaces(b), []);
-  assert.equal((await make('BobCo', b)).status, 200);
+  assert.deepEqual([(await json('/me', b)).creates, (await json('/me')).creates], [false, true], 'making a workspace is for admins');
+  const refused = await make('BobCo', b);
+  assert.deepEqual([refused.status, await refused.text()], [403, 'making a workspace is for admins and the people they name: ask an admin']);
+  assert.equal((await call('PUT', '/creators', JSON.stringify({ creators: [bob] }), b)).status, 403, "who may is the admins' to say");
+  assert.equal((await call('PUT', '/creators', JSON.stringify({ creators: ['Treasury'] }))).status, 400);
+  assert.deepEqual(await (await call('PUT', '/creators', JSON.stringify({ creators: ['Bob@demo.test'] }))).json(), [bob]);
+  assert.equal((await make('BobCo', b)).status, 200, 'and those they name');
   assert.deepEqual((await workspaces(b)).map((w: { name: string; owners: string[] }) => [w.name, w.owners]), [['BobCo', [bob]]]);
   for (const path of [await at(series, '2026-08-30'), `/files/${await iid(series, '2026-08-30')}/upload/x`])
     assert.equal((await call('GET', path, undefined, b)).status, 404, path);
@@ -324,6 +330,9 @@ test("each person sees the workspaces they're in, by email or Entra group; owner
 
   const group = '0b8e5c8a-6d3e-4c21-9f2a-1d2e3f4a5b6c', users = join(root, '.rf', 'users.json');
   writeFileSync(users, JSON.stringify({ ...JSON.parse(readFileSync(users, 'utf8')), [bob]: { ...JSON.parse(readFileSync(users, 'utf8'))[bob], groups: [group] } }));
+  await call('PUT', '/creators', JSON.stringify({ creators: [group.toUpperCase()] }));
+  assert.equal((await json('/me', b)).creates, true, 'by an Entra group too');
+  await call('PUT', '/creators', JSON.stringify({ creators: [] }));
   assert.equal((await make('Acme Payroll')).status, 200);
   assert.equal((await call('POST', '/api/series', JSON.stringify({ workspace: (await named('Acme Payroll')).id, name: 'Payroll' }))).status, 200);
   assert.ok(!(await workspaces(b)).some((w: { name: string }) => w.name === 'Acme Payroll'));
@@ -601,6 +610,9 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   await rf('brand', '--clear');
   assert.deepEqual((await json('/me')).brand, { text: null, logo: false });
   assert.equal((await call('GET', '/brand/logo')).status, 404);
+  assert.equal((await rf('creators', `${bob}, 0B8E5C8A-6D3E-4C21-9F2A-1D2E3F4A5B6C`)).trim(), `${bob}\n0b8e5c8a-6d3e-4c21-9f2a-1d2e3f4a5b6c`);
+  assert.equal((await rf('creators')).trim(), `${bob}\n0b8e5c8a-6d3e-4c21-9f2a-1d2e3f4a5b6c`);
+  assert.equal((await rf('creators', '--clear')).trim(), 'only admins make workspaces');
 
   // Bob runs an instance in a workspace, so taking him out of it, or his admin role when he isn't in it, is refused unless forced.
   await call('POST', '/api/workspaces', JSON.stringify({ name: 'Guarded' }));

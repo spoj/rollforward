@@ -11,7 +11,7 @@ import { AGENT, commit } from './git.ts';
 import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
 import { authenticate, checkConfig, cli, connect, m365Ready, mode, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
-import { canManage, canSee, changes, everyone, initSystem, readJson, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
+import { canManage, canSee, changes, everyone, initSystem, isIn, isPeople, readJson, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
 import { checkTicks, logins, runnerOf, signOut } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
@@ -333,13 +333,14 @@ function events(me: Me, req: IncomingMessage, res: ServerResponse) {
 const text = (path: string) => (existsSync(path) ? readFileSync(path, 'utf8') : '');
 // The deployment's brand, the admins': a text and a logo, which top the sidebar and are the page's title and icon.
 const brand = () => readJson<{ text?: string; logo?: string; type?: string }>('brand.json', {});
+// Who may make a workspace: admins, and the people and Entra groups they name.
+const creators = () => readJson<string[]>('creators.json', []);
 const json = async (req: IncomingMessage) => {
   try { return JSON.parse((await body(req)).toString() || '{}'); } catch { throw new HttpError(400, 'the body is JSON'); }
 };
 const people = (w: { owners?: unknown; members?: unknown }) => [w.owners, w.members].map(list => {
-  const ok = Array.isArray(list) && list.every(p => typeof p === 'string' && /^[^@\s]+@[^@\s]+$|^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(p));
-  if (!ok) throw new HttpError(400, `owners and members are lists of emails and Entra group ids: ${JSON.stringify(list)}`);
-  return (list as string[]).map(p => p.toLowerCase());
+  if (!isPeople(list)) throw new HttpError(400, `owners and members are lists of emails and Entra group ids: ${JSON.stringify(list)}`);
+  return list.map(p => p.toLowerCase());
 });
 
 // Workspaces, series and instances, by id. Renaming a workspace or a series edits .rf/tree.json, so it may happen mid-run; a run sees
@@ -360,6 +361,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     return send(res, 200, { id: target, kind: t.series[target] ? 'series' : 'instance' });
   }
   if (kind === 'workspaces' && !id && req.method === 'POST') {
+    if (me.role !== 'admin' && !isIn(me, creators())) throw new HttpError(403, 'making a workspace is for admins and the people they name: ask an admin');
     const name = safeName(String(payload.name ?? ''));
     if (Object.values(t.workspaces).some(w => w.name === name)) throw new HttpError(409, `the name ${name} is taken; choose another`);
     const wid = newId();
@@ -711,7 +713,15 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       res.end(readFileSync(page));
     } else if (url.pathname === '/me') {
       const { text, logo } = brand();
-      send(res, 200, { ...me, names: names(me), sign_in: mode, m365: m365Ready(), browsers: !!process.env.RF_BROWSER_URL, brand: { text: text || null, logo: !!logo } });
+      send(res, 200, { ...me, names: names(me), sign_in: mode, m365: m365Ready(), browsers: !!process.env.RF_BROWSER_URL, brand: { text: text || null, logo: !!logo }, creates: me.role === 'admin' || isIn(me, creators()) });
+    } else if (url.pathname === '/creators') {
+      if (me.role !== 'admin') throw new HttpError(403, 'who may make workspaces is the admins\' to say');
+      if (req.method === 'PUT') {
+        const { creators: list } = await json(req);
+        if (!isPeople(list)) throw new HttpError(400, `creators: a list of emails and Entra group ids: ${JSON.stringify(list)}`);
+        writeJson('creators.json', list.map(p => p.toLowerCase()));
+      }
+      send(res, 200, creators());
     } else if (url.pathname === '/brand' && req.method === 'PUT') {
       if (me.role !== 'admin') throw new HttpError(403, "the deployment's brand is the admins'");
       const { text, logo, clear } = await json(req), b = { ...(!clear && brand()) };
