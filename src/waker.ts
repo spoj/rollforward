@@ -7,7 +7,7 @@ import { startRun, type Run, type View } from './runner.ts';
 import { prepare } from './indexes.ts';
 import { canSee, changes, everyone, readJson, rfDir, tree, type Tree, writeJson } from './system.ts';
 import { users } from './auth.ts';
-import type { Browsers } from './browsers.ts';
+import { scoped, type Browsers } from './browsers.ts';
 import { seriesSettings } from './series.ts';
 import { pushed, skills } from './skills.ts';
 import { AGENT, commit, committed } from './git.ts';
@@ -278,7 +278,7 @@ function fire() {
     const runs = u && !u.disabled && canSee({ email: shared.by, role: u.role, groups: u.groups ?? [] }, t.workspaces[t.series[target].workspace]);
     try {
       if (!runs) throw new Error('not shared');
-      startWith(target, wake.label!, shared.by, shared.logins, { from });
+      startWith(target, wake.label!, shared.by, shared.logins.filter(t => !scoped(t)), { from });
     } catch {
       w.requests[newId()] = { series: target, label: wake.label!, from, at: now };
     }

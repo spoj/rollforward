@@ -367,7 +367,13 @@ test('everyone sees the skills, which every run loads; admins keep the connectio
   assert.equal((await call('PUT', '/connections/portal', JSON.stringify({ type: 'website', url: 'https://portal.test/#/login', hosts: ['cdn.portal.test/x'] }))).status, 400);
   const site = await (await call('PUT', '/connections/portal', JSON.stringify({ type: 'website', title: 'Portal', url: 'https://portal.test/#/login', hosts: 'cdn.portal.test' }))).json();
   assert.deepEqual([site.title, site.url, site.hosts, site.writeback, site.updated_by], ['Portal', 'https://portal.test/#/login', ['cdn.portal.test'], true, adminEmail]);
-  assert.deepEqual((await json('/connections', b)).map((c: { name: string; login: { id: string } }) => [c.name, c.login.id]), [['portal', 'web:portal']]);
+  assert.deepEqual((await json('/connections', b)).map((c: { name: string; login: { id: string }; allowed: boolean }) => [c.name, c.login.id, c.allowed]), [['portal', 'web:portal', true]]);
+  assert.equal((await call('PUT', '/connections/portal', JSON.stringify({ type: 'website', url: 'https://portal.test/#/login', people: adminEmail }))).status, 200);
+  assert.deepEqual([(await json('/connections', b))[0].allowed, (await json('/connections'))[0].allowed], [false, true], 'only the people it lists');
+  const { saveLogin } = await import('../src/logins.ts');
+  saveLogin(adminEmail, { id: 'web:portal', kind: 'website', name: 'Portal', since: new Date().toISOString(), offers: [{ id: 'web:portal', name: 'Portal' }] }, 'state');
+  assert.equal((await call('PUT', await at(series), JSON.stringify({ share: true, logins: ['web:portal'] }))).status, 400, 'never lent through a shared series');
+  assert.equal((await call('DELETE', '/logins/web:portal')).status, 200);
   assert.equal((await call('DELETE', '/connections/portal')).status, 200);
   assert.deepEqual(await json('/connections', b), []);
 });

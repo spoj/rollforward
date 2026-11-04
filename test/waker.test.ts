@@ -85,12 +85,15 @@ test("a series' wake starts an instance as whoever shares the series; unshared, 
   assert.deepEqual(Object.values(wakes().requests).map(r => [r.series, r.label, r.from]), [['s2', '2026-10', 'Acme/Bank rec/2026-09']]);
   assert.equal(labels('s2').length, 0);
 
-  writeFileSync(join(tmp, 'series', 's2', 'series.json'), JSON.stringify({ shared: { by: alice, since: new Date().toISOString(), logins: [] } }));
+  writeFileSync(join(tmp, 'series', 's2', 'series.json'), JSON.stringify({ shared: { by: alice, since: new Date().toISOString(), logins: ['web:bank', 'web:portal'] } }));
+  writeJson('connections.json', { bank: { type: 'website', url: 'https://bank.example.com', hosts: [], writeback: false, people: [alice], updated_by: alice, updated_at: '' } });
   writeJson('wakes.json', { ...readJson('wakes.json', {}), fired: {} });
   setWake('s2', { at: new Date().toISOString(), from: 'Acme/Bank rec/2026-09', label: '2026-11' });
   await settle();
   const made = instance(labels('s2').find(l => l.label === '2026-11')!.id);
   assert.deepEqual([made.log[0].op, made.log[0].by, made.log[1].op, made.log[1].from], ['create', alice, 'wake', 'Acme/Bank rec/2026-09']);
+  assert.deepEqual(made.log[0].logins, ['web:portal'], 'a website that lists its people, ticked before it did, is never lent through the share');
+  writeJson('connections.json', {});
 
   make('s2', '2026-12');
   make('s2', '2027-01');

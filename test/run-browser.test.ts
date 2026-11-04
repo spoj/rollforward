@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } fr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInstance, openStore } from '../src/store.ts';
-import { initSystem, saveTree, writeJson } from '../src/system.ts';
+import { initSystem, saveTree, tree, writeJson } from '../src/system.ts';
 
 // A run's browsers, from a stand-in browser service whose page changes only when the test says, and which keeps the states and
 // headers it was given and the sessions it closed, lists those in `listed`, and answers a browser's state as `back` says and its
@@ -35,7 +35,7 @@ const service = createServer(async (req, res) => {
 }).on('upgrade', (req, socket) => socket.end(`HTTP/1.1 101 Switching Protocols\r\n\r\nservice got ${req.url}`));
 await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
 Object.assign(process.env, { RF_BROWSER_URL: `http://127.0.0.1:${(service.address() as { port: number }).port}`, RF_BROWSER_IDLE_MS: '300' });
-const { Browsers, endSignIn, keepAlive, reap, startSignIn } = await import('../src/browsers.ts');
+const { Browsers, endSignIn, keepAlive, reap, scoped, startSignIn } = await import('../src/browsers.ts');
 const { serveAgent } = await import('../src/agent-api.ts');
 const { logins, personDir, saveLogin, secret, signOut } = await import('../src/logins.ts');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-shots-'));
@@ -239,6 +239,8 @@ test("a website's keepalive loads its page every so often in office hours, in th
 });
 
 test("a person's keepalive turn that fails leaves the others' to go on", async () => {
+  writeJson('users.json', { [alice]: { role: 'admin' }, 'carol@demo.test': { role: 'user' } });
+  saveTree({ ...tree(), workspaces: { w: { ...tree().workspaces.w, members: ['carol@demo.test'] } } });
   saveLogin('carol@demo.test', website('pa', 'PatriArch'), '{"cookies":["refused"]}');
   createInstance('s', 'k0', 'carol@demo.test', ['web:pa']);
   saveLogin(alice, website('pa', 'PatriArch'), '{"cookies":["signed in again"]}');
@@ -246,6 +248,36 @@ test("a person's keepalive turn that fails leaves the others' to go on", async (
   await keepAlive(new Date(2026, 10, 2, 9));
   assert.deepEqual(states, [{ cookies: ['refused'] }, { cookies: ['signed in again'] }], "carol's first, refused");
   assert.deepEqual(JSON.parse(secret(alice, 'web:pa')), { cookies: ['kept alive again'] });
+  writeJson('users.json', { [alice]: { role: 'admin' } });
+  states.length = 0;
+  await keepAlive(new Date(2026, 10, 2, 9, 10));
+  assert.deepEqual(states, [{ cookies: ['kept alive again'] }], 'nor for carol, who can no longer run her instance');
+});
+
+test("a website that lists its people lets only them use it, admins no more than anyone: a run gets its browser only if its runner and all who took part in its instance are among them, and else goes on without it, logged once", async () => {
+  const bob = 'bob@demo.test', treasury = '0b1c2d3e-0000-4000-8000-000000000001';
+  writeJson('users.json', { [alice]: { role: 'admin' }, [bob]: { role: 'user', groups: [treasury] } });
+  saveTree({ ...tree(), workspaces: { w: { ...tree().workspaces.w, members: [bob] } } });
+  writeJson('connections.json', { bank: { type: 'website', title: 'Bank', url: 'https://bank.example.com', hosts: [], writeback: false, keepalive: '/home', every: 10, people: [treasury], updated_by: alice, updated_at: '' } });
+  saveLogin(alice, website('bank', 'Bank'), '{"cookies":["alice"]}');
+  saveLogin(bob, website('bank', 'Bank'), '{"cookies":["bob"]}');
+  assert.ok(scoped('web:bank') && !scoped('m365:mail:x'), 'never lent through a shared series');
+  await assert.rejects(new Browsers(createInstance('s', 'b1', alice, ['web:bank']), 1).browser('bank'), /Bank is only for the people its connection lists, and alice@demo.test, who runs this instance, is not among them/);
+  await assert.rejects(startSignIn(alice, 'bank', ''), /Bank is only for the people its connection lists/);
+  const his = createInstance('s', 'b2', bob, ['web:bank']), run = new Browsers(his, 1);
+  assert.equal(await run.browser('bank'), 'b9', 'bob, by his Entra group');
+  await run.close();
+  his.append(alice, 'comment', { thread: 't1', text: 'Fetch the balance.' });
+  const next = new Browsers(his, 2);
+  for (const _ of [1, 2]) await assert.rejects(next.browser('bank'), /alice@demo.test, who took part in this instance, is not among them: this run goes on without it/);
+  assert.deepEqual(his.log.filter(e => e.action === 'refused').map(e => e.run), [2], 'logged once');
+  const woken = createInstance('s', 'b3', bob, ['web:bank']);
+  woken.append('server', 'wake', { from: alice });
+  await assert.rejects(new Browsers(woken, 1).browser('bank'), /alice@demo.test, who took part in this instance/, 'nor where she woke it');
+  [states.length, shown] = [0, { url: 'https://bank.example.com/home', password: false }];
+  await keepAlive(new Date(2026, 10, 2, 9));
+  assert.deepEqual(states, [{ cookies: ['bob'] }], "kept alive for bob alone, though alice's instance ticks it too");
+  writeJson('users.json', { [alice]: { role: 'admin' } });
 });
 
 test("as the server starts, the browsers a restart left open on the service close: a run's keeps its request log and hands its login back, as its run would have, and a sign-in's just goes", async () => {

@@ -6,9 +6,10 @@ import { request as httpRequest, STATUS_CODES, type IncomingMessage, type Server
 import { request as httpsRequest } from 'node:https';
 import type { Duplex } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { HttpError, instance, instances, replaceReadOnly, type Instance } from './store.ts';
-import { logins, personDir, runnerOf, saveLogin, seal, secret, use } from './logins.ts';
+import { HttpError, instance, instances, isPerson, replaceReadOnly, type Instance } from './store.ts';
+import { lender, logins, personDir, runnerOf, saveLogin, seal, secret, use } from './logins.ts';
 import { connections } from './connections.ts';
+import { users } from './auth.ts';
 import { readJson, rfDir, tree } from './system.ts';
 
 // Browsers from the browser service (spoj/rollforward-browser, a repo of its own), whose one client is this server, with its key: a
@@ -69,10 +70,16 @@ export function passUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, 
 // in, and the other hosts its pages need, such as single sign-on's. A browser on one reaches only those hosts; whatever its login
 // may do there, the browser may, so keeping to reads is the agent's, and its request log shows what it did.
 
-export type Website = { name: string; url: string; hosts: string[]; writeback: boolean; header?: string; keepalive?: string; every?: number; hours?: string };
+export type Website = { name: string; url: string; hosts: string[]; writeback: boolean; header?: string; keepalive?: string; every?: number; hours?: string; people?: string[] };
 export const websites = (): Record<string, Website> => Object.fromEntries(connections().filter(c => c.type === 'website').map(c => [c.name, {
-  name: c.title ?? c.name, url: c.url, hosts: c.hosts, writeback: c.writeback, header: c.header, keepalive: c.keepalive, every: c.every, hours: c.hours,
+  name: c.title ?? c.name, url: c.url, hosts: c.hosts, writeback: c.writeback, header: c.header, keepalive: c.keepalive, every: c.every, hours: c.hours, people: c.people,
 }]));
+
+// A website that lists its people lets only them use it, by email or Entra group, admins no more than anyone: only they see it on
+// Logins and sign in to it, and a run gets its browser only if its runner and everyone who took part in its instance, or woke it,
+// are among them. Such a website is never lent through a shared series.
+export const allowed = (w: Website, email: string) => !w.people || w.people.includes(email) || (users()[email]?.groups ?? []).some(g => w.people!.includes(g));
+export const scoped = (offer: string) => offer.startsWith('web:') && !!websites()[offer.slice(4)]?.people;
 
 function website(id: string): Website {
   const w = websites()[id];
@@ -90,6 +97,7 @@ const signIns = new Map<string, { email: string; site: string; name: string; tok
 
 export async function startSignIn(email: string, site: string, given: string): Promise<string> {
   const w = website(site), kept = `web:${site}.header`;
+  if (!allowed(w, email)) throw new HttpError(403, `${w.name} is only for the people its connection lists`);
   let token;
   if (w.header) {
     token = given.trim() || (existsSync(join(personDir(email), `${kept}.sealed`)) ? secret(email, kept) : '');
@@ -169,6 +177,7 @@ export class Browsers {
   bySite = new Map<string, { id: string; email: string; since: string; writeback: boolean; file: string; conns: number; idle?: NodeJS.Timeout; shot?: Buffer }>();
   private opening = new Map<string, Promise<string>>();
   private opens = new Map<string, number>();
+  private refused = new Set<string>();
   private ended = false;
   shots = 0;
   constructor(inst: Instance, run: number) {
@@ -181,13 +190,17 @@ export class Browsers {
   // One its runner must sign in to again is logged, as the agent API logs it, so the instance carries on once they do.
   lent(site: string) {
     try {
-      const { email, login } = use(this.inst, `web:${site}`), had = this.bySite.get(site);
+      const { email, login } = use(this.inst, `web:${site}`), had = this.bySite.get(site), w = websites()[site];
+      const out = w && [email, ...this.inst.log.map(e => isPerson(e) ? e.by : e.op === 'wake' ? String(e.from) : '')].find(p => p.includes('@') && !allowed(w, p));
+      if (out) throw Object.assign(new HttpError(403, `${w.name} is only for the people its connection lists, and ${out}, ${out === email ? 'who runs this instance' : 'who took part in this instance'}, is not among them: this run goes on without it`), { refused: true });
       if (login.expired) throw Object.assign(new HttpError(409, `${email}'s login to ${login.name} has expired: they sign in to it again on the Logins page, and the instance carries on`), { login: login.id });
       if (had && had.email !== email) throw new HttpError(409, `this run's browser on ${site} is in ${had.email}'s login, and ${email} has taken the instance over: the next run opens one in theirs`);
       return { email, login, had };
     } catch (e) {
-      const { login } = e as { login?: string };
+      const { login, refused } = e as { login?: string; refused?: true };
       if (login) this.inst.append('server', 'expired', { login, name: websites()[site]?.name ?? site, runner: runnerOf(this.inst).by });
+      if (refused && !this.refused.has(site)) this.inst.append('server', 'browser', { run: this.run, site, action: 'refused', why: (e as Error).message });
+      if (refused) this.refused.add(site);
       throw e;
     }
   }
@@ -319,21 +332,28 @@ export class Browsers {
 
 // ---- Keeping logins alive: a website whose sessions end when left idle, as PatriArch's after 12 minutes, may name a page to load
 // every so many minutes, in office hours if it names them: on weekdays, in the server's time zone. Each turn loads it in the browser
-// of each person whose login there is live and who runs an open instance with it ticked, unless a run of theirs holds that browser;
+// of each person whose login there is live, who may use the website, and who runs an open instance with it ticked and may still run
+// it, so its runs could use that login, unless a run of theirs holds that browser;
 // where the website writes its state back, the turn holds it, so a run that connects meanwhile waits. The browser reaches only that
 // page's host, so a sign-in elsewhere, as single sign-on would make one, never stretches a session past what the site allows: a page
 // asking for a password, or one elsewhere, means the login expired, as rf expired says, and else the browser's state is the login.
 const lastTurn = new Map<string, number>();
 
 export async function keepAlive(now = new Date()) {
-  const going = Object.keys(tree().series).flatMap(sid => instances(sid).filter(i => i.doc.status === 'open'));
+  const going = Object.keys(tree().series).flatMap(sid => instances(sid).filter(i => i.doc.status === 'open')).flatMap(i => {
+    try {
+      return [lender(i)];
+    } catch {
+      return [];
+    }
+  });
   for (const [site, w] of Object.entries(websites())) {
     const [from, to] = w.hours?.split('-') ?? [], at = now.toTimeString().slice(0, 5);
     if (!w.keepalive || now.getTime() - (lastTurn.get(site) ?? 0) < w.every! * 60_000 || (w.hours && (now.getDay() % 6 === 0 || at < from || at >= to))) continue;
     lastTurn.set(site, now.getTime());
-    for (const email of new Set(going.map(runnerOf).filter(r => r.logins.includes(`web:${site}`)).map(r => r.by))) {
+    for (const email of new Set(going.filter(r => r.logins.includes(`web:${site}`)).map(r => r.by))) {
       const login = logins(email).find(l => l.id === `web:${site}`), key = `${email} ${site}`;
-      if (!login || login.expired || held.has(key)) continue;
+      if (!login || login.expired || !allowed(w, email) || held.has(key)) continue;
       let release!: () => void;
       if (w.writeback) held.set(key, { released: new Promise<void>(ok => { release = ok; }), release: () => release() });
       try {

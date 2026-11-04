@@ -16,7 +16,7 @@ import { checkTicks, logins, runnerOf, signOut } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { byLogin, call, connections, convert, intercepts, loginOf, removeConnection, setConnection } from './connections.ts';
-import { Browsers, endSignIn, isSignIn, keepAlive, passUpgrade, reap, startSignIn, viewPage } from './browsers.ts';
+import { allowed, Browsers, endSignIn, isSignIn, keepAlive, passUpgrade, reap, scoped, startSignIn, viewPage, websites } from './browsers.ts';
 import { offer, unoffer } from './connections/graph.ts';
 import { forget, indexes, startIndexing, track } from './indexes.ts';
 import { seriesSettings } from './series.ts';
@@ -440,6 +440,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (change.share !== undefined && !change.share && was && was.by !== by && !canManage(me, t.workspaces[s.workspace]))
       throw new HttpError(403, `${was.by} shares it: they, or the workspace's owners, stop sharing it`);
     const shared = change.share === undefined ? was : change.share ? { by, since: new Date().toISOString(), logins: checkTicks(by, change.logins ?? []) } : undefined;
+    if (change.share && shared!.logins.some(scoped)) throw new HttpError(400, 'a website that lists its people is never lent through a shared series: untick it');
     saveTree(t);
     replaceReadOnly(join(seriesDir(id), 'series.json'), JSON.stringify({ ...(shared && { shared }) }, null, 1));
     return send(res, 200, 'ok');
@@ -667,7 +668,7 @@ async function skillsRoute(me: Me, req: IncomingMessage, res: ServerResponse, ur
 // with rf.
 async function connectionsRoute(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) {
   const name = decodeURIComponent(url.pathname.slice(13));
-  if (!name && req.method === 'GET') return send(res, 200, connections().map(c => ({ ...c, login: loginOf(c) })));
+  if (!name && req.method === 'GET') return send(res, 200, connections().map(c => ({ ...c, login: loginOf(c), ...(c.type === 'website' && { allowed: allowed(websites()[c.name], me.email) }) })));
   if (me.role !== 'admin') throw new HttpError(403, 'admins keep connections');
   if (req.method === 'PUT') return send(res, 200, setConnection(name, await json(req), me.email));
   if (req.method === 'DELETE') return send(res, 200, (removeConnection(name), 'ok'));
