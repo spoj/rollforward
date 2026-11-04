@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { closeSync, constants, cpSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, cpSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { execFile } from 'node:child_process';
@@ -29,7 +29,7 @@ const page = join(app, 'web', 'index.html');
 const exec = promisify(execFile);
 const port = Number(process.argv[3] ?? 8780);
 const host = process.env.RF_HOST ?? '127.0.0.1';
-const tmpDir = join(root, '.tmp');
+const tmpDir = join(root, '.tmp'), previews = join(root, '.previews');
 if (!existsSync(join(agentRoot, 'usr'))) throw new Error(`no agent image at ${agentRoot}: node scripts/agent.ts unpacks agent-${agentId}, which this checkout runs`);
 initSystem(root);
 openStore(root);
@@ -76,8 +76,10 @@ for (const [aid, a] of Object.entries(tree().series).filter(([, s]) => (s as { a
 }
 openSkills(root);
 checkConfig();
-rmSync(tmpDir, { recursive: true, force: true });
-mkdirSync(tmpDir);
+for (const dir of [tmpDir, previews]) {
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir);
+}
 
 async function body(req: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -336,6 +338,9 @@ function pullable(me: Me, path: string) {
   return out.filter(f => !path || f.path === path || f.path.startsWith(path + '/'));
 }
 
+let previewing = 0;
+const turns: (() => void)[] = [];
+
 async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
   const [id, ...rest] = url.pathname.split('/').slice(2).map(decodeURIComponent);
   const rel = rest.join('/');
@@ -346,18 +351,38 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
   if (fd === undefined) throw new HttpError(404, 'no such file');
   if (preview) {
     // preview.py runs in the agent's userland, with no network and nothing of the host's: the file, up to 100 MB, streams to its
-    // stdin.
+    // stdin. What it makes is kept, until the server restarts, by the file's name and content, as a file doesn't change once
+    // written; and at most 2 run at once, the rest waiting their turn, so previews never crowd out runs.
     if (fstatSync(fd).size > 100e6) {
       closeSync(fd);
       throw new HttpError(413, `${basename(rel)} is over 100 MB, too big to preview: download it`);
     }
-    const run = exec('bwrap', [
-      '--unshare-all', '--die-with-parent', '--new-session', '--clearenv', ...userland(), '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
-      '--ro-bind', join(app, 'src', 'preview.py'), '/preview.py', '--setenv', 'HOME', '/tmp', '--setenv', 'LANG', 'C.UTF-8', '--', '/opt/venv/bin/python', '/preview.py', basename(rel),
-    ], { timeout: 30_000, maxBuffer: 64e6 });
-    const [{ stdout }] = await Promise.all([run, pipeline(createReadStream('', { fd }), run.child.stdin!)]);
-    res.writeHead(200, { 'content-type': 'application/json' });
-    return void res.end(stdout);
+    const sum = createHash('sha256').update(`${basename(rel)}\n`);
+    for await (const c of createReadStream('', { fd, start: 0, autoClose: false })) sum.update(c);
+    const kept = join(previews, sum.digest('hex'));
+    if (existsSync(kept)) {
+      closeSync(fd);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return void createReadStream(kept).pipe(res);
+    }
+    if (previewing < 2) previewing++;
+    else await new Promise<void>(go => turns.push(go));
+    try {
+      const run = exec('bwrap', [
+        '--unshare-all', '--die-with-parent', '--new-session', '--clearenv', ...userland(), '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
+        '--ro-bind', join(app, 'src', 'preview.py'), '/preview.py', '--setenv', 'HOME', '/tmp', '--setenv', 'LANG', 'C.UTF-8', '--', '/opt/venv/bin/python', '/preview.py', basename(rel),
+      ], { timeout: 30_000, maxBuffer: 64e6 });
+      const [{ stdout }] = await Promise.all([run, pipeline(createReadStream('', { fd, start: 0 }), run.child.stdin!)]);
+      const tmp = join(tmpDir, randomUUID());
+      writeFileSync(tmp, stdout);
+      renameSync(tmp, kept);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return void res.end(stdout);
+    } finally {
+      const go = turns.shift();
+      if (go) go();
+      else previewing--;
+    }
   }
   const image = rel.match(/\.(png|jpe?g|gif|webp|svg)$/i)?.[1].toLowerCase().replace('jpg', 'jpeg').replace('svg', 'svg+xml');
   res.writeHead(200, {

@@ -748,6 +748,10 @@ test('the second audit: a bad request line, a bad workbook and a slow body hurt 
   assert.equal((await preview('bad.xlsx')).status, 500);
   writeFileSync(bad.replace('bad.xlsx', 'fine.csv'), 'month,total\n2026-08,5\n');
   assert.deepEqual((await (await preview('fine.csv')).json()).sheets[0].rows, [['month', 'total'], ['2026-08', '5']]);
+  const kept = readdirSync(join(root, '.previews'));
+  assert.equal(kept.length, 1, 'a preview is kept, one that failed not');
+  writeFileSync(join(root, '.previews', kept[0]), '{"sheets":[{"name":"kept","rows":[],"truncated":false}]}');
+  assert.equal((await (await preview('fine.csv')).json()).sheets[0].name, 'kept', 'and the same file previews from it');
   truncateSync(bad, 100e6 + 1);
   const big = await preview('bad.xlsx');
   assert.deepEqual([big.status, await big.text()], [413, 'bad.xlsx is over 100 MB, too big to preview: download it']);
