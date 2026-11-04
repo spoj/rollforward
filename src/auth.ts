@@ -380,9 +380,10 @@ async function tokenFromBrowser(req: IncomingMessage, res: ServerResponse) {
   await finishSignIn(res, await verified(form.get('id_token') ?? ''), p);
 }
 
+// Where a sign-in goes once done: a path on this site, as a browser reads it, which takes \ for / and drops tabs and line breaks.
 const nextOf = (url: URL | URLSearchParams) => {
   const n = (url instanceof URL ? url.searchParams : url).get('next') ?? '/';
-  return n.startsWith('/') && !n.startsWith('//') ? n : '/';
+  return n.startsWith('/') && new URL(n, 'http://x').host === 'x' ? n : '/';
 };
 
 // Who is asking. Answers the sign-in routes itself, and shows the sign-in page to anyone not signed in, then returns null.

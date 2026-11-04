@@ -42,9 +42,9 @@ export async function idp() {
     close: () => server.close(),
     // What a server at `base` needs to sign in through it.
     env: (base: string) => ({ RF_OIDC_ISSUER: issuer, RF_OIDC_CLIENT_ID: 'rf-test', RF_OIDC_CLIENT_SECRET: 'shh', RF_PUBLIC_URL: base }),
-    // Signs `email` in at `base` as a browser would: the server's answer that sets the session, or refuses it.
-    async signIn(base: string, email: string) {
-      const out = await fetch(`${base}/auth/login`, { redirect: 'manual' }), to = new URL(out.headers.get('location')!);
+    // Signs `email` in at `base` as a browser would, from `login`: the server's answer that sets the session, or refuses it.
+    async signIn(base: string, email: string, login = '/auth/login') {
+      const out = await fetch(`${base}${login}`, { redirect: 'manual' }), to = new URL(out.headers.get('location')!);
       to.searchParams.set('login_hint', email);
       const back = (await fetch(to, { redirect: 'manual' })).headers.get('location')!;
       return fetch(back, { headers: { cookie: out.headers.getSetCookie()[0].split(';')[0] }, redirect: 'manual' });
