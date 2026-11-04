@@ -33,7 +33,8 @@ const ECDSA_SHA256 = seq(oid('1.2.840.10045.4.3.2'));
 
 function certificate(o: { subject: string; key: KeyObject; issuer: string; signer: KeyObject; authority?: Buffer; host?: string; days: number }): string {
   const spki = o.key.export({ type: 'spki', format: 'der' }), id = createHash('sha1').update(spki).digest(), serial = randomBytes(16);
-  serial[0] &= 0x7f;
+  // DER takes a positive integer at its shortest: a first byte of 0, before one under 0x80, fails to parse, 1 time in 256.
+  serial[0] = 0x40 | (serial[0] & 0x3f);
   const tbs = seq(
     der(0xa0, der(0x02, Buffer.from([2]))), der(0x02, serial), ECDSA_SHA256, name(o.issuer),
     seq(time(new Date(Date.now() - 86_400_000)), time(new Date(Date.now() + o.days * 86_400_000))), name(o.subject), spki,

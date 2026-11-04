@@ -223,6 +223,11 @@ after(() => {
 const share = (link: string) => `/shares/u!${Buffer.from(link).toString('base64url')}`;
 const calls = () => log.filter(e => e.op === 'call').map(e => e.data);
 
+test("rollforward's certificates are always DER that parses: a thousand hosts' each load", async () => {
+  const { contextFor } = await import('../src/ca.ts');
+  for (let i = 0; i < 1000; i++) contextFor(`host${i}.test`);
+});
+
 test("a run reads a ticked SharePoint library at Graph's own address, as Graph answers, with its runner's token put in for the run's own", async () => {
   const folder = await via('GET', `${G}${share('https://share.test/reports')}/driveItem`);
   assert.deepEqual([folder.status, JSON.parse(folder.text).name], [200, '2026']);
