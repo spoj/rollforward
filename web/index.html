@@ -752,6 +752,7 @@ function logText(e) {
     logins: () => `${w} ticked logins: ${esc(e.logins.join(', ') || 'none')}`,
     egress: () => `Run ${e.run} ${e.allowed ? 'reached' : 'was refused'} ${esc(e.host)}`,
     delivered: () => `${w} delivered ${item(e.item)} to ${esc(e.to)}<div class="d">${{ graph: 'Through Microsoft 365 · ', website: 'Through a website · ' }[e.via] ?? ''}${esc(e.receipt)}</div>`,
+    send: () => `${w} sent ${esc(e.method)} ${esc(e.path)} to ${esc(e.name)}, with no answer logged`,
     call: () => `${w} ${e.model ? `asked ${esc(e.model)}` : `called ${esc(e.name)}: ${esc(e.method)} ${esc(e.path)}`}${e.cost ? ` \u00b7 $${e.cost.toFixed(4)}` : ''}${e.refused || e.failed ? `, ${e.refused ? 'refused' : 'failed'}<div class="d">${esc(e.refused ?? e.failed)}</div>` : e.status >= 300 ? `, which answered ${e.status}` : ''}`,
     graph: () => `${w} ${e.method ? `sent ${esc(e.method)} ${esc(e.path)} to` : `read ${esc(e.path)} from`} Microsoft 365${e.status >= 300 ? `, which answered ${e.status}` : ''}${e.to && e.to !== e.path ? `<div class="d">${esc(e.to)}</div>` : ''}${[e.body, e.file].filter(Boolean).map(f => `<div class="f"><a data-act="preview" data-file="${esc(f)}">${esc(f)}</a></div>`).join('')}`,
     rename: () => e.by === 'server' ? `Named by its first prompt, from ${esc(e.from)}` : `${w} renamed the instance from ${esc(e.from)}`,
@@ -819,7 +820,7 @@ function lineHtml(s, i) {
 
 // What a row of the agent's work did, by kind of entry, and what a person's entries of one kind in a row did.
 const DID = {
-  call: n => `made ${plural(n, 'request')} outside`, model: n => `asked a model ${n} time${n > 1 ? 's' : ''}`, graph: n => `read ${plural(n, 'path')} from Microsoft 365`, point: n => `showed ${plural(n, 'file')}`, item: n => `set up ${plural(n, 'item')}`,
+  call: n => `made ${plural(n, 'request')} outside`, send: n => `sent ${plural(n, 'request')} with no answer logged`, model: n => `asked a model ${n} time${n > 1 ? 's' : ''}`, graph: n => `read ${plural(n, 'path')} from Microsoft 365`, point: n => `showed ${plural(n, 'file')}`, item: n => `set up ${plural(n, 'item')}`,
   remove: n => `removed ${plural(n, 'item')}`, get: n => `fetched ${plural(n, 'file')} from the browser`, browser: n => `closed ${plural(n, 'browser')}`, wait: n => `waited for ${plural(n, 'browser')}`,
   egress: n => `reached ${plural(n, 'host')}`, upload: n => `uploaded ${plural(n, 'file')}`, resolve: n => `resolved ${plural(n, 'thread')}`,
 };
@@ -828,12 +829,13 @@ const ALONE = new Set(['comment', 'report', 'run', 'done']);
 // The Ops log: the log's entries and, from the agent's session, its messages and tool calls, in time order. What the agent does
 // between comments, reports and a run's start and end folds into one row, with what the server logged of the run, such as each
 // screenshot of its browser, which the row shows; a person's entries of one kind in a row fold too. A run's trigger and the rf
-// say and ask calls are left out, as their entries show them, and so is its last message, which is its report.
+// say and ask calls are left out, as their entries show them, and so is its last message, which is its report; and a request sent,
+// once its answer is logged.
 function opsHtml() {
-  const reported = new Set(data.log.filter(e => e.op === 'report').map(e => e.text));
+  const reported = new Set(data.log.filter(e => e.op === 'report').map(e => e.text)), answered = new Set(data.log.map(e => e.sent));
   const steps = lines.map((s, i) => ({ ...s, i })).filter(s => s.kind !== 'user' && !(s.kind === 'bash' && /\brf (say|ask)\b/.test(s.text)) && !(s.kind === 'say' && reported.has(s.text.trim())));
   const rows = [];
-  for (const x of [...steps, ...data.log].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))) {
+  for (const x of [...steps, ...data.log.filter(e => e.op !== 'send' || !answered.has(e.seq))].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))) {
     const key = ALONE.has(x.op) ? '' : !x.op || x.by === 'agent' || (x.by === 'server' && x.run) ? 'work' : `${x.op} ${x.by}`;
     if (key && rows.at(-1)?.key === key) rows.at(-1).xs.push(x);
     else rows.push({ key, xs: [x] });

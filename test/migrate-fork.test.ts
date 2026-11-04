@@ -79,10 +79,11 @@ test("migrate-fork copies the fork's root by id, with its talk as threads, numbe
 
   assert.deepEqual(w2.log.map(e => [...brief(e), e.by]), [
     [1, 'create', [], 'ann@x.com'], [2, 'comment', 'c2', 'bo@x.com'], [3, 'run', 2, 'server'], [4, 'comment', 'c2', 'agent'], [5, 'comment', 'c5', 'agent'],
-    [6, 'comment', 'c5', 'bo@x.com'], [7, 'done', 6, 'server'], [8, 'run', 6, 'server'], [9, 'done', 8, 'server'],
+    [6, 'comment', 'c5', 'bo@x.com'], [7, 'done', 6, 'server'], [8, 'run', 6, 'server'], [9, 'done', 8, 'server'], [10, 'wake', null, 'server'],
   ]);
+  assert.equal(w2.log[9].reason, 'The move to 0.2.0 cut your last run; carry on', 'the run the move cut carries on at the first start');
   assert.deepEqual(w2.asking(), []);
-  assert.equal(w2.append('bo@x.com', 'comment', { thread: 'c10', text: 'Thanks' }).seq, 10);
+  assert.equal(w2.append('bo@x.com', 'comment', { thread: 'c11', text: 'Thanks' }).seq, 11);
 
   migrate('again');
   assert.deepEqual(readdirSync(join(tmp, 'again', 'instances')).sort(), readdirSync(join(root, 'instances')).sort());

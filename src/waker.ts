@@ -284,17 +284,16 @@ function summaryOf(report: string): string {
 }
 
 // A run a restart cut ends as aborted, with what its calls cost so far, and its instance is woken to carry on, so a deploy needn't
-// wait for quiet. A run the move from the team's fork cut has its done already, from scripts/migrate-fork.ts, and is woken the
-// same way.
+// wait for quiet. A commit the restart cut leaves git's locks, which would refuse the instance's next; no git runs as it starts.
 export function recover() {
   for (const id of Object.keys(tree().series)) for (const inst of instances(id).filter(i => i.doc.status === 'open')) {
+    for (const f of ['index.lock', 'HEAD.lock', 'config.lock', 'packed-refs.lock', 'refs/heads/main.lock']) rmSync(join(inst.dir, '.git', f), { force: true });
     const run = inst.log.findLast(e => e.op === 'run' || e.op === 'done');
     if (run?.op === 'run') {
       const cost = inst.log.reduce((t, e) => t + (e.op === 'call' && e.run === run.run ? (e.cost as number | undefined) ?? 0 : 0), 0);
       inst.append('server', 'done', { run: run.run, aborted: true, seen: seenBefore(inst), cost: +cost.toFixed(4), summary: null, error: 'a restart cut the run' });
       inst.append('server', 'wake', { reason: 'A restart cut your last run; carry on', from: 'server' });
     }
-    if (run?.error === 'cut by the move to 0.2.0' && !due(inst)) inst.append('server', 'wake', { reason: 'The move to 0.2.0 cut your last run; carry on', from: 'server' });
     kick(inst);
   }
 }

@@ -62,7 +62,11 @@ function convert(log: Entry[]): Entry[] {
     seqOf.set(seq, out.length);
   }
   const last = out.findLast(e => e.op === 'run' || e.op === 'done');
-  if (last?.op === 'run') out.push({ seq: out.length + 1, at: new Date().toISOString(), by: 'server', op: 'done', run: last.run, aborted: true, seen: out.length, cost: 0, summary: null, error: 'cut by the move to 0.2.0' });
+  if (last?.op === 'run') {
+    const at = new Date().toISOString();
+    out.push({ seq: out.length + 1, at, by: 'server', op: 'done', run: last.run, aborted: true, seen: out.length, cost: 0, summary: null, error: 'cut by the move to 0.2.0' });
+    out.push({ seq: out.length + 1, at, by: 'server', op: 'wake', reason: 'The move to 0.2.0 cut your last run; carry on', from: 'server' });
+  }
   return out;
 }
 

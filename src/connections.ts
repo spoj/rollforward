@@ -101,7 +101,9 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
   const url = new URL(req.url!, `https://${host}`), method = req.method!, link = a.links.get(url.href), s = link ? undefined : own(host);
   const c = link || s ? undefined : connections().find(c => types[c.type].host?.(c) === host);
   const name = link ?? c?.name ?? s?.name ?? host, path = link ? url.origin + url.pathname : url.pathname + url.search;
-  const log = (status: number, bytes: number, more?: object) => a.inst.append('agent', 'call', { run: a.n, name, method, path, status, bytes, ...more });
+  // A request that may write, to anything but the server's own services, is logged as it goes too, so a cut leaves it as sent.
+  let sent: number | undefined;
+  const log = (status: number, bytes: number, more?: object) => a.inst.append('agent', 'call', { run: a.n, name, method, path, status, bytes, ...(sent && { sent }), ...more });
   try {
     // A target such as //elsewhere/… or https://elsewhere/… would take the request, and the credential put in, to another host.
     if (url.host !== host) throw new HttpError(403, `${host} takes requests for ${host}, not ${url.origin}`);
@@ -111,18 +113,19 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     const isJson = String(req.headers['content-type']).includes('json');
     const raw = !link && (['POST', 'PATCH'].includes(method) || (method === 'PUT' && isJson)) ? Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)) : undefined;
     const json = isJson && raw?.length ? JSON.parse(raw.toString()) : undefined, r = { method, url, headers: req.headers, json, body: raw };
-    let sent = json, auth: Record<string, string> = {};
+    let out = json, auth: Record<string, string> = {};
     if (c) {
       const { by, logins: ticks } = lender(a.inst), checked = await types[c.type].check!(c, by, ticks, r), login = loginOf(c) as EntraLogin;
-      sent = checked.json ?? json;
+      out = checked.json ?? json;
       auth = { authorization: `Bearer ${await token(use(a.inst, checked.offer).email, login.id, login.scope)}` };
     }
     if (s) {
       // The key goes in both headers SDKs send one in: Authorization, and x-api-key, as Anthropic's, Pi's among them, and Exa's do.
-      sent = s.check(r);
+      out = s.check(r);
       auth = { authorization: `Bearer ${process.env[s.key]}`, 'x-api-key': process.env[s.key]! };
     }
-    const body = sent === undefined ? raw : Buffer.from(JSON.stringify(sent));
+    const body = out === undefined ? raw : Buffer.from(JSON.stringify(out));
+    if (!s && !['GET', 'HEAD'].includes(method)) sent = a.inst.append('agent', 'send', { run: a.n, name, method, path }).seq;
     const answer = await forward(`${upstreams[host] ?? url.origin}${url.pathname}${url.search}`, req, res, { auth, body, keep: !link });
     // An answer's links go through for this run; what a service's answer cost, whole or in the last event of its stream that says,
     // adds to the run's as it comes.

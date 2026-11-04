@@ -383,6 +383,8 @@ test('writes go within the ticks: a file saved into a ticked folder, a message s
   const saved = await via('PUT', `${G}/drives/b!d1/items/y2026:/report.xlsx:/content`, { body: 'PK report', headers: { 'content-type': 'application/octet-stream' } });
   assert.deepEqual([saved.status, JSON.parse(saved.text).id, writes.at(-1)!.body.toString()], [201, 'new1', 'PK report'], 'a new file, by its path under a folder the ticked site holds');
   assert.equal((await via('POST', `${G}/me/sendMail`, json({ message: { subject: 'Pack', toRecipients: [{ emailAddress: { address: 'controller@demo.test' } }] } }))).status, 202);
+  const [send, answer] = log.slice(-2);
+  assert.deepEqual([send.op, send.data, answer.op, answer.data.sent], ['send', { run: answer.data.run, name: answer.data.name, method: 'POST', path: '/v1.0/me/sendMail' }, 'call', log.length - 1], 'a write is logged as it goes too, and its answer names it, so a cut leaves it as sent');
   assert.equal((await via('POST', `${G}/me/messages`, json({ subject: 'Pack' }))).status, 201);
   const session = JSON.parse((await via('POST', `${G}/me/messages/d1/attachments/createUploadSession`, json({ AttachmentItem: { attachmentType: 'file', name: 'pack.xlsx', size: 9 } }))).text);
   assert.equal((await via('PUT', session.uploadUrl, { body: 'PK pack!!', headers: { 'content-range': 'bytes 0-8/9', authorization: '' } })).status, 201);
