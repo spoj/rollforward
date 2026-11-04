@@ -92,7 +92,7 @@ What rf pull copies, the folders as the agent sees them
                              error), close, and the rest
     upload/                  what people uploaded, their comments' attachments in upload/attachments/
     working/                 what the agent made, its scripts, and process.md, how it does this series
-    session/                 each run's session: every message and tool call of it
+    session/                 each session's transcript, which may carry several runs: every message and tool call
     browser/                 each run's browser requests, and its screenshots
     skills/                  the skills the latest run loaded
     names.tsv                each instance in the latest run's reach, id<TAB>/work/<workspace>/<series>/<label>: names can

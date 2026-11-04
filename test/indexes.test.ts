@@ -197,9 +197,11 @@ test('a crawl cut by a restart goes on at the page it was on, and meanwhile a ru
   assert.deepEqual(now(lines(feedOf(DAN, BIG))), ['b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7', 'b8', 'bigtop']);
 });
 
-test("each person's cache is their own delta feed, and a run gets a copy of it", async () => {
+test("each person's cache is their own delta feed, and a run gets a copy of it, once its first crawl has begun", async () => {
   offer(ALICE, [{ id: FOLDER, name: 'Folder LFM, Reports' }]);
+  assert.deepEqual(ix.sources(instance(ALICE, [FOLDER])), [], 'none before its first crawl');
   await work(settled(ALICE, FOLDER));
+  assert.deepEqual(ix.sources(instance(ALICE, [FOLDER])).map(({ o }) => o.id), [FOLDER]);
   const a = run(ALICE, [FOLDER])('Folder LFM, Reports');
   assert.deepEqual(now(a.lines), ['f1', 'f2', 'f3', 'pub', 'sub', 'top']);
   assert.deepEqual(a.lines.find(l => l.id === 'pub'), state['b!d'].get('pub'), "Graph's own JSON, verbatim");

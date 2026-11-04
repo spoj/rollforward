@@ -5,7 +5,7 @@ import { join, posix } from 'node:path';
 import { agentsFile, createInstance, HttpError, instance, instanceDir, instances, isPerson, labels, newId, readFile, seriesDir, type Entry, type Instance } from './store.ts';
 import { startRun, type Run, type View } from './runner.ts';
 import type { JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
-import { prepare } from './indexes.ts';
+import { prepare, sources } from './indexes.ts';
 import { canSee, changes, everyone, readJson, rfDir, tree, type Tree, writeJson } from './system.ts';
 import { asPerson, users } from './auth.ts';
 import { scoped, type Browsers } from './browsers.ts';
@@ -42,12 +42,12 @@ const waiting = new Set<Instance>();
 const IDLE_MS = Number(process.env.RF_IDLE_MIN ?? 60) * 60_000, MAX_IDLE = Number(process.env.RF_MAX_IDLE ?? 8);
 type Idle = { inst: Instance; run: Run; token: string; view: View; skills: Record<string, number>; session: number; shape: string; seq: number; since: number };
 const idle = new Map<string, Idle>();
-// What a run's Pi starts from, which a run carrying its session on must still: its view of the data, the AGENTS.md files there and
-// the live skills' versions.
+// What a run's Pi starts from, which a run carrying its session on must still: its view of the data, the AGENTS.md files there, the
+// live skills' versions, and the caches it has copies of at $RF_INDEX, a first one for a source so starting a session that has them.
 function startsFrom(inst: Instance): string {
   const v = view(inst);
   return JSON.stringify([v.instance, v.names, v.series, v.env, v.ro.filter(([, at]) => at.endsWith('/AGENTS.md')).map(([p]) => existsSync(p) && readFileSync(p, 'utf8')),
-    skills().map(s => [s.id, pushed(s).version])]);
+    skills().map(s => [s.id, pushed(s).version]), sources(inst).map(({ o }) => o.id)]);
 }
 function stale(i: Idle): boolean {
   const t = tree(), runner = asPerson(runnerOf(i.inst).by);

@@ -224,21 +224,28 @@ export function forget(email: string, offer?: string) {
     });
 }
 
-// Before a run starts, for each source its runner ticked that has a cache, without waiting for it: into `to`, on the same disk, a
-// copy of the feed as its .json accounts for it, by reflink where the disk does that, as <name>.ndjson.zst, and <name>.json: the
-// source, their own deltaLinks, to follow for what changed since, and as_of, when the oldest of them was reached, null while the
-// cache is still being built. All of it runs at once, so no tidy-up starts a new feed in between. Whether there was any.
-export function prepare(inst: Instance, to: string): boolean {
+// What a run of the instance reads: the cache of each source its lender ticked that has one so far, without waiting for it.
+export function sources(inst: Instance): { o: Offer; c: Cache }[] {
   let by: string, ticked: string[];
   try {
     ({ by, logins: ticked } = lender(inst));
   } catch {
-    return false;
+    return [];
   }
+  return (m365(by)?.offers ?? []).filter(o => ticked.includes(o.id) && indexed(o)).flatMap(o => {
+    const c = load(by, o.id);
+    return c ? [{ o, c }] : [];
+  });
+}
+
+// Before a run starts, for each of its caches: into `to`, on the same disk, a copy of the feed as its .json accounts for it, by
+// reflink where the disk does that, as <name>.ndjson.zst, and <name>.json: the source, their own deltaLinks, to follow for what
+// changed since, and as_of, when the oldest of them was reached, null while the cache is still being built. All of it runs at
+// once, so no tidy-up starts a new feed in between. Whether there was any.
+export function prepare(inst: Instance, to: string): boolean {
   const names = new Set<string>();
-  for (const o of (m365(by)?.offers ?? []).filter(o => ticked.includes(o.id) && indexed(o))) {
-    const c = load(by, o.id), base = o.name.replace(/[/\0]/g, '-'), ps = Object.values(c?.parts ?? {});
-    if (!c) continue;
+  for (const { o, c } of sources(inst)) {
+    const base = o.name.replace(/[/\0]/g, '-'), ps = Object.values(c.parts);
     let name = base;
     for (let k = 2; names.has(name); k++) name = `${base} ${k}`;
     names.add(name);
