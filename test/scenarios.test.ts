@@ -212,10 +212,12 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.ok(providers.length && providers.every(p => JSON.stringify(p) === '{"data_collection":"deny"}'), 'every call asked only for providers that collect no data');
   assert.deepEqual(log.filter(e => e.op === 'comment' && e.by === 'agent').map(e => [e.text, !!e.ask]), [['Walls checked.', false], ['Is the bank file coming today?', true], ['Cited.', false]], "the agent's words are comments of its own, and an ask is marked");
   assert.match(woken.prompt!, /"op":"wake","from":"[^"]*\/2026-11"/, 'the wake started the next run, saying only who set it');
-  assert.deepEqual([walls.first, woken.first], [1, 1], 'each run a new conversation, of its own prompt alone');
-  assert.match(woken.prompt!, /^Instance 2026-11, run 3\. Its runner is Demo Admin <admin@demo\.test>, who lends you /, 'which names the runner');
+  assert.match(made.prompt!, /^Instance 2026-11, run 1\. Its runner is Demo Admin <admin@demo\.test>, who lends you /, 'a new Pi hears who the runner is');
+  assert.deepEqual([made.first, walls.first], [1, 1], 'a new conversation, of its own prompt alone, as a series made in reach since changed what run 2 sees');
+  assert.ok(woken.first! > 1, 'a run within the hour of the last carries its conversation on, as a new turn');
+  assert.match(woken.prompt!, /^Instance 2026-11, run 3\. New log entries:/, 'whose message is the new log entries');
   const transcripts = readdirSync(join(root, 'instances', id, 'session'));
-  assert.ok(['run-2', 'run-3'].every(r => transcripts.some(f => f.endsWith(`_${r}.jsonl`))), `a transcript per run: ${transcripts}`);
+  assert.ok(['run-1', 'run-2'].every(r => transcripts.some(f => f.endsWith(`_${r}.jsonl`))) && !transcripts.some(f => f.endsWith('_run-3.jsonl')), `a transcript per session: ${transcripts}`);
   assert.match(woken.saw[0], /m365:mail:admin@demo.test is not ticked/);
   assert.deepEqual(log.filter(e => e.op === 'done').map(e => [e.run, e.aborted, e.cost]), [[1, false, 0.01], [2, false, +(walls.bash.length * 0.01 + 0.01 + 0.002).toFixed(4)], [3, false, 0.02]], "what its calls cost, Pi's and the script's");
   assert.deepEqual(log.filter(e => e.op === 'report').map(e => e.text), [made.report, walls.report, woken.report]);
@@ -225,11 +227,13 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   log = await runs(id, 4);
   assert.match(takenOver.saw[0], /m365:mail:bob@demo.test is not ticked for this instance; its runner, bob@demo.test/);
   assert.equal(log.findLast(e => e.op === 'done')!.aborted, false);
+  assert.equal(takenOver.first, 1, 'a takeover ends the idle Pi: a new runner, a new conversation');
 
   scripts.push({ bash: [], report: '', saw: [], fail: 'the model said no' });
   assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Once more.' }, bob)).status, 200);
   log = await runs(id, 5);
   assert.match(String(log.findLast(e => e.op === 'done')!.error), /the model said no/, "a model's failure is the run's error");
+  assert.deepEqual(log.filter(e => e.op === 'run').map(e => e.continues), [undefined, undefined, 2, undefined, 4], 'which ends its Pi, as a refusal would');
 });
 
 test('people rename the instance, its series and its workspace mid-run: the run carries on by the names it started with, and the next run has the new ones', async () => {

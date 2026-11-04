@@ -18,11 +18,12 @@ chmodSync(scratch, 0o700);
 // Each run's own cgroup, where systemd runs the server; the container image sets this empty.
 const SCOPE = 'systemd-run --user --scope --quiet --collect --slice=rollforward-runs -p MemoryHigh=4G -p MemoryMax=8G --';
 
+// A run's Pi, which takes turns: each a prompt the agent takes, and steers it may get, until it settles, aborted or not.
 export type Run = {
+  turn(text: string): Promise<{ settled: Promise<boolean> }>;
   steer(text: string): Promise<unknown>;
   interrupt(): Promise<void>;
   stop(): Promise<void>;
-  settled: Promise<boolean>;
 };
 
 // The run's view of the data, which the server builds: its own instance at instance, such as /work/<workspace>/<series>/<label>,
@@ -35,8 +36,8 @@ export type View = { instance: string; dir: string; pylib: string; ro: [string, 
 
 // Pi for one run, in its sandbox (sandbox.ts): its view read-only but for the instance's working/ and session/ and the series'
 // .pylib, the live skills and nothing else of the host's. prompt.md is its system prompt, to which Pi adds the AGENTS.md
-// files from / down to the instance. Each run, `n`, is a new session, its transcript in the instance's session/ beside the earlier
-// runs'. The skills are the versions live as it starts, copied into the instance's skills/ by reflink, which the folder's commits
+// files from / down to the instance. A run that starts Pi, `n`, starts a session, which later runs may continue (waker.ts), its
+// transcript in the instance's session/ beside the earlier sessions'. The skills are the versions live as it starts, copied into the instance's skills/ by reflink, which the folder's commits
 // hold, and read-only at /skills/<id>, so a push applies from the next run.
 export function pi(o: { token: string; id: string; n: number; view: View; skills: { id: string; dir: string }[] }): RpcClient {
   const run = join(scratch, 'runs', o.token), home = join(run, 'home'), agentDir = join(home, '.pi', 'agent'), tmp = join(run, 'tmp');
@@ -102,21 +103,26 @@ async function ready(client: RpcClient, tries = 4): Promise<void> {
   }
 }
 
-export async function startRun(o: Parameters<typeof pi>[0] & { message: string; onEvent: (e: JsonAgentSessionEvent) => void }): Promise<Run> {
+export async function startRun(o: Parameters<typeof pi>[0] & { onEvent: (e: JsonAgentSessionEvent) => void }): Promise<Run> {
   if (!process.env.OPENROUTER_API_KEY) throw new Error('no model key: the server has no OPENROUTER_API_KEY');
   const client = pi(o), run = join(scratch, 'runs', o.token);
   // A run may leave folders it can't write in its home; they're made writable first, never through a link.
   const writable = (d: string) => { chmodSync(d, 0o700); for (const e of readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) writable(join(d, e.name)); };
   const stop = async () => { await client.stop(); unlistenRun(o.token); writable(run); rmSync(run, { recursive: true, force: true }); };
-  const settled = new Promise<boolean>(resolve => client.onEvent(e => e.type === 'agent_settled' && resolve(e.aborted)));
+  let settle = (_: boolean) => {}, settled = Promise.resolve(false);
+  client.onEvent(e => e.type === 'agent_settled' && settle(e.aborted));
   client.onEvent(o.onEvent);
   await client.start();
-  await ready(client).then(() => client.prompt(o.message)).catch(async e => { await stop(); throw e; });
+  await ready(client).catch(async e => { await stop(); throw e; });
   return {
+    turn: async text => {
+      settled = new Promise<boolean>(resolve => { settle = resolve; });
+      await client.prompt(text);
+      return { settled };
+    },
     steer: text => client.steer(text),
-    // Done once the run settles: Pi says so before it answers the abort, and the run's end may stop it first.
+    // Done once the turn settles: Pi says so before it answers the abort, and the run's end may stop it first.
     interrupt: async () => { await Promise.race([client.clearQueue().then(() => client.abort()), settled]); },
     stop,
-    settled,
   };
 }

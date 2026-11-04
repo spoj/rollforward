@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
 import { agentsFile, createInstance, HttpError, instance, instanceDir, instances, isPerson, labels, newId, readFile, seriesDir, type Entry, type Instance } from './store.ts';
 import { startRun, type Run, type View } from './runner.ts';
+import type { JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { prepare } from './indexes.ts';
 import { canSee, changes, everyone, readJson, rfDir, tree, type Tree, writeJson } from './system.ts';
 import { asPerson, users } from './auth.ts';
@@ -27,11 +28,35 @@ const full = () => active.size >= MAX_RUNS || (MIN_FREE > 0 && freemem() < MIN_F
 export const MAX_OPEN = 3;
 const SPACING_MS = 15 * 60_000, MAX_WAKES = 20;
 
-export type Active = { inst: Instance; n: number; token: string; view: View; run?: Run; sent: number; seen: number; texts: Map<string, number>; interrupted: boolean; done: boolean; cost: number; said: string; failed?: string; hosts: Set<string>; links: Map<string, string>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string };
+export type Active = { inst: Instance; n: number; session: number; token: string; view: View; skills: Record<string, number>; run?: Run; sent: number; seen: number; texts: Map<string, number>; interrupted: boolean; done: boolean; cost: number; said: string; failed?: string; hosts: Set<string>; links: Map<string, string>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string };
 export const active = new Map<string, Active>();
 export const byToken = new Map<string, Active>();
 const debounce = new Map<string, NodeJS.Timeout>();
 const waiting = new Set<Instance>();
+
+// A run's Pi, idle once the run ends cleanly, which its instance's next run within RF_IDLE_MIN carries on, as a new turn of the same
+// session whose message is the new log entries; at most RF_MAX_IDLE are idle, the longest ended first, and none holds its series'
+// slot. Anything the run would start from otherwise ends it: a takeover, new ticks, a view of the data changed, as by a rename, its
+// instance closed or abandoned, its runner no longer seeing it. So does a run that failed or was cut short, as by a refusal, whose
+// session is no place to carry on.
+const IDLE_MS = Number(process.env.RF_IDLE_MIN ?? 60) * 60_000, MAX_IDLE = Number(process.env.RF_MAX_IDLE ?? 8);
+type Idle = { inst: Instance; run: Run; token: string; view: View; skills: Record<string, number>; session: number; shape: string; seq: number; since: number };
+const idle = new Map<string, Idle>();
+// What a run sees, as its Pi started with it, but for the indexes copied for it then.
+const shape = (v: View) => JSON.stringify([v.instance, v.names, v.series, { ...v.env, RF_INDEX: undefined }]);
+function stale(i: Idle): boolean {
+  const t = tree(), runner = asPerson(runnerOf(i.inst).by);
+  return Date.now() - i.since > IDLE_MS || i.inst.doc.status !== 'open' || !(runner && canSee(runner, t.workspaces[t.series[i.inst.seriesId].workspace]))
+    || i.inst.log.some(e => e.seq > i.seq && ['takeover', 'logins'].includes(e.op)) || shape(view(i.inst)) !== i.shape;
+}
+// A run's Pi stopped, if it started, and its copies of indexes gone.
+const end = (token: string, run?: Run) => Promise.resolve(run?.stop()).catch(e => console.error('a run left its scratch folder', e))
+  .finally(() => rmSync(join(rfDir(), 'runs', token), { recursive: true, force: true }));
+function drop(id: string) {
+  const i = idle.get(id)!;
+  idle.delete(id);
+  end(i.token, i.run);
+}
 
 function seenBefore(inst: Instance): number {
   return (inst.log.findLast(e => e.op === 'done')?.seen as number | undefined) ?? 0;
@@ -145,46 +170,44 @@ async function start(inst: Instance) {
   }
   if (active.has(series) || !due(inst)) return void changes.emit('change', inst.id);
   if (full()) return void waiting.add(inst);
-  started.push(Date.now());
-  started.splice(0, started.length - MAX_RUNS);
+  let kept = idle.get(inst.id);
+  idle.delete(inst.id);
+  if (kept && stale(kept)) {
+    end(kept.token, kept.run);
+    kept = undefined;
+  }
+  if (!kept) {
+    started.push(Date.now());
+    started.splice(0, started.length - MAX_RUNS);
+  }
   const n = inst.log.filter(e => e.op === 'run').length + 1;
   const entries = inst.log.filter(e => e.seq > seen && e.by !== 'agent');
-  const text = message(inst, n, entries, true);
+  const text = message(inst, n, entries, !kept);
+  // The versions live as its Pi starts, which it uses to its end.
+  const live = kept ? [] : skills().map(s => ({ ...s, dir: realpathSync(s.dir) }));
   const a: Active = {
-    inst, n, token: randomUUID(), view: view(inst), sent: entries.at(-1)!.seq, seen, texts: new Map([[text, entries.at(-1)!.seq]]), interrupted: false, done: false, cost: 0, said: '', hosts: new Set(), links: new Map(),
+    inst, n, session: kept?.session ?? n, token: kept?.token ?? randomUUID(), view: kept?.view ?? view(inst), skills: kept?.skills ?? Object.fromEntries(live.map(s => [s.id, pushed(s).version])),
+    sent: entries.at(-1)!.seq, seen, texts: new Map([[text, entries.at(-1)!.seq]]), interrupted: false, done: false, cost: 0, said: '', hosts: new Set(), links: new Map(),
     process: processOf(inst), thread: pending(inst, seen)[0]?.thread as string | undefined,
   };
   active.set(series, a);
   byToken.set(a.token, a);
-  // The versions live now, which the run uses to its end.
-  const live = skills().map(s => ({ ...s, dir: realpathSync(s.dir) }));
   // Whose OpenRouter key it starts with, its runner's own or the server's (connections.ts), never the key.
   const key = logins(runnerOf(inst).by).some(l => l.id === 'openrouter' && l.enabled) ? 'own' : 'shared';
-  inst.append('server', 'run', { run: n, upto: a.sent, skills: Object.fromEntries(live.map(s => [s.id, pushed(s).version])), key });
+  inst.append('server', 'run', { run: n, upto: a.sent, skills: a.skills, key, ...(kept && { continues: kept.session }) });
+  let settled: Promise<boolean>;
   try {
-    // Copies of the indexes of what its runner ticked, on the indexes' own disk, read-only at $RF_INDEX.
-    const index = join(rfDir(), 'runs', a.token);
-    if (prepare(inst, index)) {
-      a.view.ro.push([index, '/index']);
-      a.view.env.RF_INDEX = '/index';
+    if (kept) a.run = kept.run;
+    else {
+      // Copies of the indexes of what its runner ticked, on the indexes' own disk, read-only at $RF_INDEX.
+      const index = join(rfDir(), 'runs', a.token);
+      if (prepare(inst, index)) {
+        a.view.ro.push([index, '/index']);
+        a.view.env.RF_INDEX = '/index';
+      }
+      a.run = await startRun({ token: a.token, id: inst.id, n, view: a.view, skills: live, onEvent: e => byToken.has(a.token) && heard(byToken.get(a.token)!, e) });
     }
-    a.run = await startRun({
-      token: a.token, id: inst.id, n, view: a.view,
-      message: text, skills: live,
-      onEvent: e => {
-        if (e.type === 'message_end' || e.type === 'tool_execution_end') changes.emit('change', inst.id); // the audit shows the run as it goes
-        if (e.type === 'tool_execution_end') a.browsers?.shoot().catch(err => console.error(`run ${n} of ${inst.id}: no screenshot`, err));
-        if (e.type === 'message_end' && e.message.role === 'assistant') {
-          a.failed = e.message.stopReason === 'error' ? e.message.errorMessage ?? 'the model failed' : undefined; // a later success clears it
-          const text = e.message.content.map(b => (b.type === 'text' ? b.text : '')).join('').trim();
-          if (text) a.said = text;
-        }
-        if (e.type !== 'message_start' || e.message.role !== 'user') return;
-        const c = e.message.content;
-        const seq = a.texts.get(typeof c === 'string' ? c : c.map(b => (b.type === 'text' ? b.text : '')).join(''));
-        if (seq) a.seen = Math.max(a.seen, seq);
-      },
-    });
+    ({ settled } = await a.run.turn(text));
   } catch (err) {
     finish(a, true, String(err));
     return;
@@ -195,7 +218,22 @@ async function start(inst: Instance) {
     await a.run!.interrupt().catch(() => {});
     finish(a, true, 'time limit');
   }, LIMIT_MS);
-  a.run.settled.then(aborted => finish(a, aborted, a.failed));
+  settled.then(aborted => finish(a, aborted, a.failed));
+}
+
+// What its Pi says as a run goes, the run now its token's.
+function heard(a: Active, e: JsonAgentSessionEvent) {
+  if (e.type === 'message_end' || e.type === 'tool_execution_end') changes.emit('change', a.inst.id); // the audit shows the run as it goes
+  if (e.type === 'tool_execution_end') a.browsers?.shoot().catch(err => console.error(`run ${a.n} of ${a.inst.id}: no screenshot`, err));
+  if (e.type === 'message_end' && e.message.role === 'assistant') {
+    a.failed = e.message.stopReason === 'error' ? e.message.errorMessage ?? 'the model failed' : undefined; // a later success clears it
+    const text = e.message.content.map(b => (b.type === 'text' ? b.text : '')).join('').trim();
+    if (text) a.said = text;
+  }
+  if (e.type !== 'message_start' || e.message.role !== 'user') return;
+  const c = e.message.content;
+  const seq = a.texts.get(typeof c === 'string' ? c : c.map(b => (b.type === 'text' ? b.text : '')).join(''));
+  if (seq) a.seen = Math.max(a.seen, seq);
 }
 
 // The process a run starts from: its instance's working/process.md, or, until it has one, that of the series' latest closed instance
@@ -216,16 +254,21 @@ function finish(a: Active, aborted: boolean, error?: string) {
   byToken.delete(a.token);
   const series = a.inst.seriesId;
   active.delete(series);
-  rmSync(join(rfDir(), 'runs', a.token), { recursive: true, force: true });
   a.browsers?.end().catch(e => a.inst.append('server', 'browsers', { run: a.n, error: e.message }));
   // The agent's last words in a run are its report to the instance's people; its first line is the run's summary.
   if (a.said && !aborted) a.inst.append('agent', 'report', { run: a.n, text: a.said });
   const summary = a.said && !aborted ? summaryOf(a.said) : null, added = rules(a.process, readFile(a.inst.dir, 'working/process.md') ?? a.process);
   // The rules it added to the process, or reworded, for the thread whose entry started it, where they were likely agreed.
   a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(4), summary, ...(error && { error }), ...(added && { rules: added, thread: a.thread }) });
-  // Once its sandbox has stopped, the run's changes are one commit, with the names.tsv they were written under, which the instance's
-  // next run and its other commits wait for.
-  const stopped = a.run?.stop().catch(e => console.error(`run ${a.n} of ${a.inst.id} left its scratch folder`, e));
+  // Its Pi idles for the instance's next run, or stops, the longest idle too past RF_MAX_IDLE.
+  const keep = !aborted && !error && !!a.run && a.inst.doc.status === 'open';
+  if (keep) {
+    idle.set(a.inst.id, { inst: a.inst, run: a.run!, token: a.token, view: a.view, skills: a.skills, session: a.session, shape: shape(a.view), seq: a.inst.log.at(-1)!.seq, since: Date.now() });
+    if (idle.size > MAX_IDLE) drop(idle.keys().next().value!);
+  }
+  // The run's changes are one commit, with the names.tsv they were written under, which the instance's next run and its other
+  // commits wait for: once its sandbox has stopped, or, idle, as it is, nothing running in it.
+  const stopped = keep ? undefined : end(a.token, a.run);
   commit(a.inst.dir, AGENT, [`Run ${a.n}`, summary ?? error].filter(Boolean).join(': '), stopped).catch(e => a.inst.append('server', 'commit', { run: a.n, error: e.message }));
   if (a.run) { // one that never started, as with a missing API key, waits for the next act or a restart rather than retrying at once
     const next = due(a.inst) ? a.inst : instances(series).find(i => i !== a.inst && due(i));
@@ -359,6 +402,7 @@ export function startWith(seriesId: string, label: string, by: string, logins: s
 }
 
 function fire() {
+  for (const [id, i] of idle) if (stale(i)) drop(id);
   startWaiting();
   const w = wakes(), now = new Date().toISOString(), t = tree();
   const due = Object.entries(w.pending).filter(([, k]) => k.at <= now).sort(([, a], [, b]) => a.at.localeCompare(b.at));
