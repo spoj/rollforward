@@ -204,6 +204,7 @@ async function pull(path: string, dir: string) {
   const into = !from || at.endsWith('/') ? resolve(dir) : under(resolve(dir), from.slice(from.lastIndexOf('/') + 1)), rel = (f: { path: string }) => f.path.slice(from ? from.length + 1 : 0);
   if (!into) throw new Error(`${from} can't be a name here: pull ${from}/ into a folder of your choosing`);
   let fetched = 0, same = 0, deleted = 0, failed = 0, big = 0;
+  const fetches: (() => Promise<void>)[] = [];
   for (const f of list.filter(f => !excluded(rel(f)))) {
     const local = rel(f) ? under(into, rel(f)) : into, st = local && existsSync(local) ? statSync(local) : undefined;
     if (!local) {
@@ -219,15 +220,21 @@ async function pull(path: string, dir: string) {
       big++;
       continue;
     }
-    console.log(`${st ? 'changed' : 'new'}  ${f.path}`);
-    try {
-      if (!dry) write(local, f.text ?? new Uint8Array(await (await api(f.url!)).arrayBuffer()), f.mtime);
-      fetched++;
-    } catch (e) {
-      failed++;
-      console.error(`${f.path}: ${(e as Error).message}`);
-    }
+    fetches.push(async () => {
+      console.log(`${st ? 'changed' : 'new'}  ${f.path}`);
+      try {
+        if (!dry) write(local, f.text ?? new Uint8Array(await (await api(f.url!)).arrayBuffer()), f.mtime);
+        fetched++;
+      } catch (e) {
+        failed++;
+        console.error(`${f.path}: ${(e as Error).message}`);
+      }
+    });
   }
+  // Up to 8 files are fetched at once, each started in the list's order.
+  await Promise.all(Array.from({ length: 8 }, async () => {
+    for (let next; (next = fetches.shift());) await next();
+  }));
   if (flags.delete && list.some(rel) && existsSync(into)) {
     const keep = new Set(list.map(rel)), mine = (d: string): string[] => readdirSync(d, { withFileTypes: true }).flatMap(e => e.isDirectory() ? mine(join(d, e.name)) : [join(d, e.name)]);
     for (const p of mine(into)) {
