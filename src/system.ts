@@ -9,7 +9,8 @@ import { join } from 'node:path';
 // A workspace's people are each an email or an Entra group's id. Owners manage who is in it; owners and members see and work in all
 // of it. A workspace with neither is the admins'. Its proposal, a manager's, merges it into another workspace, or moves one of its
 // series there, once a manager of that one accepts (server.ts); moved lists the series it moved out, which its people see go.
-export type Proposal = { kind: 'merge' | 'move'; to: string; series?: string; by: string; at: string };
+// A merge's `had` is the series the workspace had as it was proposed.
+export type Proposal = { kind: 'merge' | 'move'; to: string; series?: string; had?: string[]; by: string; at: string };
 export type Workspace = { name: string; owners: string[]; members: string[]; archived?: boolean; proposal?: Proposal; moved?: { name: string; to: string; at: string }[] };
 // A task is a series marked single, holding one instance, named by its label until it is made a series.
 export type Series = { name: string; workspace: string; archived?: boolean; single?: boolean };

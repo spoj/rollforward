@@ -845,14 +845,20 @@ test("a workspace's owners propose to merge it into another or move a series the
 
   assert.equal((await propose({ kind: 'merge', to: into })).status, 200);
   assert.equal((await call('DELETE', `/api/proposals/${from}`, undefined, b)).status, 200, "withdrawn by the merged workspace's owner");
+  await put(into, { members: [bob] });
+  assert.equal((await propose({ kind: 'merge', to: into }, b)).status, 200);
+  await put(from, { owners: [], members: [bob] });
+  assert.deepEqual([(await listed(into)).proposal, (await accept({ owners: [], members: [] })).status], [null, 404], 'open only while its proposer manages the workspace');
   assert.equal((await propose({ kind: 'merge', to: into })).status, 200);
+  const late = await add(from, 'Late'), merging = await json(`/api/proposals/${from}`);
+  assert.deepEqual([merging.series.filter((s: { since?: true }) => s.since).map((s: { id: string }) => s.id), merging.agents], [[late], 'Fiscal months end on Saturdays.\n'], 'a series made since it was proposed, and the AGENTS.md it adds, shown to the one accepting');
   assert.deepEqual((await json('/api/status')).proposals.map((p: { kind: string; from: string; to: string; by: string }) => [p.kind, p.from, p.to, p.by]), [['merge', 'Moves A', 'Moves B', adminEmail]]);
   await json(`/api/instances/${other}`);
   await json(`/api/instances/${other}`, b);
   assert.equal((await accept({ owners: [bob], members: [] })).status, 200);
   const merged = await listed(into, b);
   assert.deepEqual([merged.owners, merged.members, merged.series.map((s: { name: string }) => s.name), merged.agents],
-    [[adminEmail, bob], [], ['Aging', 'Rec', 'Rec 2'], 'Amounts in HKD.\n\n## Moves A\n\nFiscal months end on Saturdays.\n']);
+    [[adminEmail, bob], [], ['Aging', 'Late', 'Rec', 'Rec 2'], 'Amounts in HKD.\n\n## Moves A\n\nFiscal months end on Saturdays.\n']);
   assert.deepEqual([await listed(from), existsSync(join(root, 'agents', `${from}.md`))], [undefined, false], 'the merged workspace is gone, its AGENTS.md with it');
   const unread = async (cookie: string) => (await listed(into, cookie)).series.find((s: { id: string }) => s.id === aging).instances[0].unread;
   assert.deepEqual([await unread(b), await unread(admin)], [true, false], 'new to everyone but who accepted');

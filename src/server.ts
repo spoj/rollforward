@@ -191,8 +191,12 @@ function summary(i: Instance, email: string, w8 = wakes()) {
 
 // A proposal lapses, and a series moved out stops showing where it was, a week on.
 const fresh = (at: string) => Date.now() - Date.parse(at) < 7 * 86400e3;
-// The proposals open, each by the id of the workspace it merges or moves a series out of, into the one it names.
-const proposals = (t: Tree) => Object.entries(t.workspaces).filter(([, w]) => w.proposal && fresh(w.proposal.at)).map(([id, w]) => {
+// The proposals open, each by the id of the workspace it merges or moves a series out of, into the one it names, while whoever
+// proposed it still manages that workspace.
+const proposals = (t: Tree) => Object.entries(t.workspaces).filter(([, w]) => {
+  const u = w.proposal && fresh(w.proposal.at) && users()[w.proposal.by];
+  return !!u && !u.disabled && canManage({ email: w.proposal!.by, role: u.role, groups: u.groups ?? [] }, w);
+}).map(([id, w]) => {
   const p = w.proposal!;
   return { id, into: p.to, kind: p.kind, from: w.name, to: t.workspaces[p.to].name, series: p.series ? t.series[p.series].name : null, by: p.by, at: p.at };
 });
@@ -461,7 +465,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       if (a.archived || b.archived) throw new HttpError(409, `${a.archived ? a.name : b.name} is archived`);
       const busy = proposals(t).find(p => [p.id, p.into].some(x => x === id || x === payload.to));
       if (busy) throw new HttpError(409, `${busy.from} has a proposal open, into ${busy.to}: until it's accepted, declined or withdrawn, or lapses a week on, neither takes another`);
-      a.proposal = { kind: payload.kind, to: payload.to, ...(payload.kind === 'move' && { series: payload.series }), by, at: new Date().toISOString() };
+      a.proposal = { kind: payload.kind, to: payload.to, ...(payload.kind === 'move' ? { series: payload.series } : { had: Object.keys(t.series).filter(sid => t.series[sid].workspace === id) }), by, at: new Date().toISOString() };
       saveTree(t);
       return send(res, 200, 'ok');
     }
@@ -479,7 +483,11 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // other, whom its managers may add.
     const us = users(), joining = p.kind === 'merge' ? everyone(a).filter(x => !everyone(b).includes(x))
       : [...new Set(instances(moving[0]).filter(i => i.doc.status === 'open').map(i => runnerOf(i).by))].filter(x => !us[x] || !canSee({ email: x, role: us[x].role, groups: us[x].groups ?? [] }, b));
-    if (req.method === 'GET') return send(res, 200, { ...p, series: move(structuredClone(t)), people: joining });
+    // What the one accepting sees first: for a merge, the series made since it was proposed marked so, and the AGENTS.md it adds.
+    if (req.method === 'GET') return send(res, 200, {
+      ...p, series: move(structuredClone(t)).map(s => ({ ...s, ...(a.proposal!.had && !a.proposal!.had.includes(s.id) && { since: true }) })), people: joining,
+      ...(p.kind === 'merge' && { agents: text(agentsFile(id)) }),
+    });
     if (req.method !== 'POST') throw new HttpError(405, 'GET it, POST {"owners", "members"} to accept it, or DELETE to withdraw or decline it');
     if (a.archived || b.archived) throw new HttpError(409, `${a.archived ? a.name : b.name} is archived`);
     // A run going in a series that moves has read what its workspace reaches, which it could copy where the other's people see it.
