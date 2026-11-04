@@ -278,6 +278,7 @@ test("what the session names, such as a tool call's name, shows as text in the a
 test("a sign-off the agent asks for shows louder, above the instance and in its thread, with Approve and Reject for its runner; approving commits the folder, as the thread and the audit say", async () => {
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
   await page.waitForSelector('#log.open');
+  await page.locator('#needs', { hasText: 'The pack is ready to send to the bank.' }).waitFor();
   assert.equal(await page.locator('#needs').innerText(), 'Sign-off\nThe pack is ready to send to the bank.\nReview');
   const thread = page.locator('#log .thread.waits.signoff');
   await thread.waitFor();

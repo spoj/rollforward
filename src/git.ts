@@ -129,8 +129,8 @@ async function snapshot(dir: string, who: Who, message: string): Promise<string>
   const exit = once(p, 'close');
   const fed = await pipeline(stream(dir, who, message, parent, seen, now), p.stdin).then(() => undefined, (e: NodeJS.ErrnoException) => e);
   const [code] = await exit;
-  // A broken pipe means git stopped reading, and says why.
-  if (fed && fed.code !== 'EPIPE') throw fed;
+  // A pipe broken or closed early means git stopped reading, and says why.
+  if (fed && !['EPIPE', 'ERR_STREAM_PREMATURE_CLOSE'].includes(fed.code!)) throw fed;
   if (code) throw new Error(`git fast-import failed: ${err.trim()}`);
   const hash = await git(dir, 'rev-parse', 'refs/heads/main');
   writeFileSync(cache, JSON.stringify(Object.fromEntries(now)), 'latin1');
