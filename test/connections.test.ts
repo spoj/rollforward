@@ -39,7 +39,7 @@ const folders: Record<string, ReturnType<typeof item>[]> = {
   top: [item('y2026', '2026', '2026-01-02T00:00:00Z', true), item('y2025', '2025', '2025-01-02T00:00:00Z', true)],
   y2026: [item('a', 'AGING_A_1.csv', '2026-10-20T12:00:00Z', false, 'y2026'), item('b', 'AGING_B_2.csv', '2026-10-20T12:30:00Z', false, 'y2026'), item('c', 'AGING_A_0.csv', '2026-10-19T12:00:00Z', false, 'y2026')],
 };
-const content: Record<string, string> = { a: 'As-Of Date,10/20/2026\nCustomer,Open\nAcme,10\n', c: '{"@microsoft.graph.downloadUrl":"https://contoso.sharepoint.com/download/b?tempauth=t","uploadUrl":"https://outlook.office.com/upload/s9"}' };
+const content: Record<string, string> = { a: 'As-Of Date,10/20/2026\nCustomer,Open\nAcme,10\n', c: '{"@microsoft.graph.downloadUrl":"https://host/download/b?tempauth=t","uploadUrl":"https://outlook.office.com/upload/s9"}' };
 const drives: Record<string, any> = {
   'b!d1': { driveType: 'documentLibrary', sharePointIds: { siteUrl: 'https://host/sites/reports', siteId: 'site1', webId: 'web1' } },
   'b!own': { driveType: 'business', owner: { user: { displayName: 'Alice Ames' } }, sharePointIds: { siteUrl: 'https://host-my/personal/alice', siteId: 'personal', webId: 'alice' } },
@@ -144,7 +144,7 @@ before(async () => {
     if ((m = /^\/shares\/u!([\w-]+)\/driveItem$/.exec(path))) return send(shares[Buffer.from(m[1], 'base64url').toString()] ?? { error: { code: 'itemNotFound' } }, shares[Buffer.from(m[1], 'base64url').toString()] ? 200 : 404);
     if ((m = /^\/drives\/b!d1\/(?:items\/(\w+)|root)\/(?:children|search\(q='\w+'\))$/.exec(path))) return send({ value: folders[m[1] ?? 'root1'] ?? [] });
     if ((m = /^\/drives\/b!d1\/items\/(\w+)\/content$/.exec(path))) return void res.writeHead(200, m[1] === 'c' ? { 'content-type': 'application/json' } : {}).end(content[m[1]]);
-    if ((m = /^\/drives\/b!d1\/items\/(\w+)$/.exec(path))) return send(m[1] === 'root1' ? roots['b!d1'] : { ...[...Object.values(folders).flat()].find(i => i.id === m![1]), ...(m[1] === 'a' && { '@microsoft.graph.downloadUrl': 'https://contoso.sharepoint.com/download/a?tempauth=t' }) });
+    if ((m = /^\/drives\/b!d1\/items\/(\w+)$/.exec(path))) return send(m[1] === 'root1' ? roots['b!d1'] : { ...[...Object.values(folders).flat()].find(i => i.id === m![1]), ...(m[1] === 'a' && { '@microsoft.graph.downloadUrl': 'https://host/download/a?tempauth=t' }) });
     if ((m = /^\/(?:drives\/(b!\w+)|users\/alice@demo\.test\/drive)\/root$/.exec(path))) return send(roots[m[1] ?? 'b!own']);
     if ((m = /^\/drives\/(b!\w+)$/.exec(path)) && drives[m[1]]) return send({ id: m[1], ...drives[m[1]] });
     if (path === '/sites/host,site1,web1') return send({ id: 'host,site1,web1', displayName: 'Reports' });
@@ -191,7 +191,7 @@ before(async () => {
   c.convert();
   c.setConnection('adb', { type: 'databricks', host: 'adb-1.test', warehouse: 'wh1' }, 'admin');
   endpoints.graph = base;
-  for (const host of ['graph.microsoft.com', 'adb-1.test', 'contoso.sharepoint.com', 'outlook.office.com', 'dbstorage1.blob.core.windows.net']) c.upstreams[host] = base;
+  for (const host of ['graph.microsoft.com', 'adb-1.test', 'host', 'outlook.office.com', 'dbstorage1.blob.core.windows.net']) c.upstreams[host] = base;
   for (const host of ['openrouter.ai', 'api.exa.ai']) c.upstreams[host] = `http://127.0.0.1:${(services.address() as { port: number }).port}`;
   logins.saveLogin(ALICE, { id: 'm365', kind: 'm365', name: 'Microsoft 365', account: ALICE, since: '2026-11-02T00:00:00Z', offers: [
     { id: `m365:mail:${ALICE}`, name: 'Mailbox' }, { id: 'm365:onedrive', name: 'OneDrive' }, { id: 'm365:site:host,site1,web1', name: 'SharePoint Reports' },
@@ -252,7 +252,10 @@ test("the proxy refuses, with a plain 403 and why, what isn't ticked: the runner
   await refused('/users', /the graph connection reaches mailboxes, and folders, files and SharePoint sites ticked for this instance, not \/users/);
   await refused('https://graph.microsoft.com/v2.0/me/messages', /Microsoft Graph, under \/v1.0\/ or \/beta\//);
   for (const out of ["/sites/host,site1,web1/getByPath(path='/sites/HR')/drive/root/children", "/sites/host,site1,web1/microsoft.graph.getByPath(path='/sites/HR')"]) await refused(out, /getByPath reaches any site by its path/);
-  for (const out of ['/drives/b!d1/recent()', "/drives/b!d1/search(q='pay')", '/me/drive/sharedWithMe()', '/drives/b!d1/following']) await refused(out, /lists other drives' items too/);
+  for (const out of ['/drives/b!d1/recent()', "/drives/b!d1/search(q='pay')", '/me/drive/sharedWithMe()', '/drives/b!d1/following', '/sites/host,site1,web1/drive/recent()', "/sites/host,site1,web1/drives/b!d1/search(q='pay')"]) await refused(out, /lists other drives' items too/);
+  await refused('/sites/host,site1,web1/sites/other', /subsites are ticked by themselves/);
+  await refused('/drives/b!d1/items/y2026/children/zzz', /not under another's children/);
+  for (const out of ['/drives/b!d1/root:/Reports/y2026%2F..%2F..%2Fx.csv:/content', '/me/messages/', '/me//messages']) await refused(out, /each part of the path is a name/);
   await refused('/me/messages', /no X-HTTP-Method header, and no Prefer that redeems a sharing link/, { prefer: 'redeemSharingLink' });
   await refused('/me/messages', /no X-HTTP-Method header/, { 'x-http-method-override': 'DELETE' });
   assert.deepEqual(calls().at(-1), { run: 1, name: 'graph', method: 'GET', path: '/v1.0/me/messages', status: 403, bytes: 0, refused: 'no X-HTTP-Method header, and no Prefer that redeems a sharing link' });
@@ -310,11 +313,11 @@ test("links an answer gave go through for that run alone, as they are, with no c
   const item = JSON.parse((await via('GET', `${G}/drives/b!d1/items/a`)).text);
   const download = await via('GET', item['@microsoft.graph.downloadUrl'], { headers: { authorization: '' } });
   assert.deepEqual(JSON.parse(download.text), { downloaded: true, auth: null });
-  assert.deepEqual(calls().at(-1), { run: 1, name: 'graph', method: 'GET', path: 'https://contoso.sharepoint.com/download/a', status: 200, bytes: download.text.length });
+  assert.deepEqual(calls().at(-1), { run: 1, name: 'graph', method: 'GET', path: 'https://host/download/a', status: 200, bytes: download.text.length });
   runs.set('other', inst);
   await assert.rejects(via('GET', item['@microsoft.graph.downloadUrl'], { token: 'other' }), /CONNECT answered 403/, "another run's, whose proxy doesn't end its host");
   assert.equal((await via('GET', `${G}/drives/b!d1/items/c/content`)).status, 200, 'a JSON file of links');
-  assert.equal((await via('GET', 'https://contoso.sharepoint.com/download/b?tempauth=t')).status, 403, "not a link an answer gave, only a file's content");
+  assert.equal((await via('GET', 'https://host/download/b?tempauth=t')).status, 403, "not a link an answer gave, only a file's content");
 });
 
 test('a login Microsoft no longer renews is marked expired, and the run is told its runner signs in again', async () => {
@@ -395,6 +398,8 @@ test('rf delivered records an output delivered, with where it went and its recei
 test('writes go within the ticks: a file saved into a ticked folder, a message sent from a ticked mailbox, and a large attachment through its upload session', async () => {
   const saved = await via('PUT', `${G}/drives/b!d1/items/y2026:/report.xlsx:/content`, { body: 'PK report', headers: { 'content-type': 'application/octet-stream' } });
   assert.deepEqual([saved.status, JSON.parse(saved.text).id, writes.at(-1)!.body.toString()], [201, 'new1', 'PK report'], 'a new file, by its path under a folder the ticked site holds');
+  const file = '{"parentReference": {"id": "y2025"}, "n": 12345678901234567890}';
+  assert.deepEqual([(await via('PUT', `${G}/drives/b!d1/items/y2026:/report.xlsx:/content`, { body: file, headers: { 'content-type': 'application/json' } })).status, writes.at(-1)!.body.toString()], [201, file], "a JSON file's content, as its bytes");
   assert.equal((await via('POST', `${G}/me/sendMail`, json({ message: { subject: 'Pack', toRecipients: [{ emailAddress: { address: 'controller@demo.test' } }] } }))).status, 202);
   const [send, answer] = log.slice(-2);
   assert.deepEqual([send.op, send.data, answer.op, answer.data.sent], ['send', { run: answer.data.run, name: answer.data.name, method: 'POST', path: '/v1.0/me/sendMail' }, 'call', log.length - 1], 'a write is logged as it goes too, and its answer names it, so a cut leaves it as sent');
@@ -413,6 +418,13 @@ test("writes share nothing, and make, move or copy nothing outside the ticks; ma
     ['POST', '/drives/b!d1/items/a/createLink', { type: 'view', scope: 'anonymous' }, /would share it/],
     ['POST', '/drives/b!d1/items/a/invite', { recipients: [] }, /would share it/],
     ['POST', '/drives/b!d1/items/a/graph.createLink', { type: 'view', scope: 'anonymous' }, /would share it/],
+    ['POST', '/drives/b!d1/items/y2026/subscriptions', { notificationUrl: 'https://elsewhere.test/hook' }, /would share it/],
+    ['POST', '/drives/b!d1/items/a/assignSensitivityLabel', { sensitivityLabelId: 'none' }, /would share it/],
+    ['POST', '/sites/host,site1,web1/onenote/notebooks/n1/copyNotebook', { siteId: 'elsewhere' }, /would copy it where no tick reaches/],
+    ['PATCH', '/drives/b!d1/items/a', { ParentReference: { id: 'y2025' } }, /would put it in a folder no tick covers/],
+    ['PATCH', '/drives/b!d1/items/a', { parentReference: { id: 'y2026', Path: '/drive/root:/x' } }, /name the folder by its parentReference's id/],
+    ['POST', '/me/sendMail', { Message: { from: { emailAddress: { address: AP } } } }, /mail from alice@demo.test goes out as alice@demo.test/],
+    ['POST', '/me/sendMail/', {}, /each part of the path is a name/],
     ['POST', '/me/mailFolders/inbox/messageRules', { actions: { forwardTo: [] } }, /would share it/],
     ['PATCH', '/drives/b!d1/items/a', { parentReference: { id: 'y2025' } }, /would put it in a folder no tick covers/],
     ['POST', '/drives/b!d1/items/a/copy', { parentReference: { driveId: 'b!d1', id: 'top' } }, /would put it in a folder no tick covers/],

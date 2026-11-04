@@ -37,7 +37,7 @@ export type Type = {
   host?(c: Connection): string;
   // The offer a request needs ticked, and its JSON body as it goes on, if the type rewrote it; or a refusal.
   check?(c: Connection, runner: string, ticks: string[], r: Request): Promise<{ offer: string; json?: unknown }>;
-  links?(answer: any, path: string): string[];
+  links?(answer: any, path: string, email: string): string[] | Promise<string[]>;
   env?(c: Connection): Record<string, string>;
 };
 export const types: Record<string, Type> = { graph, databricks, website };
@@ -114,14 +114,16 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     if (!link && !c && !s) throw new HttpError(403, `${url.origin + url.pathname} is no link a connection's answer gave this run`);
     // A POST's or PATCH's body, a JSON one, or any to the server's own services, is read whole, for the policy; a JSON body goes on as the JSON it read, as it rewrote
     // it, never as bytes another parser might read otherwise, such as a key twice. Anything else, such as a file's content, streams.
-    const isJson = String(req.headers['content-type']).includes('json');
+    const isJson = /json/i.test(String(req.headers['content-type']));
     const raw = !link && (s || ['POST', 'PATCH'].includes(method) || (method === 'PUT' && isJson)) ? Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)) : undefined;
-    const json = isJson && raw?.length ? JSON.parse(raw.toString()) : undefined, r = { method, url, headers: req.headers, json, body: raw };
-    let out = json, auth: Record<string, string> = {};
+    // A file's content, PUT …/content, goes on as its bytes, a JSON file's too.
+    const json = isJson && raw?.length && !(method === 'PUT' && /\/content$/i.test(url.pathname)) ? JSON.parse(raw.toString()) : undefined, r = { method, url, headers: req.headers, json, body: raw };
+    let out = json, auth: Record<string, string> = {}, as = '';
     if (c) {
       const { by, logins: ticks } = lender(a.inst), checked = await types[c.type].check!(c, by, ticks, r), login = loginOf(c) as EntraLogin;
       out = checked.json ?? json;
-      auth = { authorization: `Bearer ${await token(use(a.inst, checked.offer).email, login.id, login.scope)}` };
+      as = use(a.inst, checked.offer).email;
+      auth = { authorization: `Bearer ${await token(as, login.id, login.scope)}` };
     }
     if (s) {
       // The key goes in both headers SDKs send one in: Authorization, and x-api-key, as Anthropic's, Pi's among them, and Exa's do.
@@ -134,7 +136,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     const answer = await forward(`${upstreams[host] ?? url.origin}${url.pathname}${url.search}`, req, res, { auth, body, keep: !link });
     // An answer's links go through for this run; what a service's answer cost, whole or in the last event of its stream that says,
     // adds to the run's as it comes.
-    if (c && answer.type.includes('json')) for (const l of types[c.type].links?.(JSON.parse(answer.text || 'null'), url.pathname) ?? []) a.links.set(new URL(l).href, c.name);
+    if (c && answer.type.includes('json')) for (const l of await types[c.type].links?.(JSON.parse(answer.text || 'null'), url.pathname, as) ?? []) a.links.set(new URL(l).href, c.name);
     const cost = !s ? 0 : (answer.text.trimStart().startsWith('{') ? [answer.text] : answer.text.split('\n').filter(l => l.startsWith('data: {')).map(l => l.slice(6)))
       .map(e => s.cost(JSON.parse(e))).findLast(x => x !== undefined) ?? 0;
     a.cost += cost;
