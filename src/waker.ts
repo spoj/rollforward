@@ -60,8 +60,10 @@ const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math
 // whose entries change those: a takeover and a runner's new ticks.
 export function message(inst: Instance, n: number, entries: Entry[], first = false): string {
   const made = entries.findLast(e => ['takeover', 'logins'].includes(e.op)), us = users(), who = (by: string) => `${us[by]?.name || by} <${by}>`;
+  const set = [...wakesOf(inst.id), ...wakesOf(inst.seriesId)];
   return `Instance ${inst.label}, run ${n}.`
     + (first || made ? ` Its runner is ${made?.op === 'takeover' ? `now ${who(made.by)}, taking over from ${who(made.from as string)}` : who(runnerOf(inst).by)}, who lends you ${reachable(inst).map(c => `${c.name} (${c.type})`).join(', ') || 'no connection'}.` : '')
+    + (first && set.length ? ` Pending wakes: ${set.map(k => `${k.id}, ${k.target === inst.id ? 'waking this instance' : `starting ${k.label}`} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''}`).join('; ')}.` : '')
     + ' New log entries:\n'
     + entries.map(e => JSON.stringify(isNote(inst, e) ? { ...e, note: true } : e)).join('\n');
 }
@@ -215,26 +217,69 @@ export function closed(inst: Instance, by: string) {
   }
 }
 
-// Wakes (.rf/wakes.json): at most one pending per target, an instance or a series by id, fired by the clock at least 15 minutes after
-// the target's last, and the requests to start an instance that a series no one shares, or with 3 open, got instead.
-// A run's wake notes its instance, `inst`, as its name in `from` may change before it fires.
-export type Wake = { at: string; from: string; label?: string; inst?: string };
+// Wakes (.rf/wakes.json): the pending ones by id, each for a target, an instance or a series by id, and the requests to start an
+// instance that a series no one shares, or with 3 open, got instead. A target fires at most once in 15 minutes: a wake due sooner
+// waits. A run's wake notes its instance, `inst`, as its name in `from` may change before it fires. One with `days` recurs each week
+// on them at its time of day, in the server's time zone; a series' moves the date in its label on with it, keeping it the day it
+// fires or the one before that it fires on, as it was set.
+export type Wake = { target: string; at: string; from: string; label?: string; inst?: string; days?: string[] };
 export type Request = { series: string; label: string; from: string; at: string };
 type Wakes = { pending: Record<string, Wake>; fired: Record<string, string>; requests: Record<string, Request> };
 export const wakes = () => readJson<Wakes>('wakes.json', { pending: {}, fired: {}, requests: {} });
 const saveWakes = (w: Wakes) => writeJson('wakes.json', w);
+export const wakesOf = (target: string, w = wakes()) => Object.entries(w.pending).filter(([, k]) => k.target === target)
+  .map(([id, k]) => ({ id, ...k })).sort((a, b) => a.at.localeCompare(b.at));
 
-export function setWake(target: string, wake: Wake): Wake {
-  const w = wakes(), at = Math.max(Date.parse(wake.at), Date.parse(w.fired[target] ?? '1970-01-01') + SPACING_MS);
-  w.pending[target] = { ...wake, at: new Date(at).toISOString() };
-  saveWakes(w);
-  return w.pending[target];
+const WEEK = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'], dayOf = (d: Date) => WEEK[(d.getDay() + 6) % 7];
+const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const dateIn = (label?: string) => label?.match(/\d{4}-\d{2}-\d{2}/)?.[0];
+// The next of `days` after d, or by -1 the one before it, at d's time of day.
+function step(d: Date, days: string[], by: 1 | -1): Date {
+  const n = new Date(d);
+  do n.setDate(n.getDate() + by); while (!days.includes(dayOf(n)));
+  return n;
 }
 
-export function cancelWake(target: string) {
+// The days a wake first due `at` recurs on, from mon-fri or mon,wed,fri, or none from '', with a series' label's date checked.
+export function weekly(text: string, at: Date, label?: string): string[] | undefined {
+  const on = new Set<string>();
+  for (const part of text.toLowerCase().split(',').map(p => p.trim()).filter(Boolean)) {
+    const [a, b = a] = part.split('-').map(d => WEEK.indexOf(d));
+    if (a < 0 || b < 0) throw new HttpError(400, `days: such as mon-fri or mon,wed,fri, not ${text}`);
+    for (let d = a; on.add(WEEK[d]), d !== b; d = (d + 1) % 7);
+  }
+  const days = WEEK.filter(d => on.has(d)), date = dateIn(label);
+  if (!days.length) return undefined;
+  if (!days.includes(dayOf(at))) throw new HttpError(400, `${ymd(at)} is a ${dayOf(at)}, not one of the days it recurs on`);
+  if (label !== undefined && date !== ymd(at) && date !== ymd(step(at, days, -1)))
+    throw new HttpError(400, `a weekly wake's label holds the date it first fires, ${ymd(at)}, or the one before it that it fires on, ${ymd(step(at, days, -1))}`);
+  return days;
+}
+
+// A series' one-off wake for a label pending already moves it, or is one a weekly wake starting that label has made; any other adds
+// up, unless the same is pending.
+export function setWake(target: string, wake: Omit<Wake, 'target'>): Wake & { id: string } {
+  const w = wakes(), k: Wake = { ...wake, target }, labelled = k.label !== undefined && !k.days;
+  // A weekly one keeps its time of day; fire() spaces it.
+  if (!k.days) k.at = new Date(Math.max(Date.parse(k.at), Date.parse(w.fired[target] ?? '1970-01-01') + SPACING_MS)).toISOString();
+  const [id = newId(), was] = Object.entries(w.pending).find(([, p]) => p.target === target && p.label === k.label
+    && (labelled || (p.at === k.at && String(p.days) === String(k.days)))) ?? [];
+  if (!(labelled && was?.days)) w.pending[id] = k;
+  saveWakes(w);
+  return { id, ...w.pending[id] };
+}
+
+export function cancelWake(id: string) {
   const w = wakes();
-  if (!w.pending[target]) return;
-  delete w.pending[target];
+  delete w.pending[id];
+  saveWakes(w);
+}
+
+// Every wake and request for these series and instances, as they close or are archived.
+export function cancelWakes(targets: string[]) {
+  const w = wakes();
+  for (const [id, k] of Object.entries(w.pending)) if (targets.includes(k.target)) delete w.pending[id];
+  for (const [id, r] of Object.entries(w.requests)) if (targets.includes(r.series)) delete w.requests[id];
   saveWakes(w);
 }
 
@@ -258,18 +303,28 @@ export function startWith(seriesId: string, label: string, by: string, logins: s
 
 function fire() {
   startWaiting();
-  const w = wakes(), now = new Date().toISOString(), t = tree(), due = Object.entries(w.pending).filter(([, k]) => k.at <= now);
+  const w = wakes(), now = new Date().toISOString(), t = tree();
+  const due = Object.entries(w.pending).filter(([, k]) => k.at <= now).sort(([, a], [, b]) => a.at.localeCompare(b.at));
   if (!due.length) return;
-  for (const [target, wake] of due) {
-    delete w.pending[target];
+  for (const [id, wake] of due) {
+    const { target, days, label } = wake;
+    if (Date.parse(w.fired[target] ?? '1970-01-01') + SPACING_MS > Date.parse(now)) continue;
     w.fired[target] = now;
+    delete w.pending[id];
+    if (days) {
+      const was = new Date(wake.at), next = step(was, days, 1), date = dateIn(label);
+      w.pending[id] = { ...wake, at: next.toISOString(), ...(date && { label: label!.replace(date, ymd(date === ymd(was) ? next : was)) }) };
+    }
     // Where the run that set it is now, though it was renamed or moved since.
     const from = wake.inst ? `${named(t, instance(wake.inst).seriesId)}/${instance(wake.inst).label}` : wake.from;
-    const s = t.series[t.series[target] ? target : instance(target).seriesId];
-    if (s.archived || t.workspaces[s.workspace].archived) continue;
-    if (!t.series[target]) {
-      const inst = instance(target);
-      if (inst.doc.status !== 'open') continue;
+    // A series' wake for a label it has already wakes that instance.
+    const known = t.series[target] && labels(target).find(l => l.label === label)?.id;
+    if (!t.series[target] || known) {
+      const inst = instance(known || target);
+      if (inst.doc.status !== 'open') {
+        console.log(`a wake found ${named(t, inst.seriesId)}/${inst.label} ${inst.doc.status}, so it woke nothing`);
+        continue;
+      }
       inst.append('server', 'wake', { from, ...(wake.inst !== inst.id && !starter(inst, wake.from) && { note: true }) });
       kick(inst);
       continue;
@@ -278,9 +333,9 @@ function fire() {
     const runs = u && !u.disabled && canSee({ email: shared.by, role: u.role, groups: u.groups ?? [] }, t.workspaces[t.series[target].workspace]);
     try {
       if (!runs) throw new Error('not shared');
-      startWith(target, wake.label!, shared.by, shared.logins.filter(t => !scoped(t)), { from });
+      startWith(target, label!, shared.by, shared.logins.filter(t => !scoped(t)), { from });
     } catch {
-      w.requests[newId()] = { series: target, label: wake.label!, from, at: now };
+      w.requests[newId()] = { series: target, label: label!, from, at: now };
     }
   }
   saveWakes(w);

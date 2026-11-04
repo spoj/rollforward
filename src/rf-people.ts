@@ -13,7 +13,9 @@ rf pull PATH DIR [--delete] [-n|--dry-run] [--exclude PATTERN]...
 rf help                           how rollforward works and how to use rf, for an agent
 rf comment PATH TEXT [--item ID] [--ref REF] [--thread T] [--wait]   a new thread, or a reply in T, as to an agent's ask
 rf upload PATH FILE [--onto ITEM] [--output]
-rf wake PATH AT [--label LABEL]   AT now, +<n>m|h|d or a date; PATH an open instance, or a series with LABEL
+rf wake PATH AT [--label LABEL] [--days DAYS] | rf wake --cancel ID
+                                  AT now, +<n>m|h|d or a date; PATH an open instance, or a series with LABEL; DAYS, such as
+                                  mon-fri, repeats it weekly at AT's time; rf ls shows each wake's ID
 rf agents [WORKSPACE] [--set FILE|-]     the company's AGENTS.md, or a workspace's; setting the company's is for admins
 rf skills
 rf skill pull ID [DIR] [--version N]   the newest version, or N, into DIR, ./ID by default, new or empty, as push reads it
@@ -248,9 +250,16 @@ if (cmd === 'login' && url) {
   writeFileSync(config, JSON.stringify({ url, token }), { mode: 0o600 });
   console.log(`signed in as ${me.email}`);
 } else if (cmd === 'ls') {
+  const wakes = (list: { id: string; at: string; label?: string; days?: string[] }[]) => {
+    for (const k of list) console.log(`  wake ${k.id} ${k.at}${k.label ? ` starts ${k.label}` : ''}${k.days ? `, then each ${k.days.join(', ')}` : ''}`);
+  };
   for (const w of await get('/api')) for (const s of w.series) {
-    console.log(`${w.name}/${s.name}${s.wake ? `  wakes ${s.wake.at} to start ${s.wake.label}` : ''}${s.requests.length ? `  ${s.requests.length} asking to start` : ''}`);
-    for (const i of s.instances) console.log(`${w.name}/${s.name}/${i.label}  ${i.status}${i.running ? ', running' : ''}${i.asks.length ? `, ${i.asks.length} asks waiting` : ''}${i.wake ? `, wakes ${i.wake}` : ''}, runner ${i.runner}`);
+    console.log(`${w.name}/${s.name}${s.requests.length ? `  ${s.requests.length} asking to start` : ''}`);
+    wakes(s.wakes);
+    for (const i of s.instances) {
+      console.log(`${w.name}/${s.name}/${i.label}  ${i.status}${i.running ? ', running' : ''}${i.asks.length ? `, ${i.asks.length} asks waiting` : ''}, runner ${i.runner}`);
+      wakes(i.wakes);
+    }
   }
 } else if (cmd === 'pull' && args.length === 2) await pull(args[0], args[1]);
 else if (cmd === 'comment' && args.length === 2) {
@@ -273,11 +282,14 @@ else if (cmd === 'comment' && args.length === 2) {
   const q = new URLSearchParams({ name: basename(args[1]), pane: flags.output ? 'out' : 'in', ...(typeof flags.onto === 'string' && { onto: flags.onto }) });
   await api(`${(await find(args[0])).at}/upload?${q}`, { method: 'POST', body: readFileSync(args[1]) });
   console.log('uploaded');
+} else if (cmd === 'wake' && typeof flags.cancel === 'string' && !args.length) {
+  await api(`/api/wakes/${flags.cancel}`, { method: 'DELETE' });
+  console.log('cancelled');
 } else if (cmd === 'wake' && args.length === 2) {
   const { series, inst } = await find(args[0]);
   const at = args[1] === 'now' ? Date.now() : args[1].startsWith('+') ? Date.now() + Number(args[1].slice(1, -1)) * { m: 60e3, h: 3600e3, d: 86400e3 }[args[1].at(-1)!]! : Date.parse(args[1]);
-  const w = await (await post(`/api/wakes/${inst?.id ?? series.id}`, { at: new Date(at).toISOString(), label: flags.label }, 'PUT')).json();
-  console.log(`wakes at ${w.at}`);
+  const w = await (await post(`/api/wakes/${inst?.id ?? series.id}`, { at: new Date(at).toISOString(), label: flags.label, days: flags.days }, 'PUT')).json();
+  console.log(`wake ${w.id} at ${w.at}${w.days ? `, then each ${w.days.join(', ')}` : ''}`);
 } else if (cmd === 'agents' && args.length <= 1) {
   const ws = args[0] === undefined ? undefined : (await get('/api')).find(w => w.name === args[0]);
   if (args[0] !== undefined && !ws) throw new Error(`no workspace ${args[0]}`);

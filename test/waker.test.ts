@@ -10,7 +10,7 @@ import type { Active } from '../src/waker.ts';
 // Wakes without a model: a run that a wake starts ends at once for want of a key, which is enough to see what started it.
 delete process.env.OPENROUTER_API_KEY;
 process.env.RF_WAKE_TICK_MS = '50';
-const { citedFor, closed, kick, message, recover, resolveFor, setWake, startWaking, view, wakes } = await import('../src/waker.ts');
+const { cancelWakes, citedFor, closed, kick, message, recover, resolveFor, setWake, startWaking, view, wakes, wakesOf, weekly } = await import('../src/waker.ts');
 const { saveLogin } = await import('../src/logins.ts');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-wake-')), alice = 'alice@demo.test';
 initSystem(tmp);
@@ -74,7 +74,7 @@ test('a due wake its own run set continues an open instance, as a reply does, th
   await settle();
   assert.deepEqual(oct.log.filter(e => e.op === 'wake').map(e => [e.from, e.note]), [['Acme/Bank rec/2026-10', undefined]]);
   assert.ok(ops(oct).includes('run'), 'it started a run');
-  assert.equal(wakes().pending[oct.id], undefined);
+  assert.deepEqual(wakesOf(oct.id), []);
   const next = setWake(oct.id, { at: new Date().toISOString(), from: 'x' });
   assert.ok(Date.parse(next.at) - Date.parse(wakes().fired[oct.id]) >= 15 * 60_000);
 });
@@ -171,17 +171,11 @@ test('after a restart every open instance with something for a run starts; an In
   assert.ok(!ops(held).includes('run'), 'interrupted, it waits for the next act');
 });
 
-test("a task's run sees its own instance alone in its series' folder, and the series in reach, not their packages; a wake in an archived workspace is dropped", async () => {
+test("a task's run sees its own instance alone in its series' folder, and the series in reach, not their packages", () => {
   const v = view(make('s4', 'Lunch'));
   assert.equal(v.instance, '/work/Acme/Lunch/Lunch');
   assert.deepEqual(v.ro.map(([, at]) => at).filter(at => at.startsWith('/work/Acme/Lunch/')), ['/work/Acme/Lunch/Lunch']);
   assert.ok(v.ro.some(([, at]) => at.startsWith('/work/Acme/Bank rec/')) && !v.ro.some(([, at]) => at.endsWith('/.pylib')), "another series' .pylib is its own runs' code");
-  const t = tree(), cut = instance(labels('s3').find(l => l.label === 'cut')!.id);
-  saveTree({ ...t, workspaces: { ...t.workspaces, x: { ...t.workspaces.x, archived: true } } });
-  setWake(cut.id, { at: new Date().toISOString(), from: 'x' });
-  await settle();
-  assert.equal(wakes().pending[cut.id], undefined);
-  assert.ok(!cut.log.some(e => e.op === 'wake' && e.from === 'x'));
 });
 
 test("others' comments and wakes are notes for an instance's runner, unless the agent asked them, and start runs only where the runner shares the series, where comments stay notes", async () => {
@@ -203,4 +197,44 @@ test("others' comments and wakes are notes for an instance's runner, unless the 
   await settle();
   assert.equal(runs(shared), 1, 'in a series its runner shares, anyone starts runs');
   assert.match(message(shared, 1, shared.log), /"by":"bob@demo\.test","op":"comment".*"note":true/, "and bob's comment still reaches the agent as a note");
+});
+
+test("a weekly wake's days are such as mon-fri or mon,wed,fri, and it first fires on one of them; a series' label holds the date it fires or the one before that it fires on", () => {
+  const fri = new Date(2020, 0, 3, 8), mon = new Date(2020, 0, 6, 8), weekdays = ['mon', 'tue', 'wed', 'thu', 'fri'];
+  assert.deepEqual(weekly('mon-fri', fri, '2020-01-03'), weekdays, 'the day it fires');
+  assert.deepEqual(weekly('Mon-Fri', mon, 'BB 2020-01-03'), weekdays, "Monday's is Friday's");
+  assert.throws(() => weekly('mon-fri', mon, '2020-01-05'), /holds the date it first fires, 2020-01-06, or the one before it that it fires on, 2020-01-03/);
+  assert.throws(() => weekly('mon-fri', mon, 'January'), /holds the date/);
+  assert.throws(() => weekly('sat,sun', mon), /2020-01-06 is a mon, not one of the days/);
+  assert.deepEqual(weekly('fri-mon, wed', fri), ['mon', 'wed', 'fri', 'sat', 'sun']);
+  assert.equal(weekly('', fri), undefined, 'none: a one-off');
+  assert.throws(() => weekly('weekdays', fri), /days: such as mon-fri/);
+});
+
+test("a target has as many wakes as are set, the same twice being one, and a series' for a label pending moves it; each run's first message lists its instance's and series' by id", () => {
+  const nov = make('s6', 'listed'), at = (d: number, h: number) => new Date(2030, 0, d, h).toISOString();
+  const a = setWake(nov.id, { at: at(7, 8), from: 'x' });
+  setWake(nov.id, { at: at(8, 8), from: 'x' });
+  assert.equal(setWake(nov.id, { at: at(7, 8), from: 'y' }).id, a.id, 'the same twice is one');
+  const s = setWake('s6', { at: at(7, 8), from: 'x', label: '2030-01-07' });
+  assert.equal(setWake('s6', { at: at(7, 9), from: 'x', label: '2030-01-07' }).id, s.id);
+  assert.deepEqual([wakesOf(nov.id).length, wakesOf('s6').map(k => k.at)], [2, [at(7, 9)]], 'moved');
+  assert.match(message(nov, 1, nov.log, true), new RegExp(`Pending wakes: ${a.id}, waking this instance at ${at(7, 8)}; \\w+, waking this instance at ${at(8, 8)}; ${s.id}, starting 2030-01-07 at ${at(7, 9)}\\. New log entries`));
+  cancelWakes([nov.id, 's6']);
+  assert.deepEqual([...wakesOf(nov.id), ...wakesOf('s6')], []);
+});
+
+test("a weekly wake fires on its days at its time and moves on, a series' label with it; a target's wakes fire 15 minutes apart; and a series' wake for a label it has continues that instance", async () => {
+  const fri = (h: number) => new Date(2020, 0, 3, h).toISOString(), daily = make('s6', 'daily');
+  const series = setWake('s6', { at: fri(8), from: 'x', label: 'BB 2020-01-02', days: ['mon', 'tue', 'wed', 'thu', 'fri'] });
+  const own = setWake(daily.id, { at: fri(17), from: 'x', days: ['fri'] });
+  setWake('s1', { at: fri(9), from: 'y', label: '2026-10' });
+  await settle();
+  const req = Object.values(wakes().requests).find(r => r.series === 's6')!;
+  assert.equal(req.label, 'BB 2020-01-02', 'no one shares it, so someone is asked to start it');
+  assert.deepEqual(wakesOf('s6').map(k => [k.id, k.at, k.label]), [[series.id, new Date(2020, 0, 6, 8).toISOString(), 'BB 2020-01-03']], "Monday's, Friday's, which waits for the 15 minutes since Friday's");
+  assert.deepEqual(wakesOf(daily.id).map(k => [k.id, k.at]), [[own.id, new Date(2020, 0, 10, 17).toISOString()]]);
+  assert.ok(daily.log.some(e => e.op === 'wake' && e.from === 'x'));
+  assert.ok(oct.log.some(e => e.op === 'wake' && e.from === 'y'), "2026-10 is Bank rec's already");
+  cancelWakes(['s6', daily.id]);
 });

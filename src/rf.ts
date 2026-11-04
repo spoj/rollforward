@@ -25,12 +25,16 @@ const HELP: Record<string, string> = {
   name, and a sign-off and closing, in the name of whoever signed.`,
   resolve: `rf resolve THREAD [TEXT]
   Resolves a thread you started, once it no longer applies, saying why.`,
-  wake: `rf wake TARGET AT [--label LABEL]
+  wake: `rf wake TARGET AT [--label LABEL] [--days DAYS] | rf wake --cancel ID
   Starts a run later, which sees who woke it. TARGET is a folder as you see it, by the names your run started with: an open
   instance, such as . for your own, ../<label> or ../../<series>/<label>, which the wake continues; or a series, such as .. or
-  ../../<series>, which it starts a new instance of, labelled LABEL. AT is now, +<n>m, +<n>h, +<n>d, or a date and time with
-  its offset, such as 2026-09-14T07:00+08:00. A target has one wake pending (a new one replaces it), at least 15 minutes after
-  its last. A closed instance can't be woken: to correct one, wake its series with --label <its label>-r2.`,
+  ../../<series>, which it starts a new instance of, labelled LABEL, or continues the one it has by that label. AT is now,
+  +<n>m, +<n>h, +<n>d, or a date and time with its offset, such as 2026-09-14T07:00+08:00. --days, such as mon-fri or
+  mon,wed,fri, repeats it each week on those days at AT's time; a series' LABEL then holds the date AT falls on, or that of
+  the day before it that it fires on, and moves on with it. A target has as many wakes as are set, firing at least 15 minutes
+  apart; setting a series' wake for a LABEL already pending moves it. Each run's first message lists the wakes pending for
+  its instance and series, by ID, which --cancel cancels. A closed instance can't be woken: to correct one, wake its series
+  with --label <its label>-r2.`,
   delivered: `rf delivered ITEM --to WHERE --receipt WHAT
   Records that you delivered the output ITEM outside: where to, such as "E1, batch 4471" or the mail's recipients, and what
   proves it, such as the document number a website gave, or the Message-ID or the file's id and eTag Microsoft 365 gave.`,
@@ -69,14 +73,23 @@ function comment() {
   return send('POST', `${own}/comment`, JSON.stringify({ thread: o.in, item, ref, text, files: o.file, ask: cmd === 'ask', to: o.to, signoff: o.signoff }));
 }
 
-// rf wake TARGET AT [--label LABEL]: the folder becomes an id, then the wake is set as a person sets one.
+// rf wake TARGET AT [--label LABEL] [--days DAYS]: the folder becomes an id, then the wake is set as a person sets one.
 const wake = async () => {
-  const i = args.indexOf('--label'), label = i >= 0 ? args[i + 1] : undefined, [target, at, ...rest] = i >= 0 ? [...args.slice(0, i), ...args.slice(i + 2)] : args;
-  if (!target || !at || rest.length) return usage('wake');
+  const o: Record<string, string> = {}, rest: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const flag = /^--(label|days|cancel)$/.exec(args[i])?.[1];
+    if (flag) o[flag] = args[++i];
+    else rest.push(args[i]);
+  }
+  if (o.cancel !== undefined && !rest.length) return send('DELETE', `api/wakes/${o.cancel}`);
+  const [target, at, ...more] = rest;
+  if (!target || !at || more.length) return usage('wake');
   const found = await send('GET', `api/resolve?path=${encodeURIComponent(target)}`);
   if (!found.ok) return found;
-  const { id, kind } = JSON.parse(found.text), set = await send('PUT', `api/wakes/${id}`, JSON.stringify({ at, label }));
-  return set.ok ? { ok: true, text: `set: ${target} ${kind === 'series' ? `starts ${label}` : 'wakes'} at ${JSON.parse(set.text).at}` } : set;
+  const { id, kind } = JSON.parse(found.text), set = await send('PUT', `api/wakes/${id}`, JSON.stringify({ at, label: o.label, days: o.days }));
+  if (!set.ok) return set;
+  const k = JSON.parse(set.text);
+  return { ok: true, text: `set: ${target} ${kind === 'series' ? `starts ${k.label}` : 'wakes'} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''} (wake ${k.id})` };
 };
 
 let res;

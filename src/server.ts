@@ -21,7 +21,7 @@ import { offer, unoffer } from './connections/graph.ts';
 import { forget, indexes, startIndexing, track } from './indexes.ts';
 import { seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, byToken, cancelWake, citedFor, closed, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, resolveFor, setWake, startWaking, startWith, wakes, wider, type Active } from './waker.ts';
+import { active, byToken, cancelWake, cancelWakes, citedFor, closed, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, resolveFor, setWake, startWaking, startWith, wakes, wakesOf, weekly, wider, type Active } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -43,10 +43,13 @@ function freeName(t: Tree, ws: string, name: string): string {
   return n;
 }
 
-// Before v0.2.25 a run's wake for its own instance was known by the run's name, which a rename changes; it gets the instance's id.
+// wakes.json once kept one pending wake per target, by the target's id; each wake now has an id of its own.
 {
-  const t = tree(), w8 = wakes();
-  for (const [id, k] of Object.entries(w8.pending)) if (!t.series[id] && k.from === `${named(t, instance(id).seriesId)}/${instance(id).label}`) k.inst = id;
+  const w8 = wakes();
+  for (const [target, k] of Object.entries(w8.pending)) if (!k.target) {
+    delete w8.pending[target];
+    w8.pending[newId()] = { ...k, target };
+  }
   writeJson('wakes.json', w8);
 }
 
@@ -66,7 +69,7 @@ for (const [aid, a] of Object.entries(tree().series).filter(([, s]) => (s as { a
   const t = tree(), w8 = wakes();
   console.log(`${t.workspaces[a.workspace].name}/Ad hoc: its ${moved.length} instances are tasks now`);
   delete t.series[aid];
-  delete w8.pending[aid];
+  for (const [id, k] of Object.entries(w8.pending)) if (k.target === aid) delete w8.pending[id];
   for (const [rid, r] of Object.entries(w8.requests)) if (r.series === aid) delete w8.requests[rid];
   saveTree(t);
   writeJson('wakes.json', w8);
@@ -164,7 +167,7 @@ function summary(i: Instance, email: string, w8 = wakes()) {
   if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i).map(w => w.who), runner: runnerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: +i.log.reduce((t, e) => t + (e.op === 'done' ? e.cost as number : 0), 0).toFixed(4) });
   return {
     id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(i.seriesId)?.inst === i, queued: !!queued(i),
-    asks: k.asks, wake: w8.pending[i.id]?.at ?? null, runner: k.runner, cost: k.cost, active: k.active,
+    asks: k.asks, wakes: wakesOf(i.id, w8), runner: k.runner, cost: k.cost, active: k.active,
     unread: !!news && news.at > s.since && news.seq > (s.at[i.id] ?? 0),
   };
 }
@@ -176,7 +179,7 @@ function listing(me: Me) {
       const { shared } = seriesSettings(seriesDir(sid));
       return {
         id: sid, name: s.name, archived: !!s.archived, single: !!s.single, shared_by: shared?.by ?? null, shared_logins: shared?.by === me.email ? shared.logins : [],
-        wake: w8.pending[sid] ?? null,
+        wakes: wakesOf(sid, w8),
         requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r })),
         instances: instances(sid).map(i => summary(i, me.email, w8)),
       };
@@ -352,7 +355,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   // A run reads and writes its own instance's screen and threads, commits its folder, sets wakes in its own workspace, and finds
   // what a folder it can read names; nothing else here.
   const run = me.run;
-  if (run && !(kind === 'instances' && id === run.inst.id && ['screen', 'comment', 'resolve', 'commit'].includes(action)) && !(kind === 'wakes' && req.method === 'PUT') && kind !== 'resolve')
+  if (run && !(kind === 'instances' && id === run.inst.id && ['screen', 'comment', 'resolve', 'commit'].includes(action)) && !(kind === 'wakes' && ['PUT', 'DELETE'].includes(req.method!)) && kind !== 'resolve')
     throw new HttpError(404, 'not found');
   // The body before the tree: a request held open must not save a tree from before others' changes, such as an owner's removal.
   const payload = ['upload', 'attach', 'screen'].includes(action) ? {} : await json(req);
@@ -399,6 +402,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       (t.groups ??= {})[g] = label.trim();
     }
     if (change.archived !== undefined) w.archived = !!change.archived;
+    if (change.archived) cancelWakes(Object.keys(t.series).filter(sid => t.series[sid].workspace === id).flatMap(sid => [sid, ...labels(sid).map(l => l.id)]));
     if (change.agents !== undefined) writeFileSync(agentsFile(id), String(change.agents));
     saveTree(t);
     return send(res, 200, 'ok');
@@ -439,6 +443,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       s.name = name;
     }
     if (change.archived !== undefined) s.archived = !!change.archived;
+    if (change.archived) cancelWakes([id, ...labels(id).map(l => l.id)]);
     // Anyone may share it as themselves in place of whoever does; only they, or whoever manages the workspace, stop sharing it.
     const was = seriesSettings(seriesDir(id)).shared;
     if (change.share !== undefined && !change.share && was && was.by !== by && !canManage(me, t.workspaces[s.workspace]))
@@ -449,24 +454,29 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     replaceReadOnly(join(seriesDir(id), 'series.json'), JSON.stringify({ ...(shared && { shared }) }, null, 1));
     return send(res, 200, 'ok');
   }
-  // A pending wake, which people may move or cancel, and a request to start an instance, which they start or dismiss.
   if (kind === 'wakes') {
-    // A person moves or cancels a pending wake, or sets one, as an agent's rf wake does: an open instance continues, a series starts LABEL.
-    // A run wakes only in its own workspace: it reads wider ones, never acts there.
-    const target = t.series[id] ? id : instance(id).seriesId, wake = wakes().pending[id];
-    if (t.series[id]?.single) throw new HttpError(400, `${t.series[id].name} is a task, with one instance: wake that`);
-    if (!run) mustSee(me, t.workspaces[t.series[target].workspace]);
-    else if (t.series[target].workspace !== t.series[run.inst.seriesId].workspace) throw new HttpError(403, `${named(t, target)} is in another workspace: you can read it, not wake it`);
-    if (req.method === 'DELETE' && !wake) throw new HttpError(404, 'no wake pending');
+    // People and runs set wakes, one-off or weekly, and cancel them: PUT names the target, an open instance, which the wake continues,
+    // or a series, which it starts LABEL of; DELETE names the wake. A run wakes only in its own workspace: it reads wider ones, never
+    // acts there.
+    const wake = req.method === 'DELETE' ? wakes().pending[id] : undefined, to = wake?.target ?? id, sid = t.series[to] ? to : instance(to).seriesId;
+    if (req.method === 'DELETE' && !wake) throw new HttpError(404, 'no such wake pending');
+    if (t.series[to]?.single) throw new HttpError(400, `${t.series[to].name} is a task, with one instance: wake that`);
+    if (!run) mustSee(me, t.workspaces[t.series[sid].workspace]);
+    else if (t.series[sid].workspace !== t.series[run.inst.seriesId].workspace) throw new HttpError(403, `${named(t, sid)} is in another workspace: you can read it, not wake it`);
     if (req.method === 'DELETE') return void (cancelWake(id), send(res, 200, 'ok'));
-    const { at: when = '', label } = payload, w = String(when);
+    const { at: when = '', label, days } = payload, w = String(when);
     const at = w === 'now' ? Date.now() : /^\+\d+[mhd]$/.test(w) ? Date.now() + Number(w.slice(1, -1)) * { m: 60e3, h: 3600e3, d: 86400e3 }[w.at(-1) as 'm'] : Date.parse(w);
-    if (req.method !== 'PUT' || Number.isNaN(at)) throw new HttpError(400, 'PUT {"at", "label" for a series}, or DELETE; at is now, +<n>m|h|d, or a date and time such as 2026-09-14T07:00+08:00');
-    if (!wake && t.series[id] && !label) throw new HttpError(400, `waking a series starts a new instance: name it with a label${run ? '; to wake your own instance, name its folder: .' : ''}`);
-    if (!t.series[id] && instance(id).doc.status !== 'open') throw new HttpError(409, `${instance(id).label} is ${instance(id).doc.status}: to correct it, wake its series with the label ${instance(id).label}-r2`);
-    const from = run ? `${named(t, run.inst.seriesId)}/${run.inst.label}` : by;
-    return send(res, 200, setWake(id, { ...wake, at: new Date(at).toISOString(), from, inst: run?.inst.id, ...(label && { label }) }));
+    if (req.method !== 'PUT' || Number.isNaN(at)) throw new HttpError(400, 'PUT {"at", "label" for a series, "days"}, or DELETE; at is now, +<n>m|h|d, or a date and time such as 2026-09-14T07:00+08:00');
+    if (t.series[sid].archived || t.workspaces[t.series[sid].workspace].archived) throw new HttpError(409, `${named(t, sid)} is archived`);
+    if (t.series[to] && !label) throw new HttpError(400, `waking a series starts a new instance: name it with a label${run ? '; to wake your own instance, name its folder: .' : ''}`);
+    if (!t.series[to] && instance(to).doc.status !== 'open') throw new HttpError(409, `${instance(to).label} is ${instance(to).doc.status}: to correct it, wake its series with the label ${instance(to).label}-r2`);
+    const first = new Date(at), starts = t.series[to] ? safeName(String(label)) : undefined;
+    return send(res, 200, setWake(to, {
+      at: first.toISOString(), from: run ? `${named(t, run.inst.seriesId)}/${run.inst.label}` : by, ...(run && { inst: run.inst.id }),
+      ...(starts && { label: starts }), ...(days !== undefined && { days: weekly(String(days), first, starts) }),
+    }));
   }
+  // A request to start an instance, which people start or dismiss.
   if (kind === 'requests') {
     const r = wakes().requests[id];
     if (!r) throw new HttpError(404, `no request ${id}`);
@@ -609,7 +619,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (mine) throw new HttpError(409, 'wait for the run to end');
     if (runnerOf(inst).by !== by) throw new HttpError(403, `only the runner, ${runnerOf(inst).by}, ${action === 'close' ? 'closes it, as closing signs it off' : 'abandons it'}; take it over first`);
     await (action === 'close' ? inst.close(me) : inst.abandon(by));
-    cancelWake(inst.id);
+    cancelWakes([inst.id]);
     if (action === 'close') closed(inst, by);
     return send(res, 200, 'ok');
   } else throw new HttpError(404, `no action ${action}`);

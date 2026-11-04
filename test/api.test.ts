@@ -389,29 +389,35 @@ test('everyone sees the skills, which every run loads; admins keep the connectio
   assert.deepEqual(await json('/connections', b), []);
 });
 
-test("people see and move a series' next wake, share it as themselves, and start or dismiss requests; a wake stays pending whatever runs before it", async () => {
+test("people see, set, move and cancel wakes, one-off or weekly, share a series as themselves, and start or dismiss requests; a wake stays pending whatever runs before it", async () => {
   const s = await shown(series), wakes = join(root, '.rf', 'wakes.json'), sep = await iid(series, '2026-08-30 rework');
   const due = new Date(Date.now() + 86_400_000).toISOString();
   writeFileSync(wakes, JSON.stringify({
-    pending: { [s.id]: { at: due, from: 'larkfield/x/y', label: '2026-09-20' }, [sep]: { at: due, from: 'larkfield/x/y' } },
+    pending: { k1: { target: s.id, at: due, from: 'larkfield/x/y', label: '2026-09-20' }, k2: { target: sep, at: due, from: 'larkfield/x/y' } },
     fired: {}, requests: { r1: { series: s.id, label: '2026-09-27', from: 'larkfield/Bank rec/2026-09', at: due } },
   }));
   const listed = await shown(series);
-  assert.deepEqual([listed.wake.label, listed.requests.map((r: { id: string }) => r.id), listed.shared_by], ['2026-09-20', ['r1'], null]);
-  assert.equal(listed.instances.find((i: { id: string }) => i.id === sep).wake, due);
-  const later = new Date(Date.now() + 2 * 86_400_000).toISOString();
-  assert.equal((await (await call('PUT', `/api/wakes/${s.id}`, JSON.stringify({ at: later }))).json()).at, later);
+  assert.deepEqual([listed.wakes.map((k: { id: string; label: string }) => [k.id, k.label]), listed.requests.map((r: { id: string }) => r.id), listed.shared_by], [[['k1', '2026-09-20']], ['r1'], null]);
+  assert.deepEqual(listed.instances.find((i: { id: string }) => i.id === sep).wakes.map((k: { at: string }) => k.at), [due]);
+  const later = new Date(Date.now() + 2 * 86_400_000).toISOString(), set = (target: string, body: object) => call('PUT', `/api/wakes/${target}`, JSON.stringify(body));
+  assert.deepEqual(await (await set(s.id, { at: later, label: '2026-09-20' })).json(), { id: 'k1', target: s.id, at: later, from: adminEmail, label: '2026-09-20' }, 'the same label moves it');
+  assert.equal((await set(s.id, { at: '2030-01-07T08:00', label: '2030-01-05', days: 'mon-fri' })).status, 400, "a weekly wake's label holds the day it fires or the one before that it fires on");
+  assert.equal((await set(s.id, { at: '2030-01-07T08:00', label: '2030-01-04', days: 'sat' })).status, 400, 'it fires on one of its days');
+  const weekly = await (await set(s.id, { at: '2030-01-07T08:00', label: '2030-01-04', days: 'mon-fri' })).json();
+  assert.deepEqual([weekly.label, weekly.days], ['2030-01-04', ['mon', 'tue', 'wed', 'thu', 'fri']], "Monday's is Friday's");
+  assert.equal((await (await set(s.id, { at: later, label: '2030-01-04' })).json()).id, weekly.id, 'a one-off for a label a weekly one starts is that one');
+  assert.equal((await shown(series)).wakes.length, 2);
   const ws = `/api/workspaces/${(await named('larkfield')).id}`, b = sessionOf(await login(bob))!;
   assert.equal((await call('PUT', ws, JSON.stringify({ owners: [adminEmail], members: [bob] }))).status, 200);
   assert.equal((await call('POST', `${await at(series, '2026-08-30 rework', 'comment')}`, JSON.stringify({ text: 'fyi' }), b)).status, 200);
-  assert.equal(JSON.parse(readFileSync(wakes, 'utf8')).pending[sep]?.at, due, "bob's note for the runner starts nothing, so the wake stays");
+  assert.equal(JSON.parse(readFileSync(wakes, 'utf8')).pending.k2?.at, due, "bob's note for the runner starts nothing, so the wake stays");
   const asks = async () => (await shown(series)).instances.find((i: { id: string }) => i.id === sep).asks;
   assert.deepEqual(await asks(), [adminEmail], "bob's note waits on the runner");
   assert.equal((await call('PUT', await at(series), JSON.stringify({ share: true }))).status, 200);
   assert.deepEqual(await asks(), [adminEmail], 'where the runner shares the series it is still a note for them');
   assert.equal((await call('PUT', await at(series), JSON.stringify({ share: false }))).status, 200);
   assert.equal((await call('POST', `${await at(series, '2026-08-30 rework', 'comment')}`, JSON.stringify({ text: 'go' }))).status, 200);
-  assert.equal(JSON.parse(readFileSync(wakes, 'utf8')).pending[sep]?.at, due, "the runner's act starts a run now, and the wake still comes when it's due");
+  assert.equal(JSON.parse(readFileSync(wakes, 'utf8')).pending.k2?.at, due, "the runner's act starts a run now, and the wake still comes when it's due");
 
   assert.equal((await call('PUT', await at(series), JSON.stringify({ share: true }))).status, 200);
   assert.equal((await shown(series)).shared_by, adminEmail);
@@ -428,10 +434,19 @@ test("people see and move a series' next wake, share it as themselves, and start
   assert.deepEqual([made.log[0].by, made.log[1].op, made.log[1].from], [adminEmail, 'wake', 'larkfield/Bank rec/2026-09']);
   assert.equal((await call('POST', await at(series), JSON.stringify({ label: 'third' }))).status, 200);
   assert.equal((await call('POST', await at(series), JSON.stringify({ label: 'fourth' }))).status, 409, '3 open already');
-  assert.equal((await call('DELETE', `/api/wakes/${s.id}`)).status, 200);
-  assert.equal((await shown(series)).wake, null);
+  assert.equal((await call('DELETE', '/api/wakes/k1')).status, 200);
+  assert.equal((await call('DELETE', '/api/wakes/k1')).status, 404);
+  assert.deepEqual((await shown(series)).wakes.map((k: { id: string }) => k.id), [weekly.id]);
   assert.equal((await call('PUT', await at(series), JSON.stringify({ share: false }))).status, 200);
+  const third = await iid(series, 'third');
+  await set(third, { at: later });
   for (const label of ['2026-09-27', 'third']) assert.equal((await call('POST', `${await at(series, label, 'abandon')}`)).status, 200);
+  assert.deepEqual(Object.values(JSON.parse(readFileSync(wakes, 'utf8')).pending).filter((k: { target: string }) => k.target === third), [], "abandoning an instance cancels its wakes");
+  await set(sep, { at: later });
+  assert.equal((await call('PUT', await at(series), JSON.stringify({ archived: true }))).status, 200);
+  assert.deepEqual(Object.values(JSON.parse(readFileSync(wakes, 'utf8')).pending), [], "archiving a series cancels its wakes and its instances'");
+  assert.equal((await set(sep, { at: later })).status, 409, 'and none is set while it is archived');
+  assert.equal((await call('PUT', await at(series), JSON.stringify({ archived: false }))).status, 200);
 });
 
 test("AGENTS.md: the company's is the admins', a workspace's its owners', and both are files every agent in scope reads", async () => {
