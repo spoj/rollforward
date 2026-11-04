@@ -127,28 +127,31 @@ test("the workspace's + starts a task at once, which its first prompt names, new
   await page.waitForSelector('#bar .state .bad:text("Run 1 failed")');
   await page.click('#bar [data-act=close]');
   await page.fill('#ask input', 'Zebra surveys');
-  await page.click('#ask button:text-is("Make it a series and close")');
+  await page.click('#ask button:text-is("Start series and close")');
   await page.waitForSelector('.row.ser .l:text-is("Zebra surveys")');
   assert.deepEqual(await page.locator('.row.ser .l').allTextContents(), ['Zebra surveys', 'Weekly borrowing base', 'Year-end pack'], 'series too come newest activity first');
   assert.deepEqual(await page.locator('.row.grp ~ a.row.inst .l').allTextContents(), ['Apple orchard audit for 2026']);
 });
 
-test('only the runner abandons, and abandoning asks first, in the page', async () => {
+test("only the runner abandons, from the Close dialog, whose buttons for a task weigh the same, the series' name with the one that makes it", async () => {
   await page.click('.row.ser .l:text-is("Weekly borrowing base")');
-  await page.click('[data-act=menu-instance]');
-  assert.equal(await page.locator('#pop [data-act=abandon]').count(), 0, 'alex runs it');
-  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#bar [data-act=close]').count(), 0, 'alex runs it');
   await page.click('[data-act=takeover]');
   await page.click('[data-act=start-go]');
-  await page.waitForSelector('#bar [data-act=close]');
-  await page.click('[data-act=menu-instance]');
-  await page.click('#pop [data-act=abandon]');
+  await page.click('#bar [data-act=close]');
+  assert.deepEqual(await page.locator('#ask button').allTextContents(), ['Abandon instead', 'Close instance', 'Cancel']);
   await page.click('#ask button:text-is("Cancel")');
   assert.match(await page.textContent('#bar .state') ?? '', /Waiting for files/);
-  await page.click('[data-act=menu-instance]');
-  await page.click('#pop [data-act=abandon]');
-  await page.click('#ask button:text-is("Abandon")');
+  await page.click('#bar [data-act=close]');
+  await page.click('#ask button:text-is("Abandon instead")');
   await page.waitForSelector('#bar .state:text("Abandoned")');
+  await page.click('.row.grp ~ a.row.inst .l:text-is("Apple orchard audit for 2026")');
+  await page.click('#bar [data-act=close]');
+  assert.deepEqual(await page.$$eval('#ask .opt, #ask .abandon', os => os.map(o => [o.querySelector('button')!.className, o.textContent])), [
+    ['btn commit', 'Close taskcloses it as a one-off'], ['btn commit', 'Start series and closethis task becomes its first instance, an example for later ones'],
+    ['quiet', "Abandon instead: it stays as it is, but isn't an example or a starting point."]]);
+  assert.equal(await page.locator('#ask .opts input').inputValue(), 'Apple orchard audit for 2026', "the series' name goes with its button");
+  await page.click('#ask button:text-is("Cancel")');
   assert.deepEqual(native, [], "the browser's own dialogs never show");
 });
 

@@ -232,6 +232,12 @@ dialog::backdrop { background: rgba(21,24,29,.3); }
 .dlg p { margin: 0 0 12px; font-size: 13px; color: var(--ink-2); white-space: pre-wrap; }
 .dlg input { width: 100%; font: inherit; padding: 7px 9px; border: 1px solid var(--rule-2); border-radius: var(--r1); }
 .dlg .err { margin-top: 8px; font-size: 12.5px; color: var(--red); }
+.dlg .opt { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 13px; color: var(--ink-2); }
+.dlg .opt .btn { flex: none; }
+.dlg .opts { margin-top: 14px; }
+.dlg .opts label { display: grid; gap: 4px; font-size: 12.5px; color: var(--ink-2); }
+.dlg .abandon { margin-top: 14px; font-size: 12px; color: var(--ink-3); }
+.dlg .abandon .quiet { display: inline; padding: 0; text-decoration: underline; }
 .dlg pre.agents { max-height: 200px; overflow: auto; white-space: pre-wrap; font: 12px/1.45 var(--mono); background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r1); padding: 8px 10px; }
 .dlg .err:empty { display: none; }
 .dlg .foot { display: flex; flex-direction: row-reverse; gap: 8px; margin-top: 16px; }
@@ -644,7 +650,7 @@ function renderBar() {
     if (open) h += data.runner.by === me.email ? `<button class="btn commit top" data-act="close" ${off}>${cur.s.single ? 'Close task' : 'Close instance'}</button>`
       : `<button class="btn top" data-act="takeover" ${off || `title="${esc(nameOf(data.runner.by))} runs it: their logins, their sign-off. Taking over makes it yours."`}>Take over</button>`;
     else h += cur.s.single ? '<button class="btn top" data-act="start-series">Start series</button>' : '<button class="btn top" data-act="duplicate">Duplicate</button>';
-    if (open) h += '<button class="btn top" data-act="menu-instance" title="Rename, abandon">\u22EF</button>';
+    if (open) h += '<button class="btn top" data-act="menu-instance" title="Rename, wakes, credentials">\u22EF</button>';
   }
   put($('#bar'), h);
 }
@@ -1295,21 +1301,22 @@ function openMenu(btn, items) {
 
 // The page's own dialog, to confirm or to ask for a name: it resolves with what act returns, or null if cancelled. Until act
 // succeeds it stays open, saying why it didn't.
-function ask({ title, text = '', html = '', value, placeholder = '', ok, alt, kind = 'primary', act }) {
+// A dialog's buttons that have a value act, with the text it asks for, if any, and that value; `html` may hold more of them.
+function ask({ title, text = '', html = '', value, placeholder = '', ok, kind = 'primary', act }) {
   const d = $('#ask');
   d.innerHTML = `<form method="dialog"><h3>${esc(title)}</h3>${text ? `<p>${esc(text)}</p>` : ''}${html}`
     + (value === undefined ? '' : `<input type="text" value="${esc(value)}" placeholder="${esc(placeholder)}" required autocomplete="off">`)
-    + `<div class="err"></div><div class="foot"><button class="btn ${kind}" value="ok" ${alt ? 'formnovalidate' : ''}>${esc(ok)}</button>${alt ? `<button class="btn" value="alt">${esc(alt)}</button>` : ''}<button class="btn" formnovalidate>Cancel</button></div></form>`;
+    + `<div class="err"></div><div class="foot">${ok ? `<button class="btn ${kind}" value="ok">${esc(ok)}</button>` : ''}<button class="btn" formnovalidate>Cancel</button></div></form>`;
   d.showModal();
   d.querySelector('input')?.select();
   return new Promise(done => {
     d.onclose = () => done(null);
     d.querySelector('form').onsubmit = async e => {
-      if (!['ok', 'alt'].includes(e.submitter.value)) return;
+      if (!e.submitter.value) return;
       e.preventDefault();
       e.submitter.setAttribute('aria-busy', 'true');
       try {
-        done(await act(value === undefined ? undefined : d.querySelector('input').value.trim(), e.submitter.value === 'alt'));
+        done(await act(value === undefined ? undefined : d.querySelector('input').value.trim(), e.submitter.value));
         d.close();
       } catch (err) {
         d.querySelector('.err').textContent = err.message;
@@ -1433,7 +1440,6 @@ async function onAct(act, el, was) {
   if (act === 'menu-instance') {
     openMenu(el, [
       ['Rename', 'rename'], ['Wakes', 'wakes'], data.runner.by === me.email && ['Credentials', 'ticks'],
-      data.runner.by === me.email && ['-'], data.runner.by === me.email && ['Abandon', 'abandon', 'danger', data.run && 'Available when the run ends'],
     ]);
   }
   if (act === 'audit') await toggleAudit();
@@ -1601,17 +1607,20 @@ async function onAct(act, el, was) {
     p.value = '';
     p.click();
   }
+  // A task closes as a one-off, or as the first instance of a series it becomes; either may be abandoned instead.
   if (act === 'close') {
-    const waits = threads.filter(t => t.waits);
-    const task = cur.s.single, text = (task ? 'If it will recur, make it a series under the name below: this task becomes its first instance, an example for later ones.' : 'It becomes an example for later instances.')
-      + (waits.length ? '\n\nClosing accepts what the agent did for each ask still waiting:\n' + waits.map(t => `• ${firstLine(t.last.text)}`).join('\n') : '');
-    const close = async (name, promote) => {
-      if (promote) await api(`${seriesPath(cur)}/promote`, { method: 'POST', body: JSON.stringify({ name }) });
+    const waits = threads.filter(t => t.waits), task = cur.s.single;
+    const text = (task ? '' : 'It becomes an example for later instances.') + (waits.length ? `${task ? '' : '\n\n'}Closing accepts what the agent did for each ask still waiting:\n` + waits.map(t => `• ${firstLine(t.last.text)}`).join('\n') : '');
+    const html = (task ? `<div class="opt"><button class="btn commit" value="close">Close task</button><span>closes it as a one-off</span></div>`
+      + `<div class="opts"><label>Series name<input type="text" id="aseries" value="${esc(cur.i.label)}" autocomplete="off"></label>`
+      + `<div class="opt"><button class="btn commit" value="series">Start series and close</button><span>this task becomes its first instance, an example for later ones</span></div></div>` : '')
+      + `<div class="abandon"><button class="quiet" value="abandon" formnovalidate>Abandon instead</button>: it stays as it is, but isn't an example or a starting point.</div>`;
+    if (await ask({ title: `Close ${cur.i.label}?`, text, html, ok: !task && 'Close instance', kind: 'commit', act: async (_, how) => {
+      if (how === 'abandon') return api(`${instPath()}/abandon`, { method: 'POST' });
+      if (how === 'series') await api(`${seriesPath(cur)}/promote`, { method: 'POST', body: JSON.stringify({ name: $('#aseries').value.trim() }) });
       return api(`${instPath()}/close`, { method: 'POST' });
-    };
-    if (await ask({ title: `Close ${cur.i.label}?`, text, ...(task && { value: cur.i.label, alt: 'Make it a series and close' }), ok: task ? 'Close task' : 'Close instance', kind: 'commit', act: close })) await refresh();
+    } })) await refresh();
   }
-  if (act === 'abandon' && await ask({ title: `Abandon ${cur.i.label}?`, text: "It stays as it is, but isn't an example or a starting point for later instances.", ok: 'Abandon', kind: 'danger', act: () => api(`${instPath()}/abandon`, { method: 'POST' }) })) await refresh();
   if (act === 'new-instance') await openStart('New instance', 'Start', ({ label, logins }) => api(seriesPath(cur), { method: 'POST', body: JSON.stringify({ label, logins }) }), '');
   // A task starts at once, Untitled, with the logins last ticked, on its conversation, ready for the prompt that starts its run.
   if (act === 'new-task') {
