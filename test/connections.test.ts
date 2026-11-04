@@ -86,7 +86,7 @@ before(async () => {
   mkdirSync(join(instDir, 'working'), { recursive: true });
   mkdirSync(seriesDir, { recursive: true });
   graph = createServer((req, res) => {
-    const u = new URL(req.url!, 'http://x'), path = decodeURIComponent(u.pathname).replace(/^\/v1\.0/, ''), send = (body: unknown, status = 200) => res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body));
+    const u = new URL(req.url!, 'http://x'), path = decodeURIComponent(u.pathname).replace(/^\/(v1\.0|beta)/, ''), send = (body: unknown, status = 200) => res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body));
     const base = `http://127.0.0.1:${(graph.address() as { port: number }).port}`;
     if (path === '/.well-known/openid-configuration') return send({ issuer: base, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token` });
     if (path === '/token') {
@@ -250,7 +250,7 @@ test("the proxy refuses, with a plain 403 and why, what isn't ticked: the runner
   await refused(`/users/${AP}/messages`, /m365:mail:ap@demo.test is not ticked/);
   await refused(`/me/messages/../../users/${AP}/messages`, /m365:mail:ap@demo.test is not ticked/);
   await refused('/users', /the graph connection reaches mailboxes, and folders, files and SharePoint sites ticked for this instance, not \/users/);
-  await refused('https://graph.microsoft.com/beta/me/messages', /Microsoft Graph v1.0/);
+  await refused('https://graph.microsoft.com/v2.0/me/messages', /Microsoft Graph, under \/v1.0\/ or \/beta\//);
   for (const out of ["/sites/host,site1,web1/getByPath(path='/sites/HR')/drive/root/children", "/sites/host,site1,web1/microsoft.graph.getByPath(path='/sites/HR')"]) await refused(out, /getByPath reaches any site by its path/);
   for (const out of ['/drives/b!d1/recent()', "/drives/b!d1/search(q='pay')", '/me/drive/sharedWithMe()', '/drives/b!d1/following']) await refused(out, /lists other drives' items too/);
   await refused('/me/messages', /no X-HTTP-Method header, and no Prefer that redeems a sharing link/, { prefer: 'redeemSharingLink' });
@@ -270,6 +270,7 @@ test("a run reads a ticked mailbox whole: messages with their bodies, and a mess
   const mime = await via('GET', `${G}/me/messages/m1/$value`);
   assert.deepEqual([mime.text, mime.headers['content-type']], [MIME, 'message/rfc822']);
   assert.deepEqual(calls().slice(-2).map(e => e.path), ['/v1.0/me/messages?$select=subject,body', '/v1.0/me/messages/m1/$value']);
+  assert.equal((await via('GET', 'https://graph.microsoft.com/beta/me/messages/m1/$value')).text, MIME, 'beta as v1.0');
 });
 
 test('a person adds, in one box, a mailbox by its address, a site by its link, and a folder or file by any link to it', async () => {
@@ -511,18 +512,17 @@ test("OpenRouter is every run's, with the server's key put in for the run's: its
   assert.equal(+(callRuns.get('run')!.cost - before).toFixed(6), 0.007);
 });
 
-test('OpenRouter takes nothing but inference and reads of the models: no keys or credits, and no body but a JSON object, which would pass by the rewrite', async () => {
+test("OpenRouter takes any request, with the run's key, and whatever body one carries, by any method to any path, is a JSON object, which goes on asking only for providers that don't collect its data", async () => {
   const before = asked.length;
-  for (const [method, path] of [['GET', '/credits'], ['GET', '/key'], ['POST', '/keys'], ['DELETE', '/keys/k1'], ['GET', '/chat/completions'], ['POST', '/embeddings']]) {
-    const r = await via(method, `${O}${path}`, json({}));
-    assert.equal(r.status, 403, path);
-    assert.match(r.text, new RegExp(`^${method} /api/v1${path}: openrouter takes inference, POST /api/v1/chat/completions`), path);
-  }
-  assert.match((await via('POST', `${O}/chat/completions`, { body: '{"model":"x","provider":{"data_collection":"allow"}}' })).text, /its body is a JSON object, sent as application\/json/);
-  assert.equal(asked.length, before, 'none reached OpenRouter');
+  await via('GET', `${O}/credits`);
+  await via('POST', 'https://openrouter.ai/api/alpha/responses', json({ model: 'x', input: 'Hi' }));
+  assert.deepEqual(asked.slice(before).map(a => [a.path, a.key, a.body]), [['/api/v1/credits', 'the-openrouter-key', undefined], ['/api/alpha/responses', 'the-openrouter-key', { model: 'x', input: 'Hi', provider: { data_collection: 'deny' } }]]);
+  const body = '{"model":"x","provider":{"data_collection":"allow"}}';
+  for (const method of ['POST', 'PUT', 'DELETE']) assert.match((await via(method, `${O}/chat/completions`, { body, headers: { 'content-length': String(body.length) } })).text, /its body is a JSON object, sent as application\/json/, method);
+  assert.equal(asked.length, before + 2, 'none of those reached OpenRouter');
 });
 
-test("Exa is every run's too, with the server's key: a search, whose cost adds to the run's; nothing else, and nothing once the server has no key", async () => {
+test("Exa is every run's too, with the server's key: a search, whose cost adds to the run's, or anything else, and nothing once the server has no key", async () => {
   const before = callRuns.get('run')?.cost ?? 0;
   const found = await via('POST', 'https://api.exa.ai/search', { body: JSON.stringify({ query: 'Larkfield refinancing' }), headers: { 'content-type': 'application/json', authorization: '', 'x-api-key': 'rf' } });
   assert.equal(found.status, 200);
@@ -530,12 +530,12 @@ test("Exa is every run's too, with the server's key: a search, whose cost adds t
   assert.deepEqual(calls().at(-1), { run: 1, name: 'exa', method: 'POST', path: '/search', status: 200, bytes: found.text.length, cost: 0.005 });
   assert.equal(+(callRuns.get('run')!.cost - before).toFixed(6), 0.005);
   const n = asked.length;
-  for (const [method, path] of [['GET', '/search'], ['POST', '/websets/v0/websets'], ['POST', '/research/v1']]) assert.match((await via(method, `https://api.exa.ai${path}`, json({}))).text, /exa takes POST \/search, \/contents, \/findSimilar, \/answer/, path);
-  assert.match((await via('POST', 'https://api.exa.ai/contents', { body: 'urls=x' })).text, /\/contents: its body is a JSON object/);
+  await via('POST', 'https://api.exa.ai/websets/v0/websets', json({}));
+  assert.deepEqual([asked.at(-1)!.path, asked.at(-1)!.key], ['/websets/v0/websets', 'the-exa-key'], 'any request');
   delete process.env.EXA_API_KEY;
   await assert.rejects(via('POST', 'https://api.exa.ai/search', json({ query: 'x' })), /CONNECT answered 403/);
   process.env.EXA_API_KEY = 'the-exa-key';
-  assert.equal(asked.length, n, 'none reached Exa');
+  assert.equal(asked.length, n + 1, 'none once the server has no key');
 });
 
 test('a login Microsoft asks to consent to what the server asks for anew renews with what it has, and says what its person reconnects to grant', async () => {

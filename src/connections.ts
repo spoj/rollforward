@@ -111,10 +111,10 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     if (url.host !== host) throw new HttpError(403, `${host} takes requests for ${host}, not ${url.origin}`);
     if (mine?.expired) throw Object.assign(new HttpError(409, `${runner}'s own OpenRouter key is out of credits: they save another, or stop using it, on the Logins page, and the instance carries on`), { login: 'openrouter' });
     if (!link && !c && !s) throw new HttpError(403, `${url.origin + url.pathname} is no link a connection's answer gave this run`);
-    // A POST's or PATCH's body, or a JSON one, is read whole, for the policy; a JSON body goes on as the JSON it read, as it rewrote
+    // A POST's or PATCH's body, a JSON one, or any to the server's own services, is read whole, for the policy; a JSON body goes on as the JSON it read, as it rewrote
     // it, never as bytes another parser might read otherwise, such as a key twice. Anything else, such as a file's content, streams.
     const isJson = String(req.headers['content-type']).includes('json');
-    const raw = !link && (['POST', 'PATCH'].includes(method) || (method === 'PUT' && isJson)) ? Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)) : undefined;
+    const raw = !link && (s || ['POST', 'PATCH'].includes(method) || (method === 'PUT' && isJson)) ? Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)) : undefined;
     const json = isJson && raw?.length ? JSON.parse(raw.toString()) : undefined, r = { method, url, headers: req.headers, json, body: raw };
     let out = json, auth: Record<string, string> = {};
     if (c) {

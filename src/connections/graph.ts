@@ -6,7 +6,7 @@ import type { Request, Type } from '../connections.ts';
 
 // Microsoft Graph, as the runner, as far as the instance's ticks reach: /me/… or /users/ADDRESS/… for a mailbox's messages and
 // folders, and its sendMail; /drives/ID/…, /shares/ID/…, /me/drive/… or /users/ADDRESS/drive/… for files, within a ticked folder,
-// a ticked file, a ticked site's libraries or the runner's ticked OneDrive; and /sites/ID/… for a ticked site, all under v1.0, as
+// a ticked file, a ticked site's libraries or the runner's ticked OneDrive; and /sites/ID/… for a ticked site, under v1.0 or beta, as
 // Graph reads a path, dot segments resolved. A write, a POST, PATCH, PUT or DELETE, reaches only what a read does: a file it makes,
 // moves or copies lands within the ticks, mail goes out as the ticked mailbox it is sent from, and it shares nothing. A write's
 // body is a JSON object, which the policy reads, but a file's content and mail as MIME, whose headers it reads. Its person's login is Microsoft 365's, 'm365', whose offers they add one at a time.
@@ -49,10 +49,10 @@ function mime(body: Buffer | undefined, box: string, bare: string) {
 
 // The offer that lets a request through, or why not.
 async function check(runner: string, ticks: string[], { method, url, headers, json, body: raw }: Request): Promise<string> {
-  if (!url.pathname.startsWith('/v1.0/')) throw new HttpError(403, `${url.pathname}: Microsoft Graph v1.0, under /v1.0/`);
+  if (!/^\/(v1\.0|beta)\//.test(url.pathname)) throw new HttpError(403, `${url.pathname}: Microsoft Graph, under /v1.0/ or /beta/`);
   // Neither another method in a header, nor a Prefer that redeems a sharing link, which grants the runner access.
   if (Object.keys(headers).some(h => /^x-http-method/i.test(h)) || /redeemsharinglink/i.test(String(headers.prefer ?? ''))) throw new HttpError(403, 'no X-HTTP-Method header, and no Prefer that redeems a sharing link');
-  const bare = url.pathname.slice(5), path = bare + url.search, segments = bare.split('/').slice(1).map(s => decodeURIComponent(s));
+  const bare = url.pathname.replace(/^\/[^/]+/, ''), path = bare + url.search, segments = bare.split('/').slice(1).map(s => decodeURIComponent(s));
   // /me is the runner, and mailFolders('inbox') is mailFolders.
   const segs = segments[0] === 'me' ? ['users', runner, ...segments.slice(1)] : segments, [top, id = '', part = ''] = segs.map(s => s.replace(/\(.*$/, ''));
   const write = method !== 'GET', actions = segs.map(s => s.replace(/\(.*$/, '').replace(/^microsoft\.graph\./i, '').toLowerCase()), action = actions.at(-1);
