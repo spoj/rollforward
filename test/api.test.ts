@@ -322,18 +322,23 @@ test('without a session the site shows Sign in with Microsoft, which goes to Mic
     const page = await fetch(base + '/', { redirect: 'manual', headers: { cookie } }), to = page.headers.get('location');
     if (!to) return { status: page.status };
     const back = (await fetch(to, { redirect: 'manual' })).headers.get('location')!, cookies = page.headers.getSetCookie().map(c => c.split(';')[0]);
-    return { to, cookies, done: (await fetch(back, { redirect: 'manual', headers: { cookie: [cookie, ...cookies].join('; ') } })).headers.get('location') };
+    const done = await fetch(back, { redirect: 'manual', headers: { cookie: [cookie, ...cookies].join('; ') } });
+    return { to, cookies, done: done.headers.get('location'), admitted: done.headers.getSetCookie().some(c => c.startsWith('rf_session=')) };
   };
   rmSync(kept);
   const quiet = await load(admin);
   assert.match(quiet.to!, /\/authorize\?.*&login_hint=admin%40demo\.test&prompt=none$/);
-  assert.deepEqual([quiet.done, existsSync(kept)], ['/', true], 'kept, and back where they were');
+  assert.deepEqual([quiet.done, quiet.admitted, existsSync(kept)], ['/', true, true], 'kept, and back where they were');
   rmSync(kept);
   entra.who.ask.add(adminEmail);
   const asked = await load(admin);
   assert.deepEqual([asked.done, existsSync(kept)], ['/', false], 'where Microsoft would ask, they carry on as they were, with no error');
   assert.equal((await load(`${admin}; ${asked.cookies!.find(c => c.startsWith('rf_silent='))}`)).status, 200, 'once a session');
   entra.who.ask.delete(adminEmail);
+  entra.who.other = bob;
+  const other = await load(admin);
+  assert.deepEqual([other.done, other.admitted, existsSync(kept)], ['/', false, false], 'Microsoft answering for another account the browser holds lets no one in');
+  entra.who.other = '';
   await login(adminEmail);
 });
 

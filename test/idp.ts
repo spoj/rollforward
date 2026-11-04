@@ -3,13 +3,14 @@ import { createServer } from 'node:http';
 
 // A stand-in for Microsoft Entra ID, for the tests that sign in: the code flow with PKCE of a Web app with a client secret, as the
 // server does it, signing in whoever the login hint names, else `as`, as a browser that picked that account would, by the names the
-// tests know them by, but with prompt=none those `who.ask` names, as Microsoft answers login_required; and the refresh tokens
+// tests know them by, or `who.other` whatever the hint, but with prompt=none not those `who.ask` names, as Microsoft answers
+// login_required; and the refresh tokens
 // that keeps, which renew until `who.gone` says the account is disabled or `who.stale` that its sign-in expired, and answer 503
 // while `who.down`.
 const NAMES: Record<string, string> = { 'admin@demo.test': 'Demo Admin', 'bob@demo.test': 'Bob' };
 
 export async function idp() {
-  const b64 = (s: string) => Buffer.from(s).toString('base64url'), who = { as: '', ask: new Set<string>(), gone: new Set<string>(), stale: new Set<string>(), down: false, renewed: [] as string[] };
+  const b64 = (s: string) => Buffer.from(s).toString('base64url'), who = { as: '', other: '', ask: new Set<string>(), gone: new Set<string>(), stale: new Set<string>(), down: false, renewed: [] as string[] };
   const refresh = (email: string) => `rt.${b64(email)}`;
   let issuer = '';
   const server = createServer(async (req, res) => {
@@ -18,7 +19,7 @@ export async function idp() {
     if (u.pathname === '/authorize') {
       const p = u.searchParams;
       if (p.get('prompt') === 'none' && who.ask.has(p.get('login_hint')!)) return void res.writeHead(302, { location: `${p.get('redirect_uri')}?error=login_required&state=${p.get('state')}` }).end();
-      const code = b64(JSON.stringify({ email: p.get('login_hint') ?? who.as, nonce: p.get('nonce'), challenge: p.get('code_challenge'), scope: p.get('scope') }));
+      const code = b64(JSON.stringify({ email: who.other || (p.get('login_hint') ?? who.as), nonce: p.get('nonce'), challenge: p.get('code_challenge'), scope: p.get('scope') }));
       return void res.writeHead(302, { location: `${p.get('redirect_uri')}?code=${code}&state=${p.get('state')}` }).end();
     }
     const f = new URLSearchParams(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString());

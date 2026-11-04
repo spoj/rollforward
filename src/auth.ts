@@ -238,7 +238,7 @@ const pendingCookie = (state: string) => `rf_oidc_${state}`;
 async function microsoft(res: ServerResponse, next: string, connect?: { login: EntraLogin; email: string }, silent?: string) {
   const d = await discovery();
   const state = randomBytes(16).toString('base64url'), nonce = randomBytes(16).toString('base64url'), verifier = randomBytes(32).toString('base64url');
-  const pending = b64(JSON.stringify({ state, nonce, verifier, next, exp: Date.now() + 600_000, ...connect, ...(silent && { silent: true }) }));
+  const pending = b64(JSON.stringify({ state, nonce, verifier, next, exp: Date.now() + 600_000, ...connect, ...(silent && { silent }) }));
   const to = new URL(d.authorization_endpoint);
   for (const [k, v] of Object.entries({
     response_type: 'code', client_id: oidc.clientId, redirect_uri: connect ? m365Redirect : oidc.redirect, scope: connect ? entraScope(connect.login.scope) : `${oidc.scopes} offline_access`, state, nonce,
@@ -248,7 +248,7 @@ async function microsoft(res: ServerResponse, next: string, connect?: { login: E
   res.end();
 }
 
-type Pending = { state: string; nonce: string; verifier: string; next: string; exp: number; login?: EntraLogin; email?: string; silent?: boolean };
+type Pending = { state: string; nonce: string; verifier: string; next: string; exp: number; login?: EntraLogin; email?: string; silent?: string };
 
 // The sign-in this browser started under `state`, if it is still good.
 function pendingOf(req: IncomingMessage, state: string): Pending | undefined {
@@ -271,6 +271,8 @@ async function finishSignIn(res: ServerResponse, claims: any, p: Pending, refres
   const email = String(claims.email ?? claims.preferred_username ?? claims.upn ?? '').toLowerCase();
   if (!email.includes('@')) return page(res, 403, 'Your account has no email address.');
   if (domains.length && !domains.includes(email.split('@')[1])) return page(res, 403, `${email} is not in an allowed domain.`);
+  // A sign-in asking nothing lets in only whom it asked for, never another account the browser holds.
+  if (p.silent && email !== p.silent) return void res.writeHead(302, { location: p.next, 'set-cookie': cookie(pendingCookie(p.state), '', 0) }).end();
   if (admit(res, email, claims.name, { sub: claims.sub, ...(claims.oid && { oid: `${claims.tid}/${claims.oid}` }) }, Array.isArray(claims.groups) ? claims.groups.map(String) : undefined, p.next, [cookie(pendingCookie(p.state), '', 0)]) && refresh) keepSignIn(email, refresh);
 }
 
