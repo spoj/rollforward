@@ -421,7 +421,7 @@ test("writes share nothing, and make, move or copy nothing outside the ticks; ma
     assert.match(r.text, why, path);
   }
   const site = await write('POST', '/sites/host,site1,web1/lists/l1/items', {});
-  assert.deepEqual([site.status, site.text], [403, 'm365:site:host,site1,web1 is not ticked for this instance; its runner, alice@demo.test, ticks logins when starting or taking it over\n'], 'a write reaches what its ticks do, whatever RF_M365_SCOPES asks of Microsoft');
+  assert.deepEqual([site.status, site.text], [409, "this server's Microsoft 365 logins don't write SharePoint sites: RF_M365_SCOPES has no Sites.ReadWrite.All\n"], "the server's to change");
   assert.match((await via('PUT', `${G}/drives/b!d1/items/y2025:/x.csv:/content`, { token: 'run3', body: 'x' })).text, /is in no folder, file or SharePoint site ticked/);
   assert.match((await via('PATCH', `${G}/drives/b!d1/items/a`, { token: 'run3', body: JSON.stringify({ parentReference: { id: 'y2025' } }), headers: { 'content-type': 'text/plain' } })).text, /a write's body is a JSON object/);
   assert.equal(writes.length, before, 'none reached Graph');
