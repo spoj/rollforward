@@ -568,6 +568,8 @@ function renderSide() {
       if (closed) h += `<button class="quiet" data-act="toggle-closed">${showClosed ? 'Hide' : 'Show'} closed (${closed})</button>`;
       h += '</div>';
     }
+    // A series moved to another workspace, for a week, where people who aren't in that one see it go.
+    for (const m of w.moved) h += `<div class="row wake"><span class="nm"><span class="l">${esc(m.name)} moved to ${esc(m.to)}</span></span><span class="n">${ago(m.at)}</span></div>`;
     // Tasks, each a series of its one instance, listed under a heading that is no series.
     const tasks = w.series.filter(s => s.single && listed(s, cur?.s?.id === s.id)).flatMap(s => s.instances).sort(byAct(recent)), done = tasks.filter(i => i.status !== 'open').length;
     if (tasks.length) h += '<div class="row grp"><span class="nm">Ungrouped</span></div>' + tasks.filter(i => i.status === 'open' || showClosed || i.id === cur?.i?.id).map(row).join('')
@@ -755,6 +757,7 @@ function logText(e) {
     send: () => `${w} sent ${esc(e.method)} ${esc(e.path)} to ${esc(e.name)}, with no answer logged`,
     call: () => `${w} ${e.model ? `asked ${esc(e.model)}` : `called ${esc(e.name)}: ${esc(e.method)} ${esc(e.path)}`}${e.cost ? ` \u00b7 $${e.cost.toFixed(4)}` : ''}${e.refused || e.failed ? `, ${e.refused ? 'refused' : 'failed'}<div class="d">${esc(e.refused ?? e.failed)}</div>` : e.status >= 300 ? `, which answered ${e.status}` : ''}`,
     graph: () => `${w} ${e.method ? `sent ${esc(e.method)} ${esc(e.path)} to` : `read ${esc(e.path)} from`} Microsoft 365${e.status >= 300 ? `, which answered ${e.status}` : ''}${e.to && e.to !== e.path ? `<div class="d">${esc(e.to)}</div>` : ''}${[e.body, e.file].filter(Boolean).map(f => `<div class="f"><a data-act="preview" data-file="${esc(f)}">${esc(f)}</a></div>`).join('')}`,
+    move: () => `Moved from ${esc(e.from)} to ${esc(e.to)}, ${who(e.accepted_by)} accepting`,
     rename: () => e.by === 'server' ? `Named by its first prompt, from ${esc(e.from)}` : `${w} renamed the instance from ${esc(e.from)}`,
     duplicate: () => `${w} made this instance as a copy of ${esc(e.from)}`,
     browser: () => e.action === 'get' ? `${w} fetched ${esc(e.from)} from the browser on ${esc(e.site)}${f}`
@@ -931,7 +934,8 @@ function threadHtml(t) {
 function conversationHtml() {
   const open = data.doc.status === 'open', name = id => esc(data.doc.items.find(i => i.id === id)?.name ?? id);
   const report = data.log.findLast(e => e.op === 'report'), rest = threads.filter(t => !t.waits).sort((a, b) => a.resolved - b.resolved);
-  let h = '<div class="conv">';
+  const moved = data.log.findLast(e => e.op === 'move');
+  let h = '<div class="conv">' + (moved ? `<div class="sub">Moved ${when(moved.at)} from ${esc(moved.from)} to ${esc(moved.to)}, ${who(moved.accepted_by)} accepting.</div>` : '');
   if (threads.some(t => t.waits)) h += `<h3>Waiting on people</h3>` + threads.filter(t => t.waits).map(threadHtml).join('');
   if (report) h += `<h3>Report, run ${report.run}</h3><div class="post">${md(report.text)}</div>`;
   if (rest.length) h += `<h3>Threads</h3>` + rest.map(threadHtml).join('');
@@ -1043,6 +1047,7 @@ function renderPv() {
     if (s.kind === 'workspace') h += (s.manage ? `<h3>Name</h3><input type="text" id="wname" value="${esc(s.name)}">` : '') + peopleHtml(s)
       + `<h3>Reading</h3><div class="sub">Agents here read every series of this workspace${s.reads.length ? `, and of ${esc(s.reads.join(', '))}, which ${s.reads.length > 1 ? 'have' : 'has'} everyone this one has` : ''}. They write only here.${s.read_by.length ? ` Agents in ${esc(s.read_by.join(', '))}, whose people are all here, read this one.` : ''}</div>`
       + agentsHtml(s, 'Every agent in this workspace reads it at the start of each run: its conventions, and changes that cut across its series, such as a renamed entity.', s.manage)
+      + (s.manage && !s.archived ? moveHtml(s) : '')
       + (s.manage ? `<div class="row2"><button class="btn danger" data-act="archive-workspace">${s.archived ? 'Restore workspace' : 'Archive workspace'}</button></div>` : '');
     if (s.kind === 'series') h += `<h3>Name</h3><input type="text" id="sname" value="${esc(s.name)}">`
       + `<h3>Who starts runs</h3>${startsHtml(s)}<h3>Wakes</h3>${wakesHtml(s.id, s.wakes, true)}`
@@ -1074,6 +1079,20 @@ function wakesHtml(target, list, series) {
     + WEEK.map(d => `<label class="sub"><input type="checkbox" value="${d}" ${k.days?.includes(d) ? 'checked' : ''}>${d[0].toUpperCase() + d.slice(1)}</label>`).join('')
     + `<button class="btn" data-act="wake-save">${k.id ? 'Save' : 'Add'}</button>${k.id ? '<button class="quiet" data-act="wake-delete">Delete</button>' : ''}</div>`;
   return `<div class="sub">${series ? 'Each starts the instance it names, or continues it if the series has it.' : 'Each continues this instance.'} Tick days to repeat it weekly at its time.</div>${list.map(row).join('')}${row()}`;
+}
+
+// A merge or move, as Waiting on you and the settings say it.
+const proposalText = p => p.kind === 'merge' ? `to merge ${esc(p.from)} into ${esc(p.to)}` : `to move ${esc(p.series)} from ${esc(p.from)} to ${esc(p.to)}`;
+
+// Merging this workspace into another you see, or moving one of its series there, once a manager of that one accepts within a week;
+// or the proposal open, which its proposer's side withdraws.
+function moveHtml(s) {
+  const p = s.proposal, others = tree.filter(w => w.id !== s.id && !w.archived);
+  if (p) return `<h3>Merge or move</h3><div class="sub">${person(p.by)} proposed ${when(p.at)} ${proposalText(p)}, for its owners to accept within a week.</div>`
+    + (p.id === s.id ? `<div class="row2"><button class="btn" data-act="proposal-drop" data-id="${p.id}">Withdraw</button></div>` : '');
+  return !others.length ? '' : '<h3>Merge or move</h3><div class="sub">All of it, or a series, into another workspace, once one of its owners accepts. A merge brings everyone here into that one; a series moved leaves behind whoever isn\'t in it.</div>'
+    + `<div class="row2"><select id="mvwhat"><option value="">All of ${esc(s.name)}</option>${s.series.filter(x => !x.archived).map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select>`
+    + `<span class="sub">into</span><select id="mvto">${others.map(w => `<option value="${w.id}">${esc(w.name)}</option>`).join('')}</select><button class="btn" data-act="propose">Propose</button></div>`;
 }
 
 // AGENTS.md, the company's or a workspace's: a text every agent in scope reads, which only admins, or the workspace's owners, change.
@@ -1178,9 +1197,11 @@ const signInHtml = (id, name) => id === 'openrouter' ? '<button class="btn" data
   : !id.startsWith('web:') ? `<a class="btn" href="/logins/${enc(id)}/connect">Sign in again</a>`
   : `<button class="btn" data-act="web-signin" data-id="${esc(id.slice(4))}" data-name="${esc(name)}">Sign in again</button>`;
 
-// What waits on you: the agent's asks and the notes for you, requests to start a series you can see, and your expired logins.
+// What waits on you: the agent's asks and the notes for you, requests to start a series you can see, proposals to merge or move
+// into a workspace you manage, and your expired logins.
 function waiting() {
-  const out = [], at = (w, s, i) => `<a href="#/${i?.id ?? w.id}">${esc(w.name)}${s.single ? '' : ' · ' + esc(s.name)}${i ? ' · ' + esc(i.label) : ''}</a>`;
+  const out = tree.filter(w => !w.archived && w.manage && w.proposal?.into === w.id).map(({ proposal: p }) => `<div class="wt">${person(p.by)} proposes ${proposalText(p)}`
+    + ` <button class="btn" data-act="accept" data-id="${p.id}">Accept…</button><button class="btn" data-act="proposal-drop" data-id="${p.id}">Decline</button></div>`), at = (w, s, i) => `<a href="#/${i?.id ?? w.id}">${esc(w.name)}${s.single ? '' : ' · ' + esc(s.name)}${i ? ' · ' + esc(i.label) : ''}</a>`;
   for (const w of tree.filter(w => !w.archived)) for (const s of w.series.filter(s => !s.archived)) {
     for (const i of s.instances) {
       const n = i.asks.filter(e => e === me.email).length;
@@ -1221,9 +1242,9 @@ function openMenu(btn, items) {
 
 // The page's own dialog, to confirm or to ask for a name: it resolves with what act returns, or null if cancelled. Until act
 // succeeds it stays open, saying why it didn't.
-function ask({ title, text = '', value, placeholder = '', ok, alt, kind = 'primary', act }) {
+function ask({ title, text = '', html = '', value, placeholder = '', ok, alt, kind = 'primary', act }) {
   const d = $('#ask');
-  d.innerHTML = `<form method="dialog"><h3>${esc(title)}</h3>${text ? `<p>${esc(text)}</p>` : ''}`
+  d.innerHTML = `<form method="dialog"><h3>${esc(title)}</h3>${text ? `<p>${esc(text)}</p>` : ''}${html}`
     + (value === undefined ? '' : `<input type="text" value="${esc(value)}" placeholder="${esc(placeholder)}" required autocomplete="off">`)
     + `<div class="err"></div><div class="foot"><button class="btn ${kind}" value="ok" ${alt ? 'formnovalidate' : ''}>${esc(ok)}</button>${alt ? `<button class="btn" value="alt">${esc(alt)}</button>` : ''}<button class="btn" formnovalidate>Cancel</button></div></form>`;
   d.showModal();
@@ -1348,9 +1369,11 @@ async function onAct(act, el, was) {
   if (act === 'menu') $('#side').classList.toggle('open');
   if (act === 'expand') { expandRow(el.dataset.id); renderSide(); }
   if (act === 'workspaces') { localStorage.workspaces = el.dataset.id; renderSide(); }
-  // A row's settings and + act on that row, which they open first.
+  // A row's settings and + act on that row, which they open first: after the hash change's own refresh starts, which this one
+  // supersedes, so it lands before they act.
   if (['workspace-settings', 'new-task', 'settings', 'new-instance'].includes(act) && el.dataset.id && ![cur?.w.id, cur?.s?.id].includes(el.dataset.id)) {
     location.hash = `#/${el.dataset.id}`;
+    await new Promise(ok => addEventListener('hashchange', ok, { once: true }));
     await refresh();
   }
   if (act === 'menu-instance') {
@@ -1444,6 +1467,36 @@ async function onAct(act, el, was) {
     renderPv();
   }
   if (act === 'req-start') await openStart('Start the instance asked for', 'Start', ({ logins }) => api(`/api/requests/${el.dataset.id}`, { method: 'POST', body: JSON.stringify({ logins }) }));
+  if (act === 'propose') {
+    const series = $('#mvwhat').value;
+    await api(`/api/proposals/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ kind: series ? 'move' : 'merge', series, to: $('#mvto').value }) });
+    await refresh();
+    openWorkspaceSettings();
+  }
+  if (act === 'proposal-drop') {
+    await api(`/api/proposals/${el.dataset.id}`, { method: 'DELETE' });
+    await refresh();
+    if (pv.settings.kind === 'waiting') renderPv(); else openWorkspaceSettings();
+  }
+  // Accepting shows what it does now: the series coming and their names here, and who joins, as members unless made owners; for a
+  // series, whoever runs its open instances but isn't here, whom you may leave out.
+  if (act === 'accept') {
+    const id = el.dataset.id, p = await api(`/api/proposals/${id}`), merge = p.kind === 'merge';
+    const html = `<ul>${p.series.map(x => `<li>${esc(x.from)} \u2192 ${esc(x.to)}</li>`).join('')}</ul>`
+      + p.people.map(x => `<div class="row2"><select data-p="${esc(x)}"><option value="members">Member</option><option value="owners">Owner</option>${merge ? '' : '<option value="">Not added</option>'}</select> ${person(x)}</div>`).join('');
+    const text = merge ? "Its series come here, its people join as members, and its AGENTS.md is added to this one's. Shared series stop being shared until their sharers share them here."
+      : `It comes here, and stops being shared, if it is, until its sharer shares it here.${p.people.length ? ` Who runs its open instances but isn't in ${p.to}: added, they go on; left out, their runs wait until someone here takes those over.` : ''}`;
+    if (await ask({
+      title: merge ? `Merge ${p.from} into ${p.to}` : `Move ${p.series[0].from} to ${p.to}`, text, html, ok: 'Accept',
+      act: () => {
+        const as = { owners: [], members: [] };
+        for (const s of $('#ask').querySelectorAll('select[data-p]')) if (s.value) as[s.value].push(s.dataset.p);
+        return api(`/api/proposals/${id}`, { method: 'POST', body: JSON.stringify(as) });
+      },
+    }) === null) return;
+    await refresh();
+    renderPv();
+  }
   if (act === 'req-drop') {
     await api(`/api/requests/${el.dataset.id}`, { method: 'DELETE' });
     await refresh();

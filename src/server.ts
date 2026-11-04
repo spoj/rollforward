@@ -164,12 +164,12 @@ function names(me: Me) {
 }
 
 // What makes an instance new to a person, when someone else or the agent did it: a run's end, a report, a comment, a sign-off, an
-// upload, a takeover, a close.
-const NEWS = ['done', 'report', 'comment', 'signoff', 'upload', 'takeover', 'close', 'abandon'];
+// upload, a takeover, a close, or a move to another workspace that someone else accepted.
+const NEWS = ['done', 'report', 'comment', 'signoff', 'upload', 'takeover', 'close', 'abandon', 'move'];
 
 function summary(i: Instance, email: string, w8 = wakes()) {
   const key = `${i.log.length}:${i.doc.rev}:${seriesSettings(i.series()).shared?.by ?? ''}`;
-  const news = i.log.findLast(e => e.by !== email && NEWS.includes(e.op)), s = seen(email);
+  const news = i.log.findLast(e => e.by !== email && e.accepted_by !== email && NEWS.includes(e.op)), s = seen(email);
   let k = kept.get(i);
   if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i).map(w => w.who), runner: runnerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: +i.log.reduce((t, e) => t + (e.op === 'done' ? e.cost as number : 0), 0).toFixed(4) });
   return {
@@ -179,8 +179,16 @@ function summary(i: Instance, email: string, w8 = wakes()) {
   };
 }
 
+// A proposal lapses, and a series moved out stops showing where it was, a week on.
+const fresh = (at: string) => Date.now() - Date.parse(at) < 7 * 86400e3;
+// The proposals open, each by the id of the workspace it merges or moves a series out of, into the one it names.
+const proposals = (t: Tree) => Object.entries(t.workspaces).filter(([, w]) => w.proposal && fresh(w.proposal.at)).map(([id, w]) => {
+  const p = w.proposal!;
+  return { id, into: p.to, kind: p.kind, from: w.name, to: t.workspaces[p.to].name, series: p.series ? t.series[p.series].name : null, by: p.by, at: p.at };
+});
+
 function listing(me: Me) {
-  const t = tree(), w8 = wakes(), byName = (a: [string, { name: string }], b: [string, { name: string }]) => a[1].name.localeCompare(b[1].name);
+  const t = tree(), w8 = wakes(), open = proposals(t), byName = (a: [string, { name: string }], b: [string, { name: string }]) => a[1].name.localeCompare(b[1].name);
   return Object.entries(t.workspaces).filter(([, w]) => canSee(me, w)).sort(byName).map(([id, w]) => {
     const series = Object.entries(t.series).filter(([, s]) => s.workspace === id).sort(byName).map(([sid, s]) => {
       const { shared } = seriesSettings(seriesDir(sid));
@@ -195,6 +203,7 @@ function listing(me: Me) {
     const mine = w.owners.includes(me.email) || series.some(s => instances(s.id).some(i => kept.get(i)!.acted.includes(me.email)));
     return {
       id, name: w.name, archived: !!w.archived, owners: w.owners, members: w.members, manage: canManage(me, w), agents: text(agentsFile(id)), mine,
+      proposal: open.find(p => p.id === id || p.into === id) ?? null, moved: (w.moved ?? []).filter(m => fresh(m.at)),
       reads: wider(t, id).map(o => t.workspaces[o].name).sort(), read_by: Object.keys(t.workspaces).filter(o => wider(t, o).includes(id)).map(o => t.workspaces[o].name).sort(),
       series,
     };
@@ -252,6 +261,7 @@ function status(me: Me) {
       }).map(path),
     }))),
     requests: Object.values(w8.requests).filter(r => seen.some(([sid]) => sid === r.series)).map(r => ({ who: asked(r), path: named(t, r.series), label: r.label, from: r.from, at: r.at })),
+    proposals: proposals(t).filter(p => [p.id, p.into].some(x => canSee(me, t.workspaces[x]))),
     failed: open.filter(i => active.get(i.seriesId)?.inst !== i).flatMap(i => {
       const d = i.log.findLast(e => e.op === 'done');
       return d?.error ? [{ path: path(i), run: d.run as number, at: d.at, error: d.error as string }] : [];
@@ -426,6 +436,60 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (change.archived) cancelWakes(Object.keys(t.series).filter(sid => t.series[sid].workspace === id).flatMap(sid => [sid, ...labels(sid).map(l => l.id)]));
     if (change.agents !== undefined) writeFileSync(agentsFile(id), String(change.agents));
     saveTree(t);
+    return send(res, 200, 'ok');
+  }
+  // A proposal to merge a workspace into another, or to move one of its series there, is the workspace's, by its id: whoever manages
+  // it proposes and withdraws, and whoever manages the other accepts or declines, within a week. Neither may be archived, or in
+  // another proposal. What moves, and who joins, is worked out as it's accepted: the series keep their ids, so their instances,
+  // wakes and requests go with them, and their names, but for a number on a name the other has; none stays shared.
+  if (kind === 'proposals') {
+    const a = t.workspaces[id], p = proposals(t).find(p => p.id === id);
+    if (req.method === 'PUT') {
+      const b = mustSee(me, t.workspaces[payload.to]);
+      if (!canManage(me, mustSee(me, a))) throw new HttpError(403, "only the workspace's owners and admins propose to merge it or move its series");
+      if (!(payload.kind === 'merge' || (payload.kind === 'move' && t.series[payload.series]?.workspace === id)) || b === a) throw new HttpError(400, 'PUT {"kind": "merge", "to"} or {"kind": "move", "series", "to"}: one of its series, into another workspace');
+      if (a.archived || b.archived) throw new HttpError(409, `${a.archived ? a.name : b.name} is archived`);
+      const busy = proposals(t).find(p => [p.id, p.into].some(x => x === id || x === payload.to));
+      if (busy) throw new HttpError(409, `${busy.from} has a proposal open, into ${busy.to}: until it's accepted, declined or withdrawn, or lapses a week on, neither takes another`);
+      a.proposal = { kind: payload.kind, to: payload.to, ...(payload.kind === 'move' && { series: payload.series }), by, at: new Date().toISOString() };
+      saveTree(t);
+      return send(res, 200, 'ok');
+    }
+    const b = p && t.workspaces[p.into];
+    if (!b || !(canManage(me, a) || canManage(me, b))) throw new HttpError(404, 'no proposal open for this workspace');
+    if (req.method === 'DELETE') return void (delete a.proposal, saveTree(t), send(res, 200, 'ok'));
+    if (!canManage(me, b)) throw new HttpError(403, `the owners of ${b.name} accept it, or decline it`);
+    const moving = p.kind === 'merge' ? Object.keys(t.series).filter(sid => t.series[sid].workspace === id) : [a.proposal!.series!];
+    const move = (t: Tree) => moving.map(sid => {
+      const from = named(t, sid);
+      Object.assign(t.series[sid], { name: freeName(t, p.into, t.series[sid].name), workspace: p.into });
+      return { id: sid, from, to: named(t, sid) };
+    });
+    // Who joins: everyone in a workspace merged, as members; for a series moved, whoever runs its open instances but can't see the
+    // other, whom its managers may add.
+    const us = users(), joining = p.kind === 'merge' ? everyone(a).filter(x => !everyone(b).includes(x))
+      : [...new Set(instances(moving[0]).filter(i => i.doc.status === 'open').map(i => runnerOf(i).by))].filter(x => !us[x] || !canSee({ email: x, role: us[x].role, groups: us[x].groups ?? [] }, b));
+    if (req.method === 'GET') return send(res, 200, { ...p, series: move(structuredClone(t)), people: joining });
+    if (req.method !== 'POST') throw new HttpError(405, 'GET it, POST {"owners", "members"} to accept it, or DELETE to withdraw or decline it');
+    if (a.archived || b.archived) throw new HttpError(409, `${a.archived ? a.name : b.name} is archived`);
+    // A run going in a series that moves has read what its workspace reaches, which it could copy where the other's people see it.
+    const going = moving.filter(sid => active.has(sid));
+    if (going.length) throw new HttpError(409, `wait for its runs to end: ${going.map(sid => named(t, sid)).join(', ')}`);
+    const [owners, members] = people(payload), moved = move(t);
+    b.owners = [...new Set([...b.owners, ...owners])];
+    b.members = [...new Set([...b.members, ...members, ...(p.kind === 'merge' ? everyone(a) : [])])].filter(x => !b.owners.includes(x));
+    for (const sid of moving) replaceReadOnly(join(seriesDir(sid), 'series.json'), '{}');
+    if (p.kind === 'merge') {
+      const add = text(agentsFile(id)), keep = text(agentsFile(p.into)).trimEnd();
+      if (add) writeFileSync(agentsFile(p.into), `${keep && `${keep}\n\n`}## ${a.name}\n\n${add}`);
+      rmSync(agentsFile(id), { force: true });
+      delete t.workspaces[id];
+    } else {
+      delete a.proposal;
+      a.moved = [...(a.moved ?? []).filter(m => fresh(m.at)), { name: p.series!, to: moved[0].to, at: new Date().toISOString() }];
+    }
+    saveTree(t);
+    for (const m of moved) for (const i of instances(m.id)) i.append('server', 'move', { from: m.from, to: m.to, accepted_by: by });
     return send(res, 200, 'ok');
   }
   if (kind === 'series' && !id && req.method === 'POST') {

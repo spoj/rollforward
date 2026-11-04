@@ -53,6 +53,7 @@ For scale, a weekly borrowing base's runs cost about $0.20–0.60 each with Clau
 - **Reach:** a workspace's agents read its other series, and those of any workspace that has everyone it has, by the same email or group, so reading never widens who sees what: a payroll workspace's agent reads the entity's main workspace, never the reverse. They never write there.
 - **AGENTS.md:** the company's, the admins', and each workspace's, its owners': conventions, and changes that cut across series, such as a renamed entity, which each series adapts to at its next run.
 - **Archive:** a workspace or a series no longer in use leaves the sidebar, but for "Show archived", until it's restored; nothing in it changes.
+- **Merge and move:** a workspace's owners, or admins, propose in its settings to merge it into another workspace, or to move one of its series there, and that one's owners, or admins, accept or decline it in Waiting on you within a week; a workspace is in one proposal at a time, and an archived one in none. Accepting, once no run of what moves is going, moves the series as they are, so their instances, wakes and requests go too, each under its name, numbered where that workspace has it already. A merge makes everyone in the merged workspace a member there, or an owner where the one accepting says, and adds its AGENTS.md to that one's under its name; a series moved alone leaves out whoever runs its open instances but isn't in that workspace, unless the one accepting adds them. Shared series stop being shared until their sharers share them there. Each moved instance's log says so, new to everyone but who accepted, and the workspace a series left shows it go for a week.
 
 ## The page
 
@@ -119,7 +120,7 @@ Everything is files on the host's disk, in folders named by random ids, with no 
                               connections.json, ca/ (the runs' certificate authority), wakes.json (pending wakes and requests), egress.json (hosts runs may reach), browsers.json (the runs' browsers open on the browser service),
                               tokens.json and token-uses.jsonl, brand.json (the deployment's logo and text), capabilities.json (whom admins let publish or create), runs/ (runs' copies of indexes,
                               see Indexes), and the keys session.key and seal.key
-      tree.json               {"workspaces": {id: {name, owners, members, archived?}}, "series": {id: {name, workspace, archived?, single?}},
+      tree.json               {"workspaces": {id: {name, owners, members, archived?, proposal?, moved?}}, "series": {id: {name, workspace, archived?, single?}},
                               "groups": {Entra group id: label}}
     agents/                   company.md, the company's AGENTS.md, and <workspace id>.md, each workspace's
     skills/                   versions/<id>/<n>/, each pushed version, and live/<id>, a link to the one runs use

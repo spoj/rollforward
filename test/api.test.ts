@@ -226,7 +226,7 @@ test('a workspace can be made; a workspace or a series is archived and restored,
   const acme = () => named('Acme');
   const { id } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Acme' }))).json();
   const { series: made, ...rest } = await acme();
-  assert.deepEqual(rest, { id, name: 'Acme', archived: false, owners: [adminEmail], members: [], manage: true, agents: '', mine: true, reads: [], read_by: [] });
+  assert.deepEqual(rest, { id, name: 'Acme', archived: false, owners: [adminEmail], members: [], manage: true, agents: '', mine: true, proposal: null, moved: [], reads: [], read_by: [] });
   assert.deepEqual(made, [], 'a workspace starts empty');
   assert.equal((await call('POST', '/api/workspaces', JSON.stringify({ name: 'Acme' }))).status, 409);
   assert.equal((await call('PUT', `/api/workspaces/${id}`, JSON.stringify({ archived: true }))).status, 200);
@@ -614,7 +614,7 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   assert.match(await rf('wakes', `larkfield/${series}`), /, none pending\n/);
   assert.match(await rf('activity', `larkfield/${series}/2026-08-23`), new RegExp(`^larkfield/${series}/2026-08-23\n  ${stamp}  alex  uploads upload/Larkfield AR aging 082326\\.csv\n  ${stamp}  run 1  Borrowing base for 08-23: excess 173,800\\.\n  ${stamp}  alex  closes it\n$`));
   assert.match(await rf('costs', '--by', 'person'), /^ +\$\d+\.\d\d +\d+ runs +\$\d+\.\d\d a run  alex$/m);
-  assert.deepEqual(Object.keys(JSON.parse(await rf('status', '--json'))), ['running', 'queued', 'asks', 'expired', 'requests', 'failed', 'indexes']);
+  assert.deepEqual(Object.keys(JSON.parse(await rf('status', '--json'))), ['running', 'queued', 'asks', 'expired', 'requests', 'proposals', 'failed', 'indexes']);
   assert.equal(await rf('indexes'), 'No indexes.\n');
   assert.match(await rf('status'), /^Last run failed \(\d+\)\n  larkfield\//m);
 
@@ -766,4 +766,70 @@ test("rf login without a token signs in through the browser: the person allows r
   const { id } = await (await fetch(`${base}/auth/cli`, { method: 'POST', body: '{}' })).json();
   assert.equal((await fetch(`${base}/auth/cli/poll`, { method: 'POST', body: JSON.stringify({ id }) })).status, 202);
   assert.equal((await fetch(`${base}/auth/cli/poll`, { method: 'POST', body: JSON.stringify({ id: 'made-up' }) })).status, 410);
+});
+
+test("a workspace's owners propose to merge it into another or move a series there, whose owners accept or decline within a week; what moves keeps its ids, and both sides hear of it", async () => {
+  const b = sessionOf(await login(bob))!;
+  const make = async (name: string) => (await (await call('POST', '/api/workspaces', JSON.stringify({ name }))).json()).id as string;
+  const put = (ws: string, body: object) => call('PUT', `/api/workspaces/${ws}`, JSON.stringify(body));
+  const add = async (ws: string, name: string) => (await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name }))).json()).id as string;
+  const propose = (body: object, cookie = admin) => call('PUT', `/api/proposals/${from}`, JSON.stringify(body), cookie);
+  const accept = (body: object, cookie = admin) => call('POST', `/api/proposals/${from}`, JSON.stringify(body), cookie);
+  const listed = async (ws: string, cookie = admin) => (await workspaces(cookie)).find((w: { id: string }) => w.id === ws);
+  const from = await make('Moves A'), into = await make('Moves B');
+  await put(from, { owners: [bob], members: [], agents: 'Fiscal months end on Saturdays.\n' });
+  await put(into, { agents: 'Amounts in HKD.\n' });
+  const rec = await add(from, 'Rec'), aging = await add(from, 'Aging');
+  await add(into, 'Rec');
+  const { id: inst } = await (await call('POST', `/api/series/${rec}`, JSON.stringify({ label: 'w1' }), b)).json();
+  const { id: other } = await (await call('POST', `/api/series/${aging}`, JSON.stringify({ label: 'w1' }), b)).json();
+  await call('PUT', `/api/series/${rec}`, JSON.stringify({ share: true, logins: [] }), b);
+  const { id: wake } = await (await call('PUT', `/api/wakes/${rec}`, JSON.stringify({ at: '+1d', label: 'w2' }))).json();
+  await quiet();
+
+  assert.equal((await propose({ kind: 'move', series: rec, to: into }, b)).status, 404, 'into a workspace its proposer sees');
+  await put(into, { members: [bob] });
+  assert.equal((await propose({ kind: 'move', series: 'nope', to: into }, b)).status, 400);
+  assert.equal((await propose({ kind: 'move', series: rec, to: into }, b)).status, 200);
+  const twice = await propose({ kind: 'merge', to: into }, b);
+  assert.deepEqual([twice.status, await twice.text()], [409, "Moves A has a proposal open, into Moves B: until it's accepted, declined or withdrawn, or lapses a week on, neither takes another"]);
+  assert.equal((await accept({ owners: [], members: [] }, b)).status, 403, "the other workspace's managers accept it");
+  assert.deepEqual({ ...(await listed(into)).proposal, at: undefined }, { id: from, into, kind: 'move', from: 'Moves A', to: 'Moves B', series: 'Rec', by: bob, at: undefined });
+  const treeFile = join(root, '.rf', 'tree.json'), t = JSON.parse(readFileSync(treeFile, 'utf8'));
+  t.workspaces[from].proposal.at = new Date(Date.now() - 8 * 86400e3).toISOString();
+  writeFileSync(treeFile, JSON.stringify(t));
+  assert.deepEqual([(await listed(from)).proposal, (await call('DELETE', `/api/proposals/${from}`)).status], [null, 404], 'a week on, it lapses');
+
+  await put(into, { members: [], archived: true });
+  assert.equal((await propose({ kind: 'move', series: rec, to: into })).status, 409, 'none into an archived workspace');
+  await put(into, { archived: false });
+  assert.equal((await propose({ kind: 'move', series: rec, to: into })).status, 200);
+  const shown = await json(`/api/proposals/${from}`);
+  assert.deepEqual([shown.series, shown.people], [[{ id: rec, from: 'Moves A/Rec', to: 'Moves B/Rec 2' }], [bob]], 'renamed where the name is taken; who runs it but is not in B');
+  assert.equal((await call('DELETE', `/api/proposals/${from}`)).status, 200, 'declined');
+  await propose({ kind: 'move', series: rec, to: into });
+  assert.equal((await accept({ owners: [], members: [] })).status, 200);
+  const moved = (await listed(into)).series.find((s: { id: string }) => s.id === rec);
+  assert.deepEqual([moved.name, moved.shared_by, moved.wakes.map((k: { id: string }) => k.id)], ['Rec 2', null, [wake]], 'no longer shared; its wakes go with it');
+  const { log } = await json(`/api/instances/${inst}`);
+  assert.deepEqual({ ...log.at(-1), seq: 0, at: '' }, { seq: 0, at: '', by: 'server', op: 'move', from: 'Moves A/Rec', to: 'Moves B/Rec 2', accepted_by: adminEmail });
+  assert.equal((await call('GET', `/api/instances/${inst}`, undefined, b)).status, 404, 'left out, bob no longer sees it');
+  assert.deepEqual((await listed(from, b)).moved.map((m: { name: string; to: string }) => `${m.name} moved to ${m.to}`), ['Rec moved to Moves B/Rec 2']);
+
+  assert.equal((await propose({ kind: 'merge', to: into })).status, 200);
+  assert.equal((await call('DELETE', `/api/proposals/${from}`, undefined, b)).status, 200, "withdrawn by the merged workspace's owner");
+  assert.equal((await propose({ kind: 'merge', to: into })).status, 200);
+  assert.deepEqual((await json('/api/status')).proposals.map((p: { kind: string; from: string; to: string; by: string }) => [p.kind, p.from, p.to, p.by]), [['merge', 'Moves A', 'Moves B', adminEmail]]);
+  await json(`/api/instances/${other}`);
+  await json(`/api/instances/${other}`, b);
+  assert.equal((await accept({ owners: [bob], members: [] })).status, 200);
+  const merged = await listed(into, b);
+  assert.deepEqual([merged.owners, merged.members, merged.series.map((s: { name: string }) => s.name), merged.agents],
+    [[adminEmail, bob], [], ['Aging', 'Rec', 'Rec 2'], 'Amounts in HKD.\n\n## Moves A\n\nFiscal months end on Saturdays.\n']);
+  assert.deepEqual([await listed(from), existsSync(join(root, 'agents', `${from}.md`))], [undefined, false], 'the merged workspace is gone, its AGENTS.md with it');
+  const unread = async (cookie: string) => (await listed(into, cookie)).series.find((s: { id: string }) => s.id === aging).instances[0].unread;
+  assert.deepEqual([await unread(b), await unread(admin)], [true, false], 'new to everyone but who accepted');
+  const empty = await make('Moves C');
+  assert.equal((await call('PUT', `/api/proposals/${empty}`, JSON.stringify({ kind: 'merge', to: into }))).status, 200);
+  assert.equal((await call('POST', `/api/proposals/${empty}`, JSON.stringify({ owners: [], members: [] }))).status, 200, 'a workspace with no series merges too');
 });
