@@ -384,8 +384,12 @@ test('the proxy reaches nothing, not even what a tick is checked against, for a 
   const { upsertUser } = await import('../src/auth.ts'), before = methods.length;
   upsertUser(ALICE, { disabled: true });
   assert.match((await via('GET', `${G}/drives/b!d1/items/y2026/children`)).text, /can no longer run this instance/);
+  const { saveLogin, signOut } = await import('../src/logins.ts'), n = asked.length;
+  saveLogin(ALICE, { id: 'openrouter', kind: 'key', name: 'OpenRouter', account: ALICE, since: '2026-11-04T00:00:00Z', offers: [], enabled: true } as never, 'sk-or-alice');
+  assert.match((await via('POST', `${O}/chat/completions`, json({ model: 'x', messages: [] }))).text, /can no longer run this instance/, "nor their own model key, nor the server's in its place");
+  signOut(ALICE, 'openrouter');
   upsertUser(ALICE, { disabled: false });
-  assert.equal(methods.length, before, 'no request reached Graph');
+  assert.deepEqual([methods.length, asked.length], [before, n], 'no request reached Graph or OpenRouter');
 });
 
 test('rf delivered records an output delivered, with where it went and its receipt', async () => {
