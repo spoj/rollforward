@@ -43,7 +43,18 @@ a { color: inherit; }
 .row { display: flex; align-items: center; gap: 2px; min-height: 30px; padding: 0 4px 0 8px; border-radius: var(--r1); text-decoration: none; }
 .row.grp { margin-top: 6px; border-top: 1px solid var(--rule); border-radius: 0; }
 .row.grp .nm { font-style: italic; color: var(--ink-3); }
-.ticks2 { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 12.5px; color: var(--ink-2); margin: 6px 0; }
+.ticks2 { display: grid; gap: 4px; font-size: 12.5px; color: var(--ink-2); margin: 6px 0; }
+.ticks2 label { display: flex; align-items: center; gap: 6px; }
+.lline { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--rule); }
+.lline b { flex: 0 0 9.5em; font-weight: 600; }
+.lline .sub { flex: 1; }
+.lsub { display: flex; align-items: center; gap: 8px; padding-left: 16px; }
+.lsub > span { flex: 1; }
+.tgroup summary { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.tgroup summary .sub::after { content: ' \25B8'; }
+.log details.tgroup > summary::before, .log details.tgroup[open] > summary::before { content: none; }
+.tgroup[open] summary .sub::after { content: ' \25BE'; }
+.tgroup > label, .tkind > label { padding-left: 20px; }
 .row.wake, .row.req { font-size: 12px; color: var(--ink-2); }
 /* A row keeps to one line: its name gives way, cut short with the whole of it on hover; what follows it never does. */
 .row .nm { flex: 1 1 0; min-width: 0; display: flex; align-items: center; padding: 5px 0; text-decoration: none; }
@@ -393,7 +404,7 @@ function fileUrl(path, kind = 'files') {
 }
 const ext = f => (f && f.includes('.') ? f.split('.').pop() : '').toUpperCase();
 
-let tree = [], expired = [], offers = [], cur = null, data = null, lines = [], linesKey = '', openItem = null, hover = null, showClosed = false, showArchived = false, pv = null, me = null;
+let tree = [], expired = [], myLogins = [], cur = null, data = null, lines = [], linesKey = '', openItem = null, hover = null, showClosed = false, showArchived = false, pv = null, me = null;
 let seen = {}, prevSigs = {}, uploads = [], shown = '', refreshes = 0, threads = [];
 // Threads with a reply box open: those waiting on people have one anyway, the others once Reply is clicked.
 const replying = new Set();
@@ -465,7 +476,7 @@ async function refresh() {
   i ??= s?.instances.find(i => i.status === 'open') ?? s?.instances.at(-1);
   const path = i ? `/api/instances/${i.id}` : '', [d, st] = path ? await fetchInstance(path) : [null, null];
   if (n !== refreshes) return;
-  [tree, expired, offers] = [t, mine.filter(l => l.expired), mine.flatMap(l => l.offers)];
+  [tree, expired, myLogins] = [t, mine.filter(l => l.expired), mine];
   land(w && { w, s, i }, path, d, st);
 }
 
@@ -942,7 +953,7 @@ function conversationHtml() {
   // Before its first run, its runner may tick its logins anew where they write its first prompt.
   const first = data.runner.by === me.email && !data.log.some(e => e.op === 'run');
   if (open) h += `<h3>${ui.on ? `Comment on ${name(ui.on)}${ui.ref ? ` at ${esc(ui.ref)}` : ''}` : 'Comment on the instance'}</h3>`
-    + (first && offers.length ? `<div class="ticks2">Logins it may use:${offers.map(o => `<label><input type="checkbox" class="ctick" value="${esc(o.id)}" ${data.runner.logins.includes(o.id) ? 'checked' : ''}> ${esc(o.name)}</label>`).join('')}</div>` : '')
+    + (first && myLogins.some(l => l.offers.length) ? `<div class="ticks2">Logins it may use:${ticksHtml(myLogins, data.runner.logins)}</div>` : '')
     + `<textarea id="newcomment" rows="3" placeholder="${first ? 'What should the agent do? Drop files here too' : data.runner.by === me.email || cur.s.shared_by === data.runner.by ? 'The agent replies in the thread' : `A note for ${esc(nameOf(data.runner.by))}: the agent takes it up once they do`}"></textarea><input type="file" id="newfiles" multiple><div><button class="btn primary" data-act="comment">Comment</button></div>`;
   return h + '</div>';
 }
@@ -1066,8 +1077,8 @@ function renderPv() {
 function startsHtml(s) {
   const mine = s.shared_by === me.email, ws = esc(cur.w.name), arm = `<button class="btn share ${pv.arming ? 'armed' : ''}" data-act="share-arm">${s.shared_by ? 'Start them as me instead' : `Let anyone in ${ws} start runs`}</button>`;
   return `<div>${s.shared_by ? `Anyone in ${ws}, and its agents, start runs of this series as ${mine ? 'you, with these logins:' : person(s.shared_by) + '.'}` : "Each instance's runner, and nobody else: others' comments are notes for them, and a wake asks someone to start the instance."}</div>`
-    + (mine ? ticksHtml(s.offers, s.shared_logins) + '<div class="row2"><button class="btn" data-act="share-off">Stop</button></div>' : `<div class="row2">${arm}</div>`)
-    + (pv.arming ? `<div class="warn">With these logins:${ticksHtml(s.offers)}You take on every run that anyone in ${ws}, or any of its agents, starts in this series: their comments, uploads and wakes in your instances, and the instances their wakes start, all run as you, with your logins.<div><button class="btn danger" data-act="share-on">Start their runs as me</button></div></div>` : '');
+    + (mine ? ticksHtml(s.logins, s.shared_logins) + '<div class="row2"><button class="btn" data-act="share-off">Stop</button></div>' : `<div class="row2">${arm}</div>`)
+    + (pv.arming ? `<div class="warn">With these logins:${ticksHtml(s.logins)}You take on every run that anyone in ${ws}, or any of its agents, starts in this series: their comments, uploads and wakes in your instances, and the instances their wakes start, all run as you, with your logins.<div><button class="btn danger" data-act="share-on">Start their runs as me</button></div></div>` : '');
 }
 
 // Wakes for an instance or a series, each one-off or weekly on the days ticked at its time, editable in place, and a row to add one.
@@ -1119,8 +1130,8 @@ function openWorkspaceSettings() {
 }
 
 async function openSeriesSettings() {
-  const s = cur.s, offers = await myOffers();
-  pv = { title: 'Series settings', settings: { ...s, kind: 'series', offers, cost: s.instances.reduce((t, i) => t + i.cost, 0), closed: s.instances.filter(i => i.status === 'closed').length } };
+  const s = cur.s, logins = await api('/logins');
+  pv = { title: 'Series settings', settings: { ...s, kind: 'series', logins, cost: s.instances.reduce((t, i) => t + i.cost, 0), closed: s.instances.filter(i => i.status === 'closed').length } };
   renderPv();
 }
 
@@ -1145,51 +1156,71 @@ async function openTokens(made) {
   renderPv();
 }
 
-// Your logins, each with what it offers a run, which you tick when you start or take over an instance.
+// Your logins, on one page: what needs you first, then a line for each, Microsoft 365, Databricks, the websites and the model key,
+// whose detail opens in place.
 function loginsHtml(s) {
-  let h = `<div class="sub">Every login is yours alone. A run uses only its runner's logins, and only those ticked for its instance. Nothing here is a password: you sign in to each system yourself.</div>`;
   const entra = s.connections.filter(c => c.login.scope), sites = s.connections.filter(c => c.type === 'website' && c.allowed).map(c => ({ id: c.name, name: c.title ?? c.name, url: c.url, hosts: c.hosts, header: c.header }));
+  const mine = id => s.logins.find(l => l.id === id), k = mine('openrouter'), shown = id => pv.shown?.includes(id);
+  const line = (name, sub, acts = '') => `<div class="lline"><b>${esc(name)}</b><span class="sub">${sub}</span>${acts}</div>`;
+  const show = id => `<button class="quiet" data-act="logins-show" data-id="${id}">${shown(id) ? 'Hide \u25BE' : 'Show \u25B8'}</button>`;
+  const connect = l => `<a class="btn primary" href="/logins/${enc(l.id)}/connect">${l.expired ? 'Sign in again' : 'Reconnect'}</a>`;
+  const signOut = id => `<button class="quiet" data-act="signout-login" data-id="${esc(id)}">Sign out</button>`;
+  const needs = [
+    ...s.logins.filter(l => l.expired && l.kind !== 'key').map(l => line(l.name, '<span class="q">expired</span>', l.kind === 'website' ? signInHtml(l.id, l.name) : connect(l))),
+    ...s.logins.filter(l => l.missing.length && !l.expired).map(l => line(l.name, `<span class="q">runs can't send or save</span>: Microsoft hasn't granted it ${esc(l.missing.join(', '))}, which this server now asks for`, connect(l))),
+    ...(k?.enabled && k.expired ? [line('Model key', '<span class="q">your key is out of credits</span>: save another, or stop using it', '<button class="btn primary" data-act="logins-show" data-id="key">Change</button>')] : []),
+  ];
+  let h = `<div class="sub">Every login is yours alone. A run uses only its runner's logins, and only those ticked for its instance. Nothing here is a password: you sign in to each system yourself.</div>`
+    + (needs.length ? `<h3>Needs you</h3>${needs.join('')}<h3>All</h3>` : '');
   if (!me.m365 && entra.length) h += `<div class="sub">Microsoft sign-in isn't set up on this server: its logins need an app registered in Microsoft Entra ID, which an admin sets in the server's settings (README, Access).</div>`;
   for (const c of entra) {
-    const l = s.logins.find(l => l.id === c.login.id);
+    const l = mine(c.login.id);
     if (!l) {
-      if (me.m365) h += `<h3>${esc(c.login.name)}</h3><div class="sub">${c.type === 'graph' ? 'Only what you add once connected: mailboxes, SharePoint sites, and folders or files in SharePoint or OneDrive. A run reaches nothing else, and shares nothing.' : `Runs reach ${esc(c.name)} as you, with your own permissions there.`}</div><div><a class="btn primary" href="/logins/${enc(c.login.id)}/connect">Connect ${esc(c.login.name)}</a></div>`;
+      if (me.m365) h += line(c.login.name, c.type === 'graph' ? 'Only what you add once connected: mailboxes, SharePoint sites, and folders or files in SharePoint or OneDrive. A run reaches nothing else, and shares nothing.' : `Runs reach ${esc(c.name)} as you, with your own permissions there.`, `<a class="btn primary" href="/logins/${enc(c.login.id)}/connect">Connect</a>`);
       continue;
     }
-    h += `<h3>${esc(l.name)}</h3><div class="sub">${l.account ? `${person(l.account)} · ` : ''}${l.expired ? '<span class="q">expired: sign in again</span>' : `since ${esc(when(l.since))}`}</div>`
-      + (l.missing.length && !l.expired ? `<div class="sub"><span class="q">Reconnect to let runs send and save</span>: Microsoft hasn't granted this login ${esc(l.missing.join(', '))}, which this server now asks for.</div>` : '')
-      + l.offers.map(o => `<div class="skill-row" style="display:flex;align-items:center"><span style="flex:1">${esc(o.name)}</span>${l.id === 'm365' ? `<button class="quiet" data-act="unoffer" data-id="${esc(o.id)}">Remove</button>` : ''}</div>`).join('')
-      + (l.id === 'm365' && l.offers.length ? `<div class="sub">Kept as an index, refreshed with your login while it's added.</div>` : '');
-    if (l.id === 'm365' && !l.expired) h += `<div class="sub">Add a mailbox by its address, yours or one you may read; a whole SharePoint site by its link; or a folder, with all under it, or a file, in SharePoint or anyone's OneDrive, by any link to it.</div>`
-      + `<div class="row2"><input type="text" id="offer-add" placeholder="A mailbox or a link" style="flex:1"><button class="btn" data-act="offer-add">Add</button></div>`;
-    h += `<div class="row2">${l.expired || l.missing.length ? `<a class="btn primary" href="/logins/${enc(l.id)}/connect">${l.expired ? 'Sign in again' : 'Reconnect'}</a>` : ''}<button class="btn" data-act="signout-login" data-id="${esc(l.id)}">Sign out</button></div>`;
+    const sources = l.id === 'm365' ? ` · ${l.offers.length} source${l.offers.length === 1 ? '' : 's'}` : '';
+    h += line(l.name, `${l.account ? `${person(l.account)} · ` : ''}${l.expired ? 'expired' : `since ${esc(when(l.since))}`}${sources}`, l.id === 'm365' ? show('m365') : signOut(l.id));
+    if (l.id === 'm365' && shown('m365')) h += l.offers.map(o => `<div class="lsub"><span>${esc(o.name)}</span><button class="quiet" data-act="unoffer" data-id="${esc(o.id)}">Remove</button></div>`).join('')
+      + (l.offers.length ? `<div class="sub">Each kept as an index, refreshed with your login while it's added.</div>` : '')
+      + (l.expired ? '' : `<div class="sub">Add a mailbox by its address, yours or one you may read; a whole SharePoint site by its link; or a folder, with all under it, or a file, in SharePoint or anyone's OneDrive, by any link to it.</div>`
+        + `<div class="row2"><input type="text" id="offer-add" placeholder="A mailbox or a link" style="flex:1"><button class="btn" data-act="offer-add">Add</button></div>`)
+      + `<div class="row2">${signOut('m365')}</div>`;
   }
-  const ids = new Set([...s.connections.map(c => c.login.id), 'openrouter']), k = s.logins.find(l => l.id === 'openrouter');
-  h += `<h3>Model key</h3><div class="sub">${k?.enabled && k.expired ? '<span class="q">Your key is out of credits: save another, or stop using it</span>' : "Runs you run use the server's OpenRouter key, or your own: on yours, one that runs out of credits waits for you."}</div>`
-    + `<div class="row2"><input type="password" id="orkey" placeholder="${k ? 'A new OpenRouter key, if any' : 'Your OpenRouter key'}" autocomplete="off" style="flex:1"><button class="btn" data-act="orkey-save">Save</button>${k ? '<button class="quiet" data-act="signout-login" data-id="openrouter">Remove</button>' : ''}</div>`
-    + (k ? `<label class="skill-row"><input type="checkbox" id="oruse" ${k.enabled ? 'checked' : ''}> Use my key for my runs</label>` : '');
-  for (const l of s.logins.filter(l => !ids.has(l.id))) h += `<h3>${esc(l.name)}</h3><div class="sub">No longer a connection on this server, so no run uses it.</div><div class="row2"><button class="btn" data-act="signout-login" data-id="${esc(l.id)}">Sign out</button></div>`;
-  if (sites.length) h += `<h3>Websites</h3><div class="sub">Sign in yourself, in a browser shown here. Your login is what that browser keeps, its cookies, never your password; a run's browser starts from it and brings it back refreshed. It reaches only the hosts listed, but there it can do whatever you can: the agent is told only to read, and each run's log counts its writes.${sites.some(w => w.header) ? " Where a site's sign-in needs a token, give it in the box under its name: it goes only to that sign-in, never to a run's browser, and is kept, sealed, for the next." : ''}</div>`
+  const ids = new Set([...s.connections.map(c => c.login.id), 'openrouter']), signed = sites.filter(w => mine(`web:${w.id}`) && !mine(`web:${w.id}`).expired).length;
+  for (const l of s.logins.filter(l => !ids.has(l.id))) h += line(l.name, 'no longer a connection on this server, so no run uses it', signOut(l.id));
+  h += line('Websites', sites.length ? `${signed} of ${sites.length} signed in` : me.browsers ? 'none yet: admins add a website with <code>rf connection set NAME website --url URL --hosts ...</code>, and then everyone it is for can sign in to it here'
+    : 'not set up on this server: website logins need the browser service (README, Websites), and then admins add websites with <code>rf connection set NAME website</code>', sites.length ? show('web') : '');
+  if (sites.length && shown('web')) h += `<div class="sub">Sign in yourself, in a browser shown here. Your login is what that browser keeps, its cookies, never your password; a run's browser starts from it and brings it back refreshed. It reaches only the hosts listed, but there it can do whatever you can: the agent is told only to read, and each run's log counts its writes.${sites.some(w => w.header) ? " Where a site's sign-in needs a token, give it in the box under its name: it goes only to that sign-in, never to a run's browser, and is kept, sealed, for the next." : ''}</div>`
     + sites.map(w => {
-      const l = s.logins.find(l => l.id === `web:${w.id}`);
-      return `<div class="skill-row" style="display:flex;align-items:center;gap:8px"><span style="flex:1">${esc(w.name)} <span class="sub">${esc([new URL(w.url).hostname, ...w.hosts].join(', '))}${l ? ` · since ${esc(when(l.since))}` : ''}</span>`
+      const l = mine(`web:${w.id}`);
+      return `<div class="lsub"><span>${esc(w.name)} <span class="sub">${esc([new URL(w.url).hostname, ...w.hosts].join(', '))}${l ? ` · ${l.expired ? 'expired' : `since ${esc(when(l.since))}`}` : ''}</span>`
         + `${w.header ? `<input type="password" id="hdr-${esc(w.id)}" placeholder="${l ? `New ${esc(w.header)}, if any` : `Your ${esc(w.header)}`}" autocomplete="off" style="display:block;width:100%;margin-top:6px">` : ''}</span>`
-        + `<button class="btn" data-act="web-signin" data-id="${esc(w.id)}" data-name="${esc(w.name)}">${l ? 'Sign in again' : 'Sign in'}</button>${l ? `<button class="quiet" data-act="signout-login" data-id="${esc(l.id)}">Sign out</button>` : ''}</div>`;
+        + `<button class="btn" data-act="web-signin" data-id="${esc(w.id)}" data-name="${esc(w.name)}">${l ? 'Sign in again' : 'Sign in'}</button>${l ? signOut(l.id) : ''}</div>`;
     }).join('');
-  if (!sites.length) h += `<h3>Websites</h3><div class="sub">${me.browsers ? 'None yet: admins add a website with <code>rf connection set NAME website --url URL --hosts ...</code>, and then everyone it is for can sign in to it here.' : "Not set up on this server: website logins need the browser service (README, Websites), and then admins add websites with <code>rf connection set NAME website</code>."}</div>`;
+  h += line('Model key', !k ? "the server's" : k.enabled ? `yours${k.expired ? ', out of credits' : ''}` : "the server's · yours saved",
+    (k ? `<label><input type="checkbox" id="oruse" ${k.enabled ? 'checked' : ''}> use mine</label>` : '') + `<button class="quiet" data-act="logins-show" data-id="key">${k ? 'Change' : 'Add mine'}</button>`);
+  if (shown('key')) h += `<div class="sub">Runs you run use the server's OpenRouter key, or your own: on yours, one that runs out of credits waits for you.</div>`
+    + `<div class="row2"><input type="password" id="orkey" placeholder="${k ? 'A new OpenRouter key' : 'Your OpenRouter key'}" autocomplete="off" style="flex:1"><button class="btn" data-act="orkey-save">Save</button>${k ? signOut('openrouter').replace('Sign out', 'Remove') : ''}</div>`;
   return h;
 }
 
-// Ticks: which of your logins an instance may use, asked whenever you start, copy or take over one, or share a series.
-const ticksHtml = (offers, on = []) => offers.length ? offers.map(o => `<label class="skill-row"><input type="checkbox" class="tick" value="${esc(o.id)}" ${on.includes(o.id) ? 'checked' : ''}> ${esc(o.name)}</label>`).join('')
-  : '<div class="sub">You have no logins yet; add them under <a data-act="logins">Logins</a>. The agent can still work with the files people bring.</div>';
+// Ticks: which of your logins an instance may use, asked whenever you start, copy or take over one, or share a series, by kind:
+// Microsoft 365's sources fold under a tick of its own, unless some are ticked and some not, and an expired login is flagged, its
+// ticks off.
+function ticksHtml(logins, on = []) {
+  const n = l => l.expired ? 0 : l.offers.filter(o => on.includes(o.id)).length, tick = (l, o) => `<label><input type="checkbox" class="tick" value="${esc(o.id)}" ${on.includes(o.id) && !l.expired ? 'checked' : ''}> ${esc(o.name)}${l.expired ? ' <span class="q">expired</span>' : ''}</label>`;
+  const h = [['m365', ''], ['databricks', 'Databricks'], ['website', 'Websites']].map(([kind, name]) => logins.filter(l => l.kind === kind && l.offers.length).map(l => kind === 'm365'
+    ? `<details class="tgroup" ${n(l) && n(l) < l.offers.length ? 'open' : ''}><summary><label><input type="checkbox" class="tickall" ${n(l) === l.offers.length ? 'checked' : ''}> ${esc(l.name)}${l.expired ? ' <span class="q">expired</span>' : ''}</label><span class="sub">${l.offers.length} source${l.offers.length === 1 ? '' : 's'}</span></summary>${l.offers.map(o => tick(l, o)).join('')}</details>`
+    : `<div class="tkind"><span class="sub">${name}</span>${l.offers.map(o => tick(l, o)).join('')}</div>`).join('')).join('');
+  return h || '<div class="sub">You have no logins yet; add them under <a data-act="logins">Logins</a>. The agent can still work with the files people bring.</div>';
+}
 const ticked = () => [...document.querySelectorAll('#pv input.tick:checked')].map(i => i.value);
-const myOffers = async () => (await api('/logins')).flatMap(l => l.offers);
 
 function startHtml(s) {
   return (s.series !== undefined ? `<h3>Series</h3><div class="sub">This task becomes its first instance.</div><input type="text" id="sseries" value="${esc(s.series)}">` : '')
     + (s.label !== undefined ? `<h3>${s.series !== undefined ? 'The new instance' : 'Label'}</h3><input type="text" id="slabel" value="${esc(s.label)}" placeholder="such as a date">` : '')
-    + `<h3>Logins this instance may use</h3>` + ticksHtml(s.offers, s.on) + `<div><button class="btn primary" data-act="start-go">${esc(s.go)}</button></div>`;
+    + `<h3>Logins this instance may use</h3>` + ticksHtml(s.logins, s.on) + `<div><button class="btn primary" data-act="start-go">${esc(s.go)}</button></div>`;
 }
 
 // Signing in again, from wherever a login is said to have expired: Microsoft's own page, or a website's live browser.
@@ -1209,13 +1240,13 @@ function waiting() {
     }
     for (const r of s.requests.filter(r => (r.who ?? me.email) === me.email)) out.push(`<div class="wt">${at(w, s)}: ${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)} <button class="btn" data-act="req-start" data-id="${esc(r.id)}">Start</button></div>`);
   }
-  return [...out, ...expired.map(l => `<div class="wt">Your ${esc(l.name)} login has expired. ${signInHtml(l.id, l.name)}</div>`)];
+  return [...out, ...expired.map(l => `<div class="wt">Your ${l.kind === 'key' ? 'OpenRouter key is out of credits' : `${esc(l.name)} login has expired`}. ${signInHtml(l.id, l.name)}</div>`)];
 }
 
 // Your own OpenRouter key, if a new one is given, and whether your runs use it; a first one is used at once.
 async function saveKey() {
   const k = pv.settings.logins.find(l => l.id === 'openrouter');
-  await api('/logins/openrouter', { method: 'PUT', body: JSON.stringify({ key: $('#orkey').value, enabled: $('#oruse')?.checked ?? !k }) });
+  await api('/logins/openrouter', { method: 'PUT', body: JSON.stringify({ key: $('#orkey')?.value ?? '', enabled: $('#oruse')?.checked ?? !k }) });
   await openLogins();
   saved();
 }
@@ -1299,7 +1330,7 @@ function closePv() {
 }
 
 async function openStart(title, go, then, label, series, on) {
-  pv = { title, settings: { kind: 'start', go, then, label, series, on, offers: await myOffers() } };
+  pv = { title, settings: { kind: 'start', go, then, label, series, on, logins: await api('/logins') } };
   renderPv();
   $('#slabel')?.focus();
 }
@@ -1556,7 +1587,7 @@ async function onAct(act, el, was) {
   if (act === 'new-instance') await openStart('New instance', 'Start', ({ label, logins }) => api(seriesPath(cur), { method: 'POST', body: JSON.stringify({ label, logins }) }), '');
   // A task starts at once, Untitled, with the logins last ticked, on its conversation, ready for the prompt that starts its run.
   if (act === 'new-task') {
-    const offers = new Set((await myOffers()).map(o => o.id)), logins = JSON.parse(localStorage.ticks ?? '[]').filter(id => offers.has(id));
+    const offers = new Set((await api('/logins')).filter(l => !l.expired).flatMap(l => l.offers.map(o => o.id))), logins = JSON.parse(localStorage.ticks ?? '[]').filter(id => offers.has(id));
     const { instance } = await api('/api/series', { method: 'POST', body: JSON.stringify({ workspace: cur.w.id, single: true, logins }) });
     Object.assign(ui, { open: true, tab: 'conv', on: null, ref: null, focus: instance });
     go(instance);
@@ -1627,6 +1658,10 @@ async function onAct(act, el, was) {
     await openLogins();
   }
   if (act === 'orkey-save') await saveKey();
+  if (act === 'logins-show') {
+    pv.shown = pv.shown?.includes(el.dataset.id) ? pv.shown.filter(x => x !== el.dataset.id) : [...pv.shown ?? [], el.dataset.id];
+    renderPv();
+  }
   if (act === 'signout-login') {
     await api(`/logins/${enc(el.dataset.id)}`, { method: 'DELETE' });
     pv.settings.logins = await api('/logins');
@@ -1641,13 +1676,20 @@ async function onAct(act, el, was) {
 $('#picker').addEventListener('change', e => upload([...e.target.files], e.target.dataset.pane, e.target.dataset.onto));
 // Settings save as they change: a name once it's left or Enter is pressed, a tick at once.
 document.addEventListener('change', async ev => {
-  const el = ev.target;
+  const el = ev.target, group = el.closest('details.tgroup');
+  // A group's tick ticks all under it, as one change of theirs; its own follows theirs.
+  if (el.matches('input.tickall')) {
+    const kids = [...group.querySelectorAll('input.tick')];
+    for (const k of kids) k.checked = el.checked;
+    return kids[0].dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  if (group) group.querySelector('.tickall').checked = [...group.querySelectorAll('input.tick')].every(k => k.checked);
   if (el.id === 'sname') await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) });
   else if (el.matches('#pv input.tick') && pv.settings.kind === 'series' && pv.settings.shared_by === me.email) await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ share: true, logins: ticked() }) });
   else if (el.id === 'wname') await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) });
   else if (el.id === 'oruse') await saveKey();
-  else if (el.matches('#log input.ctick')) {
-    const logins = [...document.querySelectorAll('#log input.ctick:checked')].map(i => i.value);
+  else if (el.matches('#log input.tick')) {
+    const logins = [...document.querySelectorAll('#log input.tick:checked')].map(i => i.value);
     localStorage.ticks = JSON.stringify(logins);
     await api(`${instPath()}/logins`, { method: 'POST', body: JSON.stringify({ logins }) });
     return refresh();

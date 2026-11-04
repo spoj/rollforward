@@ -2,7 +2,8 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { appendFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -293,4 +294,41 @@ test("a name two people share shows with their email, a group among a workspace'
   await page.click('.row.ws [data-act=workspace-settings]');
   await page.waitForSelector(`#pv .ut td:has(span[title="${bob}"]:text-is("Bob <${bob}>"))`);
   assert.equal(await page.locator(`#pv .ut td:has(span[title="${group}"])`).innerText(), 'Finance HK · group');
+});
+
+test("Logins shows what needs you first, then a line for each kind, Microsoft 365's sources and the websites opening in place; ticks go by kind, Microsoft 365's sources under a tick of their own, an expired login's flagged and off", async () => {
+  const rf = join(root, '.rf'), mine = join(rf, 'people', createHash('sha256').update('admin@demo.test').digest('hex').slice(0, 16));
+  writeFileSync(join(rf, 'connections.json'), JSON.stringify({ graph: { type: 'graph' }, adb: { type: 'databricks', host: 'adb-1.test', warehouse: 'wh1' }, portal: { type: 'website', url: 'https://portal.test/', hosts: [] }, wiki: { type: 'website', url: 'https://wiki.test/', hosts: [] } }));
+  mkdirSync(mine, { recursive: true });
+  writeFileSync(join(mine, 'logins.json'), JSON.stringify([
+    { id: 'm365', kind: 'm365', name: 'Microsoft 365', account: 'admin@demo.test', since: '2026-11-01T00:00:00Z', offers: [{ id: 'm365:onedrive', name: 'OneDrive' }, { id: 'm365:site:s1', name: 'SharePoint Reports' }] },
+    { id: 'adb', kind: 'databricks', name: 'Databricks adb', since: '2026-11-01T00:00:00Z', offers: [{ id: 'adb', name: 'Databricks adb, warehouse wh1' }], expired: true },
+    { id: 'web:portal', kind: 'website', name: 'portal', since: '2026-11-02T00:00:00Z', offers: [{ id: 'web:portal', name: 'portal' }] },
+  ]));
+  const lines = () => page.$$eval('#pv .lline', ls => ls.map(l => [...l.children].map(c => (c as HTMLElement).innerText.trim()).join(' | ')));
+  await page.evaluate(() => openLogins());
+  await page.waitForSelector('#pv .lline');
+  assert.deepEqual((await page.$$eval('#pv h3', hs => hs.map(h => h.textContent))), ['Needs you', 'All']);
+  const all = await lines();
+  assert.equal(all[0], 'Databricks adb | expired | Sign in again', 'first, what needs you');
+  assert.match(all.slice(1).join('\n'), /^Microsoft 365 \| Demo Admin · since .+ · 2 sources \| Show ▸\nDatabricks adb \| expired \| Sign out\nWebsites \| 1 of 2 signed in \| Show ▸\nModel key \| the server's \| Add mine$/);
+  await page.click('#pv [data-act=logins-show][data-id=m365]');
+  assert.deepEqual(await page.$$eval('#pv .lsub', rs => rs.map(r => (r as HTMLElement).innerText.replace(/\s+/g, ' ').trim())), ['OneDrive Remove', 'SharePoint Reports Remove']);
+  await page.click('#pv [data-act=logins-show][data-id=web]');
+  assert.match((await page.$$eval('#pv .lsub', rs => rs.map(r => (r as HTMLElement).innerText.replace(/\s+/g, ' ').trim()))).slice(2).join('\n'), /^portal portal\.test · since .+ Sign in again Sign out\nwiki wiki\.test Sign in$/);
+  await page.mouse.click(5, 5);
+
+  await page.evaluate(() => openStart('New instance', 'Start', () => {}, '', undefined, ['m365:onedrive', 'adb']));
+  await page.waitForSelector('#pv details.tgroup');
+  const ticks = () => page.$$eval('#pv input.tick, #pv input.tickall', ts => ts.map(t => `${(t as HTMLInputElement).value === 'on' ? 'all' : (t as HTMLInputElement).value}:${(t as HTMLInputElement).checked}`));
+  assert.deepEqual(await ticks(), ['all:false', 'm365:onedrive:true', 'm365:site:s1:false', 'adb:false', 'web:portal:false'], 'the expired login unticked');
+  assert.equal(await page.$eval('#pv details.tgroup', d => (d as HTMLDetailsElement).open), true, 'open while some of its sources are ticked and some not');
+  assert.match(await page.locator('#pv .tkind', { hasText: 'Databricks' }).innerText(), /^Databricks\s+Databricks adb, warehouse wh1\s+expired$/);
+  await page.click('#pv details.tgroup summary .tickall');
+  assert.deepEqual((await ticks()).slice(0, 3), ['all:true', 'm365:onedrive:true', 'm365:site:s1:true'], "the group's tick ticks its sources");
+  await page.click('#pv details.tgroup input[value="m365:onedrive"]');
+  assert.deepEqual((await ticks()).slice(0, 3), ['all:false', 'm365:onedrive:false', 'm365:site:s1:true'], 'and follows them');
+  await page.mouse.click(5, 5);
+  rmSync(join(rf, 'connections.json'));
+  rmSync(mine, { recursive: true });
 });
