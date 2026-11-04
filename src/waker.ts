@@ -38,7 +38,7 @@ const waiting = new Set<Instance>();
 // session whose message is the new log entries; at most RF_MAX_IDLE are idle, the longest ended first, and none holds its series'
 // slot. Anything the run would start from otherwise ends it: a takeover, new ticks, a view of the data changed, as by a rename, its
 // instance closed or abandoned, its runner no longer seeing it. So does a run that failed or was cut short, as by a refusal, whose
-// session is no place to carry on.
+// session is no place to carry on, and one that left a job running in its sandbox, which no run would watch.
 const IDLE_MS = Number(process.env.RF_IDLE_MIN ?? 60) * 60_000, MAX_IDLE = Number(process.env.RF_MAX_IDLE ?? 8);
 type Idle = { inst: Instance; run: Run; token: string; view: View; skills: Record<string, number>; session: number; shape: string; seq: number; since: number };
 const idle = new Map<string, Idle>();
@@ -274,7 +274,7 @@ function finish(a: Active, aborted: boolean, error?: string) {
   // The rules it added to the process, or reworded, for the thread whose entry started it, where they were likely agreed.
   a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(4), summary, ...(error && { error }), ...(added && { rules: added, thread: a.thread }) });
   // Its Pi idles for the instance's next run, or stops, the longest idle too past RF_MAX_IDLE.
-  const keep = !aborted && !error && !!a.run && a.inst.doc.status === 'open';
+  const keep = !aborted && !error && !!a.run && a.inst.doc.status === 'open' && a.run.alone();
   if (keep) {
     idle.set(a.inst.id, { inst: a.inst, run: a.run!, token: a.token, view: a.view, skills: a.skills, session: a.session, shape: a.shape, seq: a.inst.log.at(-1)!.seq, since: Date.now() });
     if (idle.size > MAX_IDLE) drop(idle.keys().next().value!);

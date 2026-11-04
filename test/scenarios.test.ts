@@ -105,13 +105,13 @@ exec ${git} "$@"
   [admin, bob] = [await login(ADMIN), await login(BOB)];
 });
 
-// The server on the data root, as a restart starts it again. The server sends what runs ask of openrouter.ai, Pi's own calls among
-// them, to the stand-in.
-async function serve() {
+// The server on the data root, as a restart starts it again, with `env` besides. The server sends what runs ask of openrouter.ai,
+// Pi's own calls among them, to the stand-in.
+async function serve(env: NodeJS.ProcessEnv = {}) {
   const upstream = `import { upstreams } from ${JSON.stringify(pathToFileURL(join(app, 'src', 'connections.ts')).href)}; upstreams['openrouter.ai'] = 'http://127.0.0.1:${(model.address() as { port: number }).port}';`;
   proc = spawn(process.execPath, ['--import', `data:text/javascript,${encodeURIComponent(upstream)}`, join(app, 'src', 'server.ts'), root, new URL(base).port], {
     env: { ...process.env, PATH: `${join(tmp, 'bin')}:${process.env.PATH}`, RF_HOLD_GIT: join(tmp, 'hold-git'), HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch'), OPENROUTER_API_KEY: 'stand-in-key', RF_WAKE_TICK_MS: '300',
-      RF_BROWSER_URL: `http://127.0.0.1:${(service.address() as { port: number }).port}`, RF_BROWSER_KEY: 'stand-in', ...entra.env(base), RF_ADMINS: ADMIN },
+      RF_BROWSER_URL: `http://127.0.0.1:${(service.address() as { port: number }).port}`, RF_BROWSER_KEY: 'stand-in', ...entra.env(base), RF_ADMINS: ADMIN, ...env },
     stdio: ['ignore', 'pipe', 'inherit'],
   });
   await new Promise((ok, fail) => {
@@ -559,4 +559,51 @@ test("a person granted sites adds a website of their own, theirs alone: they all
   assert.equal((await call('DELETE', '/logins/sites/bobs', undefined, bob)).status, 200);
   assert.deepEqual([await listed(admin), (await (await call('GET', '/logins', undefined, bob)).json()).some((l: { id: string }) => l.id === 'web:bobs')], [undefined, false]);
   refused = [];
+});
+
+test("a run's Pi idles only with nothing but Pi running in its sandbox, and ends as more Pis idle than RF_MAX_IDLE, past RF_IDLE_MIN, or as its instance closes or is abandoned", async () => {
+  proc.kill();
+  await once(proc, 'exit');
+  await serve({ RF_IDLE_MIN: '0.1', RF_MAX_IDLE: '1' });
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Idle' })).json();
+  // Whether an instance's Pi is there: its sandbox's scratch folder, named for its token, holds the bwrap arguments setting its id.
+  const runsDir = join(tmp, 'scratch', 'runs'), pi = (id: string) => readdirSync(runsDir).some(t => readFileSync(join(runsDir, t, 'bwrap.args'), 'utf8').includes(`RF_INSTANCE\0${id}\0`));
+  const gone = async (id: string, why: string, tries = 10) => {
+    for (let i = 0; pi(id); i++) {
+      assert.ok(i < tries, why);
+      await new Promise(ok => setTimeout(ok, 200));
+    }
+  };
+  // An instance of a series of its own, as a series holds at most 3 open, its first run done.
+  const start = async (name: string, bash: string[] = []) => {
+    scripts.push({ bash, report: 'Done.', saw: [] });
+    const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name })).json();
+    const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
+    await runs(id, 1);
+    return id as string;
+  };
+  // The session the instance's next run carries on, if any.
+  const again = async (id: string, n: number) => {
+    scripts.push({ bash: [], report: 'Again.', saw: [] });
+    assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: `Once more, run ${n}.` })).status, 200);
+    return (await runs(id, n)).find(e => e.op === 'run' && e.run === n)!.continues;
+  };
+  const job = await start('job', ['nohup sleep 120 >/dev/null 2>&1 &']);
+  await gone(job, 'a run that left a job running stops its Pi, the job with it');
+  assert.equal(await again(job, 2), undefined);
+  const a = await start('a'), b = await start('b');
+  await gone(a, 'the longest idle ends as another idles past RF_MAX_IDLE');
+  assert.equal(await again(b, 2), 1, 'the idle one carries its session on');
+  const old = await start('old');
+  await gone(old, 'past RF_IDLE_MIN its Pi ends', 100);
+  assert.equal(await again(old, 2), undefined);
+  for (const act of ['close', 'abandon']) {
+    const id = await start(act);
+    assert.ok(pi(id));
+    assert.equal((await call('POST', `/api/instances/${id}/${act}`, {})).status, 200);
+    await gone(id, `its instance's ${act} ends its idle Pi`);
+  }
+  proc.kill();
+  await once(proc, 'exit');
+  await serve();
 });

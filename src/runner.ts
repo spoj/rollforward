@@ -1,5 +1,6 @@
 import { RpcClient, type JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
-import { chmodSync, constants, cpSync, existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import type { ChildProcess } from 'node:child_process';
+import { chmodSync, constants, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, posix, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,6 +25,8 @@ export type Run = {
   steer(text: string): Promise<unknown>;
   interrupt(): Promise<void>;
   stop(): Promise<void>;
+  // Whether its sandbox runs nothing but Pi: no job the agent left running, with & or nohup.
+  alone(): boolean;
 };
 
 // The run's view of the data, which the server builds: its own instance at instance, such as /work/<workspace>/<series>/<label>,
@@ -124,5 +127,18 @@ export async function startRun(o: Parameters<typeof pi>[0] & { onEvent: (e: Json
     // Done once the turn settles: Pi says so before it answers the abort, and the run's end may stop it first.
     interrupt: async () => { await Promise.race([client.clearQueue().then(() => client.abort()), settled]); },
     stop,
+    // The sandbox by the process Pi's client started, which is its outer bwrap (bin/sandbox/node).
+    alone: () => alone((client as unknown as { process: ChildProcess }).process.pid!),
   };
+}
+
+// Whether a sandbox, by its outer bwrap, still runs and runs nothing but its PID namespace's init, Pi, which is the second process
+// there, and the socat offering the server's socket, with a process of its own per connection; one that has exited counts for nothing.
+function alone(bwrap: number): boolean {
+  const read = (p: string, f: (p: string) => string) => { try { return f(p); } catch { return ''; } }; // a process of another user's, or gone
+  const ns = read(`/proc/${read(`/proc/${bwrap}/task/${bwrap}/children`, p => readFileSync(p, 'utf8')).split(' ')[0]}/ns/pid`, readlinkSync);
+  return !!ns && readdirSync('/proc').filter(p => /^\d+$/.test(p) && read(`/proc/${p}/ns/pid`, readlinkSync) === ns).every(p => {
+    const status = read(`/proc/${p}/status`, p => readFileSync(p, 'utf8'));
+    return !status || Number(/^NSpid:.*\s(\d+)$/m.exec(status)![1]) <= 2 || /^Name:\tsocat$/m.test(status) || /^State:\tZ/m.test(status);
+  });
 }
