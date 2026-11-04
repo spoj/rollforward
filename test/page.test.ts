@@ -528,3 +528,18 @@ test('an email previews in a frame that runs and loads nothing, and its attachme
   await page.keyboard.press('Escape');
 });
 
+test("a PDF previews as its pages, each fetched as it comes into view", async () => {
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', asked: string[] = [];
+  await page.route('**/preview/**', r => {
+    const at = new URL(r.request().url()).searchParams.get('page');
+    if (at) asked.push(at);
+    return r.fulfill({ json: at ? { image: png } : { pdf: { pages: 3, shown: { 1: png } } } });
+  });
+  await page.evaluate(() => preview('working/pack.pdf'));
+  await page.waitForSelector('#pv .pages img[data-page="2"][src]');
+  assert.equal(await page.locator('#pv .pages img').count(), 3);
+  assert.ok(!asked.includes('1'), 'the first came with the preview');
+  await page.unroute('**/preview/**');
+  await page.keyboard.press('Escape');
+});
+

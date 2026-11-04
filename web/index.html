@@ -265,6 +265,9 @@ dialog::backdrop { background: rgba(21,24,29,.3); }
 .mh .atts { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px; }
 .pv a[data-act^=attachment] { text-decoration: underline; cursor: pointer; }
 iframe.mail { width: 100%; border: 0; background: #fff; }
+.pages { background: var(--paper); padding: 4px 0; }
+.pages img { width: min(100% - 24px, 900px); margin: 12px auto; background: #fff; box-shadow: 0 1px 3px rgba(21, 24, 29, .12); }
+.pages img:not([src]) { aspect-ratio: 210 / 297; }
 .sh { border-collapse: collapse; font: 12px/1.3 var(--mono); }
 .sh th, .sh td { border: 1px solid var(--rule); padding: 3px 6px; white-space: nowrap; }
 .sh th { position: sticky; top: 0; background: var(--paper); color: var(--ink-3); font-weight: 500; z-index: 2; }
@@ -1144,6 +1147,7 @@ function renderPv() {
   }
   d.innerHTML = h + '<div class="pvn" id="pvn"></div>';
   if (!d.open) d.showModal();
+  if ((pv.att ?? pv).pdf) watchPages(d, pv.att ?? pv);
 }
 
 // Sharing a series lends your logins to whoever starts its runs, so it takes two clicks, the second saying what you take on. Once it's
@@ -1422,13 +1426,23 @@ function previewBody(p) {
       + (m.html == null ? `<div class="pvb"><pre>${esc(m.text)}</pre></div>` : `<iframe class="pvb mail" sandbox="allow-popups allow-popups-to-escape-sandbox" srcdoc="${esc(MAIL + m.html)}"></iframe>`);
   }
   if (p.image) return `<div class="pvb"><img src="${esc(p.image)}" alt=""></div>`;
+  if (p.pdf) return `<div class="pvb pages">${Array.from({ length: p.pdf.pages }, (_, k) => `<img data-page="${k + 1}" alt="Page ${k + 1}"${p.pdf.shown[k + 1] ? ` src="${esc(p.pdf.shown[k + 1])}"` : ''}>`).join('')}</div>`;
   if (p.text !== undefined) return `<div class="pvb">${p.md ? `<div class="say">${md(p.text)}</div>` : `<pre>${esc(p.text)}</pre>`}</div>`;
   return `<div class="pvb"><div class="empty">${p.loading ? 'Loading…' : 'No preview for this kind of file. Download it instead.'}</div></div>`;
+}
+// A PDF's pages, each fetched as it scrolls into view.
+function watchPages(at, p) {
+  const seen = new IntersectionObserver(es => es.forEach(async e => {
+    if (!e.isIntersecting) return;
+    seen.unobserve(e.target);
+    e.target.src = p.pdf.shown[e.target.dataset.page] = (await api(`${p.src}${p.src.includes('?') ? '&' : '?'}page=${e.target.dataset.page}`)).image;
+  }), { root: at.querySelector('.pages'), rootMargin: '600px' });
+  for (const img of at.querySelectorAll('.pages img:not([src])')) seen.observe(img);
 }
 const MAIL = `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'"><base target="_blank"><style>body { font: 14px/1.5 system-ui, sans-serif; margin: 14px 18px; }</style>`;
 
 async function preview(path, item) {
-  const sheet = /\.(xlsx|xlsm|xls|csv|eml|msg)$/i.test(path), text = /\.(md|txt|json|py|sql|log)$/i.test(path);
+  const sheet = /\.(xlsx|xlsm|xls|csv|eml|msg|pdf)$/i.test(path), text = /\.(md|txt|json|py|sql|log)$/i.test(path);
   const p = pv = { title: fname(path), path, src: fileUrl(path, 'preview'), item: item?.id, threads: item ? talkOn(item.id) : [], sheet: 0, image: /\.(png|jpe?g|gif|webp|svg)$/i.test(path) && fileUrl(path), was: item && data.log.findLast(e => e.op === 'point' && e.item === item.id && e.file === path)?.was, md: /\.md$/i.test(path), loading: sheet || text };
   renderPv();
   try {

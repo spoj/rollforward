@@ -1,7 +1,7 @@
 """Print a JSON preview of one file, read from stdin and named by the first argument, or of the part of it the second asks for, as a
 query: spreadsheet values, as a workbook shows them, an email, cleaned for a sandboxed frame, or one of its attachments. It holds
 2 GB at most, so a workbook that unpacks to more, as a zip bomb does, fails here."""
-import base64, colorsys, csv, datetime, email, io, json, mimetypes, re, resource, sys
+import base64, colorsys, csv, datetime, email, io, json, mimetypes, re, resource, subprocess, sys
 from decimal import ROUND_HALF_UP, Decimal
 from email import policy
 from pathlib import Path
@@ -295,6 +295,20 @@ def msg(m, q):
                 [(n if isinstance(b, bytes) else f'{n}.msg', b, c, k) for n, b, c, k in attachments], q)
 
 
+# A PDF's pages as images, poppler's: their count and the first, or, asked for, another.
+def pdf(data, q):
+    Path('/tmp/in.pdf').write_bytes(data)
+    if 'page' in dict(q):
+        return {'image': page(int(dict(q)['page']))}
+    pages = int(re.search(r'^Pages:\s+(\d+)', subprocess.run(['/usr/bin/pdfinfo', '/tmp/in.pdf'], capture_output=True, text=True, check=True).stdout, re.M).group(1))
+    return {'pdf': {'pages': pages, 'shown': {1: page(1)} if pages else {}}}
+
+
+def page(n):
+    subprocess.run(['/usr/bin/pdftoppm', '-f', str(n), '-l', str(n), '-r', '110', '-png', '-singlefile', '/tmp/in.pdf', '/tmp/page'], capture_output=True, check=True)
+    return uri('page.png', Path('/tmp/page.png').read_bytes())
+
+
 def preview(name, data, q):
     ext = Path(name).suffix.lower()
     if ext in ('.xlsx', '.xlsm'):
@@ -310,6 +324,8 @@ def preview(name, data, q):
     if ext == '.msg':
         import extract_msg
         return msg(extract_msg.openMsg(data), q)
+    if ext == '.pdf':
+        return pdf(data, q)
     if ext in ('.png', '.jpg', '.jpeg', '.gif', '.webp'):
         return {'image': uri(name, data)}
     if ext in ('.md', '.txt', '.json', '.py', '.sql', '.log'):

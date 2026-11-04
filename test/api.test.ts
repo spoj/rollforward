@@ -769,6 +769,11 @@ test('the second audit: a bad request line, a bad workbook and a slow body hurt 
   assert.equal((await (await preview('mail.eml?attachment=1&sheet=1')).json()).name, 'Hidden', "an attachment's own sheet");
   assert.equal((await (await preview('mail.eml?attachment=2')).json()).email.text, 'inner body\n', 'and a message within');
   rmSync(bad.replace('bad.xlsx', 'mail.eml'));
+  cpSync(join(app, 'test', 'pack.pdf'), bad.replace('bad.xlsx', 'pack.pdf'));
+  const pack = (await (await preview('pack.pdf')).json()).pdf;
+  assert.deepEqual([pack.pages, Object.keys(pack.shown)], [3, ['1']], 'its pages, the first shown');
+  assert.match((await (await preview('pack.pdf?page=3')).json()).image, /^data:image\/png;base64,/, 'and another as asked');
+  rmSync(bad.replace('bad.xlsx', 'pack.pdf'));
   truncateSync(bad, 100e6 + 1);
   const big = await preview('bad.xlsx');
   assert.deepEqual([big.status, await big.text()], [413, 'bad.xlsx is over 100 MB, too big to preview: download it']);
