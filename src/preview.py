@@ -1,16 +1,15 @@
-"""Print a JSON preview of one file, read from stdin and named by the argument: spreadsheet values, as a workbook shows them, or an
-email's plain text. It holds 2 GB at most, so a workbook that unpacks to more, as a zip bomb does, fails here."""
-import colorsys, csv, datetime, email, io, json, re, resource, sys
+"""Print a JSON preview of one file, read from stdin and named by the first argument, or of the part of it the second asks for, as a
+query: spreadsheet values, as a workbook shows them, an email, cleaned for a sandboxed frame, or one of its attachments. It holds
+2 GB at most, so a workbook that unpacks to more, as a zip bomb does, fails here."""
+import base64, colorsys, csv, datetime, email, io, json, mimetypes, re, resource, sys
 from decimal import ROUND_HALF_UP, Decimal
 from email import policy
 from pathlib import Path
+from urllib.parse import parse_qsl
 
 resource.setrlimit(resource.RLIMIT_AS, (2 << 30, 2 << 30))
 
 ROWS, COLS = 2000, 100
-name, part = sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else ''
-ext = Path(name).suffix.lower()
-data = sys.stdin.buffer.read()
 
 
 def sheet(name, rows):
@@ -133,7 +132,7 @@ def when(v, part):
     return ''.join(out)
 
 
-def workbook():
+def workbook(data, part):
     from openpyxl import load_workbook
     from openpyxl.styles.colors import COLOR_INDEX
     from openpyxl.styles.numbers import BUILTIN_FORMATS
@@ -222,7 +221,7 @@ def workbook():
 
     # The sheets' names, the hidden ones after the others, and the sheet the workbook opens on, read; or, asked for by its place, one
     # other sheet.
-    if part:
+    if part is not None:
         return read(wb.worksheets[int(part)])
     sheets = wb.worksheets
     active = sheets.index(wb.active) if wb.active in sheets else 0
@@ -230,21 +229,92 @@ def workbook():
                        for k in sorted(range(len(sheets)), key=lambda k: sheets[k].sheet_state != 'visible')]}
 
 
-if ext in ('.xlsx', '.xlsm'):
-    out = workbook()
-elif ext == '.xls':
-    import xlrd
-    book = xlrd.open_workbook(file_contents=data)
-    out = {'sheets': [sheet(s.name, (s.row_values(i) for i in range(s.nrows))) for s in book.sheets()]}
-elif ext == '.csv':
-    out = {'sheets': [sheet(name, csv.reader(io.StringIO(data.decode('utf-8-sig', errors='replace'), newline='')))]}
-elif ext == '.eml':
+# An email's body as a sandboxed frame may show it: no scripts, forms, frames or remote loads, links only to the web or mail, and its
+# own images, cid: ones, inline.
+DROP = ['script', 'noscript', 'iframe', 'frame', 'frameset', 'object', 'embed', 'applet', 'form', 'input', 'button', 'select', 'textarea',
+        'link', 'meta', 'base', 'audio', 'video', 'source', 'track', 'svg', 'math', 'template', 'portal']
+
+
+def clean(html, inline):
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html, 'lxml')
+    for t in soup(DROP):
+        t.decompose()
+    for t in soup.find_all(True):
+        for a, v in list(t.attrs.items()):
+            low, v = a.lower(), str(v)
+            if low == 'src' and v[:4].lower() == 'cid:' and v[4:] in inline:
+                t.attrs[a] = inline[v[4:]]
+            elif low.startswith('on') or low in ('src', 'srcset', 'background', 'action', 'formaction', 'ping', 'poster', 'lowsrc', 'dynsrc', 'data') \
+                    or (low == 'href' and not re.match(r'(?i)(https?:|mailto:|#)', v.strip())):
+                del t.attrs[a]
+    return str(soup)
+
+
+def uri(name, body, kind=None):
+    return f'data:{kind or mimetypes.guess_type(name)[0] or "application/octet-stream"};base64,{base64.b64encode(body).decode()}'
+
+
+# An email's headers, its body, as clean HTML where it has one and as text, and its attachments, an image its HTML shows by cid:
+# among them; or, asked for by its place, one of those attachments' previews. An attachment is a file's name and bytes, or a
+# message within, an .msg's as extract_msg reads it.
+def mail(headers, html, text, attachments, q):
+    if q and q[0][0] == 'attachment':
+        name, body = attachments[int(q[0][1])][:2]
+        return preview(name, body, q[1:])
+    shown = set(re.findall(r'(?i)src\s*=\s*["\']?cid:([^"\'\s>]+)', html or ''))
+    inline = {cid: uri(name, body, kind) for name, body, cid, kind in attachments if cid in shown and isinstance(body, bytes)}
+    return {'email': {'headers': {k: str(v) for k, v in headers.items() if v}, 'html': clean(html, inline) if html else None, 'text': text,
+                      'attachments': [{'name': name, 'k': k} for k, (name, body, cid, kind) in enumerate(attachments) if cid not in inline]}}
+
+
+def eml(data, q):
     m = email.message_from_bytes(data, policy=policy.default)
-    body = m.get_body(preferencelist=('plain',))
-    out = {'email': {
-        'headers': {k: str(m[k]) for k in ('From', 'To', 'Cc', 'Date', 'Subject') if m[k]},
-        'text': body.get_content() if body else '',
-        'attachments': [a.get_filename() for a in m.iter_attachments()]}}
-else:
-    out = {}
-print(json.dumps(out, default=str))
+    html, plain = m.get_body(preferencelist=('html',)), m.get_body(preferencelist=('plain',))
+
+    def leaves(p):
+        if p.get_content_type() == 'message/rfc822' or not p.is_multipart():
+            yield p
+        else:
+            for sub in p.iter_parts():
+                yield from leaves(sub)
+    attachments = [((p.get_filename() or 'message') + '.eml' if p.get_content_type() == 'message/rfc822' else p.get_filename() or f'part {k + 1}',
+                    p.get_content().as_bytes() if p.get_content_type() == 'message/rfc822' else p.get_payload(decode=True) or b'',
+                    (p['Content-ID'] or '').strip().strip('<>'), p.get_content_type())
+                   for k, p in enumerate(x for x in leaves(m) if x is not html and x is not plain)]
+    return mail({k: m[k] for k in ('From', 'To', 'Cc', 'Date', 'Subject')}, html and html.get_content(), plain.get_content() if plain else '', attachments, q)
+
+
+def msg(m, q):
+    attachments = [(a.name or f'attachment {k + 1}', a.data, a.cid or '', a.mimetype) for k, a in enumerate(m.attachments)]
+    if q and q[0][0] == 'attachment' and not isinstance(attachments[int(q[0][1])][1], bytes):
+        return msg(attachments[int(q[0][1])][1], q[1:])
+    from bs4 import UnicodeDammit
+    html = m.htmlBody
+    return mail({'From': m.sender, 'To': m.to, 'Cc': m.cc, 'Date': m.date, 'Subject': m.subject}, html and UnicodeDammit(html).unicode_markup, m.body or '',
+                [(n if isinstance(b, bytes) else f'{n}.msg', b, c, k) for n, b, c, k in attachments], q)
+
+
+def preview(name, data, q):
+    ext = Path(name).suffix.lower()
+    if ext in ('.xlsx', '.xlsm'):
+        return workbook(data, dict(q).get('sheet'))
+    if ext == '.xls':
+        import xlrd
+        book = xlrd.open_workbook(file_contents=data)
+        return {'sheets': [sheet(s.name, (s.row_values(i) for i in range(s.nrows))) for s in book.sheets()]}
+    if ext == '.csv':
+        return {'sheets': [sheet(name, csv.reader(io.StringIO(data.decode('utf-8-sig', errors='replace'), newline='')))]}
+    if ext == '.eml':
+        return eml(data, q)
+    if ext == '.msg':
+        import extract_msg
+        return msg(extract_msg.openMsg(data), q)
+    if ext in ('.png', '.jpg', '.jpeg', '.gif', '.webp'):
+        return {'image': uri(name, data)}
+    if ext in ('.md', '.txt', '.json', '.py', '.sql', '.log'):
+        return {'text': data.decode('utf-8', 'replace')}
+    return {}
+
+
+print(json.dumps(preview(sys.argv[1], sys.stdin.buffer.read(), parse_qsl(sys.argv[2] if len(sys.argv) > 2 else '')), default=str))

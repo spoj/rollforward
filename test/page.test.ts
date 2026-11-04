@@ -512,3 +512,19 @@ test("a sheet shows as its workbook does: number formats, bold, colours, column 
   await page.keyboard.press('Escape');
 });
 
+test('an email previews in a frame that runs and loads nothing, and its attachments open in its place', async () => {
+  await page.route('**/preview/**', r => r.fulfill({ json: new URL(r.request().url()).searchParams.get('attachment') === '1'
+    ? { sheets: [{ name: 'Book', rows: [['in the attachment']], truncated: false }] }
+    : { email: { headers: { Subject: 'Aging' }, html: '<p>Hello</p>', text: 'Hello', attachments: [{ name: 'book.xlsx', k: 1 }] } } }));
+  await page.evaluate(() => preview('working/mail.eml'));
+  const frame = page.locator('#pv iframe.mail');
+  assert.deepEqual(await frame.evaluate(f => [f.getAttribute('sandbox'), f.getAttribute('srcdoc')!.includes("default-src 'none'")]), ['allow-popups allow-popups-to-escape-sandbox', true]);
+  assert.equal(await page.frameLocator('#pv iframe.mail').locator('p').textContent(), 'Hello');
+  await page.click('#pv [data-act=attachment]');
+  await page.locator('#pv table.sh td', { hasText: 'in the attachment' }).waitFor();
+  await page.click('#pv [data-act=attachment-back]');
+  await frame.waitFor();
+  await page.unroute('**/preview/**');
+  await page.keyboard.press('Escape');
+});
+

@@ -361,8 +361,8 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
       closeSync(fd);
       throw new HttpError(413, `${basename(rel)} is over 100 MB, too big to preview: download it`);
     }
-    // A workbook's sheet, by its place in the workbook, is a preview of its own, read when first shown.
-    const sheet = url.searchParams.get('sheet') ?? '', sum = createHash('sha256').update(`${basename(rel)}\n${sheet}\n`);
+    // A part of the file, as its query asks, such as a workbook's sheet or an email's attachment, is a preview of its own.
+    const part = url.search.slice(1), sum = createHash('sha256').update(`${basename(rel)}\n${part}\n`);
     for await (const c of createReadStream('', { fd, start: 0, autoClose: false })) sum.update(c);
     const kept = join(previews, sum.digest('hex'));
     if (existsSync(kept)) {
@@ -375,7 +375,7 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
     try {
       const run = exec('bwrap', [
         '--unshare-all', '--die-with-parent', '--new-session', '--clearenv', ...userland(), '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
-        '--ro-bind', join(app, 'src', 'preview.py'), '/preview.py', '--setenv', 'HOME', '/tmp', '--setenv', 'LANG', 'C.UTF-8', '--', '/opt/venv/bin/python', '/preview.py', basename(rel), sheet,
+        '--ro-bind', join(app, 'src', 'preview.py'), '/preview.py', '--setenv', 'HOME', '/tmp', '--setenv', 'LANG', 'C.UTF-8', '--', '/opt/venv/bin/python', '/preview.py', basename(rel), part,
       ], { timeout: 30_000, maxBuffer: 64e6 });
       const [{ stdout }] = await Promise.all([run, pipeline(createReadStream('', { fd, start: 0 }), run.child.stdin!)]);
       const tmp = join(tmpDir, randomUUID());

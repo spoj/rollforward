@@ -761,6 +761,14 @@ test('the second audit: a bad request line, a bad workbook and a slow body hurt 
   assert.deepEqual([summary.look['0,0'], summary.look['0,1'], summary.look['0,2'], summary.look['1,4'].r], [{ b: true }, { bg: '#FFFF00' }, { bg: '#B9CDE5' }, true], 'bold, fills, a theme colour tinted, and dates to the right');
   assert.deepEqual([summary.rows[3], summary.merged, summary.hidden, summary.widths['0']], [[{ f: '=SUM(B2:B3)' }], [[4, 0, 4, 2]], { rows: [2], cols: [3] }, 20]);
   rmSync(bad.replace('bad.xlsx', 'formats.xlsx'));
+  cpSync(join(app, 'test', 'mail.eml'), bad.replace('bad.xlsx', 'mail.eml'));
+  const mail = (await (await preview('mail.eml')).json()).email;
+  assert.deepEqual([mail.headers.Subject, mail.attachments], ['Aging', [{ name: 'book.xlsx', k: 1 }, { name: 'message.eml', k: 2 }]], 'its attachments, not the image it shows');
+  assert.match(mail.html, /<img src="data:image\/png;base64,[^"]+"\/><img\/>/, 'its own image inline, a remote one gone');
+  assert.doesNotMatch(mail.html, /script|onload|javascript:|evil\.test|<form|<input/i);
+  assert.equal((await (await preview('mail.eml?attachment=1&sheet=1')).json()).name, 'Hidden', "an attachment's own sheet");
+  assert.equal((await (await preview('mail.eml?attachment=2')).json()).email.text, 'inner body\n', 'and a message within');
+  rmSync(bad.replace('bad.xlsx', 'mail.eml'));
   truncateSync(bad, 100e6 + 1);
   const big = await preview('bad.xlsx');
   assert.deepEqual([big.status, await big.text()], [413, 'bad.xlsx is over 100 MB, too big to preview: download it']);

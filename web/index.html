@@ -260,6 +260,11 @@ dialog::backdrop { background: rgba(21,24,29,.3); }
 .pvb .say { padding: 14px 18px; white-space: pre-wrap; font-size: 13.5px; }
 .pvb pre { white-space: pre-wrap; word-break: break-word; font: 12.5px/1.5 var(--mono); padding: 14px 16px; margin: 0; }
 .pvb img { max-width: 100%; display: block; margin: 12px auto; }
+.mh { display: grid; gap: 2px; padding: 10px 16px; border-bottom: 1px solid var(--rule); font-size: 13px; }
+.mh b { margin-right: 6px; color: var(--ink-3); font-weight: 500; }
+.mh .atts { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px; }
+.pv a[data-act^=attachment] { text-decoration: underline; cursor: pointer; }
+iframe.mail { width: 100%; border: 0; background: #fff; }
 .sh { border-collapse: collapse; font: 12px/1.3 var(--mono); }
 .sh th, .sh td { border: 1px solid var(--rule); padding: 3px 6px; white-space: nowrap; }
 .sh th { position: sticky; top: 0; background: var(--paper); color: var(--ink-3); font-weight: 500; z-index: 2; }
@@ -1066,9 +1071,9 @@ const num = v => v.toLocaleString(undefined, { maximumFractionDigits: 2 });
 
 const cellText = v => v == null ? '' : typeof v === 'object' ? v.f : typeof v === 'number' ? num(v) : v;
 
-function sheetTable(s, first) {
+function sheetTable(p, s, first) {
   const noted = new Map(), asks = new Set(), at = new Map();
-  for (const t of pv.threads) {
+  for (const t of p.threads ?? []) {
     const r = (t.ref ?? '').match(/^(?:'?([^'!]+)'?!)?\$?([A-Z]{1,3})\$?(\d+)/);
     if (!r || (r[1] ? r[1] !== s.name : !first)) continue;
     const key = `${+r[3] - 1},${[...r[2]].reduce((t, ch) => t * 26 + ch.charCodeAt(0) - 64, 0) - 1}`;
@@ -1076,7 +1081,7 @@ function sheetTable(s, first) {
     at.set(key, t.id);
     if (t.waits) asks.add(key);
   }
-  const old = pv.cmp && oldOf(pv);
+  const old = p.cmp && oldOf(p);
   const rows = Array.from({ length: Math.max(s.rows.length, old?.rows.length ?? 0) }, (_, r) => s.rows[r] ?? []);
   const width = Math.max(0, ...rows.map(r => r.length), ...(old?.rows ?? []).map(r => r.length));
   // As the workbook shows it: its number formats, bold, font colours and fills, column widths, merged cells, and no hidden rows or
@@ -1114,15 +1119,9 @@ function renderPv() {
   // Your account's dialog: Logins, Tokens and, for admins, People, as tabs.
   const account = [['logins', 'Logins'], ['tokens', 'Tokens'], ...(me.role === 'admin' ? [['people', 'People']] : [])];
   if (account.some(([k]) => k === pv.settings?.kind)) h += `<div class="pvtabs">${account.map(([k, name]) => `<button class="tab ${pv.settings.kind === k ? 'sel' : ''}" data-act="${k}">${name}</button>`).join('')}</div>`;
-  if (pv.sheets) {
-    if (pv.sheets.length > 1) h += `<div class="tabs">${pv.sheets.map((s, k) => `<button class="btn ${k === pv.sheet ? 'sel' : ''} ${s.state ? 'dim' : ''}" data-act="sheet" data-k="${k}"${s.state ? ' title="Hidden in the workbook"' : ''}>${esc(s.name)}</button>`).join('')}</div>`;
-    h += `<div class="pvb">${sheetTable(pv.sheets[pv.sheet], (pv.sheets[pv.sheet].at ?? pv.sheet) === 0)}</div>`;
-  } else if (pv.email) {
-    const m = pv.email;
-    h += `<div class="pvb"><pre>${esc(Object.entries(m.headers).map(([k, v]) => `${k}: ${v}`).join('\n') + (m.attachments.length ? `\nAttachments: ${m.attachments.join(', ')}` : '') + '\n\n' + m.text)}</pre></div>`;
-  } else if (pv.image) h += `<div class="pvb"><img src="${fileUrl(pv.path)}" alt=""></div>`;
+  if (pv.att) h += `<div class="sub" style="padding:8px 14px"><a data-act="attachment-back">\u2190 ${esc(pv.title)}</a> \u00b7 ${esc(pv.att.title)}</div>` + previewBody(pv.att);
+  else if (pv.path) h += previewBody(pv);
   else if (pv.signin) h += `<div class="sub" style="padding:8px 14px">Sign in as you always do, then Save login. Only you see this browser.</div><div class="pvb"><iframe src="/signins/${pv.signin}/view?drive" style="width:100%;height:100%;border:0"></iframe></div>`;
-  else if (pv.text !== undefined) h += `<div class="pvb">${pv.md ? `<div class="say">${md(pv.text)}</div>` : `<pre>${esc(pv.text)}</pre>`}</div>`;
   else if (pv.settings?.kind === 'tokens') h += `<div class="pvb vl">${tokensHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'people') h += `<div class="pvb vl"><div class="sub">Everyone who can sign in. Admins manage people with rf (Tokens): rf people, as a file to edit and set, and rf user add|role|disable|enable|signout|remove.</div><table class="ut"><tr><th>Person</th><th>Role</th><th>Workspaces</th><th>Last in</th></tr>${pv.settings.users.map(u => `<tr><td>${esc(u.name ?? '')}<div class="sub">${esc(u.email)}${u.disabled ? ' · disabled' : ''}</div></td><td>${esc(u.role)}</td><td class="sub">${esc(u.workspaces.join(', ')) || 'none'}</td><td class="sub">${esc(u.last_login ? when(u.last_login) : 'never')}</td></tr>`).join('')}</table></div>`;
   else if (pv.settings?.kind === 'logins') h += `<div class="pvb vl">${loginsHtml(pv.settings)}</div>`;
@@ -1143,8 +1142,6 @@ function renderPv() {
       + `<div class="row2"><button class="btn danger" data-act="archive-series">${s.archived ? 'Restore series' : 'Archive series'}</button></div>`;
     h += '</div>';
   }
-  else if (pv.loading) h += `<div class="pvb"><div class="empty">Loading…</div></div>`;
-  else h += `<div class="pvb"><div class="empty">No preview for this kind of file. Download it instead.</div></div>`;
   d.innerHTML = h + '<div class="pvn" id="pvn"></div>';
   if (!d.open) d.showModal();
 }
@@ -1410,15 +1407,32 @@ const oldOf = p => p.old.find(o => o.name === p.sheets[p.sheet].name) ?? p.old[p
 
 // A workbook's sheets are read as they're first shown, as is, comparing, the earlier file's.
 async function loadSheets(p) {
-  for (const [path, s] of [[p.path, p.sheets[p.sheet]], [p.was, p.cmp && oldOf(p)]]) if (s && !s.rows) Object.assign(s, await api(`${fileUrl(path, 'preview')}?sheet=${s.at}`));
+  for (const [src, s] of [[p.src, p.sheets[p.sheet]], [p.was && fileUrl(p.was, 'preview'), p.cmp && oldOf(p)]]) if (s && !s.rows) Object.assign(s, await api(`${src}${src.includes('?') ? '&' : '?'}sheet=${s.at}`));
 }
 
+// What a preview shows of its file, or of an attachment in it: a workbook's sheets, an email in a frame that runs nothing and loads
+// nothing, an image, or text.
+function previewBody(p) {
+  if (p.sheets) return (p.sheets.length > 1 ? `<div class="tabs">${p.sheets.map((s, k) => `<button class="btn ${k === p.sheet ? 'sel' : ''} ${s.state ? 'dim' : ''}" data-act="sheet" data-k="${k}"${s.state ? ' title="Hidden in the workbook"' : ''}>${esc(s.name)}</button>`).join('')}</div>` : '')
+    + `<div class="pvb">${sheetTable(p, p.sheets[p.sheet], (p.sheets[p.sheet].at ?? p.sheet) === 0)}</div>`;
+  if (p.email) {
+    const m = p.email;
+    return `<div class="mh">${Object.entries(m.headers).map(([k, v]) => `<div><b>${esc(k)}</b> ${esc(v)}</div>`).join('')}`
+      + (m.attachments.length ? `<div class="atts">${m.attachments.map(a => `<a data-act="attachment" data-k="${a.k}">${esc(a.name)}</a>`).join('')}</div>` : '') + '</div>'
+      + (m.html == null ? `<div class="pvb"><pre>${esc(m.text)}</pre></div>` : `<iframe class="pvb mail" sandbox="allow-popups allow-popups-to-escape-sandbox" srcdoc="${esc(MAIL + m.html)}"></iframe>`);
+  }
+  if (p.image) return `<div class="pvb"><img src="${esc(p.image)}" alt=""></div>`;
+  if (p.text !== undefined) return `<div class="pvb">${p.md ? `<div class="say">${md(p.text)}</div>` : `<pre>${esc(p.text)}</pre>`}</div>`;
+  return `<div class="pvb"><div class="empty">${p.loading ? 'Loading…' : 'No preview for this kind of file. Download it instead.'}</div></div>`;
+}
+const MAIL = `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'"><base target="_blank"><style>body { font: 14px/1.5 system-ui, sans-serif; margin: 14px 18px; }</style>`;
+
 async function preview(path, item) {
-  const sheet = /\.(xlsx|xlsm|xls|csv|eml)$/i.test(path), text = /\.(md|txt|json|py|sql|log)$/i.test(path);
-  const p = pv = { title: fname(path), path, item: item?.id, threads: item ? talkOn(item.id) : [], sheet: 0, image: /\.(png|jpe?g|gif|webp|svg)$/i.test(path), was: item && data.log.findLast(e => e.op === 'point' && e.item === item.id && e.file === path)?.was, md: /\.md$/i.test(path), loading: sheet || text };
+  const sheet = /\.(xlsx|xlsm|xls|csv|eml|msg)$/i.test(path), text = /\.(md|txt|json|py|sql|log)$/i.test(path);
+  const p = pv = { title: fname(path), path, src: fileUrl(path, 'preview'), item: item?.id, threads: item ? talkOn(item.id) : [], sheet: 0, image: /\.(png|jpe?g|gif|webp|svg)$/i.test(path) && fileUrl(path), was: item && data.log.findLast(e => e.op === 'point' && e.item === item.id && e.file === path)?.was, md: /\.md$/i.test(path), loading: sheet || text };
   renderPv();
   try {
-    if (sheet) Object.assign(p, await api(fileUrl(path, 'preview')));
+    if (sheet) Object.assign(p, await api(p.src));
     if (p.sheets) p.sheet = p.sheets.findIndex(s => s.rows);
     if (text) p.text = await (await fetch(fileUrl(path))).text();
   } finally {
@@ -1617,9 +1631,21 @@ async function onAct(act, el) {
   }
   if (act === 'duplicate') await openStart(`Copy ${cur.i.label}`, 'Copy', ({ label, logins }) => api(`${instPath()}/duplicate?as=${enc(label)}`, { method: 'POST', body: JSON.stringify({ logins }) }), `${cur.i.label} copy`);
   if (act === 'sheet') {
-    const p = Object.assign(pv, { sheet: Number(el.dataset.k) });
+    const p = Object.assign(pv.att ?? pv, { sheet: Number(el.dataset.k) });
     await loadSheets(p);
-    if (pv === p) renderPv();
+    if (pv) renderPv();
+  }
+  // An email's attachment shows in its place, as a file of its own would, back to the email from above it.
+  if (act === 'attachment') {
+    const of = pv.att ?? pv, p = pv, att = p.att = { title: of.email.attachments.find(a => a.k === +el.dataset.k).name, src: `${of.src}${of.src.includes('?') ? '&' : '?'}attachment=${el.dataset.k}`, sheet: 0, loading: true };
+    renderPv();
+    Object.assign(att, await api(att.src), { loading: false });
+    if (att.sheets) att.sheet = att.sheets.findIndex(s => s.rows);
+    if (pv === p && p.att === att) renderPv();
+  }
+  if (act === 'attachment-back') {
+    pv.att = null;
+    renderPv();
   }
   if (act === 'cell') {
     // A cell's threads and what changed there; on an item's file in an open instance, a reply there, or a new comment.
