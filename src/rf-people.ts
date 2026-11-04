@@ -16,6 +16,8 @@ rf upload PATH FILE [--onto ITEM] [--output]
 rf wake PATH AT [--label LABEL]   AT now, +<n>m|h|d or a date; PATH an open instance, or a series with LABEL
 rf agents [WORKSPACE] [--set FILE|-]     the company's AGENTS.md, or a workspace's; setting the company's is for admins
 rf skills
+rf skill pull ID [DIR] [--version N]   the newest version, or N, into DIR, ./ID by default, new or empty, as push reads it
+rf skill versions ID
 rf connections
 rf status [--long MIN] [--json]   what goes on and what's stuck: runs going, flagged past MIN minutes (30), and queued, with why;
                                   what waits on whom since when; open instances whose last run failed
@@ -28,16 +30,14 @@ rf people WORKSPACE [--set FILE|-] [-n] [--force]   its owners and admins: its p
                                   each with a comment; --set replaces them, -n shows the changes, --force hides open instances
                                   from their runners
 
-Publishers and admins:
+Admins, and those they grant publish:
 rf skill push DIR                 DIR/SKILL.md and the rest become the newest version of the skill named DIR's name, live at once
-rf skill pull ID [DIR] [--version N]   the newest version, or N, into DIR, ./ID by default, new or empty, as push reads it
-rf skill versions ID
 rf skill rollback ID N            pushes version N again, as the newest
 
 Admins:
 rf people [--set FILE|-] [-n] [--force]   everyone as lines of ROLE EMAIL, each with a comment; --set sets the roles of the people
                                   listed and adds new ones, removing no one
-rf user add EMAIL [admin|publisher] | role EMAIL admin|publisher|user [--force] | disable EMAIL | enable EMAIL | signout EMAIL | remove EMAIL
+rf user add EMAIL [admin] | role EMAIL admin|user [--force] | disable EMAIL | enable EMAIL | signout EMAIL | remove EMAIL
 rf connection set NAME TYPE [--SETTING VALUE]...   an outside system runs reach as their runner, by a login each person makes:
                                   graph, Microsoft 365, with no settings; databricks, --host HOST --warehouse ID, a workspace
                                   and its SQL warehouse; website, --url URL [--hosts HOST,...] [--title TITLE] [--writeback
@@ -52,8 +52,9 @@ rf connection remove NAME
 rf brand [--text TEXT] [--logo FILE] [--clear]   the deployment's text and logo, a .png, .jpg, .gif, .webp or .svg, which top
                                   the sidebar and are the page's title and icon; --clear goes back to the plain look, and with
                                   no option it prints them
-rf creators [EMAIL|GROUP,...] [--clear]   who besides admins makes workspaces, by email or Entra group id: a list replaces
-                                  the one before, --clear leaves it to admins, and with neither it prints it`;
+rf can [CAP [EMAIL|GROUP,...] [--clear]]   what users may do beyond the rest, as admins may: publish, push skills, and
+                                  create, make workspaces; a list grants CAP to those emails and Entra group ids in place of
+                                  whom it had, --clear to no one, and with neither it prints whom each is granted to`;
 
 const GUIDE = `rollforward runs a team's recurring work, such as a weekly borrowing base or a month-end reconciliation, with an agent
 that does each period's work and people who check it. rf does what its page does, as you.
@@ -363,10 +364,10 @@ else if (cmd === 'comment' && args.length === 2) {
     : (await get('/users')).map(u => ({ kind: u.role, who: u.email, note: [u.disabled && 'disabled', last(u.last_login), `in ${u.workspaces.join(', ') || 'none'}`, u.outside.length && `runs outside them: ${u.outside.join(', ')}`] }));
   if (typeof flags.set !== 'string') {
     const w = Math.max(0, ...now.map(p => p.who.length));
-    for (const p of now) console.log(`${p.kind.padEnd(9)} ${p.who.padEnd(w)}  # ${p.note.filter(Boolean).join('; ')}`);
+    for (const p of now) console.log(`${p.kind.padEnd(6)} ${p.who.padEnd(w)}  # ${p.note.filter(Boolean).join('; ')}`);
     if (!now.length) console.log('# no one is in it: only admins see it');
   } else {
-    const kinds = ws ? ['owner', 'member'] : ['admin', 'publisher', 'user'];
+    const kinds = ws ? ['owner', 'member'] : ['admin', 'user'];
     const want = readFileSync(flags.set === '-' ? 0 : flags.set, 'utf8').split('\n').map(l => l.replace(/#.*/, '').trim()).filter(Boolean).map(l => l.split(/\s+/));
     const bad = want.find(([kind, who, more]) => !kinds.includes(kind) || !who || more);
     if (bad) throw new Error(`each line is ${kinds.join('|')} ${ws ? 'EMAIL-OR-GROUP' : 'EMAIL'}, not: ${bad.join(' ')}`);
@@ -390,10 +391,10 @@ else if (cmd === 'comment' && args.length === 2) {
     const { text, logo } = (await get('/me')).brand;
     console.log(text || logo ? `${text ?? 'no text'}, ${logo ? 'with a logo' : 'no logo'}` : 'no brand: the plain look');
   }
-} else if (cmd === 'creators' && args.length <= 1) {
-  const list = flags.clear ? [] : args[0]?.split(',').map(p => p.trim()).filter(Boolean);
-  const now: string[] = await (await (list ? post('/creators', { creators: list }, 'PUT') : api('/creators'))).json();
-  console.log(now.length ? now.join('\n') : 'only admins make workspaces');
+} else if (cmd === 'can' && args.length <= 2) {
+  const [cap, list] = args, people = flags.clear ? [] : list?.split(',').map(p => p.trim()).filter(Boolean);
+  const all: Record<string, string[]> = await (await (people ? post('/capabilities', { cap, people }, 'PUT') : api('/capabilities'))).json();
+  for (const [c, who] of Object.entries(all)) if (!cap || c === cap) console.log(`${c}: ${who.join(', ') || 'admins only'}`);
 } else if (cmd === 'user' && args.length >= 2) {
   const [what, email, role] = args, at = `/users/${encodeURIComponent(email)}`;
   if (what === 'add') await post('/users', { roles: { [email]: role ?? 'user' } }, 'PUT');

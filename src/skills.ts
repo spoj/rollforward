@@ -2,10 +2,10 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, s
 import { dirname, join, posix } from 'node:path';
 import { HttpError } from './store.ts';
 
-// Skills: what to fetch or do, and how, each a Pi skill whole in a folder, which publishers push with rf skill push (none ship
-// here): a SKILL.md, whose front matter has `name` and `description`, then instructions the agent reads when it needs them, the
-// links and addresses they use among them; and the scripts the agent runs in its sandbox, which reach the server through rf. Every
-// run loads every live skill. Nothing in a skill is a secret: every login is a person's own (logins.ts).
+// Skills: what to fetch or do, and how, each a Pi skill whole in a folder, which admins and those they let publish push with
+// rf skill push (none ship here): a SKILL.md, whose front matter has `name` and `description`, then instructions the agent reads
+// when it needs them, the links and addresses they use among them; and the scripts the agent runs in its sandbox, which reach the
+// server through rf. Every run loads every live skill. Nothing in a skill is a secret: every login is a person's own (logins.ts).
 
 // Skills are data: each push is a version, DATA/skills/versions/<id>/<n>/, with who pushed it and when in its .pushed.json, and
 // DATA/skills/live/<id> links to the version runs use, so a push is live at once. Rolling back is pushing an earlier one again.

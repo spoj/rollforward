@@ -11,9 +11,9 @@ import { forgetLogins, logins, saveLogin, type Offer } from './logins.ts';
 // has one, or, for an app registered as a Single-page application (RF_OIDC_SPA=1), the browser does and the server checks the token's
 // signature. Without them it goes to a demo account picker that offers the two demo accounts below, so keep a demo on localhost.
 
-// Publishers push skills; admins manage people and skills, from rf.
-export type Role = 'admin' | 'publisher' | 'user';
-export const ROLES: Role[] = ['admin', 'publisher', 'user'];
+// Admins manage people and skills, from rf, and grant users capabilities (server.ts).
+export type Role = 'admin' | 'user';
+export const ROLES: Role[] = ['admin', 'user'];
 export type User = { name?: string; role: Role; disabled?: boolean; sub?: string; oid?: string; groups?: string[]; epoch?: number; created?: string; last_login?: string };
 export type Me = { email: string; name: string; role: Role; groups: string[] };
 
@@ -450,7 +450,7 @@ if (import.meta.main) {
     else if (cmd === 'remove' && id in all) removeUser(id);
     else if (cmd === 'list') for (const [n, u] of Object.entries(all)) console.log([n, u.role, u.disabled ? 'disabled' : '', u.last_login ? `last in ${u.last_login}` : 'never in'].filter(Boolean).join('\t'));
     else {
-      console.error('usage: node src/auth.ts DATA_ROOT list | add EMAIL [admin|publisher] | role EMAIL admin|publisher|user | disable EMAIL | enable EMAIL | signout EMAIL | remove EMAIL');
+      console.error('usage: node src/auth.ts DATA_ROOT list | add EMAIL [admin] | role EMAIL admin|user | disable EMAIL | enable EMAIL | signout EMAIL | remove EMAIL');
       process.exitCode = 2;
     }
   } catch (e) {

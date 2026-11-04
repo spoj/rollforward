@@ -544,7 +544,7 @@ function renderSide() {
   };
   const waits = waiting().length;
   let h = waits ? `<div class="row waits"><a class="nm" data-act="waiting">Waiting on you<span class="q"> ${waits}</span></a></div>` : '';
-  h += `<div class="row head"><span class="nm">Workspaces</span><span class="seg">${['mine', 'all'].map(v => `<button class="${(v === 'mine') === mine ? 'sel' : ''}" data-act="workspaces" data-id="${v}">${v === 'mine' ? 'Mine' : 'All'}</button>`).join('')}</span>${me.creates ? btn('new-workspace', 'New workspace', '+') : ''}</div>`;
+  h += `<div class="row head"><span class="nm">Workspaces</span><span class="seg">${['mine', 'all'].map(v => `<button class="${(v === 'mine') === mine ? 'sel' : ''}" data-act="workspaces" data-id="${v}">${v === 'mine' ? 'Mine' : 'All'}</button>`).join('')}</span>${me.can.includes('create') ? btn('new-workspace', 'New workspace', '+') : ''}</div>`;
   for (const w of [...tree].sort(byAct(wAct))) {
     const won = cur?.w.id === w.id;
     if (!listed(w, won) || (mine && !w.mine && !won)) continue;
@@ -645,7 +645,7 @@ function tile(item) {
 function renderPanes() {
   $('#outs').hidden = !data;
   if (!data) {
-    put($('#flow'), `<div class="empty">${cur?.s ? 'No instance yet. Make one with + by the series.' : cur ? 'No series yet. Make one with + by the workspace.' : me.creates ? 'No workspace yet. Make one with + by Workspaces.' : 'No workspace yet: an admin makes one or adds you to one.'}</div>`);
+    put($('#flow'), `<div class="empty">${cur?.s ? 'No instance yet. Make one with + by the series.' : cur ? 'No series yet. Make one with + by the workspace.' : me.can.includes('create') ? 'No workspace yet. Make one with + by Workspaces.' : 'No workspace yet: an admin makes one or adds you to one.'}</div>`);
     return drawEdges();
   }
   const open = data.doc.status === 'open', stored = localStorage[`seen:${instPath()}`], items = data.doc.items;
@@ -1103,7 +1103,7 @@ function saved() {
 
 // Personal tokens: rf, on your own machine or for your desktop agent, acts as you with one.
 function tokensHtml(s) {
-  return `<div class="sub">rf does what this page does, from a shell or your desktop agent, as you: list and pull what you can see, comment and reply, upload and wake${me.role === 'user' ? '' : `, and ${me.role === 'admin' ? "manage people, skills and the company's AGENTS.md" : 'push skills'}`}. Install it with <code>npm i -g @rfany/rf</code> (Node 22 or later), then <code>rf login ${esc(location.origin)}</code> and allow it on the page it opens; or make a token below and <code>rf login ${esc(location.origin)} TOKEN</code>.</div>`
+  return `<div class="sub">rf does what this page does, from a shell or your desktop agent, as you: list and pull what you can see, comment and reply, upload and wake${me.role === 'admin' ? ", and manage people, skills and the company's AGENTS.md" : me.can.includes('publish') ? ', and push skills' : ''}. Install it with <code>npm i -g @rfany/rf</code> (Node 22 or later), then <code>rf login ${esc(location.origin)}</code> and allow it on the page it opens; or make a token below and <code>rf login ${esc(location.origin)} TOKEN</code>.</div>`
     + (s.made ? `<h3>Your new token</h3><div class="sub">Copy it now: it isn't shown again.</div><input type="text" readonly value="${esc(s.made)}" onclick="this.select()">` : '')
     + (s.tokens.length ? `<h3>Your tokens</h3>` + s.tokens.map(t => `<div class="wt">${esc(t.name)} <span class="sub">made ${esc(when(t.created))}, ${t.expires < new Date().toISOString() ? 'expired' : 'until ' + esc(when(t.expires))}</span><button class="quiet" data-act="revoke-token" data-id="${esc(t.id)}">Revoke</button></div>`).join('') : '')
     + `<h3>New token</h3><div class="row2"><input type="text" id="tname" placeholder="Name, such as laptop" style="flex:1"><select id="tdays"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option></select><button class="btn primary" data-act="new-token">Make</button></div>`;

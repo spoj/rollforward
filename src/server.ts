@@ -333,8 +333,10 @@ function events(me: Me, req: IncomingMessage, res: ServerResponse) {
 const text = (path: string) => (existsSync(path) ? readFileSync(path, 'utf8') : '');
 // The deployment's brand, the admins': a text and a logo, which top the sidebar and are the page's title and icon.
 const brand = () => readJson<{ text?: string; logo?: string; type?: string }>('brand.json', {});
-// Who may make a workspace: admins, and the people and Entra groups they name.
-const creators = () => readJson<string[]>('creators.json', []);
+// Capabilities beyond what every user has, each granted by admins to people and Entra groups: publish, pushing skills, which every
+// run loads, and create, making workspaces. Admins have them all.
+const CAPS = ['publish', 'create'], granted = () => readJson<Record<string, string[]>>('capabilities.json', {});
+const can = (me: Me, cap: string) => me.role === 'admin' || isIn(me, granted()[cap] ?? []);
 const json = async (req: IncomingMessage) => {
   try { return JSON.parse((await body(req)).toString() || '{}'); } catch { throw new HttpError(400, 'the body is JSON'); }
 };
@@ -361,7 +363,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     return send(res, 200, { id: target, kind: t.series[target] ? 'series' : 'instance' });
   }
   if (kind === 'workspaces' && !id && req.method === 'POST') {
-    if (me.role !== 'admin' && !isIn(me, creators())) throw new HttpError(403, 'making a workspace is for admins and the people they name: ask an admin');
+    if (!can(me, 'create')) throw new HttpError(403, 'making a workspace is for admins and those they grant create: ask an admin');
     const name = safeName(String(payload.name ?? ''));
     if (Object.values(t.workspaces).some(w => w.name === name)) throw new HttpError(409, `the name ${name} is taken; choose another`);
     const wid = newId();
@@ -653,14 +655,14 @@ async function admin(me: Me, req: IncomingMessage, res: ServerResponse, url: URL
   send(res, 200, 'ok');
 }
 
-// Skills: anyone signed in may list them; every run loads every live one. Publishers and admins push versions, with rf.
+// Skills: anyone signed in may list and read them; every run loads every live one. Those who may publish push versions, with rf.
 async function skillsRoute(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) {
   const [id = '', action, n] = url.pathname.split('/').slice(2).map(decodeURIComponent);
   if (!id && req.method === 'GET') return send(res, 200, skills().map(s => ({ id: s.id, name: s.name, description: s.description, pushed: pushed(s) })));
   if (action === 'versions' && n && req.method === 'GET') return send(res, 200, versionFiles(id, Number(n)));
   if (action === 'versions' && req.method === 'GET') return send(res, 200, versionsOf(id));
   if (action === 'versions' && req.method === 'POST') {
-    if (me.role !== 'admin' && me.role !== 'publisher') throw new HttpError(403, 'publishers and admins push skills');
+    if (!can(me, 'publish')) throw new HttpError(403, 'pushing skills is for admins and those they grant publish: ask an admin');
     const { files, from } = await json(req);
     return send(res, 200, `pushed ${id} version ${pushSkill(id, from === undefined ? files : versionFiles(id, Number(from)), me.email)}, live now`);
   }
@@ -713,15 +715,16 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       res.end(readFileSync(page));
     } else if (url.pathname === '/me') {
       const { text, logo } = brand();
-      send(res, 200, { ...me, names: names(me), sign_in: mode, m365: m365Ready(), browsers: !!process.env.RF_BROWSER_URL, brand: { text: text || null, logo: !!logo }, creates: me.role === 'admin' || isIn(me, creators()) });
-    } else if (url.pathname === '/creators') {
-      if (me.role !== 'admin') throw new HttpError(403, 'who may make workspaces is the admins\' to say');
+      send(res, 200, { ...me, names: names(me), sign_in: mode, m365: m365Ready(), browsers: !!process.env.RF_BROWSER_URL, brand: { text: text || null, logo: !!logo }, can: CAPS.filter(c => can(me, c)) });
+    } else if (url.pathname === '/capabilities') {
+      if (me.role !== 'admin') throw new HttpError(403, 'admins grant capabilities');
       if (req.method === 'PUT') {
-        const { creators: list } = await json(req);
-        if (!isPeople(list)) throw new HttpError(400, `creators: a list of emails and Entra group ids: ${JSON.stringify(list)}`);
-        writeJson('creators.json', list.map(p => p.toLowerCase()));
+        const { cap, people } = await json(req);
+        if (!CAPS.includes(cap)) throw new HttpError(400, `a capability is one of ${CAPS.join(', ')}`);
+        if (!isPeople(people)) throw new HttpError(400, `${cap}: a list of emails and Entra group ids: ${JSON.stringify(people)}`);
+        writeJson('capabilities.json', { ...granted(), [cap]: people.map(p => p.toLowerCase()) });
       }
-      send(res, 200, creators());
+      send(res, 200, Object.fromEntries(CAPS.map(c => [c, granted()[c] ?? []])));
     } else if (url.pathname === '/brand' && req.method === 'PUT') {
       if (me.role !== 'admin') throw new HttpError(403, "the deployment's brand is the admins'");
       const { text, logo, clear } = await json(req), b = { ...(!clear && brand()) };

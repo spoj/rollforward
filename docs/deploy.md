@@ -78,7 +78,7 @@ Run the image under podman, as a systemd service. The image is the agent image, 
 A data root of the team's fork (its main at a1fa8db, with folders `<workspace>/<series>/<label>/`) moves with `node scripts/migrate-fork.ts OLD NEW`. It reads OLD only and writes NEW, which mustn't exist yet. Ids come from the old paths, so a rerun into a fresh NEW gives the same links: try it on a copy while the fork runs, then again with the fork stopped, and point the proxy at the new server.
 
 - **It carries** people with their roles, workspaces with their owners, series with their `.pylib`, and instances with `upload/`, `working/` and the agent's session. Notes become the agent's comments and questions its asks, with their options in the text; steers and answers become people's replies, and a question closing defaulted is one the close accepted.
-- **It leaves** the fork's skills, its Microsoft 365 connections and vendor passwords, and its keys: people sign in again, series start with no skills, and publishers push them again. It prints anything else it left.
+- **It leaves** the fork's skills, its Microsoft 365 connections and vendor passwords, and its keys: people sign in again, series start with no skills, and those who may publish push them again. It prints anything else it left.
 - **The new server starts no run** for the old logs, but carries on the runs the move cut: each gets its `done`, with every old entry seen, and the new server wakes its instance, as after a restart.
 - **Some of the fork's people are names, not emails,** in its logs, so their instances have a runner no one signs in as. With the server stopped, `node scripts/rename-person.ts DATA NAME EMAIL` renames one, and prints the instances it changed.
 
