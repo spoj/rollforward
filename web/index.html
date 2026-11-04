@@ -643,7 +643,7 @@ function renderBar() {
     const off = data.run ? 'disabled title="Available when the run ends"' : '';
     if (open) h += data.runner.by === me.email ? `<button class="btn commit top" data-act="close" ${off}>${cur.s.single ? 'Close task' : 'Close instance'}</button>`
       : `<button class="btn top" data-act="takeover" ${off || `title="${esc(nameOf(data.runner.by))} runs it: their logins, their sign-off. Taking over makes it yours."`}>Take over</button>`;
-    else h += cur.s.single ? '<button class="btn top" data-act="start-another">Start another based on this</button>' : '<button class="btn top" data-act="duplicate">Duplicate</button>';
+    else h += cur.s.single ? '<button class="btn top" data-act="start-series">Start series</button>' : '<button class="btn top" data-act="duplicate">Duplicate</button>';
     if (open) h += '<button class="btn top" data-act="menu-instance" title="Rename, abandon">\u22EF</button>';
   }
   put($('#bar'), h);
@@ -1238,8 +1238,7 @@ function ticksHtml(logins, on = []) {
 const ticked = () => [...document.querySelectorAll('#pv input.tick:checked')].map(i => i.value);
 
 function startHtml(s) {
-  return (s.series !== undefined ? `<h3>Series</h3><div class="sub">This task becomes its first instance.</div><input type="text" id="sseries" value="${esc(s.series)}">` : '')
-    + (s.label !== undefined ? `<h3>${s.series !== undefined ? 'The new instance' : 'Label'}</h3><input type="text" id="slabel" value="${esc(s.label)}" placeholder="such as a date">` : '')
+  return (s.label !== undefined ? `<h3>Label</h3><input type="text" id="slabel" value="${esc(s.label)}" placeholder="such as a date">` : '')
     + `<h3>Credentials</h3>` + ticksHtml(s.logins, s.on)
     + (s.logins.some(l => l.offers.length) ? `<div class="consent">By clicking ${esc(s.go)}, you agree that agents carry these credentials while acting as you.</div>` : '')
     + `<div><button class="btn primary" data-act="start-go">${esc(s.go)}</button></div>`;
@@ -1352,8 +1351,8 @@ function closePv() {
   renderPv();
 }
 
-async function openStart(title, go, then, label, series, on) {
-  pv = { title, settings: { kind: 'start', go, then, label, series, on, logins: await api('/logins') } };
+async function openStart(title, go, then, label, on) {
+  pv = { title, settings: { kind: 'start', go, then, label, on, logins: await api('/logins') } };
   renderPv();
   $('#slabel')?.focus();
 }
@@ -1433,7 +1432,7 @@ async function onAct(act, el, was) {
   }
   if (act === 'menu-instance') {
     openMenu(el, [
-      ['Rename', 'rename'], ['Wakes', 'wakes'], cur.s.single && ['Start another based on this', 'start-another'], data.runner.by === me.email && ['Credentials', 'ticks'],
+      ['Rename', 'rename'], ['Wakes', 'wakes'], data.runner.by === me.email && ['Credentials', 'ticks'],
       data.runner.by === me.email && ['-'], data.runner.by === me.email && ['Abandon', 'abandon', 'danger', data.run && 'Available when the run ends'],
     ]);
   }
@@ -1621,17 +1620,18 @@ async function onAct(act, el, was) {
     Object.assign(ui, { open: true, on: null, ref: null, focus: instance });
     go(instance);
   }
-  if (act === 'ticks') await openStart('Credentials', 'Save', ({ logins }) => api(`${instPath()}/logins`, { method: 'POST', body: JSON.stringify({ logins }) }), undefined, undefined, data.runner.logins);
-  if (act === 'start-another') await openStart(`Start another based on ${cur.i.label}`, 'Start', async ({ label, logins, name }) => {
-    await api(`${seriesPath(cur)}/promote`, { method: 'POST', body: JSON.stringify({ name }) });
-    return api(seriesPath(cur), { method: 'POST', body: JSON.stringify({ label, logins }) });
-  }, '', cur.i.label);
+  if (act === 'ticks') await openStart('Credentials', 'Save', ({ logins }) => api(`${instPath()}/logins`, { method: 'POST', body: JSON.stringify({ logins }) }), undefined, data.runner.logins);
+  // A closed task made a series is its only instance, an example for the instances the series starts later.
+  if (act === 'start-series' && await ask({
+    title: `Start a series from ${cur.i.label}`, text: 'This task becomes its first instance, an example for later ones.', value: cur.i.label, placeholder: 'Series name', ok: 'Start series',
+    act: name => api(`${seriesPath(cur)}/promote`, { method: 'POST', body: JSON.stringify({ name }) }),
+  })) await refresh();
   if (act === 'takeover') await openStart(`Take over ${cur.i.label}`, 'Take over', ({ logins }) => api(`${instPath()}/takeover`, { method: 'POST', body: JSON.stringify({ logins }) }));
   if (act === 'start-go') {
     const s = pv.settings, label = $('#slabel')?.value.trim();
     if (label === '') return toast('Give it a label');
     localStorage.ticks = JSON.stringify(ticked());
-    const r = await s.then({ label, logins: ticked(), name: $('#sseries')?.value.trim() });
+    const r = await s.then({ label, logins: ticked() });
     pv = null;
     renderPv();
     if (r?.id) go(r.id);

@@ -358,7 +358,7 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   assert.match((await page.$$eval('#pv .lsub', rs => rs.map(r => (r as HTMLElement).innerText.replace(/\s+/g, ' ').trim()))).slice(2).join('\n'), /^portal portal\.test · since .+ Sign in again Sign out\nwiki wiki\.test Sign in$/);
   await page.mouse.click(5, 5);
 
-  await page.evaluate(() => openStart('New instance', 'Start', () => {}, '', undefined, ['m365:onedrive', 'adb']));
+  await page.evaluate(() => openStart('New instance', 'Start', () => {}, '', ['m365:onedrive', 'adb']));
   await page.waitForSelector('#pv details.tgroup');
   const ticks = () => page.$$eval('#pv input.tick, #pv input.tickall', ts => ts.map(t => `${(t as HTMLInputElement).value === 'on' ? 'all' : (t as HTMLInputElement).value}:${(t as HTMLInputElement).checked}`));
   assert.deepEqual(await ticks(), ['all:false', 'm365:onedrive:true', 'm365:site:s1:false', 'adb:false', 'web:portal:false'], 'the expired login unticked');
@@ -429,3 +429,19 @@ test("a picture pasted into a comment, or a reply, goes with it, shown under the
   await page.waitForSelector('#log .thread .post .f img[alt^="screenshot "]');
 });
 
+test('a task closed as a one-off starts a series later, by its name alone, as its only instance', async () => {
+  await page.hover('.row.ws.on');
+  await page.click('.row.ws.on [data-act=new-task]');
+  await page.waitForSelector('#bar h1 .t:text-is("Untitled")');
+  await page.keyboard.type('Quarterly stock count');
+  await page.click('[data-act=comment]');
+  await page.waitForSelector('#bar .state .bad:text("Run 1 failed")');
+  await page.click('#bar [data-act=close]');
+  await page.click('#ask button:text-is("Close task")');
+  await page.click('#bar [data-act=start-series]');
+  await page.fill('#ask input', 'Stock counts');
+  await page.click('#ask button:text-is("Start series")');
+  await page.waitForSelector('.row.ser .l:text-is("Stock counts")');
+  await page.waitForSelector('#bar [data-act=duplicate]');
+  assert.deepEqual(await page.evaluate(() => tree.flatMap(w => w.series).filter(s => s.name === 'Stock counts').map(s => [s.single, s.instances.map(i => i.status)])), [[false, ['closed']]], 'no instance starts');
+});
