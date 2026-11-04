@@ -220,7 +220,8 @@ test('a closed instance takes corrections, later entries, each its own commit, s
   assert.deepEqual([back.op, back.inst, back.seq, back.kind], ['corrected', await iid(series, '2026-09-06'), e.seq, 'wrong'], 'the instance it names points back');
   for (let i = 0; i < 50 && !(await head()).includes('Correction'); i++) await new Promise(ok => setTimeout(ok, 100));
   assert.equal(await head(), 'Demo Admin Correction: 2026-09-06 is wrong, see 2026-09-13\n');
-  assert.equal((await shown(series)).instances.find((i: { label: string }) => i.label === '2026-09-06').corrections, 1, 'the series list counts them');
+  const row = (await shown(series)).instances.find((i: { label: string }) => i.label === '2026-09-06');
+  assert.deepEqual([row.corrections, row.wrong], [1, 1], 'the series list counts them, and the wrong ones of the week for its runner');
   for (const [body, why] of [[{ kind: 'fine', text: 'x' }, /a correction is \{"kind": "wrong" or "superseded"/], [{ kind: 'wrong', text: 'x', item: 'nope' }, /no item nope; 2026-09-06's items: /], [{ kind: 'wrong', text: 'x', see, thread: 'c99' }, /no thread c99 in 2026-09-13/]] as [object, RegExp][])
     assert.match(await (await fix('2026-09-06', body)).text(), why);
   assert.equal((await fix('2026-09-13', { kind: 'wrong', text: 'x' })).status, 409, 'only a closed instance');

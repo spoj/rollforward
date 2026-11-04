@@ -242,6 +242,9 @@ dialog::backdrop { background: rgba(21,24,29,.3); }
 .dlg .opt .btn { flex: none; }
 .dlg .opts { margin-top: 14px; }
 .dlg .opts label { display: grid; gap: 4px; font-size: 12.5px; color: var(--ink-2); }
+.dlg .opt label { display: flex; align-items: center; gap: 6px; }
+.dlg input[type=radio] { width: auto; margin: 0; }
+.dlg :is(textarea, select) { font: inherit; font-size: 13px; color: var(--ink); padding: 7px 9px; border: 1px solid var(--rule-2); border-radius: var(--r1); background: var(--sheet); }
 .dlg .abandon { margin-top: 14px; font-size: 12px; color: var(--ink-3); }
 .dlg .abandon .quiet { display: inline; padding: 0; text-decoration: underline; }
 .dlg pre.agents { max-height: 200px; overflow: auto; white-space: pre-wrap; font: 12px/1.45 var(--mono); background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r1); padding: 8px 10px; }
@@ -298,6 +301,11 @@ dialog::backdrop { background: rgba(21,24,29,.3); }
 .needs > div { display: flex; align-items: center; gap: 10px; }
 .needs > div > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .needs b { color: var(--red); font-weight: 600; }
+.corrs { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; padding: 8px 28px; border-bottom: 1px solid var(--rule); background: #fffbeb; font-size: 13px; }
+.corrs > div { display: flex; align-items: baseline; gap: 10px; }
+.corrs > div > span { flex: 1; min-width: 0; }
+.corrs .by { flex: none; color: var(--ink-3); font-size: 12px; }
+.corr { color: #b45309; font-weight: 600; }
 .audit { padding-bottom: 12px; }
 .audit > .sub { padding: 10px 20px 4px; }
 .audit .e { padding: 4px 20px; font-size: 12.5px; }
@@ -398,6 +406,7 @@ input[type=checkbox] { accent-color: var(--ink); }
   <main class="main">
     <div class="bar" id="bar"></div>
     <div class="needs" id="needs" hidden></div>
+    <div class="corrs" id="corrs" hidden></div>
     <div class="panes" id="panes">
       <section class="pane outs" id="outs" data-pane="out"></section>
       <section class="pane flow" id="flow" data-pane="in"></section>
@@ -582,7 +591,8 @@ function renderSide() {
   const btn = (act, title, glyph, id = '') => `<button class="add" data-act="${act}" data-id="${id}" title="${title}">${glyph}</button>`;
   const chev = id => `<button class="chev" data-act="expand" data-id="${id}">${expanded.has(id) ? '\u25BE' : '\u25B8'}</button>`;
   const row = i => {
-    const st = i.queued ? '\u29D7 queued' : i.asks.length ? `<span class="cnt" title="${i.asks.length} to answer">${i.asks.length}</span>` : i.wakes[0] ? `<span title="${when(i.wakes[0].at)}">wakes ${soon(i.wakes[0].at)}</span>` : i.status === 'open' ? '' : i.status;
+    const st = i.queued ? '\u29D7 queued' : i.asks.length ? `<span class="cnt" title="${i.asks.length} to answer">${i.asks.length}</span>` : i.wakes[0] ? `<span title="${when(i.wakes[0].at)}">wakes ${soon(i.wakes[0].at)}</span>` : i.status === 'open' ? ''
+      : i.corrections ? `<span class="corr" title="Read with ${plural(i.corrections, 'correction')}">corrected</span>` : i.status;
     return `<a class="row inst ${i.status} ${cur?.i?.id === i.id ? 'on' : ''}" href="#/${i.id}" title="${esc(i.label)}"><span class="nm ${i.unread ? 'b' : ''}"><span class="l">${esc(i.label)}</span>${i.runner === me.email ? '' : `<span class="who" title="${esc(nameOf(i.runner))} runs it">${esc(initials(me.names[i.runner] ?? i.runner))}</span>`}${i.unread && !i.asks.length ? '<span class="dot u"></span>' : ''}</span><span class="n">${st}</span>${age(i.active, i.running)}</a>`;
   };
   const waits = waiting().length;
@@ -686,8 +696,8 @@ function provenance(file) {
 }
 
 function tile(item) {
-  const on = talkOn(item.id), open = on.filter(t => t.waits).length;
-  const count = open ? `${open} to answer` : on.length ? `${on.length} comment${on.length > 1 ? 's' : ''}` : '';
+  const on = talkOn(item.id), open = on.filter(t => t.waits).length, fixed = data.log.some(e => e.op === 'correction' && e.item === item.id);
+  const count = (fixed ? '<span class="corr">Corrected</span> ' : '') + (open ? `${open} to answer` : on.length ? `${on.length} comment${on.length > 1 ? 's' : ''}` : '');
   const corner = on.length ? `<span class="corner ${open ? 'ask' : ''}"></span>` : '';
   const mark = `${seen[item.id] !== sig(item) ? 'fresh' : ''} ${prevSigs[item.id] && prevSigs[item.id] !== sig(item) ? 'flash' : ''}`;
   const from = item.from?.length ? `<div class="from">from ${item.from.map(f => esc(data.doc.items.find(i => i.id === f).name)).join(', ')}</div>` : '';
@@ -797,6 +807,8 @@ function logText(e) {
     signoff: () => `${w} ${e.approved ? 'signed off' : 'rejected the sign-off'}<div class="d">${e.text ? `${esc(e.text)} · ` : ''}Commit <code>${e.commit.slice(0, 7)}</code></div>`,
     commit: () => e.error ? `Run ${e.run}'s changes weren't committed<div class="d">${esc(e.error)}</div>` : `${w} committed the folder<div class="d">${esc(e.message)} · Commit <code>${e.commit.slice(0, 7)}</code></div>`,
     abandon: () => `${w} abandoned the instance`,
+    correction: () => `${w} marked ${e.item ? item(e.item) : 'the instance'}${e.ref ? ` at ${esc(e.ref)}` : ''} ${e.kind}<div class="d">${esc(e.text)}${seeHtml(e.see)}</div>`,
+    corrected: () => `${w} marked <a href="#/${esc(e.inst)}">${esc(e.label)}</a>${e.item ? ` ${esc(e.item)}` : ''} ${e.kind}`,
     comment: () => `${w} ${e.note ? `left a note for ${who(data.runner.by)}` : e.by !== 'agent' ? 'commented' : e.ask ? `asked${e.to ? ' ' + who(e.to) : ''}` : 'said'}${e.item ? ` on ${item(e.item)}${e.ref ? ` at ${esc(e.ref)}` : ''}` : ''}<div class="d">${esc(e.text)}</div>`,
     resolve: () => `${w} resolved a thread${e.text ? `<div class="d">${esc(e.text)}</div>` : ''}`,
     report: () => `${w} reported on run ${e.run}<div class="d">${md(e.text)}</div>`,
@@ -830,7 +842,15 @@ function renderNeeds() {
     + [...held.values()].map(e => `<div><b>Login</b><span>${e.login === 'openrouter' ? 'Your OpenRouter key is out of credits' : `Your ${esc(e.name)} login has expired`}: this instance waits for it</span>${signInHtml(e.login, e.name)}</div>`).join('');
   $('#needs').hidden = !h;
   put($('#needs'), h);
+  // A closed instance is read with the corrections it took since: what was wrong in it, or what superseded it, and where.
+  const cs = data?.log.filter(e => e.op === 'correction') ?? [];
+  $('#corrs').hidden = !cs.length;
+  put($('#corrs'), `<b class="corr">Read with corrections (${cs.length})</b>` + cs.map(e => `<div><span><b>${e.item ? esc(data.doc.items.find(i => i.id === e.item)?.name ?? e.item) : 'The instance'}</b>`
+    + `${e.ref ? ` at ${esc(e.ref)}` : ''} is ${e.kind}: ${esc(e.text)}${seeHtml(e.see)}</span><span class="by">${who(e.by)} \u00b7 ${when(e.at)}</span></div>`).join(''));
 }
+
+// Where a correction says the change is: a later instance, by its label then, and its thread.
+const seeHtml = see => see ? ` \u00b7 see <a href="#/${esc(see.inst)}">${esc(see.label)}</a>${see.thread ? ` ${esc(see.thread)}` : ''}` : '';
 
 function renderLog() {
   $('#log').className = 'log' + (ui.open && data ? ' open' : '');
@@ -996,6 +1016,7 @@ function conversationHtml() {
   if (open) h += `<h3>${ui.on ? `Comment on ${name(ui.on)}${ui.ref ? ` at ${esc(ui.ref)}` : ''}` : 'Comment on the instance'}</h3>`
     + (lends ? `<div class="ticks2">Credentials:${ticksHtml(myLogins, data.runner.logins)}</div>` : '')
     + `<textarea id="newcomment" rows="3" placeholder="${first ? 'What should the agent do? Drop files here too' : mine || cur.s.shared_by === data.runner.by ? 'The agent replies in the thread' : `A note for ${esc(nameOf(data.runner.by))}: the agent takes it up once they do`}"></textarea><input type="file" id="newfiles" multiple>${lends ? '<div class="consent">By clicking Comment, you agree that agents carry these credentials while acting as you.</div>' : ''}<div><button class="btn primary" data-act="comment">Comment</button></div>`;
+  if (data.doc.status === 'closed') h += '<div><button class="btn" data-act="correct">Add a correction</button></div>';
   const ended = r => data.log.find(e => e.op === 'done' && e.run === r.run)?.seq ?? Infinity;
   return h + [...threads.map(t => [t.last.seq, threadHtml(t)]), ...runs.map(r => [ended(r), runHtml(r, r === runs.at(-1))])].sort((a, b) => b[0] - a[0]).map(([, x]) => x).join('') + '</div>';
 }
@@ -1023,6 +1044,7 @@ function renderCard() {
   if (item.file) h += `<button class="btn" data-act="preview" data-file="${esc(item.file)}" data-item="${esc(item.id)}">Preview</button><a class="btn" href="${fileUrl(item.file)}">Download</a>`;
   if (open) h += `<button class="btn" data-act="add" data-item="${esc(item.id)}" data-pane="${item.kind === 'output' ? 'out' : 'in'}">Upload…</button>`;
   if (open) h += `<button class="btn" data-act="comment-on" data-item="${esc(item.id)}">Comment</button>`;
+  if (data.doc.status === 'closed') h += `<button class="btn" data-act="correct" data-item="${esc(item.id)}">Correct\u2026</button>`;
   h += `<button class="btn" data-act="uncard" style="margin-left:auto">Close</button></div>`;
   put(card, h);
   card.hidden = false;
@@ -1280,6 +1302,7 @@ function waiting() {
     for (const i of s.instances) {
       const n = i.asks.filter(e => e === me.email).length;
       if (n) out.push(`<div class="wt">${at(w, s, i)}: ${n} ask${n > 1 ? 's' : ''} for you</div>`);
+      if (i.wrong && i.runner === me.email) out.push(`<div class="wt">${at(w, s, i)}: ${plural(i.wrong, 'correction')} say${i.wrong > 1 ? '' : 's'} it's wrong</div>`);
     }
     for (const r of s.requests.filter(r => (r.who ?? me.email) === me.email)) out.push(`<div class="wt">${at(w, s)}: ${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)} <button class="btn" data-act="req-start" data-id="${esc(r.id)}">Start</button></div>`);
   }
@@ -1311,7 +1334,8 @@ function ask({ title, text = '', html = '', value, placeholder = '', ok, kind = 
     + (value === undefined ? '' : `<input type="text" value="${esc(value)}" placeholder="${esc(placeholder)}" required autocomplete="off">`)
     + `<div class="err"></div><div class="foot">${ok ? `<button class="btn ${kind}" value="ok">${esc(ok)}</button>` : ''}<button class="btn" formnovalidate>Cancel</button></div></form>`;
   d.showModal();
-  d.querySelector('input')?.select();
+  const input = d.querySelector('form > input');
+  input?.select();
   return new Promise(done => {
     d.onclose = () => done(null);
     d.querySelector('form').onsubmit = async e => {
@@ -1319,7 +1343,7 @@ function ask({ title, text = '', html = '', value, placeholder = '', ok, kind = 
       e.preventDefault();
       e.submitter.setAttribute('aria-busy', 'true');
       try {
-        done(await act(value === undefined ? undefined : d.querySelector('input').value.trim(), e.submitter.value));
+        done(await act(input?.value.trim(), e.submitter.value));
         d.close();
       } catch (err) {
         d.querySelector('.err').textContent = err.message;
@@ -1626,6 +1650,19 @@ async function onAct(act, el) {
   }
   if (act === 'ticks') await openStart('Credentials', 'Save', ({ logins }) => api(`${instPath()}/logins`, { method: 'POST', body: JSON.stringify({ logins }) }), undefined, data.runner.logins);
   // A closed task made a series is its only instance, an example for the instances the series starts later.
+  // A closed instance is never changed, but a correction is read with it: on it or one of its items, at a ref if given, and where
+  // the change is, another instance of its series.
+  if (act === 'correct') {
+    const item = data.doc.items.find(i => i.id === el.dataset.item), others = cur.s.instances.filter(i => i.id !== cur.i.id);
+    const html = `<div class="opt"><label><input type="radio" name="ckind" value="wrong" checked> Wrong</label><label><input type="radio" name="ckind" value="superseded"> Superseded</label></div>`
+      + '<div class="opts"><label>What is wrong, or what supersedes it<textarea id="ctext" rows="2" required></textarea></label></div>'
+      + (item ? '<div class="opts"><label>At, if somewhere in it<input type="text" id="cref" placeholder="such as Sheet1!C22" autocomplete="off"></label></div>' : '')
+      + (others.length ? `<div class="opts"><label>See<select id="csee"><option value="">no other instance</option>${others.map(i => `<option value="${i.id}">${esc(i.label)}</option>`).join('')}</select></label></div>` : '');
+    if (await ask({
+      title: `Correct ${item ? item.name : cur.i.label}`, text: "It stays as it is; the correction is read with it, and can't be withdrawn.", html, ok: 'Add correction',
+      act: () => api(`${instPath()}/correct`, { method: 'POST', body: JSON.stringify({ kind: $('#ask [name=ckind]:checked').value, text: $('#ctext').value.trim(), ...(item && { item: item.id }), ...($('#cref')?.value.trim() && { ref: $('#cref').value.trim() }), ...($('#csee')?.value && { see: $('#csee').value }) }) }),
+    })) await refresh();
+  }
   if (act === 'start-series' && await ask({
     title: `Start a series from ${cur.i.label}`, text: 'This task becomes its first instance, an example for later ones.', value: cur.i.label, placeholder: 'Series name', ok: 'Start series',
     act: name => api(`${seriesPath(cur)}/promote`, { method: 'POST', body: JSON.stringify({ name }) }),

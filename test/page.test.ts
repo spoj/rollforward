@@ -461,3 +461,28 @@ test('a task closed as a one-off starts a series later, by its name alone, as it
   await page.waitForSelector('#bar [data-act=duplicate]');
   assert.deepEqual(await page.evaluate(() => tree.flatMap(w => w.series).filter(s => s.name === 'Stock counts').map(s => [s.single, s.instances.map(i => i.status)])), [[false, ['closed']]], 'no instance starts');
 });
+
+test("a closed instance is read with its corrections: one added on an item's card shows in a strip above it, on the item's tile, in the sidebar and in the audit", async () => {
+  await page.evaluate(() => { location.hash = '#/3d70f7ca6f20'; });
+  await page.waitForSelector('#bar h1 .t:text-is("2026-08-30")');
+  assert.equal(await page.locator('#corrs').isVisible(), false);
+  await page.click('.tile .fn:text-is("AR aging")');
+  await page.click('#card [data-act=correct]');
+  await page.fill('#cref', 'C12');
+  await page.selectOption('#csee', { index: 1 });
+  const see = await page.$eval('#csee', s => (s as HTMLSelectElement).selectedOptions[0].textContent);
+  await page.fill('#ctext', 'The rate was 5%, not 4%.');
+  await page.click('#ask button:text-is("Add correction")');
+  await page.waitForSelector('#corrs:not([hidden])');
+  assert.deepEqual(await page.locator('#corrs').innerText().then(t => t.split('\n').slice(0, 2)), ['Read with corrections (1)', `AR aging at C12 is wrong: The rate was 5%, not 4%. · see ${see}`]);
+  assert.match(await page.locator('.tile:has(.fn:text-is("AR aging")) .ext').innerText(), /Corrected/);
+  assert.equal(await page.textContent('.row.inst.on .corr'), 'corrected');
+  await page.click('#log .seg [data-act=audit]');
+  await page.locator('#audit .e', { hasText: 'marked AR aging at C12 wrong' }).waitFor();
+  await page.click('#log .seg [data-act=audit]');
+  assert.equal(await page.locator('#conv [data-act=correct]').count(), 1, 'the instance itself takes one from the conversation');
+  await page.evaluate(() => api('/api/instances/a5c0ff5e1f01/correct', { method: 'POST', body: JSON.stringify({ kind: 'wrong', text: 'The ledger total was off.' }) }));
+  await page.evaluate(() => refresh());
+  await page.click('[data-act=waiting]');
+  await page.locator('.wt', { hasText: "2026-11: 1 correction says it's wrong" }).waitFor();
+});
