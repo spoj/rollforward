@@ -272,3 +272,18 @@ test("a weekly wake fires on its days at its time and moves on, a series' label 
   assert.ok(oct.log.some(e => e.op === 'wake' && e.from === 'y'), "2026-10 is Bank rec's already");
   cancelWakes(['s6', daily.id]);
 });
+
+test("a run's first message lists the corrections on its series' closed instances before it; a <label>-r2 closing supersedes <label>", async () => {
+  const { correct } = await import('../src/waker.ts'), q3 = make('s2', 'q3');
+  await q3.close({ email: alice, name: 'Alice' });
+  const r2 = make('s2', 'q3-r2'), q4 = make('s2', 'q4');
+  correct(q3, alice, { kind: 'wrong', text: 'The rate was a day stale.' });
+  assert.match(message(q4, 1, q4.log, true), / Corrections on earlier instances: q3 is wrong, "The rate was a day stale\."\. New log entries:/);
+  assert.doesNotMatch(message(q4, 2, q4.log), /Corrections/, 'the first message only');
+  await r2.close({ email: alice, name: 'Alice' });
+  closed(r2, alice);
+  assert.deepEqual([q3.log.at(-1)!.by, q3.log.at(-1)!.kind, q3.log.at(-1)!.see, r2.log.at(-1)!.op], ['server', 'superseded', { inst: r2.id }, 'corrected']);
+  assert.match(message(q4, 1, q4.log, true), /Corrections on earlier instances: q3 is wrong, "The rate was a day stale\."; q3 is superseded, "q3-r2 supersedes it", see q3-r2\. New/);
+  await settle();
+});
+

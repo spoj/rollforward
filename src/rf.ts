@@ -36,6 +36,10 @@ const HELP: Record<string, string> = {
   apart; setting a series' wake for a LABEL already pending moves it. Each run's first message lists the wakes pending for
   its instance and series, by ID, which --cancel cancels. A closed instance can't be woken: to correct one, wake its series
   with --label <its label>-r2.`,
+  correct: `rf correct PATH [--on ITEM[@REF]] --wrong|--superseded [--in THREAD] TEXT|-
+  Says that a closed instance of your workspace, such as ../<label>, or an item of it, at a place in its file if given, is wrong
+  or superseded, and why, as a later entry it keeps; it is never changed. It links your instance, and THREAD of yours, where the
+  change is; each run's first message lists the corrections on the instances before it. - reads TEXT from stdin.`,
   delivered: `rf delivered ITEM --to WHERE --receipt WHAT
   Records that you delivered the output ITEM outside: where to, such as "E1, batch 4471" or the mail's recipients, and what
   proves it, such as the document number a website gave, or the Message-ID or the file's id and eTag Microsoft 365 gave.`,
@@ -93,12 +97,30 @@ const wake = async () => {
   return { ok: true, text: `set: ${target} ${kind === 'series' ? `starts ${k.label}` : 'wakes'} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''} (wake ${k.id})` };
 };
 
+// rf correct PATH …: the folder becomes an id, then the correction goes to that instance.
+const correct = async () => {
+  const o: Record<string, string> = {}, words: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const flag = /^--(on|in|wrong|superseded)$/.exec(args[i])?.[1];
+    if (flag === 'wrong' || flag === 'superseded') o.kind = o.kind ? 'both' : flag;
+    else if (flag && args[i + 1] !== undefined) o[flag] = args[++i];
+    else words.push(args[i]);
+  }
+  const [path, ...said] = words, text = said.join(' ') === '-' ? readFileSync(0, 'utf8') : said.join(' ');
+  if (!path || !text.trim() || !o.kind || o.kind === 'both') return usage('correct');
+  const found = await send('GET', `api/resolve?path=${encodeURIComponent(path)}`);
+  if (!found.ok) return found;
+  const at = o.on?.indexOf('@') ?? -1, item = at >= 0 ? o.on!.slice(0, at) : o.on, ref = at >= 0 ? o.on!.slice(at + 1) : undefined;
+  return send('POST', `api/instances/${JSON.parse(found.text).id}/correct`, JSON.stringify({ kind: o.kind, item, ref, text, thread: o.in }));
+};
+
 let res;
 if (cmd === 'show') res = await send('GET', `${own}/screen`);
 else if (cmd === 'put' && args[0]) res = await send('PUT', `${own}/screen`, readFileSync(args[0] === '-' ? 0 : args[0]));
 else if (cmd === 'say' || cmd === 'ask') res = await comment();
 else if (cmd === 'resolve' && args[0]) res = await send('POST', `${own}/resolve`, JSON.stringify({ thread: args[0], text: args.slice(1).join(' ') }));
 else if (cmd === 'wake') res = await wake();
+else if (cmd === 'correct') res = await correct();
 else if (cmd === 'commit' && args.length) res = await send('POST', `${own}/commit`, JSON.stringify({ message: args.join(' ') === '-' ? readFileSync(0, 'utf8') : args.join(' ') }));
 else if (['expired', 'delivered'].includes(cmd) && args.length >= 1) res = await send('POST', `agent/${cmd}`, JSON.stringify({ args }));
 else if (cmd === 'help') res = { ok: true, text: HELP[args[0]] ?? USAGE };

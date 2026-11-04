@@ -441,6 +441,33 @@ test("a run that adds rules to the process, or rewords them, says how many in it
   assert.equal(log.findLast(e => e.op === 'done')!.rules, undefined, 'none, none said');
 });
 
+test("a later run corrects a closed instance, never changing it, linking the thread of its own that says why; the next instance's run hears of it", async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Fixes' })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Fixed' })).json();
+  scripts.push({ bash: [], report: 'Built.', saw: [] });
+  const { id: first } = await (await call('POST', `/api/series/${series}`, { label: 'm1', logins: [] })).json();
+  await runs(first, 1);
+  assert.equal((await call('POST', `/api/instances/${first}/close`)).status, 200);
+  const fixing: Script = {
+    bash: ["t=$(rf say m1 used a stale rate. | cut -d' ' -f3 | tr -d ,); rf correct ../m1 --wrong --in $t The rate was a day stale. 2>&1", 'rf correct ../m1 --wrong 2>&1', 'rf correct . --superseded x 2>&1'],
+    report: 'Corrected m1.', saw: [],
+  };
+  scripts.push(fixing);
+  const { id: second } = await (await call('POST', `/api/series/${series}`, { label: 'm2', logins: [] })).json();
+  const log = await runs(second, 1), said = log.find(e => e.op === 'comment' && e.by === 'agent')!;
+  assert.match(fixing.saw[0], /^m1 is marked wrong, seq \d+\s*$/);
+  assert.match(fixing.saw[1], /^rf correct PATH/, 'no text, its usage');
+  assert.match(fixing.saw[2], /^m2 is open: only a closed instance takes corrections/);
+  const fix = (await (await call('GET', `/api/instances/${first}`)).json()).log.at(-1);
+  assert.deepEqual([fix.by, fix.op, fix.kind, fix.text, fix.see], ['agent', 'correction', 'wrong', 'The rate was a day stale.', { inst: second, thread: said.thread }]);
+  assert.deepEqual(log.filter(e => e.op === 'corrected').map(e => [e.inst, e.seq, e.kind]), [[first, fix.seq, 'wrong']]);
+  const next: Script = { bash: [], report: 'Rolled forward.', saw: [] };
+  scripts.push(next);
+  const { id: third } = await (await call('POST', `/api/series/${series}`, { label: 'm3', logins: [] })).json();
+  await runs(third, 1);
+  assert.match(next.prompt!, new RegExp(`Corrections on earlier instances: m1 is wrong, "The rate was a day stale\\.", see m2 ${said.thread}\\.`));
+});
+
 // A websocket's opening, as a page at `origin` asks for it, and all that came back.
 const upgrade = (path: string, cookie: string, origin = base) => new Promise<string>(ok => {
   let got = '';

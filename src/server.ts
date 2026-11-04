@@ -21,7 +21,7 @@ import { offer, unoffer } from './connections/graph.ts';
 import { forget, indexes, startIndexing, track } from './indexes.ts';
 import { seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, byToken, cancelWake, cancelWakes, citedFor, closed, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, resolveFor, setWake, startWaking, startWith, wakes, wakesOf, weekly, wider, CUT, type Active, type Request } from './waker.ts';
+import { active, byToken, cancelWake, cancelWakes, citedFor, closed, correct, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, resolveFor, setWake, startWaking, startWith, wakes, wakesOf, weekly, wider, CUT, type Active, type Request } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -181,11 +181,11 @@ function summary(i: Instance, email: string, w8 = wakes()) {
   const key = `${i.log.length}:${i.doc.rev}:${seriesSettings(i.series()).shared?.by ?? ''}`;
   const news = i.log.findLast(e => e.by !== email && e.accepted_by !== email && NEWS.includes(e.op)), s = seen(email);
   let k = kept.get(i);
-  if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i).map(w => w.who), runner: runnerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: +i.log.reduce((t, e) => t + (e.op === 'done' ? e.cost as number : 0), 0).toFixed(4) });
+  if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i).map(w => w.who), runner: runnerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: +i.log.reduce((t, e) => t + (e.op === 'done' ? e.cost as number : 0), 0).toFixed(4), corrections: i.log.filter(e => e.op === 'correction').length });
   return {
     id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(i.seriesId)?.inst === i, queued: !!queued(i),
     asks: k.asks, wakes: wakesOf(i.id, w8), fired: w8.fired[i.id] ?? null, runner: k.runner, cost: k.cost, active: k.active,
-    unread: !!news && news.at > s.since && news.seq > (s.at[i.id] ?? 0),
+    unread: !!news && news.at > s.since && news.seq > (s.at[i.id] ?? 0), corrections: k.corrections,
   };
 }
 
@@ -393,10 +393,10 @@ const people = (w: { owners?: unknown; members?: unknown }) => [w.owners, w.memb
 // the new names from its next start.
 async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: URL) {
   const [kind, id = '', action] = url.pathname.split('/').slice(2).map(decodeURIComponent);
-  // A run reads and writes its own instance's screen and threads, commits its folder, sets wakes in its own workspace, and finds
-  // what a folder it can read names; nothing else here.
+  // A run reads and writes its own instance's screen and threads, commits its folder, sets wakes and corrects closed instances in its
+  // own workspace, and finds what a folder it can read names; nothing else here.
   const run = me.run;
-  if (run && !(kind === 'instances' && id === run.inst.id && ['screen', 'comment', 'resolve', 'commit'].includes(action)) && !(kind === 'wakes' && ['PUT', 'DELETE'].includes(req.method!)) && kind !== 'resolve')
+  if (run && !(kind === 'instances' && id === run.inst.id && ['screen', 'comment', 'resolve', 'commit'].includes(action)) && !(kind === 'instances' && action === 'correct') && !(kind === 'wakes' && ['PUT', 'DELETE'].includes(req.method!)) && kind !== 'resolve')
     throw new HttpError(404, 'not found');
   // The body before the tree: a request held open must not save a tree from before others' changes, such as an owner's removal.
   const payload = ['upload', 'attach', 'screen'].includes(action) ? {} : await json(req);
@@ -617,6 +617,18 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     }
     inst.append(by, 'rename', { from });
     return send(res, 200, 'ok');
+  }
+  if (action === 'correct') {
+    // On an item, at a ref if given, or on the instance; a run's links its own instance, a person's the instance and thread they name.
+    const { kind: k, item, ref, text, thread } = payload, see = run ? run.inst : payload.see ? instance(String(payload.see)) : undefined;
+    if (inst.doc.status !== 'closed') throw new HttpError(409, `${inst.label} is ${inst.doc.status}: only a closed instance takes corrections, as nothing else changes it`);
+    if (run && t.series[inst.seriesId].workspace !== t.series[run.inst.seriesId].workspace) throw new HttpError(403, `${named(t, inst.seriesId)} is in another workspace: you can read it, not correct it`);
+    if (see && !run) mustSee(me, t.workspaces[t.series[see.seriesId].workspace]);
+    if (!['wrong', 'superseded'].includes(k) || typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a correction is {"kind": "wrong" or "superseded", "text", "item", "ref", "see", "thread"}');
+    if (item != null && !inst.doc.items.some(i => i.id === item)) throw new HttpError(400, `no item ${item}; ${inst.label}'s items: ${inst.doc.items.map(i => i.id).join(', ')}`);
+    if (thread != null && !see?.threads().has(thread)) throw new HttpError(400, `no thread ${thread} in ${see?.label ?? 'the instance it names'}`);
+    const e = correct(inst, by, { kind: k, ...(item != null && { item }), ...(ref && { ref: String(ref) }), text: text.trim(), ...(see && { see }), ...(thread != null && { thread }) });
+    return send(res, 200, `${inst.label}${item ? ` ${item}` : ''} is marked ${k}, seq ${e.seq}`);
   }
   if (inst.doc.status !== 'open') throw new HttpError(409, `instance is ${inst.doc.status}`);
   if (action === 'attach') {

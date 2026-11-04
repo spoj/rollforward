@@ -210,6 +210,22 @@ test('close and abandon end an open instance; a closed one takes no actions', as
   assert.equal(ab.log.at(-1).op, 'abandon');
 });
 
+test('a closed instance takes corrections, later entries, each its own commit, saying it or an item of it is wrong or superseded, and where the change is', async () => {
+  const fix = async (label: string, body: object) => call('POST', await at(series, label, 'correct'), JSON.stringify(body)), see = await iid(series, '2026-09-13');
+  const r = await fix('2026-09-06', { kind: 'wrong', text: ' The rate was a day stale. ', see });
+  assert.match(await r.text(), /^2026-09-06 is marked wrong, seq \d+$/);
+  const { log } = await json(await at(series, '2026-09-06')), e = log.at(-1);
+  assert.deepEqual([e.by, e.op, e.kind, e.text, e.see], [adminEmail, 'correction', 'wrong', 'The rate was a day stale.', { inst: see }]);
+  const back = (await json(await at(series, '2026-09-13'))).log.at(-1), head = async () => execFileSync('git', ['log', '-1', '--format=%an %s'], { cwd: await dir(series, '2026-09-06'), encoding: 'utf8' });
+  assert.deepEqual([back.op, back.inst, back.seq, back.kind], ['corrected', await iid(series, '2026-09-06'), e.seq, 'wrong'], 'the instance it names points back');
+  for (let i = 0; i < 50 && !(await head()).includes('Correction'); i++) await new Promise(ok => setTimeout(ok, 100));
+  assert.equal(await head(), 'Demo Admin Correction: 2026-09-06 is wrong, see 2026-09-13\n');
+  assert.equal((await shown(series)).instances.find((i: { label: string }) => i.label === '2026-09-06').corrections, 1, 'the series list counts them');
+  for (const [body, why] of [[{ kind: 'fine', text: 'x' }, /a correction is \{"kind": "wrong" or "superseded"/], [{ kind: 'wrong', text: 'x', item: 'nope' }, /no item nope; 2026-09-06's items: /], [{ kind: 'wrong', text: 'x', see, thread: 'c99' }, /no thread c99 in 2026-09-13/]] as [object, RegExp][])
+    assert.match(await (await fix('2026-09-06', body)).text(), why);
+  assert.equal((await fix('2026-09-13', { kind: 'wrong', text: 'x' })).status, 409, 'only a closed instance');
+});
+
 test("series settings write series.json; a rename edits .rf/tree.json", async () => {
   const put = async (name: string, body: object) => call('PUT', await at(name), JSON.stringify(body));
   const id = (await shown(series)).id;

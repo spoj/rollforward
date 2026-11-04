@@ -62,9 +62,16 @@ const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math
 export function message(inst: Instance, n: number, entries: Entry[], first = false): string {
   const made = entries.findLast(e => ['takeover', 'logins'].includes(e.op)), us = users(), who = (by: string) => `${us[by]?.name || by} <${by}>`;
   const set = [...wakesOf(inst.id), ...wakesOf(inst.seriesId)];
+  // The corrections on the instances before it, so an error isn't rolled forward.
+  const fixed = !first ? [] : instances(inst.seriesId).filter(i => i.doc.status === 'closed' && i.label.localeCompare(inst.label, 'en', { numeric: true }) < 0)
+    .flatMap(i => i.log.filter(e => e.op === 'correction').map(e => {
+      const see = e.see as { inst: string; thread?: string } | undefined;
+      return `${i.label}${e.item ? ` ${e.item}${e.ref ? `@${e.ref}` : ''}` : ''} is ${e.kind}, ${JSON.stringify(e.text)}${see ? `, see ${instance(see.inst).label}${see.thread ? ` ${see.thread}` : ''}` : ''}`;
+    }));
   return `Instance ${inst.label}, run ${n}.`
     + (first || made ? ` Its runner is ${made?.op === 'takeover' ? `now ${who(made.by)}, taking over from ${who(made.from as string)}` : who(runnerOf(inst).by)}, who lends you ${reachable(inst).map(c => `${c.name} (${c.type})`).join(', ') || 'no connection'}.` : '')
     + (first && set.length ? ` Pending wakes: ${set.map(k => `${k.id}, ${k.target === inst.id ? 'waking this instance' : `starting ${k.label}`} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''}`).join('; ')}.` : '')
+    + (fixed.length ? ` Corrections on earlier instances: ${fixed.join('; ')}.` : '')
     + ' New log entries:\n'
     + entries.map(e => JSON.stringify(isNote(inst, e) ? { ...e, note: true } : e)).join('\n');
 }
@@ -244,11 +251,25 @@ export function queued(inst: Instance): { why: string; since: string } | undefin
 }
 
 // Closing an instance wakes its series' later open instances, which may have used its draft; a note for those the closer doesn't start.
+// A <label>-r2 closing supersedes <label>, as a <label>-r3 does <label>-r2.
 export function closed(inst: Instance, by: string) {
   for (const later of instances(inst.seriesId).filter(i => i.doc.status === 'open' && i.label.localeCompare(inst.label, 'en', { numeric: true }) > 0)) {
     later.append('server', 'wake', { reason: `${inst.label} closed: its final figures may differ from the draft you read`, from: `${named(tree(), inst.seriesId)}/${inst.label}`, ...(!starter(later, by) && { note: true }) });
     kick(later);
   }
+  const [, base, r] = /^(.+)-r(\d+)$/.exec(inst.label) ?? [], was = base && instances(inst.seriesId).find(i => i.label === (r === '2' ? base : `${base}-r${Number(r) - 1}`) && i.doc.status === 'closed');
+  if (was) correct(was, 'server', { kind: 'superseded', text: `${inst.label} supersedes it`, see: inst });
+}
+
+// A correction: a closed instance is never changed, but takes later entries saying that one of its items, or itself, is wrong or
+// superseded, and where the change is, `see`, an instance and its thread, which notes it too. Each is a commit of the closed
+// instance's own.
+export function correct(inst: Instance, by: string, c: { kind: string; item?: string; ref?: string; text: string; see?: Instance; thread?: string }) {
+  const e = inst.append(by, 'correction', { kind: c.kind, ...(c.item && { item: c.item }), ...(c.ref && { ref: c.ref }), text: c.text, ...(c.see && { see: { inst: c.see.id, ...(c.thread && { thread: c.thread }) } }) });
+  c.see?.append(by, 'corrected', { inst: inst.id, seq: e.seq, kind: c.kind, ...(c.item && { item: c.item }) });
+  const who = by === 'agent' ? AGENT : by === 'server' ? { name: 'rollforward', email: 'server@rollforward' } : { name: users()[by]?.name ?? by, email: by };
+  commit(inst.dir, who, `Correction: ${c.item ?? inst.label} is ${c.kind}${c.see ? `, see ${c.see.label}` : ''}`).catch(err => inst.append('server', 'commit', { error: err.message }));
+  return e;
 }
 
 // Wakes (.rf/wakes.json): the pending ones by id, each for a target, an instance or a series by id, and the requests to start an
