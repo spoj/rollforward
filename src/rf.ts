@@ -21,8 +21,8 @@ const HELP: Record<string, string> = {
   rf say.`,
   commit: `rf commit MESSAGE|-
   Commits your instance's whole folder as it is now, in your name, to its history: the folder is a repository, which only the
-  server commits; read it with git log, show or diff, such as git diff HEAD -- working. A sign-off and closing commit it too, in
-  the name of whoever signed.`,
+  server commits; read it with git log, show or diff, such as git diff HEAD -- working. Each run's end commits it too, in your
+  name, and a sign-off and closing, in the name of whoever signed.`,
   resolve: `rf resolve THREAD [TEXT]
   Resolves a thread you started, once it no longer applies, saying why.`,
   wake: `rf wake TARGET AT [--label LABEL]

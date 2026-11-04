@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { agentsFile, createInstance, duplicateInstance, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, safeName, seriesDir, type Entry, type Instance } from './store.ts';
-import { commit } from './git.ts';
+import { AGENT, commit } from './git.ts';
 import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
 import { authenticate, checkConfig, cli, connect, m365Ready, mode, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
@@ -581,7 +581,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // The agent commits the folder at a moment worth keeping, in its own name.
     const message = typeof payload.message === 'string' ? payload.message.trim() : '';
     if (!message) throw new HttpError(400, 'a commit has a message');
-    const hash = await commit(inst.dir, { name: 'rollforward agent', email: 'agent@rollforward' }, message);
+    const hash = await commit(inst.dir, AGENT, message);
     inst.append('agent', 'commit', { run: run.n, message, commit: hash });
     return send(res, 200, `committed ${hash}`);
   } else if (action === 'interrupt') {

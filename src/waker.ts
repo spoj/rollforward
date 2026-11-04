@@ -10,6 +10,7 @@ import { users } from './auth.ts';
 import type { Browsers } from './browsers.ts';
 import { seriesSettings } from './series.ts';
 import { pushed, skills } from './skills.ts';
+import { AGENT, commit } from './git.ts';
 import { runnerOf } from './logins.ts';
 import { reachable, types } from './connections.ts';
 
@@ -164,19 +165,25 @@ async function start(inst: Instance) {
   a.run.settled.then(aborted => finish(a, aborted, a.failed));
 }
 
-function finish(a: Active, aborted: boolean, error?: string) {
+async function finish(a: Active, aborted: boolean, error?: string) {
   if (a.done) return;
   a.done = true;
   clearTimeout(a.timer);
   byToken.delete(a.token);
   const series = a.inst.seriesId;
-  active.delete(series);
-  a.run?.stop().catch(e => console.error(`run ${a.n} of ${a.inst.id} left its scratch folder`, e));
   rmSync(join(rfDir(), 'runs', a.token), { recursive: true, force: true });
-  a.browsers?.end().catch(e => a.inst.append('server', 'browsers', { run: a.n, error: e.message }));
   // The agent's last words in a run are its report to the instance's people; its first line is the run's summary.
   if (a.said && !aborted) a.inst.append('agent', 'report', { run: a.n, text: a.said });
-  a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(4), summary: a.said && !aborted ? summaryOf(a.said) : null, ...(error && { error }) });
+  const summary = a.said && !aborted ? summaryOf(a.said) : null;
+  a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(4), summary, ...(error && { error }) });
+  // Once its sandbox and browsers have stopped, the run's changes are one commit, with the names.tsv they were written under, before
+  // another run there may start.
+  await Promise.all([
+    a.run?.stop().catch(e => console.error(`run ${a.n} of ${a.inst.id} left its scratch folder`, e)),
+    a.browsers?.end().catch(e => a.inst.append('server', 'browsers', { run: a.n, error: e.message })),
+  ]);
+  await commit(a.inst.dir, AGENT, [`Run ${a.n}`, summary ?? error].filter(Boolean).join(': ')).catch(e => a.inst.append('server', 'commit', { run: a.n, error: e.message }));
+  active.delete(series);
   if (a.run) { // one that never started, as with a missing API key, waits for the next act or a restart rather than retrying at once
     const next = due(a.inst) ? a.inst : instances(series).find(i => i !== a.inst && due(i));
     if (next) start(next);
@@ -285,18 +292,20 @@ function summaryOf(report: string): string {
   return (line.length > 200 ? line.split(/(?<=[.!?])\s/)[0] : line).slice(0, 200);
 }
 
-// A run a restart cut ends as aborted, with what its calls cost so far, and its instance is woken to carry on, so a deploy needn't
-// wait for quiet. A commit the restart cut leaves git's locks, which would refuse the instance's next; no git runs as it starts.
+// A run a restart cut ends as aborted, with what its calls cost so far, its changes committed as at any run's end, and its instance
+// is woken to carry on, so a deploy needn't wait for quiet. A commit the restart cut leaves git's locks, which would refuse the
+// instance's next; no git runs as it starts.
 export function recover() {
   for (const id of Object.keys(tree().series)) for (const inst of instances(id).filter(i => i.doc.status === 'open')) {
     for (const f of ['index.lock', 'HEAD.lock', 'config.lock', 'packed-refs.lock', 'refs/heads/main.lock']) rmSync(join(inst.dir, '.git', f), { force: true });
     const run = inst.log.findLast(e => e.op === 'run' || e.op === 'done');
-    if (run?.op === 'run') {
+    if (run?.op !== 'run') kick(inst);
+    else {
       const cost = inst.log.reduce((t, e) => t + (e.op === 'call' && e.run === run.run ? (e.cost as number | undefined) ?? 0 : 0), 0);
       inst.append('server', 'done', { run: run.run, aborted: true, seen: seenBefore(inst), cost: +cost.toFixed(4), summary: null, error: 'a restart cut the run' });
       inst.append('server', 'wake', { reason: `A restart cut run ${run.run}; carry on`, from: 'server' });
+      commit(inst.dir, AGENT, `Run ${run.run}: a restart cut the run`).catch(e => inst.append('server', 'commit', { run: run.run, error: e.message })).then(() => kick(inst));
     }
-    kick(inst);
   }
 }
 

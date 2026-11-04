@@ -740,7 +740,7 @@ function logText(e) {
     interrupt: () => `${w} interrupted the run`,
     close: () => `${w} closed the instance${e.accepted ? `<div class="d">Accepting what the agent did for ${e.accepted.length} ask${e.accepted.length > 1 ? 's' : ''} still waiting</div>` : ''}${e.commit ? `<div class="d">Commit <code>${e.commit.slice(0, 7)}</code></div>` : ''}`,
     signoff: () => `${w} ${e.approved ? 'signed off' : 'rejected the sign-off'}<div class="d">${e.text ? `${esc(e.text)} · ` : ''}Commit <code>${e.commit.slice(0, 7)}</code></div>`,
-    commit: () => `${w} committed the folder<div class="d">${esc(e.message)} · Commit <code>${e.commit.slice(0, 7)}</code></div>`,
+    commit: () => e.error ? `Run ${e.run}'s changes weren't committed<div class="d">${esc(e.error)}</div>` : `${w} committed the folder<div class="d">${esc(e.message)} · Commit <code>${e.commit.slice(0, 7)}</code></div>`,
     abandon: () => `${w} abandoned the instance`,
     comment: () => `${w} ${e.note ? `left a note for ${who(data.runner.by)}` : e.by !== 'agent' ? 'commented' : e.ask ? `asked${e.to ? ' ' + who(e.to) : ''}` : 'said'}${e.item ? ` on ${item(e.item)}${e.ref ? ` at ${esc(e.ref)}` : ''}` : ''}<div class="d">${esc(e.text)}</div>`,
     resolve: () => `${w} resolved a thread${e.text ? `<div class="d">${esc(e.text)}</div>` : ''}`,
