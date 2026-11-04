@@ -174,7 +174,7 @@ function summary(i: Instance, email: string, w8 = wakes()) {
   if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i).map(w => w.who), runner: runnerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: +i.log.reduce((t, e) => t + (e.op === 'done' ? e.cost as number : 0), 0).toFixed(4) });
   return {
     id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(i.seriesId)?.inst === i, queued: !!queued(i),
-    asks: k.asks, wakes: wakesOf(i.id, w8), runner: k.runner, cost: k.cost, active: k.active,
+    asks: k.asks, wakes: wakesOf(i.id, w8), fired: w8.fired[i.id] ?? null, runner: k.runner, cost: k.cost, active: k.active,
     unread: !!news && news.at > s.since && news.seq > (s.at[i.id] ?? 0),
   };
 }
@@ -186,7 +186,7 @@ function listing(me: Me) {
       const { shared } = seriesSettings(seriesDir(sid));
       return {
         id: sid, name: s.name, archived: !!s.archived, single: !!s.single, shared_by: shared?.by ?? null, shared_logins: shared?.by === me.email ? shared.logins : [],
-        wakes: wakesOf(sid, w8),
+        wakes: wakesOf(sid, w8), fired: w8.fired[sid] ?? null,
         requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r, who: asked(r) })),
         instances: instances(sid).map(i => summary(i, me.email, w8)),
       };

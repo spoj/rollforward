@@ -32,6 +32,8 @@ rf runs [PATH] [--since DATE] [--failed] [--running] [--long MIN] [--json]
 rf costs [PATH] [--since DATE] [--by workspace|series|person|day|outcome] [--json]   totals, runs and cost per run; person
                                   is the runner; runs leave out those a restart cut, as the next run carries each on
 rf activity [PATH] [--since DATE] [--json]   per instance, what people said, uploaded and closed, and each run's report
+rf wakes [PATH] [--json]          each series' pending wakes and requests to start an instance, and when a wake of it last
+                                  fired, and each instance's pending wakes
 rf people WORKSPACE [--set FILE|-] [-n] [--force]   its owners and admins: its people as lines of owner|member EMAIL-OR-GROUP,
                                   each with a comment; --set replaces them, -n shows the changes, --force hides open instances
                                   from their runners
@@ -374,6 +376,17 @@ else if (cmd === 'comment' && args.length === 2) {
   else {
     for (const o of out) console.log(`${usd(o.cost).padStart(10)}  ${String(o.runs).padStart(5)} runs  ${(o.per_run === null ? '-' : usd(o.per_run)).padStart(8)} a run  ${o[by]}`);
     console.log(`${usd(rows.reduce((t, r) => t + r.cost, 0)).padStart(10)}  ${String(rows.reduce((n, r) => n + counted(r), 0)).padStart(5)} runs  in all`);
+  }
+} else if (cmd === 'wakes' && args.length <= 1) {
+  const at = (args[0] ?? '').replace(/\/+$/, ''), rows = (await get('/api')).flatMap(w => w.series.filter(s => !s.archived).flatMap(s => [
+    ...(s.single ? [] : [{ path: `${w.name}/${s.name}`, fired: s.fired, wakes: s.wakes, requests: s.requests }]),
+    ...s.instances.filter(i => i.wakes.length).map(i => ({ path: `${w.name}/${s.name}/${i.label}`, fired: i.fired, wakes: i.wakes, requests: [] })),
+  ])).filter(r => !at || r.path === at || r.path.startsWith(at + '/'));
+  if (flags.json) console.log(JSON.stringify(rows, null, 1));
+  else for (const r of rows) {
+    console.log(`${r.path}  last woken ${r.fired ? when(r.fired) : 'never'}${r.wakes.length || r.requests.length ? '' : ', none pending'}`);
+    for (const k of r.wakes) console.log(`  wake ${k.id} ${when(k.at)}${k.label ? ` starts ${k.label}` : ''}${k.days ? `, then each ${k.days.join(', ')}` : ''}, set by ${k.from}`);
+    for (const q of r.requests) console.log(`  request ${q.id} to start ${q.label}, from ${q.from} since ${when(q.at)}, waits on ${q.who ?? 'anyone'}`);
   }
 } else if (cmd === 'activity' && args.length <= 1) {
   const at = (args[0] ?? '').replace(/\/+$/, ''), blocks = (await get(`/api/activity?since=${encodeURIComponent(String(flags.since ?? ''))}`))
