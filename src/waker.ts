@@ -347,6 +347,9 @@ function summaryOf(report: string): string {
   return (line.length > 200 ? line.split(/(?<=[.!?])\s/)[0] : line).slice(0, 200);
 }
 
+// A run a restart cut: its done's error, which `rf runs` tells from a failure.
+export const CUT = 'a restart cut the run';
+
 // A run a restart cut ends as aborted, with what its calls cost so far, its changes committed as at any run's end, and its instance
 // is woken to carry on, so a deploy needn't wait for quiet. A commit the restart cut leaves git's locks, which would refuse the
 // instance's next; no git runs as it starts.
@@ -356,9 +359,9 @@ export function recover() {
     const run = inst.log.findLast(e => e.op === 'run' || e.op === 'done');
     if (run?.op === 'run') {
       const cost = inst.log.reduce((t, e) => t + (e.op === 'call' && e.run === run.run ? (e.cost as number | undefined) ?? 0 : 0), 0);
-      inst.append('server', 'done', { run: run.run, aborted: true, seen: seenBefore(inst), cost: +cost.toFixed(4), summary: null, error: 'a restart cut the run' });
+      inst.append('server', 'done', { run: run.run, aborted: true, seen: seenBefore(inst), cost: +cost.toFixed(4), summary: null, error: CUT });
       inst.append('server', 'wake', { reason: `A restart cut run ${run.run}; carry on`, from: 'server' });
-      commit(inst.dir, AGENT, `Run ${run.run}: a restart cut the run`).catch(e => inst.append('server', 'commit', { run: run.run, error: e.message }));
+      commit(inst.dir, AGENT, `Run ${run.run}: ${CUT}`).catch(e => inst.append('server', 'commit', { run: run.run, error: e.message }));
     }
     kick(inst);
   }

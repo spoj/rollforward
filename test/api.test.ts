@@ -601,8 +601,14 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   assert.equal((await json(await at(series, 'talk'))).log.findLast((e: { op: string }) => e.op === 'comment').text, 'From the shell');
   const runs = JSON.parse(await rf('runs', `larkfield/${series}`, '--json'));
   assert.ok(runs.every((r: { path: string }) => r.path.startsWith(`larkfield/${series}/`)));
-  assert.deepEqual(runs[0], { path: `larkfield/${series}/2026-08-23`, run: 1, at: '2026-08-23T23:01:00.000Z', outcome: 'done', seconds: 240, cost: 0.21, runner: 'alex', started: { op: 'upload', by: 'alex' }, summary: 'Borrowing base for 08-23: excess 173,800.', error: null });
-  assert.match(await rf('runs', '--failed'), /  run \d+  failed  \d+[sm]  \$0\.00  (upload|comment|create|wake) by \S+  /, 'without a model key, the runs the tests start fail');
+  assert.deepEqual(runs[0], { path: `larkfield/${series}/2026-08-23`, run: 1, at: '2026-08-23T23:01:00.000Z', outcome: 'done', seconds: 240, cost: 0.21, runner: 'alex', started: { op: 'upload', by: 'alex' }, summary: 'Borrowing base for 08-23: excess 173,800.', error: null, failure: null });
+  assert.match(await rf('runs', '--failed'), /  run \d+  failed \(other\)  \d+[sm]  \$0\.00  (upload|comment|create|wake) by \S+  /, 'without a model key, the runs the tests start fail');
+  const scratch = `larkfield/${series}/scratch`;
+  assert.deepEqual(JSON.parse(await rf('runs', scratch, '--json')).map((r: { outcome: string; failure: string }) => [r.outcome, r.failure]), [['cut', null], ['failed', 'credits']]);
+  assert.deepEqual(JSON.parse(await rf('costs', scratch, '--by', 'outcome', '--json')), [{ outcome: 'cut', runs: 0, cost: 0.05, per_run: null }, { outcome: 'failed, credits', runs: 1, cost: 0.01, per_run: 0.01 }]);
+  assert.match(await rf('costs', scratch, '--by', 'outcome'), /^ +\$0\.05 +0 runs +- a run  cut\n.*\n +\$0\.06 +1 runs  in all$/m, 'a run a restart cut is carried on by the next, so it counts no run');
+  const stamp = '[\\d-]+ [\\d:]+';
+  assert.match(await rf('activity', `larkfield/${series}/2026-08-23`), new RegExp(`^larkfield/${series}/2026-08-23\n  ${stamp}  alex  uploads upload/Larkfield AR aging 082326\\.csv\n  ${stamp}  run 1  Borrowing base for 08-23: excess 173,800\\.\n  ${stamp}  alex  closes it\n$`));
   assert.match(await rf('costs', '--by', 'person'), /^ +\$\d+\.\d\d +\d+ runs +\$\d+\.\d\d a run  alex$/m);
   assert.deepEqual(Object.keys(JSON.parse(await rf('status', '--json'))), ['running', 'queued', 'asks', 'expired', 'requests', 'failed', 'indexes']);
   assert.equal(await rf('indexes'), 'No indexes.\n');

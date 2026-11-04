@@ -21,7 +21,7 @@ import { offer, unoffer } from './connections/graph.ts';
 import { forget, indexes, startIndexing, track } from './indexes.ts';
 import { seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, byToken, cancelWake, cancelWakes, citedFor, closed, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, resolveFor, setWake, startWaking, startWith, wakes, wakesOf, weekly, wider, type Active, type Request } from './waker.ts';
+import { active, byToken, cancelWake, cancelWakes, citedFor, closed, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, resolveFor, setWake, startWaking, startWith, wakes, wakesOf, weekly, wider, CUT, type Active, type Request } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -209,8 +209,11 @@ function runs(me: Me, since: string) {
     return i.log.filter(r => r.op === 'run' && r.at >= since).map(r => {
       const d = i.log.find(e => e.op === 'done' && e.run === r.run), seen = (i.log.findLast(e => e.op === 'done' && e.seq < r.seq)?.seen as number | undefined) ?? 0;
       const cause = pending(i, seen).find(e => e.seq <= (r.upto as number));
+      const error = d?.error as string | undefined, outcome = !d ? 'running' : error === CUT ? 'cut' : error ? 'failed' : d.aborted ? 'interrupted' : 'done';
       return {
-        path: `${named(t, sid)}/${i.label}`, run: r.run as number, at: r.at, outcome: !d ? 'running' : d.error ? 'failed' : d.aborted ? 'interrupted' : 'done',
+        path: `${named(t, sid)}/${i.label}`, run: r.run as number, at: r.at, outcome,
+        // Why a failed run failed: out of OpenRouter credits, a provider's policy refusing it, the time limit, or anything else.
+        failure: outcome !== 'failed' ? null : /\b402\b|credits/i.test(error!) ? 'credits' : /\b403\b|terms of service|usage polic|flagged/i.test(error!) ? 'policy' : error === 'time limit' ? 'time limit' : 'other',
         seconds: Math.round(((d ? Date.parse(d.at) : Date.now()) - Date.parse(r.at)) / 1000), cost: d ? d.cost as number : a?.inst === i ? +a.cost.toFixed(4) : 0,
         runner: i.log.findLast(e => e.seq < r.seq && ['create', 'duplicate', 'takeover'].includes(e.op))!.by,
         started: cause ? { op: cause.op, by: cause.op === 'wake' ? cause.from as string : cause.by } : null,
@@ -218,6 +221,17 @@ function runs(me: Me, since: string) {
       };
     });
   })).sort((x, y) => x.at.localeCompare(y.at));
+}
+
+// What people said, uploaded and closed, and each run's report or error, per instance `me` sees, since `since`.
+function activity(me: Me, since: string) {
+  const t = tree();
+  return Object.entries(t.series).filter(([, s]) => canSee(me, t.workspaces[s.workspace])).flatMap(([sid]) => instances(sid).map(i => ({
+    path: `${named(t, sid)}/${i.label}`,
+    entries: i.log.filter(e => e.at >= since && (e.op === 'done' || (isPerson(e) && ['comment', 'upload', 'close', 'abandon'].includes(e.op)))).map(e => ({
+      at: e.at, by: e.by, op: e.op, ...(e.op === 'comment' && { text: e.text }), ...(e.op === 'upload' && { file: e.file }), ...(e.op === 'done' && { run: e.run, summary: e.summary, error: e.error }),
+    })),
+  })).filter(b => b.entries.length));
 }
 
 // What goes on and what is stuck in what `me` sees: runs going and queued, what waits on whom, and open instances whose last run
@@ -763,6 +777,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     else if (url.pathname === '/api') send(res, 200, listing(me));
     else if (url.pathname === '/api/files') send(res, 200, pullable(me, url.searchParams.get('path') ?? ''));
     else if (url.pathname === '/api/runs') send(res, 200, runs(me, url.searchParams.get('since') ?? ''));
+    else if (url.pathname === '/api/activity') send(res, 200, activity(me, url.searchParams.get('since') ?? ''));
     else if (url.pathname === '/api/status') send(res, 200, status(me));
     // Each index the person can see, admins all, others those they are indexing.
     else if (url.pathname === '/api/indexes') send(res, 200, indexes().filter(x => me.role === 'admin' || x.people.some(p => p.who === me.email)));

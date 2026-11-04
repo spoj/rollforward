@@ -26,8 +26,12 @@ rf status [--long MIN] [--json]   what goes on and what's stuck: runs going, fla
 rf indexes [--json]               each index of a source you index, all for admins: its kind, items and size, and per person
                                   its phase, crawl or follow, pages read, when last caught up, and its error and next try
 rf runs [PATH] [--since DATE] [--failed] [--running] [--long MIN] [--json]
-                                  a line per run: start, path, run, outcome, time, cost, what started it, summary or error
-rf costs [PATH] [--since DATE] [--by workspace|series|person|day] [--json]   totals, runs and cost per run; person is the runner
+                                  a line per run: start, path, run, outcome, time, cost, what started it, summary or error;
+                                  the outcome is done, interrupted by a person, cut by a restart, running, or failed, for
+                                  credits, policy, time limit or other
+rf costs [PATH] [--since DATE] [--by workspace|series|person|day|outcome] [--json]   totals, runs and cost per run; person
+                                  is the runner; runs leave out those a restart cut, as the next run carries each on
+rf activity [PATH] [--since DATE] [--json]   per instance, what people said, uploaded and closed, and each run's report
 rf people WORKSPACE [--set FILE|-] [-n] [--force]   its owners and admins: its people as lines of owner|member EMAIL-OR-GROUP,
                                   each with a comment; --set replaces them, -n shows the changes, --force hides open instances
                                   from their runners
@@ -354,18 +358,31 @@ else if (cmd === 'comment' && args.length === 2) {
 } else if (cmd === 'runs' && args.length <= 1) {
   const rows = (await runsIn(args[0])).filter(r => (!flags.failed || r.outcome === 'failed') && (!flags.running || r.outcome === 'running') && (!flags.long || r.seconds >= Number(flags.long) * 60));
   if (flags.json) console.log(JSON.stringify(rows, null, 1));
-  else for (const r of rows) console.log(`${when(r.at)}  ${r.path}  run ${r.run}  ${r.outcome}  ${took(r.seconds)}  ${usd(r.cost)}  ${r.started ? `${r.started.op} by ${r.started.by}` : '-'}  ${r.error ?? r.summary ?? ''}`);
+  else for (const r of rows) console.log(`${when(r.at)}  ${r.path}  run ${r.run}  ${r.outcome}${r.failure ? ` (${r.failure})` : ''}  ${took(r.seconds)}  ${usd(r.cost)}  ${r.started ? `${r.started.op} by ${r.started.by}` : '-'}  ${r.error ?? r.summary ?? ''}`);
 } else if (cmd === 'costs' && args.length <= 1) {
-  const by = String(flags.by ?? 'series'), key = { workspace: r => r.path.split('/')[0], series: r => r.path.split('/').slice(0, 2).join('/'), person: r => r.runner, day: r => when(r.at).slice(0, 10) }[by];
+  const by = String(flags.by ?? 'series'), key = {
+    workspace: r => r.path.split('/')[0], series: r => r.path.split('/').slice(0, 2).join('/'), person: r => r.runner, day: r => when(r.at).slice(0, 10),
+    outcome: r => r.failure ? `failed, ${r.failure}` : r.outcome,
+  }[by];
   if (!key) throw new Error(USAGE);
-  const sums = new Map<string, { runs: number; cost: number }>(), rows = await runsIn(args[0]);
-  for (const r of rows) sums.set(key(r), { runs: (sums.get(key(r))?.runs ?? 0) + 1, cost: (sums.get(key(r))?.cost ?? 0) + r.cost });
-  const out = [...sums].map(([k, v]) => ({ [by]: k, runs: v.runs, cost: +v.cost.toFixed(4), per_run: +(v.cost / v.runs).toFixed(4) }))
+  // A run a restart cut is carried on by the next, so it adds its cost, not a run.
+  const sums = new Map<string, { runs: number; cost: number }>(), rows = await runsIn(args[0]), counted = (r: { outcome: string }) => r.outcome === 'cut' ? 0 : 1;
+  for (const r of rows) sums.set(key(r), { runs: (sums.get(key(r))?.runs ?? 0) + counted(r), cost: (sums.get(key(r))?.cost ?? 0) + r.cost });
+  const out = [...sums].map(([k, v]) => ({ [by]: k, runs: v.runs, cost: +v.cost.toFixed(4), per_run: v.runs ? +(v.cost / v.runs).toFixed(4) : null }))
     .sort((a, b) => by === 'day' ? a.day.localeCompare(b.day) : b.cost - a.cost);
   if (flags.json) console.log(JSON.stringify(out, null, 1));
   else {
-    for (const o of out) console.log(`${usd(o.cost).padStart(10)}  ${String(o.runs).padStart(5)} runs  ${usd(o.per_run).padStart(8)} a run  ${o[by]}`);
-    console.log(`${usd(rows.reduce((t, r) => t + r.cost, 0)).padStart(10)}  ${String(rows.length).padStart(5)} runs  in all`);
+    for (const o of out) console.log(`${usd(o.cost).padStart(10)}  ${String(o.runs).padStart(5)} runs  ${(o.per_run === null ? '-' : usd(o.per_run)).padStart(8)} a run  ${o[by]}`);
+    console.log(`${usd(rows.reduce((t, r) => t + r.cost, 0)).padStart(10)}  ${String(rows.reduce((n, r) => n + counted(r), 0)).padStart(5)} runs  in all`);
+  }
+} else if (cmd === 'activity' && args.length <= 1) {
+  const at = (args[0] ?? '').replace(/\/+$/, ''), blocks = (await get(`/api/activity?since=${encodeURIComponent(String(flags.since ?? ''))}`))
+    .filter(b => !at || b.path === at || b.path.startsWith(at + '/'));
+  if (flags.json) console.log(JSON.stringify(blocks, null, 1));
+  else for (const b of blocks) {
+    console.log(b.path);
+    for (const e of b.entries) console.log(`  ${when(e.at)}  ${e.op === 'done' ? `run ${e.run}  ${e.error ?? e.summary ?? 'no report'}`
+      : `${e.by}  ${e.op === 'comment' ? `says: ${e.text.split('\n')[0].slice(0, 200)}` : e.op === 'upload' ? `uploads ${e.file}` : `${e.op === 'close' ? 'closes' : 'abandons'} it`}`}`);
   }
 } else if (cmd === 'people' && args.length <= 1) {
   // People as lines to edit and set: ROLE EMAIL for everyone, owner|member EMAIL-OR-GROUP for a workspace, each with a comment.
