@@ -18,10 +18,10 @@ import { checkLogins } from './entra.ts';
 import { byLogin, call, connections, convert, intercepts, loginOf, removeConnection, setConnection } from './connections.ts';
 import { Browsers, endSignIn, isSignIn, passUpgrade, startSignIn, viewPage } from './browsers.ts';
 import { offer, unoffer } from './connections/graph.ts';
-import { forget, indexes, startIndexing, stopIndexing, track } from './indexes.ts';
+import { forget, indexes, startIndexing, track } from './indexes.ts';
 import { seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, byToken, cancelWake, closed, drain, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, resolveFor, setWake, startWaking, startWith, wakes, wider, type Active } from './waker.ts';
+import { active, byToken, cancelWake, closed, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, resolveFor, setWake, startWaking, startWith, wakes, wider, type Active } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -42,15 +42,6 @@ function freeName(t: Tree, ws: string, name: string): string {
   for (let k = 2; taken.has(n); k++) n = `${name} ${k}`;
   return n;
 }
-
-// An update (scripts/update.ts) drains the server before it moves the checkout: no run starts, and once those going end and
-// indexing stops after its slice going, or after 30 minutes, GET /drained answers 200, for the update to move it and restart the
-// server, which starts what queued meanwhile. Heard from the start, so a drain asked as the server starts waits for it.
-let drained = false;
-process.on('SIGUSR2', () => {
-  drain(() => stopIndexing().then(() => { drained = true; }));
-  setTimeout(() => { drained = true; }, 30 * 60_000);
-});
 
 // Before v0.2.25 a run's wake for its own instance was known by the run's name, which a rename changes; it gets the instance's id.
 {
@@ -708,7 +699,6 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     const url = new URL(req.url!, 'http://x');
     const site = req.headers['sec-fetch-site'];
     if (req.method !== 'GET' && site && site !== 'same-origin') throw new HttpError(403, 'cross-site request refused');
-    if (url.pathname === '/drained') return send(res, drained ? 200 : 503, drained ? 'drained' : 'not drained');
     const me = await authenticate(req, res, url);
     if (!me) return;
     if (url.pathname === '/') {

@@ -10,7 +10,7 @@ import type { Active } from '../src/waker.ts';
 // Wakes without a model: a run that a wake starts ends at once for want of a key, which is enough to see what started it.
 delete process.env.OPENROUTER_API_KEY;
 process.env.RF_WAKE_TICK_MS = '50';
-const { closed, drain, kick, message, queued, recover, resolveFor, setWake, startWaking, view, wakes } = await import('../src/waker.ts');
+const { closed, kick, message, recover, resolveFor, setWake, startWaking, view, wakes } = await import('../src/waker.ts');
 const { saveLogin } = await import('../src/logins.ts');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-wake-')), alice = 'alice@demo.test';
 initSystem(tmp);
@@ -173,17 +173,4 @@ test("others' comments and wakes are notes for an instance's runner, unless the 
   await settle();
   assert.equal(runs(shared), 1, 'in a series its runner shares, anyone starts runs');
   assert.match(message(shared, 1, shared.log), /"by":"bob@demo\.test","op":"comment".*"note":true/, "and bob's comment still reaches the agent as a note");
-});
-
-// Last: a drained server starts no more runs.
-test('an update drains the server: it exits once no run is going, and starts none meanwhile', async () => {
-  let exits = 0;
-  drain(() => exits++);
-  assert.equal(exits, 1, 'nothing was going');
-  const held = make('s6', 'drained');
-  held.append(alice, 'comment', { thread: 'h1', text: 'go on' });
-  kick(held);
-  await settle();
-  assert.ok(!ops(held).includes('run'));
-  assert.match(queued(held)!.why, /updates once the runs going end/);
 });

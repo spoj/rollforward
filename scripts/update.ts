@@ -1,9 +1,9 @@
-// Moves this checkout to the newest release CI made, once the server's runs going have ended, then restarts it: a systemd timer runs it
-// (docs/deploy.md), and never twice at once. A release is taken once every check on its commit has passed, and never past a prerelease, which a tag with
+// Moves this checkout to the newest release CI made and restarts the server at once, whatever runs are going: they carry on after the
+// restart. A systemd timer runs it (docs/deploy.md), and never twice at once. A release is taken once every check on its commit has passed, and never past a prerelease, which a tag with
 // a Manual: line makes for a release that needs a person first. What it installs, its packages and its agent image, is fetched
-// before the server drains, so a failure there, as without the network, changes nothing, and the next tick tries again. If the
+// before the server stops, so a failure there, as without the network, changes nothing, and the next tick tries again. If the
 // server doesn't answer HEALTH after the move, the checkout goes back, and that release isn't tried again; if going back fails too,
-// the server restarts as the checkout is, never left drained.
+// the server starts as the checkout is, never left stopped.
 //   node scripts/update.ts HEALTH
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -45,19 +45,13 @@ if (!checks.length || checks.some((c: any) => c.status !== 'completed' || !['suc
   process.exit(0);
 }
 
-// The checkout at `to`, with what changed since `from` installed, and the server restarted. The server drains first, on SIGUSR2, so
-// the runs going end on the release they started on, with its files: it starts no run, and says on /drained when those going have
-// ended, or 30 minutes have passed. One that restarted meanwhile, as a release before /drained did by itself, or that doesn't
-// answer within 35 minutes, is restarted all the same.
-async function move(from: string, to: string) {
-  const pid = () => sh('systemctl', '--user', 'show', '--property=MainPID', '--value', 'rollforward'), was = pid();
-  if (was !== '0') {
-    sh('systemctl', '--user', 'kill', '--kill-whom=main', '--signal=SIGUSR2', 'rollforward');
-    for (let i = 0; i < 420 && pid() === was && !(await fetch(new URL('/drained', health)).then(r => r.ok, () => false)); i++) await sleep(5000);
-  }
+// The checkout at `to`, with what changed since `from` installed, and the server started on it. It stops first, so the old process
+// never serves the new files; the runs it cuts end as aborted, and their instances are woken to carry on as it starts.
+function move(from: string, to: string) {
+  sh('systemctl', '--user', 'stop', 'rollforward');
   sh('git', 'checkout', '-q', '--detach', to);
   if (changed(from, to, 'package-lock.json')) sh('npm', 'ci', '--omit=dev', '--no-audit', '--no-fund', '--offline');
-  sh('systemctl', '--user', 'restart', 'rollforward');
+  sh('systemctl', '--user', 'start', 'rollforward');
 }
 const changed = (from: string, to: string, file: string) => !!sh('git', 'diff', '--name-only', from, to, '--', file);
 // A start may take a while, as one that moves data does.
@@ -88,7 +82,7 @@ try {
   rmSync(tmp, { recursive: true, force: true });
 }
 try {
-  await move(current, target);
+  move(current, target);
   if (await answers()) {
     // Only this image and the one before, for a person's move back, are kept.
     for (const d of readdirSync(AGENTS)) if (![image, id].includes(d)) remove(join(AGENTS, d));
@@ -99,14 +93,14 @@ try {
 } catch (e) {
   console.log(`${target} failed: ${(e as Error).message}`);
 }
-// Recorded first, so a way back that fails too doesn't drain the server again at the next tick.
+// Recorded first, so a way back that fails too doesn't try that release again at the next tick.
 mkdirSync(dirname(state), { recursive: true });
 writeFileSync(state, JSON.stringify({ bad: [...bad, target] }));
 try {
-  await move(target, current);
+  move(target, current);
   console.log(`back on ${current}; ${target} won't be tried again`);
 } catch (e) {
-  console.log(`going back to ${current} failed: ${(e as Error).message}; the server restarts as the checkout is, and ${target} won't be tried again`);
+  console.log(`going back to ${current} failed: ${(e as Error).message}; the server starts as the checkout is, and ${target} won't be tried again`);
   sh('systemctl', '--user', 'restart', 'rollforward');
 }
 process.exitCode = 1;

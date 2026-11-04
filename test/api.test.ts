@@ -703,11 +703,3 @@ test("rf login without a token signs in through the browser: the person allows r
   assert.equal((await fetch(`${base}/auth/cli/poll`, { method: 'POST', body: JSON.stringify({ id }) })).status, 202);
   assert.equal((await fetch(`${base}/auth/cli/poll`, { method: 'POST', body: JSON.stringify({ id: 'made-up' }) })).status, 410);
 });
-
-// Last: a drained server starts no more runs.
-test('an update drains the server: GET /drained answers 200 once no run is going', async () => {
-  assert.equal((await fetch(base + '/drained')).status, 503);
-  process.kill(proc.pid!, 'SIGUSR2');
-  for (let i = 0; i < 50 && (await fetch(base + '/drained')).status !== 200; i++) await new Promise(r => setTimeout(r, 100));
-  assert.equal((await fetch(base + '/drained')).status, 200);
-});

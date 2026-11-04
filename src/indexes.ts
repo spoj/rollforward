@@ -55,14 +55,12 @@ function queue<T>(key: string, f: () => Promise<T>): Promise<T> {
 }
 
 // The server calls Graph itself, as the person, as logins.ts does, not through a run's proxy; a list of requests goes as a $batch.
-// Stopping indexing drops the request in flight.
 const G = () => `${endpoints.graph}/v1.0`;
-let halt = new AbortController();
 async function call(email: string, path: string, requests?: object[]): Promise<any> {
   const r = await fetch(`${G()}${path}`, {
     method: requests ? 'POST' : 'GET', body: requests && JSON.stringify({ requests }),
     headers: { authorization: `Bearer ${await token(email, 'm365', scope())}`, ...(requests && { 'content-type': 'application/json' }) },
-    signal: AbortSignal.any([halt.signal, AbortSignal.timeout(120_000)]),
+    signal: AbortSignal.timeout(120_000),
   });
   if (r.ok) return r.json();
   throw Object.assign(new Error(`Microsoft Graph answered ${r.status}: ${(await r.text()).slice(0, 300)}`), { status: r.status, after: Number(r.headers.get('retry-after')) || 60 });
@@ -94,7 +92,7 @@ function failed(p: Part, e: any, link: string) {
 // A person's due parts of a cache, 20 to a $batch, a page each, until none is due or `until` passes: a part is due again at once
 // while its round has a next page, and an hour after it reaches its deltaLink. A mailbox's folder list adds and drops its folders'
 // parts. A 403 or 404 means they can no longer read it: a mail folder or a site's library is removed, with what is under it at the
-// tidy-up; for the source itself, the cache goes. A batch dropped as indexing stops leaves the cache as it was.
+// tidy-up; for the source itself, the cache goes.
 async function slice(person: string, offer: string, until: number): Promise<void> {
   const mail = offer.startsWith('m365:mail:');
   for (;;) {
@@ -105,7 +103,6 @@ async function slice(person: string, offer: string, until: number): Promise<void
     try {
       answers = (await call(person, '/$batch', due.map(([, p], k) => ({ id: String(k), method: 'GET', url: p.link.slice(G().length), headers: { prefer: prefer(offer) } })))).responses;
     } catch (e) {
-      if (halt.signal.aborted) return;
       for (const [part, p] of due) failed(p, e, start(offer, part));
       return save(c);
     }
@@ -157,13 +154,12 @@ async function slice(person: string, offer: string, until: number): Promise<void
 
 // Once what later lines replaced or removed reaches a quarter of the feed, it's rewritten without them, and without what is under a
 // removed folder or library, as delta sends only the folder, as a new feed that the .json then names. A library's root item has its
-// drive as parent. Indexing stopping leaves it for next time.
+// drive as parent.
 async function tidy(c: Cache) {
   const file = feed(c), next = feed({ ...c, gen: c.gen + 1 });
   const read = () => createInterface({ input: createReadStream(file, { end: c.length - 1 }).pipe(createZstdDecompress()), crlfDelay: Infinity });
   const ids: string[] = [], last = new Map<string, number>(), gone = new Set<string>(), parent = new Map<string, string>();
   for await (const line of read()) {
-    if (halt.signal.aborted) return;
     const it = JSON.parse(line);
     last.set(it.id, ids.push(it.id) - 1);
     if (it.deleted || it['@removed']) gone.add(it.id);
@@ -182,7 +178,6 @@ async function tidy(c: Cache) {
   let i = 0, kept = 0;
   await pipeline(async function* () {
     for await (const line of read()) {
-      if (halt.signal.aborted) return;
       const id = ids[i];
       if (last.get(id) === i++ && !under(id)) {
         kept++;
@@ -190,7 +185,6 @@ async function tidy(c: Cache) {
       }
     }
   }, createZstdCompress(), createWriteStream(next));
-  if (halt.signal.aborted) return;
   Object.assign(c, { gen: c.gen + 1, length: statSync(next).size, base: statSync(next).size, lines: kept });
   save(c);
   rmSync(file);
@@ -251,16 +245,16 @@ export function prepare(inst: Instance, to: string): boolean {
 
 // In the background, the most overdue cache gets a slice, again and again, one at a time: each crawl goes on to its end, and each
 // cache catches up hourly while its person's login offers its source. Nothing is kept in memory, so a restart goes on from the
-// .json files, and a drain waits for none of it.
-let worker: Promise<void> | undefined, poke = () => {};
+// .json files.
+let stopping = false, worker: Promise<void> | undefined, poke = () => {};
 const rest = (ms: number) => new Promise<void>(ok => { poke = ok; setTimeout(ok, Math.max(0, Math.min(ms, 60_000))).unref(); });
 export function startIndexing() {
-  halt = new AbortController();
+  stopping = false;
   // Copies of runs cut short.
   rmSync(join(rfDir(), 'runs'), { recursive: true, force: true });
   for (const email of Object.keys(users())) track(email);
   worker = (async () => {
-    while (!halt.signal.aborted) {
+    while (!stopping) {
       const next = caches().filter(c => offered(c.person, c.source)).flatMap(c => Object.values(c.parts).flatMap(p => (p.due === null ? [] : [{ c, due: p.due }]))).sort((a, b) => a.due - b.due)[0];
       if (!next || next.due > Date.now()) await rest((next?.due ?? Infinity) - Date.now());
       else await queue(at(next.c.person, next.c.source), async () => {
@@ -271,8 +265,9 @@ export function startIndexing() {
     }
   })();
 }
+// For the tests, which stop the worker between their steps, once what it's doing ends.
 export function stopIndexing(): Promise<void> {
-  halt.abort();
+  stopping = true;
   poke();
   return worker ?? Promise.resolve();
 }

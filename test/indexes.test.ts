@@ -142,18 +142,15 @@ function now(feed: Item[]) {
   return [...m.keys()].filter(id => !dead(up(m.get(id)!))).sort();
 }
 const until = async (done: () => boolean) => { for (let i = 0; !done(); i++) { assert.ok(i < 3000, 'it never happened'); await new Promise(ok => setTimeout(ok, 20)); } };
-// The worker runs until `done`, then stops, so that what a test writes next doesn't race it.
+// The worker runs until `done`, then stops once what it's doing ends, a tidy-up after a slice included, so that what a test writes
+// next doesn't race it.
 async function work(done: () => boolean) {
   ix.startIndexing();
   await until(done);
   await ix.stopIndexing();
 }
-// Whether the worker is done with these caches: none is due, nor wants a tidy-up.
-const settled = (who: string, ...offerIds: string[]) => () => offerIds.every(o => {
-  if (!existsSync(`${at(who, o)}.json`)) return false;
-  const c = cache(who, o), ps = Object.values(c.parts) as { due: number | null; delta: string | null }[];
-  return ps.every(p => p.due === null || p.due > Date.now()) && !(ps.every(p => p.delta) && c.length > c.base * 1.25);
-});
+const settled = (who: string, ...offerIds: string[]) => () =>
+  offerIds.every(o => existsSync(`${at(who, o)}.json`) && Object.values(cache(who, o).parts).every((p: any) => p.due === null || p.due > Date.now()));
 // The worker catches a person's caches up now, as it would within the hour.
 async function due(who: string, ...offerIds: string[]) {
   for (const o of offerIds) {
@@ -198,20 +195,6 @@ test('a crawl cut by a restart goes on at the page it was on, and meanwhile a ru
   await new Promise(ok => second.on('exit', ok));
   assert.match(asked.filter((a, i) => i >= from && a.who === DAN)[0].url, /token=c6\./, 'the restart asked for the third page first');
   assert.deepEqual(now(lines(feedOf(DAN, BIG))), ['b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7', 'b8', 'bigtop']);
-});
-
-test('stopping indexing drops the $batch in flight at once, and the cursor stays where it was', async () => {
-  const c = cache(DAN, BIG), token = new URL(c.parts[''].link).searchParams.get('token')!;
-  c.parts[''].due = Date.now();
-  writeFileSync(`${at(DAN, BIG)}.json`, JSON.stringify(c));
-  const reached = new Promise<void>(ok => { hold = { token, reached: ok }; });
-  ix.startIndexing();
-  await reached;
-  const t = Date.now();
-  await ix.stopIndexing();
-  hold = undefined;
-  assert.ok(Date.now() - t < 5_000, `the drain took ${Date.now() - t} ms, where the batch would wait 120 s`);
-  assert.deepEqual(cache(DAN, BIG), c, 'nothing of the batch committed, nor counted as a failure');
 });
 
 test("each person's cache is their own delta feed, and a run gets a copy of it", async () => {
@@ -377,7 +360,9 @@ test("a whole OneDrive: its person's own drive's root delta", async () => {
   assert.deepEqual(asked.filter(q => q.who === DAN && q.url.startsWith('/me/')).map(q => [q.url, q.prefer]), [['/me/drive/root/delta', 'deltashowremovedasdeleted']]);
 });
 
-test('rf indexes: each cache, its lines and bytes, and how it goes', () => {
+test('rf indexes: each cache, its lines and bytes, and how it goes', async () => {
+  // Each start lists Carol's libraries again, and b!big, open again, crawls again.
+  await work(settled(CAROL, SITE));
   const site = ix.indexes().find(x => x.source === SITE && x.people[0].who === CAROL)!;
   assert.equal(site.kind, 'site');
   assert.equal(site.items, cache(CAROL, SITE).lines);
