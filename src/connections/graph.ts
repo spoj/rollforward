@@ -55,13 +55,14 @@ async function check(runner: string, ticks: string[], { method, url, headers, js
   const bare = url.pathname.replace(/^\/[^/]+/, ''), path = bare + url.search, segments = bare.split('/').slice(1).map(s => decodeURIComponent(s));
   // /me is the runner, and mailFolders('inbox') is mailFolders.
   const segs = segments[0] === 'me' ? ['users', runner, ...segments.slice(1)] : segments, [top, id = '', part = ''] = segs.map(s => s.replace(/\(.*$/, ''));
-  const write = method !== 'GET', actions = segs.map(s => s.replace(/\(.*$/, '').replace(/^microsoft\.graph\./i, '').toLowerCase()), action = actions.at(-1);
+  // An action by its last dotted part, as Graph takes it qualified or not: send, graph.send and microsoft.graph.send alike.
+  const write = method !== 'GET', actions = segs.map(s => s.replace(/\(.*$/, '').split('.').pop()!.toLowerCase()), action = actions.at(-1);
   const mailbox = top === 'users' && (part === 'messages' || part === 'mailFolders' || (write && actions[2] === 'sendmail'));
   const body = headers['transfer-encoding'] !== undefined || Number(headers['content-length'] ?? 0) > 0, object = typeof json === 'object' && json !== null;
   if (write && body && !object && !mailbox && !(method === 'PUT' && action === 'content')) throw new HttpError(403, `${bare}: a write's body is a JSON object, but a file's content, with PUT …/content, or mail as MIME`);
   let offer: string | undefined, mail = false;
   if (mailbox) {
-    const scope = !write ? 'Mail.Read' : ['sendmail', 'send', 'reply', 'replyall', 'forward'].includes(action!) ? 'Mail.Send' : 'Mail.ReadWrite';
+    const scope = !write ? 'Mail.Read' : ['sendmail', 'send', 'reply', 'replyall', 'forward', 'unsubscribe'].includes(action!) ? 'Mail.Send' : 'Mail.ReadWrite';
     const what = { 'Mail.Read': ['read mail', 'read shared mailboxes'], 'Mail.Send': ['send mail', 'send from shared mailboxes'], 'Mail.ReadWrite': ['write mail', 'write to shared mailboxes'] }[scope];
     needs(scope, what[0]);
     if (id.toLowerCase() !== runner) needs(`${scope}.Shared`, what[1]);

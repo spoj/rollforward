@@ -66,13 +66,13 @@ const m365 = () => logins.logins(ALICE).find(l => l.id === 'm365')!;
 
 // A request as a run's tool makes it: CONNECT through the proxy with the run's token, then TLS to the host, trusting what the run
 // trusts, and HTTP/1.1; `data` sees the answer as it comes.
-async function via(method: string, url: string, o: { body?: string | Buffer; headers?: Record<string, string>; token?: string; data?: (b: Buffer) => void } = {}): Promise<{ status: number; text: string; headers: IncomingHttpHeaders }> {
+async function via(method: string, url: string, o: { body?: string | Buffer; headers?: Record<string, string>; token?: string; data?: (b: Buffer) => void; path?: string } = {}): Promise<{ status: number; text: string; headers: IncomingHttpHeaders }> {
   const u = new URL(url), token = o.token ?? 'run';
   const socket = await new Promise<Socket>((ok, fail) => request({ socketPath: sock, method: 'CONNECT', path: `${u.hostname}:443`, headers: { 'proxy-authorization': `Basic ${Buffer.from(`rf:${token}`).toString('base64')}` } })
     .on('connect', (r, s) => r.statusCode === 200 ? ok(s) : fail(new Error(`CONNECT answered ${r.statusCode}`))).on('error', fail).end());
   const tls = tlsConnect({ socket, servername: u.hostname, ca, ALPNProtocols: ['http/1.1'] });
   return new Promise((ok, fail) => {
-    const r = httpsRequest({ host: u.hostname, path: u.pathname + u.search, method, headers: { authorization: 'Bearer rf', ...o.headers }, createConnection: () => tls }, res => {
+    const r = httpsRequest({ host: u.hostname, path: o.path ?? u.pathname + u.search, method, headers: { authorization: 'Bearer rf', ...o.headers }, createConnection: () => tls }, res => {
       const chunks: Buffer[] = [];
       res.on('data', b => { chunks.push(b); o.data?.(b); }).on('end', () => ok({ status: res.statusCode!, text: Buffer.concat(chunks).toString(), headers: res.headers }));
     });
@@ -259,9 +259,11 @@ test("the proxy refuses, with a plain 403 and why, what isn't ticked: the runner
   assert.equal((await via('GET', `${G}/me/messages`, { headers: { prefer: 'outlook.body-content-type="text"' } })).status, 200);
 });
 
-test('a request is for the host it was sent to: a target naming another, such as //elsewhere.test/…, is refused before anything is put in', async () => {
+test('a request is for the host it was sent to, over https: a target naming another, such as //elsewhere.test/…, or http://, is refused before anything is put in', async () => {
   const before = seen.length, r = await via('GET', `${G.replace('/v1.0', '')}//elsewhere.test/v1.0/me/messages`);
-  assert.deepEqual([r.status, r.text], [403, 'graph.microsoft.com takes requests for graph.microsoft.com, not https://elsewhere.test\n']);
+  assert.deepEqual([r.status, r.text], [403, 'graph.microsoft.com takes requests for https://graph.microsoft.com, not https://elsewhere.test\n']);
+  const clear = await via('GET', G, { path: 'http://graph.microsoft.com/v1.0/me/messages' });
+  assert.deepEqual([clear.status, clear.text], [403, 'graph.microsoft.com takes requests for https://graph.microsoft.com, not http://graph.microsoft.com\n'], 'its token would go in the clear');
   assert.equal(seen.length, before, 'nothing reached Graph, or went on with its token');
 });
 
@@ -409,6 +411,7 @@ test("writes share nothing, and make, move or copy nothing outside the ticks; ma
   for (const [method, path, body, why] of [
     ['POST', '/drives/b!d1/items/a/createLink', { type: 'view', scope: 'anonymous' }, /would share it/],
     ['POST', '/drives/b!d1/items/a/invite', { recipients: [] }, /would share it/],
+    ['POST', '/drives/b!d1/items/a/graph.createLink', { type: 'view', scope: 'anonymous' }, /would share it/],
     ['POST', '/me/mailFolders/inbox/messageRules', { actions: { forwardTo: [] } }, /would share it/],
     ['PATCH', '/drives/b!d1/items/a', { parentReference: { id: 'y2025' } }, /would put it in a folder no tick covers/],
     ['POST', '/drives/b!d1/items/a/copy', { parentReference: { driveId: 'b!d1', id: 'top' } }, /would put it in a folder no tick covers/],
