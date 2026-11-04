@@ -309,6 +309,10 @@ test("people show by name, with their email on hover, and Entra groups by label;
   await page.click('#log [data-act=audit]');
   await page.locator('#audit .e', { hasText: 'Bob left a note for you' }).waitFor();
   await page.click('#audit [data-act=audit]');
+  const long = `Wide${'_'.repeat(400)}`;
+  assert.equal((await fetch(url('/api/instances/a5c0ff5e1f00/comment'), { method: 'POST', body: JSON.stringify({ text: long }), headers: { cookie: bobs } })).status, 200);
+  await page.waitForSelector(`#needs span:text-is("${long}")`);
+  assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('#needs, #log')].map(e => e.scrollWidth <= e.clientWidth).concat([...document.querySelectorAll('#needs .btn')].map(b => b.getBoundingClientRect().right <= document.querySelector('#needs')!.getBoundingClientRect().right))), [true, true, true, true], 'a long line ends in an ellipsis, and its Reply shows; the panel keeps its width');
 });
 
 test("a name two people share shows with their email, a group among a workspace's people is marked as one, and a person's request to start a series names them", async () => {
