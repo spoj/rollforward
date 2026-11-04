@@ -7,7 +7,8 @@ import type { Type } from '../connections.ts';
 // `writeback`, true unless set false, says whether a run's browser writes its state back to its person's login. `header` names a
 // header its sign-in needs that its pages never send, such as Retail Link's x-bot-token, whose value each person gives as they sign in.
 // `keepalive`, a page of it by address or path, and `every`, in minutes, keep idle logins alive (browsers.ts), in `hours` on weekdays if given.
-// `people`, emails and Entra group ids, are the only ones who may use it, if given.
+// `people`, emails and Entra group ids, are the only ones who may use it, if given. `owner` is the person whose own site it is, who
+// added it under the capability sites; `off`, an admin's, takes it from everyone.
 export default {
   settings(input) {
     if (typeof input.url !== 'string' || !/^https?:\/\/[^/]/.test(input.url)) throw new HttpError(400, 'url: an http(s) address, where sign-in starts');
@@ -25,7 +26,8 @@ export default {
     if (input.hours !== undefined && !/^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/.test(String(input.hours))) throw new HttpError(400, "hours: from and to, such as 08:00-19:00, on weekdays in the server's time zone");
     return { url: input.url, hosts, ...(typeof input.title === 'string' && input.title.trim() && { title: input.title.trim() }), writeback: input.writeback !== false && input.writeback !== 'false', ...(input.header !== undefined && { header: String(input.header) }),
       ...(every && { keepalive: String(input.keepalive), every: Number(every[1]) * (every[2] === 'h' ? 60 : 1) }), ...(input.hours !== undefined && { hours: String(input.hours) }),
-      ...(people && { people: people.map(p => p.toLowerCase()) }) };
+      ...(people && { people: people.map(p => p.toLowerCase()) }), ...(typeof input.owner === 'string' && { owner: input.owner.toLowerCase() }),
+      ...((input.off === true || input.off === 'true') && { off: true }) };
   },
   login: c => ({ id: `web:${c.name}`, kind: 'website', name: c.title ?? c.name, offers: [{ id: `web:${c.name}`, name: c.title ?? c.name }] }),
 } satisfies Type;

@@ -8,7 +8,10 @@ import type { Duplex } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { HttpError, instance, instances, isPerson, replaceReadOnly, type Instance } from './store.ts';
 import { lender, logins, personDir, runnerOf, saveLogin, seal, secret, use } from './logins.ts';
-import { connections } from './connections.ts';
+import { lookup } from 'node:dns/promises';
+import { getDomain } from 'tldts';
+import { changeConnection, connections, setConnection, types } from './connections.ts';
+import { isPrivate } from './sandbox.ts';
 import { users } from './auth.ts';
 import { changes, readJson, rfDir, tree } from './system.ts';
 
@@ -50,7 +53,7 @@ export function files(id: string, path: string) {
 }
 
 const open = async (w: Website, ttl_s: number, state?: unknown, headers?: Record<string, string>): Promise<string> =>
-  (await json('POST', '/sessions', { site: { hosts: [new URL(w.url).hostname, ...w.hosts], start_url: w.url, headers }, state, ttl_s })).id;
+  (await json('POST', '/sessions', { site: { hosts: [new URL(w.url).hostname, ...w.hosts], start_url: w.url, headers, ...(w.owner && { public: true }) }, state, ttl_s })).id;
 const close = (id: string): Promise<{ state: unknown; log: { method: string; url: string; status: number; blocked?: string; error?: string }[] }> => json('DELETE', `/sessions/${id}`);
 
 // A websocket passed through to the service's `path`, with the key added.
@@ -70,15 +73,16 @@ export function passUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, 
 // in, and the other hosts its pages need, such as single sign-on's. A browser on one reaches only those hosts; whatever its login
 // may do there, the browser may, so keeping to reads is the agent's, and its request log shows what it did.
 
-export type Website = { name: string; url: string; hosts: string[]; writeback: boolean; header?: string; keepalive?: string; every?: number; hours?: string; people?: string[] };
+export type Website = { name: string; url: string; hosts: string[]; writeback: boolean; header?: string; keepalive?: string; every?: number; hours?: string; people?: string[]; owner?: string; off?: boolean };
 export const websites = (): Record<string, Website> => Object.fromEntries(connections().filter(c => c.type === 'website').map(c => [c.name, {
   name: c.title ?? c.name, url: c.url, hosts: c.hosts, writeback: c.writeback, header: c.header, keepalive: c.keepalive, every: c.every, hours: c.hours, people: c.people,
+  ...(c.owner && { owner: c.owner }), ...(c.off && { off: true }),
 }]));
 
 // A website that lists its people lets only them use it, by email or Entra group, admins no more than anyone: only they see it on
 // Logins and sign in to it, and a run gets its browser only if its runner and everyone who took part in its instance, or woke it,
-// are among them. Such a website is never lent through a shared series.
-export const allowed = (w: Website, email: string) => !w.people || w.people.includes(email) || (users()[email]?.groups ?? []).some(g => w.people!.includes(g));
+// are among them. Such a website is never lent through a shared series. A website an admin switched off, no one uses.
+export const allowed = (w: Website, email: string) => !w.off && (!w.people || w.people.includes(email) || (users()[email]?.groups ?? []).some(g => w.people!.includes(g)));
 export const scoped = (offer: string) => offer.startsWith('web:') && !!websites()[offer.slice(4)]?.people;
 
 function website(id: string): Website {
@@ -110,6 +114,69 @@ export async function startSignIn(email: string, site: string, given: string): P
 }
 
 export const isSignIn = (email: string, id: string) => signIns.get(id)?.email === email;
+
+// Whether a host, exact or *.domain for any name under the domain, covers another, which may be either too.
+const covers = (pattern: string, host: string) => pattern === host || (pattern.startsWith('*.') && host.endsWith(pattern.slice(1)));
+const reached = (w: { url: string; hosts: string[] }) => [new URL(w.url).hostname, ...w.hosts];
+
+// What a website may reach: never rollforward's own host, or a host of another connection, so that no website goes around another's
+// people or settings; a wildcard over one registrable domain at most; and for a person's own, never an internal address, which the
+// browser refuses it too.
+async function checkHost(site: string, h: string, own: boolean) {
+  if (!/^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(h)) throw new HttpError(400, `${h}: a host, such as sso.example.com, or *.example.com for any name under it`);
+  const base = h.replace(/^\*\./, '');
+  if (h !== base && getDomain(base) !== base) throw new HttpError(400, `${h}: a wildcard covers one registrable domain at most, such as *.example.com`);
+  if ([process.env.RF_PUBLIC_URL, process.env.RF_BROWSER_URL].some(u => u && covers(h, new URL(u).hostname))) throw new HttpError(400, `${h} is rollforward's own: no website reaches it`);
+  const other = connections().find(c => c.name !== site && (types[c.type].serves?.(c, base) || (c.type === 'website' && reached(c).some(x => covers(x, h) || covers(h, x)))));
+  if (other) throw new HttpError(400, `${h} is ${other.name}'s: no other website reaches it`);
+  if (own && h === base && (await lookup(h, { all: true }).catch(() => [])).some(isPrivate)) throw new HttpError(400, `${h} is at an internal address: a website of your own reaches none`);
+}
+
+// A person's own website, for those granted sites: its name and the https address where its sign-in starts, the other hosts its pages
+// need allowed as they sign in to it.
+export async function addSite(email: string, name: string, url: string) {
+  if (!/^https:\/\/[^/]/.test(url)) throw new HttpError(400, 'url: an https address, where its sign-in starts');
+  if (connections().some(c => c.name === name)) throw new HttpError(409, `${name} is taken: name yours otherwise`);
+  await checkHost(name, new URL(url).hostname, true);
+  setConnection(name, { type: 'website', url, people: [email], owner: email }, email);
+}
+
+// A website's hosts are its person's to allow if it's their own, and otherwise admins'.
+const allows = (w: Website, by: { email: string; role: string }) => (w.owner ? w.owner === by.email : by.role === 'admin');
+
+// The hosts a person's sign-in to a website was refused and still is, each with its count, and *.D where two or more of them are
+// under one registrable domain D; and whether they may allow them.
+export async function refusedHosts(by: { email: string; role: string }, site: string) {
+  const w = website(site), id = [...signIns].find(([, s]) => s.email === by.email && s.site === site)?.[0], reach = reached(w);
+  if (!id) throw new HttpError(404, `no sign-in of yours to ${site} is open`);
+  const n = new Map<string, number>();
+  for (const e of await json('GET', `/sessions/${id}/log`) as { url: string; blocked?: string }[]) {
+    const host = e.blocked === 'host not on the list' && URL.parse(e.url)!.hostname;
+    if (host && !reach.some(p => covers(p, host))) n.set(host, (n.get(host) ?? 0) + 1);
+  }
+  const under = Map.groupBy(n.keys(), h => getDomain(h) ?? h);
+  return {
+    allows: allows(w, by),
+    hosts: [...[...under].filter(([d, hs]) => hs.length > 1 && hs.some(h => h !== d)).map(([d, hs]) => ({ host: `*.${d}`, count: hs.reduce((t, h) => t + n.get(h)!, 0) })),
+      ...[...n].map(([host, count]) => ({ host, count }))].sort((a, b) => b.count - a.count),
+  };
+}
+
+// A host a website's pages need, allowed by its person if it's their own and otherwise by an admin; their open sign-in to it, if any,
+// reaches it at once.
+export async function allowHost(by: { email: string; role: string }, site: string, host: string) {
+  const w = website(site), h = host.trim().toLowerCase();
+  if (!allows(w, by)) throw new HttpError(403, `${w.name}'s hosts are ${w.owner ? `${w.owner}'s` : "admins'"} to allow`);
+  await checkHost(site, h, !!w.owner);
+  changeConnection(site, { hosts: [...new Set([...w.hosts, h])] }, by.email);
+  const id = [...signIns].find(([, s]) => s.email === by.email && s.site === site)?.[0];
+  if (!id) return;
+  await json('PUT', `/sessions/${id}/hosts`, { hosts: reached(website(site)) });
+  await json('POST', `/sessions/${id}/reload`);
+}
+
+// The hosts a run's browser on a website was refused that it still doesn't reach.
+export const unreached = (site: string, hosts: string[]) => hosts.filter(h => !reached(websites()[site]).some(p => covers(p, h)));
 
 export const viewPage = async (id: string) => (await call('GET', `/sessions/${id}/view`)).toString();
 
@@ -157,15 +224,17 @@ type Opened = { inst: string; run: number; site: string; email: string; since: s
 const journal = () => readJson<Record<string, Opened>>('browsers.json', {});
 const setJournal = (all: Record<string, Opened>) => replaceReadOnly(join(rfDir(), 'browsers.json'), JSON.stringify(all));
 
-// A run's browser closed: its request log kept in its instance's browser/, logged as browser, and, where its website writes it back,
-// its state its person's login again, unless they signed out or in anew since it opened.
-function keep(inst: Instance, b: Opened, { state, log }: { state: unknown; log: { method: string; blocked?: string }[] }) {
+// A run's browser closed: its request log kept in its instance's browser/, logged as browser with the hosts its pages were refused, and,
+// where its website writes it back, its state its person's login again, unless they signed out or in anew since it opened.
+function keep(inst: Instance, b: Opened, { state, log }: { state: unknown; log: { method: string; url: string; blocked?: string }[] }) {
   const login = logins(b.email).find(l => l.id === `web:${b.site}`);
   if (b.writeback && state && login && !login.expired && login.since === b.since) saveLogin(b.email, login, JSON.stringify(state));
   mkdirSync(join(inst.dir, 'browser'), { recursive: true });
   replaceReadOnly(join(inst.dir, b.file), log.map(e => JSON.stringify(e) + '\n').join(''));
-  const writes = log.filter(e => !e.blocked && !['GET', 'HEAD', 'OPTIONS'].includes(e.method)).length;
-  inst.append('server', 'browser', { run: b.run, site: b.site, login: b.email, requests: log.length, writes, blocked: log.filter(e => e.blocked).length, file: b.file });
+  const writes = log.filter(e => !e.blocked && !['GET', 'HEAD', 'OPTIONS'].includes(e.method)).length, hosts: Record<string, number> = {};
+  for (const h of log.filter(e => e.blocked === 'host not on the list').map(e => URL.parse(e.url)!.hostname)) hosts[h] = (hosts[h] ?? 0) + 1;
+  inst.append('server', 'browser', { run: b.run, site: b.site, login: b.email, requests: log.length, writes, blocked: log.filter(e => e.blocked).length, file: b.file,
+    ...(Object.keys(hosts).length && { hosts }) });
 }
 
 // As the server starts, before any browser of its own opens: the browsers left open on the service, which this server alone uses,

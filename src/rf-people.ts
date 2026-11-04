@@ -58,12 +58,14 @@ rf connection set NAME TYPE [--SETTING VALUE]...   an outside system runs reach 
                                   live login's browser every so often, in office hours on weekdays if given, so idle sessions
                                   stay alive, and who alone may use it, by email or Entra group id
 rf connection remove NAME
+rf connection off|on NAME         a website switched off, for no one to use, such as a person's own, or on again
 rf brand [--text TEXT] [--logo FILE] [--clear]   the deployment's text and logo, a .png, .jpg, .gif, .webp or .svg, which top
                                   the sidebar and are the page's title and icon; --clear goes back to the plain look, and with
                                   no option it prints them
-rf can [CAP [EMAIL|GROUP,...] [--clear]]   what users may do beyond the rest, as admins may: publish, push skills, and
-                                  create, make workspaces; a list grants CAP to those emails and Entra group ids in place of
-                                  whom it had, --clear to no one, and with neither it prints whom each is granted to`;
+rf can [CAP [EMAIL|GROUP,...] [--clear]]   what users may do beyond the rest, as admins may: publish, push skills;
+                                  create, make workspaces; and sites, add websites of their own; a list grants CAP to those
+                                  emails and Entra group ids in place of whom it had, --clear to no one, and with neither it
+                                  prints whom each is granted to`;
 
 const GUIDE = `rollforward runs a team's recurring work, such as a weekly borrowing base or a month-end reconciliation, with an agent
 that does each period's work and people who check it. rf does what its page does, as you.
@@ -347,6 +349,9 @@ else if (cmd === 'comment' && args.length === 2) {
 } else if (cmd === 'connection' && args[0] === 'set' && args.length === 3) {
   await post(`/connections/${encodeURIComponent(args[1])}`, { type: args[2], ...flags }, 'PUT');
   console.log('saved');
+} else if (cmd === 'connection' && ['off', 'on'].includes(args[0]) && args[1]) {
+  await post(`/connections/${encodeURIComponent(args[1])}`, { off: args[0] === 'off' }, 'PATCH');
+  console.log(args[0]);
 } else if (cmd === 'connection' && args[0] === 'remove' && args[1]) {
   await api(`/connections/${encodeURIComponent(args[1])}`, { method: 'DELETE' });
   console.log('removed');

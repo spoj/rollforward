@@ -15,8 +15,8 @@ import { canManage, canSee, changes, everyone, initSystem, isIn, isPeople, readJ
 import { checkTicks, logins, runnerOf, saveLogin, signOut, unoffer } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
-import { byLogin, call, connections, convert, intercepts, loginOf, removeConnection, setConnection, upstreams } from './connections.ts';
-import { allowed, Browsers, endSignIn, isSignIn, keepAlive, passUpgrade, reap, scoped, startSignIn, viewPage, websites } from './browsers.ts';
+import { byLogin, call, changeConnection, connections, convert, intercepts, loginOf, removeConnection, setConnection, upstreams } from './connections.ts';
+import { addSite, allowed, allowHost, Browsers, endSignIn, isSignIn, keepAlive, passUpgrade, reap, refusedHosts, scoped, startSignIn, unreached, viewPage, websites } from './browsers.ts';
 import { offer } from './connections/graph.ts';
 import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, startIndexing, track } from './indexes.ts';
@@ -159,7 +159,8 @@ function guard(before: string[], after: string[], force: unknown) {
 
 // An instance as the sidebar shows it. What comes from its log and screen is kept until either moves on, or its series' sharing,
 // which says whose entries are notes, changes, so a listing reads each instance's log once, not on every refresh.
-const kept = new WeakMap<Instance, { key: string; active: string; asks: string[]; runner: string; acted: string[]; cost: number; corrections: number; wrong: string[] }>();
+const kept = new WeakMap<Instance, { key: string; active: string; asks: string[]; runner: string; acted: string[]; cost: number; corrections: number; wrong: string[];
+  refused: { at: string; run: number; site: string; hosts: string[] }[] }>();
 // Who runs an instance, and the logins they ticked for it, by name while they still offer them.
 function runner(inst: Instance) {
   const r = runnerOf(inst), offers = logins(r.by).flatMap(l => l.offers);
@@ -185,13 +186,16 @@ function summary(i: Instance, email: string, w8 = wakes()) {
   const news = i.log.findLast(e => e.by !== email && e.accepted_by !== email && NEWS.includes(e.op)), s = seen(email);
   let k = kept.get(i);
   if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i).map(w => w.who), runner: runnerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: +i.log.reduce((t, e) => t + (e.op === 'done' ? e.cost as number : 0), 0).toFixed(4), corrections: i.log.filter(e => e.op === 'correction').length,
-    wrong: i.log.filter(e => e.op === 'correction' && e.kind === 'wrong').map(e => e.at) });
+    wrong: i.log.filter(e => e.op === 'correction' && e.kind === 'wrong').map(e => e.at),
+    refused: i.log.filter(e => e.op === 'browser' && e.hosts).map(e => ({ at: e.at, run: e.run as number, site: e.site as string, hosts: Object.keys(e.hosts as object) })) });
   return {
     id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(i.seriesId)?.inst === i, queued: !!queued(i),
     asks: k.asks, wakes: wakesOf(i.id, w8), fired: w8.fired[i.id] ?? null, runner: k.runner, cost: k.cost, active: k.active,
     unread: !!news && news.at > s.since && news.seq > (s.at[i.id] ?? 0), corrections: k.corrections,
     // What says it was wrong, for its runner under Waiting on you, for a week, as a correction is never withdrawn.
     wrong: k.wrong.filter(fresh).length,
+    // The hosts a run's browser on a person's own website was refused, for them to allow under Waiting on you, for a week.
+    refused: k.refused.filter(e => fresh(e.at) && websites()[e.site]?.owner === email).map(e => ({ ...e, hosts: unreached(e.site, e.hosts) })).filter(e => e.hosts.length),
   };
 }
 
@@ -416,7 +420,7 @@ const text = (path: string) => (existsSync(path) ? readFileSync(path, 'utf8') : 
 const brand = () => readJson<{ text?: string; logo?: string; type?: string }>('brand.json', {});
 // Capabilities beyond what every user has, each granted by admins to people and Entra groups: publish, pushing skills, which every
 // run loads, and create, making workspaces. Admins have them all.
-const CAPS = ['publish', 'create'], granted = () => readJson<Record<string, string[]>>('capabilities.json', {});
+const CAPS = ['publish', 'create', 'sites'], granted = () => readJson<Record<string, string[]>>('capabilities.json', {});
 const can = (me: Me, cap: string) => me.role === 'admin' || isIn(me, granted()[cap] ?? []);
 const json = async (req: IncomingMessage) => {
   try { return JSON.parse((await body(req)).toString() || '{}'); } catch { throw new HttpError(400, 'the body is JSON'); }
@@ -827,15 +831,20 @@ async function skillsRoute(me: Me, req: IncomingMessage, res: ServerResponse, ur
   throw new HttpError(405, 'GET, or POST a version');
 }
 
-// Connections: anyone signed in may list them, each with its login, to connect or sign in on the Logins page; admins keep them,
-// with rf.
+// Connections: anyone signed in may list them, each with its login, to connect or sign in on the Logins page, but a person's own
+// website only they and admins; admins keep them, with rf, and switch a website off, for no one to use, or on again.
 async function connectionsRoute(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) {
   const name = decodeURIComponent(url.pathname.slice(13));
-  if (!name && req.method === 'GET') return send(res, 200, connections().map(c => ({ ...c, login: loginOf(c), ...(c.type === 'website' && { allowed: allowed(websites()[c.name], me.email) }) })));
+  if (!name && req.method === 'GET') return send(res, 200, connections().filter(c => !c.owner || c.owner === me.email || me.role === 'admin')
+    .map(c => ({ ...c, login: loginOf(c), ...(c.type === 'website' && { allowed: allowed(websites()[c.name], me.email) }) })));
   if (me.role !== 'admin') throw new HttpError(403, 'admins keep connections');
   if (req.method === 'PUT') return send(res, 200, setConnection(name, await json(req), me.email));
   if (req.method === 'DELETE') return send(res, 200, (removeConnection(name), 'ok'));
-  throw new HttpError(405, 'PUT or DELETE');
+  if (req.method === 'PATCH') {
+    if (!websites()[name]) throw new HttpError(404, `no website ${name}: only a website is switched off or on`);
+    return send(res, 200, (changeConnection(name, { off: (await json(req)).off === true || undefined }, me.email), 'ok'));
+  }
+  throw new HttpError(405, 'PUT, PATCH or DELETE');
 }
 
 serveSandboxes({
@@ -933,6 +942,23 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       if (!login?.scope) throw new HttpError(404, 'no connection signs in to Microsoft with that login');
       await connect(res, me.email, login);
     }
+    // A person's own websites, for those granted sites: a name and the https address where its sign-in starts, the hosts its pages
+    // need allowed as they sign in.
+    else if (url.pathname === '/logins/sites' && req.method === 'POST') {
+      if (!can(me, 'sites')) throw new HttpError(403, 'a website of your own is for admins and those they grant sites: ask an admin');
+      const { name, url: start } = await json(req);
+      send(res, 200, (await addSite(me.email, String(name ?? ''), String(start ?? '')), 'ok'));
+    }
+    // Removed, with its person's login to it.
+    else if (/^\/logins\/sites\/[^/]+$/.test(url.pathname) && req.method === 'DELETE') {
+      const n = decodeURIComponent(url.pathname.split('/')[3]), w = websites()[n];
+      if (!w?.owner || (w.owner !== me.email && me.role !== 'admin')) throw new HttpError(404, `no website ${n} of yours`);
+      removeConnection(n);
+      if (logins(w.owner).some(l => l.id === `web:${n}`)) signOut(w.owner, `web:${n}`);
+      send(res, 200, 'ok');
+    }
+    else if (/^\/logins\/web\/[^/]+\/refused$/.test(url.pathname) && req.method === 'GET') send(res, 200, await refusedHosts(me, decodeURIComponent(url.pathname.split('/')[3])));
+    else if (/^\/logins\/web\/[^/]+\/hosts$/.test(url.pathname) && req.method === 'POST') send(res, 200, (await allowHost(me, decodeURIComponent(url.pathname.split('/')[3]), String((await json(req)).host ?? '')), 'ok'));
     else if (url.pathname.startsWith('/logins/web/') && req.method === 'POST') send(res, 200, { id: await startSignIn(me.email, decodeURIComponent(url.pathname.slice(12)), String((await json(req)).header ?? '')) });
     // What a person's login offers that they add themselves: Microsoft 365's sources and Databricks' warehouses.
     else if (/^\/logins\/[^/]+\/offers$/.test(url.pathname) && req.method === 'POST') {

@@ -144,6 +144,7 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .owner:is(:hover, :focus-within) .about { display: block; }
 .creds { vertical-align: 3px; margin-left: 6px; padding: 1px 9px; border: 1px solid var(--rule-2); border-radius: 10px; background: var(--sheet); font: 500 12.5px var(--sans); color: var(--ink-2); cursor: pointer; }
 .creds:hover { color: var(--ink); border-color: var(--edge); }
+.creds a { text-decoration: underline; cursor: pointer; }
 .who { flex: none; display: inline-block; margin-left: 6px; padding: 0 4px; border-radius: 6px; font-size: 10px; font-weight: 600; line-height: 15px; vertical-align: 1px; color: var(--person); background: var(--person-bg); }
 .state { margin-left: auto; font-size: 13px; color: var(--ink-2); display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .ptog { position: relative; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 1px solid var(--rule-2); border-radius: var(--r1); background: var(--sheet); color: var(--ink-3); cursor: pointer; }
@@ -1153,7 +1154,7 @@ function renderPv() {
   if (account.some(([k]) => k === pv.settings?.kind)) h += `<div class="pvtabs">${account.map(([k, name]) => `<button class="tab ${pv.settings.kind === k ? 'sel' : ''}" data-act="${k}">${name}</button>`).join('')}</div>`;
   if (pv.att) h += `<div class="sub" style="padding:8px 14px"><a data-act="attachment-back">\u2190 ${esc(pv.title)}</a> \u00b7 ${esc(pv.att.title)}</div>` + previewBody(pv.att);
   else if (pv.path) h += previewBody(pv);
-  else if (pv.signin) h += `<div class="sub" style="padding:8px 14px">Sign in as you always do, then Save login. Only you see this browser.</div><div class="pvb"><iframe src="/signins/${pv.signin}/view?drive" style="width:100%;height:100%;border:0"></iframe></div>`;
+  else if (pv.signin) h += `<div class="sub" style="padding:8px 14px">Sign in as you always do, then Save login. Only you see this browser.</div><div id="refused"></div><div class="pvb"><iframe src="/signins/${pv.signin}/view?drive" style="width:100%;height:100%;border:0"></iframe></div>`;
   else if (pv.settings?.kind === 'tokens') h += `<div class="pvb vl">${tokensHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'people') h += `<div class="pvb vl"><div class="sub">Everyone who can sign in. Admins manage people with rf (Tokens): rf people, as a file to edit and set, and rf user add|role|disable|enable|signout|remove.</div><table class="ut"><tr><th>Person</th><th>Role</th><th>Workspaces</th><th>Last in</th></tr>${pv.settings.users.map(u => `<tr><td>${esc(u.name ?? '')}<div class="sub">${esc(u.email)}${u.disabled ? ' · disabled' : ''}</div></td><td>${esc(u.role)}</td><td class="sub">${esc(u.workspaces.join(', ')) || 'none'}</td><td class="sub">${esc(u.last_login ? when(u.last_login) : 'never')}</td></tr>`).join('')}</table></div>`;
   else if (pv.settings?.kind === 'logins') h += `<div class="pvb vl">${loginsHtml(pv.settings)}</div>`;
@@ -1266,7 +1267,7 @@ async function openTokens(made) {
 // Your logins, on one page: what needs you first, then a line for each, Microsoft 365, Databricks, the websites and the model key,
 // whose detail opens in place.
 function loginsHtml(s) {
-  const entra = s.connections.filter(c => c.login.scope), sites = s.connections.filter(c => c.type === 'website' && c.allowed).map(c => ({ id: c.name, name: c.title ?? c.name, url: c.url, hosts: c.hosts, header: c.header }));
+  const entra = s.connections.filter(c => c.login.scope), sites = s.connections.filter(c => c.type === 'website' && c.allowed).map(c => ({ id: c.name, name: c.title ?? c.name, url: c.url, hosts: c.hosts, header: c.header, owner: c.owner }));
   const mine = id => s.logins.find(l => l.id === id), k = mine('openrouter'), shown = id => pv.shown?.includes(id);
   const line = (name, sub, acts = '') => `<div class="lline"><b>${esc(name)}</b><span class="sub">${sub}</span>${acts}</div>`;
   const show = id => `<button class="quiet" data-act="logins-show" data-id="${id}">${shown(id) ? 'Hide \u25BE' : 'Show \u25B8'}</button>`;
@@ -1296,15 +1297,20 @@ function loginsHtml(s) {
   }
   const ids = new Set([...s.connections.map(c => c.login.id), 'openrouter']), signed = sites.filter(w => mine(`web:${w.id}`) && !mine(`web:${w.id}`).expired).length;
   for (const l of s.logins.filter(l => !ids.has(l.id))) h += line(l.name, 'no longer a connection on this server, so no run uses it', signOut(l.id));
-  h += line('Websites', sites.length ? `${signed} of ${sites.length} signed in` : me.browsers ? 'none yet: admins add a website with <code>rf connection set NAME website --url URL --hosts ...</code>, and then everyone it is for can sign in to it here'
-    : 'not set up on this server: website logins need the browser service (README, Websites), and then admins add websites with <code>rf connection set NAME website</code>', sites.length ? show('web') : '');
+  const adds = me.browsers && me.can.includes('sites');
+  h += line('Websites', sites.length ? `${signed} of ${sites.length} signed in` : me.browsers ? `none yet: ${adds ? 'add one of your own, or ' : ''}admins add a website with <code>rf connection set NAME website --url URL --hosts ...</code>, and then everyone it is for can sign in to it here`
+    : 'not set up on this server: website logins need the browser service (README, Websites), and then admins add websites with <code>rf connection set NAME website</code>', sites.length || adds ? show('web') : '');
   if (sites.length && shown('web')) h += `<div class="sub">Sign in yourself, in a browser shown here. Your login is what that browser keeps, its cookies, never your password; a run's browser starts from it and brings it back refreshed. It reaches only the hosts listed, but there it can do whatever you can: the agent is told only to read, and each run's log counts its writes.${sites.some(w => w.header) ? " Where a site's sign-in needs a token, give it in the box under its name: it goes only to that sign-in, never to a run's browser, and is kept, sealed, for the next." : ''}</div>`
     + sites.map(w => {
       const l = mine(`web:${w.id}`);
       return `<div class="lsub"><span>${esc(w.name)} <span class="sub">${esc([new URL(w.url).hostname, ...w.hosts].join(', '))}${l ? ` · ${l.expired ? 'expired' : `since ${esc(when(l.since))}`}` : ''}</span>`
         + `${w.header ? `<input type="password" id="hdr-${esc(w.id)}" placeholder="${l ? `New ${esc(w.header)}, if any` : `Your ${esc(w.header)}`}" autocomplete="off" style="display:block;width:100%;margin-top:6px">` : ''}</span>`
-        + `<button class="btn" data-act="web-signin" data-id="${esc(w.id)}" data-name="${esc(w.name)}">${l ? 'Sign in again' : 'Sign in'}</button>${l ? signOut(l.id) : ''}</div>`;
+        + `<button class="btn" data-act="web-signin" data-id="${esc(w.id)}" data-name="${esc(w.name)}">${l ? 'Sign in again' : 'Sign in'}</button>${l ? signOut(l.id) : ''}`
+        + `${w.owner === me.email ? `<button class="quiet" data-act="site-remove" data-id="${esc(w.id)}">Remove</button>` : ''}</div>`;
     }).join('');
+  // A website of one's own, for those admins let add one: theirs alone, the hosts its pages need allowed as they sign in.
+  if (adds && shown('web')) h += `<div class="sub">A website of your own: its name and the https address where you sign in. Only you see it, sign in to it and run with it. The other hosts its pages need, such as single sign-on's, you allow as you sign in.</div>`
+    + '<div class="row2"><input type="text" id="site-name" placeholder="Name" style="width:30%"><input type="text" id="site-url" placeholder="https://… where you sign in" style="flex:1"><button class="btn" data-act="site-add">Add</button></div>';
   h += line('Model key', !k ? "the server's" : k.enabled ? `yours${k.expired ? ', out of credits' : ''}` : "the server's · yours saved",
     (k ? `<label><input type="checkbox" id="oruse" ${k.enabled ? 'checked' : ''}> use mine</label>` : '') + `<button class="quiet" data-act="logins-show" data-id="key">${k ? 'Change' : 'Add mine'}</button>`);
   if (shown('key')) h += `<div class="sub">Runs you run use the server's OpenRouter key, or your own: on yours, one that runs out of credits waits for you.</div>`
@@ -1346,6 +1352,8 @@ function waiting() {
     for (const i of s.instances) {
       const n = i.asks.filter(e => e === me.email).length;
       if (n) out.push(`<div class="wt">${at(w, s, i)}: ${n} ask${n > 1 ? 's' : ''} for you</div>`);
+      for (const r of i.refused) out.push(`<div class="wt">${at(w, s, i)}: run ${r.run}'s browser on ${esc(r.site)} was refused`
+        + r.hosts.map(x => ` <span class="creds">${esc(x)} <a data-act="allow-host" data-site="${esc(r.site)}" data-host="${esc(x)}">Allow</a></span>`).join('') + '</div>');
       if (i.wrong && i.runner === me.email) out.push(`<div class="wt">${at(w, s, i)}: ${plural(i.wrong, 'correction')} say${i.wrong > 1 ? '' : 's'} it's wrong</div>`);
     }
     for (const r of s.requests.filter(r => (r.who ?? me.email) === me.email)) out.push(`<div class="wt">${at(w, s)}: ${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)} <button class="btn" data-act="req-start" data-id="${esc(r.id)}">Start</button></div>`);
@@ -1849,7 +1857,30 @@ async function onAct(act, el) {
   }
   if (act === 'web-signin') {
     const header = document.getElementById(`hdr-${el.dataset.id}`)?.value ?? '';
-    pv = { title: `Sign in to ${el.dataset.name}`, signin: (await api(`/logins/web/${enc(el.dataset.id)}`, { method: 'POST', body: JSON.stringify({ header }) })).id };
+    const p = pv = { title: `Sign in to ${el.dataset.name}`, signin: (await api(`/logins/web/${enc(el.dataset.id)}`, { method: 'POST', body: JSON.stringify({ header }) })).id };
+    renderPv();
+    // The hosts its pages asked for and were refused, every few seconds, each with Allow for whoever may allow it.
+    while (pv === p) {
+      const r = await api(`/logins/web/${enc(el.dataset.id)}/refused`).catch(e => { if (pv === p) throw e; });
+      if (pv !== p) break;
+      put($('#refused'), !r.hosts.length ? '' : `<div class="sub" style="padding:0 14px 8px">Its pages asked for hosts it doesn't reach${r.allows ? ': allow those its sign-in needs, such as single sign-on\u2019s' : '; an admin allows them'}.`
+        + r.hosts.map(x => ` <span class="creds">${esc(x.host)} \u00b7 ${x.count}${r.allows ? ` <a data-act="allow-host" data-site="${esc(el.dataset.id)}" data-host="${esc(x.host)}">Allow</a>` : ''}</span>`).join('') + '</div>');
+      await new Promise(ok => setTimeout(ok, 3000));
+    }
+  }
+  if (act === 'allow-host') {
+    await api(`/logins/web/${enc(el.dataset.site)}/hosts`, { method: 'POST', body: JSON.stringify({ host: el.dataset.host }) });
+    el.closest('.creds').remove();
+    if (!pv?.signin) await refresh();
+  }
+  if (act === 'site-add') {
+    await api('/logins/sites', { method: 'POST', body: JSON.stringify({ name: $('#site-name').value.trim(), url: $('#site-url').value.trim() }) });
+    pv.settings.connections = await api('/connections');
+    renderPv();
+  }
+  if (act === 'site-remove' && await ask({ title: `Remove ${el.dataset.id}?`, text: 'Your login to it goes too, and no run of yours uses it again.', ok: 'Remove',
+    act: () => api(`/logins/sites/${enc(el.dataset.id)}`, { method: 'DELETE' }) })) {
+    [pv.settings.logins, pv.settings.connections] = await Promise.all([api('/logins'), api('/connections')]);
     renderPv();
   }
   if (act === 'signin-save') {

@@ -56,6 +56,15 @@ export function setConnection(name: string, input: Record<string, unknown>, by: 
   return { name, ...all[name] };
 }
 
+// A change to a connection's settings past their checks: a host a website's pages needed, allowed as its person signed in (browsers.ts),
+// or an admin's switching a website off or on.
+export function changeConnection(name: string, change: Record<string, unknown>, by: string) {
+  const all = readJson<Record<string, any>>('connections.json', {});
+  if (!all[name]) throw new HttpError(404, `no connection ${name}`);
+  all[name] = { ...all[name], ...change, updated_by: by, updated_at: new Date().toISOString() };
+  writeJson('connections.json', all);
+}
+
 // People's logins to a connection removed stay theirs to sign out of; no run can use them.
 export function removeConnection(name: string) {
   const all = readJson<Record<string, any>>('connections.json', {});

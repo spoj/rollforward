@@ -19,11 +19,16 @@ const app = join(import.meta.dirname, '..'), tmp = mkdtempSync(join(tmpdir(), 'r
 const ADMIN = 'admin@demo.test', BOB = 'bob@demo.test';
 let model: ReturnType<typeof createServer>, proc: ChildProcess, base = '', admin = '', bob = '', sessions = 0;
 // The browser service, a stand-in: the browsers it opens are b1, b2…, each with a person in control and a live view, and a websocket
-// to one answers with the path it reached.
-const service = createServer((req, res) => {
-  if (req.method === 'POST') return void res.writeHead(201).end(JSON.stringify({ id: `b${++sessions}` }));
-  if (req.method === 'DELETE') return void res.end('{"state":{"cookies":[]},"log":[]}');
-  res.end(req.url === '/sessions' ? '[]' : req.url!.endsWith('/log') ? '[{"live":true}]' : req.url!.endsWith('/view') ? 'the live view' : '');
+// to one answers with the path it reached. Their pages asked for the addresses in `refused`, which they don't reach; what else they
+// were told, as hosts allowed, is in `told`.
+let refused: string[] = [];
+const told: string[] = [];
+const service = createServer(async (req, res) => {
+  const blocked = refused.map(url => ({ method: 'GET', url, status: 403, blocked: 'host not on the list' }));
+  if (req.method === 'POST' && req.url === '/sessions') return void res.writeHead(201).end(JSON.stringify({ id: `b${++sessions}` }));
+  if (req.method === 'PUT' || req.method === 'POST') return void res.end((told.push(`${req.method} ${req.url} ${Buffer.concat(await Array.fromAsync(req)).toString()}`), '{}'));
+  if (req.method === 'DELETE') return void res.end(JSON.stringify({ state: { cookies: [] }, log: blocked }));
+  res.end(req.url === '/sessions' ? '[]' : req.url!.endsWith('/log') ? JSON.stringify([{ live: true }, ...blocked]) : req.url!.endsWith('/view') ? 'the live view' : '');
 }).on('upgrade', (req, socket) => socket.end(`HTTP/1.1 101 Switching Protocols\r\n\r\nservice got ${req.url}`));
 
 const text = (c: unknown): string => typeof c === 'string' ? c : (c as { type: string; text?: string; content?: unknown }[]).map(b => b.text ?? (b.content === undefined ? '' : text(b.content))).join('');
@@ -504,4 +509,54 @@ test("whoever sees an instance watches its run's browser live from the page, nev
   await until('the browser closed', () => readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').includes('"op":"browser"'));
   const { log, run } = await (await call('GET', `/api/instances/${id}`, undefined, bob)).json();
   assert.deepEqual([log.find((e: { op: string }) => e.op === 'interrupt').by, log.find((e: { op: string }) => e.op === 'browser').site, run], [BOB, 'portal', null], "logged as bob's, and the browser gone");
+});
+
+test("a person granted sites adds a website of their own, theirs alone: they allow the hosts its pages need as they sign in, the hosts a run's browser was refused wait on them, and an admin may switch it off", async () => {
+  const carol = await login('carol@demo.test'), add = (body: object) => call('POST', '/logins/sites', { name: 'bobs', url: 'https://bobs.example.com/', ...body }, bob);
+  const said = async (res: Response) => [res.status, await res.text()];
+  const allow = (host: string, cookie = bob) => call('POST', '/logins/web/bobs/hosts', { host }, cookie);
+  const listed = async (cookie: string) => (await (await call('GET', '/connections', undefined, cookie)).json()).find((c: { name: string }) => c.name === 'bobs');
+  assert.equal((await add({})).status, 403, 'only those admins grant sites');
+  assert.equal((await call('PUT', '/capabilities', { cap: 'sites', people: [BOB] })).status, 200);
+  assert.deepEqual(await said(await add({ url: 'http://bobs.example.com/' })), [400, 'url: an https address, where its sign-in starts']);
+  assert.deepEqual(await said(await add({ name: 'graph' })), [409, 'graph is taken: name yours otherwise']);
+  assert.deepEqual(await said(await add({ url: 'https://10.1.2.3/' })), [400, '10.1.2.3 is at an internal address: a website of your own reaches none']);
+  assert.equal((await add({})).status, 200);
+  assert.deepEqual([(await listed(bob))?.owner, (await listed(bob))?.allowed, await listed(carol), (await listed(admin))?.owner], [BOB, true, undefined, BOB], "listed for its person and admins alone");
+
+  // Signing in, its pages ask for hosts it doesn't reach: its person allows those its sign-in needs, and the open browser reaches them.
+  refused = ['https://sso.idp.test/a', 'https://cdn.idp.test/x.js', 'https://sso.idp.test/b'];
+  const { id: signIn } = await (await call('POST', '/logins/web/bobs', {}, bob)).json();
+  assert.deepEqual(await (await call('GET', '/logins/web/bobs/refused', undefined, bob)).json(),
+    { allows: true, hosts: [{ host: '*.idp.test', count: 3 }, { host: 'sso.idp.test', count: 2 }, { host: 'cdn.idp.test', count: 1 }] });
+  assert.deepEqual(await said(await allow('*.co.uk')), [400, '*.co.uk: a wildcard covers one registrable domain at most, such as *.example.com']);
+  assert.deepEqual(await said(await allow('graph.microsoft.com')), [400, "graph.microsoft.com is graph's: no other website reaches it"]);
+  assert.deepEqual(await said(await allow('sso.idp.test', carol)), [403, "bobs's hosts are bob@demo.test's to allow"]);
+  assert.equal((await allow('sso.idp.test')).status, 200);
+  assert.deepEqual(told.slice(-2), [`PUT /sessions/${signIn}/hosts {"hosts":["bobs.example.com","sso.idp.test"]}`, `POST /sessions/${signIn}/reload `]);
+  assert.deepEqual((await (await call('GET', '/logins/web/bobs/refused', undefined, bob)).json()).hosts, [{ host: 'cdn.idp.test', count: 1 }], 'what it reaches now is no longer refused');
+  assert.equal((await call('POST', `/signins/${signIn}`, undefined, bob)).status, 200);
+
+  // A run's browser refused a host: it waits on the website's person, under Waiting on you, until they allow it.
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Own sites' })).json();
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB] })).status, 200);
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Own pull' }, bob)).json();
+  scripts.push({ bash: ['curl -s -m 5 -H "connection: upgrade" -H "upgrade: websocket" "$RF_BROWSERS/bobs"'], report: 'Pulled.', saw: [] });
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-12', logins: ['web:bobs'] }, bob)).json();
+  await runs(id, 1);
+  await until('the browser closed', () => readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').includes('"op":"browser"'));
+  const waits = async () => (await (await call('GET', '/api', undefined, bob)).json()).flatMap((w: any) => w.series.flatMap((s: any) => s.instances)).find((i: { id: string }) => i.id === id).refused;
+  assert.deepEqual((await waits()).map(({ run, site, hosts }: { run: number; site: string; hosts: string[] }) => ({ run, site, hosts })), [{ run: 1, site: 'bobs', hosts: ['cdn.idp.test'] }]);
+  assert.equal((await allow('cdn.idp.test')).status, 200);
+  assert.deepEqual(await waits(), []);
+
+  // An admin switches it off, for no one to use, and on again; its person removes it, and their login to it.
+  assert.equal((await call('PATCH', '/connections/bobs', { off: true })).status, 200);
+  assert.deepEqual([(await listed(bob)).allowed, (await call('POST', '/logins/web/bobs', {}, bob)).status], [false, 403]);
+  assert.equal((await call('PATCH', '/connections/bobs', { off: false })).status, 200);
+  assert.equal((await listed(bob)).allowed, true);
+  assert.equal((await call('DELETE', '/logins/sites/bobs', undefined, carol)).status, 404);
+  assert.equal((await call('DELETE', '/logins/sites/bobs', undefined, bob)).status, 200);
+  assert.deepEqual([await listed(admin), (await (await call('GET', '/logins', undefined, bob)).json()).some((l: { id: string }) => l.id === 'web:bobs')], [undefined, false]);
+  refused = [];
 });
