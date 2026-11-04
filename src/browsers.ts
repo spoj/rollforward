@@ -6,10 +6,10 @@ import { request as httpRequest, STATUS_CODES, type IncomingMessage, type Server
 import { request as httpsRequest } from 'node:https';
 import type { Duplex } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { HttpError, replaceReadOnly, type Instance } from './store.ts';
+import { HttpError, instance, replaceReadOnly, type Instance } from './store.ts';
 import { logins, personDir, runnerOf, saveLogin, seal, secret, use } from './logins.ts';
 import { connections } from './connections.ts';
-import { tree } from './system.ts';
+import { readJson, rfDir, tree } from './system.ts';
 
 // Browsers from the browser service (spoj/rollforward-browser, a repo of its own), whose one client is this server, with its key: a
 // throwaway container per session, driven over CDP, whose proxy keeps to a website's hosts and logs every request. A website login is
@@ -131,12 +131,42 @@ export async function endSignIn(email: string, id: string, save: boolean) {
 const held = new Map<string, { run: Browsers; released: Promise<void>; release(): void }>();
 const IDLE_MS = Number(process.env.RF_BROWSER_IDLE_MS ?? 5 * 60_000);
 
+// The runs' browsers open on the service, by id, in .rf/browsers.json, so those a restart cut from their runs still leave what
+// their runs would have kept (reap).
+type Opened = { inst: string; run: number; site: string; email: string; since: string; writeback: boolean; file: string };
+const journal = () => readJson<Record<string, Opened>>('browsers.json', {});
+const setJournal = (all: Record<string, Opened>) => replaceReadOnly(join(rfDir(), 'browsers.json'), JSON.stringify(all));
+
+// A run's browser closed: its request log kept in its instance's browser/, logged as browser, and, where its website writes it back,
+// its state its person's login again, unless they signed out or in anew since it opened.
+function keep(inst: Instance, b: Opened, { state, log }: { state: unknown; log: { method: string; blocked?: string }[] }) {
+  const login = logins(b.email).find(l => l.id === `web:${b.site}`);
+  if (b.writeback && state && login && !login.expired && login.since === b.since) saveLogin(b.email, login, JSON.stringify(state));
+  mkdirSync(join(inst.dir, 'browser'), { recursive: true });
+  replaceReadOnly(join(inst.dir, b.file), log.map(e => JSON.stringify(e) + '\n').join(''));
+  const writes = log.filter(e => !e.blocked && !['GET', 'HEAD', 'OPTIONS'].includes(e.method)).length;
+  inst.append('server', 'browser', { run: b.run, site: b.site, login: b.email, requests: log.length, writes, blocked: log.filter(e => e.blocked).length, file: b.file });
+}
+
+// As the server starts, before any browser of its own opens: the browsers left open on the service, which this server alone uses,
+// close, a run's kept as its run would have kept it, and any other, such as a sign-in's, gone.
+export async function reap() {
+  const left = journal();
+  for (const { id } of await json('GET', '/sessions')) {
+    const closed = await close(id);
+    if (left[id]) keep(instance(left[id].inst), left[id], closed);
+  }
+  const all = journal();
+  for (const id in left) delete all[id];
+  setJournal(all);
+}
+
 export class Browsers {
   inst: Instance;
   run: number;
-  bySite = new Map<string, { id: string; email: string; since: string; writeback: boolean; conns: number; idle?: NodeJS.Timeout; shot?: Buffer }>();
+  bySite = new Map<string, { id: string; email: string; since: string; writeback: boolean; file: string; conns: number; idle?: NodeJS.Timeout; shot?: Buffer }>();
   private opening = new Map<string, Promise<string>>();
-  private closed = new Map<string, number>();
+  private opens = new Map<string, number>();
   private ended = false;
   shots = 0;
   constructor(inst: Instance, run: number) {
@@ -181,8 +211,11 @@ export class Browsers {
       const opening = open(w, 7200, JSON.parse(secret(email, login.id)));
       this.opening.set(site, opening);
       try {
-        const id = await opening, b = { id, email, since: login.since, writeback, conns: 0 };
+        const id = await opening, n = (this.opens.get(site) ?? 0) + 1, file = `browser/run ${this.run} ${site}${n > 1 ? ` ${n}` : ''}.jsonl`;
+        const b = { id, email, since: login.since, writeback, file, conns: 0 };
+        this.opens.set(site, n);
         this.bySite.set(site, b);
+        setJournal({ ...journal(), [id]: { inst: this.inst.id, run: this.run, site, email, since: login.since, writeback, file } });
         this.idle(site, b);
         return id;
       } catch (e) {
@@ -267,18 +300,14 @@ export class Browsers {
   // back refreshed, unless it expired or its person signed in to it anew since the browser opened, which a stale state would
   // overwrite, and lets the next run have its person's browser there.
   async close(only?: string) {
-    await Promise.all([...this.bySite].filter(([site]) => !only || site === only).map(async ([site, { id, email, since, writeback, idle }]) => {
+    await Promise.all([...this.bySite].filter(([site]) => !only || site === only).map(async ([site, { id, email, since, writeback, file, idle }]) => {
       this.bySite.delete(site);
       clearTimeout(idle);
       try {
-        const { state, log } = await close(id), login = logins(email).find(l => l.id === `web:${site}`), n = (this.closed.get(site) ?? 0) + 1;
-        if (writeback && state && login && !login.expired && login.since === since) saveLogin(email, login, JSON.stringify(state));
-        this.closed.set(site, n);
-        const file = `browser/run ${this.run} ${site}${n > 1 ? ` ${n}` : ''}.jsonl`;
-        mkdirSync(join(this.inst.dir, 'browser'), { recursive: true });
-        replaceReadOnly(join(this.inst.dir, file), log.map(e => JSON.stringify(e) + '\n').join(''));
-        const writes = log.filter(e => !e.blocked && !['GET', 'HEAD', 'OPTIONS'].includes(e.method)).length;
-        this.inst.append('server', 'browser', { run: this.run, site, login: email, requests: log.length, writes, blocked: log.filter(e => e.blocked).length, file });
+        const closed = await close(id), all = journal();
+        delete all[id];
+        setJournal(all);
+        keep(this.inst, { inst: this.inst.id, run: this.run, site, email, since, writeback, file }, closed);
       } finally {
         if (writeback) this.release(`${email} ${site}`);
       }

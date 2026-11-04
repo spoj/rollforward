@@ -16,7 +16,7 @@ import { checkTicks, logins, runnerOf, signOut } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { byLogin, call, connections, convert, intercepts, loginOf, removeConnection, setConnection } from './connections.ts';
-import { Browsers, endSignIn, isSignIn, passUpgrade, startSignIn, viewPage } from './browsers.ts';
+import { Browsers, endSignIn, isSignIn, passUpgrade, reap, startSignIn, viewPage } from './browsers.ts';
 import { offer, unoffer } from './connections/graph.ts';
 import { forget, indexes, startIndexing, track } from './indexes.ts';
 import { seriesSettings } from './series.ts';
@@ -784,6 +784,7 @@ server.on('upgrade', (req, socket, head) => {
   if (!me || !m || !isSignIn(me.email, m[1])) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
   passUpgrade(req, socket, head, `/sessions/${m[1]}/${m[2]}`);
 });
+if (process.env.RF_BROWSER_URL) reap().catch(e => console.error('the browser service: browsers a restart left open are still open', e));
 server.listen(port, host, () => {
   startIndexing();
   startWaking();

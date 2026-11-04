@@ -10,24 +10,28 @@ import { createInstance, openStore } from '../src/store.ts';
 import { initSystem, saveTree, writeJson } from '../src/system.ts';
 
 // A run's browsers, from a stand-in browser service whose page changes only when the test says, and which keeps the states and
-// headers it was given and answers a browser's state as `back` says.
-let page = Buffer.from('page 1'), back: unknown = { cookies: [] };
-const states: unknown[] = [], headers: unknown[] = [];
+// headers it was given and the sessions it closed, lists those in `listed`, and answers a browser's state as `back` says.
+let page = Buffer.from('page 1'), back: unknown = { cookies: [] }, listed: string[] = [];
+const states: unknown[] = [], headers: unknown[] = [], deleted: string[] = [];
 const service = createServer(async (req, res) => {
-  if (req.method === 'DELETE') return res.writeHead(200).end(JSON.stringify({ state: back, log: [{ method: 'GET' }] }));
+  if (req.method === 'DELETE') {
+    deleted.push(req.url!.split('/')[2]);
+    return res.writeHead(200).end(JSON.stringify({ state: back, log: [{ method: 'GET' }] }));
+  }
   if (req.method === 'POST') {
     const { state, site } = JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString());
     states.push(state);
     headers.push(site.headers);
     return res.writeHead(201).end(JSON.stringify({ id: 'b9' }));
   }
+  if (req.url === '/sessions') return res.writeHead(200).end(JSON.stringify(listed.map(id => ({ id }))));
   if (req.url === '/sessions/b9/log') return res.writeHead(200).end('[{"live":true}]');
   if (req.url!.startsWith('/sessions/b9/files/')) return res.writeHead(200).end(`file at ${req.url}`);
   res.writeHead(req.url === '/sessions/b1/screenshot' ? 200 : 404).end(page);
 }).on('upgrade', (req, socket) => socket.end(`HTTP/1.1 101 Switching Protocols\r\n\r\nservice got ${req.url}`));
 await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
 Object.assign(process.env, { RF_BROWSER_URL: `http://127.0.0.1:${(service.address() as { port: number }).port}`, RF_BROWSER_IDLE_MS: '300' });
-const { Browsers, endSignIn, startSignIn } = await import('../src/browsers.ts');
+const { Browsers, endSignIn, reap, startSignIn } = await import('../src/browsers.ts');
 const { serveAgent } = await import('../src/agent-api.ts');
 const { logins, personDir, saveLogin, secret, signOut } = await import('../src/logins.ts');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-shots-'));
@@ -44,7 +48,7 @@ after(() => {
 
 test("after each tool call, each of the run's browsers is shot unless its page looks the same, kept read-only and logged", async () => {
   const inst = createInstance('s', '2026-11', 'alice@demo.test', []), browsers = new Browsers(inst, 2);
-  browsers.bySite.set('erp', { id: 'b1', email: 'alice@demo.test', since: '', writeback: true, conns: 0 });
+  browsers.bySite.set('erp', { id: 'b1', email: 'alice@demo.test', since: '', writeback: true, file: 'browser/run 2 erp.jsonl', conns: 0 });
   await browsers.shoot();
   await browsers.shoot();
   page = Buffer.from('page 2');
@@ -59,7 +63,7 @@ test("the agent says a website signed it out: its runner's login is marked expir
   const alice = 'alice@demo.test', erp = { id: 'web:erp', kind: 'website' as const, name: 'ERP', since: '', offers: [{ id: 'web:erp', name: 'ERP' }] };
   saveLogin(alice, erp, '{}');
   const inst = createInstance('s', '2026-12', alice, ['web:erp']), browsers = new Browsers(inst, 1);
-  browsers.bySite.set('erp', { id: 'b1', email: alice, since: '', writeback: true, conns: 0 });
+  browsers.bySite.set('erp', { id: 'b1', email: alice, since: '', writeback: true, file: 'browser/run 1 erp.jsonl', conns: 0 });
   await assert.rejects(browsers.expire('erp'), (e: { status: number; login: string }) => e.status === 409 && e.login === 'web:erp');
   assert.equal(logins(alice).find(l => l.id === 'web:erp')!.expired, true);
   assert.equal(browsers.bySite.size, 0);
@@ -69,7 +73,7 @@ test("the agent says a website signed it out: its runner's login is marked expir
 
 test('an answer of the browser service that is no JSON, as a proxy in front of it may give, fails that call alone', async () => {
   const inst = createInstance('s', '2027-01', 'alice@demo.test', []), browsers = new Browsers(inst, 3);
-  browsers.bySite.set('erp', { id: 'gone', email: 'alice@demo.test', since: '', writeback: true, conns: 0 });
+  browsers.bySite.set('erp', { id: 'gone', email: 'alice@demo.test', since: '', writeback: true, file: 'browser/run 3 erp.jsonl', conns: 0 });
   await assert.rejects(browsers.shoot(), (e: { status: number; message: string }) => e.status === 502 && e.message.startsWith('browser service: 404 page'));
 });
 
@@ -199,4 +203,20 @@ test("a run that ended while its connection waited for its person's browser open
   const three = new Browsers(createInstance('s', '2027-11', alice, ['web:crm']), 1);
   assert.equal(await Promise.race([three.browser('crm'), sleep(200).then(() => 'still held')]), 'b9', "the person's browser there is free");
   await three.close();
+});
+
+test("as the server starts, the browsers a restart left open on the service close: a run's keeps its request log and hands its login back, as its run would have, and a sign-in's just goes", async () => {
+  writeJson('connections.json', { crm: { type: 'website', title: 'CRM', url: 'https://crm.example.com', hosts: [], writeback: true, updated_by: alice, updated_at: '' } });
+  saveLogin(alice, website('crm', 'CRM'), '{"cookies":["before"]}');
+  const inst = createInstance('s', '2027-12b', alice, ['web:crm']), cut = new Browsers(inst, 4);
+  await cut.browser('crm');
+  clearTimeout(cut.bySite.get('crm')!.idle);
+  [listed, back] = [['b9', 'signin'], { cookies: ['as it was cut'] }];
+  deleted.length = 0;
+  await reap();
+  assert.deepEqual(deleted, ['b9', 'signin']);
+  assert.deepEqual(inst.log.filter(e => e.op === 'browser').map(e => [e.run, e.site, e.requests, e.writes, e.file]), [[4, 'crm', 1, 0, 'browser/run 4 crm.jsonl']]);
+  assert.equal(readFileSync(join(inst.dir, 'browser/run 4 crm.jsonl'), 'utf8'), '{"method":"GET"}\n');
+  assert.deepEqual(JSON.parse(secret(alice, 'web:crm')), { cookies: ['as it was cut'] });
+  assert.deepEqual(JSON.parse(readFileSync(join(tmp, '.rf', 'browsers.json'), 'utf8')), {}, 'nothing left to reap');
 });
