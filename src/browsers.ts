@@ -349,6 +349,8 @@ export async function keepAlive(now = new Date()) {
         if (after?.since !== login.since || after.expired) continue;
         const over = shown.password || new URL(shown.url).origin !== page.origin;
         saveLogin(email, over ? { ...after, expired: true } : after, over ? undefined : JSON.stringify(state));
+      } catch (e) {
+        console.error(`keeping ${email}'s login to ${site} alive:`, e);
       } finally {
         if (w.writeback) {
           held.delete(key);

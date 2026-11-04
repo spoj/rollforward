@@ -24,6 +24,7 @@ const service = createServer(async (req, res) => {
     states.push(state);
     headers.push(site.headers);
     starts.push(`${site.start_url} ${site.hosts.join(',')}`);
+    if (state?.cookies?.[0] === 'refused') return res.writeHead(500).end('{"error":"refused"}');
     return res.writeHead(201).end(JSON.stringify({ id: 'b9' }));
   }
   if (req.url === '/sessions') return res.writeHead(200).end(JSON.stringify(listed.map(id => ({ id }))));
@@ -235,6 +236,16 @@ test("a website's keepalive loads its page every so often in office hours, in th
   assert.deepEqual(JSON.parse(secret(alice, 'web:pa')), { cookies: ['kept alive'] }, 'and its state stays');
   await keepAlive(monday(8, 30));
   assert.equal(turns(), 2, 'nothing for an expired login');
+});
+
+test("a person's keepalive turn that fails leaves the others' to go on", async () => {
+  saveLogin('carol@demo.test', website('pa', 'PatriArch'), '{"cookies":["refused"]}');
+  createInstance('s', 'k0', 'carol@demo.test', ['web:pa']);
+  saveLogin(alice, website('pa', 'PatriArch'), '{"cookies":["signed in again"]}');
+  [states.length, back, shown] = [0, { cookies: ['kept alive again'] }, { url: 'https://pa.example.com/PatriArchMVC/Home', password: false }];
+  await keepAlive(new Date(2026, 10, 2, 9));
+  assert.deepEqual(states, [{ cookies: ['refused'] }, { cookies: ['signed in again'] }], "carol's first, refused");
+  assert.deepEqual(JSON.parse(secret(alice, 'web:pa')), { cookies: ['kept alive again'] });
 });
 
 test("as the server starts, the browsers a restart left open on the service close: a run's keeps its request log and hands its login back, as its run would have, and a sign-in's just goes", async () => {
