@@ -80,7 +80,10 @@ before(async () => {
       const send = (status: number, b: unknown, headers = {}) => res.writeHead(status, { 'content-type': 'application/json', ...headers }).end(JSON.stringify(b));
       const path = new URL(req.url!, 'http://x').pathname, who = (req.headers.authorization ?? '').replace('Bearer ', '');
       if (path === '/.well-known/openid-configuration') return send(200, { issuer: base, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token` });
-      if (path === '/token') return send(200, { access_token: new URLSearchParams(body).get('refresh_token'), expires_in: 3600 });
+      if (path === '/token') {
+        const r = new URLSearchParams(body).get('refresh_token');
+        return r === 'expired' ? send(400, { error: 'invalid_grant', error_description: 'AADSTS700082: The refresh token has expired.' }) : send(200, { access_token: r, expires_in: 3600 });
+      }
       if (path === '/v1.0/$batch') {
         const requests = JSON.parse(body).requests as { id: string; url: string; headers?: { prefer?: string } }[];
         batches.push(requests.length);
@@ -119,25 +122,49 @@ before(async () => {
   put('mail', { id: 'farc', displayName: 'Archive', parentFolderId: 'mroot' }, '');
   for (const [id, f] of [['m1', 'fin'], ['m2', 'fin'], ['m3', 'fin'], ['m4', 'fsub'], ['m5', 'farc']]) put('mail', { id, subject: `Re: ${id}`, parentFolderId: f, body: { contentType: 'text', content: `about ${id}` } }, f);
 });
-after(() => { graph.close(); rmSync(tmp, { recursive: true, force: true }); });
+after(async () => { await ix.stopIndexing(); graph.close(); rmSync(tmp, { recursive: true, force: true }); });
 
-const offer = (who: string, offers: { id: string; name: string }[], since = '2026-11-01T00:00:00Z') =>
-  logins.saveLogin(who, { id: 'm365', kind: 'm365', name: 'Microsoft 365', account: who, since, offers }, who);
+const offer = (who: string, offers: { id: string; name: string }[], since = '2026-11-01T00:00:00Z', secret = who) =>
+  logins.saveLogin(who, { id: 'm365', kind: 'm365', name: 'Microsoft 365', account: who, since, offers }, secret);
 const at = (who: string, offerId: string) => join(logins.personDir(who), 'index', createHash('sha256').update(offerId).digest('hex').slice(0, 16));
 const cache = (who: string, offerId: string) => JSON.parse(readFileSync(`${at(who, offerId)}.json`, 'utf8'));
-const feed = (f: string) => (existsSync(f) ? zstdDecompressSync(readFileSync(f)).toString().split('\n').filter(Boolean).map(l => JSON.parse(l)) : []);
-// What a feed says now: a later line for an id replaces an earlier one, and a deleted or @removed one removes it.
-const now = (lines: Item[]) => { const m = new Map<string, Item>(); for (const l of lines) l.deleted || l['@removed'] ? m.delete(l.id) : m.set(l.id, l); return [...m.keys()].sort(); };
-const settle = () => new Promise(ok => setTimeout(ok, 50));
-
-// A run of `who`'s with these offers ticked, and what it reads at $RF_INDEX.
-async function run(who: string, ticked: string[]) {
-  const to = join(tmp, '.rf', 'runs', `run-${Math.random()}`), inst = { seriesId: 'weekly', log: [{ seq: 1, at: '', by: who, op: 'create', logins: ticked }] } as unknown as Instance;
-  assert.equal(await ix.prepare(inst, to), true);
-  return (name: string) => ({ lines: feed(join(to, `${name}.ndjson.zst`)), meta: JSON.parse(readFileSync(join(to, `${name}.json`), 'utf8')), file: join(to, `${name}.ndjson.zst`) });
+const feedOf = (who: string, offerId: string) => `${at(who, offerId)}.${cache(who, offerId).gen}.ndjson.zst`;
+const lines = (f: string) => (existsSync(f) ? zstdDecompressSync(readFileSync(f)).toString().split('\n').filter(Boolean).map(l => JSON.parse(l)) : []);
+// What a feed says now: a later line for an id replaces an earlier one, and a deleted or @removed one removes it, a folder's with
+// everything under it.
+function now(feed: Item[]) {
+  const m = new Map<string, Item>(), gone = new Set<string>(), up = (l: Item) => l.parentFolderId ?? l.parentReference?.id ?? l.parentReference?.driveId;
+  for (const l of feed) l.deleted || l['@removed'] ? (m.delete(l.id), gone.add(l.id)) : (m.set(l.id, l), gone.delete(l.id));
+  const dead = (id: string | undefined): boolean => id !== undefined && (gone.has(id) || (m.has(id) && dead(up(m.get(id)!))));
+  return [...m.keys()].filter(id => !dead(up(m.get(id)!))).sort();
+}
+const settle = () => new Promise(ok => setTimeout(ok, 20));
+// The worker catches a person's caches up now, as it would within the hour; done when none is due.
+async function due(who: string, ...offerIds: string[]) {
+  for (const o of offerIds) {
+    const c = cache(who, o);
+    for (const p of Object.values(c.parts) as { due: number | null }[]) p.due = Date.now();
+    writeFileSync(`${at(who, o)}.json`, JSON.stringify(c));
+  }
+  ix.track(who);
+  await idle(who, ...offerIds);
+}
+async function idle(who: string, ...offerIds: string[]) {
+  for (let i = 0; i < 250; i++) {
+    await settle();
+    if (offerIds.every(o => existsSync(`${at(who, o)}.json`) && Object.values(cache(who, o).parts).every((p: any) => p.due === null || p.due > Date.now()))) return;
+  }
+  assert.fail(`${who}'s caches never caught up`);
 }
 
-test('a crawl cut by a restart goes on at the page it was on, with nothing else in memory', async () => {
+// A run of `who`'s with these offers ticked, and what it reads at $RF_INDEX: it never waits.
+function run(who: string, ticked: string[]) {
+  const to = join(tmp, '.rf', 'runs', `run-${Math.random()}`), inst = { seriesId: 'weekly', log: [{ seq: 1, at: '', by: who, op: 'create', logins: ticked }] } as unknown as Instance;
+  ix.prepare(inst, to);
+  return (name: string) => ({ lines: lines(join(to, `${name}.ndjson.zst`)), meta: existsSync(join(to, `${name}.json`)) ? JSON.parse(readFileSync(join(to, `${name}.json`), 'utf8')) : null, file: join(to, `${name}.ndjson.zst`) });
+}
+
+test('a crawl cut by a restart goes on at the page it was on, and meanwhile a run starts at once with what is committed', async () => {
   offer(DAN, [{ id: BIG, name: 'Big' }]);
   const env = { ...process.env, ROOT: tmp, GRAPH: base, SRC: new URL('../src/', import.meta.url).href };
   const script = `const { initSystem } = await import(process.env.SRC + 'system.ts'); initSystem(process.env.ROOT);
@@ -151,172 +178,191 @@ test('a crawl cut by a restart goes on at the page it was on, with nothing else 
   await new Promise(ok => first.on('exit', ok));
   hold = undefined;
   assert.match(cache(DAN, BIG).parts[''].link, /token=c6\./, 'the cursor is at the third page');
-  assert.equal(feed(`${at(DAN, BIG)}.ndjson.zst`).length, 6, 'two pages were written');
+  // What a write cut short leaves past the committed length isn't the run's.
+  appendFileSync(feedOf(DAN, BIG), zstdCompressSync(`${JSON.stringify({ id: 'b9', name: 'half-written.xlsx' })}\n`));
+  const asking = asked.length, d = run(DAN, [BIG])('Big');
+  assert.equal(asked.length, asking, 'the run asked Graph nothing');
+  assert.equal(d.lines.length, 6, 'two pages were committed');
+  assert.equal(d.meta.as_of, null, 'still being built');
   const from = asked.length, second = child();
   for (let i = 0; i < 100 && !cache(DAN, BIG).parts[''].delta; i++) await new Promise(ok => setTimeout(ok, 100));
   second.kill('SIGKILL');
+  await new Promise(ok => second.on('exit', ok));
   assert.match(asked.filter((a, i) => i >= from && a.who === DAN)[0].url, /token=c6\./, 'the restart asked for the third page first');
-  assert.equal(feed(`${at(DAN, BIG)}.ndjson.zst`).length, 9);
+  assert.deepEqual(now(lines(feedOf(DAN, BIG))), ['b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7', 'b8', 'bigtop']);
+  ix.startIndexing();
 });
 
 test("each person's cache is their own delta feed, and a run gets a copy of it", async () => {
   offer(ALICE, [{ id: FOLDER, name: 'Folder LFM, Reports' }]);
-  const a = (await run(ALICE, [FOLDER]))('Folder LFM, Reports');
-  assert.deepEqual(a.lines.map(i => i.id), ['top', 'f1', 'sub', 'f2', 'pub', 'f3']);
-  assert.deepEqual(a.lines[4], state['b!d'].get('pub'), "Graph's own JSON, verbatim");
+  ix.track(ALICE);
+  await idle(ALICE, FOLDER);
+  const a = run(ALICE, [FOLDER])('Folder LFM, Reports');
+  assert.deepEqual(now(a.lines), ['f1', 'f2', 'f3', 'pub', 'sub', 'top']);
+  assert.deepEqual(a.lines.find(l => l.id === 'pub'), state['b!d'].get('pub'), "Graph's own JSON, verbatim");
   assert.deepEqual(a.meta, { source: FOLDER, as_of: cache(ALICE, FOLDER).parts[''].as_of, deltaLinks: [`${base}/v1.0/drives/b!d/items/top/delta?token=s${seq}`] });
-  assert.notEqual(statSync(a.file).ino, statSync(`${at(ALICE, FOLDER)}.ndjson.zst`).ino, 'a copy, not the cache itself');
+  assert.notEqual(statSync(a.file).ino, statSync(feedOf(ALICE, FOLDER)).ino, 'a copy, not the cache itself');
   assert.ok(asked.filter(q => q.who === ALICE).every(q => q.prefer === 'deltashowremovedasdeleted'));
   // Bob can't open the folder, so he has no cache of it; the folder shared with him he has, as his token sees it.
   offer(BOB, [{ id: FOLDER, name: 'Folder LFM, Reports' }, { id: PUB, name: 'Folder Shared with Bob, Reports' }]);
-  const b = await run(BOB, [FOLDER, PUB]);
+  ix.track(BOB);
+  await idle(BOB, FOLDER, PUB);
+  const b = run(BOB, [FOLDER, PUB]);
   assert.deepEqual(b('Folder LFM, Reports').lines, []);
   assert.equal(b('Folder LFM, Reports').meta.as_of, null);
   assert.match(cache(BOB, FOLDER).parts[''].error, /403/);
-  assert.deepEqual(b('Folder Shared with Bob, Reports').lines.map(i => i.id), ['pub', 'f3']);
+  assert.deepEqual(now(b('Folder Shared with Bob, Reports').lines), ['f3', 'pub']);
+  // Someone with no cache yet gets nothing of it.
+  offer(CAROL, [{ id: FOLDER, name: 'Folder LFM, Reports' }]);
+  assert.equal(run(CAROL, [FOLDER])('Folder LFM, Reports').meta, null);
 });
 
-test('changes are appended, a later line winning, and a run starting catches up first', async () => {
+test('changes are appended, a later line winning', async () => {
   put('b!d', { ...state['b!d'].get('f1')!, name: 'aging v2.xlsx' });
   put('b!d', { id: 'f3', deleted: {} });
-  const a = (await run(ALICE, [FOLDER]))('Folder LFM, Reports');
-  assert.deepEqual(a.lines.slice(6), [state['b!d'].get('f1'), { id: 'f3', deleted: {} }]);
+  await due(ALICE, FOLDER);
+  const a = run(ALICE, [FOLDER])('Folder LFM, Reports');
   assert.deepEqual(now(a.lines), ['f1', 'f2', 'pub', 'sub', 'top']);
+  assert.equal(a.lines.findLast(l => l.id === 'f1').name, 'aging v2.xlsx');
 });
 
 test('a crash after a batch is appended but before its .json is replaced replays the batch and nothing else', async () => {
-  const c = cache(ALICE, FOLDER), f = `${at(ALICE, FOLDER)}.ndjson.zst`;
-  appendFileSync(f, zstdCompressSync(`${JSON.stringify({ id: 'f4', name: 'half-written.xlsx' })}\n`));
+  appendFileSync(feedOf(ALICE, FOLDER), zstdCompressSync(`${JSON.stringify({ id: 'f9', name: 'half-written.xlsx' })}\n`));
   put('b!d', file('b!d', 'f4', 'april.xlsx', 'top'));
-  await run(ALICE, [FOLDER]);
-  const lines = feed(f);
-  assert.equal(lines.length, c.lines + 1);
-  assert.deepEqual(lines.at(-1), state['b!d'].get('f4'));
-  assert.equal(statSync(f).size, cache(ALICE, FOLDER).length);
+  await due(ALICE, FOLDER);
+  const feed = lines(feedOf(ALICE, FOLDER));
+  assert.ok(!feed.some(l => l.id === 'f9'));
+  assert.deepEqual(feed.filter(l => l.id === 'f4'), [state['b!d'].get('f4')]);
+  assert.equal(statSync(feedOf(ALICE, FOLDER)).size, cache(ALICE, FOLDER).length);
 });
 
 test('a 410 crawls again, appending', async () => {
   const c = cache(ALICE, FOLDER);
   c.parts[''].link = `${base}/v1.0/drives/b!d/items/top/delta?token=gone`;
   writeFileSync(`${at(ALICE, FOLDER)}.json`, JSON.stringify(c));
-  const a = (await run(ALICE, [FOLDER]))('Folder LFM, Reports');
-  assert.equal(a.lines.length, c.lines + 6);
-  assert.deepEqual(now(a.lines), ['f1', 'f2', 'f4', 'pub', 'sub', 'top']);
+  const from = asked.length;
+  await due(ALICE, FOLDER);
+  assert.deepEqual(asked.slice(from).filter(q => q.who === ALICE).map(q => new URL(q.url, base).search).slice(0, 2), ['?token=gone', '']);
+  assert.deepEqual(now(lines(feedOf(ALICE, FOLDER))), ['f1', 'f2', 'f4', 'pub', 'sub', 'top']);
   assert.ok(cache(ALICE, FOLDER).parts[''].delta);
 });
 
-test('the tidy-up rewrites a feed without what later lines replaced or removed, a deleted folder with everything under it', async () => {
+test('the tidy-up writes a new feed without what later lines replaced or removed, a deleted folder with everything under it, and a run copying meanwhile gets the old or the new', async () => {
   // As Graph's delta does, the folder's deletion comes alone.
   put('b!d', { id: 'sub', deleted: {} });
   state['b!d'].set('f2', { id: 'f2', deleted: {} });
-  const c = cache(ALICE, FOLDER);
-  c.parts[''].due = Date.now();
+  await due(ALICE, FOLDER);
+  // Many lines to fold, so the tidy-up takes a while.
+  const c = cache(ALICE, FOLDER), f = feedOf(ALICE, FOLDER), extra = zstdCompressSync(Array.from({ length: 20_000 }, () => `${JSON.stringify(state['b!d'].get('f1'))}\n`).join(''));
+  appendFileSync(f, extra);
+  Object.assign(c, { length: c.length + extra.length, lines: c.lines + 20_000 });
+  const old = c.lines;
   writeFileSync(`${at(ALICE, FOLDER)}.json`, JSON.stringify(c));
-  const worker = await import(`../src/indexes.ts?worker=${Date.now()}`);
-  worker.startIndexing();
-  for (let i = 0; i < 100 && !cache(ALICE, FOLDER).base; i++) await settle();
-  await worker.stopIndexing();
-  const lines = feed(`${at(ALICE, FOLDER)}.ndjson.zst`);
-  assert.deepEqual(lines.map(l => l.id).sort(), ['f1', 'f4', 'pub', 'top']);
-  assert.equal(lines.find(l => l.id === 'f1').name, 'aging v2.xlsx');
-  assert.equal(cache(ALICE, FOLDER).lines, 4);
+  const seen = new Set<number>();
+  const copying = (async () => { for (let i = 0; i < 500 && cache(ALICE, FOLDER).gen === c.gen; i++) { seen.add(run(ALICE, [FOLDER])('Folder LFM, Reports').lines.length); await new Promise(setImmediate); } })();
+  await due(ALICE, FOLDER);
+  for (let i = 0; i < 250 && cache(ALICE, FOLDER).gen === c.gen; i++) await settle();
+  await copying;
+  seen.add(run(ALICE, [FOLDER])('Folder LFM, Reports').lines.length);
+  assert.deepEqual([...seen].sort((x, y) => x - y), [4, old].filter(n => seen.has(n)), `each copy was the old feed or the new: ${[...seen]}`);
+  assert.ok(seen.has(4));
+  assert.equal(existsSync(f), false, 'the old feed is gone');
+  const feed = lines(feedOf(ALICE, FOLDER));
+  assert.deepEqual(feed.map(l => l.id).sort(), ['f1', 'f4', 'pub', 'top']);
+  assert.equal(feed.find(l => l.id === 'f1').name, 'aging v2.xlsx');
 });
 
-test('a 429 waits as Retry-After says, at the same page, and the run still gets its copy', async () => {
+test('a 429 waits as Retry-After says, at the same page', async () => {
   const link = cache(ALICE, FOLDER).parts[''].link;
   once.set(ALICE, 429);
-  const a = (await run(ALICE, [FOLDER]))('Folder LFM, Reports');
-  assert.equal(a.lines.length, 4);
+  await due(ALICE, FOLDER);
   const p = cache(ALICE, FOLDER).parts[''];
   assert.equal(p.link, link);
   assert.match(p.error, /429/);
   assert.ok(Math.abs(p.due - (Date.now() + 120_000)) < 10_000);
+  assert.deepEqual(now(run(ALICE, [FOLDER])('Folder LFM, Reports').lines), ['f1', 'f4', 'pub', 'top']);
 });
 
 test('an expired login pauses its cache until its person signs in again, then it goes on at the same page', async () => {
-  const l = logins.logins(ALICE).find(l => l.id === 'm365')!, link = cache(ALICE, FOLDER).parts[''].link;
-  logins.saveLogin(ALICE, { ...l, since: '2026-11-04T00:00:00Z', expired: true });
-  const a = (await run(ALICE, [FOLDER]))('Folder LFM, Reports');
-  assert.equal(a.lines.length, 4, 'the run gets the copy there is');
+  const link = cache(ALICE, FOLDER).parts[''].link;
+  offer(ALICE, [{ id: FOLDER, name: 'Folder LFM, Reports' }], '2026-11-04T00:00:00Z', 'expired');
+  await due(ALICE, FOLDER);
   assert.equal(cache(ALICE, FOLDER).parts[''].due, null);
   assert.match(cache(ALICE, FOLDER).parts[''].error, /login/);
-  logins.saveLogin(ALICE, { ...l, since: '2026-11-04T01:00:00Z', expired: false }, ALICE);
-  await settle();
-  assert.ok(cache(ALICE, FOLDER).parts[''].due <= Date.now());
-  assert.equal(cache(ALICE, FOLDER).parts[''].link, link);
+  assert.equal(run(ALICE, [FOLDER])('Folder LFM, Reports').lines.length, 4, 'a run gets what there is');
+  const from = asked.length;
+  offer(ALICE, [{ id: FOLDER, name: 'Folder LFM, Reports' }], '2026-11-04T01:00:00Z');
+  await idle(ALICE, FOLDER);
+  assert.equal(asked.slice(from).find(q => q.who === ALICE)!.url, link.slice(`${base}/v1.0`.length));
+  assert.equal(cache(ALICE, FOLDER).parts[''].error, null);
 });
 
 test('losing the source deletes the cache', async () => {
+  const f = feedOf(ALICE, FOLDER);
   locked.add(ALICE);
-  const a = (await run(ALICE, [FOLDER]))('Folder LFM, Reports');
+  await due(ALICE, FOLDER);
   locked.delete(ALICE);
-  assert.deepEqual(a.lines, []);
-  assert.equal(existsSync(`${at(ALICE, FOLDER)}.ndjson.zst`), false);
+  assert.equal(existsSync(f), false);
   assert.equal(cache(ALICE, FOLDER).length, 0);
   assert.match(cache(ALICE, FOLDER).parts[''].error, /403/);
+  const a = run(ALICE, [FOLDER])('Folder LFM, Reports');
+  assert.deepEqual(a.lines, []);
+  assert.equal(a.meta.as_of, null);
 });
 
 test("a mailbox: its folder list, then every folder's messages, 20 folders to a $batch, and what goes", async () => {
   offer(CAROL, [{ id: MAIL, name: `Mailbox ${BOX}` }]);
-  const from = batches.length, c = (await run(CAROL, [MAIL]))(`Mailbox ${BOX}`);
+  const from = batches.length;
+  ix.track(CAROL);
+  await idle(CAROL, MAIL);
+  const c = run(CAROL, [MAIL])(`Mailbox ${BOX}`);
   assert.deepEqual(now(c.lines), ['farc', 'fin', 'fsub', 'm1', 'm2', 'm3', 'm4', 'm5']);
   assert.ok(batches.slice(from).includes(3), "the folder list's second page and two folders' first pages went in one $batch");
-  assert.ok(asked.filter(q => q.who === CAROL).every(q => q.prefer?.includes('outlook.body-content-type="text"')));
+  assert.ok(asked.filter(q => q.who === CAROL && q.url.includes('/mailFolders/')).every(q => q.prefer?.includes('outlook.body-content-type="text"')));
   assert.equal(c.meta.deltaLinks.length, 4);
   put('mail', { id: 'm1', '@removed': { reason: 'deleted' } }, 'fin');
   put('mail', { id: 'fsub', '@removed': { reason: 'deleted' } }, '');
-  const again = (await run(CAROL, [MAIL]))(`Mailbox ${BOX}`);
-  assert.deepEqual(now(again.lines), ['farc', 'fin', 'm2', 'm3', 'm4', 'm5'], "a removed folder's messages go at the tidy-up");
+  await due(CAROL, MAIL);
+  assert.deepEqual(now(lines(feedOf(CAROL, MAIL))), ['farc', 'fin', 'm2', 'm3', 'm5']);
   assert.equal(cache(CAROL, MAIL).parts.fsub, undefined);
-  // A folder its person can no longer read goes, with its messages, at the tidy-up.
+  // A folder its person can no longer read goes, with its messages.
   state.mail.set('farc', { ...state.mail.get('farc'), '@removed': { reason: 'deleted' } });
-  const last = (await run(CAROL, [MAIL]))(`Mailbox ${BOX}`);
-  assert.deepEqual(now(last.lines), ['fin', 'm2', 'm3', 'm4', 'm5']);
+  await due(CAROL, MAIL);
   assert.equal(cache(CAROL, MAIL).parts.farc, undefined);
-  const due = cache(CAROL, MAIL);
-  due.parts[''].due = Date.now();
-  writeFileSync(`${at(CAROL, MAIL)}.json`, JSON.stringify(due));
-  const worker = await import(`../src/indexes.ts?mail=${Date.now()}`);
-  worker.startIndexing();
-  for (let i = 0; i < 100 && !cache(CAROL, MAIL).base; i++) await settle();
-  await worker.stopIndexing();
-  assert.deepEqual(feed(`${at(CAROL, MAIL)}.ndjson.zst`).map(l => l.id).sort(), ['fin', 'm2', 'm3']);
+  for (let i = 0; i < 250 && cache(CAROL, MAIL).base === 0; i++) await settle();
+  assert.deepEqual(lines(feedOf(CAROL, MAIL)).map(l => l.id).sort(), ['fin', 'm2', 'm3'], 'tidied');
 });
 
 test("a site: each library's root delta, and a library closed to its person goes, with what is under it", async () => {
   offer(CAROL, [{ id: MAIL, name: `Mailbox ${BOX}` }, { id: SITE, name: 'Site Reports' }]);
-  const c = (await run(CAROL, [SITE]))('Site Reports');
+  ix.track(CAROL);
+  for (let i = 0; i < 100 && !existsSync(`${at(CAROL, SITE)}.json`); i++) await settle();
+  await idle(CAROL, SITE);
   const big = ['b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7', 'b8', 'bigroot', 'bigtop'];
-  assert.deepEqual(now(c.lines), [...big, 'droot', 'f1', 'f4', 'out', 'pub', 'top'].sort());
+  assert.deepEqual(now(run(CAROL, [SITE])('Site Reports').lines), [...big, 'droot', 'f1', 'f4', 'out', 'pub', 'top'].sort());
   assert.equal(cache(CAROL, SITE).parts['b!d'].link.split('?')[0], `${base}/v1.0/drives/b!d/root/delta`);
   closed.add(`${CAROL} b!big`);
-  await run(CAROL, [SITE]);
+  await due(CAROL, SITE);
   closed.delete(`${CAROL} b!big`);
   assert.equal(cache(CAROL, SITE).parts['b!big'], undefined);
   assert.ok(cache(CAROL, SITE).parts['b!d'].delta, 'the other library goes on');
-  const due = cache(CAROL, SITE);
-  due.parts['b!d'].due = Date.now();
-  writeFileSync(`${at(CAROL, SITE)}.json`, JSON.stringify(due));
-  const worker = await import(`../src/indexes.ts?site=${Date.now()}`);
-  worker.startIndexing();
-  for (let i = 0; i < 100 && !cache(CAROL, SITE).base; i++) await settle();
-  await worker.stopIndexing();
-  assert.deepEqual(feed(`${at(CAROL, SITE)}.ndjson.zst`).map(l => l.id).sort(), ['droot', 'f1', 'f4', 'out', 'pub', 'top']);
+  assert.deepEqual(now(lines(feedOf(CAROL, SITE))), ['droot', 'f1', 'f4', 'out', 'pub', 'top']);
 });
 
 test('rf indexes: each cache, its lines and bytes, and how it goes', () => {
   const site = ix.indexes().find(x => x.source === SITE && x.people[0].who === CAROL)!;
   assert.equal(site.kind, 'site');
-  assert.equal(site.items, 6);
-  assert.equal(site.bytes, statSync(`${at(CAROL, SITE)}.ndjson.zst`).size);
+  assert.equal(site.items, cache(CAROL, SITE).lines);
+  assert.equal(site.bytes, cache(CAROL, SITE).length);
   assert.deepEqual(site.people.map(p => [p.who, p.phase]), [[CAROL, 'follow']]);
   assert.equal(ix.indexes().find(x => x.source === FOLDER && x.people[0].who === BOB)!.people[0].phase, 'crawl');
 });
 
 test('removing an offer deletes its cache', async () => {
+  const f = feedOf(CAROL, SITE);
   ix.forget(CAROL, SITE);
   await settle();
   assert.equal(existsSync(`${at(CAROL, SITE)}.json`), false);
-  assert.equal(existsSync(`${at(CAROL, SITE)}.ndjson.zst`), false);
+  assert.equal(existsSync(f), false);
   assert.ok(existsSync(`${at(CAROL, MAIL)}.json`));
 });

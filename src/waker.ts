@@ -134,7 +134,7 @@ async function start(inst: Instance) {
   try {
     // Copies of the indexes of what its runner ticked, on the indexes' own disk, read-only at $RF_INDEX.
     const index = join(rfDir(), 'runs', a.token);
-    if (await prepare(inst, index)) {
+    if (prepare(inst, index)) {
       a.view.ro.push([index, '/index']);
       a.view.env.RF_INDEX = '/index';
     }

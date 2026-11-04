@@ -14,14 +14,16 @@ import { endpoints, scope } from './connections/graph.ts';
 
 // Indexes of outside sources (README: Indexes). A person's Microsoft 365 login keeps a cache of each offer it makes, but a file: the
 // delta feed Graph gave their own token, its crawl then its changes, Graph's own JSON, one item per line, in
-// .rf/people/<p>/index/<sha256(offer)[:16]>.ndjson.zst, a zstd frame per batch of pages. A later line for an id replaces an earlier
-// one, and a deleted facet or an @removed removes it. The .json beside it holds the cursors, one per part of the source, and the
-// feed's length they account for. A batch is appended and synced first, and only then is the .json replaced; each write starts by
-// cutting the feed back to that length, so a crash in between replays the batch and nothing else.
-const SLICE_MS = 5_000, RUN_MS = 15_000, REFRESH_MS = 60 * 60_000, TRIES = 5;
+// .rf/people/<p>/index/<sha256(offer)[:16]>.<gen>.ndjson.zst, a zstd frame per batch of pages. A later line for an id replaces an
+// earlier one, and a deleted facet or an @removed removes it. The .json beside it, <sha256(offer)[:16]>.json, holds the cursors, one
+// per part of the source, and which feed is the cache and how much of it they account for. A batch is appended and synced first,
+// and only then is the .json replaced; each write starts by cutting the feed back to that length, so a crash in between replays the
+// batch and nothing else. What the .json accounts for never changes under a feed's name: a tidy-up, or a source lost, starts a new
+// one, so a run copies a cache as it is, without waiting.
+const SLICE_MS = 5_000, REFRESH_MS = 60 * 60_000, TRIES = 5;
 
 type Part = { link: string; delta: string | null; as_of: string | null; pages: number; due: number | null; error: string | null; tries: number };
-type Cache = { person: string; source: string; name: string; length: number; lines: number; base: number; parts: Record<string, Part> };
+type Cache = { person: string; source: string; name: string; gen: number; length: number; lines: number; base: number; parts: Record<string, Part> };
 
 const kind = (offer: string) => /^m365:(\w+):(.*)$/.exec(offer)!.slice(1) as [string, string];
 const m365 = (email: string) => logins(email).find(l => l.id === 'm365');
@@ -29,6 +31,7 @@ const indexed = (o: Offer) => /^m365:(item|site|mail):/.test(o.id) && !o.name.st
 // A cache is kept up while its person's login offers its source and hasn't expired.
 const offered = (person: string, offer: string) => !!m365(person)?.offers.some(o => o.id === offer) && !m365(person)!.expired;
 const at = (person: string, offer: string) => join(personDir(person), 'index', createHash('sha256').update(offer).digest('hex').slice(0, 16));
+const feed = (c: Cache) => `${at(c.person, c.source)}.${c.gen}.ndjson.zst`;
 const load = (person: string, offer: string): Cache | undefined => (existsSync(`${at(person, offer)}.json`) ? JSON.parse(readFileSync(`${at(person, offer)}.json`, 'utf8')) : undefined);
 function save(c: Cache) {
   const f = `${at(c.person, c.source)}.json`;
@@ -88,7 +91,7 @@ function failed(p: Part, e: any, link: string) {
 // parts. A 403 or 404 means they can no longer read it: a mail folder or a site's library is removed, with what is under it at the
 // tidy-up; for the source itself, the cache goes.
 async function slice(person: string, offer: string, until: number): Promise<void> {
-  const file = `${at(person, offer)}.ndjson.zst`, mail = offer.startsWith('m365:mail:');
+  const mail = offer.startsWith('m365:mail:');
   for (;;) {
     const c = load(person, offer);
     const due = c ? Object.entries(c.parts).filter(([, p]) => p.due !== null && p.due <= Date.now()).sort(([, a], [, b]) => a.due! - b.due!).slice(0, 20) : [];
@@ -126,14 +129,14 @@ async function slice(person: string, offer: string, until: number): Promise<void
       Object.assign(p, { link: next ?? end, pages: p.pages + 1, due: next ? Date.now() : Date.now() + REFRESH_MS, error: null, tries: 0 }, end && { delta: end, as_of: new Date().toISOString() });
     }
     if (lost) {
-      const [part, p, e] = lost;
-      rmSync(file, { force: true });
-      Object.assign(c, { length: 0, lines: 0, base: 0, parts: { [part]: { ...fresh(start(offer, part)), tries: p.tries } } });
+      const [part, p, e] = lost, was = feed(c);
+      Object.assign(c, { gen: c.gen + 1, length: 0, lines: 0, base: 0, parts: { [part]: { ...fresh(start(offer, part)), tries: p.tries } } });
       failed(c.parts[part], e, start(offer, part));
-      return save(c);
+      save(c);
+      return rmSync(was, { force: true });
     }
     if (lines.length) {
-      const frame = await promisify(zstdCompress)(lines.join('')), fd = openSync(file, 'a');
+      const frame = await promisify(zstdCompress)(lines.join('')), fd = openSync(feed(c), 'a');
       ftruncateSync(fd, c.length);
       writeSync(fd, frame);
       fsyncSync(fd);
@@ -147,9 +150,10 @@ async function slice(person: string, offer: string, until: number): Promise<void
 }
 
 // Once what later lines replaced or removed reaches a quarter of the feed, it's rewritten without them, and without what is under a
-// removed folder or library, as delta sends only the folder, into a file that replaces it. A library's root item has its drive as parent.
+// removed folder or library, as delta sends only the folder, as a new feed that the .json then names. A library's root item has its
+// drive as parent.
 async function tidy(c: Cache) {
-  const file = `${at(c.person, c.source)}.ndjson.zst`;
+  const file = feed(c), next = feed({ ...c, gen: c.gen + 1 });
   const read = () => createInterface({ input: createReadStream(file, { end: c.length - 1 }).pipe(createZstdDecompress()), crlfDelay: Infinity });
   const ids: string[] = [], last = new Map<string, number>(), gone = new Set<string>(), parent = new Map<string, string>();
   for await (const line of read()) {
@@ -177,69 +181,63 @@ async function tidy(c: Cache) {
         yield `${line}\n`;
       }
     }
-  }, createZstdCompress(), createWriteStream(`${file}.tmp`));
-  renameSync(`${file}.tmp`, file);
-  Object.assign(c, { length: statSync(file).size, base: statSync(file).size, lines: kept });
+  }, createZstdCompress(), createWriteStream(next));
+  Object.assign(c, { gen: c.gen + 1, length: statSync(next).size, base: statSync(next).size, lines: kept });
   save(c);
+  rmSync(file);
 }
 
 // A cache starts with its source's first part, or for a site, a part per library, which are listed again each time.
 async function begin(o: Offer, person: string) {
-  const [k, id] = kind(o.id), c = load(person, o.id) ?? { person, source: o.id, name: o.name, length: 0, lines: 0, base: 0, parts: k === 'site' ? {} : { '': fresh(start(o.id, '')) } };
+  const [k, id] = kind(o.id), c = load(person, o.id) ?? { person, source: o.id, name: o.name, gen: 0, length: 0, lines: 0, base: 0, parts: k === 'site' ? {} : { '': fresh(start(o.id, '')) } };
   c.name = o.name;
   if (k === 'site') for (const d of (await call(person, `/sites/${id}/drives?$select=id`)).value) c.parts[d.id] ??= fresh(start(o.id, d.id));
   mkdirSync(dirname(at(person, o.id)), { recursive: true, mode: 0o700 });
   save(c);
 }
 
-// A person's sources with no cache yet start one, in the background: when they add an offer or sign in, and at the server's start.
+// A person's caches start, or a site's libraries are listed again, in the background: when they add an offer or sign in, and at the
+// server's start.
 export function track(email: string) {
   const l = m365(email);
-  for (const o of l && !l.expired ? l.offers.filter(indexed) : [])
-    if (!load(email, o.id)) queue(at(email, o.id), () => begin(o, email)).then(() => poke(), e => console.error(`index of ${o.id} for ${email}: no start`, e));
+  for (const o of l && !l.expired ? l.offers.filter(indexed) : []) queue(at(email, o.id), () => begin(o, email)).then(() => poke(), e => console.error(`index of ${o.id} for ${email}: no start`, e));
 }
 
 // A person's cache goes when they remove its offer, or every one when they sign out of Microsoft 365, after any write going on.
 export function forget(email: string, offer?: string) {
   for (const c of caches().filter(c => c.person === email && (!offer || c.source === offer)))
-    queue(at(email, c.source), async () => { for (const s of ['.ndjson.zst', '.json']) rmSync(`${at(email, c.source)}${s}`, { force: true }); });
+    queue(at(email, c.source), async () => {
+      const now = load(email, c.source);
+      for (const f of now ? [feed(now), `${at(email, c.source)}.json`] : []) rmSync(f, { force: true });
+    });
 }
 
-// Before a run starts, for each source its runner ticked: up to about 15 s catching up with their cache, as the latest items matter
-// most, then into `to`, on the same disk, a copy of it, by reflink where the disk does that: <name>.ndjson.zst, and <name>.json, the
-// source, their own deltaLinks, to follow for what changed since, and as_of, when the oldest of them was reached, or null while
-// their crawl goes on. On any failure the run still gets what there is.
-export async function prepare(inst: Instance, to: string): Promise<boolean> {
+// Before a run starts, for each source its runner ticked that has a cache, without waiting for it: into `to`, on the same disk, a
+// copy of the feed as its .json accounts for it, by reflink where the disk does that, as <name>.ndjson.zst, and <name>.json: the
+// source, their own deltaLinks, to follow for what changed since, and as_of, when the oldest of them was reached, null while the
+// cache is still being built. All of it runs at once, so no tidy-up starts a new feed in between. Whether there was any.
+export function prepare(inst: Instance, to: string): boolean {
   let by: string, ticked: string[];
   try {
     ({ by, logins: ticked } = lender(inst));
   } catch {
     return false;
   }
-  const offers = (m365(by)?.offers ?? []).filter(o => ticked.includes(o.id) && indexed(o)), names = new Set<string>();
-  if (!offers.length) return false;
-  mkdirSync(to, { recursive: true });
-  await Promise.all(offers.map(o => {
-    const base = o.name.replace(/[/\0]/g, '-');
+  const names = new Set<string>();
+  for (const o of (m365(by)?.offers ?? []).filter(o => ticked.includes(o.id) && indexed(o))) {
+    const c = load(by, o.id), base = o.name.replace(/[/\0]/g, '-'), ps = Object.values(c?.parts ?? {});
+    if (!c) continue;
     let name = base;
     for (let k = 2; names.has(name); k++) name = `${base} ${k}`;
     names.add(name);
-    return queue(at(by, o.id), async () => {
-      await begin(o, by).catch(e => console.error(`index of ${o.id} for ${by}: no start`, e));
-      const c = load(by, o.id);
-      if (!c) return;
-      for (const p of Object.values(c.parts)) p.due = Date.now();
-      save(c);
-      await slice(by, o.id, Date.now() + RUN_MS).catch(e => console.error(`index of ${o.id} for ${by}: no catch-up`, e));
-      const d = load(by, o.id)!, ps = Object.values(d.parts), file = `${at(by, o.id)}.ndjson.zst`;
-      if (d.length) {
-        truncateSync(file, d.length);
-        copyFileSync(file, join(to, `${name}.ndjson.zst`), constants.COPYFILE_FICLONE);
-      }
-      writeFileSync(join(to, `${name}.json`), JSON.stringify({ source: o.id, as_of: ps.length && ps.every(p => p.as_of) ? ps.map(p => p.as_of!).sort()[0] : null, deltaLinks: ps.flatMap(p => p.delta ?? []) }, null, 1));
-    }).catch(e => console.error(`index of ${o.id} for ${by}: no copy`, e));
-  }));
-  return true;
+    mkdirSync(to, { recursive: true });
+    if (c.length) {
+      copyFileSync(feed(c), join(to, `${name}.ndjson.zst`), constants.COPYFILE_FICLONE);
+      truncateSync(join(to, `${name}.ndjson.zst`), c.length);
+    }
+    writeFileSync(join(to, `${name}.json`), JSON.stringify({ source: o.id, as_of: ps.length && ps.every(p => p.as_of) ? ps.map(p => p.as_of!).sort()[0] : null, deltaLinks: ps.flatMap(p => p.delta ?? []) }, null, 1));
+  }
+  return names.size > 0;
 }
 
 // In the background, the most overdue cache gets a slice, again and again, one at a time: each crawl goes on to its end, and each
