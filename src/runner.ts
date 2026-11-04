@@ -114,7 +114,8 @@ export async function startRun(o: Parameters<typeof pi>[0] & { message: string; 
   await ready(client).then(() => client.prompt(o.message)).catch(async e => { await stop(); throw e; });
   return {
     steer: text => client.steer(text),
-    interrupt: async () => { await client.clearQueue(); await client.abort(); },
+    // Done once the run settles: Pi says so before it answers the abort, and the run's end may stop it first.
+    interrupt: async () => { await Promise.race([client.clearQueue().then(() => client.abort()), settled]); },
     stop,
     settled,
   };
