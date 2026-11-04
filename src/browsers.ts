@@ -51,7 +51,7 @@ export function files(id: string, path: string) {
 
 const open = async (w: Website, ttl_s: number, state?: unknown, headers?: Record<string, string>): Promise<string> =>
   (await json('POST', '/sessions', { site: { hosts: [new URL(w.url).hostname, ...w.hosts], start_url: w.url, headers }, state, ttl_s })).id;
-const close = (id: string): Promise<{ state: unknown; log: { method: string; url: string; status: number; blocked?: string }[] }> => json('DELETE', `/sessions/${id}`);
+const close = (id: string): Promise<{ state: unknown; log: { method: string; url: string; status: number; blocked?: string; error?: string }[] }> => json('DELETE', `/sessions/${id}`);
 
 // A websocket passed through to the service's `path`, with the key added.
 export function passUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, path: string) {
@@ -132,7 +132,7 @@ export async function endSignIn(email: string, id: string, save: boolean) {
       if (!blocked.hosts.includes(host)) blocked.hosts.push(host);
     } else {
       (requests[host] ??= {})[e.status] = (requests[host][e.status] ?? 0) + 1;
-      if (e.status >= 400) failed.push(`${e.method} ${host}${u?.pathname ?? ''} ${e.status}`);
+      if (e.status >= 400) failed.push(`${e.method} ${host}${u?.pathname ?? ''} ${e.status}${e.error ? ` ${e.error}` : ''}`);
     }
   }
   console.log(`sign-in ended ${JSON.stringify({ id, site, email, saved: save, seconds: Math.round((Date.now() - since) / 1000), requests, blocked, failed })}`);

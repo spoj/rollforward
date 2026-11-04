@@ -136,7 +136,7 @@ test("a sign-in that ends, saved or not, leaves a line in the server's output of
   const lines = said.mock.calls.map(c => String(c.arguments[0]));
   assert.equal(lines[0], `sign-in ended ${JSON.stringify({
     id: 'b9', site: 'pa', email: alice, saved: false, seconds: 0, requests: { 'pa.example.com': { 302: 1, 502: 1 }, 'sso.example.com': { 200: 1, 401: 1 } },
-    blocked: { count: 2, hosts: ['cdn.example.com'] }, failed: ['POST sso.example.com/login 401', 'GET pa.example.com/home 502'],
+    blocked: { count: 2, hosts: ['cdn.example.com'] }, failed: ['POST sso.example.com/login 401', 'GET pa.example.com/home 502 socket hang up'],
   })}`);
   assert.match(lines[1], /^sign-in ended \{"id":"b9","site":"pa","email":"alice@demo.test","saved":true,/);
   assert.equal(lines.length, 2);
