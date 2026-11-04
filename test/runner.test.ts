@@ -52,11 +52,9 @@ writeFileSync(i('p1/working/payroll.csv'), 'names');
 // A ticked library's cache, a zstd frame per batch, as the server copies it before the run starts.
 mkdirSync(join(tmp, 'index'));
 writeFileSync(join(tmp, 'index', 'LFM.ndjson.zst'), Buffer.concat([{ id: 'f1', name: 'aging.xlsx', size: 1200 }, { id: 'f2', name: 'march.xlsx', size: 800 }].map(i => zstdCompressSync(`${JSON.stringify(i)}\n`))));
-mkdirSync(i('w2/session'));
-writeFileSync(i('w2/session/main.jsonl'), `${JSON.stringify({ type: 'session', id: 'main', cwd: '/work/ws/Old name' })}\n`);
 const cwd = '/work/ws/Weekly: AR', at = `${cwd}/w2`;
 const agent = pi({
-  token: TOKEN, id: 'w2', skills: ['tool'],
+  token: TOKEN, id: 'w2', n: 1, skills: ['tool'],
   view: { cwd, instance: at, dir: i('w2'), pylib: join(root, 'series', 'weekly', '.pylib'), ro: [[i('w1'), `${cwd}/w1`], [i('w2'), at], [i('r1'), '/work/ws/Shared/r1'], [join(tmp, 'index'), '/index']], env: { DATABRICKS_HOST: 'https://adb-1.test', RF_INDEX: '/index' } },
 });
 const sh = async (command: string) => (await agent.bash(command)).output.trim();
@@ -86,7 +84,6 @@ test('the sandbox shows its view of the data by name, and nothing else of the da
   assert.equal(await sh('cat ../Shared/r1/working/rates.csv'), 'usd,1');
   assert.equal(await sh('ls /work/ws'), 'Shared\nWeekly: AR');
   for (const p of [root, '/root', import.meta.dirname]) assert.match(await sh(`ls ${p} 2>&1`), /No such file/, p);
-  assert.equal(JSON.parse(readFileSync(i('w2/session/main.jsonl'), 'utf8').split('\n')[0]).cwd, cwd, 'its session moved to the names of today, so Pi resumes it');
 });
 
 test("writes land only in the instance's working/ and session/ and the series' .pylib", async () => {

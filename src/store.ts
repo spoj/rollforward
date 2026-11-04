@@ -17,10 +17,10 @@ export function replaceReadOnly(path: string, data: string | Buffer) {
 
 // Opens `rel` under `base` where a run may have put anything: only a regular file reached without a link, else undefined. The real
 // path of what was opened is checked, so a folder swapped for a link meanwhile is refused too.
-export function openFile(base: string, rel: string, flags = constants.O_RDONLY): number | undefined {
+export function openFile(base: string, rel: string): number | undefined {
   const path = join(base, rel);
   if (!lstatSync(path, { throwIfNoEntry: false })?.isFile()) return undefined;
-  const fd = openSync(path, flags | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   if (fstatSync(fd).isFile() && readlinkSync(`/proc/self/fd/${fd}`) === join(realpathSync(base), rel)) return fd;
   closeSync(fd);
 }

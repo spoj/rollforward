@@ -1,11 +1,10 @@
 import { RpcClient, type JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
-import { chmodSync, closeSync, constants, existsSync, ftruncateSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { listenRun, PORT, sandboxArgs, unlistenRun } from './sandbox.ts';
 import { skillsDir } from './skills.ts';
-import { openFile } from './store.ts';
 import { bundle } from './ca.ts';
 
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -34,9 +33,8 @@ export type View = { cwd: string; instance: string; dir: string; pylib: string; 
 
 // Pi for one run, in its sandbox (sandbox.ts): its view read-only but for the instance's working/ and session/ and the series'
 // .pylib, the live skills and nothing else of the host's. prompt.md is its system prompt, to which Pi adds the AGENTS.md
-// files from / down to cwd. A session started under other names is moved to these, as Pi resumes only a session whose folder it
-// recorded.
-export function pi(o: { token: string; id: string; view: View; skills?: string[] }): RpcClient {
+// files from / down to cwd. Each run, `n`, is a new session, its transcript in the instance's session/ beside the earlier runs'.
+export function pi(o: { token: string; id: string; n: number; view: View; skills?: string[] }): RpcClient {
   const run = join(scratch, 'runs', o.token), home = join(run, 'home'), agentDir = join(home, '.pi', 'agent'), tmp = join(run, 'tmp');
   const { cwd, instance, dir, pylib } = o.view, working = join(dir, 'working'), session = join(dir, 'session');
   const socketDir = join(run, 'socket');
@@ -45,17 +43,6 @@ export function pi(o: { token: string; id: string; view: View; skills?: string[]
   // prompt, would split it.
   symlinkSync(`${cwd}/.pylib`, join(home, 'pylib'));
   listenRun(join(socketDir, 'rf.sock'), o.token);
-  for (const f of readdirSync(session).filter(f => f.endsWith('.jsonl'))) {
-    const fd = openFile(session, f, constants.O_RDWR);
-    if (fd === undefined) continue;
-    try {
-      const text = readFileSync(fd, 'utf8'), nl = text.indexOf('\n'), head = JSON.parse(text.slice(0, nl));
-      if (head.cwd !== cwd) {
-        ftruncateSync(fd);
-        writeSync(fd, JSON.stringify({ ...head, cwd }) + text.slice(nl), 0);
-      }
-    } finally { closeSync(fd); }
-  }
   const local = `http://127.0.0.1:${PORT}`, proxy = `http://rf:${o.token}@127.0.0.1:${PORT}`;
   writeFileSync(join(agentDir, 'settings.json'), JSON.stringify({ steeringMode: 'all' }));
   mkdirSync(join(home, '.officecli'));
@@ -85,7 +72,7 @@ export function pi(o: { token: string; id: string; view: View; skills?: string[]
     args: ['--no-extensions', '--no-skills', '--no-mcp', '--no-prompt-templates', ...(o.skills ?? []).flatMap(id => ['--skill', `/skills/live/${id}`]),
       '--tools', 'read,bash,edit,write', '--system-prompt', join(app, 'prompt.md'),
       '--thinking', process.env.RF_THINKING ?? 'high',
-      '--session-dir', `${instance}/session`, '--session-id', 'main',
+      '--session-dir', `${instance}/session`, '--session-id', `run-${o.n}`,
       ...JSON.parse(process.env.RF_PI_ARGS ?? '[]')],
   });
 }

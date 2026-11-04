@@ -55,12 +55,12 @@ export function pending(inst: Instance, seen: number): Entry[] {
 // Whether an instance has something for a run: what came since its last run, or since an Interrupt, which waits for the next act.
 const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math.max(seenBefore(inst), inst.log.findLast(e => e.op === 'interrupt')?.seq ?? 0)).length > 0;
 
-// A message names the runner, on whose behalf the agent acts, and the connections they lend it, where its entries set those: the
-// first, a takeover and a runner's new ticks.
-export function message(inst: Instance, n: number, entries: Entry[]): string {
-  const made = entries.findLast(e => ['create', 'duplicate', 'takeover', 'logins'].includes(e.op)), us = users(), who = (by: string) => `${us[by]?.name || by} <${by}>`;
+// A run's first message names the runner, on whose behalf the agent acts, and the connections they lend it, as does a later one
+// whose entries change those: a takeover and a runner's new ticks.
+export function message(inst: Instance, n: number, entries: Entry[], first = false): string {
+  const made = entries.findLast(e => ['takeover', 'logins'].includes(e.op)), us = users(), who = (by: string) => `${us[by]?.name || by} <${by}>`;
   return `Instance ${inst.label} (folder ${inst.label}/), run ${n}.`
-    + (made ? ` Its runner is ${made.op === 'takeover' ? `now ${who(made.by)}, taking over from ${who(made.from as string)}` : who(made.by)}, who lends you ${reachable(inst).map(c => `${c.name} (${c.type})`).join(', ') || 'no connection'}.` : '')
+    + (first || made ? ` Its runner is ${made?.op === 'takeover' ? `now ${who(made.by)}, taking over from ${who(made.from as string)}` : who(runnerOf(inst).by)}, who lends you ${reachable(inst).map(c => `${c.name} (${c.type})`).join(', ') || 'no connection'}.` : '')
     + ' New log entries:\n'
     + entries.map(e => JSON.stringify(isNote(inst, e) ? { ...e, note: true } : e)).join('\n');
 }
@@ -119,7 +119,7 @@ async function start(inst: Instance) {
   started.splice(0, started.length - MAX_RUNS);
   const n = inst.log.filter(e => e.op === 'run').length + 1;
   const entries = inst.log.filter(e => e.seq > seen && e.by !== 'agent');
-  const text = message(inst, n, entries);
+  const text = message(inst, n, entries, true);
   const a: Active = { inst, n, token: randomUUID(), view: view(inst), sent: entries.at(-1)!.seq, seen, texts: new Map([[text, entries.at(-1)!.seq]]), interrupted: false, done: false, cost: 0, said: '', hosts: new Set(), links: new Map() };
   active.set(series, a);
   byToken.set(a.token, a);
@@ -133,7 +133,7 @@ async function start(inst: Instance) {
       a.view.env.RF_INDEX = '/index';
     }
     a.run = await startRun({
-      token: a.token, id: inst.id, view: a.view,
+      token: a.token, id: inst.id, n, view: a.view,
       message: text, skills: live.map(s => s.id),
       onEvent: e => {
         if (e.type === 'message_end' || e.type === 'tool_execution_end') changes.emit('change', inst.id); // the Ops log shows the run as it goes
@@ -292,7 +292,7 @@ export function recover() {
     if (run?.op === 'run') {
       const cost = inst.log.reduce((t, e) => t + (e.op === 'call' && e.run === run.run ? (e.cost as number | undefined) ?? 0 : 0), 0);
       inst.append('server', 'done', { run: run.run, aborted: true, seen: seenBefore(inst), cost: +cost.toFixed(4), summary: null, error: 'a restart cut the run' });
-      inst.append('server', 'wake', { reason: 'A restart cut your last run; carry on', from: 'server' });
+      inst.append('server', 'wake', { reason: `A restart cut run ${run.run}; carry on`, from: 'server' });
     }
     kick(inst);
   }

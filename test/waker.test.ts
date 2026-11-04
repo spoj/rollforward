@@ -35,8 +35,9 @@ startWaking();
 
 after(() => rmSync(tmp, { recursive: true, force: true }));
 
-test('a message names the runner and what they lend only where its entries set those', () => {
-  assert.match(message(oct, 1, oct.log), new RegExp(`^Instance 2026-10 \\(folder 2026-10/\\), run 1\\. Its runner is .+ <${alice}>, who lends you no connection\\. New log entries:`));
+test("a run's first message names the runner and what they lend, as does a later one only where its entries change those", () => {
+  assert.match(message(oct, 1, oct.log, true), new RegExp(`^Instance 2026-10 \\(folder 2026-10/\\), run 1\\. Its runner is .+ <${alice}>, who lends you no connection\\. New log entries:`));
+  assert.match(message(oct, 2, [{ seq: 98, at: '', by: alice, op: 'comment', text: 'go' }], true), /^Instance 2026-10 \(folder 2026-10\/\), run 2\. Its runner is /, 'every run is a new conversation');
   assert.match(message(oct, 2, []), /^Instance 2026-10 \(folder 2026-10\/\), run 2\. New log entries:/);
   assert.match(message(oct, 3, [{ seq: 99, at: '', by: 'bob@demo.test', op: 'takeover', from: alice }]), new RegExp(`run 3\\. Its runner is now .+ <bob@demo\\.test>, taking over from .+ <${alice}>, who lends you no connection\\.`));
 });
@@ -110,7 +111,7 @@ test('a run a restart cut ends as aborted, with what its calls cost so far, and 
   cut.append('server', 'run', { run: 2, upto: 1 });
   for (const c of [{ name: 'openrouter', cost: 0.25 }, { name: 'graph' }, { name: 'exa', cost: 0.5 }]) cut.append('agent', 'call', { run: 2, ...c });
   recover();
-  assert.deepEqual(cut.log.slice(-2).map(e => [e.op, e.error ?? e.reason, e.cost]), [['done', 'a restart cut the run', 0.75], ['wake', 'A restart cut your last run; carry on', undefined]]);
+  assert.deepEqual(cut.log.slice(-2).map(e => [e.op, e.error ?? e.reason, e.cost]), [['done', 'a restart cut the run', 0.75], ['wake', 'A restart cut run 2; carry on', undefined]]);
   await settle();
   assert.equal(cut.log.filter(e => e.op === 'run').length, 3, 'started again');
 });

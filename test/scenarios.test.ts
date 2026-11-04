@@ -11,7 +11,7 @@ import { pathToFileURL } from 'node:url';
 // Real runs, from a person's act down to Pi in its sandbox, with a scripted stand-in for OpenRouter: each run's prompt takes the
 // next script, bash commands and then the report, and the stand-in keeps what each command answered. So the walls a run meets, a
 // wake and a takeover are checked as a run meets them, at no model cost.
-type Script = { bash: (string | (() => string))[]; report: string; prompt?: string; system?: string; saw: string[]; fail?: string; hold?: () => void };
+type Script = { bash: (string | (() => string))[]; report: string; prompt?: string; system?: string; first?: number; saw: string[]; fail?: string; hold?: () => void };
 const scripts: Script[] = [], byPrompt = new Map<string, Script>(), providers: unknown[] = [];
 const app = join(import.meta.dirname, '..'), tmp = mkdtempSync(join(tmpdir(), 'rf-scenario-')), root = join(tmp, 'data');
 const ADMIN = 'admin@demo.test', BOB = 'bob@demo.test';
@@ -28,7 +28,7 @@ async function answer(req: IncomingMessage, res: ServerResponse) {
   if (req.url!.endsWith('/chat/completions')) return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'A second opinion' } }], usage: { cost: 0.002 } }));
   const msgs: { role: string; content: unknown }[] = body.messages, at = msgs.findLastIndex(m => m.role === 'user' && !isResult(m));
   const key = text(msgs[at].content);
-  if (!byPrompt.has(key)) byPrompt.set(key, Object.assign(scripts.shift()!, { prompt: key, system: text(body.system) }));
+  if (!byPrompt.has(key)) byPrompt.set(key, Object.assign(scripts.shift()!, { prompt: key, system: text(body.system), first: msgs.filter(m => m.role !== 'system').length }));
   const s = byPrompt.get(key)!, results = msgs.slice(at + 1).filter(isResult).flatMap(m => (m.content as { type: string; content: unknown }[]).filter(b => b.type === 'tool_result'));
   s.saw = results.map(r => text(r.content));
   // A held answer never comes, for a cut mid model call.
@@ -192,6 +192,10 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.ok(providers.length && providers.every(p => JSON.stringify(p) === '{"data_collection":"deny"}'), 'every call asked only for providers that collect no data');
   assert.deepEqual(log.filter(e => e.op === 'comment' && e.by === 'agent').map(e => [e.text, !!e.ask]), [['Walls checked.', false], ['Is the bank file coming today?', true]], "the agent's words are comments of its own, and an ask is marked");
   assert.match(woken.prompt!, /"op":"wake","from":"[^"]*\/2026-11"/, 'the wake started the next run, saying only who set it');
+  assert.deepEqual([walls.first, woken.first], [1, 1], 'each run a new conversation, of its own prompt alone');
+  assert.match(woken.prompt!, /^Instance 2026-11 \(folder 2026-11\/\), run 3\. Its runner is Demo Admin <admin@demo\.test>, who lends you /, 'which names the runner');
+  const transcripts = readdirSync(join(root, 'instances', id, 'session'));
+  assert.ok(['run-2', 'run-3'].every(r => transcripts.some(f => f.endsWith(`_${r}.jsonl`))), `a transcript per run: ${transcripts}`);
   assert.match(woken.saw[0], /m365:mail:admin@demo.test is not ticked/);
   assert.deepEqual(log.filter(e => e.op === 'done').map(e => [e.run, e.aborted, e.cost]), [[1, false, 0.01], [2, false, +(walls.bash.length * 0.01 + 0.01 + 0.002).toFixed(4)], [3, false, 0.02]], "what its calls cost, Pi's and the script's");
   assert.deepEqual(log.filter(e => e.op === 'report').map(e => e.text), [made.report, walls.report, woken.report]);
@@ -282,7 +286,8 @@ test('a cut anywhere leaves the instance right, its log whole, and the next run 
     assert.deepEqual(entries(), log, 'the log parses, every line of it');
     const done = log.filter(e => e.op === 'done');
     assert.deepEqual([done.at(-2)!.aborted, done.at(-2)!.error, done.at(-1)!.aborted], [true, 'a restart cut the run', false]);
-    assert.ok(log.some(e => e.op === 'wake' && e.reason === 'A restart cut your last run; carry on'));
+    assert.ok(log.some(e => e.op === 'wake' && e.reason === `A restart cut run ${n}; carry on`), 'naming the run, whose transcript is in session/');
+    assert.equal(next.first, 1, 'in a new conversation');
     assert.equal(log.findLast(e => e.op === 'report')!.text, next.report);
     return log;
   };
