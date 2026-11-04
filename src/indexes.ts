@@ -25,9 +25,9 @@ const SLICE_MS = 5_000, REFRESH_MS = 60 * 60_000, TRIES = 5;
 type Part = { link: string; delta: string | null; as_of: string | null; pages: number; due: number | null; error: string | null; tries: number };
 type Cache = { person: string; source: string; name: string; gen: number; length: number; lines: number; base: number; parts: Record<string, Part> };
 
-const kind = (offer: string) => /^m365:(\w+):(.*)$/.exec(offer)!.slice(1) as [string, string];
+const kind = (offer: string) => /^m365:(\w+):?(.*)$/.exec(offer)!.slice(1) as [string, string];
 const m365 = (email: string) => logins(email).find(l => l.id === 'm365');
-const indexed = (o: Offer) => /^m365:(item|site|mail):/.test(o.id) && !o.name.startsWith('File ');
+const indexed = (o: Offer) => /^m365:(item:|site:|mail:|onedrive$)/.test(o.id) && !o.name.startsWith('File ');
 // A cache is kept up while its person's login offers its source and hasn't expired.
 const offered = (person: string, offer: string) => !!m365(person)?.offers.some(o => o.id === offer) && !m365(person)!.expired;
 const at = (person: string, offer: string) => join(personDir(person), 'index', createHash('sha256').update(offer).digest('hex').slice(0, 16));
@@ -68,11 +68,13 @@ async function call(email: string, path: string, requests?: object[]): Promise<a
   throw Object.assign(new Error(`Microsoft Graph answered ${r.status}: ${(await r.text()).slice(0, 300)}`), { status: r.status, after: Number(r.headers.get('retry-after')) || 60 });
 }
 
-// Where a part of a source starts: a ticked folder's delta, the whole folder or library; each library of a site, its root's; a
-// mailbox's folder list ('') and each folder's messages, as text. A drive's shows what its person can no longer see as deleted.
+// Where a part of a source starts: a ticked folder's delta, the whole folder or library; a person's whole OneDrive, its root's; each
+// library of a site, its root's; a mailbox's folder list ('') and each folder's messages, as text. A drive's shows what its person
+// can no longer see as deleted.
 function start(offer: string, part: string): string {
   const [k, id] = kind(offer);
   if (k === 'item') return `${G()}/drives/${id.replace('/', '/items/')}/delta`;
+  if (k === 'onedrive') return `${G()}/me/drive/root/delta`;
   if (k === 'site') return `${G()}/drives/${part}/root/delta`;
   return `${G()}/users/${encodeURIComponent(id)}/mailFolders/${part ? `${encodeURIComponent(part)}/messages/` : ''}delta`;
 }
@@ -294,7 +296,7 @@ export function indexes() {
   return caches().map(c => {
     const ps = Object.values(c.parts), err = ps.find(p => p.error);
     return {
-      name: c.name, source: c.source, kind: ({ item: 'folder', site: 'site', mail: 'mailbox' } as Record<string, string>)[kind(c.source)[0]], items: c.lines, bytes: c.length,
+      name: c.name, source: c.source, kind: ({ item: 'folder', onedrive: 'OneDrive', site: 'site', mail: 'mailbox' } as Record<string, string>)[kind(c.source)[0]], items: c.lines, bytes: c.length,
       people: [{
         who: c.person, phase: ps.every(p => p.delta) ? 'follow' : 'crawl', pages: ps.reduce((n, p) => n + p.pages, 0),
         caught_up: ps.length && ps.every(p => p.as_of) ? ps.map(p => p.as_of!).sort()[0] : null, error: err?.error ?? null, retry_at: err?.due ? new Date(err.due).toISOString() : null,

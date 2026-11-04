@@ -10,10 +10,10 @@ import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 import type { Instance } from '../src/store.ts';
 
 // A stand-in for Microsoft's sign-in and Graph: a library whose ticked folder has a subfolder shared with Bob, who sees only what is
-// under it; a bigger library for a crawl cut by a restart; and a shared mailbox. Each person's access token is their refresh token,
+// under it; a bigger library for a crawl cut by a restart; Dan's OneDrive; and a shared mailbox. Each person's access token is their refresh token,
 // which is their address. Delta pages hold three items, or two messages; a cursor's token says where it is.
 const ALICE = 'alice@demo.test', BOB = 'bob@demo.test', CAROL = 'carol@demo.test', DAN = 'dan@demo.test', BOX = 'team@demo.test';
-const FOLDER = 'm365:item:b!d/top', PUB = 'm365:item:b!d/pub', BIG = 'm365:item:b!big/bigtop', MAIL = `m365:mail:${BOX}`, SITE = 'm365:site:host,s1,w1';
+const FOLDER = 'm365:item:b!d/top', PUB = 'm365:item:b!d/pub', BIG = 'm365:item:b!big/bigtop', MAIL = `m365:mail:${BOX}`, SITE = 'm365:site:host,s1,w1', ONEDRIVE = 'm365:onedrive';
 const tmp = mkdtempSync(join(tmpdir(), 'rf-index-'));
 let graph: Server, base = '', ix: typeof import('../src/indexes.ts'), logins: typeof import('../src/logins.ts');
 
@@ -68,6 +68,7 @@ function answer(who: string, url: string, prefer?: string): { status: number; he
   const u = new URL(url, 'http://x'), path = decodeURIComponent(u.pathname).replace(/^\/v1\.0/, ''), token = u.searchParams.get('token') ?? u.searchParams.get('$deltatoken');
   let m;
   if ((m = /^\/drives\/([^/]+)\/(?:items\/([^/]+)|root)\/delta$/.exec(path))) return delta(who, m[1], m[2], token);
+  if (path === '/me/drive/root/delta' && who === DAN) return delta(who, 'b!own', undefined, token);
   if ((m = /^\/users\/[^/]+\/mailFolders\/(?:([^/]+)\/messages\/)?delta$/.exec(path))) return mail(m[1], token);
   if (path === '/sites/host,s1,w1/drives') return { status: 200, body: { value: [{ id: 'b!d' }, { id: 'b!big' }] } };
   return { status: 404, body: { error: { code: 'itemNotFound', message: path } } };
@@ -117,6 +118,8 @@ before(async () => {
   put('b!big', { id: 'bigroot', name: 'root', root: {}, folder: {}, parentReference: { driveId: 'b!big' } });
   put('b!big', folder('b!big', 'bigtop', 'Big', 'bigroot'));
   for (let i = 1; i <= 8; i++) put('b!big', file('b!big', `b${i}`, `${i}.xlsx`, 'bigtop'));
+  put('b!own', { id: 'oroot', name: 'root', root: {}, folder: {}, parentReference: { driveId: 'b!own' } });
+  put('b!own', file('b!own', 'o1', 'notes.docx', 'oroot'));
   put('mail', { id: 'fin', displayName: 'Inbox', parentFolderId: 'mroot' }, '');
   put('mail', { id: 'fsub', displayName: 'Clients', parentFolderId: 'fin' }, '');
   put('mail', { id: 'farc', displayName: 'Archive', parentFolderId: 'mroot' }, '');
@@ -367,6 +370,13 @@ test("a site: each library's root delta, and a library closed to its person goes
   assert.deepEqual(lines(feedOf(CAROL, SITE)).map(l => l.id).sort(), ['droot', 'f1', 'f4', 'out', 'pub', 'top'], 'tidied');
 });
 
+test("a whole OneDrive: its person's own drive's root delta", async () => {
+  offer(DAN, [{ id: BIG, name: 'Big' }, { id: ONEDRIVE, name: 'OneDrive' }]);
+  await work(settled(DAN, ONEDRIVE));
+  assert.deepEqual(now(run(DAN, [ONEDRIVE])('OneDrive').lines), ['o1', 'oroot']);
+  assert.deepEqual(asked.filter(q => q.who === DAN && q.url.startsWith('/me/')).map(q => [q.url, q.prefer]), [['/me/drive/root/delta', 'deltashowremovedasdeleted']]);
+});
+
 test('rf indexes: each cache, its lines and bytes, and how it goes', () => {
   const site = ix.indexes().find(x => x.source === SITE && x.people[0].who === CAROL)!;
   assert.equal(site.kind, 'site');
@@ -374,6 +384,7 @@ test('rf indexes: each cache, its lines and bytes, and how it goes', () => {
   assert.equal(site.bytes, cache(CAROL, SITE).length);
   assert.deepEqual(site.people.map(p => [p.who, p.phase]), [[CAROL, 'follow']]);
   assert.equal(ix.indexes().find(x => x.source === FOLDER && x.people[0].who === BOB)!.people[0].phase, 'crawl');
+  assert.equal(ix.indexes().find(x => x.source === ONEDRIVE)!.kind, 'OneDrive');
 });
 
 test('removing an offer deletes its cache', async () => {
