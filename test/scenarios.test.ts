@@ -68,17 +68,18 @@ before(async () => {
   base = `http://127.0.0.1:${(probe.address() as { port: number }).port}`;
   await new Promise(ok => probe.close(ok));
   mkdirSync(join(tmp, 'home'));
-  // The server's git, but that a commit's read-tree, while the file $RF_HOLD_GIT exists, takes the index's lock and holds it, as git
-  // does as it writes, until the server is gone: a cut mid commit.
+  // The server's git, but that the read-tree of a commit whose subject the file $RF_HOLD_GIT holds takes the index's lock and holds
+  // it, as git does as it writes, until the server is gone: a cut mid commit.
   mkdirSync(join(tmp, 'bin'));
+  const git = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
   writeFileSync(join(tmp, 'bin', 'git'), `#!/bin/sh
-if [ "$1" = read-tree ] && [ -e "$RF_HOLD_GIT" ]; then
+if [ "$1" = read-tree ] && [ -e "$RF_HOLD_GIT" ] && [ "$(${git} log -1 --format=%s "$2")" = "$(cat "$RF_HOLD_GIT")" ]; then
   : > .git/index.lock
   : > "$RF_HOLD_GIT.held"
   while kill -0 "$PPID" 2>/dev/null; do sleep 0.05; done
   exit 1
 fi
-exec ${execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()} "$@"
+exec ${git} "$@"
 `);
   chmodSync(join(tmp, 'bin', 'git'), 0o755);
   await serve();
@@ -349,9 +350,7 @@ test('a cut anywhere leaves the instance right, its log whole, and the next run 
   await carriedOn(4, afterTool);
   assert.match(afterTool.saw[0], /started/, 'with what the cut tool call wrote');
 
-  // The hold is for the agent's commit mid-run, so the last run's own commit comes first.
-  await until("run 5's commit", () => commits()[0].startsWith('Run 5:'));
-  writeFileSync(join(tmp, 'hold-git'), '');
+  writeFileSync(join(tmp, 'hold-git'), 'Before the cut');
   scripts.push({ bash: ['rf commit Before the cut 2>&1'], report: 'Never said.', saw: [] });
   await call('POST', `/api/instances/${id}/comment`, { text: 'Commit it.' });
   await until('the commit', () => existsSync(join(tmp, 'hold-git.held')));
