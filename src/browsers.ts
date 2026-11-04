@@ -51,7 +51,7 @@ export function files(id: string, path: string) {
 
 const open = async (w: Website, ttl_s: number, state?: unknown, headers?: Record<string, string>): Promise<string> =>
   (await json('POST', '/sessions', { site: { hosts: [new URL(w.url).hostname, ...w.hosts], start_url: w.url, headers }, state, ttl_s })).id;
-const close = (id: string): Promise<{ state: unknown; log: { method: string; blocked?: string }[] }> => json('DELETE', `/sessions/${id}`);
+const close = (id: string): Promise<{ state: unknown; log: { method: string; url: string; status: number; blocked?: string }[] }> => json('DELETE', `/sessions/${id}`);
 
 // A websocket passed through to the service's `path`, with the key added.
 export function passUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, path: string) {
@@ -93,7 +93,7 @@ function website(id: string): Website {
 // it. It is sealed with their login as they save it, and used again when they sign in again without a new one; never sent for a
 // run's browser.
 
-const signIns = new Map<string, { email: string; site: string; name: string; token?: string }>();
+const signIns = new Map<string, { email: string; site: string; name: string; token?: string; since: number }>();
 
 export async function startSignIn(email: string, site: string, given: string): Promise<string> {
   const w = website(site), kept = `web:${site}.header`;
@@ -105,7 +105,7 @@ export async function startSignIn(email: string, site: string, given: string): P
     if (/[^\x20-\x7e]/.test(token)) throw new HttpError(400, `${w.header}: letters, digits and punctuation`);
   }
   const id = await open(w, 1800, undefined, token && { [w.header!]: token });
-  signIns.set(id, { email, site, name: w.name, token });
+  signIns.set(id, { email, site, name: w.name, token, since: Date.now() });
   return id;
 }
 
@@ -117,12 +117,25 @@ export async function viewPage(email: string, id: string): Promise<string> {
 }
 
 // Ends a sign-in; with `save`, what the browser holds becomes the person's login to the site, replacing any before. Signing in
-// takes requests the person makes in control of the browser, so with none there is nothing to save yet.
+// takes requests the person makes in control of the browser, so with none there is nothing to save yet. What its browser did is
+// one line of the server's output, its addresses without their queries, which may hold codes or tokens.
 export async function endSignIn(email: string, id: string, save: boolean) {
   if (!isSignIn(email, id)) throw new HttpError(404, 'no such sign-in');
   if (save && !(await json('GET', `/sessions/${id}/log`)).some((e: { live?: true }) => e.live)) throw new HttpError(409, 'Take control and sign in first, then Save login.');
-  const { site, name, token } = signIns.get(id)!, { state } = await close(id);
+  const { site, name, token, since } = signIns.get(id)!, { state, log } = await close(id);
   signIns.delete(id);
+  const requests: Record<string, Record<number, number>> = {}, blocked = { count: 0, hosts: [] as string[] }, failed: string[] = [];
+  for (const e of log) {
+    const u = URL.parse(e.url), host = u?.host ?? e.url.split(/[?#]/)[0];
+    if (e.blocked) {
+      blocked.count++;
+      if (!blocked.hosts.includes(host)) blocked.hosts.push(host);
+    } else {
+      (requests[host] ??= {})[e.status] = (requests[host][e.status] ?? 0) + 1;
+      if (e.status >= 400) failed.push(`${e.method} ${host}${u?.pathname ?? ''} ${e.status}`);
+    }
+  }
+  console.log(`sign-in ended ${JSON.stringify({ id, site, email, saved: save, seconds: Math.round((Date.now() - since) / 1000), requests, blocked, failed })}`);
   if (!save) return;
   saveLogin(email, { id: `web:${site}`, kind: 'website', name, since: new Date().toISOString(), offers: [{ id: `web:${site}`, name }] }, JSON.stringify(state));
   if (token) seal(email, `web:${site}.header`, token);

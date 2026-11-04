@@ -11,13 +11,15 @@ import { initSystem, saveTree, tree, writeJson } from '../src/system.ts';
 
 // A run's browsers, from a stand-in browser service whose page changes only when the test says, and which keeps the states and
 // headers it was given and the sessions it closed, lists those in `listed`, and answers a browser's state as `back` says and its
-// tab as `shown` does.
+// tab as `shown` does, and its request log as `requested`.
 let page = Buffer.from('page 1'), back: unknown = { cookies: [] }, listed: string[] = [], shown = { url: '', password: false };
+const plain = [{ method: 'GET', url: 'https://crm.example.com/', status: 200 }];
+let requested: object[] = plain;
 const states: unknown[] = [], headers: unknown[] = [], deleted: string[] = [], starts: string[] = [];
 const service = createServer(async (req, res) => {
   if (req.method === 'DELETE') {
     deleted.push(req.url!.split('/')[2]);
-    return res.writeHead(200).end(JSON.stringify({ state: back, log: [{ method: 'GET' }] }));
+    return res.writeHead(200).end(JSON.stringify({ state: back, log: requested }));
   }
   if (req.method === 'POST') {
     const { state, site } = JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString());
@@ -115,6 +117,29 @@ test("a website's header goes, with its person's value, to their sign-in's brows
   assert.equal(secret(alice, 'web:rl.header'), 'jwt-2');
   signOut(alice, 'web:rl');
   assert.ok(!existsSync(join(personDir(alice), 'web:rl.header.sealed')));
+});
+
+test("a sign-in that ends, saved or not, leaves a line in the server's output of what its browser did, its addresses without their queries", async t => {
+  writeJson('connections.json', { pa: { type: 'website', title: 'PatriArch', url: 'https://pa.example.com/', hosts: ['sso.example.com'], writeback: true, updated_by: alice, updated_at: '' } });
+  const said = t.mock.method(console, 'log', () => {});
+  requested = [
+    { method: 'GET', url: 'https://pa.example.com/?code=secret', status: 302 },
+    { method: 'GET', url: 'https://sso.example.com/login?token=secret', status: 200 },
+    { method: 'POST', url: 'https://sso.example.com/login', status: 401 },
+    { method: 'GET', url: 'https://cdn.example.com/app.js', status: 403, blocked: 'host not on the list' },
+    { method: 'GET', url: 'https://cdn.example.com/app.css', status: 403, blocked: 'host not on the list' },
+    { method: 'GET', url: 'https://pa.example.com/home?code=secret', status: 502, error: 'socket hang up' },
+  ];
+  await endSignIn(alice, await startSignIn(alice, 'pa', ''), false);
+  requested = plain;
+  await endSignIn(alice, await startSignIn(alice, 'pa', ''), true);
+  const lines = said.mock.calls.map(c => String(c.arguments[0]));
+  assert.equal(lines[0], `sign-in ended ${JSON.stringify({
+    id: 'b9', site: 'pa', email: alice, saved: false, seconds: 0, requests: { 'pa.example.com': { 302: 1, 502: 1 }, 'sso.example.com': { 200: 1, 401: 1 } },
+    blocked: { count: 2, hosts: ['cdn.example.com'] }, failed: ['POST sso.example.com/login 401', 'GET pa.example.com/home 502'],
+  })}`);
+  assert.match(lines[1], /^sign-in ended \{"id":"b9","site":"pa","email":"alice@demo.test","saved":true,/);
+  assert.equal(lines.length, 2);
 });
 
 test("a person has one browser at a time on a website that writes its state back: another run waits, logged, and opens from the state handed back; elsewhere runs open at once from the saved login, which stays", async () => {
@@ -291,7 +316,7 @@ test("as the server starts, the browsers a restart left open on the service clos
   await reap();
   assert.deepEqual(deleted, ['b9', 'signin']);
   assert.deepEqual(inst.log.filter(e => e.op === 'browser').map(e => [e.run, e.site, e.requests, e.writes, e.file]), [[4, 'crm', 1, 0, 'browser/run 4 crm.jsonl']]);
-  assert.equal(readFileSync(join(inst.dir, 'browser/run 4 crm.jsonl'), 'utf8'), '{"method":"GET"}\n');
+  assert.equal(readFileSync(join(inst.dir, 'browser/run 4 crm.jsonl'), 'utf8'), `${JSON.stringify(plain[0])}\n`);
   assert.deepEqual(JSON.parse(secret(alice, 'web:crm')), { cookies: ['as it was cut'] });
   assert.deepEqual(JSON.parse(readFileSync(join(tmp, '.rf', 'browsers.json'), 'utf8')), {}, 'nothing left to reap');
 });
