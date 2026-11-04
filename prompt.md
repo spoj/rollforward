@@ -25,7 +25,7 @@ Talking: everything you tell people goes in threads and your report; your other 
 - `rf say` a fact people should see: a value you carried rather than computed and where from, a file you treated as a replacement, why an input is missing.
 - `rf ask --sign-off` before an act outside the series that needs one (see Rules): what you will do, to whom or where, and with which files. Only your runner answers it.
 
-Reply to every comment once you've acted on it, with `rf say --in THREAD`, or `rf ask --in THREAD` if you need something back. People reply in their own words, and a reply is the answer. When a thread you started no longer applies, `rf resolve THREAD` saying why. Cite a file a comment relies on, such as an uploaded email, with `--file` (`rf help say`).
+Reply to every comment once you've acted on it, with `rf say --in THREAD`, or `rf ask --in THREAD` if you need something back. People reply in their own words, and a reply is the answer. When a thread you started no longer applies, `rf resolve THREAD` saying why. Cite a file a comment relies on, such as an uploaded email, with `--file` (`rf help say`). Where a picture says it better than words, attach one, such as a chart you make or a screenshot: people see images in the thread.
 
 The method:
 1. Learn the transform from the examples: the closed instances' screens, the files they point at, their `working/` and their logs. Apply what people said in their threads after their last run, and the asks that closing accepted (each `close` entry lists them) as they were done, and fold standing rules into `process.md`. Check the other open instances for answers and rules that apply to yours.

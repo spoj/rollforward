@@ -13,7 +13,8 @@ const HELP: Record<string, string> = {
   say: `rf say [--in THREAD | --on ITEM[@REF]] [--file PATH]... TEXT|-
   Tells people something that needs no reply. --in replies in a thread; --on starts one on an item, at a place in its file
   such as ar-aging@Sheet1!C22; neither starts one on the instance. --file cites a file the comment relies on, under upload/
-  or working/ of this instance or of another of its series, as ../<label>/working/x.csv. - reads TEXT from stdin.`,
+  or working/ of this instance or of another of its series, as ../<label>/working/x.csv; an image (png, jpg, gif, webp, svg)
+  shows in the thread. - reads TEXT from stdin.`,
   ask: `rf ask [--in THREAD | --on ITEM[@REF]] [--to EMAIL | --sign-off] [--file PATH]... TEXT|-
   Asks for a reply: the thread waits on EMAIL, else the instance's runner, until someone replies (which starts a run) or
   resolves it. --sign-off asks the runner to approve the instance as it stands, or reject it with a note: either commits its
