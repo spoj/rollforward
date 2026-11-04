@@ -529,7 +529,7 @@ test("a person granted sites adds a website of their own, theirs alone: they all
   const { id: signIn } = await (await call('POST', '/logins/web/bobs', {}, bob)).json();
   assert.deepEqual(await (await call('GET', '/logins/web/bobs/refused', undefined, bob)).json(),
     { allows: true, hosts: [{ host: '*.idp.test', count: 3 }, { host: 'sso.idp.test', count: 2 }, { host: 'cdn.idp.test', count: 1 }] });
-  assert.deepEqual(await said(await allow('*.co.uk')), [400, '*.co.uk: a wildcard covers one registrable domain at most, such as *.example.com']);
+  assert.deepEqual(await said(await allow('*.co.uk')), [400, '*.co.uk: a wildcard stays within one registrable domain, such as *.example.com']);
   assert.deepEqual(await said(await allow('graph.microsoft.com')), [400, "graph.microsoft.com is graph's: no other website reaches it"]);
   assert.deepEqual(await said(await allow('sso.idp.test', carol)), [403, "bobs's hosts are bob@demo.test's to allow"]);
   assert.equal((await allow('sso.idp.test')).status, 200);

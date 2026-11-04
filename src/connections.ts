@@ -4,7 +4,9 @@ import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib';
 import { HttpError, type Instance } from './store.ts';
-import { readJson, rfDir, writeJson } from './system.ts';
+import { lookup } from 'node:dns/promises';
+import { getDomain } from 'tldts';
+import { isPrivate, readJson, rfDir, writeJson } from './system.ts';
 import type { EntraLogin } from './auth.ts';
 import { token } from './entra.ts';
 import { lender, logins, runnerOf, saveLogin, secret, use, type Offer } from './logins.ts';
@@ -46,12 +48,32 @@ export const types: Record<string, Type> = { graph, databricks, website };
 
 export const connections = (): Connection[] => Object.entries(readJson<Record<string, any>>('connections.json', {})).map(([name, c]) => ({ name, ...c }));
 
-export function setConnection(name: string, input: Record<string, unknown>, by: string): Connection {
+// Whether a host, exact or *.domain for any name under the domain, covers another, which may be either too.
+export const covers = (pattern: string, host: string) => pattern === host || (pattern.startsWith('*.') && host.endsWith(pattern.slice(1)));
+export const reached = (w: { url: string; hosts: string[] }) => [new URL(w.url).hostname, ...w.hosts];
+
+// What a website may reach, an admin's or a person's own: never rollforward's own host; never another website's address, or a host
+// another connection serves, so that no website goes around another's people or settings, though hosts such as single sign-on's
+// they share; a wildcard within one registrable domain, the public suffixes being the Public Suffix List's, its private ones too;
+// and for a person's own, never an internal address, which the browser refuses it too.
+export async function checkHost(name: string, h: string, own: boolean) {
+  if (!/^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(h)) throw new HttpError(400, `${h}: a host, such as sso.example.com, or *.example.com for any name under it`);
+  const base = h.replace(/^\*\./, '');
+  if (h !== base && !getDomain(base, { allowPrivateDomains: true })) throw new HttpError(400, `${h}: a wildcard stays within one registrable domain, such as *.example.com`);
+  if ([process.env.RF_PUBLIC_URL, process.env.RF_BROWSER_URL].some(u => u && covers(h, new URL(u).hostname))) throw new HttpError(400, `${h} is rollforward's own: no website reaches it`);
+  const other = connections().find(c => c.name !== name && (types[c.type].serves?.(c, base) || (c.type === 'website' && covers(h, new URL(c.url).hostname))));
+  if (other) throw new HttpError(400, `${h} is ${other.name}'s: no other website reaches it`);
+  if (own && h === base && (await lookup(h, { all: true }).catch(() => [])).some(isPrivate)) throw new HttpError(400, `${h} is at an internal address: a website of your own reaches none`);
+}
+
+export async function setConnection(name: string, input: Record<string, unknown>, by: string): Promise<Connection> {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) throw new HttpError(400, 'a connection\'s name is lowercase letters, digits and dashes');
   const type = types[String(input.type)];
   if (!type) throw new HttpError(400, `type: one of ${Object.keys(types).join(', ')}`);
+  const settings = type.settings(input);
+  if (type === website) for (const h of reached(settings as { url: string; hosts: string[] })) await checkHost(name, h, !!settings.owner);
   const all = readJson<Record<string, any>>('connections.json', {});
-  all[name] = { type: input.type, ...type.settings(input), updated_by: by, updated_at: new Date().toISOString() };
+  all[name] = { type: input.type, ...settings, updated_by: by, updated_at: new Date().toISOString() };
   writeJson('connections.json', all);
   return { name, ...all[name] };
 }

@@ -1,10 +1,10 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { BlockList, connect, createServer as createNetServer, type Server as NetServer } from 'node:net';
+import { connect, createServer as createNetServer, type Server as NetServer } from 'node:net';
 import { lookup } from 'node:dns/promises';
 import { TLSSocket } from 'node:tls';
 import { join } from 'node:path';
 import { agentRoot } from './agent.ts';
-import { readJson } from './system.ts';
+import { isPrivate, readJson } from './system.ts';
 import { serveBrowsers, upgradeBrowser, type Browsers } from './browsers.ts';
 import { contextFor } from './ca.ts';
 
@@ -24,14 +24,6 @@ const ALLOWED = [
   'github.com', '*.github.com', '*.githubusercontent.com',
   'docs.python.org', '*.readthedocs.io', 'pandas.pydata.org', 'nodejs.org', 'developer.mozilla.org', 'learn.microsoft.com',
 ];
-
-const PRIVATE = new BlockList();
-for (const [net, bits] of [['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['168.63.129.16', 32], ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.168.0.0', 16]] as const) PRIVATE.addSubnet(net, bits, 'ipv4');
-for (const [net, bits] of [['::', 127], ['fc00::', 7], ['fe80::', 10]] as const) PRIVATE.addSubnet(net, bits, 'ipv6');
-export const isPrivate = (a: { address: string; family: number }) => {
-  const v4 = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(a.address)?.[1];
-  return v4 ? PRIVATE.check(v4, 'ipv4') : PRIVATE.check(a.address, a.family === 6 ? 'ipv6' : 'ipv4');
-};
 
 export const allowed = (host: string) =>
   [...ALLOWED, ...readJson<string[]>('egress.json', [])].some(p => (p.startsWith('*.') ? host.endsWith(p.slice(1)) : host === p));

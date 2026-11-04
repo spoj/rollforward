@@ -8,10 +8,8 @@ import type { Duplex } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { HttpError, instance, instances, isPerson, replaceReadOnly, type Instance } from './store.ts';
 import { lender, logins, personDir, runnerOf, saveLogin, seal, secret, use } from './logins.ts';
-import { lookup } from 'node:dns/promises';
 import { getDomain } from 'tldts';
-import { changeConnection, connections, setConnection, types } from './connections.ts';
-import { isPrivate } from './sandbox.ts';
+import { changeConnection, checkHost, connections, covers, reached, setConnection } from './connections.ts';
 import { users } from './auth.ts';
 import { changes, readJson, rfDir, tree } from './system.ts';
 
@@ -115,30 +113,12 @@ export async function startSignIn(email: string, site: string, given: string): P
 
 export const isSignIn = (email: string, id: string) => signIns.get(id)?.email === email;
 
-// Whether a host, exact or *.domain for any name under the domain, covers another, which may be either too.
-const covers = (pattern: string, host: string) => pattern === host || (pattern.startsWith('*.') && host.endsWith(pattern.slice(1)));
-const reached = (w: { url: string; hosts: string[] }) => [new URL(w.url).hostname, ...w.hosts];
-
-// What a website may reach: never rollforward's own host, or a host of another connection, so that no website goes around another's
-// people or settings; a wildcard over one registrable domain at most; and for a person's own, never an internal address, which the
-// browser refuses it too.
-async function checkHost(site: string, h: string, own: boolean) {
-  if (!/^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(h)) throw new HttpError(400, `${h}: a host, such as sso.example.com, or *.example.com for any name under it`);
-  const base = h.replace(/^\*\./, '');
-  if (h !== base && getDomain(base) !== base) throw new HttpError(400, `${h}: a wildcard covers one registrable domain at most, such as *.example.com`);
-  if ([process.env.RF_PUBLIC_URL, process.env.RF_BROWSER_URL].some(u => u && covers(h, new URL(u).hostname))) throw new HttpError(400, `${h} is rollforward's own: no website reaches it`);
-  const other = connections().find(c => c.name !== site && (types[c.type].serves?.(c, base) || (c.type === 'website' && reached(c).some(x => covers(x, h) || covers(h, x)))));
-  if (other) throw new HttpError(400, `${h} is ${other.name}'s: no other website reaches it`);
-  if (own && h === base && (await lookup(h, { all: true }).catch(() => [])).some(isPrivate)) throw new HttpError(400, `${h} is at an internal address: a website of your own reaches none`);
-}
-
 // A person's own website, for those granted sites: its name and the https address where its sign-in starts, the other hosts its pages
 // need allowed as they sign in to it.
 export async function addSite(email: string, name: string, url: string) {
   if (!/^https:\/\/[^/]/.test(url)) throw new HttpError(400, 'url: an https address, where its sign-in starts');
   if (connections().some(c => c.name === name)) throw new HttpError(409, `${name} is taken: name yours otherwise`);
-  await checkHost(name, new URL(url).hostname, true);
-  setConnection(name, { type: 'website', url, people: [email], owner: email }, email);
+  await setConnection(name, { type: 'website', url, people: [email], owner: email }, email);
 }
 
 // A website's hosts are its person's to allow if it's their own, and otherwise admins'.
@@ -154,7 +134,7 @@ export async function refusedHosts(by: { email: string; role: string }, site: st
     const host = e.blocked === 'host not on the list' && URL.parse(e.url)!.hostname;
     if (host && !reach.some(p => covers(p, host))) n.set(host, (n.get(host) ?? 0) + 1);
   }
-  const under = Map.groupBy(n.keys(), h => getDomain(h) ?? h);
+  const under = Map.groupBy(n.keys(), h => getDomain(h, { allowPrivateDomains: true }) ?? h);
   return {
     allows: allows(w, by),
     hosts: [...[...under].filter(([d, hs]) => hs.length > 1 && hs.some(h => h !== d)).map(([d, hs]) => ({ host: `*.${d}`, count: hs.reduce((t, h) => t + n.get(h)!, 0) })),

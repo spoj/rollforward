@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { BlockList } from 'node:net';
 import { join } from 'node:path';
 
 // The data root's .rf/ holds what only the server uses: the people who can sign in, the sessions' key, and tree.json, the
@@ -97,3 +98,12 @@ export function forgetPerson(email: string) {
   }
   saveTree(t);
 }
+
+// The addresses no run's own request, nor a person's own website, reaches: private, loopback, link-local and Azure's WireServer.
+const PRIVATE = new BlockList();
+for (const [net, bits] of [['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['168.63.129.16', 32], ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.168.0.0', 16]] as const) PRIVATE.addSubnet(net, bits, 'ipv4');
+for (const [net, bits] of [['::', 127], ['fc00::', 7], ['fe80::', 10]] as const) PRIVATE.addSubnet(net, bits, 'ipv6');
+export const isPrivate = (a: { address: string; family: number }) => {
+  const v4 = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(a.address)?.[1];
+  return v4 ? PRIVATE.check(v4, 'ipv4') : PRIVATE.check(a.address, a.family === 6 ? 'ipv6' : 'ipv4');
+};

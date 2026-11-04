@@ -838,7 +838,7 @@ async function connectionsRoute(me: Me, req: IncomingMessage, res: ServerRespons
   if (!name && req.method === 'GET') return send(res, 200, connections().filter(c => !c.owner || c.owner === me.email || me.role === 'admin')
     .map(c => ({ ...c, login: loginOf(c), ...(c.type === 'website' && { allowed: allowed(websites()[c.name], me.email) }) })));
   if (me.role !== 'admin') throw new HttpError(403, 'admins keep connections');
-  if (req.method === 'PUT') return send(res, 200, setConnection(name, await json(req), me.email));
+  if (req.method === 'PUT') return send(res, 200, await setConnection(name, await json(req), me.email));
   if (req.method === 'DELETE') return send(res, 200, (removeConnection(name), 'ok'));
   if (req.method === 'PATCH') {
     if (!websites()[name]) throw new HttpError(404, `no website ${name}: only a website is switched off or on`);
