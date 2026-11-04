@@ -254,7 +254,9 @@ test("the proxy refuses, with a plain 403 and why, what isn't ticked: the runner
   for (const out of ["/sites/host,site1,web1/getByPath(path='/sites/HR')/drive/root/children", "/sites/host,site1,web1/microsoft.graph.getByPath(path='/sites/HR')"]) await refused(out, /getByPath reaches any site by its path/);
   for (const out of ['/drives/b!d1/recent()', "/drives/b!d1/search(q='pay')", '/me/drive/sharedWithMe()', '/drives/b!d1/following', '/sites/host,site1,web1/drive/recent()', "/sites/host,site1,web1/drives/b!d1/search(q='pay')"]) await refused(out, /lists other drives' items too/);
   await refused('/sites/host,site1,web1/sites/other', /subsites are ticked by themselves/);
-  await refused('/drives/b!d1/items/y2026/children/zzz', /not under another's children/);
+  await via('GET', `${G}/sites/host,site1,web1/drives`);
+  assert.deepEqual([calls().at(-1)!.path, calls().at(-1)!.refused], ['/v1.0/sites/host,site1,web1/drives', undefined], "a ticked site's libraries, listed");
+  for (const out of ['/drives/b!d1/items/y2026/children/zzz', "/drives/b!d1/items/y2026/children('zzz')", '/drives/b!d1/items/y2026/children(zzz)/content']) await refused(out, /not under another's children/);
   for (const out of ['/drives/b!d1/root:/Reports/y2026%2F..%2F..%2Fx.csv:/content', '/me/messages/', '/me//messages']) await refused(out, /each part of the path is a name/);
   await refused('/me/messages', /no X-HTTP-Method header, and no Prefer that redeems a sharing link/, { prefer: 'redeemSharingLink' });
   await refused('/me/messages', /no X-HTTP-Method header/, { 'x-http-method-override': 'DELETE' });

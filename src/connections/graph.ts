@@ -78,14 +78,14 @@ async function check(runner: string, ticks: string[], { method, url, headers, js
     if (write && body && !object) mime(String(headers['content-type']).startsWith('text/plain') ? raw : undefined, id.toLowerCase(), bare);
     const said = [json, ...keyed(json, 'message')].flatMap(m => [...keyed(m, 'from'), ...keyed(m, 'sender')]), at = (x: unknown) => keyed(x, 'emailaddress').flatMap(e => keyed(e, 'address'));
     if (said.some(x => !at(x).length || at(x).some(a => String(a).toLowerCase() !== id.toLowerCase()))) throw new HttpError(403, `${bare}: mail from ${id} goes out as ${id}`);
-  } else if (top === 'drives' || top === 'shares' || (['users', 'sites'].includes(top) && part === 'drive') || (top === 'sites' && part === 'drives')) {
+  } else if (top === 'drives' || top === 'shares' || (['users', 'sites'].includes(top) && part === 'drive') || (top === 'sites' && part === 'drives' && segs[3])) {
     needs(write ? 'Files.ReadWrite.All' : 'Files.Read.All', `${write ? 'save' : 'read'} OneDrive or SharePoint files`);
     // A share's site and list are the whole site and library its item is in, past what is ticked.
     // A drive's own search, recent, sharedWithMe and following list other drives' items too; a search under its root stays in it.
     const of = segs[top === 'sites' && part === 'drives' ? 4 : part === 'drive' ? 3 : 2] ?? '';
     if (top !== 'shares' && /(^|\.)(search|recent|sharedwithme|following)(\(|$)/i.test(of)) throw new HttpError(403, `${bare}: a drive's ${of.replace(/\(.*$/, '')} lists other drives' items too; search under its root, as /drives/ID/root/search(q='...')`);
     // An item by its own id, not as a child of a ticked one.
-    if (actions.some((a, k) => a === 'children' && k < actions.length - 1)) throw new HttpError(403, `${bare}: name an item by its own id, as /drives/ID/items/ITEM, not under another's children`);
+    if (actions.some((a, k) => a === 'children' && k < actions.length - 1) || segs.some(s => /(^|\.)children\(./i.test(s))) throw new HttpError(403, `${bare}: name an item by its own id, as /drives/ID/items/ITEM, not under another's children`);
     if (top === 'shares' && !['', 'driveitem', 'root', 'items', 'listitem'].includes(part.toLowerCase())) throw new HttpError(403, `${bare}: a share is read through its driveItem, root or items, not its ${part}, which reaches past what is ticked`);
     const item = await located(runner, addressed(bare.replace(/^\/me\//, `/users/${runner}/`)));
     offer = await covering(runner, ticks, item.parentReference.driveId, item.id, item.parentReference.id);
@@ -112,14 +112,16 @@ async function check(runner: string, ticks: string[], { method, url, headers, js
 
 // Links an answer gives, which the run may then use as they are, read from the path as check() reads it: an upload session's, from
 // the answer that makes one, at Outlook's host for mail and SharePoint's for files; and a file's download address, on the
-// driveItems an answer about files gives, at its drive's own site's host; never what a file's or a message's content holds.
-async function links(j: any, path: string, email: string): Promise<string[]> {
+// driveItems an answer about files gives that a tick covers, at its drive's own site's host; never what a file's or a message's
+// content holds.
+async function links(j: any, path: string, email: string, ticks: string[]): Promise<string[]> {
   const parts = path.replace(/^\/[^/]+/, '').split('/').slice(1).map(s => decodeURIComponent(s).replace(/\(.*$/, '').split('.').pop()!.toLowerCase());
   const [top, , part] = parts[0] === 'me' ? ['users', '', ...parts.slice(1)] : parts, action = parts.at(-1)!, url = (u: unknown): u is string => typeof u === 'string' && URL.canParse(u);
   if (action === 'createuploadsession') return [j?.uploadUrl].filter(u => url(u) && (parts.includes('attachments') ? /^https:\/\/outlook\.office(365)?\.com\//i : /^https:\/\/([\w-]+\.)*(sharepoint\.com|svc\.ms)\//i).test(u));
   if (!['drives', 'shares'].includes(top) && !['drive', 'drives'].includes(part) || ['content', '$value'].includes(action)) return [];
   const items = [j, ...(Array.isArray(j?.value) ? j.value : [])].filter(i => url(i?.['@microsoft.graph.downloadUrl']));
-  const at = await Promise.all(items.map(async i => new URL(i['@microsoft.graph.downloadUrl']).origin === `https://${(await siteOf(email, i.parentReference?.driveId)).split(',')[0]}`));
+  const at = await Promise.all(items.map(async i => new URL(i['@microsoft.graph.downloadUrl']).origin === `https://${(await siteOf(email, i.parentReference?.driveId)).split(',')[0]}`
+    && !!await covering(email, ticks, i.parentReference.driveId, i.id, i.parentReference.id)));
   return items.filter((_, k) => at[k]).map(i => i['@microsoft.graph.downloadUrl']);
 }
 
