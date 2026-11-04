@@ -33,6 +33,16 @@ const iid = async (name: string, label: string) => (await shown(name)).instances
 const at = async (name: string, label?: string, action?: string) => (label ? `/api/instances/${await iid(name, label)}${action ? `/${action}` : ''}` : `/api/series/${(await shown(name)).id}`);
 const dir = async (name: string, label: string) => join(root, 'instances', await iid(name, label));
 const create = async (name: string, label: string, cookie = admin) => call('POST', await at(name), JSON.stringify({ label }), cookie);
+// An instance's log once its nth run has ended.
+async function ran(name: string, label: string, n = 1) {
+  let log: { op: string; [k: string]: any }[] = [];
+  for (let i = 0; log.filter(e => e.op === 'done').length < n && i < 240; i++) {
+    await new Promise(r => setTimeout(r, 250));
+    ({ log } = await json(await at(name, label)));
+  }
+  assert.ok(log.filter(e => e.op === 'done').length >= n, `run ${n} ended`);
+  return log;
+}
 
 before(async () => {
   cpSync(join(app, 'test', 'fixture'), root, { recursive: true });
@@ -67,22 +77,16 @@ test('GET /api lists the series and its instances with statuses', async () => {
   ]);
 });
 
-test('a new instance starts from the last closed one; a new series can be made', async () => {
+test('a new instance of a series starts empty and runs at once; a new series can be made', async () => {
   assert.equal((await create(series, '2026-09-13')).status, 200);
   const { doc, log } = await json(await at(series, '2026-09-13'));
-  const last = (await json(await at(series, '2026-08-30'))).doc;
   assert.equal(doc.status, 'open');
-  assert.deepEqual(doc.items.map((i: { id: string }) => i.id), last.items.map((i: { id: string }) => i.id));
-  assert.ok(doc.items.every((i: { file: unknown }) => i.file === null));
-  assert.equal(log[0].op, 'create');
-  assert.equal(log[0].from, '2026-08-30');
-  assert.equal(log[0].fetch, true, '08-30 fetched inputs, so the new instance starts a run at once');
-  let done;
-  for (let i = 0; !done && i < 240; i++) {
-    await new Promise(r => setTimeout(r, 250));
-    done = (await json(await at(series, '2026-09-13'))).log.find((e: { op: string }) => e.op === 'done');
-  }
-  assert.ok(done, 'the fetch run ended');
+  assert.deepEqual(doc.items, []);
+  assert.deepEqual(log.slice(0, 2).map((e: { seq: number; at: string }) => ({ ...e, at: undefined })), [
+    { seq: 1, at: undefined, by: adminEmail, op: 'create', logins: [] },
+    { seq: 2, at: undefined, by: 'server', op: 'wake', from: adminEmail },
+  ]);
+  await ran(series, '2026-09-13');
 
   const made = await call('POST', '/api/series', JSON.stringify({ workspace: (await named('larkfield')).id, name: monthly }));
   assert.equal(made.status, 200);
@@ -93,6 +97,7 @@ test('a new instance starts from the last closed one; a new series can be made',
 test('an upload lands read-only, becomes an item, and starts one run that ends with an error; a drop onto an item is only a hint', async () => {
   const bytes = 'a,b\n1,2\n', label = '2026-09-13';
   assert.equal((await create(monthly, label)).status, 200);
+  await ran(monthly, label);
   assert.equal((await call('POST', `${await at(monthly, label, 'upload')}?by=t&pane=in&name=x.csv`, bytes)).status, 200);
   const file = join(await dir(monthly, label), 'upload', 'x.csv');
   assert.equal(readFileSync(file, 'utf8'), bytes);
@@ -108,20 +113,15 @@ test('an upload lands read-only, becomes an item, and starts one run that ends w
   assert.equal(second.doc.items.find((i: { id: string }) => i.id === x.id).file, 'upload/x.csv', 'the agent decides what a drop replaces');
   assert.ok(second.doc.items.some((i: { file: string }) => i.file === 'upload/x_2.csv'));
 
-  let done;
-  for (let i = 0; !done && i < 240; i++) {
-    await new Promise(r => setTimeout(r, 250));
-    done = (await json(await at(monthly, label))).log.find((e: { op: string }) => e.op === 'done');
-  }
-  assert.ok(done, 'run ended');
-  assert.ok(done.error, 'no model reachable, so the run carries an error');
+  assert.ok((await ran(monthly, label, 2)).findLast(e => e.op === 'done')!.error, 'no model reachable, so the run carries an error');
   await new Promise(r => setTimeout(r, 1000));
-  assert.equal((await json(await at(monthly, label))).log.filter((e: { op: string }) => e.op === 'run').length, 1, 'a run that never started is not retried');
+  assert.equal((await json(await at(monthly, label))).log.filter((e: { op: string }) => e.op === 'run').length, 2, "the making's and the uploads': a run that never started is not retried");
 });
 
 test('an upload streams to disk as it arrives, and is refused if its instance closes meanwhile', async () => {
   const label = '2026-09-20';
   assert.equal((await create(monthly, label)).status, 200);
+  await ran(monthly, label);
   let release!: () => void, sent = false;
   const held = new Promise<void>(ok => { release = ok; });
   const body = new ReadableStream({ async pull(c) { if (!sent) { sent = true; c.enqueue(new Uint8Array(1 << 20)); } else { await held; c.close(); } } });
@@ -433,7 +433,7 @@ test('a task is a series of one instance, Untitled until its first prompt or a r
   assert.deepEqual((await solo())[0], [one.id, 'Cash forecasts', false, ['Cash forecast']]);
   assert.equal((await json(`/api/instances/${one.instance}`)).log.at(-1).op, 'promote');
   const next = (await (await call('POST', `/api/series/${one.id}`, JSON.stringify({ label: 'week 2' }))).json()).id;
-  assert.equal((await json(`/api/instances/${next}`)).log[0].from, 'Cash forecast', 'the next instance rolls forward from the first');
+  assert.deepEqual((await json(`/api/instances/${next}`)).log.map((e: { op: string }) => e.op).slice(0, 2), ['create', 'wake'], 'the next instance is a plain one, which runs at once');
   assert.equal((await call('POST', `/api/series/${one.id}/promote`, JSON.stringify({ name: 'Again' }))).status, 400);
 });
 

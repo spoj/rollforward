@@ -94,7 +94,12 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.equal((await fetch(`${base}/agents`, { method: 'PUT', headers: { cookie: admin }, body: 'Company: fiscal months end on the last Saturday.' })).status, 200);
   assert.equal((await call('PUT', '/connections/graph', { type: 'graph' })).status, 200);
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec' })).json();
+  const made: Script = { bash: [], report: 'Nothing to roll forward yet.', saw: [] };
+  scripts.push(made);
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
+  // The person's thread is the comment's seq, the first entry after the making's run.
+  const thread = `c${(await runs(id, 1)).length + 1}`;
+  assert.match(made.prompt!, /"op":"create".*\n.*"op":"wake","from":"admin@demo.test"/, 'making an instance of a series starts a run');
   const { id: wide } = await (await call('POST', '/api/workspaces', { name: 'Wide' })).json();
   assert.equal((await call('PUT', `/api/workspaces/${wide}`, { members: [BOB] })).status, 200);
   assert.equal((await call('POST', '/api/series', { workspace: wide, name: 'Close' })).status, 200);
@@ -108,13 +113,13 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
       'rf wake ../../Wide/Close now --label 2026-11 2>&1',
       'rf wake . soon 2>&1',
       'rf wake . +1d 2>&1',
-      'rf say --in c2 Walls checked. 2>&1',
-      'rf say --in c9 x 2>&1',
+      () => `rf say --in ${thread} Walls checked. 2>&1`,
+      'rf say --in c99 x 2>&1',
       'rf show 2>&1 | head -c 200',
       'rf ask --to stranger@example.com Which bank? 2>&1',
       'rf ask Is the bank file coming today? 2>&1',
       'rf say --on nope x 2>&1',
-      'rf resolve c2 2>&1',
+      () => `rf resolve ${thread} 2>&1`,
       `curl -s -m 10 https://openrouter.ai/api/v1/chat/completions -H 'content-type: application/json' -d '{"model": "openai/gpt-5-mini", "messages": [{"role": "user", "content": "Is this right?"}]}'`,
       'curl -s -m 10 https://openrouter.ai/api/v1/credits',
     ],
@@ -125,7 +130,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   scripts.push(walls, woken, takenOver);
 
   assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Check what you can reach.' })).status, 200);
-  let log = await runs(id, 2);
+  let log = await runs(id, 3);
   assert.match(walls.prompt!, /Check what you can reach/);
   assert.ok(walls.system!.startsWith(readFileSync(join(app, 'prompt.md'), 'utf8').split('\n')[0]), "prompt.md is the system prompt, not added to Pi's own");
   const order = ['Company: fiscal', 'Scenarios: amounts'].map(t => walls.system!.indexOf(t));
@@ -133,41 +138,41 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.match(walls.saw[0], /No such file or directory/, 'the data root is not in the sandbox');
   assert.match(walls.saw[1], /curl exit 7/, "the server's own port is not reachable");
   assert.match(walls.saw[2], /curl exit [1-9]/, 'nor an internal address');
-  assert.deepEqual(log.filter(e => e.op === 'egress').map(e => [e.run, e.host, e.allowed]), [[1, '10.1.2.3', false]]);
+  assert.deepEqual(log.filter(e => e.op === 'egress').map(e => [e.run, e.host, e.allowed]), [[2, '10.1.2.3', false]]);
   assert.match(walls.saw[3], /m365:mail:ceo@demo.test is not ticked for this instance; its runner, admin@demo.test/, "Graph at its own address, through the server, which refuses what isn't ticked");
-  assert.deepEqual(log.filter(e => e.op === 'call' && e.name === 'graph').map(e => [e.run, e.name, e.path, e.status]), [[1, 'graph', '/v1.0/users/ceo@demo.test/messages', 403], [2, 'graph', '/v1.0/me/messages', 403]]);
+  assert.deepEqual(log.filter(e => e.op === 'call' && e.name === 'graph').map(e => [e.run, e.name, e.path, e.status]), [[2, 'graph', '/v1.0/users/ceo@demo.test/messages', 403], [3, 'graph', '/v1.0/me/messages', 403]]);
   assert.match(walls.saw[4], /^set: 2026-11 wakes at /);
   assert.match(walls.saw[5], /Wide\/Close is in another workspace: you can read it, not wake it/);
   assert.match(walls.saw[6], /at is now, \+<n>m\|h\|d, or a date/);
   assert.match(walls.saw[7], /name it with a label/);
-  assert.match(walls.saw[8], /^said in c2, seq \d+\s*$/);
-  assert.match(walls.saw[9], /no thread c9; this instance's threads: c2/);
+  assert.match(walls.saw[8], new RegExp(`^said in ${thread}, seq \\d+\\s*$`));
+  assert.match(walls.saw[9], new RegExp(`no thread c99; this instance's threads: ${thread}`));
   assert.match(walls.saw[10], /"rev": \d+,\s+"status": "open"/);
   assert.match(walls.saw[11], /stranger@example.com can't see this instance; ask its runner, admin@demo.test/);
   assert.match(walls.saw[12], /^asked in c\d+, seq \d+\s*$/);
   assert.match(walls.saw[13], /no item nope/);
-  assert.match(walls.saw[14], /admin@demo.test started c2, and resolves it/);
+  assert.match(walls.saw[14], new RegExp(`admin@demo.test started ${thread}, and resolves it`));
   assert.match(walls.saw[15], /"content":"A second opinion"/, 'any model, through OpenRouter, with the server\'s key');
   assert.match(walls.saw[16], /^GET \/api\/v1\/credits: openrouter takes inference/);
   const asked = log.filter(e => e.op === 'call' && e.name === 'openrouter'), pi = asked.filter(e => (e.path as string).startsWith('/api/v1/messages'));
-  assert.deepEqual(asked.filter(e => !pi.includes(e)).map(e => [e.run, e.method, e.path, e.status, e.model, e.cost]), [[1, 'POST', '/api/v1/chat/completions', 200, 'openai/gpt-5-mini', 0.002], [1, 'GET', '/api/v1/credits', 403, undefined, undefined]]);
-  assert.deepEqual(pi.map(e => [e.run, e.method, e.status, e.model, e.cost]), [...Array(walls.bash.length + 1).fill([1, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01]), ...Array(2).fill([2, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01])], "Pi's own calls, a step's each and the report's, through the same connection");
+  assert.deepEqual(asked.filter(e => !pi.includes(e)).map(e => [e.run, e.method, e.path, e.status, e.model, e.cost]), [[2, 'POST', '/api/v1/chat/completions', 200, 'openai/gpt-5-mini', 0.002], [2, 'GET', '/api/v1/credits', 403, undefined, undefined]]);
+  assert.deepEqual(pi.map(e => [e.run, e.method, e.status, e.model, e.cost]), [[1, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01], ...Array(walls.bash.length + 1).fill([2, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01]), ...Array(2).fill([3, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01])], "Pi's own calls, a step's each and the report's, through the same connection");
   assert.ok(providers.length && providers.every(p => JSON.stringify(p) === '{"data_collection":"deny"}'), 'every call asked only for providers that collect no data');
   assert.deepEqual(log.filter(e => e.op === 'comment' && e.by === 'agent').map(e => [e.text, !!e.ask]), [['Walls checked.', false], ['Is the bank file coming today?', true]], "the agent's words are comments of its own, and an ask is marked");
   assert.match(woken.prompt!, /"op":"wake","from":"[^"]*\/2026-11"/, 'the wake started the next run, saying only who set it');
   assert.match(woken.saw[0], /m365:mail:admin@demo.test is not ticked/);
-  assert.deepEqual(log.filter(e => e.op === 'done').map(e => [e.run, e.aborted, e.cost]), [[1, false, +(walls.bash.length * 0.01 + 0.01 + 0.002).toFixed(4)], [2, false, 0.02]], "what its calls cost, Pi's and the script's");
-  assert.deepEqual(log.filter(e => e.op === 'report').map(e => e.text), [walls.report, woken.report]);
+  assert.deepEqual(log.filter(e => e.op === 'done').map(e => [e.run, e.aborted, e.cost]), [[1, false, 0.01], [2, false, +(walls.bash.length * 0.01 + 0.01 + 0.002).toFixed(4)], [3, false, 0.02]], "what its calls cost, Pi's and the script's");
+  assert.deepEqual(log.filter(e => e.op === 'report').map(e => e.text), [made.report, walls.report, woken.report]);
 
   assert.equal((await call('POST', `/api/instances/${id}/takeover`, { logins: [] }, bob)).status, 200);
   assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Mine now.' }, bob)).status, 200);
-  log = await runs(id, 3);
+  log = await runs(id, 4);
   assert.match(takenOver.saw[0], /m365:mail:bob@demo.test is not ticked for this instance; its runner, bob@demo.test/);
   assert.equal(log.findLast(e => e.op === 'done')!.aborted, false);
 
   scripts.push({ bash: [], report: '', saw: [], fail: 'the model said no' });
   assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Once more.' }, bob)).status, 200);
-  log = await runs(id, 4);
+  log = await runs(id, 5);
   assert.match(String(log.findLast(e => e.op === 'done')!.error), /the model said no/, "a model's failure is the run's error");
 });
 
@@ -175,7 +180,9 @@ test('sign-offs are git commits: the agent commits a moment worth keeping, the r
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Signed' })).json();
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB] })).status, 200);
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Pack' })).json();
+  scripts.push({ bash: [], report: 'Nothing to roll forward yet.', saw: [] });
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-12', logins: [] })).json();
+  await runs(id, 1);
   const dir = join(root, 'instances', id), git = (...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
   const ask: Script = {
     bash: [
@@ -192,19 +199,19 @@ test('sign-offs are git commits: the agent commits a moment worth keeping, the r
   scripts.push(ask, again, approved);
 
   assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Build the pack.' })).status, 200);
-  let log = await runs(id, 1);
+  let log = await runs(id, 2);
   assert.match(ask.saw[0], /^committed [0-9a-f]{40}\s*$/);
   assert.match(ask.saw[1], /^rollforward agent\|Draft pack built\n[^]* M working\/pack.csv/, 'the run reads its history, and sees what changed since');
   assert.match(ask.saw[2], /Read-only file system|Permission denied|unable to/i, 'and never writes it');
   assert.match(ask.saw[3], /a sign-off is the runner's, admin@demo.test: leave out --to/);
   assert.match(ask.saw[4], /^asked in c\d+/);
-  assert.deepEqual(log.filter(e => e.op === 'commit').map(e => [e.by, e.run, e.message, e.commit]), [['agent', 1, 'Draft pack built', git('rev-parse', 'HEAD~0')]]);
+  assert.deepEqual(log.filter(e => e.op === 'commit').map(e => [e.by, e.run, e.message, e.commit]), [['agent', 2, 'Draft pack built', git('rev-parse', 'HEAD~0')]]);
   const thread = log.findLast(e => e.op === 'comment')!.thread as string, signoff = (body: object, cookie = admin) => call('POST', `/api/instances/${id}/signoff`, { thread, ...body }, cookie);
   assert.equal(log.findLast(e => e.op === 'comment')!.signoff, true);
 
   assert.equal((await signoff({ approved: true }, bob)).status, 403, "only the runner signs");
   assert.equal((await signoff({ approved: false, text: 'Use the new rate.' })).status, 200);
-  log = await runs(id, 2);
+  log = await runs(id, 3);
   const rejected = log.find(e => e.op === 'signoff')!;
   assert.deepEqual([rejected.by, rejected.approved, rejected.text], [ADMIN, false, 'Use the new rate.']);
   assert.equal(git('log', '-1', '--format=%an <%ae>%n%B', String(rejected.commit)), 'Demo Admin <admin@demo.test>\nThe pack is ready to send to the bank.\n\nUse the new rate.', 'a rejection commits too, without a Signed-off-by');
@@ -214,7 +221,7 @@ test('sign-offs are git commits: the agent commits a moment worth keeping, the r
 
   const next = log.findLast(e => e.op === 'comment')!.thread;
   assert.equal((await call('POST', `/api/instances/${id}/signoff`, { thread: next, approved: true, text: 'Go.' })).status, 200);
-  log = await runs(id, 3);
+  log = await runs(id, 4);
   const yes = log.findLast(e => e.op === 'signoff')!;
   assert.equal(git('log', '-1', '--format=%an%n%B', String(yes.commit)), 'Demo Admin\nThe rate is fixed: send it now?\n\nGo.\n\nSigned-off-by: Demo Admin <admin@demo.test>');
   assert.match(git('show', `${yes.commit}:log.jsonl`), /"op":"signoff","thread":"c\d+","approved":false/, 'the whole folder, its log included');

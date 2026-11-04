@@ -8,7 +8,7 @@ import { createInstance, openStore } from '../src/store.ts';
 
 const alex = { email: 'alex', name: 'Alex' };
 
-test('a put takes steps and from, and a new instance carries the graph; from must name items and not go round in a circle', async () => {
+test('a put takes steps and from; from must name items and not go round in a circle', async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-')), series = 'weekly';
   openStore(tmp);
   const inst = createInstance(series, 'w1', 'alex', []);
@@ -19,13 +19,10 @@ test('a put takes steps and from, and a new instance carries the graph; from mus
   assert.deepEqual(inst.log.filter(e => e.op === 'item').map(e => e.from), [undefined, ['ar'], ['el']]);
   assert.throws(() => put([ar, { id: 'bb', name: 'BB', kind: 'output', file: null, from: ['nope'] }]), /bb: from names no item "nope"/);
   assert.throws(() => put([{ ...ar, from: ['bb'] }, { id: 'bb', name: 'BB', kind: 'output', file: null, from: ['ar'] }]), /circle among ar, bb/);
-  put([ar, { id: 'el', name: 'Eligible AR', kind: 'step', file: 'working/eligible.csv', from: ['ar'] }, { id: 'bb', name: 'Borrowing base', kind: 'output', file: null, from: ['el'] }]);
-  await inst.close(alex);
-  assert.deepEqual(createInstance(series, 'w2', 'alex', []).doc.items.map(i => [i.id, i.kind, i.file, i.from]), [['ar', 'input', null, undefined], ['el', 'step', null, ['ar']], ['bb', 'output', null, ['el']]]);
   rmSync(tmp, { recursive: true, force: true });
 });
 
-test("an output's destination is free text, logged as it changes and carried to the next instance", async () => {
+test("an output's destination is free text, logged as it changes", async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-')), series = 'monthly';
   openStore(tmp);
   const inst = createInstance(series, 'm1', 'alex', []);
@@ -33,8 +30,6 @@ test("an output's destination is free text, logged as it changes and carried to 
   assert.throws(() => put([{ id: 'pack', name: 'Pack', kind: 'output', file: null, destination: 3 }]), /pack: destination must be a string/);
   put([{ id: 'pack', name: 'Pack', kind: 'output', file: null, destination: 'Mail to ap@demo.test' }]);
   assert.equal(inst.log.findLast(e => e.op === 'item')!.destination, 'Mail to ap@demo.test');
-  await inst.close(alex);
-  assert.equal(createInstance(series, 'm2', 'alex', []).doc.items[0].destination, 'Mail to ap@demo.test');
   rmSync(tmp, { recursive: true, force: true });
 });
 

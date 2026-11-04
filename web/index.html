@@ -730,7 +730,7 @@ function logText(e) {
   const item = id => esc(data.doc.items.find(i => i.id === id)?.name ?? id);
   const f = e.file ? `<div class="f"><a data-act="preview" data-file="${esc(e.file)}">${esc(e.file)}</a></div>` : '';
   return {
-    create: () => `${w} opened the instance${e.from ? `<div class="d">Items carried over from ${esc(e.from)}.${e.fetch ? ' The agent starts fetching its inputs.' : ''}</div>` : ''}`,
+    create: () => `${w} opened the instance`,
     upload: () => `${w} uploaded ${e.pane === 'out' ? 'an output' : 'an input'}${e.onto ? ' onto ' + item(e.onto) : ''}${f}`,
     point: () => `${w} ${e.file ? 'showed' : 'cleared'} ${item(e.item)}${e.was ? `<div class="d">Replacing ${esc(fname(e.was))}</div>` : ''}${f}`,
     item: () => `${w} set up ${esc(e.name)}${e.from?.length ? `<div class="d">From ${e.from.map(item).join(', ')}</div>` : ''}${e.headline ? `<div class="d">${esc(e.headline)}</div>` : ''}${e.source ? `<div class="d">Source: ${esc(e.source)}</div>` : ''}${e.destination ? `<div class="d">Destination: ${esc(e.destination)}</div>` : ''}`,
@@ -861,14 +861,13 @@ function workHead(xs, live) {
   return `${actor('agent', xs[0].at)} ${did.join(', ') || 'worked'}${bad ? ` \u00b7 <span class="bad">${bad} failed</span>` : ''}${live ? ' <span class="spin"></span>' : ''}`;
 }
 
-// Process: the instance's working/process.md, redlined against the instance it was made from, else the series' latest closed before it.
+// Process: the instance's working/process.md, redlined against the series' latest closed instance before it by label.
 async function loadProcess(key) {
   proc.key = key;
-  const from = data.log.find(e => e.op === 'create' || e.op === 'duplicate')?.from;
-  const prev = from ?? cur.s.instances.filter(i => i.status === 'closed' && i.label < cur.i.label).map(i => i.label).sort().at(-1);
+  const prev = cur.s.instances.filter(i => i.status === 'closed' && i.label < cur.i.label).map(i => i.label).sort().at(-1);
   const get = async path => { const r = await fetch(fileUrl(path)); return r.ok ? r.text() : ''; };
   const [now, was] = await Promise.all([get('working/process.md'), prev ? get(`../${prev}/working/process.md`) : '']);
-  // Until this instance's agent writes its own, the process is still the one it starts from.
+  // Until this instance's agent writes its own, the process is still the one before it.
   const lines = now ? redline(was, now) : redline('', was), changed = lines.some(([k]) => k);
   proc.html = '<div class="conv">'
     + `<div class="sub">${!now && !was ? 'No process.md yet: the agent writes it as it learns the series.' : !now ? `As of ${esc(prev)}, until the agent updates it here.` : prev ? (changed ? `Changes since ${esc(prev)} are marked.` : `Unchanged since ${esc(prev)}.`) : 'The series\' first process.'}</div>`
@@ -1150,7 +1149,7 @@ const ticked = () => [...document.querySelectorAll('#pv input.tick:checked')].ma
 const myOffers = async () => (await api('/logins')).flatMap(l => l.offers);
 
 function startHtml(s) {
-  return (s.series !== undefined ? `<h3>Series</h3><div class="sub">This task becomes its first instance, which the new one rolls forward from.</div><input type="text" id="sseries" value="${esc(s.series)}">` : '')
+  return (s.series !== undefined ? `<h3>Series</h3><div class="sub">This task becomes its first instance.</div><input type="text" id="sseries" value="${esc(s.series)}">` : '')
     + (s.label !== undefined ? `<h3>${s.series !== undefined ? 'The new instance' : 'Label'}</h3><input type="text" id="slabel" value="${esc(s.label)}" placeholder="such as a date">` : '')
     + `<h3>Logins this instance may use</h3>` + ticksHtml(s.offers, s.on) + `<div><button class="btn primary" data-act="start-go">${esc(s.go)}</button></div>`;
 }
@@ -1453,7 +1452,7 @@ async function onAct(act, el, was) {
   }
   if (act === 'close') {
     const waits = threads.filter(t => t.waits);
-    const task = cur.s.single, text = (task ? 'If it will recur, make it a series under the name below: this task becomes its first instance, which later ones roll forward from.' : 'It becomes an example for later instances.')
+    const task = cur.s.single, text = (task ? 'If it will recur, make it a series under the name below: this task becomes its first instance, an example for later ones.' : 'It becomes an example for later instances.')
       + (waits.length ? '\n\nClosing accepts what the agent did for each ask still waiting:\n' + waits.map(t => `• ${firstLine(t.last.text)}`).join('\n') : '');
     const close = async (name, promote) => {
       if (promote) await api(`${seriesPath(cur)}/promote`, { method: 'POST', body: JSON.stringify({ name }) });

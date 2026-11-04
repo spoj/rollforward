@@ -55,7 +55,7 @@ export const isNote = (inst: Instance, e: Entry) => !!e.note || (isPerson(e) && 
 export const starts = (inst: Instance, e: Entry) => !isNote(inst, e) || starter(inst, e.by);
 
 export function pending(inst: Instance, seen: number): Entry[] {
-  return inst.log.filter(e => e.seq > seen && starts(inst, e) && (e.op === 'wake' || (isPerson(e) && (['upload', 'comment', 'signoff'].includes(e.op) || (e.op === 'create' && e.fetch)))));
+  return inst.log.filter(e => e.seq > seen && starts(inst, e) && (e.op === 'wake' || (isPerson(e) && ['upload', 'comment', 'signoff'].includes(e.op))));
 }
 
 // Whether an instance has something for a run: what came since its last run, or since an Interrupt, which waits for the next act.
@@ -244,7 +244,8 @@ export function dropRequest(id: string): Request {
   return r;
 }
 
-// Starts an instance of a series for a wake or a request, run by `by` with the logins they ticked, the wake its first entry.
+// Starts an instance of a series, run by `by` with the logins they ticked, with a wake after its create: as a person makes it, or for a
+// wake or a request.
 export function startWith(seriesId: string, label: string, by: string, logins: string[], wake: { from: string }): Instance {
   if (instances(seriesId).filter(i => i.doc.status === 'open').length >= MAX_OPEN) throw new HttpError(409, `${MAX_OPEN} instances are open; close one first`);
   const inst = createInstance(seriesId, label, by, logins);

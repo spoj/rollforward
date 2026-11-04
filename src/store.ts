@@ -107,20 +107,16 @@ function freeLabel(seriesId: string, label: string): string {
   return name;
 }
 
-// A new instance starts from its series' latest closed one. `by` is its runner, and `logins` the offers of their logins they ticked
-// for it (logins.ts).
+// A new instance starts empty: its agent learns from the series' earlier instances what to roll forward from. `by` is its runner,
+// and `logins` the offers of their logins they ticked for it (logins.ts).
 export function createInstance(seriesId: string, label: string, by: string, logins: string[]): Instance {
   const name = freeLabel(seriesId, label), id = newId(), dir = instanceDir(id);
-  const closed = instances(seriesId).filter(i => i.doc.status === 'closed').sort((a, b) => a.closedAt().localeCompare(b.closedAt()));
-  const from = closed.at(-1);
   mkdirSync(join(dir, 'upload'), { recursive: true });
   mkdirSync(join(dir, 'working'));
   setMeta(id, { label: name, series: seriesId });
   const inst = instance(id);
-  inst.doc.items = (from?.doc.items ?? []).map(({ id, name, kind, from, destination }) => ({ id, name, kind, file: null, from, destination }));
   inst.save();
-  const fetch = from?.doc.items.some(i => i.kind === 'input' && i.file?.startsWith('working/'));
-  inst.append(by, 'create', { from: from?.label ?? null, ...(fetch && { fetch }), logins });
+  inst.append(by, 'create', { logins });
   return inst;
 }
 
@@ -174,10 +170,6 @@ export class Instance {
     this.doc.rev++;
     replaceReadOnly(join(this.dir, 'workspace.json'), JSON.stringify(this.doc, null, 1));
     changes.emit('change', this.id);
-  }
-
-  closedAt(): string {
-    return this.log.findLast(e => e.op === 'close')?.at ?? '';
   }
 
   // Keeps a person's file under folder/ of upload/, read-only, under its own name made unique; answers its path in the instance.

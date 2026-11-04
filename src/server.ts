@@ -424,7 +424,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const s = t.series[id];
     mustSee(me, s && t.workspaces[s.workspace]);
     if (action === 'promote') {
-      // A task made a series, as it is, under a name of its own: later instances roll forward from its first.
+      // A task made a series, as it is, under a name of its own, its one instance the series' first.
       if (!s.single) throw new HttpError(400, `${s.name} is a series already`);
       const name = safeName(String(payload.name ?? ''));
       if (name !== s.name && Object.values(t.series).some(x => x.workspace === s.workspace && x.name === name)) throw new HttpError(409, `${name} exists`);
@@ -435,13 +435,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       return send(res, 200, 'ok');
     }
     if (s.single) throw new HttpError(400, `${s.name} is a task, with one instance and no settings: Start another based on this makes it a series`);
-    if (req.method === 'POST') {
-      if (instances(id).filter(i => i.doc.status === 'open').length >= MAX_OPEN) throw new HttpError(409, `${MAX_OPEN} instances are open; close one first`);
-      const { label, logins: ticks } = payload;
-      const created = createInstance(id, String(label ?? ''), by, checkTicks(by, ticks ?? []));
-      kick(created);
-      return send(res, 200, { id: created.id });
-    }
+    if (req.method === 'POST') return send(res, 200, { id: startWith(id, String(payload.label ?? ''), by, checkTicks(by, payload.logins ?? []), { from: by }).id });
     if (req.method !== 'PUT') throw new HttpError(405, 'PUT, or POST a new instance');
     const change = payload;
     if (change.name !== undefined && change.name !== s.name) {
