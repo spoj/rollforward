@@ -4,9 +4,14 @@ import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createInstance, instance, openStore } from '../src/store.ts';
+import { createInstance, instance, openStore, safeName } from '../src/store.ts';
 
 const alex = { email: 'alex', name: 'Alex' };
+
+test("a name is a folder's and a line's: slashes, control characters and line breaks become _, and AGENTS.md, where the view binds instructions, is refused", () => {
+  assert.equal(safeName('Bank/rec\\Q1\nlines\u2028\u2029\x85\x7f'), 'Bank_rec_Q1_lines____');
+  assert.throws(() => safeName('AGENTS.md'), /AGENTS\.md is the name of the agents' instructions/);
+});
 
 test("an instance's screen kept as workspace.json, as before v0.2.44, is screen.json from the start", () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-')), inst = (openStore(tmp), createInstance('weekly', 'w1', 'alex', []));

@@ -88,10 +88,13 @@ export function instances(seriesId: string): Instance[] {
   return labels(seriesId).map(l => instance(l.id));
 }
 
+// A name is a folder's in a run's view, a line of names.tsv: no slash, control character or line break, which a reader such as
+// Python's splitlines() would split it at; and not AGENTS.md, where the instructions the view binds go.
 export function safeName(s: string): string {
-  const name = s.replace(/[/\\\x00-\x1f]/g, '_');
+  const name = s.replace(/[/\\\x00-\x1f\x7f\x85\u2028\u2029]/g, '_');
   if (!name) throw new HttpError(400, 'a name is needed');
   if (name.startsWith('.')) throw new HttpError(400, `a name can't start with a dot: ${s}`);
+  if (name === 'AGENTS.md') throw new HttpError(400, "AGENTS.md is the name of the agents' instructions: choose another");
   return name;
 }
 
