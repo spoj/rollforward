@@ -811,6 +811,33 @@ test('rf makes what the page makes: a workspace, a task, named or by its first c
   assert.deepEqual([await status('Making/Lunches/Lunch'), await status('Making/Lunches/again')], ['closed', 'open']);
 });
 
+test('rf shares and archives series and workspaces, starts or drops a request, and lists your logins, takes offers off them and signs out of them', async () => {
+  const { saveLogin } = await import('../src/logins.ts'), week = new Date(Date.now() + 86_400_000).toISOString(), since = new Date().toISOString();
+  saveLogin(adminEmail, { id: 'web:crm', kind: 'website', name: 'CRM', since, offers: [{ id: 'web:crm', name: 'CRM' }], keepalive: week }, 'state');
+  saveLogin(adminEmail, { id: 'web:erp', kind: 'website', name: 'ERP', since, offers: [{ id: 'web:erp', name: 'ERP' }], expired: true }, 'state');
+  const lunches = async () => (await named('Making')).series.find((x: { name: string }) => x.name === 'Lunches');
+  assert.equal(await rf('share', 'Making/Lunches', 'on', '--creds', 'web:crm'), 'shared Making/Lunches, ticking web:crm: you agree that agents carry these credentials while acting as you\n');
+  assert.deepEqual([(await lunches()).shared_by, (await lunches()).shared_logins], [adminEmail, ['web:crm']]);
+  assert.equal(await rf('share', 'Making/Lunches', 'off'), 'stopped sharing Making/Lunches\n');
+  await assert.rejects(rf('share', 'Making/Lunches/again', 'on'), fails(1, /^rf: Making\/Lunches\/again is an instance: name its series\n$/));
+  assert.equal(await rf('archive', 'Making/Lunches'), 'archived Making/Lunches\n');
+  assert.equal((await lunches()).archived, true);
+  assert.equal(await rf('archive', 'Making/Lunches', '--undo'), 'brought back Making/Lunches\n');
+  assert.equal(await rf('archive', 'Making'), 'archived Making\n');
+  assert.equal((await named('Making')).archived, true);
+  await rf('archive', 'Making', '--undo');
+  await assert.rejects(rf('request', 'drop', 'nosuch'), fails(1, /: 404 no request nosuch\n$/));
+  await assert.rejects(rf('request', 'start', 'nosuch'), fails(1, /: 404 no request nosuch\n$/));
+  const listed = await rf('logins');
+  assert.match(listed, /^web:crm  CRM  since [\d-]+ [\d:]+, kept alive until [\d-]+ [\d:]+\n  web:crm  CRM$/m);
+  assert.match(listed, new RegExp(`^web:erp  ERP  expired: sign in again at ${base}/#logins\n`, 'm'));
+  assert.equal(await rf('logins', 'unoffer', 'web:crm', 'web:crm'), 'web:crm no longer offers web:crm\n');
+  assert.deepEqual(JSON.parse(await rf('logins', '--json')).find((l: { id: string }) => l.id === 'web:crm').offers, []);
+  await assert.rejects(rf('logins', 'allow', 'nosuch', 'cdn.example.com'), fails(1, /: 404 no website nosuch/));
+  for (const id of ['web:crm', 'web:erp']) assert.equal(await rf('logins', 'signout', id), `signed out of ${id}\n`);
+  await assert.rejects(rf('logins', 'signout', 'web:crm'), fails(1, /: 404 you have no login web:crm\n$/));
+});
+
 test('the page hears of changes from an event stream, only of instances it can see', async () => {
   const listen = async (cookie: string) => {
     const r = await fetch(base + '/api/events', { headers: { cookie } }), reader = r.body!.getReader(), got: string[] = [];

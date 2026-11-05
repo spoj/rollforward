@@ -42,6 +42,16 @@ rf new instance SERIES LABEL [--creds OFFER,...]   the series' next instance, wh
 rf new series PATH NAME           the task at PATH becomes the series NAME, itself its first instance
 rf new workspace NAME             yours to own, for admins and those they grant create
 rf copy PATH LABEL [--creds OFFER,...]   a closed or abandoned instance, copied into a new open one without its agent session
+rf share PATH on|off [--creds OFFER,...]   the series' people, and their agents, wake it as you, with those offers ticked;
+                                  off stops it, for its sharer or its workspace's owners
+rf archive PATH [--undo]          a workspace or a series leaves the sidebar as it is, until --undo brings it back
+rf request start|drop ID [--creds OFFER,...]   a request to start an instance, by the ID rf waiting and rf wakes print
+rf logins [--json]                your logins, each with its state, keepalive and offers; you sign in to them on the page
+rf logins offer|unoffer LOGIN SOURCE|OFFER   what a login offers runs: Microsoft 365's (m365) mailboxes, sites, folders and
+                                  files, by address or link, a Databricks login's SQL warehouses, by link; unoffer takes the
+                                  OFFER rf logins lists
+rf logins allow SITE HOST         a host the pages of SITE, your own website or, for admins, another, need
+rf logins signout LOGIN
 rf correct PATH TEXT [--item ID] [--ref REF] [--superseded] [--see LABEL]   a closed instance, or its item ID at REF, is
                                   wrong, or superseded, as LABEL, another instance of its series, shows; it can't be withdrawn
 rf wake PATH AT [--label LABEL] [--days DAYS] | rf wake --cancel ID
@@ -137,6 +147,7 @@ Usual work
 - Answer an ask: rf comment PATH TEXT --thread T --wait, which prints what the agent says back; a sign-off, as its runner:
   rf signoff PATH T approve|reject [TEXT]. Close an instance you stand by: rf close PATH.
 - Take an instance over: rf creds PATH lists the offers of your logins, and rf takeover PATH --creds OFFER,... ticks them.
+- Your logins: rf logins lists them, with what each offers, and an expired one's link to sign in again on the page.
 - Give an input or a corrected output: rf upload PATH FILE [--onto ITEM] [--output].
 - Start an instance: rf new instance SERIES LABEL, as you, or rf wake SERIES now --label LABEL, which starts it as whoever
   shares the series, else asks on the page for someone to start it; take one you run up later: rf wake PATH +2h. A one-off:
@@ -169,7 +180,7 @@ const flags: Record<string, string | true> = {}, excludes: string[] = [], args: 
 for (let i = 0; i < argv.length; i++) {
   const flag = argv[i] === '-n' ? 'dry-run' : argv[i].match(/^--(.+)$/)?.[1];
   if (!flag) args.push(argv[i]);
-  else if (['wait', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear', 'follow', 'superseded'].includes(flag)) flags[flag] = true;
+  else if (['wait', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear', 'follow', 'superseded', 'undo'].includes(flag)) flags[flag] = true;
   else if (argv[i + 1] === undefined) throw new Error(`--${flag} takes a value`);
   else if (flag === 'exclude') excludes.push(argv[++i]);
   else flags[flag] = argv[++i];
@@ -199,6 +210,11 @@ async function instanceAt(path: string) {
   const { series, inst, at } = await find(path);
   if (!inst) throw new Error(`${path} is a series: name one of its instances, as rf ls lists them`);
   return { series, inst, at };
+}
+async function seriesAt(path: string) {
+  const { series, inst } = await find(path);
+  if (inst) throw new Error(`${path} is an instance: name its series`);
+  return series;
 }
 async function workspaceNamed(name: string) {
   const ws = (await get('/api')).find(w => w.name === name);
@@ -427,9 +443,7 @@ else if (cmd === 'comment' && args.length === 2) {
   if (typeof flags.comment === 'string') await post(`/api/instances/${instance}/comment`, { text: flags.comment });
   console.log(`made ${await pathOf(instance)}${consent(ticks())}`);
 } else if (cmd === 'new' && args[0] === 'instance' && args.length === 3) {
-  const { series, inst } = await find(args[1]);
-  if (inst) throw new Error(`${args[1]} is an instance: name its series`);
-  const { id } = await (await post(`/api/series/${series.id}`, { label: args[2], logins: ticks() })).json();
+  const { id } = await (await post(`/api/series/${(await seriesAt(args[1])).id}`, { label: args[2], logins: ticks() })).json();
   console.log(`made ${await pathOf(id)}${consent(ticks())}`);
 } else if (cmd === 'new' && args[0] === 'series' && args.length === 3) {
   await post(`/api/series/${(await find(args[1])).series.id}/promote`, { name: args[2] });
@@ -440,6 +454,32 @@ else if (cmd === 'comment' && args.length === 2) {
 } else if (cmd === 'copy' && args.length === 2) {
   const { id } = await (await post(`${(await instanceAt(args[0])).at}/duplicate?as=${encodeURIComponent(args[1])}`, { logins: ticks() })).json();
   console.log(`made ${await pathOf(id)}${consent(ticks())}`);
+} else if (cmd === 'share' && ['on', 'off'].includes(args[1]) && args.length === 2) {
+  await post(`/api/series/${(await seriesAt(args[0])).id}`, { share: args[1] === 'on', logins: ticks() }, 'PUT');
+  console.log(args[1] === 'on' ? `shared ${args[0]}${consent(ticks())}` : `stopped sharing ${args[0]}`);
+} else if (cmd === 'archive' && args.length === 1) {
+  const [w, s] = args[0].replace(/\/+$/, '').split('/');
+  await post(s === undefined ? `/api/workspaces/${(await workspaceNamed(w)).id}` : `/api/series/${(await seriesAt(args[0])).id}`, { archived: !flags.undo }, 'PUT');
+  console.log(`${flags.undo ? 'brought back' : 'archived'} ${args[0]}`);
+} else if (cmd === 'request' && ['start', 'drop'].includes(args[0]) && args.length === 2) {
+  if (args[0] === 'drop') await api(`/api/requests/${args[1]}`, { method: 'DELETE' });
+  console.log(args[0] === 'drop' ? `dropped request ${args[1]}` : `made ${await pathOf((await (await post(`/api/requests/${args[1]}`, { logins: ticks() })).json()).id)}${consent(ticks())}`);
+} else if (cmd === 'logins' && !args.length) {
+  const all = await get('/logins');
+  if (flags.json) console.log(JSON.stringify(all, null, 1));
+  else for (const l of all) {
+    console.log(`${l.id}  ${l.name}  ${l.expired ? `expired: sign in again at ${url}/#logins` : `since ${when(l.since)}`}${l.kind === 'key' ? (l.enabled ? ', in use' : ', not in use') : ''}${l.keepalive > new Date().toISOString() ? `, kept alive until ${when(l.keepalive)}` : ''}${l.missing.length ? `, missing ${l.missing.join(', ')}` : ''}`);
+    for (const o of l.offers) console.log(`  ${o.id}  ${o.name}`);
+  }
+} else if (cmd === 'logins' && ['offer', 'unoffer', 'allow'].includes(args[0]) && args.length === 3) {
+  const [what, login, x] = args, at = `/logins/${encodeURIComponent(login)}`;
+  if (what === 'offer') await post(`${at}/offers`, { add: x });
+  else if (what === 'unoffer') await api(`${at}/offers/${encodeURIComponent(x)}`, { method: 'DELETE' });
+  else await post(`/logins/web/${encodeURIComponent(login)}/hosts`, { host: x });
+  console.log(`${login} ${{ offer: 'offers', unoffer: 'no longer offers', allow: 'reaches' }[what]} ${x}`);
+} else if (cmd === 'logins' && args[0] === 'signout' && args.length === 2) {
+  await api(`/logins/${encodeURIComponent(args[1])}`, { method: 'DELETE' });
+  console.log(`signed out of ${args[1]}`);
 } else if (cmd === 'correct' && args.length === 2) {
   const { series, at } = await instanceAt(args[0]), see = flags.see === undefined ? undefined : series.instances.find(i => i.label === flags.see);
   if (flags.see !== undefined && !see) throw new Error(`no instance ${flags.see} in its series`);
