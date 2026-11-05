@@ -5,6 +5,8 @@ import type { Request } from '../connections.ts';
 // (connections.ts): Pi's own calls to its model go through it too. Whatever body a request carries, by any method to any path, is
 // a JSON object, which goes on asking only for providers that don't collect its data.
 export const name = 'openrouter', host = 'openrouter.ai', key = 'OPENROUTER_API_KEY';
+// The model runs use, RF_MODEL, which the server's own checks of websites use too (grants.ts, browsers.ts).
+export const [provider, model] = (process.env.RF_MODEL ?? 'openrouter/anthropic/claude-opus-5.5').split(/\/(.*)/);
 
 export function check({ method, url, json, body }: Request): unknown {
   if (!body?.length) return undefined;

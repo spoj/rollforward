@@ -9,7 +9,8 @@ import { pipeline } from 'node:stream/promises';
 import { HttpError, instance, replaceReadOnly, type Instance } from './store.ts';
 import { logins, personDir, runnerOf, saveLogin, seal, secret, signOut, use } from './logins.ts';
 import { getDomain } from 'tldts';
-import { changeConnection, checkHost, connections, covers, reached, removeConnection, setConnection } from './connections.ts';
+import { changeConnection, checkHost, connections, covers, reached, removeConnection, setConnection, upstreams } from './connections.ts';
+import { model } from './connections/openrouter.ts';
 import { asPerson, can, users, type Me } from './auth.ts';
 import { approved, forget, grants } from './grants.ts';
 import { changes, readJson, rfDir, tree } from './system.ts';
@@ -79,10 +80,10 @@ export function passUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, 
 // hosts; whatever its login may do there, the browser may, so keeping to reads is the agent's, and its request log shows what it
 // did. A website an admin switched off, no one uses.
 
-export type Website = { name: string; url: string; hosts: string[]; writeback: boolean; header?: string; keepalive?: string; every?: number; owner?: string; internal?: boolean; off?: boolean };
+export type Website = { name: string; url: string; hosts: string[]; writeback: boolean; header?: string; keepalive?: string; every?: number; owner?: string; internal?: boolean; off?: boolean; classes?: Record<string, 'tracker' | 'other'> };
 export const websites = (): Record<string, Website> => Object.fromEntries(connections().filter(c => c.type === 'website').map(c => [c.name, {
   name: c.title ?? c.name, url: c.url, hosts: c.hosts, writeback: c.writeback, header: c.header, keepalive: c.keepalive, every: c.every,
-  ...(c.owner && { owner: c.owner }), ...(c.internal && { internal: true }), ...(c.off && { off: true }),
+  ...(c.owner && { owner: c.owner }), ...(c.internal && { internal: true }), ...(c.off && { off: true }), ...(c.classes && { classes: c.classes }),
 }]));
 
 function website(id: string): Website {
@@ -138,7 +139,7 @@ export async function setSite(by: Me, name: string, change: Record<string, unkno
   if (!allows(w, by)) throw new HttpError(403, `${w.name} is ${w.owner}'s to change, or an admin's`);
   if (theirs.length && by.role !== 'admin') throw new HttpError(403, `${theirs.join(' and ')}: admins set it`);
   await setConnection(name, { type: 'website', url: c.url, hosts: c.hosts, title: c.title, writeback: c.writeback, header: c.header, keepalive: c.keepalive,
-    every: c.every && `${c.every}m`, owner: c.owner, off: c.off, internal: c.internal, ...change }, by.email);
+    every: c.every && `${c.every}m`, owner: c.owner, off: c.off, internal: c.internal, classes: c.classes, ...change }, by.email);
 }
 
 // A website goes with its grants, and everyone's login to it: its owner's to remove while no one else has a grant to it pending or
@@ -185,7 +186,8 @@ export async function allowHost(by: { email: string; role: string }, site: strin
 }
 
 // The hosts a run's browser on a website was refused that it still doesn't reach.
-export const unreached = (site: string, hosts: string[]) => hosts.filter(h => !reached(websites()[site]).some(p => covers(p, h)));
+// The hosts a website doesn't reach, of those asked for, but trackers the server sorted out (classify), which no one is asked to allow.
+export const unreached = (site: string, hosts: string[]) => hosts.filter(h => !reached(websites()[site]).some(p => covers(p, h)) && websites()[site].classes?.[h] !== 'tracker');
 
 export const viewPage = async (id: string) => (await call('GET', `/sessions/${id}/view`)).toString();
 
@@ -211,9 +213,11 @@ export async function endSignIn(email: string, id: string, save: boolean, keepal
       if (e.status >= 400) failed.push(`${e.method} ${host} ${e.status}${e.error ? ` ${e.error}` : ''}`);
     }
   }
-  console.log(`sign-in ended ${JSON.stringify({ id, site, email, saved: save, seconds: Math.round((Date.now() - since) / 1000), requests, blocked, failed })}`);
+  const seconds = Math.round((Date.now() - since) / 1000);
+  console.log(`sign-in ended ${JSON.stringify({ id, site, email, saved: save, seconds, requests, blocked, failed })}`);
   if (!save) return;
-  saveLogin(email, { id: `web:${site}`, kind: 'website', name, since: new Date().toISOString(), offers: [{ id: `web:${site}`, name }], ...(until && { keepalive: new Date(until).toISOString() }) }, JSON.stringify(state));
+  saveLogin(email, { id: `web:${site}`, kind: 'website', name, since: new Date().toISOString(), offers: [{ id: `web:${site}`, name }], ...(until && { keepalive: new Date(until).toISOString() }),
+    trace: { requests, blocked: blocked.hosts, seconds } }, JSON.stringify(state));
   if (token) seal(email, `web:${site}.header`, token);
 }
 
@@ -247,6 +251,38 @@ function keep(inst: Instance, b: Opened, { state, log }: { state: unknown; log: 
   for (const h of log.filter(e => e.blocked === 'host not on the list').map(e => URL.parse(e.url)!.hostname)) hosts[h] = (hosts[h] ?? 0) + 1;
   inst.append('server', 'browser', { run: b.run, site: b.site, ...(b.email && { login: b.email }), requests: log.length, writes, blocked: log.filter(e => e.blocked).length, file: b.file,
     ...(Object.keys(hosts).length && { hosts }) });
+  if (Object.keys(hosts).length && websites()[b.site]) classify(inst, b.run, b.site, hosts).catch(e => console.error(`sorting the hosts ${b.site} was refused:`, e));
+}
+
+// The hosts a run's browser on a website was refused, sorted once each: one within the registrable domains the website reaches is
+// its own, and the website reaches it from then on; of the rest, the server's model says which are its sign-on's or its pages' CDN,
+// which it reaches too, and which are trackers, which stay refused and wait on no one. What's left waits, as before, on its owner
+// and on admins, under Waiting on you. Without the server's key only its own are sorted. What it reaches now is logged in the
+// instance, as `browser` with `allowed`.
+const CLASSIFY = `A browser on a company's website, run by an automated job, was refused these hosts, which the website may not reach. Say what each is to the website, as one JSON object {"hosts": {HOST: "sign-on" | "cdn" | "tracker" | "other"}}: "sign-on" for the identity provider its sign-in goes through, "cdn" for where its own pages' scripts, styles, fonts or images come from, "tracker" for analytics, advertising, telemetry or chat widgets, and "other" for anything else or anything you're unsure of.`;
+
+async function classify(inst: Instance, run: number, site: string, refused: Record<string, number>) {
+  const w = websites()[site], key = process.env.OPENROUTER_API_KEY, domain = (x: string) => getDomain(x.replace(/^\*\./, ''), { allowPrivateDomains: true }) ?? x;
+  const todo = unreached(site, Object.keys(refused)).filter(h => !w.classes?.[h]), own = todo.filter(h => reached(w).some(p => domain(p) === domain(h)));
+  const rest = todo.filter(h => !own.includes(h));
+  let sorted: Record<string, string> = {};
+  if (rest.length && key) {
+    const res = await fetch(`${upstreams['openrouter.ai'] ?? 'https://openrouter.ai'}/api/v1/chat/completions`, {
+      method: 'POST', headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' }, signal: AbortSignal.timeout(120_000),
+      body: JSON.stringify({ model, provider: { data_collection: 'deny' }, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: CLASSIFY }, { role: 'user', content: JSON.stringify({
+        website: { name: site, title: w.name, address: new URL(w.url).host, hosts: w.hosts }, refused: Object.fromEntries(rest.map(h => [h, refused[h]])),
+      }) }] }),
+    });
+    if (!res.ok) throw new Error(`OpenRouter answered ${res.status}`);
+    sorted = JSON.parse((await res.json()).choices[0].message.content).hosts ?? {};
+  }
+  const allowed: string[] = [];
+  for (const h of [...own, ...rest.filter(h => ['sign-on', 'cdn'].includes(sorted[h]))]) if (await checkHost(site, h, !!w.internal).then(() => true, () => false)) allowed.push(h);
+  const classes = Object.fromEntries(rest.filter(h => sorted[h] && !allowed.includes(h)).map(h => [h, sorted[h] === 'tracker' ? 'tracker' : 'other']));
+  if (!allowed.length && !Object.keys(classes).length) return;
+  changeConnection(site, { hosts: [...new Set([...w.hosts, ...allowed])], classes: { ...w.classes, ...classes } }, 'server');
+  console.log(`hosts sorted ${JSON.stringify({ site, inst: inst.id, run, allowed, classes })}`);
+  if (allowed.length) inst.append('server', 'browser', { run, site, action: 'allowed', allowed });
 }
 
 // As the server starts, before any browser of its own opens: the browsers left open on the service, which this server alone uses,

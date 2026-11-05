@@ -276,7 +276,8 @@ function names(me: Me) {
 // upload, a takeover, a close, or a move to another workspace that someone else accepted.
 const NEWS = ['done', 'report', 'comment', 'signoff', 'upload', 'takeover', 'close', 'abandon', 'move'];
 
-function summary(i: Instance, email: string, w8 = wakes()) {
+function summary(i: Instance, me: Me, w8 = wakes()) {
+  const email = me.email;
   const key = `${i.log.length}:${i.doc.rev}:${seriesSettings(i.series()).shared?.by ?? ''}`;
   const news = i.log.findLast(e => e.by !== email && e.accepted_by !== email && NEWS.includes(e.op)), s = seen(email);
   let k = kept.get(i);
@@ -289,8 +290,9 @@ function summary(i: Instance, email: string, w8 = wakes()) {
     unread: !!news && news.at > s.since && news.seq > (s.at[i.id] ?? 0), corrections: k.corrections,
     // What says it was wrong, for its runner under Waiting on you, for a week, as a correction is never withdrawn.
     wrong: k.wrong.filter(fresh).length,
-    // The hosts a run's browser on a person's own website was refused, for them to allow under Waiting on you, for a week.
-    refused: k.refused.filter(e => fresh(e.at) && websites()[e.site]?.owner === email).map(e => ({ ...e, hosts: unreached(e.site, e.hosts) })).filter(e => e.hosts.length),
+    // The hosts a run's browser on a website was refused that it still doesn't reach, once the server sorted them (browsers.ts), for
+    // its owner or an admin to allow under Waiting on you, for a week.
+    refused: k.refused.filter(e => fresh(e.at) && websites()[e.site] && (websites()[e.site].owner === email || me.role === 'admin')).map(e => ({ ...e, hosts: unreached(e.site, e.hosts) })).filter(e => e.hosts.length),
   };
 }
 
@@ -315,7 +317,7 @@ function listing(me: Me) {
         id: sid, name: s.name, archived: !!s.archived, single: !!s.single, shared_by: shared?.by ?? null, shared_logins: shared?.by === me.email ? shared.logins : [],
         wakes: wakesOf(sid, w8), fired: w8.fired[sid] ?? null,
         requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r, who: asked(r) })),
-        instances: instances(sid).map(i => summary(i, me.email, w8)),
+        instances: instances(sid).map(i => summary(i, me, w8)),
       };
     });
     // Mine: a workspace you own, or one where you ran an instance, commented or uploaded; membership alone isn't.
@@ -730,7 +732,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   if (!action) see(by, inst.id, inst.log.at(-1)!.seq);
   if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4), browsers: [...(mine.browsers?.watchable().keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), runner: runner(inst), previous: previous(inst), review: inst.review() });
   if (action === 'trace') return send(res, 200, trace(inst));
-  if (action === 'summary') return send(res, 200, summary(inst, by));
+  if (action === 'summary') return send(res, 200, summary(inst, me));
   // A population as the page shows it: its count, total and largest rows, and the rows of its picks.
   if (action === 'sample') {
     const item = inst.doc.items.find(i => i.id === url.searchParams.get('item') && i.population && i.file);
@@ -1098,7 +1100,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     else if (url.pathname === '/grants' && req.method === 'GET') send(res, 200, visible(me));
     else if (url.pathname === '/grants' && req.method === 'POST') {
       const { site, workspace, reason } = await json(req);
-      send(res, 200, { id: ask(me, String(site ?? ''), String(workspace ?? ''), String(reason ?? '')) });
+      send(res, 200, await ask(me, String(site ?? ''), String(workspace ?? ''), String(reason ?? '')));
     }
     else if (/^\/grants\/\w+$/.test(url.pathname) && req.method === 'POST') {
       const { approve, text } = await json(req);

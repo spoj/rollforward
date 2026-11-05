@@ -9,7 +9,8 @@ import type { Type } from '../connections.ts';
 // unless given (browsers.ts).
 // `owner` is the person who added it, as anyone may (browsers.ts), whose its settings are, besides admins'; who uses it is a matter
 // of grants (grants.ts). An admin's `off` takes it from everyone, and an admin's `internal` lets its browsers reach internal
-// addresses, by exact hosts, as an intranet's need.
+// addresses, by exact hosts, as an intranet's need. `classes` are the server's sorting of hosts its runs' browsers were refused:
+// trackers, which stay refused, and others, which wait on its owner and admins (browsers.ts).
 export default {
   settings(input) {
     if (typeof input.url !== 'string' || !/^https?:\/\/[^/]/.test(input.url)) throw new HttpError(400, 'url: an http(s) address, where sign-in starts');
@@ -23,7 +24,8 @@ export default {
     return { url: input.url, hosts, ...(typeof input.title === 'string' && input.title.trim() && { title: input.title.trim() }), writeback: input.writeback !== false && input.writeback !== 'false', ...(input.header !== undefined && { header: String(input.header) }),
       ...(input.keepalive !== undefined && { keepalive: String(input.keepalive) }), ...(every && { every: Number(every[1]) * (every[2] === 'h' ? 60 : 1) }),
       ...(typeof input.owner === 'string' && { owner: input.owner.toLowerCase() }),
-      ...((input.off === true || input.off === 'true') && { off: true }), ...((input.internal === true || input.internal === 'true') && { internal: true }) };
+      ...((input.off === true || input.off === 'true') && { off: true }), ...((input.internal === true || input.internal === 'true') && { internal: true }),
+      ...(typeof input.classes === 'object' && input.classes !== null && { classes: input.classes }) };
   },
   login: c => ({ id: `web:${c.name}`, kind: 'website', name: c.title ?? c.name, offers: [{ id: `web:${c.name}`, name: c.title ?? c.name }] }),
 } satisfies Type;

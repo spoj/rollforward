@@ -39,6 +39,8 @@ await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
 Object.assign(process.env, { RF_BROWSER_URL: `http://127.0.0.1:${(service.address() as { port: number }).port}`, RF_BROWSER_IDLE_MS: '300' });
 const { Browsers, endSignIn, keepAlive, reap, startSignIn } = await import('../src/browsers.ts');
 const { ask, decide, grants, lapse, revoke } = await import('../src/grants.ts');
+// The server's model checks no website here.
+delete process.env.OPENROUTER_API_KEY;
 const { asPerson } = await import('../src/auth.ts');
 const { serveAgent } = await import('../src/agent-api.ts');
 const { logins, personDir, saveLogin, secret, signOut } = await import('../src/logins.ts');
@@ -334,7 +336,7 @@ test("a run gets its browser on a website only where its runner's grant to it in
   const first = new Browsers(his, 1);
   for (const _ of [1, 2]) await assert.rejects(first.browser('bank'), /^Error: bob@demo\.test has no approved grant to use Bank in Acme: they ask its owners for one on the Logins page; this run goes on without it$/);
   assert.deepEqual(his.log.filter(e => e.action === 'refused').map(e => e.run), [1], 'logged once a run');
-  const id = ask(asPerson(bob)!, 'bank', 'w', 'daily balances');
+  const { id } = await ask(asPerson(bob)!, 'bank', 'w', 'daily balances');
   await assert.rejects(new Browsers(his, 2).browser('bank'), /no approved grant/, 'asked is not approved');
   decide(asPerson(alice)!, id, true, '');
   const run = new Browsers(his, 3), heard: string[] = [], hear = (x: string) => heard.push(x);
@@ -361,7 +363,7 @@ test('a request lapses a week after it was asked, and a login no approved grant 
   writeJson('grants.json', {});
   saveLogin(bob, { ...website('bank', 'Bank'), since }, '{}');
   saveLogin(bob, { ...website('crm', 'CRM'), since }, '{}');
-  const asked = ask(asPerson(bob)!, 'bank', 'w', 'balances'), used = ask(asPerson(bob)!, 'crm', 'w', 'invoices');
+  const { id: asked } = await ask(asPerson(bob)!, 'bank', 'w', 'balances'), { id: used } = await ask(asPerson(bob)!, 'crm', 'w', 'invoices');
   decide(asPerson(alice)!, used, true, '');
   lapse(Date.now() + week - 60_000);
   const theirs = () => logins(bob).map(l => l.id).filter(id => ['web:bank', 'web:crm'].includes(id));

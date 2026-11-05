@@ -1294,7 +1294,7 @@ function renderPv() {
     h += '<div class="pvb vl">';
     if (s.kind === 'workspace') h += (s.manage ? `<h3>Name</h3><input type="text" id="wname" value="${esc(s.name)}">` : '') + peopleHtml(s)
       + (s.grants.length ? `<h3>Websites</h3><div class="sub">Whose logins to which websites runs here use, as its owners approved them, or are asked to.</div>`
-        + s.grants.map(g => `<div class="lsub"><span>${person(g.person)} · ${esc(g.site)} <span class="sub">${g.state === 'approved' ? `approved by ${esc(nameOf(g.by))}` : 'asked'}: ${esc(g.reason)}</span></span>${s.manage || g.person === me.email ? `<button class="quiet" data-act="grant-revoke" data-id="${esc(g.id)}">Revoke</button>` : ''}</div>`).join('') : '')
+        + s.grants.map(g => `<div class="lsub"><span>${person(g.person)} · ${esc(g.site)} <span class="sub">${g.state === 'approved' ? `approved by ${esc(nameOf(g.by))}` : 'asked'}: ${esc(g.reason)}${g.check?.risk ? ` · ${esc(g.check.risk)} risk` : ''}</span></span>${s.manage || g.person === me.email ? `<button class="quiet" data-act="grant-revoke" data-id="${esc(g.id)}">Revoke</button>` : ''}</div>`).join('') : '')
       + `<h3>Reading</h3><div class="sub">Agents here read every series of this workspace${s.reads.length ? `, and of ${esc(s.reads.join(', '))}, which ${s.reads.length > 1 ? 'have' : 'has'} everyone this one has` : ''}. They write only here.${s.read_by.length ? ` Agents in ${esc(s.read_by.join(', '))}, whose people are all here, read this one.` : ''}</div>`
       + agentsHtml(s, 'Every agent in this workspace reads it at the start of each run: its conventions, and changes that cut across its series, such as a renamed entity.', s.manage)
       + (s.manage && !s.archived ? moveHtml(s) : '')
@@ -1490,8 +1490,13 @@ function waiting() {
     }
     for (const r of s.requests.filter(r => (r.who ?? me.email) === me.email)) out.push(`<div class="wt">${at(w, s)}: ${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)} <button class="btn" data-act="req-start" data-id="${esc(r.id)}">Start</button></div>`);
   }
-  for (const w of tree.filter(w => !w.archived && w.manage)) for (const g of w.grants.filter(g => g.state === 'pending'))
-    out.push(`<div class="wt">${person(g.person)} asks to use their ${esc(g.site)} login in <a href="#/${w.id}">${esc(w.name)}</a>: ${esc(g.reason)} <button class="btn" data-act="grant-approve" data-id="${esc(g.id)}">Approve</button><button class="btn" data-act="grant-deny" data-id="${esc(g.id)}">Deny</button></div>`);
+  // Each with the server's check of the website: one it rates high only an admin approves.
+  for (const w of tree.filter(w => !w.archived && w.manage)) for (const g of w.grants.filter(g => g.state === 'pending')) {
+    const c = g.check, high = c?.risk === 'high' && me.role !== 'admin';
+    out.push(`<div class="wt">${person(g.person)} asks to use their ${esc(g.site)} login in <a href="#/${w.id}">${esc(w.name)}</a>: ${esc(g.reason)}`
+      + `<div class="sub">${!c || c.error ? `Not checked${c ? `: ${esc(c.error)}` : ''}.` : `Check: ${esc(c.risk)} risk${c.flags.length ? ` (${esc(c.flags.join('; '))})` : ''}. ${esc(c.summary)}${c.same ? ` It looks like ${esc(c.same)}, a website here already.` : ''}${c.hosts.length ? ` Approving lets it reach ${esc(c.hosts.join(', '))}.` : ''}`}</div>`
+      + `${high ? '<span class="sub">An admin decides.</span>' : `<button class="btn" data-act="grant-approve" data-id="${esc(g.id)}">Approve</button>`}<button class="btn" data-act="grant-deny" data-id="${esc(g.id)}">Deny</button></div>`);
+  }
   return [...out, ...expired.map(l => `<div class="wt">Your ${l.kind === 'key' ? 'OpenRouter key is out of credits' : `${esc(l.name)} login has expired`}. ${signInHtml(l.id, l.name)}</div>`)];
 }
 

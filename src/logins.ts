@@ -13,8 +13,10 @@ import { asPerson } from './auth.ts';
 // its instance.
 export type Offer = { id: string; name: string };
 // A Microsoft 365 login's scopes are the Graph permissions Microsoft last granted it; a website login's keepalive, when keeping it
-// alive ends (browsers.ts).
-export type Login = { id: string; kind: string; name: string; account?: string; since: string; offers: Offer[]; expired?: boolean; scopes?: string[]; enabled?: boolean; keepalive?: string };
+// alive ends, and its sign-in's trace, its requests by host and status and the hosts it was refused, which its grants' checks read
+// (browsers.ts, grants.ts).
+export type Trace = { requests: Record<string, Record<number, number>>; blocked: string[]; seconds: number };
+export type Login = { id: string; kind: string; name: string; account?: string; since: string; offers: Offer[]; expired?: boolean; scopes?: string[]; enabled?: boolean; keepalive?: string; trace?: Trace };
 
 export const personDir = (email: string) => join(rfDir(), 'people', createHash('sha256').update(email).digest('hex').slice(0, 16));
 const list = (email: string) => join(personDir(email), 'logins.json');

@@ -6,11 +6,11 @@ import { delimiter, dirname, join, posix, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { listenRun, PORT, sandboxArgs, unlistenRun } from './sandbox.ts';
 import { bundle } from './ca.ts';
+import { model, provider } from './connections/openrouter.ts';
 
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 // Inside, the app is at /app, read-only.
 const cliPath = `/app/${relative(app, join(dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent'))), 'cli.js'))}`;
-const [provider, model] = (process.env.RF_MODEL ?? 'openrouter/anthropic/claude-opus-5.5').split(/\/(.*)/);
 // Where runs get their HOME and /tmp, and the folder of the server's socket for sandboxes.
 export const scratch = process.env.RF_SCRATCH ?? join(tmpdir(), 'rollforward');
 // The server's user alone reaches its runs, whose folders are named by their tokens.

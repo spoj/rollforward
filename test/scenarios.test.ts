@@ -16,6 +16,8 @@ import { idp } from './idp.ts';
 // wake and a takeover are checked as a run meets them, at no model cost.
 type Script = { bash: (string | (() => string | Promise<string>))[]; report: string; prompt?: string; system?: string; first?: number; saw: string[]; fail?: string; hold?: () => void };
 const scripts: Script[] = [], byPrompt = new Map<string, Script>(), providers: unknown[] = [], keys: string[] = [];
+// The server's own checks of websites (grants.ts, browsers.ts): what they asked, and the verdicts the stand-in model answers, in turn.
+const checks: { provider: unknown; messages: { content: string }[] }[] = [], verdicts: object[] = [];
 const app = join(import.meta.dirname, '..'), tmp = mkdtempSync(join(tmpdir(), 'rf-scenario-')), root = join(tmp, 'data');
 const ADMIN = 'admin@demo.test', BOB = 'bob@demo.test';
 let model: ReturnType<typeof createServer>, proc: ChildProcess, base = '', admin = '', bob = '', sessions = 0;
@@ -39,6 +41,7 @@ const isResult = (m: { role: string; content: unknown }) => Array.isArray(m.cont
 // costing a cent, unless the key is out of credits; and a chat completion, for a script's own call.
 async function answer(req: IncomingMessage, res: ServerResponse) {
   const body = JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString());
+  if (body.response_format) return void (checks.push(body), res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: JSON.stringify(verdicts.shift()) } }] })));
   keys.push(String(req.headers['x-api-key']));
   if (keys.at(-1) === 'sk-or-broke') return void res.writeHead(402, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: 'Insufficient credits', code: 402 } }));
   providers.push(body.provider);
@@ -523,7 +526,7 @@ test("whoever sees an instance watches its run's browser live from the page, the
     [BOB, [[ADMIN, 'portal', 'drive'], ['server', 'portal', undefined]], null], "the admin's control logged as theirs, the interrupt as bob's, and the browser gone");
 });
 
-test("anyone adds a website, theirs to set: they allow the hosts its pages need as they sign in, a run uses it where its workspace's owners approved its runner's grant, the hosts a run's browser was refused wait on its owner, and an admin may switch it off", async () => {
+test("anyone adds a website, theirs to set: they allow the hosts its pages need as they sign in, a run uses it where its workspace's owners approved its runner's grant, seeing the server's check, the hosts a run's browser was refused are sorted, and what's left waits on its owner and admins, and an admin may switch it off", async () => {
   const carol = await login('carol@demo.test'), add = (body: object) => call('POST', '/logins/sites', { name: 'bobs', url: 'https://bobs.example.com/', ...body }, bob);
   const said = async (res: Response) => [res.status, await res.text()];
   const allow = (host: string, cookie = bob) => call('POST', '/logins/web/bobs/hosts', { host }, cookie);
@@ -547,26 +550,47 @@ test("anyone adds a website, theirs to set: they allow the hosts its pages need 
   assert.deepEqual((await (await call('GET', '/logins/web/bobs/refused', undefined, bob)).json()).hosts, [{ host: 'cdn.idp.test', count: 1 }], 'what it reaches now is no longer refused');
   assert.equal((await call('POST', `/signins/${signIn}`, undefined, bob)).status, 200);
 
-  // Bob asks to use it in a workspace, whose owner approves: from then on, he allows hosts only within the domains it reaches.
+  // Bob asks to use it in a workspace; the server's model checks the website from his sign-in's hosts, and its owner approves.
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Own sites' })).json();
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB] })).status, 200);
   assert.deepEqual(await said(await call('POST', '/grants', { site: 'bobs', workspace: ws, reason: '' }, bob)), [400, "a reason: what you'll use it for, for the workspace's owners"]);
-  const { id: grant } = await (await call('POST', '/grants', { site: 'bobs', workspace: ws, reason: 'own pulls' }, bob)).json();
-  const pending = async () => (await (await call('GET', '/api')).json()).find((w: { id: string }) => w.id === ws).grants.map((g: { person: string; site: string; state: string }) => [g.person, g.site, g.state]);
-  assert.deepEqual(await pending(), [[BOB, 'bobs', 'pending']], "under its owners' Waiting on you");
+  verdicts.push({ risk: 'low', flags: [], summary: "Bob's portal, signing in through idp.test.", title: 'Bobs Portal', hosts: ['*.bobs.example.com', 'sso.idp.test', 'graph.microsoft.com'], same: 'nosuch' });
+  const { id: grant, check } = await (await call('POST', '/grants', { site: 'bobs', workspace: ws, reason: 'own pulls' }, bob)).json();
+  assert.deepEqual(check, { risk: 'low', flags: [], summary: "Bob's portal, signing in through idp.test.", title: 'Bobs Portal', hosts: ['*.bobs.example.com', 'sso.idp.test'], same: null }, "graph's host never, nor a website that isn't here");
+  const asked = JSON.parse(checks.at(-1)!.messages[1].content);
+  assert.deepEqual([checks.at(-1)!.provider, asked.website.address, asked.signIn.blocked, asked.reason], [{ data_collection: 'deny' }, 'https://bobs.example.com/', ['sso.idp.test', 'cdn.idp.test'], 'own pulls'], 'hosts alone, from providers that keep no data');
+  const pending = async () => (await (await call('GET', '/api')).json()).find((w: { id: string }) => w.id === ws).grants.map((g: { person: string; site: string; state: string; check: { risk: string } }) => [g.person, g.site, g.state, g.check.risk]);
+  assert.deepEqual(await pending(), [[BOB, 'bobs', 'pending', 'low']], "under its owners' Waiting on you, with the check");
   assert.equal((await call('POST', `/grants/${grant}`, { approve: true }, bob)).status, 403, "a member doesn't approve");
   assert.equal((await call('POST', `/grants/${grant}`, { approve: true })).status, 200);
-  assert.deepEqual(await said(await allow('cdn.other.test')), [403, 'cdn.other.test is outside the domains bobs reaches, which its grants approved: an admin allows it']);
+  assert.deepEqual([(await listed(bob)).hosts, (await listed(bob)).title], [['sso.idp.test', '*.bobs.example.com'], 'Bobs Portal'], "approving lets it reach what the check found, and names it");
+  assert.deepEqual(await said(await allow('cdn.other.test')), [403, 'cdn.other.test is outside the domains Bobs Portal reaches, which its grants approved: an admin allows it']);
 
-  // A run's browser refused a host: it waits on the website's owner, under Waiting on you, until they allow it.
+  // In a workspace bob owns, a check that rates the website high risk leaves it for an admin to approve.
+  const { id: his } = await (await call('POST', '/api/workspaces', { name: "Bob's own" })).json();
+  assert.equal((await call('PUT', `/api/workspaces/${his}`, { owners: [BOB] })).status, 200);
+  verdicts.push({ risk: 'high', flags: ['looks like a lookalike'], summary: 'Not what it says.', title: '', hosts: [], same: null });
+  const { id: risky } = await (await call('POST', '/grants', { site: 'bobs', workspace: his, reason: 'more pulls' }, bob)).json();
+  assert.deepEqual(await said(await call('POST', `/grants/${risky}`, { approve: true }, bob)), [403, 'the check rates bobs high risk: an admin decides']);
+  assert.equal((await call('POST', `/grants/${risky}`, { approve: true })).status, 200);
+
+  // A run's browser was refused hosts: its own and its CDN's it reaches from then on, a tracker stays refused and unasked, and the
+  // rest waits on its owner and admins, under Waiting on you, until one of them allows it.
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Own pull' }, bob)).json();
+  refused = ['https://cdn.idp.test/x.js', 'https://www.tracker.test/c', 'https://static.cdnhost.test/a.js', 'https://upload.elsewhere.test/x'];
+  verdicts.push({ hosts: { 'www.tracker.test': 'tracker', 'static.cdnhost.test': 'cdn', 'upload.elsewhere.test': 'other' } });
   scripts.push({ bash: ['curl -s -m 5 -H "connection: upgrade" -H "upgrade: websocket" "$RF_BROWSERS/bobs"'], report: 'Pulled.', saw: [] });
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-12', logins: ['web:bobs'] }, bob)).json();
   await runs(id, 1);
-  await until('the browser closed', () => readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').includes('"op":"browser"'));
-  const waits = async () => (await (await call('GET', '/api', undefined, bob)).json()).flatMap((w: any) => w.series.flatMap((s: any) => s.instances)).find((i: { id: string }) => i.id === id).refused;
-  assert.deepEqual((await waits()).map(({ run, site, hosts }: { run: number; site: string; hosts: string[] }) => ({ run, site, hosts })), [{ run: 1, site: 'bobs', hosts: ['cdn.idp.test'] }]);
-  assert.equal((await allow('cdn.idp.test')).status, 200, 'within a domain it reaches');
+  await until('the hosts sorted', () => readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').includes('"action":"allowed"'));
+  assert.deepEqual(JSON.parse(checks.at(-1)!.messages[1].content).refused, { 'www.tracker.test': 1, 'static.cdnhost.test': 1, 'upload.elsewhere.test': 1 }, 'its own goes unasked');
+  const log = readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+  assert.deepEqual(log.find(e => e.action === 'allowed').allowed, ['cdn.idp.test', 'static.cdnhost.test']);
+  assert.deepEqual([(await listed(bob)).hosts.slice(2), (await listed(bob)).classes], [['cdn.idp.test', 'static.cdnhost.test'], { 'www.tracker.test': 'tracker', 'upload.elsewhere.test': 'other' }]);
+  const waits = async (cookie = bob) => (await (await call('GET', '/api', undefined, cookie)).json()).flatMap((w: any) => w.series.flatMap((s: any) => s.instances)).find((i: { id: string }) => i.id === id).refused.map((r: { hosts: string[] }) => r.hosts);
+  assert.deepEqual([await waits(), await waits(admin)], [[['upload.elsewhere.test']], [['upload.elsewhere.test']]]);
+  assert.equal((await allow('upload.elsewhere.test')).status, 403, 'outside its domains, now its grants are approved');
+  assert.equal((await allow('upload.elsewhere.test', admin)).status, 200);
   assert.deepEqual(await waits(), []);
 
   // An admin switches it off, for no one to use, and on again; its owner removes it, as no one else has a grant to it.
@@ -576,7 +600,7 @@ test("anyone adds a website, theirs to set: they allow the hosts its pages need 
   assert.equal((await call('PATCH', '/logins/sites/bobs', { off: false })).status, 200);
   assert.equal((await listed(bob)).off, undefined);
   assert.equal((await call('DELETE', '/logins/sites/bobs', undefined, carol)).status, 403);
-  assert.equal((await call('DELETE', '/logins/sites/bobs', undefined, bob)).status, 200, 'his alone, with only his own grant to it');
+  assert.equal((await call('DELETE', '/logins/sites/bobs', undefined, bob)).status, 200, 'his alone, with only his own grants to it');
   assert.deepEqual([await listed(admin), (await (await call('GET', '/logins', undefined, bob)).json()).some((l: { id: string }) => l.id === 'web:bobs'), await pending()], [undefined, false, []], 'its grants and logins go with it');
   refused = [];
 });
