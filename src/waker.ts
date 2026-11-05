@@ -87,8 +87,8 @@ export function pending(inst: Instance, seen: number): Entry[] {
 // Whether an instance has something for a run: what came since its last run, or since an Interrupt, which waits for the next act.
 const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math.max(seenBefore(inst), inst.log.findLast(e => e.op === 'interrupt')?.seq ?? 0)).length > 0;
 
-// A run's first message names the runner, on whose behalf the agent acts, and the connections they lend it, as does a later one
-// whose entries change those: a takeover and a runner's new ticks.
+// A run's first message names the runner, on whose behalf the agent acts, and what they lend it, each tick as logged, as does a
+// later one whose entries change those: a takeover and a runner's new ticks.
 export function message(inst: Instance, n: number, entries: Entry[], first = false): string {
   const made = entries.findLast(e => ['takeover', 'logins'].includes(e.op)), us = users(), who = (by: string) => `${us[by]?.name || by} <${by}>`;
   const set = [...wakesOf(inst.id), ...wakesOf(inst.seriesId)];
@@ -99,7 +99,7 @@ export function message(inst: Instance, n: number, entries: Entry[], first = fal
       return `${i.label}${e.item ? ` ${e.item}${e.ref ? `@${e.ref}` : ''}` : ''} is ${e.kind}, ${JSON.stringify(e.text)}${see ? `, see ${see.label}${see.thread ? ` ${see.thread}` : ''}` : ''}`;
     }));
   return `Instance ${inst.label}, run ${n}.`
-    + (first || made ? ` Its runner is ${made?.op === 'takeover' ? `now ${who(made.by)}, taking over from ${who(made.from as string)}` : who(runnerOf(inst).by)}, who lends you ${reachable(inst).map(c => `${c.name} (${c.type})`).join(', ') || 'no connection'}.` : '')
+    + (first || made ? ` Its runner is ${made?.op === 'takeover' ? `now ${who(made.by)}, taking over from ${who(made.from as string)}` : who(runnerOf(inst).by)}, who lends you ${runnerOf(inst).logins.join(', ') || 'no login'}.` : '')
     + (first && set.length ? ` Pending wakes: ${set.map(k => `${k.id}, ${k.target === inst.id ? 'waking this instance' : `starting ${k.label}`} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''}`).join('; ')}.` : '')
     + (fixed.length ? ` Corrections on earlier instances: ${fixed.join('; ')}.` : '')
     + ' New log entries:\n'
