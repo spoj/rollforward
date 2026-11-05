@@ -25,28 +25,32 @@ rf pull PATH DIR [--delete] [-n|--dry-run] [--exclude PATTERN]... [--max-size SI
                                   --max-size skips files bigger than SIZE, such as 50M
 rf help [COMMAND]                 how rollforward works and how to use rf, for an agent, or COMMAND's usage
 rf --version                      rf's own version, to tell whether it's older than what the guide names
-rf comment PATH TEXT [--item ID] [--ref REF] [--thread T] [--wait]   a new thread, or a reply in T, as to an agent's ask
-rf upload PATH FILE [--onto ITEM] [--output]
+rf comment PATH TEXT [--item ID] [--ref REF] [--thread T] [--wake|--wait]   a new thread, or a reply in T, as to an agent's
+                                  ask; --wake starts a run on it, as --wait does, which prints what the agent says back
+rf upload PATH FILE [--onto ITEM] [--output] [--wake]
 rf resolve PATH THREAD [TEXT]     resolves a thread, with TEXT as a last word; nothing wakes
-rf signoff PATH THREAD approve|reject [TEXT]   the runner's answer to a sign-off the agent asks for, which commits the folder
-rf close PATH [--as-series NAME]  the runner stands by it: closed, it's an example; a task closes as a one-off, or as the first
-                                  instance of the series NAME it becomes
+rf signoff PATH THREAD approve|reject [TEXT] [--wake]   the runner's answer to a sign-off the agent asks for, which commits
+                                  the folder
+rf close PATH [--as-series NAME] [--wake]   the runner stands by it: closed, it's an example; a task closes as a one-off, or
+                                  as the first instance of the series NAME it becomes; --wake starts runs of the series' later
+                                  open instances, which may have used its draft
 rf abandon PATH                   the runner leaves it as it is, neither an example nor a starting point
 rf interrupt PATH                 stops its run
 rf takeover PATH [--creds OFFER,...]   you run it from now on, with those offers of your logins ticked
 rf creds PATH [--set OFFER,...|--clear]   what its runs may use: its runner's ticks, and the offers of your logins; --set
                                   ticks anew, as its runner
 rf rename PATH NAME               an instance, a series or a workspace, by its path
-rf new task WORKSPACE [LABEL] [--creds OFFER,...] [--comment TEXT]   a one-off task, Untitled until LABEL or its first
-                                  comment names it; --comment starts its run
-rf new instance SERIES LABEL [--creds OFFER,...]   the series' next instance, which runs at once
+rf new task WORKSPACE [LABEL] [--creds OFFER,...] [--comment TEXT [--wake]]   a one-off task, Untitled until LABEL or its
+                                  first comment names it; --wake starts its run on the comment
+rf new instance SERIES LABEL [--creds OFFER,...] [--wake]   the series' next instance, which --wake runs at once
 rf new series PATH NAME           the task at PATH becomes the series NAME, itself its first instance
 rf new workspace NAME             yours to own, for admins and those they grant create
 rf copy PATH LABEL [--creds OFFER,...]   a closed or abandoned instance, copied into a new open one without its agent session
 rf share PATH on|off [--creds OFFER,...]   the series' people, and their agents, wake it as you, with those offers ticked;
                                   off stops it, for its sharer or its workspace's owners
 rf archive PATH [--undo]          a workspace or a series leaves the sidebar as it is, until --undo brings it back
-rf request start|drop ID [--creds OFFER,...]   a request to start an instance, by the ID rf waiting and rf wakes print
+rf request start|drop ID [--creds OFFER,...] [--wake]   a request to start an instance, by the ID rf waiting and rf wakes
+                                  print; --wake runs the instance it starts
 rf logins [--json]                your logins, each with its state, keepalive and offers; you sign in to them on the page
 rf logins offer|unoffer LOGIN SOURCE|OFFER   what a login offers runs: Microsoft 365's (m365) mailboxes, sites, folders and
                                   files, by address or link, a Databricks login's SQL warehouses, by link; unoffer takes the
@@ -123,6 +127,8 @@ What there is
   files and comment. The runner is the person whose logins the runs use, and who closes the instance once they stand by it. Their
   comments and uploads start a run of the agent, which reads them and carries on, as do everyone's where the runner shares the
   series, and a reply from whom an ask names; anyone else's is a note, which the agent takes up once the runner does.
+- rf is quiet: a comment, upload, sign-off, close, new instance or request it starts begins no run unless --wake, and the agent
+  reads it at its next run; rf wake PATH now starts one. A quiet upload or comment is committed to the instance's history at once.
 - A comment starts a thread, on the instance or on an item, at a cell such as Base!C25, and others reply in it. An ask is the
   agent's comment that waits on someone, the one it names or else the runner, until they reply or resolve it. rf ls says how many
   asks wait in each instance. A sign-off, an ask with signoff true, waits on the runner, who approves or rejects it on the page:
@@ -149,13 +155,14 @@ The copy is read-only: only rf's commands change what's on the server.
 Usual work
 - What waits on me: rf waiting, then rf show PATH, which names each thread that waits by its id.
 - Answer an ask: rf comment PATH TEXT --thread T --wait, which prints what the agent says back; a sign-off, as its runner:
-  rf signoff PATH T approve|reject [TEXT]. Close an instance you stand by: rf close PATH.
+  rf signoff PATH T approve|reject [TEXT] --wake, for the agent to carry on. Close an instance you stand by: rf close PATH.
 - Take an instance over: rf creds PATH lists the offers of your logins, and rf takeover PATH --creds OFFER,... ticks them.
 - Your logins: rf logins lists them, with what each offers, and an expired one's link to sign in again on the page.
-- Give an input or a corrected output: rf upload PATH FILE [--onto ITEM] [--output].
-- Start an instance: rf new instance SERIES LABEL, as you, or rf wake SERIES now --label LABEL, which starts it as whoever
-  shares the series, else asks on the page for someone to start it; take one you run up later: rf wake PATH +2h. A one-off:
-  rf new task WORKSPACE --comment TEXT, which becomes a series with rf new series PATH NAME.
+- Give an input or a corrected output: rf upload PATH FILE [--onto ITEM] [--output], with --wake on the last for a run on them
+  all.
+- Start an instance: rf new instance SERIES LABEL --wake, as you, or rf wake SERIES now --label LABEL, which starts it as
+  whoever shares the series, else asks on the page for someone to start it; take one you run up later: rf wake PATH +2h. A
+  one-off: rf new task WORKSPACE --comment TEXT --wake, which becomes a series with rf new series PATH NAME.
 - Read what a run did: rf show PATH for its last run, rf log PATH for every entry, --follow as they come, and rf cat PATH/FILE
   for a file; rf pull PATH/ DIR copies the folder, with session/ for every step.
 
@@ -184,7 +191,7 @@ const flags: Record<string, string | true> = {}, excludes: string[] = [], args: 
 for (let i = 0; i < argv.length; i++) {
   const flag = argv[i] === '-n' ? 'dry-run' : argv[i].match(/^--(.+)$/)?.[1];
   if (!flag) args.push(argv[i]);
-  else if (['wait', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear', 'follow', 'superseded', 'undo'].includes(flag)) flags[flag] = true;
+  else if (['wait', 'wake', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear', 'follow', 'superseded', 'undo'].includes(flag)) flags[flag] = true;
   else if (argv[i + 1] === undefined) throw new Error(`--${flag} takes a value`);
   else if (flag === 'exclude') excludes.push(argv[++i]);
   else flags[flag] = argv[++i];
@@ -402,7 +409,7 @@ if (cmd === 'login' && url) {
 } else if (cmd === 'pull' && args.length === 2) await pull(args[0], args[1]);
 else if (cmd === 'comment' && args.length === 2) {
   const { at } = await instanceAt(args[0]);
-  await post(`${at}/comment`, { text: args[1], item: flags.item, ref: flags.ref, thread: flags.thread });
+  await post(`${at}/comment`, { text: args[1], item: flags.item, ref: flags.ref, thread: flags.thread, quiet: !flags.wake && !flags.wait });
   const { log, runner } = await get(at), { seq, note } = log.at(-1);
   if (note) console.log(`a note for the runner, ${runner.by}, seq ${seq}: it starts no run until they act`);
   else if (!flags.wait) console.log(`commented, seq ${seq}`);
@@ -419,12 +426,12 @@ else if (cmd === 'comment' && args.length === 2) {
 } else if (cmd === 'resolve' && [2, 3].includes(args.length)) {
   console.log(await (await post(`${(await instanceAt(args[0])).at}/resolve`, { thread: args[1], text: args[2] })).text());
 } else if (cmd === 'signoff' && ['approve', 'reject'].includes(args[2]) && args.length <= 4) {
-  await post(`${(await instanceAt(args[0])).at}/signoff`, { thread: args[1], approved: args[2] === 'approve', text: args[3] });
+  await post(`${(await instanceAt(args[0])).at}/signoff`, { thread: args[1], approved: args[2] === 'approve', text: args[3], quiet: !flags.wake });
   console.log(`${args[2] === 'approve' ? 'approved' : 'rejected'} ${args[1]}`);
 } else if (['close', 'abandon', 'interrupt'].includes(cmd) && args.length === 1) {
   const { series, at } = await instanceAt(args[0]);
   if (cmd === 'close' && typeof flags['as-series'] === 'string') await post(`/api/series/${series.id}/promote`, { name: flags['as-series'] });
-  await post(`${at}/${cmd}`, {});
+  await post(`${at}/${cmd}`, { quiet: !flags.wake });
   console.log(`${cmd === 'close' ? 'closed' : `${cmd}ed`} ${args[0]}`);
 } else if (cmd === 'takeover' && args.length === 1) {
   await post(`${(await instanceAt(args[0])).at}/takeover`, { logins: ticks() });
@@ -449,10 +456,10 @@ else if (cmd === 'comment' && args.length === 2) {
 } else if (cmd === 'new' && args[0] === 'task' && [2, 3].includes(args.length)) {
   const { instance } = await (await post('/api/series', { workspace: (await workspaceNamed(args[1])).id, single: true, logins: ticks() })).json();
   if (args[2]) await post(`/api/instances/${instance}/rename?as=${encodeURIComponent(args[2])}`, {});
-  if (typeof flags.comment === 'string') await post(`/api/instances/${instance}/comment`, { text: flags.comment });
+  if (typeof flags.comment === 'string') await post(`/api/instances/${instance}/comment`, { text: flags.comment, quiet: !flags.wake });
   console.log(`made ${await pathOf(instance)}${consent(ticks())}`);
 } else if (cmd === 'new' && args[0] === 'instance' && args.length === 3) {
-  const { id } = await (await post(`/api/series/${(await seriesAt(args[1])).id}`, { label: args[2], logins: ticks() })).json();
+  const { id } = await (await post(`/api/series/${(await seriesAt(args[1])).id}`, { label: args[2], logins: ticks(), quiet: !flags.wake })).json();
   console.log(`made ${await pathOf(id)}${consent(ticks())}`);
 } else if (cmd === 'new' && args[0] === 'series' && args.length === 3) {
   await post(`/api/series/${(await find(args[1])).series.id}/promote`, { name: args[2] });
@@ -472,7 +479,7 @@ else if (cmd === 'comment' && args.length === 2) {
   console.log(`${flags.undo ? 'brought back' : 'archived'} ${args[0]}`);
 } else if (cmd === 'request' && ['start', 'drop'].includes(args[0]) && args.length === 2) {
   if (args[0] === 'drop') await api(`/api/requests/${args[1]}`, { method: 'DELETE' });
-  console.log(args[0] === 'drop' ? `dropped request ${args[1]}` : `made ${await pathOf((await (await post(`/api/requests/${args[1]}`, { logins: ticks() })).json()).id)}${consent(ticks())}`);
+  console.log(args[0] === 'drop' ? `dropped request ${args[1]}` : `made ${await pathOf((await (await post(`/api/requests/${args[1]}`, { logins: ticks(), quiet: !flags.wake })).json()).id)}${consent(ticks())}`);
 } else if (cmd === 'logins' && !args.length) {
   const all = await get('/logins');
   if (flags.json) console.log(JSON.stringify(all, null, 1));
@@ -501,7 +508,7 @@ else if (cmd === 'comment' && args.length === 2) {
   if (flags.see !== undefined && !see) throw new Error(`no instance ${flags.see} in its series`);
   console.log(await (await post(`${at}/correct`, { kind: flags.superseded ? 'superseded' : 'wrong', text: args[1], item: flags.item, ref: flags.ref, see: see?.id })).text());
 } else if (cmd === 'upload' && args.length === 2) {
-  const q = new URLSearchParams({ name: basename(args[1]), pane: flags.output ? 'out' : 'in', ...(typeof flags.onto === 'string' && { onto: flags.onto }) });
+  const q = new URLSearchParams({ name: basename(args[1]), pane: flags.output ? 'out' : 'in', ...(typeof flags.onto === 'string' && { onto: flags.onto }), ...(!flags.wake && { quiet: '1' }) });
   await api(`${(await instanceAt(args[0])).at}/upload?${q}`, { method: 'POST', body: readFileSync(args[1]) });
   console.log('uploaded');
 } else if (cmd === 'wake' && typeof flags.cancel === 'string' && !args.length) {

@@ -6,11 +6,12 @@ import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
 
-// Each run's end, each sign-off, each Close and each rf commit commits the whole instance folder to its own repository, .git in the
-// folder, which only the server writes and runs read. The server reads every file itself and streams them to git fast-import, so nothing a run
-// leaves in the folder, such as a .gitignore, a repository of its own or a file swapped for a link, changes what a commit holds:
-// every regular file, whatever its size or type, and links as links. Only what git can't hold is left out: a name it refuses, such
-// as a .git, and what is neither a file nor a link, such as a FIFO. One instance's commits go one at a time.
+// Each run's end, each sign-off, each Close, each rf commit and each upload or comment that starts no run commits the whole instance
+// folder to its own repository, .git in the folder, which only the server writes and runs read. The server reads every file itself
+// and streams them to git fast-import, so nothing a run leaves in the folder, such as a .gitignore, a repository of its own or a file
+// swapped for a link, changes what a commit holds: every regular file, whatever its size or type, and links as links. Only what git
+// can't hold is left out: a name it refuses, such as a .git, and what is neither a file nor a link, such as a FIFO. One instance's
+// commits go one at a time.
 export type Who = { name: string; email: string };
 export const AGENT: Who = { name: 'rollforward agent', email: 'agent@rollforward' };
 

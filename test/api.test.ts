@@ -569,6 +569,23 @@ test('talking is in threads: a comment starts one on an item or the instance, th
   assert.equal((await json(path)).log.at(-1).op, 'resolve');
 });
 
+test("a quiet act starts no run, which the next run reads: an instance made quietly waits for its first act, and an upload or comment that starts no run is committed at once, in its person's name", async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Hush' }))).json();
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'Oracle' }))).json();
+  const { id } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'kb', quiet: true }))).json(), path = `/api/instances/${id}`;
+  assert.equal((await call('POST', `${path}/upload?name=memo.txt&quiet`, 'Rates reset in March.')).status, 200);
+  assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ text: 'For the record.', quiet: true }))).status, 200);
+  await new Promise(r => setTimeout(r, 2500));
+  const { log } = await json(path), said = log.at(-1);
+  assert.deepEqual(log.map((e: { op: string; quiet?: true }) => [e.op, e.quiet]), [['create', undefined], ['upload', true], ['point', undefined], ['comment', true]], 'no wake, and no run');
+  const git = (...a: string[]) => execFileSync('git', ['-C', join(root, 'instances', id), ...a], { encoding: 'utf8' }).trim();
+  assert.deepEqual(git('log', '--format=%ae %s').split('\n'), [`${adminEmail} Comment in ${said.thread}`, `${adminEmail} Upload upload/memo.txt`]);
+  assert.match(git('show', 'HEAD:log.jsonl'), /"For the record\."/);
+  assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ text: 'Index what came in.' }))).status, 200);
+  const after = await ran(path);
+  assert.equal(after.find(e => e.op === 'run')!.upto, after.findLast(e => e.op === 'comment')!.seq, 'the next act starts a run, which reads all before it');
+});
+
 test('skills are pushed by admins and those granted publish, each push a version live at once, and rolled back by pushing an earlier one', async () => {
   const b = sessionOf(await login(bob))!, push = (files: object, cookie = admin) => call('POST', '/skills/tool/versions', JSON.stringify(files), cookie);
   assert.equal((await push({ files: filesOf(join(standIns, 'tool')) }, b)).status, 403, 'a user may not push');
@@ -810,6 +827,25 @@ test('rf makes what the page makes: a workspace, a task, named or by its first c
   await rf('close', 'Making/Lunches/Lunch');
   assert.equal(await rf('copy', 'Making/Lunches/Lunch', 'again'), 'made Making/Lunches/again, with no logins ticked\n');
   assert.deepEqual([await status('Making/Lunches/Lunch'), await status('Making/Lunches/again')], ['closed', 'open']);
+});
+
+test("rf's acts start no run unless --wake: a new instance waits for its first act, and a task's first comment, a comment and an upload are quiet", async () => {
+  const path = 'Making/Lunches/2026-11', log = async (p: string) => (await rf('log', p, '--json')).trim().split('\n').map(l => JSON.parse(l));
+  const task = await log('Making/Reconcile the bank for October/Reconcile the bank for October');
+  assert.deepEqual([task.find(e => e.op === 'comment').quiet, task.some(e => e.op === 'run')], [true, false]);
+  assert.deepEqual((await log(path)).map(e => e.op), ['create'], 'no wake');
+  await rf('comment', path, 'For the record.');
+  const file = join(tmp, 'menu.txt');
+  writeFileSync(file, 'soup');
+  assert.equal(await rf('upload', path, file), 'uploaded\n');
+  await new Promise(r => setTimeout(r, 2500));
+  assert.deepEqual((await log(path)).map(e => [e.op, e.quiet]), [['create', undefined], ['comment', true], ['upload', true], ['point', undefined]], 'no run');
+  await rf('comment', path, 'Plan the week.', '--wake');
+  const { id } = JSON.parse(await rf('ls', '--json')).find((r: { path: string }) => r.path === path);
+  assert.equal((await ran(`/api/instances/${id}`)).findLast(e => e.op === 'comment')!.quiet, undefined);
+  assert.equal(await rf('new', 'instance', 'Making/Lunches', '2026-12', '--wake'), 'made Making/Lunches/2026-12, with no logins ticked\n');
+  assert.deepEqual((await log('Making/Lunches/2026-12')).slice(0, 2).map(e => [e.op, e.from]), [['create', undefined], ['wake', adminEmail]]);
+  await quiet();
 });
 
 test('rf shares and archives series and workspaces, starts or drops a request, lists your logins, takes offers off them and signs out of them, and adds and removes your own websites', async () => {

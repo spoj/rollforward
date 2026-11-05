@@ -134,7 +134,7 @@ test("a series' wake starts an instance as whoever shares the series; unshared, 
   assert.ok(Object.values(wakes().requests).some(r => r.label === '2027-02'), '3 open already');
 });
 
-test("closing an instance wakes the later open ones of its series, not the earlier; a note for those the closer doesn't start", async () => {
+test("closing an instance wakes the later open ones of its series, not the earlier; a note for those the closer doesn't start, and a quiet close's wake is quiet", async () => {
   const before = make('s1', '2026-07');
   await sep.close({ email: alice, name: 'Alice' });
   closed(sep, alice);
@@ -143,6 +143,12 @@ test("closing an instance wakes the later open ones of its series, not the earli
   assert.ok(!ops(before).includes('wake'));
   closed(sep, 'bob@demo.test');
   assert.equal(oct.log.findLast(e => e.op === 'wake')!.note, true);
+  await settle();
+  const runs = ops(oct).filter(op => op === 'run').length;
+  closed(sep, alice, true);
+  assert.equal(oct.log.findLast(e => e.op === 'wake')!.quiet, true);
+  await settle();
+  assert.equal(ops(oct).filter(op => op === 'run').length, runs, 'it starts no run, nor what waited');
 });
 
 test("a commit a restart cut leaves git's locks, which the next start clears for the instance's next commit", async () => {
@@ -191,15 +197,21 @@ test("an instance whose run met its runner's expired login carries on when they 
   assert.ok(waits.log.some(e => e.op === 'run'), 'the wake started a run');
 });
 
-test('after a restart every open instance with something for a run starts; an Interrupt holds until the next act', async () => {
-  const queued = make('s6', 'queued'), held = make('s6', 'held');
+test('after a restart every open instance with something for a run starts; an Interrupt holds until the next act, and a quiet entry is nothing for a run, which the next reads', async () => {
+  const queued = make('s6', 'queued'), held = make('s6', 'held'), hushed = make('s8', 'hushed');
   queued.append(alice, 'comment', { thread: 't1', text: 'please redo' });
   held.append(alice, 'comment', { thread: 't2', text: 'stop that' });
   held.append(alice, 'interrupt');
+  hushed.append(alice, 'upload', { file: 'upload/notes.txt', pane: 'in', onto: null, quiet: true });
   recover();
   await settle();
   assert.ok(ops(queued).includes('run'), 'its comment came just before the restart');
   assert.ok(!ops(held).includes('run'), 'interrupted, it waits for the next act');
+  assert.ok(!ops(hushed).includes('run'), 'quiet, it waits for the next act');
+  const go = hushed.append(alice, 'comment', { thread: 't3', text: 'index what came in' });
+  kick(hushed);
+  await settle();
+  assert.equal(hushed.log.find(e => e.op === 'run')?.upto, go.seq, 'the next act starts a run, which reads all before it');
 });
 
 test("a task's run sees its own instance alone in its series' folder, and the series in reach, not their packages", () => {

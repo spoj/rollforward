@@ -196,14 +196,15 @@ export class Instance {
     return file;
   }
 
-  upload(by: string, name: string, tmp: string, sha256: string, pane: 'in' | 'out', onto: string | null) {
+  upload(by: string, name: string, tmp: string, sha256: string, pane: 'in' | 'out', onto: string | null, quiet: boolean): Entry {
     const file = this.keep(name, tmp), clean = safeName(name), stem = clean.slice(0, clean.length - extname(clean).length);
-    const up = this.append(by, 'upload', { file, pane, onto, sha256 });
+    const up = this.append(by, 'upload', { file, pane, onto, sha256, ...(quiet && { quiet: true }) });
     let id = `u${up.seq}`;
     for (let n = 2; this.doc.items.some(i => i.id === id); n++) id = `u${up.seq}_${n}`;
     this.doc.items.push({ id, name: stem, kind: pane === 'in' ? 'input' : 'output', file });
     this.append('server', 'point', { item: id, file });
     this.save();
+    return up;
   }
 
   // Each thread's comments, resolves and sign-offs, in order. A comment starts a thread, on an item (at a ref) or on the instance,

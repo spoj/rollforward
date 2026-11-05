@@ -78,7 +78,8 @@ export const starter = (inst: Instance, who: string) => {
 // is no note.
 export const isNote = (inst: Instance, e: Entry) => !!e.note || (isPerson(e) && ['upload', 'comment'].includes(e.op) && e.by !== runnerOf(inst).by
   && !(e.op === 'comment' && inst.log.findLast(x => x.seq < e.seq && x.op === 'comment' && x.thread === e.thread && x.by === 'agent')?.to === e.by));
-export const starts = (inst: Instance, e: Entry) => !isNote(inst, e) || starter(inst, e.by);
+// A quiet entry, such as rf's without --wake, starts nothing, and its act kicks nothing that waits: the next run reads it with the rest.
+export const starts = (inst: Instance, e: Entry) => !e.quiet && (!isNote(inst, e) || starter(inst, e.by));
 
 export function pending(inst: Instance, seen: number): Entry[] {
   return inst.log.filter(e => e.seq > seen && starts(inst, e) && (e.op === 'wake' || (isPerson(e) && ['upload', 'comment', 'signoff'].includes(e.op))));
@@ -307,12 +308,12 @@ export function queued(inst: Instance): { why: string; since: string } | undefin
   return { why, since: pending(inst, seenBefore(inst))[0]?.at ?? new Date().toISOString() };
 }
 
-// Closing an instance wakes its series' later open instances, which may have used its draft; a note for those the closer doesn't start.
-// A <label>-r2 closing supersedes <label>, as a <label>-r3 does <label>-r2.
-export function closed(inst: Instance, by: string) {
+// Closing an instance wakes its series' later open instances, which may have used its draft; a note for those the closer doesn't start,
+// and a quiet close's wake is quiet. A <label>-r2 closing supersedes <label>, as a <label>-r3 does <label>-r2.
+export function closed(inst: Instance, by: string, quiet?: boolean) {
   for (const later of instances(inst.seriesId).filter(i => i.doc.status === 'open' && i.label.localeCompare(inst.label, 'en', { numeric: true }) > 0)) {
-    later.append('server', 'wake', { reason: `${inst.label} closed: its final figures may differ from the draft you read`, from: `${named(tree(), inst.seriesId)}/${inst.label}`, ...(!starter(later, by) && { note: true }) });
-    kick(later);
+    later.append('server', 'wake', { reason: `${inst.label} closed: its final figures may differ from the draft you read`, from: `${named(tree(), inst.seriesId)}/${inst.label}`, ...(!starter(later, by) && { note: true }), ...(quiet && { quiet: true }) });
+    if (!quiet) kick(later);
   }
   const [, base, r] = /^(.+)-r(\d+)$/.exec(inst.label) ?? [], was = base && instances(inst.seriesId).find(i => i.label === (r === '2' ? base : `${base}-r${Number(r) - 1}`) && i.doc.status === 'closed');
   if (was) correct(was, 'server', { kind: 'superseded', text: `${inst.label} supersedes it`, see: inst });
@@ -405,13 +406,15 @@ export function dropRequest(id: string): Request {
   return r;
 }
 
-// Starts an instance of a series, run by `by` with the logins they ticked, with a wake after its create: as a person makes it, or for a
-// wake or a request.
-export function startWith(seriesId: string, label: string, by: string, logins: string[], wake: { from: string }): Instance {
+// Makes an instance of a series, run by `by` with the logins they ticked, and starts it with a wake after its create, for a wake, a
+// request or a person; without one, as a person makes it quietly, it waits for its first act.
+export function startWith(seriesId: string, label: string, by: string, logins: string[], wake?: { from: string }): Instance {
   if (instances(seriesId).filter(i => i.doc.status === 'open').length >= MAX_OPEN) throw new HttpError(409, `${MAX_OPEN} instances are open; close one first`);
   const inst = createInstance(seriesId, label, by, logins);
-  inst.append('server', 'wake', wake);
-  kick(inst);
+  if (wake) {
+    inst.append('server', 'wake', wake);
+    kick(inst);
+  }
   return inst;
 }
 

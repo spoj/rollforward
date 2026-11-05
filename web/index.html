@@ -1789,7 +1789,8 @@ async function onAct(act, el) {
       return api(`${instPath()}/close`, { method: 'POST' });
     } })) await refresh();
   }
-  if (act === 'new-instance') await openStart('New instance', 'Start', ({ label, logins }) => api(seriesPath(cur), { method: 'POST', body: JSON.stringify({ label, logins }) }), '');
+  // A new instance waits for its first upload or comment, which starts its run.
+  if (act === 'new-instance') await openStart('New instance', 'Make', ({ label, logins }) => api(seriesPath(cur), { method: 'POST', body: JSON.stringify({ label, logins, quiet: true }) }), '');
   // A task starts at once, Untitled, with the logins last ticked, on its conversation, ready for the prompt that starts its run.
   if (act === 'new-task') {
     const offers = new Set((await api('/logins')).filter(l => !l.expired).flatMap(l => l.offers.map(o => o.id))), logins = JSON.parse(localStorage.ticks ?? '[]').filter(id => offers.has(id));

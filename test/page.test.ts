@@ -642,3 +642,18 @@ test("an item's card shows its file's preview on a desktop, to scroll in place o
   await page.click('#card [data-act=uncard]');
 });
 
+
+test("a series' + makes an instance that waits for its first upload or comment, which starts its run", async () => {
+  const row = '.row.ser:has(.l:text-is("Year-end pack"))';
+  await page.hover(row);
+  await page.click(`${row} [data-act=new-instance]`);
+  await page.fill('#slabel', '2027-01');
+  await page.click('[data-act=start-go]:text-is("Make")');
+  await page.waitForSelector('#bar h1 .t:text-is("2027-01")');
+  await new Promise(r => setTimeout(r, 2000));
+  assert.deepEqual(await page.evaluate(() => data.log.map(e => e.op)), ['create'], 'no wake, and no run');
+  assert.match(await page.textContent('#bar .state') ?? '', /^Waiting for files/);
+  await page.fill('#newcomment', 'Roll it forward.');
+  await page.click('[data-act=comment]');
+  await page.waitForSelector('#bar .state .bad:text("Run 1 failed")');
+});

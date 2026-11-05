@@ -22,7 +22,7 @@ import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, startIndexing, track } from './indexes.ts';
 import { seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, byToken, cancelWake, cancelWakes, citedFor, closed, correct, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, resolveFor, setWake, startWaking, startWith, wakes, wakesOf, weekly, wider, CUT, type Active, type Request } from './waker.ts';
+import { active, byToken, cancelWake, cancelWakes, citedFor, closed, correct, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, resolveFor, setWake, startWaking, starts, startWith, wakes, wakesOf, weekly, wider, CUT, type Active, type Request } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -578,7 +578,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       return send(res, 200, 'ok');
     }
     if (s.single) throw new HttpError(400, `${s.name} is a task, with one instance and no settings: Start another based on this makes it a series`);
-    if (req.method === 'POST') return send(res, 200, { id: startWith(id, String(payload.label ?? ''), by, checkTicks(by, payload.logins ?? []), { from: by }).id });
+    if (req.method === 'POST') return send(res, 200, { id: startWith(id, String(payload.label ?? ''), by, checkTicks(by, payload.logins ?? []), payload.quiet ? undefined : { from: by }).id });
     if (req.method !== 'PUT') throw new HttpError(405, 'PUT, or POST a new instance');
     const change = payload;
     if (change.name !== undefined && change.name !== s.name) {
@@ -626,7 +626,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (!r) throw new HttpError(404, `no request ${id}`);
     mustSee(me, t.workspaces[t.series[r.series].workspace]);
     if (req.method === 'POST') {
-      const inst = startWith(r.series, r.label, by, checkTicks(by, payload.logins ?? []), { from: r.from });
+      const inst = startWith(r.series, r.label, by, checkTicks(by, payload.logins ?? []), payload.quiet ? undefined : { from: r.from });
       dropRequest(id);
       return send(res, 200, { id: inst.id });
     }
@@ -680,6 +680,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     return send(res, 200, `${inst.label}${item ? ` ${item}` : ''} is marked ${k}, seq ${e.seq}`);
   }
   if (inst.doc.status !== 'open') throw new HttpError(409, `instance is ${inst.doc.status}`);
+  // A quiet act, by quiet in its body or, for an upload, in its query, starts nothing: its entry says so, and its next run reads it.
+  const quiet = action === 'upload' ? url.searchParams.has('quiet') : !!payload.quiet;
   if (action === 'attach') {
     // A comment's attachment, kept in upload/attachments/ and named in the comment that follows; it starts nothing by itself.
     const tmp = join(tmpDir, randomUUID());
@@ -694,14 +696,16 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const pane = url.searchParams.get('pane') === 'out' ? 'out' : 'in', tmp = join(tmpDir, randomUUID()), hash = createHash('sha256');
     try {
       await pipeline(req, async function* (chunks: AsyncIterable<Buffer>) { for await (const c of chunks) { hash.update(c); yield c; } }, createWriteStream(tmp));
-      inst.upload(by, url.searchParams.get('name') ?? 'file', tmp, hash.digest('hex'), pane, url.searchParams.get('onto'));
+      const up = inst.upload(by, url.searchParams.get('name') ?? 'file', tmp, hash.digest('hex'), pane, url.searchParams.get('onto'), quiet);
+      // What starts no run, quiet or a note, is committed at once in its person's name; a run going commits it as it ends.
+      if (!starts(inst, up) && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, me, `Upload ${up.file}`).catch(err => inst.append('server', 'commit', { error: err.message }));
     } finally {
       rmSync(tmp, { force: true });
     }
   } else if (action === 'comment') {
     // A comment starts a thread, on an item (at a ref, such as a cell, if given) or on the instance, or replies in one. A person's
-    // starts a run. The agent's starts nothing: it says something, or asks, and then the thread waits on a person's reply, from the
-    // one it names or else the runner. A sign-off it asks for is the runner's.
+    // starts a run, unless quiet. The agent's starts nothing: it says something, or asks, and then the thread waits on a person's reply,
+    // from the one it names or else the runner. A sign-off it asks for is the runner's.
     const { thread, item, ref, text, files = [], ask, to, signoff } = payload, threads = inst.threads();
     if (signoff && to) throw new HttpError(400, `a sign-off is the runner's, ${runnerOf(inst).by}: leave out --to`);
     if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a comment has text');
@@ -718,7 +722,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       throw new HttpError(400, `${to} can't see this instance; ask its runner, ${runnerOf(inst).by}, or someone in its workspace`);
     const said = inst.append(by, 'comment', {
       thread: thread ?? `c${inst.log.length + 1}`, ...(thread === undefined && { item: item ?? null, ref: ref ?? null }), text: text.trim(), ...(kept.length && { files: kept }),
-      ...(run && ask && { ask: true, ...(who && { to: who }), ...(signoff && { signoff: true }) }),
+      ...(run && ask && { ask: true, ...(who && { to: who }), ...(signoff && { signoff: true }) }), ...(quiet && { quiet: true }),
     });
     if (run) return send(res, 200, `${ask ? 'asked' : 'said'} in ${said.thread}, seq ${said.seq}`);
     // Until a task is renamed, its first prompt's opening words name it.
@@ -730,6 +734,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       renameInstance(inst, s.name);
       inst.append('server', 'rename', { from });
     }
+    if (!starts(inst, said) && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, me, `Comment in ${said.thread}`).catch(err => inst.append('server', 'commit', { error: err.message }));
   } else if (action === 'resolve') {
     // Anyone resolves a thread, and nothing wakes; the agent only one it started, once it no longer applies.
     const { thread, text } = payload, posts = inst.threads().get(thread);
@@ -739,7 +744,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     return send(res, 200, `resolved ${thread}`);
   } else if (action === 'signoff') {
     // The runner approves what the agent asked them to sign off, or rejects it, with a note. Either commits the folder in their name,
-    // with the ask and the note as its message and, for an approval, their Signed-off-by; and starts a run, as a reply does.
+    // with the ask and the note as its message and, for an approval, their Signed-off-by; and starts a run, as a reply does, unless quiet.
     const { thread, approved, text } = payload, ask = inst.threads().get(thread)?.at(-1), signer = runnerOf(inst).by;
     if (!ask?.signoff) throw new HttpError(409, `no sign-off waits in ${thread}`);
     if (signer !== by) throw new HttpError(403, `only the runner, ${signer}, signs it off; take it over first`);
@@ -747,7 +752,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const note = typeof text === 'string' ? text.trim() : '';
     const hash = await commit(inst.dir, me, [ask.text, note, approved && `Signed-off-by: ${me.name} <${me.email}>`].filter(Boolean).join('\n\n'));
     if (inst.threads().get(thread)!.at(-1) !== ask) throw new HttpError(409, `${thread} was answered meanwhile`);
-    inst.append(by, 'signoff', { thread, approved: !!approved, ...(note && { text: note }), commit: hash });
+    inst.append(by, 'signoff', { thread, approved: !!approved, ...(note && { text: note }), commit: hash, ...(quiet && { quiet: true }) });
   } else if (action === 'commit' && run) {
     // The agent commits the folder at a moment worth keeping, in its own name.
     const message = typeof payload.message === 'string' ? payload.message.trim() : '';
@@ -776,10 +781,10 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (runnerOf(inst).by !== by) throw new HttpError(403, `only the runner, ${runnerOf(inst).by}, ${action === 'close' ? 'closes it, as closing signs it off' : 'abandons it'}; take it over first`);
     await (action === 'close' ? inst.close(me) : inst.abandon(by));
     cancelWakes([inst.id]);
-    if (action === 'close') closed(inst, by);
+    if (action === 'close') closed(inst, by, quiet);
     return send(res, 200, 'ok');
   } else throw new HttpError(404, `no action ${action}`);
-  kick(inst);
+  if (!quiet) kick(inst);
   send(res, 200, 'ok');
 }
 
