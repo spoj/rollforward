@@ -24,6 +24,7 @@ rf pull PATH DIR [--delete] [-n|--dry-run] [--exclude PATTERN]... [--max-size SI
                                   PATH makes DIR/<its name>, / is all you see; --delete removes what the server no longer has;
                                   --max-size skips files bigger than SIZE, such as 50M
 rf help [COMMAND]                 how rollforward works and how to use rf, for an agent, or COMMAND's usage
+rf --version                      rf's own version, to tell whether it's older than what the guide names
 rf comment PATH TEXT [--item ID] [--ref REF] [--thread T] [--wait]   a new thread, or a reply in T, as to an agent's ask
 rf upload PATH FILE [--onto ITEM] [--output]
 rf resolve PATH THREAD [TEXT]     resolves a thread, with TEXT as a last word; nothing wakes
@@ -184,6 +185,11 @@ for (let i = 0; i < argv.length; i++) {
   else if (argv[i + 1] === undefined) throw new Error(`--${flag} takes a value`);
   else if (flag === 'exclude') excludes.push(argv[++i]);
   else flags[flag] = argv[++i];
+}
+if (cmd === '--version') {
+  // Its package's: cli/ in the repo, beside rf.mjs once published.
+  console.log(JSON.parse(readFileSync(new URL(import.meta.url.endsWith('.ts') ? '../cli/package.json' : 'package.json', import.meta.url), 'utf8')).version);
+  process.exit();
 }
 if (!cmd || cmd === 'help') {
   console.log(!cmd ? USAGE : args[0] ? usage(args[0]) : GUIDE);
@@ -468,8 +474,9 @@ else if (cmd === 'comment' && args.length === 2) {
   const all = await get('/logins');
   if (flags.json) console.log(JSON.stringify(all, null, 1));
   else for (const l of all) {
-    console.log(`${l.id}  ${l.name}  ${l.expired ? `expired: sign in again at ${url}/#logins` : `since ${when(l.since)}`}${l.kind === 'key' ? (l.enabled ? ', in use' : ', not in use') : ''}${l.keepalive > new Date().toISOString() ? `, kept alive until ${when(l.keepalive)}` : ''}${l.missing.length ? `, missing ${l.missing.join(', ')}` : ''}`);
-    for (const o of l.offers) console.log(`  ${o.id}  ${o.name}`);
+    console.log(`${l.id}  ${l.name}  ${l.expired ? `expired: sign in again at ${url}/#logins` : `${l.kind === 'key' ? 'saved' : 'signed in'} since ${when(l.since)}`}${l.kind === 'key' ? (l.enabled ? ', in use' : ', not in use') : ''}${l.keepalive > new Date().toISOString() ? `, kept alive until ${when(l.keepalive)}` : ''}${l.missing.length ? `, missing ${l.missing.join(', ')}` : ''}`);
+    // A website's login offers itself alone.
+    for (const o of l.offers.filter(o => o.id !== l.id)) console.log(`  offers ${o.id}  ${o.name}`);
   }
 } else if (cmd === 'logins' && ['offer', 'unoffer', 'allow'].includes(args[0]) && args.length === 3) {
   const [what, login, x] = args, at = `/logins/${encodeURIComponent(login)}`;
