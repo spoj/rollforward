@@ -431,12 +431,12 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   rmSync(mine, { recursive: true });
 });
 
-test("while a run's browser is open it plays in a corner of the instance, to watch: one website at a time, folded as the person last left it, and Stop browser interrupts the run", async () => {
+test("while a run's browser is open it plays in a corner of the instance, to watch: one website at a time, folded as the person last left it, one in their login popped over the page while they take control of it, and Stop browser interrupts the run", async () => {
   let browsers = ['portal', 'bank'];
   const stops: string[] = [], at = '**/api/instances/a5c0ff5e1f00';
   await page.route(at, async r => {
     const res = await r.fetch();
-    await r.fulfill({ response: res, json: { ...await res.json(), run: browsers.length ? { n: 3, cost: 0.1, browsers } : null } });
+    await r.fulfill({ response: res, json: { ...await res.json(), run: browsers.length ? { n: 3, cost: 0.1, browsers, yours: ['bank'] } : null } });
   });
   await page.route('**/runs/**', r => r.fulfill({ contentType: 'text/html', body: 'watching' }));
   await page.route(`${at}/interrupt`, r => (stops.push(r.request().method()), r.fulfill({ body: 'ok' })));
@@ -446,8 +446,14 @@ test("while a run's browser is open it plays in a corner of the instance, to wat
   const player = page.locator('#player'), src = () => player.locator('iframe').getAttribute('src');
   await player.locator('iframe').waitFor();
   assert.deepEqual([await src(), await player.locator('.seg button').allInnerTexts()], ['/runs/a5c0ff5e1f00/portal/view?watch', ['portal', 'bank']]);
+  assert.equal(await player.locator('[data-act=drive]').count(), 0, "portal's browser is in another person's login");
   await player.locator('[data-site=bank]').click();
   assert.equal(await src(), '/runs/a5c0ff5e1f00/bank/view?watch');
+  await player.locator('[data-act=drive]').click();
+  assert.deepEqual([await src(), await player.locator('.plh span').textContent(), await player.locator('.plh button').allTextContents(), await player.evaluate(p => [p.className, getComputedStyle(p).position, getComputedStyle(p).borderColor])],
+    ['/runs/a5c0ff5e1f00/bank/view?drive', 'on bank, in your control', ['Give back control'], ['player drive', 'fixed', 'rgb(238, 136, 51)']], 'Take control pops it over the page, bordered orange');
+  await player.locator('[data-act=drive]').click();
+  assert.deepEqual([await src(), await player.getAttribute('class')], ['/runs/a5c0ff5e1f00/bank/view?watch', 'player'], 'and Give back control puts it back in its corner');
   await player.locator('[data-act=player]').click();
   assert.equal(await player.locator('iframe').count(), 0, 'folded');
   await page.reload();

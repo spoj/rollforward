@@ -115,14 +115,14 @@ function mustSee(me: Me, w: Workspace | undefined): Workspace {
   return w;
 }
 
-// A run's browser on a website, for whoever sees its instance to watch, if they may use the website: its session on the browser
-// service.
-function watched(me: Me, id: string, site: string): string {
+// A run's browser on a website, for whoever sees its instance to watch, if they may use the website: the run's browsers, and its
+// session on the browser service.
+function watched(me: Me, id: string, site: string): { browsers: Browsers; id: string } {
   const t = tree(), inst = instance(id), a = active.get(inst.seriesId);
   mustSee(me, t.workspaces[t.series[inst.seriesId].workspace]);
   const b = a?.inst === inst ? a.browsers?.watchable(me.email).get(site) : undefined;
   if (!b) throw new HttpError(404, `no browser of a run on ${site} for you to watch`);
-  return b;
+  return { browsers: a!.browsers!, id: b };
 }
 
 // Whom an open instance waits on, and with what: each ask on the person it names, else the runner, and each thread a note ends on
@@ -636,7 +636,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   const a = active.get(inst.seriesId);
   const mine = a?.inst === inst ? a : undefined;
   if (!action) see(by, inst.id, inst.log.at(-1)!.seq);
-  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4), browsers: [...(mine.browsers?.watchable(by).keys() ?? [])] } : null, queued: !!queued(inst), runner: runner(inst) });
+  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4), browsers: [...(mine.browsers?.watchable(by).keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), runner: runner(inst) });
   if (action === 'trace') return send(res, 200, trace(inst));
   if (action === 'summary') return send(res, 200, summary(inst, by));
   // The screen: anyone who sees the instance reads it; only its own run writes it.
@@ -980,7 +980,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       res.writeHead(200, { 'content-type': 'text/html' }).end(html);
     }
     else if (/^\/runs\/\w+\/[a-z0-9-]+\/view$/.test(url.pathname) && req.method === 'GET') {
-      const [, , id, site] = url.pathname.split('/'), html = await viewPage(watched(me, id, site));
+      const [, , id, site] = url.pathname.split('/'), html = await viewPage(watched(me, id, site).id);
       res.writeHead(200, { 'content-type': 'text/html' }).end(html);
     }
     else if (/^\/signins\/\w+$/.test(url.pathname) && (req.method === 'POST' || req.method === 'DELETE')) send(res, 200, (await endSignIn(me.email, url.pathname.slice(9), req.method === 'POST'), 'ok'));
@@ -1004,15 +1004,18 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
   }
 });
 // A live view's websockets pass through to the browser service: a sign-in's, its own person's, to watch or drive, and a run's
-// browser's, to watch only (watched). Only from the server's own pages: the session cookie, SameSite=Lax, goes with a sibling
-// subdomain's requests too.
+// browser's, to watch (watched), or to drive for the person whose login it's in. Only from the server's own pages: the session
+// cookie, SameSite=Lax, goes with a sibling subdomain's requests too.
 server.on('upgrade', (req, socket, head) => {
   socket.on('error', () => socket.destroy());
   const me = req.headers.origin === new URL(process.env.RF_PUBLIC_URL!).origin ? session(req) : null, path = URL.parse(req.url!, 'http://x')?.pathname ?? '';
-  const signIn = /^\/signins\/(\w+)\/(view\/(?:watch|drive))$/.exec(path), run = /^\/runs\/(\w+)\/([a-z0-9-]+)\/view\/watch$/.exec(path);
+  const signIn = /^\/signins\/(\w+)\/(view\/(?:watch|drive))$/.exec(path), run = /^\/runs\/(\w+)\/([a-z0-9-]+)\/view\/(watch|drive)$/.exec(path);
   let to;
   if (me && signIn && isSignIn(me.email, signIn[1])) to = `/sessions/${signIn[1]}/${signIn[2]}`;
-  if (me && run) try { to = `/sessions/${watched(me, run[1], run[2])}/view/watch`; } catch {}
+  if (me && run) try {
+    const w = watched(me, run[1], run[2]);
+    to = `/sessions/${run[3] === 'drive' ? w.browsers.drive(run[2], me.email, socket) : w.id}/view/${run[3]}`;
+  } catch {}
   if (!to) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
   passUpgrade(req, socket, head, to);
 });

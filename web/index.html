@@ -11,7 +11,7 @@
 :root {
   --paper: #f6f7f8; --sheet: #ffffff; --rule: #e3e6ea; --rule-2: #cdd2d9;
   --ink: #15181d; --ink-2: #474e5b; --ink-3: #6b7280;
-  --person: #1f48c7; --person-bg: #eef2fc; --red: #d42a1e; --edge: #a3aab4;
+  --person: #1f48c7; --person-bg: #eef2fc; --red: #d42a1e; --edge: #a3aab4; --control: #e83;
   --r1: 4px; --r2: 8px;
   --sans: "IBM Plex Sans", "Noto Sans", sans-serif; --mono: "IBM Plex Mono", "DejaVu Sans Mono", monospace;
 }
@@ -334,9 +334,11 @@ iframe.mail { width: 100%; border: 0; background: #fff; }
 .player .plh { display: flex; align-items: center; gap: 8px; padding: 2px 4px 2px 12px; font-size: 12.5px; }
 .player .plh span { color: var(--ink-3); }
 .player .plh .seg { margin: 0; }
-.player .plh .quiet { margin-left: auto; }
+.player .plh > .quiet:first-of-type { margin-left: auto; }
 .player .plh .x { border: 0; background: none; padding: 4px 8px; color: var(--ink-3); cursor: pointer; }
 .player iframe { display: block; width: 100%; height: 314px; border: 0; background: #222; }
+.player.drive { position: fixed; inset: 24px; width: auto; z-index: 24; display: flex; flex-direction: column; border: 3px solid var(--control); }
+.player.drive iframe { flex: 1; height: auto; }
 .runl { font-size: 12.5px; color: var(--ink-3); border-top: 1px solid var(--rule); padding-top: 6px; }
 .runl .post { color: var(--ink); margin-top: 4px; font-size: 13.5px; }
 .sect > summary { font-size: 13px; color: var(--ink-3); margin-top: 8px; }
@@ -486,8 +488,9 @@ function toast(text, kind = '') {
   setTimeout(() => { el.remove(); if (!box.children.length) box.hidePopover(); }, 6000);
 }
 // The side panel opens beside the instance where there's room for both; the audit is closed until asked for. sect holds which of the
-// panel's folds are open, where someone opened or closed them; site, which of the run's browsers the player shows.
-const ui = { open: innerWidth > 800, on: null, ref: null, audit: false, sect: {}, site: null };
+// panel's folds are open, where someone opened or closed them; site, which of the run's browsers the player shows, and drive, the
+// one you took control of, as instance/site.
+const ui = { open: innerWidth > 800, on: null, ref: null, audit: false, sect: {}, site: null, drive: null };
 // The review sheet, where it's a text, and the process, as the conversation shows them.
 let docs = { key: '' };
 const drawn = new WeakMap();
@@ -850,7 +853,8 @@ function logText(e) {
     duplicate: () => `${w} made this instance as a copy of ${esc(e.from)}`,
     browser: () => e.action === 'get' ? `${w} fetched ${esc(e.from)} from the browser on ${esc(e.site)}${f}`
       : e.action === 'wait' ? `Run ${e.run} waits for ${person(e.login)}'s ${esc(e.site)} browser, held by ${esc(e.held)}`
-      : e.action === 'refused' ? `Run ${e.run} goes on without ${esc(e.site)}<div class="d">${esc(e.why)}</div>` : `${w} closed run ${e.run}'s browser${e.site ? ` on ${esc(e.site)}, in ${person(e.login)}'s login` : ''}<div class="d">${e.error ? esc(e.error) : `${e.requests} requests${e.writes ? `, ${e.writes} writes` : ''}${e.blocked ? `, ${e.blocked} blocked` : ''}`}</div>${f}`,
+      : e.action === 'refused' ? `Run ${e.run} goes on without ${esc(e.site)}<div class="d">${esc(e.why)}</div>`
+      : e.action === 'drive' ? `${w} took control of run ${e.run}'s browser on ${esc(e.site)}` : `${w} closed run ${e.run}'s browser${e.site ? ` on ${esc(e.site)}, in ${person(e.login)}'s login` : ''}<div class="d">${e.error ? esc(e.error) : `${e.requests} requests${e.writes ? `, ${e.writes} writes` : ''}${e.blocked ? `, ${e.blocked} blocked` : ''}`}</div>${f}`,
     shot: () => `Run ${e.run}'s browser on ${esc(e.site)}${shotsHtml([e])}`,
     browsers: () => `Run ${e.run}'s browsers did not all close<div class="d">${esc(e.error)}</div>`,
   }[e.op]?.() ?? `${w} ${esc(e.op)}`;
@@ -912,16 +916,22 @@ function renderAudit() {
   if ($('#log').dataset.end !== 'no') $('#log').scrollTop = $('#log').scrollHeight;
 }
 
-// A run's browser, live while it's open, for anyone who sees the instance to watch, never drive, but on a website that lists its
-// people only for them: one at a time, the others a click away, folded or open as the person last left it, in this browser. Stop
-// browser interrupts the run, which closes its browsers.
+// A run's browser, live while it's open, for anyone who sees the instance to watch, but on a website that lists its people only for
+// them: one at a time, the others a click away, folded or open as the person last left it, in this browser. Stop browser interrupts
+// the run, which closes its browsers. The person whose login it's in may take control of it, popped over the page with an orange
+// border until they give it back, it closes or they go to another instance.
 function renderPlayer() {
   const sites = data?.run?.browsers ?? [], site = sites.includes(ui.site) ? ui.site : sites[0], folded = localStorage.player === 'folded';
+  if (!data?.run?.yours.includes(site) || ui.drive !== `${cur.i.id}/${site}`) ui.drive = null;
+  const drive = !!ui.drive;
   $('#player').hidden = !site;
+  $('#player').classList.toggle('drive', drive);
   // Emptied as it hides, so a browser opened again is a new view.
-  put($('#player'), !site ? '' : `<div class="plh"><b>Run ${data.run.n}'s browser</b>${sites.length > 1 ? `<span class="seg">${sites.map(s => `<button class="${s === site ? 'sel' : ''}" data-act="watch" data-site="${esc(s)}">${esc(s)}</button>`).join('')}</span>` : `<span>on ${esc(site)}</span>`}`
-    + `<button class="quiet" data-act="interrupt" title="Interrupts the run, which closes its browsers">Stop browser</button><button class="x" data-act="player" title="${folded ? 'Open' : 'Fold'}">${folded ? '\u25B4' : '\u25BE'}</button></div>`
-    + (folded ? '' : `<iframe src="/runs/${cur.i.id}/${enc(site)}/view?watch" title="Run ${data.run.n}'s browser on ${esc(site)}"></iframe>`));
+  put($('#player'), !site ? '' : `<div class="plh"><b>Run ${data.run.n}'s browser</b>${sites.length > 1 && !drive ? `<span class="seg">${sites.map(s => `<button class="${s === site ? 'sel' : ''}" data-act="watch" data-site="${esc(s)}">${esc(s)}</button>`).join('')}</span>` : `<span>on ${esc(site)}${drive ? ', in your control' : ''}</span>`}`
+    + (drive ? '<button class="quiet" data-act="drive">Give back control</button></div>'
+      : `${data.run.yours.includes(site) ? `<button class="quiet" data-act="drive" data-site="${esc(site)}" title="Pops it over the page for you to use, in your login, while the run goes on">Take control</button>` : ''}`
+        + `<button class="quiet" data-act="interrupt" title="Interrupts the run, which closes its browsers">Stop browser</button><button class="x" data-act="player" title="${folded ? 'Open' : 'Fold'}">${folded ? '\u25B4' : '\u25BE'}</button></div>`)
+    + (folded && !drive ? '' : `<iframe src="/runs/${cur.i.id}/${enc(site)}/view?${drive ? 'drive' : 'watch'}" title="Run ${data.run.n}'s browser on ${esc(site)}"></iframe>`));
 }
 
 // The audit shows with the session's steps, fetched for it.
@@ -1577,6 +1587,7 @@ async function onAct(act, el) {
   }
   if (act === 'audit') await toggleAudit();
   if (act === 'watch') { ui.site = el.dataset.site; renderPlayer(); }
+  if (act === 'drive') { ui.drive = ui.drive ? null : `${cur.i.id}/${el.dataset.site}`; renderPlayer(); }
   if (act === 'player') { localStorage.player = localStorage.player === 'folded' ? 'open' : 'folded'; renderPlayer(); }
   // A rule the process gained: the Process fold, open, in view.
   if (act === 'process') {

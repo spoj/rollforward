@@ -13,7 +13,7 @@ Sources: [Layr design reference](https://layr.design/reference/layr-001-intentio
 
 ## Choices
 
-- **The colours carry provenance.** Blue marks a file a person uploaded and black a file the agent made, borrowing the spreadsheet habit of blue for typed-in values and black for calculated ones. A thread carries a gray triangle, like Excel's comment, on its tile and its cell; it turns red while the agent's ask waits on a person's reply, and a sign-off it asks for has a heavier red border. The only other colour marks a person's commit and a discard: Close instance and a sign-off's Approve are solid blue, and Abandon is red.
+- **The colours carry provenance.** Blue marks a file a person uploaded and black a file the agent made, borrowing the spreadsheet habit of blue for typed-in values and black for calculated ones. A thread carries a gray triangle, like Excel's comment, on its tile and its cell; it turns red while the agent's ask waits on a person's reply, and a sign-off it asks for has a heavier red border. The only other colours mark a person's commit and a discard, and who drives a browser: Close instance and a sign-off's Approve are solid blue, Abandon is red, and a run's browser you took control of has an orange border, as the browser's live view marks control.
 - **Type:** IBM Plex Sans, a plain engineered face. IBM Plex Mono is used only for code and addresses: file types, cell references, paths and tool calls. Numerals are tabular everywhere.
 - **Surfaces:** tiles have a 1px border and no shadow. Only floating things are raised: a tile's card and the dialogs. A card points at its tile, like an Excel comment. There are two radii: 4px for tiles and buttons, and 8px for cards.
 - **The awkward states are drawn:**
@@ -39,7 +39,7 @@ Sources: [Layr design reference](https://layr.design/reference/layr-001-intentio
 
     paper #f6f7f8   sheet #ffffff   rule #e3e6ea   rule-2 #cdd2d9
     ink #15181d     ink-2 #474e5b   ink-3 #6b7280
-    person #1f48c7  person-bg #eef2fc   red #d42a1e   edge #a3aab4
+    person #1f48c7  person-bg #eef2fc   red #d42a1e   edge #a3aab4   control #e83
     radius 4px (tiles, buttons), 8px (cards)
 
 ## Outside critique

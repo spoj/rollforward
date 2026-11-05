@@ -334,6 +334,20 @@ export class Browsers {
     return new Map([...this.bySite].filter(([site]) => all[site] && allowed(all[site], email)).map(([site, b]) => [site, b.id]));
   }
 
+  // Those of them in `email`'s login, which they may take control of from the page.
+  yours(email: string): string[] {
+    return [...this.watchable(email).keys()].filter(site => this.bySite.get(site)!.email === email);
+  }
+
+  // Its person taking control of the run's browser on `site` over `conn`, which holds it open as the agent's connections do: logged
+  // as theirs.
+  drive(site: string, email: string, conn: Duplex): string {
+    if (!this.yours(email).includes(site)) throw new HttpError(404, `no browser of this run on ${site} in your login`);
+    this.connected(site, conn);
+    this.inst.append(email, 'browser', { run: this.run, site, action: 'drive' });
+    return this.bySite.get(site)!.id;
+  }
+
   // The agent found the website signed out: the runner's login is marked expired, for them to sign in again, which wakes the instance,
   // and its browser closes.
   async expire(site: string): Promise<never> {

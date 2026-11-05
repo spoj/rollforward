@@ -484,7 +484,7 @@ const upgrade = (path: string, cookie: string, origin = base) => new Promise<str
     .write(`GET ${path} HTTP/1.1\r\nhost: x\r\nconnection: upgrade\r\nupgrade: websocket\r\ncookie: ${cookie}\r\norigin: ${origin}\r\n\r\n`);
 });
 
-test("whoever sees an instance watches its run's browser live from the page, never driving it, and their Stop browser interrupts the run, closing it", async () => {
+test("whoever sees an instance watches its run's browser live from the page, the person whose login it's in alone taking control of it, and their Stop browser interrupts the run, closing it", async () => {
   const carol = await login('carol@demo.test');
   assert.equal((await call('PUT', '/connections/portal', { type: 'website', title: 'Portal', url: 'https://portal.example.com/', writeback: false })).status, 200);
   const { id: signIn } = await (await call('POST', '/logins/web/portal', {})).json();
@@ -497,18 +497,21 @@ test("whoever sees an instance watches its run's browser live from the page, nev
   scripts.push({ bash: ['curl -s -m 5 -H "connection: upgrade" -H "upgrade: websocket" "$RF_BROWSERS/portal"; touch working/opened; sleep 120'], report: 'Never said.', saw: [] });
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: ['web:portal'] })).json(), view = `/runs/${id}/portal/view`;
   await until('the browser', () => existsSync(join(root, 'instances', id, 'working', 'opened')));
-  assert.deepEqual((await (await call('GET', `/api/instances/${id}`, undefined, bob)).json()).run.browsers, ['portal'], 'the page shows it to bob, who sees the instance');
+  const shown = async (cookie: string) => (await (await call('GET', `/api/instances/${id}`, undefined, cookie)).json()).run, [his, mine] = [await shown(bob), await shown(admin)];
+  assert.deepEqual([his.browsers, his.yours, mine.yours], [['portal'], [], ['portal']], "the page shows it to bob, who sees the instance, and it's the admin's to take control of, in their login");
   assert.equal(await (await call('GET', view, undefined, bob)).text(), 'the live view');
   assert.match(await upgrade(`${view}/watch`, bob), /service got \/sessions\/b2\/view\/watch$/);
-  for (const [path, cookie, origin, why] of [[`${view}/drive`, bob, base, 'never to drive'], [`${view}/watch`, bob, 'https://evil.example.com', "only from the server's own pages"], [`${view}/watch`, carol, base, 'nor for anyone who sees no instance']])
+  assert.match(await upgrade(`${view}/drive`, admin), /service got \/sessions\/b2\/view\/drive$/, 'the admin takes control of it');
+  for (const [path, cookie, origin, why] of [[`${view}/drive`, bob, base, 'no one else drives it'], [`${view}/watch`, bob, 'https://evil.example.com', "only from the server's own pages"], [`${view}/watch`, carol, base, 'nor for anyone who sees no instance']])
     assert.match(await upgrade(path, cookie, origin), /^HTTP\/1.1 404/, why);
   assert.equal((await call('GET', view, undefined, carol)).status, 404);
   assert.equal((await call('POST', `/api/instances/${id}/interrupt`, undefined, bob)).status, 200, 'Stop browser');
   const done = (await runs(id, 1)).find(e => e.op === 'done')!;
   assert.equal(done.aborted, true);
-  await until('the browser closed', () => readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').includes('"op":"browser"'));
+  await until('the browser closed', () => readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').includes('"requests":'));
   const { log, run } = await (await call('GET', `/api/instances/${id}`, undefined, bob)).json();
-  assert.deepEqual([log.find((e: { op: string }) => e.op === 'interrupt').by, log.find((e: { op: string }) => e.op === 'browser').site, run], [BOB, 'portal', null], "logged as bob's, and the browser gone");
+  assert.deepEqual([log.find((e: { op: string }) => e.op === 'interrupt').by, log.filter((e: { op: string }) => e.op === 'browser').map((e: { by: string; site: string; action?: string }) => [e.by, e.site, e.action]), run],
+    [BOB, [[ADMIN, 'portal', 'drive'], ['server', 'portal', undefined]], null], "the admin's control logged as theirs, the interrupt as bob's, and the browser gone");
 });
 
 test("a person granted sites adds a website of their own, theirs alone: they allow the hosts its pages need as they sign in, the hosts a run's browser was refused wait on them, and an admin may switch it off", async () => {
