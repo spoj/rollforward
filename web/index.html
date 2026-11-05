@@ -786,13 +786,14 @@ function renderPanes() {
   light();
 }
 
-// Inputs or Outputs as a dense list: a row an item, in the screen's order until a heading sorts it, a second click reversing it.
+// Inputs or Outputs as a dense list: a row an item, in the screen's order until a heading sorts it, a second click reversing it. A row
+// with no file yet says only that, as its tile does.
 function listHtml(pane, xs) {
   const s = ui.sort[pane], was = data.previous;
   const cols = [['name', 'Name'], ['where', pane === 'in' ? 'Source' : 'Destination'], ['as_of', 'As of'], ['by', 'By'], ['headline', pane === 'in' ? 'Rows · total' : 'Headline'], ['changed', 'Changed'], ['threads', 'Threads']];
   const row = i => {
     const p = i.file && provenance(i.file), on = talkOn(i.id), asks = on.filter(t => t.waits).length;
-    return { i, p, on, asks, name: i.name, where: (pane === 'in' ? i.source : i.destination) ?? '', as_of: i.as_of ?? '', by: p ? nameOf(p.by) : '', headline: i.headline ?? '', changed: was?.changed[i.id] ?? '', threads: asks * 1e4 + on.length };
+    return { i, p, on, asks, name: i.name, where: (p && (pane === 'in' ? i.source : i.destination)) ?? '', as_of: (p && i.as_of) ?? '', by: p ? nameOf(p.by) : '', headline: (p && i.headline) ?? '', changed: was?.changed[i.id] ?? '', threads: asks * 1e4 + on.length };
   };
   const rows = xs.map(row);
   if (s) rows.sort((a, b) => s.dir * (typeof a[s.key] === 'number' ? a[s.key] - b[s.key] : String(a[s.key]).localeCompare(String(b[s.key]), undefined, { numeric: true })));
