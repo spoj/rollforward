@@ -31,7 +31,11 @@ rf upload PATH FILE [--onto ITEM] [--output] [--wake]
 rf resolve PATH THREAD [TEXT]     resolves a thread, with TEXT as a last word; nothing wakes
 rf signoff PATH THREAD approve|reject [TEXT] [--wake]   the runner's answer to a sign-off the agent asks for, which commits
                                   the folder
-rf pass PATH ITEM                 passes a piece of its Review's evidence, as it shows its file now; nothing wakes
+rf pass PATH ITEM [PICK]          passes a piece of its Review's evidence, as it shows its file now, or a pick of its sample, as its
+                                  evidence page shows now; nothing wakes
+rf draw PATH ITEM N [--key AMOUNT] [--by-amount] [--wake]   draws the sample of the population ITEM: every row of at least
+                                  AMOUNT, and N more at random, or by amount, from the server's own seed, logged
+rf pick PATH ITEM ID add|drop WHY [--wake]   adds a row to the sample by its id, or drops a pick, saying why
 rf close PATH [--as-series NAME] [--wake]   the runner makes it the record, its review logged as it stands, and an example,
                                   approving nothing; a task closes as a one-off, or as the first instance of the series NAME it
                                   becomes; --wake starts runs of the series' later open instances, which may have used its draft
@@ -198,7 +202,7 @@ const flags: Record<string, string | true> = {}, excludes: string[] = [], args: 
 for (let i = 0; i < argv.length; i++) {
   const flag = argv[i] === '-n' ? 'dry-run' : argv[i].match(/^--(.+)$/)?.[1];
   if (!flag) args.push(argv[i]);
-  else if (['wait', 'wake', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear', 'follow', 'superseded', 'undo'].includes(flag)) flags[flag] = true;
+  else if (['wait', 'wake', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear', 'follow', 'superseded', 'undo', 'by-amount'].includes(flag)) flags[flag] = true;
   else if (argv[i + 1] === undefined) throw new Error(`--${flag} takes a value`);
   else if (flag === 'exclude') excludes.push(argv[++i]);
   else flags[flag] = argv[++i];
@@ -395,7 +399,7 @@ if (cmd === 'login' && url) {
   else {
     console.log(`${args[0]}  ${doc.status}, runner ${runner.by}${run ? `, run ${run.n} going, ${usd(run.cost)}` : queued ? ', queued' : ''}`);
     for (const i of doc.items) console.log(`  ${i.kind.padEnd(6)} ${i.id}  ${i.name}  ${i.file ?? 'no file yet'}${i.from?.length ? `  from ${i.from.join(', ')}` : ''}${i.headline ? `  ${i.headline}` : ''}`);
-    if (review) console.log(`review ${review.state}${review.exceptions.length ? `: ${review.exceptions.join(', ')}` : review.unpassed.length ? `: ${review.unpassed.join(', ')} not passed` : ''}`);
+    if (review) console.log(`review ${review.state}${review.exceptions.length ? `: ${review.exceptions.join(', ')}` : review.unpassed.length ? `: ${review.unpassed.map((u: { item: string; pick?: string }) => u.pick === undefined ? u.item : `${u.item}@${u.pick}`).join(', ')} not passed` : ''}`);
     for (const w of waiting) console.log(`${w.thread}  ${w.kind} for ${w.for}${w.item ? `, on ${w.item}${w.ref ? ` at ${w.ref}` : ''}` : ''}, seq ${w.seq}: ${w.text.split('\n')[0].slice(0, 160)}`);
     if (last) console.log(`last run ${last.run}  ${usd(last.cost ?? 0)}  ${last.error ?? last.summary ?? 'no report'}`);
   }
@@ -431,9 +435,15 @@ else if (cmd === 'comment' && args.length === 2) {
     if (done.error) console.log(`The run failed: ${done.error}`);
     break;
   }
-} else if (cmd === 'pass' && args.length === 2) {
-  await post(`${(await instanceAt(args[0])).at}/pass`, { item: args[1] });
-  console.log(`passed ${args[1]}`);
+} else if (cmd === 'pass' && [2, 3].includes(args.length)) {
+  await post(`${(await instanceAt(args[0])).at}/pass`, { item: args[1], pick: args[2] });
+  console.log(`passed ${args.slice(1).join(' ')}`);
+} else if (cmd === 'draw' && args.length === 3) {
+  await post(`${(await instanceAt(args[0])).at}/draw`, { item: args[1], n: Number(args[2]), key: flags.key, by_amount: !!flags['by-amount'], quiet: !flags.wake });
+  console.log(`drew ${args[1]}`);
+} else if (cmd === 'pick' && args.length === 5 && ['add', 'drop'].includes(args[3])) {
+  await post(`${(await instanceAt(args[0])).at}/pick`, { item: args[1], id: args[2], add: args[3] === 'add', reason: args[4], quiet: !flags.wake });
+  console.log(`${args[3] === 'add' ? 'added' : 'dropped'} ${args[2]}`);
 } else if (cmd === 'resolve' && [2, 3].includes(args.length)) {
   console.log(await (await post(`${(await instanceAt(args[0])).at}/resolve`, { thread: args[1], text: args[2] })).text());
 } else if (cmd === 'signoff' && ['approve', 'reject'].includes(args[2]) && args.length <= 4) {

@@ -30,13 +30,30 @@ export function openFile(base: string, rel: string): number | undefined {
   }
 }
 
+// A file a screen shows, under upload/ or working/, as it first shows it: its sha256, and, in working/, made read-only; undefined
+// where there is none, a link not followed.
+export function freeze(base: string, rel: unknown): string | undefined {
+  const fd = typeof rel === 'string' && normalize(rel) === rel && /^(upload|working)\/./.test(rel) && !rel.split('/').includes('..') ? openFile(base, rel) : undefined;
+  if (fd === undefined) return undefined;
+  try {
+    if ((rel as string).startsWith('working/')) fchmodSync(fd, 0o444);
+    return createHash('sha256').update(readFileSync(fd)).digest('hex');
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export function readFile(base: string, rel: string): string | undefined {
   const fd = openFile(base, rel);
   if (fd === undefined) return undefined;
   try { return readFileSync(fd, 'utf8'); } finally { closeSync(fd); }
 }
 
-export type Item = { id: string; name: string; kind: 'input' | 'step' | 'output'; file: string | null; from?: string[]; headline?: string; source?: string; destination?: string; as_of?: string };
+export type Item = { id: string; name: string; kind: 'input' | 'step' | 'output'; file: string | null; from?: string[]; headline?: string; source?: string; destination?: string; as_of?: string; population?: Population };
+// A sampled review's population: a CSV, a row per item, its columns of ids and amounts, the output total it ties to, and each pick's
+// evidence page, by the row's id.
+export type Population = { id: string; amount: string; ties?: { item: string; total: number }; evidence?: Record<string, string> };
+export type Pick = { id: string; as: 'key' | 'random' | 'hand'; reason?: string };
 export type Doc = { rev: number; status: 'open' | 'closed' | 'abandoned'; items: Item[] };
 export type Entry = { seq: number; at: string; by: string; op: string; [k: string]: unknown };
 
@@ -226,13 +243,24 @@ export class Instance {
     return [...this.threads().values()].map(t => t.at(-1)!).filter(e => e.op === 'comment' && e.by === 'agent' && e.ask);
   }
 
+  // A population's sample, as drawn for the file it shows: the last draw's picks, then those people added or dropped since.
+  picks(item: Item): Pick[] | undefined {
+    const d = this.log.findLast(e => e.op === 'draw' && e.item === item.id);
+    if (d?.file !== item.file) return undefined;
+    let out = d!.picks as Pick[];
+    for (const e of this.log.filter(e => e.op === 'pick' && e.item === item.id && e.seq > d!.seq)) out = e.add ? [...out, { id: e.id as string, as: 'hand', reason: e.reason as string }] : out.filter(p => p.id !== e.id);
+    return out;
+  }
+
   // The review, once Review shows a file: the review sheet and the steps, each passed by a person while it shows the file they
-  // passed, and its exceptions, the threads people started on them and haven't resolved.
-  review(): { state: 'passed' | 'exceptions' | 'unreviewed'; exceptions: string[]; unpassed: string[] } | undefined {
+  // passed, or, for a population drawn, each pick passed while its evidence is what they passed; and its exceptions, the threads
+  // people started on them and haven't resolved.
+  review(): { state: 'passed' | 'exceptions' | 'unreviewed'; exceptions: string[]; unpassed: { item: string; pick?: string }[] } | undefined {
     const items = this.doc.items.filter(i => evidence(i) && i.file), ids = new Set(items.map(i => i.id));
     if (!items.length) return undefined;
     const exceptions = [...this.threads()].filter(([, t]) => isPerson(t[0]) && ids.has(t[0].item as string) && t.at(-1)!.op !== 'resolve').map(([id]) => id);
-    const unpassed = items.filter(i => !this.log.some(e => e.op === 'pass' && e.item === i.id && e.file === i.file)).map(i => i.id);
+    const passed = (i: Item, file?: string, pick?: string) => file && this.log.some(e => e.op === 'pass' && e.item === i.id && e.file === file && e.pick === pick);
+    const unpassed = items.flatMap(i => this.picks(i)?.filter(p => !passed(i, i.population!.evidence?.[p.id], p.id)).map(p => ({ item: i.id, pick: p.id })) ?? (passed(i, i.file!) ? [] : [{ item: i.id }]));
     return { state: exceptions.length ? 'exceptions' : unpassed.length ? 'unreviewed' : 'passed', exceptions, unpassed };
   }
 
@@ -242,11 +270,11 @@ export class Instance {
   // the folder in the runner's name. The instance is closed meanwhile, so nothing changes it, but saved only once committed: a
   // failed commit, or a restart, leaves it open.
   async close(by: Who) {
-    for (const i of this.doc.items.filter(i => i.file?.startsWith('working/'))) {
-      const fd = openFile(this.dir, i.file!), logged = this.log.findLast(e => e.op === 'point' && e.file === i.file && e.sha256)?.sha256;
+    for (const file of this.doc.items.flatMap(i => [i.file, ...Object.values(i.population?.evidence ?? {})]).filter(f => f?.startsWith('working/'))) {
+      const fd = openFile(this.dir, file!), logged = this.log.findLast(e => e.op === 'point' && e.file === file && e.sha256)?.sha256;
       const now = fd === undefined ? undefined : createHash('sha256').update(readFileSync(fd)).digest('hex');
       if (fd !== undefined) closeSync(fd);
-      if (logged && now !== logged) throw new HttpError(409, `${i.file} changed after it was shown: the agent shows the new version under a new name, and you review that`);
+      if (logged && now !== logged) throw new HttpError(409, `${file} changed after it was shown: the agent shows the new version under a new name, and you review that`);
     }
     const accepted = this.asking().map(e => e.thread), review = this.review();
     this.doc.status = 'closed';
@@ -272,7 +300,7 @@ export class Instance {
     if (doc.rev !== this.doc.rev) throw new HttpError(409, `stale rev ${doc.rev}: the workspace is now at rev ${this.doc.rev}. Run rf show and merge.`);
     if (doc.status !== undefined && doc.status !== this.doc.status) throw new HttpError(400, 'status is set by the server; leave it out or as it is');
     if (!Array.isArray(doc.items)) throw new HttpError(400, 'items must be an array');
-    const errors: string[] = [], ids = new Set<string>(), sums = new Map<string, string | undefined>();
+    const errors: string[] = [], ids = new Set<string>(), sums = new Map<string, string | undefined>(), shown: { item: string; pick: string; file: string; sha256: string }[] = [];
     const old = new Map(this.doc.items.map(i => [i.id, i]));
     for (const i of doc.items) {
       if (typeof i.id !== 'string' || !i.id || ids.has(i.id)) errors.push(`item id missing or repeated: ${JSON.stringify(i.id)}`);
@@ -284,14 +312,25 @@ export class Instance {
       if (i.file !== null) {
         const ok = typeof i.file === 'string' && normalize(i.file) === i.file && /^(upload|working)\/./.test(i.file) && !i.file.split('/').includes('..');
         if (!ok) errors.push(`${i.id}: file must be null or a path under upload/ or working/, relative to the instance folder`);
-        else {
+        else if (i.file !== old.get(i.id)?.file) {
+          const sum = freeze(this.dir, i.file);
+          if (sum) sums.set(i.id, sum);
+          else errors.push(`${i.id}: no file ${i.file} (links are not followed)`);
+        } else {
           const fd = openFile(this.dir, i.file);
           if (fd === undefined) errors.push(`${i.id}: no file ${i.file} (links are not followed)`);
-          else if (i.file !== old.get(i.id)?.file) {
-            sums.set(i.id, createHash('sha256').update(readFileSync(fd)).digest('hex'));
-            if (i.file.startsWith('working/')) fchmodSync(fd, 0o444);
-          }
-          if (fd !== undefined) closeSync(fd);
+          else closeSync(fd);
+        }
+      }
+      if (i.population !== undefined) {
+        const p = i.population, was = old.get(i.id)?.population?.evidence ?? {};
+        if (typeof p?.id !== 'string' || typeof p.amount !== 'string' || !/\.csv$/i.test(i.file ?? '')) errors.push(`${i.id}: a population is a CSV, a row per item, and says the columns of its ids and amounts: {"id": COLUMN, "amount": COLUMN}`);
+        if (p?.ties !== undefined && !(doc.items.some(o => o.id === p.ties?.item && o.kind === 'output') && typeof p.ties.total === 'number')) errors.push(`${i.id}: population.ties is {"item": an output's id, "total": the total it ties to}`);
+        for (const [pick, file] of Object.entries(p?.evidence ?? {})) {
+          if (was[pick] === file) continue;
+          const sum = freeze(this.dir, file);
+          if (sum) shown.push({ item: i.id, pick, file, sha256: sum });
+          else errors.push(`${i.id}: no file ${file} for ${pick}'s evidence: one under upload/ or working/ (links are not followed)`);
         }
       }
     }
@@ -309,9 +348,10 @@ export class Instance {
       if (i.file !== (o?.file ?? null) && i.file !== null) {
         this.append('agent', 'point', { item: i.id, file: i.file, was: o?.file ?? null, sha256: sums.get(i.id) });
       } else if (i.file === null && o?.file) this.append('agent', 'point', { item: i.id, file: null, was: o.file });
-      if (!o || o.name !== i.name || o.kind !== i.kind || JSON.stringify(o.from) !== JSON.stringify(i.from) || o.headline !== i.headline || o.source !== i.source || o.destination !== i.destination || o.as_of !== i.as_of)
-        this.append('agent', 'item', { item: i.id, name: i.name, kind: i.kind, from: i.from, headline: i.headline, source: i.source, destination: i.destination, as_of: i.as_of });
+      if (!o || o.name !== i.name || o.kind !== i.kind || JSON.stringify(o.from) !== JSON.stringify(i.from) || o.headline !== i.headline || o.source !== i.source || o.destination !== i.destination || o.as_of !== i.as_of || JSON.stringify({ ...o.population, evidence: undefined }) !== JSON.stringify({ ...i.population, evidence: undefined }))
+        this.append('agent', 'item', { item: i.id, name: i.name, kind: i.kind, from: i.from, headline: i.headline, source: i.source, destination: i.destination, as_of: i.as_of, population: i.population && { ...i.population, evidence: undefined } });
     }
+    for (const e of shown) this.append('agent', 'point', e);
     for (const o of this.doc.items) if (!ids.has(o.id)) this.append('agent', 'remove', { item: o.id });
     this.doc = { rev: this.doc.rev, status: this.doc.status, items: doc.items };
     this.save();

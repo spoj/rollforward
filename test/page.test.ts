@@ -61,6 +61,19 @@ before(async () => {
   writeFileSync(join(reviewed, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [
     { id: 'review', name: 'Review sheet', kind: 'output', file: 'working/review.md' }, { id: 'tie', name: 'Tie-out', kind: 'step', file: 'working/tie.csv' }] }));
   writeFileSync(join(reviewed, 'log.jsonl'), JSON.stringify({ seq: 1, at: '2026-08-01T09:00:00.000Z', by: 'admin@demo.test', op: 'create', from: null, logins: [] }) + '\n');
+  // A series of its own, quiet since July, whose open instance's Review shows a population of five invoices, with an evidence page each.
+  const sampled = join(root, 'instances', 'a5c0ff5e1f05'), ids = ['INV-1', 'INV-2', 'INV-3', 'INV-4', 'INV-5'];
+  tree.series.a5c0ff5e1fef = { name: 'Invoice checks', workspace: '1b3031035ff6' };
+  writeFileSync(join(root, '.rf', 'tree.json'), JSON.stringify(tree));
+  mkdirSync(join(root, 'series', 'a5c0ff5e1fef'));
+  mkdirSync(join(sampled, 'working', 'ev'), { recursive: true });
+  writeFileSync(join(sampled, 'instance.json'), JSON.stringify({ label: '2026-07', series: 'a5c0ff5e1fef' }));
+  writeFileSync(join(sampled, 'working', 'invoices.csv'), 'invoice,customer,amount\nINV-1,Acme,"1,500.00"\nINV-2,Bolt,200.00\nINV-3,Cask,300.00\nINV-4,Dune,(50.00)\nINV-5,Echo,400.00\n');
+  writeFileSync(join(sampled, 'working', 'bb.csv'), 'total\n2350\n');
+  for (const id of ids) writeFileSync(join(sampled, 'working', 'ev', `${id}.md`), `${id} matches its remittance.\n`);
+  writeFileSync(join(sampled, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [{ id: 'bb', name: 'Borrowing base', kind: 'output', file: 'working/bb.csv' },
+    { id: 'invoices', name: 'Invoices', kind: 'step', file: 'working/invoices.csv', population: { id: 'invoice', amount: 'amount', ties: { item: 'bb', total: 2350 }, evidence: Object.fromEntries(ids.map(id => [id, `working/ev/${id}.md`])) } }] }));
+  writeFileSync(join(sampled, 'log.jsonl'), JSON.stringify({ seq: 1, at: '2026-07-01T09:00:00.000Z', by: 'admin@demo.test', op: 'create', from: null, logins: [] }) + '\n');
   // A step between the fixture's 2026-08-30 input and output, and an as-of date on one input.
   const stepped = join(root, 'instances', '3d70f7ca6f20'), doc = JSON.parse(readFileSync(join(stepped, 'screen.json'), 'utf8'));
   writeFileSync(join(stepped, 'working', 'eligible.csv'), 'customer,amount\n');
@@ -147,7 +160,7 @@ test("the workspace's + starts a task at once, which its first prompt names, new
   await page.fill('#ask input', 'Zebra surveys');
   await page.click('#ask button:text-is("Start series and close")');
   await page.waitForSelector('.row.ser .l:text-is("Zebra surveys")');
-  assert.deepEqual(await page.locator('.row.ser .l').allTextContents(), ['Zebra surveys', 'Weekly borrowing base', 'Year-end pack'], 'series too come newest activity first');
+  assert.deepEqual(await page.locator('.row.ser .l').allTextContents(), ['Zebra surveys', 'Weekly borrowing base', 'Year-end pack', 'Invoice checks'], 'series too come newest activity first');
   assert.deepEqual(await page.locator('.row.grp ~ a.row.inst .l').allTextContents(), ['Apple orchard audit for 2026']);
 });
 
@@ -708,6 +721,25 @@ test("anyone passes a piece of Review from its card, as it shows its file now, a
   await page.click('#card [data-act=pass]');
   await page.waitForSelector('#bar [data-act=close]:text-is("Close")');
   await page.click('#card [data-act=uncard]');
+});
+
+test("a population's Sample shows its count, total, tie-out and largest rows; a person draws picks, key and random, and passes each as its evidence page shows", async () => {
+  await page.evaluate(() => location.hash === '#/a5c0ff5e1f05' || new Promise(ok => { addEventListener('hashchange', ok, { once: true }); location.hash = '#/a5c0ff5e1f05'; }));
+  await page.click('#rev .tile[data-item=invoices]');
+  await page.click('#card [data-act=sample]');
+  await page.waitForSelector('#pv .pvh b:text-is("Sample of Invoices")');
+  assert.equal(await page.locator('#pv .pvb > .sub').first().textContent(), '5 rows · total 2,350.00 · ties to Borrowing base, 2,350.00');
+  assert.deepEqual(await page.locator('#pv .lst').first().locator('td:first-child').allTextContents(), ['INV-1', 'INV-5', 'INV-3', 'INV-2', 'INV-4']);
+  await page.fill('#sn', '2');
+  await page.fill('#skey', '1000');
+  await page.click('#pv [data-act=draw]');
+  await page.waitForSelector('#pv .picks tr[data-pick]');
+  assert.deepEqual(await page.locator('#pv .picks tr[data-pick] td:first-child').allTextContents(), ['Key', 'Random', 'Random']);
+  await page.click('#pv .picks tr[data-pick="INV-1"] [data-act=pick-pass]');
+  await page.waitForSelector('#pv .picks tr[data-pick="INV-1"] .ok');
+  assert.match(await page.locator('#pv .pvb > .sub').last().textContent() ?? '', /^0 exceptions in 3 picks: so the error rate is under 100%, at 95% confidence \(3\/3\)$/);
+  await page.click('#pv [data-act=unpv]');
+  await page.waitForSelector('#rev .tile[data-item=invoices] .hl:text-is("2 picks to pass")');
 });
 
 test("a series' + makes an instance that waits for its first upload or comment, which starts its run", async () => {

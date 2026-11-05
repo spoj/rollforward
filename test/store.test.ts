@@ -76,19 +76,38 @@ test("a review is passed once people passed each piece of its evidence as it sho
   assert.equal(inst.review(), undefined, 'nothing to review yet');
   put([sheet, step]);
   inst.append('sam', 'pass', { item: 'review', file: 'working/review.md' });
-  assert.deepEqual(inst.review(), { state: 'unreviewed', exceptions: [], unpassed: ['el'] });
+  assert.deepEqual(inst.review(), { state: 'unreviewed', exceptions: [], unpassed: [{ item: 'el' }] });
   inst.append('sam', 'pass', { item: 'el', file: 'working/eligible.csv' });
   assert.equal(inst.review()!.state, 'passed');
   put([sheet, { ...step, file: 'working/eligible2.csv' }]);
-  assert.deepEqual(inst.review()!.unpassed, ['el'], 'a new version reopens it');
+  assert.deepEqual(inst.review()!.unpassed, [{ item: 'el' }], 'a new version reopens it');
   inst.append('sam', 'comment', { thread: 'c9', item: 'el', ref: 'A2', text: 'Why is A2 in?' });
   inst.append('agent', 'comment', { thread: 'c10', item: 'review', ref: null, text: 'All tied.' });
   inst.append('sam', 'comment', { thread: 'c11', item: 'review', ref: null, text: 'Which rate?' });
   inst.append('sam', 'resolve', { thread: 'c11' });
-  assert.deepEqual(inst.review(), { state: 'exceptions', exceptions: ['c9'], unpassed: ['el'] }, "the agent's own thread is none, nor a resolved one");
+  assert.deepEqual(inst.review(), { state: 'exceptions', exceptions: ['c9'], unpassed: [{ item: 'el' }] }, "the agent's own thread is none, nor a resolved one");
   await inst.close(alex);
   assert.deepEqual([inst.log.at(-1)!.review, inst.log.at(-1)!.exceptions], ['exceptions', ['c9']]);
   assert.equal(execFileSync('git', ['log', '-1', '--format=%B'], { cwd: inst.dir, encoding: 'utf8' }).trim(), 'Close w1, 1 exception');
+  rmSync(tmp, { recursive: true, force: true });
+});
+
+test("a population is a CSV item's, its id and amount columns named, tying to an output; each evidence page is frozen as it's first shown, logged with its pick, and closing checks it", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
+  openStore(tmp);
+  const inst = createInstance('weekly', 'w1', 'alex', []), page = join(inst.dir, 'working', 'a1.md');
+  writeFileSync(join(inst.dir, 'working', 'pop.csv'), 'id,amount\na1,5\n');
+  writeFileSync(page, 'a1 is right\n');
+  const put = (population: object) => inst.put(JSON.stringify({ rev: inst.doc.rev, status: 'open', items: [{ id: 'out', name: 'Out', kind: 'output', file: null }, { id: 'pop', name: 'Pop', kind: 'step', file: 'working/pop.csv', population }] }));
+  assert.throws(() => put({ id: 'id' }), /pop: a population is a CSV, a row per item, and says the columns of its ids and amounts/);
+  assert.throws(() => put({ id: 'id', amount: 'amount', ties: { item: 'pop', total: 5 } }), /population.ties is \{"item": an output's id/);
+  assert.throws(() => put({ id: 'id', amount: 'amount', evidence: { a1: 'working/none.md' } }), /no file working\/none.md for a1's evidence/);
+  put({ id: 'id', amount: 'amount', ties: { item: 'out', total: 5 }, evidence: { a1: 'working/a1.md' } });
+  assert.deepEqual(inst.log.filter(e => e.op === 'point' && e.pick).map(e => [e.item, e.pick, e.file]), [['pop', 'a1', 'working/a1.md']]);
+  assert.equal(statSync(page).mode & 0o222, 0, 'frozen');
+  chmodSync(page, 0o644);
+  writeFileSync(page, 'changed\n');
+  await assert.rejects(inst.close(alex), /working\/a1.md changed after it was shown/);
   rmSync(tmp, { recursive: true, force: true });
 });
 

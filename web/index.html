@@ -205,6 +205,11 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .lrow.ghost td { color: var(--ink-3); }
 .lrow.fresh .fn::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--ink); vertical-align: 1px; }
 .lrow td.q { color: var(--red); }
+.lst td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pvb .q { color: var(--red); }
+.picks td:last-child { white-space: nowrap; }
+.picks .quiet { display: inline; margin-left: 6px; }
+.pvb .ok { color: #1f6f43; }
 .pane.busy::before { content: ''; position: absolute; top: 0; left: -30%; width: 30%; height: 2px; background: var(--ink); animation: stripe 1.4s ease-in-out infinite; }
 @keyframes stripe { to { left: 100%; } }
 .pane.drag::after { content: '+ Add'; position: absolute; top: 20px; right: 28px; font-weight: 600; color: var(--person); }
@@ -501,7 +506,9 @@ const replying = new Set();
 const talkOn = id => threads.filter(t => t.item === id && !t.resolved);
 // Review's evidence, the review sheet and the steps, and the pass a person gave one as it shows its file now.
 const evidence = i => i.id === 'review' || i.kind === 'step';
-const passOf = i => data.log.findLast(e => e.op === 'pass' && e.item === i.id && e.file === i.file);
+const passOf = i => data.log.findLast(e => e.op === 'pass' && e.item === i.id && e.file === i.file && !e.pick);
+const drawOf = i => i.population && data.log.findLast(e => e.op === 'draw' && e.item === i.id && e.file === i.file);
+const unpassedOf = i => (data.review?.unpassed ?? []).filter(u => u.item === i.id);
 const sig = i => `${i.file}|${talkOn(i.id).length}|${i.headline ?? ''}`;
 
 function markSeen(items) {
@@ -761,8 +768,8 @@ function tile(item) {
     return `<div class="tile ghost ${mark}" data-item="${esc(item.id)}">${corner}<div class="ext"><span>${esc(item.kind.toUpperCase())}</span><span class="nc ${open ? 'q' : ''}">${count}</span></div><div class="fn">${esc(item.name)}</div><div class="meta">${item.kind === 'input' ? 'Missing' : 'Not built yet'}</div></div>`;
   }
   const p = provenance(item.file), sent = data.log.findLast(e => e.op === 'delivered' && e.item === item.id);
-  const v = data.log.filter(e => e.op === 'point' && e.item === item.id && e.file).length;
-  return `<div class="tile ${p.person ? 'person' : 'agent'} ${openItem === item.id ? 'on' : ''} ${mark}" data-item="${esc(item.id)}">${corner}<div class="ext"><span>${esc(ext(item.file))}${v > 1 ? ' · v' + v : ''}</span><span class="nc ${open ? 'q' : ''}">${count}</span></div><div class="fn">${esc(item.name)}</div><div class="file">${esc(fname(item.file))}</div>${item.headline ? `<div class="hl">${esc(item.headline)}</div>` : ''}${item.source ? `<div class="src">${esc(item.source)}</div>` : ''}${item.destination ? `<div class="dst" title="${esc(item.destination)}">\u2192 ${esc(item.destination)}</div>` : ''}${sent ? `<div class="sent" title="${esc(sent.receipt)}">Sent ${hhmm(sent.at)} to ${esc(sent.to)}</div>` : ''}${evidence(item) && passOf(item) ? `<div class="ok">Passed · ${person(passOf(item).by)}</div>` : ''}<div class="meta"><b>${person(p.by)}</b> · ${hhmm(p.at)}</div></div>`;
+  const v = data.log.filter(e => e.op === 'point' && e.item === item.id && e.file && !e.pick).length;
+  return `<div class="tile ${p.person ? 'person' : 'agent'} ${openItem === item.id ? 'on' : ''} ${mark}" data-item="${esc(item.id)}">${corner}<div class="ext"><span>${esc(ext(item.file))}${v > 1 ? ' · v' + v : ''}</span><span class="nc ${open ? 'q' : ''}">${count}</span></div><div class="fn">${esc(item.name)}</div><div class="file">${esc(fname(item.file))}</div>${item.headline ? `<div class="hl">${esc(item.headline)}</div>` : ''}${item.source ? `<div class="src">${esc(item.source)}</div>` : ''}${item.destination ? `<div class="dst" title="${esc(item.destination)}">\u2192 ${esc(item.destination)}</div>` : ''}${sent ? `<div class="sent" title="${esc(sent.receipt)}">Sent ${hhmm(sent.at)} to ${esc(sent.to)}</div>` : ''}${drawOf(item) ? `<div class="${unpassedOf(item).length ? 'hl' : 'ok'}">${unpassedOf(item).length ? `${plural(unpassedOf(item).length, 'pick')} to pass` : 'Every pick passed'}</div>` : evidence(item) && passOf(item) ? `<div class="ok">Passed · ${person(passOf(item).by)}</div>` : ''}<div class="meta"><b>${person(p.by)}</b> · ${hhmm(p.at)}</div></div>`;
 }
 
 // The instance in three slices: Inputs; Outputs; and Review, the evidence for whoever closes it, the review sheet first and then the
@@ -789,7 +796,7 @@ function renderPanes() {
   put($('#outs'), head('Outputs', outs, 'out') + body('out', outs) + (open ? '<div class="hint">Drop a revised output here.</div>' : ''));
   const asked = threads.filter(t => t.posts.some(p => p.signoff));
   $('#rev').hidden = !rev.length && !asked.length;
-  put($('#rev'), head('Review', rev, undefined, shown.length ? `${shown.filter(passOf).length} of ${shown.length} passed` : '') + `<div class="tiles">${rev.map(tile).join('')}${asked.map(proposal).join('')}</div>`);
+  put($('#rev'), head('Review', rev, undefined, shown.length ? `${shown.filter(i => !unpassedOf(i).length).length} of ${shown.length} passed` : '') + `<div class="tiles">${rev.map(tile).join('')}${asked.map(proposal).join('')}</div>`);
   $('#outs').classList.toggle('busy', !!data.run);
   prevSigs = Object.fromEntries(items.map(i => [i.id, sig(i)]));
   light();
@@ -830,7 +837,7 @@ function light() {
   for (const el of document.querySelectorAll('#panes :is(.tile, .lrow)[data-item]')) el.classList.toggle('made', up.has(el.dataset.item));
 }
 
-const plural = (n, word) => `${n} ${word}${n > 1 ? 's' : ''}`;
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 // People by name, with their email on hover, and Entra groups by label, with their id; a name that two of them share, with the email
 // or id beside it, so no one passes for another; anyone the page has no name for, as they are. who and nameOf say you, and Agent;
 // actor names the agent as its runner's at the time, on whose behalf it acted.
@@ -851,13 +858,15 @@ function logText(e) {
   return {
     create: () => `${w} opened the instance`,
     upload: () => `${w} uploaded ${e.pane === 'out' ? 'an output' : 'an input'}${e.onto ? ' onto ' + item(e.onto) : ''}${f}`,
-    point: () => `${w} ${e.file ? 'showed' : 'cleared'} ${item(e.item)}${e.was ? `<div class="d">Replacing ${esc(fname(e.was))}</div>` : ''}${f}`,
+    point: () => `${w} ${e.file ? 'showed' : 'cleared'} ${item(e.item)}${e.pick ? `'s evidence for ${esc(e.pick)}` : ''}${e.was ? `<div class="d">Replacing ${esc(fname(e.was))}</div>` : ''}${f}`,
     item: () => `${w} set up ${esc(e.name)}${e.from?.length ? `<div class="d">From ${e.from.map(item).join(', ')}</div>` : ''}${e.headline ? `<div class="d">${esc(e.headline)}</div>` : ''}${e.source ? `<div class="d">Source: ${esc(e.source)}</div>` : ''}${e.destination ? `<div class="d">Destination: ${esc(e.destination)}</div>` : ''}${e.as_of ? `<div class="d">As of ${esc(e.as_of)}</div>` : ''}`,
     remove: () => `${w} removed ${esc(e.item)} from the screen`,
     run: () => `Run ${e.run} started${data.run?.n === e.run ? ` \u00b7 ${usd(data.run.cost)} so far` : ''}`,
     done: () => `Run ${e.run} finished${e.aborted ? ' (stopped)' : ''} · ${took(e)} · ${usd(e.cost)}${e.summary ? `<div class="d">${esc(e.summary)}</div>` : ''}${e.error ? `<div class="d">${esc(e.error)}</div>` : ''}`,
     interrupt: () => `${w} interrupted the run`,
-    pass: () => `${w} passed ${item(e.item)}${f}`,
+    pass: () => `${w} passed ${item(e.item)}${e.pick ? ` ${esc(e.pick)}` : ''}${f}`,
+    draw: () => `${w} drew ${plural(e.picks.length, 'pick')} from ${item(e.item)}<div class="d">${e.n} ${e.by_amount ? 'by amount' : 'at random'}${e.key ? `, every row of ${e.key} or more` : ''} · seed <code>${esc(e.seed.slice(0, 12))}</code> · Commit <code>${e.commit.slice(0, 7)}</code></div>`,
+    pick: () => `${w} ${e.add ? 'added' : 'dropped'} ${esc(e.id)} ${e.add ? 'to' : 'from'} ${item(e.item)}'s sample<div class="d">${esc(e.reason)}</div>`,
     close: () => `${w} closed the instance${e.review ? `, ${e.review === 'exceptions' ? `with ${plural(e.exceptions.length, 'exception')}` : e.review}` : ''}${e.accepted ? `<div class="d">Accepting what the agent did for ${e.accepted.length} ask${e.accepted.length > 1 ? 's' : ''} still waiting</div>` : ''}${e.commit ? `<div class="d">Commit <code>${e.commit.slice(0, 7)}</code></div>` : ''}`,
     signoff: () => `${w} ${e.approved ? 'signed off' : 'rejected the sign-off'}<div class="d">${e.text ? `${esc(e.text)} · ` : ''}Commit <code>${e.commit.slice(0, 7)}</code></div>`,
     commit: () => e.error ? `Run ${e.run}'s changes weren't committed<div class="d">${esc(e.error)}</div>` : `${w} committed the folder<div class="d">${esc(e.message)} · Commit <code>${e.commit.slice(0, 7)}</code></div>`,
@@ -1056,6 +1065,39 @@ function threadHtml(t) {
       : `<div class="row2"><button class="quiet" data-act="thread" data-thread="${esc(t.id)}">Reply</button><button class="quiet" data-act="resolve" data-thread="${esc(t.id)}" title="Done with it, without waking the agent">Resolve</button></div>`) + '</div>';
 }
 
+// A population's sample: its count, total, what it ties to and its largest rows; how it was drawn, with the seed, which draws it
+// again, and a draw or a redraw; then each pick, labelled key, random or by hand, with its evidence page and where it stands, Pass,
+// Query and Drop, and a row to add by its id, saying why.
+function sampleHtml(s) {
+  const item = data.doc.items.find(i => i.id === s.item), p = item.population, d = drawOf(item), open = data.doc.status === 'open';
+  const money = n => n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }), ties = p.ties && data.doc.items.find(i => i.id === p.ties.item);
+  const off = Math.round((s.total - (p.ties?.total ?? 0)) * 100) / 100, others = s.head.filter(h => h !== p.id && h !== p.amount).slice(0, 3);
+  let h = `<div class="sub">${s.count.toLocaleString()} rows \u00b7 total ${money(s.total)}${ties ? ` \u00b7 ${off ? `<b class="q">differs by ${money(off)}</b> from` : 'ties to'} ${esc(ties.name)}, ${money(p.ties.total)}` : ''}</div>`;
+  h += `<h3>Largest</h3><table class="lst">${s.top.map(r => `<tr><td>${esc(r.id)}</td><td class="n">${money(r.amount)}</td></tr>`).join('')}</table>`;
+  if (d) h += `<div class="sub">${d.by === me.email ? 'You' : person(d.by)} drew ${d.n} ${d.by_amount ? 'by amount' : 'at random'}${d.key ? `, and every row of ${money(d.key)} or more` : ''}, ${when(d.at)} \u00b7 seed <code title="${esc(d.seed)}">${d.seed.slice(0, 12)}</code></div>`;
+  if (open) h += `<div class="row2"><label>Draw <input type="number" id="sn" min="0" value="${d?.n ?? 25}" style="width:5em"></label><label>and every row of at least <input type="number" id="skey" min="0" step="any" value="${d?.key ?? ''}" style="width:8em"></label><label><input type="checkbox" id="sby" ${d?.by_amount ? 'checked' : ''}> by amount</label><button class="btn" data-act="draw" data-item="${esc(item.id)}">${d ? 'Redraw' : 'Draw'}</button></div>`;
+  if (!d) return h;
+  const rows = new Map(s.picked.map(r => [r.id, r])), ev = p.evidence ?? {}, queried = id => threads.filter(t => t.item === item.id && t.ref === id && !t.resolved && t.posts[0].by !== 'agent');
+  const exceptions = s.picks.filter(k => queried(k.id).length).length, n = s.picks.length;
+  h += `<h3>Picks</h3><table class="lst picks"><tr><th></th><th>${esc(p.id)}</th><th>${esc(p.amount)}</th>${others.map(o => `<th>${esc(o)}</th>`).join('')}<th>Evidence</th><th></th></tr>`;
+  for (const k of s.picks) {
+    const r = rows.get(k.id), pass = ev[k.id] && data.log.findLast(e => e.op === 'pass' && e.item === item.id && e.pick === k.id && e.file === ev[k.id]), q = queried(k.id);
+    h += `<tr data-pick="${esc(k.id)}"><td title="${esc(k.reason ?? '')}">${{ key: 'Key', random: 'Random', hand: 'By hand' }[k.as]}</td><td>${esc(k.id)}</td><td class="n">${money(r.amount)}</td>${others.map(o => `<td>${esc(r.fields[o])}</td>`).join('')}`
+      + `<td>${ev[k.id] ? `<a data-act="preview" data-file="${esc(ev[k.id])}">${esc(fname(ev[k.id]))}</a>` : '<span class="sub">not yet</span>'}</td>`
+      + `<td>${q.length ? `<a class="q" data-act="thread" data-thread="${esc(q[0].id)}">Queried</a>` : pass ? `<span class="ok">Passed \u00b7 ${person(pass.by)}</span>` : ''}`
+      + `${open && ev[k.id] && !pass && !q.length ? ` <button class="quiet" data-act="pick-pass" data-item="${esc(item.id)}" data-id="${esc(k.id)}">Pass</button>` : ''}`
+      + `${open ? ` <button class="quiet" data-act="pick-query" data-item="${esc(item.id)}" data-id="${esc(k.id)}">Query</button> <button class="quiet" data-act="pick-drop" data-item="${esc(item.id)}" data-id="${esc(k.id)}">Drop</button>` : ''}</td></tr>`;
+  }
+  h += '</table>';
+  if (open) h += `<div class="row2"><input type="text" id="sadd" placeholder="${esc(p.id)} to add" autocomplete="off"><input type="text" id="swhy" placeholder="Why" autocomplete="off"><button class="btn" data-act="pick-add" data-item="${esc(item.id)}">Add pick</button></div>`;
+  return h + `<div class="sub">${plural(exceptions, 'exception')} in ${plural(n, 'pick')}${exceptions ? '' : `: so the error rate is under ${+(300 / n).toFixed(1)}%, at 95% confidence (3/${n})`}</div>`;
+}
+
+async function openSample(id) {
+  pv = { title: `Sample of ${data.doc.items.find(i => i.id === id).name}`, settings: { kind: 'sample', item: id, ...await api(`${instPath()}/sample?item=${enc(id)}`) } };
+  renderPv();
+}
+
 // The rules a run added to the process, or reworded, on the thread whose entry started it, or else on its line.
 const processNote = d => `<div class="pnote"><a data-act="process">Process: +${plural(d.rules, 'rule')}</a> in run ${d.run}</div>`;
 
@@ -1125,7 +1167,8 @@ function renderCard() {
   h += '<div class="acts">';
   if (item.file) h += `${wide ? '' : `<button class="btn" data-act="preview" data-file="${esc(item.file)}" data-item="${esc(item.id)}">Preview</button>`}<a class="btn" href="${fileUrl(item.file)}">Download</a>`;
   if (open && !wide) h += `<button class="btn" data-act="add" data-item="${esc(item.id)}" data-pane="${item.kind === 'output' ? 'out' : 'in'}">Upload…</button>`;
-  if (open && item.file && evidence(item) && !passed) h += `<button class="btn" data-act="pass" data-item="${esc(item.id)}">Pass</button>`;
+  if (item.file && item.population) h += `<button class="btn" data-act="sample" data-item="${esc(item.id)}">Sample…</button>`;
+  if (open && item.file && evidence(item) && !passed && !drawOf(item)) h += `<button class="btn" data-act="pass" data-item="${esc(item.id)}">Pass</button>`;
   if (open) h += `<button class="btn" data-act="comment-on" data-item="${esc(item.id)}">${evidence(item) ? 'Query' : 'Comment'}</button>`;
   if (data.doc.status === 'closed') h += `<button class="btn" data-act="correct" data-item="${esc(item.id)}">Correct\u2026</button>`;
   h += `<button class="btn" data-act="uncard" style="margin-left:auto">Close</button></div>`;
@@ -1192,7 +1235,7 @@ function sheetTable(p, s, first) {
 function renderPv() {
   const d = $('#pv');
   if (!pv) return void (d.open && d.close());
-  d.className = 'pv' + (pv.settings ? ' small' : '');
+  d.className = 'pv' + (pv.settings && pv.settings.kind !== 'sample' ? ' small' : '');
   let h = `<div class="pvh"><b>${esc(pv.title)}</b><span class="saved"></span>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${(pv.att ?? pv).doc ? '<button class="btn" data-act="layout">Exact layout</button>' : ''}${pv.path ? `<a class="btn" href="${fileUrl(pv.path)}">Download</a>` : ''}${pv.signin ? '<button class="btn primary" data-act="signin-save">Save login</button>' : ''}<button class="btn" data-act="unpv">${pv.signin ? 'Cancel' : 'Close'}</button></div>`;
   // Your account's dialog: Logins and Tokens, as tabs.
   const account = [['logins', 'Logins'], ['tokens', 'Tokens']];
@@ -1205,6 +1248,7 @@ function renderPv() {
   else if (pv.settings?.kind === 'wakes') h += `<div class="pvb vl">${wakesHtml(cur.i.id, cur.i.wakes, false)}</div>`;
   else if (pv.settings?.kind === 'waiting') h += `<div class="pvb vl">${waiting().join('') || '<div class="sub">Nothing waits on you.</div>'}</div>`;
   else if (pv.settings?.kind === 'start') h += `<div class="pvb vl">${startHtml(pv.settings)}</div>`;
+  else if (pv.settings?.kind === 'sample') h += `<div class="pvb vl">${sampleHtml(pv.settings)}</div>`;
   else if (pv.settings) {
     const s = pv.settings;
     h += '<div class="pvb vl">';
@@ -1661,6 +1705,25 @@ async function onAct(act, el) {
     await api(`${instPath()}/pass`, { method: 'POST', body: JSON.stringify({ item: el.dataset.item }) });
     await refresh();
   }
+  if (act === 'sample') await openSample(el.dataset.item);
+  // A draw, a pick added, dropped or passed: the sample again, as it stands.
+  if (['draw', 'pick-add', 'pick-pass'].includes(act) || (act === 'pick-drop' && await ask({ title: `Drop ${el.dataset.id}?`, text: 'The drop is logged, with why.', value: '', placeholder: 'Why', ok: 'Drop',
+    act: why => api(`${instPath()}/pick`, { method: 'POST', body: JSON.stringify({ item: el.dataset.item, id: el.dataset.id, add: false, reason: why }) }) }))) {
+    const item = el.dataset.item;
+    if (act === 'draw') await api(`${instPath()}/draw`, { method: 'POST', body: JSON.stringify({ item, n: Number($('#sn').value), key: $('#skey').value, by_amount: $('#sby').checked }) });
+    if (act === 'pick-add') await api(`${instPath()}/pick`, { method: 'POST', body: JSON.stringify({ item, id: $('#sadd').value.trim(), add: true, reason: $('#swhy').value.trim() }) });
+    if (act === 'pick-pass') await api(`${instPath()}/pass`, { method: 'POST', body: JSON.stringify({ item, pick: el.dataset.id }) });
+    await refresh();
+    await openSample(item);
+  }
+  if (act === 'pick-query') {
+    closePv();
+    Object.assign(ui, { open: true, on: el.dataset.item, ref: el.dataset.id });
+    renderLog();
+    renderBar();
+    $('#newcomment')?.focus();
+  }
+
   if (act === 'view') { localStorage.view = el.dataset.id; renderPanes(); placeCard(); }
   if (act === 'sort') {
     const { pane, key } = el.dataset, was = ui.sort[pane];
@@ -1822,7 +1885,7 @@ async function onAct(act, el) {
   if (act === 'close') {
     const waits = threads.filter(t => t.waits), task = cur.s.single, r = data.review;
     const review = r?.state === 'exceptions' ? `Its review has ${plural(r.exceptions.length, 'exception')}, queries no one resolved:\n${threads.filter(t => r.exceptions.includes(t.id)).map(t => `• ${firstLine(t.posts[0].text)}`).join('\n')}`
-      : r?.state === 'unreviewed' ? `No one passed ${r.unpassed.map(id => data.doc.items.find(i => i.id === id).name).join(', ')}.` : r ? 'Its review passed.' : '';
+      : r?.state === 'unreviewed' ? `No one passed ${r.unpassed.map(u => `${data.doc.items.find(i => i.id === u.item).name}${u.pick === undefined ? '' : ` ${u.pick}`}`).join(', ')}.` : r ? 'Its review passed.' : '';
     const text = [task ? 'It becomes the record, approving nothing.' : "It becomes this period's record and an example for later instances, approving nothing.", review,
       waits.length && 'Closing accepts what the agent did for each ask still waiting:\n' + waits.map(t => `• ${firstLine(t.last.text)}`).join('\n')].filter(Boolean).join('\n\n');
     const html = (task ? `<div class="opt"><button class="btn commit" value="close">Close task</button><span>closes it as a one-off</span></div>`
