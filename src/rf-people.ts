@@ -128,20 +128,22 @@ COMMAND gives one's usage, every read takes --json, and a failure is one line on
 What there is
 - A workspace holds series, and its people. A series is one recurring job; an instance is one period of it, labelled such as
   2026-08-23. A task is a one-off: a series of one instance, named by its label, until someone makes it a series. PATH is workspace/series/label, as rf ls prints it; for rf pull it may go deeper, into an instance's files.
-- An instance's screen is its items: inputs, outputs, and Review, the agent's evidence, the review sheet and steps, each pointing
-  at a file, with what it's made from. People upload files and comment, and pass Review's evidence or query it, a thread on it, an
-  exception until resolved. The runner is the person whose logins the runs use, and who closes the instance, making it the
+- An instance's screen is its items: inputs, outputs, and Review, the agent's evidence, the review sheet, which every instance
+  has, missing until the agent writes it, and steps, each pointing at a file, with what it's made from. People upload files and
+  comment, and pass Review's evidence, the review sheet once they accept its points, or query it, or a point of it, a thread on
+  it, an exception until resolved. The runner is the person whose logins the runs use, and who closes the instance, making it the
   period's record and an example for the next, which approves nothing: closing logs the review as passed, unreviewed or with its
-  exceptions. Their
-  comments and uploads start a run of the agent, which reads them and carries on, as do everyone's where the runner shares the
-  series, and a reply from whom an ask names; anyone else's is a note, which the agent takes up once the runner does.
+  exceptions. Their comments and uploads start a run of the agent, which reads them and carries on, as do everyone's where the
+  runner shares the series, and a reply from whom an ask names; anyone else's is a note, which the agent takes up once the runner
+  does.
 - rf is quiet: a comment, upload, sign-off, close, new instance or request it starts begins no run unless --wake, and the agent
   reads it at its next run; rf wake PATH now starts one. A quiet upload or comment is committed to the instance's history at once.
-- A comment starts a thread, on the instance or on an item, at a cell such as Base!C25, and others reply in it. An ask is the
-  agent's comment that waits on someone, the one it names or else the runner, until they reply or resolve it. rf ls says how many
-  asks wait in each instance. A sign-off, an ask with signoff true, is for an action outside, such as a mail, and waits on the
-  runner, who approves or rejects it: either commits the instance's folder to its history, .git in it, as closing does. One that
-  names recipients and attached files, frozen by their sha256, binds the instance's mail: it goes only as an approval says.
+- A comment starts a thread, on the instance or on an item, at a cell such as Base!C25 or a line of a markdown file by its
+  opening words, such as a point of the review sheet, and others reply in it. An ask is the agent's comment that waits on someone,
+  the one it names or else the runner, until they reply or resolve it. rf ls says how many asks wait in each instance. A sign-off,
+  an ask with signoff true, is for an action outside, such as a mail, and waits on the runner, who approves or rejects it: either
+  commits the instance's folder to its history, .git in it, as closing does. One that names recipients and attached files, frozen
+  by their sha256, binds the instance's mail: it goes only as an approval says.
 
 What rf pull copies, the folders as the agent sees them
   AGENTS.md                  the company's conventions; <workspace>/AGENTS.md the workspace's
@@ -395,11 +397,11 @@ if (cmd === 'login' && url) {
   });
   const done = log.findLast(e => e.op === 'done'), report = done && log.findLast(e => e.op === 'report' && e.run === done.run);
   const last = done ? { run: done.run, cost: done.cost, summary: done.summary ?? null, error: done.error ?? null, report: report?.text ?? null } : null;
-  if (flags.json) console.log(JSON.stringify({ path: args[0], id: inst.id, status: doc.status, runner: runner.by, running: run, queued, items: doc.items, review: review ?? null, waiting, last_run: last }, null, 1));
+  if (flags.json) console.log(JSON.stringify({ path: args[0], id: inst.id, status: doc.status, runner: runner.by, running: run, queued, items: doc.items, review, waiting, last_run: last }, null, 1));
   else {
     console.log(`${args[0]}  ${doc.status}, runner ${runner.by}${run ? `, run ${run.n} going, ${usd(run.cost)}` : queued ? ', queued' : ''}`);
     for (const i of doc.items) console.log(`  ${i.kind.padEnd(6)} ${i.id}  ${i.name}  ${i.file ?? 'no file yet'}${i.from?.length ? `  from ${i.from.join(', ')}` : ''}${i.headline ? `  ${i.headline}` : ''}`);
-    if (review) console.log(`review ${review.state}${review.exceptions.length ? `: ${review.exceptions.join(', ')}` : review.unpassed.length ? `: ${review.unpassed.map((u: { item: string; pick?: string }) => u.pick === undefined ? u.item : `${u.item}@${u.pick}`).join(', ')} not passed` : ''}`);
+    console.log(`review ${review.state}${review.exceptions.length ? `: ${review.exceptions.join(', ')}` : review.unpassed.length ? `: ${review.unpassed.map((u: { item: string; pick?: string }) => u.pick === undefined ? u.item : `${u.item}@${u.pick}`).join(', ')} not passed` : ''}`);
     for (const w of waiting) console.log(`${w.thread}  ${w.kind} for ${w.for}${w.item ? `, on ${w.item}${w.ref ? ` at ${w.ref}` : ''}` : ''}, seq ${w.seq}: ${w.text.split('\n')[0].slice(0, 160)}`);
     if (last) console.log(`last run ${last.run}  ${usd(last.cost ?? 0)}  ${last.error ?? last.summary ?? 'no report'}`);
   }

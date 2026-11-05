@@ -190,6 +190,8 @@ export class Instance {
     this.id = basename(dir);
     const ws = join(dir, 'screen.json'), log = join(dir, 'log.jsonl');
     this.doc = existsSync(ws) ? JSON.parse(readFileSync(ws, 'utf8')) : { rev: 0, status: 'open', items: [] };
+    // Every screen has the review sheet, missing until the agent writes it, a screen from before it too.
+    if (!this.doc.items.some(i => i.id === 'review')) this.doc.items.unshift({ id: 'review', name: 'Review sheet', kind: 'output', file: null });
     this.log = existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : [];
   }
 
@@ -252,12 +254,11 @@ export class Instance {
     return out;
   }
 
-  // The review, once Review shows a file: the review sheet and the steps, each passed by a person while it shows the file they
-  // passed, or, for a population drawn, each pick passed while its evidence is what they passed; and its exceptions, the threads
-  // people started on them and haven't resolved.
-  review(): { state: 'passed' | 'exceptions' | 'unreviewed'; exceptions: string[]; unpassed: { item: string; pick?: string }[] } | undefined {
-    const items = this.doc.items.filter(i => evidence(i) && i.file), ids = new Set(items.map(i => i.id));
-    if (!items.length) return undefined;
+  // The review: the review sheet, unpassed while it's missing, and the steps Review shows, each passed by a person while it shows the
+  // file they passed, or, for a population drawn, each pick passed while its evidence is what they passed; and its exceptions, the
+  // threads people started on them and haven't resolved.
+  review(): { state: 'passed' | 'exceptions' | 'unreviewed'; exceptions: string[]; unpassed: { item: string; pick?: string }[] } {
+    const items = this.doc.items.filter(i => i.id === 'review' || (i.kind === 'step' && i.file)), ids = new Set(items.map(i => i.id));
     const exceptions = [...this.threads()].filter(([, t]) => isPerson(t[0]) && ids.has(t[0].item as string) && t.at(-1)!.op !== 'resolve').map(([id]) => id);
     const passed = (i: Item, file?: string, pick?: string) => file && this.log.some(e => e.op === 'pass' && e.item === i.id && e.file === file && e.pick === pick);
     const unpassed = items.flatMap(i => this.picks(i)?.filter(p => !passed(i, i.population!.evidence?.[p.id], p.id)).map(p => ({ item: i.id, pick: p.id })) ?? (passed(i, i.file!) ? [] : [{ item: i.id }]));
@@ -276,16 +277,15 @@ export class Instance {
       if (fd !== undefined) closeSync(fd);
       if (logged && now !== logged) throw new HttpError(409, `${file} changed after it was shown: the agent shows the new version under a new name, and you review that`);
     }
-    const accepted = this.asking().map(e => e.thread), review = this.review();
+    const accepted = this.asking().map(e => e.thread), review = this.review(), n = review.exceptions.length;
     this.doc.status = 'closed';
-    const n = review?.exceptions.length, state = !review ? '' : n ? `, ${n} exception${n > 1 ? 's' : ''}` : `, ${review.state}`;
-    const hash = await commit(this.dir, by, `Close ${this.label}${state}`).catch(e => {
+    const hash = await commit(this.dir, by, `Close ${this.label}, ${n ? `${n} exception${n > 1 ? 's' : ''}` : review.state}`).catch(e => {
       this.doc.status = 'open';
       throw e;
     });
     await pack(this.dir);
     this.save();
-    this.append(by.email, 'close', { ...(accepted.length && { accepted }), ...(review && { review: review.state }), ...(review?.exceptions.length && { exceptions: review.exceptions }), commit: hash });
+    this.append(by.email, 'close', { ...(accepted.length && { accepted }), review: review.state, ...(n && { exceptions: review.exceptions }), commit: hash });
   }
 
   abandon(by: string) {
@@ -341,6 +341,7 @@ export class Instance {
       for (const [id, fs] of from) if (!fs.some(f => from.has(f))) peeled = from.delete(id);
     }
     if (from.size) errors.push(`from goes round in a circle among ${[...from.keys()].join(', ')}`);
+    if (!ids.has('review')) errors.push('review: every screen keeps the review sheet, its file null until you write it');
     if (errors.length) throw new HttpError(400, errors.join('\n'));
 
     for (const i of doc.items) {

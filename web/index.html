@@ -164,12 +164,10 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .btn.danger:hover:not(:disabled) { background: #fdf1f0; border-color: var(--red); }
 [aria-busy=true] { pointer-events: none; opacity: .6; cursor: progress; }
 
-/* The instance's slices, Inputs, Outputs and Review, side by side, each scrolling on its own, Review there only once it has something;
-   in the list view, Inputs over Outputs, with Review beside them. */
+/* The instance's slices, Inputs, Outputs and Review, side by side, each scrolling on its own; in the list view, Inputs over Outputs,
+   with Review beside them. */
 .panes { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr); grid-template-areas: "ins outs rev"; position: relative; }
-.panes:has(> .rev[hidden]) { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-areas: "ins outs"; }
 .panes.list { grid-template-columns: minmax(0, 1fr) minmax(240px, 28%); grid-template-rows: fit-content(55%) minmax(0, 1fr); grid-template-areas: "ins rev" "outs rev"; }
-.panes.list:has(> .rev[hidden]) { grid-template-columns: minmax(0, 1fr); grid-template-areas: "ins" "outs"; }
 .pane { padding: 22px 28px 20px; display: flex; flex-direction: column; position: relative; overflow: auto; min-width: 0; scrollbar-gutter: stable; }
 /* Always-visible scrollbars, so a long list of inputs or outputs shows it goes on (Edge's overlay scrollbars hide until hovered). */
 .pane::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -337,6 +335,10 @@ iframe.mail { width: 100%; border: 0; background: #fff; }
 .by { font-size: 11.5px; color: var(--ink-3); white-space: normal; margin-top: 4px; }
 .acts { display: flex; flex-wrap: wrap; gap: 8px; border-top: 1px solid var(--rule); padding-top: 10px; margin-top: 8px; }
 
+.say .pt { cursor: pointer; border-radius: 3px; }
+.say .pt:hover { background: #eceff3; }
+.say .pt.noted { text-decoration: underline dotted var(--ink-3); }
+.say .pt.q { text-decoration-color: var(--red); }
 .say table { border-collapse: collapse; margin: 4px 0; white-space: normal; }
 .say td { border: 1px solid var(--rule); padding: 3px 8px; font-size: 12.5px; }
 .say tr:first-child td { font-weight: 600; background: var(--sheet); }
@@ -508,7 +510,7 @@ const talkOn = id => threads.filter(t => t.item === id && !t.resolved);
 const evidence = i => i.id === 'review' || i.kind === 'step';
 const passOf = i => data.log.findLast(e => e.op === 'pass' && e.item === i.id && e.file === i.file && !e.pick);
 const drawOf = i => i.population && data.log.findLast(e => e.op === 'draw' && e.item === i.id && e.file === i.file);
-const unpassedOf = i => (data.review?.unpassed ?? []).filter(u => u.item === i.id);
+const unpassedOf = i => data.review.unpassed.filter(u => u.item === i.id);
 const sig = i => `${i.file}|${talkOn(i.id).length}|${i.headline ?? ''}`;
 
 function markSeen(items) {
@@ -720,7 +722,7 @@ function renderBar() {
     const wake = open ? `<span>\u00b7 <a data-act="wakes">${cur.i.wakes[0] ? `next wake ${when(cur.i.wakes[0].at)}` : 'no wake'}</a></span>` : '';
     h += `<div class="state">${state}${wake}</div>`;
     const off = data.run ? 'disabled title="Available when the run ends"' : '';
-    const r = data.review, closing = `Close${r?.state === 'exceptions' ? ` with ${plural(r.exceptions.length, 'exception')}` : r?.state === 'unreviewed' ? ' unreviewed' : ''}`;
+    const r = data.review, closing = `Close${r.state === 'exceptions' ? ` with ${plural(r.exceptions.length, 'exception')}` : r.state === 'unreviewed' ? ' unreviewed' : ''}`;
     if (open) h += data.runner.by === me.email ? `<button class="btn commit top" data-act="close" ${off}>${closing}</button>`
       : `<button class="btn top" data-act="takeover" ${off || `title="${esc(nameOf(data.runner.by))} runs it: their logins, their sign-off. Taking over makes it yours."`}>Take over</button>`;
     else h += cur.s.single ? '<button class="btn top" data-act="start-series">Start series</button>' : '<button class="btn top" data-act="duplicate">Duplicate</button>';
@@ -765,15 +767,15 @@ function tile(item) {
   const corner = on.length ? `<span class="corner ${open ? 'ask' : ''}"></span>` : '';
   const mark = `${seen[item.id] !== sig(item) ? 'fresh' : ''} ${prevSigs[item.id] && prevSigs[item.id] !== sig(item) ? 'flash' : ''}`;
   if (!item.file) {
-    return `<div class="tile ghost ${mark}" data-item="${esc(item.id)}">${corner}<div class="ext"><span>${esc(item.kind.toUpperCase())}</span><span class="nc ${open ? 'q' : ''}">${count}</span></div><div class="fn">${esc(item.name)}</div><div class="meta">${item.kind === 'input' ? 'Missing' : 'Not built yet'}</div></div>`;
+    return `<div class="tile ghost ${mark}" data-item="${esc(item.id)}">${corner}<div class="ext"><span>${esc(item.kind.toUpperCase())}</span><span class="nc ${open ? 'q' : ''}">${count}</span></div><div class="fn">${esc(item.name)}</div><div class="meta">${item.kind === 'input' || item.id === 'review' ? 'Missing' : 'Not built yet'}</div></div>`;
   }
   const p = provenance(item.file), sent = data.log.findLast(e => e.op === 'delivered' && e.item === item.id);
   const v = data.log.filter(e => e.op === 'point' && e.item === item.id && e.file && !e.pick).length;
   return `<div class="tile ${p.person ? 'person' : 'agent'} ${openItem === item.id ? 'on' : ''} ${mark}" data-item="${esc(item.id)}">${corner}<div class="ext"><span>${esc(ext(item.file))}${v > 1 ? ' · v' + v : ''}</span><span class="nc ${open ? 'q' : ''}">${count}</span></div><div class="fn">${esc(item.name)}</div><div class="file">${esc(fname(item.file))}</div>${item.headline ? `<div class="hl">${esc(item.headline)}</div>` : ''}${item.source ? `<div class="src">${esc(item.source)}</div>` : ''}${item.destination ? `<div class="dst" title="${esc(item.destination)}">\u2192 ${esc(item.destination)}</div>` : ''}${sent ? `<div class="sent" title="${esc(sent.receipt)}">Sent ${hhmm(sent.at)} to ${esc(sent.to)}</div>` : ''}${drawOf(item) ? `<div class="${unpassedOf(item).length ? 'hl' : 'ok'}">${unpassedOf(item).length ? `${plural(unpassedOf(item).length, 'pick')} to pass` : 'Every pick passed'}</div>` : evidence(item) && passOf(item) ? `<div class="ok">Passed · ${person(passOf(item).by)}</div>` : ''}<div class="meta"><b>${person(p.by)}</b> · ${hhmm(p.at)}</div></div>`;
 }
 
-// The instance in three slices: Inputs; Outputs; and Review, the evidence for whoever closes it, the review sheet first and then the
-// steps, there only once it has some. On a desktop a toggle, kept in this browser, shows Inputs and Outputs as lists, each sorting by
+// The instance in three slices: Inputs; Outputs; and Review, the evidence for whoever closes it, the review sheet first, missing until
+// the agent writes it, and then the steps. On a desktop a toggle, kept in this browser, shows Inputs and Outputs as lists, each sorting by
 // the column its heading names; a phone shows tiles, Outputs first.
 function renderPanes() {
   $('#outs').hidden = $('#rev').hidden = $('#view').hidden = !data;
@@ -782,7 +784,7 @@ function renderPanes() {
   seen = stored ? JSON.parse(stored) : {};
   if (!stored) markSeen(items);
   const ins = items.filter(i => i.kind === 'input'), outs = items.filter(i => i.kind === 'output' && !evidence(i));
-  const rev = [...items.filter(i => i.id === 'review'), ...items.filter(i => i.kind === 'step' && i.id !== 'review')], shown = rev.filter(i => i.file);
+  const rev = [...items.filter(i => i.id === 'review'), ...items.filter(i => i.kind === 'step' && i.id !== 'review')], counted = rev.filter(i => i.file || i.id === 'review');
   const head = (title, list, pane, count = list.length ? `${list.filter(i => i.file).length} of ${list.length}` : '') => `<div class="ph"><h2>${title}</h2><span class="c">${count}</span>${open && pane ? `<button class="btn" data-act="add" data-pane="${pane}">+ Add files</button>` : ''}</div>`;
   const adding = pane => uploads.filter(u => u.pane === pane && u.path === instPath()).map(u => `<div class="tile ghost"><div class="ext"><span>UPLOADING</span></div><div class="fn">${esc(u.f.name)}</div><div class="prog"><i style="width:${u.pct}%"></i></div></div>`).join('');
   const files = new Set(items.map(i => i.file)), also = new Map();
@@ -795,8 +797,7 @@ function renderPanes() {
   put($('#ins'), head('Inputs', ins, 'in') + body('in', ins) + alsoUsed + (open ? '<div class="hint">Drop files to add them. The agent decides what each one is.</div>' : ''));
   put($('#outs'), head('Outputs', outs, 'out') + body('out', outs) + (open ? '<div class="hint">Drop a revised output here.</div>' : ''));
   const asked = threads.filter(t => t.posts.some(p => p.signoff));
-  $('#rev').hidden = !rev.length && !asked.length;
-  put($('#rev'), head('Review', rev, undefined, shown.length ? `${shown.filter(i => !unpassedOf(i).length).length} of ${shown.length} passed` : '') + `<div class="tiles">${rev.map(tile).join('')}${asked.map(proposal).join('')}</div>`);
+  put($('#rev'), head('Review', rev, undefined, `${counted.filter(i => !unpassedOf(i).length).length} of ${counted.length} passed`) + `<div class="tiles">${rev.map(tile).join('')}${asked.map(proposal).join('')}</div>`);
   $('#outs').classList.toggle('busy', !!data.run);
   prevSigs = Object.fromEntries(items.map(i => [i.id, sig(i)]));
   light();
@@ -987,13 +988,19 @@ const firstLine = t => t.trim().split('\n')[0];
 const inline = s => s.replace(/!\[([^\]]*)\]\(([^)\s&]+\.(?:png|jpe?g|gif|webp|svg))\)/gi, (_, alt, f) => `<img class="md" src="${fileUrl(f)}" loading="lazy" alt="${alt}" title="${alt}" data-act="preview" data-file="${f}">`)
   .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>');
 
-function md(text) {
+// With an item's threads, each line but a heading or a table's is a point, as of the review sheet, to comment on where it stands: a
+// thread there names it by its opening words, its ref, and marks it.
+function md(text, threads) {
   let h = '', rows = [];
   const table = () => { if (rows.length) h += `<table>${rows.map(r => `<tr>${r.map(c => `<td>${inline(c)}</td>`).join('')}</tr>`).join('')}</table>`; rows = []; };
-  for (const l of esc(text).split('\n')) {
+  for (const raw of text.split('\n')) {
+    const l = esc(raw);
     if (l.trim().startsWith('|')) { if (!/^[\s|:-]+$/.test(l)) rows.push(l.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim())); continue; }
     table();
-    h += inline(l.replace(/^(\s*)[-*] /, '$1\u2022 ').replace(/^#+ (.*)/, '<b>$1</b>')) + '\n';
+    const line = inline(l.replace(/^(\s*)[-*] /, '$1\u2022 ').replace(/^#+ (.*)/, '<b>$1</b>')), point = threads && !/^\s*(#|$)/.test(raw) && raw.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, '').replace(/\*\*|`/g, '').trim();
+    if (!point) { h += line + '\n'; continue; }
+    const ref = point.length > 60 ? point.slice(0, 60).replace(/\s+\S*$/, '') + '\u2026' : point, on = threads.filter(t => t.ref && point.startsWith(t.ref.replace(/\u2026$/, '')));
+    h += `<span class="pt ${on.length ? 'noted' : ''} ${on.some(t => t.waits) ? 'q' : ''}" data-act="cell" data-ref="${esc(ref)}"${on.length ? ` data-thread="${esc(on[0].id)}" data-note="${esc(on.map(t => t.posts.map(p => `${nameOf(p.by)}: ${p.text}`).join('\n')).join('\n\n'))}"` : ''}>${line}</span>\n`;
   }
   table();
   return h.trimEnd();
@@ -1154,6 +1161,7 @@ function renderCard() {
   } else h += `<div class="cp">${item.kind === 'input' ? 'Expected input, not there yet' : `${item.kind === 'step' ? 'Step' : 'Output'} not built yet`}</div>`;
   const from = (item.from ?? []).map(f => data.doc.items.find(i => i.id === f)).filter(Boolean), passed = item.file && evidence(item) && passOf(item);
   if (passed) h += `<div class="cp ok">Passed by ${person(passed.by)} at ${hhmm(passed.at)}</div>`;
+  else if (open && item.id === 'review' && item.file) h += '<div class="cp">Passing it accepts its points. Query one you don\'t accept where it stands: click it in the preview.</div>';
   if (from.length) h += `<div class="cp">Made from ${from.map(f => `<a data-act="opencard" data-item="${esc(f.id)}">${esc(f.name)}</a>`).join(', ')}</div>`;
   if (wide) h += `<div class="cpv">${cardPv.att ? `<div class="sub"><a data-act="attachment-back">\u2190 ${esc(cardPv.title)}</a> \u00b7 ${esc(cardPv.att.title)}</div>` : ''}${previewBody(cardPv.att ?? cardPv)}</div>`
     + `<div class="full"><a data-act="preview" data-file="${esc(item.file)}" data-item="${esc(item.id)}">Open full</a></div>`;
@@ -1554,7 +1562,7 @@ function previewBody(p) {
   if (p.doc) return `<div class="pvb doc">${p.doc.map(b => b.h ? `<h${b.h}>${esc(b.text)}</h${b.h}>` : b.table ? `<table>${b.table.map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</table>`
     : b.li !== undefined ? `<p class="li" style="margin-left:${18 + b.level * 18}px">${esc(b.li)}</p>` : `<p>${esc(b.p)}</p>`).join('')}</div>`;
   if (p.pdf) return `<div class="pvb pages">${Array.from({ length: p.pdf.pages }, (_, k) => `<img data-page="${k + 1}" alt="Page ${k + 1}"${p.pdf.shown[k + 1] ? ` src="${esc(p.pdf.shown[k + 1])}"` : ''}>`).join('')}</div>`;
-  if (p.text !== undefined) return `<div class="pvb">${p.md ? `<div class="say">${md(p.text)}</div>` : `<pre>${esc(p.text)}</pre>`}</div>`;
+  if (p.text !== undefined) return `<div class="pvb">${p.md ? `<div class="say">${md(p.text, p.item && talkOn(p.item))}</div>` : `<pre>${esc(p.text)}</pre>`}</div>`;
   return `<div class="pvb"><div class="empty">${p.loading ? 'Loading…' : p.error ? esc(p.error) : 'No preview for this kind of file. Download it instead.'}</div></div>`;
 }
 // A PDF's pages, each fetched as it scrolls into view and kept apart from those the preview came with, so a card drawn again on each
@@ -1883,9 +1891,9 @@ async function onAct(act, el) {
   }
   // A task closes as a one-off, or as the first instance of a series it becomes; either may be abandoned instead.
   if (act === 'close') {
-    const waits = threads.filter(t => t.waits), task = cur.s.single, r = data.review;
-    const review = r?.state === 'exceptions' ? `Its review has ${plural(r.exceptions.length, 'exception')}, queries no one resolved:\n${threads.filter(t => r.exceptions.includes(t.id)).map(t => `• ${firstLine(t.posts[0].text)}`).join('\n')}`
-      : r?.state === 'unreviewed' ? `No one passed ${r.unpassed.map(u => `${data.doc.items.find(i => i.id === u.item).name}${u.pick === undefined ? '' : ` ${u.pick}`}`).join(', ')}.` : r ? 'Its review passed.' : '';
+    const waits = threads.filter(t => t.waits), task = cur.s.single, r = data.review, named = (i, pick) => `${i.name}${i.file ? '' : ' (missing)'}${pick === undefined ? '' : ` ${pick}`}`;
+    const review = r.state === 'exceptions' ? `Its review has ${plural(r.exceptions.length, 'exception')}, queries no one resolved:\n${threads.filter(t => r.exceptions.includes(t.id)).map(t => `• ${firstLine(t.posts[0].text)}`).join('\n')}`
+      : r.state === 'unreviewed' ? `No one passed ${r.unpassed.map(u => named(data.doc.items.find(i => i.id === u.item), u.pick)).join(', ')}.` : 'Its review passed.';
     const text = [task ? 'It becomes the record, approving nothing.' : "It becomes this period's record and an example for later instances, approving nothing.", review,
       waits.length && 'Closing accepts what the agent did for each ask still waiting:\n' + waits.map(t => `• ${firstLine(t.last.text)}`).join('\n')].filter(Boolean).join('\n\n');
     const html = (task ? `<div class="opt"><button class="btn commit" value="close">Close task</button><span>closes it as a one-off</span></div>`

@@ -56,7 +56,7 @@ before(async () => {
   const reviewed = join(root, 'instances', 'a5c0ff5e1f02');
   mkdirSync(join(reviewed, 'working'), { recursive: true });
   writeFileSync(join(reviewed, 'instance.json'), JSON.stringify({ label: '2026-10', series: 'a5c0ff5e1fee' }));
-  writeFileSync(join(reviewed, 'working', 'review.md'), '2 checks pass\n');
+  writeFileSync(join(reviewed, 'working', 'review.md'), '2 checks pass\n\n- The ledger ties to the pack.\n- **Judgment:** the October accrual is carried at the September rate, as agreed with the controller.\n');
   writeFileSync(join(reviewed, 'working', 'tie.csv'), 'ledger,pack\n');
   writeFileSync(join(reviewed, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [
     { id: 'review', name: 'Review sheet', kind: 'output', file: 'working/review.md' }, { id: 'tie', name: 'Tie-out', kind: 'step', file: 'working/tie.csv' }] }));
@@ -177,7 +177,8 @@ test("only the runner abandons, from the Close dialog, whose buttons for a task 
   await page.waitForSelector('#pv .pvh b:text-is("Credentials")');
   await page.mouse.click(5, 5);
   await page.click('#bar [data-act=close]');
-  assert.deepEqual(await page.locator('#ask button').allTextContents(), ['Abandon instead', 'Close', 'Cancel'], 'nothing to review, so its Close says no more');
+  assert.deepEqual(await page.locator('#ask button').allTextContents(), ['Abandon instead', 'Close unreviewed', 'Cancel'], 'every instance has a review sheet, so its Close says it is missing');
+  assert.match(await page.textContent('#ask') ?? '', /No one passed Review sheet \(missing\)\./);
   await page.click('#ask button:text-is("Cancel")');
   assert.match(await page.textContent('#bar .state') ?? '', /Waiting for files/);
   await page.click('#bar [data-act=close]');
@@ -702,6 +703,7 @@ test("anyone passes a piece of Review from its card, as it shows its file now, a
   await page.waitForSelector('#rev .tile[data-item=tie]');
   assert.deepEqual([await page.textContent('#bar [data-act=close]'), await page.textContent('#rev .ph .c')], ['Close unreviewed', '0 of 2 passed']);
   await page.click('#rev .tile[data-item=review]');
+  assert.match(await page.textContent('#card') ?? '', /Passing it accepts its points\. Query one you don't accept where it stands: click it in the preview\./);
   await page.click('#card [data-act=pass]');
   await page.waitForSelector('#rev .tile[data-item=review] .ok:text("Passed · ")');
   assert.equal(await page.textContent('#rev .ph .c'), '1 of 2 passed');
@@ -723,8 +725,26 @@ test("anyone passes a piece of Review from its card, as it shows its file now, a
   await page.click('#card [data-act=uncard]');
 });
 
+test("a point of the review sheet someone doesn't accept is a query at it, by its opening words, marked where it stands: an exception like any other", async () => {
+  await page.click('#rev .tile[data-item=review]');
+  await page.waitForSelector('#card .say .pt');
+  assert.deepEqual(await page.locator('#card .say .pt').allTextContents(), ['2 checks pass', '\u2022 The ledger ties to the pack.', '\u2022 Judgment: the October accrual is carried at the September rate, as agreed with the controller.']);
+  await page.click('#card .say .pt:has-text("Judgment")');
+  await page.click('#pv .say .pt:has-text("Judgment")');
+  await page.click('#pvn [data-act=comment-cell]');
+  assert.equal(await page.textContent('.compose h3'), 'Comment on Review sheet at Judgment: the October accrual is carried at the September\u2026');
+  await page.fill('#newcomment', 'Use the October rate.');
+  await page.click('[data-act=comment]');
+  await page.waitForSelector('#bar [data-act=close]:text-is("Close with 1 exception")');
+  await page.waitForSelector('#card .say .pt.noted:has-text("Judgment")');
+  assert.equal(await page.locator('#card .say .pt.noted').count(), 1, 'the point it names, and no other');
+  await page.click('#card [data-act=uncard]');
+});
+
 test("a population's Sample shows its count, total, tie-out and largest rows; a person draws picks, key and random, and passes each as its evidence page shows", async () => {
   await page.evaluate(() => location.hash === '#/a5c0ff5e1f05' || new Promise(ok => { addEventListener('hashchange', ok, { once: true }); location.hash = '#/a5c0ff5e1f05'; }));
+  await page.waitForSelector('#rev .tile.ghost[data-item=review] .meta:text-is("Missing")');
+  assert.equal(await page.textContent('#rev .ph .c'), '0 of 2 passed', 'the review sheet, missing, counts');
   await page.click('#rev .tile[data-item=invoices]');
   await page.click('#card [data-act=sample]');
   await page.waitForSelector('#pv .pvh b:text-is("Sample of Invoices")');

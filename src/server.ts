@@ -874,7 +874,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (mine) throw new HttpError(409, 'wait for the run to end');
     const { rows, total } = population(inst, item), seed = randomBytes(32).toString('hex'), picks = draw(rows, n, key, !!payload.by_amount, seed);
     if (!picks.length) throw new HttpError(400, 'the draw picks nothing: draw more, or a lower key');
-    const outputs = Object.fromEntries(inst.doc.items.filter(i => i.kind === 'output' && i.file).map(i => [i.id, sha256(inst.dir, i.file!)])), sum = sha256(inst.dir, item.file!);
+    const outputs = Object.fromEntries(inst.doc.items.filter(i => i.kind === 'output' && !evidence(i) && i.file).map(i => [i.id, sha256(inst.dir, i.file!)])), sum = sha256(inst.dir, item.file!);
     const hash = await commit(inst.dir, me, [`Draw ${picks.length} of ${item.name}`, `${item.file} ${sum}\n${Object.entries(outputs).map(([id, s]) => `${id} ${s}`).join('\n')}`, `Seed: ${seed}`].join('\n\n'));
     inst.append(by, 'draw', { item: item.id, file: item.file, sha256: sum, rows: rows.length, total, outputs, n, ...(key !== undefined && { key }), ...(payload.by_amount && { by_amount: true }), seed, picks, commit: hash, ...(quiet && { quiet: true }) });
   } else if (action === 'pick') {
