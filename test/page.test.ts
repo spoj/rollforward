@@ -411,7 +411,7 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   writeFileSync(join(mine, 'logins.json'), JSON.stringify([
     { id: 'm365', kind: 'm365', name: 'Microsoft 365', account: 'admin@demo.test', since: '2026-11-01T00:00:00Z', offers: [{ id: 'm365:onedrive', name: 'OneDrive' }, { id: 'm365:site:s1', name: 'SharePoint Reports' }] },
     { id: 'adb', kind: 'databricks', name: 'Databricks adb', since: '2026-11-01T00:00:00Z', offers: [{ id: 'adb:adb-1.azuredatabricks.net/wh1', name: 'Warehouse Finance, adb-1.azuredatabricks.net' }], expired: true },
-    { id: 'web:portal', kind: 'website', name: 'portal', since: '2026-11-02T00:00:00Z', offers: [{ id: 'web:portal', name: 'portal' }] },
+    { id: 'web:portal', kind: 'website', name: 'portal', since: '2026-11-02T00:00:00Z', offers: [{ id: 'web:portal', name: 'portal' }], keepalive: new Date(Date.now() + 86_400_000).toISOString() },
   ]));
   const lines = () => page.$$eval('#pv .lline', ls => ls.map(l => [...l.children].map(c => (c as HTMLElement).innerText.trim()).join(' | ')));
   await page.evaluate(() => openLogins());
@@ -426,7 +426,20 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   assert.deepEqual((await page.$$eval('#pv .lsub', rs => rs.map(r => (r as HTMLElement).innerText.replace(/\s+/g, ' ').trim()))).slice(2), ['Warehouse Finance, adb-1.azuredatabricks.net Remove'], "Databricks' warehouses, as Microsoft 365's sources");
   await page.click('#pv [data-act=logins-show][data-id=adb]');
   await page.click('#pv [data-act=logins-show][data-id=web]');
-  assert.match((await page.$$eval('#pv .lsub', rs => rs.map(r => (r as HTMLElement).innerText.replace(/\s+/g, ' ').trim()))).slice(2).join('\n'), /^portal portal\.test · since .+ Sign in again Sign out\nwiki wiki\.test Sign in$/);
+  assert.match((await page.$$eval('#pv .lsub', rs => rs.map(r => (r as HTMLElement).innerText.replace(/\s+/g, ' ').trim()))).slice(2).join('\n'), /^portal portal\.test · since .+, kept alive until .+ Sign in again Sign out\nwiki wiki\.test Sign in$/);
+  // Signing in, those granted keepalive may tick it, a week ahead unless they set less, and Save login sends it.
+  const saved: unknown[] = [], routes = ['**/logins/web/portal', '**/logins/web/portal/refused', '**/signins/s1/view?drive', '**/signins/s1'];
+  await page.route(routes[0], r => r.fulfill({ json: { id: 's1' } }));
+  await page.route(routes[1], r => r.fulfill({ json: { allows: true, hosts: [] } }));
+  await page.route(routes[2], r => r.fulfill({ contentType: 'text/html', body: 'live' }));
+  await page.route(routes[3], r => (r.request().method() === 'POST' && saved.push(r.request().postDataJSON()), r.fulfill({ body: 'ok' })));
+  await page.click('#pv [data-act=web-signin][data-id=portal]');
+  assert.equal(await page.isChecked('#pv #keep'), false, 'off unless ticked');
+  await page.check('#pv #keep');
+  await page.click('#pv [data-act=signin-save]');
+  await page.waitForSelector('#pv .lline');
+  assert.ok(Math.abs(Date.parse((saved[0] as { keepalive: string }).keepalive) - Date.now() - 7 * 86_400_000) < 120_000, JSON.stringify(saved));
+  for (const url of routes) await page.unroute(url);
   await page.mouse.click(5, 5);
 
   await page.evaluate(() => openStart('New instance', 'Start', () => {}, '', ['m365:onedrive', 'adb:adb-1.azuredatabricks.net/wh1']));

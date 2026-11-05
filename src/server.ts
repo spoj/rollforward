@@ -10,8 +10,8 @@ import { agentsFile, createInstance, duplicateInstance, moveInstance, renameInst
 import { AGENT, commit } from './git.ts';
 import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
-import { asPerson, authenticate, checkConfig, cli, connect, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
-import { canManage, canSee, changes, everyone, initSystem, isIn, isPeople, readJson, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
+import { asPerson, authenticate, CAPS, can, capabilities, checkConfig, cli, connect, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
+import { canManage, canSee, changes, everyone, initSystem, isPeople, readJson, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
 import { checkTicks, logins, runnerOf, saveLogin, signOut, unoffer } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
@@ -42,6 +42,14 @@ function freeName(t: Tree, ws: string, name: string): string {
   let n = name;
   for (let k = 2; taken.has(n); k++) n = `${name} ${k}`;
   return n;
+}
+
+// A website's keepalive once kept office hours, for everyone running an open instance with it ticked; now each person keeps their own
+// login alive as they sign in (browsers.ts), and the hours go.
+{
+  const all = readJson<Record<string, { hours?: string }>>('connections.json', {});
+  for (const c of Object.values(all)) delete c.hours;
+  writeJson('connections.json', all);
 }
 
 // wakes.json once kept one pending wake per target, by the target's id; each wake now has an id of its own.
@@ -418,10 +426,6 @@ function events(me: Me, req: IncomingMessage, res: ServerResponse) {
 const text = (path: string) => (existsSync(path) ? readFileSync(path, 'utf8') : '');
 // The deployment's brand, the admins': a text and a logo, which top the sidebar and are the page's title and icon.
 const brand = () => readJson<{ text?: string; logo?: string; type?: string }>('brand.json', {});
-// Capabilities beyond what every user has, each granted by admins to people and Entra groups: publish, pushing skills, which every
-// run loads, and create, making workspaces. Admins have them all.
-const CAPS = ['publish', 'create', 'sites'], granted = () => readJson<Record<string, string[]>>('capabilities.json', {});
-const can = (me: Me, cap: string) => me.role === 'admin' || isIn(me, granted()[cap] ?? []);
 const json = async (req: IncomingMessage) => {
   try { return JSON.parse((await body(req)).toString() || '{}'); } catch { throw new HttpError(400, 'the body is JSON'); }
 };
@@ -892,9 +896,9 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
         const { cap, people } = await json(req);
         if (!CAPS.includes(cap)) throw new HttpError(400, `a capability is one of ${CAPS.join(', ')}`);
         if (!isPeople(people)) throw new HttpError(400, `${cap}: a list of emails and Entra group ids: ${JSON.stringify(people)}`);
-        writeJson('capabilities.json', { ...granted(), [cap]: people.map(p => p.toLowerCase()) });
+        writeJson('capabilities.json', { ...capabilities(), [cap]: people.map(p => p.toLowerCase()) });
       }
-      send(res, 200, Object.fromEntries(CAPS.map(c => [c, granted()[c] ?? []])));
+      send(res, 200, Object.fromEntries(CAPS.map(c => [c, capabilities()[c] ?? []])));
     } else if (url.pathname === '/brand' && req.method === 'PUT') {
       if (me.role !== 'admin') throw new HttpError(403, "the deployment's brand is the admins'");
       const { text, logo, clear } = await json(req), b = { ...(!clear && brand()) };
@@ -983,7 +987,13 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       const [, , id, site] = url.pathname.split('/'), html = await viewPage(watched(me, id, site).id);
       res.writeHead(200, { 'content-type': 'text/html' }).end(html);
     }
-    else if (/^\/signins\/\w+$/.test(url.pathname) && (req.method === 'POST' || req.method === 'DELETE')) send(res, 200, (await endSignIn(me.email, url.pathname.slice(9), req.method === 'POST'), 'ok'));
+    // Saved, a login may be kept alive, by those granted keepalive; or thrown away.
+    else if (/^\/signins\/\w+$/.test(url.pathname) && req.method === 'POST') {
+      const { keepalive } = await json(req);
+      if (keepalive !== undefined && !can(me, 'keepalive')) throw new HttpError(403, 'keeping a login alive is for admins and those they grant keepalive: ask an admin');
+      send(res, 200, (await endSignIn(me.email, url.pathname.slice(9), true, keepalive), 'ok'));
+    }
+    else if (/^\/signins\/\w+$/.test(url.pathname) && req.method === 'DELETE') send(res, 200, (await endSignIn(me.email, url.pathname.slice(9), false), 'ok'));
     // Your own OpenRouter key, checked with OpenRouter as you save it, and whether your runs use it: a new one, or not using it, ends
     // its running out of credits.
     else if (url.pathname === '/logins/openrouter' && req.method === 'PUT') {

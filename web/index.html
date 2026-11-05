@@ -1167,7 +1167,7 @@ function renderPv() {
   if (account.some(([k]) => k === pv.settings?.kind)) h += `<div class="pvtabs">${account.map(([k, name]) => `<button class="tab ${pv.settings.kind === k ? 'sel' : ''}" data-act="${k}">${name}</button>`).join('')}</div>`;
   if (pv.att) h += `<div class="sub" style="padding:8px 14px"><a data-act="attachment-back">\u2190 ${esc(pv.title)}</a> \u00b7 ${esc(pv.att.title)}</div>` + previewBody(pv.att);
   else if (pv.path) h += previewBody(pv);
-  else if (pv.signin) h += `<div class="sub" style="padding:8px 14px">Sign in as you always do, then Save login. Only you see this browser.</div><div id="refused"></div><div class="pvb"><iframe src="/signins/${pv.signin}/view?drive" style="width:100%;height:100%;border:0"></iframe></div>`;
+  else if (pv.signin) h += `<div class="sub" style="padding:8px 14px">Sign in as you always do, then Save login. Only you see this browser.${me.can.includes('keepalive') ? `<label style="display:block;margin-top:6px"><input type="checkbox" id="keep"> Keep the login alive until <input type="datetime-local" id="keep-until" value="${localInput(Date.now() + 7 * 864e5)}" max="${localInput(Date.now() + 7 * 864e5)}">, a week at most: the server opens the site every few minutes, so runs while you're away find you signed in.</label>` : ''}</div><div id="refused"></div><div class="pvb"><iframe src="/signins/${pv.signin}/view?drive" style="width:100%;height:100%;border:0"></iframe></div>`;
   else if (pv.settings?.kind === 'tokens') h += `<div class="pvb vl">${tokensHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'people') h += `<div class="pvb vl"><div class="sub">Everyone who can sign in. Admins manage people with rf (Tokens): rf people, as a file to edit and set, and rf user add|role|disable|enable|signout|remove.</div><table class="ut"><tr><th>Person</th><th>Role</th><th>Workspaces</th><th>Last in</th></tr>${pv.settings.users.map(u => `<tr><td>${esc(u.name ?? '')}<div class="sub">${esc(u.email)}${u.disabled ? ' · disabled' : ''}</div></td><td>${esc(u.role)}</td><td class="sub">${esc(u.workspaces.join(', ')) || 'none'}</td><td class="sub">${esc(u.last_login ? when(u.last_login) : 'never')}</td></tr>`).join('')}</table></div>`;
   else if (pv.settings?.kind === 'logins') h += `<div class="pvb vl">${loginsHtml(pv.settings)}</div>`;
@@ -1316,7 +1316,7 @@ function loginsHtml(s) {
   if (sites.length && shown('web')) h += `<div class="sub">Sign in yourself, in a browser shown here. Your login is what that browser keeps, its cookies, never your password; a run's browser starts from it and brings it back refreshed. It reaches only the hosts listed, but there it can do whatever you can: the agent is told only to read, and each run's log counts its writes.${sites.some(w => w.header) ? " Where a site's sign-in needs a token, give it in the box under its name: it goes only to that sign-in, never to a run's browser, and is kept, sealed, for the next." : ''}</div>`
     + sites.map(w => {
       const l = mine(`web:${w.id}`);
-      return `<div class="lsub"><span>${esc(w.name)} <span class="sub">${esc([new URL(w.url).hostname, ...w.hosts].join(', '))}${l ? ` · ${l.expired ? 'expired' : `since ${esc(when(l.since))}`}` : ''}</span>`
+      return `<div class="lsub"><span>${esc(w.name)} <span class="sub">${esc([new URL(w.url).hostname, ...w.hosts].join(', '))}${l ? ` · ${l.expired ? 'expired' : `since ${esc(when(l.since))}${l.keepalive > new Date().toISOString() ? `, kept alive until ${esc(when(l.keepalive))}` : ''}`}` : ''}</span>`
         + `${w.header ? `<input type="password" id="hdr-${esc(w.id)}" placeholder="${l ? `New ${esc(w.header)}, if any` : `Your ${esc(w.header)}`}" autocomplete="off" style="display:block;width:100%;margin-top:6px">` : ''}</span>`
         + `<button class="btn" data-act="web-signin" data-id="${esc(w.id)}" data-name="${esc(w.name)}">${l ? 'Sign in again' : 'Sign in'}</button>${l ? signOut(l.id) : ''}`
         + `${w.owner === me.email ? `<button class="quiet" data-act="site-remove" data-id="${esc(w.id)}">Remove</button>` : ''}</div>`;
@@ -1898,7 +1898,7 @@ async function onAct(act, el) {
     renderPv();
   }
   if (act === 'signin-save') {
-    await api(`/signins/${pv.signin}`, { method: 'POST' });
+    await api(`/signins/${pv.signin}`, { method: 'POST', body: JSON.stringify({ keepalive: $('#keep')?.checked ? new Date($('#keep-until').value) : undefined }) });
     await openLogins();
   }
   if (act === 'orkey-save') await saveKey();

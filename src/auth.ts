@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { appendFileSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { HttpError } from './store.ts';
-import { forgetPerson, initSystem, key, readJson, rfDir, writeJson } from './system.ts';
+import { forgetPerson, initSystem, isIn, key, readJson, rfDir, writeJson } from './system.ts';
 import { forgetLogins, logins, personDir, saveLogin, type Offer } from './logins.ts';
 import { keepSignIn } from './entra.ts';
 
@@ -11,11 +11,16 @@ import { keepSignIn } from './entra.ts';
 // (OpenID Connect, code flow with PKCE), at RF_OIDC_ISSUER, for the app RF_OIDC_CLIENT_ID, which the server needs to start. The server
 // redeems the code, with the app's secret if it has one.
 
-// Admins manage people and skills, from rf, and grant users capabilities (server.ts).
+// Admins manage people and skills, from rf, and grant users capabilities.
 export type Role = 'admin' | 'user';
 export const ROLES: Role[] = ['admin', 'user'];
 export type User = { name?: string; role: Role; disabled?: boolean; sub?: string; oid?: string; groups?: string[]; epoch?: number; created?: string; last_login?: string };
 export type Me = { email: string; name: string; role: Role; groups: string[] };
+// Capabilities beyond what every user has, each granted by admins to people and Entra groups: publish, pushing skills, which every
+// run loads; create, making workspaces; sites, adding websites of one's own; and keepalive, keeping one's website logins alive
+// (browsers.ts), which loads the website every few minutes. Admins have them all.
+export const CAPS = ['publish', 'create', 'sites', 'keepalive'], capabilities = () => readJson<Record<string, string[]>>('capabilities.json', {});
+export const can = (me: Me, cap: string) => me.role === 'admin' || isIn(me, capabilities()[cap] ?? []);
 
 const env = process.env;
 const oidc = {

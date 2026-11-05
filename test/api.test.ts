@@ -355,13 +355,13 @@ test("each person sees the workspaces they're in, by email or Entra group; owner
   assert.equal((await json('/me', b)).role, 'user');
   assert.deepEqual(await workspaces(b), []);
   const grant = (cap: string, people: unknown, cookie = admin) => call('PUT', '/capabilities', JSON.stringify({ cap, people }), cookie);
-  assert.deepEqual([(await json('/me', b)).can, (await json('/me')).can], [[], ['publish', 'create', 'sites']], 'admins have every capability');
+  assert.deepEqual([(await json('/me', b)).can, (await json('/me')).can], [[], ['publish', 'create', 'sites', 'keepalive']], 'admins have every capability');
   const refused = await make('BobCo', b);
   assert.deepEqual([refused.status, await refused.text()], [403, 'making a workspace is for admins and those they grant create: ask an admin']);
   assert.equal((await grant('create', [bob], b)).status, 403, 'admins grant capabilities');
   assert.equal((await grant('create', ['Treasury'])).status, 400);
   assert.equal((await grant('delete', [bob])).status, 400);
-  assert.deepEqual(await (await grant('create', ['Bob@demo.test'])).json(), { publish: [], create: [bob], sites: [] });
+  assert.deepEqual(await (await grant('create', ['Bob@demo.test'])).json(), { publish: [], create: [bob], sites: [], keepalive: [] });
   assert.equal((await make('BobCo', b)).status, 200, 'and those granted create');
   assert.deepEqual((await workspaces(b)).map((w: { name: string; owners: string[] }) => [w.name, w.owners]), [['BobCo', [bob]]]);
   for (const path of [await at(series, '2026-08-30'), `/files/${await iid(series, '2026-08-30')}/upload/x`])
@@ -695,7 +695,7 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   assert.deepEqual((await json('/me')).brand, { text: null, logo: false });
   assert.equal((await call('GET', '/brand/logo')).status, 404);
   assert.equal((await rf('can', 'create', `${bob}, 0B8E5C8A-6D3E-4C21-9F2A-1D2E3F4A5B6C`)).trim(), `create: ${bob}, 0b8e5c8a-6d3e-4c21-9f2a-1d2e3f4a5b6c`);
-  assert.equal((await rf('can')).trim(), `publish: admins only\ncreate: ${bob}, 0b8e5c8a-6d3e-4c21-9f2a-1d2e3f4a5b6c\nsites: admins only`);
+  assert.equal((await rf('can')).trim(), `publish: admins only\ncreate: ${bob}, 0b8e5c8a-6d3e-4c21-9f2a-1d2e3f4a5b6c\nsites: admins only\nkeepalive: admins only`);
   assert.equal((await rf('can', 'create', '--clear')).trim(), 'create: admins only');
 
   // Bob runs an instance in a workspace, so taking him out of it, or his admin role when he isn't in it, is refused unless forced.

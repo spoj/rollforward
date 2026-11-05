@@ -235,49 +235,71 @@ test("a run that ended while its connection waited for its person's browser open
   await three.close();
 });
 
-test("a website's keepalive loads its page every so often in office hours, in the browser of each person running an open instance with it ticked, its state the login again, until a sign-in shows, which marks the login expired", async () => {
-  writeJson('connections.json', { pa: { type: 'website', title: 'PatriArch', url: 'https://pa.example.com/PatriArchMVC/Account/Login', hosts: ['sso.example.com'], writeback: true, keepalive: '/PatriArchMVC/', every: 10, hours: '08:00-19:00', updated_by: alice, updated_at: '' } });
-  saveLogin(alice, website('pa', 'PatriArch'), '{"cookies":["signed in"]}');
-  saveLogin('bob@demo.test', website('pa', 'PatriArch'), '{"cookies":["bob, running nothing"]}');
-  createInstance('s', 'k1', alice, ['web:pa']);
-  const monday = (h: number, m = 0) => new Date(2026, 10, 2, h, m), turns = () => starts.filter(s => s.startsWith('https://pa.example.com/PatriArchMVC/ ')).length;
+test("a person granted keepalive who keeps their login to a website alive, as they saved it, has its keepalive page, or else its address, loaded in its browser every so often, whatever the hour, until the time they set, its state the login again, until a sign-in shows, which marks the login expired", async () => {
+  const bob = 'bob@demo.test', carol = 'carol@demo.test', until = new Date(2026, 10, 9).toISOString(), at = (d: number, h: number, m = 0) => new Date(2026, 10, d, h, m);
+  writeJson('users.json', { [alice]: { role: 'admin' }, [bob]: { role: 'user' }, [carol]: { role: 'user' } });
+  writeJson('capabilities.json', { keepalive: [carol] });
+  writeJson('connections.json', { pa: { type: 'website', title: 'PatriArch', url: 'https://pa.example.com/PatriArchMVC/Account/Login', hosts: ['sso.example.com'], writeback: true, keepalive: '/PatriArchMVC/', every: 8, updated_by: alice, updated_at: '' } });
+  saveLogin(alice, { ...website('pa', 'PatriArch'), keepalive: until }, '{"cookies":["signed in"]}');
+  saveLogin(bob, { ...website('pa', 'PatriArch'), keepalive: until }, '{"cookies":["bob, not granted keepalive"]}');
+  saveLogin(carol, website('pa', 'PatriArch'), '{"cookies":["carol, not keeping it alive"]}');
+  const turns = () => starts.filter(s => s.startsWith('https://pa.example.com/PatriArchMVC/ ')).length;
   [starts.length, states.length, back, shown] = [0, 0, { cookies: ['kept alive'] }, { url: 'https://pa.example.com/PatriArchMVC/Home', password: false }];
-  await keepAlive(monday(7, 59));
-  assert.equal(turns(), 0, 'before office hours');
-  await keepAlive(monday(8));
-  assert.deepEqual([starts, states], [['https://pa.example.com/PatriArchMVC/ pa.example.com'], [{ cookies: ['signed in'] }]], "the page's host alone, in alice's browser, not bob's");
+  await keepAlive(at(7, 3));
+  assert.deepEqual([starts, states], [['https://pa.example.com/PatriArchMVC/ pa.example.com'], [{ cookies: ['signed in'] }]], "the page's host alone, in alice's browser alone, on a Saturday at 3:00");
   assert.deepEqual(JSON.parse(secret(alice, 'web:pa')), { cookies: ['kept alive'] });
-  await keepAlive(monday(8, 9));
-  await keepAlive(new Date(2026, 10, 7, 10));
-  assert.equal(turns(), 1, 'every 10 minutes, on weekdays');
+  await keepAlive(at(7, 3, 7));
+  assert.equal(turns(), 1, 'every 8 minutes, as the website says');
+  writeJson('capabilities.json', { keepalive: [carol, bob] });
+  await keepAlive(at(7, 3, 8));
+  assert.deepEqual(states.slice(1), [{ cookies: ['kept alive'] }, { cookies: ['bob, not granted keepalive'] }], 'bob too, once granted keepalive');
   const run = new Browsers(createInstance('s', 'k2', alice, ['web:pa']), 1);
   await run.browser('pa');
-  await keepAlive(monday(8, 10));
-  assert.equal(turns(), 1, "a run holds alice's browser there");
+  await keepAlive(at(7, 3, 16));
+  assert.equal(turns(), 4, "bob's alone: a run holds alice's browser there");
   await run.close();
   [shown, back] = [{ url: 'https://pa.example.com/PatriArchMVC/Account/Login', password: true }, { cookies: ['signed out'] }];
-  await keepAlive(monday(8, 20));
-  assert.equal(turns(), 2);
+  await keepAlive(at(7, 3, 24));
+  assert.equal(turns(), 6);
   assert.equal(logins(alice).find(l => l.id === 'web:pa')!.expired, true, 'a sign-in page: the login expired');
   assert.deepEqual(JSON.parse(secret(alice, 'web:pa')), { cookies: ['kept alive'] }, 'and its state stays');
-  await keepAlive(monday(8, 30));
-  assert.equal(turns(), 2, 'nothing for an expired login');
+  saveLogin(bob, { ...website('pa', 'PatriArch'), keepalive: until }, '{"cookies":["bob"]}');
+  await keepAlive(at(9, 0));
+  assert.equal(turns(), 6, 'nothing for an expired login, nor once the time its person set has come');
+  writeJson('connections.json', { crm: { type: 'website', title: 'CRM', url: 'https://crm.example.com/#/home', hosts: ['cdn.example.com'], writeback: false, updated_by: alice, updated_at: '' } });
+  saveLogin(bob, { ...website('crm', 'CRM'), keepalive: new Date(2026, 10, 12).toISOString() }, '{"cookies":["crm"]}');
+  [starts.length, shown] = [0, { url: 'https://crm.example.com/#/home', password: false }];
+  for (const m of [0, 9, 10]) await keepAlive(at(10, 12, m));
+  assert.deepEqual(starts, ['https://crm.example.com/#/home crm.example.com', 'https://crm.example.com/#/home crm.example.com'], 'its address, every 10 minutes, where the website gives no page or how often');
 });
 
-test("a person's keepalive turn that fails leaves the others' to go on", async () => {
-  writeJson('users.json', { [alice]: { role: 'admin' }, 'carol@demo.test': { role: 'user' } });
-  saveTree({ ...tree(), workspaces: { w: { ...tree().workspaces.w, members: ['carol@demo.test'] } } });
-  saveLogin('carol@demo.test', website('pa', 'PatriArch'), '{"cookies":["refused"]}');
-  createInstance('s', 'k0', 'carol@demo.test', ['web:pa']);
-  saveLogin(alice, website('pa', 'PatriArch'), '{"cookies":["signed in again"]}');
+test("saving a sign-in keeps its login alive until a time within the next 7 days, if given, and a sign-in without one no longer", async () => {
+  writeJson('connections.json', { crm: { type: 'website', title: 'CRM', url: 'https://crm.example.com', hosts: [], writeback: true, updated_by: alice, updated_at: '' } });
+  const id = await startSignIn(alice, 'crm', ''), week = Date.now() + 7 * 86_400_000;
+  for (const t of [new Date(Date.now() - 60_000).toISOString(), new Date(week + 60_000).toISOString(), 'Friday', null])
+    await assert.rejects(endSignIn(alice, id, true, t), /keepalive: a time within the next 7 days, until which your login is kept alive/, String(t));
+  await endSignIn(alice, id, true, new Date(week - 60_000).toISOString());
+  assert.equal(logins(alice).find(l => l.id === 'web:crm')!.keepalive, new Date(week - 60_000).toISOString());
+  await endSignIn(alice, await startSignIn(alice, 'crm', ''), true);
+  assert.equal(logins(alice).find(l => l.id === 'web:crm')!.keepalive, undefined);
+});
+
+test("a person's keepalive turn that fails leaves the others' to go on, and a person disabled has none", async () => {
+  const carol = 'carol@demo.test', until = new Date(2026, 10, 12).toISOString();
+  writeJson('connections.json', { pa: { type: 'website', title: 'PatriArch', url: 'https://pa.example.com/PatriArchMVC/Account/Login', hosts: ['sso.example.com'], writeback: true, keepalive: '/PatriArchMVC/', every: 8, updated_by: alice, updated_at: '' } });
+  writeJson('users.json', { [carol]: { role: 'user' }, [alice]: { role: 'admin' } });
+  writeJson('capabilities.json', { keepalive: [carol] });
+  saveLogin(carol, { ...website('pa', 'PatriArch'), keepalive: until }, '{"cookies":["refused"]}');
+  saveLogin(alice, { ...website('pa', 'PatriArch'), keepalive: until }, '{"cookies":["signed in again"]}');
   [states.length, back, shown] = [0, { cookies: ['kept alive again'] }, { url: 'https://pa.example.com/PatriArchMVC/Home', password: false }];
-  await keepAlive(new Date(2026, 10, 2, 9));
+  await keepAlive(new Date(2026, 10, 10, 9));
   assert.deepEqual(states, [{ cookies: ['refused'] }, { cookies: ['signed in again'] }], "carol's first, refused");
   assert.deepEqual(JSON.parse(secret(alice, 'web:pa')), { cookies: ['kept alive again'] });
-  writeJson('users.json', { [alice]: { role: 'admin' } });
+  writeJson('users.json', { [carol]: { role: 'user', disabled: true }, [alice]: { role: 'admin' } });
   states.length = 0;
-  await keepAlive(new Date(2026, 10, 2, 9, 10));
-  assert.deepEqual(states, [{ cookies: ['kept alive again'] }], 'nor for carol, who can no longer run her instance');
+  await keepAlive(new Date(2026, 10, 10, 9, 10));
+  assert.deepEqual(states, [{ cookies: ['kept alive again'] }], 'nor for carol, disabled');
+  writeJson('users.json', { [alice]: { role: 'admin' } });
 });
 
 test("a website that lists its people lets only them use it, admins no more than anyone: a run gets its browser only if its runner and all who took part in its instance are among them, and else goes on without it, logged once", async () => {
@@ -285,8 +307,9 @@ test("a website that lists its people lets only them use it, admins no more than
   writeJson('users.json', { [alice]: { role: 'admin' }, [bob]: { role: 'user', groups: [treasury] } });
   saveTree({ ...tree(), workspaces: { w: { ...tree().workspaces.w, members: [bob] } } });
   writeJson('connections.json', { bank: { type: 'website', title: 'Bank', url: 'https://bank.example.com', hosts: [], writeback: false, keepalive: '/home', every: 10, people: [treasury], updated_by: alice, updated_at: '' } });
-  saveLogin(alice, website('bank', 'Bank'), '{"cookies":["alice"]}');
-  saveLogin(bob, website('bank', 'Bank'), '{"cookies":["bob"]}');
+  writeJson('capabilities.json', { keepalive: [treasury] });
+  saveLogin(alice, { ...website('bank', 'Bank'), keepalive: new Date(2026, 10, 9).toISOString() }, '{"cookies":["alice"]}');
+  saveLogin(bob, { ...website('bank', 'Bank'), keepalive: new Date(2026, 10, 9).toISOString() }, '{"cookies":["bob"]}');
   assert.ok(scoped('web:bank') && !scoped('m365:mail:x'), 'never lent through a shared series');
   await assert.rejects(new Browsers(createInstance('s', 'b1', alice, ['web:bank']), 1).browser('bank'), /Bank is only for the people its connection lists, and alice@demo.test, who runs this instance, is not among them/);
   await assert.rejects(startSignIn(alice, 'bank', ''), /Bank is only for the people its connection lists/);
@@ -305,7 +328,7 @@ test("a website that lists its people lets only them use it, admins no more than
   await assert.rejects(new Browsers(woken, 1).browser('bank'), /alice@demo.test, who took part in this instance/, 'nor where she woke it');
   [states.length, shown] = [0, { url: 'https://bank.example.com/home', password: false }];
   await keepAlive(new Date(2026, 10, 2, 9));
-  assert.deepEqual(states, [{ cookies: ['bob'] }], "kept alive for bob alone, though alice's instance ticks it too");
+  assert.deepEqual(states, [{ cookies: ['bob'] }], 'kept alive for bob alone, though alice keeps hers alive too');
   writeJson('users.json', { [alice]: { role: 'admin' } });
 });
 

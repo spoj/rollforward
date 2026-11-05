@@ -564,6 +564,21 @@ test("a person granted sites adds a website of their own, theirs alone: they all
   refused = [];
 });
 
+test('saving a sign-in keeps its login alive until the time given, for those admins grant keepalive', async () => {
+  const until = new Date(Date.now() + 86_400_000).toISOString(), save = async () => {
+    const { id } = await (await call('POST', '/logins/web/kept', {}, bob)).json(), res = await call('POST', `/signins/${id}`, { keepalive: until }, bob);
+    if (res.status !== 200) await call('DELETE', `/signins/${id}`, undefined, bob);
+    return [res.status, await res.text()];
+  };
+  assert.equal((await call('PUT', '/connections/kept', { type: 'website', title: 'Kept', url: 'https://kept.example.com/' })).status, 200);
+  assert.deepEqual(await save(), [403, 'keeping a login alive is for admins and those they grant keepalive: ask an admin']);
+  assert.equal((await call('PUT', '/capabilities', { cap: 'keepalive', people: [BOB] })).status, 200);
+  assert.deepEqual(await save(), [200, 'ok']);
+  assert.equal((await (await call('GET', '/logins', undefined, bob)).json()).find((l: { id: string }) => l.id === 'web:kept').keepalive, until);
+  assert.equal((await call('DELETE', '/connections/kept')).status, 200);
+  assert.equal((await call('DELETE', '/logins/web:kept', undefined, bob)).status, 200);
+});
+
 test("a run's Pi idles only with nothing but Pi running in its sandbox, and ends as more Pis idle than RF_MAX_IDLE, past RF_IDLE_MIN, or as its instance closes or is abandoned", async () => {
   proc.kill();
   await once(proc, 'exit');

@@ -361,29 +361,29 @@ test('admins keep connections, each a name, a type and its settings; the website
   const { connections, removeConnection, setConnection } = await import('../src/connections.ts');
   const { websites } = await import('../src/browsers.ts'), { existsSync } = await import('node:fs');
   assert.deepEqual(connections().map(c => [c.name, c.type]), [['graph', 'graph'], ['portal', 'website'], ['adb', 'databricks']]);
-  assert.deepEqual(websites().portal, { name: 'The Portal', url: 'https://portal.test/#/login', hosts: ['cdn.portal.test'], writeback: true, header: undefined, keepalive: undefined, every: undefined, hours: undefined, people: undefined });
+  assert.deepEqual(websites().portal, { name: 'The Portal', url: 'https://portal.test/#/login', hosts: ['cdn.portal.test'], writeback: true, header: undefined, keepalive: undefined, every: undefined, people: undefined });
   assert.ok(!existsSync(join(tmp, '.rf', 'websites.json')));
   await assert.rejects(setConnection('Portal', { type: 'website', url: 'https://portal.test' }, 'admin'), /a connection's name is/);
   await assert.rejects(setConnection('erp', { type: 'ftp' }, 'admin'), /type: one of graph, databricks, website/);
   await assert.rejects(setConnection('erp', { type: 'website', url: 'portal.test' }, 'admin'), /an http\(s\) address/);
   await assert.rejects(setConnection('erp', { type: 'website', url: 'https://erp.test', hosts: 'cdn.erp.test/x' }, 'admin'), /hosts: names/);
   await assert.rejects(setConnection('erp', { type: 'website', url: 'https://erp.test', header: 'x bot' }, 'admin'), /header: the name of a header/);
-  await assert.rejects(setConnection('erp', { type: 'website', url: 'https://erp.test', keepalive: '/app/' }, 'admin'), /keepalive and every go together/);
   await assert.rejects(setConnection('erp', { type: 'website', url: 'https://erp.test', people: 'Treasury' }, 'admin'), /people: who alone may use it/);
   await assert.rejects(setConnection('erp', { type: 'website', url: 'https://erp.test', keepalive: '/app/', every: '10' }, 'admin'), /every: minutes or hours/);
   for (const keepalive of ['https://sso.test/app/', 'C:/Program Files/Git/app/'])
     await assert.rejects(setConnection('erp', { type: 'website', url: 'https://erp.test', keepalive, every: '10m' }, 'admin'), /keepalive: a page of the website, by its address or path/, `${keepalive}: another host's, or a path Git Bash rewrote`);
-  await assert.rejects(setConnection('erp', { type: 'website', url: 'https://erp.test', keepalive: '/app/', every: '10m', hours: '8-19' }, 'admin'), /hours: from and to/);
   // What any website may reach: not another's address, nor what another connection serves, though hosts such as single sign-on's
   // they share; and a wildcard within one registrable domain, the Public Suffix List's private suffixes counting as public.
   for (const [hosts, why] of [['portal.test', /portal\.test is portal's/], ['graph.microsoft.com', /graph\.microsoft\.com is graph's/],
     ['*.co.uk', /\*\.co\.uk: a wildcard stays within one registrable domain/], ['*.github.io', /\*\.github\.io: a wildcard stays/]])
     await assert.rejects(setConnection('erp', { type: 'website', url: 'https://erp.test/', hosts }, 'admin'), why, hosts);
   await setConnection('erp', { type: 'website', url: 'https://erp.test/', hosts: 'cdn.portal.test, *.eu.sso.test' }, 'admin');
-  await setConnection('erp', { type: 'website', url: 'https://erp.test/', hosts: 'cdn.erp.test, *.sso.test', writeback: 'false', header: 'x-bot-token', keepalive: '/app/', every: '1h', hours: '08:00-19:00', people: 'Ann@x.test, 0b1c2d3e-0000-4000-8000-000000000001' }, 'admin');
-  assert.deepEqual(websites().erp, { name: 'erp', url: 'https://erp.test/', hosts: ['cdn.erp.test', '*.sso.test'], writeback: false, header: 'x-bot-token', keepalive: '/app/', every: 60, hours: '08:00-19:00', people: ['ann@x.test', '0b1c2d3e-0000-4000-8000-000000000001'] });
-  await setConnection('erp', { type: 'website', url: 'https://erp.test/', keepalive: 'https://erp.test/app/', every: '10m' }, 'admin');
-  assert.equal(websites().erp.keepalive, 'https://erp.test/app/', 'a page by its address, as given');
+  await setConnection('erp', { type: 'website', url: 'https://erp.test/', hosts: 'cdn.erp.test, *.sso.test', writeback: 'false', header: 'x-bot-token', keepalive: '/app/', every: '1h', people: 'Ann@x.test, 0b1c2d3e-0000-4000-8000-000000000001' }, 'admin');
+  assert.deepEqual(websites().erp, { name: 'erp', url: 'https://erp.test/', hosts: ['cdn.erp.test', '*.sso.test'], writeback: false, header: 'x-bot-token', keepalive: '/app/', every: 60, people: ['ann@x.test', '0b1c2d3e-0000-4000-8000-000000000001'] });
+  await setConnection('erp', { type: 'website', url: 'https://erp.test/', keepalive: 'https://erp.test/app/' }, 'admin');
+  assert.deepEqual([websites().erp.keepalive, websites().erp.every], ['https://erp.test/app/', undefined], 'a page by its address, as given, and no every, for the default');
+  await setConnection('erp', { type: 'website', url: 'https://erp.test/', every: '8m' }, 'admin');
+  assert.deepEqual([websites().erp.keepalive, websites().erp.every], [undefined, 8], 'how often, and no page, for its address');
   removeConnection('erp');
   assert.throws(() => removeConnection('erp'), /no connection erp/);
 });

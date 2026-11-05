@@ -50,20 +50,21 @@ rf user add EMAIL [admin] | role EMAIL admin|user [--force] | disable EMAIL | en
 rf connection set NAME TYPE [--SETTING VALUE]...   an outside system runs reach as their runner, by a login each person makes:
                                   graph, Microsoft 365, and databricks, Azure Databricks, each with no settings, as each
                                   person adds what their login offers; website, --url URL [--hosts HOST,...] [--title TITLE]
-                                  [--writeback false] [--header NAME] [--keepalive PAGE --every 10m [--hours 08:00-19:00]]
+                                  [--writeback false] [--header NAME] [--keepalive PAGE] [--every 10m]
                                   [--people EMAIL|GROUP,...], where people sign in, the other hosts its pages need, such as
                                   *.example.com, whether a run's browser writes its state back, a header its sign-in needs
-                                  that its pages never send, such as x-bot-token, whose value each person gives, a page, by
-                                  its address or path, such as https://patriarch.patrina.net/PatriArchMVC/, to load in each
-                                  live login's browser every so often, in office hours on weekdays if given, so idle sessions
-                                  stay alive, and who alone may use it, by email or Entra group id
+                                  that its pages never send, such as x-bot-token, whose value each person gives, the page a
+                                  login kept alive loads, by its address or path, such as
+                                  https://patriarch.patrina.net/PatriArchMVC/, else the address, and how often, 10m unless
+                                  given, and who alone may use it, by email or Entra group id
 rf connection remove NAME
 rf connection off|on NAME         a website switched off, for no one to use, such as a person's own, or on again
 rf brand [--text TEXT] [--logo FILE] [--clear]   the deployment's text and logo, a .png, .jpg, .gif, .webp or .svg, which top
                                   the sidebar and are the page's title and icon; --clear goes back to the plain look, and with
                                   no option it prints them
 rf can [CAP [EMAIL|GROUP,...] [--clear]]   what users may do beyond the rest, as admins may: publish, push skills;
-                                  create, make workspaces; and sites, add websites of their own; a list grants CAP to those
+                                  create, make workspaces; sites, add websites of their own; and keepalive, keep their
+                                  website logins alive for up to a week as they sign in; a list grants CAP to those
                                   emails and Entra group ids in place of whom it had, --clear to no one, and with neither it
                                   prints whom each is granted to`;
 
