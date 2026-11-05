@@ -8,7 +8,7 @@ import type { JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { prepare, sources } from './indexes.ts';
 import { canSee, changes, everyone, readJson, rfDir, tree, type Tree, writeJson } from './system.ts';
 import { asPerson, users } from './auth.ts';
-import { scoped, type Browsers } from './browsers.ts';
+import type { Browsers } from './browsers.ts';
 import { seriesSettings } from './series.ts';
 import { pushed, skills } from './skills.ts';
 import { AGENT, commit, committed } from './git.ts';
@@ -464,7 +464,7 @@ function fire() {
     const runs = sharer && canSee(sharer, t.workspaces[t.series[target].workspace]);
     try {
       if (!runs) throw new Error('not shared');
-      startWith(target, label!, shared.by, shared.logins.filter(t => !scoped(t)), { from });
+      startWith(target, label!, shared.by, shared.logins, { from });
     } catch {
       w.requests[newId()] = { series: target, label: label!, from, at: now };
     }

@@ -37,7 +37,9 @@ const service = createServer(async (req, res) => {
 }).on('upgrade', (req, socket) => socket.end(`HTTP/1.1 101 Switching Protocols\r\n\r\nservice got ${req.url}`));
 await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
 Object.assign(process.env, { RF_BROWSER_URL: `http://127.0.0.1:${(service.address() as { port: number }).port}`, RF_BROWSER_IDLE_MS: '300' });
-const { Browsers, endSignIn, keepAlive, reap, scoped, startSignIn } = await import('../src/browsers.ts');
+const { Browsers, endSignIn, keepAlive, reap, startSignIn } = await import('../src/browsers.ts');
+const { ask, decide, grants, lapse, revoke } = await import('../src/grants.ts');
+const { asPerson } = await import('../src/auth.ts');
 const { serveAgent } = await import('../src/agent-api.ts');
 const { logins, personDir, saveLogin, secret, signOut } = await import('../src/logins.ts');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-shots-'));
@@ -46,6 +48,9 @@ openStore(tmp);
 saveTree({ workspaces: { w: { name: 'Acme', owners: ['alice@demo.test'], members: [] } }, series: { s: { name: 'Portal pull', workspace: 'w' } } });
 mkdirSync(join(tmp, 'series', 's'), { recursive: true });
 writeJson('users.json', { 'alice@demo.test': { role: 'admin' } });
+// Everyone the tests run as has an approved grant to each website they use, in Acme (grants.ts), but where a test says otherwise.
+const everyone = Object.fromEntries(['alice@demo.test', 'bob@demo.test', 'carol@demo.test'].flatMap(p => ['crm', 'ledger', 'rl', 'pa', 'erp'].map(s => [`${p} ${s}`, { workspace: 'w', person: p, site: s, reason: 'tests', at: '', state: 'approved' }])));
+writeJson('grants.json', everyone);
 
 after(() => {
   service.close();
@@ -316,34 +321,56 @@ test("a person's keepalive turn that fails leaves the others' to go on, and a pe
   writeJson('users.json', { [alice]: { role: 'admin' } });
 });
 
-test("a website that lists its people lets only them use it, admins no more than anyone: a run gets its browser only if its runner and all who took part in its instance are among them, and else goes on without it, logged once", async () => {
-  const bob = 'bob@demo.test', treasury = '0b1c2d3e-0000-4000-8000-000000000001';
-  writeJson('users.json', { [alice]: { role: 'admin' }, [bob]: { role: 'user', groups: [treasury] } });
+test("a run gets its browser on a website only where its runner's grant to it in the instance's workspace is approved, else goes on without it, logged once; a login is kept alive only while a grant of its person's is approved, and revoked, signed out", async () => {
+  const bob = 'bob@demo.test', until = new Date(2026, 10, 9).toISOString();
+  writeJson('users.json', { [alice]: { role: 'admin' }, [bob]: { role: 'user' } });
   saveTree({ ...tree(), workspaces: { w: { ...tree().workspaces.w, members: [bob] } } });
-  writeJson('connections.json', { bank: { type: 'website', title: 'Bank', url: 'https://bank.example.com', hosts: [], writeback: false, keepalive: '/home', every: 10, people: [treasury], updated_by: alice, updated_at: '' } });
-  writeJson('capabilities.json', { keepalive: [treasury] });
-  saveLogin(alice, { ...website('bank', 'Bank'), keepalive: new Date(2026, 10, 9).toISOString() }, '{"cookies":["alice"]}');
-  saveLogin(bob, { ...website('bank', 'Bank'), keepalive: new Date(2026, 10, 9).toISOString() }, '{"cookies":["bob"]}');
-  assert.ok(scoped('web:bank') && !scoped('m365:mail:x'), 'never lent through a shared series');
-  await assert.rejects(new Browsers(createInstance('s', 'b1', alice, ['web:bank']), 1).browser('bank'), /Bank is only for the people its connection lists, and alice@demo.test, who runs this instance, is not among them/);
-  await assert.rejects(startSignIn(alice, 'bank', ''), /Bank is only for the people its connection lists/);
-  const his = createInstance('s', 'b2', bob, ['web:bank']), run = new Browsers(his, 1), heard: string[] = [], hear = (id: string) => heard.push(id);
+  writeJson('connections.json', { bank: { type: 'website', title: 'Bank', url: 'https://bank.example.com', hosts: [], writeback: false, keepalive: '/home', every: 10, owner: alice, updated_by: alice, updated_at: '' } });
+  writeJson('capabilities.json', { keepalive: [bob] });
+  writeJson('grants.json', {});
+  saveLogin(alice, { ...website('bank', 'Bank'), keepalive: until }, '{"cookies":["alice"]}');
+  saveLogin(bob, { ...website('bank', 'Bank'), keepalive: until }, '{"cookies":["bob"]}');
+  const his = createInstance('s', 'b2', bob, ['web:bank']);
+  const first = new Browsers(his, 1);
+  for (const _ of [1, 2]) await assert.rejects(first.browser('bank'), /^Error: bob@demo\.test has no approved grant to use Bank in Acme: they ask its owners for one on the Logins page; this run goes on without it$/);
+  assert.deepEqual(his.log.filter(e => e.action === 'refused').map(e => e.run), [1], 'logged once a run');
+  const id = ask(asPerson(bob)!, 'bank', 'w', 'daily balances');
+  await assert.rejects(new Browsers(his, 2).browser('bank'), /no approved grant/, 'asked is not approved');
+  decide(asPerson(alice)!, id, true, '');
+  const run = new Browsers(his, 3), heard: string[] = [], hear = (x: string) => heard.push(x);
   changes.on('change', hear);
-  assert.equal(await run.browser('bank'), 'b9', 'bob, by his Entra group');
+  assert.equal(await run.browser('bank'), 'b9');
   changes.off('change', hear);
-  assert.deepEqual([heard, [...run.watchable(bob)], [...run.watchable(alice)]], [[his.id], [['bank', 'b9']], []], "its instance's page hears it opened, for bob to watch, and not alice, an admin, who sees the instance");
+  assert.deepEqual([heard, [...run.watchable()]], [[his.id], [['bank', 'b9']]], "its instance's page hears it opened, for whoever sees the instance to watch");
   await run.close();
-  his.append(alice, 'comment', { thread: 't1', text: 'Fetch the balance.' });
-  const next = new Browsers(his, 2);
-  for (const _ of [1, 2]) await assert.rejects(next.browser('bank'), /alice@demo.test, who took part in this instance, is not among them: this run goes on without it/);
-  assert.deepEqual(his.log.filter(e => e.action === 'refused').map(e => e.run), [2], 'logged once');
-  const woken = createInstance('s', 'b3', bob, ['web:bank']);
-  woken.append('server', 'wake', { from: alice });
-  await assert.rejects(new Browsers(woken, 1).browser('bank'), /alice@demo.test, who took part in this instance/, 'nor where she woke it');
   [states.length, shown] = [0, { url: 'https://bank.example.com/home', password: false }];
   await keepAlive(new Date(2026, 10, 2, 9));
-  assert.deepEqual(states, [{ cookies: ['bob'] }], 'kept alive for bob alone, though alice keeps hers alive too');
+  assert.deepEqual(states, [{ cookies: ['bob'] }], 'kept alive for bob, whose grant is approved, not for alice, who has none');
+  revoke(asPerson(alice)!, id);
+  assert.ok(!logins(bob).some(l => l.id === 'web:bank'), 'revoked, with nothing left pending or approved, bob is signed out of it');
+  await assert.rejects(new Browsers(his, 4).browser('bank'), /bob@demo\.test no longer has a login offering web:bank/);
+  signOut(alice, 'web:bank');
   writeJson('users.json', { [alice]: { role: 'admin' } });
+  writeJson('grants.json', everyone);
+});
+
+test('a request lapses a week after it was asked, and a login no approved grant uses is signed out a week after its sign-in', async () => {
+  const bob = 'bob@demo.test', week = 7 * 86_400_000, since = new Date().toISOString();
+  writeJson('users.json', { [alice]: { role: 'admin' }, [bob]: { role: 'user' } });
+  writeJson('connections.json', { bank: { type: 'website', url: 'https://bank.example.com', hosts: [], owner: alice }, crm: { type: 'website', url: 'https://crm.example.com', hosts: [], owner: alice } });
+  writeJson('grants.json', {});
+  saveLogin(bob, { ...website('bank', 'Bank'), since }, '{}');
+  saveLogin(bob, { ...website('crm', 'CRM'), since }, '{}');
+  const asked = ask(asPerson(bob)!, 'bank', 'w', 'balances'), used = ask(asPerson(bob)!, 'crm', 'w', 'invoices');
+  decide(asPerson(alice)!, used, true, '');
+  lapse(Date.now() + week - 60_000);
+  const theirs = () => logins(bob).map(l => l.id).filter(id => ['web:bank', 'web:crm'].includes(id));
+  assert.deepEqual([grants()[asked].state, theirs()], ['pending', ['web:bank', 'web:crm']], 'not yet a week');
+  lapse(Date.now() + week + 60_000);
+  assert.deepEqual([grants()[asked].state, grants()[used].state, theirs()], ['lapsed', 'approved', ['web:crm']], 'the request lapsed, and the login it waited on went with it; the approved one stays');
+  signOut(bob, 'web:crm');
+  writeJson('users.json', { [alice]: { role: 'admin' } });
+  writeJson('grants.json', everyone);
 });
 
 test("as the server starts, the browsers a restart left open on the service close: a run's keeps its request log and hands its login back, as its run would have, and a sign-in's just goes", async t => {

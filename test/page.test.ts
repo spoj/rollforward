@@ -460,7 +460,7 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   assert.deepEqual((await page.$$eval('#pv .lsub', rs => rs.map(r => (r as HTMLElement).innerText.replace(/\s+/g, ' ').trim()))).slice(2), ['Warehouse Finance, adb-1.azuredatabricks.net Remove'], "Databricks' warehouses, as Microsoft 365's sources");
   await page.click('#pv [data-act=logins-show][data-id=adb]');
   await page.click('#pv [data-act=logins-show][data-id=web]');
-  assert.match((await page.$$eval('#pv .lsub', rs => rs.map(r => (r as HTMLElement).innerText.replace(/\s+/g, ' ').trim()))).slice(2).join('\n'), /^portal portal\.test · since .+, kept alive until .+ Sign in again Sign out\nwiki wiki\.test Sign in$/);
+  assert.match((await page.$$eval('#pv .lsub', rs => rs.map(r => (r as HTMLElement).innerText.replace(/\s+/g, ' ').trim()))).slice(2).join('\n'), /^portal portal\.test · since .+, kept alive until .+ Sign in again Sign out Remove\nwiki wiki\.test Sign in Remove$/);
   // Signing in, those granted keepalive may tick it, a week ahead unless they set less, and Save login sends it.
   const saved: unknown[] = [], routes = ['**/logins/web/portal', '**/logins/web/portal/refused', '**/signins/s1/view?drive', '**/signins/s1'];
   await page.route(routes[0], r => r.fulfill({ json: { id: 's1' } }));

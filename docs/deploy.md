@@ -112,4 +112,4 @@ A data root of the team's fork (its main at a1fa8db, with folders `<workspace>/<
 2. From the rollforward host, `curl -fsS -H "authorization: Bearer $RF_BROWSER_KEY" $RF_BROWSER_URL/sessions` answers `[]`.
 3. Sign in at `RF_PUBLIC_URL` as one of `RF_ADMINS` and make a workspace. With its +, start a task and comment "Reply OK". The run ends within a few minutes, for about $0.05.
 4. Under Logins, Connect Microsoft 365.
-5. Add a website with `rf connection set NAME website --url URL` (rf and a token come from Tokens), sign in to it from Logins, and save the login.
+5. Under Logins, Websites, add a website by its name and address, sign in to it, save the login, and ask to use it in the workspace, which you approve under Waiting on you.

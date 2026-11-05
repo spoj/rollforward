@@ -492,7 +492,8 @@ const upgrade = (path: string, cookie: string, origin = base) => new Promise<str
 
 test("whoever sees an instance watches its run's browser live from the page, the person whose login it's in alone taking control of it, and their Stop browser interrupts the run, closing it", async () => {
   const carol = await login('carol@demo.test');
-  assert.equal((await call('PUT', '/connections/portal', { type: 'website', title: 'Portal', url: 'https://portal.example.com/', writeback: false })).status, 200);
+  assert.equal((await call('POST', '/logins/sites', { name: 'portal', url: 'https://portal.example.com/' })).status, 200);
+  assert.equal((await call('PATCH', '/logins/sites/portal', { title: 'Portal', writeback: false })).status, 200);
   const { id: signIn } = await (await call('POST', '/logins/web/portal', {})).json();
   assert.match(await upgrade(`/signins/${signIn}/view/drive`, admin), /service got \/sessions\/b1\/view\/drive$/, 'a sign-in is its person\'s to drive');
   assert.match(await upgrade(`/signins/${signIn}/view/drive`, admin, 'https://evil.example.com'), /^HTTP\/1.1 404/, "only from the server's own pages");
@@ -500,6 +501,8 @@ test("whoever sees an instance watches its run's browser live from the page, the
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Watching' })).json();
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB] })).status, 200);
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Portal pull' })).json();
+  const { id: grant } = await (await call('POST', '/grants', { site: 'portal', workspace: ws, reason: 'portal pulls' })).json();
+  assert.equal((await call('POST', `/grants/${grant}`, { approve: true })).status, 200);
   scripts.push({ bash: ['curl -s -m 5 -H "connection: upgrade" -H "upgrade: websocket" "$RF_BROWSERS/portal"; touch working/opened; sleep 120'], report: 'Never said.', saw: [] });
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: ['web:portal'] })).json(), view = `/runs/${id}/portal/view`;
   await until('the browser', () => existsSync(join(root, 'instances', id, 'working', 'opened')));
@@ -520,35 +523,42 @@ test("whoever sees an instance watches its run's browser live from the page, the
     [BOB, [[ADMIN, 'portal', 'drive'], ['server', 'portal', undefined]], null], "the admin's control logged as theirs, the interrupt as bob's, and the browser gone");
 });
 
-test("a person granted sites adds a website of their own, theirs alone: they allow the hosts its pages need as they sign in, the hosts a run's browser was refused wait on them, and an admin may switch it off", async () => {
+test("anyone adds a website, theirs to set: they allow the hosts its pages need as they sign in, a run uses it where its workspace's owners approved its runner's grant, the hosts a run's browser was refused wait on its owner, and an admin may switch it off", async () => {
   const carol = await login('carol@demo.test'), add = (body: object) => call('POST', '/logins/sites', { name: 'bobs', url: 'https://bobs.example.com/', ...body }, bob);
   const said = async (res: Response) => [res.status, await res.text()];
   const allow = (host: string, cookie = bob) => call('POST', '/logins/web/bobs/hosts', { host }, cookie);
   const listed = async (cookie: string) => (await (await call('GET', '/connections', undefined, cookie)).json()).find((c: { name: string }) => c.name === 'bobs');
-  assert.equal((await add({})).status, 403, 'only those admins grant sites');
-  assert.equal((await call('PUT', '/capabilities', { cap: 'sites', people: [BOB] })).status, 200);
   assert.deepEqual(await said(await add({ url: 'http://bobs.example.com/' })), [400, 'url: an https address, where its sign-in starts']);
   assert.deepEqual(await said(await add({ name: 'graph' })), [409, 'graph is taken: name yours otherwise']);
-  assert.deepEqual(await said(await add({ url: 'https://10.1.2.3/' })), [400, '10.1.2.3 is at an internal address: a website of your own reaches none']);
+  assert.deepEqual(await said(await add({ url: 'https://10.1.2.3/' })), [400, '10.1.2.3 is at an internal address: a website reaches one only where an admin lets it']);
   assert.equal((await add({})).status, 200);
-  assert.deepEqual([(await listed(bob))?.owner, (await listed(bob))?.allowed, await listed(carol), (await listed(admin))?.owner], [BOB, true, undefined, BOB], "listed for its person and admins alone");
+  assert.deepEqual([(await listed(bob))?.owner, (await listed(carol))?.owner], [BOB, BOB], 'everyone sees it, to sign in to it too');
 
-  // Signing in, its pages ask for hosts it doesn't reach: its person allows those its sign-in needs, and the open browser reaches them.
+  // Signing in, its pages ask for hosts it doesn't reach: its owner allows those its sign-in needs, and the open browser reaches them.
   refused = ['https://sso.idp.test/a', 'https://cdn.idp.test/x.js', 'https://sso.idp.test/b'];
   const { id: signIn } = await (await call('POST', '/logins/web/bobs', {}, bob)).json();
   assert.deepEqual(await (await call('GET', '/logins/web/bobs/refused', undefined, bob)).json(),
     { allows: true, hosts: [{ host: '*.idp.test', count: 3 }, { host: 'sso.idp.test', count: 2 }, { host: 'cdn.idp.test', count: 1 }] });
   assert.deepEqual(await said(await allow('*.co.uk')), [400, '*.co.uk: a wildcard stays within one registrable domain, such as *.example.com']);
   assert.deepEqual(await said(await allow('graph.microsoft.com')), [400, "graph.microsoft.com is graph's: no other website reaches it"]);
-  assert.deepEqual(await said(await allow('sso.idp.test', carol)), [403, "bobs's hosts are bob@demo.test's to allow"]);
+  assert.deepEqual(await said(await allow('sso.idp.test', carol)), [403, "bobs's hosts are bob@demo.test's to allow, or an admin's"]);
   assert.equal((await allow('sso.idp.test')).status, 200);
   assert.deepEqual(told.slice(-2), [`PUT /sessions/${signIn}/hosts {"hosts":["bobs.example.com","sso.idp.test"]}`, `POST /sessions/${signIn}/reload `]);
   assert.deepEqual((await (await call('GET', '/logins/web/bobs/refused', undefined, bob)).json()).hosts, [{ host: 'cdn.idp.test', count: 1 }], 'what it reaches now is no longer refused');
   assert.equal((await call('POST', `/signins/${signIn}`, undefined, bob)).status, 200);
 
-  // A run's browser refused a host: it waits on the website's person, under Waiting on you, until they allow it.
+  // Bob asks to use it in a workspace, whose owner approves: from then on, he allows hosts only within the domains it reaches.
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Own sites' })).json();
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB] })).status, 200);
+  assert.deepEqual(await said(await call('POST', '/grants', { site: 'bobs', workspace: ws, reason: '' }, bob)), [400, "a reason: what you'll use it for, for the workspace's owners"]);
+  const { id: grant } = await (await call('POST', '/grants', { site: 'bobs', workspace: ws, reason: 'own pulls' }, bob)).json();
+  const pending = async () => (await (await call('GET', '/api')).json()).find((w: { id: string }) => w.id === ws).grants.map((g: { person: string; site: string; state: string }) => [g.person, g.site, g.state]);
+  assert.deepEqual(await pending(), [[BOB, 'bobs', 'pending']], "under its owners' Waiting on you");
+  assert.equal((await call('POST', `/grants/${grant}`, { approve: true }, bob)).status, 403, "a member doesn't approve");
+  assert.equal((await call('POST', `/grants/${grant}`, { approve: true })).status, 200);
+  assert.deepEqual(await said(await allow('cdn.other.test')), [403, 'cdn.other.test is outside the domains bobs reaches, which its grants approved: an admin allows it']);
+
+  // A run's browser refused a host: it waits on the website's owner, under Waiting on you, until they allow it.
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Own pull' }, bob)).json();
   scripts.push({ bash: ['curl -s -m 5 -H "connection: upgrade" -H "upgrade: websocket" "$RF_BROWSERS/bobs"'], report: 'Pulled.', saw: [] });
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-12', logins: ['web:bobs'] }, bob)).json();
@@ -556,17 +566,18 @@ test("a person granted sites adds a website of their own, theirs alone: they all
   await until('the browser closed', () => readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').includes('"op":"browser"'));
   const waits = async () => (await (await call('GET', '/api', undefined, bob)).json()).flatMap((w: any) => w.series.flatMap((s: any) => s.instances)).find((i: { id: string }) => i.id === id).refused;
   assert.deepEqual((await waits()).map(({ run, site, hosts }: { run: number; site: string; hosts: string[] }) => ({ run, site, hosts })), [{ run: 1, site: 'bobs', hosts: ['cdn.idp.test'] }]);
-  assert.equal((await allow('cdn.idp.test')).status, 200);
+  assert.equal((await allow('cdn.idp.test')).status, 200, 'within a domain it reaches');
   assert.deepEqual(await waits(), []);
 
-  // An admin switches it off, for no one to use, and on again; its person removes it, and their login to it.
-  assert.equal((await call('PATCH', '/connections/bobs', { off: true })).status, 200);
-  assert.deepEqual([(await listed(bob)).allowed, (await call('POST', '/logins/web/bobs', {}, bob)).status], [false, 403]);
-  assert.equal((await call('PATCH', '/connections/bobs', { off: false })).status, 200);
-  assert.equal((await listed(bob)).allowed, true);
-  assert.equal((await call('DELETE', '/logins/sites/bobs', undefined, carol)).status, 404);
-  assert.equal((await call('DELETE', '/logins/sites/bobs', undefined, bob)).status, 200);
-  assert.deepEqual([await listed(admin), (await (await call('GET', '/logins', undefined, bob)).json()).some((l: { id: string }) => l.id === 'web:bobs')], [undefined, false]);
+  // An admin switches it off, for no one to use, and on again; its owner removes it, as no one else has a grant to it.
+  assert.deepEqual(await said(await call('PATCH', '/logins/sites/bobs', { off: true }, bob)), [403, 'off: admins set it']);
+  assert.equal((await call('PATCH', '/logins/sites/bobs', { off: true })).status, 200);
+  assert.deepEqual([(await listed(bob)).off, (await call('POST', '/logins/web/bobs', {}, bob)).status], [true, 403]);
+  assert.equal((await call('PATCH', '/logins/sites/bobs', { off: false })).status, 200);
+  assert.equal((await listed(bob)).off, undefined);
+  assert.equal((await call('DELETE', '/logins/sites/bobs', undefined, carol)).status, 403);
+  assert.equal((await call('DELETE', '/logins/sites/bobs', undefined, bob)).status, 200, 'his alone, with only his own grant to it');
+  assert.deepEqual([await listed(admin), (await (await call('GET', '/logins', undefined, bob)).json()).some((l: { id: string }) => l.id === 'web:bobs'), await pending()], [undefined, false, []], 'its grants and logins go with it');
   refused = [];
 });
 
@@ -576,13 +587,13 @@ test('saving a sign-in keeps its login alive until the time given, for those adm
     if (res.status !== 200) await call('DELETE', `/signins/${id}`, undefined, bob);
     return [res.status, await res.text()];
   };
-  assert.equal((await call('PUT', '/connections/kept', { type: 'website', title: 'Kept', url: 'https://kept.example.com/' })).status, 200);
+  assert.equal((await call('POST', '/logins/sites', { name: 'kept', url: 'https://kept.example.com/' })).status, 200);
   assert.deepEqual(await save(), [403, 'keeping a login alive is for admins and those they grant keepalive: ask an admin']);
   assert.equal((await call('PUT', '/capabilities', { cap: 'keepalive', people: [BOB] })).status, 200);
   assert.deepEqual(await save(), [200, 'ok']);
   assert.equal((await (await call('GET', '/logins', undefined, bob)).json()).find((l: { id: string }) => l.id === 'web:kept').keepalive, until);
-  assert.equal((await call('DELETE', '/connections/kept')).status, 200);
-  assert.equal((await call('DELETE', '/logins/web:kept', undefined, bob)).status, 200);
+  assert.equal((await call('DELETE', '/logins/sites/kept')).status, 200);
+  assert.ok(!(await (await call('GET', '/logins', undefined, bob)).json()).some((l: { id: string }) => l.id === 'web:kept'), "removed, it takes everyone's login to it");
 });
 
 test("a run's Pi idles only with nothing but Pi running in its sandbox, and ends as more Pis idle than RF_MAX_IDLE, past RF_IDLE_MIN, or as its instance closes or is abandoned", async () => {

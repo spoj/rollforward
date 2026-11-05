@@ -13,8 +13,9 @@ process.on('uncaughtException', e => {
 
 const USAGE = `rf login URL [TOKEN]                without a TOKEN, through the browser: type rf's code on the page, and allow it
 rf ls [--json]                    every workspace, series and instance you see, with its status, runner, asks waiting and wakes
-rf waiting [--json]               what waits on you: asks, sign-offs and notes, requests to start an instance, proposals,
-                                  expired logins, and hosts a run's browser on a website of your own was refused
+rf waiting [--json]               what waits on you: asks, sign-offs and notes, requests to start an instance or to use a
+                                  website in a workspace you own, proposals, expired logins, and hosts a run's browser on a
+                                  website you added was refused
 rf show PATH [--json]             an instance: its items, the threads that wait on someone, by id, and its last run
 rf log PATH [--since SEQ] [--follow] [--json]   its log, a line an entry, after SEQ; --follow prints more as they come;
                                   --json prints the entries as they are, a line each
@@ -60,11 +61,26 @@ rf logins [--json]                your logins, each with its state, keepalive an
 rf logins offer|unoffer LOGIN SOURCE|OFFER   what a login offers runs: Microsoft 365's (m365) mailboxes, sites, folders and
                                   files, by address or link, a Databricks login's SQL warehouses, by link; unoffer takes the
                                   OFFER rf logins lists
-rf logins allow SITE HOST         a host the pages of SITE, your own website or, for admins, another, need
+rf logins allow SITE HOST         a host the pages of SITE, a website you added or, for admins, any, need; once a grant to it
+                                  is approved, only within the domains it reaches, beyond which admins allow them
 rf logins signout LOGIN
-rf site add NAME URL              a website of your own, for those granted sites, whose sign-in starts at URL; you sign in to it
-                                  on the page
-rf site remove NAME               a website of yours, with your login to it
+rf site add NAME URL              a website whose sign-in starts at URL, which you sign in to on the page; at an address a
+                                  website has already, it's that one, whose name rf prints
+rf site set NAME [--title TITLE] [--header NAME] [--keepalive PAGE] [--every 10m] [--writeback false]
+                                  a website you added, or for admins any: its name as people see it, a header its sign-in
+                                  needs that its pages never send, such as x-bot-token, whose value each person gives, the
+                                  page a login kept alive loads, by address or path, else its address, and how often, 10m
+                                  unless given, and whether a run's browser writes its state back; admins also set
+                                  --off true|false, for no one to use it, and --internal true|false, for its browsers to
+                                  reach internal hosts
+rf site remove NAME               a website you added, while no one else has a grant to it pending or approved, or for admins
+                                  any: its grants go with it, and everyone's login to it
+rf site ask NAME WORKSPACE REASON to use your login to NAME in WORKSPACE's runs, for REASON, which one of its owners approves
+                                  or denies; a login no approved grant uses is signed out a week after you signed in, and
+                                  once you have no grant to it pending or approved
+rf grants [WORKSPACE] [--json]    the grants to use websites, yours and those of the workspaces you own, with their states
+rf grant approve|deny ID [TEXT]   a request to use a website in a workspace you own, with TEXT for its asker
+rf grant revoke ID                a grant pending or approved, yours or in a workspace you own; its runs' browsers close
 rf correct PATH TEXT [--item ID] [--ref REF] [--superseded] [--see LABEL]   a closed instance, or its item ID at REF, is
                                   wrong, or superseded, as LABEL, another instance of its series, shows; it can't be withdrawn
 rf wake PATH AT [--label LABEL] [--days DAYS] | rf wake --cancel ID
@@ -100,24 +116,16 @@ Admins:
 rf people [--set FILE|-] [-n] [--force]   everyone as lines of ROLE EMAIL, each with a comment; --set sets the roles of the people
                                   listed and adds new ones, removing no one
 rf user add EMAIL [admin] | role EMAIL admin|user [--force] | disable EMAIL | enable EMAIL | signout EMAIL | remove EMAIL
-rf connection set NAME TYPE [--SETTING VALUE]...   an outside system runs reach as their runner, by a login each person makes:
-                                  graph, Microsoft 365, and databricks, Azure Databricks, each with no settings, as each
-                                  person adds what their login offers; website, --url URL [--hosts HOST,...] [--title TITLE]
-                                  [--writeback false] [--header NAME] [--keepalive PAGE] [--every 10m]
-                                  [--people EMAIL|GROUP,...], where people sign in, the other hosts its pages need, such as
-                                  *.example.com, whether a run's browser writes its state back, a header its sign-in needs
-                                  that its pages never send, such as x-bot-token, whose value each person gives, the page a
-                                  login kept alive loads, by its address or path, such as
-                                  https://patriarch.patrina.net/PatriArchMVC/, else the address, and how often, 10m unless
-                                  given, and who alone may use it, by email or Entra group id
+rf connection set NAME TYPE       an outside system runs reach as their runner, by a login each person makes: graph,
+                                  Microsoft 365, or databricks, Azure Databricks, as each person adds what their login
+                                  offers; websites are rf site's
 rf connection remove NAME
-rf connection off|on NAME         a website switched off, for no one to use, such as a person's own, or on again
 rf brand [--text TEXT] [--logo FILE] [--clear]   the deployment's text and logo, a .png, .jpg, .gif, .webp or .svg, which top
                                   the sidebar and are the page's title and icon; --clear goes back to the plain look, and with
                                   no option it prints them
 rf can [CAP [EMAIL|GROUP,...] [--clear]]   what users may do beyond the rest, as admins may: publish, push skills;
-                                  create, make workspaces; sites, add websites of their own; and keepalive, keep their
-                                  website logins alive for up to a week as they sign in; a list grants CAP to those
+                                  create, make workspaces; and keepalive, keep their website logins alive for up to a
+                                  week as they sign in; a list grants CAP to those
                                   emails and Entra group ids in place of whom it had, --clear to no one, and with neither it
                                   prints whom each is granted to`;
 
@@ -384,9 +392,10 @@ if (cmd === 'login' && url) {
     ...all.filter(w => w.manage && w.proposal?.into === w.id).map(({ proposal: p }) => ({ kind: 'proposal', path: p.to, since: p.at, text: `${p.by} proposes to ${p.kind === 'merge' ? `merge ${p.from} into it` : `move ${p.from}/${p.series} to it`}` })),
     ...s.expired.filter(e => e.who === me.email).map(e => ({ kind: 'expired', login: e.login, holding: e.holding, text: `your ${e.login} login expired` })),
     ...series.flatMap(x => x.instances.flatMap(i => i.refused.map(r => ({ kind: 'refused', path: `${x.path}/${i.label}`, since: r.at, site: r.site, hosts: r.hosts, text: `run ${r.run}'s browser on ${r.site} was refused ${r.hosts.join(', ')}` })))),
+    ...all.filter(w => w.manage).flatMap(w => w.grants.filter(g => g.state === 'pending').map(g => ({ kind: 'grant', path: w.name, since: g.at, id: g.id, text: `${g.person} asks to use ${g.site} here: ${g.reason}` }))),
   ];
   if (flags.json) console.log(JSON.stringify(rows, null, 1));
-  else console.log(rows.map(r => `${r.kind}  ${r.path ?? r.login}${r.since ? ` since ${when(r.since)}` : ''}${r.id ? `, request ${r.id}` : ''}: ${r.text.split('\n')[0].slice(0, 120)}`).join('\n') || 'Nothing waits on you.');
+  else console.log(rows.map(r => `${r.kind}  ${r.path ?? r.login}${r.since ? ` since ${when(r.since)}` : ''}${r.id ? `, ${r.kind === 'grant' ? 'grant' : 'request'} ${r.id}` : ''}: ${r.text.split('\n')[0].slice(0, 120)}`).join('\n') || 'Nothing waits on you.');
 } else if (cmd === 'show' && args.length === 1) {
   const { inst, at } = await instanceAt(args[0]), { doc, log, run, queued, runner, review } = await get(at);
   const threads = Map.groupBy(log.filter(e => ['comment', 'resolve', 'signoff'].includes(e.op)), e => e.thread);
@@ -518,11 +527,28 @@ else if (cmd === 'comment' && args.length === 2) {
   else await post(`/logins/web/${encodeURIComponent(login)}/hosts`, { host: x });
   console.log(`${login} ${{ offer: 'offers', unoffer: 'no longer offers', allow: 'reaches' }[what]} ${x}`);
 } else if (cmd === 'site' && args[0] === 'add' && args.length === 3) {
-  await post('/logins/sites', { name: args[1], url: args[2] });
-  console.log(`added ${args[1]}: sign in to it at ${url}/#logins`);
+  const { site, existing } = await (await post('/logins/sites', { name: args[1], url: args[2] })).json();
+  console.log(`${existing ? `${args[2]} is ${site}'s` : `added ${site}`}: sign in to it at ${url}/#logins, then rf site ask ${site} WORKSPACE REASON`);
+} else if (cmd === 'site' && args[0] === 'set' && args.length === 2) {
+  await post(`/logins/sites/${encodeURIComponent(args[1])}`, flags, 'PATCH');
+  console.log('saved');
 } else if (cmd === 'site' && args[0] === 'remove' && args.length === 2) {
   await api(`/logins/sites/${encodeURIComponent(args[1])}`, { method: 'DELETE' });
   console.log(`removed ${args[1]}`);
+} else if (cmd === 'site' && args[0] === 'ask' && args.length === 4) {
+  const { id } = await (await post('/grants', { site: args[1], workspace: (await workspaceNamed(args[2])).id, reason: args[3] })).json();
+  console.log(`asked, as grant ${id}: one of ${args[2]}'s owners approves or denies it`);
+} else if (cmd === 'grants' && args.length <= 1) {
+  const [all, ws] = await Promise.all([get('/grants'), get('/api')]), name = (id: string) => ws.find(w => w.id === id)?.name ?? id;
+  const shown = all.filter(g => !args[0] || name(g.workspace) === args[0]);
+  if (flags.json) console.log(JSON.stringify(shown.map(g => ({ ...g, workspace: name(g.workspace) })), null, 1));
+  else for (const g of shown) console.log(`${g.id}  ${g.state}  ${g.site} in ${name(g.workspace)} for ${g.person}, since ${when(g.at)}: ${g.reason}${g.by ? `; ${g.state} by ${g.by}${g.text ? `: ${g.text}` : ''}` : ''}`);
+} else if (cmd === 'grant' && ['approve', 'deny'].includes(args[0]) && [2, 3].includes(args.length)) {
+  await post(`/grants/${args[1]}`, { approve: args[0] === 'approve', text: args[2] });
+  console.log(args[0] === 'approve' ? 'approved' : 'denied');
+} else if (cmd === 'grant' && args[0] === 'revoke' && args.length === 2) {
+  await api(`/grants/${args[1]}`, { method: 'DELETE' });
+  console.log('revoked');
 } else if (cmd === 'logins' && args[0] === 'signout' && args.length === 2) {
   await api(`/logins/${encodeURIComponent(args[1])}`, { method: 'DELETE' });
   console.log(`signed out of ${args[1]}`);
@@ -582,9 +608,6 @@ else if (cmd === 'comment' && args.length === 2) {
 } else if (cmd === 'connection' && args[0] === 'set' && args.length === 3) {
   await post(`/connections/${encodeURIComponent(args[1])}`, { type: args[2], ...flags }, 'PUT');
   console.log('saved');
-} else if (cmd === 'connection' && ['off', 'on'].includes(args[0]) && args[1]) {
-  await post(`/connections/${encodeURIComponent(args[1])}`, { off: args[0] === 'off' }, 'PATCH');
-  console.log(args[0]);
 } else if (cmd === 'connection' && args[0] === 'remove' && args[1]) {
   await api(`/connections/${encodeURIComponent(args[1])}`, { method: 'DELETE' });
   console.log('removed');

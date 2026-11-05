@@ -1261,6 +1261,8 @@ function renderPv() {
     const s = pv.settings;
     h += '<div class="pvb vl">';
     if (s.kind === 'workspace') h += (s.manage ? `<h3>Name</h3><input type="text" id="wname" value="${esc(s.name)}">` : '') + peopleHtml(s)
+      + (s.grants.length ? `<h3>Websites</h3><div class="sub">Whose logins to which websites runs here use, as its owners approved them, or are asked to.</div>`
+        + s.grants.map(g => `<div class="lsub"><span>${person(g.person)} · ${esc(g.site)} <span class="sub">${g.state === 'approved' ? `approved by ${esc(nameOf(g.by))}` : 'asked'}: ${esc(g.reason)}</span></span>${s.manage || g.person === me.email ? `<button class="quiet" data-act="grant-revoke" data-id="${esc(g.id)}">Revoke</button>` : ''}</div>`).join('') : '')
       + `<h3>Reading</h3><div class="sub">Agents here read every series of this workspace${s.reads.length ? `, and of ${esc(s.reads.join(', '))}, which ${s.reads.length > 1 ? 'have' : 'has'} everyone this one has` : ''}. They write only here.${s.read_by.length ? ` Agents in ${esc(s.read_by.join(', '))}, whose people are all here, read this one.` : ''}</div>`
       + agentsHtml(s, 'Every agent in this workspace reads it at the start of each run: its conventions, and changes that cut across its series, such as a renamed entity.', s.manage)
       + (s.manage && !s.archived ? moveHtml(s) : '')
@@ -1363,7 +1365,7 @@ async function openTokens(made) {
 // Your logins, on one page: what needs you first, then a line for each, Microsoft 365, Databricks, the websites and the model key,
 // whose detail opens in place.
 function loginsHtml(s) {
-  const entra = s.connections.filter(c => c.login.scope), sites = s.connections.filter(c => c.type === 'website' && c.allowed).map(c => ({ id: c.name, name: c.title ?? c.name, url: c.url, hosts: c.hosts, header: c.header, owner: c.owner }));
+  const entra = s.connections.filter(c => c.login.scope), sites = s.connections.filter(c => c.type === 'website').map(c => ({ id: c.name, name: c.title ?? c.name, url: c.url, hosts: c.hosts, header: c.header, owner: c.owner, off: c.off }));
   const mine = id => s.logins.find(l => l.id === id), k = mine('openrouter'), shown = id => pv.shown?.includes(id);
   const line = (name, sub, acts = '') => `<div class="lline"><b>${esc(name)}</b><span class="sub">${sub}</span>${acts}</div>`;
   const show = id => `<button class="quiet" data-act="logins-show" data-id="${id}">${shown(id) ? 'Hide \u25BE' : 'Show \u25B8'}</button>`;
@@ -1393,19 +1395,21 @@ function loginsHtml(s) {
   }
   const ids = new Set([...s.connections.map(c => c.login.id), 'openrouter']), signed = sites.filter(w => mine(`web:${w.id}`) && !mine(`web:${w.id}`).expired).length;
   for (const l of s.logins.filter(l => !ids.has(l.id))) h += line(l.name, 'no longer a connection on this server, so no run uses it', signOut(l.id));
-  const adds = me.browsers && me.can.includes('sites');
-  h += line('Websites', sites.length ? `${signed} of ${sites.length} signed in` : me.browsers ? `none yet: ${adds ? 'add one of your own, or ' : ''}admins add a website with <code>rf connection set NAME website --url URL --hosts ...</code>, and then everyone it is for can sign in to it here`
-    : 'not set up on this server: website logins need the browser service (README, Websites), and then admins add websites with <code>rf connection set NAME website</code>', sites.length || adds ? show('web') : '');
+  h += line('Websites', sites.length ? `${signed} of ${sites.length} signed in` : me.browsers ? 'none yet: add one' : 'not set up on this server: website logins need the browser service (README, Websites)', sites.length || me.browsers ? show('web') : '');
   if (sites.length && shown('web')) h += `<div class="sub">Sign in yourself, in a browser shown here. Your login is what that browser keeps, its cookies, never your password; a run's browser starts from it and brings it back refreshed. It reaches only the hosts listed, but there it can do whatever you can: the agent is told only to read, and each run's log counts its writes.${sites.some(w => w.header) ? " Where a site's sign-in needs a token, give it in the box under its name: it goes only to that sign-in, never to a run's browser, and is kept, sealed, for the next." : ''}</div>`
+    + `<div class="sub">A run uses your login only in a workspace whose owners approved it: once signed in, ask to use it there, saying what for. Until one approves it, your login is signed out a week after you signed in.</div>`
     + sites.map(w => {
-      const l = mine(`web:${w.id}`);
-      return `<div class="lsub"><span>${esc(w.name)} <span class="sub">${esc([new URL(w.url).hostname, ...w.hosts].join(', '))}${l ? ` · ${l.expired ? 'expired' : `since ${esc(when(l.since))}${l.keepalive > new Date().toISOString() ? `, kept alive until ${esc(when(l.keepalive))}` : ''}`}` : ''}</span>`
+      const l = mine(`web:${w.id}`), gs = s.grants.filter(g => g.person === me.email && g.site === w.id && ['pending', 'approved'].includes(g.state));
+      const free = tree.filter(x => !x.archived && !gs.some(g => g.workspace === x.id));
+      return `<div class="lsub"><span>${esc(w.name)} <span class="sub">${esc([new URL(w.url).hostname, ...w.hosts].join(', '))}${w.off ? ' · switched off' : ''}${l ? ` · ${l.expired ? 'expired' : `since ${esc(when(l.since))}${l.keepalive > new Date().toISOString() ? `, kept alive until ${esc(when(l.keepalive))}` : ''}`}` : ''}</span>`
         + `${w.header ? `<input type="password" id="hdr-${esc(w.id)}" placeholder="${l ? `New ${esc(w.header)}, if any` : `Your ${esc(w.header)}`}" autocomplete="off" style="display:block;width:100%;margin-top:6px">` : ''}</span>`
-        + `<button class="btn" data-act="web-signin" data-id="${esc(w.id)}" data-name="${esc(w.name)}">${l ? 'Sign in again' : 'Sign in'}</button>${l ? signOut(l.id) : ''}`
-        + `${w.owner === me.email ? `<button class="quiet" data-act="site-remove" data-id="${esc(w.id)}">Remove</button>` : ''}</div>`;
+        + `${w.off ? '' : `<button class="btn" data-act="web-signin" data-id="${esc(w.id)}" data-name="${esc(w.name)}">${l ? 'Sign in again' : 'Sign in'}</button>`}${l ? signOut(l.id) : ''}`
+        + `${w.owner === me.email || me.role === 'admin' ? `<button class="quiet" data-act="site-remove" data-id="${esc(w.id)}">Remove</button>` : ''}</div>`
+        + gs.map(g => `<div class="lsub"><span class="sub">${g.state === 'approved' ? 'Approved' : 'Asked'} in ${esc(tree.find(x => x.id === g.workspace)?.name ?? g.workspace)}: ${esc(g.reason)}</span><button class="quiet" data-act="grant-revoke" data-id="${esc(g.id)}">${g.state === 'approved' ? 'Stop using' : 'Withdraw'}</button></div>`).join('')
+        + (l && !l.expired && !w.off && free.length ? `<div class="row2"><select id="ask-ws-${esc(w.id)}">${free.map(x => `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join('')}</select>`
+          + `<input type="text" id="ask-why-${esc(w.id)}" placeholder="What runs there use it for" style="flex:1"><button class="btn" data-act="grant-ask" data-id="${esc(w.id)}">Ask to use</button></div>` : '');
     }).join('');
-  // A website of one's own, for those admins let add one: theirs alone, the hosts its pages need allowed as they sign in.
-  if (adds && shown('web')) h += `<div class="sub">A website of your own: its name and the https address where you sign in. Only you see it, sign in to it and run with it. The other hosts its pages need, such as single sign-on's, you allow as you sign in.</div>`
+  if (me.browsers && shown('web')) h += `<div class="sub">A new website: its name and the https address where you sign in. The other hosts its pages need, such as single sign-on's, you allow as you sign in. At an address a website has already, it's that one.</div>`
     + '<div class="row2"><input type="text" id="site-name" placeholder="Name" style="width:30%"><input type="text" id="site-url" placeholder="https://… where you sign in" style="flex:1"><button class="btn" data-act="site-add">Add</button></div>';
   h += line('Model key', !k ? "the server's" : k.enabled ? `yours${k.expired ? ', out of credits' : ''}` : "the server's · yours saved",
     (k ? `<label><input type="checkbox" id="oruse" ${k.enabled ? 'checked' : ''}> use mine</label>` : '') + `<button class="quiet" data-act="logins-show" data-id="key">${k ? 'Change' : 'Add mine'}</button>`);
@@ -1440,7 +1444,7 @@ const signInHtml = (id, name) => id === 'openrouter' ? '<button class="btn" data
   : `<button class="btn" data-act="web-signin" data-id="${esc(id.slice(4))}" data-name="${esc(name)}">Sign in again</button>`;
 
 // What waits on you: the agent's asks and the notes for you, requests to start a series you can see, proposals to merge or move
-// into a workspace you manage, and your expired logins.
+// into a workspace you manage, and requests to use a website there, and your expired logins.
 function waiting() {
   const out = tree.filter(w => !w.archived && w.manage && w.proposal?.into === w.id).map(({ proposal: p }) => `<div class="wt">${person(p.by)} proposes ${proposalText(p)}`
     + ` <button class="btn" data-act="accept" data-id="${p.id}">Accept…</button><button class="btn" data-act="proposal-drop" data-id="${p.id}">Decline</button></div>`), at = (w, s, i) => `<a href="#/${i?.id ?? w.id}">${esc(w.name)}${s.single ? '' : ' · ' + esc(s.name)}${i ? ' · ' + esc(i.label) : ''}</a>`;
@@ -1454,6 +1458,8 @@ function waiting() {
     }
     for (const r of s.requests.filter(r => (r.who ?? me.email) === me.email)) out.push(`<div class="wt">${at(w, s)}: ${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)} <button class="btn" data-act="req-start" data-id="${esc(r.id)}">Start</button></div>`);
   }
+  for (const w of tree.filter(w => !w.archived && w.manage)) for (const g of w.grants.filter(g => g.state === 'pending'))
+    out.push(`<div class="wt">${person(g.person)} asks to use their ${esc(g.site)} login in <a href="#/${w.id}">${esc(w.name)}</a>: ${esc(g.reason)} <button class="btn" data-act="grant-approve" data-id="${esc(g.id)}">Approve</button><button class="btn" data-act="grant-deny" data-id="${esc(g.id)}">Deny</button></div>`);
   return [...out, ...expired.map(l => `<div class="wt">Your ${l.kind === 'key' ? 'OpenRouter key is out of credits' : `${esc(l.name)} login has expired`}. ${signInHtml(l.id, l.name)}</div>`)];
 }
 
@@ -1466,8 +1472,8 @@ async function saveKey() {
 }
 
 async function openLogins() {
-  const [logins, connections] = await Promise.all([api('/logins'), api('/connections')]);
-  pv = { title: 'Logins', settings: { kind: 'logins', logins, connections } };
+  const [logins, connections, grants] = await Promise.all([api('/logins'), api('/connections'), api('/grants')]);
+  pv = { title: 'Logins', settings: { kind: 'logins', logins, connections, grants } };
   renderPv();
 }
 
@@ -2004,7 +2010,23 @@ async function onAct(act, el) {
     pv.settings.connections = await api('/connections');
     renderPv();
   }
-  if (act === 'site-remove' && await ask({ title: `Remove ${el.dataset.id}?`, text: 'Your login to it goes too, and no run of yours uses it again.', ok: 'Remove',
+  if (act === 'grant-ask') {
+    const id = CSS.escape(el.dataset.id);
+    await api('/grants', { method: 'POST', body: JSON.stringify({ site: el.dataset.id, workspace: $(`#ask-ws-${id}`).value, reason: $(`#ask-why-${id}`).value }) });
+    pv.settings.grants = await api('/grants');
+    renderPv();
+  }
+  if (act === 'grant-approve' || act === 'grant-deny') {
+    await api(`/grants/${el.dataset.id}`, { method: 'POST', body: JSON.stringify({ approve: act === 'grant-approve' }) });
+    await refresh();
+    renderPv();
+  }
+  if (act === 'grant-revoke') {
+    await api(`/grants/${el.dataset.id}`, { method: 'DELETE' });
+    await refresh();
+    if (pv.settings.kind === 'logins') await openLogins(); else openWorkspaceSettings();
+  }
+  if (act === 'site-remove' && await ask({ title: `Remove ${el.dataset.id}?`, text: "Everyone's login to it goes too, with its grants, and no run uses it again.", ok: 'Remove',
     act: () => api(`/logins/sites/${enc(el.dataset.id)}`, { method: 'DELETE' }) })) {
     [pv.settings.logins, pv.settings.connections] = await Promise.all([api('/logins'), api('/connections')]);
     renderPv();

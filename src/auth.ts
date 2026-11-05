@@ -17,9 +17,9 @@ export const ROLES: Role[] = ['admin', 'user'];
 export type User = { name?: string; role: Role; disabled?: boolean; sub?: string; oid?: string; groups?: string[]; epoch?: number; created?: string; last_login?: string };
 export type Me = { email: string; name: string; role: Role; groups: string[] };
 // Capabilities beyond what every user has, each granted by admins to people and Entra groups: publish, pushing skills, which every
-// run loads; create, making workspaces; sites, adding websites of one's own; and keepalive, keeping one's website logins alive
-// (browsers.ts), which loads the website every few minutes. Admins have them all.
-export const CAPS = ['publish', 'create', 'sites', 'keepalive'], capabilities = () => readJson<Record<string, string[]>>('capabilities.json', {});
+// run loads; create, making workspaces; and keepalive, keeping one's website logins alive (browsers.ts), which loads the website
+// every few minutes. Admins have them all.
+export const CAPS = ['publish', 'create', 'keepalive'], capabilities = () => readJson<Record<string, string[]>>('capabilities.json', {});
 export const can = (me: Me, cap: string) => me.role === 'admin' || isIn(me, capabilities()[cap] ?? []);
 
 const env = process.env;

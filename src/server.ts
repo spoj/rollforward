@@ -16,7 +16,8 @@ import { checkTicks, logins, runnerOf, saveLogin, signOut, unoffer } from './log
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { byLogin, call, changeConnection, connections, convert, intercepts, loginOf, removeConnection, setConnection, upstreams } from './connections.ts';
-import { addSite, allowed, allowHost, Browsers, endSignIn, isSignIn, keepAlive, passUpgrade, reap, refusedHosts, scoped, startSignIn, unreached, viewPage, websites } from './browsers.ts';
+import { addSite, allowHost, Browsers, endSignIn, isSignIn, keepAlive, passUpgrade, reap, refusedHosts, removeSite, setSite, startSignIn, unreached, viewPage, websites } from './browsers.ts';
+import { ask, decide, lapse, migrate, revoke, visible } from './grants.ts';
 import { offer } from './connections/graph.ts';
 import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, startIndexing, track } from './indexes.ts';
@@ -35,6 +36,7 @@ if (!existsSync(join(agentRoot, 'usr'))) throw new Error(`no agent image at ${ag
 initSystem(root);
 openStore(root);
 convert();
+migrate();
 
 // A file's sha256, kept by its path, size and change time, as each view of an instance compares its files again.
 const sums = new Map<string, [string, string]>();
@@ -213,7 +215,7 @@ function mustSee(me: Me, w: Workspace | undefined): Workspace {
 function watched(me: Me, id: string, site: string): { browsers: Browsers; id: string } {
   const t = tree(), inst = instance(id), a = active.get(inst.seriesId);
   mustSee(me, t.workspaces[t.series[inst.seriesId].workspace]);
-  const b = a?.inst === inst ? a.browsers?.watchable(me.email).get(site) : undefined;
+  const b = a?.inst === inst ? a.browsers?.watchable().get(site) : undefined;
   if (!b) throw new HttpError(404, `no browser of a run on ${site} for you to watch`);
   return { browsers: a!.browsers!, id: b };
 }
@@ -305,7 +307,7 @@ const proposals = (t: Tree) => Object.entries(t.workspaces).filter(([, w]) => {
 });
 
 function listing(me: Me) {
-  const t = tree(), w8 = wakes(), open = proposals(t), byName = (a: [string, { name: string }], b: [string, { name: string }]) => a[1].name.localeCompare(b[1].name);
+  const t = tree(), w8 = wakes(), open = proposals(t), granted = visible(me).filter(g => ['pending', 'approved'].includes(g.state)), byName = (a: [string, { name: string }], b: [string, { name: string }]) => a[1].name.localeCompare(b[1].name);
   return Object.entries(t.workspaces).filter(([, w]) => canSee(me, w)).sort(byName).map(([id, w]) => {
     const series = Object.entries(t.series).filter(([, s]) => s.workspace === id).sort(byName).map(([sid, s]) => {
       const { shared } = seriesSettings(seriesDir(sid));
@@ -322,6 +324,8 @@ function listing(me: Me) {
       id, name: w.name, archived: !!w.archived, owners: w.owners, members: w.members, manage: canManage(me, w), agents: text(agentsFile(id)), mine,
       proposal: open.find(p => p.id === id || p.into === id) ?? null, moved: (w.moved ?? []).filter(m => fresh(m.at)),
       reads: wider(t, id).map(o => t.workspaces[o].name).sort(), read_by: Object.keys(t.workspaces).filter(o => wider(t, o).includes(id)).map(o => t.workspaces[o].name).sort(),
+      // The grants to use websites here, asked or approved: all of them for its managers, else one's own.
+      grants: granted.filter(g => g.workspace === id),
       series,
     };
   });
@@ -678,7 +682,6 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (change.share !== undefined && !change.share && was && was.by !== by && !canManage(me, t.workspaces[s.workspace]))
       throw new HttpError(403, `${was.by} shares it: they, or the workspace's owners, stop sharing it`);
     const shared = change.share === undefined ? was : change.share ? { by, since: new Date().toISOString(), logins: checkTicks(by, change.logins ?? []) } : undefined;
-    if (change.share && shared!.logins.some(scoped)) throw new HttpError(400, 'a website that lists its people is never lent through a shared series: untick it');
     saveTree(t);
     replaceReadOnly(join(seriesDir(id), 'series.json'), JSON.stringify({ ...(shared && { shared }) }, null, 1));
     return send(res, 200, 'ok');
@@ -725,7 +728,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   const a = active.get(inst.seriesId);
   const mine = a?.inst === inst ? a : undefined;
   if (!action) see(by, inst.id, inst.log.at(-1)!.seq);
-  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4), browsers: [...(mine.browsers?.watchable(by).keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), runner: runner(inst), previous: previous(inst), review: inst.review() });
+  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4), browsers: [...(mine.browsers?.watchable().keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), runner: runner(inst), previous: previous(inst), review: inst.review() });
   if (action === 'trace') return send(res, 200, trace(inst));
   if (action === 'summary') return send(res, 200, summary(inst, by));
   // A population as the page shows it: its count, total and largest rows, and the rows of its picks.
@@ -971,20 +974,17 @@ async function skillsRoute(me: Me, req: IncomingMessage, res: ServerResponse, ur
   throw new HttpError(405, 'GET, or POST a version');
 }
 
-// Connections: anyone signed in may list them, each with its login, to connect or sign in on the Logins page, but a person's own
-// website only they and admins; admins keep them, with rf, and switch a website off, for no one to use, or on again.
+// Connections: anyone signed in may list them, each with its login, to connect or sign in on the Logins page; admins keep them,
+// with rf, but websites, which anyone adds (/logins/sites).
 async function connectionsRoute(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) {
   const name = decodeURIComponent(url.pathname.slice(13));
-  if (!name && req.method === 'GET') return send(res, 200, connections().filter(c => !c.owner || c.owner === me.email || me.role === 'admin')
-    .map(c => ({ ...c, login: loginOf(c), ...(c.type === 'website' && { allowed: allowed(websites()[c.name], me.email) }) })));
+  if (!name && req.method === 'GET') return send(res, 200, connections().map(c => ({ ...c, login: loginOf(c) })));
   if (me.role !== 'admin') throw new HttpError(403, 'admins keep connections');
-  if (req.method === 'PUT') return send(res, 200, await setConnection(name, await json(req), me.email));
+  const body = req.method === 'PUT' ? await json(req) : {};
+  if (websites()[name] || body.type === 'website') throw new HttpError(400, 'a website is anyone\'s to add, with rf site add, and its owner\'s or an admin\'s to change, with rf site set, or remove');
+  if (req.method === 'PUT') return send(res, 200, await setConnection(name, body, me.email));
   if (req.method === 'DELETE') return send(res, 200, (removeConnection(name), 'ok'));
-  if (req.method === 'PATCH') {
-    if (!websites()[name]) throw new HttpError(404, `no website ${name}: only a website is switched off or on`);
-    return send(res, 200, (changeConnection(name, { off: (await json(req)).off === true || undefined }, me.email), 'ok'));
-  }
-  throw new HttpError(405, 'PUT, PATCH or DELETE');
+  throw new HttpError(405, 'PUT or DELETE');
 }
 
 serveSandboxes({
@@ -1085,19 +1085,28 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       if (!login?.scope) throw new HttpError(404, 'no connection signs in to Microsoft with that login');
       await connect(res, me.email, login);
     }
-    // A person's own websites, for those granted sites: a name and the https address where its sign-in starts, the hosts its pages
-    // need allowed as they sign in.
+    // Websites, which anyone adds, by a name and the https address where its sign-in starts, the hosts its pages need allowed as
+    // its owner signs in; its owner, or an admin, changes or removes it.
     else if (url.pathname === '/logins/sites' && req.method === 'POST') {
-      if (!can(me, 'sites')) throw new HttpError(403, 'a website of your own is for admins and those they grant sites: ask an admin');
       const { name, url: start } = await json(req);
-      send(res, 200, (await addSite(me.email, String(name ?? ''), String(start ?? '')), 'ok'));
+      send(res, 200, await addSite(me.email, String(name ?? ''), String(start ?? '')));
     }
-    // Removed, with its person's login to it.
-    else if (/^\/logins\/sites\/[^/]+$/.test(url.pathname) && req.method === 'DELETE') {
-      const n = decodeURIComponent(url.pathname.split('/')[3]), w = websites()[n];
-      if (!w?.owner || (w.owner !== me.email && me.role !== 'admin')) throw new HttpError(404, `no website ${n} of yours`);
-      removeConnection(n);
-      if (logins(w.owner).some(l => l.id === `web:${n}`)) signOut(w.owner, `web:${n}`);
+    else if (/^\/logins\/sites\/[^/]+$/.test(url.pathname) && req.method === 'PATCH') send(res, 200, (await setSite(me, decodeURIComponent(url.pathname.split('/')[3]), await json(req)), 'ok'));
+    else if (/^\/logins\/sites\/[^/]+$/.test(url.pathname) && req.method === 'DELETE') send(res, 200, (removeSite(me, decodeURIComponent(url.pathname.split('/')[3])), 'ok'));
+    // Grants: a person asks to use their login to a website in a workspace, whose owners approve or deny it, and revoke it, as its
+    // person may withdraw it; revoked, that person's run browsers there in the workspace close at once.
+    else if (url.pathname === '/grants' && req.method === 'GET') send(res, 200, visible(me));
+    else if (url.pathname === '/grants' && req.method === 'POST') {
+      const { site, workspace, reason } = await json(req);
+      send(res, 200, { id: ask(me, String(site ?? ''), String(workspace ?? ''), String(reason ?? '')) });
+    }
+    else if (/^\/grants\/\w+$/.test(url.pathname) && req.method === 'POST') {
+      const { approve, text } = await json(req);
+      send(res, 200, (decide(me, url.pathname.slice(8), approve === true, String(text ?? '')), 'ok'));
+    }
+    else if (/^\/grants\/\w+$/.test(url.pathname) && req.method === 'DELETE') {
+      const g = revoke(me, url.pathname.slice(8)), t = tree();
+      for (const a of active.values()) if (t.series[a.inst.seriesId].workspace === g.workspace && a.browsers?.bySite.get(g.site)?.email === g.person) await a.browsers.close(g.site);
       send(res, 200, 'ok');
     }
     else if (/^\/logins\/web\/[^/]+\/refused$/.test(url.pathname) && req.method === 'GET') send(res, 200, await refusedHosts(me, decodeURIComponent(url.pathname.split('/')[3])));
@@ -1169,7 +1178,10 @@ if (process.env.RF_BROWSER_URL) reap().catch(e => console.error('the browser ser
 server.listen(port, host, () => {
   startIndexing();
   startWaking();
-  if (process.env.RF_BROWSER_URL) setInterval(() => keepAlive().catch(e => console.error('keeping logins alive:', e)), 60_000).unref();
+  if (process.env.RF_BROWSER_URL) setInterval(() => {
+    lapse();
+    keepAlive().catch(e => console.error('keeping logins alive:', e));
+  }, 60_000).unref();
   checkLogins(connections().map(loginOf).flatMap(l => l.scope ? [l] : []));
   console.log(`rollforward on http://${host}:${port}, data in ${root}${process.env.RF_TODAY ? `, skills take today as ${process.env.RF_TODAY} (RF_TODAY)` : ''}`);
 });

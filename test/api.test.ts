@@ -314,7 +314,7 @@ test('a workspace can be made; a workspace or a series is archived and restored,
   const acme = () => named('Acme');
   const { id } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Acme' }))).json();
   const { series: made, ...rest } = await acme();
-  assert.deepEqual(rest, { id, name: 'Acme', archived: false, owners: [adminEmail], members: [], manage: true, agents: '', mine: true, proposal: null, moved: [], reads: [], read_by: [] });
+  assert.deepEqual(rest, { id, name: 'Acme', archived: false, owners: [adminEmail], members: [], manage: true, agents: '', mine: true, proposal: null, moved: [], reads: [], read_by: [], grants: [] });
   assert.deepEqual(made, [], 'a workspace starts empty');
   assert.equal((await call('POST', '/api/workspaces', JSON.stringify({ name: 'Acme' }))).status, 409);
   assert.equal((await call('PUT', `/api/workspaces/${id}`, JSON.stringify({ archived: true }))).status, 200);
@@ -422,13 +422,13 @@ test("each person sees the workspaces they're in, by email or Entra group; owner
   assert.equal((await json('/me', b)).role, 'user');
   assert.deepEqual(await workspaces(b), []);
   const grant = (cap: string, people: unknown, cookie = admin) => call('PUT', '/capabilities', JSON.stringify({ cap, people }), cookie);
-  assert.deepEqual([(await json('/me', b)).can, (await json('/me')).can], [[], ['publish', 'create', 'sites', 'keepalive']], 'admins have every capability');
+  assert.deepEqual([(await json('/me', b)).can, (await json('/me')).can], [[], ['publish', 'create', 'keepalive']], 'admins have every capability');
   const refused = await make('BobCo', b);
   assert.deepEqual([refused.status, await refused.text()], [403, 'making a workspace is for admins and those they grant create: ask an admin']);
   assert.equal((await grant('create', [bob], b)).status, 403, 'admins grant capabilities');
   assert.equal((await grant('create', ['Treasury'])).status, 400);
   assert.equal((await grant('delete', [bob])).status, 400);
-  assert.deepEqual(await (await grant('create', ['Bob@demo.test'])).json(), { publish: [], create: [bob], sites: [], keepalive: [] });
+  assert.deepEqual(await (await grant('create', ['Bob@demo.test'])).json(), { publish: [], create: [bob], keepalive: [] });
   assert.equal((await make('BobCo', b)).status, 200, 'and those granted create');
   assert.deepEqual((await workspaces(b)).map((w: { name: string; owners: string[] }) => [w.name, w.owners]), [['BobCo', [bob]]]);
   for (const path of [await at(series, '2026-08-30'), `/files/${await iid(series, '2026-08-30')}/upload/x`])
@@ -486,23 +486,24 @@ test("the page names everyone who has signed in, and the Entra groups in the wor
   assert.deepEqual(JSON.parse(readFileSync(join(root, '.rf', 'tree.json'), 'utf8')).groups, { [group]: 'Finance HK', [other]: 'Payroll team' });
 });
 
-test('everyone sees the skills, which every run loads; admins keep the connections, which everyone sees with their logins', async () => {
+test('everyone sees the skills, which every run loads; admins keep the connections but websites, which anyone adds, and everyone sees them with their logins', async () => {
   const b = sessionOf(await login(bob))!;
   const report = (list: { id: string }[]) => list.find(s => s.id === 'mail-report') as Record<string, unknown>;
   assert.deepEqual(Object.keys(report(await json('/skills', b))).sort(), ['description', 'id', 'name', 'pushed'], 'anyone signed in sees the skills');
-  assert.equal((await call('PUT', '/connections/portal', JSON.stringify({ type: 'website', url: 'https://portal.test/#/login' }), b)).status, 403);
-  assert.equal((await call('PUT', '/connections/portal', JSON.stringify({ type: 'website', url: 'https://portal.test/#/login', hosts: ['cdn.portal.test/x'] }))).status, 400);
-  const site = await (await call('PUT', '/connections/portal', JSON.stringify({ type: 'website', title: 'Portal', url: 'https://portal.test/#/login', hosts: 'cdn.portal.test' }))).json();
-  assert.deepEqual([site.title, site.url, site.hosts, site.writeback, site.updated_by], ['Portal', 'https://portal.test/#/login', ['cdn.portal.test'], true, adminEmail]);
-  assert.deepEqual((await json('/connections', b)).map((c: { name: string; login: { id: string }; allowed: boolean }) => [c.name, c.login.id, c.allowed]), [['graph', 'm365', undefined], ['portal', 'web:portal', true]]);
-  assert.equal((await call('PUT', '/connections/portal', JSON.stringify({ type: 'website', url: 'https://portal.test/#/login', people: adminEmail }))).status, 200);
-  const portal = async (cookie?: string) => (await json('/connections', cookie)).find((c: { name: string }) => c.name === 'portal').allowed;
-  assert.deepEqual([await portal(b), await portal()], [false, true], 'only the people it lists');
-  const { saveLogin } = await import('../src/logins.ts');
-  saveLogin(adminEmail, { id: 'web:portal', kind: 'website', name: 'Portal', since: new Date().toISOString(), offers: [{ id: 'web:portal', name: 'Portal' }] }, 'state');
-  assert.equal((await call('PUT', await at(series), JSON.stringify({ share: true, logins: ['web:portal'] }))).status, 400, 'never lent through a shared series');
-  assert.equal((await call('DELETE', '/logins/web:portal')).status, 200);
-  assert.equal((await call('DELETE', '/connections/portal')).status, 200);
+  assert.equal((await call('PUT', '/connections/portal', JSON.stringify({ type: 'website', url: 'https://portal.test/#/login' }))).status, 400, "a website is rf site's, admins' too");
+  assert.equal((await call('POST', '/logins/sites', JSON.stringify({ name: 'portal', url: 'http://portal.test/' }), b)).status, 400, 'https only');
+  assert.deepEqual(await (await call('POST', '/logins/sites', JSON.stringify({ name: 'portal', url: 'https://portal.test/#/login' }), b)).json(), { site: 'portal' }, 'anyone adds one');
+  assert.deepEqual(await (await call('POST', '/logins/sites', JSON.stringify({ name: 'mine', url: 'https://portal.test/other' }))).json(), { site: 'portal', existing: true }, 'an address a website has is that website');
+  assert.equal((await call('PATCH', '/logins/sites/portal', JSON.stringify({ title: 'Portal', every: '5m' }), b)).status, 200, "its settings are its owner's");
+  assert.equal((await call('PATCH', '/logins/sites/portal', JSON.stringify({ off: true }), b)).status, 403, "switching it off is admins'");
+  assert.equal((await call('PATCH', '/logins/sites/portal', JSON.stringify({ hosts: 'evil.test' }), b)).status, 400, 'its hosts are allowed one by one');
+  const portal = async () => (await json('/connections', b)).find((c: { name: string }) => c.name === 'portal');
+  const site = await portal();
+  assert.deepEqual([site.title, site.url, site.hosts, site.every, site.owner, site.login.id], ['Portal', 'https://portal.test/#/login', [], 5, bob, 'web:portal']);
+  assert.equal((await call('PATCH', '/logins/sites/portal', JSON.stringify({ off: true }))).status, 200);
+  assert.equal((await portal()).off, true, 'admins switch it off');
+  assert.equal((await call('DELETE', '/connections/portal')).status, 400);
+  assert.equal((await call('DELETE', '/logins/sites/portal')).status, 200, 'admins remove any');
   assert.deepEqual((await json('/connections', b)).map((c: { name: string }) => c.name), ['graph']);
 });
 
@@ -782,7 +783,7 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   assert.deepEqual((await json('/me')).brand, { text: null, logo: false });
   assert.equal((await call('GET', '/brand/logo')).status, 404);
   assert.equal((await rf('can', 'create', `${bob}, 0B8E5C8A-6D3E-4C21-9F2A-1D2E3F4A5B6C`)).trim(), `create: ${bob}, 0b8e5c8a-6d3e-4c21-9f2a-1d2e3f4a5b6c`);
-  assert.equal((await rf('can')).trim(), `publish: admins only\ncreate: ${bob}, 0b8e5c8a-6d3e-4c21-9f2a-1d2e3f4a5b6c\nsites: admins only\nkeepalive: admins only`);
+  assert.equal((await rf('can')).trim(), `publish: admins only\ncreate: ${bob}, 0b8e5c8a-6d3e-4c21-9f2a-1d2e3f4a5b6c\nkeepalive: admins only`);
   assert.equal((await rf('can', 'create', '--clear')).trim(), 'create: admins only');
 
   // Bob runs an instance in a workspace, so taking him out of it, or his admin role when he isn't in it, is refused unless forced.
@@ -816,7 +817,7 @@ test("rf alone lists its commands and rf help COMMAND gives one's usage; every r
   const rows = JSON.parse(await rf('ls', '--json')), week = rows.find((r: { path: string }) => r.path === `larkfield/${series}/2026-08-30`);
   assert.deepEqual([week.id, week.status, rows.find((r: { path: string }) => r.path === `larkfield/${series}`).id], [await iid(series, '2026-08-30'), 'closed', (await shown(series)).id]);
   assert.ok(JSON.parse(await rf('skills', '--json')).some((s: { id: string }) => s.id === 'tool'));
-  assert.deepEqual(Object.keys(JSON.parse(await rf('can', '--json'))), ['publish', 'create', 'sites', 'keepalive']);
+  assert.deepEqual(Object.keys(JSON.parse(await rf('can', '--json'))), ['publish', 'create', 'keepalive']);
   assert.deepEqual(JSON.parse(await rf('brand', '--json')), { text: null, logo: false });
   assert.ok(JSON.parse(await rf('people', '--json')).some((u: { email: string; role: string }) => u.email === adminEmail && u.role === 'admin'));
   assert.ok(JSON.parse(await rf('connections', '--json')).every((c: { name: string; type: string }) => c.name && c.type));
@@ -915,7 +916,7 @@ test("rf's acts start no run unless --wake: a new instance waits for its first a
   await quiet();
 });
 
-test('rf shares and archives series and workspaces, starts or drops a request, lists your logins, takes offers off them and signs out of them, and adds and removes your own websites', async () => {
+test('rf shares and archives series and workspaces, starts or drops a request, lists your logins, takes offers off them and signs out of them, adds, sets and removes websites, and asks for, approves and revokes grants', async () => {
   const { saveLogin } = await import('../src/logins.ts'), week = new Date(Date.now() + 86_400_000).toISOString(), since = new Date().toISOString();
   saveLogin(adminEmail, { id: 'web:crm', kind: 'website', name: 'CRM', since, offers: [{ id: 'web:crm', name: 'CRM' }], keepalive: week }, 'state');
   saveLogin(adminEmail, { id: 'web:erp', kind: 'website', name: 'ERP', since, offers: [{ id: 'web:erp', name: 'ERP' }], expired: true }, 'state');
@@ -940,11 +941,23 @@ test('rf shares and archives series and workspaces, starts or drops a request, l
   assert.equal(await rf('logins', 'unoffer', 'web:crm', 'web:crm'), 'web:crm no longer offers web:crm\n');
   assert.deepEqual(JSON.parse(await rf('logins', '--json')).find((l: { id: string }) => l.id === 'web:crm').offers, []);
   await assert.rejects(rf('logins', 'allow', 'nosuch', 'cdn.example.com'), fails(1, /: 404 no website nosuch/));
-  assert.equal(await rf('site', 'add', 'gg', 'https://gg.example.com/'), `added gg: sign in to it at ${base}/#logins\n`);
-  await assert.rejects(rf('site', 'add', 'gg', 'https://gg.example.com/'), fails(1, /: 409 gg is taken: name yours otherwise\n$/));
+  assert.equal(await rf('site', 'add', 'gg', 'https://gg.example.com/'), `added gg: sign in to it at ${base}/#logins, then rf site ask gg WORKSPACE REASON\n`);
+  assert.equal(await rf('site', 'add', 'mine', 'https://gg.example.com/login'), `https://gg.example.com/login is gg's: sign in to it at ${base}/#logins, then rf site ask gg WORKSPACE REASON\n`, 'an address a website has is that website');
+  await assert.rejects(rf('site', 'add', 'gg', 'https://other.example.com/'), fails(1, /: 409 gg is taken: name yours otherwise\n$/));
+  assert.equal(await rf('site', 'set', 'gg', '--title', 'GG', '--every', '5m'), 'saved\n');
+  assert.deepEqual(JSON.parse(await rf('connections', '--json')).filter((c: { name: string }) => c.name === 'gg').map((c: { title: string; every: number; owner: string }) => [c.title, c.every, c.owner]), [['GG', 5, adminEmail]]);
   assert.equal(await rf('logins', 'allow', 'gg', 'cdn.gg-assets.example.net'), 'gg reaches cdn.gg-assets.example.net\n');
+  await assert.rejects(rf('site', 'ask', 'gg', 'Making', 'month-end pulls'), fails(1, /: 409 sign in to gg first/));
+  saveLogin(adminEmail, { id: 'web:gg', kind: 'website', name: 'GG', since, offers: [{ id: 'web:gg', name: 'GG' }] }, 'state');
+  const asked = /^asked, as grant (\w+): one of Making's owners approves or denies it\n$/.exec(await rf('site', 'ask', 'gg', 'Making', 'month-end pulls'))![1];
+  await assert.rejects(rf('site', 'ask', 'gg', 'Making', 'again'), fails(1, /: 409 you've asked for gg in Making already/));
+  assert.match(await rf('waiting'), new RegExp(`^grant  Making since .+, grant ${asked}: ${adminEmail} asks to use gg here: month-end pulls$`, 'm'));
+  assert.equal(await rf('grant', 'approve', asked, 'fine'), 'approved\n');
+  assert.match(await rf('grants', 'Making'), new RegExp(`^${asked}  approved  gg in Making for ${adminEmail}, since .+: month-end pulls; approved by ${adminEmail}: fine$`, 'm'));
+  assert.equal(await rf('grant', 'revoke', asked), 'revoked\n');
+  assert.ok(!JSON.parse(await rf('logins', '--json')).some((l: { id: string }) => l.id === 'web:gg'), 'with no grant left, the login is signed out');
   assert.equal(await rf('site', 'remove', 'gg'), 'removed gg\n');
-  await assert.rejects(rf('site', 'remove', 'gg'), fails(1, /: 404 no website gg of yours\n$/));
+  await assert.rejects(rf('site', 'remove', 'gg'), fails(1, /: 404 no website gg; /));
   await assert.rejects(rf('site', 'add', 'gg'), fails(2, /^rf site add NAME URL /));
   for (const id of ['web:crm', 'web:erp', 'wh']) assert.equal(await rf('logins', 'signout', id), `signed out of ${id}\n`);
   await assert.rejects(rf('logins', 'signout', 'web:crm'), fails(1, /: 404 you have no login web:crm\n$/));

@@ -54,18 +54,18 @@ export const connections = (): Connection[] => Object.entries(readJson<Record<st
 export const covers = (pattern: string, host: string) => pattern === host || (pattern.startsWith('*.') && host.endsWith(pattern.slice(1)));
 export const reached = (w: { url: string; hosts: string[] }) => [new URL(w.url).hostname, ...w.hosts];
 
-// What a website may reach, an admin's or a person's own: never rollforward's own host; never another website's address, or a host
-// another connection serves, so that no website goes around another's people or settings, though hosts such as single sign-on's
-// they share; a wildcard within one registrable domain, the public suffixes being the Public Suffix List's, its private ones too;
-// and for a person's own, never an internal address, which the browser refuses it too.
-export async function checkHost(name: string, h: string, own: boolean) {
+// What a website may reach: never rollforward's own host; never another website's address, or a host another connection serves, so
+// that no website goes around another's grants or settings, though hosts such as single sign-on's they share; a wildcard within one
+// registrable domain, the public suffixes being the Public Suffix List's, its private ones too; and never an internal address, which
+// the browser refuses it too, unless an admin lets the website reach them, by exact hosts.
+export async function checkHost(name: string, h: string, internal: boolean) {
   if (!/^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(h)) throw new HttpError(400, `${h}: a host, such as sso.example.com, or *.example.com for any name under it`);
   const base = h.replace(/^\*\./, '');
   if (h !== base && !getDomain(base, { allowPrivateDomains: true })) throw new HttpError(400, `${h}: a wildcard stays within one registrable domain, such as *.example.com`);
   if ([process.env.RF_PUBLIC_URL, process.env.RF_BROWSER_URL].some(u => u && covers(h, new URL(u).hostname))) throw new HttpError(400, `${h} is rollforward's own: no website reaches it`);
   const other = connections().find(c => c.name !== name && (types[c.type].serves?.(c, base) || (c.type === 'website' && covers(h, new URL(c.url).hostname))));
   if (other) throw new HttpError(400, `${h} is ${other.name}'s: no other website reaches it`);
-  if (own && h === base && (await lookup(h, { all: true }).catch(() => [])).some(isPrivate)) throw new HttpError(400, `${h} is at an internal address: a website of your own reaches none`);
+  if (!internal && h === base && (await lookup(h, { all: true }).catch(() => [])).some(isPrivate)) throw new HttpError(400, `${h} is at an internal address: a website reaches one only where an admin lets it`);
 }
 
 export async function setConnection(name: string, input: Record<string, unknown>, by: string): Promise<Connection> {
@@ -74,15 +74,14 @@ export async function setConnection(name: string, input: Record<string, unknown>
   const type = types[String(input.type)];
   if (!type) throw new HttpError(400, `type: one of ${Object.keys(types).join(', ')}`);
   const settings = type.settings(input);
-  if (type === website) for (const h of reached(settings as { url: string; hosts: string[] })) await checkHost(name, h, !!settings.owner);
+  if (type === website) for (const h of reached(settings as { url: string; hosts: string[] })) await checkHost(name, h, !!settings.internal);
   const all = readJson<Record<string, any>>('connections.json', {});
   all[name] = { type: input.type, ...settings, updated_by: by, updated_at: new Date().toISOString() };
   writeJson('connections.json', all);
   return { name, ...all[name] };
 }
 
-// A change to a connection's settings past their checks: a host a website's pages needed, allowed as its person signed in (browsers.ts),
-// or an admin's switching a website off or on.
+// A change to a connection's settings past their checks: a host a website's pages needed, allowed as its owner signed in (browsers.ts).
 export function changeConnection(name: string, change: Record<string, unknown>, by: string) {
   const all = readJson<Record<string, any>>('connections.json', {});
   if (!all[name]) throw new HttpError(404, `no connection ${name}`);
