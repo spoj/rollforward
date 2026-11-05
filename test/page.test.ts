@@ -416,6 +416,7 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   const lines = () => page.$$eval('#pv .lline', ls => ls.map(l => [...l.children].map(c => (c as HTMLElement).innerText.trim()).join(' | ')));
   await page.evaluate(() => openLogins());
   await page.waitForSelector('#pv .lline');
+  assert.deepEqual(await page.$$eval('#pv .pvtabs .tab', ts => ts.map(t => t.textContent)), ['Logins', 'Tokens'], "an admin's too: admins see people with rf people");
   assert.deepEqual((await page.$$eval('#pv h3', hs => hs.map(h => h.textContent))), ['Needs you', 'All']);
   const all = await lines();
   assert.equal(all[0], 'Databricks adb | expired | Sign in again', 'first, what needs you');

@@ -109,7 +109,6 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .acct:is(:hover, :focus-within) .acts2 { display: flex; }
 .pvtabs { display: flex; gap: 4px; padding: 0 12px; border-bottom: 1px solid var(--rule); }
 .me .mail { color: var(--ink-3); font-size: 12px; word-break: break-all; }
-@media (max-width: 560px) { .ut th:nth-child(3), .ut td:nth-child(3), .ut th:nth-child(4), .ut td:nth-child(4) { display: none; } }
 .dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--red); display: inline-block; margin-left: 6px; vertical-align: 1px; }
 .dot.u { background: var(--person); }
 .row .nm.b { font-weight: 600; }
@@ -1162,14 +1161,13 @@ function renderPv() {
   if (!pv) return void (d.open && d.close());
   d.className = 'pv' + (pv.settings ? ' small' : '');
   let h = `<div class="pvh"><b>${esc(pv.title)}</b><span class="saved"></span>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${(pv.att ?? pv).doc ? '<button class="btn" data-act="layout">Exact layout</button>' : ''}${pv.path ? `<a class="btn" href="${fileUrl(pv.path)}">Download</a>` : ''}${pv.signin ? '<button class="btn primary" data-act="signin-save">Save login</button>' : ''}<button class="btn" data-act="unpv">${pv.signin ? 'Cancel' : 'Close'}</button></div>`;
-  // Your account's dialog: Logins, Tokens and, for admins, People, as tabs.
-  const account = [['logins', 'Logins'], ['tokens', 'Tokens'], ...(me.role === 'admin' ? [['people', 'People']] : [])];
+  // Your account's dialog: Logins and Tokens, as tabs.
+  const account = [['logins', 'Logins'], ['tokens', 'Tokens']];
   if (account.some(([k]) => k === pv.settings?.kind)) h += `<div class="pvtabs">${account.map(([k, name]) => `<button class="tab ${pv.settings.kind === k ? 'sel' : ''}" data-act="${k}">${name}</button>`).join('')}</div>`;
   if (pv.att) h += `<div class="sub" style="padding:8px 14px"><a data-act="attachment-back">\u2190 ${esc(pv.title)}</a> \u00b7 ${esc(pv.att.title)}</div>` + previewBody(pv.att);
   else if (pv.path) h += previewBody(pv);
   else if (pv.signin) h += `<div class="sub" style="padding:8px 14px">Sign in as you always do, then Save login. Only you see this browser.${me.can.includes('keepalive') ? `<label style="display:block;margin-top:6px"><input type="checkbox" id="keep"> Keep the login alive until <input type="datetime-local" id="keep-until" value="${localInput(Date.now() + 7 * 864e5)}" max="${localInput(Date.now() + 7 * 864e5)}">, a week at most: the server opens the site every few minutes, so runs while you're away find you signed in.</label>` : ''}</div><div id="refused"></div><div class="pvb"><iframe src="/signins/${pv.signin}/view?drive" style="width:100%;height:100%;border:0"></iframe></div>`;
   else if (pv.settings?.kind === 'tokens') h += `<div class="pvb vl">${tokensHtml(pv.settings)}</div>`;
-  else if (pv.settings?.kind === 'people') h += `<div class="pvb vl"><div class="sub">Everyone who can sign in. Admins manage people with rf (Tokens): rf people, as a file to edit and set, and rf user add|role|disable|enable|signout|remove.</div><table class="ut"><tr><th>Person</th><th>Role</th><th>Workspaces</th><th>Last in</th></tr>${pv.settings.users.map(u => `<tr><td>${esc(u.name ?? '')}<div class="sub">${esc(u.email)}${u.disabled ? ' · disabled' : ''}</div></td><td>${esc(u.role)}</td><td class="sub">${esc(u.workspaces.join(', ')) || 'none'}</td><td class="sub">${esc(u.last_login ? when(u.last_login) : 'never')}</td></tr>`).join('')}</table></div>`;
   else if (pv.settings?.kind === 'logins') h += `<div class="pvb vl">${loginsHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'wakes') h += `<div class="pvb vl">${wakesHtml(cur.i.id, cur.i.wakes, false)}</div>`;
   else if (pv.settings?.kind === 'waiting') h += `<div class="pvb vl">${waiting().join('') || '<div class="sub">Nothing waits on you.</div>'}</div>`;
@@ -1831,10 +1829,6 @@ async function onAct(act, el) {
   }
   if (act === 'logins') await openLogins();
   if (act === 'tokens') await openTokens();
-  if (act === 'people') {
-    pv = { title: 'People', settings: { kind: 'people', users: await api('/users') } };
-    renderPv();
-  }
   if (act === 'new-token') {
     const name = $('#tname').value.trim();
     if (!name) return toast('Name the token, such as laptop');
