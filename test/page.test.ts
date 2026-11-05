@@ -259,6 +259,27 @@ test("a row's chevron folds and opens it, selected or not, and selects nothing",
   await page.waitForSelector('.row.ser');
 });
 
+test("the sidebar's filter keeps, as you type, the rows whose names match and what holds them, opened; its menu chooses which workspaces show, and the order", async () => {
+  assert.equal(await page.locator('#tree .row.head').count(), 0, 'no heading over the tree');
+  const series = () => page.locator('#tree .row.ser .l').allTextContents(), before = await series();
+  await page.fill('#find', 'year');
+  assert.deepEqual(await series(), ['Year-end pack']);
+  await page.fill('#find', '2026-08-23');
+  assert.deepEqual([await series(), await page.locator('#tree a.row.inst .l').allTextContents()], [['Weekly borrowing base'], ['2026-08-23']], 'a closed instance that matches, in its series, opened');
+  await page.fill('#find', 'nothing like this');
+  assert.equal(await page.textContent('#tree .empty'), 'Nothing matches.');
+  await page.fill('#find', '');
+  assert.deepEqual(await series(), before);
+  await page.click('#sorter summary');
+  assert.deepEqual(await page.locator('#sortpop .opt:not([data-act=toggle-archived])').allTextContents(), ['My workspaces', 'All workspaces', 'Newest activity', 'Name']);
+  await page.click('#sortpop [data-act=order][data-id=name]');
+  assert.deepEqual([await series(), await page.locator('#sorter.on').count()], [[...before].sort(), 1], 'by name, the button marked');
+  await page.click('#sortpop [data-act=order][data-id=activity]');
+  assert.deepEqual([await series(), await page.locator('#sorter.on').count()], [before, 0]);
+  await page.mouse.click(5, 5);
+  assert.equal(await page.locator('#sorter[open]').count(), 0, 'a click beside the menu closes it');
+});
+
 test('keys: c goes to the comment box, Ctrl+Enter sends it, Esc leaves it, and j moves through the sidebar', async () => {
   await page.click('a.row.inst.open >> nth=0');
   await page.waitForSelector('#bar [data-act=close], #bar [data-act=takeover]');

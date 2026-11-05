@@ -67,6 +67,19 @@ a { color: inherit; }
 .row > .add { position: relative; }
 .row:is(.ws, .ser, .waits):has(> a.nm):hover, a.row.inst:not(.on):hover { background: #eceff2; }
 .head { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
+/* The sidebar's top: a filter as you type; a button whose menu chooses which workspaces show and in what order, marked while it's
+   not as it starts; and + for a workspace. */
+.find { display: flex; align-items: center; gap: 2px; padding: 0 0 8px; }
+.find input { flex: 1; min-width: 0; font: inherit; font-size: 13px; padding: 4px 8px; border: 1px solid var(--rule-2); border-radius: var(--r1); background: var(--sheet); color: var(--ink); }
+.sorter { position: relative; }
+.sorter > summary::-webkit-details-marker { display: none; }
+.sorter.on > summary { color: var(--ink); background: var(--rule); }
+.sorter .pop { position: absolute; z-index: 5; top: 28px; right: 0; min-width: 170px; padding: 4px; background: var(--sheet); border: 1px solid var(--rule-2); border-radius: var(--r1); box-shadow: 0 6px 18px rgba(0, 0, 0, .12); }
+.pop .head { padding: 6px 8px 2px; }
+.pop .opt { all: unset; display: block; position: relative; cursor: pointer; padding: 4px 10px 4px 26px; border-radius: var(--r1); font-size: 13px; color: var(--ink); }
+.pop .opt:hover { background: var(--paper); }
+.pop .opt.sel::before { content: '\2713'; position: absolute; left: 9px; }
+.side .empty { padding: 6px 8px; }
 .ws { font-size: 14px; font-weight: 600; }
 .tree { margin-left: 14px; padding-left: 4px; border-left: 1px solid var(--rule-2); }
 .ser { font-size: 13.5px; color: var(--ink-2); }
@@ -458,7 +471,7 @@ input[type=checkbox] { accent-color: var(--ink); }
 </head>
 <body>
 <div class="app">
-  <aside class="side" id="side"><div class="brand" id="brand"></div><div class="scroll" id="tree"></div><div class="acct" id="acct"></div></aside>
+  <aside class="side" id="side"><div class="brand" id="brand"></div><div class="find"><input type="search" id="find" placeholder="Filter" autocomplete="off" spellcheck="false" aria-label="Filter workspaces, series and instances"><details class="sorter" id="sorter"><summary class="add" title="Show and sort"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 4h12M4.5 8h7M7 12h2"/></svg></summary><div class="pop" id="sortpop"></div></details><span id="newws"></span></div><div class="scroll" id="tree"></div><div class="acct" id="acct"></div></aside>
   <main class="main">
     <div class="bar" id="bar"></div>
     <div class="needs" id="needs" hidden></div>
@@ -638,7 +651,9 @@ function renderBrand() {
 }
 
 // The sidebar's tree, folded as a file browser's: selecting a row opens it and leaves the others as they were, and its chevron folds
-// it. Mine keeps to the workspaces you own or worked in, and the one you're in.
+// it. Its menu shows your workspaces, those you own or worked in and the one you're in, or all, and archived ones or not, newest
+// activity first or by name. The filter keeps the rows whose names match and what holds them, opened as it goes; a matching
+// workspace or series shows its rows as ever.
 const expanded = new Set(JSON.parse(localStorage.expanded ?? '[]'));
 function expandRow(id, open = !expanded.has(id)) {
   if (open) expanded.add(id); else expanded.delete(id);
@@ -647,14 +662,16 @@ function expandRow(id, open = !expanded.has(id)) {
 
 function renderSide() {
   if (editing) return;
-  const listed = (x, on) => !x.archived || showArchived || on, mine = localStorage.workspaces !== 'all' && tree.some(w => w.mine);
+  const listed = (x, on) => !x.archived || showArchived || on, mine = localStorage.workspaces !== 'all' && tree.some(w => w.mine), byName = localStorage.order === 'name';
+  const q = $('#find').value.trim().toLowerCase(), hit = name => name.toLowerCase().includes(q), opened = new Set(), shut = id => !expanded.has(id) && !opened.has(id);
+  const sorted = (xs, act, name) => [...xs].sort(byName ? (x, y) => name(x).localeCompare(name(y), undefined, { numeric: true }) : byAct(act));
   // A dot on a folded row: red for asks waiting on people, else blue for something new to you.
   const asks = s => !s.archived && s.instances.some(i => i.asks.length), news = s => !s.archived && s.instances.some(i => i.unread);
-  const dot = (id, ss) => expanded.has(id) ? '' : ss.some(asks) ? '<span class="dot"></span>' : ss.some(news) ? '<span class="dot u"></span>' : '';
+  const dot = (id, ss) => !shut(id) ? '' : ss.some(asks) ? '<span class="dot"></span>' : ss.some(news) ? '<span class="dot u"></span>' : '';
   // A row's last activity, or a spinner while a run goes.
   const age = (iso, running) => `<span class="age">${running ? '<span class="spin"></span>' : iso ? ago(iso) : ''}</span>`;
   const btn = (act, title, glyph, id = '') => `<button class="add" data-act="${act}" data-id="${id}" title="${title}">${glyph}</button>`;
-  const chev = id => `<button class="chev" data-act="expand" data-id="${id}">${expanded.has(id) ? '\u25BE' : '\u25B8'}</button>`;
+  const chev = id => `<button class="chev" data-act="expand" data-id="${id}">${shut(id) ? '\u25B8' : '\u25BE'}</button>`;
   const row = i => {
     const st = i.queued ? '\u29D7 queued' : i.asks.length ? `<span class="cnt" title="${i.asks.length} to answer">${i.asks.length}</span>` : i.wakes[0] ? `<span title="${when(i.wakes[0].at)}">wakes ${soon(i.wakes[0].at)}</span>` : i.status === 'open' ? ''
       : i.corrections ? `<span class="corr" title="Read with ${plural(i.corrections, 'correction')}">corrected</span>` : i.status;
@@ -662,21 +679,31 @@ function renderSide() {
   };
   const waits = waiting().length;
   let h = waits ? `<div class="row waits"><a class="nm" data-act="waiting">Waiting on you<span class="q"> ${waits}</span></a></div>` : '';
-  h += `<div class="row head"><span class="nm">Workspaces</span><span class="seg">${['mine', 'all'].map(v => `<button class="${(v === 'mine') === mine ? 'sel' : ''}" data-act="workspaces" data-id="${v}">${v === 'mine' ? 'Mine' : 'All'}</button>`).join('')}</span>${me.can.includes('create') ? btn('new-workspace', 'New workspace', '+') : ''}</div>`;
-  for (const w of [...tree].sort(byAct(wAct))) {
-    const won = cur?.w.id === w.id;
+  let shown = 0;
+  for (const w of sorted(tree, wAct, w => w.name)) {
+    const won = cur?.w.id === w.id, wHit = !q || hit(w.name);
     if (!listed(w, won) || (mine && !w.mine && !won)) continue;
+    // Each series with the instances that match, where only they do.
+    const series = sorted(w.series.filter(s => !s.single && listed(s, cur?.s?.id === s.id)), sAct, s => s.name).map(s => [s, wHit || hit(s.name) ? null : s.instances.filter(i => hit(i.label))]).filter(([, found]) => !found || found.length);
+    const tasks = sorted(w.series.filter(s => s.single && listed(s, cur?.s?.id === s.id)).flatMap(s => s.instances), recent, i => i.label).filter(i => wHit || hit(i.label));
+    if (!wHit && !series.length && !tasks.length) continue;
+    shown++;
+    if (!wHit) opened.add(w.id);
     h += `<div class="row ws ${won ? 'on' : ''} ${w.archived ? 'archived' : ''}">${chev(w.id)}<a class="nm" href="#/${w.id}" title="${esc(w.name)}"><span class="l">${esc(w.name)}</span>${dot(w.id, w.series)}</a>`
       + `<span class="n">${w.archived ? 'archived' : ''}</span>${age(wAct(w), w.series.some(s => s.instances.some(i => i.running)))}` + btn('workspace-settings', 'Settings', '\u2699', w.id) + btn('new-task', 'New task', '+', w.id) + '</div>';
-    if (!expanded.has(w.id)) continue;
+    if (shut(w.id)) continue;
     h += '<div class="tree">';
-    for (const s of w.series.filter(s => !s.single).sort(byAct(sAct))) {
+    for (const [s, found] of series) {
       const on = cur?.s?.id === s.id, open = s.instances.filter(i => i.status === 'open');
-      if (!listed(s, on)) continue;
-      const note = s.archived ? 'archived' : s.requests.length ? `<span class="q">${s.requests.length} to start</span>` : open.length && !expanded.has(s.id) ? `${open.length} open` : s.wakes[0] && !expanded.has(s.id) ? `<span title="${when(s.wakes[0].at)}">wakes ${soon(s.wakes[0].at)}</span>` : '';
+      if (found) opened.add(s.id);
+      const note = s.archived ? 'archived' : s.requests.length ? `<span class="q">${s.requests.length} to start</span>` : open.length && shut(s.id) ? `${open.length} open` : s.wakes[0] && shut(s.id) ? `<span title="${when(s.wakes[0].at)}">wakes ${soon(s.wakes[0].at)}</span>` : '';
       h += `<div class="row ser ${on ? 'on' : ''} ${s.archived ? 'archived' : ''}">${chev(s.id)}<a class="nm" href="#/${s.id}" title="${esc(s.name)}"><span class="l">${esc(s.name)}</span>${dot(s.id, [s])}</a>`
         + `<span class="n">${note}</span>${age(sAct(s), s.instances.some(i => i.running))}` + btn('settings', 'Settings', '\u2699', s.id) + btn('new-instance', 'New instance', '+', s.id) + '</div>';
-      if (!expanded.has(s.id)) continue;
+      if (shut(s.id)) continue;
+      if (found) {
+        h += `<div class="tree">${found.map(row).join('')}</div>`;
+        continue;
+      }
       const closed = s.instances.length - open.length;
       h += '<div class="tree">';
       for (const k of s.wakes) h += `<div class="row wake"><span class="nm" title="Starts ${esc(k.label)} ${when(k.at)}"><span class="l">Starts ${esc(k.label)} ${soon(k.at)}</span></span><span class="n">${k.days ? 'weekly' : 'wake'}</span></div>`;
@@ -687,15 +714,20 @@ function renderSide() {
       h += '</div>';
     }
     // A series moved to another workspace, for a week, where people who aren't in that one see it go.
-    for (const m of w.moved) h += `<div class="row wake"><span class="nm"><span class="l">${esc(m.name)} moved to ${esc(m.to)}</span></span><span class="n">${ago(m.at)}</span></div>`;
+    if (!q) for (const m of w.moved) h += `<div class="row wake"><span class="nm"><span class="l">${esc(m.name)} moved to ${esc(m.to)}</span></span><span class="n">${ago(m.at)}</span></div>`;
     // Tasks, each a series of its one instance, listed under a heading that is no series.
-    const tasks = w.series.filter(s => s.single && listed(s, cur?.s?.id === s.id)).flatMap(s => s.instances).sort(byAct(recent)), done = tasks.filter(i => i.status !== 'open').length;
-    if (tasks.length) h += '<div class="row grp"><span class="nm">Ungrouped</span></div>' + tasks.filter(i => i.status === 'open' || showClosed.has(w.id) || i.id === cur?.i?.id).map(row).join('')
+    const done = !wHit ? 0 : tasks.filter(i => i.status !== 'open').length;
+    if (tasks.length) h += '<div class="row grp"><span class="nm">Ungrouped</span></div>' + tasks.filter(i => !wHit || i.status === 'open' || showClosed.has(w.id) || i.id === cur?.i?.id).map(row).join('')
       + (done ? `<button class="quiet" data-act="toggle-closed" data-id="${w.id}">${showClosed.has(w.id) ? 'Hide' : 'Show'} closed (${done})</button>` : '');
     h += '</div>';
   }
   const archived = tree.filter(w => w.archived).length + tree.filter(w => expanded.has(w.id)).flatMap(w => w.series).filter(s => s.archived).length;
-  if (archived) h += `<button class="quiet" data-act="toggle-archived">${showArchived ? 'Hide' : 'Show'} archived (${archived})</button>`;
+  if (q && !shown) h += '<div class="empty">Nothing matches.</div>';
+  const opt = (act, id, on, label) => `<button class="opt ${on ? 'sel' : ''}" data-act="${act}" data-id="${id}">${label}</button>`;
+  put($('#sortpop'), '<div class="head">Show</div>' + opt('workspaces', 'mine', mine, 'My workspaces') + opt('workspaces', 'all', !mine, 'All workspaces')
+    + (archived ? opt('toggle-archived', '', showArchived, `Archived (${archived})`) : '') + '<div class="head">Sort</div>' + opt('order', 'activity', !byName, 'Newest activity') + opt('order', 'name', byName, 'Name'));
+  $('#sorter').classList.toggle('on', localStorage.workspaces === 'all' || showArchived || byName);
+  put($('#newws'), me.can.includes('create') ? btn('new-workspace', 'New workspace', '+') : '');
   // Keys move a focus through the rows' links (j, k), which a new drawing keeps.
   const kf = $('#tree').contains(document.activeElement) && document.activeElement.getAttribute('href');
   put($('#tree'), h);
@@ -779,7 +811,7 @@ function tile(item) {
 // the column its heading names; a phone shows tiles, Outputs first.
 function renderPanes() {
   $('#outs').hidden = $('#rev').hidden = $('#view').hidden = !data;
-  if (!data) return put($('#ins'), `<div class="empty">${cur?.s ? 'No instance yet. Make one with + by the series.' : cur ? 'No series yet. Make one with + by the workspace.' : me.can.includes('create') ? 'No workspace yet. Make one with + by Workspaces.' : 'No workspace yet: an admin makes one or adds you to one.'}</div>`);
+  if (!data) return put($('#ins'), `<div class="empty">${cur?.s ? 'No instance yet. Make one with + by the series.' : cur ? 'No series yet. Make one with + by the workspace.' : me.can.includes('create') ? 'No workspace yet. Make one with + by the filter.' : 'No workspace yet: an admin makes one or adds you to one.'}</div>`);
   const open = data.doc.status === 'open', stored = localStorage[`seen:${instPath()}`], items = data.doc.items, list = localStorage.view === 'list' && innerWidth > 800;
   seen = stored ? JSON.parse(stored) : {};
   if (!stored) markSeen(items);
@@ -1637,6 +1669,7 @@ async function upload(files, pane, onto) {
 }
 
 document.addEventListener('click', async ev => {
+  if (!ev.target.closest('#sorter')) $('#sorter').open = false;
   if (!ev.target.closest('#side, [data-act=menu]') || ev.target.closest('#side a')) $('#side').classList.remove('open');
   // A fold opened or closed stays so as the panel is drawn again, which, the page now differing from what was drawn, it next is.
   const sum = ev.target.closest('#log details[data-key] > summary');
@@ -1668,6 +1701,7 @@ async function onAct(act, el) {
   if (act === 'menu') $('#side').classList.toggle('open');
   if (act === 'expand') { expandRow(el.dataset.id); renderSide(); }
   if (act === 'workspaces') { localStorage.workspaces = el.dataset.id; renderSide(); }
+  if (act === 'order') { localStorage.order = el.dataset.id; renderSide(); }
   // A row's settings and + act on that row, which they open first: after the hash change's own refresh starts, which this one
   // supersedes, so it lands before they act.
   if (['workspace-settings', 'new-task', 'settings', 'new-instance'].includes(act) && el.dataset.id && ![cur?.w.id, cur?.s?.id].includes(el.dataset.id)) {
@@ -2172,11 +2206,13 @@ addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.isComposing && e.target.id === 'slabel') $('[data-act=start-go]').click();
   // A dialog closes itself on Escape.
   if (e.key !== 'Escape' || document.querySelector('dialog[open]')) return;
-  if ($('#side').classList.contains('open')) $('#side').classList.remove('open');
+  if ($('#sorter').open) $('#sorter').open = false;
+  else if ($('#side').classList.contains('open')) $('#side').classList.remove('open');
   else if (openItem) { openItem = null; renderCard(); renderPanes(); }
   else if (ui.open) { ui.open = false; renderLog(); renderBar(); placeCard(); }
 });
 // Microsoft sends people back to #logins after they connect Microsoft 365.
+$('#find').addEventListener('input', renderSide);
 const backFromMicrosoft = location.hash === '#logins';
 if (backFromMicrosoft) history.replaceState(null, '', '#/');
 refresh().then(() => backFromMicrosoft && openLogins());
