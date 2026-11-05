@@ -53,6 +53,9 @@ rf logins offer|unoffer LOGIN SOURCE|OFFER   what a login offers runs: Microsoft
                                   OFFER rf logins lists
 rf logins allow SITE HOST         a host the pages of SITE, your own website or, for admins, another, need
 rf logins signout LOGIN
+rf site add NAME URL              a website of your own, for those granted sites, whose sign-in starts at URL; you sign in to it
+                                  on the page
+rf site remove NAME               a website of yours, with your login to it
 rf correct PATH TEXT [--item ID] [--ref REF] [--superseded] [--see LABEL]   a closed instance, or its item ID at REF, is
                                   wrong, or superseded, as LABEL, another instance of its series, shows; it can't be withdrawn
 rf wake PATH AT [--label LABEL] [--days DAYS] | rf wake --cancel ID
@@ -484,6 +487,12 @@ else if (cmd === 'comment' && args.length === 2) {
   else if (what === 'unoffer') await api(`${at}/offers/${encodeURIComponent(x)}`, { method: 'DELETE' });
   else await post(`/logins/web/${encodeURIComponent(login)}/hosts`, { host: x });
   console.log(`${login} ${{ offer: 'offers', unoffer: 'no longer offers', allow: 'reaches' }[what]} ${x}`);
+} else if (cmd === 'site' && args[0] === 'add' && args.length === 3) {
+  await post('/logins/sites', { name: args[1], url: args[2] });
+  console.log(`added ${args[1]}: sign in to it at ${url}/#logins`);
+} else if (cmd === 'site' && args[0] === 'remove' && args.length === 2) {
+  await api(`/logins/sites/${encodeURIComponent(args[1])}`, { method: 'DELETE' });
+  console.log(`removed ${args[1]}`);
 } else if (cmd === 'logins' && args[0] === 'signout' && args.length === 2) {
   await api(`/logins/${encodeURIComponent(args[1])}`, { method: 'DELETE' });
   console.log(`signed out of ${args[1]}`);

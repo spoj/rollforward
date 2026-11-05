@@ -812,7 +812,7 @@ test('rf makes what the page makes: a workspace, a task, named or by its first c
   assert.deepEqual([await status('Making/Lunches/Lunch'), await status('Making/Lunches/again')], ['closed', 'open']);
 });
 
-test('rf shares and archives series and workspaces, starts or drops a request, and lists your logins, takes offers off them and signs out of them', async () => {
+test('rf shares and archives series and workspaces, starts or drops a request, lists your logins, takes offers off them and signs out of them, and adds and removes your own websites', async () => {
   const { saveLogin } = await import('../src/logins.ts'), week = new Date(Date.now() + 86_400_000).toISOString(), since = new Date().toISOString();
   saveLogin(adminEmail, { id: 'web:crm', kind: 'website', name: 'CRM', since, offers: [{ id: 'web:crm', name: 'CRM' }], keepalive: week }, 'state');
   saveLogin(adminEmail, { id: 'web:erp', kind: 'website', name: 'ERP', since, offers: [{ id: 'web:erp', name: 'ERP' }], expired: true }, 'state');
@@ -837,6 +837,12 @@ test('rf shares and archives series and workspaces, starts or drops a request, a
   assert.equal(await rf('logins', 'unoffer', 'web:crm', 'web:crm'), 'web:crm no longer offers web:crm\n');
   assert.deepEqual(JSON.parse(await rf('logins', '--json')).find((l: { id: string }) => l.id === 'web:crm').offers, []);
   await assert.rejects(rf('logins', 'allow', 'nosuch', 'cdn.example.com'), fails(1, /: 404 no website nosuch/));
+  assert.equal(await rf('site', 'add', 'gg', 'https://gg.example.com/'), `added gg: sign in to it at ${base}/#logins\n`);
+  await assert.rejects(rf('site', 'add', 'gg', 'https://gg.example.com/'), fails(1, /: 409 gg is taken: name yours otherwise\n$/));
+  assert.equal(await rf('logins', 'allow', 'gg', 'cdn.gg-assets.example.net'), 'gg reaches cdn.gg-assets.example.net\n');
+  assert.equal(await rf('site', 'remove', 'gg'), 'removed gg\n');
+  await assert.rejects(rf('site', 'remove', 'gg'), fails(1, /: 404 no website gg of yours\n$/));
+  await assert.rejects(rf('site', 'add', 'gg'), fails(2, /^rf site add NAME URL /));
   for (const id of ['web:crm', 'web:erp', 'wh']) assert.equal(await rf('logins', 'signout', id), `signed out of ${id}\n`);
   await assert.rejects(rf('logins', 'signout', 'web:crm'), fails(1, /: 404 you have no login web:crm\n$/));
 });
