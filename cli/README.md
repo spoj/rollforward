@@ -6,4 +6,4 @@ People's command line for [rollforward](https://github.com/spoj/rollforward): wh
     rf login https://rollforward.example.com
 
 rf opens the page, which asks you to allow it if it shows the same code as rf; or make a token on the page, under Tokens, and
-`rf login URL TOKEN`. `rf` alone lists the commands; `rf help` is the guide for an agent, read before it first uses rf.
+`rf login URL TOKEN`. `rf` alone lists the commands and `rf help COMMAND` gives one's usage; `rf help` is the guide for an agent, read before it first uses rf.

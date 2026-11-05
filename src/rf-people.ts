@@ -5,13 +5,19 @@ import { spawn } from 'node:child_process';
 import { homedir, hostname } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
+// A failure is one line, rf's own or the server's, never a stack.
+process.on('uncaughtException', e => {
+  console.error(`rf: ${e.message}${e.cause instanceof Error ? `: ${e.cause.message}` : ''}`);
+  process.exit(1);
+});
+
 const USAGE = `rf login URL [TOKEN]                without a TOKEN, through the browser: type rf's code on the page, and allow it
 rf ls
 rf pull PATH DIR [--delete] [-n|--dry-run] [--exclude PATTERN]... [--max-size SIZE]
                                   PATH's files into DIR as rsync copies them, whole, if their size or time differ: PATH/ fills DIR,
                                   PATH makes DIR/<its name>, / is all you see; --delete removes what the server no longer has;
                                   --max-size skips files bigger than SIZE, such as 50M
-rf help                           how rollforward works and how to use rf, for an agent
+rf help [COMMAND]                 how rollforward works and how to use rf, for an agent, or COMMAND's usage
 rf comment PATH TEXT [--item ID] [--ref REF] [--thread T] [--wait]   a new thread, or a reply in T, as to an agent's ask
 rf upload PATH FILE [--onto ITEM] [--output]
 rf wake PATH AT [--label LABEL] [--days DAYS] | rf wake --cancel ID
@@ -69,7 +75,8 @@ rf can [CAP [EMAIL|GROUP,...] [--clear]]   what users may do beyond the rest, as
                                   prints whom each is granted to`;
 
 const GUIDE = `rollforward runs a team's recurring work, such as a weekly borrowing base or a month-end reconciliation, with an agent
-that does each period's work and people who check it. rf does what its page does, as you.
+that does each period's work and people who check it. rf does what its page does, as you: rf alone lists its commands, rf help
+COMMAND gives one's usage, every read takes --json, and a failure is one line on stderr, with exit code 1.
 
 What there is
 - A workspace holds series, and its people. A series is one recurring job; an instance is one period of it, labelled such as
@@ -110,7 +117,7 @@ Usual work
 - Read what a run did: rf pull PATH/ DIR, then its report and done entries in log.jsonl, the files in working/, and session/ for
   every step.
 
-Watching over it, for admins and power users; each sees what the caller sees, and takes --json
+Watching over it, for admins and power users; each sees what the caller sees
 - What's stuck: rf status lists runs going, flagging those past --long MIN (30); queued runs, since when and why: their series is
   running, the RF_MAX_RUNS cap, or memory; what waits on whom since when: asks, notes for runners, expired logins and the instances
   they hold, and requests to start; open instances whose last run failed; and indexes crawling or failing.
@@ -126,6 +133,9 @@ Watching over it, for admins and power users; each sees what the caller sees, an
   does); for a workspace it replaces its people. A change that would hide an open instance from the person who runs it is refused,
   naming them, unless --force: have someone who stays take those over first.`;
 
+// A command's usage, as USAGE gives it; with none known, every command's.
+const usage = (c?: string) => (c && USAGE.split(/\n(?=\S)/).map(e => e.trimEnd()).filter(e => e.split(/\s/)[1] === c).join('\n')) || USAGE;
+
 const config = join(homedir(), '.config', 'rollforward.json');
 const [cmd, ...argv] = process.argv.slice(2);
 const flags: Record<string, string | true> = {}, excludes: string[] = [], args: string[] = [];
@@ -133,20 +143,15 @@ for (let i = 0; i < argv.length; i++) {
   const flag = argv[i] === '-n' ? 'dry-run' : argv[i].match(/^--(.+)$/)?.[1];
   if (!flag) args.push(argv[i]);
   else if (['wait', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear'].includes(flag)) flags[flag] = true;
-  else if (argv[i + 1] === undefined) {
-    console.error(`--${flag} takes a value\n\n${USAGE}`);
-    process.exit(2);
-  } else if (flag === 'exclude') excludes.push(argv[++i]);
+  else if (argv[i + 1] === undefined) throw new Error(`--${flag} takes a value`);
+  else if (flag === 'exclude') excludes.push(argv[++i]);
   else flags[flag] = argv[++i];
 }
-if (cmd === 'help') {
-  console.log(GUIDE);
+if (!cmd || cmd === 'help') {
+  console.log(!cmd ? USAGE : args[0] ? usage(args[0]) : GUIDE);
   process.exit();
 }
-if (cmd !== 'login' && !existsSync(config)) {
-  console.error(`Sign in first: rf login URL\n\n${USAGE}`);
-  process.exit(2);
-}
+if (cmd !== 'login' && !existsSync(config)) throw new Error('sign in first: rf login URL');
 let { url, token } = cmd === 'login' ? { url: args[0]?.replace(/\/$/, ''), token: args[1] } : JSON.parse(readFileSync(config, 'utf8'));
 
 async function api(path: string, init: RequestInit = {}) {
@@ -273,17 +278,15 @@ if (cmd === 'login' && url) {
   mkdirSync(dirname(config), { recursive: true });
   writeFileSync(config, JSON.stringify({ url, token }), { mode: 0o600 });
   console.log(`signed in as ${me.email}`);
-} else if (cmd === 'ls') {
-  const wakes = (list: { id: string; at: string; label?: string; days?: string[] }[]) => {
-    for (const k of list) console.log(`  wake ${k.id} ${k.at}${k.label ? ` starts ${k.label}` : ''}${k.days ? `, then each ${k.days.join(', ')}` : ''}`);
-  };
-  for (const w of await get('/api')) for (const s of w.series) {
-    console.log(`${w.name}/${s.name}${s.requests.length ? `  ${s.requests.length} asking to start` : ''}`);
-    wakes(s.wakes);
-    for (const i of s.instances) {
-      console.log(`${w.name}/${s.name}/${i.label}  ${i.status}${i.running ? ', running' : ''}${i.asks.length ? `, ${i.asks.length} asks waiting` : ''}, runner ${i.runner}`);
-      wakes(i.wakes);
-    }
+} else if (cmd === 'ls' && !args.length) {
+  const rows = (await get('/api')).flatMap(w => w.series.flatMap(s => [
+    { path: `${w.name}/${s.name}`, id: s.id, requests: s.requests.length, wakes: s.wakes },
+    ...s.instances.map(i => ({ path: `${w.name}/${s.name}/${i.label}`, id: i.id, status: i.status, running: i.running, asks: i.asks.length, runner: i.runner, wakes: i.wakes })),
+  ]));
+  if (flags.json) console.log(JSON.stringify(rows, null, 1));
+  else for (const r of rows) {
+    console.log(r.status ? `${r.path}  ${r.status}${r.running ? ', running' : ''}${r.asks ? `, ${r.asks} asks waiting` : ''}, runner ${r.runner}` : `${r.path}${r.requests ? `  ${r.requests} asking to start` : ''}`);
+    for (const k of r.wakes) console.log(`  wake ${k.id} ${k.at}${k.label ? ` starts ${k.label}` : ''}${k.days ? `, then each ${k.days.join(', ')}` : ''}`);
   }
 } else if (cmd === 'pull' && args.length === 2) await pull(args[0], args[1]);
 else if (cmd === 'comment' && args.length === 2) {
@@ -339,13 +342,19 @@ else if (cmd === 'comment' && args.length === 2) {
   }
   console.log(`pulled ${args[1]} version ${n} into ${dir}`);
 } else if (cmd === 'skill' && args[0] === 'versions' && args[1]) {
-  for (const v of await get(`/skills/${encodeURIComponent(args[1])}/versions`)) console.log(`${v.version}  ${v.at}  ${v.by}`);
+  const versions = await get(`/skills/${encodeURIComponent(args[1])}/versions`);
+  if (flags.json) console.log(JSON.stringify(versions, null, 1));
+  else for (const v of versions) console.log(`${v.version}  ${v.at}  ${v.by}`);
 } else if (cmd === 'skill' && args[0] === 'rollback' && args.length === 3) {
   console.log(await (await post(`/skills/${encodeURIComponent(args[1])}/versions`, { from: Number(args[2]) })).text());
 } else if (cmd === 'skills') {
-  for (const s of await get('/skills')) console.log(`${s.id}  v${s.pushed.version} by ${s.pushed.by} ${s.pushed.at}  ${s.description}`);
+  const skills = await get('/skills');
+  if (flags.json) console.log(JSON.stringify(skills, null, 1));
+  else for (const s of skills) console.log(`${s.id}  v${s.pushed.version} by ${s.pushed.by} ${s.pushed.at}  ${s.description}`);
 } else if (cmd === 'connections') {
-  for (const { name, type, login, updated_by, updated_at, ...settings } of await get('/connections')) console.log(`${name}  ${type}  ${JSON.stringify(settings)}`);
+  const all = await get('/connections');
+  if (flags.json) console.log(JSON.stringify(all, null, 1));
+  else for (const { name, type, login, updated_by, updated_at, ...settings } of all) console.log(`${name}  ${type}  ${JSON.stringify(settings)}`);
 } else if (cmd === 'connection' && args[0] === 'set' && args.length === 3) {
   await post(`/connections/${encodeURIComponent(args[1])}`, { type: args[2], ...flags }, 'PUT');
   console.log('saved');
@@ -388,7 +397,7 @@ else if (cmd === 'comment' && args.length === 2) {
     workspace: r => r.path.split('/')[0], series: r => r.path.split('/').slice(0, 2).join('/'), person: r => r.runner, day: r => when(r.at).slice(0, 10),
     outcome: r => r.failure ? `failed, ${r.failure}` : r.outcome,
   }[by];
-  if (!key) throw new Error(USAGE);
+  if (!key) throw new Error('--by: workspace, series, person, day or outcome');
   // A run a restart cut is carried on by the next, so it adds its cost, not a run.
   const sums = new Map<string, { runs: number; cost: number }>(), rows = await runsIn(args[0]), counted = (r: { outcome: string }) => r.outcome === 'cut' ? 0 : 1;
   for (const r of rows) sums.set(key(r), { runs: (sums.get(key(r))?.runs ?? 0) + counted(r), cost: (sums.get(key(r))?.cost ?? 0) + r.cost });
@@ -423,10 +432,11 @@ else if (cmd === 'comment' && args.length === 2) {
   // People as lines to edit and set: ROLE EMAIL for everyone, owner|member EMAIL-OR-GROUP for a workspace, each with a comment.
   const ws = args[0] === undefined ? undefined : (await get('/api')).find(w => w.name === args[0]);
   if (args[0] !== undefined && !ws) throw new Error(`no workspace ${args[0]}`);
-  const last = (iso: string | null) => iso ? `last in ${when(iso)}` : 'never in';
-  const now = ws ? (await get(`/api/workspaces/${ws.id}/people`)).map(p => ({ kind: p.as, who: p.who, note: [p.who.includes('@') ? last(p.last_login) : 'a group', p.runs.length && `runs ${p.runs.join(', ')}`] }))
-    : (await get('/users')).map(u => ({ kind: u.role, who: u.email, note: [u.disabled && 'disabled', last(u.last_login), `in ${u.workspaces.join(', ') || 'none'}`, u.outside.length && `runs outside them: ${u.outside.join(', ')}`] }));
-  if (typeof flags.set !== 'string') {
+  const last = (iso: string | null) => iso ? `last in ${when(iso)}` : 'never in', listed = await get(ws ? `/api/workspaces/${ws.id}/people` : '/users');
+  const now = ws ? listed.map(p => ({ kind: p.as, who: p.who, note: [p.who.includes('@') ? last(p.last_login) : 'a group', p.runs.length && `runs ${p.runs.join(', ')}`] }))
+    : listed.map(u => ({ kind: u.role, who: u.email, note: [u.disabled && 'disabled', last(u.last_login), `in ${u.workspaces.join(', ') || 'none'}`, u.outside.length && `runs outside them: ${u.outside.join(', ')}`] }));
+  if (flags.json && typeof flags.set !== 'string') console.log(JSON.stringify(listed, null, 1));
+  else if (typeof flags.set !== 'string') {
     const w = Math.max(0, ...now.map(p => p.who.length));
     for (const p of now) console.log(`${p.kind.padEnd(6)} ${p.who.padEnd(w)}  # ${p.note.filter(Boolean).join('; ')}`);
     if (!now.length) console.log('# no one is in it: only admins see it');
@@ -452,13 +462,14 @@ else if (cmd === 'comment' && args.length === 2) {
     await post('/brand', { clear: flags.clear, text: flags.text, logo }, 'PUT');
     console.log('saved');
   } else {
-    const { text, logo } = (await get('/me')).brand;
-    console.log(text || logo ? `${text ?? 'no text'}, ${logo ? 'with a logo' : 'no logo'}` : 'no brand: the plain look');
+    const { brand } = await get('/me'), { text, logo } = brand;
+    console.log(flags.json ? JSON.stringify(brand) : text || logo ? `${text ?? 'no text'}, ${logo ? 'with a logo' : 'no logo'}` : 'no brand: the plain look');
   }
 } else if (cmd === 'can' && args.length <= 2) {
   const [cap, list] = args, people = flags.clear ? [] : list?.split(',').map(p => p.trim()).filter(Boolean);
   const all: Record<string, string[]> = await (await (people ? post('/capabilities', { cap, people }, 'PUT') : api('/capabilities'))).json();
-  for (const [c, who] of Object.entries(all)) if (!cap || c === cap) console.log(`${c}: ${who.join(', ') || 'admins only'}`);
+  if (flags.json) console.log(JSON.stringify(all, null, 1));
+  else for (const [c, who] of Object.entries(all)) if (!cap || c === cap) console.log(`${c}: ${who.join(', ') || 'admins only'}`);
 } else if (cmd === 'user' && args.length >= 2) {
   const [what, email, role] = args, at = `/users/${encodeURIComponent(email)}`;
   if (what === 'add') await post('/users', { roles: { [email]: role ?? 'user' } }, 'PUT');
@@ -466,9 +477,12 @@ else if (cmd === 'comment' && args.length === 2) {
   else if (what === 'disable' || what === 'enable') await post(at, { disabled: what === 'disable' }, 'PUT');
   else if (what === 'signout') await post(at, { signout: true }, 'PUT');
   else if (what === 'remove') await api(at, { method: 'DELETE' });
-  else throw new Error(USAGE);
+  else {
+    console.error(usage(cmd));
+    process.exit(2);
+  }
   console.log('done');
 } else {
-  console.error(USAGE);
+  console.error(usage(cmd));
   process.exitCode = 2;
 }

@@ -602,17 +602,19 @@ test("personal tokens act as their person for rf, every use logged, until revoke
   assert.equal((await as('/me')).status, 401);
 });
 
+// rf as a person runs it, signed in once in its own home: what it printed, or a failure with its exit code.
+const home = join(tmp, 'cli-home');
+const rf = (...args: string[]) => new Promise<string>((ok, fail) => {
+  const p = spawn(process.execPath, [join(app, 'src', 'rf-people.ts'), ...args], { env: { ...process.env, HOME: home } });
+  let out = '';
+  p.stdout.on('data', d => (out += d));
+  p.stderr.on('data', d => (out += d));
+  p.on('exit', code => (code ? fail(Object.assign(new Error(out), { code })) : ok(out)));
+});
+
 test('rf for people: ls, comment, pull as rsync does, runs, costs and status, and admins manage people and the brand from it', async () => {
   const { token } = await (await call('POST', '/tokens', JSON.stringify({ name: 'cli', days: 1 }))).json();
-  const home = join(tmp, 'cli-home');
   mkdirSync(home);
-  const rf = (...args: string[]) => new Promise<string>((ok, fail) => {
-    const p = spawn(process.execPath, [join(app, 'src', 'rf-people.ts'), ...args], { env: { ...process.env, HOME: home } });
-    let out = '';
-    p.stdout.on('data', d => (out += d));
-    p.stderr.on('data', d => (out += d));
-    p.on('exit', code => (code ? fail(new Error(out)) : ok(out)));
-  });
   assert.equal((await rf('login', base, token)).trim(), `signed in as ${adminEmail}`);
   const asToken = (method: string, path: string, body?: string) => fetch(base + path, { method, body, headers: { authorization: `Bearer ${token}` } });
   assert.equal((await asToken('POST', '/tokens', JSON.stringify({ name: 'more', days: 90 }))).status, 403, 'a token makes no tokens');
@@ -716,6 +718,24 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   writeFileSync(file, `user ${bob}\n`);
   await assert.rejects(rf('people', '--set', file), /Guarded\/Weekly\/one, run by Bob <bob@demo\.test>/);
   assert.match(await rf('people', '--set', file, '--force'), /^bob@demo\.test: admin -> user\nsaved$/m);
+});
+
+test("rf alone lists its commands and rf help COMMAND gives one's usage; every read takes --json; a failure is one line, with exit code 1, and a command used wrongly prints its usage, with exit code 2", async () => {
+  const fails = (code: number, out: RegExp) => (e: { code: number; message: string }) => e.code === code && out.test(e.message);
+  assert.match(await rf(), /^rf login URL \[TOKEN\] .*\nrf ls\n/);
+  assert.match(await rf('help', 'wake'), /^rf wake PATH AT \[--label LABEL\] \[--days DAYS\] \| rf wake --cancel ID\n +AT now, [^\n]+\n +mon-fri, [^\n]+\n$/);
+  await assert.rejects(rf('wake'), fails(2, /^rf wake PATH AT [^\n]+\n +AT now/));
+  await assert.rejects(rf('comment', 'nowhere/at/all', 'Hello'), fails(1, /^rf: nothing you can see at nowhere\/at\/all\n$/));
+  await assert.rejects(rf('wake', '--cancel', 'nosuch'), fails(1, /^rf: DELETE \/api\/wakes\/nosuch: 404 [^\n]+\n$/));
+  await assert.rejects(rf('costs', '--by', 'colour'), fails(1, /^rf: --by: workspace, series, person, day or outcome\n$/));
+  const rows = JSON.parse(await rf('ls', '--json')), week = rows.find((r: { path: string }) => r.path === `larkfield/${series}/2026-08-30`);
+  assert.deepEqual([week.id, week.status, rows.find((r: { path: string }) => r.path === `larkfield/${series}`).id], [await iid(series, '2026-08-30'), 'closed', (await shown(series)).id]);
+  assert.ok(JSON.parse(await rf('skills', '--json')).some((s: { id: string }) => s.id === 'tool'));
+  assert.deepEqual(Object.keys(JSON.parse(await rf('can', '--json'))), ['publish', 'create', 'sites', 'keepalive']);
+  assert.deepEqual(JSON.parse(await rf('brand', '--json')), { text: null, logo: false });
+  assert.ok(JSON.parse(await rf('people', '--json')).some((u: { email: string; role: string }) => u.email === adminEmail && u.role === 'admin'));
+  assert.ok(JSON.parse(await rf('connections', '--json')).every((c: { name: string; type: string }) => c.name && c.type));
+  assert.deepEqual(JSON.parse(await rf('skill', 'versions', 'tool', '--json')).map((v: { version: number }) => v.version), [1, 2, 3, 4]);
 });
 
 test('the page hears of changes from an event stream, only of instances it can see', async () => {
