@@ -793,6 +793,24 @@ test('rf acts on an instance as the page does: resolve, creds, rename, takeover,
   assert.deepEqual((await rows()).filter(r => r.path.startsWith('Readings/Jots/')).map(r => [r.path, r.status]), [['Readings/Jots/a2', 'closed'], ['Readings/Jots/b1', 'abandoned']]);
 });
 
+test('rf makes what the page makes: a workspace, a task, named or by its first comment, a series from a task, its next instance, and a copy of a closed one', async () => {
+  const status = async (path: string) => JSON.parse(await rf('ls', '--json')).find((r: { path: string }) => r.path === path)?.status;
+  assert.equal(await rf('new', 'workspace', 'Making'), 'made Making\n');
+  await assert.rejects(rf('new', 'workspace', 'Making'), fails(1, /: 409 the name Making is taken; choose another\n$/));
+  assert.equal(await rf('new', 'task', 'Making', '--comment', 'Reconcile the bank for October'), 'made Making/Reconcile the bank for October/Reconcile the bank for October, with no logins ticked\n');
+  assert.equal(await rf('new', 'task', 'Making', 'Lunch'), 'made Making/Lunch/Lunch, with no logins ticked\n');
+  assert.equal(await status('Making/Lunch/Lunch'), 'open');
+  assert.equal(await rf('new', 'series', 'Making/Lunch', 'Lunches'), 'made the series Making/Lunches\n');
+  await assert.rejects(rf('new', 'instance', 'Making/Lunches/Lunch', '2026-11'), fails(1, /^rf: Making\/Lunches\/Lunch is an instance: name its series\n$/));
+  await assert.rejects(rf('new', 'instance', 'Making/Lunches', '2026-11', '--creds', 'web:nosuch'), fails(1, /: 400 logins must be offers of your own logins: \["web:nosuch"\]\n$/));
+  assert.equal(await rf('new', 'instance', 'Making/Lunches', '2026-11'), 'made Making/Lunches/2026-11, with no logins ticked\n');
+  await assert.rejects(rf('copy', 'Making/Lunches/Lunch', 'again'), fails(1, /: 409 only a closed or abandoned instance can be duplicated\n$/));
+  await quiet();
+  await rf('close', 'Making/Lunches/Lunch');
+  assert.equal(await rf('copy', 'Making/Lunches/Lunch', 'again'), 'made Making/Lunches/again, with no logins ticked\n');
+  assert.deepEqual([await status('Making/Lunches/Lunch'), await status('Making/Lunches/again')], ['closed', 'open']);
+});
+
 test('the page hears of changes from an event stream, only of instances it can see', async () => {
   const listen = async (cookie: string) => {
     const r = await fetch(base + '/api/events', { headers: { cookie } }), reader = r.body!.getReader(), got: string[] = [];

@@ -36,6 +36,12 @@ rf takeover PATH [--creds OFFER,...]   you run it from now on, with those offers
 rf creds PATH [--set OFFER,...|--clear]   what its runs may use: its runner's ticks, and the offers of your logins; --set
                                   ticks anew, as its runner
 rf rename PATH NAME               an instance, a series or a workspace, by its path
+rf new task WORKSPACE [LABEL] [--creds OFFER,...] [--comment TEXT]   a one-off task, Untitled until LABEL or its first
+                                  comment names it; --comment starts its run
+rf new instance SERIES LABEL [--creds OFFER,...]   the series' next instance, which runs at once
+rf new series PATH NAME           the task at PATH becomes the series NAME, itself its first instance
+rf new workspace NAME             yours to own, for admins and those they grant create
+rf copy PATH LABEL [--creds OFFER,...]   a closed or abandoned instance, copied into a new open one without its agent session
 rf correct PATH TEXT [--item ID] [--ref REF] [--superseded] [--see LABEL]   a closed instance, or its item ID at REF, is
                                   wrong, or superseded, as LABEL, another instance of its series, shows; it can't be withdrawn
 rf wake PATH AT [--label LABEL] [--days DAYS] | rf wake --cancel ID
@@ -132,8 +138,9 @@ Usual work
   rf signoff PATH T approve|reject [TEXT]. Close an instance you stand by: rf close PATH.
 - Take an instance over: rf creds PATH lists the offers of your logins, and rf takeover PATH --creds OFFER,... ticks them.
 - Give an input or a corrected output: rf upload PATH FILE [--onto ITEM] [--output].
-- Start an instance: rf wake SERIES now --label LABEL, which starts it as whoever shares the series, else asks on the page for
-  someone to start it; take one you run up later: rf wake PATH +2h.
+- Start an instance: rf new instance SERIES LABEL, as you, or rf wake SERIES now --label LABEL, which starts it as whoever
+  shares the series, else asks on the page for someone to start it; take one you run up later: rf wake PATH +2h. A one-off:
+  rf new task WORKSPACE --comment TEXT, which becomes a series with rf new series PATH NAME.
 - Read what a run did: rf show PATH for its last run, rf log PATH for every entry, --follow as they come, and rf cat PATH/FILE
   for a file; rf pull PATH/ DIR copies the folder, with session/ for every step.
 
@@ -198,6 +205,8 @@ async function workspaceNamed(name: string) {
   if (!ws) throw new Error(`no workspace ${name}`);
   return ws;
 }
+// An instance's path as rf ls prints it, by its id.
+const pathOf = async (id: string) => (await get('/api')).flatMap(w => w.series.flatMap(s => s.instances.filter(i => i.id === id).map(i => `${w.name}/${s.name}/${i.label}`)))[0];
 // The offers of your logins that --creds or --set name, ticked for an instance, and what ticking them agrees to.
 const ticks = () => flags.clear ? [] : String(flags.creds ?? flags.set ?? '').split(',').map(o => o.trim()).filter(Boolean);
 const consent = (offers: string[]) => offers.length ? `, ticking ${offers.join(', ')}: you agree that agents carry these credentials while acting as you` : ', with no logins ticked';
@@ -412,6 +421,25 @@ else if (cmd === 'comment' && args.length === 2) {
   else if (s !== undefined) await post(`/api/series/${(await find(args[0])).series.id}`, { name: args[1] }, 'PUT');
   else await post(`/api/workspaces/${(await workspaceNamed(w)).id}`, { name: args[1] }, 'PUT');
   console.log(`renamed ${args[0]} ${args[1]}`);
+} else if (cmd === 'new' && args[0] === 'task' && [2, 3].includes(args.length)) {
+  const { instance } = await (await post('/api/series', { workspace: (await workspaceNamed(args[1])).id, single: true, logins: ticks() })).json();
+  if (args[2]) await post(`/api/instances/${instance}/rename?as=${encodeURIComponent(args[2])}`, {});
+  if (typeof flags.comment === 'string') await post(`/api/instances/${instance}/comment`, { text: flags.comment });
+  console.log(`made ${await pathOf(instance)}${consent(ticks())}`);
+} else if (cmd === 'new' && args[0] === 'instance' && args.length === 3) {
+  const { series, inst } = await find(args[1]);
+  if (inst) throw new Error(`${args[1]} is an instance: name its series`);
+  const { id } = await (await post(`/api/series/${series.id}`, { label: args[2], logins: ticks() })).json();
+  console.log(`made ${await pathOf(id)}${consent(ticks())}`);
+} else if (cmd === 'new' && args[0] === 'series' && args.length === 3) {
+  await post(`/api/series/${(await find(args[1])).series.id}/promote`, { name: args[2] });
+  console.log(`made the series ${args[1].split('/')[0]}/${args[2]}`);
+} else if (cmd === 'new' && args[0] === 'workspace' && args.length === 2) {
+  await post('/api/workspaces', { name: args[1] });
+  console.log(`made ${args[1]}`);
+} else if (cmd === 'copy' && args.length === 2) {
+  const { id } = await (await post(`${(await instanceAt(args[0])).at}/duplicate?as=${encodeURIComponent(args[1])}`, { logins: ticks() })).json();
+  console.log(`made ${await pathOf(id)}${consent(ticks())}`);
 } else if (cmd === 'correct' && args.length === 2) {
   const { series, at } = await instanceAt(args[0]), see = flags.see === undefined ? undefined : series.instances.find(i => i.label === flags.see);
   if (flags.see !== undefined && !see) throw new Error(`no instance ${flags.see} in its series`);
