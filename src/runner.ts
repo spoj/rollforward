@@ -72,6 +72,8 @@ export function pi(o: { token: string; id: string; n: number; view: View; skills
       PATH: ['/app/bin', '/opt/venv/bin', '/usr/local/bin', '/usr/bin'].join(delimiter), LANG: 'C.UTF-8', TZ: Intl.DateTimeFormat().resolvedOptions().timeZone, PYTHONPATH: '/home/agent/pylib',
       // A plain pip install, the venv's, lands in the series' .pylib, built for the Python runs use.
       PIP_TARGET: lib, PI_CODING_AGENT_DIR: '/home/agent/.pi/agent', PI_OFFLINE: '1', PI_TELEMETRY: '0', OFFICECLI_NO_AUTO_RESIDENT: '1',
+      // playwright-cli's snapshots and screenshots, out of the instance, whose own folder is read-only.
+      PLAYWRIGHT_MCP_OUTPUT_DIR: '/tmp/playwright-cli',
       // git reads the instance's repository from working/, across the mount between them.
       GIT_DISCOVERY_ACROSS_FILESYSTEM: '1',
       RF_URL: local, RF_TOKEN: o.token, RF_BROWSERS: `${local}/browsers/${o.token}`, RF_INSTANCE: o.id, RF_WORKING: `${instance}/working`, RF_SKILLS: '/skills', ...(process.env.RF_TODAY && { RF_TODAY: process.env.RF_TODAY }),

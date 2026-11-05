@@ -70,7 +70,7 @@ Run the image under podman, as a systemd service. The image is the agent image, 
 **Where the image can't be built,** such as on a host whose filter blocks Debian's mirrors, run the server as README's Without Docker says, as a systemd user service of the same user. The host's own programs don't matter to runs, whose userland is the agent image, never the host's:
 
 - Node 26 beside the system's, such as in `/opt/node-v26`, bubblewrap, and GNU tar; no zstd, Python or LibreOffice.
-- `npm ci --omit=dev`, then `/opt/node-v26/bin/node scripts/agent.ts`, which unpacks the agent image the checkout runs, CI's `agent-<id>` prerelease, into `.agent/<id>` (about 500 MB to fetch, 1.6 GB unpacked).
+- `npm ci --omit=dev`, then `/opt/node-v26/bin/node scripts/agent.ts`, which unpacks the agent image the checkout runs, CI's `agent-<id>` prerelease, into `.agent/<id>` (about 720 MB to fetch, 2.5 GB unpacked).
 - The unit `~/.config/systemd/user/rollforward.service` has `WorkingDirectory=%h/rollforward`, `ExecStart=/opt/node-v26/bin/node --env-file=%h/.config/rollforward.env src/server.ts %h/rollforward-data 8780` and `Restart=always`; `systemctl --user set-property rollforward-runs.slice MemoryMax=24G` caps all runs together.
 
 ## Moving from the team's fork

@@ -53,7 +53,7 @@ async function tryIt(args: string[]) {
   mkdirSync(join(home, '.officecli'));
   writeFileSync(join(home, '.officecli', 'config.json'), JSON.stringify({ autoUpdate: false }));
   const env = {
-    PATH: ['/app/bin', '/opt/venv/bin', '/usr/local/bin', '/usr/bin'].join(delimiter), LANG: 'C.UTF-8', TZ: Intl.DateTimeFormat().resolvedOptions().timeZone, HOME: '/home/agent', OFFICECLI_NO_AUTO_RESIDENT: '1',
+    PATH: ['/app/bin', '/opt/venv/bin', '/usr/local/bin', '/usr/bin'].join(delimiter), LANG: 'C.UTF-8', TZ: Intl.DateTimeFormat().resolvedOptions().timeZone, HOME: '/home/agent', OFFICECLI_NO_AUTO_RESIDENT: '1', PLAYWRIGHT_MCP_OUTPUT_DIR: '/tmp/playwright-cli',
     RF_URL: api.url, RF_TOKEN: api.token, RF_BROWSERS: `${api.url}/browsers/${api.token}`, RF_WORKING: join(out, 'working'), RF_SKILLS: '/skills',
     HTTPS_PROXY: via, https_proxy: via, NODE_USE_ENV_PROXY: '1', OPENROUTER_API_KEY: 'rf', ...(process.env.EXA_API_KEY && { EXA_API_KEY: 'rf' }), ...Object.assign({}, ...reachable(run.inst).map(c => types[c.type].env?.(c, runnerOf(run.inst).logins))), ...Object.fromEntries(['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS', 'CURL_CA_BUNDLE'].map(k => [k, join(out, 'ca.pem')])),
   };

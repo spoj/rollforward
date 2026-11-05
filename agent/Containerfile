@@ -12,5 +12,8 @@ RUN apt-get update \
 RUN curl -fsSL -o /usr/local/bin/officecli https://github.com/iOfficeAI/OfficeCLI/releases/download/v1.0.160/officecli-linux-x64 \
  && echo 'baa084b64ec634bd9d41a0592db3ed85f11658b358bab898679537ea7f3e73a9  /usr/local/bin/officecli' | sha256sum -c - \
  && chmod 755 /usr/local/bin/officecli
+# playwright-cli, Playwright's command line for agents, which attaches to a run's browsers over CDP.
+RUN npm install -g --no-fund --no-audit @playwright/cli@0.1.23
 COPY requirements.txt /opt/venv/requirements.txt
-RUN python3 -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir -r /opt/venv/requirements.txt
+RUN python3 -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir -r /opt/venv/requirements.txt \
+ && ln -s "$(/opt/venv/bin/python -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')" /usr/local/bin/ffmpeg

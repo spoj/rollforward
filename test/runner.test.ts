@@ -164,11 +164,12 @@ test("the agent's python is the image's venv, with its packages", async () => {
 
 // sample.msg is TxtSampleEmail.msg from MsgReader's tests (github.com/kenjiuno/MSGReader, MIT).
 test("the agent's userland is the agent image: its programs, LibreOffice recalculating a workbook and rendering Chinese to PDF, poppler's, and Python's PDF and Outlook readers", async () => {
-  const programs = 'timeout grep head cat ls tail sed cp rm mkdir cut unzip zip wc diff cmp which sort sha256sum pwd find xargs git curl jq fd rg file zstd sqlite3 soffice pdftotext pdfinfo pdftoppm tesseract officecli node python pip';
+  const programs = 'timeout grep head cat ls tail sed cp rm mkdir cut unzip zip wc diff cmp which sort sha256sum pwd find xargs git curl jq fd rg file zstd sqlite3 soffice pdftotext pdfinfo pdftoppm tesseract officecli playwright-cli ffmpeg node python pip';
   assert.equal(await sh('cat /etc/debian_version'), readFileSync(join(agentRoot, 'etc', 'debian_version'), 'utf8').trim(), "the image's /etc, on any host");
   assert.equal(await sh(`for p in ${programs}; do command -v $p > /dev/null || echo $p; done`), '', 'none missing');
   assert.match(await sh('tesseract --list-langs'), /chi_sim\nchi_tra\neng/);
   assert.equal(await sh('officecli --version && jq -r .autoUpdate ~/.officecli/config.json && echo $OFFICECLI_NO_AUTO_RESIDENT'), '1.0.160\nfalse\n1', "officecli, which neither updates itself nor stays resident");
+  assert.equal(await sh('playwright-cli --version && echo $PLAYWRIGHT_MCP_OUTPUT_DIR'), '0.1.23\n/tmp/playwright-cli', 'its files out of the instance');
   copyFileSync(join(import.meta.dirname, 'sample.msg'), i('w2/working/sample.msg'));
   await sh(`cd "$RF_WORKING" && python -c "
 import openpyxl
@@ -178,4 +179,5 @@ wb.save('book.xlsx')" && soffice --headless --convert-to pdf --outdir out book.x
   assert.equal(await sh(`python -c "import openpyxl; print(openpyxl.load_workbook('$RF_WORKING/out/book.xlsx', data_only=True).active['A3'].value)"`), '6', 'recalculated');
   assert.match(await sh('pdftotext "$RF_WORKING/out/book.pdf" -'), /應收帳款/);
   assert.equal(await sh(`python -W ignore -c "import pypdf, fitz, extract_msg; print(len(pypdf.PdfReader('$RF_WORKING/out/book.pdf').pages), fitz.open('$RF_WORKING/out/book.pdf').page_count, extract_msg.openMsg('$RF_WORKING/sample.msg').subject)"`), '1 1 TxtSampleEmail');
+  assert.equal(await sh(`python -W ignore -c "import polars, pyarrow, pptx, pyxlsb, pbixray, formulas, scipy, tabulate, markdown, yaml, httpx; print(polars.read_excel('$RF_WORKING/out/book.xlsx', has_header=False).row(2)[0])"`), '6', "Polars reads a workbook, through fastexcel");
 });
