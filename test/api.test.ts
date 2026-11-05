@@ -611,6 +611,7 @@ const rf = (...args: string[]) => new Promise<string>((ok, fail) => {
   p.stderr.on('data', d => (out += d));
   p.on('exit', code => (code ? fail(Object.assign(new Error(out), { code })) : ok(out)));
 });
+const fails = (code: number, out: RegExp) => (e: { code: number; message: string }) => e.code === code && out.test(e.message);
 
 test('rf for people: ls, comment, pull as rsync does, runs, costs and status, and admins manage people and the brand from it', async () => {
   const { token } = await (await call('POST', '/tokens', JSON.stringify({ name: 'cli', days: 1 }))).json();
@@ -721,8 +722,7 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
 });
 
 test("rf alone lists its commands and rf help COMMAND gives one's usage; every read takes --json; a failure is one line, with exit code 1, and a command used wrongly prints its usage, with exit code 2", async () => {
-  const fails = (code: number, out: RegExp) => (e: { code: number; message: string }) => e.code === code && out.test(e.message);
-  assert.match(await rf(), /^rf login URL \[TOKEN\] .*\nrf ls\n/);
+  assert.match(await rf(), /^rf login URL \[TOKEN\] .*\nrf ls \[--json\] /);
   assert.match(await rf('help', 'wake'), /^rf wake PATH AT \[--label LABEL\] \[--days DAYS\] \| rf wake --cancel ID\n +AT now, [^\n]+\n +mon-fri, [^\n]+\n$/);
   await assert.rejects(rf('wake'), fails(2, /^rf wake PATH AT [^\n]+\n +AT now/));
   await assert.rejects(rf('comment', 'nowhere/at/all', 'Hello'), fails(1, /^rf: nothing you can see at nowhere\/at\/all\n$/));
@@ -736,6 +736,30 @@ test("rf alone lists its commands and rf help COMMAND gives one's usage; every r
   assert.ok(JSON.parse(await rf('people', '--json')).some((u: { email: string; role: string }) => u.email === adminEmail && u.role === 'admin'));
   assert.ok(JSON.parse(await rf('connections', '--json')).every((c: { name: string; type: string }) => c.name && c.type));
   assert.deepEqual(JSON.parse(await rf('skill', 'versions', 'tool', '--json')).map((v: { version: number }) => v.version), [1, 2, 3, 4]);
+});
+
+test('rf reads without a pull: waiting, what waits on you; show, an instance, the threads that wait by id and its last run; log, its entries, or those after a seq; and cat, one file', async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Reads' }))).json();
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ members: [bob] }))).status, 200);
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'Notes' }))).json();
+  const { id } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'a1' }))).json(), path = 'Reads/Notes/a1';
+  await ran(`/api/instances/${id}`);
+  await quiet();
+  assert.equal((await call('POST', `/api/instances/${id}/comment`, JSON.stringify({ text: 'Bob notes the rate moved.\nMore below.' }), sessionOf(await login(bob))!)).status, 200);
+  await quiet();
+  const { log } = await json(`/api/instances/${id}`), note = log.findLast((e: { op: string }) => e.op === 'comment');
+  assert.match(await rf('waiting'), new RegExp(`^note  ${path} since [\\d-]+ [\\d:]+: Bob notes the rate moved\\.$`, 'm'));
+  assert.deepEqual(JSON.parse(await rf('waiting', '--json')).find((r: { path: string }) => r.path === path), { kind: 'note', path, since: note.at, text: note.text });
+  const shown = JSON.parse(await rf('show', path, '--json'));
+  assert.deepEqual([shown.id, shown.status, shown.runner, shown.waiting], [id, 'open', adminEmail, [{ thread: note.thread, kind: 'note', for: adminEmail, by: bob, seq: note.seq, item: null, ref: null, text: note.text }]]);
+  assert.match(await rf('show', path), new RegExp(`^${path}  open, runner ${adminEmail}\\n${note.thread}  note for ${adminEmail}, seq ${note.seq}: Bob notes the rate moved\\.\\nlast run \\d+  \\$0\\.00  .+\\n$`));
+  const lines = (await rf('log', path)).trim().split('\n');
+  assert.equal(lines.length, log.length);
+  assert.match(lines.find(l => l.startsWith(`${note.seq}  `))!, new RegExp(`^${note.seq}  [\\d-]+ [\\d:]+  ${bob}  comment  \\{.*"thread":"${note.thread}".*\\}  Bob notes the rate moved\\.$`));
+  assert.deepEqual((await rf('log', path, '--since', String(note.seq - 1), '--json')).trim().split('\n').map(l => JSON.parse(l).seq), log.filter((e: { seq: number }) => e.seq >= note.seq).map((e: { seq: number }) => e.seq));
+  assert.equal(await rf('cat', 'AGENTS.md'), 'Fiscal months end on the last Saturday.');
+  await assert.rejects(rf('cat', path), fails(1, /^rf: Reads\/Notes\/a1 is a folder: rf pull it\n$/));
+  await assert.rejects(rf('show', 'Reads/Notes'), fails(1, /^rf: Reads\/Notes is a series: name one of its instances, as rf ls lists them\n$/));
 });
 
 test('the page hears of changes from an event stream, only of instances it can see', async () => {

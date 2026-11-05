@@ -12,7 +12,13 @@ process.on('uncaughtException', e => {
 });
 
 const USAGE = `rf login URL [TOKEN]                without a TOKEN, through the browser: type rf's code on the page, and allow it
-rf ls
+rf ls [--json]                    every workspace, series and instance you see, with its status, runner, asks waiting and wakes
+rf waiting [--json]               what waits on you: asks, sign-offs and notes, requests to start an instance, proposals,
+                                  expired logins, and hosts a run's browser on a website of your own was refused
+rf show PATH [--json]             an instance: its items, the threads that wait on someone, by id, and its last run
+rf log PATH [--since SEQ] [--follow] [--json]   its log, a line an entry, after SEQ; --follow prints more as they come;
+                                  --json prints the entries as they are, a line each
+rf cat PATH/FILE                  one file, to stdout
 rf pull PATH DIR [--delete] [-n|--dry-run] [--exclude PATTERN]... [--max-size SIZE]
                                   PATH's files into DIR as rsync copies them, whole, if their size or time differ: PATH/ fills DIR,
                                   PATH makes DIR/<its name>, / is all you see; --delete removes what the server no longer has;
@@ -109,13 +115,13 @@ What rf pull copies, the folders as the agent sees them
 The copy is read-only, and only rf changes what's on the server: comment, upload and wake.
 
 Usual work
-- What waits on me: rf ls, then the asks in that instance's log.jsonl, ask true, whose thread has nothing after them.
+- What waits on me: rf waiting, then rf show PATH, which names each thread that waits by its id.
 - Answer an ask: rf comment PATH TEXT --thread T --wait, which prints what the agent says back.
 - Give an input or a corrected output: rf upload PATH FILE [--onto ITEM] [--output].
 - Start an instance: rf wake SERIES now --label LABEL, which starts it as whoever shares the series, else asks on the page for
   someone to start it; take one you run up later: rf wake PATH +2h.
-- Read what a run did: rf pull PATH/ DIR, then its report and done entries in log.jsonl, the files in working/, and session/ for
-  every step.
+- Read what a run did: rf show PATH for its last run, rf log PATH for every entry, --follow as they come, and rf cat PATH/FILE
+  for a file; rf pull PATH/ DIR copies the folder, with session/ for every step.
 
 Watching over it, for admins and power users; each sees what the caller sees
 - What's stuck: rf status lists runs going, flagging those past --long MIN (30); queued runs, since when and why: their series is
@@ -142,7 +148,7 @@ const flags: Record<string, string | true> = {}, excludes: string[] = [], args: 
 for (let i = 0; i < argv.length; i++) {
   const flag = argv[i] === '-n' ? 'dry-run' : argv[i].match(/^--(.+)$/)?.[1];
   if (!flag) args.push(argv[i]);
-  else if (['wait', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear'].includes(flag)) flags[flag] = true;
+  else if (['wait', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear', 'follow'].includes(flag)) flags[flag] = true;
   else if (argv[i + 1] === undefined) throw new Error(`--${flag} takes a value`);
   else if (flag === 'exclude') excludes.push(argv[++i]);
   else flags[flag] = argv[++i];
@@ -167,6 +173,11 @@ async function find(path: string) {
   const inst = l === undefined ? undefined : series?.instances.find(i => i.label === l);
   if (!series || (l !== undefined && !inst)) throw new Error(`nothing you can see at ${path}`);
   return { series, inst, at: inst ? `/api/instances/${inst.id}` : '' };
+}
+async function instanceAt(path: string) {
+  const { inst, at } = await find(path);
+  if (!inst) throw new Error(`${path} is a series: name one of its instances, as rf ls lists them`);
+  return { inst, at };
 }
 
 // Times as this machine's clock reads them, and lengths of time and costs, for the views.
@@ -288,9 +299,53 @@ if (cmd === 'login' && url) {
     console.log(r.status ? `${r.path}  ${r.status}${r.running ? ', running' : ''}${r.asks ? `, ${r.asks} asks waiting` : ''}, runner ${r.runner}` : `${r.path}${r.requests ? `  ${r.requests} asking to start` : ''}`);
     for (const k of r.wakes) console.log(`  wake ${k.id} ${k.at}${k.label ? ` starts ${k.label}` : ''}${k.days ? `, then each ${k.days.join(', ')}` : ''}`);
   }
+} else if (cmd === 'waiting' && !args.length) {
+  const [me, s, all] = await Promise.all([get('/me'), get('/api/status'), get('/api')]), mine = (who: string | null) => (who ?? me.email) === me.email;
+  const series = all.flatMap(w => w.series.map(x => ({ ...x, path: `${w.name}/${x.name}` })));
+  const rows = [
+    ...s.asks.filter(a => a.who === me.email).map(a => ({ kind: a.signoff ? 'sign-off' : a.note ? 'note' : 'ask', path: a.path, since: a.since, text: a.text })),
+    ...series.flatMap(x => x.requests.filter(r => mine(r.who)).map(r => ({ kind: 'request', path: x.path, since: r.at, id: r.id, text: `${r.from} asks to start ${r.label}` }))),
+    ...all.filter(w => w.manage && w.proposal?.into === w.id).map(({ proposal: p }) => ({ kind: 'proposal', path: p.to, since: p.at, text: `${p.by} proposes to ${p.kind === 'merge' ? `merge ${p.from} into it` : `move ${p.from}/${p.series} to it`}` })),
+    ...s.expired.filter(e => e.who === me.email).map(e => ({ kind: 'expired', login: e.login, holding: e.holding, text: `your ${e.login} login expired` })),
+    ...series.flatMap(x => x.instances.flatMap(i => i.refused.map(r => ({ kind: 'refused', path: `${x.path}/${i.label}`, since: r.at, site: r.site, hosts: r.hosts, text: `run ${r.run}'s browser on ${r.site} was refused ${r.hosts.join(', ')}` })))),
+  ];
+  if (flags.json) console.log(JSON.stringify(rows, null, 1));
+  else console.log(rows.map(r => `${r.kind}  ${r.path ?? r.login}${r.since ? ` since ${when(r.since)}` : ''}${r.id ? `, request ${r.id}` : ''}: ${r.text.split('\n')[0].slice(0, 120)}`).join('\n') || 'Nothing waits on you.');
+} else if (cmd === 'show' && args.length === 1) {
+  const { inst, at } = await instanceAt(args[0]), { doc, log, run, queued, runner } = await get(at);
+  const threads = Map.groupBy(log.filter(e => ['comment', 'resolve', 'signoff'].includes(e.op)), e => e.thread);
+  const waiting = doc.status !== 'open' ? [] : [...threads.values()].flatMap(t => {
+    const e = t.at(-1);
+    return e.op === 'comment' && ((e.by === 'agent' && e.ask) || e.note)
+      ? [{ thread: e.thread, kind: e.signoff ? 'sign-off' : e.ask ? 'ask' : 'note', for: e.to ?? runner.by, by: e.by, seq: e.seq, item: t[0].item, ref: t[0].ref, text: e.text }] : [];
+  });
+  const done = log.findLast(e => e.op === 'done'), report = done && log.findLast(e => e.op === 'report' && e.run === done.run);
+  const last = done ? { run: done.run, cost: done.cost, summary: done.summary ?? null, error: done.error ?? null, report: report?.text ?? null } : null;
+  if (flags.json) console.log(JSON.stringify({ path: args[0], id: inst.id, status: doc.status, runner: runner.by, running: run, queued, items: doc.items, waiting, last_run: last }, null, 1));
+  else {
+    console.log(`${args[0]}  ${doc.status}, runner ${runner.by}${run ? `, run ${run.n} going, ${usd(run.cost)}` : queued ? ', queued' : ''}`);
+    for (const i of doc.items) console.log(`  ${i.kind.padEnd(6)} ${i.id}  ${i.name}  ${i.file ?? 'no file yet'}${i.from?.length ? `  from ${i.from.join(', ')}` : ''}${i.headline ? `  ${i.headline}` : ''}`);
+    for (const w of waiting) console.log(`${w.thread}  ${w.kind} for ${w.for}${w.item ? `, on ${w.item}${w.ref ? ` at ${w.ref}` : ''}` : ''}, seq ${w.seq}: ${w.text.split('\n')[0].slice(0, 160)}`);
+    if (last) console.log(`last run ${last.run}  ${usd(last.cost ?? 0)}  ${last.error ?? last.summary ?? 'no report'}`);
+  }
+} else if (cmd === 'log' && args.length === 1) {
+  const { at } = await instanceAt(args[0]);
+  for (let since = Number(flags.since ?? 0); ; await new Promise(ok => setTimeout(ok, 3000))) {
+    const fresh = (await get(at)).log.filter(e => e.seq > since);
+    for (const e of fresh) {
+      const { seq, at, by, op, text, ...rest } = e;
+      console.log(flags.json ? JSON.stringify(e) : `${seq}  ${when(at)}  ${by}  ${op}${Object.keys(rest).length ? `  ${JSON.stringify(rest)}` : ''}${text ? `  ${String(text).split('\n')[0].slice(0, 200)}` : ''}`);
+    }
+    since = fresh.at(-1)?.seq ?? since;
+    if (!flags.follow) break;
+  }
+} else if (cmd === 'cat' && args.length === 1) {
+  const path = args[0].replace(/^\/+|\/+$/g, ''), [f, ...more] = await get(`/api/files?path=${encodeURIComponent(path)}`);
+  if (!f || f.path !== path || more.length) throw new Error(f ? `${args[0]} is a folder: rf pull it` : `nothing you can see at ${args[0]}`);
+  process.stdout.write(f.text ?? Buffer.from(await (await api(f.url)).arrayBuffer()));
 } else if (cmd === 'pull' && args.length === 2) await pull(args[0], args[1]);
 else if (cmd === 'comment' && args.length === 2) {
-  const { at } = await find(args[0]);
+  const { at } = await instanceAt(args[0]);
   await post(`${at}/comment`, { text: args[1], item: flags.item, ref: flags.ref, thread: flags.thread });
   const { log, runner } = await get(at), { seq, note } = log.at(-1);
   if (note) console.log(`a note for the runner, ${runner.by}, seq ${seq}: it starts no run until they act`);
@@ -307,7 +362,7 @@ else if (cmd === 'comment' && args.length === 2) {
   }
 } else if (cmd === 'upload' && args.length === 2) {
   const q = new URLSearchParams({ name: basename(args[1]), pane: flags.output ? 'out' : 'in', ...(typeof flags.onto === 'string' && { onto: flags.onto }) });
-  await api(`${(await find(args[0])).at}/upload?${q}`, { method: 'POST', body: readFileSync(args[1]) });
+  await api(`${(await instanceAt(args[0])).at}/upload?${q}`, { method: 'POST', body: readFileSync(args[1]) });
   console.log('uploaded');
 } else if (cmd === 'wake' && typeof flags.cancel === 'string' && !args.length) {
   await api(`/api/wakes/${flags.cancel}`, { method: 'DELETE' });
