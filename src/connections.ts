@@ -70,6 +70,7 @@ export async function checkHost(name: string, h: string, own: boolean) {
 
 export async function setConnection(name: string, input: Record<string, unknown>, by: string): Promise<Connection> {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) throw new HttpError(400, 'a connection\'s name is lowercase letters, digits and dashes');
+  if (name === 'print') throw new HttpError(409, "print is the runs' own print browser, $RF_BROWSERS/print: name it otherwise");
   const type = types[String(input.type)];
   if (!type) throw new HttpError(400, `type: one of ${Object.keys(types).join(', ')}`);
   const settings = type.settings(input);

@@ -211,6 +211,20 @@ test("$RF_BROWSERS/NAME is the run's browser there: its CDP discovery, its webso
   await api.close();
 });
 
+test("$RF_BROWSERS/print is the run's own print browser, a name no website takes: no login, website, host or state, opened for a connection and closed with its last, logged as the others are", async () => {
+  const { setConnection } = await import('../src/connections.ts');
+  await assert.rejects(setConnection('print', { type: 'website', url: 'https://print.example.com' }, alice), /print is the runs' own print browser/);
+  const inst = createInstance('s', 'print', alice, []), api = await serveAgent(inst), base = `${api.url}/browsers/${api.token}`, opened = starts.length;
+  assert.deepEqual(await (await fetch(`${base}/print/json/version`)).json(), { webSocketDebuggerUrl: `${base.replace('http', 'ws')}/print` });
+  const raw = connect(Number(new URL(api.url).port), '127.0.0.1');
+  raw.end(`GET /browsers/${api.token}/print HTTP/1.1\r\nhost: x\r\nconnection: upgrade\r\nupgrade: websocket\r\n\r\n`);
+  assert.match(Buffer.concat(await Array.fromAsync(raw)).toString(), /service got \/sessions\/b9\/cdp$/);
+  assert.deepEqual([starts.slice(opened), states.at(-1)], [['undefined '], undefined]);
+  for (let i = 0; i < 100 && !inst.log.some(e => e.op === 'browser'); i++) await new Promise(ok => setTimeout(ok, 20));
+  assert.deepEqual(inst.log.filter(e => e.op === 'browser').map(e => [e.by, e.site, e.login, e.file]), [['server', 'print', undefined, 'browser/run 0 print.jsonl']]);
+  await api.close();
+});
+
 test("a browser refused for its runner's expired login is logged as expired, so the instance carries on once they sign in again", async () => {
   writeJson('connections.json', { crm: { type: 'website', title: 'CRM', url: 'https://crm.example.com', hosts: [], writeback: true, updated_by: alice, updated_at: '' } });
   saveLogin(alice, { ...website('crm', 'CRM'), expired: true }, '{}');

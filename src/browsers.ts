@@ -50,6 +50,11 @@ export function files(id: string, path: string) {
   return `/sessions/${id}/files/${parts.map(encodeURIComponent).join('/')}`;
 }
 
+// The runs' own print browser, at $RF_BROWSERS/print: no website, login or host, for a run to render what it has, such as a mail as
+// HTML, and print it with page.pdf(); it reaches nothing, and closes with its last connection, for half an hour at most.
+export const PRINT = 'print';
+const printer = async () => (await json('POST', '/sessions', { site: { hosts: [], public: true }, ttl_s: 1800 })).id as string;
+
 const open = async (w: Website, ttl_s: number, state?: unknown, headers?: Record<string, string>): Promise<string> =>
   (await json('POST', '/sessions', { site: { hosts: [new URL(w.url).hostname, ...w.hosts], start_url: w.url, headers, ...(w.owner && { public: true }) }, state, ttl_s })).id;
 const close = (id: string): Promise<{ state: unknown; log: { method: string; url: string; status: number; blocked?: string; error?: string }[] }> => json('DELETE', `/sessions/${id}`);
@@ -210,13 +215,13 @@ const setJournal = (all: Record<string, Opened>) => replaceReadOnly(join(rfDir()
 // A run's browser closed: its request log kept in its instance's browser/, logged as browser with the hosts its pages were refused, and,
 // where its website writes it back, its state its person's login again, unless they signed out or in anew since it opened.
 function keep(inst: Instance, b: Opened, { state, log }: { state: unknown; log: { method: string; url: string; blocked?: string }[] }) {
-  const login = logins(b.email).find(l => l.id === `web:${b.site}`);
-  if (b.writeback && state && login && !login.expired && login.since === b.since) saveLogin(b.email, login, JSON.stringify(state));
+  const login = b.writeback && logins(b.email).find(l => l.id === `web:${b.site}`);
+  if (login && state && !login.expired && login.since === b.since) saveLogin(b.email, login, JSON.stringify(state));
   mkdirSync(join(inst.dir, 'browser'), { recursive: true });
   replaceReadOnly(join(inst.dir, b.file), log.map(e => JSON.stringify(e) + '\n').join(''));
   const writes = log.filter(e => !e.blocked && !['GET', 'HEAD', 'OPTIONS'].includes(e.method)).length, hosts: Record<string, number> = {};
   for (const h of log.filter(e => e.blocked === 'host not on the list').map(e => URL.parse(e.url)!.hostname)) hosts[h] = (hosts[h] ?? 0) + 1;
-  inst.append('server', 'browser', { run: b.run, site: b.site, login: b.email, requests: log.length, writes, blocked: log.filter(e => e.blocked).length, file: b.file,
+  inst.append('server', 'browser', { run: b.run, site: b.site, ...(b.email && { login: b.email }), requests: log.length, writes, blocked: log.filter(e => e.blocked).length, file: b.file,
     ...(Object.keys(hosts).length && { hosts }) });
 }
 
@@ -275,10 +280,10 @@ export class Browsers {
   async browser(site: string, conn?: Duplex): Promise<string | undefined> {
     for (let waited = false; ; waited = true) {
       if (this.ended) return undefined;
-      const { email, login, had } = this.lent(site);
+      const { email, login, had } = site === PRINT ? { email: '', login: undefined, had: this.bySite.get(site) } : this.lent(site);
       if (had) return had.id;
       if (this.opening.has(site)) return this.opening.get(site);
-      const w = website(site), writeback = w.writeback, key = `${email} ${site}`, other = writeback ? held.get(key) : undefined;
+      const w = site === PRINT ? undefined : website(site), writeback = !!w?.writeback, key = `${email} ${site}`, other = writeback ? held.get(key) : undefined;
       if (other) {
         if (!waited) this.inst.append('server', 'browser', { run: this.run, site, login: email, action: 'wait', held: other.run ? `${tree().series[other.run.inst.seriesId]?.name}/${other.run.inst.label}` : 'keepalive' });
         await Promise.race([other.released, new Promise(ok => conn?.once('close', ok))]);
@@ -289,15 +294,15 @@ export class Browsers {
         let release!: () => void;
         held.set(key, { run: this, released: new Promise<void>(ok => { release = ok; }), release: () => release() });
       }
-      const opening = open(w, 7200, JSON.parse(secret(email, login.id)));
+      const opening = w ? open(w, 7200, JSON.parse(secret(email, login!.id))) : printer();
       this.opening.set(site, opening);
       try {
         const id = await opening, n = (this.opens.get(site) ?? 0) + 1, file = `browser/run ${this.run} ${site}${n > 1 ? ` ${n}` : ''}.jsonl`;
-        const b = { id, email, since: login.since, writeback, file, conns: 0 };
+        const b = { id, email, since: login?.since ?? '', writeback, file, conns: 0 };
         this.opens.set(site, n);
         this.bySite.set(site, b);
         changes.emit('change', this.inst.id); // for its instance's page to show it
-        setJournal({ ...journal(), [id]: { inst: this.inst.id, run: this.run, site, email, since: login.since, writeback, file } });
+        setJournal({ ...journal(), [id]: { inst: this.inst.id, run: this.run, site, email, since: b.since, writeback, file } });
         this.idle(site, b);
         return id;
       } catch (e) {
@@ -320,7 +325,7 @@ export class Browsers {
   }
 
   private idle(site: string, b: { writeback: boolean; idle?: NodeJS.Timeout }) {
-    if (b.writeback) b.idle = setTimeout(() => this.close(site).catch(e => this.inst.append('server', 'browsers', { run: this.run, error: e.message })), IDLE_MS);
+    if (b.writeback || site === PRINT) b.idle = setTimeout(() => this.close(site).catch(e => this.inst.append('server', 'browsers', { run: this.run, error: e.message })), site === PRINT ? 0 : IDLE_MS);
   }
 
   private release(key: string) {
@@ -467,7 +472,7 @@ export async function keepAlive(now = new Date()) {
 // asks it; GET NAME/downloads/PATH, a file in that browser's machine; and the CDP websocket at NAME itself, passed to the service.
 export async function serveBrowsers(b: Browsers, base: string, [site, what, ...path]: string[], req: IncomingMessage, res: ServerResponse) {
   if (req.method === 'GET' && what === 'json' && path.join('/').replace(/\/$/, '') === 'version') {
-    b.lent(site);
+    if (site !== PRINT) b.lent(site);
     return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ webSocketDebuggerUrl: `ws://${req.headers.host}${base}/${site}` }));
   }
   if (req.method === 'GET' && what === 'downloads') return b.download(site, path.map(decodeURIComponent).join('/'), res);

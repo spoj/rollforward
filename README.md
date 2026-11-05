@@ -115,7 +115,7 @@ Talk is threads only, as `comment` entries in the instance's `log.jsonl`: `{thre
 - `rf show` prints the screen, `screen.json`, with its `rev`; `rf put FILE` replaces it. A put is refused if its `rev` isn't current, as people may have uploaded meanwhile, and unless every item has a unique id, a name and a kind; `from` names items, never in a circle; `file` is null or an existing file under `upload/` or `working/`; and `status` is left as it is. The server logs each change (`point`, `item`, `remove`) and freezes each newly shown file, logging its sha256.
 - `rf say`, `rf ask` and `rf resolve` (see Talking), and `rf wake` (see Runs).
 - `rf commit MESSAGE` commits the instance's folder, in the agent's name, at a moment it judges worth keeping, logged as `commit` with the run and the hash. The run reads the history, `.git` in the folder, with git: the log, and `git diff` for what changed since the last commit.
-- `rf delivered ITEM --to WHERE --receipt WHAT` records an output delivered outside. A run's browser on a website is at `$RF_BROWSERS/SITE` (see Access). The agent never sees a password or a token of its runner's.
+- `rf delivered ITEM --to WHERE --receipt WHAT` records an output delivered outside. A run's browser on a website is at `$RF_BROWSERS/SITE` (see Access), and its print browser at `$RF_BROWSERS/print`. The agent never sees a password or a token of its runner's.
 
 ## Storage
 
@@ -205,6 +205,7 @@ Each run's Pi is a bubblewrap sandbox ([src/sandbox.ts](src/sandbox.ts)), in a s
 - **No network of its own.** Its one way out is a socket of its own the server listens on, `RF_SCRATCH/runs/<token>/socket/rf.sock`, which socat offers at 127.0.0.1:7000 inside. What comes in on it is that run's alone: its token, which the agent sees, and may print where another run reads it, opens nothing on another run's socket.
   - `/api/…` and `/agent/…`, as the run, by its token (`RF_URL`, `RF_TOKEN`), which ends with the run; the site itself serves no `/agent`;
   - `/browsers/<token>/<SITE>`, `$RF_BROWSERS/SITE`, the run's browser on a website: its CDP websocket, passed to the browser service with its key, and the files of its machine;
+  - `/browsers/<token>/print`, `$RF_BROWSERS/print`, the run's print browser, a name no connection takes: a browser of the service with no login, website, host or state, `public`, for half an hour at most, so what a run renders in it, such as a mail as HTML, prints with Playwright's `page.pdf()` and fetches nothing; it opens for a connection and closes with its last, or as the run ends, logged as `browser` as a website's are, with no `login`;
   - `CONNECT`, an HTTPS proxy to package registries, GitHub, documentation sites and the hosts in `.rf/egress.json`, never to a private address. Each host a run asks for is logged once, as `egress`. A connection's host, or one of a link a connection's answer gave the run, the proxy answers itself (see Connections).
 - **What a run leaves is never followed:** the server reads the files a run can write only as regular files reached without a link, checked by the real path of what it opened, and Duplicate copies only files and folders.
 - **In a container,** bubblewrap needs podman's `--security-opt unmask=/proc/*` (Docker: `seccomp=unconfined` and `systempaths=unconfined`), and runs get no scope of their own (`RF_SANDBOX_SCOPE=`).
