@@ -1,6 +1,6 @@
 {
   "name": "@rfany/rf",
-  "version": "0.10.1",
+  "version": "0.11.0",
   "description": "rollforward's command line for people: what its page does, from a shell or a desktop agent, as you",
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/spoj/rollforward.git", "directory": "cli" },
