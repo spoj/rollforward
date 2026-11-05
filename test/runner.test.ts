@@ -50,6 +50,8 @@ const sockets = serveSandboxes({
 for (const d of [i('w1/working'), i('w2/working'), i('r1/working'), i('p1/working'), join(root, 'series', 'weekly')]) mkdirSync(d, { recursive: true });
 writeFileSync(join(root, '.rf', 'session.key'), 'secret');
 writeFileSync(i('r1/working/rates.csv'), 'usd,1');
+// The copy of the skills an earlier version's run kept in the instance.
+mkdirSync(i('w2/skills/tool'), { recursive: true });
 writeFileSync(i('p1/working/payroll.csv'), 'names');
 // A ticked library's cache, a zstd frame per batch, as the server copies it before the run starts.
 mkdirSync(join(tmp, 'index'));
@@ -76,7 +78,7 @@ test('a run offers the agent the skills it is given, and not the others', async 
   const offered = (await agent.getCommands()).filter(c => c.source === 'skill').map(c => c.name);
   assert.ok(offered.includes('skill:tool'), `offered: ${offered.join(', ') || 'none'}`);
   assert.ok(!offered.includes('skill:mail-report'), `offered: ${offered.join(', ')}`);
-  assert.ok(existsSync(i('w2/skills/tool/SKILL.md')) && !existsSync(i('w2/skills/mail-report')), "copied into the instance's skills/, which its commits hold");
+  assert.ok(!existsSync(i('w2/skills')), "the copy an earlier version's run kept in the instance goes, with its next commit");
 });
 
 test("the agent's scripts reach a skill's files through $RF_SKILLS", async () => {
@@ -101,7 +103,7 @@ test("git finds the instance's repository from working/, across the mount betwee
 test("writes land only in the instance's working/ and session/ and the series' .pylib", async () => {
   assert.equal(await sh('touch working/out.csv ../.pylib/pkg.py && echo ok'), 'ok');
   assert.ok(existsSync(i('w2/working/out.csv')) && existsSync(join(root, 'series', 'weekly', '.pylib', 'pkg.py')));
-  for (const p of ['../w1/working/x.csv', '../notes.md', 'screen.json', 'names.tsv', '../../Shared/r1/working/x.csv', '/work/x', '/app/x', '/skills/x'])
+  for (const p of ['../w1/working/x.csv', '../notes.md', 'screen.json', 'names.tsv', '../../Shared/r1/working/x.csv', '/work/x', '/app/x', '/skills/tool/x'])
     assert.match(await sh(`touch ${p} 2>&1`), /Read-only file system/, p);
 });
 

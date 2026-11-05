@@ -138,7 +138,6 @@ Everything is files on the host's disk, in folders named by random ids, with no 
       screen.json             the screen, read-only
       log.jsonl               every event, written by the server
       session/                each Pi session, <time>_run-<n>.jsonl by the run that started it, which the audit shows
-      skills/                 the skills the latest run loaded, copied in as it started
       names.tsv               the latest run's names: each instance in its reach, id<TAB>/work/<workspace>/<series>/<label>
       browser/                each run's browser requests, one line per request, and its screenshots
       .git/                   the folder's history: a commit at each run's end, sign-off, close and rf commit
@@ -260,7 +259,7 @@ Graph takes 30 minutes to 2 hours to list a big library or mailbox, but seconds 
 
 ## Skills
 
-Every run loads every live **skill**: a website's skill, with its guardrails, is there wherever a runner's login to that website is ticked, so the company's skills are few and chosen with care. A skill is what to fetch or do, and how, whole in a folder that whoever may publish pushes with `rf skill push DIR`, live at once; each push is a version, and `rf skill rollback ID N` brings an earlier one back. Anyone signed in may read a skill, as every run loads it anyway: `rf skill pull ID [DIR] [--version N]` writes the newest version, or N, into DIR (`./ID`), new or empty so no stale file goes along, as `rf skill push DIR` reads it back. It is a Pi skill: a `SKILL.md` for the agent, with the links and website it uses written in it, and the scripts it runs. A run loads the versions live as it starts, copied by reflink into its instance's `skills/`, read-only to it at `/skills/<id>`, which its scripts reach through `RF_SKILLS`, so the folder's commits hold them; its `run` entry names them, and a push applies from the next run.
+Every run loads every live **skill**: a website's skill, with its guardrails, is there wherever a runner's login to that website is ticked, so the company's skills are few and chosen with care. A skill is what to fetch or do, and how, whole in a folder that whoever may publish pushes with `rf skill push DIR`, live at once; each push is a version, and `rf skill rollback ID N` brings an earlier one back. Anyone signed in may read a skill, as every run loads it anyway: `rf skill pull ID [DIR] [--version N]` writes the newest version, or N, into DIR (`./ID`), new or empty so no stale file goes along, as `rf skill push DIR` reads it back. It is a Pi skill: a `SKILL.md` for the agent, with the links and website it uses written in it, and the scripts it runs. A run loads the versions live as it starts, read-only to it at `/skills/<id>`, which its scripts reach through `RF_SKILLS`; its `run` entry names them, and a push applies from the next run.
 
 | Kind of skill | Reads through | Fetches, for example |
 | --- | --- | --- |

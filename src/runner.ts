@@ -1,6 +1,6 @@
 import { RpcClient, type JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import type { ChildProcess } from 'node:child_process';
-import { chmodSync, constants, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, posix, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,16 +40,15 @@ export type View = { instance: string; dir: string; pylib: string; ro: [string, 
 // Pi for one run, in its sandbox (sandbox.ts): its view read-only but for the instance's working/ and session/ and the series'
 // .pylib, the live skills and nothing else of the host's. prompt.md is its system prompt, to which Pi adds the AGENTS.md
 // files from / down to the instance. A run that starts Pi, `n`, starts a session, which later runs may continue (waker.ts), its
-// transcript in the instance's session/ beside the earlier sessions'. The skills are the versions live as it starts, copied into the instance's skills/ by reflink, which the folder's commits
-// hold, and read-only at /skills/<id>, so a push applies from the next run.
+// transcript in the instance's session/ beside the earlier sessions'. The skills are the versions live as it starts, read-only at
+// /skills/<id>, so a push applies from the next run.
 export function pi(o: { token: string; id: string; n: number; view: View; skills: { id: string; dir: string }[] }): RpcClient {
   const run = join(scratch, 'runs', o.token), home = join(run, 'home'), agentDir = join(home, '.pi', 'agent'), tmp = join(run, 'tmp');
   const { instance, dir, pylib } = o.view, working = join(dir, 'working'), session = join(dir, 'session'), lib = `${posix.dirname(instance)}/.pylib`;
   const socketDir = join(run, 'socket');
   for (const d of [agentDir, tmp, pylib, working, session, socketDir]) mkdirSync(d, { recursive: true });
+  // The copy of the skills that earlier versions' runs kept in an open instance goes, with its next commit.
   rmSync(join(dir, 'skills'), { recursive: true, force: true });
-  mkdirSync(join(dir, 'skills'));
-  for (const s of o.skills) cpSync(s.dir, join(dir, 'skills', s.id), { recursive: true, mode: constants.COPYFILE_FICLONE });
   writeFileSync(join(dir, 'names.tsv'), Object.entries(o.view.names).map(([at, id]) => `${id}\t${at}\n`).join(''));
   // PYTHONPATH reaches the series' .pylib through a link in HOME, as a colon in its path, such as in a task named by its first
   // prompt, would split it.
@@ -64,7 +63,7 @@ export function pi(o: { token: string; id: string; n: number; view: View; skills
   const args = sandboxArgs({
     cwd: instance, home, tmp, socketDir,
     ro: [
-      ...['bin', 'src', 'node_modules', 'package.json', 'prompt.md'].map(f => [join(app, f), `/app/${f}`] as [string, string]), [join(dir, 'skills'), '/skills'] as [string, string],
+      ...['bin', 'src', 'node_modules', 'package.json', 'prompt.md'].map(f => [join(app, f), `/app/${f}`] as [string, string]), ...o.skills.map(s => [s.dir, `/skills/${s.id}`] as [string, string]),
       ...(process.env.RF_SANDBOX_RO ?? '').split(delimiter).map(p => [p, p] as [string, string]),
     ].filter(([p]) => p && existsSync(p)),
     work: { ro: o.view.ro.filter(([src]) => existsSync(src)), rw: [[working, `${instance}/working`], [session, `${instance}/session`], [pylib, lib]] },
