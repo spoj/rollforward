@@ -259,6 +259,20 @@ test("the deployment's brand tops the sidebar and titles the page, its logo the 
   assert.match(await page.title(), / rollforward$/);
 });
 
+test("Show closed lists the closed instances of its own series alone", async () => {
+  for (const id of ['a5c0ff5e1f00', 'cec3e476c710']) {
+    await page.evaluate(id => { location.hash = `#/${id}`; }, id);
+    await page.waitForSelector(`a.row.inst.on[href="#/${id}"]`);
+  }
+  const listed = () => page.locator('#tree a.row.inst').evaluateAll(as => as.map(a => a.getAttribute('href')).sort()), before = await listed();
+  const toggle = (series: string) => page.locator(`#tree [data-act=toggle-closed][data-id=${series}]`);
+  await toggle('d83e3e5c41da').click();
+  assert.deepEqual((await listed()).filter(h => !before.includes(h)), ['#/3d70f7ca6f20', '#/4647a9f73aac', '#/c0f4e4f28232'], "the borrowing base's closed and abandoned instances, not the year-end pack's");
+  assert.deepEqual([await toggle('d83e3e5c41da').textContent(), await toggle('a5c0ff5e1fee').textContent()].map(t => t!.split(' ')[0]), ['Hide', 'Show']);
+  await toggle('d83e3e5c41da').click();
+  assert.deepEqual(await listed(), before);
+});
+
 test("the sidebar's and the side panel's inner edges drag their widths, within bounds, kept in this browser; a double-click resets them", async () => {
   const widths = () => page.evaluate(() => [$('#side')!.offsetWidth, ($('#log') as HTMLElement).offsetWidth]);
   const drag = async (pane: string, dx: number) => {

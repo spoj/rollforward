@@ -466,7 +466,8 @@ function fileUrl(path, kind = 'files') {
 const ext = f => (f && f.includes('.') ? f.split('.').pop() : '').toUpperCase();
 
 let cardPv = null;
-let tree = [], expired = [], myLogins = [], cur = null, data = null, lines = [], linesKey = '', openItem = null, hover = null, showClosed = false, showArchived = false, pv = null, me = null;
+// showClosed holds the series, and the workspaces for their Ungrouped tasks, whose closed instances the sidebar lists.
+let tree = [], expired = [], myLogins = [], cur = null, data = null, lines = [], linesKey = '', openItem = null, hover = null, showClosed = new Set(), showArchived = false, pv = null, me = null;
 let seen = {}, prevSigs = {}, uploads = [], shown = '', refreshes = 0, threads = [];
 // Threads with a reply box open: those waiting on people have one anyway, the others once Reply is clicked.
 const replying = new Set();
@@ -643,16 +644,16 @@ function renderSide() {
       for (const k of s.wakes) h += `<div class="row wake"><span class="nm" title="Starts ${esc(k.label)} ${when(k.at)}"><span class="l">Starts ${esc(k.label)} ${soon(k.at)}</span></span><span class="n">${k.days ? 'weekly' : 'wake'}</span></div>`;
       for (const r of s.requests) h += `<div class="row req"><span class="nm" title="${esc(`${r.from} asks to start ${r.label}`)}"><span class="l">${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)}</span></span>`
         + `<button class="add" data-act="req-start" data-id="${r.id}" title="Start it">\u25B6</button><button class="add" data-act="req-drop" data-id="${r.id}" title="Dismiss">\u00D7</button></div>`;
-      h += s.instances.filter(i => i.status === 'open' || showClosed || i.id === cur?.i?.id).map(row).join('');
-      if (closed) h += `<button class="quiet" data-act="toggle-closed">${showClosed ? 'Hide' : 'Show'} closed (${closed})</button>`;
+      h += s.instances.filter(i => i.status === 'open' || showClosed.has(s.id) || i.id === cur?.i?.id).map(row).join('');
+      if (closed) h += `<button class="quiet" data-act="toggle-closed" data-id="${s.id}">${showClosed.has(s.id) ? 'Hide' : 'Show'} closed (${closed})</button>`;
       h += '</div>';
     }
     // A series moved to another workspace, for a week, where people who aren't in that one see it go.
     for (const m of w.moved) h += `<div class="row wake"><span class="nm"><span class="l">${esc(m.name)} moved to ${esc(m.to)}</span></span><span class="n">${ago(m.at)}</span></div>`;
     // Tasks, each a series of its one instance, listed under a heading that is no series.
     const tasks = w.series.filter(s => s.single && listed(s, cur?.s?.id === s.id)).flatMap(s => s.instances).sort(byAct(recent)), done = tasks.filter(i => i.status !== 'open').length;
-    if (tasks.length) h += '<div class="row grp"><span class="nm">Ungrouped</span></div>' + tasks.filter(i => i.status === 'open' || showClosed || i.id === cur?.i?.id).map(row).join('')
-      + (done ? `<button class="quiet" data-act="toggle-closed">${showClosed ? 'Hide' : 'Show'} closed (${done})</button>` : '');
+    if (tasks.length) h += '<div class="row grp"><span class="nm">Ungrouped</span></div>' + tasks.filter(i => i.status === 'open' || showClosed.has(w.id) || i.id === cur?.i?.id).map(row).join('')
+      + (done ? `<button class="quiet" data-act="toggle-closed" data-id="${w.id}">${showClosed.has(w.id) ? 'Hide' : 'Show'} closed (${done})</button>` : '');
     h += '</div>';
   }
   const archived = tree.filter(w => w.archived).length + tree.filter(w => expanded.has(w.id)).flatMap(w => w.series).filter(s => s.archived).length;
@@ -1766,7 +1767,7 @@ async function onAct(act, el) {
     renderLog(); renderBar();
     $('#newcomment')?.focus();
   }
-  if (act === 'toggle-closed') { showClosed = !showClosed; renderSide(); }
+  if (act === 'toggle-closed') { showClosed[showClosed.has(el.dataset.id) ? 'delete' : 'add'](el.dataset.id); renderSide(); }
   if (act === 'toggle-archived') { showArchived = !showArchived; renderSide(); }
   if (act === 'add') {
     const p = $('#picker');
