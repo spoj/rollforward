@@ -762,6 +762,37 @@ test('rf reads without a pull: waiting, what waits on you; show, an instance, th
   await assert.rejects(rf('show', 'Reads/Notes'), fails(1, /^rf: Reads\/Notes is a series: name one of its instances, as rf ls lists them\n$/));
 });
 
+test('rf acts on an instance as the page does: resolve, creds, rename, takeover, interrupt, signoff, close, as a series for a task, abandon and correct', async () => {
+  const b = sessionOf(await login(bob))!, rows = async () => JSON.parse(await rf('ls', '--json')) as { path: string; id: string; status?: string; runner?: string }[];
+  const thread = JSON.parse(await rf('show', 'Reads/Notes/a1', '--json')).waiting[0].thread;
+  assert.equal(await rf('resolve', 'Reads/Notes/a1', thread, 'Seen it.'), `resolved ${thread}\n`);
+  assert.deepEqual(JSON.parse(await rf('show', 'Reads/Notes/a1', '--json')).waiting, []);
+  assert.match(await rf('creds', 'Reads/Notes/a1'), new RegExp(`^${adminEmail} ticks:\\n(  .+\\n)*yours:\\n`));
+  await assert.rejects(rf('creds', 'Reads/Notes/a1', '--set', 'web:nosuch'), fails(1, /^rf: POST \/api\/instances\/\w+\/logins: 400 logins must be offers of your own logins: \["web:nosuch"\]\n$/));
+  assert.equal(await rf('creds', 'Reads/Notes/a1', '--clear'), 'saved, with no logins ticked\n');
+  assert.equal(await rf('rename', 'Reads/Notes/a1', 'a2'), 'renamed Reads/Notes/a1 a2\n');
+  assert.equal(await rf('rename', 'Reads/Notes', 'Jots'), 'renamed Reads/Notes Jots\n');
+  assert.equal(await rf('rename', 'Reads', 'Readings'), 'renamed Reads Readings\n');
+  assert.deepEqual((await rows()).filter(r => r.path.startsWith('Readings/')).map(r => r.path), ['Readings/Jots', 'Readings/Jots/a2']);
+  const { id: sid } = (await rows()).find(r => r.path === 'Readings/Jots')!, { id: his } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'b1' }), b)).json();
+  await ran(`/api/instances/${his}`);
+  await quiet();
+  assert.equal(await rf('takeover', 'Readings/Jots/b1'), 'you run Readings/Jots/b1 now, with no logins ticked\n');
+  assert.equal((await json(`/api/instances/${his}`)).runner.by, adminEmail);
+  await assert.rejects(rf('interrupt', 'Readings/Jots/b1'), fails(1, /^rf: POST \/api\/instances\/\w+\/interrupt: 409 no run going\n$/));
+  await assert.rejects(rf('signoff', 'Readings/Jots/b1', 'c1', 'approve'), fails(1, /: 409 no sign-off waits in c1\n$/));
+  await assert.rejects(rf('signoff', 'Readings/Jots/b1', 'c1', 'maybe'), fails(2, /^rf signoff PATH THREAD approve\|reject/));
+  assert.equal(await rf('close', 'Readings/Jots/a2'), 'closed Readings/Jots/a2\n');
+  assert.match(await rf('correct', 'Readings/Jots/a2', 'The rate was a day stale.', '--see', 'b1'), /^a2 is marked wrong, seq \d+\n$/);
+  await assert.rejects(rf('correct', 'Readings/Jots/a2', 'x', '--see', 'zz'), fails(1, /^rf: no instance zz in its series\n$/));
+  assert.equal(await rf('abandon', 'Readings/Jots/b1'), 'abandoned Readings/Jots/b1\n');
+  const { instance } = await (await call('POST', '/api/series', JSON.stringify({ workspace: (await named('Readings')).id, single: true }))).json();
+  assert.equal(await rf('close', 'Readings/Untitled/Untitled', '--as-series', 'Monthly jots'), 'closed Readings/Untitled/Untitled\n');
+  const made = (await named('Readings')).series.find((x: { name: string }) => x.name === 'Monthly jots');
+  assert.deepEqual([made.single, made.instances.map((i: { id: string; status: string }) => [i.id, i.status])], [false, [[instance, 'closed']]], 'the task became the first instance of the series');
+  assert.deepEqual((await rows()).filter(r => r.path.startsWith('Readings/Jots/')).map(r => [r.path, r.status]), [['Readings/Jots/a2', 'closed'], ['Readings/Jots/b1', 'abandoned']]);
+});
+
 test('the page hears of changes from an event stream, only of instances it can see', async () => {
   const listen = async (cookie: string) => {
     const r = await fetch(base + '/api/events', { headers: { cookie } }), reader = r.body!.getReader(), got: string[] = [];

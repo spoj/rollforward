@@ -26,6 +26,18 @@ rf pull PATH DIR [--delete] [-n|--dry-run] [--exclude PATTERN]... [--max-size SI
 rf help [COMMAND]                 how rollforward works and how to use rf, for an agent, or COMMAND's usage
 rf comment PATH TEXT [--item ID] [--ref REF] [--thread T] [--wait]   a new thread, or a reply in T, as to an agent's ask
 rf upload PATH FILE [--onto ITEM] [--output]
+rf resolve PATH THREAD [TEXT]     resolves a thread, with TEXT as a last word; nothing wakes
+rf signoff PATH THREAD approve|reject [TEXT]   the runner's answer to a sign-off the agent asks for, which commits the folder
+rf close PATH [--as-series NAME]  the runner stands by it: closed, it's an example; a task closes as a one-off, or as the first
+                                  instance of the series NAME it becomes
+rf abandon PATH                   the runner leaves it as it is, neither an example nor a starting point
+rf interrupt PATH                 stops its run
+rf takeover PATH [--creds OFFER,...]   you run it from now on, with those offers of your logins ticked
+rf creds PATH [--set OFFER,...|--clear]   what its runs may use: its runner's ticks, and the offers of your logins; --set
+                                  ticks anew, as its runner
+rf rename PATH NAME               an instance, a series or a workspace, by its path
+rf correct PATH TEXT [--item ID] [--ref REF] [--superseded] [--see LABEL]   a closed instance, or its item ID at REF, is
+                                  wrong, or superseded, as LABEL, another instance of its series, shows; it can't be withdrawn
 rf wake PATH AT [--label LABEL] [--days DAYS] | rf wake --cancel ID
                                   AT now, +<n>m|h|d or a date; PATH an open instance, or a series with LABEL; DAYS, such as
                                   mon-fri, repeats it weekly at AT's time; rf ls shows each wake's ID
@@ -112,11 +124,13 @@ What rf pull copies, the folders as the agent sees them
                              change, so where a path in a file doesn't match, look its id up in the names.tsv of the commit
                              that last changed the file (git log -1 -- FILE, then git show H:names.tsv), and its name now in
                              rf ls
-The copy is read-only, and only rf changes what's on the server: comment, upload and wake.
+The copy is read-only: only rf's commands change what's on the server.
 
 Usual work
 - What waits on me: rf waiting, then rf show PATH, which names each thread that waits by its id.
-- Answer an ask: rf comment PATH TEXT --thread T --wait, which prints what the agent says back.
+- Answer an ask: rf comment PATH TEXT --thread T --wait, which prints what the agent says back; a sign-off, as its runner:
+  rf signoff PATH T approve|reject [TEXT]. Close an instance you stand by: rf close PATH.
+- Take an instance over: rf creds PATH lists the offers of your logins, and rf takeover PATH --creds OFFER,... ticks them.
 - Give an input or a corrected output: rf upload PATH FILE [--onto ITEM] [--output].
 - Start an instance: rf wake SERIES now --label LABEL, which starts it as whoever shares the series, else asks on the page for
   someone to start it; take one you run up later: rf wake PATH +2h.
@@ -148,7 +162,7 @@ const flags: Record<string, string | true> = {}, excludes: string[] = [], args: 
 for (let i = 0; i < argv.length; i++) {
   const flag = argv[i] === '-n' ? 'dry-run' : argv[i].match(/^--(.+)$/)?.[1];
   if (!flag) args.push(argv[i]);
-  else if (['wait', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear', 'follow'].includes(flag)) flags[flag] = true;
+  else if (['wait', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear', 'follow', 'superseded'].includes(flag)) flags[flag] = true;
   else if (argv[i + 1] === undefined) throw new Error(`--${flag} takes a value`);
   else if (flag === 'exclude') excludes.push(argv[++i]);
   else flags[flag] = argv[++i];
@@ -175,10 +189,18 @@ async function find(path: string) {
   return { series, inst, at: inst ? `/api/instances/${inst.id}` : '' };
 }
 async function instanceAt(path: string) {
-  const { inst, at } = await find(path);
+  const { series, inst, at } = await find(path);
   if (!inst) throw new Error(`${path} is a series: name one of its instances, as rf ls lists them`);
-  return { inst, at };
+  return { series, inst, at };
 }
+async function workspaceNamed(name: string) {
+  const ws = (await get('/api')).find(w => w.name === name);
+  if (!ws) throw new Error(`no workspace ${name}`);
+  return ws;
+}
+// The offers of your logins that --creds or --set name, ticked for an instance, and what ticking them agrees to.
+const ticks = () => flags.clear ? [] : String(flags.creds ?? flags.set ?? '').split(',').map(o => o.trim()).filter(Boolean);
+const consent = (offers: string[]) => offers.length ? `, ticking ${offers.join(', ')}: you agree that agents carry these credentials while acting as you` : ', with no logins ticked';
 
 // Times as this machine's clock reads them, and lengths of time and costs, for the views.
 const when = (iso: string) => new Date(iso).toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' });
@@ -360,6 +382,40 @@ else if (cmd === 'comment' && args.length === 2) {
     if (done.error) console.log(`The run failed: ${done.error}`);
     break;
   }
+} else if (cmd === 'resolve' && [2, 3].includes(args.length)) {
+  console.log(await (await post(`${(await instanceAt(args[0])).at}/resolve`, { thread: args[1], text: args[2] })).text());
+} else if (cmd === 'signoff' && ['approve', 'reject'].includes(args[2]) && args.length <= 4) {
+  await post(`${(await instanceAt(args[0])).at}/signoff`, { thread: args[1], approved: args[2] === 'approve', text: args[3] });
+  console.log(`${args[2] === 'approve' ? 'approved' : 'rejected'} ${args[1]}`);
+} else if (['close', 'abandon', 'interrupt'].includes(cmd) && args.length === 1) {
+  const { series, at } = await instanceAt(args[0]);
+  if (cmd === 'close' && typeof flags['as-series'] === 'string') await post(`/api/series/${series.id}/promote`, { name: flags['as-series'] });
+  await post(`${at}/${cmd}`, {});
+  console.log(`${cmd === 'close' ? 'closed' : `${cmd}ed`} ${args[0]}`);
+} else if (cmd === 'takeover' && args.length === 1) {
+  await post(`${(await instanceAt(args[0])).at}/takeover`, { logins: ticks() });
+  console.log(`you run ${args[0]} now${consent(ticks())}`);
+} else if (cmd === 'creds' && args.length === 1) {
+  const { at } = await instanceAt(args[0]);
+  if (flags.set !== undefined || flags.clear) {
+    await post(`${at}/logins`, { logins: ticks() });
+    console.log(`saved${consent(ticks())}`);
+  } else {
+    const [{ runner }, mine] = await Promise.all([get(at), get('/logins')]);
+    const out = { runner: runner.by, ticked: runner.logins.map((id, k) => ({ id, name: runner.ticked[k] })), yours: mine.flatMap(l => l.offers.map(o => ({ ...o, ...(l.expired && { expired: true }) }))) };
+    if (flags.json) console.log(JSON.stringify(out, null, 1));
+    else console.log([`${out.runner} ticks:`, ...out.ticked.map(o => `  ${o.id}  ${o.name}`), 'yours:', ...out.yours.map(o => `  ${o.id}  ${o.name}${o.expired ? '  expired' : ''}`)].join('\n'));
+  }
+} else if (cmd === 'rename' && args.length === 2) {
+  const [w, s, l] = args[0].replace(/\/+$/, '').split('/');
+  if (l !== undefined) await post(`${(await instanceAt(args[0])).at}/rename?as=${encodeURIComponent(args[1])}`, {});
+  else if (s !== undefined) await post(`/api/series/${(await find(args[0])).series.id}`, { name: args[1] }, 'PUT');
+  else await post(`/api/workspaces/${(await workspaceNamed(w)).id}`, { name: args[1] }, 'PUT');
+  console.log(`renamed ${args[0]} ${args[1]}`);
+} else if (cmd === 'correct' && args.length === 2) {
+  const { series, at } = await instanceAt(args[0]), see = flags.see === undefined ? undefined : series.instances.find(i => i.label === flags.see);
+  if (flags.see !== undefined && !see) throw new Error(`no instance ${flags.see} in its series`);
+  console.log(await (await post(`${at}/correct`, { kind: flags.superseded ? 'superseded' : 'wrong', text: args[1], item: flags.item, ref: flags.ref, see: see?.id })).text());
 } else if (cmd === 'upload' && args.length === 2) {
   const q = new URLSearchParams({ name: basename(args[1]), pane: flags.output ? 'out' : 'in', ...(typeof flags.onto === 'string' && { onto: flags.onto }) });
   await api(`${(await instanceAt(args[0])).at}/upload?${q}`, { method: 'POST', body: readFileSync(args[1]) });
@@ -373,8 +429,7 @@ else if (cmd === 'comment' && args.length === 2) {
   const w = await (await post(`/api/wakes/${inst?.id ?? series.id}`, { at: new Date(at).toISOString(), label: flags.label, days: flags.days }, 'PUT')).json();
   console.log(`wake ${w.id} at ${w.at}${w.days ? `, then each ${w.days.join(', ')}` : ''}`);
 } else if (cmd === 'agents' && args.length <= 1) {
-  const ws = args[0] === undefined ? undefined : (await get('/api')).find(w => w.name === args[0]);
-  if (args[0] !== undefined && !ws) throw new Error(`no workspace ${args[0]}`);
+  const ws = args[0] === undefined ? undefined : await workspaceNamed(args[0]);
   if (typeof flags.set !== 'string') console.log(ws ? ws.agents : (await get('/agents')).text);
   else {
     const text = readFileSync(flags.set === '-' ? 0 : flags.set, 'utf8');
@@ -485,8 +540,7 @@ else if (cmd === 'comment' && args.length === 2) {
   }
 } else if (cmd === 'people' && args.length <= 1) {
   // People as lines to edit and set: ROLE EMAIL for everyone, owner|member EMAIL-OR-GROUP for a workspace, each with a comment.
-  const ws = args[0] === undefined ? undefined : (await get('/api')).find(w => w.name === args[0]);
-  if (args[0] !== undefined && !ws) throw new Error(`no workspace ${args[0]}`);
+  const ws = args[0] === undefined ? undefined : await workspaceNamed(args[0]);
   const last = (iso: string | null) => iso ? `last in ${when(iso)}` : 'never in', listed = await get(ws ? `/api/workspaces/${ws.id}/people` : '/users');
   const now = ws ? listed.map(p => ({ kind: p.as, who: p.who, note: [p.who.includes('@') ? last(p.last_login) : 'a group', p.runs.length && `runs ${p.runs.join(', ')}`] }))
     : listed.map(u => ({ kind: u.role, who: u.email, note: [u.disabled && 'disabled', last(u.last_login), `in ${u.workspaces.join(', ') || 'none'}`, u.outside.length && `runs outside them: ${u.outside.join(', ')}`] }));
