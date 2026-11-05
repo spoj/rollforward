@@ -1,8 +1,9 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -290,7 +291,7 @@ test('sign-offs are git commits: the agent commits a moment worth keeping, the r
     ],
     report: 'Built the pack; asked for a sign-off.', saw: [],
   };
-  const again: Script = { bash: ['rf ask --sign-off The rate is fixed: send it now? 2>&1'], report: 'Fixed the rate; asked again.', saw: [] };
+  const again: Script = { bash: ['rf ask --sign-off --recipients Bank@demo.test,ops@demo.test --attach working/pack.csv The rate is fixed: send it now? 2>&1'], report: 'Fixed the rate; asked again.', saw: [] };
   const approved: Script = { bash: [], report: 'Signed off: sending.', saw: [] };
   scripts.push(ask, again, approved);
 
@@ -315,11 +316,16 @@ test('sign-offs are git commits: the agent commits a moment worth keeping, the r
   assert.match(again.prompt!, /"op":"signoff".*"approved":false.*"text":"Use the new rate."/, 'the answer starts a run, as a reply does');
   assert.equal((await signoff({ approved: true })).status, 409, 'nothing waits in that thread now');
 
-  const next = log.findLast(e => e.op === 'comment')!.thread;
-  assert.equal((await call('POST', `/api/instances/${id}/signoff`, { thread: next, approved: true, text: 'Go.' })).status, 200);
+  const next = log.findLast(e => e.op === 'comment')!, pack = join(dir, 'working', 'pack.csv'), sum = createHash('sha256').update('200\n').digest('hex');
+  assert.deepEqual([next.recipients, next.attach, statSync(pack).mode & 0o777], [['bank@demo.test', 'ops@demo.test'], [{ file: 'working/pack.csv', sha256: sum }], 0o444], 'it binds the mail, its file frozen');
+  chmodSync(pack, 0o644);
+  writeFileSync(pack, '300\n');
+  assert.match(await (await call('POST', `/api/instances/${id}/signoff`, { thread: next.thread, approved: true })).text(), /working\/pack\.csv changed since the agent asked/);
+  writeFileSync(pack, '200\n');
+  assert.equal((await call('POST', `/api/instances/${id}/signoff`, { thread: next.thread, approved: true, text: 'Go.' })).status, 200);
   log = await runs(id, 4);
   const yes = log.findLast(e => e.op === 'signoff')!;
-  assert.equal(git('log', '-1', '--format=%an%n%B', String(yes.commit)), 'Demo Admin\nThe rate is fixed: send it now?\n\nGo.\n\nSigned-off-by: Demo Admin <admin@demo.test>');
+  assert.equal(git('log', '-1', '--format=%an%n%B', String(yes.commit)), `Demo Admin\nThe rate is fixed: send it now?\n\nTo: bank@demo.test, ops@demo.test\nAttached: working/pack.csv ${sum}\n\nGo.\n\nSigned-off-by: Demo Admin <admin@demo.test>`);
   assert.match(git('show', `${yes.commit}:log.jsonl`), /"op":"signoff","thread":"c\d+","approved":false/, 'the whole folder, its log included');
 
   assert.equal((await call('POST', `/api/instances/${id}/close`)).status, 200);

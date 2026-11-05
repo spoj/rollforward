@@ -15,10 +15,13 @@ const HELP: Record<string, string> = {
   such as ar-aging@Sheet1!C22; neither starts one on the instance. --file cites a file the comment relies on, under upload/
   or working/ of this instance or of another of its series, as ../<label>/working/x.csv; an image (png, jpg, gif, webp, svg)
   shows in the thread. - reads TEXT from stdin.`,
-  ask: `rf ask [--in THREAD | --on ITEM[@REF]] [--to EMAIL | --sign-off] [--file PATH]... TEXT|-
+  ask: `rf ask [--in THREAD | --on ITEM[@REF]] [--to EMAIL | --sign-off [--recipients EMAIL,...] [--attach PATH]...] [--file PATH]... TEXT|-
   Asks for a reply: the thread waits on EMAIL, else the instance's runner, until someone replies (which starts a run) or
-  resolves it. --sign-off asks the runner to approve the instance as it stands, or reject it with a note: either commits its
-  folder in their name (rf help commit) and starts a run, and the log's signoff entry says which, with the commit. The rest as
+  resolves it. --sign-off asks the runner to approve an action outside, such as a mail or a submission, shown under Review, or
+  reject it with a note: either commits its folder in their name (rf help commit) and starts a run, and the log's signoff entry
+  says which, with the commit. --recipients, to, cc and bcc alike, and --attach, files under upload/ or working/ frozen as you
+  ask, bind it: once a sign-off names recipients, Microsoft 365 sends this instance's mail only as an approval binds it, to
+  exactly those recipients with exactly those files, as a JSON sendMail or a draft's send, each approval once. The rest as
   rf say.`,
   commit: `rf commit MESSAGE|-
   Commits your instance's whole folder as it is now, in your name, to its history: the folder is a repository, which only the
@@ -64,18 +67,18 @@ const own = `api/instances/${process.env.RF_INSTANCE}`;
 
 // rf say and rf ask: a comment in a thread, or starting one on an item or the instance.
 function comment() {
-  const o: { in?: string; on?: string; to?: string; file: string[]; words: string[]; signoff?: boolean } = { file: [], words: [] };
+  const o: { in?: string; on?: string; to?: string; recipients?: string; file: string[]; attach: string[]; words: string[]; signoff?: boolean } = { file: [], attach: [], words: [] };
   for (let i = 0; i < args.length; i++) {
-    const flag = /^--(in|on|to|file)$/.exec(args[i])?.[1] as 'in' | 'on' | 'to' | 'file' | undefined;
+    const flag = /^--(in|on|to|recipients|file|attach)$/.exec(args[i])?.[1] as 'in' | 'on' | 'to' | 'recipients' | 'file' | 'attach' | undefined;
     if (args[i] === '--sign-off' && cmd === 'ask') o.signoff = true;
     else if (!flag || args[i + 1] === undefined) o.words.push(args[i]);
-    else if (flag === 'file') o.file.push(args[++i]);
+    else if (flag === 'file' || flag === 'attach') o[flag].push(args[++i]);
     else o[flag] = args[++i];
   }
   const text = o.words.join(' ') === '-' ? readFileSync(0, 'utf8') : o.words.join(' ');
   if (!text.trim() || (o.in && o.on) || (o.to && cmd === 'say')) return usage(cmd);
   const at = o.on?.indexOf('@') ?? -1, item = at >= 0 ? o.on!.slice(0, at) : o.on, ref = at >= 0 ? o.on!.slice(at + 1) : undefined;
-  return send('POST', `${own}/comment`, JSON.stringify({ thread: o.in, item, ref, text, files: o.file, ask: cmd === 'ask', to: o.to, signoff: o.signoff }));
+  return send('POST', `${own}/comment`, JSON.stringify({ thread: o.in, item, ref, text, files: o.file, ask: cmd === 'ask', to: o.to, signoff: o.signoff, recipients: o.recipients?.split(',').map(r => r.trim()), attach: o.attach }));
 }
 
 // rf wake TARGET AT [--label LABEL] [--days DAYS]: the folder becomes an id, then the wake is set as a person sets one.

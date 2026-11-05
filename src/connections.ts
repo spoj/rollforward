@@ -33,13 +33,15 @@ import * as exa from './connections/exa.ts';
 
 export type Connection = { name: string; type: string; [setting: string]: any };
 export type Request = { method: string; url: URL; headers: Record<string, string | string[] | undefined>; json?: any; body?: Buffer };
+export type Mail = { to: string[]; sums: string[] };
 export type Type = {
   settings(input: Record<string, unknown>): Record<string, unknown>;
   // Its person's login: an Entra login, with its scope, or a website's, which they sign in to in a live browser.
   login(c: Connection): (EntraLogin | { id: string; kind: string; name: string; scope?: undefined; offers: Offer[] });
   serves?(c: Connection, host: string): boolean;
   // The offer a request needs ticked, and its JSON body as it goes on, if the type rewrote it; or a refusal.
-  check?(c: Connection, runner: string, ticks: string[], r: Request): Promise<{ offer: string; json?: unknown }>;
+  // A request that sends mail also reads, on asking, what goes, its recipients and its attachments' sha256s, or why that can't be read.
+  check?(c: Connection, runner: string, ticks: string[], r: Request): Promise<{ offer: string; json?: unknown; mail?: () => Promise<Mail | string> }>;
   links?(answer: any, path: string, email: string, ticks: string[]): string[] | Promise<string[]>;
   // What a run's environment holds for it, given the instance's ticks.
   env?(c: Connection, ticks: string[]): Record<string, string>;
@@ -152,10 +154,11 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     // A file's content, PUT …/content, streams on as its bytes, a JSON file's too.
     const raw = !link && (s || ['POST', 'PATCH'].includes(method) || (method === 'PUT' && isJson && !/\/content$/i.test(url.pathname))) ? Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)) : undefined;
     const json = isJson && raw?.length ? JSON.parse(raw.toString()) : undefined, r = { method, url, headers: req.headers, json, body: raw };
-    let out = json, auth: Record<string, string> = {}, as = '', ticks: string[] = [];
+    let out = json, auth: Record<string, string> = {}, as = '', ticks: string[] = [], signoff: number | undefined;
     if (c) {
       const { by, logins } = lender(a.inst), checked = await types[c.type].check!(c, by, ticks = logins, r), login = loginOf(c) as EntraLogin;
       out = checked.json ?? json;
+      if (checked.mail) signoff = await approval(a.inst, checked.mail);
       as = use(a.inst, checked.offer).email;
       auth = { authorization: `Bearer ${await token(as, login.id, login.scope)}` };
     }
@@ -174,7 +177,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     const cost = !s ? 0 : (answer.text.trimStart().startsWith('{') ? [answer.text] : answer.text.split('\n').filter(l => l.startsWith('data: {')).map(l => l.slice(6)))
       .map(e => s.cost(JSON.parse(e))).findLast(x => x !== undefined) ?? 0;
     a.cost += cost;
-    log(answer.status, answer.bytes, s ? { ...(json?.model && { model: json.model }), cost } : undefined);
+    log(answer.status, answer.bytes, s ? { ...(json?.model && { model: json.model }), cost } : signoff ? { signoff } : undefined);
     if (mine && answer.status === 402) {
       saveLogin(runner, { ...mine, expired: true });
       a.inst.append('server', 'expired', { login: 'openrouter', name: 'OpenRouter', runner });
@@ -187,6 +190,23 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     if (res.headersSent) return void res.destroy();
     res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8' }).end(`${err.message}\n`);
   }
+}
+
+// Once a sign-off the agent asks for names a mail's recipients, the instance's mail goes out only as an approval binds it: to exactly
+// those recipients, to, cc and bcc alike, with exactly those files' bytes attached, each approval once; the call names the approval.
+async function approval(inst: Instance, read: () => Promise<Mail | string>): Promise<number | undefined> {
+  const asks = inst.log.filter(e => e.op === 'comment' && e.signoff && e.recipients);
+  if (!asks.length) return undefined;
+  const mail = await read();
+  if (typeof mail === 'string') throw new HttpError(403, `${mail}, as a sign-off binds this instance's mail`);
+  const same = (a: string[], b: string[]) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
+  const fits = asks.filter(e => same([...new Set(e.recipients as string[])], [...new Set(mail.to)]) && same(((e.attach ?? []) as { sha256: string }[]).map(f => f.sha256), mail.sums));
+  const answers = fits.map(e => inst.log.find(s => s.op === 'signoff' && s.thread === e.thread && s.seq > e.seq));
+  const ok = answers.find(s => s?.approved && !inst.log.some(c => c.op === 'call' && c.signoff === s.seq && (c.status as number) < 300));
+  if (ok) return ok.seq;
+  const t = fits.at(-1)?.thread;
+  throw new HttpError(403, !fits.length ? `no sign-off binds mail to ${mail.to.join(', ')} with ${mail.sums.length || 'no'} attachment${mail.sums.length === 1 ? '' : 's'} of those bytes: once one names recipients, this instance's mail goes only as an approval binds it, to exactly its recipients with exactly its files`
+    : answers.some(s => s?.approved) ? `${t}'s approved mail went out already: ask again for another` : answers.some(Boolean) ? `${t}'s sign-off was rejected` : `${t}'s sign-off waits on its runner`);
 }
 
 // The request goes on as it came, but for its credential and the hop's own headers; the answer comes back as it is, and, where

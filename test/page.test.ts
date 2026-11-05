@@ -30,7 +30,7 @@ before(async () => {
   writeFileSync(join(signed, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [] }));
   writeFileSync(join(signed, 'log.jsonl'), [
     { seq: 1, at: '2026-08-01T09:00:00.000Z', by: 'admin@demo.test', op: 'create', from: null, logins: [] },
-    { seq: 2, at: '2026-08-01T09:05:00.000Z', by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'The pack is ready to send to the bank.', ask: true, signoff: true },
+    { seq: 2, at: '2026-08-01T09:05:00.000Z', by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'The pack is ready to send to the bank.', ask: true, signoff: true, recipients: ['bank@demo.test'] },
   ].map(e => JSON.stringify(e) + '\n').join(''));
   // A closed instance of the same series, with its review sheet, whose run, asked to, called a connection and added a rule to its
   // process.
@@ -332,6 +332,8 @@ test("a sign-off the agent asks for shows louder, above the instance and in its 
   await thread.waitFor();
   assert.equal(await page.textContent('#bar .ptog .badge'), String(await page.locator('#log .thread.waits').count()), "the panel's toggle counts what waits there");
   assert.match(await thread.locator('.on').innerText(), /waits on your sign-off/);
+  assert.deepEqual(await page.locator('#rev .tile.prop.waits > *').allTextContents(), ['SIGN-OFF', 'The pack is ready to send to the bank.', '\u2192 bank@demo.test', 'Waits on you'], 'Review shows the action and where it goes');
+  assert.equal(await thread.locator('.binds').textContent(), 'To bank@demo.test');
   assert.deepEqual(await thread.locator('button').allInnerTexts(), ['Approve', 'Reject']);
   await thread.locator('textarea').fill('Looks right.');
   await thread.locator('[data-act=signoff][data-ok]').click();
@@ -339,6 +341,7 @@ test("a sign-off the agent asks for shows louder, above the instance and in its 
   await post.waitFor();
   assert.match(await post.locator('.tm').innerText(), /commit [0-9a-f]{7}/);
   await page.waitForSelector('#needs', { state: 'hidden' });
+  await page.waitForSelector('#rev .tile.prop .meta:text("Approved")');
   await page.click('#log [data-act=audit]');
   await page.locator('#audit .e', { hasText: 'You signed off' }).waitFor();
   await page.click('#log .seg [data-act=audit]');

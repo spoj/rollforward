@@ -135,8 +135,9 @@ What there is
   reads it at its next run; rf wake PATH now starts one. A quiet upload or comment is committed to the instance's history at once.
 - A comment starts a thread, on the instance or on an item, at a cell such as Base!C25, and others reply in it. An ask is the
   agent's comment that waits on someone, the one it names or else the runner, until they reply or resolve it. rf ls says how many
-  asks wait in each instance. A sign-off, an ask with signoff true, waits on the runner, who approves or rejects it on the page:
-  either commits the instance's folder to its history, .git in it, as closing does.
+  asks wait in each instance. A sign-off, an ask with signoff true, is for an action outside, such as a mail, and waits on the
+  runner, who approves or rejects it: either commits the instance's folder to its history, .git in it, as closing does. One that
+  names recipients and attached files, frozen by their sha256, binds the instance's mail: it goes only as an approval says.
 
 What rf pull copies, the folders as the agent sees them
   AGENTS.md                  the company's conventions; <workspace>/AGENTS.md the workspace's

@@ -1,8 +1,9 @@
+import { createHash } from 'node:crypto';
 import { HttpError } from '../store.ts';
 import { graphScopes, needs } from '../auth.ts';
 import { token } from '../entra.ts';
 import { logins, saveLogin, type Offer } from '../logins.ts';
-import type { Request, Type } from '../connections.ts';
+import type { Mail, Request, Type } from '../connections.ts';
 
 // Microsoft Graph, as the runner, as far as the instance's ticks reach: /me/… or /users/ADDRESS/… for a mailbox's messages and
 // folders, and its sendMail; /drives/ID/…, /shares/ID/…, /me/drive/… or /users/ADDRESS/drive/… for files, within a ticked folder,
@@ -47,8 +48,8 @@ function mime(body: Buffer | undefined, box: string, bare: string) {
   if (address.toLowerCase() !== box) throw refuse(`mail from ${box} goes out as ${box}, not ${address}`);
 }
 
-// The offer that lets a request through, or why not.
-async function check(runner: string, ticks: string[], { method, url, headers, json, body: raw }: Request): Promise<string> {
+// The offer that lets a request through, or why not, and for a send, what it sends.
+async function check(runner: string, ticks: string[], { method, url, headers, json, body: raw }: Request): Promise<{ offer: string; mail?: () => Promise<Mail | string> }> {
   if (!/^\/(v1\.0|beta)\//.test(url.pathname)) throw new HttpError(403, `${url.pathname}: Microsoft Graph, under /v1.0/ or /beta/`);
   // Neither another method in a header, nor a Prefer that redeems a sharing link, which grants the runner access.
   if (Object.keys(headers).some(h => /^x-http-method/i.test(h)) || /redeemsharinglink/i.test(String(headers.prefer ?? ''))) throw new HttpError(403, 'no X-HTTP-Method header, and no Prefer that redeems a sharing link');
@@ -67,7 +68,7 @@ async function check(runner: string, ticks: string[], { method, url, headers, js
   const mailbox = top === 'users' && (part === 'messages' || part === 'mailFolders' || (write && actions[2] === 'sendmail'));
   const body = headers['transfer-encoding'] !== undefined || Number(headers['content-length'] ?? 0) > 0, object = typeof json === 'object' && json !== null;
   if (write && body && !object && !mailbox && !(method === 'PUT' && action === 'content')) throw new HttpError(403, `${bare}: a write's body is a JSON object, but a file's content, with PUT …/content, or mail as MIME`);
-  let offer: string | undefined, mail = false;
+  let offer: string | undefined, mail = false, sent: (() => Promise<Mail | string>) | undefined;
   if (mailbox) {
     const scope = !write ? 'Mail.Read' : ['sendmail', 'send', 'reply', 'replyall', 'forward', 'unsubscribe'].includes(action!) ? 'Mail.Send' : 'Mail.ReadWrite';
     const what = { 'Mail.Read': ['read mail', 'read shared mailboxes'], 'Mail.Send': ['send mail', 'send from shared mailboxes'], 'Mail.ReadWrite': ['write mail', 'write to shared mailboxes'] }[scope];
@@ -78,6 +79,10 @@ async function check(runner: string, ticks: string[], { method, url, headers, js
     if (write && body && !object) mime(String(headers['content-type']).startsWith('text/plain') ? raw : undefined, id.toLowerCase(), bare);
     const said = [json, ...keyed(json, 'message')].flatMap(m => [...keyed(m, 'from'), ...keyed(m, 'sender')]), at = (x: unknown) => keyed(x, 'emailaddress').flatMap(e => keyed(e, 'address'));
     if (said.some(x => !at(x).length || at(x).some(a => String(a).toLowerCase() !== id.toLowerCase()))) throw new HttpError(403, `${bare}: mail from ${id} goes out as ${id}`);
+    // A send as it goes, read where a sign-off binds it: a JSON sendMail's message, or the draft a send sends, as Graph has it then.
+    if (write && ['sendmail', 'send', 'reply', 'replyall', 'forward'].includes(action!)) sent = async () => action === 'sendmail' ? (object ? going(keyed(json, 'message')[0]) : `${bare}: mail as MIME isn't read for what it sends; send it as a JSON message`)
+      : action === 'send' ? going(await drafted(runner, bare.replace(/\/[^/]+$/, '')))
+      : `${bare} sends what isn't read first: reply or forward as a draft, with createReply, createReplyAll or createForward, then send that`;
   } else if (top === 'drives' || top === 'shares' || (['users', 'sites'].includes(top) && part === 'drive') || (top === 'sites' && part === 'drives' && segs[3])) {
     needs(write ? 'Files.ReadWrite.All' : 'Files.Read.All', `${write ? 'save' : 'read'} OneDrive or SharePoint files`);
     // A share's site and list are the whole site and library its item is in, past what is ticked.
@@ -107,7 +112,7 @@ async function check(runner: string, ticks: string[], { method, url, headers, js
       if (!await covering(runner, ticks, folder.parentReference.driveId, folder.id, folder.parentReference.id)) throw new HttpError(403, `${bare} would put it in a folder no tick covers`);
     }
   }
-  return offer;
+  return { offer, ...(sent !== undefined && { mail: sent }) };
 }
 
 // Links an answer gives, which the run may then use as they are, read from the path as check() reads it: an upload session's, from
@@ -129,9 +134,23 @@ export default {
   settings: () => ({}),
   login: () => ({ id: 'm365', kind: 'm365', name: 'Microsoft 365', scope: scope() }),
   serves: (_, host) => host === 'graph.microsoft.com',
-  check: async (_, runner, ticks, r) => ({ offer: await check(runner, ticks, r) }),
+  check: (_, runner, ticks, r) => check(runner, ticks, r),
   links,
 } satisfies Type;
+
+// What a message sends: its recipients, to, cc and bcc, and each attachment's sha256, which only a file's bytes have.
+function going(m: unknown): Mail | string {
+  const to = ['torecipients', 'ccrecipients', 'bccrecipients'].flatMap(k => keyed(m, k).flat()).flatMap(r => keyed(r, 'emailaddress')).flatMap(e => keyed(e, 'address'));
+  const bytes = keyed(m, 'attachments').flat().map(f => keyed(f, 'contentbytes')[0]);
+  if (bytes.some(b => typeof b !== 'string')) return "an attachment that isn't a file's bytes, such as an item or a link, isn't read for what it sends";
+  return { to: to.map(a => String(a).toLowerCase()), sums: bytes.map(b => createHash('sha256').update(Buffer.from(b, 'base64')).digest('hex')) };
+}
+
+// A draft's recipients and attachments.
+async function drafted(email: string, message: string) {
+  const [m, files] = await Promise.all([graph(email, `${message}?$select=toRecipients,ccRecipients,bccRecipients`), graph(email, `${message}/attachments`)]);
+  return { ...m, attachments: files.value };
+}
 
 // A JSON object's values for a key, in any case, as Graph reads keys: each, where several cases of it are there.
 const keyed = (o: unknown, k: string): any[] => o && typeof o === 'object' ? Object.entries(o).filter(([n]) => n.toLowerCase() === k).map(([, v]) => v) : [];

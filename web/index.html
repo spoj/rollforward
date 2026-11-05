@@ -400,6 +400,8 @@ input[type=checkbox] { accent-color: var(--ink); }
 .post.ask b::after { content: ' asks'; color: var(--red); font-weight: 500; }
 .post.signoff b::after { content: ' asks for a sign-off'; }
 .thread.waits.signoff { border: 2px solid var(--red); }
+.post .binds { font-size: 12px; color: var(--ink-2); }
+.tile.prop.waits { border: 2px solid var(--red); }
 .thread .on, .post .tm { color: var(--ink-3); font-size: 12px; }
 .post b.p { color: var(--person, #1d4ed8); }
 .post .f img, img.md { display: block; max-width: 100%; max-height: 240px; margin-top: 4px; border: 1px solid var(--rule); border-radius: var(--r1); cursor: zoom-in; }
@@ -785,8 +787,9 @@ function renderPanes() {
   put($('#view'), `<span class="seg">${[['tiles', 'Tiles'], ['list', 'List']].map(([v, name]) => `<button class="${list === (v === 'list') ? 'sel' : ''}" data-act="view" data-id="${v}">${name}</button>`).join('')}</span>`);
   put($('#ins'), head('Inputs', ins, 'in') + body('in', ins) + alsoUsed + (open ? '<div class="hint">Drop files to add them. The agent decides what each one is.</div>' : ''));
   put($('#outs'), head('Outputs', outs, 'out') + body('out', outs) + (open ? '<div class="hint">Drop a revised output here.</div>' : ''));
-  $('#rev').hidden = !rev.length;
-  put($('#rev'), head('Review', rev, undefined, shown.length ? `${shown.filter(passOf).length} of ${shown.length} passed` : '') + `<div class="tiles">${rev.map(tile).join('')}</div>`);
+  const asked = threads.filter(t => t.posts.some(p => p.signoff));
+  $('#rev').hidden = !rev.length && !asked.length;
+  put($('#rev'), head('Review', rev, undefined, shown.length ? `${shown.filter(passOf).length} of ${shown.length} passed` : '') + `<div class="tiles">${rev.map(tile).join('')}${asked.map(proposal).join('')}</div>`);
   $('#outs').classList.toggle('busy', !!data.run);
   prevSigs = Object.fromEntries(items.map(i => [i.id, sig(i)]));
   light();
@@ -808,6 +811,16 @@ function listHtml(pane, xs) {
     + `<td>${r.i.file ? `<b>${person(r.p.by)}</b> ${hhmm(r.p.at)}` : r.i.kind === 'input' ? 'Missing' : 'Not built yet'}</td><td>${esc(r.headline)}</td><td>${r.changed}</td>`
     + `<td class="${r.asks ? 'q' : ''}">${r.asks ? `${r.asks} to answer` : r.on.length ? plural(r.on.length, 'comment') : ''}</td></tr>`;
   return `<table class="lst"><tr>${cols.map(([k, name]) => `<th data-act="sort" data-pane="${pane}" data-key="${k}" ${s?.key === k ? `aria-sort="${s.dir > 0 ? 'ascending' : 'descending'}"` : ''} ${k === 'changed' && was ? `title="Since ${esc(was.label)}"` : ''}>${name}</th>`).join('')}</tr>${rows.map(tr).join('')}</table>`;
+}
+
+// An action outside the agent asks to sign off, as its last ask in the thread binds it: where it goes, what it attaches, and whether
+// the runner approved it and, for mail, it went. It opens its thread, where the runner answers.
+function proposal(t) {
+  const a = t.posts.findLast(p => p.signoff), answer = t.posts.find(p => p.op === 'signoff' && p.seq > a.seq);
+  const sent = answer?.approved && data.log.find(e => e.op === 'call' && e.signoff === answer.seq && e.status < 300);
+  const state = sent ? `Sent ${hhmm(sent.at)}` : answer ? `${answer.approved ? 'Approved' : 'Rejected'} \u00b7 ${person(answer.by)}` : `Waits on ${who(data.runner.by)}`;
+  return `<div class="tile prop ${t.waits ? 'waits' : ''}" data-act="thread" data-thread="${esc(t.id)}"><div class="ext"><span>SIGN-OFF</span></div><div class="fn">${esc(firstLine(a.text))}</div>`
+    + `${a.recipients ? `<div class="dst">\u2192 ${esc(a.recipients.join(', '))}</div>` : ''}${a.attach ? `<div class="file">${a.attach.map(f => esc(fname(f.file))).join(', ')}</div>` : ''}<div class="meta">${state}</div></div>`;
 }
 
 // Hovering a tile or a row marks what it's made from, all the way back.
@@ -862,7 +875,7 @@ function logText(e) {
     egress: () => `Run ${e.run} ${e.allowed ? 'reached' : 'was refused'} ${esc(e.host)}`,
     delivered: () => `${w} delivered ${item(e.item)} to ${esc(e.to)}<div class="d">${{ graph: 'Through Microsoft 365 · ', website: 'Through a website · ' }[e.via] ?? ''}${esc(e.receipt)}</div>`,
     send: () => `${w} sent ${esc(e.method)} ${esc(e.path)} to ${esc(e.name)}, with no answer logged`,
-    call: () => `${w} ${e.model ? `asked ${esc(e.model)}` : `called ${esc(e.name)}: ${esc(e.method)} ${esc(e.path)}`}${e.cost ? ` \u00b7 $${e.cost.toFixed(4)}` : ''}${e.refused || e.failed ? `, ${e.refused ? 'refused' : 'failed'}<div class="d">${esc(e.refused ?? e.failed)}</div>` : e.status >= 300 ? `, which answered ${e.status}` : ''}`,
+    call: () => `${w} ${e.model ? `asked ${esc(e.model)}` : `called ${esc(e.name)}: ${esc(e.method)} ${esc(e.path)}`}${e.cost ? ` \u00b7 $${e.cost.toFixed(4)}` : ''}${e.refused || e.failed ? `, ${e.refused ? 'refused' : 'failed'}<div class="d">${esc(e.refused ?? e.failed)}</div>` : e.status >= 300 ? `, which answered ${e.status}` : ''}${e.signoff ? `<div class="d">As ${esc(data.log.find(x => x.seq === e.signoff).thread)}'s sign-off binds it</div>` : ''}`,
     graph: () => `${w} ${e.method ? `sent ${esc(e.method)} ${esc(e.path)} to` : `read ${esc(e.path)} from`} Microsoft 365${e.status >= 300 ? `, which answered ${e.status}` : ''}${e.to && e.to !== e.path ? `<div class="d">${esc(e.to)}</div>` : ''}${[e.body, e.file].filter(Boolean).map(f => `<div class="f"><a data-act="preview" data-file="${esc(f)}">${esc(f)}</a></div>`).join('')}`,
     move: () => `Moved from ${esc(e.from)} to ${esc(e.to)}, ${who(e.accepted_by)} accepting`,
     rename: () => e.by === 'server' ? `Named by its first prompt, from ${esc(e.from)}` : `${w} renamed the instance from ${esc(e.from)}`,
@@ -1036,7 +1049,7 @@ function threadHtml(t) {
   const state = signoff ? ` \u00b7 waits on ${t.waits === me.email ? 'your' : `${person(t.waits)}'s`} sign-off` : t.waits ? ` \u00b7 waits on ${who(t.waits)}` : t.pending ? ' \u00b7 <span class="spin"></span> the agent picks it up next' : t.resolved ? ` \u00b7 resolved by ${who(t.last.by)}${t.last.text ? `: ${esc(t.last.text)}` : ''}` : '';
   return `<div class="thread ${t.resolved ? 'resolved' : ''} ${t.waits ? 'waits' : ''} ${signoff ? 'signoff' : ''}" data-thread="${esc(t.id)}"><div class="on">${place(t)}${state}</div>`
     + data.log.filter(e => e.op === 'done' && e.rules && e.thread === t.id).map(processNote).join('')
-    + t.posts.map(p => `<div class="post ${p.ask ? 'ask' : ''} ${p.signoff ? 'signoff' : ''}"><b class="${p.by === 'agent' ? '' : 'p'}">${who(p.by)}</b> <span class="tm">${hhmm(p.at)}${p.to ? ` \u00b7 to ${who(p.to)}` : ''}${p.note ? ` \u00b7 a note for ${who(data.runner.by)}` : ''}${p.commit ? ` \u00b7 commit <code>${p.commit.slice(0, 7)}</code>` : ''}</span><div>${p.by === 'agent' ? md(p.text) : esc(p.text)}</div>${(p.files ?? []).map(f => `<div class="f">${/\.(png|jpe?g|gif|webp|svg)$/i.test(f) ? `<img src="${fileUrl(f)}" loading="lazy" alt="${esc(fname(f))}" title="${esc(fname(f))}" data-act="preview" data-file="${esc(f)}">` : `<a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a>`}</div>`).join('')}</div>`).join('')
+    + t.posts.map(p => `<div class="post ${p.ask ? 'ask' : ''} ${p.signoff ? 'signoff' : ''}"><b class="${p.by === 'agent' ? '' : 'p'}">${who(p.by)}</b> <span class="tm">${hhmm(p.at)}${p.to ? ` \u00b7 to ${who(p.to)}` : ''}${p.note ? ` \u00b7 a note for ${who(data.runner.by)}` : ''}${p.commit ? ` \u00b7 commit <code>${p.commit.slice(0, 7)}</code>` : ''}</span><div>${p.by === 'agent' ? md(p.text) : esc(p.text)}</div>${p.recipients ? `<div class="binds">To ${esc(p.recipients.join(', '))}</div>` : ''}${(p.attach ?? []).map(a => `<div class="binds">Attaches <a data-act="preview" data-file="${esc(a.file)}">${esc(fname(a.file))}</a> <code title="sha256 ${esc(a.sha256)}">${a.sha256.slice(0, 12)}</code></div>`).join('')}${(p.files ?? []).map(f => `<div class="f">${/\.(png|jpe?g|gif|webp|svg)$/i.test(f) ? `<img src="${fileUrl(f)}" loading="lazy" alt="${esc(fname(f))}" title="${esc(fname(f))}" data-act="preview" data-file="${esc(f)}">` : `<a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a>`}</div>`).join('')}</div>`).join('')
     + (data.doc.status !== 'open' || t.resolved ? ''
       : signoff ? (t.waits === me.email ? `<textarea rows="2" placeholder="A note, such as what to change"></textarea><div class="row2"><button class="btn commit" data-act="signoff" data-ok="1" data-thread="${esc(t.id)}"${off}>Approve</button><button class="btn" data-act="signoff" data-thread="${esc(t.id)}"${off}>Reject</button></div>` : '')
       : t.waits || replying.has(t.id) ? `<textarea rows="2" placeholder="Reply"></textarea><input type="file" multiple><div class="row2"><button class="btn" data-act="reply-thread" data-thread="${esc(t.id)}">Reply</button><button class="btn" data-act="resolve" data-thread="${esc(t.id)}" title="Done with it, without waking the agent">Resolve</button></div>`
@@ -1578,7 +1591,7 @@ document.addEventListener('click', async ev => {
     if (!ev.target.closest('#card, dialog')) { openItem = null; renderCard(); renderPanes(); }
     return;
   }
-  if (el.matches('.tile, .lrow')) {
+  if (!el.dataset.act) {
     openItem = openItem === el.dataset.item ? null : el.dataset.item;
     markSeen(data.doc.items.filter(i => i.id === openItem));
     renderPanes();

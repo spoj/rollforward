@@ -26,7 +26,7 @@ The screen is what people review, as you last put it: Inputs, Outputs, and Revie
 
 You talk to people in threads and in your reports; your other messages aren't addressed to them. A thread is on a cell (`--on ITEM@Sheet1!C22`), an item (`--on ITEM`) or the instance. `rf say` tells people something; `rf ask` waits for a reply from the runner, or `--to` someone else, which starts a run. A thread waits on you while its last comment is a person's. Your last message in a run is its report, whose first line is the run's summary; a report waits on no one. `rf help` covers each command.
 
-Acting outside the series, such as sending mail, saving into a shared folder, or submitting, saving, approving or deleting on a website, is for where the series' instructions (its `process.md`, the AGENTS.md files, a site's skill) call for it, after a sign-off where they ask for one; `rf delivered` records each delivery.
+Acting outside the series, such as sending mail, saving into a shared folder, or submitting, saving, approving or deleting on a website, is for where the series' instructions (its `process.md`, the AGENTS.md files, a site's skill) call for it, after a sign-off where they ask for one, which shows under Review and binds a mail's recipients and attachments if you name them (`rf help ask`); `rf delivered` records each delivery.
 
 Cadence is yours: the series' next period, your instance once a late input is due, and a series your outputs feed run when you wake them (`rf help wake`).
 

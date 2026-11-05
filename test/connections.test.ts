@@ -4,6 +4,7 @@ import { createServer, request, type IncomingHttpHeaders, type Server } from 'no
 import { request as httpsRequest } from 'node:https';
 import { connect as tlsConnect } from 'node:tls';
 import type { Socket } from 'node:net';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -133,7 +134,7 @@ before(async () => {
         if (path === '/drives/b!d1/items/a' && req.method === 'PATCH') return send({ id: 'a', eTag: '"{A},2"' });
         if (path === '/me/messages') return send({ id: 'd1' }, 201);
         if (path === '/me/messages/d1/attachments/createUploadSession') return send({ uploadUrl: 'https://outlook.office.com/upload/s1?tempauth=secret' }, 201);
-        if (path === '/me/sendMail' || path === '/me/messages/d1/send') return void res.writeHead(202).end();
+        if (path === '/me/sendMail' || path === '/me/messages/d1/send' || path === '/me/messages/d2/send') return void res.writeHead(202).end();
         send({ error: { code: 'invalidRequest', message: 'not here' } }, 400);
       });
       return;
@@ -152,6 +153,9 @@ before(async () => {
     if (path === '/drives/b!d1/root:/LFM:') return send(item('top', 'LFM', '2026-01-01T00:00:00Z', true, 'root1'));
     if (path === '/me/messages') return send({ value: mail });
     if (path === '/me/messages/m1/$value') return void res.writeHead(200, { 'content-type': 'message/rfc822' }).end(MIME);
+    // A draft to the bank, with the pack attached.
+    if (path === '/me/messages/d2') return send({ id: 'd2', toRecipients: [{ emailAddress: { address: 'bank@demo.test' } }], ccRecipients: [], bccRecipients: [] });
+    if (path === '/me/messages/d2/attachments') return send({ value: [{ '@odata.type': '#microsoft.graph.fileAttachment', name: 'pack.csv', contentBytes: Buffer.from('100\n').toString('base64') }] });
     if (path === `/users/${AP}/mailFolders/inbox`) return send({ id: 'inbox' });
     if (path === '/sites/demo.sharepoint.com:/sites/Finance') return send({ id: 'host,site2,web2', displayName: 'Finance' });
     send({ error: { code: 'itemNotFound', message: 'not here' } }, 404);
@@ -421,6 +425,30 @@ test('writes go within the ticks: a file saved into a ticked folder, a message s
   assert.deepEqual([writes.at(-1)!.path, writes.at(-1)!.auth], ['/upload/s1', undefined], 'the link as it is, with no token of ours');
   assert.equal(calls().at(-1)!.path, 'https://outlook.office.com/upload/s1', "the link's own token isn't logged");
   assert.equal((await via('POST', `${G}/me/messages/d1/send`)).status, 202);
+});
+
+test("once a sign-off names a mail's recipients, the instance's mail goes out only as an approval binds it: to exactly them, with exactly its files' bytes, each approval once", async () => {
+  const pack = Buffer.from('100\n'), sum = createHash('sha256').update(pack).digest('hex'), L: any[] = [{ seq: 1, op: 'create', by: ALICE, logins: ticks },
+    { seq: 2, op: 'comment', by: 'agent', thread: 'c2', text: 'Send the pack?', ask: true, signoff: true, recipients: ['bank@demo.test'], attach: [{ file: 'working/pack.csv', sha256: sum }] }];
+  runs.set('bound', { ...inst, log: L, append: (_by: string, op: string, data: any) => (L.push({ seq: L.length + 1, op, ...data }), L.at(-1)) } as unknown as Instance);
+  const mail = (to: string[], bytes = pack) => via('POST', `${G}/me/sendMail`, { token: 'bound', ...json({ message: { subject: 'Pack', toRecipients: to.map(address => ({ emailAddress: { address } })),
+    attachments: [{ '@odata.type': '#microsoft.graph.fileAttachment', name: 'pack.csv', contentBytes: bytes.toString('base64') }] } }) });
+  assert.match((await mail(['bank@demo.test'])).text, /c2's sign-off waits on its runner/);
+  L.push({ seq: L.length + 1, op: 'signoff', by: ALICE, thread: 'c2', approved: true });
+  const approved = L.length;
+  assert.match((await mail(['bank@demo.test', 'cc@demo.test'])).text, /no sign-off binds mail to bank@demo\.test, cc@demo\.test with 1 attachment of those bytes/);
+  assert.match((await mail(['bank@demo.test'], Buffer.from('999\n'))).text, /no sign-off binds/, 'another file');
+  assert.equal((await mail(['Bank@demo.test'])).status, 202);
+  assert.equal(L.at(-1).signoff, approved, 'the call names the approval');
+  assert.match((await mail(['bank@demo.test'])).text, /c2's approved mail went out already: ask again for another/);
+  const mime = Buffer.from(`From: ${ALICE}\r\nTo: bank@demo.test\r\n\r\nThe pack.`).toString('base64');
+  assert.match((await via('POST', `${G}/me/sendMail`, { token: 'bound', body: mime, headers: { 'content-type': 'text/plain' } })).text, /mail as MIME isn't read for what it sends/);
+  assert.match((await via('POST', `${G}/me/messages/m1/forward`, { token: 'bound', ...json({ toRecipients: [] }) })).text, /forward as a draft/);
+  L.push({ seq: L.length + 1, op: 'comment', by: 'agent', thread: 'c2', text: 'Send it again?', ask: true, signoff: true, recipients: ['bank@demo.test'], attach: [{ file: 'working/pack.csv', sha256: sum }] },
+    { seq: L.length + 2, op: 'signoff', by: ALICE, thread: 'c2', approved: true });
+  assert.equal((await via('POST', `${G}/me/messages/d2/send`, { token: 'bound' })).status, 202, 'a draft, as Graph has it');
+  assert.equal(L.at(-1).signoff, L.length - 2);
+  runs.delete('bound');
 });
 
 test("writes share nothing, and make, move or copy nothing outside the ticks; mail goes out as the ticked mailbox, in JSON or in MIME whose one From is it", async () => {
