@@ -164,7 +164,12 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .btn.danger:hover:not(:disabled) { background: #fdf1f0; border-color: var(--red); }
 [aria-busy=true] { pointer-events: none; opacity: .6; cursor: progress; }
 
-.panes { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: minmax(0, 1fr); position: relative; }
+/* The instance's slices, Inputs, Outputs and Review, side by side, each scrolling on its own, Review there only once it has something;
+   in the list view, Inputs over Outputs, with Review beside them. */
+.panes { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr); grid-template-areas: "ins outs rev"; position: relative; }
+.panes:has(> .rev[hidden]) { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-areas: "ins outs"; }
+.panes.list { grid-template-columns: minmax(0, 1fr) minmax(240px, 28%); grid-template-rows: fit-content(55%) minmax(0, 1fr); grid-template-areas: "ins rev" "outs rev"; }
+.panes.list:has(> .rev[hidden]) { grid-template-columns: minmax(0, 1fr); grid-template-areas: "ins" "outs"; }
 .pane { padding: 22px 28px 20px; display: flex; flex-direction: column; position: relative; overflow: auto; min-width: 0; scrollbar-gutter: stable; }
 /* Always-visible scrollbars, so a long list of inputs or outputs shows it goes on (Edge's overlay scrollbars hide until hovered). */
 .pane::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -172,15 +177,34 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .pane::-webkit-scrollbar-thumb { background: var(--edge); border: 2px solid var(--rule); border-radius: 6px; }
 .pane::-webkit-scrollbar-thumb:hover { background: var(--ink-3); }
 @supports not selector(::-webkit-scrollbar) { .pane { scrollbar-width: thin; scrollbar-color: var(--edge) var(--rule); } }
-.flow { grid-area: 1 / 1; }
-.outs { grid-area: 1 / 2; overflow: hidden auto; border-left: 1px solid var(--rule); }
-.cols { display: flex; gap: 64px; align-items: start; }
-.col { width: 216px; flex: none; display: grid; gap: 10px; align-content: start; }
-.edges { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; }
-.edges path { fill: none; stroke: var(--edge); stroke-width: 1.25; }
-.edges path.hot { stroke: var(--ink); stroke-width: 1.5; }
-.edges marker path { fill: var(--edge); stroke: none; }
-.edges #arrow-hot path { fill: var(--ink); }
+.ins { grid-area: ins; }
+.outs { grid-area: outs; border-left: 1px solid var(--rule); }
+.rev { grid-area: rev; border-left: 1px solid var(--rule); }
+.panes.list .outs { border-left: 0; border-top: 1px solid var(--rule); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; align-content: start; }
+.tiles:empty { display: none; }
+.view { position: absolute; right: 72px; bottom: 12px; z-index: 4; }
+.view .seg { margin: 0; background: var(--paper); }
+.view .seg button { padding: 3px 10px; font-size: 12px; }
+.lst { width: 100%; border-collapse: collapse; font-size: 12.5px; background: var(--sheet); border: 1px solid var(--rule); margin-bottom: 10px; }
+.lst th { text-align: left; font-weight: 500; color: var(--ink-3); padding: 6px 8px; border-bottom: 1px solid var(--rule-2); white-space: nowrap; cursor: pointer; user-select: none; }
+.lst th:hover { color: var(--ink); }
+.lst th[aria-sort=ascending]::after { content: ' \25B4'; }
+.lst th[aria-sort=descending]::after { content: ' \25BE'; }
+.lst td { padding: 5px 8px; border-bottom: 1px solid var(--rule); vertical-align: top; overflow-wrap: break-word; }
+.lst td:nth-child(n+3):not(:nth-child(5)) { white-space: nowrap; }
+.lrow { cursor: pointer; }
+.lrow:hover { background: #f5f6f8; }
+.lrow.on, .lrow.drag { background: #e7eaee; }
+.lrow.made { background: #eef0f3; box-shadow: inset 3px 0 0 var(--ink-2); }
+.lrow .fn { display: block; }
+.lst td:first-child { min-width: 9em; }
+.lrow .file { display: block; font-size: 11.5px; }
+.lrow.person .fn, .lrow.person td b { color: var(--person); }
+.lrow td b { font-weight: 500; }
+.lrow.ghost td { color: var(--ink-3); }
+.lrow.fresh .fn::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--ink); vertical-align: 1px; }
+.lrow td.q { color: var(--red); }
 .pane.busy::before { content: ''; position: absolute; top: 0; left: -30%; width: 30%; height: 2px; background: var(--ink); animation: stripe 1.4s ease-in-out infinite; }
 @keyframes stripe { to { left: 100%; } }
 .pane.drag::after { content: '+ Add'; position: absolute; top: 20px; right: 28px; font-weight: 600; color: var(--person); }
@@ -199,13 +223,14 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .nc.q, .legend .tri.q { color: var(--red); border-top-color: var(--red); }
 .fn { font-size: 13px; font-weight: 500; line-height: 1.32; word-break: break-word; }
 .file { font-size: 12px; color: var(--ink-3); word-break: break-word; }
-.from { display: none; font-size: 12px; color: var(--ink-3); }
 .tile.person .fn, .tile.person .meta b { color: var(--person); }
 .meta { margin-top: auto; font-size: 12px; color: var(--ink-3); }
 .meta b { font-weight: 500; color: var(--ink); }
 .corner { position: absolute; top: -1px; right: -1px; width: 0; height: 0; border-top: 12px solid var(--ink-3); border-left: 12px solid transparent; border-top-right-radius: var(--r1); }
 .tile.ghost { background: transparent; border: 1px dashed var(--rule-2); }
 .tile.ghost .fn { color: var(--ink-2); font-weight: 400; }
+/* Hovering a tile or a row marks what it's made from. */
+.tile.made { border-color: var(--ink-2); background: #f1f3f5; }
 .tile.fresh::before { content: ''; position: absolute; top: 9px; left: -4px; width: 7px; height: 7px; border-radius: 50%; background: var(--ink); }
 .tile.flash { animation: flash 1.4s ease-out; }
 @keyframes flash { from { box-shadow: 0 0 0 4px var(--rule-2); } }
@@ -408,12 +433,9 @@ input[type=checkbox] { accent-color: var(--ink); }
   .pane { padding: 16px 14px; overflow: clip; }
   .ph { position: static; margin: 0 0 4px; padding: 0; background: none; }
   .outs { border-left: 0; border-bottom: 1px solid var(--rule); }
-  .cols { display: block; }
-  .col { width: auto; grid-template-columns: repeat(2, 1fr); }
-  .col > :not(.tile) { grid-column: 1 / -1; }
-  .col + .col { margin-top: 18px; }
-  .ph:empty, .edges { display: none; }
-  .from { display: block; }
+  .rev { border-left: 0; border-top: 1px solid var(--rule); }
+  .tiles { grid-template-columns: repeat(2, 1fr); }
+  .ph:empty, .view { display: none; }
   .hint { display: none; }
   .card { left: 0 !important; right: 0; bottom: 0; top: auto !important; width: auto; max-height: 75dvh; border-radius: 12px 12px 0 0; padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
   .log.open { position: fixed; inset: 0; width: auto; z-index: 25; }
@@ -432,8 +454,9 @@ input[type=checkbox] { accent-color: var(--ink); }
     <div class="corrs" id="corrs" hidden></div>
     <div class="panes" id="panes">
       <section class="pane outs" id="outs" data-pane="out"></section>
-      <section class="pane flow" id="flow" data-pane="in"></section>
-      <svg class="edges" id="edges"></svg>
+      <section class="pane ins" id="ins" data-pane="in"></section>
+      <section class="pane rev" id="rev" data-pane="in" hidden></section>
+      <div class="view" id="view"></div>
       <div class="key" tabindex="0">Key<div class="legend"><div><i class="p">Blue</i> uploaded by a person</div><div><i>Black</i> made by the agent</div><div><span class="tri"></span>comments</div><div><span class="tri q"></span>waiting on a reply</div><div><span class="dash"></span>expected, not there yet</div><div class="keys"><div><kbd>j k</kbd> move through the sidebar, <kbd>h l</kbd> fold and open, <kbd>Enter</kbd> go</div><div><kbd>c</kbd> the comment box</div><div><kbd>Ctrl Enter</kbd> sends, <kbd>Esc</kbd> leaves a field, <kbd>?</kbd> shows this</div></div></div></div>
     </div>
     <div class="player" id="player" hidden></div>
@@ -490,7 +513,7 @@ function toast(text, kind = '') {
 // The side panel opens beside the instance where there's room for both; the audit is closed until asked for. sect holds which of the
 // panel's folds are open, where someone opened or closed them; site, which of the run's browsers the player shows, and drive, the
 // one you took control of, as instance/site.
-const ui = { open: innerWidth > 800, on: null, ref: null, audit: false, sect: {}, site: null, drive: null };
+const ui = { open: innerWidth > 800, on: null, ref: null, audit: false, sect: {}, site: null, drive: null, sort: {} };
 // The review sheet, where it's a text, and the process, as the conversation shows them.
 let docs = { key: '' };
 const drawn = new WeakMap();
@@ -726,80 +749,65 @@ function tile(item) {
   const count = (fixed ? '<span class="corr">Corrected</span> ' : '') + (open ? `${open} to answer` : on.length ? `${on.length} comment${on.length > 1 ? 's' : ''}` : '');
   const corner = on.length ? `<span class="corner ${open ? 'ask' : ''}"></span>` : '';
   const mark = `${seen[item.id] !== sig(item) ? 'fresh' : ''} ${prevSigs[item.id] && prevSigs[item.id] !== sig(item) ? 'flash' : ''}`;
-  const from = item.from?.length ? `<div class="from">from ${item.from.map(f => esc(data.doc.items.find(i => i.id === f).name)).join(', ')}</div>` : '';
   if (!item.file) {
-    return `<div class="tile ghost ${mark}" data-item="${esc(item.id)}">${corner}<div class="ext"><span>${esc(item.kind.toUpperCase())}</span><span class="nc ${open ? 'q' : ''}">${count}</span></div><div class="fn">${esc(item.name)}</div>${from}<div class="meta">${item.kind === 'input' ? 'Missing' : 'Not built yet'}</div></div>`;
+    return `<div class="tile ghost ${mark}" data-item="${esc(item.id)}">${corner}<div class="ext"><span>${esc(item.kind.toUpperCase())}</span><span class="nc ${open ? 'q' : ''}">${count}</span></div><div class="fn">${esc(item.name)}</div><div class="meta">${item.kind === 'input' ? 'Missing' : 'Not built yet'}</div></div>`;
   }
   const p = provenance(item.file), sent = data.log.findLast(e => e.op === 'delivered' && e.item === item.id);
   const v = data.log.filter(e => e.op === 'point' && e.item === item.id && e.file).length;
-  return `<div class="tile ${p.person ? 'person' : 'agent'} ${openItem === item.id ? 'on' : ''} ${mark}" data-item="${esc(item.id)}">${corner}<div class="ext"><span>${esc(ext(item.file))}${v > 1 ? ' · v' + v : ''}</span><span class="nc ${open ? 'q' : ''}">${count}</span></div><div class="fn">${esc(item.name)}</div><div class="file">${esc(fname(item.file))}</div>${item.headline ? `<div class="hl">${esc(item.headline)}</div>` : ''}${item.source ? `<div class="src">${esc(item.source)}</div>` : ''}${item.destination ? `<div class="dst" title="${esc(item.destination)}">\u2192 ${esc(item.destination)}</div>` : ''}${sent ? `<div class="sent" title="${esc(sent.receipt)}">Sent ${hhmm(sent.at)} to ${esc(sent.to)}</div>` : ''}${from}<div class="meta"><b>${person(p.by)}</b> · ${hhmm(p.at)}</div></div>`;
+  return `<div class="tile ${p.person ? 'person' : 'agent'} ${openItem === item.id ? 'on' : ''} ${mark}" data-item="${esc(item.id)}">${corner}<div class="ext"><span>${esc(ext(item.file))}${v > 1 ? ' · v' + v : ''}</span><span class="nc ${open ? 'q' : ''}">${count}</span></div><div class="fn">${esc(item.name)}</div><div class="file">${esc(fname(item.file))}</div>${item.headline ? `<div class="hl">${esc(item.headline)}</div>` : ''}${item.source ? `<div class="src">${esc(item.source)}</div>` : ''}${item.destination ? `<div class="dst" title="${esc(item.destination)}">\u2192 ${esc(item.destination)}</div>` : ''}${sent ? `<div class="sent" title="${esc(sent.receipt)}">Sent ${hhmm(sent.at)} to ${esc(sent.to)}</div>` : ''}<div class="meta"><b>${person(p.by)}</b> · ${hhmm(p.at)}</div></div>`;
 }
 
+// The instance in three slices: Inputs; Outputs; and Review, the evidence for whoever closes it, the review sheet first and then the
+// steps, there only once it has some. On a desktop a toggle, kept in this browser, shows Inputs and Outputs as lists, each sorting by
+// the column its heading names; a phone shows tiles, Outputs first.
 function renderPanes() {
-  $('#outs').hidden = !data;
-  if (!data) {
-    put($('#flow'), `<div class="empty">${cur?.s ? 'No instance yet. Make one with + by the series.' : cur ? 'No series yet. Make one with + by the workspace.' : me.can.includes('create') ? 'No workspace yet. Make one with + by Workspaces.' : 'No workspace yet: an admin makes one or adds you to one.'}</div>`);
-    return drawEdges();
-  }
-  const open = data.doc.status === 'open', stored = localStorage[`seen:${instPath()}`], items = data.doc.items;
+  $('#outs').hidden = $('#rev').hidden = $('#view').hidden = !data;
+  if (!data) return put($('#ins'), `<div class="empty">${cur?.s ? 'No instance yet. Make one with + by the series.' : cur ? 'No series yet. Make one with + by the workspace.' : me.can.includes('create') ? 'No workspace yet. Make one with + by Workspaces.' : 'No workspace yet: an admin makes one or adds you to one.'}</div>`);
+  const open = data.doc.status === 'open', stored = localStorage[`seen:${instPath()}`], items = data.doc.items, list = localStorage.view === 'list' && innerWidth > 800;
   seen = stored ? JSON.parse(stored) : {};
   if (!stored) markSeen(items);
-  const byId = new Map(items.map(i => [i.id, i])), depth = new Map();
-  const d = i => {
-    if (!depth.has(i.id)) depth.set(i.id, 1 + Math.max(0, ...(i.from ?? []).map(f => byId.get(f)).filter(p => p.kind === 'step').map(d)));
-    return depth.get(i.id);
-  };
-  const cols = [items.filter(i => i.kind === 'input')], steps = items.filter(i => i.kind === 'step'), outs = items.filter(i => i.kind === 'output');
-  for (const i of steps) (cols[d(i)] ??= []).push(i);
+  const ins = items.filter(i => i.kind === 'input'), outs = items.filter(i => i.kind === 'output' && i.id !== 'review');
+  const rev = [...items.filter(i => i.id === 'review'), ...items.filter(i => i.kind === 'step' && i.id !== 'review')];
   const head = (title, list, pane) => `<div class="ph"><h2>${title}</h2><span class="c">${list.length ? `${list.filter(i => i.file).length} of ${list.length}` : ''}</span>${open && pane ? `<button class="btn" data-act="add" data-pane="${pane}">+ Add files</button>` : ''}</div>`;
   const adding = pane => uploads.filter(u => u.pane === pane && u.path === instPath()).map(u => `<div class="tile ghost"><div class="ext"><span>UPLOADING</span></div><div class="fn">${esc(u.f.name)}</div><div class="prog"><i style="width:${u.pct}%"></i></div></div>`).join('');
   const shown = new Set(items.map(i => i.file)), also = new Map();
   for (const t of threads) for (const p of t.posts) for (const f of p.by === 'agent' ? p.files ?? [] : []) if (!shown.has(f) && !also.has(f)) also.set(f, t);
   const via = t => t.item ? `on <a data-act="opencard" data-item="${esc(t.item)}">${esc(items.find(i => i.id === t.item)?.name ?? t.item)}</a>` : `in <a data-act="thread" data-thread="${esc(t.id)}">a comment</a>`;
   const alsoUsed = also.size ? `<div class="also"><div class="ah">Also used</div>${[...also].map(([f, t]) => `<div><a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a> <span class="via">· cited ${via(t)}</span></div>`).join('')}</div>` : '';
-  put($('#flow'), `<div class="cols">${cols.map((col, k) => `<div class="col">${k === 0 ? head('Inputs', col, 'in') : k === 1 ? head('Steps', steps) : '<div class="ph"></div>'}${col.map(tile).join('')}${k === 0 ? adding('in') + alsoUsed : ''}</div>`).join('')}</div>`
-    + (open ? '<div class="hint">Drop files to add them. The agent decides what each one is.</div>' : ''));
-  put($('#outs'), `<div class="col">${head('Outputs', outs, 'out')}${outs.map(tile).join('')}${adding('out')}</div>${open ? '<div class="hint">Drop a revised output here.</div>' : ''}`);
+  const body = (pane, xs) => `${list ? listHtml(pane, xs) : ''}<div class="tiles">${list ? '' : xs.map(tile).join('')}${adding(pane)}</div>`;
+  $('#panes').classList.toggle('list', list);
+  put($('#view'), `<span class="seg">${[['tiles', 'Tiles'], ['list', 'List']].map(([v, name]) => `<button class="${list === (v === 'list') ? 'sel' : ''}" data-act="view" data-id="${v}">${name}</button>`).join('')}</span>`);
+  put($('#ins'), head('Inputs', ins, 'in') + body('in', ins) + alsoUsed + (open ? '<div class="hint">Drop files to add them. The agent decides what each one is.</div>' : ''));
+  put($('#outs'), head('Outputs', outs, 'out') + body('out', outs) + (open ? '<div class="hint">Drop a revised output here.</div>' : ''));
+  $('#rev').hidden = !rev.length;
+  put($('#rev'), head('Review', rev) + `<div class="tiles">${rev.map(tile).join('')}</div>`);
   $('#outs').classList.toggle('busy', !!data.run);
   prevSigs = Object.fromEntries(items.map(i => [i.id, sig(i)]));
-  drawEdges();
+  light();
 }
 
-function drawEdges() {
-  if (!data || innerWidth <= 800) return void ($('#edges').innerHTML = '');
-  const box = $('#panes').getBoundingClientRect(), items = data.doc.items, hot = hover ?? openItem, up = new Set(), down = new Set();
-  const climb = id => { for (const f of items.find(i => i.id === id)?.from ?? []) if (!up.has(f)) { up.add(f); climb(f); } };
-  const fall = id => { for (const i of items) if (i.from?.includes(id) && !down.has(i.id)) { down.add(i.id); fall(i.id); } };
-  if (hot) { climb(hot); fall(hot); }
-  const rects = new Map(items.map(i => [i.id, document.querySelector(`#panes .tile[data-item="${CSS.escape(i.id)}"]`).getBoundingClientRect()]));
-  const mid = id => rects.get(id).top + rects.get(id).height / 2, byY = ids => ids.sort((p, q) => mid(p) - mid(q));
-  const parents = new Map(items.map(i => [i.id, byY([...i.from ?? []])])), children = new Map(items.map(i => [i.id, byY(items.filter(c => c.from?.includes(i.id)).map(c => c.id))]));
-  const port = (id, ends, other) => rects.get(id).top + rects.get(id).height * (ends.get(id).indexOf(other) + 1) / (ends.get(id).length + 1);
-  const cols = [...document.querySelectorAll('#flow .col')].map(c => [...c.querySelectorAll('.tile')].map(t => t.getBoundingClientRect())).filter(ts => ts.length);
-  let h = '';
-  for (const i of items) for (const f of i.from ?? []) {
-    const a = rects.get(f), b = rects.get(i.id), y1 = port(f, children, i.id), y2 = port(i.id, parents, f), lit = i.id === hot || up.has(i.id) || f === hot || down.has(f);
-    let d;
-    if (b.left > a.right) {
-      // Cross each column in between at its nearest gap, so a line never seems to enter a tile it passes.
-      const pts = [[a.right, y1]];
-      for (const ts of cols.filter(ts => ts[0].left > a.right && ts[0].right < b.left)) {
-        const y = pts.at(-1)[1], gaps = [ts[0].top - 14, ...ts.slice(1).map((t, k) => (ts[k].bottom + t.top) / 2), ts.at(-1).bottom + 14];
-        const g = gaps.reduce((best, v) => (Math.abs(v - y) < Math.abs(best - y) ? v : best));
-        pts.push([ts[0].left, g], [ts[0].right, g]);
-      }
-      pts.push([b.left, y2]);
-      d = `M${pts[0][0] - box.left},${pts[0][1] - box.top}` + pts.slice(1).map(([x, y], k) => {
-        const [px, py] = pts[k], mx = (px + x) / 2 - box.left;
-        return k % 2 ? ` L${x - box.left},${y - box.top}` : ` C${mx},${py - box.top} ${mx},${y - box.top} ${x - box.left},${y - box.top}`;
-      }).join('');
-    } else {
-      const x1 = a.right - box.left, x2 = b.right - box.left, c = Math.max(x1, x2) + 36;
-      d = `M${x1},${y1 - box.top} C${c},${y1 - box.top} ${c},${y2 - box.top} ${x2},${y2 - box.top}`;
-    }
-    h += `<path class="${lit ? 'hot' : ''}" d="${d}" marker-end="url(#${lit ? 'arrow-hot' : 'arrow'})"/>`;
-  }
-  $('#edges').innerHTML = `<defs>${['arrow', 'arrow-hot'].map(id => `<marker id="${id}" viewBox="0 0 8 8" refX="8" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0 8,4 0,8z"/></marker>`).join('')}</defs>${h}`;
+// Inputs or Outputs as a dense list: a row an item, in the screen's order until a heading sorts it, a second click reversing it.
+function listHtml(pane, xs) {
+  const s = ui.sort[pane], was = data.previous;
+  const cols = [['name', 'Name'], ['where', pane === 'in' ? 'Source' : 'Destination'], ['as_of', 'As of'], ['by', 'By'], ['headline', pane === 'in' ? 'Rows · total' : 'Headline'], ['changed', 'Changed'], ['threads', 'Threads']];
+  const row = i => {
+    const p = i.file && provenance(i.file), on = talkOn(i.id), asks = on.filter(t => t.waits).length;
+    return { i, p, on, asks, name: i.name, where: (pane === 'in' ? i.source : i.destination) ?? '', as_of: i.as_of ?? '', by: p ? nameOf(p.by) : '', headline: i.headline ?? '', changed: was?.changed[i.id] ?? '', threads: asks * 1e4 + on.length };
+  };
+  const rows = xs.map(row);
+  if (s) rows.sort((a, b) => s.dir * (typeof a[s.key] === 'number' ? a[s.key] - b[s.key] : String(a[s.key]).localeCompare(String(b[s.key]), undefined, { numeric: true })));
+  const tr = r => `<tr class="lrow ${!r.i.file ? 'ghost' : r.p.person ? 'person' : 'agent'} ${openItem === r.i.id ? 'on' : ''} ${seen[r.i.id] !== sig(r.i) ? 'fresh' : ''}" data-item="${esc(r.i.id)}">`
+    + `<td><span class="fn">${esc(r.name)}</span>${r.i.file ? `<span class="file">${esc(fname(r.i.file))}</span>` : ''}</td><td>${esc(r.where)}</td><td>${esc(r.as_of)}</td>`
+    + `<td>${r.i.file ? `<b>${person(r.p.by)}</b> ${hhmm(r.p.at)}` : r.i.kind === 'input' ? 'Missing' : 'Not built yet'}</td><td>${esc(r.headline)}</td><td>${r.changed}</td>`
+    + `<td class="${r.asks ? 'q' : ''}">${r.asks ? `${r.asks} to answer` : r.on.length ? plural(r.on.length, 'comment') : ''}</td></tr>`;
+  return `<table class="lst"><tr>${cols.map(([k, name]) => `<th data-act="sort" data-pane="${pane}" data-key="${k}" ${s?.key === k ? `aria-sort="${s.dir > 0 ? 'ascending' : 'descending'}"` : ''} ${k === 'changed' && was ? `title="Since ${esc(was.label)}"` : ''}>${name}</th>`).join('')}</tr>${rows.map(tr).join('')}</table>`;
+}
+
+// Hovering a tile or a row marks what it's made from, all the way back.
+function light() {
+  const up = new Set(), climb = id => { for (const f of data?.doc.items.find(i => i.id === id)?.from ?? []) if (!up.has(f)) { up.add(f); climb(f); } };
+  if (hover) climb(hover);
+  for (const el of document.querySelectorAll('#panes :is(.tile, .lrow)[data-item]')) el.classList.toggle('made', up.has(el.dataset.item));
 }
 
 const plural = (n, word) => `${n} ${word}${n > 1 ? 's' : ''}`;
@@ -1081,6 +1089,8 @@ function renderCard() {
       + (item.kind === 'output' ? `<br>Destination: ${item.destination ? esc(item.destination) : 'stays here'}` : '')
       + data.log.filter(e => e.op === 'delivered' && e.item === item.id).map(e => `<br><span class="sent">Sent to ${esc(e.to)} ${when(e.at)} · ${esc(e.receipt)}</span>`).join('') + '</div>';
   } else h += `<div class="cp">${item.kind === 'input' ? 'Expected input, not there yet' : `${item.kind === 'step' ? 'Step' : 'Output'} not built yet`}</div>`;
+  const from = (item.from ?? []).map(f => data.doc.items.find(i => i.id === f)).filter(Boolean);
+  if (from.length) h += `<div class="cp">Made from ${from.map(f => `<a data-act="opencard" data-item="${esc(f.id)}">${esc(f.name)}</a>`).join(', ')}</div>`;
   if (wide) h += `<div class="cpv">${cardPv.att ? `<div class="sub"><a data-act="attachment-back">\u2190 ${esc(cardPv.title)}</a> \u00b7 ${esc(cardPv.att.title)}</div>` : ''}${previewBody(cardPv.att ?? cardPv)}</div>`
     + `<div class="full"><a data-act="preview" data-file="${esc(item.file)}" data-item="${esc(item.id)}">Open full</a></div>`;
   // The item's open threads, each as it began, with where it stands.
@@ -1103,7 +1113,7 @@ function renderCard() {
 }
 
 function placeCard() {
-  const card = $('#card'), t = !card.hidden && document.querySelector(`.tile[data-item="${CSS.escape(openItem)}"]`);
+  const card = $('#card'), t = !card.hidden && document.querySelector(`:is(.tile, .lrow)[data-item="${CSS.escape(openItem)}"]`);
   if (!t || innerWidth <= 800) return;
   const r = t.getBoundingClientRect(), w = card.offsetWidth, ch = card.offsetHeight;
   const right = r.right + 10 + w < innerWidth, left = !right && r.left - 10 - w >= 8;
@@ -1553,12 +1563,12 @@ document.addEventListener('click', async ev => {
     ui.sect[sum.parentElement.dataset.key] = !sum.parentElement.open;
     drawn.delete($('#conv'));
   }
-  const el = ev.target.closest('[data-act], .tile');
+  const el = ev.target.closest('[data-act], .tile, .lrow');
   if (!el) {
     if (!ev.target.closest('#card, dialog')) { openItem = null; renderCard(); renderPanes(); }
     return;
   }
-  if (el.classList.contains('tile')) {
+  if (el.matches('.tile, .lrow')) {
     openItem = openItem === el.dataset.item ? null : el.dataset.item;
     markSeen(data.doc.items.filter(i => i.id === openItem));
     renderPanes();
@@ -1624,6 +1634,12 @@ async function onAct(act, el) {
     await refresh();
   }
   if (act === 'uncard') { openItem = null; renderCard(); renderPanes(); }
+  if (act === 'view') { localStorage.view = el.dataset.id; renderPanes(); placeCard(); }
+  if (act === 'sort') {
+    const { pane, key } = el.dataset, was = ui.sort[pane];
+    ui.sort[pane] = { key, dir: was?.key === key ? -was.dir : 1 };
+    renderPanes();
+  }
   if (act === 'opencard') { openItem = el.dataset.item; markSeen(data.doc.items.filter(i => i.id === openItem)); renderPanes(); renderCard(); }
   if (act === 'preview') await preview(el.dataset.file, data.doc.items.find(i => i.id === el.dataset.item));
   if (act === 'unpv') closePv();
@@ -1947,7 +1963,7 @@ $('#pv').addEventListener('click', e => {
 
 for (const type of ['dragover', 'dragleave', 'drop']) {
   $('#panes').addEventListener(type, e => {
-    const pane = e.target.closest('.pane'), t = e.target.closest('.tile');
+    const pane = e.target.closest('.pane'), t = e.target.closest('.tile, .lrow');
     if (!pane || data?.doc.status !== 'open' || !e.dataTransfer.types.includes('Files')) return;
     e.preventDefault();
     document.querySelectorAll('.drag').forEach(x => x.classList.remove('drag'));
@@ -1986,18 +2002,18 @@ $('#log').addEventListener('paste', e => {
 });
 addEventListener('dragover', e => { if (!e.defaultPrevented) { e.preventDefault(); e.dataTransfer.dropEffect = 'none'; } });
 addEventListener('drop', e => e.preventDefault());
-$('#panes').addEventListener('scroll', () => { placeCard(); drawEdges(); }, true);
+$('#panes').addEventListener('scroll', placeCard, true);
 $('#panes').addEventListener('mouseover', e => {
-  const id = e.target.closest('.tile')?.dataset.item ?? null;
-  if (id !== hover) { hover = id; drawEdges(); }
+  const id = e.target.closest('.tile, .lrow')?.dataset.item ?? null;
+  if (id !== hover) { hover = id; light(); }
 });
-$('#panes').addEventListener('mouseleave', () => { hover = null; drawEdges(); });
-new ResizeObserver(() => { placeCard(); drawEdges(); }).observe($('#panes'));
-document.fonts.ready.then(drawEdges);
+$('#panes').addEventListener('mouseleave', () => { hover = null; light(); });
+new ResizeObserver(placeCard).observe($('#panes'));
+matchMedia('(max-width: 800px)').addEventListener('change', renderPanes);
 
 addEventListener('hashchange', () => {
   openItem = null; ui.sect = {}; prevSigs = {};
-  $('#panes').scrollTop = $('#flow').scrollTop = $('#flow').scrollLeft = $('#outs').scrollTop = 0;
+  for (const el of ['#panes', '#ins', '#outs', '#rev']) $(el).scrollTop = 0;
   $('#log').dataset.end = 'yes';
   closePv();
   $('#side').classList.remove('open');

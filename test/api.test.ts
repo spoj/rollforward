@@ -163,6 +163,14 @@ test('duplicate copies a closed instance into an open one, once', async () => {
   assert.equal((await call('POST', dup)).status, 409);
 });
 
+test("an instance says which of its files are new since the series' latest closed instance before it, changed or the same, by content", async () => {
+  const path = await at(series, '2026-08-30 copy');
+  assert.deepEqual((await json(path)).previous, { label: '2026-08-30', changed: { 'ar-aging': 'same', inventory: 'same', 'borrowing-base': 'same' } });
+  writeFileSync(join(await dir(series, '2026-08-30 copy'), 'working', 'Borrowing base 08.30.2026.csv'), 'revised\n');
+  assert.equal((await json(path)).previous.changed['borrowing-base'], 'changed');
+  assert.equal((await json(await at(series, '2026-08-23'))).previous, null);
+});
+
 test('rename relabels an instance in any status in its instance.json and logs it; an existing label is refused, a former one free', async () => {
   const rename = async (label: string, to: string) => call('POST', `${await at(series, label, 'rename')}?as=${encodeURIComponent(to)}`);
   const id = await iid(series, '2026-08-30 copy');

@@ -52,6 +52,13 @@ before(async () => {
     { seq: 7, at: '2026-08-01T09:04:30.000Z', by: 'agent', op: 'comment', thread: 'c10', item: null, ref: null, text: 'The ledger by month.', files: [{ inst: 'a5c0ff5e1f01', path: 'working/months.png' }, { inst: 'a5c0ff5e1f01', path: 'working/ledger.csv' }] },
     { seq: 8, at: '2026-08-01T09:05:00.000Z', by: 'admin@demo.test', op: 'close' },
   ].map(e => JSON.stringify(e) + '\n').join(''));
+  // A step between the fixture's 2026-08-30 input and output, and an as-of date on one input.
+  const stepped = join(root, 'instances', '3d70f7ca6f20'), doc = JSON.parse(readFileSync(join(stepped, 'screen.json'), 'utf8'));
+  writeFileSync(join(stepped, 'working', 'eligible.csv'), 'customer,amount\n');
+  doc.items.find((i: { id: string }) => i.id === 'borrowing-base').from = ['eligible', 'inventory'];
+  doc.items.find((i: { id: string }) => i.id === 'inventory').as_of = '2026-08-29';
+  doc.items.push({ id: 'eligible', name: 'Eligible AR', kind: 'step', file: 'working/eligible.csv', from: ['ar-aging'] });
+  writeFileSync(join(stepped, 'screen.json'), JSON.stringify(doc));
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch') };
   mkdirSync(env.HOME!);
   delete env.OPENROUTER_API_KEY;
@@ -642,6 +649,28 @@ test("an item's card shows its file's preview on a desktop, to scroll in place o
   await page.click('#card [data-act=uncard]');
 });
 
+test("an instance is its Inputs, Outputs and Review, its steps evidence under Review; hovering an item marks what it's made from, which its card names; the list view, kept in this browser, sorts by a column", async () => {
+  await page.evaluate(() => location.hash === '#/3d70f7ca6f20' || new Promise(ok => { addEventListener('hashchange', ok, { once: true }); location.hash = '#/3d70f7ca6f20'; }));
+  await page.waitForSelector('#rev .tile .fn:text-is("Eligible AR")');
+  assert.deepEqual(await page.locator('#ins .tile .fn').allTextContents(), ['AR aging', 'Inventory at cost']);
+  assert.deepEqual(await page.locator('#outs .tile .fn').allTextContents(), ['Borrowing base']);
+  await page.hover('#outs .tile[data-item=borrowing-base]');
+  assert.deepEqual(await page.locator('#panes .made').evaluateAll(els => els.map(e => (e as HTMLElement).dataset.item)), ['ar-aging', 'inventory', 'eligible'], 'through the step too');
+  await page.click('#view [data-id=list]');
+  assert.equal(await page.evaluate(() => localStorage.view), 'list');
+  assert.deepEqual(await page.locator('#ins .lst th').allTextContents(), ['Name', 'Source', 'As of', 'By', 'Rows · total', 'Changed', 'Threads']);
+  assert.deepEqual(await page.locator('#ins .lrow td:nth-child(3)').allTextContents(), ['', '2026-08-29']);
+  assert.deepEqual(await page.locator('#outs .lrow td:nth-child(6)').allTextContents(), ['changed'], 'since 2026-08-23, by content');
+  await page.click('#ins .lst th:text-is("As of")');
+  await page.click('#ins .lst th:text-is("As of")');
+  assert.deepEqual(await page.locator('#ins .lrow .fn').allTextContents(), ['Inventory at cost', 'AR aging'], 'a second click reverses it');
+  await page.click('#outs .lrow[data-item=borrowing-base]');
+  await page.click('#card a:text-is("Eligible AR")');
+  await page.waitForSelector('#card .cp:text("Made from AR aging")');
+  await page.click('#card [data-act=uncard]');
+  await page.click('#view [data-id=tiles]');
+  await page.waitForSelector('#ins .tile');
+});
 
 test("a series' + makes an instance that waits for its first upload or comment, which starts its run", async () => {
   const row = '.row.ser:has(.l:text-is("Year-end pack"))';

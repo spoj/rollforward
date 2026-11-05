@@ -36,6 +36,33 @@ initSystem(root);
 openStore(root);
 convert();
 
+// A file's sha256, kept by its path, size and change time, as each view of an instance compares its files again.
+const sums = new Map<string, [string, string]>();
+function sha256(dir: string, file: string): string | undefined {
+  const fd = openFile(dir, file);
+  if (fd === undefined) return undefined;
+  try {
+    const st = fstatSync(fd), key = `${st.size}:${st.mtimeMs}`, hit = sums.get(join(dir, file));
+    if (hit?.[0] === key) return hit[1];
+    const sum = createHash('sha256').update(readFileSync(fd)).digest('hex');
+    sums.set(join(dir, file), [key, sum]);
+    return sum;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// The series' latest closed instance before this one, by label, and whether each of this one's files is new since it, changed or
+// the same, by content, as its item of the same id had it.
+function previous(inst: Instance) {
+  const prev = instances(inst.seriesId).filter(i => i.doc.status === 'closed' && i.label.localeCompare(inst.label, 'en', { numeric: true }) < 0).at(-1);
+  if (!prev) return null;
+  return { label: prev.label, changed: Object.fromEntries(inst.doc.items.filter(i => i.file).map(i => {
+    const was = prev.doc.items.find(p => p.id === i.id)?.file, now = was && sha256(inst.dir, i.file!);
+    return [i.id, !was ? 'new' : now && now === sha256(prev.dir, was) ? 'same' : 'changed'];
+  })) };
+}
+
 // A free name among a workspace's series: the name, else the name 2, 3 and on.
 function freeName(t: Tree, ws: string, name: string): string {
   const taken = new Set(Object.values(t.series).filter(s => s.workspace === ws).map(s => s.name));
@@ -640,7 +667,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   const a = active.get(inst.seriesId);
   const mine = a?.inst === inst ? a : undefined;
   if (!action) see(by, inst.id, inst.log.at(-1)!.seq);
-  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4), browsers: [...(mine.browsers?.watchable(by).keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), runner: runner(inst) });
+  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4), browsers: [...(mine.browsers?.watchable(by).keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), runner: runner(inst), previous: previous(inst) });
   if (action === 'trace') return send(res, 200, trace(inst));
   if (action === 'summary') return send(res, 200, summary(inst, by));
   // The screen: anyone who sees the instance reads it; only its own run writes it.
