@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { agentsFile, createInstance, duplicateInstance, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, safeName, seriesDir, type Entry, type Instance } from './store.ts';
+import { agentsFile, closedBefore, createInstance, evidence, duplicateInstance, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, safeName, seriesDir, type Entry, type Instance } from './store.ts';
 import { AGENT, commit } from './git.ts';
 import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
@@ -55,7 +55,7 @@ function sha256(dir: string, file: string): string | undefined {
 // The series' latest closed instance before this one, by label, and whether each of this one's files is new since it, changed or
 // the same, by content, as its item of the same id had it.
 function previous(inst: Instance) {
-  const prev = instances(inst.seriesId).filter(i => i.doc.status === 'closed' && i.label.localeCompare(inst.label, 'en', { numeric: true }) < 0).at(-1);
+  const prev = closedBefore(inst).at(-1);
   if (!prev) return null;
   return { label: prev.label, changed: Object.fromEntries(inst.doc.items.filter(i => i.file).map(i => {
     const was = prev.doc.items.find(p => p.id === i.id)?.file, now = was && sha256(inst.dir, i.file!);
@@ -667,7 +667,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   const a = active.get(inst.seriesId);
   const mine = a?.inst === inst ? a : undefined;
   if (!action) see(by, inst.id, inst.log.at(-1)!.seq);
-  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4), browsers: [...(mine.browsers?.watchable(by).keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), runner: runner(inst), previous: previous(inst) });
+  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4), browsers: [...(mine.browsers?.watchable(by).keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), runner: runner(inst), previous: previous(inst), review: inst.review() });
   if (action === 'trace') return send(res, 200, trace(inst));
   if (action === 'summary') return send(res, 200, summary(inst, by));
   // The screen: anyone who sees the instance reads it; only its own run writes it.
@@ -780,6 +780,12 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const hash = await commit(inst.dir, me, [ask.text, note, approved && `Signed-off-by: ${me.name} <${me.email}>`].filter(Boolean).join('\n\n'));
     if (inst.threads().get(thread)!.at(-1) !== ask) throw new HttpError(409, `${thread} was answered meanwhile`);
     inst.append(by, 'signoff', { thread, approved: !!approved, ...(note && { text: note }), commit: hash, ...(quiet && { quiet: true }) });
+  } else if (action === 'pass') {
+    // A person passes a piece of Review's evidence, as it shows its file now; a new version reopens it. Nothing runs.
+    const shown = inst.doc.items.filter(i => evidence(i) && i.file), item = shown.find(i => i.id === payload.item);
+    if (!item) throw new HttpError(400, `no ${payload.item} under Review to pass; it shows ${shown.map(i => i.id).join(', ') || 'nothing yet'}`);
+    inst.append(by, 'pass', { item: item.id, file: item.file });
+    return send(res, 200, 'ok');
   } else if (action === 'commit' && run) {
     // The agent commits the folder at a moment worth keeping, in its own name.
     const message = typeof payload.message === 'string' ? payload.message.trim() : '';
@@ -805,7 +811,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     return send(res, 200, 'ok');
   } else if (action === 'close' || action === 'abandon') {
     if (mine) throw new HttpError(409, 'wait for the run to end');
-    if (runnerOf(inst).by !== by) throw new HttpError(403, `only the runner, ${runnerOf(inst).by}, ${action === 'close' ? 'closes it, as closing signs it off' : 'abandons it'}; take it over first`);
+    if (runnerOf(inst).by !== by) throw new HttpError(403, `only the runner, ${runnerOf(inst).by}, ${action === 'close' ? 'closes it, making it the record' : 'abandons it'}; take it over first`);
     await (action === 'close' ? inst.close(me) : inst.abandon(by));
     cancelWakes([inst.id]);
     if (action === 'close') closed(inst, by, quiet);

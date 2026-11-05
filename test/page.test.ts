@@ -52,6 +52,15 @@ before(async () => {
     { seq: 7, at: '2026-08-01T09:04:30.000Z', by: 'agent', op: 'comment', thread: 'c10', item: null, ref: null, text: 'The ledger by month.', files: [{ inst: 'a5c0ff5e1f01', path: 'working/months.png' }, { inst: 'a5c0ff5e1f01', path: 'working/ledger.csv' }] },
     { seq: 8, at: '2026-08-01T09:05:00.000Z', by: 'admin@demo.test', op: 'close' },
   ].map(e => JSON.stringify(e) + '\n').join(''));
+  // An open instance of the same series whose Review shows the review sheet and a step.
+  const reviewed = join(root, 'instances', 'a5c0ff5e1f02');
+  mkdirSync(join(reviewed, 'working'), { recursive: true });
+  writeFileSync(join(reviewed, 'instance.json'), JSON.stringify({ label: '2026-10', series: 'a5c0ff5e1fee' }));
+  writeFileSync(join(reviewed, 'working', 'review.md'), '2 checks pass\n');
+  writeFileSync(join(reviewed, 'working', 'tie.csv'), 'ledger,pack\n');
+  writeFileSync(join(reviewed, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [
+    { id: 'review', name: 'Review sheet', kind: 'output', file: 'working/review.md' }, { id: 'tie', name: 'Tie-out', kind: 'step', file: 'working/tie.csv' }] }));
+  writeFileSync(join(reviewed, 'log.jsonl'), JSON.stringify({ seq: 1, at: '2026-08-01T09:00:00.000Z', by: 'admin@demo.test', op: 'create', from: null, logins: [] }) + '\n');
   // A step between the fixture's 2026-08-30 input and output, and an as-of date on one input.
   const stepped = join(root, 'instances', '3d70f7ca6f20'), doc = JSON.parse(readFileSync(join(stepped, 'screen.json'), 'utf8'));
   writeFileSync(join(stepped, 'working', 'eligible.csv'), 'customer,amount\n');
@@ -155,7 +164,7 @@ test("only the runner abandons, from the Close dialog, whose buttons for a task 
   await page.waitForSelector('#pv .pvh b:text-is("Credentials")');
   await page.mouse.click(5, 5);
   await page.click('#bar [data-act=close]');
-  assert.deepEqual(await page.locator('#ask button').allTextContents(), ['Abandon instead', 'Close instance', 'Cancel']);
+  assert.deepEqual(await page.locator('#ask button').allTextContents(), ['Abandon instead', 'Close', 'Cancel'], 'nothing to review, so its Close says no more');
   await page.click('#ask button:text-is("Cancel")');
   assert.match(await page.textContent('#bar .state') ?? '', /Waiting for files/);
   await page.click('#bar [data-act=close]');
@@ -670,6 +679,32 @@ test("an instance is its Inputs, Outputs and Review, its steps evidence under Re
   await page.click('#card [data-act=uncard]');
   await page.click('#view [data-id=tiles]');
   await page.waitForSelector('#ins .tile');
+});
+
+test("anyone passes a piece of Review from its card, as it shows its file now, and a query on it is an exception until resolved; Close says how the review stands", async () => {
+  await page.evaluate(() => location.hash === '#/a5c0ff5e1f02' || new Promise(ok => { addEventListener('hashchange', ok, { once: true }); location.hash = '#/a5c0ff5e1f02'; }));
+  await page.waitForSelector('#rev .tile[data-item=tie]');
+  assert.deepEqual([await page.textContent('#bar [data-act=close]'), await page.textContent('#rev .ph .c')], ['Close unreviewed', '0 of 2 passed']);
+  await page.click('#rev .tile[data-item=review]');
+  await page.click('#card [data-act=pass]');
+  await page.waitForSelector('#rev .tile[data-item=review] .ok:text("Passed · ")');
+  assert.equal(await page.textContent('#rev .ph .c'), '1 of 2 passed');
+  await page.click('#rev .tile[data-item=tie]');
+  assert.deepEqual(await page.locator('#card .acts .btn').allTextContents(), ['Download', 'Pass', 'Query', 'Close']);
+  await page.click('#card [data-act=comment-on]');
+  await page.fill('#newcomment', 'Which ledger is this?');
+  await page.click('[data-act=comment]');
+  await page.waitForSelector('#bar [data-act=close]:text-is("Close with 1 exception")');
+  await page.click('#card [data-act=uncard]');
+  await page.click('#bar [data-act=close]');
+  assert.match(await page.textContent('#ask') ?? '', /Its review has 1 exception, queries no one resolved:\s+• Which ledger is this\?/);
+  await page.click('#ask button:text-is("Cancel")');
+  await page.click('#conv .thread:has-text("Which ledger is this?") [data-act=resolve]');
+  await page.waitForSelector('#bar [data-act=close]:text-is("Close unreviewed")');
+  await page.click('#rev .tile[data-item=tie]');
+  await page.click('#card [data-act=pass]');
+  await page.waitForSelector('#bar [data-act=close]:text-is("Close")');
+  await page.click('#card [data-act=uncard]');
 });
 
 test("a series' + makes an instance that waits for its first upload or comment, which starts its run", async () => {

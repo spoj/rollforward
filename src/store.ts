@@ -93,6 +93,12 @@ export function instances(seriesId: string): Instance[] {
   return labels(seriesId).map(l => instance(l.id));
 }
 
+// Review's evidence: the review sheet and the steps.
+export const evidence = (i: Item) => i.id === 'review' || i.kind === 'step';
+
+// The closed instances of its series before it, by label: the examples it rolls forward from.
+export const closedBefore = (inst: Instance) => instances(inst.seriesId).filter(i => i.doc.status === 'closed' && i.label.localeCompare(inst.label, 'en', { numeric: true }) < 0);
+
 // A name is a folder's in a run's view, a line of names.tsv: no slash, control character or line break, which a reader such as
 // Python's splitlines() would split it at; and not AGENTS.md, where the instructions the view binds go.
 export function safeName(s: string): string {
@@ -220,10 +226,21 @@ export class Instance {
     return [...this.threads().values()].map(t => t.at(-1)!).filter(e => e.op === 'comment' && e.by === 'agent' && e.ask);
   }
 
-  // Closing signs off what people saw: a shown file in working/ must still be what its point logged. Its folder is the run's, so
-  // read-only alone doesn't stop a file being replaced. The asks still waiting are accepted as the agent said it did them. As the
-  // runner's sign-off, it commits the folder in their name. The instance is closed meanwhile, so nothing changes it, but saved only
-  // once committed: a failed commit, or a restart, leaves it open.
+  // The review, once Review shows a file: the review sheet and the steps, each passed by a person while it shows the file they
+  // passed, and its exceptions, the threads people started on them and haven't resolved.
+  review(): { state: 'passed' | 'exceptions' | 'unreviewed'; exceptions: string[]; unpassed: string[] } | undefined {
+    const items = this.doc.items.filter(i => evidence(i) && i.file), ids = new Set(items.map(i => i.id));
+    if (!items.length) return undefined;
+    const exceptions = [...this.threads()].filter(([, t]) => isPerson(t[0]) && ids.has(t[0].item as string) && t.at(-1)!.op !== 'resolve').map(([id]) => id);
+    const unpassed = items.filter(i => !this.log.some(e => e.op === 'pass' && e.item === i.id && e.file === i.file)).map(i => i.id);
+    return { state: exceptions.length ? 'exceptions' : unpassed.length ? 'unreviewed' : 'passed', exceptions, unpassed };
+  }
+
+  // Closing makes the instance the period's record and an example for the next, approving nothing: a shown file in working/ must
+  // still be what its point logged, as people saw it. Its folder is the run's, so read-only alone doesn't stop a file being
+  // replaced. The asks still waiting are accepted as the agent said it did them, and the review is logged as it stands. It commits
+  // the folder in the runner's name. The instance is closed meanwhile, so nothing changes it, but saved only once committed: a
+  // failed commit, or a restart, leaves it open.
   async close(by: Who) {
     for (const i of this.doc.items.filter(i => i.file?.startsWith('working/'))) {
       const fd = openFile(this.dir, i.file!), logged = this.log.findLast(e => e.op === 'point' && e.file === i.file && e.sha256)?.sha256;
@@ -231,15 +248,16 @@ export class Instance {
       if (fd !== undefined) closeSync(fd);
       if (logged && now !== logged) throw new HttpError(409, `${i.file} changed after it was shown: the agent shows the new version under a new name, and you review that`);
     }
-    const accepted = this.asking().map(e => e.thread);
+    const accepted = this.asking().map(e => e.thread), review = this.review();
     this.doc.status = 'closed';
-    const hash = await commit(this.dir, by, `Close ${this.label}\n\nSigned-off-by: ${by.name} <${by.email}>`).catch(e => {
+    const n = review?.exceptions.length, state = !review ? '' : n ? `, ${n} exception${n > 1 ? 's' : ''}` : `, ${review.state}`;
+    const hash = await commit(this.dir, by, `Close ${this.label}${state}`).catch(e => {
       this.doc.status = 'open';
       throw e;
     });
     await pack(this.dir);
     this.save();
-    this.append(by.email, 'close', { ...(accepted.length && { accepted }), commit: hash });
+    this.append(by.email, 'close', { ...(accepted.length && { accepted }), ...(review && { review: review.state }), ...(review?.exceptions.length && { exceptions: review.exceptions }), commit: hash });
   }
 
   abandon(by: string) {

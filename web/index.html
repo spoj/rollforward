@@ -247,6 +247,8 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .hl { font-size: 12px; line-height: 1.35; }
 .dst, .sent { font-size: 11.5px; color: var(--ink-2); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .sent { color: #1f6f43; }
+/* A pass, green as a delivery: a person's decision on the agent's evidence. */
+.tile .ok, .cp.ok { font-size: 11.5px; color: #1f6f43; }
 .src { font-size: 11.5px; color: var(--ink-3); word-break: break-all; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .also { margin-top: 16px; font-size: 12.5px; display: grid; gap: 4px; }
 .also .ah { font-size: 12px; color: var(--ink-3); }
@@ -495,6 +497,9 @@ let seen = {}, prevSigs = {}, uploads = [], shown = '', refreshes = 0, threads =
 const replying = new Set();
 // An item's open threads; a new one shows on its tile as a change.
 const talkOn = id => threads.filter(t => t.item === id && !t.resolved);
+// Review's evidence, the review sheet and the steps, and the pass a person gave one as it shows its file now.
+const evidence = i => i.id === 'review' || i.kind === 'step';
+const passOf = i => data.log.findLast(e => e.op === 'pass' && e.item === i.id && e.file === i.file);
 const sig = i => `${i.file}|${talkOn(i.id).length}|${i.headline ?? ''}`;
 
 function markSeen(items) {
@@ -706,7 +711,8 @@ function renderBar() {
     const wake = open ? `<span>\u00b7 <a data-act="wakes">${cur.i.wakes[0] ? `next wake ${when(cur.i.wakes[0].at)}` : 'no wake'}</a></span>` : '';
     h += `<div class="state">${state}${wake}</div>`;
     const off = data.run ? 'disabled title="Available when the run ends"' : '';
-    if (open) h += data.runner.by === me.email ? `<button class="btn commit top" data-act="close" ${off}>${cur.s.single ? 'Close task' : 'Close instance'}</button>`
+    const r = data.review, closing = `Close${r?.state === 'exceptions' ? ` with ${plural(r.exceptions.length, 'exception')}` : r?.state === 'unreviewed' ? ' unreviewed' : ''}`;
+    if (open) h += data.runner.by === me.email ? `<button class="btn commit top" data-act="close" ${off}>${closing}</button>`
       : `<button class="btn top" data-act="takeover" ${off || `title="${esc(nameOf(data.runner.by))} runs it: their logins, their sign-off. Taking over makes it yours."`}>Take over</button>`;
     else h += cur.s.single ? '<button class="btn top" data-act="start-series">Start series</button>' : '<button class="btn top" data-act="duplicate">Duplicate</button>';
     // One control opens and closes the side panel, where it stays, with what waits there as its badge.
@@ -754,7 +760,7 @@ function tile(item) {
   }
   const p = provenance(item.file), sent = data.log.findLast(e => e.op === 'delivered' && e.item === item.id);
   const v = data.log.filter(e => e.op === 'point' && e.item === item.id && e.file).length;
-  return `<div class="tile ${p.person ? 'person' : 'agent'} ${openItem === item.id ? 'on' : ''} ${mark}" data-item="${esc(item.id)}">${corner}<div class="ext"><span>${esc(ext(item.file))}${v > 1 ? ' · v' + v : ''}</span><span class="nc ${open ? 'q' : ''}">${count}</span></div><div class="fn">${esc(item.name)}</div><div class="file">${esc(fname(item.file))}</div>${item.headline ? `<div class="hl">${esc(item.headline)}</div>` : ''}${item.source ? `<div class="src">${esc(item.source)}</div>` : ''}${item.destination ? `<div class="dst" title="${esc(item.destination)}">\u2192 ${esc(item.destination)}</div>` : ''}${sent ? `<div class="sent" title="${esc(sent.receipt)}">Sent ${hhmm(sent.at)} to ${esc(sent.to)}</div>` : ''}<div class="meta"><b>${person(p.by)}</b> · ${hhmm(p.at)}</div></div>`;
+  return `<div class="tile ${p.person ? 'person' : 'agent'} ${openItem === item.id ? 'on' : ''} ${mark}" data-item="${esc(item.id)}">${corner}<div class="ext"><span>${esc(ext(item.file))}${v > 1 ? ' · v' + v : ''}</span><span class="nc ${open ? 'q' : ''}">${count}</span></div><div class="fn">${esc(item.name)}</div><div class="file">${esc(fname(item.file))}</div>${item.headline ? `<div class="hl">${esc(item.headline)}</div>` : ''}${item.source ? `<div class="src">${esc(item.source)}</div>` : ''}${item.destination ? `<div class="dst" title="${esc(item.destination)}">\u2192 ${esc(item.destination)}</div>` : ''}${sent ? `<div class="sent" title="${esc(sent.receipt)}">Sent ${hhmm(sent.at)} to ${esc(sent.to)}</div>` : ''}${evidence(item) && passOf(item) ? `<div class="ok">Passed · ${person(passOf(item).by)}</div>` : ''}<div class="meta"><b>${person(p.by)}</b> · ${hhmm(p.at)}</div></div>`;
 }
 
 // The instance in three slices: Inputs; Outputs; and Review, the evidence for whoever closes it, the review sheet first and then the
@@ -766,12 +772,12 @@ function renderPanes() {
   const open = data.doc.status === 'open', stored = localStorage[`seen:${instPath()}`], items = data.doc.items, list = localStorage.view === 'list' && innerWidth > 800;
   seen = stored ? JSON.parse(stored) : {};
   if (!stored) markSeen(items);
-  const ins = items.filter(i => i.kind === 'input'), outs = items.filter(i => i.kind === 'output' && i.id !== 'review');
-  const rev = [...items.filter(i => i.id === 'review'), ...items.filter(i => i.kind === 'step' && i.id !== 'review')];
-  const head = (title, list, pane) => `<div class="ph"><h2>${title}</h2><span class="c">${list.length ? `${list.filter(i => i.file).length} of ${list.length}` : ''}</span>${open && pane ? `<button class="btn" data-act="add" data-pane="${pane}">+ Add files</button>` : ''}</div>`;
+  const ins = items.filter(i => i.kind === 'input'), outs = items.filter(i => i.kind === 'output' && !evidence(i));
+  const rev = [...items.filter(i => i.id === 'review'), ...items.filter(i => i.kind === 'step' && i.id !== 'review')], shown = rev.filter(i => i.file);
+  const head = (title, list, pane, count = list.length ? `${list.filter(i => i.file).length} of ${list.length}` : '') => `<div class="ph"><h2>${title}</h2><span class="c">${count}</span>${open && pane ? `<button class="btn" data-act="add" data-pane="${pane}">+ Add files</button>` : ''}</div>`;
   const adding = pane => uploads.filter(u => u.pane === pane && u.path === instPath()).map(u => `<div class="tile ghost"><div class="ext"><span>UPLOADING</span></div><div class="fn">${esc(u.f.name)}</div><div class="prog"><i style="width:${u.pct}%"></i></div></div>`).join('');
-  const shown = new Set(items.map(i => i.file)), also = new Map();
-  for (const t of threads) for (const p of t.posts) for (const f of p.by === 'agent' ? p.files ?? [] : []) if (!shown.has(f) && !also.has(f)) also.set(f, t);
+  const files = new Set(items.map(i => i.file)), also = new Map();
+  for (const t of threads) for (const p of t.posts) for (const f of p.by === 'agent' ? p.files ?? [] : []) if (!files.has(f) && !also.has(f)) also.set(f, t);
   const via = t => t.item ? `on <a data-act="opencard" data-item="${esc(t.item)}">${esc(items.find(i => i.id === t.item)?.name ?? t.item)}</a>` : `in <a data-act="thread" data-thread="${esc(t.id)}">a comment</a>`;
   const alsoUsed = also.size ? `<div class="also"><div class="ah">Also used</div>${[...also].map(([f, t]) => `<div><a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a> <span class="via">· cited ${via(t)}</span></div>`).join('')}</div>` : '';
   const body = (pane, xs) => `${list ? listHtml(pane, xs) : ''}<div class="tiles">${list ? '' : xs.map(tile).join('')}${adding(pane)}</div>`;
@@ -780,7 +786,7 @@ function renderPanes() {
   put($('#ins'), head('Inputs', ins, 'in') + body('in', ins) + alsoUsed + (open ? '<div class="hint">Drop files to add them. The agent decides what each one is.</div>' : ''));
   put($('#outs'), head('Outputs', outs, 'out') + body('out', outs) + (open ? '<div class="hint">Drop a revised output here.</div>' : ''));
   $('#rev').hidden = !rev.length;
-  put($('#rev'), head('Review', rev) + `<div class="tiles">${rev.map(tile).join('')}</div>`);
+  put($('#rev'), head('Review', rev, undefined, shown.length ? `${shown.filter(passOf).length} of ${shown.length} passed` : '') + `<div class="tiles">${rev.map(tile).join('')}</div>`);
   $('#outs').classList.toggle('busy', !!data.run);
   prevSigs = Object.fromEntries(items.map(i => [i.id, sig(i)]));
   light();
@@ -833,12 +839,13 @@ function logText(e) {
     create: () => `${w} opened the instance`,
     upload: () => `${w} uploaded ${e.pane === 'out' ? 'an output' : 'an input'}${e.onto ? ' onto ' + item(e.onto) : ''}${f}`,
     point: () => `${w} ${e.file ? 'showed' : 'cleared'} ${item(e.item)}${e.was ? `<div class="d">Replacing ${esc(fname(e.was))}</div>` : ''}${f}`,
-    item: () => `${w} set up ${esc(e.name)}${e.from?.length ? `<div class="d">From ${e.from.map(item).join(', ')}</div>` : ''}${e.headline ? `<div class="d">${esc(e.headline)}</div>` : ''}${e.source ? `<div class="d">Source: ${esc(e.source)}</div>` : ''}${e.destination ? `<div class="d">Destination: ${esc(e.destination)}</div>` : ''}`,
+    item: () => `${w} set up ${esc(e.name)}${e.from?.length ? `<div class="d">From ${e.from.map(item).join(', ')}</div>` : ''}${e.headline ? `<div class="d">${esc(e.headline)}</div>` : ''}${e.source ? `<div class="d">Source: ${esc(e.source)}</div>` : ''}${e.destination ? `<div class="d">Destination: ${esc(e.destination)}</div>` : ''}${e.as_of ? `<div class="d">As of ${esc(e.as_of)}</div>` : ''}`,
     remove: () => `${w} removed ${esc(e.item)} from the screen`,
     run: () => `Run ${e.run} started${data.run?.n === e.run ? ` \u00b7 ${usd(data.run.cost)} so far` : ''}`,
     done: () => `Run ${e.run} finished${e.aborted ? ' (stopped)' : ''} · ${took(e)} · ${usd(e.cost)}${e.summary ? `<div class="d">${esc(e.summary)}</div>` : ''}${e.error ? `<div class="d">${esc(e.error)}</div>` : ''}`,
     interrupt: () => `${w} interrupted the run`,
-    close: () => `${w} closed the instance${e.accepted ? `<div class="d">Accepting what the agent did for ${e.accepted.length} ask${e.accepted.length > 1 ? 's' : ''} still waiting</div>` : ''}${e.commit ? `<div class="d">Commit <code>${e.commit.slice(0, 7)}</code></div>` : ''}`,
+    pass: () => `${w} passed ${item(e.item)}${f}`,
+    close: () => `${w} closed the instance${e.review ? `, ${e.review === 'exceptions' ? `with ${plural(e.exceptions.length, 'exception')}` : e.review}` : ''}${e.accepted ? `<div class="d">Accepting what the agent did for ${e.accepted.length} ask${e.accepted.length > 1 ? 's' : ''} still waiting</div>` : ''}${e.commit ? `<div class="d">Commit <code>${e.commit.slice(0, 7)}</code></div>` : ''}`,
     signoff: () => `${w} ${e.approved ? 'signed off' : 'rejected the sign-off'}<div class="d">${e.text ? `${esc(e.text)} · ` : ''}Commit <code>${e.commit.slice(0, 7)}</code></div>`,
     commit: () => e.error ? `Run ${e.run}'s changes weren't committed<div class="d">${esc(e.error)}</div>` : `${w} committed the folder<div class="d">${esc(e.message)} · Commit <code>${e.commit.slice(0, 7)}</code></div>`,
     abandon: () => `${w} abandoned the instance`,
@@ -1090,7 +1097,8 @@ function renderCard() {
       + (item.kind === 'output' ? `<br>Destination: ${item.destination ? esc(item.destination) : 'stays here'}` : '')
       + data.log.filter(e => e.op === 'delivered' && e.item === item.id).map(e => `<br><span class="sent">Sent to ${esc(e.to)} ${when(e.at)} · ${esc(e.receipt)}</span>`).join('') + '</div>';
   } else h += `<div class="cp">${item.kind === 'input' ? 'Expected input, not there yet' : `${item.kind === 'step' ? 'Step' : 'Output'} not built yet`}</div>`;
-  const from = (item.from ?? []).map(f => data.doc.items.find(i => i.id === f)).filter(Boolean);
+  const from = (item.from ?? []).map(f => data.doc.items.find(i => i.id === f)).filter(Boolean), passed = item.file && evidence(item) && passOf(item);
+  if (passed) h += `<div class="cp ok">Passed by ${person(passed.by)} at ${hhmm(passed.at)}</div>`;
   if (from.length) h += `<div class="cp">Made from ${from.map(f => `<a data-act="opencard" data-item="${esc(f.id)}">${esc(f.name)}</a>`).join(', ')}</div>`;
   if (wide) h += `<div class="cpv">${cardPv.att ? `<div class="sub"><a data-act="attachment-back">\u2190 ${esc(cardPv.title)}</a> \u00b7 ${esc(cardPv.att.title)}</div>` : ''}${previewBody(cardPv.att ?? cardPv)}</div>`
     + `<div class="full"><a data-act="preview" data-file="${esc(item.file)}" data-item="${esc(item.id)}">Open full</a></div>`;
@@ -1104,7 +1112,8 @@ function renderCard() {
   h += '<div class="acts">';
   if (item.file) h += `${wide ? '' : `<button class="btn" data-act="preview" data-file="${esc(item.file)}" data-item="${esc(item.id)}">Preview</button>`}<a class="btn" href="${fileUrl(item.file)}">Download</a>`;
   if (open && !wide) h += `<button class="btn" data-act="add" data-item="${esc(item.id)}" data-pane="${item.kind === 'output' ? 'out' : 'in'}">Upload…</button>`;
-  if (open) h += `<button class="btn" data-act="comment-on" data-item="${esc(item.id)}">Comment</button>`;
+  if (open && item.file && evidence(item) && !passed) h += `<button class="btn" data-act="pass" data-item="${esc(item.id)}">Pass</button>`;
+  if (open) h += `<button class="btn" data-act="comment-on" data-item="${esc(item.id)}">${evidence(item) ? 'Query' : 'Comment'}</button>`;
   if (data.doc.status === 'closed') h += `<button class="btn" data-act="correct" data-item="${esc(item.id)}">Correct\u2026</button>`;
   h += `<button class="btn" data-act="uncard" style="margin-left:auto">Close</button></div>`;
   put(card, h);
@@ -1635,6 +1644,10 @@ async function onAct(act, el) {
     await refresh();
   }
   if (act === 'uncard') { openItem = null; renderCard(); renderPanes(); }
+  if (act === 'pass') {
+    await api(`${instPath()}/pass`, { method: 'POST', body: JSON.stringify({ item: el.dataset.item }) });
+    await refresh();
+  }
   if (act === 'view') { localStorage.view = el.dataset.id; renderPanes(); placeCard(); }
   if (act === 'sort') {
     const { pane, key } = el.dataset, was = ui.sort[pane];
@@ -1794,13 +1807,16 @@ async function onAct(act, el) {
   }
   // A task closes as a one-off, or as the first instance of a series it becomes; either may be abandoned instead.
   if (act === 'close') {
-    const waits = threads.filter(t => t.waits), task = cur.s.single;
-    const text = (task ? '' : 'It becomes an example for later instances.') + (waits.length ? `${task ? '' : '\n\n'}Closing accepts what the agent did for each ask still waiting:\n` + waits.map(t => `• ${firstLine(t.last.text)}`).join('\n') : '');
+    const waits = threads.filter(t => t.waits), task = cur.s.single, r = data.review;
+    const review = r?.state === 'exceptions' ? `Its review has ${plural(r.exceptions.length, 'exception')}, queries no one resolved:\n${threads.filter(t => r.exceptions.includes(t.id)).map(t => `• ${firstLine(t.posts[0].text)}`).join('\n')}`
+      : r?.state === 'unreviewed' ? `No one passed ${r.unpassed.map(id => data.doc.items.find(i => i.id === id).name).join(', ')}.` : r ? 'Its review passed.' : '';
+    const text = [task ? 'It becomes the record, approving nothing.' : "It becomes this period's record and an example for later instances, approving nothing.", review,
+      waits.length && 'Closing accepts what the agent did for each ask still waiting:\n' + waits.map(t => `• ${firstLine(t.last.text)}`).join('\n')].filter(Boolean).join('\n\n');
     const html = (task ? `<div class="opt"><button class="btn commit" value="close">Close task</button><span>closes it as a one-off</span></div>`
       + `<div class="opts"><label>Series name<input type="text" id="aseries" value="${esc(cur.i.label)}" autocomplete="off"></label>`
       + `<div class="opt"><button class="btn commit" value="series">Start series and close</button><span>this task becomes its first instance, an example for later ones</span></div></div>` : '')
       + `<div class="abandon"><button class="quiet" value="abandon" formnovalidate>Abandon instead</button>: it stays as it is, but isn't an example or a starting point.</div>`;
-    if (await ask({ title: `Close ${cur.i.label}?`, text, html, ok: !task && 'Close instance', kind: 'commit', act: async (_, how) => {
+    if (await ask({ title: `Close ${cur.i.label}?`, text, html, ok: !task && el.textContent, kind: 'commit', act: async (_, how) => {
       if (how === 'abandon') return api(`${instPath()}/abandon`, { method: 'POST' });
       if (how === 'series') await api(`${seriesPath(cur)}/promote`, { method: 'POST', body: JSON.stringify({ name: $('#aseries').value.trim() }) });
       return api(`${instPath()}/close`, { method: 'POST' });

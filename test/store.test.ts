@@ -65,6 +65,33 @@ test("an ask waits on people until someone replies or resolves it, and closing a
   rmSync(tmp, { recursive: true, force: true });
 });
 
+test("a review is passed once people passed each piece of its evidence as it shows now, with exceptions while a thread a person started on one is open; closing logs it", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
+  openStore(tmp);
+  const inst = createInstance('weekly', 'w1', 'alex', []);
+  for (const f of ['review.md', 'eligible.csv', 'eligible2.csv']) writeFileSync(join(inst.dir, 'working', f), `${f}\n`);
+  const put = (items: object[]) => inst.put(JSON.stringify({ rev: inst.doc.rev, status: 'open', items }));
+  const sheet = { id: 'review', name: 'Review sheet', kind: 'output', file: 'working/review.md' }, step = { id: 'el', name: 'Eligible AR', kind: 'step', file: 'working/eligible.csv' };
+  put([{ ...sheet, file: null }]);
+  assert.equal(inst.review(), undefined, 'nothing to review yet');
+  put([sheet, step]);
+  inst.append('sam', 'pass', { item: 'review', file: 'working/review.md' });
+  assert.deepEqual(inst.review(), { state: 'unreviewed', exceptions: [], unpassed: ['el'] });
+  inst.append('sam', 'pass', { item: 'el', file: 'working/eligible.csv' });
+  assert.equal(inst.review()!.state, 'passed');
+  put([sheet, { ...step, file: 'working/eligible2.csv' }]);
+  assert.deepEqual(inst.review()!.unpassed, ['el'], 'a new version reopens it');
+  inst.append('sam', 'comment', { thread: 'c9', item: 'el', ref: 'A2', text: 'Why is A2 in?' });
+  inst.append('agent', 'comment', { thread: 'c10', item: 'review', ref: null, text: 'All tied.' });
+  inst.append('sam', 'comment', { thread: 'c11', item: 'review', ref: null, text: 'Which rate?' });
+  inst.append('sam', 'resolve', { thread: 'c11' });
+  assert.deepEqual(inst.review(), { state: 'exceptions', exceptions: ['c9'], unpassed: ['el'] }, "the agent's own thread is none, nor a resolved one");
+  await inst.close(alex);
+  assert.deepEqual([inst.log.at(-1)!.review, inst.log.at(-1)!.exceptions], ['exceptions', ['c9']]);
+  assert.equal(execFileSync('git', ['log', '-1', '--format=%B'], { cwd: inst.dir, encoding: 'utf8' }).trim(), 'Close w1, 1 exception');
+  rmSync(tmp, { recursive: true, force: true });
+});
+
 test("closing commits the folder in the runner's name, files and folders a run made unreadable made readable again; a commit that fails leaves it open", async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
   openStore(tmp);
@@ -82,7 +109,7 @@ test("closing commits the folder in the runner's name, files and folders a run m
   assert.deepEqual([statSync(locked).mode & 0o777, statSync(shut).mode & 0o777], [0o400, 0o700]);
   const git = (...args: string[]) => execFileSync('git', args, { cwd: inst.dir, encoding: 'utf8' }).trim();
   assert.equal(inst.log.at(-1)!.commit, git('rev-parse', 'HEAD'));
-  assert.equal(git('log', '-1', '--format=%an <%ae>%n%B'), 'Alex <alex>\nClose m1\n\nSigned-off-by: Alex <alex>');
+  assert.equal(git('log', '-1', '--format=%an <%ae>%n%B'), 'Alex <alex>\nClose m1');
   assert.deepEqual([git('show', 'HEAD:working/locked.csv'), git('show', 'HEAD:working/shut/in.csv')], ['x', 'y']);
   assert.match(git('count-objects', '-v'), /^count: 0\n[^]*^packs: 1$/m, 'closed, its history is one pack');
   rmSync(tmp, { recursive: true, force: true });

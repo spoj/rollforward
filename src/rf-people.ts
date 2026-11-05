@@ -31,9 +31,10 @@ rf upload PATH FILE [--onto ITEM] [--output] [--wake]
 rf resolve PATH THREAD [TEXT]     resolves a thread, with TEXT as a last word; nothing wakes
 rf signoff PATH THREAD approve|reject [TEXT] [--wake]   the runner's answer to a sign-off the agent asks for, which commits
                                   the folder
-rf close PATH [--as-series NAME] [--wake]   the runner stands by it: closed, it's an example; a task closes as a one-off, or
-                                  as the first instance of the series NAME it becomes; --wake starts runs of the series' later
-                                  open instances, which may have used its draft
+rf pass PATH ITEM                 passes a piece of its Review's evidence, as it shows its file now; nothing wakes
+rf close PATH [--as-series NAME] [--wake]   the runner makes it the record, its review logged as it stands, and an example,
+                                  approving nothing; a task closes as a one-off, or as the first instance of the series NAME it
+                                  becomes; --wake starts runs of the series' later open instances, which may have used its draft
 rf abandon PATH                   the runner leaves it as it is, neither an example nor a starting point
 rf interrupt PATH                 stops its run
 rf takeover PATH [--creds OFFER,...]   you run it from now on, with those offers of your logins ticked
@@ -123,8 +124,11 @@ COMMAND gives one's usage, every read takes --json, and a failure is one line on
 What there is
 - A workspace holds series, and its people. A series is one recurring job; an instance is one period of it, labelled such as
   2026-08-23. A task is a one-off: a series of one instance, named by its label, until someone makes it a series. PATH is workspace/series/label, as rf ls prints it; for rf pull it may go deeper, into an instance's files.
-- An instance's screen is its items: inputs, steps and outputs, each pointing at a file, with what it's made from. People upload
-  files and comment. The runner is the person whose logins the runs use, and who closes the instance once they stand by it. Their
+- An instance's screen is its items: inputs, outputs, and Review, the agent's evidence, the review sheet and steps, each pointing
+  at a file, with what it's made from. People upload files and comment, and pass Review's evidence or query it, a thread on it, an
+  exception until resolved. The runner is the person whose logins the runs use, and who closes the instance, making it the
+  period's record and an example for the next, which approves nothing: closing logs the review as passed, unreviewed or with its
+  exceptions. Their
   comments and uploads start a run of the agent, which reads them and carries on, as do everyone's where the runner shares the
   series, and a reply from whom an ask names; anyone else's is a note, which the agent takes up once the runner does.
 - rf is quiet: a comment, upload, sign-off, close, new instance or request it starts begins no run unless --wake, and the agent
@@ -137,11 +141,12 @@ What there is
 What rf pull copies, the folders as the agent sees them
   AGENTS.md                  the company's conventions; <workspace>/AGENTS.md the workspace's
   <workspace>/<series>/<label>/
-    screen.json              the screen: {rev, status, items: [{id, name, kind, file, from, headline, source}]}
+    screen.json              the screen: {rev, status, items: [{id, name, kind, file, from, headline, source, destination, as_of}]}
     log.jsonl                every event, by seq: by is a person's email, "server" or "agent"; op is upload, comment (thread, item,
                              ref, text, ask, to, signoff), resolve, signoff (the runner's answer, with its commit), commit, point and
-                             item (the screen changing), run, report (the agent's account of a run), done (its cost, summary or
-                             error), close, and the rest
+                             item (the screen changing), pass (a person's, of Review's evidence), run, report (the agent's
+                             account of a run), done (its cost, summary or error), close (with the review as it stood), and the
+                             rest
     upload/                  what people uploaded, their comments' attachments in upload/attachments/
     working/                 what the agent made, its scripts, and process.md, how it does this series
     session/                 each session's transcript, which may carry several runs: every message and tool call
@@ -155,7 +160,8 @@ The copy is read-only: only rf's commands change what's on the server.
 Usual work
 - What waits on me: rf waiting, then rf show PATH, which names each thread that waits by its id.
 - Answer an ask: rf comment PATH TEXT --thread T --wait, which prints what the agent says back; a sign-off, as its runner:
-  rf signoff PATH T approve|reject [TEXT] --wake, for the agent to carry on. Close an instance you stand by: rf close PATH.
+  rf signoff PATH T approve|reject [TEXT] --wake, for the agent to carry on. Pass what Review shows: rf pass PATH ITEM. Close an
+  instance once it's the record: rf close PATH.
 - Take an instance over: rf creds PATH lists the offers of your logins, and rf takeover PATH --creds OFFER,... ticks them.
 - Your logins: rf logins lists them, with what each offers, and an expired one's link to sign in again on the page.
 - Give an input or a corrected output: rf upload PATH FILE [--onto ITEM] [--output], with --wake on the last for a run on them
@@ -375,7 +381,7 @@ if (cmd === 'login' && url) {
   if (flags.json) console.log(JSON.stringify(rows, null, 1));
   else console.log(rows.map(r => `${r.kind}  ${r.path ?? r.login}${r.since ? ` since ${when(r.since)}` : ''}${r.id ? `, request ${r.id}` : ''}: ${r.text.split('\n')[0].slice(0, 120)}`).join('\n') || 'Nothing waits on you.');
 } else if (cmd === 'show' && args.length === 1) {
-  const { inst, at } = await instanceAt(args[0]), { doc, log, run, queued, runner } = await get(at);
+  const { inst, at } = await instanceAt(args[0]), { doc, log, run, queued, runner, review } = await get(at);
   const threads = Map.groupBy(log.filter(e => ['comment', 'resolve', 'signoff'].includes(e.op)), e => e.thread);
   const waiting = doc.status !== 'open' ? [] : [...threads.values()].flatMap(t => {
     const e = t.at(-1);
@@ -384,10 +390,11 @@ if (cmd === 'login' && url) {
   });
   const done = log.findLast(e => e.op === 'done'), report = done && log.findLast(e => e.op === 'report' && e.run === done.run);
   const last = done ? { run: done.run, cost: done.cost, summary: done.summary ?? null, error: done.error ?? null, report: report?.text ?? null } : null;
-  if (flags.json) console.log(JSON.stringify({ path: args[0], id: inst.id, status: doc.status, runner: runner.by, running: run, queued, items: doc.items, waiting, last_run: last }, null, 1));
+  if (flags.json) console.log(JSON.stringify({ path: args[0], id: inst.id, status: doc.status, runner: runner.by, running: run, queued, items: doc.items, review: review ?? null, waiting, last_run: last }, null, 1));
   else {
     console.log(`${args[0]}  ${doc.status}, runner ${runner.by}${run ? `, run ${run.n} going, ${usd(run.cost)}` : queued ? ', queued' : ''}`);
     for (const i of doc.items) console.log(`  ${i.kind.padEnd(6)} ${i.id}  ${i.name}  ${i.file ?? 'no file yet'}${i.from?.length ? `  from ${i.from.join(', ')}` : ''}${i.headline ? `  ${i.headline}` : ''}`);
+    if (review) console.log(`review ${review.state}${review.exceptions.length ? `: ${review.exceptions.join(', ')}` : review.unpassed.length ? `: ${review.unpassed.join(', ')} not passed` : ''}`);
     for (const w of waiting) console.log(`${w.thread}  ${w.kind} for ${w.for}${w.item ? `, on ${w.item}${w.ref ? ` at ${w.ref}` : ''}` : ''}, seq ${w.seq}: ${w.text.split('\n')[0].slice(0, 160)}`);
     if (last) console.log(`last run ${last.run}  ${usd(last.cost ?? 0)}  ${last.error ?? last.summary ?? 'no report'}`);
   }
@@ -423,6 +430,9 @@ else if (cmd === 'comment' && args.length === 2) {
     if (done.error) console.log(`The run failed: ${done.error}`);
     break;
   }
+} else if (cmd === 'pass' && args.length === 2) {
+  await post(`${(await instanceAt(args[0])).at}/pass`, { item: args[1] });
+  console.log(`passed ${args[1]}`);
 } else if (cmd === 'resolve' && [2, 3].includes(args.length)) {
   console.log(await (await post(`${(await instanceAt(args[0])).at}/resolve`, { thread: args[1], text: args[2] })).text());
 } else if (cmd === 'signoff' && ['approve', 'reject'].includes(args[2]) && args.length <= 4) {

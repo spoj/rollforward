@@ -2,7 +2,7 @@ import { freemem } from 'node:os';
 import { existsSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
-import { agentsFile, createInstance, HttpError, instance, instanceDir, instances, isPerson, labels, newId, readFile, seriesDir, type Entry, type Instance } from './store.ts';
+import { agentsFile, closedBefore, createInstance, HttpError, instance, instanceDir, instances, isPerson, labels, newId, readFile, seriesDir, type Entry, type Instance } from './store.ts';
 import { startRun, type Run, type View } from './runner.ts';
 import type { JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { prepare, sources } from './indexes.ts';
@@ -94,15 +94,21 @@ export function message(inst: Instance, n: number, entries: Entry[], first = fal
   const made = entries.findLast(e => ['takeover', 'logins'].includes(e.op)), us = users(), who = (by: string) => `${us[by]?.name || by} <${by}>`;
   const set = [...wakesOf(inst.id), ...wakesOf(inst.seriesId)];
   // The corrections on the instances before it, so an error isn't rolled forward.
-  const fixed = !first ? [] : instances(inst.seriesId).filter(i => i.doc.status === 'closed' && i.label.localeCompare(inst.label, 'en', { numeric: true }) < 0)
-    .flatMap(i => i.log.filter(e => e.op === 'correction').map(e => {
-      const see = e.see as { label: string; thread?: string } | undefined;
-      return `${i.label}${e.item ? ` ${e.item}${e.ref ? `@${e.ref}` : ''}` : ''} is ${e.kind}, ${JSON.stringify(e.text)}${see ? `, see ${see.label}${see.thread ? ` ${see.thread}` : ''}` : ''}`;
-    }));
+  const fixed = !first ? [] : closedBefore(inst).flatMap(i => i.log.filter(e => e.op === 'correction').map(e => {
+    const see = e.see as { label: string; thread?: string } | undefined;
+    return `${i.label}${e.item ? ` ${e.item}${e.ref ? `@${e.ref}` : ''}` : ''} is ${e.kind}, ${JSON.stringify(e.text)}${see ? `, see ${see.label}${see.thread ? ` ${see.thread}` : ''}` : ''}`;
+  }));
+  // How the review of the latest of them stood at its close, and its exceptions, the threads people left open on its evidence.
+  const prev = first ? closedBefore(inst).at(-1) : undefined, shut = prev?.log.findLast(e => e.op === 'close');
+  const open = ((shut?.exceptions ?? []) as string[]).map(t => {
+    const q = prev!.threads().get(t)![0];
+    return `${t} on ${q.item}${q.ref ? `@${q.ref}` : ''}, ${JSON.stringify(q.text)}`;
+  });
   return `Instance ${inst.label}, run ${n}.`
     + (first || made ? ` Its runner is ${made?.op === 'takeover' ? `now ${who(made.by)}, taking over from ${who(made.from as string)}` : who(runnerOf(inst).by)}, who lends you ${runnerOf(inst).logins.join(', ') || 'no login'}.` : '')
     + (first && set.length ? ` Pending wakes: ${set.map(k => `${k.id}, ${k.target === inst.id ? 'waking this instance' : `starting ${k.label}`} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''}`).join('; ')}.` : '')
     + (fixed.length ? ` Corrections on earlier instances: ${fixed.join('; ')}.` : '')
+    + (shut?.review ? ` ${prev!.label}, the latest closed instance before it, closed ${open.length ? `with exceptions: ${open.join('; ')}` : shut.review === 'passed' ? 'with its review passed' : 'unreviewed'}.` : '')
     + ' New log entries:\n'
     + entries.map(e => JSON.stringify(isNote(inst, e) ? { ...e, note: true } : e)).join('\n');
 }

@@ -325,7 +325,7 @@ test('sign-offs are git commits: the agent commits a moment worth keeping, the r
   assert.equal((await call('POST', `/api/instances/${id}/close`)).status, 200);
   log = (await (await call('GET', `/api/instances/${id}`)).json()).log;
   assert.equal(log.at(-1).commit, git('rev-parse', 'HEAD'));
-  assert.equal(git('log', '-1', '--format=%an%n%B'), 'Demo Admin\nClose 2026-12\n\nSigned-off-by: Demo Admin <admin@demo.test>');
+  assert.equal(git('log', '-1', '--format=%an%n%B'), 'Demo Admin\nClose 2026-12');
   assert.deepEqual(git('log', '--reverse', '--format=%an|%s').split('\n'), [
     'rollforward agent|Run 1: Nothing to roll forward yet.', 'rollforward agent|Draft pack built', 'rollforward agent|Run 2: Built the pack; asked for a sign-off.',
     'Demo Admin|The pack is ready to send to the bank.', 'rollforward agent|Run 3: Fixed the rate; asked again.', 'Demo Admin|The rate is fixed: send it now?',

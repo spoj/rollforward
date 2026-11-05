@@ -327,3 +327,13 @@ test("a run's first message lists the corrections on its series' closed instance
   await settle();
 });
 
+test("a run's first message says how the review of the latest closed instance before it stood at its close, with its exceptions", async () => {
+  const r1 = make('s2', 'r1'), r2 = make('s2', 'r2');
+  writeFileSync(join(r1.dir, 'working', 'review.md'), 'All tied\n');
+  r1.put(JSON.stringify({ rev: r1.doc.rev, status: 'open', items: [{ id: 'review', name: 'Review sheet', kind: 'output', file: 'working/review.md' }] }));
+  r1.append(alice, 'comment', { thread: 'c7', item: 'review', ref: 'A1', text: 'Tied to what?' });
+  await r1.close({ email: alice, name: 'Alice' });
+  assert.match(message(r2, 1, r2.log, true), / r1, the latest closed instance before it, closed with exceptions: c7 on review@A1, "Tied to what\?"\. New log entries:/);
+  assert.doesNotMatch(message(r2, 2, r2.log), /latest closed/, 'the first message only');
+});
+
