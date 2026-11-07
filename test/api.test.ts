@@ -414,24 +414,27 @@ test("the page names everyone who has signed in, and the Entra groups in the wor
   assert.deepEqual(JSON.parse(readFileSync(join(root, '.rf', 'tree.json'), 'utf8')).groups, { [group]: 'Finance HK', [other]: 'Payroll team' });
 });
 
-test('everyone sees the skills, which every run loads; admins keep the connections but websites, which anyone adds, and everyone sees them with their logins', async () => {
+test("everyone sees the skills, which every run loads; admins keep the connections, and each person their own websites, admins seeing anyone's and only letting one reach internal addresses", async () => {
   const b = sessionOf(await login(bob))!;
   const report = (list: { id: string }[]) => list.find(s => s.id === 'mail-report') as Record<string, unknown>;
   assert.deepEqual(Object.keys(report(await json('/skills', b))).sort(), ['description', 'id', 'name', 'pushed'], 'anyone signed in sees the skills');
-  assert.equal((await call('PUT', '/connections/portal', JSON.stringify({ type: 'website', url: 'https://portal.test/#/login' }))).status, 400, "a website is rf site's, admins' too");
+  assert.equal((await call('PUT', '/connections/portal', JSON.stringify({ type: 'website', url: 'https://portal.test/#/login' }))).status, 400, 'a website is no connection');
   assert.equal((await call('POST', '/logins/sites', JSON.stringify({ name: 'portal', url: 'http://portal.test/' }), b)).status, 400, 'https only');
-  assert.deepEqual(await (await call('POST', '/logins/sites', JSON.stringify({ name: 'portal', url: 'https://portal.test/#/login' }), b)).json(), { site: 'portal' }, 'anyone adds one');
-  assert.deepEqual(await (await call('POST', '/logins/sites', JSON.stringify({ name: 'mine', url: 'https://portal.test/other' }))).json(), { site: 'portal', existing: true }, 'an address a website has is that website');
-  assert.equal((await call('PATCH', '/logins/sites/portal', JSON.stringify({ title: 'Portal', every: '5m' }), b)).status, 200, "its settings are its owner's");
-  assert.equal((await call('PATCH', '/logins/sites/portal', JSON.stringify({ off: true }), b)).status, 403, "switching it off is admins'");
+  assert.deepEqual(await (await call('POST', '/logins/sites', JSON.stringify({ name: 'portal', url: 'https://portal.test/#/login', header: 'x-bot-token' }), b)).json(), { site: 'portal' }, 'anyone adds one');
+  assert.equal((await call('POST', '/logins/sites', JSON.stringify({ name: 'portal', url: 'https://portal.test/other' }), b)).status, 409, 'by a name of theirs once');
+  assert.deepEqual(await (await call('POST', '/logins/sites', JSON.stringify({ name: 'portal', url: 'https://portal.test/other' }))).json(), { site: 'portal' }, "another's may have that name too");
+  assert.equal((await call('PATCH', '/logins/sites/portal', JSON.stringify({ every: '5m' }), b)).status, 200, "its settings are its person's");
+  assert.equal((await call('PATCH', '/logins/sites/portal', JSON.stringify({ internal: true }), b)).status, 403, "letting it reach internal addresses is admins'");
   assert.equal((await call('PATCH', '/logins/sites/portal', JSON.stringify({ hosts: 'evil.test' }), b)).status, 400, 'its hosts are allowed one by one');
-  const portal = async () => (await json('/connections', b)).find((c: { name: string }) => c.name === 'portal');
-  const site = await portal();
-  assert.deepEqual([site.title, site.url, site.hosts, site.every, site.owner, site.login.id], ['Portal', 'https://portal.test/#/login', [], 5, bob, 'web:portal']);
-  assert.equal((await call('PATCH', '/logins/sites/portal', JSON.stringify({ off: true }))).status, 200);
-  assert.equal((await portal()).off, true, 'admins switch it off');
-  assert.equal((await call('DELETE', '/connections/portal')).status, 400);
-  assert.equal((await call('DELETE', '/logins/sites/portal')).status, 200, 'admins remove any');
+  assert.equal((await call('PATCH', `/logins/sites/portal?person=${bob}`, JSON.stringify({ every: '1h' }))).status, 403, "admins change no one else's settings");
+  assert.equal((await call('PATCH', `/logins/sites/portal?person=${bob}`, JSON.stringify({ internal: true }))).status, 200, 'but let it reach internal addresses');
+  const { added, ...site } = (await json('/logins/sites', b)).portal;
+  assert.deepEqual(site, { url: 'https://portal.test/#/login', hosts: [], writeback: true, header: 'x-bot-token', every: 5, internal: true });
+  assert.equal((await call('GET', `/logins/sites?person=${adminEmail}`, undefined, b)).status, 403, 'a person sees their own');
+  assert.deepEqual(Object.keys(await json(`/logins/sites?person=${bob}`)), ['portal'], "admins see anyone's");
+  assert.equal((await call('DELETE', '/logins/sites/portal')).status, 200, 'admins remove their own');
+  assert.deepEqual([Object.keys(await json('/logins/sites')), Object.keys(await json('/logins/sites', b))], [[], ['portal']], "and no one else's");
+  assert.equal((await call('DELETE', '/logins/sites/portal', undefined, b)).status, 200);
   assert.deepEqual((await json('/connections', b)).map((c: { name: string }) => c.name), ['graph']);
 });
 
