@@ -14,7 +14,7 @@ const running = (label: string, logins: string[], n = 1, by = 'alice@demo.test')
   inst.append('server', 'run', { run: n, runner: by, consent: 1 });
   return inst;
 };
-import { changes, initSystem, saveTree, tree, writeJson } from '../src/system.ts';
+import { changes, initSystem, rfDir, saveTree, tree, writeJson } from '../src/system.ts';
 
 // A run's browsers, from a stand-in browser service whose page changes only when the test says, and which keeps the states and
 // headers it was given and the sessions it closed, lists those in `listed`, and answers a browser's state as `back` says and its
@@ -378,6 +378,8 @@ test('a request lapses a week after it was asked, and a login no approved grant 
   assert.deepEqual([grants()[asked].state, theirs()], ['pending', ['web:bank', 'web:crm']], 'not yet a week');
   lapse(Date.now() + week + 60_000);
   assert.deepEqual([grants()[asked].state, grants()[used].state, theirs()], ['lapsed', 'approved', ['web:crm']], 'the request lapsed, and the login it waited on went with it; the approved one stays');
+  const { by, op, grants: lapsed } = JSON.parse(readFileSync(join(rfDir(), 'log.jsonl'), 'utf8').trim().split('\n').at(-1)!);
+  assert.deepEqual([by, op, lapsed], ['server', 'lapse', [asked]], "an act of the server's, in the system's log");
   signOut(bob, 'web:crm');
   writeJson('users.json', { [alice]: { role: 'admin' } });
   writeJson('grants.json', everyone);

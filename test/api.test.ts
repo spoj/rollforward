@@ -1110,3 +1110,17 @@ test("a workspace's owners propose to merge it into another or move a series the
   assert.equal((await call('PUT', `/api/proposals/${empty}`, JSON.stringify({ kind: 'merge', to: into }))).status, 200);
   assert.equal((await call('POST', `/api/proposals/${empty}`, JSON.stringify({ owners: [], members: [] }))).status, 200, 'a workspace with no series merges too');
 });
+
+test("what a person changes beyond an instance is an act of theirs in the system's log, once it's done, its secrets and files' contents left out", async () => {
+  const acts = () => readFileSync(join(root, '.rf', 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+  const before = acts().length;
+  assert.equal((await call('POST', '/api/workspaces', JSON.stringify({ name: 'Logged' }))).status, 200);
+  assert.equal((await call('POST', '/api/workspaces', JSON.stringify({ name: '' }))).status, 400);
+  assert.equal((await call('PUT', '/brand', JSON.stringify({ text: 'Logged', logo: { name: 'l.png', data: 'iVBORw0KGgo=' } }))).status, 200);
+  assert.equal((await call('PUT', '/brand', JSON.stringify({ clear: true }))).status, 200);
+  assert.deepEqual(acts().slice(before).map(a => [a.seq, a.by, a.method, a.path, a.body]), [
+    [before + 1, adminEmail, 'POST', '/api/workspaces', { name: 'Logged' }],
+    [before + 2, adminEmail, 'PUT', '/brand', { text: 'Logged', logo: { name: 'l.png' } }],
+    [before + 3, adminEmail, 'PUT', '/brand', { clear: true }],
+  ], 'one refused is no act');
+});

@@ -11,7 +11,7 @@ import { AGENT, commit } from './git.ts';
 import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
 import { asPerson, authenticate, CAPS, can, capabilities, checkConfig, cli, connect, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
-import { canManage, canSee, changes, everyone, initSystem, isPeople, readJson, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
+import { act, canManage, canSee, changes, everyone, initSystem, isPeople, readJson, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
 import { checkTicks, logins, runnerOf, saveLogin, signOut, unoffer } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
@@ -420,8 +420,13 @@ function events(me: Me, req: IncomingMessage, res: ServerResponse) {
 const text = (path: string) => (existsSync(path) ? readFileSync(path, 'utf8') : '');
 // The deployment's brand, the admins': a text and a logo, which top the sidebar and are the page's title and icon.
 const brand = () => readJson<{ text?: string; logo?: string; type?: string }>('brand.json', {});
+// Each request's JSON body, as read, for the system's log.
+const bodies = new WeakMap<IncomingMessage, object>();
 const json = async (req: IncomingMessage) => {
-  try { return JSON.parse((await body(req)).toString() || '{}'); } catch { throw new HttpError(400, 'the body is JSON'); }
+  let parsed;
+  try { parsed = JSON.parse((await body(req)).toString() || '{}'); } catch { throw new HttpError(400, 'the body is JSON'); }
+  bodies.set(req, parsed);
+  return parsed;
 };
 const people = (w: { owners?: unknown; members?: unknown }) => [w.owners, w.members].map(list => {
   if (!isPeople(list)) throw new HttpError(400, `owners and members are lists of emails and Entra group ids: ${JSON.stringify(list)}`);
@@ -887,6 +892,9 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     if (req.method !== 'GET' && site && site !== 'same-origin') throw new HttpError(403, 'cross-site request refused');
     const me = await authenticate(req, res, url);
     if (!me) return;
+    // What a person changes beyond an instance is an act of theirs in the system's log, once it's done.
+    if (!['GET', 'HEAD'].includes(req.method!) && !url.pathname.startsWith('/api/instances/'))
+      res.on('finish', () => res.statusCode < 400 && act(me.email, { method: req.method, path: url.pathname + url.search, body: bodies.get(req) }));
     if (url.pathname === '/') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(readFileSync(page));

@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { BlockList } from 'node:net';
 import { join } from 'node:path';
 
@@ -42,6 +42,16 @@ export function writeJson(name: string, data: unknown) {
 }
 
 export const rfDir = () => dir;
+
+// The system's log, .rf/log.jsonl: what people did beyond an instance, one act a line, by seq, each by who did it; an instance's acts
+// are in its own log. A secret, or a file's content, is never written: such a field goes, however deep.
+const UNLOGGED = ['key', 'header', 'token', 'secret', 'password', 'data'];
+let acts = 0;
+export function act(by: string, fields: Record<string, unknown>) {
+  const p = join(dir, 'log.jsonl');
+  acts ||= existsSync(p) ? readFileSync(p, 'utf8').split('\n').length - 1 : 0;
+  appendFileSync(p, JSON.stringify({ ...fields, seq: ++acts, at: new Date().toISOString(), by }, (k, v) => UNLOGGED.includes(k) ? undefined : v) + '\n', { mode: 0o600 });
+}
 
 // What each person has seen of each instance, the last seq of its log they viewed, and since when, before which nothing is new to
 // them: .rf/seen/EMAIL.json.

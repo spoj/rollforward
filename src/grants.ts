@@ -1,5 +1,5 @@
 import { HttpError, newId } from './store.ts';
-import { canManage, canSee, readJson, tree, writeJson } from './system.ts';
+import { act, canManage, canSee, readJson, tree, writeJson } from './system.ts';
 import { users, type Me } from './auth.ts';
 import { logins, signOut, type Trace } from './logins.ts';
 import { changeConnection, checkHost, connections, upstreams } from './connections.ts';
@@ -108,11 +108,14 @@ function unused(person: string, site: string) {
   if (!Object.values(grants()).some(g => live(g) && g.person === person && g.site === site) && logins(person).some(l => l.id === `web:${site}`)) signOut(person, `web:${site}`);
 }
 
-// Requests a week old lapse, and logins no approved grant uses are signed out a week after their sign-in.
+// Requests a week old lapse, and logins no approved grant uses are signed out a week after their sign-in, each an act of the
+// server's in the system's log.
 export function lapse(now = Date.now()) {
   const all = grants(), old = Object.entries(all).filter(([, g]) => g.state === 'pending' && now - Date.parse(g.at) > WEEK);
   for (const [id, g] of old) all[id] = { ...g, state: 'lapsed', decided: new Date(now).toISOString() };
   if (old.length) save(all);
   for (const [, g] of old) unused(g.person, g.site);
-  for (const email of Object.keys(users())) for (const l of logins(email).filter(l => l.kind === 'website' && now - Date.parse(l.since) > WEEK && !approved(l.id.slice(4), email))) signOut(email, l.id);
+  const out = Object.keys(users()).flatMap(email => logins(email).filter(l => l.kind === 'website' && now - Date.parse(l.since) > WEEK && !approved(l.id.slice(4), email)).map(l => [email, l.id]));
+  for (const [email, id] of out) signOut(email, id);
+  if (old.length || out.length) act('server', { op: 'lapse', grants: old.map(([id]) => id), signed_out: out });
 }
