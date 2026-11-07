@@ -127,6 +127,7 @@ Everything is files on the host's disk, in folders named by random ids, with no 
                               connections.json, ca/ (the runs' certificate authority), wakes.json (pending wakes and requests), egress.json (hosts runs may reach), browsers.json (the runs' browsers open on the browser service),
                               tokens.json and token-uses.jsonl, brand.json (the deployment's logo and text), capabilities.json (whom admins let publish, create or keep logins alive), grants.json (whose logins to which websites runs in which workspace use, see Websites), runs/ (runs' copies of indexes,
                               see Indexes), and the keys session.key and seal.key
+    .rf-backups/<time>/       .rf/ as each of the server's last five starts found it, but index/ and runs/, to put back by hand
       tree.json               {"workspaces": {id: {name, owners, members, archived?, proposal?, moved?, readers?}}, "series": {id: {name, workspace, archived?, single?}},
                               "groups": {Entra group id: label}}
     agents/                   company.md, the company's AGENTS.md, and <workspace id>.md, each workspace's

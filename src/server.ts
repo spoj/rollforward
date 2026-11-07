@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { closeSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, cpSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { execFile } from 'node:child_process';
@@ -34,6 +34,12 @@ const host = process.env.RF_HOST ?? '127.0.0.1';
 const tmpDir = join(root, '.tmp'), previews = join(root, '.previews');
 if (!existsSync(join(agentRoot, 'usr'))) throw new Error(`no agent image at ${agentRoot}: node scripts/agent.ts unpacks agent-${agentId}, which this checkout runs`);
 initSystem(root);
+// As it starts, before anything changes .rf/, the server copies it to .rf-backups/<time>/, keeping the newest five, but the indexes'
+// caches and the runs' copies of them, which Graph gives again: what a mistake or a release's migration changed is there to put back.
+const backups = join(root, '.rf-backups');
+mkdirSync(backups, { recursive: true, mode: 0o700 });
+cpSync(join(root, '.rf'), join(backups, new Date().toISOString().replace(/[:.]/g, '-')), { recursive: true, filter: p => !['index', 'runs'].includes(basename(p)) });
+for (const old of readdirSync(backups).sort().slice(0, -5)) rmSync(join(backups, old), { recursive: true });
 openStore(root);
 adopt();
 // A new data root starts with one connection, Microsoft 365's, graph.
