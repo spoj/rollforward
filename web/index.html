@@ -1223,7 +1223,7 @@ function renderPv() {
     h += '<div class="pvb vl">';
     if (s.kind === 'workspace') h += (s.manage ? `<h3>Name</h3><input type="text" id="wname" value="${esc(s.name)}">` : '') + peopleHtml(s)
       + (s.grants.length ? `<h3>Websites</h3><div class="sub">Whose logins to which websites runs here use, as its owners approved them, or are asked to.</div>`
-        + s.grants.map(g => `<div class="lsub"><span>${person(g.person)} · ${esc(g.site)} <span class="sub">${g.state === 'approved' ? `approved by ${esc(nameOf(g.by))}` : 'asked'}: ${esc(g.reason)}${g.check?.risk ? ` · ${esc(g.check.risk)} risk` : ''}</span></span>${s.manage || g.person === me.email ? `<button class="quiet" data-act="grant-revoke" data-id="${esc(g.id)}">Revoke</button>` : ''}</div>`).join('') : '')
+        + s.grants.map(g => `<div class="lsub"><span>${person(g.person)} · ${esc(g.site)} <span class="sub">${esc(g.url)} · ${g.state === 'approved' ? `approved by ${esc(nameOf(g.by))}` : 'asked'}: ${esc(g.reason)}${g.check?.risk ? ` · ${esc(g.check.risk)} risk` : ''}</span></span>${s.manage || g.person === me.email ? `<button class="quiet" data-act="grant-revoke" data-id="${esc(g.id)}">Revoke</button>` : ''}</div>`).join('') : '')
       + readingHtml(s)
       + agentsHtml(s, 'Every agent in this workspace reads it at the start of each run: its conventions, and changes that cut across its series, such as a renamed entity.', s.manage)
       + (s.manage && !s.archived ? moveHtml(s) : '')
@@ -1338,7 +1338,7 @@ async function openTokens(made) {
 // Your logins, on one page: what needs you first, then a line for each, Microsoft 365, Databricks, the websites and the model key,
 // whose detail opens in place.
 function loginsHtml(s) {
-  const entra = s.connections.filter(c => c.login.scope), sites = s.connections.filter(c => c.type === 'website').map(c => ({ id: c.name, name: c.title ?? c.name, url: c.url, hosts: c.hosts, header: c.header, owner: c.owner, off: c.off }));
+  const entra = s.connections.filter(c => c.login.scope), sites = Object.entries(s.sites);
   const mine = id => s.logins.find(l => l.id === id), k = mine('openrouter'), shown = id => pv.shown?.includes(id);
   const line = (name, sub, acts = '') => `<div class="lline"><b>${esc(name)}</b><span class="sub">${sub}</span>${acts}</div>`;
   const show = id => `<button class="quiet" data-act="logins-show" data-id="${id}">${shown(id) ? 'Hide \u25BE' : 'Show \u25B8'}</button>`;
@@ -1366,24 +1366,24 @@ function loginsHtml(s) {
       + (l.expired ? '' : `<div class="sub">${hint}</div><div class="row2"><input type="text" id="offer-add-${esc(l.id)}" placeholder="${box}" style="flex:1"><button class="btn" data-act="offer-add" data-id="${esc(l.id)}">Add</button></div>`)
       + `<div class="row2">${signOut(l.id)}</div>`;
   }
-  const ids = new Set([...s.connections.map(c => c.login.id), 'openrouter']), signed = sites.filter(w => mine(`web:${w.id}`) && !mine(`web:${w.id}`).expired).length;
+  const ids = new Set([...s.connections.map(c => c.login.id), ...sites.map(([n]) => `web:${n}`), 'openrouter']), signed = sites.filter(([n]) => mine(`web:${n}`) && !mine(`web:${n}`).expired).length;
   for (const l of s.logins.filter(l => !ids.has(l.id))) h += line(l.name, 'no longer a connection on this server, so no run uses it', signOut(l.id));
   h += line('Websites', sites.length ? `${signed} of ${sites.length} signed in` : me.browsers ? 'none yet: add one' : 'not set up on this server: website logins need the browser service (README, Websites)', sites.length || me.browsers ? show('web') : '');
-  if (sites.length && shown('web')) h += `<div class="sub">Sign in yourself, in a browser shown here. Your login is what that browser keeps, its cookies, never your password; a run's browser starts from it and brings it back refreshed. It reaches only the hosts listed, but there it can do whatever you can: the agent is told only to read, and each run's log counts its writes.${sites.some(w => w.header) ? " Where a site's sign-in needs a token, give it in the box under its name: it goes only to that sign-in, never to a run's browser, and is kept, sealed, for the next." : ''}</div>`
+  if (sites.length && shown('web')) h += `<div class="sub">Sign in yourself, in a browser shown here. Your login is what that browser keeps, its cookies, never your password; a run's browser starts from it and brings it back refreshed. It reaches only its address's host and the others you allowed, but there it can do whatever you can: the agent is told only to read, and each run's log counts its writes.${sites.some(([, w]) => w.header) ? " Where a site's sign-in needs a token, give it in the box under its name: it goes only to that sign-in, never to a run's browser, and is kept, sealed, for the next." : ''}</div>`
     + `<div class="sub">A run uses your login only in a workspace whose owners approved it: once signed in, ask to use it there, saying what for. Until one approves it, your login is signed out a week after you signed in.</div>`
-    + sites.map(w => {
-      const l = mine(`web:${w.id}`), gs = s.grants.filter(g => g.person === me.email && g.site === w.id && ['pending', 'approved'].includes(g.state));
+    + sites.map(([n, w]) => {
+      const l = mine(`web:${n}`), gs = s.grants.filter(g => g.person === me.email && g.site === n && ['pending', 'approved'].includes(g.state));
       const free = tree.filter(x => !x.archived && !gs.some(g => g.workspace === x.id));
-      return `<div class="lsub"><span>${esc(w.name)} <span class="sub">${esc([new URL(w.url).hostname, ...w.hosts].join(', '))}${w.off ? ' · switched off' : ''}${l ? ` · ${l.expired ? 'expired' : `since ${esc(when(l.since))}${l.keepalive > new Date().toISOString() ? `, kept alive until ${esc(when(l.keepalive))}` : ''}`}` : ''}</span>`
-        + `${w.header ? `<input type="password" id="hdr-${esc(w.id)}" placeholder="${l ? `New ${esc(w.header)}, if any` : `Your ${esc(w.header)}`}" autocomplete="off" style="display:block;width:100%;margin-top:6px">` : ''}</span>`
-        + `${w.off ? '' : `<button class="btn" data-act="web-signin" data-id="${esc(w.id)}" data-name="${esc(w.name)}">${l ? 'Sign in again' : 'Sign in'}</button>`}${l ? signOut(l.id) : ''}`
-        + `${w.owner === me.email || me.role === 'admin' ? `<button class="quiet" data-act="site-remove" data-id="${esc(w.id)}">Remove</button>` : ''}</div>`
+      return `<div class="lsub"><span>${esc(n)} <span class="sub">${esc(w.url)}${l ? ` · ${l.expired ? 'expired' : `since ${esc(when(l.since))}${l.keepalive > new Date().toISOString() ? `, kept alive until ${esc(when(l.keepalive))}` : ''}`}` : ''}</span>`
+        + `${w.header ? `<input type="password" id="hdr-${esc(n)}" placeholder="${l ? `New ${esc(w.header)}, if any` : `Your ${esc(w.header)}`}" autocomplete="off" style="display:block;width:100%;margin-top:6px">` : ''}</span>`
+        + `<button class="btn" data-act="web-signin" data-id="${esc(n)}" data-name="${esc(n)}">${l ? 'Sign in again' : 'Sign in'}</button>${l ? signOut(l.id) : ''}`
+        + `<button class="quiet" data-act="site-remove" data-id="${esc(n)}">Remove</button></div>`
         + gs.map(g => `<div class="lsub"><span class="sub">${g.state === 'approved' ? 'Approved' : 'Asked'} in ${esc(tree.find(x => x.id === g.workspace)?.name ?? g.workspace)}: ${esc(g.reason)}</span><button class="quiet" data-act="grant-revoke" data-id="${esc(g.id)}">${g.state === 'approved' ? 'Stop using' : 'Withdraw'}</button></div>`).join('')
-        + (l && !l.expired && !w.off && free.length ? `<div class="row2"><select id="ask-ws-${esc(w.id)}">${free.map(x => `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join('')}</select>`
-          + `<input type="text" id="ask-why-${esc(w.id)}" placeholder="What runs there use it for" style="flex:1"><button class="btn" data-act="grant-ask" data-id="${esc(w.id)}">Ask to use</button></div>` : '');
+        + (l && !l.expired && free.length ? `<div class="row2"><select id="ask-ws-${esc(n)}">${free.map(x => `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join('')}</select>`
+          + `<input type="text" id="ask-why-${esc(n)}" placeholder="What runs there use it for" style="flex:1"><button class="btn" data-act="grant-ask" data-id="${esc(n)}">Ask to use</button></div>` : '');
     }).join('');
-  if (me.browsers && shown('web')) h += `<div class="sub">A new website: its name and the https address where you sign in. The other hosts its pages need, such as single sign-on's, you allow as you sign in. At an address a website has already, it's that one.</div>`
-    + '<div class="row2"><input type="text" id="site-name" placeholder="Name" style="width:30%"><input type="text" id="site-url" placeholder="https://… where you sign in" style="flex:1"><button class="btn" data-act="site-add">Add</button></div>';
+  if (me.browsers && shown('web')) h += `<div class="sub">A new website: a name for it, the https address where you sign in and, if its sign-in needs a header its pages never send, such as x-bot-token, that header's name, whose value you give as you sign in. The other hosts its pages need, such as single sign-on's, you allow as you sign in.</div>`
+    + '<div class="row2"><input type="text" id="site-name" placeholder="Name" style="width:30%"><input type="text" id="site-url" placeholder="https://… where you sign in" style="flex:1"><input type="text" id="site-header" placeholder="Header, if any" style="width:20%"><button class="btn" data-act="site-add">Add</button></div>';
   h += line('Model key', !k ? "the server's" : k.enabled ? `yours${k.expired ? ', out of credits' : ''}` : "the server's · yours saved",
     (k ? `<label><input type="checkbox" id="oruse" ${k.enabled ? 'checked' : ''}> use mine</label>` : '') + `<button class="quiet" data-act="logins-show" data-id="key">${k ? 'Change' : 'Add mine'}</button>`);
   if (shown('key')) h += `<div class="sub">Runs you run use the server's OpenRouter key, or your own: on yours, one that runs out of credits waits for you.</div>`
@@ -1434,8 +1434,8 @@ function waiting() {
   // Each with the server's check of the website: one it rates high only an admin approves.
   for (const w of tree.filter(w => !w.archived && w.manage)) for (const g of w.grants.filter(g => g.state === 'pending')) {
     const c = g.check, high = c?.risk === 'high' && me.role !== 'admin';
-    out.push(`<div class="wt">${person(g.person)} asks to use their ${esc(g.site)} login in <a href="#/${w.id}">${esc(w.name)}</a>: ${esc(g.reason)}`
-      + `<div class="sub">${!c || c.error ? `Not checked${c ? `: ${esc(c.error)}` : ''}.` : `Check: ${esc(c.risk)} risk${c.flags.length ? ` (${esc(c.flags.join('; '))})` : ''}. ${esc(c.summary)}${c.same ? ` It looks like ${esc(c.same)}, a website here already.` : ''}${c.hosts.length ? ` Approving lets it reach ${esc(c.hosts.join(', '))}.` : ''}`}</div>`
+    out.push(`<div class="wt">${person(g.person)} asks to use their ${esc(g.site)} login, at ${esc(g.url)}, in <a href="#/${w.id}">${esc(w.name)}</a>: ${esc(g.reason)}`
+      + `<div class="sub">${!c || c.error ? `Not checked${c ? `: ${esc(c.error)}` : ''}.` : `Check: ${esc(c.risk)} risk${c.flags.length ? ` (${esc(c.flags.join('; '))})` : ''}. ${esc(c.summary)}${c.hosts.length ? ` Approving lets it reach ${esc(c.hosts.join(', '))}.` : ''}`}</div>`
       + `${high ? '<span class="sub">An admin decides.</span>' : `<button class="btn" data-act="grant-approve" data-id="${esc(g.id)}">Approve</button>`}<button class="btn" data-act="grant-deny" data-id="${esc(g.id)}">Deny</button></div>`);
   }
   return [...out, ...expired.map(l => `<div class="wt">Your ${l.kind === 'key' ? 'OpenRouter key is out of credits' : `${esc(l.name)} login has expired`}. ${signInHtml(l.id, l.name)}</div>`)];
@@ -1450,8 +1450,8 @@ async function saveKey() {
 }
 
 async function openLogins() {
-  const [logins, connections, grants] = await Promise.all([api('/logins'), api('/connections'), api('/grants')]);
-  pv = { title: 'Logins', settings: { kind: 'logins', logins, connections, grants } };
+  const [logins, connections, grants, sites] = await Promise.all([api('/logins'), api('/connections'), api('/grants'), api('/logins/sites')]);
+  pv = { title: 'Logins', settings: { kind: 'logins', logins, connections, grants, sites } };
   renderPv();
 }
 
@@ -1982,8 +1982,8 @@ async function onAct(act, el) {
     while (pv === p) {
       const r = await api(`/logins/web/${enc(el.dataset.id)}/refused`).catch(e => { if (pv === p) throw e; });
       if (pv !== p) break;
-      put($('#refused'), !r.hosts.length ? '' : `<div class="sub" style="padding:0 14px 8px">Its pages asked for hosts it doesn't reach${r.allows ? ': allow those its sign-in needs, such as single sign-on\u2019s' : '; an admin allows them'}.`
-        + r.hosts.map(x => ` <span class="creds">${esc(x.host)} \u00b7 ${x.count}${r.allows ? ` <a data-act="allow-host" data-site="${esc(el.dataset.id)}" data-host="${esc(x.host)}">Allow</a>` : ''}</span>`).join('') + '</div>');
+      put($('#refused'), !r.hosts.length ? '' : `<div class="sub" style="padding:0 14px 8px">Its pages asked for hosts it doesn't reach: allow those its sign-in needs, such as single sign-on\u2019s.`
+        + r.hosts.map(x => ` <span class="creds">${esc(x.host)} \u00b7 ${x.count} <a data-act="allow-host" data-site="${esc(el.dataset.id)}" data-host="${esc(x.host)}">Allow</a></span>`).join('') + '</div>');
       await new Promise(ok => setTimeout(ok, 3000));
     }
   }
@@ -1993,8 +1993,8 @@ async function onAct(act, el) {
     if (!pv?.signin) await refresh();
   }
   if (act === 'site-add') {
-    await api('/logins/sites', { method: 'POST', body: JSON.stringify({ name: $('#site-name').value.trim(), url: $('#site-url').value.trim() }) });
-    pv.settings.connections = await api('/connections');
+    await api('/logins/sites', { method: 'POST', body: JSON.stringify({ name: $('#site-name').value.trim(), url: $('#site-url').value.trim(), header: $('#site-header').value.trim() || undefined }) });
+    pv.settings.sites = await api('/logins/sites');
     renderPv();
   }
   if (act === 'grant-ask') {
@@ -2013,9 +2013,9 @@ async function onAct(act, el) {
     await refresh();
     if (pv.settings.kind === 'logins') await openLogins(); else openWorkspaceSettings();
   }
-  if (act === 'site-remove' && await ask({ title: `Remove ${el.dataset.id}?`, text: "Everyone's login to it goes too, with its grants, and no run uses it again.", ok: 'Remove',
+  if (act === 'site-remove' && await ask({ title: `Remove ${el.dataset.id}?`, text: 'Your login to it and your grants for it go too.', ok: 'Remove',
     act: () => api(`/logins/sites/${enc(el.dataset.id)}`, { method: 'DELETE' }) })) {
-    [pv.settings.logins, pv.settings.connections] = await Promise.all([api('/logins'), api('/connections')]);
+    [pv.settings.logins, pv.settings.sites, pv.settings.grants] = await Promise.all([api('/logins'), api('/logins/sites'), api('/grants')]);
     renderPv();
   }
   if (act === 'signin-save') {

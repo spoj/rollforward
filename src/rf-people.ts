@@ -15,7 +15,7 @@ const USAGE = `rf login URL [TOKEN]                without a TOKEN, through the 
 rf ls [--json]                    every workspace, series and instance you see, with its status, runner, asks waiting and wakes
 rf waiting [--json]               what waits on you: asks and notes, requests to start an instance or to use a
                                   website in a workspace you own, proposals, expired logins, and hosts a run's browser on a
-                                  website you added was refused
+                                  website of yours was refused
 rf show PATH [--json]             an instance: its items, the threads that wait on someone, by id, and its last run
 rf log PATH [--since SEQ] [--follow] [--json]   its log, a line an entry, after SEQ; --follow prints more as they come;
                                   --json prints the entries as they are, a line each
@@ -56,20 +56,21 @@ rf logins [--json]                your logins, each with its state, keepalive an
 rf logins offer|unoffer LOGIN SOURCE|OFFER   what a login offers runs: Microsoft 365's (m365) mailboxes, sites, folders and
                                   files, by address or link, a Databricks login's SQL warehouses, by link; unoffer takes the
                                   OFFER rf logins lists
-rf logins allow SITE HOST         a host the pages of SITE, a website you added or, for admins, any, need; once a grant to it
-                                  is approved, only within the domains it reaches, beyond which admins allow them
+rf logins allow SITE HOST [--person EMAIL]   a host the pages of your website SITE need, or for admins, with --person,
+                                  someone's; once a grant to it is approved, only within the domains it reaches, beyond
+                                  which admins allow them
 rf logins signout LOGIN
-rf site add NAME URL              a website whose sign-in starts at URL, which you sign in to on the page; at an address a
-                                  website has already, it's that one, whose name rf prints
-rf site set NAME [--title TITLE] [--header NAME] [--keepalive PAGE] [--every 10m] [--writeback false]
-                                  a website you added, or for admins any: its name as people see it, a header its sign-in
-                                  needs that its pages never send, such as x-bot-token, whose value each person gives, the
-                                  page a login kept alive loads, by address or path, else its address, and how often, 10m
-                                  unless given, and whether a run's browser writes its state back; admins also set
-                                  --off true|false, for no one to use it, and --internal true|false, for its browsers to
-                                  reach internal hosts
-rf site remove NAME               a website you added, while no one else has a grant to it pending or approved, or for admins
-                                  any: its grants go with it, and everyone's login to it
+rf site add NAME URL [--header NAME]   a website of your own, by a NAME you choose, whose sign-in starts at URL, which you
+                                  sign in to on the page; --header names a header its sign-in needs that its pages never
+                                  send, such as x-bot-token, whose value you give as you sign in
+rf site set NAME [--header NAME] [--keepalive PAGE] [--every 10m] [--writeback false] [--person EMAIL]
+                                  your website NAME, or for admins, with --person, someone's: a header its sign-in needs
+                                  that its pages never send, such as x-bot-token, whose value its person gives, the page a
+                                  login kept alive loads, by address or path, else its address, and how often, 10m unless
+                                  given, and whether a run's browser writes its state back; admins also set
+                                  --internal true|false, for its browsers to reach internal hosts
+rf site remove NAME [--person EMAIL]   your website NAME, with your login to it and your grants for it, or for admins, with
+                                  --person, someone's
 rf site ask NAME WORKSPACE REASON to use your login to NAME in WORKSPACE's runs, for REASON, which one of its owners approves
                                   or denies, seeing the server's check of the website, or an admin, where it rates it high
                                   risk; a login no approved grant uses is signed out a week after you signed in, and once
@@ -214,6 +215,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (flag === 'exclude') excludes.push(argv[++i]);
   else flags[flag] = argv[++i];
 }
+const whose = flags.person ? `?person=${encodeURIComponent(String(flags.person))}` : '';
 if (cmd === '--version') {
   // Its package's: cli/ in the repo, beside rf.mjs once published.
   console.log(JSON.parse(readFileSync(new URL(import.meta.url.endsWith('.ts') ? '../cli/package.json' : 'package.json', import.meta.url), 'utf8')).version);
@@ -389,7 +391,7 @@ if (cmd === 'login' && url) {
     ...all.filter(w => w.manage && w.proposal?.into === w.id).map(({ proposal: p }) => ({ kind: 'proposal', path: p.to, since: p.at, text: `${p.by} proposes to ${p.kind === 'merge' ? `merge ${p.from} into it` : `move ${p.from}/${p.series} to it`}` })),
     ...s.expired.filter(e => e.who === me.email).map(e => ({ kind: 'expired', login: e.login, holding: e.holding, text: `your ${e.login} login expired` })),
     ...series.flatMap(x => x.instances.flatMap(i => i.refused.map(r => ({ kind: 'refused', path: `${x.path}/${i.label}`, since: r.at, site: r.site, hosts: r.hosts, text: `run ${r.run}'s browser on ${r.site} was refused ${r.hosts.join(', ')}` })))),
-    ...all.filter(w => w.manage).flatMap(w => w.grants.filter(g => g.state === 'pending').map(g => ({ kind: 'grant', path: w.name, since: g.at, id: g.id, text: `${g.person} asks to use ${g.site} here: ${g.reason} (${g.check?.risk ? `${g.check.risk} risk` : 'not checked'})` }))),
+    ...all.filter(w => w.manage).flatMap(w => w.grants.filter(g => g.state === 'pending').map(g => ({ kind: 'grant', path: w.name, since: g.at, id: g.id, text: `${g.person} asks to use ${g.site}, at ${g.url}, here: ${g.reason} (${g.check?.risk ? `${g.check.risk} risk` : 'not checked'})` }))),
   ];
   if (flags.json) console.log(JSON.stringify(rows, null, 1));
   else console.log(rows.map(r => `${r.kind}  ${r.path ?? r.login}${r.since ? ` since ${when(r.since)}` : ''}${r.id ? `, ${r.kind === 'grant' ? 'grant' : 'request'} ${r.id}` : ''}: ${r.text.split('\n')[0].slice(0, 120)}`).join('\n') || 'Nothing waits on you.');
@@ -510,26 +512,26 @@ else if (cmd === 'comment' && args.length === 2) {
   const [what, login, x] = args, at = `/logins/${encodeURIComponent(login)}`;
   if (what === 'offer') await post(`${at}/offers`, { add: x });
   else if (what === 'unoffer') await api(`${at}/offers/${encodeURIComponent(x)}`, { method: 'DELETE' });
-  else await post(`/logins/web/${encodeURIComponent(login)}/hosts`, { host: x });
+  else await post(`/logins/web/${encodeURIComponent(login)}/hosts${whose}`, { host: x });
   console.log(`${login} ${{ offer: 'offers', unoffer: 'no longer offers', allow: 'reaches' }[what]} ${x}`);
 } else if (cmd === 'site' && args[0] === 'add' && args.length === 3) {
-  const { site, existing } = await (await post('/logins/sites', { name: args[1], url: args[2] })).json();
-  console.log(`${existing ? `${args[2]} is ${site}'s` : `added ${site}`}: sign in to it at ${url}/#logins, then rf site ask ${site} WORKSPACE REASON`);
+  const { site } = await (await post('/logins/sites', { name: args[1], url: args[2], header: flags.header })).json();
+  console.log(`added ${site}: sign in to it at ${url}/#logins, then rf site ask ${site} WORKSPACE REASON`);
 } else if (cmd === 'site' && args[0] === 'set' && args.length === 2) {
-  await post(`/logins/sites/${encodeURIComponent(args[1])}`, flags, 'PATCH');
+  await post(`/logins/sites/${encodeURIComponent(args[1])}${whose}`, { ...flags, person: undefined }, 'PATCH');
   console.log('saved');
 } else if (cmd === 'site' && args[0] === 'remove' && args.length === 2) {
-  await api(`/logins/sites/${encodeURIComponent(args[1])}`, { method: 'DELETE' });
+  await api(`/logins/sites/${encodeURIComponent(args[1])}${whose}`, { method: 'DELETE' });
   console.log(`removed ${args[1]}`);
 } else if (cmd === 'site' && args[0] === 'ask' && args.length === 4) {
   const { id, check: c } = await (await post('/grants', { site: args[1], workspace: (await workspaceNamed(args[2])).id, reason: args[3] })).json();
   console.log(`asked, as grant ${id}: ${c.risk === 'high' ? 'an admin approves or denies it, as the check rates it high risk' : `one of ${args[2]}'s owners approves or denies it`}\n${!c.risk ? `not checked: ${c.error}`
-    : `check: ${c.risk} risk${c.flags.length ? ` (${c.flags.join('; ')})` : ''}. ${c.summary}${c.same ? ` It looks like ${c.same}, a website here already.` : ''}${c.hosts.length ? ` Approving lets it reach ${c.hosts.join(', ')}.` : ''}`}`);
+    : `check: ${c.risk} risk${c.flags.length ? ` (${c.flags.join('; ')})` : ''}. ${c.summary}${c.hosts.length ? ` Approving lets it reach ${c.hosts.join(', ')}.` : ''}`}`);
 } else if (cmd === 'grants' && args.length <= 1) {
   const [all, ws] = await Promise.all([get('/grants'), get('/api')]), name = (id: string) => ws.find(w => w.id === id)?.name ?? id;
   const shown = all.filter(g => !args[0] || name(g.workspace) === args[0]);
   if (flags.json) console.log(JSON.stringify(shown.map(g => ({ ...g, workspace: name(g.workspace) })), null, 1));
-  else for (const g of shown) console.log(`${g.id}  ${g.state}  ${g.site} in ${name(g.workspace)} for ${g.person}, since ${when(g.at)}: ${g.reason}${g.by ? `; ${g.state} by ${g.by}${g.text ? `: ${g.text}` : ''}` : ''} (${g.check?.risk ? `${g.check.risk} risk` : 'not checked'})`);
+  else for (const g of shown) console.log(`${g.id}  ${g.state}  ${g.site} at ${g.url} in ${name(g.workspace)} for ${g.person}, since ${when(g.at)}: ${g.reason}${g.by ? `; ${g.state} by ${g.by}${g.text ? `: ${g.text}` : ''}` : ''} (${g.check?.risk ? `${g.check.risk} risk` : 'not checked'})`);
 } else if (cmd === 'grant' && ['approve', 'deny'].includes(args[0]) && [2, 3].includes(args.length)) {
   await post(`/grants/${args[1]}`, { approve: args[0] === 'approve', text: args[2] });
   console.log(args[0] === 'approve' ? 'approved' : 'denied');
