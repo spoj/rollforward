@@ -682,7 +682,7 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   assert.equal((await json(await at(series, 'talk'))).log.findLast((e: { op: string }) => e.op === 'comment').text, 'From the shell');
   const runs = JSON.parse(await rf('runs', `larkfield/${series}`, '--json'));
   assert.ok(runs.every((r: { path: string }) => r.path.startsWith(`larkfield/${series}/`)));
-  assert.deepEqual(runs[0], { path: `larkfield/${series}/2026-08-23`, run: 1, at: '2026-08-23T23:01:00.000Z', outcome: 'done', seconds: 240, cost: 0.21, runner: 'alex', started: { op: 'upload', by: 'alex' }, summary: 'Borrowing base for 08-23: excess 173,800.', error: null, failure: null });
+  assert.deepEqual(runs[0], { path: `larkfield/${series}/2026-08-23`, run: 1, at: '2026-08-23T23:01:00.000Z', outcome: 'done', seconds: 240, cost: 0.21, runner: 'alex', started: { op: 'upload', by: 'alex' }, error: null, failure: null });
   assert.match(await rf('runs', '--failed'), /  run \d+  failed \(other\)  \d+[sm]  \$0\.00  (upload|comment|create|wake) by \S+  /, 'without a model key, the runs the tests start fail');
   const scratch = `larkfield/${series}/scratch`;
   assert.deepEqual(JSON.parse(await rf('runs', scratch, '--json')).map((r: { outcome: string; failure: string }) => [r.outcome, r.failure]), [['cut', null], ['failed', 'credits']]);
@@ -693,7 +693,7 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   assert.match(await rf('wakes', `larkfield/${series}`), new RegExp(`^larkfield/${series}  last woken (never|${stamp})\n  wake ${woken} ${stamp} starts next, set by ${adminEmail}\n`));
   assert.equal((await rf('wake', '--cancel', woken)).trim(), 'cancelled');
   assert.match(await rf('wakes', `larkfield/${series}`), /, none pending\n/);
-  assert.match(await rf('activity', `larkfield/${series}/2026-08-23`), new RegExp(`^larkfield/${series}/2026-08-23\n  ${stamp}  alex  uploads upload/Larkfield AR aging 082326\\.csv\n  ${stamp}  run 1  Borrowing base for 08-23: excess 173,800\\.\n  ${stamp}  alex  closes it\n$`));
+  assert.match(await rf('activity', `larkfield/${series}/2026-08-23`), new RegExp(`^larkfield/${series}/2026-08-23\n  ${stamp}  alex  uploads upload/Larkfield AR aging 082326\\.csv\n  ${stamp}  alex  closes it\n$`));
   assert.match(await rf('costs', '--by', 'person'), /^ +\$\d+\.\d\d +\d+ runs +\$\d+\.\d\d a run  alex$/m);
   assert.deepEqual(Object.keys(JSON.parse(await rf('status', '--json'))), ['running', 'queued', 'asks', 'expired', 'requests', 'proposals', 'failed', 'indexes']);
   assert.equal(await rf('indexes'), 'No indexes.\n');
@@ -779,7 +779,7 @@ test('rf reads without a pull: waiting, what waits on you; show, an instance, th
   assert.deepEqual(JSON.parse(await rf('waiting', '--json')).find((r: { path: string }) => r.path === path), { kind: 'note', path, since: note.at, text: note.text });
   const shown = JSON.parse(await rf('show', path, '--json'));
   assert.deepEqual([shown.id, shown.status, shown.runner, shown.waiting], [id, 'open', adminEmail, [{ thread: note.thread, kind: 'note', for: adminEmail, by: bob, seq: note.seq, item: null, ref: null, text: note.text }]]);
-  assert.match(await rf('show', path), new RegExp(`^${path}  open, runner ${adminEmail}\\n${note.thread}  note for ${adminEmail}, seq ${note.seq}: Bob notes the rate moved\\.\\nlast run \\d+  \\$0\\.00  .+\\n$`));
+  assert.match(await rf('show', path), new RegExp(`^${path}  open, runner ${adminEmail}\\n${note.thread}  note for ${adminEmail}, seq ${note.seq}: Bob notes the rate moved\\.\\nlast run \\d+  \\$0\\.00(  .+)?\\n$`));
   const lines = (await rf('log', path)).trim().split('\n');
   assert.equal(lines.length, log.length);
   assert.match(lines.find(l => l.startsWith(`${note.seq}  `))!, new RegExp(`^${note.seq}  [\\d-]+ [\\d:]+  ${bob}  comment  \\{.*"thread":"${note.thread}".*\\}  Bob notes the rate moved\\.$`));

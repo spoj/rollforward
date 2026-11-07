@@ -92,12 +92,13 @@ rf status [--long MIN] [--json]   what goes on and what's stuck: runs going, fla
 rf indexes [--json]               each index of a source you index, all for admins: its kind, items and size, and per person
                                   its phase, crawl or follow, pages read, when last caught up, and its error and next try
 rf runs [PATH] [--since DATE] [--failed] [--running] [--long MIN] [--json]
-                                  a line per run: start, path, run, outcome, time, cost, what started it, summary or error;
+                                  a line per run: start, path, run, outcome, time, cost, what started it, and any error;
                                   the outcome is done, interrupted by a person, cut by a restart, running, or failed, for
                                   credits, policy, time limit or other
 rf costs [PATH] [--since DATE] [--by workspace|series|person|day|outcome] [--json]   totals, runs and cost per run; person
                                   is the runner; runs leave out those a restart cut, as the next run carries each on
-rf activity [PATH] [--since DATE] [--json]   per instance, what people said, uploaded and closed, and each run's report
+rf activity [PATH] [--since DATE] [--json]   per instance, what people and the agent said, what people uploaded and closed, and
+                                  each run that failed
 rf wakes [PATH] [--json]          each series' pending wakes and requests to start an instance, and when a wake of it last
                                   fired, and each instance's pending wakes
 rf people WORKSPACE [--set FILE|-] [-n] [--force]   its owners and admins: its people as lines of owner|member EMAIL-OR-GROUP,
@@ -152,8 +153,7 @@ What rf pull copies, the folders as the agent sees them
     screen.json              the screen: {rev, status, items: [{id, name, kind, file, from, headline, source, destination, as_of}]}
     log.jsonl                every event, by seq: by is a person's email, "server" or "agent"; op is upload, comment (thread, item,
                              ref, text, ask, to, signoff), resolve, signoff (the runner's answer, with its commit), commit, point and
-                             item (the screen changing), run, report (the agent's account of a run), done (its cost, summary or
-                             error), close, and the rest
+                             item (the screen changing), run, done (its cost, or error), close, and the rest
     upload/                  what people uploaded, their comments' attachments in upload/attachments/
     working/                 what the agent made, its scripts, and process.md, how it does this series
     session/                 each session's transcript, which may carry several runs: every message and tool call
@@ -186,7 +186,7 @@ Watching over it, for admins and power users; each sees what the caller sees
 - Indexes: rf indexes shows each index of a big library or mailbox you index, every one for admins: its items and size, and per
   person whether it is crawling or following changes, pages read, when last caught up, and an error, if any, with its next try.
 - History: rf runs [PATH] [--since DATE] [--failed] [--running] [--long MIN] prints a line per run: its start, path, run number,
-  outcome, time taken, cost, what started it and by whom, and its summary or error. rf costs [PATH] [--since DATE] [--by
+  outcome, time taken, cost, what started it and by whom, and any error. rf costs [PATH] [--since DATE] [--by
   workspace|series|person|day] totals them, by the runner for person.
 - People: rf people (admins) prints everyone as ROLE EMAIL lines, and rf people WORKSPACE (its owners and admins) its owners and
   members as owner|member lines; a comment after each says when they last signed in and which open instances they run, and for
@@ -396,14 +396,13 @@ if (cmd === 'login' && url) {
     return e.op === 'comment' && ((e.by === 'agent' && e.ask) || e.note)
       ? [{ thread: e.thread, kind: e.signoff ? 'sign-off' : e.ask ? 'ask' : 'note', for: e.to ?? runner.by, by: e.by, seq: e.seq, item: t[0].item, ref: t[0].ref, text: e.text }] : [];
   });
-  const done = log.findLast(e => e.op === 'done'), report = done && log.findLast(e => e.op === 'report' && e.run === done.run);
-  const last = done ? { run: done.run, cost: done.cost, summary: done.summary ?? null, error: done.error ?? null, report: report?.text ?? null } : null;
+  const done = log.findLast(e => e.op === 'done'), last = done ? { run: done.run, cost: done.cost, error: done.error ?? null } : null;
   if (flags.json) console.log(JSON.stringify({ path: args[0], id: inst.id, status: doc.status, runner: runner.by, running: run, queued, items: doc.items, waiting, last_run: last }, null, 1));
   else {
     console.log(`${args[0]}  ${doc.status}, runner ${runner.by}${run ? `, run ${run.n} going, ${usd(run.cost)}` : queued ? ', queued' : ''}`);
     for (const i of doc.items) console.log(`  ${i.kind.padEnd(6)} ${i.id}  ${i.name}  ${i.file ?? 'no file yet'}${i.from?.length ? `  from ${i.from.join(', ')}` : ''}${i.headline ? `  ${i.headline}` : ''}`);
     for (const w of waiting) console.log(`${w.thread}  ${w.kind} for ${w.for}${w.item ? `, on ${w.item}${w.ref ? ` at ${w.ref}` : ''}` : ''}, seq ${w.seq}: ${w.text.split('\n')[0].slice(0, 160)}`);
-    if (last) console.log(`last run ${last.run}  ${usd(last.cost ?? 0)}  ${last.error ?? last.summary ?? 'no report'}`);
+    if (last) console.log(`last run ${last.run}  ${usd(last.cost ?? 0)}${last.error ? `  ${last.error}` : ''}`);
   }
 } else if (cmd === 'log' && args.length === 1) {
   const { at } = await instanceAt(args[0]);
@@ -433,7 +432,7 @@ else if (cmd === 'comment' && args.length === 2) {
     const log = (await get(at)).log, done = log.find(e => e.op === 'done' && e.seen >= seq);
     if (!done) continue;
     const from = Math.max(seq, log.find(e => e.op === 'run' && e.run === done.run).seq);
-    for (const e of log.filter(e => e.seq > from && e.seq < done.seq && ((e.op === 'comment' && e.by === 'agent') || e.op === 'report'))) console.log(`${e.op === 'report' ? 'Report' : `${e.ask ? 'Asks' : 'Says'} in ${e.thread}`}:\n${e.text}\n`);
+    for (const e of log.filter(e => e.seq > from && e.seq < done.seq && e.op === 'comment' && e.by === 'agent')) console.log(`${e.ask ? 'Asks' : 'Says'} in ${e.thread}:\n${e.text}\n`);
     if (done.error) console.log(`The run failed: ${done.error}`);
     break;
   }
@@ -621,7 +620,7 @@ else if (cmd === 'comment' && args.length === 2) {
 } else if (cmd === 'runs' && args.length <= 1) {
   const rows = (await runsIn(args[0])).filter(r => (!flags.failed || r.outcome === 'failed') && (!flags.running || r.outcome === 'running') && (!flags.long || r.seconds >= Number(flags.long) * 60));
   if (flags.json) console.log(JSON.stringify(rows, null, 1));
-  else for (const r of rows) console.log(`${when(r.at)}  ${r.path}  run ${r.run}  ${r.outcome}${r.failure ? ` (${r.failure})` : ''}  ${took(r.seconds)}  ${usd(r.cost)}  ${r.started ? `${r.started.op} by ${r.started.by}` : '-'}  ${r.error ?? r.summary ?? ''}`);
+  else for (const r of rows) console.log(`${when(r.at)}  ${r.path}  run ${r.run}  ${r.outcome}${r.failure ? ` (${r.failure})` : ''}  ${took(r.seconds)}  ${usd(r.cost)}  ${r.started ? `${r.started.op} by ${r.started.by}` : '-'}  ${r.error ?? ''}`);
 } else if (cmd === 'costs' && args.length <= 1) {
   const by = String(flags.by ?? 'series'), key = {
     workspace: r => r.path.split('/')[0], series: r => r.path.split('/').slice(0, 2).join('/'), person: r => r.runner, day: r => when(r.at).slice(0, 10),
@@ -655,7 +654,7 @@ else if (cmd === 'comment' && args.length === 2) {
   if (flags.json) console.log(JSON.stringify(blocks, null, 1));
   else for (const b of blocks) {
     console.log(b.path);
-    for (const e of b.entries) console.log(`  ${when(e.at)}  ${e.op === 'done' ? `run ${e.run}  ${e.error ?? e.summary ?? 'no report'}`
+    for (const e of b.entries) console.log(`  ${when(e.at)}  ${e.op === 'done' ? `run ${e.run} failed: ${e.error}`
       : `${e.by}  ${e.op === 'comment' ? `says: ${e.text.split('\n')[0].slice(0, 200)}` : e.op === 'upload' ? `uploads ${e.file}` : `${e.op === 'close' ? 'closes' : 'abandons'} it`}`}`);
   }
 } else if (cmd === 'people' && args.length <= 1) {

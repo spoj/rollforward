@@ -613,7 +613,7 @@ function land(next, path, d, st) {
   threads = threadsOf();
   if (st) [lines, linesKey] = st;
   const done = data && lastDone();
-  if (done && was !== undefined && done.seq > was) toast(done.error ? `Run ${done.run} failed: ${done.error}` : `Run ${done.run} finished${done.summary ? ': ' + done.summary : ''}`, done.error ? '' : 'ok');
+  if (done && was !== undefined && done.seq > was) toast(done.error ? `Run ${done.run} failed: ${done.error}` : `Run ${done.run} finished`, done.error ? '' : 'ok');
   render();
 }
 
@@ -880,7 +880,7 @@ function logText(e) {
     item: () => `${w} set up ${esc(e.name)}${e.from?.length ? `<div class="d">From ${e.from.map(item).join(', ')}</div>` : ''}${e.headline ? `<div class="d">${esc(e.headline)}</div>` : ''}${e.source ? `<div class="d">Source: ${esc(e.source)}</div>` : ''}${e.destination ? `<div class="d">Destination: ${esc(e.destination)}</div>` : ''}${e.as_of ? `<div class="d">As of ${esc(e.as_of)}</div>` : ''}`,
     remove: () => `${w} removed ${esc(e.item)} from the screen`,
     run: () => `Run ${e.run} started${data.run?.n === e.run ? ` \u00b7 ${usd(data.run.cost)} so far` : ''}`,
-    done: () => `Run ${e.run} finished${e.aborted ? ' (stopped)' : ''} · ${took(e)} · ${usd(e.cost)}${e.summary ? `<div class="d">${esc(e.summary)}</div>` : ''}${e.error ? `<div class="d">${esc(e.error)}</div>` : ''}`,
+    done: () => `Run ${e.run} finished${e.aborted ? ' (stopped)' : ''} · ${took(e)} · ${usd(e.cost)}${e.error ? `<div class="d">${esc(e.error)}</div>` : ''}`,
     interrupt: () => `${w} interrupted the run`,
     close: () => `${w} closed the instance${e.accepted ? `<div class="d">Accepting what the agent did for ${e.accepted.length} ask${e.accepted.length > 1 ? 's' : ''} still waiting</div>` : ''}${e.commit ? `<div class="d">Commit <code>${e.commit.slice(0, 7)}</code></div>` : ''}`,
     signoff: () => `${w} ${e.approved ? 'signed off' : 'rejected the sign-off'}<div class="d">${e.text ? `${esc(e.text)} · ` : ''}Commit <code>${e.commit.slice(0, 7)}</code></div>`,
@@ -890,7 +890,6 @@ function logText(e) {
     corrected: () => `${w} marked <a href="#/${esc(e.inst)}">${esc(e.label)}</a>${e.item ? ` ${esc(e.item)}` : ''} ${e.kind}`,
     comment: () => `${w} ${e.note ? `left a note for ${who(data.runner.by)}` : e.by !== 'agent' ? 'commented' : e.ask ? `asked${e.to ? ' ' + who(e.to) : ''}` : 'said'}${e.item ? ` on ${item(e.item)}${e.ref ? ` at ${esc(e.ref)}` : ''}` : ''}<div class="d">${esc(e.text)}</div>`,
     resolve: () => `${w} resolved a thread${e.text ? `<div class="d">${esc(e.text)}</div>` : ''}`,
-    report: () => `${w} reported on run ${e.run}<div class="d">${md(e.text)}</div>`,
     wake: () => `${e.note ? `${person(e.from)} would wake it: a note for ${who(data.runner.by)}` : `Woken${e.from ? ` by ${who(e.from)}` : ''}`}${e.reason ? `<div class="d">${esc(e.reason)}</div>` : ''}`,
     expired: () => e.left ? `${who(e.runner)} has left: Microsoft no longer signs them in, so someone takes the instance over` : `Waiting for ${who(e.runner)} ${e.login === 'openrouter' ? 'to save another OpenRouter key, or stop using their own, out of credits' : `to sign in to ${esc(e.name ?? (e.login === 'm365' ? 'Microsoft 365' : e.login))} again`}${e.runner === me.email && !data.log.some(x => x.seq > e.seq && x.op === 'wake' && x.login === e.login) ? `<div>${signInHtml(e.login, e.name ?? e.login)}</div>` : ''}`,
     takeover: () => `${w} took over from ${who(e.from)}${e.logins?.length ? `<div class="d">Logins: ${esc(e.logins.join(', '))}</div>` : ''}`,
@@ -1088,11 +1087,11 @@ function threadHtml(t) {
 // The rules a run added to the process, or reworded, on the thread whose entry started it, or else on its line.
 const processNote = d => `<div class="pnote"><a data-act="process">Process: +${plural(d.rules, 'rule')}</a> in run ${d.run}</div>`;
 
-// A run, as one line among the threads: how it ended, how long it took and what it cost, opening to its report or why it failed.
+// A run, as one line among the threads: how it ended, how long it took and what it cost, opening to why it failed.
 function runHtml(r, latest) {
-  const d = data.log.find(e => e.op === 'done' && e.run === r.run), report = data.log.find(e => e.op === 'report' && e.run === r.run);
+  const d = data.log.find(e => e.op === 'done' && e.run === r.run);
   const line = `Run ${r.run} \u00b7 ${!d ? `<span class="spin"></span> going \u00b7 ${usd(data.run?.cost ?? 0)}` : `${d.error ? '<span class="bad">failed</span>' : d.aborted ? 'stopped' : 'done'} \u00b7 ${took(d)} \u00b7 ${usd(d.cost)}`}`;
-  const body = (report ? `<div class="post">${md(report.text)}</div>` : d?.error ? `<div class="post bad">${esc(d.error)}</div>` : '') + (d?.rules && !d.thread ? processNote(d) : '');
+  const body = (d?.error ? `<div class="post bad">${esc(d.error)}</div>` : '') + (d?.rules && !d.thread ? processNote(d) : '');
   return body ? `<details class="runl" data-key="run${r.run}" ${ui.sect[`run${r.run}`] ?? latest ? 'open' : ''}><summary>${line}</summary>${body}</details>` : `<div class="runl">${line}</div>`;
 }
 
@@ -2160,6 +2159,8 @@ addEventListener('visibilitychange', drain);
 // The rows' ages move on as the minutes pass.
 setInterval(renderSide, 60_000);
 $('#log').addEventListener('scroll', e => { const el = e.currentTarget; el.dataset.end = el.scrollTop + el.clientHeight >= el.scrollHeight - 8 ? 'yes' : 'no'; });
+// A post's image that loads once the log is at its end keeps it there.
+$('#log').addEventListener('load', () => { if ($('#log').dataset.end !== 'no') $('#log').scrollTop = $('#log').scrollHeight; }, true);
 
 // Pane widths, kept in this browser: a grip's drag sets its pane's width, which the CSS bounds, and keeps what shows.
 {

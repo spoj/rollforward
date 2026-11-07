@@ -162,7 +162,7 @@ test('a run a restart cut ends as aborted, with what its calls cost so far, and 
   const cut = make('s3', 'cut');
   cut.append('server', 'run', { run: 1, upto: 1 });
   cut.append('agent', 'call', { run: 1, name: 'openrouter', cost: 5 });
-  cut.append('server', 'done', { run: 1, aborted: false, seen: 1, cost: 5, summary: null });
+  cut.append('server', 'done', { run: 1, aborted: false, seen: 1, cost: 5 });
   cut.append('server', 'run', { run: 2, upto: 1 });
   for (const c of [{ name: 'openrouter', cost: 0.25 }, { name: 'graph' }, { name: 'exa', cost: 0.5 }]) cut.append('agent', 'call', { run: 2, ...c });
   recover();

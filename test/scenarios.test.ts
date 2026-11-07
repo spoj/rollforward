@@ -229,7 +229,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.ok(['run-1', 'run-2'].every(r => transcripts.some(f => f.endsWith(`_${r}.jsonl`))) && !transcripts.some(f => f.endsWith('_run-3.jsonl')), `a transcript per session: ${transcripts}`);
   assert.match(woken.saw[0], /m365:mail:admin@demo.test is not ticked/);
   assert.deepEqual(log.filter(e => e.op === 'done').map(e => [e.run, e.aborted, e.cost]), [[1, false, 0.01], [2, false, +(walls.bash.length * 0.01 + 0.01 + 0.002).toFixed(4)], [3, false, 0.02]], "what its calls cost, Pi's and the script's");
-  assert.deepEqual(log.filter(e => e.op === 'report').map(e => e.text), [made.report, walls.report, woken.report]);
+  assert.ok(!JSON.stringify(log).includes(walls.report), "a run's closing message reaches no one: it stays in its session");
 
   assert.equal((await call('POST', `/api/instances/${id}/takeover`, { logins: [] }, bob)).status, 200);
   assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Mine now.' }, bob)).status, 200);
@@ -266,13 +266,13 @@ test('people rename the instance, its series and its workspace mid-run: the run 
   assert.match(during.saw[1], /^set: \. wakes at .*\nsaid in c\d+, seq \d+\s*$/);
   assert.deepEqual((await (await call('GET', `/api/instances/${id}`)).json()).log.findLast((e: { op: string }) => e.op === 'comment').files, [{ inst: id, path: 'working/x.csv' }]);
   const git = (...args: string[]) => execFileSync('git', args, { cwd: join(root, 'instances', id), encoding: 'utf8' });
-  await until("run 2's commit", () => git('log', '-1', '--format=%s').startsWith('Run 2:'));
+  await until("run 2's commit", () => git('log', '-1', '--format=%s') === 'Run 2\n');
   assert.ok(git('show', 'HEAD:names.tsv').includes(`${id}\t/work/Named/Before/2026-11\n`), "the run's commit holds the names its changes were written under");
   assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Again.' })).status, 200);
   await runs(id, 3);
   const [now, ...renamed] = next.saw[0].trim().split('\n');
   assert.deepEqual([now, renamed.filter(l => l.startsWith(id))], ['/work/Renamed/After/November', [`${id}\t/work/Renamed/After/November`]]);
-  await until("run 3's commit", () => git('log', '-1', '--format=%s').startsWith('Run 3:'));
+  await until("run 3's commit", () => git('log', '-1', '--format=%s') === 'Run 3\n');
   assert.ok(git('show', 'HEAD:names.tsv').includes(`${id}\t/work/Renamed/After/November\n`));
 });
 
@@ -336,9 +336,9 @@ test('sign-offs are git commits: the agent commits a moment worth keeping, the r
   assert.equal(log.at(-1).commit, git('rev-parse', 'HEAD'));
   assert.equal(git('log', '-1', '--format=%an%n%B'), 'Demo Admin\nClose 2026-12');
   assert.deepEqual(git('log', '--reverse', '--format=%an|%s').split('\n'), [
-    'rollforward agent|Run 1: Nothing to roll forward yet.', 'rollforward agent|Draft pack built', 'rollforward agent|Run 2: Built the pack; asked for a sign-off.',
-    'Demo Admin|The pack is ready to send to the bank.', 'rollforward agent|Run 3: Fixed the rate; asked again.', 'Demo Admin|The rate is fixed: send it now?',
-    'rollforward agent|Run 4: Signed off: sending.', 'Demo Admin|Close 2026-12',
+    'rollforward agent|Run 1', 'rollforward agent|Draft pack built', 'rollforward agent|Run 2',
+    'Demo Admin|The pack is ready to send to the bank.', 'rollforward agent|Run 3', 'Demo Admin|The rate is fixed: send it now?',
+    'rollforward agent|Run 4', 'Demo Admin|Close 2026-12',
   ], "each run's end, the agent's commit, the two answers and the close");
   const pulled = await (await call('GET', '/api/files?path=Signed/Pack/2026-12')).json();
   assert.ok(pulled.length && !pulled.some((f: { path: string }) => f.path.includes('/.git/')), 'rf pull leaves the history out');
@@ -354,7 +354,7 @@ test('a cut anywhere leaves the instance right, its log whole, and the next run 
   await runs(id, 1);
   const dir = join(root, 'instances', id), entries = () => readFileSync(join(dir, 'log.jsonl'), 'utf8').trimEnd().split('\n').map(l => JSON.parse(l));
   const commits = () => execFileSync('git', ['log', '--format=%s'], { cwd: dir, encoding: 'utf8' }).trim().split('\n');
-  // The run a cut cut short ends as aborted, and the start wakes its instance, whose next run carries on to its report.
+  // The run a cut cut short ends as aborted, and the start wakes its instance, whose next run carries on to its end.
   const carriedOn = async (n: number, next: Script) => {
     const log = await runs(id, n + 1);
     assert.deepEqual(entries(), log, 'the log parses, every line of it');
@@ -363,7 +363,6 @@ test('a cut anywhere leaves the instance right, its log whole, and the next run 
     assert.ok(log.some(e => e.op === 'wake' && e.reason === `A restart cut run ${n}; carry on`), 'naming the run, whose transcript is in session/');
     assert.ok(commits().includes(`Run ${n}: a restart cut the run`), "its changes committed, as at any run's end");
     assert.equal(next.first, 1, 'in a new conversation');
-    assert.equal(log.findLast(e => e.op === 'report')!.text, next.report);
     return log;
   };
 
@@ -438,7 +437,7 @@ test("a person's own OpenRouter key, checked as it's saved, goes in for the runs
   scripts.push({ bash: [], report: 'On the shared key.', saw: [] });
   assert.equal((await call('PUT', '/logins/openrouter', { enabled: false })).status, 200);
   log = await runs(id, 3);
-  assert.deepEqual([log.findLast(e => e.op === 'run')!.key, [...new Set(keys)], log.findLast(e => e.op === 'report')!.text], ['shared', ['stand-in-key'], 'On the shared key.']);
+  assert.deepEqual([log.findLast(e => e.op === 'run')!.key, [...new Set(keys)]], ['shared', ['stand-in-key']]);
 });
 
 test("a run that adds rules to the process, or rewords them, says how many in its done entry, with the thread whose comment started it", async () => {

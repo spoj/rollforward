@@ -32,8 +32,7 @@ before(async () => {
     { seq: 1, at: '2026-08-01T09:00:00.000Z', by: 'admin@demo.test', op: 'create', from: null, logins: [] },
     { seq: 2, at: '2026-08-01T09:05:00.000Z', by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'The pack is ready to send to the bank.', ask: true, signoff: true, recipients: ['bank@demo.test'] },
   ].map(e => JSON.stringify(e) + '\n').join(''));
-  // A closed instance of the same series whose run, asked to, called a connection, added a rule to its process and reported with
-  // images.
+  // A closed instance of the same series whose run, asked to, called a connection, added a rule to its process and posted images.
   const called = join(root, 'instances', 'a5c0ff5e1f01');
   mkdirSync(join(called, 'working'), { recursive: true });
   writeFileSync(join(called, 'instance.json'), JSON.stringify({ label: '2026-11', series: 'a5c0ff5e1fee' }));
@@ -47,10 +46,9 @@ before(async () => {
     { seq: 3, at: '2026-08-01T09:01:00.000Z', by: 'server', op: 'run', run: 1, upto: 2, skills: {} },
     { seq: 4, at: '2026-08-01T09:02:00.000Z', by: 'agent', op: 'call', run: 1, name: 'adb', method: 'POST', path: '/api/2.0/sql/statements', status: 200, bytes: 512 },
     { seq: 5, at: '2026-08-01T09:03:00.000Z', by: 'agent', op: 'call', run: 1, name: 'adb', method: 'POST', path: '/api/2.0/sql/statements', status: 403, bytes: 0, refused: 'adb:adb-1.azuredatabricks.net/wh9 is not ticked for this instance; its runner, admin@demo.test, ticks logins when starting or taking it over' },
-    { seq: 6, at: '2026-08-01T09:03:30.000Z', by: 'agent', op: 'report', run: 1, text: 'Read the ledger.\n\n| ![Ledger](working/months.png) | ![Months](../2026-11/working/months.png) |' },
-    { seq: 7, at: '2026-08-01T09:04:00.000Z', by: 'server', op: 'done', run: 1, aborted: false, seen: 5, cost: 0.01, summary: 'Read the ledger.', rules: 1, thread: 'c9' },
-    { seq: 8, at: '2026-08-01T09:04:30.000Z', by: 'agent', op: 'comment', thread: 'c10', item: null, ref: null, text: 'The ledger by month.', files: [{ inst: 'a5c0ff5e1f01', path: 'working/months.png' }, { inst: 'a5c0ff5e1f01', path: 'working/ledger.csv' }] },
-    { seq: 9, at: '2026-08-01T09:05:00.000Z', by: 'admin@demo.test', op: 'close' },
+    { seq: 6, at: '2026-08-01T09:04:00.000Z', by: 'server', op: 'done', run: 1, aborted: false, seen: 5, cost: 0.01, rules: 1, thread: 'c9' },
+    { seq: 7, at: '2026-08-01T09:04:30.000Z', by: 'agent', op: 'comment', thread: 'c10', item: null, ref: null, text: 'The ledger by month.\n\n| ![Ledger](working/months.png) | ![Months](../2026-11/working/months.png) |', files: [{ inst: 'a5c0ff5e1f01', path: 'working/months.png' }, { inst: 'a5c0ff5e1f01', path: 'working/ledger.csv' }] },
+    { seq: 8, at: '2026-08-01T09:05:00.000Z', by: 'admin@demo.test', op: 'close' },
   ].map(e => JSON.stringify(e) + '\n').join(''));
   // An open instance of the same series with two steps, notes in markdown and a tie-out.
   const reviewed = join(root, 'instances', 'a5c0ff5e1f02');
@@ -197,9 +195,7 @@ test("the side panel is the instance's conversation, a run a line among its thre
   await page.waitForSelector('#bar h1 .t:text-is("2026-08-30")');
   await page.waitForSelector('#log.open .seg .sel:text-is("Conversation")');
   assert.equal(await page.getAttribute('#bar [data-act=panel]', 'title'), 'Close the conversation', 'one toggle, in the bar, open or closed');
-  const run = page.locator('#log details.runl');
-  assert.equal(await run.locator('summary').innerText(), 'Run 1 · done · 4m 0s · $0.21');
-  assert.match(await run.locator('.post').innerText(), /^Borrowing base for 08-30: excess 180,542\.50/, 'the latest run open to its report');
+  assert.equal(await page.locator('#log .runl').innerText(), 'Run 1 · done · 4m 0s · $0.21');
   assert.equal(await page.locator('#audit').isVisible(), false);
   await page.click('#log .seg [data-act=audit]');
   await page.waitForSelector('#audit .e');
@@ -207,7 +203,7 @@ test("the side panel is the instance's conversation, a run a line among its thre
   const rows = await page.locator('#audit .e > div').evaluateAll(es => es.map(e => (e as HTMLElement).innerText.split('\n')[0]));
   assert.deepEqual([...rows.slice(0, 4), rows.at(-1)], ['alex opened the instance', 'alex uploaded an input', 'Server showed u2', 'Run 1 started', 'alex closed the instance']);
   assert.ok(rows.includes('Run 1 finished · 4m 0s · $0.21') && rows.includes("alex's agent set up Borrowing base"), 'each entry a line');
-  assert.ok(rows.includes("alex's agent said Borrowing base for 08-30: excess 180,542.50, up 6,742.50."), "and the agent's session");
+  assert.ok(rows.includes("alex's agent said Borrowing base for 08-30: excess 180,542.50, up 6,742.50."), "and the agent's session, whose plain text reaches no one else");
   await page.click('#log .seg [data-act=audit]');
   assert.equal(await page.locator('#audit').isVisible(), false);
   await page.click('#bar [data-act=panel]');
@@ -217,10 +213,10 @@ test("the side panel is the instance's conversation, a run a line among its thre
   await page.waitForSelector('#log.open .seg .sel:text-is("Conversation")');
 });
 
-test("the runner sees the process, open; a report's images show side by side, by their paths in the instance; a thread whose entry started a run that added a rule says so, opening the process; the run's calls to a connection are in the audit, a refusal with why", async () => {
+test("the runner sees the process, open; a post's images show side by side, by their paths in the instance; a thread whose entry started a run that added a rule says so, opening the process; the run's calls to a connection are in the audit, a refusal with why", async () => {
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f01'; });
   await page.waitForSelector('#log details[data-key=process][open]');
-  const pictured = page.locator('#log details[data-key=run1] .post td img');
+  const pictured = page.locator('#log .thread[data-thread=c10] .post td img');
   assert.deepEqual(await pictured.evaluateAll(is => is.map(i => i.getAttribute('src'))), ['/files/a5c0ff5e1f01/working/months.png', '/files/a5c0ff5e1f01/working/months.png']);
   await pictured.first().click();
   await page.waitForSelector('#pv img');
@@ -419,7 +415,7 @@ test("the conversation reads as a chat: its folds at the top, then oldest first,
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f01'; });
   await page.waitForSelector('#bar h1 .t:text-is("2026-11")');
   await page.waitForSelector('#log details[data-key=process][open]');
-  assert.deepEqual(await order(), ['process', 'c9', 'run1', 'c10', 'compose']);
+  assert.deepEqual(await order(), ['process', 'c9', 'runl', 'c10', 'compose']);
   assert.deepEqual(await where(), ['latest', 0]);
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
   await page.waitForSelector('#bar h1 .t:text-is("2026-12")');

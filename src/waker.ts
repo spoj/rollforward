@@ -28,7 +28,7 @@ const full = () => active.size >= MAX_RUNS || (MIN_FREE > 0 && freemem() < MIN_F
 export const MAX_OPEN = 3;
 const SPACING_MS = 15 * 60_000, MAX_WAKES = 20;
 
-export type Active = { inst: Instance; n: number; session: number; token: string; view: View; skills: Record<string, number>; shape: string; run?: Run; sent: number; seen: number; texts: Map<string, number>; interrupted: boolean; done: boolean; cost: number; said: string; failed?: string; hosts: Set<string>; links: Map<string, string>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string };
+export type Active = { inst: Instance; n: number; session: number; token: string; view: View; skills: Record<string, number>; shape: string; run?: Run; sent: number; seen: number; texts: Map<string, number>; interrupted: boolean; done: boolean; cost: number; failed?: string; hosts: Set<string>; links: Map<string, string>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string };
 export const active = new Map<string, Active>();
 export const byToken = new Map<string, Active>();
 const debounce = new Map<string, NodeJS.Timeout>();
@@ -192,7 +192,7 @@ async function start(inst: Instance) {
   const live = kept ? [] : skills().map(s => ({ ...s, dir: realpathSync(s.dir) }));
   const a: Active = {
     inst, n, session: kept?.session ?? n, token: kept?.token ?? randomUUID(), view: kept?.view ?? view(inst), skills: kept?.skills ?? Object.fromEntries(live.map(s => [s.id, pushed(s).version])), shape: kept?.shape ?? startsFrom(inst),
-    sent: entries.at(-1)!.seq, seen, texts: new Map([[text, entries.at(-1)!.seq]]), interrupted: false, done: false, cost: 0, said: '', hosts: new Set(), links: new Map(),
+    sent: entries.at(-1)!.seq, seen, texts: new Map([[text, entries.at(-1)!.seq]]), interrupted: false, done: false, cost: 0, hosts: new Set(), links: new Map(),
     process: processOf(inst), thread: pending(inst, seen)[0]?.thread as string | undefined,
   };
   active.set(series, a);
@@ -240,8 +240,6 @@ function heard(a: Active, e: JsonAgentSessionEvent) {
   if (e.type === 'tool_execution_end') a.browsers?.shoot().catch(err => console.error(`run ${a.n} of ${a.inst.id}: no screenshot`, err));
   if (e.type === 'message_end' && e.message.role === 'assistant') {
     a.failed = e.message.stopReason === 'error' ? e.message.errorMessage ?? 'the model failed' : undefined; // a later success clears it
-    const text = e.message.content.map(b => (b.type === 'text' ? b.text : '')).join('').trim();
-    if (text) a.said = text;
   }
   if (e.type !== 'message_start' || e.message.role !== 'user') return;
   const c = e.message.content;
@@ -268,11 +266,9 @@ function finish(a: Active, aborted: boolean, error?: string) {
   const series = a.inst.seriesId;
   active.delete(series);
   a.browsers?.end().catch(e => a.inst.append('server', 'browsers', { run: a.n, error: e.message }));
-  // The agent's last words in a run are its report to the instance's people; its first line is the run's summary.
-  if (a.said && !aborted) a.inst.append('agent', 'report', { run: a.n, text: a.said });
-  const summary = a.said && !aborted ? summaryOf(a.said) : null, added = rules(a.process, readFile(a.inst.dir, 'working/process.md') ?? a.process);
   // The rules it added to the process, or reworded, for the thread whose entry started it, where they were likely agreed.
-  a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(4), summary, ...(error && { error }), ...(added && { rules: added, thread: a.thread }) });
+  const added = rules(a.process, readFile(a.inst.dir, 'working/process.md') ?? a.process);
+  a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(4), ...(error && { error }), ...(added && { rules: added, thread: a.thread }) });
   // Its Pi idles for the instance's next run, or stops, the longest idle too past RF_MAX_IDLE.
   const keep = !aborted && !error && !!a.run && a.inst.doc.status === 'open' && a.run.alone();
   if (keep) {
@@ -283,7 +279,7 @@ function finish(a: Active, aborted: boolean, error?: string) {
   // commits wait for: once its sandbox has stopped, or, idle, as it is, nothing running in it.
   if (!a.run) rmSync(join(rfDir(), 'runs', a.token), { recursive: true, force: true });
   const stopped = keep || !a.run ? undefined : end(a.token, a.run);
-  commit(a.inst.dir, AGENT, [`Run ${a.n}`, summary ?? error].filter(Boolean).join(': '), stopped).catch(e => a.inst.append('server', 'commit', { run: a.n, error: e.message }));
+  commit(a.inst.dir, AGENT, [`Run ${a.n}`, error].filter(Boolean).join(': '), stopped).catch(e => a.inst.append('server', 'commit', { run: a.n, error: e.message }));
   if (a.run) { // one that never started, as with a missing API key, waits for the next act or a restart rather than retrying at once
     const next = due(a.inst) ? a.inst : instances(series).find(i => i !== a.inst && due(i));
     if (next) start(next);
@@ -465,12 +461,6 @@ function fire() {
   saveWakes(w);
 }
 
-// A run's summary: the report's first line, plain, or its first sentence when that line runs long.
-function summaryOf(report: string): string {
-  const line = report.split('\n')[0].replace(/\*+|^#+/g, '').trim();
-  return (line.length > 200 ? line.split(/(?<=[.!?])\s/)[0] : line).slice(0, 200);
-}
-
 // A run a restart cut: its done's error, which `rf runs` tells from a failure.
 export const CUT = 'a restart cut the run';
 
@@ -483,7 +473,7 @@ export function recover() {
     const run = inst.log.findLast(e => e.op === 'run' || e.op === 'done');
     if (run?.op === 'run') {
       const cost = inst.log.reduce((t, e) => t + (e.op === 'call' && e.run === run.run ? (e.cost as number | undefined) ?? 0 : 0), 0);
-      inst.append('server', 'done', { run: run.run, aborted: true, seen: seenBefore(inst), cost: +cost.toFixed(4), summary: null, error: CUT });
+      inst.append('server', 'done', { run: run.run, aborted: true, seen: seenBefore(inst), cost: +cost.toFixed(4), error: CUT });
       inst.append('server', 'wake', { reason: `A restart cut run ${run.run}; carry on`, from: 'server' });
       commit(inst.dir, AGENT, `Run ${run.run}: ${CUT}`).catch(e => inst.append('server', 'commit', { run: run.run, error: e.message }));
     }

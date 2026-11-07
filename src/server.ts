@@ -214,9 +214,9 @@ function names(me: Me) {
   };
 }
 
-// What makes an instance new to a person, when someone else or the agent did it: a run's end, a report, a comment, a sign-off, an
-// upload, a takeover, a close, or a move to another workspace that someone else accepted.
-const NEWS = ['done', 'report', 'comment', 'signoff', 'upload', 'takeover', 'close', 'abandon', 'move'];
+// What makes an instance new to a person, when someone else or the agent did it: a run's end, a comment, a sign-off, an upload, a
+// takeover, a close, or a move to another workspace that someone else accepted.
+const NEWS = ['done', 'comment', 'signoff', 'upload', 'takeover', 'close', 'abandon', 'move'];
 
 function summary(i: Instance, me: Me, w8 = wakes()) {
   const email = me.email;
@@ -291,19 +291,19 @@ function runs(me: Me, since: string) {
         seconds: Math.round(((d ? Date.parse(d.at) : Date.now()) - Date.parse(r.at)) / 1000), cost: d ? d.cost as number : a?.inst === i ? +a.cost.toFixed(4) : 0,
         runner: i.log.findLast(e => e.seq < r.seq && ['create', 'duplicate', 'takeover'].includes(e.op))!.by,
         started: cause ? { op: cause.op, by: cause.op === 'wake' ? cause.from as string : cause.by } : null,
-        summary: d?.summary ?? null, error: d?.error ?? null,
+        error: d?.error ?? null,
       };
     });
   })).sort((x, y) => x.at.localeCompare(y.at));
 }
 
-// What people said, uploaded and closed, and each run's report or error, per instance `me` sees, since `since`.
+// What people and the agent said, what people uploaded and closed, and each run's failure, per instance `me` sees, since `since`.
 function activity(me: Me, since: string) {
   const t = tree();
   return Object.entries(t.series).filter(([, s]) => canSee(me, t.workspaces[s.workspace])).flatMap(([sid]) => instances(sid).map(i => ({
     path: `${named(t, sid)}/${i.label}`,
-    entries: i.log.filter(e => e.at >= since && (e.op === 'done' || (isPerson(e) && ['comment', 'upload', 'close', 'abandon'].includes(e.op)))).map(e => ({
-      at: e.at, by: e.by, op: e.op, ...(e.op === 'comment' && { text: e.text }), ...(e.op === 'upload' && { file: e.file }), ...(e.op === 'done' && { run: e.run, summary: e.summary, error: e.error }),
+    entries: i.log.filter(e => e.at >= since && ((e.op === 'done' && e.error) || e.op === 'comment' || (isPerson(e) && ['upload', 'close', 'abandon'].includes(e.op)))).map(e => ({
+      at: e.at, by: e.by, op: e.op, ...(e.op === 'comment' && { text: e.text }), ...(e.op === 'upload' && { file: e.file }), ...(e.op === 'done' && { run: e.run, error: e.error }),
     })),
   })).filter(b => b.entries.length));
 }
