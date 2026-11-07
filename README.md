@@ -322,5 +322,5 @@ TypeScript on Node, with `node:http` and no framework or build step; the agent's
 - [src/connections.ts](src/connections.ts): connections and the calls runs make to them, a module each type, and each of the server's own, under [src/connections/](src/connections), and [src/ca.ts](src/ca.ts), the runs' certificate authority.
 - [web/index.html](web/index.html): the page, one file of plain JS.
 - [prompt.md](prompt.md): the agent's instructions.
-- [docs/design.md](docs/design.md): the look; [docs/deploy.md](docs/deploy.md): deploying on two hosts, rollforward's and the browser service's, and moving from the team's fork with [scripts/migrate-fork.ts](scripts/migrate-fork.ts).
+- [docs/design.md](docs/design.md): the look; [docs/deploy.md](docs/deploy.md): deploying on two hosts, rollforward's and the browser service's.
 - [LICENSE](LICENSE): MIT.
