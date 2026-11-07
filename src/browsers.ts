@@ -102,7 +102,7 @@ function website(email: string, name: string): Website {
 export function adopt() {
   const all = readJson<Record<string, any>>('connections.json', {}), moved: Record<string, string[]> = {}, given = Object.values(grants());
   for (const [name, c] of Object.entries(all).filter(([, c]) => c.type === 'website')) {
-    moved[name] = Object.keys(users()).filter(e => e === c.owner || logins(e).some(l => l.id === `web:${name}`) || given.some(g => g.person === e && g.site === name));
+    moved[name] = [...new Set([...Object.keys(users()), ...given.map(g => g.person)])].filter(e => e === c.owner || logins(e).some(l => l.id === `web:${name}`) || given.some(g => g.person === e && g.site === name));
     for (const e of moved[name]) if (!websitesOf(e)[name]) saveWebsites(e, { ...websitesOf(e), [name]: { url: c.url, hosts: c.hosts ?? [], writeback: c.writeback !== false,
       ...(c.header && { header: c.header }), ...(c.keepalive && { keepalive: c.keepalive }), ...(c.every && { every: c.every }),
       ...(c.internal && { internal: true }), ...(c.classes && { classes: c.classes }), added: c.updated_at ?? new Date().toISOString() } });
@@ -123,28 +123,30 @@ export function adopt() {
 const signIns = new Map<string, { email: string; site: string; name: string; token?: string; since: number }>();
 
 export async function startSignIn(email: string, site: string, given: string): Promise<string> {
-  const w = website(email, site), kept = `web:${site}.header`, name = site;
+  const w = website(email, site), kept = `web:${site}.header`;
+  await checkHost(new URL(w.url).hostname, !!w.internal);
   let token;
   if (w.header) {
     token = given.trim() || (existsSync(join(personDir(email), `${kept}.sealed`)) ? secret(email, kept) : '');
-    if (!token) throw new HttpError(400, `${name} needs your ${w.header} to sign in: give it in the box under its name, on the Logins page`);
+    if (!token) throw new HttpError(400, `${site} needs your ${w.header} to sign in: give it in the box under its name, on the Logins page`);
     if (/[^\x20-\x7e]/.test(token)) throw new HttpError(400, `${w.header}: letters, digits and punctuation`);
   }
   const id = await open(w, 1800, undefined, token && { [w.header!]: token });
-  signIns.set(id, { email, site, name, token, since: Date.now() });
+  signIns.set(id, { email, site, name: site, token, since: Date.now() });
   return id;
 }
 
 export const isSignIn = (email: string, id: string) => signIns.get(id)?.email === email;
 
 // A website of one's own: its name, which runs use, the https address where its sign-in starts, and the header that sign-in needs, if
-// any; the other hosts its pages need its person allows as they sign in to it.
+// any; the other hosts its pages need its person allows as they sign in to it. One at an internal address no browser reaches until an
+// admin lets it reach internal addresses (setSite), as signing in to it says.
 export async function addSite(email: string, name: string, url: string, header = '') {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(name) || name === PRINT) throw new HttpError(400, `a website's name is lowercase letters, digits and dashes, and not ${PRINT}, the runs' own print browser`);
   if (!/^https:\/\/[^/]/.test(url) || !URL.canParse(url)) throw new HttpError(400, 'url: an https address, where its sign-in starts');
   if (header && !/^[a-z0-9-]+$/i.test(header)) throw new HttpError(400, 'header: the name of a header its sign-in needs, such as x-bot-token');
   if (websitesOf(email)[name]) throw new HttpError(409, `you have a website ${name} already: name this one otherwise`);
-  await checkHost(new URL(url).hostname, false);
+  await checkHost(new URL(url).hostname, true);
   saveWebsites(email, { ...websitesOf(email), [name]: { url, hosts: [], writeback: true, ...(header && { header }), added: new Date().toISOString() } });
   return { site: name };
 }
@@ -191,11 +193,13 @@ export async function refusedHosts(email: string, site: string) {
     ...[...n].map(([host, count]) => ({ host, count }))].sort((a, b) => b.count - a.count) };
 }
 
-// A host a person's website's pages need, allowed by them; their open sign-in to it, if any, reaches it at once. Once a grant to it is
-// approved, they allow only hosts within the registrable domains it reaches already: one elsewhere would widen what the grant approved.
-export async function allowHost(email: string, site: string, host: string) {
+// A host a person's website's pages need, allowed by them, or by an admin; their open sign-in to it, if any, reaches it at once. Once
+// a grant to it is approved, its person allows only hosts within the registrable domains it reaches already: one elsewhere would widen
+// what the grant approved, which is an admin's to approve.
+export async function allowHost(by: Me, site: string, host: string, email = by.email) {
+  if (email !== by.email && by.role !== 'admin') throw new HttpError(403, `${email}'s websites are theirs`);
   const w = website(email, site), h = host.trim().toLowerCase(), domain = (x: string) => getDomain(x.replace(/^\*\./, ''), { allowPrivateDomains: true }) ?? x;
-  if (approved(site, email) && !reached(w).some(p => domain(p) === domain(h))) throw new HttpError(403, `${h} is outside the domains ${site} reaches, which its approved grants cover`);
+  if (by.role !== 'admin' && approved(site, email) && !reached(w).some(p => domain(p) === domain(h))) throw new HttpError(403, `${h} is outside the domains ${site} reaches, which its approved grants cover: an admin allows it`);
   await checkHost(h, !!w.internal);
   changeWebsite(email, site, { hosts: [...new Set([...w.hosts, h])] });
   const id = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];

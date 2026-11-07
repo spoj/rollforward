@@ -578,7 +578,7 @@ const upgrade = (path: string, cookie: string, origin = base) => new Promise<str
 test("whoever sees an instance watches its run's browser live from the page, the person whose login it's in alone taking control of it, and their Stop browser interrupts the run, closing it", async () => {
   const carol = await login('carol@demo.test');
   assert.equal((await call('POST', '/logins/sites', { name: 'portal', url: 'https://portal.example.com/' })).status, 200);
-  assert.equal((await call('PATCH', '/logins/sites/portal', { title: 'Portal', writeback: false })).status, 200);
+  assert.equal((await call('PATCH', '/logins/sites/portal', { writeback: false })).status, 200);
   const { id: signIn } = await (await call('POST', '/logins/web/portal', {})).json();
   assert.match(await upgrade(`/signins/${signIn}/view/drive`, admin), /service got \/sessions\/b1\/view\/drive$/, 'a sign-in is its person\'s to drive');
   assert.match(await upgrade(`/signins/${signIn}/view/drive`, admin, 'https://evil.example.com'), /^HTTP\/1.1 404/, "only from the server's own pages");
@@ -608,25 +608,29 @@ test("whoever sees an instance watches its run's browser live from the page, the
     [BOB, [[ADMIN, 'portal', 'drive'], ['server', 'portal', undefined]], null], "the admin's control logged as theirs, the interrupt as bob's, and the browser gone");
 });
 
-test("anyone adds a website, theirs to set: they allow the hosts its pages need as they sign in, a run uses it where its workspace's owners approved its runner's grant, seeing the server's check, the hosts a run's browser was refused are sorted, and what's left waits on its owner and admins, and an admin may switch it off", async () => {
-  const carol = await login('carol@demo.test'), add = (body: object) => call('POST', '/logins/sites', { name: 'bobs', url: 'https://bobs.example.com/', ...body }, bob);
+test("anyone adds websites of their own, theirs to set: they allow the hosts its pages need as they sign in, a run uses one where its workspace's owners approved its runner's grant, seeing the server's check, the hosts a run's browser was refused are sorted, and what's left waits on its person, an admin allowing what's beyond its domains", async () => {
+  const carol = await login('carol@demo.test'), add = (body: object, cookie = bob) => call('POST', '/logins/sites', { name: 'bobs', url: 'https://bobs.example.com/', ...body }, cookie);
   const said = async (res: Response) => [res.status, await res.text()];
-  const allow = (host: string, cookie = bob) => call('POST', '/logins/web/bobs/hosts', { host }, cookie);
-  const listed = async (cookie: string) => (await (await call('GET', '/connections', undefined, cookie)).json()).find((c: { name: string }) => c.name === 'bobs');
+  const allow = (host: string, cookie = bob, whose = '') => call('POST', `/logins/web/bobs/hosts${whose}`, { host }, cookie);
+  const listed = async (cookie: string) => (await (await call('GET', '/logins/sites', undefined, cookie)).json()).bobs;
   assert.deepEqual(await said(await add({ url: 'http://bobs.example.com/' })), [400, 'url: an https address, where its sign-in starts']);
-  assert.deepEqual(await said(await add({ name: 'graph' })), [409, 'graph is taken: name yours otherwise']);
-  assert.deepEqual(await said(await add({ url: 'https://10.1.2.3/' })), [400, '10.1.2.3 is at an internal address: a website reaches one only where an admin lets it']);
   assert.equal((await add({})).status, 200);
-  assert.deepEqual([(await listed(bob))?.owner, (await listed(carol))?.owner], [BOB, BOB], 'everyone sees it, to sign in to it too');
+  assert.deepEqual(await said(await add({ url: 'https://bobs.example.com/other' })), [409, 'you have a website bobs already: name this one otherwise']);
+  assert.equal((await add({ url: 'https://carols.example.com/' }, carol)).status, 200, 'a name is each person\'s own');
+  assert.deepEqual([(await listed(bob)).url, (await listed(carol)).url], ['https://bobs.example.com/', 'https://carols.example.com/']);
+  // One at an internal address waits for an admin to let it reach internal addresses.
+  assert.equal((await add({ name: 'intranet', url: 'https://10.1.2.3/' })).status, 200);
+  assert.deepEqual(await said(await call('POST', '/logins/web/intranet', {}, bob)), [400, '10.1.2.3 is at an internal address: a website reaches one only where an admin lets it']);
+  assert.equal((await call('DELETE', '/logins/sites/intranet', undefined, bob)).status, 200);
 
-  // Signing in, its pages ask for hosts it doesn't reach: its owner allows those its sign-in needs, and the open browser reaches them.
+  // Signing in, its pages ask for hosts it doesn't reach: its person allows those its sign-in needs, and the open browser reaches them.
   refused = ['https://sso.idp.test/a', 'https://cdn.idp.test/x.js', 'https://sso.idp.test/b'];
   const { id: signIn } = await (await call('POST', '/logins/web/bobs', {}, bob)).json();
   assert.deepEqual(await (await call('GET', '/logins/web/bobs/refused', undefined, bob)).json(),
-    { allows: true, hosts: [{ host: '*.idp.test', count: 3 }, { host: 'sso.idp.test', count: 2 }, { host: 'cdn.idp.test', count: 1 }] });
+    { hosts: [{ host: '*.idp.test', count: 3 }, { host: 'sso.idp.test', count: 2 }, { host: 'cdn.idp.test', count: 1 }] });
   assert.deepEqual(await said(await allow('*.co.uk')), [400, '*.co.uk: a wildcard stays within one registrable domain, such as *.example.com']);
-  assert.deepEqual(await said(await allow('graph.microsoft.com')), [400, "graph.microsoft.com is graph's: no other website reaches it"]);
-  assert.deepEqual(await said(await allow('sso.idp.test', carol)), [403, "bobs's hosts are bob@demo.test's to allow, or an admin's"]);
+  assert.deepEqual(await said(await allow('graph.microsoft.com')), [400, "graph.microsoft.com is graph's: no website reaches it"]);
+  assert.deepEqual(await said(await allow('sso.idp.test', carol, `?person=${BOB}`)), [403, "bob@demo.test's websites are theirs"]);
   assert.equal((await allow('sso.idp.test')).status, 200);
   assert.deepEqual(told.slice(-2), [`PUT /sessions/${signIn}/hosts {"hosts":["bobs.example.com","sso.idp.test"]}`, `POST /sessions/${signIn}/reload `]);
   assert.deepEqual((await (await call('GET', '/logins/web/bobs/refused', undefined, bob)).json()).hosts, [{ host: 'cdn.idp.test', count: 1 }], 'what it reaches now is no longer refused');
@@ -636,28 +640,29 @@ test("anyone adds a website, theirs to set: they allow the hosts its pages need 
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Own sites' })).json();
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB] })).status, 200);
   assert.deepEqual(await said(await call('POST', '/grants', { site: 'bobs', workspace: ws, reason: '' }, bob)), [400, "a reason: what you'll use it for, for the workspace's owners"]);
-  verdicts.push({ risk: 'low', flags: [], summary: "Bob's portal, signing in through idp.test.", title: 'Bobs Portal', hosts: ['*.bobs.example.com', 'sso.idp.test', 'graph.microsoft.com'], same: 'nosuch' });
+  verdicts.push({ risk: 'low', flags: [], summary: "Bob's portal, signing in through idp.test.", hosts: ['*.bobs.example.com', 'sso.idp.test', 'graph.microsoft.com'] });
   const { id: grant, check } = await (await call('POST', '/grants', { site: 'bobs', workspace: ws, reason: 'own pulls' }, bob)).json();
-  assert.deepEqual(check, { risk: 'low', flags: [], summary: "Bob's portal, signing in through idp.test.", title: 'Bobs Portal', hosts: ['*.bobs.example.com', 'sso.idp.test'], same: null }, "graph's host never, nor a website that isn't here");
+  assert.deepEqual(check, { risk: 'low', flags: [], summary: "Bob's portal, signing in through idp.test.", hosts: ['*.bobs.example.com', 'sso.idp.test'] }, "graph's host never");
   const asked = JSON.parse(checks.at(-1)!.messages[1].content);
   assert.deepEqual([checks.at(-1)!.provider, asked.website.address, asked.signIn.blocked, asked.reason], [{ data_collection: 'deny' }, 'https://bobs.example.com/', ['sso.idp.test', 'cdn.idp.test'], 'own pulls'], 'hosts alone, from providers that keep no data');
-  const pending = async () => (await (await call('GET', '/api')).json()).find((w: { id: string }) => w.id === ws).grants.map((g: { person: string; site: string; state: string; check: { risk: string } }) => [g.person, g.site, g.state, g.check.risk]);
-  assert.deepEqual(await pending(), [[BOB, 'bobs', 'pending', 'low']], "under its owners' Waiting on you, with the check");
+  const pending = async () => (await (await call('GET', '/api')).json()).find((w: { id: string }) => w.id === ws).grants.map((g: { person: string; site: string; url: string; state: string; check: { risk: string } }) => [g.person, g.site, g.url, g.state, g.check.risk]);
+  assert.deepEqual(await pending(), [[BOB, 'bobs', 'https://bobs.example.com/', 'pending', 'low']], "under its owners' Waiting on you, with its address and the check");
   assert.equal((await call('POST', `/grants/${grant}`, { approve: true }, bob)).status, 403, "a member doesn't approve");
   assert.equal((await call('POST', `/grants/${grant}`, { approve: true })).status, 200);
-  assert.deepEqual([(await listed(bob)).hosts, (await listed(bob)).title], [['sso.idp.test', '*.bobs.example.com'], 'Bobs Portal'], "approving lets it reach what the check found, and names it");
-  assert.deepEqual(await said(await allow('cdn.other.test')), [403, 'cdn.other.test is outside the domains Bobs Portal reaches, which its grants approved: an admin allows it']);
+  assert.deepEqual((await listed(bob)).hosts, ['sso.idp.test', '*.bobs.example.com'], 'approving lets it reach what the check found');
+  assert.deepEqual(await said(await allow('cdn.other.test')), [403, 'cdn.other.test is outside the domains bobs reaches, which its approved grants cover: an admin allows it']);
 
   // In a workspace bob owns, a check that rates the website high risk leaves it for an admin to approve.
   const { id: his } = await (await call('POST', '/api/workspaces', { name: "Bob's own" })).json();
   assert.equal((await call('PUT', `/api/workspaces/${his}`, { owners: [BOB] })).status, 200);
-  verdicts.push({ risk: 'high', flags: ['looks like a lookalike'], summary: 'Not what it says.', title: '', hosts: [], same: null });
+  verdicts.push({ risk: 'high', flags: ['looks like a lookalike'], summary: 'Not what it says.', hosts: [] });
   const { id: risky } = await (await call('POST', '/grants', { site: 'bobs', workspace: his, reason: 'more pulls' }, bob)).json();
   assert.deepEqual(await said(await call('POST', `/grants/${risky}`, { approve: true }, bob)), [403, 'the check rates bobs high risk: an admin decides']);
   assert.equal((await call('POST', `/grants/${risky}`, { approve: true })).status, 200);
 
   // A run's browser was refused hosts: its own it reaches from then on, a tracker stays refused and unasked, and the rest, its CDN's
-  // too, waits on its owner and admins, under Waiting on you, marked as the server's model says, until one of them allows it.
+  // too, waits on its person, under Waiting on you, marked as the server's model says, until they allow it, or an admin what's beyond
+  // its domains.
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Own pull' }, bob)).json();
   refused = ['https://cdn.idp.test/x.js', 'https://www.tracker.test/c', 'https://static.cdnhost.test/a.js', 'https://upload.elsewhere.test/x'];
   verdicts.push({ hosts: { 'www.tracker.test': 'tracker', 'static.cdnhost.test': 'cdn', 'upload.elsewhere.test': 'other' } });
@@ -670,20 +675,16 @@ test("anyone adds a website, theirs to set: they allow the hosts its pages need 
   assert.deepEqual(log.find(e => e.action === 'allowed').allowed, ['cdn.idp.test']);
   assert.deepEqual([(await listed(bob)).hosts.slice(2), (await listed(bob)).classes], [['cdn.idp.test'], { 'www.tracker.test': 'tracker', 'static.cdnhost.test': 'cdn', 'upload.elsewhere.test': 'other' }]);
   const waits = async (cookie = bob) => (await (await call('GET', '/api', undefined, cookie)).json()).flatMap((w: any) => w.series.flatMap((s: any) => s.instances)).find((i: { id: string }) => i.id === id).refused.map((r: { hosts: string[] }) => r.hosts);
-  assert.deepEqual([await waits(), await waits(admin)], [[['static.cdnhost.test', 'upload.elsewhere.test']], [['static.cdnhost.test', 'upload.elsewhere.test']]], "only a person allows what the website doesn't own");
+  assert.deepEqual([await waits(), await waits(admin)], [[['static.cdnhost.test', 'upload.elsewhere.test']], []], 'they wait on its person alone');
   assert.equal((await allow('upload.elsewhere.test')).status, 403, 'outside its domains, now its grants are approved');
-  for (const host of ['upload.elsewhere.test', 'static.cdnhost.test']) assert.equal((await allow(host, admin)).status, 200);
+  for (const host of ['upload.elsewhere.test', 'static.cdnhost.test']) assert.equal((await allow(host, admin, `?person=${BOB}`)).status, 200);
   assert.deepEqual(await waits(), []);
 
-  // An admin switches it off, for no one to use, and on again; its owner removes it, as no one else has a grant to it.
-  assert.deepEqual(await said(await call('PATCH', '/logins/sites/bobs', { off: true }, bob)), [403, 'off: admins set it']);
-  assert.equal((await call('PATCH', '/logins/sites/bobs', { off: true })).status, 200);
-  assert.deepEqual([(await listed(bob)).off, (await call('POST', '/logins/web/bobs', {}, bob)).status], [true, 403]);
-  assert.equal((await call('PATCH', '/logins/sites/bobs', { off: false })).status, 200);
-  assert.equal((await listed(bob)).off, undefined);
-  assert.equal((await call('DELETE', '/logins/sites/bobs', undefined, carol)).status, 403);
-  assert.equal((await call('DELETE', '/logins/sites/bobs', undefined, bob)).status, 200, 'his alone, with only his own grants to it');
-  assert.deepEqual([await listed(admin), (await (await call('GET', '/logins', undefined, bob)).json()).some((l: { id: string }) => l.id === 'web:bobs'), await pending()], [undefined, false, []], 'its grants and logins go with it');
+  // Bob removes his, with his login to it and his grants for it; Carol's stays.
+  assert.equal((await call('DELETE', '/logins/sites/bobs', undefined, bob)).status, 200);
+  assert.deepEqual([await listed(bob), (await (await call('GET', '/logins', undefined, bob)).json()).some((l: { id: string }) => l.id === 'web:bobs'), await pending(), (await listed(carol)).url],
+    [undefined, false, [], 'https://carols.example.com/'], 'his grants and login go with it');
+  assert.equal((await call('DELETE', '/logins/sites/bobs', undefined, carol)).status, 200);
   refused = [];
 });
 
@@ -693,13 +694,13 @@ test('saving a sign-in keeps its login alive until the time given, for those adm
     if (res.status !== 200) await call('DELETE', `/signins/${id}`, undefined, bob);
     return [res.status, await res.text()];
   };
-  assert.equal((await call('POST', '/logins/sites', { name: 'kept', url: 'https://kept.example.com/' })).status, 200);
+  assert.equal((await call('POST', '/logins/sites', { name: 'kept', url: 'https://kept.example.com/' }, bob)).status, 200);
   assert.deepEqual(await save(), [403, 'keeping a login alive is for admins and those they grant keepalive: ask an admin']);
   assert.equal((await call('PUT', '/capabilities', { cap: 'keepalive', people: [BOB] })).status, 200);
   assert.deepEqual(await save(), [200, 'ok']);
   assert.equal((await (await call('GET', '/logins', undefined, bob)).json()).find((l: { id: string }) => l.id === 'web:kept').keepalive, until);
-  assert.equal((await call('DELETE', '/logins/sites/kept')).status, 200);
-  assert.ok(!(await (await call('GET', '/logins', undefined, bob)).json()).some((l: { id: string }) => l.id === 'web:kept'), "removed, it takes everyone's login to it");
+  assert.equal((await call('DELETE', '/logins/sites/kept', undefined, bob)).status, 200);
+  assert.ok(!(await (await call('GET', '/logins', undefined, bob)).json()).some((l: { id: string }) => l.id === 'web:kept'), 'removed, it takes its login with it');
 });
 
 test("a run's Pi idles only with nothing but Pi running in its sandbox, and ends as more Pis idle than RF_MAX_IDLE, past RF_IDLE_MIN, or as its instance closes or is abandoned", async () => {

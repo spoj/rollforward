@@ -93,9 +93,9 @@ export function revoke(me: Me, id: string): Grant {
   return g;
 }
 
-// A person's website removed takes their grants for it with it.
-export function forget(person: string, site: string) {
-  save(Object.fromEntries(Object.entries(grants()).filter(([, g]) => g.person !== person || g.site !== site)));
+// A person's website removed takes their grants for it with it, and a person removed all of theirs.
+export function forget(person: string, site?: string) {
+  save(Object.fromEntries(Object.entries(grants()).filter(([, g]) => g.person !== person || (site !== undefined && g.site !== site))));
 }
 
 // Signed out of a website once nothing of theirs for it is pending or approved.

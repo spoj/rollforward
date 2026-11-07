@@ -56,8 +56,8 @@ rf logins [--json]                your logins, each with its state, keepalive an
 rf logins offer|unoffer LOGIN SOURCE|OFFER   what a login offers runs: Microsoft 365's (m365) mailboxes, sites, folders and
                                   files, by address or link, a Databricks login's SQL warehouses, by link; unoffer takes the
                                   OFFER rf logins lists
-rf logins allow SITE HOST         a host the pages of your website SITE need; once a grant to it is approved, only within
-                                  the domains it reaches
+rf logins allow SITE HOST [--person EMAIL]   a host the pages of your website SITE need; once a grant to it is approved,
+                                  only within the domains it reaches, beyond which admins allow them, with --person
 rf logins signout LOGIN
 rf site add NAME URL [--header NAME]   a website of your own, by a NAME you choose, whose sign-in starts at URL, which you
                                   sign in to on the page; --header names a header its sign-in needs that its pages never
@@ -509,7 +509,7 @@ else if (cmd === 'comment' && args.length === 2) {
   const [what, login, x] = args, at = `/logins/${encodeURIComponent(login)}`;
   if (what === 'offer') await post(`${at}/offers`, { add: x });
   else if (what === 'unoffer') await api(`${at}/offers/${encodeURIComponent(x)}`, { method: 'DELETE' });
-  else await post(`/logins/web/${encodeURIComponent(login)}/hosts`, { host: x });
+  else await post(`/logins/web/${encodeURIComponent(login)}/hosts${flags.person ? `?person=${encodeURIComponent(String(flags.person))}` : ''}`, { host: x });
   console.log(`${login} ${{ offer: 'offers', unoffer: 'no longer offers', allow: 'reaches' }[what]} ${x}`);
 } else if (cmd === 'site' && args[0] === 'add' && args.length === 3) {
   const { site } = await (await post('/logins/sites', { name: args[1], url: args[2], header: flags.header })).json();

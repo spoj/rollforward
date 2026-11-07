@@ -17,7 +17,7 @@ import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { answered, byLogin, call, connections, intercepts, loginOf, removeConnection, setConnection, upstreams } from './connections.ts';
 import { addSite, adopt, allowHost, Browsers, endSignIn, isSignIn, keepAlive, passUpgrade, reap, refusedHosts, removeSite, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
-import { ask, decide, lapse, revoke, visible } from './grants.ts';
+import { ask, decide, forget, lapse, revoke, visible } from './grants.ts';
 import { offer } from './connections/graph.ts';
 import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, startIndexing, track } from './indexes.ts';
@@ -839,6 +839,7 @@ async function admin(me: Me, req: IncomingMessage, res: ServerResponse, url: URL
   if (!users()[email]) throw new HttpError(404, `no user ${email}`);
   if (req.method === 'DELETE') {
     if (email === me.email) throw new HttpError(409, 'you cannot remove yourself');
+    forget(email);
     removeUser(email);
   } else if (req.method === 'PUT') {
     const { disabled, signout } = await json(req);
@@ -1015,7 +1016,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       send(res, 200, 'ok');
     }
     else if (/^\/logins\/web\/[^/]+\/refused$/.test(url.pathname) && req.method === 'GET') send(res, 200, await refusedHosts(me.email, decodeURIComponent(url.pathname.split('/')[3])));
-    else if (/^\/logins\/web\/[^/]+\/hosts$/.test(url.pathname) && req.method === 'POST') send(res, 200, (await allowHost(me.email, decodeURIComponent(url.pathname.split('/')[3]), String((await json(req)).host ?? '')), 'ok'));
+    else if (/^\/logins\/web\/[^/]+\/hosts$/.test(url.pathname) && req.method === 'POST') send(res, 200, (await allowHost(me, decodeURIComponent(url.pathname.split('/')[3]), String((await json(req)).host ?? ''), url.searchParams.get('person') ?? me.email), 'ok'));
     else if (url.pathname.startsWith('/logins/web/') && req.method === 'POST') send(res, 200, { id: await startSignIn(me.email, decodeURIComponent(url.pathname.slice(12)), String((await json(req)).header ?? '')) });
     // What a person's login offers that they add themselves: Microsoft 365's sources and Databricks' warehouses.
     else if (/^\/logins\/[^/]+\/offers$/.test(url.pathname) && req.method === 'POST') {
