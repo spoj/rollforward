@@ -15,7 +15,7 @@ process.env.RF_WAKE_TICK_MS = '50';
 const entra = await idp();
 Object.assign(process.env, entra.env('http://127.0.0.1:1'));
 const { cancelWakes, pinFor, closed, kick, message, recover, resolveFor, setWake, startWaking, view, wakes, wakesOf, weekly } = await import('../src/waker.ts');
-const { saveLogin } = await import('../src/logins.ts');
+const { personDir, saveLogin } = await import('../src/logins.ts');
 const { keepSignIn } = await import('../src/entra.ts');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-wake-')), alice = 'alice@demo.test';
 initSystem(tmp);
@@ -42,10 +42,12 @@ startWaking();
 
 after(() => (entra.close(), rmSync(tmp, { recursive: true, force: true })));
 
-test("a run's first message names the runner and what they lend, each tick as logged, as does a later one only where its entries change those", () => {
+test("a run's first message names the runner and what they lend, each tick as logged, a website's with its address, as does a later one only where its entries change those", () => {
   assert.match(message(oct, 1, oct.log, true), new RegExp(`^Instance 2026-10, run 1\\. Its runner is .+ <${alice}>, who lends you no login\\. New log entries:`));
+  mkdirSync(personDir(alice), { recursive: true });
+  writeFileSync(join(personDir(alice), 'websites.json'), JSON.stringify({ portal: { url: 'https://portal.test/login', hosts: [], writeback: true, added: '' } }));
   const ticked = createInstance('s5', '2026-10', alice, ['web:portal', 'm365:mail:ann@demo.test', 'm365:item:d1/i1']);
-  assert.match(message(ticked, 1, ticked.log, true), /, who lends you web:portal, m365:mail:ann@demo\.test, m365:item:d1\/i1\. New log entries:/);
+  assert.match(message(ticked, 1, ticked.log, true), /, who lends you web:portal at https:\/\/portal\.test\/login, m365:mail:ann@demo\.test, m365:item:d1\/i1\. New log entries:/);
   assert.match(message(oct, 2, [{ seq: 98, at: '', by: alice, op: 'comment', text: 'go' }], true), /^Instance 2026-10, run 2\. Its runner is /, 'every run is a new conversation');
   assert.match(message(oct, 2, []), /^Instance 2026-10, run 2\. New log entries:/);
   assert.match(message(oct, 3, [{ seq: 99, at: '', by: 'bob@demo.test', op: 'takeover', from: alice }]), new RegExp(`run 3\\. Its runner is now .+ <bob@demo\\.test>, taking over from .+ <${alice}>, who lends you no login\\.`));

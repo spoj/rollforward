@@ -8,7 +8,7 @@ import type { JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { prepare, sources } from './indexes.ts';
 import { canSee, changes, readJson, rfDir, tree, type Tree, writeJson } from './system.ts';
 import { asPerson, users } from './auth.ts';
-import type { Browsers } from './browsers.ts';
+import { websitesOf, type Browsers } from './browsers.ts';
 import { seriesSettings } from './series.ts';
 import { pushed, skills } from './skills.ts';
 import { AGENT, commit, committed } from './git.ts';
@@ -92,14 +92,14 @@ const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math
 // later one whose entries change those: a takeover and a runner's new ticks.
 export function message(inst: Instance, n: number, entries: Entry[], first = false): string {
   const made = entries.findLast(e => ['takeover', 'logins'].includes(e.op)), us = users(), who = (by: string) => `${us[by]?.name || by} <${by}>`;
-  const set = [...wakesOf(inst.id), ...wakesOf(inst.seriesId)];
+  const set = [...wakesOf(inst.id), ...wakesOf(inst.seriesId)], sites = websitesOf(runnerOf(inst).by);
   // The corrections on the instances before it, so an error isn't rolled forward.
   const fixed = !first ? [] : closedBefore(inst).flatMap(i => i.log.filter(e => e.op === 'correction').map(e => {
     const see = e.see as { label: string; thread?: string } | undefined;
     return `${i.label}${e.item ? ` ${e.item}${e.ref ? `@${e.ref}` : ''}` : ''} is ${e.kind}, ${JSON.stringify(e.text)}${see ? `, see ${see.label}${see.thread ? ` ${see.thread}` : ''}` : ''}`;
   }));
   return `Instance ${inst.label}, run ${n}.`
-    + (first || made ? ` Its runner is ${made?.op === 'takeover' ? `now ${who(made.by)}, taking over from ${who(made.from as string)}` : who(runnerOf(inst).by)}, who lends you ${runnerOf(inst).logins.join(', ') || 'no login'}.` : '')
+    + (first || made ? ` Its runner is ${made?.op === 'takeover' ? `now ${who(made.by)}, taking over from ${who(made.from as string)}` : who(runnerOf(inst).by)}, who lends you ${runnerOf(inst).logins.map(l => l.startsWith('web:') && sites[l.slice(4)] ? `${l} at ${sites[l.slice(4)].url}` : l).join(', ') || 'no login'}.` : '')
     + (first && set.length ? ` Pending wakes: ${set.map(k => `${k.id}, ${k.target === inst.id ? 'waking this instance' : `starting ${k.label}`} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''}`).join('; ')}.` : '')
     + (fixed.length ? ` Corrections on earlier instances: ${fixed.join('; ')}.` : '')
     + ' New log entries:\n'

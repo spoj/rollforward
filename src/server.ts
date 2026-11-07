@@ -15,8 +15,8 @@ import { act, canManage, canSee, changes, everyone, initSystem, isPeople, readJs
 import { checkTicks, logins, runnerOf, saveLogin, signOut, unoffer } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
-import { answered, byLogin, call, changeConnection, connections, intercepts, loginOf, removeConnection, setConnection, upstreams } from './connections.ts';
-import { addSite, allowHost, Browsers, endSignIn, isSignIn, keepAlive, passUpgrade, reap, refusedHosts, removeSite, setSite, startSignIn, unreached, viewPage, websites } from './browsers.ts';
+import { answered, byLogin, call, connections, intercepts, loginOf, removeConnection, setConnection, upstreams } from './connections.ts';
+import { addSite, adopt, allowHost, Browsers, endSignIn, isSignIn, keepAlive, passUpgrade, reap, refusedHosts, removeSite, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
 import { ask, decide, lapse, revoke, visible } from './grants.ts';
 import { offer } from './connections/graph.ts';
 import { addWarehouse } from './connections/databricks.ts';
@@ -35,6 +35,7 @@ const tmpDir = join(root, '.tmp'), previews = join(root, '.previews');
 if (!existsSync(join(agentRoot, 'usr'))) throw new Error(`no agent image at ${agentRoot}: node scripts/agent.ts unpacks agent-${agentId}, which this checkout runs`);
 initSystem(root);
 openStore(root);
+adopt();
 // A new data root starts with one connection, Microsoft 365's, graph.
 if (!existsSync(join(root, '.rf', 'connections.json'))) writeJson('connections.json', { graph: { type: 'graph', updated_by: 'server', updated_at: new Date().toISOString() } });
 
@@ -158,7 +159,7 @@ function guard(before: string[], after: string[], force: unknown) {
 // An instance as the sidebar shows it. What comes from its log and screen is kept until either moves on, or its series' sharing,
 // which says whose entries are notes, changes, so a listing reads each instance's log once, not on every refresh.
 const kept = new WeakMap<Instance, { key: string; active: string; asks: string[]; runner: string; acted: string[]; cost: number; corrections: number; wrong: string[];
-  refused: { at: string; run: number; site: string; hosts: string[] }[] }>();
+  refused: { at: string; run: number; site: string; login: string; hosts: string[] }[] }>();
 // Who runs an instance, and the logins they ticked for it, by name while they still offer them.
 function runner(inst: Instance) {
   const r = runnerOf(inst), offers = logins(r.by).flatMap(l => l.offers);
@@ -186,16 +187,16 @@ function summary(i: Instance, me: Me, w8 = wakes()) {
   let k = kept.get(i);
   if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i).map(w => w.who), runner: runnerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: +i.log.reduce((t, e) => t + (e.op === 'done' ? e.cost as number : 0), 0).toFixed(4), corrections: i.log.filter(e => e.op === 'correction').length,
     wrong: i.log.filter(e => e.op === 'correction' && e.kind === 'wrong').map(e => e.at),
-    refused: i.log.filter(e => e.op === 'browser' && e.hosts).map(e => ({ at: e.at, run: e.run as number, site: e.site as string, hosts: Object.keys(e.hosts as object) })) });
+    refused: i.log.filter(e => e.op === 'browser' && e.hosts).map(e => ({ at: e.at, run: e.run as number, site: e.site as string, login: e.login as string, hosts: Object.keys(e.hosts as object) })) });
   return {
     id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(i.seriesId)?.inst === i, queued: !!queued(i),
     asks: k.asks, wakes: wakesOf(i.id, w8), fired: w8.fired[i.id] ?? null, runner: k.runner, cost: k.cost, active: k.active,
     unread: !!news && news.at > s.since && news.seq > (s.at[i.id] ?? 0), corrections: k.corrections,
     // What says it was wrong, for its runner under Waiting on you, for a week, as a correction is never withdrawn.
     wrong: k.wrong.filter(fresh).length,
-    // The hosts a run's browser on a website was refused that it still doesn't reach, once the server sorted them (browsers.ts), for
-    // its owner or an admin to allow under Waiting on you, for a week.
-    refused: k.refused.filter(e => fresh(e.at) && websites()[e.site] && (websites()[e.site].owner === email || me.role === 'admin')).map(e => ({ ...e, hosts: unreached(e.site, e.hosts), says: websites()[e.site].classes ?? {} })).filter(e => e.hosts.length),
+    // The hosts a run's browser on a person's website was refused that it still doesn't reach, once the server sorted them
+    // (browsers.ts), for that person to allow under Waiting on you, for a week.
+    refused: k.refused.filter(e => fresh(e.at) && e.login === email && websitesOf(email)[e.site]).map(e => ({ ...e, hosts: unreached(email, e.site, e.hosts), says: websitesOf(email)[e.site].classes ?? {} })).filter(e => e.hosts.length),
   };
 }
 
@@ -863,13 +864,12 @@ async function skillsRoute(me: Me, req: IncomingMessage, res: ServerResponse, ur
 }
 
 // Connections: anyone signed in may list them, each with its login, to connect or sign in on the Logins page; admins keep them,
-// with rf, but websites, which anyone adds (/logins/sites).
+// with rf.
 async function connectionsRoute(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) {
   const name = decodeURIComponent(url.pathname.slice(13));
   if (!name && req.method === 'GET') return send(res, 200, connections().map(c => ({ ...c, login: loginOf(c) })));
   if (me.role !== 'admin') throw new HttpError(403, 'admins keep connections');
   const body = req.method === 'PUT' ? await json(req) : {};
-  if (websites()[name] || body.type === 'website') throw new HttpError(400, 'a website is anyone\'s to add, with rf site add, and its owner\'s or an admin\'s to change, with rf site set, or remove');
   if (req.method === 'PUT') return send(res, 200, await setConnection(name, body, me.email));
   if (req.method === 'DELETE') return send(res, 200, (removeConnection(name), 'ok'));
   throw new HttpError(405, 'PUT or DELETE');
@@ -985,14 +985,19 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       if (!login?.scope) throw new HttpError(404, 'no connection signs in to Microsoft with that login');
       await connect(res, me.email, login);
     }
-    // Websites, which anyone adds, by a name and the https address where its sign-in starts, the hosts its pages need allowed as
-    // its owner signs in; its owner, or an admin, changes or removes it.
-    else if (url.pathname === '/logins/sites' && req.method === 'POST') {
-      const { name, url: start } = await json(req);
-      send(res, 200, await addSite(me.email, String(name ?? ''), String(start ?? '')));
+    // Websites, each person's own, by a name of theirs and the https address where its sign-in starts, the hosts its pages need
+    // allowed as they sign in; admins see anyone's, and only let one reach internal addresses.
+    else if (url.pathname === '/logins/sites' && req.method === 'GET') {
+      const person = url.searchParams.get('person') ?? me.email;
+      if (person !== me.email && me.role !== 'admin') throw new HttpError(403, `${person}'s websites are theirs`);
+      send(res, 200, websitesOf(person));
     }
-    else if (/^\/logins\/sites\/[^/]+$/.test(url.pathname) && req.method === 'PATCH') send(res, 200, (await setSite(me, decodeURIComponent(url.pathname.split('/')[3]), await json(req)), 'ok'));
-    else if (/^\/logins\/sites\/[^/]+$/.test(url.pathname) && req.method === 'DELETE') send(res, 200, (removeSite(me, decodeURIComponent(url.pathname.split('/')[3])), 'ok'));
+    else if (url.pathname === '/logins/sites' && req.method === 'POST') {
+      const { name, url: start, header } = await json(req);
+      send(res, 200, await addSite(me.email, String(name ?? ''), String(start ?? ''), String(header ?? '').trim()));
+    }
+    else if (/^\/logins\/sites\/[^/]+$/.test(url.pathname) && req.method === 'PATCH') send(res, 200, (await setSite(me, decodeURIComponent(url.pathname.split('/')[3]), await json(req), url.searchParams.get('person') ?? me.email), 'ok'));
+    else if (/^\/logins\/sites\/[^/]+$/.test(url.pathname) && req.method === 'DELETE') send(res, 200, (removeSite(me.email, decodeURIComponent(url.pathname.split('/')[3])), 'ok'));
     // Grants: a person asks to use their login to a website in a workspace, whose owners approve or deny it, and revoke it, as its
     // person may withdraw it; revoked, that person's run browsers there in the workspace close at once.
     else if (url.pathname === '/grants' && req.method === 'GET') send(res, 200, visible(me));
@@ -1009,8 +1014,8 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       for (const a of active.values()) if (t.series[a.inst.seriesId].workspace === g.workspace && a.browsers?.bySite.get(g.site)?.email === g.person) await a.browsers.close(g.site);
       send(res, 200, 'ok');
     }
-    else if (/^\/logins\/web\/[^/]+\/refused$/.test(url.pathname) && req.method === 'GET') send(res, 200, await refusedHosts(me, decodeURIComponent(url.pathname.split('/')[3])));
-    else if (/^\/logins\/web\/[^/]+\/hosts$/.test(url.pathname) && req.method === 'POST') send(res, 200, (await allowHost(me, decodeURIComponent(url.pathname.split('/')[3]), String((await json(req)).host ?? '')), 'ok'));
+    else if (/^\/logins\/web\/[^/]+\/refused$/.test(url.pathname) && req.method === 'GET') send(res, 200, await refusedHosts(me.email, decodeURIComponent(url.pathname.split('/')[3])));
+    else if (/^\/logins\/web\/[^/]+\/hosts$/.test(url.pathname) && req.method === 'POST') send(res, 200, (await allowHost(me.email, decodeURIComponent(url.pathname.split('/')[3]), String((await json(req)).host ?? '')), 'ok'));
     else if (url.pathname.startsWith('/logins/web/') && req.method === 'POST') send(res, 200, { id: await startSignIn(me.email, decodeURIComponent(url.pathname.slice(12)), String((await json(req)).header ?? '')) });
     // What a person's login offers that they add themselves: Microsoft 365's sources and Databricks' warehouses.
     else if (/^\/logins\/[^/]+\/offers$/.test(url.pathname) && req.method === 'POST') {

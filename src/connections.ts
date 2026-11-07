@@ -11,7 +11,6 @@ import { token } from './entra.ts';
 import { lender, logins, runnerOf, saveLogin, secret, use, type Offer } from './logins.ts';
 import graph from './connections/graph.ts';
 import databricks from './connections/databricks.ts';
-import website from './connections/website.ts';
 import * as openrouter from './connections/openrouter.ts';
 import * as exa from './connections/exa.ts';
 
@@ -34,7 +33,7 @@ export type Connection = { name: string; type: string; [setting: string]: any };
 export type Request = { method: string; url: URL; headers: Record<string, string | string[] | undefined>; json?: any; body?: Buffer };
 export type Type = {
   settings(input: Record<string, unknown>): Record<string, unknown>;
-  // Its person's login: an Entra login, with its scope, or a website's, which they sign in to in a live browser.
+  // Its person's login: an Entra login, with its scope.
   login(c: Connection): (EntraLogin | { id: string; kind: string; name: string; scope?: undefined; offers: Offer[] });
   serves?(c: Connection, host: string): boolean;
   // The offer a request needs ticked, its JSON body as it goes on, if the type rewrote it, and the origin where its answer's
@@ -45,7 +44,7 @@ export type Type = {
   // What a run's environment holds for it, given the instance's ticks.
   env?(c: Connection, ticks: string[]): Record<string, string>;
 };
-export const types: Record<string, Type> = { graph, databricks, website };
+export const types: Record<string, Type> = { graph, databricks };
 
 export const connections = (): Connection[] => Object.entries(readJson<Record<string, any>>('connections.json', {})).map(([name, c]) => ({ name, ...c }));
 
@@ -53,17 +52,16 @@ export const connections = (): Connection[] => Object.entries(readJson<Record<st
 export const covers = (pattern: string, host: string) => pattern === host || (pattern.startsWith('*.') && host.endsWith(pattern.slice(1)));
 export const reached = (w: { url: string; hosts: string[] }) => [new URL(w.url).hostname, ...w.hosts];
 
-// What a website may reach: never rollforward's own host; never another website's address, or a host another connection serves, so
-// that no website goes around another's grants or settings, though hosts such as single sign-on's they share; a wildcard within one
-// registrable domain, the public suffixes being the Public Suffix List's, its private ones too; and never an internal address, which
-// the browser refuses it too, unless an admin lets the website reach them, by exact hosts.
-export async function checkHost(name: string, h: string, internal: boolean) {
+// What a website may reach (browsers.ts): never rollforward's own host, or a host a connection serves, so that no website goes around
+// its grants or settings; a wildcard within one registrable domain, the public suffixes being the Public Suffix List's, its private ones
+// too; and never an internal address, which the browser refuses it too, unless an admin lets the website reach them, by exact hosts.
+export async function checkHost(h: string, internal: boolean) {
   if (!/^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(h)) throw new HttpError(400, `${h}: a host, such as sso.example.com, or *.example.com for any name under it`);
   const base = h.replace(/^\*\./, '');
   if (h !== base && !getDomain(base, { allowPrivateDomains: true })) throw new HttpError(400, `${h}: a wildcard stays within one registrable domain, such as *.example.com`);
   if ([process.env.RF_PUBLIC_URL, process.env.RF_BROWSER_URL].some(u => u && covers(h, new URL(u).hostname))) throw new HttpError(400, `${h} is rollforward's own: no website reaches it`);
-  const other = connections().find(c => c.name !== name && (types[c.type].serves?.(c, base) || (c.type === 'website' && covers(h, new URL(c.url).hostname))));
-  if (other) throw new HttpError(400, `${h} is ${other.name}'s: no other website reaches it`);
+  const other = connections().find(c => types[c.type].serves?.(c, base));
+  if (other) throw new HttpError(400, `${h} is ${other.name}'s: no website reaches it`);
   if (!internal && h === base && (await lookup(h, { all: true }).catch(() => [])).some(isPrivate)) throw new HttpError(400, `${h} is at an internal address: a website reaches one only where an admin lets it`);
 }
 
@@ -73,19 +71,10 @@ export async function setConnection(name: string, input: Record<string, unknown>
   const type = types[String(input.type)];
   if (!type) throw new HttpError(400, `type: one of ${Object.keys(types).join(', ')}`);
   const settings = type.settings(input);
-  if (type === website) for (const h of reached(settings as { url: string; hosts: string[] })) await checkHost(name, h, !!settings.internal);
   const all = readJson<Record<string, any>>('connections.json', {});
   all[name] = { type: input.type, ...settings, updated_by: by, updated_at: new Date().toISOString() };
   writeJson('connections.json', all);
   return { name, ...all[name] };
-}
-
-// A change to a connection's settings past their checks: a host a website's pages needed, allowed as its owner signed in (browsers.ts).
-export function changeConnection(name: string, change: Record<string, unknown>, by: string) {
-  const all = readJson<Record<string, any>>('connections.json', {});
-  if (!all[name]) throw new HttpError(404, `no connection ${name}`);
-  all[name] = { ...all[name], ...change, updated_by: by, updated_at: new Date().toISOString() };
-  writeJson('connections.json', all);
 }
 
 // People's logins to a connection removed stay theirs to sign out of; no run can use them.
