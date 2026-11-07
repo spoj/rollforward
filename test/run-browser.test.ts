@@ -51,10 +51,12 @@ delete process.env.OPENROUTER_API_KEY;
 const { asPerson } = await import('../src/auth.ts');
 const { serveAgent } = await import('../src/agent-api.ts');
 const { logins, personDir, saveLogin, secret, signOut } = await import('../src/logins.ts');
-// A person's websites, as they'd have added them.
-const sites = (email: string, all: Record<string, object>) => {
-  mkdirSync(personDir(email), { recursive: true });
-  writeFileSync(join(personDir(email), 'websites.json'), JSON.stringify(all));
+// The websites of everyone the tests run as, alike, as each would have added them.
+const sites = (all: Record<string, object>) => {
+  for (const email of ['alice@demo.test', 'bob@demo.test', 'carol@demo.test']) {
+    mkdirSync(personDir(email), { recursive: true });
+    writeFileSync(join(personDir(email), 'websites.json'), JSON.stringify(all));
+  }
 };
 const tmp = mkdtempSync(join(tmpdir(), 'rf-shots-'));
 initSystem(tmp);
@@ -86,6 +88,7 @@ test("after each tool call, each of the run's browsers is shot unless its page l
 
 test("the agent says a website signed it out: its runner's login is marked expired and its browser closes, keeping its request log", async () => {
   const alice = 'alice@demo.test', erp = { id: 'web:erp', kind: 'website' as const, name: 'ERP', since: '', offers: [{ id: 'web:erp', name: 'ERP' }] };
+  sites({ erp: { url: 'https://erp.example.com', hosts: [], writeback: true } });
   saveLogin(alice, erp, '{}');
   const inst = running('2026-12', ['web:erp']), browsers = new Browsers(inst, 1);
   browsers.bySite.set('erp', { id: 'b1', email: alice, since: '', writeback: true, file: 'browser/run 1 erp.jsonl', conns: 0 });
@@ -104,7 +107,7 @@ test('an answer of the browser service that is no JSON, as a proxy in front of i
 
 test("closing a run's browser hands its login back refreshed, unless its person signed in to it anew since it opened", async () => {
   const alice = 'alice@demo.test', crm = (since: string) => ({ id: 'web:crm', kind: 'website' as const, name: 'CRM', since, offers: [{ id: 'web:crm', name: 'CRM' }] });
-  sites(alice, { crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });
+  sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });
   saveLogin(alice, crm('t1'), '{"cookies":["old"]}');
   const browsers = new Browsers(running('2027-02', ['web:crm']), 1);
   await browsers.browser('crm');
@@ -120,9 +123,9 @@ const sleep = (ms: number) => new Promise(ok => setTimeout(ok, ms));
 const alice = 'alice@demo.test', website = (id: string, name: string) => ({ id: `web:${id}`, kind: 'website' as const, name, since: 't1', offers: [{ id: `web:${id}`, name }] });
 
 test("a website's header goes, with its person's value, to their sign-in's browser alone: sealed as they save the login, used again when they sign in again with none, replaced by a new one, and gone as they sign out", async () => {
-  sites(alice, { rl: { url: 'https://rl.example.com/login', hosts: [], writeback: true, header: 'x-bot-token' } });
+  sites({ rl: { url: 'https://rl.example.com/login', hosts: [], writeback: true, header: 'x-bot-token' } });
   headers.length = 0;
-  await assert.rejects(startSignIn(alice, 'rl', ''), /Retail Link needs your x-bot-token to sign in/);
+  await assert.rejects(startSignIn(alice, 'rl', ''), /rl needs your x-bot-token to sign in/);
   await assert.rejects(startSignIn(alice, 'rl', 'jwt\r\nx: 1'), /x-bot-token: letters, digits and punctuation/);
   await endSignIn(alice, await startSignIn(alice, 'rl', 'jwt-1\n'), false);
   await assert.rejects(startSignIn(alice, 'rl', ''), /needs your x-bot-token/, 'kept only with a saved login');
@@ -139,7 +142,7 @@ test("a website's header goes, with its person's value, to their sign-in's brows
 });
 
 test("a sign-in that ends, saved or not, leaves a line in the server's output of what its browser did, its addresses as their hosts alone", async t => {
-  sites(alice, { pa: { url: 'https://pa.example.com/', hosts: ['sso.example.com'], writeback: true } });
+  sites({ pa: { url: 'https://pa.example.com/', hosts: ['sso.example.com'], writeback: true } });
   const said = t.mock.method(console, 'log', () => {});
   requested = [
     { method: 'GET', url: 'https://pa.example.com/?code=secret', status: 302 },
@@ -163,7 +166,7 @@ test("a sign-in that ends, saved or not, leaves a line in the server's output of
 });
 
 test("a person has one browser at a time on a website that writes its state back: another run waits, logged, and opens from the state handed back; elsewhere runs open at once from the saved login, which stays", async () => {
-  sites(alice, {
+  sites({
     crm: { url: 'https://crm.example.com', hosts: [], writeback: true },
     ledger: { url: 'https://ledger.example.com', hosts: [], writeback: false },
   });
@@ -245,11 +248,11 @@ test("$RF_BROWSERS/print is the run's own print browser, a name no website takes
 });
 
 test("a browser refused for its runner's expired login is logged as expired, so the instance carries on once they sign in again", async () => {
-  sites(alice, { crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });
+  sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });
   saveLogin(alice, { ...website('crm', 'CRM'), expired: true }, '{}');
   const inst = running('2027-08', ['web:crm']), browsers = new Browsers(inst, 1);
   await assert.rejects(browsers.browser('crm'), (e: { status: number; login: string }) => e.status === 409 && e.login === 'web:crm');
-  assert.deepEqual(inst.log.filter(e => e.op === 'expired').map(e => [e.login, e.name, e.runner]), [['web:crm', 'CRM', alice]]);
+  assert.deepEqual(inst.log.filter(e => e.op === 'expired').map(e => [e.login, e.name, e.runner]), [['web:crm', 'crm', alice]]);
   saveLogin(alice, website('crm', 'CRM'), '{}');
 });
 
@@ -272,7 +275,7 @@ test("a person granted keepalive who keeps their login to a website alive, as th
   const bob = 'bob@demo.test', carol = 'carol@demo.test', until = new Date(2026, 10, 9).toISOString(), at = (d: number, h: number, m = 0) => new Date(2026, 10, d, h, m);
   writeJson('users.json', { [alice]: { role: 'admin' }, [bob]: { role: 'user' }, [carol]: { role: 'user' } });
   writeJson('capabilities.json', { keepalive: [carol] });
-  sites(alice, { pa: { url: 'https://pa.example.com/PatriArchMVC/Account/Login', hosts: ['sso.example.com'], writeback: true, keepalive: '/PatriArchMVC/', every: 8 } });
+  sites({ pa: { url: 'https://pa.example.com/PatriArchMVC/Account/Login', hosts: ['sso.example.com'], writeback: true, keepalive: '/PatriArchMVC/', every: 8 } });
   saveLogin(alice, { ...website('pa', 'PatriArch'), keepalive: until }, '{"cookies":["signed in"]}');
   saveLogin(bob, { ...website('pa', 'PatriArch'), keepalive: until }, '{"cookies":["bob, not granted keepalive"]}');
   saveLogin(carol, website('pa', 'PatriArch'), '{"cookies":["carol, not keeping it alive"]}');
@@ -299,7 +302,7 @@ test("a person granted keepalive who keeps their login to a website alive, as th
   saveLogin(bob, { ...website('pa', 'PatriArch'), keepalive: until }, '{"cookies":["bob"]}');
   await keepAlive(at(9, 0));
   assert.equal(turns(), 6, 'nothing for an expired login, nor once the time its person set has come');
-  sites(alice, { crm: { url: 'https://crm.example.com/#/home', hosts: ['cdn.example.com'], writeback: false } });
+  sites({ crm: { url: 'https://crm.example.com/#/home', hosts: ['cdn.example.com'], writeback: false } });
   saveLogin(bob, { ...website('crm', 'CRM'), keepalive: new Date(2026, 10, 12).toISOString() }, '{"cookies":["crm"]}');
   [starts.length, shown] = [0, { url: 'https://crm.example.com/#/home', password: false }];
   for (const m of [0, 9, 10]) await keepAlive(at(10, 12, m));
@@ -307,7 +310,7 @@ test("a person granted keepalive who keeps their login to a website alive, as th
 });
 
 test("saving a sign-in keeps its login alive until a time within the next 7 days, if given, and a sign-in without one no longer", async () => {
-  sites(alice, { crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });
+  sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });
   const id = await startSignIn(alice, 'crm', ''), week = Date.now() + 7 * 86_400_000;
   for (const t of [new Date(Date.now() - 60_000).toISOString(), new Date(week + 60_000).toISOString(), 'Friday', null])
     await assert.rejects(endSignIn(alice, id, true, t), /keepalive: a time within the next 7 days, until which your login is kept alive/, String(t));
@@ -319,7 +322,7 @@ test("saving a sign-in keeps its login alive until a time within the next 7 days
 
 test("a person's keepalive turn that fails leaves the others' to go on, and a person disabled has none", async () => {
   const carol = 'carol@demo.test', until = new Date(2026, 10, 12).toISOString();
-  sites(alice, { pa: { url: 'https://pa.example.com/PatriArchMVC/Account/Login', hosts: ['sso.example.com'], writeback: true, keepalive: '/PatriArchMVC/', every: 8 } });
+  sites({ pa: { url: 'https://pa.example.com/PatriArchMVC/Account/Login', hosts: ['sso.example.com'], writeback: true, keepalive: '/PatriArchMVC/', every: 8 } });
   writeJson('users.json', { [carol]: { role: 'user' }, [alice]: { role: 'admin' } });
   writeJson('capabilities.json', { keepalive: [carol] });
   saveLogin(carol, { ...website('pa', 'PatriArch'), keepalive: until }, '{"cookies":["refused"]}');
@@ -339,7 +342,7 @@ test("a run gets its browser on a website only where its runner's grant to it in
   const bob = 'bob@demo.test', until = new Date(2026, 10, 9).toISOString();
   writeJson('users.json', { [alice]: { role: 'admin' }, [bob]: { role: 'user' } });
   saveTree({ ...tree(), workspaces: { w: { ...tree().workspaces.w, members: [bob] } } });
-  sites(alice, { bank: { url: 'https://bank.example.com', hosts: [], writeback: false, keepalive: '/home', every: 10 } });
+  sites({ bank: { url: 'https://bank.example.com', hosts: [], writeback: false, keepalive: '/home', every: 10 } });
   writeJson('capabilities.json', { keepalive: [bob] });
   writeJson('grants.json', {});
   saveLogin(alice, { ...website('bank', 'Bank'), keepalive: until }, '{"cookies":["alice"]}');
@@ -347,7 +350,7 @@ test("a run gets its browser on a website only where its runner's grant to it in
   const his = running('b2', ['web:bank'], 1, bob);
   for (const run of [2, 3, 4]) his.append('server', 'run', { run, runner: bob, consent: 1 });
   const first = new Browsers(his, 1);
-  for (const _ of [1, 2]) await assert.rejects(first.browser('bank'), /^Error: bob@demo\.test has no approved grant to use Bank in Acme: they ask its owners for one on the Logins page; this run goes on without it$/);
+  for (const _ of [1, 2]) await assert.rejects(first.browser('bank'), /^Error: bob@demo\.test has no approved grant to use bank in Acme: they ask its owners for one on the Logins page; this run goes on without it$/);
   assert.deepEqual(his.log.filter(e => e.action === 'refused').map(e => e.run), [1], 'logged once a run');
   const { id } = await ask(asPerson(bob)!, 'bank', 'w', 'daily balances');
   await assert.rejects(new Browsers(his, 2).browser('bank'), /no approved grant/, 'asked is not approved');
@@ -372,7 +375,7 @@ test("a run gets its browser on a website only where its runner's grant to it in
 test('a request lapses a week after it was asked, and a login no approved grant uses is signed out a week after its sign-in', async () => {
   const bob = 'bob@demo.test', week = 7 * 86_400_000, since = new Date().toISOString();
   writeJson('users.json', { [alice]: { role: 'admin' }, [bob]: { role: 'user' } });
-  sites(alice, { bank: { url: 'https://bank.example.com', hosts: [] }, crm: { url: 'https://crm.example.com', hosts: [] } });
+  sites({ bank: { url: 'https://bank.example.com', hosts: [] }, crm: { url: 'https://crm.example.com', hosts: [] } });
   writeJson('grants.json', {});
   saveLogin(bob, { ...website('bank', 'Bank'), since }, '{}');
   saveLogin(bob, { ...website('crm', 'CRM'), since }, '{}');
@@ -391,7 +394,7 @@ test('a request lapses a week after it was asked, and a login no approved grant 
 });
 
 test("as the server starts, the browsers a restart left open on the service close: a run's keeps its request log and hands its login back, as its run would have, and a sign-in's just goes", async t => {
-  sites(alice, { crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });
+  sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });
   saveLogin(alice, website('crm', 'CRM'), '{"cookies":["before"]}');
   const inst = running('2027-12b', ['web:crm'], 4), cut = new Browsers(inst, 4);
   await cut.browser('crm');
