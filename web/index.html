@@ -177,9 +177,9 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .btn.danger:hover:not(:disabled) { background: #fdf1f0; border-color: var(--red); }
 [aria-busy=true] { pointer-events: none; opacity: .6; cursor: progress; }
 
-/* The instance's slices, Inputs, Outputs and Review, side by side, each scrolling on its own; in the list view, Inputs over Outputs,
-   with Review beside them. */
-.panes { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr); grid-template-areas: "ins outs steps"; position: relative; }
+/* The instance's slices, Inputs, Steps and Outputs, side by side, each scrolling on its own; in the list view, Inputs over Outputs,
+   with Steps beside them. */
+.panes { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr); grid-template-areas: "ins steps outs"; position: relative; }
 .panes.list { grid-template-columns: minmax(0, 1fr) minmax(240px, 28%); grid-template-rows: fit-content(55%) minmax(0, 1fr); grid-template-areas: "ins steps" "outs steps"; }
 .pane { padding: 22px 28px 20px; display: flex; flex-direction: column; position: relative; overflow: auto; min-width: 0; scrollbar-gutter: stable; }
 /* Always-visible scrollbars, so a long list of inputs or outputs shows it goes on (Edge's overlay scrollbars hide until hovered). */
@@ -220,7 +220,7 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .pane.drag .ph .btn { visibility: hidden; }
 .pane.drag { background: var(--person-bg); }
 /* A pane's heading, with + Add files, stays in view while its tiles scroll under it. */
-.ph { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; min-height: 26px; margin: -22px 0 4px; padding: 22px 0 6px; position: sticky; top: -22px; z-index: 4; background: var(--paper); }
+.ph { flex: none; display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; min-height: 26px; margin: -22px 0 4px; padding: 22px 0 6px; position: sticky; top: -22px; z-index: 4; background: var(--paper); }
 .pane.drag .ph { background: var(--person-bg); }
 .ph h2 { margin: 0; font-size: 15px; font-weight: 600; }
 .ph .c { font-size: 13px; color: var(--ink-3); }
@@ -796,7 +796,7 @@ function tile(item) {
   return `<div class="tile ${p.person ? 'person' : 'agent'} ${openItem === item.id ? 'on' : ''} ${mark}" data-item="${esc(item.id)}">${corner}<div class="ext"><span>${esc(ext(item.file))}${v > 1 ? ' · v' + v : ''}</span><span class="nc ${open ? 'q' : ''}">${count}</span></div><div class="fn">${esc(item.name)}</div><div class="file">${esc(fname(item.file))}</div>${item.headline ? `<div class="hl">${esc(item.headline)}</div>` : ''}${item.source ? `<div class="src">${esc(item.source)}</div>` : ''}${item.destination ? `<div class="dst" title="${esc(item.destination)}">\u2192 ${esc(item.destination)}</div>` : ''}${sent ? `<div class="sent" title="${esc(sent.receipt)}">Sent ${hhmm(sent.at)} to ${esc(sent.to)}</div>` : ''}<div class="meta"><b>${person(p.by)}</b> · ${hhmm(p.at)}</div></div>`;
 }
 
-// The instance in three slices: Inputs, Outputs and Steps. On a desktop a toggle, kept in this browser, shows Inputs and Outputs as lists, each sorting by
+// The instance in three slices: Inputs, Steps and Outputs. On a desktop a toggle, kept in this browser, shows Inputs and Outputs as lists, each sorting by
 // the column its heading names; a phone shows tiles, Outputs first.
 function renderPanes() {
   $('#outs').hidden = $('#steps').hidden = $('#view').hidden = !data;
@@ -1180,12 +1180,13 @@ function renderCard() {
   placeCard();
 }
 
+// Beside its tile where there's room, else under it, and never over the side panel, whose comment box it would cover.
 function placeCard() {
   const card = $('#card'), t = !card.hidden && document.querySelector(`:is(.tile, .lrow)[data-item="${CSS.escape(openItem)}"]`);
   if (!t || innerWidth <= 800) return;
-  const r = t.getBoundingClientRect(), w = card.offsetWidth, ch = card.offsetHeight;
-  const right = r.right + 10 + w < innerWidth, left = !right && r.left - 10 - w >= 8;
-  card.style.left = (right ? r.right + 10 : left ? r.left - 10 - w : Math.max(8, Math.min(r.left, innerWidth - w - 8))) + 'px';
+  const r = t.getBoundingClientRect(), end = $('#panes').getBoundingClientRect().right, w = card.offsetWidth, ch = card.offsetHeight;
+  const right = r.right + 10 + w < end, left = !right && r.left - 10 - w >= 8;
+  card.style.left = (right ? r.right + 10 : left ? r.left - 10 - w : Math.max(8, Math.min(r.left, end - w - 8))) + 'px';
   card.style.top = Math.max(8, Math.min(right || left ? r.top : r.bottom + 8, innerHeight - ch - 8)) + 'px';
 }
 

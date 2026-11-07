@@ -746,9 +746,13 @@ test("an item's card shows its file's preview on a desktop, to scroll in place o
   await page.click('#card [data-act=uncard]');
 });
 
-test("an instance is its Inputs, Outputs and Steps; hovering an item marks what it's made from, which its card names; the list view, kept in this browser, sorts by a column", async () => {
+test("an instance is its Inputs, Steps and Outputs, left to right, each heading whole over its tiles; hovering an item marks what it's made from, which its card names; the list view, kept in this browser, sorts by a column", async () => {
   await page.evaluate(() => location.hash === '#/3d70f7ca6f20' || new Promise(ok => { addEventListener('hashchange', ok, { once: true }); location.hash = '#/3d70f7ca6f20'; }));
   await page.waitForSelector('#steps .tile .fn:text-is("Eligible AR")');
+  await page.setViewportSize({ width: 1280, height: 300 });
+  assert.deepEqual(await page.evaluate(() => ['#ins', '#steps', '#outs'].map(p => document.querySelector(p)!.getBoundingClientRect().left).every((x, k, xs) => !k || x > xs[k - 1])), true);
+  assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('#panes .ph')].map(h => h.scrollHeight <= h.clientHeight)), [true, true, true], 'a slice that scrolls keeps its heading whole');
+  await page.setViewportSize({ width: 1280, height: 720 });
   assert.deepEqual(await page.locator('#ins .tile .fn').allTextContents(), ['AR aging', 'Inventory at cost']);
   assert.deepEqual(await page.locator('#outs .tile .fn').allTextContents(), ['Borrowing base']);
   await page.hover('#outs .tile[data-item=borrowing-base]');
