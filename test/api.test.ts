@@ -55,6 +55,8 @@ async function quiet() {
 
 before(async () => {
   cpSync(join(app, 'test', 'fixture'), root, { recursive: true });
+  // What the tests save themselves, such as logins, goes to the server's data root, whichever tests run.
+  (await import('../src/system.ts')).initSystem(root);
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch') };
   mkdirSync(env.HOME);
   delete env.OPENROUTER_API_KEY;
@@ -192,8 +194,6 @@ test("only the runner closes or abandons; taking over makes you the runner with 
   assert.equal((await call('POST', await at(series, '2026-09-06', 'abandon'))).status, 403, 'nor abandons');
   assert.equal((await call('POST', await at(series, '2026-09-06', 'takeover'), JSON.stringify({ logins: [offer] }))).status, 400, 'not a login of yours');
   const { saveLogin } = await import('../src/logins.ts');
-  const { initSystem } = await import('../src/system.ts');
-  initSystem(root);
   saveLogin(adminEmail, { id: 'web', kind: 'website', name: 'Portal', since: new Date().toISOString(), offers: [{ id: offer, name: 'Portal' }] }, 'state');
   assert.deepEqual((await json('/logins')).map((l: { id: string }) => l.id), ['web']);
   assert.equal((await call('POST', await at(series, '2026-09-06', 'takeover'), JSON.stringify({ logins: [offer] }))).status, 200);
