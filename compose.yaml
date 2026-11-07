@@ -3,6 +3,8 @@ services:
   rollforward:
     build: .
     restart: unless-stopped
+    # a stop waits up to 10 s for what runs had sent to be answered
+    stop_grace_period: 20s
     init: true
     ports: ["127.0.0.1:8780:8780"]
     env_file: .env

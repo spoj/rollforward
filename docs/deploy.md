@@ -50,6 +50,7 @@ Run the image under podman, as a systemd service. The image is the agent image, 
        Volume=%h/rollforward-data:/data
        EnvironmentFile=%h/.config/rollforward.env
        PodmanArgs=--init --memory=48g --security-opt=unmask=/proc/*
+       StopTimeout=20
 
        [Service]
        Restart=always
@@ -57,7 +58,7 @@ Run the image under podman, as a systemd service. The image is the agent image, 
        [Install]
        WantedBy=default.target
 
-   `--memory` caps all runs together, below the host's memory; `unmask=/proc/*` lets bubblewrap sandbox each run.
+   `--memory` caps all runs together, below the host's memory; `unmask=/proc/*` lets bubblewrap sandbox each run; `StopTimeout=20` lets a stop wait the 10 s it gives what runs had sent to be answered, where podman would kill it at 10 s.
 5. Put HTTPS in front, such as Caddy:
 
        rollforward.example.com {

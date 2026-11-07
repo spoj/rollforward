@@ -169,7 +169,7 @@ async function start(inst: Instance) {
     inst.append('server', 'expired', { cause: pending(inst, seen)[0].seq, login: 'entra', name: 'rollforward', runner, error: (e as Error).message, ...((e as { left?: boolean }).left && { left: true }) });
     return void changes.emit('change', inst.id);
   }
-  if (active.has(series) || !due(inst)) return void changes.emit('change', inst.id);
+  if (stopping || active.has(series) || !due(inst)) return void changes.emit('change', inst.id);
   if (full()) return void waiting.add(inst);
   let kept = idle.get(inst.id);
   idle.delete(inst.id);
@@ -260,7 +260,7 @@ const rules = (was: string, now: string) => {
 };
 
 function finish(a: Active, aborted: boolean, error?: string): Entry | undefined {
-  if (a.done) return;
+  if (a.done || stopping) return;
   a.done = true;
   clearTimeout(a.timer);
   byToken.delete(a.token);
@@ -305,6 +305,17 @@ function leases() {
   }
 }
 changes.on('change', (id: string) => id === 'tree' && setImmediate(leases));
+
+// A stop, as a restart's, cuts every run, its token first, so nothing more goes out, then its connections to its browsers, and
+// starts none; each Pi goes on, for what it had sent to be answered, until the server is gone. No run ends meanwhile: the next
+// start ends them as a restart cut them (recover()), and closes their browsers (browsers.ts reap()).
+let stopping = false;
+export function stop() {
+  stopping = true;
+  byToken.clear();
+  for (const a of active.values()) a.browsers?.cut();
+  active.clear();
+}
 
 function startWaiting() {
   for (const i of waiting) {

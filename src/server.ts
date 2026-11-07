@@ -15,7 +15,7 @@ import { act, canManage, canSee, changes, everyone, initSystem, isPeople, readJs
 import { checkTicks, logins, runnerOf, saveLogin, signOut, unoffer } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
-import { byLogin, call, changeConnection, connections, intercepts, loginOf, removeConnection, setConnection, upstreams } from './connections.ts';
+import { answered, byLogin, call, changeConnection, connections, intercepts, loginOf, removeConnection, setConnection, upstreams } from './connections.ts';
 import { addSite, allowHost, Browsers, endSignIn, isSignIn, keepAlive, passUpgrade, reap, refusedHosts, removeSite, setSite, startSignIn, unreached, viewPage, websites } from './browsers.ts';
 import { ask, decide, lapse, revoke, visible } from './grants.ts';
 import { offer } from './connections/graph.ts';
@@ -23,7 +23,7 @@ import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, startIndexing, track } from './indexes.ts';
 import { seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, byToken, cancelWake, cancelWakes, closed, correct, dropRequest, isNote, kick, MAX_OPEN, named, pending, pinFor, queued, resolveFor, setWake, startWaking, starts, startWith, wakes, wakesOf, weekly, reads, CUT, type Active, type Request } from './waker.ts';
+import { active, byToken, cancelWake, cancelWakes, closed, correct, dropRequest, isNote, kick, MAX_OPEN, named, pending, pinFor, queued, resolveFor, setWake, startWaking, starts, startWith, stop, wakes, wakesOf, weekly, reads, CUT, type Active, type Request } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -1075,6 +1075,12 @@ server.on('upgrade', (req, socket, head) => {
   passUpgrade(req, socket, head, to);
 });
 if (process.env.RF_BROWSER_URL) reap().catch(e => console.error('the browser service: browsers a restart left open are still open', e));
+// A stop, as an update's, cuts the runs (waker.ts stop()) and exits once what they had sent is answered and logged, within 10 s.
+process.on('SIGTERM', async () => {
+  stop();
+  await answered(10_000);
+  process.exit();
+});
 server.listen(port, host, () => {
   startIndexing();
   startWaking();

@@ -67,6 +67,16 @@ async function answer(req: IncomingMessage, res: ServerResponse) {
   res.end();
 }
 
+// A Databricks workspace's warehouse, wh1: its statements answer once `statement` lets them go, each counted as it comes.
+let statement = Promise.resolve(), statements = 0;
+async function warehouse(req: IncomingMessage, res: ServerResponse) {
+  if (req.method === 'POST') {
+    statements++;
+    await statement;
+  }
+  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(req.method === 'POST' ? { statement_id: 's1', status: { state: 'SUCCEEDED' } } : { id: 'wh1', name: 'Finance' }));
+}
+
 const call = (method: string, path: string, body?: unknown, cookie = admin) => fetch(base + path, { method, headers: { cookie }, body: body === undefined ? undefined : JSON.stringify(body) });
 const entra = await idp();
 const login = async (email: string) => (await entra.signIn(base, email)).headers.getSetCookie().find(c => c.startsWith('rf_session='))!.split(';')[0];
@@ -82,7 +92,7 @@ async function runs(id: string, n: number) {
 
 before(async () => {
   // OpenRouter's GET /api/v1/key answers for a key it knows, as it checks one being saved.
-  model = createServer((req, res) => (req.method === 'POST' && /\/(messages|chat\/completions)$/.test(new URL(req.url!, 'http://x').pathname) ? answer(req, res)
+  model = createServer((req, res) => (req.url!.startsWith('/api/2.0/sql/') ? warehouse(req, res) : req.method === 'POST' && /\/(messages|chat\/completions)$/.test(new URL(req.url!, 'http://x').pathname) ? answer(req, res)
     : res.writeHead(req.url === '/api/v1/key' && String(req.headers.authorization).startsWith('Bearer sk-or-') ? 200 : 404).end('{}')));
   await new Promise<void>(ok => model.listen(0, '127.0.0.1', ok));
   await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
@@ -110,9 +120,9 @@ exec ${git} "$@"
 });
 
 // The server on the data root, as a restart starts it again, with `env` besides. The server sends what runs ask of openrouter.ai,
-// Pi's own calls among them, to the stand-in.
+// Pi's own calls among them, and of the Databricks workspace adb-1, to the stand-ins.
 async function serve(env: NodeJS.ProcessEnv = {}) {
-  const upstream = `import { upstreams } from ${JSON.stringify(pathToFileURL(join(app, 'src', 'connections.ts')).href)}; upstreams['openrouter.ai'] = 'http://127.0.0.1:${(model.address() as { port: number }).port}';`;
+  const upstream = `import { upstreams } from ${JSON.stringify(pathToFileURL(join(app, 'src', 'connections.ts')).href)}; upstreams['openrouter.ai'] = upstreams['adb-1.azuredatabricks.net'] = 'http://127.0.0.1:${(model.address() as { port: number }).port}';`;
   proc = spawn(process.execPath, ['--import', `data:text/javascript,${encodeURIComponent(upstream)}`, join(app, 'src', 'server.ts'), root, new URL(base).port], {
     env: { ...process.env, PATH: `${join(tmp, 'bin')}:${process.env.PATH}`, RF_HOLD_GIT: join(tmp, 'hold-git'), HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch'), OPENROUTER_API_KEY: 'stand-in-key', RF_WAKE_TICK_MS: '300',
       RF_BROWSER_URL: `http://127.0.0.1:${(service.address() as { port: number }).port}`, RF_BROWSER_KEY: 'stand-in', ...entra.env(base), RF_ADMINS: ADMIN, ...env },
@@ -451,6 +461,40 @@ test('a cut anywhere leaves the instance right, its log whole, and the next run 
   log = await runs(id, 8);
   assert.match(afterUpload.saw[0], /small\.csv/);
   assert.ok(readdirSync(join(dir, 'session')).every(f => readFileSync(join(dir, 'session', f), 'utf8').trimEnd().split('\n').every(l => JSON.parse(l))), "the agent's session parses too");
+});
+
+test('a stop, as an update makes, lets nothing more go out, and exits once what the runs had sent is answered and logged; the run it cut carries on after the start', async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Stops' })).json();
+  assert.equal((await call('PUT', '/connections/adb', { type: 'databricks' })).status, 200);
+  // Databricks connected, as the Logins page does, and its warehouse added.
+  const go = await fetch(`${base}/logins/adb/connect`, { headers: { cookie: admin }, redirect: 'manual' }), to = new URL(go.headers.get('location')!);
+  to.searchParams.set('login_hint', ADMIN);
+  const back = (await fetch(to, { redirect: 'manual' })).headers.get('location')!;
+  await fetch(back, { headers: { cookie: `${admin}; ${go.headers.getSetCookie()[0].split(';')[0]}` }, redirect: 'manual' });
+  assert.equal((await call('POST', '/logins/adb/offers', { add: 'https://adb-1.azuredatabricks.net/sql/warehouses/wh1' })).status, 200);
+  let answer!: () => void;
+  statement = new Promise(ok => (answer = ok));
+  scripts.push({ bash: [`curl -s -m 60 https://adb-1.azuredatabricks.net/api/2.0/sql/statements -H 'content-type: application/json' -d '{"statement": "SELECT 1", "warehouse_id": "wh1"}'`], report: 'Never said.', saw: [] });
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Warehouse' })).json();
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: ['adb:adb-1.azuredatabricks.net/wh1'] })).json();
+  await until('the statement', () => statements > 0);
+  const runsDir = join(tmp, 'scratch', 'runs'), token = readdirSync(runsDir).find(t => readFileSync(join(runsDir, t, 'bwrap.args'), 'utf8').includes(`RF_INSTANCE\0${id}\0`))!;
+  proc.kill('SIGTERM');
+  await new Promise(ok => setTimeout(ok, 500));
+  // The run asks its proxy for the warehouse again, with its own token, on its own socket.
+  const again = await new Promise<string>(ok => {
+    const s = connect(join(runsDir, token, 'socket', 'rf.sock'), () => s.write(`CONNECT adb-1.azuredatabricks.net:443 HTTP/1.1\r\nproxy-authorization: Basic ${Buffer.from(`rf:${token}`).toString('base64')}\r\n\r\n`));
+    s.once('data', d => (ok(String(d)), s.destroy()));
+  });
+  assert.match(again, /^HTTP\/1\.1 403 [^]*no run for this token/, 'nothing more goes out');
+  assert.equal(proc.exitCode, null, 'the server waits for the statement it sent');
+  answer();
+  await once(proc, 'exit');
+  const log = readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)), sent = log.find(e => e.op === 'send');
+  assert.deepEqual(log.filter(e => e.op === 'call' && e.sent === sent.seq).map(e => e.status), [200], 'its answer, logged before the server went');
+  scripts.push({ bash: [], report: 'Carried on after the stop.', saw: [] });
+  await serve();
+  assert.deepEqual((await runs(id, 2)).filter(e => e.op === 'done').map(e => [e.aborted, e.error]), [[true, 'a restart cut the run'], [false, undefined]]);
 });
 
 test("a person's own OpenRouter key, checked as it's saved, goes in for the runs they run instead of the server's, each run logging whose; out of credits, the run fails as credits and the instance waits for them until they stop using it, which wakes it", async () => {

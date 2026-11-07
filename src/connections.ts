@@ -119,15 +119,26 @@ export const intercepts = (a: CallRun, host: string) =>
 
 const HOP = ['authorization', 'connection', 'host', 'keep-alive', 'proxy-authorization', 'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade'];
 
+// The sends going: each logged as sent, its answer not yet.
+const sending = new Set<IncomingMessage>();
+// Once the sends going are answered and logged, or `ms` on, as a stop waits (server.ts).
+export async function answered(ms: number) {
+  for (const until = Date.now() + ms; sending.size && Date.now() < until;) await new Promise(ok => setTimeout(ok, 100));
+}
+
 export async function call(a: CallRun, host: string, req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url!, `https://${host}`), method = req.method!, link = a.links.get(url.href), s = link ? undefined : own(host);
   // The runner's own OpenRouter key, where they use it, in place of the server's, never falling back to it.
   const runner = runnerOf(a.inst).by, mine = s === openrouter ? logins(runner).find(l => l.id === 'openrouter' && l.enabled) : undefined;
   const c = link || s ? undefined : connections().find(c => types[c.type].serves?.(c, host));
   const name = link ?? c?.name ?? s?.name ?? host, path = link ? url.origin + url.pathname : url.pathname + url.search;
-  // A request that may write, to anything but the server's own services, is logged as it goes too, so a cut leaves it as sent.
+  // A request that may write, to anything but the server's own services, is logged as it goes too, so a cut leaves it as sent,
+  // and a stop waits for its answer.
   let sent: number | undefined;
-  const log = (status: number, bytes: number, more?: object) => a.inst.append('agent', 'call', { run: a.n, name, method, path, status, bytes, ...(sent && { sent }), ...more });
+  const log = (status: number, bytes: number, more?: object) => {
+    a.inst.append('agent', 'call', { run: a.n, name, method, path, status, bytes, ...(sent && { sent }), ...more });
+    sending.delete(req);
+  };
   try {
     // A target such as //elsewhere/… or https://elsewhere/… would take the request, and the credential put in, to another host, and
     // one such as http://HOST/… to it in the clear.
@@ -157,7 +168,10 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       auth = { authorization: `Bearer ${k}`, 'x-api-key': k };
     }
     const body = out === undefined ? raw : Buffer.from(JSON.stringify(out));
-    if (!s && !['GET', 'HEAD'].includes(method)) sent = a.inst.append('agent', 'send', { run: a.n, name, method, path }).seq;
+    if (!s && !['GET', 'HEAD'].includes(method)) {
+      sent = a.inst.append('agent', 'send', { run: a.n, name, method, path }).seq;
+      sending.add(req);
+    }
     // A Location where the check lets one go, as a redirect's, is a link for this run before the run can follow it.
     const answer = await forward(`${upstreams[host] ?? url.origin}${url.pathname}${url.search}`, req, res, {
       auth, body, keep: !link, location: to => { const l = URL.parse(to); if (l && l.origin === redirect) a.links.set(l.href, name); },

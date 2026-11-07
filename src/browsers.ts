@@ -309,6 +309,7 @@ export class Browsers {
   private opening = new Map<string, Promise<string>>();
   private opens = new Map<string, number>();
   private refused = new Set<string>();
+  private conns = new Set<Duplex>();
   private ended = false;
   shots = 0;
   constructor(inst: Instance, run: number) {
@@ -380,10 +381,17 @@ export class Browsers {
   connected(site: string, conn: Duplex) {
     const b = this.bySite.get(site)!;
     b.conns++;
+    this.conns.add(conn);
     clearTimeout(b.idle);
     conn.on('close', () => {
+      this.conns.delete(conn);
       if (!--b.conns && this.bySite.get(site) === b) this.idle(site, b);
     });
+  }
+
+  // A stop cuts every connection to the run's browsers; the browsers stay open for the next start to close (reap()).
+  cut() {
+    for (const c of this.conns) c.destroy();
   }
 
   private idle(site: string, b: { writeback: boolean; idle?: NodeJS.Timeout }) {

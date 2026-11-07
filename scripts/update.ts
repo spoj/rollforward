@@ -1,4 +1,4 @@
-// Moves this checkout to the newest release CI made and restarts the server at once, whatever runs are going: they carry on after the
+// Moves this checkout to the newest release CI made and restarts the server, whatever runs are going: they carry on after the
 // restart. A systemd timer runs it (docs/deploy.md), and never twice at once. A release is taken once every check on its commit has passed, and never past a prerelease, which a tag with
 // a Manual: line makes for a release that needs a person first. What it installs, its packages and its agent image, is fetched
 // before the server stops, so a failure there, as without the network, changes nothing, and the next tick tries again. If the
