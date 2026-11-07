@@ -1,10 +1,7 @@
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { HttpError, instances, newId, seriesDir } from './store.ts';
-import { canManage, canSee, readJson, rfDir, tree, writeJson } from './system.ts';
+import { HttpError, newId } from './store.ts';
+import { canManage, canSee, readJson, tree, writeJson } from './system.ts';
 import { users, type Me } from './auth.ts';
-import { logins, runnerOf, signOut, type Trace } from './logins.ts';
-import { seriesSettings } from './series.ts';
+import { logins, signOut, type Trace } from './logins.ts';
 import { changeConnection, checkHost, connections, upstreams } from './connections.ts';
 import { model } from './connections/openrouter.ts';
 import { websites } from './browsers.ts';
@@ -118,29 +115,4 @@ export function lapse(now = Date.now()) {
   if (old.length) save(all);
   for (const [, g] of old) unused(g.person, g.site);
   for (const email of Object.keys(users())) for (const l of logins(email).filter(l => l.kind === 'website' && now - Date.parse(l.since) > WEEK && !approved(l.id.slice(4), email))) signOut(email, l.id);
-}
-
-// Once, as the server starts with no grants.json: every website becomes one people add, each its adder's, or for one admins kept,
-// the admin who last set it, still reaching internal addresses as it could, with no list of people; each use of one so far, a tick
-// of an instance's runner or of a shared series' sharer, an approved grant where it is; and no one is granted sites any more, as
-// everyone adds websites.
-export function migrate() {
-  if (existsSync(join(rfDir(), 'grants.json'))) return;
-  const cs = readJson<Record<string, Record<string, unknown>>>('connections.json', {}), at = new Date().toISOString(), out: Record<string, Grant> = {};
-  for (const [name, { people, ...c }] of Object.entries(cs).filter(([, c]) => c.type === 'website'))
-    cs[name] = c.owner ? c : { ...c, ...(String(c.updated_by).includes('@') && { owner: c.updated_by }), internal: true };
-  writeJson('connections.json', cs);
-  const use = (workspace: string, person: string, ticks: string[]) => {
-    for (const site of ticks.filter(t => t.startsWith('web:')).map(t => t.slice(4)))
-      if (!Object.values(out).some(g => g.workspace === workspace && g.person === person && g.site === site))
-        out[newId()] = { workspace, person, site, reason: 'in use as grants began', at, state: 'approved', by: 'server', decided: at };
-  };
-  for (const [sid, s] of Object.entries(tree().series)) {
-    for (const i of instances(sid)) use(s.workspace, runnerOf(i).by, runnerOf(i).logins);
-    const { shared } = seriesSettings(seriesDir(sid));
-    if (shared) use(s.workspace, shared.by, shared.logins);
-  }
-  save(out);
-  const { sites, ...caps } = readJson<Record<string, string[]>>('capabilities.json', {});
-  if (sites) writeJson('capabilities.json', caps);
 }

@@ -190,9 +190,10 @@ before(async () => {
   upsertUser(ALICE, { role: 'user' });
   openSkills(tmp);
   for (const id of ['mail-report', 'onedrive-report', 'portal', 'tool']) pushSkill(id, filesOf(join(standIns, id)), ALICE);
-  // The websites kept before connections, which become connections at the start, with Microsoft 365's as graph.
-  writeJson('websites.json', { portal: { name: 'The Portal', url: 'https://portal.test/#/login', hosts: ['cdn.portal.test'], updated_by: 'admin', updated_at: '2026-10-01T00:00:00Z' } });
-  c.convert();
+  writeJson('connections.json', {
+    graph: { type: 'graph', updated_by: 'admin', updated_at: '2026-10-01T00:00:00Z' },
+    portal: { type: 'website', url: 'https://portal.test/#/login', hosts: ['cdn.portal.test'], title: 'The Portal', writeback: true, updated_by: 'admin', updated_at: '2026-10-01T00:00:00Z' },
+  });
   await c.setConnection('adb', { type: 'databricks' }, 'admin');
   endpoints.graph = base;
   for (const host of ['graph.microsoft.com', 'adb-1.azuredatabricks.net', 'host', 'outlook.office.com', 'dbstorage1.blob.core.windows.net']) c.upstreams[host] = base;
@@ -360,12 +361,11 @@ test('a push takes an id of letters, digits and dashes, and a SKILL.md; a push c
   assert.ok(!skills().some(s => s.id.includes('.')));
 });
 
-test('admins keep connections, each a name, a type and its settings; the websites kept before became connections once, with Microsoft 365 as graph', async () => {
+test('admins keep connections, each a name, a type and its settings', async () => {
   const { connections, removeConnection, setConnection } = await import('../src/connections.ts');
-  const { websites } = await import('../src/browsers.ts'), { existsSync } = await import('node:fs');
+  const { websites } = await import('../src/browsers.ts');
   assert.deepEqual(connections().map(c => [c.name, c.type]), [['graph', 'graph'], ['portal', 'website'], ['adb', 'databricks']]);
   assert.deepEqual(websites().portal, { name: 'The Portal', url: 'https://portal.test/#/login', hosts: ['cdn.portal.test'], writeback: true, header: undefined, keepalive: undefined, every: undefined });
-  assert.ok(!existsSync(join(tmp, '.rf', 'websites.json')));
   await assert.rejects(setConnection('Portal', { type: 'website', url: 'https://portal.test' }, 'admin'), /a connection's name is/);
   await assert.rejects(setConnection('erp', { type: 'ftp' }, 'admin'), /type: one of graph, databricks, website/);
   await assert.rejects(setConnection('erp', { type: 'website', url: 'portal.test' }, 'admin'), /an http\(s\) address/);

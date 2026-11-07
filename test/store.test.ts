@@ -2,24 +2,16 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createInstance, instance, openStore, safeName } from '../src/store.ts';
+import { createInstance, openStore, safeName } from '../src/store.ts';
 
 const alex = { email: 'alex', name: 'Alex' };
 
 test("a name is a folder's and a line's: slashes, control characters and line breaks become _, and AGENTS.md, where the view binds instructions, is refused", () => {
   assert.equal(safeName('Bank/rec\\Q1\nlines\u2028\u2029\x85\x7f'), 'Bank_rec_Q1_lines____');
   assert.throws(() => safeName('AGENTS.md'), /AGENTS\.md is the name of the agents' instructions/);
-});
-
-test("an instance's screen kept as workspace.json, as before v0.2.44, is screen.json from the start", () => {
-  const tmp = mkdtempSync(join(tmpdir(), 'rf-')), inst = (openStore(tmp), createInstance('weekly', 'w1', 'alex', []));
-  renameSync(join(inst.dir, 'screen.json'), join(inst.dir, 'workspace.json'));
-  openStore(tmp);
-  assert.deepEqual([existsSync(join(inst.dir, 'workspace.json')), instance(inst.id).doc], [false, inst.doc]);
-  rmSync(tmp, { recursive: true, force: true });
 });
 
 test('a screen starts empty; a put takes steps and from, which must name items and not go round in a circle', async () => {

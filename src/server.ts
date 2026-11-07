@@ -1,12 +1,12 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { closeSync, constants, cpSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { agentsFile, closedBefore, createInstance, freeze, duplicateInstance, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, safeName, seriesDir, type Entry, type Instance } from './store.ts';
+import { agentsFile, closedBefore, createInstance, freeze, duplicateInstance, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, safeName, seriesDir, type Entry, type Instance } from './store.ts';
 import { AGENT, commit } from './git.ts';
 import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
@@ -15,9 +15,9 @@ import { canManage, canSee, changes, everyone, initSystem, isPeople, readJson, s
 import { checkTicks, logins, runnerOf, saveLogin, signOut, unoffer } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
-import { byLogin, call, changeConnection, connections, convert, intercepts, loginOf, removeConnection, setConnection, upstreams } from './connections.ts';
+import { byLogin, call, changeConnection, connections, intercepts, loginOf, removeConnection, setConnection, upstreams } from './connections.ts';
 import { addSite, allowHost, Browsers, endSignIn, isSignIn, keepAlive, passUpgrade, reap, refusedHosts, removeSite, setSite, startSignIn, unreached, viewPage, websites } from './browsers.ts';
-import { ask, decide, lapse, migrate, revoke, visible } from './grants.ts';
+import { ask, decide, lapse, revoke, visible } from './grants.ts';
 import { offer } from './connections/graph.ts';
 import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, startIndexing, track } from './indexes.ts';
@@ -35,8 +35,8 @@ const tmpDir = join(root, '.tmp'), previews = join(root, '.previews');
 if (!existsSync(join(agentRoot, 'usr'))) throw new Error(`no agent image at ${agentRoot}: node scripts/agent.ts unpacks agent-${agentId}, which this checkout runs`);
 initSystem(root);
 openStore(root);
-convert();
-migrate();
+// A new data root starts with one connection, Microsoft 365's, graph.
+if (!existsSync(join(root, '.rf', 'connections.json'))) writeJson('connections.json', { graph: { type: 'graph', updated_by: 'server', updated_at: new Date().toISOString() } });
 
 // A file's sha256, kept by its path, size and change time, as each view of an instance compares its files again.
 const sums = new Map<string, [string, string]>();
@@ -73,45 +73,6 @@ function freeName(t: Tree, ws: string, name: string): string {
   return n;
 }
 
-// A website's keepalive once kept office hours, for everyone running an open instance with it ticked; now each person keeps their own
-// login alive as they sign in (browsers.ts), and the hours go.
-{
-  const all = readJson<Record<string, { hours?: string }>>('connections.json', {});
-  for (const c of Object.values(all)) delete c.hours;
-  writeJson('connections.json', all);
-}
-
-// wakes.json once kept one pending wake per target, by the target's id; each wake now has an id of its own.
-{
-  const w8 = wakes();
-  for (const [target, k] of Object.entries(w8.pending)) if (!k.target) {
-    delete w8.pending[target];
-    w8.pending[newId()] = { ...k, target };
-  }
-  writeJson('wakes.json', w8);
-}
-
-// Before v0.2.17 each workspace had an Ad hoc series of one-offs. Each of its instances becomes a task, a single series of its own,
-// saved before the instance moves into it, so a stop midway loses nothing; an open one gets a copy of the Ad hoc .pylib. A wake or
-// a request to start an Ad hoc instance is dropped.
-for (const [aid, a] of Object.entries(tree().series).filter(([, s]) => (s as { adhoc?: boolean }).adhoc)) {
-  const moved = labels(aid);
-  for (const l of moved) {
-    const t = tree(), sid = newId();
-    t.series[sid] = { name: freeName(t, a.workspace, l.label), workspace: a.workspace, single: true, ...(a.archived && { archived: true }) };
-    mkdirSync(seriesDir(sid));
-    saveTree(t);
-    if (instance(l.id).doc.status === 'open' && existsSync(join(seriesDir(aid), '.pylib'))) cpSync(join(seriesDir(aid), '.pylib'), join(seriesDir(sid), '.pylib'), { recursive: true, mode: constants.COPYFILE_FICLONE });
-    moveInstance(instance(l.id), sid);
-  }
-  const t = tree(), w8 = wakes();
-  console.log(`${t.workspaces[a.workspace].name}/Ad hoc: its ${moved.length} instances are tasks now`);
-  delete t.series[aid];
-  for (const [id, k] of Object.entries(w8.pending)) if (k.target === aid) delete w8.pending[id];
-  for (const [rid, r] of Object.entries(w8.requests)) if (r.series === aid) delete w8.requests[rid];
-  saveTree(t);
-  writeJson('wakes.json', w8);
-}
 openSkills(root);
 checkConfig();
 for (const dir of [tmpDir, previews]) {

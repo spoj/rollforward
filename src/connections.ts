@@ -1,12 +1,11 @@
 import { request as httpRequest, type IncomingMessage, type ServerResponse } from 'node:http';
 import { request as httpsRequest } from 'node:https';
-import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib';
 import { HttpError, type Instance } from './store.ts';
 import { lookup } from 'node:dns/promises';
 import { getDomain } from 'tldts';
-import { isPrivate, readJson, rfDir, writeJson } from './system.ts';
+import { isPrivate, readJson, writeJson } from './system.ts';
 import type { EntraLogin } from './auth.ts';
 import { token } from './entra.ts';
 import { lender, logins, runnerOf, saveLogin, secret, use, type Offer } from './logins.ts';
@@ -94,17 +93,6 @@ export function removeConnection(name: string) {
   if (!all[name]) throw new HttpError(404, `no connection ${name}`);
   delete all[name];
   writeJson('connections.json', all);
-}
-
-// Once, at the start: the websites kept before connections become website connections, and Microsoft 365 is the graph connection.
-export function convert() {
-  if (existsSync(join(rfDir(), 'connections.json'))) return;
-  const sites = readJson<Record<string, { name: string; url: string; hosts: string[]; updated_by: string; updated_at: string }>>('websites.json', {});
-  writeJson('connections.json', {
-    graph: { type: 'graph', updated_by: 'server', updated_at: new Date().toISOString() },
-    ...Object.fromEntries(Object.entries(sites).map(([id, w]) => [id, { type: 'website', url: w.url, hosts: w.hosts, ...(w.name !== id && { title: w.name }), writeback: true, updated_by: w.updated_by, updated_at: w.updated_at }])),
-  });
-  rmSync(join(rfDir(), 'websites.json'), { force: true });
 }
 
 export const loginOf = (c: Connection) => types[c.type].login(c);

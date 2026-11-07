@@ -80,8 +80,6 @@ export function openStore(dataRoot: string) {
   mkdirSync(join(root, 'agents'), { recursive: true });
   for (const id of readdirSync(join(root, 'instances'))) {
     index.set(id, JSON.parse(readFileSync(join(root, 'instances', id, 'instance.json'), 'utf8')));
-    // Before v0.2.47 the screen was workspace.json.
-    if (existsSync(join(root, 'instances', id, 'workspace.json'))) renameSync(join(root, 'instances', id, 'workspace.json'), join(root, 'instances', id, 'screen.json'));
   }
 }
 
