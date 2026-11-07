@@ -29,7 +29,7 @@ test('a screen starts empty; a put takes steps and from, which must name items a
   rmSync(tmp, { recursive: true, force: true });
 });
 
-test("an output's destination and an item's as-of date are free text, logged as they change", async () => {
+test("an output's destination is free text, logged as it changes", async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-')), series = 'monthly';
   openStore(tmp);
   const inst = createInstance(series, 'm1', 'alex', []);
@@ -37,9 +37,6 @@ test("an output's destination and an item's as-of date are free text, logged as 
   assert.throws(() => put([{ id: 'pack', name: 'Pack', kind: 'output', file: null, destination: 3 }]), /pack: destination must be a string/);
   put([{ id: 'pack', name: 'Pack', kind: 'output', file: null, destination: 'Mail to ap@demo.test' }]);
   assert.equal(inst.log.findLast(e => e.op === 'item')!.destination, 'Mail to ap@demo.test');
-  assert.throws(() => put([{ id: 'pack', name: 'Pack', kind: 'output', file: null, as_of: 20260930 }]), /pack: as_of must be a string/);
-  put([{ id: 'pack', name: 'Pack', kind: 'output', file: null, destination: 'Mail to ap@demo.test', as_of: '2026-09-30' }]);
-  assert.equal(inst.log.findLast(e => e.op === 'item')!.as_of, '2026-09-30');
   rmSync(tmp, { recursive: true, force: true });
 });
 

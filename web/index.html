@@ -203,7 +203,7 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .lst th[aria-sort=ascending]::after { content: ' \25B4'; }
 .lst th[aria-sort=descending]::after { content: ' \25BE'; }
 .lst td { padding: 5px 8px; border-bottom: 1px solid var(--rule); vertical-align: top; overflow-wrap: break-word; }
-.lst td:nth-child(n+3):not(:nth-child(5)) { white-space: nowrap; }
+.lst td:nth-child(n+3):not(.headline) { white-space: nowrap; }
 .lrow { cursor: pointer; }
 .lrow:hover { background: #e7eaee; box-shadow: inset 3px 0 0 var(--ink); }
 .lrow.on, .lrow.drag { background: #e7eaee; }
@@ -822,16 +822,16 @@ function renderPanes() {
 // file yet says only that, as its tile does.
 function listHtml(pane, xs) {
   const s = ui.sort[pane], was = data.previous;
-  const cols = [['name', 'Name'], ['where', { in: 'Source', step: 'Made from', out: 'Destination' }[pane]], ['as_of', 'As of'], ['by', 'By'], ['headline', pane === 'in' ? 'Rows · total' : 'Headline'], ['changed', 'Changed'], ['threads', 'Threads']];
+  const cols = [['name', 'Name'], ['where', { in: 'Source', step: 'Made from', out: 'Destination' }[pane]], ['by', 'By'], ...(pane === 'out' ? [['headline', 'Headline']] : []), ['changed', 'Changed'], ['threads', 'Threads']];
   const row = i => {
     const p = i.file && provenance(i.file), on = talkOn(i.id), asks = on.filter(t => t.waits).length;
-    return { i, p, on, asks, name: i.name, where: (p && { in: i.source, step: i.from?.map(f => data.doc.items.find(x => x.id === f)?.name ?? f).join(', '), out: i.destination }[pane]) ?? '', as_of: (p && i.as_of) ?? '', by: p ? nameOf(p.by) : '', headline: (p && i.headline) ?? '', changed: was?.changed[i.id] ?? '', threads: asks * 1e4 + on.length };
+    return { i, p, on, asks, name: i.name, where: (p && { in: i.source, step: i.from?.map(f => data.doc.items.find(x => x.id === f)?.name ?? f).join(', '), out: i.destination }[pane]) ?? '', by: p ? nameOf(p.by) : '', headline: (p && i.headline) ?? '', changed: was?.changed[i.id] ?? '', threads: asks * 1e4 + on.length };
   };
   const rows = xs.map(row);
   if (s) rows.sort((a, b) => s.dir * (typeof a[s.key] === 'number' ? a[s.key] - b[s.key] : String(a[s.key]).localeCompare(String(b[s.key]), undefined, { numeric: true })));
   const tr = r => `<tr class="lrow ${!r.i.file ? 'ghost' : r.p.person ? 'person' : 'agent'} ${openItem === r.i.id ? 'on' : ''} ${seen[r.i.id] !== sig(r.i) ? 'fresh' : ''}" data-item="${esc(r.i.id)}">`
-    + `<td><span class="fn">${esc(r.name)}</span>${r.i.file ? `<span class="file">${esc(fname(r.i.file))}</span>` : ''}</td><td>${esc(r.where)}</td><td>${esc(r.as_of)}</td>`
-    + `<td>${r.i.file ? `<b>${person(r.p.by)}</b> ${hhmm(r.p.at)}` : r.i.kind === 'input' ? 'Missing' : 'Not built yet'}</td><td>${esc(r.headline)}</td><td>${r.changed}</td>`
+    + `<td><span class="fn">${esc(r.name)}</span>${r.i.file ? `<span class="file">${esc(fname(r.i.file))}</span>` : ''}</td><td>${esc(r.where)}</td>`
+    + `<td>${r.i.file ? `<b>${person(r.p.by)}</b> ${hhmm(r.p.at)}` : r.i.kind === 'input' ? 'Missing' : 'Not built yet'}</td>${pane === 'out' ? `<td class="headline">${esc(r.headline)}</td>` : ''}<td>${r.changed}</td>`
     + `<td class="${r.asks ? 'q' : ''}">${r.asks ? `${r.asks} to answer` : r.on.length ? plural(r.on.length, 'comment') : ''}</td></tr>`;
   return `<table class="lst"><tr>${cols.map(([k, name]) => `<th data-act="sort" data-pane="${pane}" data-key="${k}" ${s?.key === k ? `aria-sort="${s.dir > 0 ? 'ascending' : 'descending'}"` : ''} ${k === 'changed' && was ? `title="Since ${esc(was.label)}"` : ''}>${name}</th>`).join('')}</tr>${rows.map(tr).join('')}</table>`;
 }
@@ -868,7 +868,7 @@ function logText(e) {
     create: () => `${w} opened the instance`,
     upload: () => `${w} uploaded ${e.pane === 'out' ? 'an output' : 'an input'}${e.onto ? ' onto ' + item(e.onto) : ''}${f}`,
     point: () => `${w} ${e.file ? 'showed' : 'cleared'} ${item(e.item)}${e.was ? `<div class="d">Replacing ${esc(fname(e.was))}</div>` : ''}${f}`,
-    item: () => `${w} set up ${esc(e.name)}${e.from?.length ? `<div class="d">From ${e.from.map(item).join(', ')}</div>` : ''}${e.headline ? `<div class="d">${esc(e.headline)}</div>` : ''}${e.source ? `<div class="d">Source: ${esc(e.source)}</div>` : ''}${e.destination ? `<div class="d">Destination: ${esc(e.destination)}</div>` : ''}${e.as_of ? `<div class="d">As of ${esc(e.as_of)}</div>` : ''}`,
+    item: () => `${w} set up ${esc(e.name)}${e.from?.length ? `<div class="d">From ${e.from.map(item).join(', ')}</div>` : ''}${e.headline ? `<div class="d">${esc(e.headline)}</div>` : ''}${e.source ? `<div class="d">Source: ${esc(e.source)}</div>` : ''}${e.destination ? `<div class="d">Destination: ${esc(e.destination)}</div>` : ''}`,
     remove: () => `${w} removed ${esc(e.item)} from the screen`,
     run: () => `Run ${e.run} started${data.run?.n === e.run ? ` \u00b7 ${usd(data.run.cost)} so far` : ''}`,
     done: () => `Run ${e.run} finished${e.aborted ? ' (stopped)' : ''} · ${took(e)} · ${usd(e.cost)}${e.error ? `<div class="d">${esc(e.error)}</div>` : ''}`,

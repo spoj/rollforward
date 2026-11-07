@@ -73,11 +73,10 @@ before(async () => {
   writeFileSync(join(sampled, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [{ id: 'bb', name: 'Borrowing base', kind: 'output', file: 'working/bb.csv' },
     { id: 'invoices', name: 'Invoices', kind: 'step', file: 'working/invoices.csv' }] }));
   writeFileSync(join(sampled, 'log.jsonl'), JSON.stringify({ seq: 1, at: '2026-07-01T09:00:00.000Z', by: 'admin@demo.test', op: 'create', from: null, logins: [] }) + '\n');
-  // A step between the fixture's 2026-08-30 input and output, and an as-of date on one input.
+  // A step between the fixture's 2026-08-30 input and output.
   const stepped = join(root, 'instances', '3d70f7ca6f20'), doc = JSON.parse(readFileSync(join(stepped, 'screen.json'), 'utf8'));
   writeFileSync(join(stepped, 'working', 'eligible.csv'), 'customer,amount\n');
   doc.items.find((i: { id: string }) => i.id === 'borrowing-base').from = ['eligible', 'inventory'];
-  doc.items.find((i: { id: string }) => i.id === 'inventory').as_of = '2026-08-29';
   doc.items.push({ id: 'eligible', name: 'Eligible AR', kind: 'step', file: 'working/eligible.csv', from: ['ar-aging'] });
   writeFileSync(join(stepped, 'screen.json'), JSON.stringify(doc));
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch') };
@@ -781,13 +780,13 @@ test("an instance is its Inputs, Steps and Outputs, left to right, each heading 
   assert.deepEqual(await page.locator('#panes .far').evaluateAll(els => els.map(e => (e as HTMLElement).dataset.item)), ['ar-aging'], 'what its sources are made from, fainter');
   await page.click('#view [data-id=list]');
   assert.equal(await page.evaluate(() => localStorage.view), 'list');
-  assert.deepEqual(await page.locator('#ins .lst th').allTextContents(), ['Name', 'Source', 'As of', 'By', 'Rows · total', 'Changed', 'Threads']);
-  assert.deepEqual(await page.locator('#ins .lrow td:nth-child(3)').allTextContents(), ['', '2026-08-29']);
-  assert.deepEqual(await page.locator('#outs .lrow td:nth-child(6)').allTextContents(), ['changed'], 'since 2026-08-23, by content');
+  assert.deepEqual(await page.locator('#ins .lst th').allTextContents(), ['Name', 'Source', 'By', 'Changed', 'Threads']);
+  assert.deepEqual(await page.locator('#outs .lst th').allTextContents(), ['Name', 'Destination', 'By', 'Headline', 'Changed', 'Threads'], "a headline is an output's");
+  assert.deepEqual(await page.locator('#outs .lrow td:nth-child(5)').allTextContents(), ['changed'], 'since 2026-08-23, by content');
   assert.deepEqual(await page.locator('#steps .lrow').evaluateAll(rs => rs.map(r => [r.querySelector('.fn')!.textContent, r.children[1].textContent])), [['Eligible AR', 'AR aging']], 'a step by what it is made from');
   assert.deepEqual(await page.evaluate(() => ['#ins', '#steps', '#outs'].map(p => document.querySelector(p)!.getBoundingClientRect().top).every((y, k, ys) => !k || y > ys[k - 1])), true, 'one over the other');
-  await page.click('#ins .lst th:text-is("As of")');
-  await page.click('#ins .lst th:text-is("As of")');
+  await page.click('#ins .lst th:text-is("Name")');
+  await page.click('#ins .lst th:text-is("Name")');
   assert.deepEqual(await page.locator('#ins .lrow .fn').allTextContents(), ['Inventory at cost', 'AR aging'], 'a second click reverses it');
   await page.click('#outs .lrow[data-item=borrowing-base]');
   await page.click('#card a:text-is("Eligible AR")');

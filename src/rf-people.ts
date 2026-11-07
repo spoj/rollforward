@@ -155,7 +155,7 @@ What there is
 What rf pull copies, the folders as the agent sees them
   AGENTS.md                  the company's conventions; <workspace>/AGENTS.md the workspace's
   <workspace>/<series>/<label>/
-    screen.json              the screen: {rev, status, items: [{id, name, kind, file, from, headline, source, destination, as_of}]}
+    screen.json              the screen: {rev, status, items: [{id, name, kind, file, from, headline, source, destination}]}
     log.jsonl                every event, by seq: by is a person's email, "server" or "agent"; op is upload, comment (thread, item,
                              ref, parent, text, files, ask, to), signoff (someone's, on the ask it names, with its commit), react,
                              commit, point and item (the screen changing), run, done (its cost, or error), close, and the rest
