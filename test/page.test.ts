@@ -499,8 +499,10 @@ test("a workspace's settings say what its agents read and which workspaces' agen
 
 test("Logins shows what needs you first, then a line for each kind, Microsoft 365's sources and the websites opening in place; ticks go by kind, Microsoft 365's sources under a tick of their own, an expired login's flagged and off", async () => {
   const rf = join(root, '.rf'), mine = join(rf, 'people', createHash('sha256').update('admin@demo.test').digest('hex').slice(0, 16));
-  writeFileSync(join(rf, 'connections.json'), JSON.stringify({ graph: { type: 'graph' }, adb: { type: 'databricks' }, portal: { type: 'website', url: 'https://portal.test/', hosts: [] }, wiki: { type: 'website', url: 'https://wiki.test/', hosts: [] } }));
+  writeFileSync(join(rf, 'connections.json'), JSON.stringify({ graph: { type: 'graph' }, adb: { type: 'databricks' } }));
   mkdirSync(mine, { recursive: true });
+  const site = (url: string) => ({ url, hosts: [], writeback: true, added: '2026-11-01T00:00:00Z' });
+  writeFileSync(join(mine, 'websites.json'), JSON.stringify({ portal: site('https://portal.test/'), wiki: site('https://wiki.test/start') }));
   writeFileSync(join(mine, 'logins.json'), JSON.stringify([
     { id: 'm365', kind: 'm365', name: 'Microsoft 365', account: 'admin@demo.test', since: '2026-11-01T00:00:00Z', offers: [{ id: 'm365:onedrive', name: 'OneDrive' }, { id: 'm365:site:s1', name: 'SharePoint Reports' }] },
     { id: 'adb', kind: 'databricks', name: 'Databricks adb', since: '2026-11-01T00:00:00Z', offers: [{ id: 'adb:adb-1.azuredatabricks.net/wh1', name: 'Warehouse Finance, adb-1.azuredatabricks.net' }], expired: true },
@@ -520,11 +522,11 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   assert.deepEqual((await page.$$eval('#pv .lsub', rs => rs.map(r => (r as HTMLElement).innerText.replace(/\s+/g, ' ').trim()))).slice(2), ['Warehouse Finance, adb-1.azuredatabricks.net Remove'], "Databricks' warehouses, as Microsoft 365's sources");
   await page.click('#pv [data-act=logins-show][data-id=adb]');
   await page.click('#pv [data-act=logins-show][data-id=web]');
-  assert.match((await page.$$eval('#pv .lsub', rs => rs.map(r => (r as HTMLElement).innerText.replace(/\s+/g, ' ').trim()))).slice(2).join('\n'), /^portal portal\.test · since .+, kept alive until .+ Sign in again Sign out Remove\nwiki wiki\.test Sign in Remove$/);
+  assert.match((await page.$$eval('#pv .lsub', rs => rs.map(r => (r as HTMLElement).innerText.replace(/\s+/g, ' ').trim()))).slice(2).join('\n'), /^portal https:\/\/portal\.test\/ · since .+, kept alive until .+ Sign in again Sign out Remove\nwiki https:\/\/wiki\.test\/start Sign in Remove$/);
   // Signing in, those granted keepalive may tick it, a week ahead unless they set less, and Save login sends it.
   const saved: unknown[] = [], routes = ['**/logins/web/portal', '**/logins/web/portal/refused', '**/signins/s1/view?drive', '**/signins/s1'];
   await page.route(routes[0], r => r.fulfill({ json: { id: 's1' } }));
-  await page.route(routes[1], r => r.fulfill({ json: { allows: true, hosts: [] } }));
+  await page.route(routes[1], r => r.fulfill({ json: { hosts: [] } }));
   await page.route(routes[2], r => r.fulfill({ contentType: 'text/html', body: 'live' }));
   await page.route(routes[3], r => (r.request().method() === 'POST' && saved.push(r.request().postDataJSON()), r.fulfill({ body: 'ok' })));
   await page.click('#pv [data-act=web-signin][data-id=portal]');
@@ -534,6 +536,23 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   await page.waitForSelector('#pv .lline');
   assert.ok(Math.abs(Date.parse((saved[0] as { keepalive: string }).keepalive) - Date.now() - 7 * 86_400_000) < 120_000, JSON.stringify(saved));
   for (const url of routes) await page.unroute(url);
+  await page.mouse.click(5, 5);
+  // A website of your own, by a name you choose, with the header its sign-in needs; removing one takes only your login to it and
+  // your grants for it.
+  await page.evaluate(() => { me.browsers = true; return openLogins(); });
+  await page.click('#pv [data-act=logins-show][data-id=web]');
+  await page.route('**/logins/sites', r => r.request().method() === 'POST' ? r.fulfill({ json: { site: 'bank' } }) : r.continue());
+  const added = page.waitForRequest(r => r.url().endsWith('/logins/sites') && r.method() === 'POST');
+  await page.fill('#pv #site-name', 'bank');
+  await page.fill('#pv #site-url', 'https://bank.test/login');
+  await page.fill('#pv #site-header', 'x-bot-token');
+  await page.click('#pv [data-act=site-add]');
+  assert.deepEqual((await added).postDataJSON(), { name: 'bank', url: 'https://bank.test/login', header: 'x-bot-token' });
+  await page.unroute('**/logins/sites');
+  await page.click('#pv [data-act=site-remove][data-id=wiki]');
+  assert.equal(await page.textContent('#ask p'), 'Your login to it and your grants for it go too.');
+  await page.click('#ask button:text-is("Remove")');
+  await page.waitForSelector('#pv [data-act=site-remove][data-id=wiki]', { state: 'detached' });
   await page.mouse.click(5, 5);
 
   await page.evaluate(() => openStart('New instance', 'Start', () => {}, '', ['m365:onedrive', 'adb:adb-1.azuredatabricks.net/wh1']));
@@ -550,6 +569,27 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   await page.mouse.click(5, 5);
   rmSync(join(rf, 'connections.json'));
   rmSync(join(mine, 'logins.json'));
+  rmSync(join(mine, 'websites.json'));
+});
+
+test("a request to use a website shows its address, in Waiting on you and the workspace's settings, and no longer which website here it looks like", async () => {
+  const rf = join(root, '.rf'), bob = 'bob@demo.test', his = join(rf, 'people', createHash('sha256').update(bob).digest('hex').slice(0, 16));
+  mkdirSync(his, { recursive: true });
+  writeFileSync(join(his, 'websites.json'), JSON.stringify({ gg: { url: 'https://gg.test/start', hosts: ['sso.gg.test'], writeback: true, added: '2026-11-01T00:00:00Z' } }));
+  writeFileSync(join(rf, 'grants.json'), JSON.stringify({ g1: { workspace: '1b3031035ff6', person: bob, site: 'gg', reason: 'For the weekly pull', at: '2026-11-02T00:00:00Z', state: 'pending',
+    check: { risk: 'low', flags: [], summary: 'A ledger.', title: 'GG', hosts: ['sso.gg.test'], same: 'portal' } } }));
+  await page.reload();
+  await page.click('[data-act=waiting]');
+  const asks = await page.locator('#pv .wt', { hasText: 'asks to use their gg login' }).innerText();
+  assert.match(asks, /asks to use their gg login, at https:\/\/gg\.test\/start, in larkfield: For the weekly pull\s+Check: low risk\. A ledger\. Approving lets it reach sso\.gg\.test\.\s/);
+  assert.doesNotMatch(asks, /looks like/, "an old check's lookalike");
+  await page.mouse.click(5, 5);
+  await page.hover('.row.ws');
+  await page.click('.row.ws [data-act=workspace-settings]');
+  assert.match(await page.locator('#pv .lsub', { hasText: 'For the weekly pull' }).innerText(), / · gg https:\/\/gg\.test\/start · asked: For the weekly pull · low risk/);
+  await page.mouse.click(5, 5);
+  rmSync(join(rf, 'grants.json'));
+  rmSync(join(his, 'websites.json'));
 });
 
 test("while a run's browser is open it plays in a corner of the instance, to watch: one website at a time, folded as the person last left it, one in their login popped over the page while they take control of it, and Stop browser interrupts the run", async () => {
