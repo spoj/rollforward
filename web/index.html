@@ -177,10 +177,10 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .btn.danger:hover:not(:disabled) { background: #fdf1f0; border-color: var(--red); }
 [aria-busy=true] { pointer-events: none; opacity: .6; cursor: progress; }
 
-/* The instance's slices, Inputs, Steps and Outputs, side by side, each scrolling on its own; in the list view, Inputs over Outputs,
-   with Steps beside them. */
+/* The instance's slices, Inputs, Steps and Outputs, side by side, each scrolling on its own; in the list view, one over the other,
+   each as tall as its rows up to an even share. */
 .panes { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr); grid-template-areas: "ins steps outs"; position: relative; }
-.panes.list { grid-template-columns: minmax(0, 1fr) minmax(240px, 28%); grid-template-rows: fit-content(55%) minmax(0, 1fr); grid-template-areas: "ins steps" "outs steps"; }
+.panes.list { grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(3, minmax(0, auto)); grid-template-areas: "ins" "steps" "outs"; }
 .pane { padding: 22px 28px 20px; display: flex; flex-direction: column; position: relative; overflow: auto; min-width: 0; scrollbar-gutter: stable; }
 /* Always-visible scrollbars, so a long list of inputs or outputs shows it goes on (Edge's overlay scrollbars hide until hovered). */
 .pane::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -191,7 +191,7 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .ins { grid-area: ins; }
 .outs { grid-area: outs; border-left: 1px solid var(--rule); }
 .steps { grid-area: steps; border-left: 1px solid var(--rule); }
-.panes.list .outs { border-left: 0; border-top: 1px solid var(--rule); }
+.panes.list :is(.steps, .outs) { border-left: 0; border-top: 1px solid var(--rule); }
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; align-content: start; }
 .tiles:empty { display: none; }
 .view { position: absolute; right: 72px; bottom: 12px; z-index: 4; }
@@ -793,7 +793,7 @@ function tile(item) {
   return `<div class="tile ${p.person ? 'person' : 'agent'} ${openItem === item.id ? 'on' : ''} ${mark}" data-item="${esc(item.id)}">${corner}<div class="ext"><span>${esc(ext(item.file))}${v > 1 ? ' · v' + v : ''}</span><span class="nc ${open ? 'q' : ''}">${count}</span></div><div class="fn">${esc(item.name)}</div><div class="file">${esc(fname(item.file))}</div>${item.headline ? `<div class="hl">${esc(item.headline)}</div>` : ''}${item.source ? `<div class="src">${esc(item.source)}</div>` : ''}${item.destination ? `<div class="dst" title="${esc(item.destination)}">\u2192 ${esc(item.destination)}</div>` : ''}${sent ? `<div class="sent" title="${esc(sent.receipt)}">Sent ${hhmm(sent.at)} to ${esc(sent.to)}</div>` : ''}<div class="meta"><b>${person(p.by)}</b> · ${hhmm(p.at)}</div></div>`;
 }
 
-// The instance in three slices: Inputs, Steps and Outputs. On a desktop a toggle, kept in this browser, shows Inputs and Outputs as lists, each sorting by
+// The instance in three slices: Inputs, Steps and Outputs. On a desktop a toggle, kept in this browser, shows them as lists, each sorting by
 // the column its heading names; a phone shows tiles, Outputs first.
 function renderPanes() {
   $('#outs').hidden = $('#steps').hidden = $('#view').hidden = !data;
@@ -813,19 +813,19 @@ function renderPanes() {
   put($('#view'), `<span class="seg">${[['tiles', 'Tiles'], ['list', 'List']].map(([v, name]) => `<button class="${list === (v === 'list') ? 'sel' : ''}" data-act="view" data-id="${v}">${name}</button>`).join('')}</span>`);
   put($('#ins'), head('Inputs', ins, 'in') + body('in', ins) + alsoUsed + (open ? '<div class="hint">Drop files to add them. The agent decides what each one is.</div>' : ''));
   put($('#outs'), head('Outputs', outs, 'out') + body('out', outs) + (open ? '<div class="hint">Drop a revised output here.</div>' : ''));
-  put($('#steps'), head('Steps', steps) + `<div class="tiles">${steps.map(tile).join('')}</div>`);
+  put($('#steps'), head('Steps', steps) + body('step', steps));
   prevSigs = Object.fromEntries(items.map(i => [i.id, sig(i)]));
   light();
 }
 
-// Inputs or Outputs as a dense list: a row an item, in the screen's order until a heading sorts it, a second click reversing it. A row
-// with no file yet says only that, as its tile does.
+// A slice as a dense list: a row an item, in the screen's order until a heading sorts it, a second click reversing it. A row with no
+// file yet says only that, as its tile does.
 function listHtml(pane, xs) {
   const s = ui.sort[pane], was = data.previous;
-  const cols = [['name', 'Name'], ['where', pane === 'in' ? 'Source' : 'Destination'], ['as_of', 'As of'], ['by', 'By'], ['headline', pane === 'in' ? 'Rows · total' : 'Headline'], ['changed', 'Changed'], ['threads', 'Threads']];
+  const cols = [['name', 'Name'], ['where', { in: 'Source', step: 'Made from', out: 'Destination' }[pane]], ['as_of', 'As of'], ['by', 'By'], ['headline', pane === 'in' ? 'Rows · total' : 'Headline'], ['changed', 'Changed'], ['threads', 'Threads']];
   const row = i => {
     const p = i.file && provenance(i.file), on = talkOn(i.id), asks = on.filter(t => t.waits).length;
-    return { i, p, on, asks, name: i.name, where: (p && (pane === 'in' ? i.source : i.destination)) ?? '', as_of: (p && i.as_of) ?? '', by: p ? nameOf(p.by) : '', headline: (p && i.headline) ?? '', changed: was?.changed[i.id] ?? '', threads: asks * 1e4 + on.length };
+    return { i, p, on, asks, name: i.name, where: (p && { in: i.source, step: i.from?.map(f => data.doc.items.find(x => x.id === f)?.name ?? f).join(', '), out: i.destination }[pane]) ?? '', as_of: (p && i.as_of) ?? '', by: p ? nameOf(p.by) : '', headline: (p && i.headline) ?? '', changed: was?.changed[i.id] ?? '', threads: asks * 1e4 + on.length };
   };
   const rows = xs.map(row);
   if (s) rows.sort((a, b) => s.dir * (typeof a[s.key] === 'number' ? a[s.key] - b[s.key] : String(a[s.key]).localeCompare(String(b[s.key]), undefined, { numeric: true })));

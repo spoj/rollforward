@@ -767,7 +767,7 @@ test("an item's card shows its file's preview on a desktop, to scroll in place o
   await page.click('#card [data-act=uncard]');
 });
 
-test("an instance is its Inputs, Steps and Outputs, left to right, each heading whole over its tiles; hovering an item marks what it's made from, which its card names; the list view, kept in this browser, sorts by a column", async () => {
+test("an instance is its Inputs, Steps and Outputs, left to right, each heading whole over its tiles; hovering an item marks what it's made from, which its card names; the list view, kept in this browser, shows each slice as a list, one over the other, sorting by a column", async () => {
   await page.evaluate(() => location.hash === '#/3d70f7ca6f20' || new Promise(ok => { addEventListener('hashchange', ok, { once: true }); location.hash = '#/3d70f7ca6f20'; }));
   await page.waitForSelector('#steps .tile .fn:text-is("Eligible AR")');
   await page.setViewportSize({ width: 1280, height: 300 });
@@ -783,6 +783,8 @@ test("an instance is its Inputs, Steps and Outputs, left to right, each heading 
   assert.deepEqual(await page.locator('#ins .lst th').allTextContents(), ['Name', 'Source', 'As of', 'By', 'Rows · total', 'Changed', 'Threads']);
   assert.deepEqual(await page.locator('#ins .lrow td:nth-child(3)').allTextContents(), ['', '2026-08-29']);
   assert.deepEqual(await page.locator('#outs .lrow td:nth-child(6)').allTextContents(), ['changed'], 'since 2026-08-23, by content');
+  assert.deepEqual(await page.locator('#steps .lrow').evaluateAll(rs => rs.map(r => [r.querySelector('.fn')!.textContent, r.children[1].textContent])), [['Eligible AR', 'AR aging']], 'a step by what it is made from');
+  assert.deepEqual(await page.evaluate(() => ['#ins', '#steps', '#outs'].map(p => document.querySelector(p)!.getBoundingClientRect().top).every((y, k, ys) => !k || y > ys[k - 1])), true, 'one over the other');
   await page.click('#ins .lst th:text-is("As of")');
   await page.click('#ins .lst th:text-is("As of")');
   assert.deepEqual(await page.locator('#ins .lrow .fn').allTextContents(), ['Inventory at cost', 'AR aging'], 'a second click reverses it');
