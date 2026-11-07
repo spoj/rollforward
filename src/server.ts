@@ -195,7 +195,7 @@ function summary(i: Instance, me: Me, w8 = wakes()) {
     wrong: k.wrong.filter(fresh).length,
     // The hosts a run's browser on a website was refused that it still doesn't reach, once the server sorted them (browsers.ts), for
     // its owner or an admin to allow under Waiting on you, for a week.
-    refused: k.refused.filter(e => fresh(e.at) && websites()[e.site] && (websites()[e.site].owner === email || me.role === 'admin')).map(e => ({ ...e, hosts: unreached(e.site, e.hosts) })).filter(e => e.hosts.length),
+    refused: k.refused.filter(e => fresh(e.at) && websites()[e.site] && (websites()[e.site].owner === email || me.role === 'admin')).map(e => ({ ...e, hosts: unreached(e.site, e.hosts), says: websites()[e.site].classes ?? {} })).filter(e => e.hosts.length),
   };
 }
 
@@ -910,6 +910,15 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
         writeJson('capabilities.json', { ...capabilities(), [cap]: people.map(p => p.toLowerCase()) });
       }
       send(res, 200, Object.fromEntries(CAPS.map(c => [c, capabilities()[c] ?? []])));
+    } else if (url.pathname === '/egress') {
+      // The hosts runs may reach beyond the sandbox's own list (sandbox.ts), which admins keep.
+      if (req.method === 'PUT') {
+        if (me.role !== 'admin') throw new HttpError(403, 'admins keep the hosts runs may reach');
+        const { hosts } = await json(req);
+        if (!Array.isArray(hosts) || !hosts.every(h => typeof h === 'string' && /^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(h))) throw new HttpError(400, `hosts: names such as pypi.org or *.example.com, not ${JSON.stringify(hosts)}`);
+        writeJson('egress.json', hosts.map(h => h.toLowerCase()));
+      }
+      send(res, 200, readJson<string[]>('egress.json', []));
     } else if (url.pathname === '/brand' && req.method === 'PUT') {
       if (me.role !== 'admin') throw new HttpError(403, "the deployment's brand is the admins'");
       const { text, logo, clear } = await json(req), b = { ...(!clear && brand()) };

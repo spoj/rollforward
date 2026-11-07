@@ -113,6 +113,8 @@ Admins:
 rf people [--set FILE|-] [-n] [--force]   everyone as lines of ROLE EMAIL, each with a comment; --set sets the roles of the people
                                   listed and adds new ones, removing no one
 rf user add EMAIL [admin] | role EMAIL admin|user [--force] | disable EMAIL | enable EMAIL | signout EMAIL | remove EMAIL
+rf egress [add|remove HOST]       the hosts runs may reach beyond package registries, GitHub and documentation sites, such as
+                                  api.example.com or *.example.org; admins add and remove them
 rf connection set NAME TYPE       an outside system runs reach as their runner, by a login each person makes: graph,
                                   Microsoft 365, or databricks, Azure Databricks, as each person adds what their login
                                   offers; websites are rf site's
@@ -657,6 +659,10 @@ else if (cmd === 'comment' && args.length === 2) {
     for (const e of b.entries) console.log(`  ${when(e.at)}  ${e.op === 'done' ? `run ${e.run} failed: ${e.error}`
       : `${e.by}  ${e.op === 'comment' ? `says: ${e.text.split('\n')[0].slice(0, 200)}` : e.op === 'upload' ? `uploads ${e.file}` : `${e.op === 'close' ? 'closes' : 'abandons'} it`}`}`);
   }
+} else if (cmd === 'egress' && (!args.length || (args.length === 2 && ['add', 'remove'].includes(args[0])))) {
+  let hosts: string[] = await (await api('/egress')).json();
+  if (args.length) hosts = await (await post('/egress', { hosts: args[0] === 'add' ? [...new Set([...hosts, args[1]])] : hosts.filter(h => h !== args[1]) }, 'PUT')).json();
+  console.log(hosts.join('\n'));
 } else if (cmd === 'people' && args.length <= 1) {
   // People as lines to edit and set: ROLE EMAIL for everyone, owner|member EMAIL-OR-GROUP for a workspace, each with a comment.
   const ws = args[0] === undefined ? undefined : await workspaceNamed(args[0]);

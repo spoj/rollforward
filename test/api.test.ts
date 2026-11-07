@@ -21,7 +21,6 @@ const adminEmail = 'admin@demo.test', bob = 'bob@demo.test';
 
 const json = async (path: string, cookie = admin) => (await fetch(base + path, { headers: { cookie } })).json();
 const call = (method: string, path: string, body?: BodyInit, cookie = admin) => fetch(base + path, { method, body, headers: { cookie } });
-const authCli = (...args: string[]) => execFileSync(process.execPath, [join(app, 'src', 'auth.ts'), root, ...args], { encoding: 'utf8' });
 const sessionOf = (r: Response) => r.headers.getSetCookie().find(c => c.startsWith('rf_session='))?.split(';')[0];
 // Signs in as a browser does: Sign in with Microsoft, at a stand-in for Microsoft that signs in whoever it's told.
 const login = (email: string) => entra.signIn(base, email);
@@ -522,19 +521,18 @@ test('a task is a series of one instance, Untitled until its first prompt or a r
   assert.equal((await call('POST', `/api/series/${one.id}/promote`, JSON.stringify({ name: 'Again' }))).status, 400);
 });
 
-test('an admin can disable someone, which ends their sessions and stops their sign-in; the CLI does the same', async () => {
+test('an admin can disable someone, which ends their sessions and stops their sign-in, and sign them out everywhere', async () => {
   const b = sessionOf(await login(bob))!;
   assert.deepEqual((await json('/users')).find((u: { email: string }) => u.email === bob).workspaces, ['BobCo']);
   assert.equal((await call('PUT', `/users/${encodeURIComponent(adminEmail)}`, JSON.stringify({ disabled: true }))).status, 409, 'an admin cannot lock themselves out');
   assert.equal((await call('PUT', `/users/${encodeURIComponent(bob)}`, JSON.stringify({ disabled: true }))).status, 200);
   assert.equal((await call('GET', '/api', undefined, b)).status, 401);
   assert.equal((await login(bob)).status, 403);
-  authCli('enable', bob);
+  assert.equal((await call('PUT', `/users/${encodeURIComponent(bob)}`, JSON.stringify({ disabled: false }))).status, 200);
   const again = sessionOf(await login(bob))!;
   assert.equal((await call('GET', '/api', undefined, again)).status, 200);
-  authCli('signout', bob);
+  assert.equal((await call('PUT', `/users/${encodeURIComponent(bob)}`, JSON.stringify({ signout: true }))).status, 200);
   assert.equal((await call('GET', '/api', undefined, again)).status, 401);
-  assert.match(authCli('list'), new RegExp(`^${bob}\\tuser`, 'm'));
 });
 
 test('talking is in threads: a comment starts one on an item or the instance, and a reply goes under one of its comments, by its seq; resolving is gone', async () => {
@@ -1123,4 +1121,15 @@ test("what a person changes beyond an instance is an act of theirs in the system
     [before + 2, adminEmail, 'PUT', '/brand', { text: 'Logged', logo: { name: 'l.png' } }],
     [before + 3, adminEmail, 'PUT', '/brand', { clear: true }],
   ], 'one refused is no act');
+});
+
+test('admins keep the hosts runs may reach beyond the sandbox\'s own list, with rf egress', async () => {
+  assert.equal(await rf('egress', 'add', 'api.example.com'), 'api.example.com\n');
+  assert.equal(await rf('egress', 'add', '*.example.org'), 'api.example.com\n*.example.org\n');
+  assert.equal(await rf('egress', 'remove', 'api.example.com'), '*.example.org\n');
+  assert.deepEqual(JSON.parse(readFileSync(join(root, '.rf', 'egress.json'), 'utf8')), ['*.example.org']);
+  const bad = await call('PUT', '/egress', JSON.stringify({ hosts: ['bad host'] }));
+  assert.deepEqual([bad.status, await bad.text()], [400, 'hosts: names such as pypi.org or *.example.com, not ["bad host"]']);
+  assert.equal((await call('PUT', '/egress', JSON.stringify({ hosts: [] }), sessionOf(await login(bob))!)).status, 403, 'admins alone');
+  assert.equal(await rf('egress', 'remove', '*.example.org'), '\n');
 });

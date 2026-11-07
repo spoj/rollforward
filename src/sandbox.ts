@@ -82,7 +82,7 @@ export function serveSandboxes(o: { agent(req: IncomingMessage, res: ServerRespo
     const addresses = listed ? await lookup(host, { all: true }).catch(() => []) : [];
     const open = addresses.length > 0 && !addresses.some(isPrivate);
     run.egress(host, open);
-    if (!open) return refuse(listed ? `${host} resolves to no public address` : `${host} is not on the sandbox's allowlist; an admin adds hosts in .rf/egress.json`);
+    if (!open) return refuse(listed ? `${host} resolves to no public address` : `${host} is not on the sandbox's allowlist; an admin adds hosts with rf egress add HOST`);
     // IPv4 where the host has it, as a machine with no IPv6 route fails an IPv6 connect.
     up = connect(443, (addresses.find(a => a.family === 4) ?? addresses[0]).address, () => {
       client.write('HTTP/1.1 200 Connection Established\r\n\r\n');

@@ -27,15 +27,15 @@ cache := home_directory() / ".cache" / live
 
 # Let EMAIL sign in with Microsoft, as a user or, with role=admin, an admin
 invite email role="user":
-    podman exec {{live}} node src/auth.ts /data add '{{email}}' {{role}}
+    rf user add '{{email}}' {{role}}
 
 # Cut EMAIL off: their sessions end and they can no longer sign in
 revoke email:
-    podman exec {{live}} node src/auth.ts /data disable '{{email}}'
+    rf user disable '{{email}}'
 
 # List who can sign in, with their role and last sign-in
 people:
-    podman exec {{live}} node src/auth.ts /data list
+    rf people
 
 # Follow the live server's log
 logs:

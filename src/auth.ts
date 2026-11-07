@@ -1,9 +1,9 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { appendFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { HttpError } from './store.ts';
-import { forgetPerson, initSystem, isIn, key, readJson, rfDir, writeJson } from './system.ts';
+import { forgetPerson, isIn, key, readJson, rfDir, writeJson } from './system.ts';
 import { forgetLogins, logins, saveLogin, type Offer } from './logins.ts';
 import { keepSignIn } from './entra.ts';
 
@@ -375,26 +375,4 @@ export async function authenticate(req: IncomingMessage, res: ServerResponse, ur
 export function checkConfig() {
   if (![undefined, '0', '1'].includes(env.RF_AUTO_PROVISION)) throw new Error(`RF_AUTO_PROVISION is 0 or 1, not ${JSON.stringify(env.RF_AUTO_PROVISION)}`);
   if (!oidc.issuer || !oidc.clientId || !oidc.publicUrl || !URL.canParse(oidc.redirect)) throw new Error('sign-in needs an app registered in Microsoft Entra ID: RF_OIDC_ISSUER, RF_OIDC_CLIENT_ID and RF_PUBLIC_URL (and RF_OIDC_CLIENT_SECRET unless the app is a public client)');
-}
-
-if (import.meta.main) {
-  initSystem(resolve(process.argv[2]));
-  const [, cmd, email = '', arg] = process.argv.slice(2), id = email.trim().toLowerCase();
-  const all = users();
-  try {
-    if (cmd === 'add' && id) upsertUser(id, { role: ROLES.includes(arg as Role) ? (arg as Role) : 'user' });
-    else if (cmd === 'role' && id in all && ROLES.includes(arg as Role)) upsertUser(id, { role: arg as Role });
-    else if (cmd === 'disable' && id in all) upsertUser(id, { disabled: true });
-    else if (cmd === 'enable' && id in all) upsertUser(id, { disabled: false });
-    else if (cmd === 'signout' && id in all) signOutEverywhere(id);
-    else if (cmd === 'remove' && id in all) removeUser(id);
-    else if (cmd === 'list') for (const [n, u] of Object.entries(all)) console.log([n, u.role, u.disabled ? 'disabled' : '', u.last_login ? `last in ${u.last_login}` : 'never in'].filter(Boolean).join('\t'));
-    else {
-      console.error('usage: node src/auth.ts DATA_ROOT list | add EMAIL [admin] | role EMAIL admin|user | disable EMAIL | enable EMAIL | signout EMAIL | remove EMAIL');
-      process.exitCode = 2;
-    }
-  } catch (e) {
-    console.error((e as Error).message);
-    process.exitCode = 1;
-  }
 }

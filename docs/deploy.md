@@ -11,7 +11,7 @@ rollforward runs on one host and the browser service ([spoj/rollforward-browser]
 - **Routes out of the rollforward host:**
   - the model's API (`openrouter.ai`), and Exa's (`api.exa.ai`) for runs' web search;
   - Microsoft (`login.microsoftonline.com` and `graph.microsoft.com`);
-  - the package registries and GitHub that runs install from (`.rf/egress.json` adds hosts);
+  - the package registries and GitHub that runs install from (`rf egress add HOST` adds hosts);
   - the browser host's port.
 
   If traffic out must go through a proxy, say so before you start: runs' own connections don't use one yet.

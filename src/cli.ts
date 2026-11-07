@@ -2,11 +2,11 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, userInfo } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Instance } from './store.ts';
-import { initSystem } from './system.ts';
+import { act, initSystem } from './system.ts';
 import { logins, runnerOf } from './logins.ts';
 import { users } from './auth.ts';
 import { serveAgent } from './agent-api.ts';
@@ -54,9 +54,11 @@ async function tryIt(args: string[]) {
   writeFileSync(join(home, '.officecli', 'config.json'), JSON.stringify({ autoUpdate: false }));
   const env = {
     PATH: ['/app/bin', '/opt/venv/bin', '/usr/local/bin', '/usr/bin'].join(delimiter), LANG: 'C.UTF-8', TZ: Intl.DateTimeFormat().resolvedOptions().timeZone, HOME: '/home/agent', OFFICECLI_NO_AUTO_RESIDENT: '1', PLAYWRIGHT_MCP_OUTPUT_DIR: '/tmp/playwright-cli',
-    RF_URL: api.url, RF_TOKEN: api.token, RF_BROWSERS: `${api.url}/browsers/${api.token}`, RF_WORKING: join(out, 'working'), RF_SKILLS: '/skills',
+    RF_URL: api.url, RF_TOKEN: api.token, RF_BROWSERS: `${api.url}/browsers/${api.token}`, RF_WORKING: join(out, 'working'), RF_SKILLS: '/skills', ...(process.env.RF_TODAY && { RF_TODAY: process.env.RF_TODAY }),
     HTTPS_PROXY: via, https_proxy: via, NODE_USE_ENV_PROXY: '1', OPENROUTER_API_KEY: 'rf', ...(process.env.EXA_API_KEY && { EXA_API_KEY: 'rf' }), ...Object.assign({}, ...reachable(run.inst).map(c => types[c.type].env?.(c, runnerOf(run.inst).logins))), ...Object.fromEntries(['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS', 'CURL_CA_BUNDLE'].map(k => [k, join(out, 'ca.pem')])),
   };
+  // A try uses an admin's logins outside any run: an act of theirs, from this machine's account, in the system's log.
+  act(as, { op: 'try', command: args.slice(dash + 1), shell: userInfo().username });
   const code = await new Promise<number>(done => spawn('bwrap', [
     '--unshare-all', '--share-net', '--die-with-parent', '--clearenv', ...userland(), '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--bind', home, '/home/agent',
     ...['bin', 'src', 'node_modules', 'package.json'].flatMap(f => ['--ro-bind', join(app, f), `/app/${f}`]), ...skills().flatMap(s => ['--ro-bind', realpathSync(s.dir), `/skills/${s.id}`]),

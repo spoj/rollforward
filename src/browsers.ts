@@ -255,10 +255,10 @@ function keep(inst: Instance, b: Opened, { state, log }: { state: unknown; log: 
 }
 
 // The hosts a run's browser on a website was refused, sorted once each: one within the registrable domains the website reaches is
-// its own, and the website reaches it from then on; of the rest, the server's model says which are its sign-on's or its pages' CDN,
-// which it reaches too, and which are trackers, which stay refused and wait on no one. What's left waits, as before, on its owner
-// and on admins, under Waiting on you. Without the server's key only its own are sorted. What it reaches now is logged in the
-// instance, as `browser` with `allowed`.
+// its own, and the website reaches it from then on, logged in the instance as `browser` with `allowed`; of the rest, the server's
+// model says which are its sign-on's or its pages' CDN, and which are trackers, which stay refused and wait on no one. The others
+// wait on its owner and admins under Waiting on you, marked as the model says: only a person allows a host the website doesn't own.
+// Without the server's key only its own are sorted.
 const CLASSIFY = `A browser on a company's website, run by an automated job, was refused these hosts, which the website may not reach. Say what each is to the website, as one JSON object {"hosts": {HOST: "sign-on" | "cdn" | "tracker" | "other"}}: "sign-on" for the identity provider its sign-in goes through, "cdn" for where its own pages' scripts, styles, fonts or images come from, "tracker" for analytics, advertising, telemetry or chat widgets, and "other" for anything else or anything you're unsure of.`;
 
 async function classify(inst: Instance, run: number, site: string, refused: Record<string, number>) {
@@ -277,8 +277,8 @@ async function classify(inst: Instance, run: number, site: string, refused: Reco
     sorted = JSON.parse((await res.json()).choices[0].message.content).hosts ?? {};
   }
   const allowed: string[] = [];
-  for (const h of [...own, ...rest.filter(h => ['sign-on', 'cdn'].includes(sorted[h]))]) if (await checkHost(site, h, !!w.internal).then(() => true, () => false)) allowed.push(h);
-  const classes = Object.fromEntries(rest.filter(h => sorted[h] && !allowed.includes(h)).map(h => [h, sorted[h] === 'tracker' ? 'tracker' : 'other']));
+  for (const h of own) if (await checkHost(site, h, !!w.internal).then(() => true, () => false)) allowed.push(h);
+  const classes = Object.fromEntries(rest.filter(h => sorted[h]).map(h => [h, ['sign-on', 'cdn', 'tracker'].includes(sorted[h]) ? sorted[h] : 'other']));
   if (!allowed.length && !Object.keys(classes).length) return;
   changeConnection(site, { hosts: [...new Set([...w.hosts, ...allowed])], classes: { ...w.classes, ...classes } }, 'server');
   console.log(`hosts sorted ${JSON.stringify({ site, inst: inst.id, run, allowed, classes })}`);

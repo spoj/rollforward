@@ -577,8 +577,8 @@ test("anyone adds a website, theirs to set: they allow the hosts its pages need 
   assert.deepEqual(await said(await call('POST', `/grants/${risky}`, { approve: true }, bob)), [403, 'the check rates bobs high risk: an admin decides']);
   assert.equal((await call('POST', `/grants/${risky}`, { approve: true })).status, 200);
 
-  // A run's browser was refused hosts: its own and its CDN's it reaches from then on, a tracker stays refused and unasked, and the
-  // rest waits on its owner and admins, under Waiting on you, until one of them allows it.
+  // A run's browser was refused hosts: its own it reaches from then on, a tracker stays refused and unasked, and the rest, its CDN's
+  // too, waits on its owner and admins, under Waiting on you, marked as the server's model says, until one of them allows it.
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Own pull' }, bob)).json();
   refused = ['https://cdn.idp.test/x.js', 'https://www.tracker.test/c', 'https://static.cdnhost.test/a.js', 'https://upload.elsewhere.test/x'];
   verdicts.push({ hosts: { 'www.tracker.test': 'tracker', 'static.cdnhost.test': 'cdn', 'upload.elsewhere.test': 'other' } });
@@ -588,12 +588,12 @@ test("anyone adds a website, theirs to set: they allow the hosts its pages need 
   await until('the hosts sorted', () => readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').includes('"action":"allowed"'));
   assert.deepEqual(JSON.parse(checks.at(-1)!.messages[1].content).refused, { 'www.tracker.test': 1, 'static.cdnhost.test': 1, 'upload.elsewhere.test': 1 }, 'its own goes unasked');
   const log = readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
-  assert.deepEqual(log.find(e => e.action === 'allowed').allowed, ['cdn.idp.test', 'static.cdnhost.test']);
-  assert.deepEqual([(await listed(bob)).hosts.slice(2), (await listed(bob)).classes], [['cdn.idp.test', 'static.cdnhost.test'], { 'www.tracker.test': 'tracker', 'upload.elsewhere.test': 'other' }]);
+  assert.deepEqual(log.find(e => e.action === 'allowed').allowed, ['cdn.idp.test']);
+  assert.deepEqual([(await listed(bob)).hosts.slice(2), (await listed(bob)).classes], [['cdn.idp.test'], { 'www.tracker.test': 'tracker', 'static.cdnhost.test': 'cdn', 'upload.elsewhere.test': 'other' }]);
   const waits = async (cookie = bob) => (await (await call('GET', '/api', undefined, cookie)).json()).flatMap((w: any) => w.series.flatMap((s: any) => s.instances)).find((i: { id: string }) => i.id === id).refused.map((r: { hosts: string[] }) => r.hosts);
-  assert.deepEqual([await waits(), await waits(admin)], [[['upload.elsewhere.test']], [['upload.elsewhere.test']]]);
+  assert.deepEqual([await waits(), await waits(admin)], [[['static.cdnhost.test', 'upload.elsewhere.test']], [['static.cdnhost.test', 'upload.elsewhere.test']]], "only a person allows what the website doesn't own");
   assert.equal((await allow('upload.elsewhere.test')).status, 403, 'outside its domains, now its grants are approved');
-  assert.equal((await allow('upload.elsewhere.test', admin)).status, 200);
+  for (const host of ['upload.elsewhere.test', 'static.cdnhost.test']) assert.equal((await allow(host, admin)).status, 200);
   assert.deepEqual(await waits(), []);
 
   // An admin switches it off, for no one to use, and on again; its owner removes it, as no one else has a grant to it.
