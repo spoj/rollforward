@@ -179,7 +179,8 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
 }
 
 // The request goes on as it came, but for its credential and the hop's own headers; the answer comes back as it is, and, where
-// it's kept and is JSON or a stream of events, as text too, for what it holds.
+// it's kept and is JSON or a stream of events, as text too, for what it holds. A run gone before its answer, as one cut, leaves it
+// read to its end all the same, so what was sent is logged as answered.
 function forward(target: string, req: IncomingMessage, res: ServerResponse, o: { auth: Record<string, string>; body?: Buffer; keep: boolean }) {
   return new Promise<{ status: number; bytes: number; type: string; text: string }>((ok, fail) => {
     const headers = Object.fromEntries(Object.entries(req.headers).filter(([k]) => !HOP.includes(k)));
@@ -190,7 +191,8 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
       const kept: Buffer[] = [], type = String(r.headers['content-type']), keep = o.keep && /json|event-stream/.test(type);
       let bytes = 0;
       r.on('data', (b: Buffer) => { bytes += b.length; if (keep) kept.push(b); });
-      r.pipe(res);
+      if (res.closed) r.resume();
+      else r.pipe(res).once('close', () => r.resume());
       r.on('end', () => {
         const raw = Buffer.concat(kept), enc = r.headers['content-encoding'];
         const text = keep ? (enc === 'gzip' ? gunzipSync(raw) : enc === 'deflate' ? inflateSync(raw) : enc === 'br' ? brotliDecompressSync(raw) : raw).toString() : '';

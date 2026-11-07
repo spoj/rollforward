@@ -67,8 +67,8 @@ let sock = '', ca = '', proxy: Server;
 const m365 = () => logins.logins(ALICE).find(l => l.id === 'm365')!;
 
 // A request as a run's tool makes it: CONNECT through the proxy with the run's token, then TLS to the host, trusting what the run
-// trusts, and HTTP/1.1; `data` sees the answer as it comes.
-async function via(method: string, url: string, o: { body?: string | Buffer; headers?: Record<string, string>; token?: string; data?: (b: Buffer) => void; path?: string } = {}): Promise<{ status: number; text: string; headers: IncomingHttpHeaders }> {
+// trusts, and HTTP/1.1; `data` sees the answer as it comes, and `cut` hangs up at its first bytes, as a run cut then would.
+async function via(method: string, url: string, o: { body?: string | Buffer; headers?: Record<string, string>; token?: string; data?: (b: Buffer) => void; path?: string; cut?: boolean } = {}): Promise<{ status: number; text: string; headers: IncomingHttpHeaders }> {
   const u = new URL(url), token = o.token ?? 'run';
   const socket = await new Promise<Socket>((ok, fail) => request({ socketPath: sock, method: 'CONNECT', path: `${u.hostname}:443`, headers: { 'proxy-authorization': `Basic ${Buffer.from(`rf:${token}`).toString('base64')}` } })
     .on('connect', (r, s) => r.statusCode === 200 ? ok(s) : fail(new Error(`CONNECT answered ${r.statusCode}`))).on('error', fail).end());
@@ -76,7 +76,11 @@ async function via(method: string, url: string, o: { body?: string | Buffer; hea
   return new Promise((ok, fail) => {
     const r = httpsRequest({ host: u.hostname, path: o.path ?? u.pathname + u.search, method, headers: { authorization: 'Bearer rf', ...o.headers }, createConnection: () => tls }, res => {
       const chunks: Buffer[] = [];
-      res.on('data', b => { chunks.push(b); o.data?.(b); }).on('end', () => ok({ status: res.statusCode!, text: Buffer.concat(chunks).toString(), headers: res.headers }));
+      res.on('data', b => {
+        chunks.push(b);
+        o.data?.(b);
+        if (o.cut) (tls.destroy(), ok({ status: res.statusCode!, text: '', headers: res.headers }));
+      }).on('end', () => ok({ status: res.statusCode!, text: Buffer.concat(chunks).toString(), headers: res.headers }));
     });
     r.on('error', fail);
     r.end(o.body);
@@ -132,6 +136,7 @@ before(async () => {
         if (path === '/upload/s1') return res.writeHead(201).end();
         if (w.auth !== 'Bearer tok') return void res.writeHead(401).end();
         if (path === '/drives/b!d1/items/y2026:/report.xlsx:/content') return send({ id: 'new1', name: 'report.xlsx', eTag: '"{NEW1},1"' }, 201);
+        if (path === '/drives/b!d1/items/y2026:/big.xlsx:/content') return send({ id: 'big1', name: 'big.xlsx', description: 'x'.repeat(1 << 22) }, 201);
         if (path === '/drives/b!d1/items/a' && req.method === 'PATCH') return send({ id: 'a', eTag: '"{A},2"' });
         if (path === '/me/messages') return send({ id: 'd1' }, 201);
         if (path === '/me/messages/d1/attachments/createUploadSession') return send({ uploadUrl: 'https://outlook.office.com/upload/s1?tempauth=secret' }, 201);
@@ -423,6 +428,17 @@ test('writes go within the ticks: a file saved into a ticked folder, a message s
   assert.deepEqual([writes.at(-1)!.path, writes.at(-1)!.auth], ['/upload/s1', undefined], 'the link as it is, with no token of ours');
   assert.equal(calls().at(-1)!.path, 'https://outlook.office.com/upload/s1', "the link's own token isn't logged");
   assert.equal((await via('POST', `${G}/me/messages/d1/send`)).status, 202);
+});
+
+test('a write whose run hangs up before its answer is read, as a run cut does, is logged as answered all the same', async () => {
+  const from = log.length;
+  assert.equal((await via('PUT', `${G}/drives/b!d1/items/y2026:/big.xlsx:/content`, { body: 'PK big', headers: { 'content-type': 'application/octet-stream' }, cut: true })).status, 201);
+  for (let i = 0; !log.slice(from).some(e => e.op === 'call'); i++) {
+    assert.ok(i < 100, 'its answer is logged');
+    await new Promise(r => setTimeout(r, 50));
+  }
+  const [send, answer] = log.slice(from);
+  assert.deepEqual([send.op, send.data.path, answer.op, answer.data.sent, answer.data.status, answer.data.bytes > 1 << 22], ['send', '/v1.0/drives/b!d1/items/y2026:/big.xlsx:/content', 'call', from + 1, 201, true]);
 });
 
 test("writes share nothing, and make, move or copy nothing outside the ticks; mail goes out as the ticked mailbox, in JSON or in MIME whose one From is it", async () => {
