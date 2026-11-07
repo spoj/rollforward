@@ -199,7 +199,6 @@ before(async () => {
   for (const id of ['mail-report', 'onedrive-report', 'portal', 'tool']) pushSkill(id, filesOf(join(standIns, id)), ALICE);
   writeJson('connections.json', {
     graph: { type: 'graph', updated_by: 'admin', updated_at: '2026-10-01T00:00:00Z' },
-    portal: { type: 'website', url: 'https://portal.test/#/login', hosts: ['cdn.portal.test'], title: 'The Portal', writeback: true, updated_by: 'admin', updated_at: '2026-10-01T00:00:00Z' },
   });
   await c.setConnection('adb', { type: 'databricks' }, 'admin');
   endpoints.graph = base;
@@ -380,31 +379,51 @@ test('a push takes an id of letters, digits and dashes, and a SKILL.md; a push c
 
 test('admins keep connections, each a name, a type and its settings', async () => {
   const { connections, removeConnection, setConnection } = await import('../src/connections.ts');
-  const { websites } = await import('../src/browsers.ts');
-  assert.deepEqual(connections().map(c => [c.name, c.type]), [['graph', 'graph'], ['portal', 'website'], ['adb', 'databricks']]);
-  assert.deepEqual(websites().portal, { name: 'The Portal', url: 'https://portal.test/#/login', hosts: ['cdn.portal.test'], writeback: true, header: undefined, keepalive: undefined, every: undefined });
-  await assert.rejects(setConnection('Portal', { type: 'website', url: 'https://portal.test' }, 'admin'), /a connection's name is/);
-  await assert.rejects(setConnection('erp', { type: 'ftp' }, 'admin'), /type: one of graph, databricks, website/);
-  await assert.rejects(setConnection('erp', { type: 'website', url: 'portal.test' }, 'admin'), /an http\(s\) address/);
-  await assert.rejects(setConnection('erp', { type: 'website', url: 'https://erp.test', hosts: 'cdn.erp.test/x' }, 'admin'), /hosts: names/);
-  await assert.rejects(setConnection('erp', { type: 'website', url: 'https://erp.test', header: 'x bot' }, 'admin'), /header: the name of a header/);
-  await assert.rejects(setConnection('erp', { type: 'website', url: 'https://erp.test', keepalive: '/app/', every: '10' }, 'admin'), /every: minutes or hours/);
-  for (const keepalive of ['https://sso.test/app/', 'C:/Program Files/Git/app/'])
-    await assert.rejects(setConnection('erp', { type: 'website', url: 'https://erp.test', keepalive, every: '10m' }, 'admin'), /keepalive: a page of the website, by its address or path/, `${keepalive}: another host's, or a path Git Bash rewrote`);
-  // What any website may reach: not another's address, nor what another connection serves, though hosts such as single sign-on's
-  // they share; and a wildcard within one registrable domain, the Public Suffix List's private suffixes counting as public.
-  for (const [hosts, why] of [['portal.test', /portal\.test is portal's/], ['graph.microsoft.com', /graph\.microsoft\.com is graph's/],
-    ['*.co.uk', /\*\.co\.uk: a wildcard stays within one registrable domain/], ['*.github.io', /\*\.github\.io: a wildcard stays/]])
-    await assert.rejects(setConnection('erp', { type: 'website', url: 'https://erp.test/', hosts }, 'admin'), why, hosts);
-  await setConnection('erp', { type: 'website', url: 'https://erp.test/', hosts: 'cdn.portal.test, *.eu.sso.test' }, 'admin');
-  await setConnection('erp', { type: 'website', url: 'https://erp.test/', hosts: 'cdn.erp.test, *.sso.test', writeback: 'false', header: 'x-bot-token', keepalive: '/app/', every: '1h' }, 'admin');
-  assert.deepEqual(websites().erp, { name: 'erp', url: 'https://erp.test/', hosts: ['cdn.erp.test', '*.sso.test'], writeback: false, header: 'x-bot-token', keepalive: '/app/', every: 60 });
-  await setConnection('erp', { type: 'website', url: 'https://erp.test/', keepalive: 'https://erp.test/app/' }, 'admin');
-  assert.deepEqual([websites().erp.keepalive, websites().erp.every], ['https://erp.test/app/', undefined], 'a page by its address, as given, and no every, for the default');
-  await setConnection('erp', { type: 'website', url: 'https://erp.test/', every: '8m' }, 'admin');
-  assert.deepEqual([websites().erp.keepalive, websites().erp.every], [undefined, 8], 'how often, and no page, for its address');
-  removeConnection('erp');
-  assert.throws(() => removeConnection('erp'), /no connection erp/);
+  assert.deepEqual(connections().map(c => [c.name, c.type]), [['graph', 'graph'], ['adb', 'databricks']]);
+  await assert.rejects(setConnection('Adb', { type: 'databricks' }, 'admin'), /a connection's name is/);
+  await assert.rejects(setConnection('erp', { type: 'website', url: 'https://erp.test/' }, 'admin'), /type: one of graph, databricks$/);
+  await setConnection('adb2', { type: 'databricks' }, 'admin');
+  removeConnection('adb2');
+  assert.throws(() => removeConnection('adb2'), /no connection adb2/);
+});
+
+test("a website is its person's own, by a name of theirs and an https address, several at one host if they like, what it reaches checked, and only its internal addresses an admin's", async () => {
+  const { addSite, allowHost, removeSite, setSite, websitesOf } = await import('../src/browsers.ts');
+  const alice = { email: ALICE, role: 'user' } as never, admin = { email: 'admin@demo.test', role: 'admin' } as never, mine = () => {
+    const { added, ...w } = websitesOf(ALICE).erp;
+    return w;
+  };
+  await addSite(ALICE, 'erp', 'https://erp.test/');
+  await addSite(ALICE, 'erp-sso', 'https://erp.test/sso', 'x-bot-token');
+  await addSite(AP, 'erp', 'https://erp.test/');
+  for (const [name, url, why] of [['erp', 'https://erp.test/x', /you have a website erp already/], ['Erp', 'https://erp.test/', /a website's name is/], ['print', 'https://erp.test/', /a website's name is/],
+    ['x', 'http://erp.test/', /url: an https address/], ['x', 'https://graph.microsoft.com/', /graph\.microsoft\.com is graph's/]])
+    await assert.rejects(addSite(ALICE, name, url), why, name);
+  await assert.rejects(addSite(ALICE, 'x', 'https://x.test/', 'x bot'), /header: the name of a header/);
+  assert.deepEqual(mine(), { url: 'https://erp.test/', hosts: [], writeback: true });
+  assert.equal(websitesOf(ALICE)['erp-sso'].header, 'x-bot-token');
+  for (const [change, why] of [[{ writeback: 'maybe' }, /writeback: true or false/], [{ header: 'x bot' }, /header: the name of a header/], [{ every: '10' }, /every: minutes or hours/],
+    [{ keepalive: 'https://sso.test/app/' }, /keepalive: a page of the website/], [{ keepalive: 'C:/Program Files/Git/app/' }, /keepalive: a page of the website/], [{ title: 'ERP' }, /title: a website's settings are/]])
+    await assert.rejects(setSite(alice, 'erp', change), why, JSON.stringify(change));
+  await setSite(alice, 'erp', { writeback: 'false', header: 'x-bot-token', keepalive: '/app/', every: '1h' });
+  assert.deepEqual(mine(), { url: 'https://erp.test/', hosts: [], writeback: false, header: 'x-bot-token', keepalive: '/app/', every: 60 });
+  await setSite(alice, 'erp', { keepalive: 'https://erp.test/app/', every: '8m' });
+  assert.deepEqual([mine().keepalive, mine().every], ['https://erp.test/app/', 8]);
+  await assert.rejects(setSite(alice, 'erp', { internal: true }), /internal: admins set it/);
+  await assert.rejects(setSite(alice, 'erp', { header: 'y' }, AP), /ap@demo\.test's website is theirs to change/);
+  await assert.rejects(setSite(admin, 'erp', { header: 'y' }, ALICE), /admins only let it reach internal addresses/);
+  await setSite(admin, 'erp', { internal: true }, ALICE);
+  assert.equal(mine().internal, true);
+  // What a website may reach: not what a connection serves, and a wildcard within one registrable domain, the Public Suffix List's
+  // private suffixes counting as public; another website's address it may, as one sign-on serves many.
+  for (const [host, why] of [['graph.microsoft.com', /graph\.microsoft\.com is graph's/], ['*.co.uk', /\*\.co\.uk: a wildcard stays within one registrable domain/], ['*.github.io', /\*\.github\.io: a wildcard stays/]])
+    await assert.rejects(allowHost(ALICE, 'erp', host), why, host);
+  await allowHost(ALICE, 'erp', '*.eu.sso.test');
+  await allowHost(ALICE, 'erp', 'erp.test');
+  assert.deepEqual(mine().hosts, ['*.eu.sso.test', 'erp.test']);
+  removeSite(ALICE, 'erp');
+  assert.deepEqual([Object.keys(websitesOf(ALICE)), Object.keys(websitesOf(AP))], [['erp-sso'], ['erp']], "AP's stays");
+  assert.throws(() => removeSite(ALICE, 'erp'), /has no website erp/);
 });
 
 test('the proxy reaches nothing, not even what a tick is checked against, for a runner who can no longer lend their login', async () => {
