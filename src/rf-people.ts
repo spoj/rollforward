@@ -56,21 +56,19 @@ rf logins [--json]                your logins, each with its state, keepalive an
 rf logins offer|unoffer LOGIN SOURCE|OFFER   what a login offers runs: Microsoft 365's (m365) mailboxes, sites, folders and
                                   files, by address or link, a Databricks login's SQL warehouses, by link; unoffer takes the
                                   OFFER rf logins lists
-rf logins allow SITE HOST [--person EMAIL]   a host the pages of your website SITE need, or for admins, with --person,
-                                  someone's; once a grant to it is approved, only within the domains it reaches, beyond
-                                  which admins allow them
+rf logins allow SITE HOST         a host the pages of your website SITE need; once a grant to it is approved, only within
+                                  the domains it reaches
 rf logins signout LOGIN
 rf site add NAME URL [--header NAME]   a website of your own, by a NAME you choose, whose sign-in starts at URL, which you
                                   sign in to on the page; --header names a header its sign-in needs that its pages never
                                   send, such as x-bot-token, whose value you give as you sign in
-rf site set NAME [--header NAME] [--keepalive PAGE] [--every 10m] [--writeback false] [--person EMAIL]
-                                  your website NAME, or for admins, with --person, someone's: a header its sign-in needs
-                                  that its pages never send, such as x-bot-token, whose value its person gives, the page a
-                                  login kept alive loads, by address or path, else its address, and how often, 10m unless
-                                  given, and whether a run's browser writes its state back; admins also set
-                                  --internal true|false, for its browsers to reach internal hosts
-rf site remove NAME [--person EMAIL]   your website NAME, with your login to it and your grants for it, or for admins, with
-                                  --person, someone's
+rf site set NAME [--header NAME] [--keepalive PAGE] [--every 10m] [--writeback false]
+                                  your website NAME: a header its sign-in needs that its pages never send, such as
+                                  x-bot-token, whose value you give as you sign in, the page a login kept alive loads, by
+                                  address or path, else its address, and how often, 10m unless given, and whether a run's
+                                  browser writes its state back; admins set --internal true|false, with --person EMAIL for
+                                  someone's, for its browsers to reach internal hosts
+rf site remove NAME               your website NAME, with your login to it and your grants for it
 rf site ask NAME WORKSPACE REASON to use your login to NAME in WORKSPACE's runs, for REASON, which one of its owners approves
                                   or denies, seeing the server's check of the website, or an admin, where it rates it high
                                   risk; a login no approved grant uses is signed out a week after you signed in, and once
@@ -215,7 +213,6 @@ for (let i = 0; i < argv.length; i++) {
   else if (flag === 'exclude') excludes.push(argv[++i]);
   else flags[flag] = argv[++i];
 }
-const whose = flags.person ? `?person=${encodeURIComponent(String(flags.person))}` : '';
 if (cmd === '--version') {
   // Its package's: cli/ in the repo, beside rf.mjs once published.
   console.log(JSON.parse(readFileSync(new URL(import.meta.url.endsWith('.ts') ? '../cli/package.json' : 'package.json', import.meta.url), 'utf8')).version);
@@ -512,16 +509,16 @@ else if (cmd === 'comment' && args.length === 2) {
   const [what, login, x] = args, at = `/logins/${encodeURIComponent(login)}`;
   if (what === 'offer') await post(`${at}/offers`, { add: x });
   else if (what === 'unoffer') await api(`${at}/offers/${encodeURIComponent(x)}`, { method: 'DELETE' });
-  else await post(`/logins/web/${encodeURIComponent(login)}/hosts${whose}`, { host: x });
+  else await post(`/logins/web/${encodeURIComponent(login)}/hosts`, { host: x });
   console.log(`${login} ${{ offer: 'offers', unoffer: 'no longer offers', allow: 'reaches' }[what]} ${x}`);
 } else if (cmd === 'site' && args[0] === 'add' && args.length === 3) {
   const { site } = await (await post('/logins/sites', { name: args[1], url: args[2], header: flags.header })).json();
   console.log(`added ${site}: sign in to it at ${url}/#logins, then rf site ask ${site} WORKSPACE REASON`);
 } else if (cmd === 'site' && args[0] === 'set' && args.length === 2) {
-  await post(`/logins/sites/${encodeURIComponent(args[1])}${whose}`, { ...flags, person: undefined }, 'PATCH');
+  await post(`/logins/sites/${encodeURIComponent(args[1])}${flags.person ? `?person=${encodeURIComponent(String(flags.person))}` : ''}`, { ...flags, person: undefined }, 'PATCH');
   console.log('saved');
 } else if (cmd === 'site' && args[0] === 'remove' && args.length === 2) {
-  await api(`/logins/sites/${encodeURIComponent(args[1])}${whose}`, { method: 'DELETE' });
+  await api(`/logins/sites/${encodeURIComponent(args[1])}`, { method: 'DELETE' });
   console.log(`removed ${args[1]}`);
 } else if (cmd === 'site' && args[0] === 'ask' && args.length === 4) {
   const { id, check: c } = await (await post('/grants', { site: args[1], workspace: (await workspaceNamed(args[2])).id, reason: args[3] })).json();

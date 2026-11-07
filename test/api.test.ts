@@ -881,12 +881,12 @@ test('rf shares and archives series and workspaces, starts or drops a request, l
   assert.match(listed, /^wh  Databricks wh  signed in since [\d-]+ [\d:]+\n  offers wh:adb-1\.azuredatabricks\.net\/w1  Warehouse Finance$/m);
   assert.equal(await rf('logins', 'unoffer', 'web:crm', 'web:crm'), 'web:crm no longer offers web:crm\n');
   assert.deepEqual(JSON.parse(await rf('logins', '--json')).find((l: { id: string }) => l.id === 'web:crm').offers, []);
-  await assert.rejects(rf('logins', 'allow', 'nosuch', 'cdn.example.com'), fails(1, /: 404 no website nosuch/));
+  await assert.rejects(rf('logins', 'allow', 'nosuch', 'cdn.example.com'), fails(1, /: 404 admin@demo\.test has no website nosuch/));
   assert.equal(await rf('site', 'add', 'gg', 'https://gg.example.com/'), `added gg: sign in to it at ${base}/#logins, then rf site ask gg WORKSPACE REASON\n`);
-  assert.equal(await rf('site', 'add', 'mine', 'https://gg.example.com/login'), `https://gg.example.com/login is gg's: sign in to it at ${base}/#logins, then rf site ask gg WORKSPACE REASON\n`, 'an address a website has is that website');
-  await assert.rejects(rf('site', 'add', 'gg', 'https://other.example.com/'), fails(1, /: 409 gg is taken: name yours otherwise\n$/));
-  assert.equal(await rf('site', 'set', 'gg', '--title', 'GG', '--every', '5m'), 'saved\n');
-  assert.deepEqual(JSON.parse(await rf('connections', '--json')).filter((c: { name: string }) => c.name === 'gg').map((c: { title: string; every: number; owner: string }) => [c.title, c.every, c.owner]), [['GG', 5, adminEmail]]);
+  assert.equal(await rf('site', 'add', 'gg-sso', 'https://gg.example.com/sso', '--header', 'x-bot-token'), `added gg-sso: sign in to it at ${base}/#logins, then rf site ask gg-sso WORKSPACE REASON\n`, 'two at one host');
+  await assert.rejects(rf('site', 'add', 'gg', 'https://other.example.com/'), fails(1, /: 409 you have a website gg already: name this one otherwise\n$/));
+  assert.equal(await rf('site', 'set', 'gg', '--every', '5m'), 'saved\n');
+  assert.deepEqual([(await json('/logins/sites')).gg.every, (await json('/logins/sites'))['gg-sso'].header], [5, 'x-bot-token']);
   assert.equal(await rf('logins', 'allow', 'gg', 'cdn.gg-assets.example.net'), 'gg reaches cdn.gg-assets.example.net\n');
   await assert.rejects(rf('site', 'ask', 'gg', 'Making', 'month-end pulls'), fails(1, /: 409 sign in to gg first/));
   saveLogin(adminEmail, { id: 'web:gg', kind: 'website', name: 'GG', since, offers: [{ id: 'web:gg', name: 'GG' }] }, 'state');
@@ -898,7 +898,7 @@ test('rf shares and archives series and workspaces, starts or drops a request, l
   assert.equal(await rf('grant', 'revoke', asked), 'revoked\n');
   assert.ok(!JSON.parse(await rf('logins', '--json')).some((l: { id: string }) => l.id === 'web:gg'), 'with no grant left, the login is signed out');
   assert.equal(await rf('site', 'remove', 'gg'), 'removed gg\n');
-  await assert.rejects(rf('site', 'remove', 'gg'), fails(1, /: 404 no website gg; /));
+  await assert.rejects(rf('site', 'remove', 'gg'), fails(1, /: 404 admin@demo\.test has no website gg: theirs are gg-sso/));
   await assert.rejects(rf('site', 'add', 'gg'), fails(2, /^rf site add NAME URL /));
   for (const id of ['web:crm', 'web:erp', 'wh']) assert.equal(await rf('logins', 'signout', id), `signed out of ${id}\n`);
   await assert.rejects(rf('logins', 'signout', 'web:crm'), fails(1, /: 404 you have no login web:crm\n$/));
