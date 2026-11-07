@@ -1259,7 +1259,7 @@ function renderPv() {
     if (s.kind === 'workspace') h += (s.manage ? `<h3>Name</h3><input type="text" id="wname" value="${esc(s.name)}">` : '') + peopleHtml(s)
       + (s.grants.length ? `<h3>Websites</h3><div class="sub">Whose logins to which websites runs here use, as its owners approved them, or are asked to.</div>`
         + s.grants.map(g => `<div class="lsub"><span>${person(g.person)} · ${esc(g.site)} <span class="sub">${g.state === 'approved' ? `approved by ${esc(nameOf(g.by))}` : 'asked'}: ${esc(g.reason)}${g.check?.risk ? ` · ${esc(g.check.risk)} risk` : ''}</span></span>${s.manage || g.person === me.email ? `<button class="quiet" data-act="grant-revoke" data-id="${esc(g.id)}">Revoke</button>` : ''}</div>`).join('') : '')
-      + `<h3>Reading</h3><div class="sub">Agents here read every series of this workspace${s.reads.length ? `, and of ${esc(s.reads.join(', '))}, which ${s.reads.length > 1 ? 'have' : 'has'} everyone this one has` : ''}. They write only here.${s.read_by.length ? ` Agents in ${esc(s.read_by.join(', '))}, whose people are all here, read this one.` : ''}</div>`
+      + readingHtml(s)
       + agentsHtml(s, 'Every agent in this workspace reads it at the start of each run: its conventions, and changes that cut across its series, such as a renamed entity.', s.manage)
       + (s.manage && !s.archived ? moveHtml(s) : '')
       + (s.manage ? `<div class="row2"><button class="btn danger" data-act="archive-workspace">${s.archived ? 'Restore workspace' : 'Archive workspace'}</button></div>` : '');
@@ -1292,6 +1292,18 @@ function wakesHtml(target, list, series) {
     + WEEK.map(d => `<label class="sub"><input type="checkbox" value="${d}" ${k.days?.includes(d) ? 'checked' : ''}>${d[0].toUpperCase() + d.slice(1)}</label>`).join('')
     + `<button class="btn" data-act="wake-save">${k.id ? 'Save' : 'Add'}</button>${k.id ? '<button class="quiet" data-act="wake-delete">Delete</button>' : ''}</div>`;
   return `<div class="sub">${series ? 'Each starts the instance it names, or continues it if the series has it.' : 'Each continues this instance.'} Tick days to repeat it weekly at its time.</div>${list.map(row).join('')}${row()}`;
+}
+
+// What this workspace's agents read, and which other workspaces' agents read it, as each one's owners let them, choosing among the
+// workspaces they see; the owners of either side take a link off.
+function readingHtml(s) {
+  const others = tree.filter(w => w.id !== s.id && !w.archived && !s.readers.some(r => r.id === w.id));
+  const link = (name, source, reader) => `<div class="lsub"><span>${esc(name)}</span>${s.manage ? `<button class="quiet" data-act="reader-drop" data-source="${source}" data-reader="${reader}">Take off</button>` : ''}</div>`;
+  return `<h3>Reading</h3><div class="sub">Agents here read every series of this workspace${s.reads.length ? ', and those of the workspaces below, whose owners let them' : ''}. They write only here, and everyone here sees what they read.</div>`
+    + s.reads.map(r => link(r.name, r.id, s.id)).join('')
+    + `<div class="sub">${s.readers.length ? 'Agents in these workspaces read this one, and their people see what they read:' : "No other workspace's agents read this one."}</div>`
+    + s.readers.map(r => link(r.name, s.id, r.id)).join('')
+    + (s.manage && others.length ? `<div class="row2"><select id="reader">${others.map(w => `<option value="${w.id}">${esc(w.name)}</option>`).join('')}</select><button class="btn" data-act="reader-add">Let its agents read this one</button></div>` : '');
 }
 
 // A merge or move, as Waiting on you and the settings say it.
@@ -1799,6 +1811,13 @@ async function onAct(act, el) {
     await api(`/api/proposals/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ kind: series ? 'move' : 'merge', series, to: $('#mvto').value }) });
     await refresh();
     openWorkspaceSettings();
+  }
+  if (act === 'reader-add' || act === 'reader-drop') {
+    const [source, reader] = act === 'reader-add' ? [cur.w.id, $('#reader').value] : [el.dataset.source, el.dataset.reader];
+    await api(`/api/workspaces/${source}/readers/${reader}`, { method: act === 'reader-add' ? 'PUT' : 'DELETE' });
+    await refresh();
+    openWorkspaceSettings();
+    saved();
   }
   if (act === 'proposal-drop') {
     await api(`/api/proposals/${el.dataset.id}`, { method: 'DELETE' });

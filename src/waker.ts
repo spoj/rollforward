@@ -6,7 +6,7 @@ import { agentsFile, closedBefore, createInstance, HttpError, instance, instance
 import { startRun, type Run, type View } from './runner.ts';
 import type { JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { prepare, sources } from './indexes.ts';
-import { canSee, changes, everyone, readJson, rfDir, tree, type Tree, writeJson } from './system.ts';
+import { canSee, changes, readJson, rfDir, tree, type Tree, writeJson } from './system.ts';
 import { asPerson, users } from './auth.ts';
 import type { Browsers } from './browsers.ts';
 import { seriesSettings } from './series.ts';
@@ -106,16 +106,12 @@ export function message(inst: Instance, n: number, entries: Entry[], first = fal
     + entries.map(e => JSON.stringify(isNote(inst, e) ? { ...e, note: true } : e)).join('\n');
 }
 
-// What a series' agent may read: the other series of its workspace, and those of any workspace that has everyone this one has, by
-// the same email or group, so nothing it reads reaches someone who couldn't see it already. A workspace with no one in it reads only
-// itself.
-export function wider(t: Tree, ws: string): string[] {
-  const people = everyone(t.workspaces[ws]);
-  return Object.keys(t.workspaces).filter(o => o !== ws && people.length > 0 && people.every(p => everyone(t.workspaces[o]).includes(p)));
-}
+// What a series' agent may read: the other series of its workspace, and those of each workspace whose managers let its workspace's
+// agents read it, its readers.
+export const reads = (t: Tree, ws: string) => Object.keys(t.workspaces).filter(o => t.workspaces[o].readers?.includes(ws));
 
 export function reach(t: Tree, seriesId: string): string[] {
-  const ws = t.series[seriesId].workspace, read = [ws, ...wider(t, ws)];
+  const ws = t.series[seriesId].workspace, read = [ws, ...reads(t, ws)];
   return Object.keys(t.series).filter(id => id !== seriesId && read.includes(t.series[id].workspace)).sort((a, b) => named(t, a).localeCompare(named(t, b)));
 }
 
@@ -293,8 +289,8 @@ function finish(a: Active, aborted: boolean, error?: string): Entry | undefined 
   return done;
 }
 
-// A run is a lease on its view too: a change that would let what it reads reach someone who can't see where it came from, that moves
-// its series, or that takes its workspace from its runner cuts it at once, its token first, so nothing more goes out, and its
+// A run is a lease on its view too: a workspace it reads taking it off its readers, or a series it reads moving out of reach, its own
+// series moving, or its runner no longer seeing its workspace cuts it at once, its token first, so nothing more goes out, and its
 // instance carries on in a run of the new view. Anything else, such as a rename or a series made in reach, waits for the next run.
 function leases() {
   const t = tree();

@@ -23,7 +23,7 @@ import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, startIndexing, track } from './indexes.ts';
 import { seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, byToken, cancelWake, cancelWakes, closed, correct, dropRequest, isNote, kick, MAX_OPEN, named, pending, pinFor, queued, resolveFor, setWake, startWaking, starts, startWith, wakes, wakesOf, weekly, wider, CUT, type Active, type Request } from './waker.ts';
+import { active, byToken, cancelWake, cancelWakes, closed, correct, dropRequest, isNote, kick, MAX_OPEN, named, pending, pinFor, queued, resolveFor, setWake, startWaking, starts, startWith, wakes, wakesOf, weekly, reads, CUT, type Active, type Request } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -228,7 +228,8 @@ function listing(me: Me) {
     return {
       id, name: w.name, archived: !!w.archived, owners: w.owners, members: w.members, manage: canManage(me, w), agents: text(agentsFile(id)), mine,
       proposal: open.find(p => p.id === id || p.into === id) ?? null, moved: (w.moved ?? []).filter(m => fresh(m.at)),
-      reads: wider(t, id).map(o => t.workspaces[o].name).sort(), read_by: Object.keys(t.workspaces).filter(o => wider(t, o).includes(id)).map(o => t.workspaces[o].name).sort(),
+      // The workspaces its agents read, and those whose agents read it, as each one's managers let them.
+      reads: reads(t, id).map(o => ({ id: o, name: t.workspaces[o].name })), readers: (w.readers ?? []).map(o => ({ id: o, name: t.workspaces[o].name })),
       // The grants to use websites here, asked or approved: all of them for its managers, else one's own.
       grants: granted.filter(g => g.workspace === id),
       series,
@@ -436,7 +437,7 @@ const people = (w: { owners?: unknown; members?: unknown }) => [w.owners, w.memb
 // Workspaces, series and instances, by id. Renaming a workspace or a series edits .rf/tree.json, so it may happen mid-run; a run sees
 // the new names from its next start.
 async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: URL) {
-  const [kind, id = '', action] = url.pathname.split('/').slice(2).map(decodeURIComponent);
+  const [kind, id = '', action, other = ''] = url.pathname.split('/').slice(2).map(decodeURIComponent);
   // A run reads and writes its own instance's screen and threads, commits its folder, sets wakes and corrects closed instances in its
   // own workspace, and finds what a folder it can read names; nothing else here.
   const run = me.run;
@@ -466,6 +467,22 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     return send(res, 200, [...w.owners.map(who => ({ who, as: 'owner' })), ...w.members.map(who => ({ who, as: 'member' }))].map(p => ({
       ...p, last_login: us[p.who]?.last_login ?? null, runs: open.filter(i => runnerOf(i).by === p.who).map(i => `${t.series[i.seriesId].name}/${i.label}`),
     })));
+  }
+  // A workspace's managers let another workspace they see read it, and its managers or the other's take that off. What its agents
+  // read, that one's people see, whoever they are; a run reading it as it's taken off is cut (waker.ts leases()).
+  if (kind === 'workspaces' && action === 'readers') {
+    const w = t.workspaces[id], o = t.workspaces[other];
+    if (req.method === 'PUT') {
+      if (!canManage(me, mustSee(me, w))) throw new HttpError(403, "only the workspace's owners and admins let another workspace's agents read it");
+      mustSee(me, o);
+      if (other === id) throw new HttpError(400, "a workspace's agents read it already");
+      w.readers = [...new Set([...(w.readers ?? []), other])];
+    } else if (req.method === 'DELETE') {
+      if (!w || !o || !(canManage(me, w) || canManage(me, o))) throw new HttpError(404, 'no such workspaces you manage');
+      w.readers = (w.readers ?? []).filter(x => x !== other);
+    } else throw new HttpError(405, 'PUT or DELETE');
+    saveTree(t);
+    return send(res, 200, 'ok');
   }
   if (kind === 'workspaces' && req.method === 'PUT') {
     const w = mustSee(me, t.workspaces[id]);
@@ -540,6 +557,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       if (add) writeFileSync(agentsFile(p.into), `${keep && `${keep}\n\n`}## ${a.name}\n\n${add}`);
       rmSync(agentsFile(id), { force: true });
       delete t.workspaces[id];
+      for (const o of Object.values(t.workspaces)) o.readers &&= o.readers.filter(x => x !== id);
     } else {
       delete a.proposal;
       a.moved = [...(a.moved ?? []).filter(m => fresh(m.at)), { name: p.series!, to: moved[0].to, at: new Date().toISOString() }];
@@ -596,8 +614,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   }
   if (kind === 'wakes') {
     // People and runs set wakes, one-off or weekly, and cancel them: PUT names the target, an open instance, which the wake continues,
-    // or a series, which it starts LABEL of; DELETE names the wake. A run wakes only in its own workspace: it reads wider ones, never
-    // acts there.
+    // or a series, which it starts LABEL of; DELETE names the wake. A run wakes only in its own workspace: it reads others that let it,
+    // never acts there.
     const wake = req.method === 'DELETE' ? wakes().pending[id] : undefined, to = wake?.target ?? id, sid = t.series[to] ? to : instance(to).seriesId;
     if (req.method === 'DELETE' && !wake) throw new HttpError(404, 'no such wake pending');
     if (t.series[to]?.single) throw new HttpError(400, `${t.series[to].name} is a task, with one instance: wake that`);

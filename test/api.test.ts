@@ -255,7 +255,7 @@ test('a workspace can be made; a workspace or a series is archived and restored,
   const acme = () => named('Acme');
   const { id } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Acme' }))).json();
   const { series: made, ...rest } = await acme();
-  assert.deepEqual(rest, { id, name: 'Acme', archived: false, owners: [adminEmail], members: [], manage: true, agents: '', mine: true, proposal: null, moved: [], reads: [], read_by: [], grants: [] });
+  assert.deepEqual(rest, { id, name: 'Acme', archived: false, owners: [adminEmail], members: [], manage: true, agents: '', mine: true, proposal: null, moved: [], reads: [], readers: [], grants: [] });
   assert.deepEqual(made, [], 'a workspace starts empty');
   assert.equal((await call('POST', '/api/workspaces', JSON.stringify({ name: 'Acme' }))).status, 409);
   assert.equal((await call('PUT', `/api/workspaces/${id}`, JSON.stringify({ archived: true }))).status, 200);
@@ -375,17 +375,27 @@ test("each person sees the workspaces they're in, by email or Entra group; owner
   assert.equal((await people('Acme Payroll', { members: [group] })).status, 200);
   assert.ok((await workspaces(b)).some((w: { name: string }) => w.name === 'Acme Payroll'), 'through the Entra group');
 
-  // Reach is the workspace's: its agents read workspaces that have everyone it has.
-  const reads = async (ws: string) => (await named(ws)).reads;
-  assert.ok(!(await reads('larkfield')).includes('Acme Payroll'), 'larkfield has bob by email, who Payroll has only by group');
+  // What a workspace's agents read beyond it is what other workspaces' owners let them, whoever is in either.
+  const links = async (ws: string) => { const w = await named(ws); return [w.reads, w.readers].map(l => l.map((r: { name: string }) => r.name)); };
+  const link = (source: string, reader: string, method: string, cookie = admin) => call(method, `/api/workspaces/${source}/readers/${reader}`, undefined, cookie);
   assert.equal((await people('Acme Payroll', { members: [] })).status, 200);
-  assert.ok((await reads('Acme Payroll')).includes('larkfield'), 'everyone in Payroll is in larkfield, so its agents read larkfield');
-  assert.ok(!(await reads('larkfield')).includes('Acme Payroll'), 'never the reverse');
-  assert.ok((await named('larkfield')).read_by.includes('Acme Payroll'), "larkfield's owners see who reads it");
+  const [lark, payroll, bobco] = await Promise.all(['larkfield', 'Acme Payroll', 'BobCo'].map(async n => (await named(n)).id));
+  assert.deepEqual(await links('Acme Payroll'), [[], []], 'everyone in Payroll is in larkfield, yet its agents read only Payroll');
+  assert.equal((await link(lark, payroll, 'PUT')).status, 200);
+  assert.deepEqual([await links('Acme Payroll'), await links('larkfield')], [[['larkfield'], []], [[], ['Acme Payroll']]], 'larkfield lets Payroll read it, never the reverse');
+  assert.equal((await link(lark, bobco, 'PUT', b)).status, 403, 'a member lets no one in');
+  assert.equal((await link(bobco, payroll, 'PUT', b)).status, 404, 'an owner lets in only a workspace they see');
+  assert.equal((await link(bobco, bobco, 'PUT', b)).status, 400);
+  assert.equal((await link(lark, bobco, 'PUT')).status, 200);
+  assert.equal((await link(lark, bobco, 'DELETE', b)).status, 200, "the reader's owners take its link off too");
+  assert.equal((await link(lark, payroll, 'DELETE', b)).status, 404, 'and no one else');
+  assert.deepEqual(await links('larkfield'), [[], ['Acme Payroll']]);
+  assert.equal((await people('Acme Payroll', { members: ['dana@demo.test'] })).status, 200);
+  assert.deepEqual(await links('Acme Payroll'), [['larkfield'], []], 'whoever joins either changes nothing of it');
 
   assert.equal((await people('larkfield', { owners: [], members: [] })).status, 200);
   assert.equal((await call('GET', await at(series, '2026-08-30'), undefined, b)).status, 404);
-  assert.deepEqual(await reads('larkfield'), [], 'a workspace with no one in it reads only itself');
+  assert.deepEqual(await links('Acme Payroll'), [['larkfield'], []]);
 });
 
 test("the page names everyone who has signed in, and the Entra groups in the workspaces you see by the labels their owners give", async () => {
@@ -1104,9 +1114,11 @@ test("a workspace's owners propose to merge it into another or move a series the
   assert.deepEqual([await listed(from), existsSync(join(root, 'agents', `${from}.md`))], [undefined, false], 'the merged workspace is gone, its AGENTS.md with it');
   const unread = async (cookie: string) => (await listed(into, cookie)).series.find((s: { id: string }) => s.id === aging).instances[0].unread;
   assert.deepEqual([await unread(b), await unread(admin)], [true, false], 'new to everyone but who accepted');
-  const empty = await make('Moves C');
+  const empty = await make('Moves C'), reader = await make('Moves D');
+  for (const [source, to] of [[empty, reader], [reader, empty]]) assert.equal((await call('PUT', `/api/workspaces/${source}/readers/${to}`)).status, 200);
   assert.equal((await call('PUT', `/api/proposals/${empty}`, JSON.stringify({ kind: 'merge', to: into }))).status, 200);
   assert.equal((await call('POST', `/api/proposals/${empty}`, JSON.stringify({ owners: [], members: [] }))).status, 200, 'a workspace with no series merges too');
+  assert.deepEqual([(await listed(reader)).reads, (await listed(reader)).readers, (await listed(into)).reads], [[], [], []], "the merged workspace's links go, both ways");
 });
 
 test("what a person changes beyond an instance is an act of theirs in the system's log, once it's done, its secrets and files' contents left out", async () => {

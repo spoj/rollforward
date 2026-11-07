@@ -160,7 +160,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   const thread = `c${(await runs(id, 1)).length + 1}`;
   assert.match(made.prompt!, /"op":"create".*\n.*"op":"wake","from":"admin@demo.test"/, 'making an instance of a series starts a run');
   const { id: wide } = await (await call('POST', '/api/workspaces', { name: 'Wide' })).json();
-  assert.equal((await call('PUT', `/api/workspaces/${wide}`, { members: [BOB] })).status, 200);
+  assert.equal((await call('PUT', `/api/workspaces/${wide}/readers/${ws}`)).status, 200);
   assert.equal((await call('POST', '/api/series', { workspace: wide, name: 'Close' })).status, 200);
   const walls: Script = {
     bash: [
@@ -280,18 +280,18 @@ test('people rename the instance, its series and its workspace mid-run: the run 
   assert.ok(git('show', 'HEAD:names.tsv').includes(`${id}\t/work/Renamed/After/November\n`));
 });
 
-test("a change that narrows what a run may read cuts it at once, and its instance carries on in a run of the new view: someone joins its workspace who can't see a workspace it reads, then its series moves", async () => {
-  const workspace = async (name: string, members: string[] = []) => {
-    const { id } = await (await call('POST', '/api/workspaces', { name })).json();
-    if (members.length) assert.equal((await call('PUT', `/api/workspaces/${id}`, { members })).status, 200);
-    return id as string;
-  };
-  const source = await workspace('Lease source', [BOB]), reader = await workspace('Lease reader'), elsewhere = await workspace('Lease elsewhere');
+test("a run reads what its workspace's links let it as it started: someone joining changes nothing, while a link taken off, or its series moving, cuts it at once, and its instance carries on in a run of the new view", async () => {
+  const workspace = async (name: string) => (await (await call('POST', '/api/workspaces', { name })).json()).id as string;
+  const source = await workspace('Lease source'), reader = await workspace('Lease reader'), elsewhere = await workspace('Lease elsewhere');
   const { id: ledger } = await (await call('POST', '/api/series', { workspace: source, name: 'Ledger' })).json();
   assert.equal((await call('POST', `/api/series/${ledger}`, { label: '2026-11', logins: [], quiet: true })).status, 200);
+  assert.equal((await call('PUT', `/api/workspaces/${source}/readers/${reader}`)).status, 200);
   const { id: series } = await (await call('POST', '/api/series', { workspace: reader, name: 'Report' })).json();
-  const joined: Script = { bash: ['ls /work', async () => {
+  const linked: Script = { bash: ['ls /work', async () => {
     assert.equal((await call('PUT', `/api/workspaces/${reader}`, { members: ['carol@demo.test'] })).status, 200);
+    return 'ls /work';
+  }, async () => {
+    assert.equal((await call('DELETE', `/api/workspaces/${source}/readers/${reader}`)).status, 200);
     return 'sleep 60';
   }], report: 'Never said.', saw: [] };
   const moved: Script = { bash: ['ls /work', async () => {
@@ -300,11 +300,12 @@ test("a change that narrows what a run may read cuts it at once, and its instanc
     return 'sleep 60';
   }], report: 'Never said.', saw: [] };
   const after: Script = { bash: ['pwd'], report: 'Carried on.', saw: [] };
-  scripts.push(joined, moved, after);
+  scripts.push(linked, moved, after);
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
-  const log = await runs(id, 3), done = log.filter(e => e.op === 'done');
-  assert.ok(joined.saw[0].split('\n').includes('Lease source'), 'its workspace had no one the other lacked, so it read it');
-  assert.deepEqual(moved.saw[0].split('\n').filter(l => l.startsWith('Lease')), ['Lease reader'], 'Carol in its workspace, it no longer does');
+  const log = await runs(id, 3), done = log.filter(e => e.op === 'done'), leases = (ls: string) => ls.split('\n').filter(l => l.startsWith('Lease'));
+  assert.deepEqual(leases(linked.saw[0]), ['Lease reader', 'Lease source'], 'its workspace is a reader of the other');
+  assert.deepEqual(leases(linked.saw[1]), ['Lease reader', 'Lease source'], 'Carol joining changes nothing it reads');
+  assert.deepEqual(leases(moved.saw[0]), ['Lease reader'], 'the link taken off, it no longer reads the other');
   assert.equal(after.saw[0].trim(), '/work/Lease elsewhere/Report/2026-11');
   assert.deepEqual(done.map(e => [e.aborted, e.error]), [[true, 'its reach narrowed'], [true, 'its series moved'], [false, undefined]]);
   assert.deepEqual(log.filter(e => e.op === 'wake' && e.from === 'server').map(e => [e.reason, log[(e.cause as number) - 1].op]),

@@ -21,7 +21,7 @@ const tmp = mkdtempSync(join(tmpdir(), 'rf-wake-')), alice = 'alice@demo.test';
 initSystem(tmp);
 openStore(tmp);
 saveTree({
-  workspaces: { w: { name: 'Acme', owners: [alice], members: [] }, x: { name: 'Hidden', owners: ['zed@demo.test'], members: [] }, m: { name: 'Main', owners: [alice, 'zed@demo.test'], members: [] }, l: { name: 'Leavers', owners: ['lee@demo.test'], members: [] } },
+  workspaces: { w: { name: 'Acme', owners: [alice], members: [] }, x: { name: 'Hidden', owners: ['zed@demo.test'], members: [] }, m: { name: 'Main', owners: [alice, 'zed@demo.test'], members: [], readers: ['w'] }, l: { name: 'Leavers', owners: ['lee@demo.test'], members: [] } },
   series: {
     s1: { name: 'Bank rec', workspace: 'w' }, s2: { name: 'Borrowing base', workspace: 'w' }, s3: { name: 'Payroll', workspace: 'x' },
     s4: { name: 'Lunch', workspace: 'w', single: true }, s5: { name: 'Close', workspace: 'm' }, s6: { name: 'Queue', workspace: 'w' }, s7: { name: 'Leaver', workspace: 'l' },
@@ -56,7 +56,7 @@ test("a run names a series or an instance by its folder, from its own instance's
   assert.equal(resolveFor(run, '../2026-10'), oct.id);
   assert.equal(resolveFor(run, '..'), 's1');
   assert.equal(resolveFor(run, '../../Borrowing base'), 's2');
-  assert.equal(resolveFor(run, '../../../Main/Close'), 's5', 'a wider workspace is in reach');
+  assert.equal(resolveFor(run, '../../../Main/Close'), 's5', 'a workspace that lets its agents read it is in reach');
   assert.throws(() => resolveFor(run, '../../../Hidden/Payroll'), /no series you can read/);
   assert.throws(() => resolveFor(run, '../../../../x/Acme/Bank rec'), /no series you can read/);
   assert.throws(() => resolveFor(run, '../2026-13'), /no instance 2026-13 in Bank rec/);

@@ -457,6 +457,26 @@ test("a name two people share shows with their email, a group among a workspace'
   assert.equal(await page.locator(`#pv .ut td:has(span[title="${group}"])`).innerText(), 'Finance HK · group');
 });
 
+test("a workspace's settings say what its agents read and which workspaces' agents read it, which its owners add among the workspaces they see, and the owners of either take off", async () => {
+  await page.evaluate(() => fetch('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: 'Readers' }) }));
+  await page.reload();
+  const settings = async (name: string) => {
+    await page.mouse.click(5, 5);
+    await page.hover(`.row.ws:has-text("${name}")`);
+    await page.click(`.row.ws:has-text("${name}") [data-act=workspace-settings]`);
+  };
+  await settings('larkfield');
+  await page.locator('#pv .sub', { hasText: "No other workspace's agents read this one." }).waitFor();
+  await page.selectOption('#reader', { label: 'Readers' });
+  await page.click('[data-act=reader-add]');
+  await page.waitForSelector('#pv .lsub span:text-is("Readers")');
+  await settings('Readers');
+  await page.locator('#pv .sub', { hasText: 'and those of the workspaces below, whose owners let them' }).waitFor();
+  await page.click('#pv .lsub:has(span:text-is("larkfield")) [data-act=reader-drop]');
+  await page.locator('#pv .sub', { hasText: 'Agents here read every series of this workspace. They write only here' }).waitFor();
+  await page.mouse.click(5, 5);
+});
+
 test("Logins shows what needs you first, then a line for each kind, Microsoft 365's sources and the websites opening in place; ticks go by kind, Microsoft 365's sources under a tick of their own, an expired login's flagged and off", async () => {
   const rf = join(root, '.rf'), mine = join(rf, 'people', createHash('sha256').update('admin@demo.test').digest('hex').slice(0, 16));
   writeFileSync(join(rf, 'connections.json'), JSON.stringify({ graph: { type: 'graph' }, adb: { type: 'databricks' }, portal: { type: 'website', url: 'https://portal.test/', hosts: [] }, wiki: { type: 'website', url: 'https://wiki.test/', hosts: [] } }));

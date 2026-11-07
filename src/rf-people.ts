@@ -83,6 +83,9 @@ rf wake PATH AT [--label LABEL] [--days DAYS] | rf wake --cancel ID
                                   AT now, +<n>m|h|d or a date; PATH an open instance, or a series with LABEL; DAYS, such as
                                   mon-fri, repeats it weekly at AT's time; rf ls shows each wake's ID
 rf agents [WORKSPACE] [--set FILE|-]     the company's AGENTS.md, or a workspace's; setting the company's is for admins
+rf readers WORKSPACE [add|remove OTHER]   the workspaces whose agents read WORKSPACE and those its own read, as each one's
+                                  owners let them; its owners let OTHER's agents read it, one they see, and its owners or
+                                  OTHER's take that off; OTHER's people see what its agents read
 rf skills
 rf skill pull ID [DIR] [--version N]   the newest version, or N, into DIR, ./ID by default, new or empty, as push reads it
 rf skill versions ID
@@ -560,6 +563,16 @@ else if (cmd === 'comment' && args.length === 2) {
     await (ws ? post(`/api/workspaces/${ws.id}`, { agents: text }, 'PUT') : api('/agents', { method: 'PUT', body: text }));
     console.log('saved');
   }
+} else if (cmd === 'readers' && args.length === 1) {
+  const ws = await workspaceNamed(args[0]);
+  if (flags.json) console.log(JSON.stringify({ readers: ws.readers, reads: ws.reads }, null, 1));
+  else console.log([...ws.readers.map(r => `${r.name} reads ${ws.name}`), ...ws.reads.map(r => `${ws.name} reads ${r.name}`)].join('\n') || `${ws.name} reads no other workspace, and none reads it`);
+} else if (cmd === 'readers' && args.length === 3 && ['add', 'remove'].includes(args[1])) {
+  // A workspace you don't see, whose agents' reading of one of yours you take off, is found among what yours read.
+  const all = await get('/api'), [ws, other] = [args[0], args[2]].map(name => all.find(w => w.name === name) ?? all.flatMap(w => w.reads).find(r => r.name === name));
+  if (!ws || !other) throw new Error(`no workspace ${ws ? args[2] : args[0]}`);
+  await post(`/api/workspaces/${ws.id}/readers/${other.id}`, {}, args[1] === 'add' ? 'PUT' : 'DELETE');
+  console.log(args[1] === 'add' ? `${other.name}'s agents read ${ws.name} from their next run` : `${other.name}'s agents no longer read ${ws.name}`);
 } else if (cmd === 'skill' && args[0] === 'push' && args[1]) {
   const files = Object.fromEntries(readdirSync(args[1], { recursive: true, withFileTypes: true }).filter(d => d.isFile())
     .map(d => [relative(args[1], join(d.parentPath, d.name)).split(sep).join('/'), readFileSync(join(d.parentPath, d.name)).toString('base64')]));
