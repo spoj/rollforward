@@ -379,8 +379,6 @@ iframe.mail { width: 100%; border: 0; background: #fff; }
 .player.drive iframe { flex: 1; height: auto; }
 .runl { font-size: 12.5px; color: var(--ink-3); border-top: 1px solid var(--rule); padding-top: 6px; }
 .runl .post { color: var(--ink); margin-top: 4px; font-size: 13.5px; }
-.sect > summary { font-size: 13px; color: var(--ink-3); margin-top: 8px; }
-.sect .post { margin-top: 6px; }
 .pnote { font-size: 12px; }
 .spin { display: inline-block; width: 8px; height: 8px; border: 2px solid var(--rule-2); border-top-color: var(--ink); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -1px; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -394,9 +392,6 @@ input[type=checkbox] { accent-color: var(--ink); }
 .log.open { display: flex; flex-direction: column; }
 .conv { flex: 1 0 auto; padding: 4px 20px 0; display: flex; flex-direction: column; gap: 8px; overflow-wrap: anywhere; }
 .conv table { display: block; max-width: 100%; overflow-x: auto; }
-.proc div { white-space: pre-wrap; font-size: 13px; line-height: 1.5; padding: 0 4px; }
-.proc .ins { background: #e6f4ea; }
-.proc .del { background: #fdecea; text-decoration: line-through; color: var(--ink-3); }
 .conv h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-3); margin: 0; }
 .conv .compose { position: sticky; bottom: 0; z-index: 1; margin: auto -20px 0; padding: 10px 20px 16px; display: grid; gap: 8px; background: var(--sheet); border-top: 1px solid var(--rule); }
 .conv textarea { font: inherit; padding: 7px 9px; border: 1px solid var(--rule-2); border-radius: var(--r1); resize: vertical; width: 100%; }
@@ -538,8 +533,6 @@ function toast(text, kind = '') {
 // one you took control of, as instance/site; full, the long comments opened in full, and alone, the comment the conversation shows
 // alone, with what hangs under it, when a thread runs deeper than the panel shows.
 const ui = { open: innerWidth > 800, on: null, ref: null, audit: false, sect: {}, site: null, drive: null, sort: {}, full: new Set(), alone: null };
-// The process, as the conversation shows it.
-let docs = { key: '' };
 const drawn = new WeakMap();
 
 function put(el, html) {
@@ -932,8 +925,6 @@ function renderLog() {
   if (ui.open && data && !$('#log').classList.contains('open')) $('#log').dataset.end = 'yes';
   $('#log').className = 'log' + (ui.open && data ? ' open' : '');
   if (!data || !ui.open) return;
-  const key = `${cur.i.id}:${data.doc.rev}:${lastDone()?.seq}`;
-  if (docs.key !== key) loadDocs(key);
   // A half-written comment or reply, or files picked for one, holds the conversation still until it's sent or cleared.
   const drafting = [...$('#conv').querySelectorAll('textarea')].some(t => t.value.trim()) || [...$('#conv').querySelectorAll('input[type=file]')].some(f => f.files.length);
   const focused = document.activeElement?.id === 'newcomment';
@@ -1014,37 +1005,6 @@ function md(text, threads) {
   table();
   return h.trimEnd();
 }
-// The process, the instance's working/process.md, redlined against the series' latest closed instance before it by label.
-async function loadDocs(key) {
-  // The instance's own, until they're read again, as after a run; another's never.
-  docs = docs.key.startsWith(`${cur.i.id}:`) ? { ...docs, key } : { key };
-  const prev = cur.s.instances.filter(i => i.status === 'closed' && i.label < cur.i.label).map(i => i.label).sort().at(-1);
-  const get = async path => { const r = await fetch(fileUrl(path)); return r.ok ? r.text() : ''; };
-  const [now, was] = await Promise.all([get('working/process.md'), prev ? get(`../${prev}/working/process.md`) : '']);
-  if (docs.key !== key) return;
-  // Until this instance's agent writes its own, the process is still the one before it.
-  const lines = now ? redline(was, now) : redline('', was), changed = lines.some(([k]) => k);
-  docs = {
-    key, changed,
-    process: (now || was) && `<div class="sub">${!now ? `As of ${esc(prev)}, until the agent updates it here.` : prev ? (changed ? `Changes since ${esc(prev)} are marked.` : `Unchanged since ${esc(prev)}.`) : 'The series\' first process.'}</div>`
-      + `<div class="proc">${lines.map(([k, l]) => `<div class="${k}">${md(l) || '&nbsp;'}</div>`).join('')}</div>`,
-  };
-  renderLog();
-}
-
-function redline(a, b) {
-  const x = a ? a.split('\n') : [], y = b ? b.split('\n') : [], n = x.length, m = y.length;
-  const L = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
-  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i][j] = x[i] === y[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
-  const out = [];
-  for (let i = 0, j = 0; i < n || j < m;) {
-    if (i < n && j < m && x[i] === y[j]) { out.push(['', y[j]]); i++; j++; }
-    else if (j < m && (i === n || L[i][j + 1] >= L[i + 1][j])) out.push(['ins', y[j++]]);
-    else out.push(['del', x[i++]]);
-  }
-  return a ? out : out.map(([, l]) => ['', l]);
-}
-
 // Threads from the log: a comment starts one, on an item (at a ref) or the instance, and later comments reply in it. In an open
 // instance it waits on a person while its last word is the agent's ask, on whom the ask names or else the runner, and on the
 // agent while its last word is a person's. A file a run cited is kept by its instance's id, and shown by that instance's label now.
@@ -1104,7 +1064,7 @@ function reactHtml(seq) {
 }
 
 // The rules a run added to the process, or reworded, on the thread whose entry started it, or else on its line.
-const processNote = d => `<div class="pnote"><a data-act="process">Process: +${plural(d.rules, 'rule')}</a> in run ${d.run}</div>`;
+const processNote = d => `<div class="pnote"><a data-act="preview" data-file="working/process.md">Process: +${plural(d.rules, 'rule')}</a> in run ${d.run}</div>`;
 
 // A run, as one line among the threads: how it ended, how long it took and what it cost, opening to why it failed.
 function runHtml(r, latest) {
@@ -1114,12 +1074,10 @@ function runHtml(r, latest) {
   return body ? `<details class="runl" data-key="run${r.run}" ${ui.sect[`run${r.run}`] ?? latest ? 'open' : ''}><summary>${line}</summary>${body}</details>` : `<div class="runl">${line}</div>`;
 }
 
-// The conversation, as a chat reads: the process, open for the runner, folded for others; the threads and the
-// runs among them, oldest first, a thread where its last word is and a run where it ended; and at the panel's foot, kept there as it
-// scrolls, the box to comment on the instance.
+// The conversation, as a chat reads: the threads and the runs among them, oldest first, a thread where its last word is and a run
+// where it ended; and at the panel's foot, kept there as it scrolls, the box to comment on the instance.
 function conversationHtml() {
   const open = data.doc.status === 'open', name = id => esc(data.doc.items.find(i => i.id === id)?.name ?? id), mine = data.runner.by === me.email;
-  const fold = (key, head, body) => `<details class="sect" data-key="${key}" ${ui.sect[key] ?? mine ? 'open' : ''}><summary>${head}</summary>${body}</details>`;
   const moved = data.log.findLast(e => e.op === 'move'), runs = data.log.filter(e => e.op === 'run');
   let h = moved ? `<div class="sub">Moved ${when(moved.at)} from ${esc(moved.from)} to ${esc(moved.to)}, ${who(moved.accepted_by ?? moved.by)} accepting.</div>` : '';
   const alone = ui.alone && threads.find(t => t.posts.some(p => p.seq === ui.alone));
@@ -1130,7 +1088,6 @@ function conversationHtml() {
     return `<a class="more" data-act="alone">\u2190 Back to the conversation</a><div class="thread"><div class="on">${place(alone)}</div>`
       + up.map(a => `<a class="up" data-act="alone" data-seq="${a.seq}">${who(a.by)}: ${esc(firstLine(a.text))}</a>`).join('') + postHtml(alone, p, 0) + '</div>';
   }
-  if (docs.process) h += fold('process', `<b>Process</b>${docs.changed ? ' \u00b7 changed' : ''}`, docs.process);
   const ended = r => data.log.find(e => e.op === 'done' && e.run === r.run)?.seq ?? Infinity;
   h += [...threads.map(t => [t.last.seq, threadHtml(t)]), ...runs.map(r => [ended(r), runHtml(r, r === runs.at(-1))])].sort((a, b) => a[0] - b[0]).map(([, x]) => x).join('');
   // Before its first run, its runner may tick its logins anew where they write its first prompt.
@@ -1700,11 +1657,6 @@ async function onAct(act, el) {
   if (act === 'drive') { ui.drive = ui.drive ? null : `${cur.i.id}/${el.dataset.site}`; renderPlayer(); }
   if (act === 'player') { localStorage.player = localStorage.player === 'folded' ? 'open' : 'folded'; renderPlayer(); }
   // A rule the process gained: the Process fold, open, in view.
-  if (act === 'process') {
-    ui.sect.process = true;
-    renderLog();
-    $('#log details[data-key=process]').scrollIntoView({ block: 'start' });
-  }
   if (act === 'panel') {
     Object.assign(ui, { open: !ui.open, on: null, ref: null });
     renderLog(); renderBar(); placeCard();

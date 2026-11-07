@@ -17,10 +17,10 @@ Recurring tasks, files in and files out. People drop this period's input files i
 | A tile's card and its threads | Preview, compared with the file it replaced |
 |---|---|
 | ![A tile's card](docs/screenshots/card.png) | ![Preview](docs/screenshots/preview.png) |
-| **What needs you, above; the process, open for the runner; then the threads and runs** | **Process, marked against the previous instance** |
-| ![Conversation](docs/screenshots/conversation.png) | ![Process](docs/screenshots/process.png) |
-| **The audit: the log and the agent's steps, a plain line each** | **Phone** |
-| ![Audit](docs/screenshots/audit.png) | ![Phone](docs/screenshots/phone.png) |
+| **What needs you, above; then the threads and runs** | **The audit: the log and the agent's steps, a plain line each** |
+| ![Conversation](docs/screenshots/conversation.png) | ![Audit](docs/screenshots/audit.png) |
+| **Phone** | |
+| ![Phone](docs/screenshots/phone.png) | |
 
 ## Try it
 
@@ -65,8 +65,8 @@ For scale, a weekly borrowing base's runs cost about $0.20–0.60 each with Clau
 - **Sources and destinations:** an input says where it came from, uploaded by whom and when, or the agent's `source`, the system or earlier instance it fetched it from; an output may say where it goes, its `destination`, free text the agent writes as the series' instructions name it, such as a mailbox and its recipients or a SharePoint folder, and stays here without one. Each delivery is a `delivered` entry, with where it went and its receipt, which the agent records with `rf delivered ITEM --to WHERE --receipt WHAT`, such as a message's Message-ID or a website's document number; the run's `call` entries, or its browser's requests, bear it out. The output's tile shows its destination and last delivery, and its card every delivery.
 - **Needs you,** a strip above the instance, there only when something is: each thread waiting on you, an ask or a note, with a button to it, and each login of yours that expired under the instance, to sign in to again.
 - **The side panel,** beside the instance where there's room for both, is its conversation. One toggle at the bar's end, the same open or closed, opens and closes it, with what waits there as its badge; on a phone it covers the page, and its × closes it. Its inner edge and the sidebar's drag to widen or narrow them, within bounds, and the browser keeps the widths; a double-click on an edge resets it.
-- **Conversation:** read as a chat: the process at its top, open for the runner and folded for everyone else; then the threads and the runs, oldest first, a thread where its last word is, so a reply takes it to the foot, and a run where it ended, below the comment that started it; and the box to comment on the instance, fixed at the panel's foot. It opens at the latest and keeps there as posts come, unless the reader has scrolled up. A run is one line, "Run 5 · done · 2m 0s · $0.40", opening to why it failed, the latest open. Where a run added rules to the process, or reworded them, the thread whose entry started it says "Process: +1 rule", which opens the process.
-- **Process:** the instance's `working/process.md`, redlined against the series' latest closed instance before it by label, so a reviewer sees what changed in the method, not only in the figures.
+- **Conversation:** read as a chat: the threads and the runs, oldest first, a thread where its last word is, so a reply takes it to the foot, and a run where it ended, below the comment that started it; and the box to comment on the instance, fixed at the panel's foot. It opens at the latest and keeps there as posts come, unless the reader has scrolled up. A run is one line, "Run 5 · done · 2m 0s · $0.40", opening to why it failed, the latest open. Where a run added rules to the process, or reworded them, the thread whose entry started it says "Process: +1 rule", which opens the process.
+- **Process:** the instance's `working/process.md`, the method as people read it, which the agent is asked to show as its first step.
 - **Audit,** the side panel's other side, by the Conversation | Audit switch at its top, a half-written comment waiting meanwhile: who did what and when, oldest first, opening at the latest, under what the runs have cost: the log, and from the agent's sessions their messages and tool calls, one plain line each, a step with its output's first line. A screenshot of the run's browser, taken after each tool call that changed its page, shows on its line and opens in Preview, as earlier files do.
 - **The bar** says what the agent is doing: working on run N, with **Interrupt**, which stops the run; queued; idle since its last run; or that its last run failed, with why on hover.
 - **A run's browser,** while one is open, plays live in a corner of the instance for whoever sees the instance to watch, never to drive. One shows at a time, the others a click away, folded or open as the person last left it, which the browser keeps. **Stop browser** is Interrupt: the run stops, and its browsers close.

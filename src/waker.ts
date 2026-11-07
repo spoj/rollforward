@@ -249,7 +249,7 @@ function heard(a: Active, e: JsonAgentSessionEvent) {
 }
 
 // The process a run starts from: its instance's working/process.md, or, until it has one, that of the series' latest closed instance
-// before it by label, as the page redlines it. A rule is one of its list items.
+// before it by label. A rule is one of its list items.
 function processOf(inst: Instance): string {
   const prev = instances(inst.seriesId).filter(i => i.doc.status === 'closed' && i.label < inst.label).at(-1);
   return readFile(inst.dir, 'working/process.md') ?? (prev && readFile(prev.dir, 'working/process.md')) ?? '';

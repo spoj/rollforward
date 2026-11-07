@@ -215,15 +215,14 @@ test("the side panel is the instance's conversation, a run a line among its thre
   await page.waitForSelector('#log.open .seg .sel:text-is("Conversation")');
 });
 
-test("the runner sees the process, open; a post's images show side by side, by their paths in the instance; a thread whose entry started a run that added a rule says so, opening the process; the run's calls to a connection are in the audit, a refusal with why", async () => {
+test("a post's images show side by side, by their paths in the instance; a thread whose entry started a run that added a rule says so, opening the process; the run's calls to a connection are in the audit, a refusal with why", async () => {
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f01'; });
-  await page.waitForSelector('#log details[data-key=process][open]');
   const pictured = page.locator('#log .thread[data-thread=c10] .post td img');
+  await pictured.first().waitFor();
   assert.deepEqual(await pictured.evaluateAll(is => is.map(i => i.getAttribute('src'))), ['/files/a5c0ff5e1f01/working/months.png', '/files/a5c0ff5e1f01/working/months.png']);
   await pictured.first().click();
   await page.waitForSelector('#pv img');
   await page.keyboard.press('Escape');
-  await page.click('#log details[data-key=process] > summary');
   const shown = page.locator('#log .thread[data-thread=c10] .post .f');
   assert.deepEqual(await shown.evaluateAll(fs => fs.map(f => f.querySelector('img')?.getAttribute('src') ?? f.textContent)), ['/files/a5c0ff5e1f01/working/months.png', 'ledger.csv'], 'an image shows in the thread, any other file as its name');
   await shown.locator('img').click();
@@ -232,7 +231,8 @@ test("the runner sees the process, open; a post's images show side by side, by t
   const note = page.locator('#log .thread[data-thread=c9] .pnote');
   assert.equal(await note.innerText(), 'Process: +1 rule in run 1');
   await note.locator('a').click();
-  await page.waitForSelector('#log details[data-key=process][open]');
+  await page.waitForSelector('#pv .say:has-text("never write to it")');
+  await page.keyboard.press('Escape');
   await page.click('#log [data-act=audit]');
   const calls = page.locator('#audit .e', { hasText: 'called adb' });
   await calls.first().waitFor();
@@ -409,7 +409,7 @@ test("people show by name, with their email on hover, and Entra groups by label;
   assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('#needs, #log')].map(e => e.scrollWidth <= e.clientWidth).concat([...document.querySelectorAll('#needs .btn')].map(b => b.getBoundingClientRect().right <= document.querySelector('#needs')!.getBoundingClientRect().right))), [true, true, true, true], 'a long line ends in an ellipsis, and its Reply shows; the panel keeps its width');
 });
 
-test("the conversation reads as a chat: its folds at the top, then oldest first, a run below the comment that started it and a thread where its last post is, and the box to comment at the panel's foot; it opens at the latest and keeps there as posts come, unless the reader has scrolled up", async () => {
+test("the conversation reads as a chat: oldest first, a run below the comment that started it and a thread where its last post is, and the box to comment at the panel's foot; it opens at the latest and keeps there as posts come, unless the reader has scrolled up", async () => {
   const url = (path: string) => new URL(path, page.url()).href, signin = await entra.signIn(new URL(page.url()).origin, 'bob@demo.test');
   const bobs = signin.headers.getSetCookie().find(c => c.startsWith('rf_session='))!.split(';')[0];
   const note = async (text: string, thread?: string) => {
@@ -422,8 +422,8 @@ test("the conversation reads as a chat: its folds at the top, then oldest first,
   await page.setViewportSize({ width: 1280, height: 420 });
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f01'; });
   await page.waitForSelector('#bar h1 .t:text-is("2026-11")');
-  await page.waitForSelector('#log details[data-key=process][open]');
-  assert.deepEqual(await order(), ['process', 'c9', 'runl', 'c10', 'compose']);
+  await page.waitForSelector('#log .thread[data-thread=c10]');
+  assert.deepEqual(await order(), ['c9', 'runl', 'c10', 'compose']);
   assert.deepEqual(await where(), ['latest', 0]);
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
   await page.waitForSelector('#bar h1 .t:text-is("2026-12")');
