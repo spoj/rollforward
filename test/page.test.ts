@@ -509,7 +509,7 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   assert.deepEqual([await page.locator('#pv h3').allTextContents(), await page.textContent('#pv .consent')], [['Label', 'Credentials'], 'By clicking Start, you agree that agents carry these credentials while acting as you.']);
   await page.mouse.click(5, 5);
   rmSync(join(rf, 'connections.json'));
-  rmSync(mine, { recursive: true });
+  rmSync(join(mine, 'logins.json'));
 });
 
 test("while a run's browser is open it plays in a corner of the instance, to watch: one website at a time, folded as the person last left it, one in their login popped over the page while they take control of it, and Stop browser interrupts the run", async () => {

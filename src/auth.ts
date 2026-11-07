@@ -1,10 +1,10 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { appendFileSync, existsSync } from 'node:fs';
+import { appendFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { HttpError } from './store.ts';
 import { forgetPerson, initSystem, isIn, key, readJson, rfDir, writeJson } from './system.ts';
-import { forgetLogins, logins, personDir, saveLogin, type Offer } from './logins.ts';
+import { forgetLogins, logins, saveLogin, type Offer } from './logins.ts';
 import { keepSignIn } from './entra.ts';
 
 // Sign-in with a Microsoft account. People press "Sign in with Microsoft" and type nothing: the button goes to Microsoft Entra ID
@@ -253,22 +253,21 @@ async function discovery() {
 // Each sign-in keeps its state in a cookie of its own, named by the state, so sign-ins started in several tabs don't overwrite each other.
 const pendingCookie = (state: string) => `rf_oidc_${state}`;
 
-// Sends the browser to Microsoft to sign in, or, with `connect`, for that signed-in person to give a login of theirs, or, `silent`,
-// to sign that person in again asking nothing of them, once a session: where Microsoft would ask, they carry on as they were.
-async function microsoft(res: ServerResponse, next: string, connect?: { login: EntraLogin; email: string }, silent?: string) {
+// Sends the browser to Microsoft to sign in, or, with `connect`, for that signed-in person to give a login of theirs.
+async function microsoft(res: ServerResponse, next: string, connect?: { login: EntraLogin; email: string }) {
   const d = await discovery();
   const state = randomBytes(16).toString('base64url'), nonce = randomBytes(16).toString('base64url'), verifier = randomBytes(32).toString('base64url');
-  const pending = b64(JSON.stringify({ state, nonce, verifier, next, exp: Date.now() + 600_000, ...connect, ...(silent && { silent }) }));
+  const pending = b64(JSON.stringify({ state, nonce, verifier, next, exp: Date.now() + 600_000, ...connect }));
   const to = new URL(d.authorization_endpoint);
   for (const [k, v] of Object.entries({
     response_type: 'code', client_id: oidc.clientId, redirect_uri: oidc.redirect, scope: connect ? entraScope(connect.login.scope) : `${oidc.scopes} offline_access`, state, nonce,
-    code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256', ...(connect ? { login_hint: connect.email } : silent ? { login_hint: silent, prompt: 'none' } : { prompt: 'select_account' }),
+    code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256', ...(connect ? { login_hint: connect.email } : { prompt: 'select_account' }),
   })) to.searchParams.set(k, v);
-  res.writeHead(302, { location: to.href, 'set-cookie': [cookie(pendingCookie(state), `${pending}.${mac(pending)}`, 600), ...(silent ? [cookie('rf_silent', '1', SESSION_MS / 1000)] : [])] });
+  res.writeHead(302, { location: to.href, 'set-cookie': cookie(pendingCookie(state), `${pending}.${mac(pending)}`, 600) });
   res.end();
 }
 
-type Pending = { state: string; nonce: string; verifier: string; next: string; exp: number; login?: EntraLogin; email?: string; silent?: string };
+type Pending = { state: string; nonce: string; verifier: string; next: string; exp: number; login?: EntraLogin; email?: string };
 
 // The sign-in this browser started under `state`, if it is still good.
 function pendingOf(req: IncomingMessage, state: string): Pending | undefined {
@@ -291,15 +290,12 @@ async function finishSignIn(res: ServerResponse, claims: any, p: Pending, refres
   const email = String(claims.email ?? claims.preferred_username ?? claims.upn ?? '').toLowerCase();
   if (!email.includes('@')) return page(res, 403, 'Your account has no email address.');
   if (domains.length && !domains.includes(email.split('@')[1])) return page(res, 403, `${email} is not in an allowed domain.`);
-  // A sign-in asking nothing lets in only whom it asked for, never another account the browser holds.
-  if (p.silent && email !== p.silent) return void res.writeHead(302, { location: p.next, 'set-cookie': cookie(pendingCookie(p.state), '', 0) }).end();
   admit(res, email, claims.name, { sub: claims.sub, ...(claims.oid && { oid: `${claims.tid}/${claims.oid}` }) }, Array.isArray(claims.groups) ? claims.groups.map(String) : undefined, p.next, [cookie(pendingCookie(p.state), '', 0)], refresh);
 }
 
 async function callback(req: IncomingMessage, res: ServerResponse, url: URL) {
   const p = pendingOf(req, url.searchParams.get('state') ?? '');
   if (!p) return expired(req, res);
-  if (url.searchParams.get('error') && p.silent) return void res.writeHead(302, { location: p.next, 'set-cookie': cookie(pendingCookie(p.state), '', 0) }).end();
   if (url.searchParams.get('error')) return page(res, 401, `Microsoft refused: ${url.searchParams.get('error_description') ?? url.searchParams.get('error')}`);
   const d = await discovery();
   const r = await fetch(d.token_endpoint, {
@@ -368,15 +364,10 @@ export async function authenticate(req: IncomingMessage, res: ServerResponse, ur
     res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': cookie('rf_session', '', 0) });
     res.end(JSON.stringify({ next: end ? `${end}?post_logout_redirect_uri=${encodeURIComponent(oidc.publicUrl + '/')}` : '/' }));
   } else {
-    const token = bearer(req, url), me = token ?? session(req);
-    // Someone signed in before sign-ins were kept, whose runs wait for one (entra.ts), keeps theirs as the page loads, if Microsoft
-    // asks nothing of them.
-    if (me && !token && req.method === 'GET' && url.pathname === '/' && !existsSync(join(personDir(me.email), 'entra.sealed')) && !cookies(req).rf_silent) await microsoft(res, '/', undefined, me.email);
-    else if (me) return me;
-    else {
-      if (!['/', '/cli'].includes(url.pathname) || req.method !== 'GET') throw new HttpError(401, 'sign in first');
-      signInPage(res, url.pathname + url.search);
-    }
+    const me = bearer(req, url) ?? session(req);
+    if (me) return me;
+    if (!['/', '/cli'].includes(url.pathname) || req.method !== 'GET') throw new HttpError(401, 'sign in first');
+    signInPage(res, url.pathname + url.search);
   }
   return null;
 }
