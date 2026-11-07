@@ -1,6 +1,6 @@
 import { freemem } from 'node:os';
 import { existsSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
 import { agentsFile, closedBefore, createInstance, HttpError, instance, instanceDir, instances, isPerson, labels, newId, readFile, seriesDir, type Entry, type Instance } from './store.ts';
 import { startRun, type Run, type View } from './runner.ts';
@@ -170,7 +170,7 @@ async function start(inst: Instance) {
       console.error(`a run of ${inst.id} waits a minute: Microsoft didn't confirm ${runner}'s sign-in`, e);
       return void setTimeout(() => kick(inst), 60_000).unref();
     }
-    inst.append('server', 'expired', { login: 'entra', name: 'rollforward', runner, error: (e as Error).message, ...((e as { left?: boolean }).left && { left: true }) });
+    inst.append('server', 'expired', { cause: pending(inst, seen)[0].seq, login: 'entra', name: 'rollforward', runner, error: (e as Error).message, ...((e as { left?: boolean }).left && { left: true }) });
     return void changes.emit('change', inst.id);
   }
   if (active.has(series) || !due(inst)) return void changes.emit('change', inst.id);
@@ -199,7 +199,10 @@ async function start(inst: Instance) {
   byToken.set(a.token, a);
   // Whose OpenRouter key it starts with, its runner's own or the server's (connections.ts), never the key.
   const key = logins(runnerOf(inst).by).some(l => l.id === 'openrouter' && l.enabled) ? 'own' : 'shared';
-  inst.append('server', 'run', { run: n, upto: a.sent, skills: a.skills, key, ...(kept && { continues: kept.session }) });
+  // A run is a lease: one runner for the whole of it, the act whose ticks it may use (logins.ts lender()), and the AGENTS.md
+  // files it reads, by their sha256.
+  const lease = runnerOf(inst), agents = Object.fromEntries(a.view.ro.filter(([p, at]) => at.endsWith('/AGENTS.md') && existsSync(p)).map(([p, at]) => [at, createHash('sha256').update(readFileSync(p)).digest('hex')]));
+  inst.append('server', 'run', { run: n, runner: lease.by, consent: lease.consent, agents, upto: a.sent, skills: a.skills, key, ...(kept && { continues: kept.session }) });
   let settled: Promise<boolean>;
   try {
     // A continued run's index copies are made again, in the folder its Pi reads them from, so it reads what's indexed since, and
@@ -311,18 +314,19 @@ export function closed(inst: Instance, by: string, quiet?: boolean) {
     if (!quiet) kick(later);
   }
   const [, base, r] = /^(.+)-r(\d+)$/.exec(inst.label) ?? [], was = base && instances(inst.seriesId).find(i => i.label === (r === '2' ? base : `${base}-r${Number(r) - 1}`) && i.doc.status === 'closed');
-  if (was) correct(was, 'server', { kind: 'superseded', text: `${inst.label} supersedes it`, see: inst });
+  if (was) correct(was, by, { kind: 'superseded', text: `${inst.label} supersedes it`, see: inst });
 }
 
 // A correction: a closed instance is never changed, but takes later entries saying that one of its items, or itself, is wrong or
 // superseded, and where the change is, `see`, an instance, by its id and its label then, and its thread, which notes it too. Each is
 // a commit of each closed instance it lands in; an open one's next run commits it.
-export function correct(inst: Instance, by: string, c: { kind: string; item?: string; ref?: string; text: string; see?: Instance; thread?: string }) {
-  const e = inst.append(by, 'correction', { kind: c.kind, ...(c.item && { item: c.item }), ...(c.ref && { ref: c.ref }), text: c.text, ...(c.see && { see: { inst: c.see.id, label: c.see.label, ...(c.thread && { thread: c.thread }) } }) });
-  c.see?.append(by, 'corrected', { inst: inst.id, label: inst.label, seq: e.seq, kind: c.kind, ...(c.item && { item: c.item }) });
-  const who = by === 'agent' ? AGENT : by === 'server' ? { name: 'rollforward', email: 'server@rollforward' } : { name: users()[by]?.name ?? by, email: by };
-  for (const [i, m] of [[inst, `Correction: ${c.item ?? inst.label} is ${c.kind}${c.see ? `, see ${c.see.label}` : ''}`], [c.see, `Corrected: ${inst.label}${c.item ? ` ${c.item}` : ''} is ${c.kind}`]] as const)
-    if (i?.doc.status === 'closed') commit(i.dir, who, m).catch(err => i.append('server', 'commit', { error: err.message }));
+export function correct(inst: Instance, by: string, c: { kind: string; item?: string; ref?: string; text: string; see?: Instance; thread?: string; run?: number }) {
+  const run = c.run && { run: c.run };
+  const e = inst.append(by, 'correction', { ...run, kind: c.kind, ...(c.item && { item: c.item }), ...(c.ref && { ref: c.ref }), text: c.text, ...(c.see && { see: { inst: c.see.id, label: c.see.label, ...(c.thread && { thread: c.thread }) } }) });
+  const f = c.see?.append(by, 'corrected', { ...run, inst: inst.id, label: inst.label, seq: e.seq, kind: c.kind, ...(c.item && { item: c.item }) });
+  const who = by === 'agent' ? AGENT : { name: users()[by]?.name ?? by, email: by };
+  for (const [i, m, x] of [[inst, `Correction: ${c.item ?? inst.label} is ${c.kind}${c.see ? `, see ${c.see.label}` : ''}`, e], [c.see, `Corrected: ${inst.label}${c.item ? ` ${c.item}` : ''} is ${c.kind}`, f]] as const)
+    if (i?.doc.status === 'closed') commit(i.dir, who, m).catch(err => i.append('server', 'commit', { cause: x!.seq, error: err.message }));
   return e;
 }
 
@@ -473,8 +477,8 @@ export function recover() {
     const run = inst.log.findLast(e => e.op === 'run' || e.op === 'done');
     if (run?.op === 'run') {
       const cost = inst.log.reduce((t, e) => t + (e.op === 'call' && e.run === run.run ? (e.cost as number | undefined) ?? 0 : 0), 0);
-      inst.append('server', 'done', { run: run.run, aborted: true, seen: seenBefore(inst), cost: +cost.toFixed(4), error: CUT });
-      inst.append('server', 'wake', { reason: `A restart cut run ${run.run}; carry on`, from: 'server' });
+      const done = inst.append('server', 'done', { run: run.run, aborted: true, seen: seenBefore(inst), cost: +cost.toFixed(4), error: CUT });
+      inst.append('server', 'wake', { reason: `A restart cut run ${run.run}; carry on`, from: 'server', cause: done.seq });
       commit(inst.dir, AGENT, `Run ${run.run}: ${CUT}`).catch(e => inst.append('server', 'commit', { run: run.run, error: e.message }));
     }
     kick(inst);
@@ -486,7 +490,7 @@ changes.on('login', (email: string, id: string, name: string) => {
   for (const sid of Object.keys(tree().series)) for (const inst of instances(sid).filter(i => i.doc.status === 'open')) {
     const hit = inst.log.findLast(e => e.op === 'expired' && e.login === id && e.runner === email);
     if (!hit || inst.log.some(e => e.seq > hit.seq && e.op === 'wake' && e.login === id)) continue;
-    inst.append('server', 'wake', { reason: `${email} signed in to ${name} again`, from: 'server', login: id });
+    inst.append('server', 'wake', { reason: `${email} signed in to ${name} again`, from: email, login: id });
     kick(inst);
   }
 });

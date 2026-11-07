@@ -140,7 +140,7 @@ async function agent(req: IncomingMessage, res: ServerResponse, url: URL) {
   // Browsers and deliveries: rf expired, rf delivered (see agent-api.ts).
   // A login the run's runner must sign in to again is logged, so the instance carries on once they do.
   const r = await agentCall(a, url.pathname, req.method ?? 'GET', () => body(req)).catch((e: HttpError & { login?: string }) => {
-    if (e.login) a.inst.append('server', 'expired', { login: e.login, name: byLogin(e.login) ? loginOf(byLogin(e.login)!).name : e.login, runner: runnerOf(a.inst).by });
+    if (e.login) a.inst.append('server', 'expired', { run: a.n, login: e.login, name: byLogin(e.login) ? loginOf(byLogin(e.login)!).name : e.login, runner: runnerOf(a.inst).by });
     throw e;
   });
   if (r) return send(res, r.status, r.data);
@@ -581,7 +581,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       a.moved = [...(a.moved ?? []).filter(m => fresh(m.at)), { name: p.series!, to: moved[0].to, at: new Date().toISOString() }];
     }
     saveTree(t);
-    for (const m of moved) for (const i of instances(m.id)) i.append('server', 'move', { from: m.from, to: m.to, accepted_by: by });
+    for (const m of moved) for (const i of instances(m.id)) i.append(by, 'move', { from: m.from, to: m.to });
     return send(res, 200, 'ok');
   }
   if (kind === 'series' && !id && req.method === 'POST') {
@@ -677,7 +677,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   if (action === 'summary') return send(res, 200, summary(inst, me));
   // The screen: anyone who sees the instance reads it; only its own run writes it.
   if (action === 'screen' && req.method === 'GET') return send(res, 200, inst.doc);
-  if (action === 'screen' && req.method === 'PUT' && run) return send(res, 200, `saved, rev ${inst.put((await body(req)).toString())}`);
+  if (action === 'screen' && req.method === 'PUT' && run) return send(res, 200, `saved, rev ${inst.put((await body(req)).toString(), run.n)}`);
   if (action === 'screen') throw new HttpError(405, "GET, or PUT by the instance's own run");
   if (req.method !== 'POST') throw new HttpError(405, 'POST only');
   if (action === 'duplicate') {
@@ -708,7 +708,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (!['wrong', 'superseded'].includes(k) || typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a correction is {"kind": "wrong" or "superseded", "text", "item", "ref", "see", "thread"}');
     if (item != null && !inst.doc.items.some(i => i.id === item)) throw new HttpError(400, `no item ${item}; ${inst.label}'s items: ${inst.doc.items.map(i => i.id).join(', ')}`);
     if (thread != null && !see?.threads().includes(thread)) throw new HttpError(400, `no thread ${thread} in ${see?.label ?? 'the instance it names'}`);
-    const e = correct(inst, by, { kind: k, ...(item != null && { item }), ...(ref && { ref: String(ref) }), text: text.trim(), ...(see && { see }), ...(thread != null && { thread }) });
+    const e = correct(inst, by, { kind: k, ...(item != null && { item }), ...(ref && { ref: String(ref) }), text: text.trim(), ...(see && { see }), ...(thread != null && { thread }), ...(run && { run: run.n }) });
     return send(res, 200, `${inst.label}${item ? ` ${item}` : ''} is marked ${k}, seq ${e.seq}`);
   }
   if (action === 'react' && !run) {
@@ -739,7 +739,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       await pipeline(req, async function* (chunks: AsyncIterable<Buffer>) { for await (const c of chunks) { hash.update(c); yield c; } }, createWriteStream(tmp));
       const up = inst.upload(by, url.searchParams.get('name') ?? 'file', tmp, hash.digest('hex'), pane, url.searchParams.get('onto'), quiet);
       // What starts no run, quiet or a note, is committed at once in its person's name; a run going commits it as it ends.
-      if (!starts(inst, up) && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, me, `Upload ${up.file}`).catch(err => inst.append('server', 'commit', { error: err.message }));
+      if (!starts(inst, up) && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, me, `Upload ${up.file}`).catch(err => inst.append('server', 'commit', { cause: up.seq, error: err.message }));
     } finally {
       rmSync(tmp, { force: true });
     }
@@ -767,7 +767,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       throw new HttpError(400, `${to} can't see this instance; ask its runner, ${runnerOf(inst).by}, or someone in its workspace`);
     const said = inst.append(by, 'comment', {
       ...(under ? { thread: under.thread, parent: under.seq } : { thread: `c${inst.log.length + 1}`, item: item ?? null, ref: ref ?? null }), text: text.trim(), ...(kept.length && { files: kept }),
-      ...(run && ask && { ask: true, ...(who && { to: who }) }), ...(quiet && { quiet: true }),
+      ...(run && { run: run.n, ...(ask && { ask: true, ...(who && { to: who }) }) }), ...(quiet && { quiet: true }),
     });
     if (run) return send(res, 200, `${ask ? 'asked' : 'said'} c${said.seq}${under ? `, under ${thread}` : ''}`);
     // Until a task is renamed, its first prompt's opening words name it.
@@ -777,9 +777,9 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       s.name = freeName(t, s.workspace, safeName(words));
       saveTree(t);
       renameInstance(inst, s.name);
-      inst.append('server', 'rename', { from });
+      inst.append('server', 'rename', { from, cause: said.seq });
     }
-    if (!starts(inst, said) && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, me, `Comment in ${said.thread}`).catch(err => inst.append('server', 'commit', { error: err.message }));
+    if (!starts(inst, said) && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, me, `Comment in ${said.thread}`).catch(err => inst.append('server', 'commit', { cause: said.seq, error: err.message }));
   } else if (action === 'signoff') {
     // Anyone who sees the instance signs off an ask of the agent's that pins files, which `thread` names as cN, with a note, the files
     // still as it pinned them: it commits the folder in their name, the ask, its files and the note its message, with their

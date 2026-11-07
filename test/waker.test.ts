@@ -320,7 +320,7 @@ test("a run's first message lists the corrections on its series' closed instance
   assert.doesNotMatch(message(q4, 2, q4.log), /Corrections/, 'the first message only');
   await r2.close({ email: alice, name: 'Alice' });
   closed(r2, alice);
-  assert.deepEqual([q3.log.at(-1)!.by, q3.log.at(-1)!.kind, q3.log.at(-1)!.see, r2.log.at(-1)!.op], ['server', 'superseded', { inst: r2.id, label: 'q3-r2' }, 'corrected']);
+  assert.deepEqual([q3.log.at(-1)!.by, q3.log.at(-1)!.kind, q3.log.at(-1)!.see, r2.log.at(-1)!.op], [alice, 'superseded', { inst: r2.id, label: 'q3-r2' }, 'corrected']);
   assert.match(message(q4, 1, q4.log, true), /Corrections on earlier instances: q3 is wrong, "The rate was a day stale\."; q3 is superseded, "q3-r2 supersedes it", see q3-r2\. New/);
   await settle();
 });

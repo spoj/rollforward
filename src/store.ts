@@ -218,7 +218,7 @@ export class Instance {
     let id = `u${up.seq}`;
     for (let n = 2; this.doc.items.some(i => i.id === id); n++) id = `u${up.seq}_${n}`;
     this.doc.items.push({ id, name: stem, kind: pane === 'in' ? 'input' : 'output', file });
-    this.append('server', 'point', { item: id, file });
+    this.append('server', 'point', { item: id, file, cause: up.seq });
     this.save();
     return up;
   }
@@ -269,7 +269,7 @@ export class Instance {
     this.append(by, 'abandon');
   }
 
-  put(text: string) {
+  put(text: string, run: number) {
     let doc: Doc;
     try { doc = JSON.parse(text); } catch (e) { throw new HttpError(400, `not JSON: ${(e as Error).message}`); }
     if (doc.rev !== this.doc.rev) throw new HttpError(409, `stale rev ${doc.rev}: the workspace is now at rev ${this.doc.rev}. Run rf show and merge.`);
@@ -310,12 +310,12 @@ export class Instance {
     for (const i of doc.items) {
       const o = old.get(i.id);
       if (i.file !== (o?.file ?? null) && i.file !== null) {
-        this.append('agent', 'point', { item: i.id, file: i.file, was: o?.file ?? null, sha256: sums.get(i.id) });
-      } else if (i.file === null && o?.file) this.append('agent', 'point', { item: i.id, file: null, was: o.file });
+        this.append('agent', 'point', { run, item: i.id, file: i.file, was: o?.file ?? null, sha256: sums.get(i.id) });
+      } else if (i.file === null && o?.file) this.append('agent', 'point', { run, item: i.id, file: null, was: o.file });
       if (!o || o.name !== i.name || o.kind !== i.kind || JSON.stringify(o.from) !== JSON.stringify(i.from) || o.headline !== i.headline || o.source !== i.source || o.destination !== i.destination || o.as_of !== i.as_of)
-        this.append('agent', 'item', { item: i.id, name: i.name, kind: i.kind, from: i.from, headline: i.headline, source: i.source, destination: i.destination, as_of: i.as_of });
+        this.append('agent', 'item', { run, item: i.id, name: i.name, kind: i.kind, from: i.from, headline: i.headline, source: i.source, destination: i.destination, as_of: i.as_of });
     }
-    for (const o of this.doc.items) if (!ids.has(o.id)) this.append('agent', 'remove', { item: o.id });
+    for (const o of this.doc.items) if (!ids.has(o.id)) this.append('agent', 'remove', { run, item: o.id });
     this.doc = { rev: this.doc.rev, status: this.doc.status, items: doc.items };
     this.save();
     return this.doc.rev;

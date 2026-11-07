@@ -1,0 +1,40 @@
+[
+ {
+  "id": "web:crm",
+  "kind": "website",
+  "name": "CRM",
+  "since": "2026-11-07T06:58:07.280Z",
+  "offers": [
+   {
+    "id": "web:crm",
+    "name": "CRM"
+   }
+  ],
+  "keepalive": "2026-11-08T06:58:07.280Z"
+ },
+ {
+  "id": "web:erp",
+  "kind": "website",
+  "name": "ERP",
+  "since": "2026-11-07T06:58:07.280Z",
+  "offers": [
+   {
+    "id": "web:erp",
+    "name": "ERP"
+   }
+  ],
+  "expired": true
+ },
+ {
+  "id": "wh",
+  "kind": "databricks",
+  "name": "Databricks wh",
+  "since": "2026-11-07T06:58:07.280Z",
+  "offers": [
+   {
+    "id": "wh:adb-1.azuredatabricks.net/w1",
+    "name": "Warehouse Finance"
+   }
+  ]
+ }
+]

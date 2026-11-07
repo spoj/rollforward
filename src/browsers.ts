@@ -322,7 +322,7 @@ export class Browsers {
   lent(site: string) {
     try {
       // A try's stand-in instance (cli.ts) is in no workspace: any approved grant of its runner's does.
-      const { email, login } = use(this.inst, `web:${site}`), had = this.bySite.get(site), w = websites()[site], t = tree(), ws = t.series[this.inst.seriesId]?.workspace;
+      const { email, login } = use(this.inst, this.run, `web:${site}`), had = this.bySite.get(site), w = websites()[site], t = tree(), ws = t.series[this.inst.seriesId]?.workspace;
       const out = !w ? undefined : w.off ? `${w.name} is switched off` : !approved(site, email, ws)
         ? `${email} has no approved grant to use ${w.name}${ws ? ` in ${t.workspaces[ws].name}` : ''}: they ask its owners for one on the Logins page` : undefined;
       if (out) throw Object.assign(new HttpError(403, `${out}; this run goes on without it`), { refused: true });
@@ -331,7 +331,7 @@ export class Browsers {
       return { email, login, had };
     } catch (e) {
       const { login, refused } = e as { login?: string; refused?: true };
-      if (login) this.inst.append('server', 'expired', { login, name: websites()[site]?.name ?? site, runner: runnerOf(this.inst).by });
+      if (login) this.inst.append('server', 'expired', { run: this.run, login, name: websites()[site]?.name ?? site, runner: runnerOf(this.inst).by });
       if (refused && !this.refused.has(site)) this.inst.append('server', 'browser', { run: this.run, site, action: 'refused', why: (e as Error).message });
       if (refused) this.refused.add(site);
       throw e;
@@ -419,7 +419,7 @@ export class Browsers {
   // The agent found the website signed out: the runner's login is marked expired, for them to sign in again, which wakes the instance,
   // and its browser closes.
   async expire(site: string): Promise<never> {
-    const { email, login } = use(this.inst, `web:${site}`);
+    const { email, login } = use(this.inst, this.run, `web:${site}`);
     saveLogin(email, { ...login, expired: true });
     await this.close(site);
     throw Object.assign(new HttpError(409, `${email}'s login to ${login.name} has expired: they sign in to it again on the Logins page, and the instance carries on`), { login: login.id });

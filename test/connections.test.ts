@@ -51,7 +51,9 @@ const mail = [
 ];
 const MIME = 'Subject: FW: Request successfully processed\r\n\r\nThe payment run is attached.\r\n';
 const ticks = ['m365:mail:alice@demo.test', 'm365:site:host,site1,web1'];
-const inst = { dir: instDir, seriesId: 'weekly', log: [{ op: 'create', by: ALICE, logins: ticks }], doc: { items: [{ id: 'pack', name: 'Pack', kind: 'output', file: null }] }, series: () => seriesDir, append: (_by: string, op: string, data: any) => { log.push({ op, data }); return { seq: log.length }; } } as unknown as Instance;
+// An instance's log as its run 1 started, with the logins ticked as it was made.
+const started = (logins: string[]) => [{ seq: 1, op: 'create', by: ALICE, logins }, { seq: 2, op: 'run', run: 1, runner: ALICE, consent: 1 }];
+const inst = { dir: instDir, seriesId: 'weekly', log: started(ticks), doc: { items: [{ id: 'pack', name: 'Pack', kind: 'output', file: null }] }, series: () => seriesDir, append: (_by: string, op: string, data: any) => { log.push({ op, data }); return { seq: log.length }; } } as unknown as Instance;
 const run: AgentRun = { inst, n: 1, token: 'run' };
 let call: (path: string, body?: unknown) => Promise<{ status: number; data: unknown } | null>;
 let agentCall: typeof import('../src/agent-api.ts').agentCall;
@@ -302,7 +304,7 @@ test('a person adds, in one box, a mailbox by its address, a site by its link, a
 });
 
 test("a ticked folder reaches what's under it, at any depth, and a search within it; not its parent, a sibling, or a search of the whole drive", async () => {
-  runs.set('run2', { ...inst, log: [{ op: 'create', by: ALICE, logins: ['m365:item:b!d1/y2026'] }] } as unknown as Instance);
+  runs.set('run2', { ...inst, log: started(['m365:item:b!d1/y2026']) } as unknown as Instance);
   const get = (path: string) => via('GET', `${G}${path}`, { token: 'run2' });
   assert.deepEqual(JSON.parse((await get('/drives/b!d1/items/y2026/children')).text).value.map((i: any) => i.id), ['a', 'b', 'c']);
   assert.equal((await get('/drives/b!d1/items/a/content')).text, content.a, 'a file under it');
@@ -424,7 +426,7 @@ test('writes go within the ticks: a file saved into a ticked folder, a message s
 });
 
 test("writes share nothing, and make, move or copy nothing outside the ticks; mail goes out as the ticked mailbox, in JSON or in MIME whose one From is it", async () => {
-  runs.set('run3', { ...inst, log: [{ op: 'create', by: ALICE, logins: ['m365:item:b!d1/y2026', `m365:mail:${ALICE}`] }] } as unknown as Instance);
+  runs.set('run3', { ...inst, log: started(['m365:item:b!d1/y2026', `m365:mail:${ALICE}`]) } as unknown as Instance);
   const write = (method: string, path: string, body: unknown) => via(method, `${G}${path}`, { token: 'run3', ...json(body) }), before = writes.length;
   for (const [method, path, body, why] of [
     ['POST', '/drives/b!d1/items/a/createLink', { type: 'view', scope: 'anonymous' }, /would share it/],
@@ -499,7 +501,7 @@ test("a person adds a SQL warehouse to their Databricks login by its link, check
 });
 
 test("a run queries Databricks at its own address as the runner: statements on a warehouse ticked for its instance, whatever they do, as the runner's own grants allow, their results through the links they give, and the catalogue", async () => {
-  runs.set('dbx', { ...inst, log: [{ op: 'create', by: ALICE, logins: ['adb:adb-1.azuredatabricks.net/wh1'] }] } as unknown as Instance);
+  runs.set('dbx', { ...inst, log: started(['adb:adb-1.azuredatabricks.net/wh1']) } as unknown as Instance);
   const D = 'https://adb-1.azuredatabricks.net', go = (method: string, path: string, body?: unknown) => via(method, `${D}${path}`, { token: 'dbx', ...(body !== undefined && json(body)) });
   const r = await go('POST', '/api/2.0/sql/statements', { statement: '-- open items\nSELECT customer, open FROM ar', warehouse_id: 'wh1', disposition: 'EXTERNAL_LINKS', format: 'CSV' });
   assert.equal(r.status, 200);
@@ -528,7 +530,7 @@ test("a run queries Databricks at its own address as the runner: statements on a
   logins.saveLogin(ALICE, { ...adb, since: new Date().toISOString() }, 'stale');
   const gone = await go('GET', '/api/2.1/unity-catalog/catalogs');
   assert.deepEqual([gone.status, gone.text], [409, "alice@demo.test's Databricks adb login has expired: they sign in to it again on the Logins page\n"]);
-  assert.deepEqual(log.filter(e => e.op === 'expired').at(-1)!.data, { login: 'adb', name: 'Databricks adb', runner: ALICE }, 'the instance carries on once they sign in again');
+  assert.deepEqual(log.filter(e => e.op === 'expired').at(-1)!.data, { run: 1, login: 'adb', name: 'Databricks adb', runner: ALICE }, 'the instance carries on once they sign in again');
   assert.equal(calls().at(-1)!.status, 409);
 });
 

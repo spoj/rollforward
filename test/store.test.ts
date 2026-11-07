@@ -28,7 +28,7 @@ test('a screen starts empty; a put takes steps and from, which must name items a
   const inst = createInstance(series, 'w1', 'alex', []);
   assert.deepEqual(inst.doc.items, []);
   writeFileSync(join(inst.dir, 'working', 'eligible.csv'), 'a\n');
-  const put = (items: object[]) => inst.put(JSON.stringify({ rev: inst.doc.rev, status: 'open', items }));
+  const put = (items: object[]) => inst.put(JSON.stringify({ rev: inst.doc.rev, status: 'open', items }), 1);
   const ar = { id: 'ar', name: 'AR aging', kind: 'input', file: null };
   put([ar, { id: 'el', name: 'Eligible AR', kind: 'step', file: 'working/eligible.csv', from: ['ar'] }, { id: 'bb', name: 'Borrowing base', kind: 'output', file: null, from: ['el'] }]);
   assert.deepEqual(inst.log.filter(e => e.op === 'item').map(e => e.from), [undefined, ['ar'], ['el']]);
@@ -41,7 +41,7 @@ test("an output's destination and an item's as-of date are free text, logged as 
   const tmp = mkdtempSync(join(tmpdir(), 'rf-')), series = 'monthly';
   openStore(tmp);
   const inst = createInstance(series, 'm1', 'alex', []);
-  const put = (items: object[]) => inst.put(JSON.stringify({ rev: inst.doc.rev, status: 'open', items }));
+  const put = (items: object[]) => inst.put(JSON.stringify({ rev: inst.doc.rev, status: 'open', items }), 1);
   assert.throws(() => put([{ id: 'pack', name: 'Pack', kind: 'output', file: null, destination: 3 }]), /pack: destination must be a string/);
   put([{ id: 'pack', name: 'Pack', kind: 'output', file: null, destination: 'Mail to ap@demo.test' }]);
   assert.equal(inst.log.findLast(e => e.op === 'item')!.destination, 'Mail to ap@demo.test');
@@ -79,7 +79,7 @@ test("a file the screen shows is frozen as it's first shown, logged with its sha
   openStore(tmp);
   const inst = createInstance('weekly', 'w1', 'alex', []), page = join(inst.dir, 'working', 'a1.md');
   writeFileSync(page, 'a1 is right\n');
-  inst.put(JSON.stringify({ rev: inst.doc.rev, status: 'open', items: [{ id: 'a1', name: 'A1', kind: 'step', file: 'working/a1.md' }] }));
+  inst.put(JSON.stringify({ rev: inst.doc.rev, status: 'open', items: [{ id: 'a1', name: 'A1', kind: 'step', file: 'working/a1.md' }] }), 1);
   assert.deepEqual(inst.log.filter(e => e.op === 'point').map(e => [e.item, e.file, e.sha256]), [['a1', 'working/a1.md', createHash('sha256').update('a1 is right\n').digest('hex')]]);
   assert.equal(statSync(page).mode & 0o222, 0, 'frozen');
   chmodSync(page, 0o644);

@@ -144,7 +144,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     // one such as http://HOST/… to it in the clear.
     if (url.origin !== `https://${host}`) throw new HttpError(403, `${host} takes requests for https://${host}, not ${url.origin}`);
     // A runner's own key only while they may lend to the instance, never the server's in its place.
-    if (mine) lender(a.inst);
+    if (mine) lender(a.inst, a.n);
     if (mine?.expired) throw Object.assign(new HttpError(409, `${runner}'s own OpenRouter key is out of credits: they save another, or stop using it, on the Logins page, and the instance carries on`), { login: 'openrouter' });
     if (!link && !c && !s) throw new HttpError(403, `${url.origin + url.pathname} is no link a connection's answer gave this run`);
     // A POST's or PATCH's body, a JSON one, or any to the server's own services, is read whole, for the policy; a JSON body goes on as the JSON it read, as it rewrote
@@ -155,9 +155,9 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     const json = isJson && raw?.length ? JSON.parse(raw.toString()) : undefined, r = { method, url, headers: req.headers, json, body: raw };
     let out = json, auth: Record<string, string> = {}, as = '', ticks: string[] = [];
     if (c) {
-      const { by, logins } = lender(a.inst), checked = await types[c.type].check!(c, by, ticks = logins, r), login = loginOf(c) as EntraLogin;
+      const { by, logins } = lender(a.inst, a.n), checked = await types[c.type].check!(c, by, ticks = logins, r), login = loginOf(c) as EntraLogin;
       out = checked.json ?? json;
-      as = use(a.inst, checked.offer).email;
+      as = use(a.inst, a.n, checked.offer).email;
       auth = { authorization: `Bearer ${await token(as, login.id, login.scope)}` };
     }
     if (s) {
@@ -178,12 +178,12 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     log(answer.status, answer.bytes, s ? { ...(json?.model && { model: json.model }), cost } : undefined);
     if (mine && answer.status === 402) {
       saveLogin(runner, { ...mine, expired: true });
-      a.inst.append('server', 'expired', { login: 'openrouter', name: 'OpenRouter', runner });
+      a.inst.append('server', 'expired', { run: a.n, login: 'openrouter', name: 'OpenRouter', runner });
     }
   } catch (e) {
     // A refusal, or an expired login, is the server's answer; anything else, a failure to reach the host.
     const err = e as Error & { status?: number; login?: string }, status = e instanceof HttpError ? err.status! : 502;
-    if (err.login) a.inst.append('server', 'expired', { login: err.login, name: byLogin(err.login) ? loginOf(byLogin(err.login)!).name : err.login, runner: runnerOf(a.inst).by });
+    if (err.login) a.inst.append('server', 'expired', { run: a.n, login: err.login, name: byLogin(err.login) ? loginOf(byLogin(err.login)!).name : err.login, runner: runnerOf(a.inst).by });
     log(status, 0, e instanceof HttpError ? { refused: err.message } : { failed: err.message });
     if (res.headersSent) return void res.destroy();
     res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8' }).end(`${err.message}\n`);

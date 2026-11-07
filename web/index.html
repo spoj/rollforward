@@ -878,7 +878,7 @@ function logText(e) {
     interrupt: () => `${w} interrupted the run`,
     close: () => `${w} closed the instance${e.accepted ? `<div class="d">Accepting what the agent did for ${e.accepted.length} ask${e.accepted.length > 1 ? 's' : ''} still waiting</div>` : ''}${e.commit ? `<div class="d">Commit <code>${e.commit.slice(0, 7)}</code></div>` : ''}`,
     signoff: () => `${w} ${e.approved === false ? 'rejected the sign-off' : 'signed off'}<div class="d">${e.text ? `${esc(e.text)} · ` : ''}Commit <code>${e.commit.slice(0, 7)}</code></div>`,
-    commit: () => e.error ? `Run ${e.run}'s changes weren't committed<div class="d">${esc(e.error)}</div>` : `${w} committed the folder<div class="d">${esc(e.message)} · Commit <code>${e.commit.slice(0, 7)}</code></div>`,
+    commit: () => e.error ? `${e.run ? `Run ${e.run}'s changes weren't` : "What's above wasn't"} committed<div class="d">${esc(e.error)}</div>` : `${w} committed the folder<div class="d">${esc(e.message)} · Commit <code>${e.commit.slice(0, 7)}</code></div>`,
     abandon: () => `${w} abandoned the instance`,
     correction: () => `${w} marked ${e.item ? item(e.item) : 'the instance'}${e.ref ? ` at ${esc(e.ref)}` : ''} ${e.kind}<div class="d">${esc(e.text)}${seeHtml(e.see)}</div>`,
     corrected: () => `${w} marked <a href="#/${esc(e.inst)}">${esc(e.label)}</a>${e.item ? ` ${esc(e.item)}` : ''} ${e.kind}`,
@@ -895,7 +895,7 @@ function logText(e) {
     send: () => `${w} sent ${esc(e.method)} ${esc(e.path)} to ${esc(e.name)}, with no answer logged`,
     call: () => `${w} ${e.model ? `asked ${esc(e.model)}` : `called ${esc(e.name)}: ${esc(e.method)} ${esc(e.path)}`}${e.cost ? ` \u00b7 $${e.cost.toFixed(4)}` : ''}${e.refused || e.failed ? `, ${e.refused ? 'refused' : 'failed'}<div class="d">${esc(e.refused ?? e.failed)}</div>` : e.status >= 300 ? `, which answered ${e.status}` : ''}`,
     graph: () => `${w} ${e.method ? `sent ${esc(e.method)} ${esc(e.path)} to` : `read ${esc(e.path)} from`} Microsoft 365${e.status >= 300 ? `, which answered ${e.status}` : ''}${e.to && e.to !== e.path ? `<div class="d">${esc(e.to)}</div>` : ''}${[e.body, e.file].filter(Boolean).map(f => `<div class="f"><a data-act="preview" data-file="${esc(f)}">${esc(f)}</a></div>`).join('')}`,
-    move: () => `Moved from ${esc(e.from)} to ${esc(e.to)}, ${who(e.accepted_by)} accepting`,
+    move: () => `Moved from ${esc(e.from)} to ${esc(e.to)}, ${who(e.accepted_by ?? e.by)} accepting`,
     rename: () => e.by === 'server' ? `Named by its first prompt, from ${esc(e.from)}` : `${w} renamed the instance from ${esc(e.from)}`,
     duplicate: () => `${w} made this instance as a copy of ${esc(e.from)}`,
     browser: () => e.action === 'get' ? `${w} fetched ${esc(e.from)} from the browser on ${esc(e.site)}${f}`
@@ -1117,7 +1117,7 @@ function conversationHtml() {
   const open = data.doc.status === 'open', name = id => esc(data.doc.items.find(i => i.id === id)?.name ?? id), mine = data.runner.by === me.email;
   const fold = (key, head, body) => `<details class="sect" data-key="${key}" ${ui.sect[key] ?? mine ? 'open' : ''}><summary>${head}</summary>${body}</details>`;
   const moved = data.log.findLast(e => e.op === 'move'), runs = data.log.filter(e => e.op === 'run');
-  let h = moved ? `<div class="sub">Moved ${when(moved.at)} from ${esc(moved.from)} to ${esc(moved.to)}, ${who(moved.accepted_by)} accepting.</div>` : '';
+  let h = moved ? `<div class="sub">Moved ${when(moved.at)} from ${esc(moved.from)} to ${esc(moved.to)}, ${who(moved.accepted_by ?? moved.by)} accepting.</div>` : '';
   const alone = ui.alone && threads.find(t => t.posts.some(p => p.seq === ui.alone));
   if (alone) {
     // The comments it hangs under, a line each, any opening the rest from there, then it and what hangs under it.

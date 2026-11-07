@@ -7,6 +7,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } fr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInstance, openStore } from '../src/store.ts';
+
+// An instance as its run n started, with the logins `by` ticked making it.
+const running = (label: string, logins: string[], n = 1, by = 'alice@demo.test') => {
+  const inst = createInstance('s', label, by, logins);
+  inst.append('server', 'run', { run: n, runner: by, consent: 1 });
+  return inst;
+};
 import { changes, initSystem, saveTree, tree, writeJson } from '../src/system.ts';
 
 // A run's browsers, from a stand-in browser service whose page changes only when the test says, and which keeps the states and
@@ -60,7 +67,7 @@ after(() => {
 });
 
 test("after each tool call, each of the run's browsers is shot unless its page looks the same, kept read-only and logged", async () => {
-  const inst = createInstance('s', '2026-11', 'alice@demo.test', []), browsers = new Browsers(inst, 2);
+  const inst = running('2026-11', [], 2), browsers = new Browsers(inst, 2);
   browsers.bySite.set('erp', { id: 'b1', email: 'alice@demo.test', since: '', writeback: true, file: 'browser/run 2 erp.jsonl', conns: 0 });
   await browsers.shoot();
   await browsers.shoot();
@@ -75,7 +82,7 @@ test("after each tool call, each of the run's browsers is shot unless its page l
 test("the agent says a website signed it out: its runner's login is marked expired and its browser closes, keeping its request log", async () => {
   const alice = 'alice@demo.test', erp = { id: 'web:erp', kind: 'website' as const, name: 'ERP', since: '', offers: [{ id: 'web:erp', name: 'ERP' }] };
   saveLogin(alice, erp, '{}');
-  const inst = createInstance('s', '2026-12', alice, ['web:erp']), browsers = new Browsers(inst, 1);
+  const inst = running('2026-12', ['web:erp']), browsers = new Browsers(inst, 1);
   browsers.bySite.set('erp', { id: 'b1', email: alice, since: '', writeback: true, file: 'browser/run 1 erp.jsonl', conns: 0 });
   await assert.rejects(browsers.expire('erp'), (e: { status: number; login: string }) => e.status === 409 && e.login === 'web:erp');
   assert.equal(logins(alice).find(l => l.id === 'web:erp')!.expired, true);
@@ -85,7 +92,7 @@ test("the agent says a website signed it out: its runner's login is marked expir
 });
 
 test('an answer of the browser service that is no JSON, as a proxy in front of it may give, fails that call alone', async () => {
-  const inst = createInstance('s', '2027-01', 'alice@demo.test', []), browsers = new Browsers(inst, 3);
+  const inst = running('2027-01', [], 3), browsers = new Browsers(inst, 3);
   browsers.bySite.set('erp', { id: 'gone', email: 'alice@demo.test', since: '', writeback: true, file: 'browser/run 3 erp.jsonl', conns: 0 });
   await assert.rejects(browsers.shoot(), (e: { status: number; message: string }) => e.status === 502 && e.message.startsWith('browser service: 404 page'));
 });
@@ -94,7 +101,7 @@ test("closing a run's browser hands its login back refreshed, unless its person 
   const alice = 'alice@demo.test', crm = (since: string) => ({ id: 'web:crm', kind: 'website' as const, name: 'CRM', since, offers: [{ id: 'web:crm', name: 'CRM' }] });
   writeJson('connections.json', { crm: { type: 'website', title: 'CRM', url: 'https://crm.example.com', hosts: [], writeback: true, updated_by: alice, updated_at: '' } });
   saveLogin(alice, crm('t1'), '{"cookies":["old"]}');
-  const browsers = new Browsers(createInstance('s', '2027-02', alice, ['web:crm']), 1);
+  const browsers = new Browsers(running('2027-02', ['web:crm']), 1);
   await browsers.browser('crm');
   await browsers.close();
   assert.deepEqual(JSON.parse(secret(alice, 'web:crm')), { cookies: [] }, 'refreshed from the browser');
@@ -116,7 +123,7 @@ test("a website's header goes, with its person's value, to their sign-in's brows
   await assert.rejects(startSignIn(alice, 'rl', ''), /needs your x-bot-token/, 'kept only with a saved login');
   await endSignIn(alice, await startSignIn(alice, 'rl', 'jwt-1'), true);
   await endSignIn(alice, await startSignIn(alice, 'rl', ''), false);
-  const browsers = new Browsers(createInstance('s', '2027-12', alice, ['web:rl']), 1);
+  const browsers = new Browsers(running('2027-12', ['web:rl']), 1);
   await browsers.browser('rl');
   await browsers.close();
   assert.deepEqual(headers, [{ 'x-bot-token': 'jwt-1' }, { 'x-bot-token': 'jwt-1' }, { 'x-bot-token': 'jwt-1' }, undefined], "the sign-ins', never the run's browser");
@@ -157,7 +164,7 @@ test("a person has one browser at a time on a website that writes its state back
   });
   saveLogin(alice, website('crm', 'CRM'), '{"cookies":["seed"]}');
   saveLogin(alice, website('ledger', 'Ledger'), '{"cookies":["seed"]}');
-  const one = new Browsers(createInstance('s', '2027-03', alice, ['web:crm', 'web:ledger']), 1), two = new Browsers(createInstance('s', '2027-04', alice, ['web:crm', 'web:ledger']), 1);
+  const one = new Browsers(running('2027-03', ['web:crm', 'web:ledger']), 1), two = new Browsers(running('2027-04', ['web:crm', 'web:ledger']), 1);
   states.length = 0;
   back = { cookies: ['handed back'] };
   await one.browser('crm');
@@ -180,7 +187,7 @@ test("a person has one browser at a time on a website that writes its state back
 });
 
 test("a browser that writes its state back is released once no connection has been open for a while, handing its login back, and a waiting connection that goes away stops waiting", async () => {
-  const one = new Browsers(createInstance('s', '2027-05', alice, ['web:crm']), 1), two = new Browsers(createInstance('s', '2027-06', alice, ['web:crm']), 1);
+  const one = new Browsers(running('2027-05', ['web:crm']), 1), two = new Browsers(running('2027-06', ['web:crm']), 1);
   back = { cookies: ['after a while'] };
   await one.browser('crm');
   const conn = new PassThrough();
@@ -202,7 +209,7 @@ test("a browser that writes its state back is released once no connection has be
 });
 
 test("$RF_BROWSERS/NAME is the run's browser there: its CDP discovery, its websocket, opening the browser at the first connection, and its machine's files, each fetch logged", async () => {
-  const inst = createInstance('s', '2027-07', alice, ['web:crm']), api = await serveAgent(inst), base = `${api.url}/browsers/${api.token}`;
+  const inst = running('2027-07', ['web:crm'], 0), api = await serveAgent(inst), base = `${api.url}/browsers/${api.token}`;
   assert.deepEqual(await (await fetch(`${base}/crm/json/version/`)).json(), { webSocketDebuggerUrl: `${base.replace('http', 'ws')}/crm` });
   assert.match(await (await fetch(`${base}/erp/json/version`)).text(), /web:erp is not ticked/);
   assert.equal((await fetch(`${base}/crm/downloads/tmp/x.csv`)).status, 409, 'no browser before a connection');
@@ -221,7 +228,7 @@ test("$RF_BROWSERS/NAME is the run's browser there: its CDP discovery, its webso
 test("$RF_BROWSERS/print is the run's own print browser, a name no website takes: no login, website, host or state, opened for a connection and closed with its last, logged as the others are", async () => {
   const { setConnection } = await import('../src/connections.ts');
   await assert.rejects(setConnection('print', { type: 'website', url: 'https://print.example.com' }, alice), /print is the runs' own print browser/);
-  const inst = createInstance('s', 'print', alice, []), api = await serveAgent(inst), base = `${api.url}/browsers/${api.token}`, opened = starts.length;
+  const inst = running('print', [], 0), api = await serveAgent(inst), base = `${api.url}/browsers/${api.token}`, opened = starts.length;
   assert.deepEqual(await (await fetch(`${base}/print/json/version`)).json(), { webSocketDebuggerUrl: `${base.replace('http', 'ws')}/print` });
   const raw = connect(Number(new URL(api.url).port), '127.0.0.1');
   raw.end(`GET /browsers/${api.token}/print HTTP/1.1\r\nhost: x\r\nconnection: upgrade\r\nupgrade: websocket\r\n\r\n`);
@@ -235,14 +242,14 @@ test("$RF_BROWSERS/print is the run's own print browser, a name no website takes
 test("a browser refused for its runner's expired login is logged as expired, so the instance carries on once they sign in again", async () => {
   writeJson('connections.json', { crm: { type: 'website', title: 'CRM', url: 'https://crm.example.com', hosts: [], writeback: true, updated_by: alice, updated_at: '' } });
   saveLogin(alice, { ...website('crm', 'CRM'), expired: true }, '{}');
-  const inst = createInstance('s', '2027-08', alice, ['web:crm']), browsers = new Browsers(inst, 1);
+  const inst = running('2027-08', ['web:crm']), browsers = new Browsers(inst, 1);
   await assert.rejects(browsers.browser('crm'), (e: { status: number; login: string }) => e.status === 409 && e.login === 'web:crm');
   assert.deepEqual(inst.log.filter(e => e.op === 'expired').map(e => [e.login, e.name, e.runner]), [['web:crm', 'CRM', alice]]);
   saveLogin(alice, website('crm', 'CRM'), '{}');
 });
 
 test("a run that ended while its connection waited for its person's browser opens none, and holds nothing, once the browser is released", async () => {
-  const one = new Browsers(createInstance('s', '2027-09', alice, ['web:crm']), 1), two = new Browsers(createInstance('s', '2027-10', alice, ['web:crm']), 1);
+  const one = new Browsers(running('2027-09', ['web:crm']), 1), two = new Browsers(running('2027-10', ['web:crm']), 1);
   states.length = 0;
   await one.browser('crm');
   const waiting = two.browser('crm', new PassThrough());
@@ -251,7 +258,7 @@ test("a run that ended while its connection waited for its person's browser open
   await one.close();
   assert.equal(await waiting, undefined);
   assert.equal(states.length, 1, 'no browser opened for the run that ended');
-  const three = new Browsers(createInstance('s', '2027-11', alice, ['web:crm']), 1);
+  const three = new Browsers(running('2027-11', ['web:crm']), 1);
   assert.equal(await Promise.race([three.browser('crm'), sleep(200).then(() => 'still held')]), 'b9', "the person's browser there is free");
   await three.close();
 });
@@ -274,7 +281,7 @@ test("a person granted keepalive who keeps their login to a website alive, as th
   writeJson('capabilities.json', { keepalive: [carol, bob] });
   await keepAlive(at(7, 3, 8));
   assert.deepEqual(states.slice(1), [{ cookies: ['kept alive'] }, { cookies: ['bob, not granted keepalive'] }], 'bob too, once granted keepalive');
-  const run = new Browsers(createInstance('s', 'k2', alice, ['web:pa']), 1);
+  const run = new Browsers(running('k2', ['web:pa']), 1);
   await run.browser('pa');
   await keepAlive(at(7, 3, 16));
   assert.equal(turns(), 4, "bob's alone: a run holds alice's browser there");
@@ -332,7 +339,8 @@ test("a run gets its browser on a website only where its runner's grant to it in
   writeJson('grants.json', {});
   saveLogin(alice, { ...website('bank', 'Bank'), keepalive: until }, '{"cookies":["alice"]}');
   saveLogin(bob, { ...website('bank', 'Bank'), keepalive: until }, '{"cookies":["bob"]}');
-  const his = createInstance('s', 'b2', bob, ['web:bank']);
+  const his = running('b2', ['web:bank'], 1, bob);
+  for (const run of [2, 3, 4]) his.append('server', 'run', { run, runner: bob, consent: 1 });
   const first = new Browsers(his, 1);
   for (const _ of [1, 2]) await assert.rejects(first.browser('bank'), /^Error: bob@demo\.test has no approved grant to use Bank in Acme: they ask its owners for one on the Logins page; this run goes on without it$/);
   assert.deepEqual(his.log.filter(e => e.action === 'refused').map(e => e.run), [1], 'logged once a run');
@@ -378,7 +386,7 @@ test('a request lapses a week after it was asked, and a login no approved grant 
 test("as the server starts, the browsers a restart left open on the service close: a run's keeps its request log and hands its login back, as its run would have, and a sign-in's just goes", async t => {
   writeJson('connections.json', { crm: { type: 'website', title: 'CRM', url: 'https://crm.example.com', hosts: [], writeback: true, updated_by: alice, updated_at: '' } });
   saveLogin(alice, website('crm', 'CRM'), '{"cookies":["before"]}');
-  const inst = createInstance('s', '2027-12b', alice, ['web:crm']), cut = new Browsers(inst, 4);
+  const inst = running('2027-12b', ['web:crm'], 4), cut = new Browsers(inst, 4);
   await cut.browser('crm');
   clearTimeout(cut.bySite.get('crm')!.idle);
   // One whose instance is gone closes all the same, and the rest after it.

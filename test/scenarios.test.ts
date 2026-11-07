@@ -182,6 +182,8 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
       `curl -s -m 10 https://openrouter.ai/api/v1/chat/completions -H 'content-type: application/json' -d '{"model": "openai/gpt-5-mini", "messages": [{"role": "user", "content": "Is this right?"}]}'`,
       'curl -s -m 10 https://openrouter.ai/api/v1/credits',
       'echo 1 > working/x.csv && rf say --pin working/x.csv --pin ../2026-11/working/x.csv Cited. 2>&1',
+      'curl -s -m 5 -X POST -H "authorization: Bearer $RF_TOKEN" "$RF_URL/api/instances/$RF_INSTANCE/close"; echo',
+      'curl -s -m 5 -H "authorization: Bearer $RF_TOKEN" "$RF_URL/api/workspaces"; echo',
     ],
     report: 'Checked the walls, and woke myself for the bank file.', saw: [],
   };
@@ -216,6 +218,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.match(walls.saw[16], /^\{\}\s*$/, "any request reaches OpenRouter, with the server's key");
   const x = { inst: id, path: 'working/x.csv', sha256: createHash('sha256').update('1\n').digest('hex') };
   assert.deepEqual(log.findLast(e => e.text === 'Cited.')!.files, [x, x], "a pinned file is kept by its instance's id, with its sha256");
+  assert.deepEqual([walls.saw[18].trim(), walls.saw[19].trim()], ['not found', 'not found'], "a run's token does only what a run may: not close its instance, nor read what people do"); 
   const asked = log.filter(e => e.op === 'call' && e.name === 'openrouter'), pi = asked.filter(e => (e.path as string).startsWith('/api/v1/messages'));
   assert.deepEqual(asked.filter(e => !pi.includes(e)).map(e => [e.run, e.method, e.path, e.status, e.model, e.cost]), [[2, 'POST', '/api/v1/chat/completions', 200, 'openai/gpt-5-mini', 0.002], [2, 'GET', '/api/v1/credits', 404, undefined, 0]]);
   assert.deepEqual(pi.map(e => [e.run, e.method, e.status, e.model, e.cost]), [[1, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01], ...Array(walls.bash.length + 1).fill([2, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01]), ...Array(2).fill([3, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01])], "Pi's own calls, a step's each and the report's, through the same connection");
@@ -665,4 +668,13 @@ test("a run's Pi idles only with nothing but Pi running in its sandbox, and ends
   proc.kill();
   await once(proc, 'exit');
   await serve();
+});
+
+test("every entry names its source: a person, a run whose entry names its runner and the act whose ticks it uses, or what caused it", () => {
+  const logs = new Map(readdirSync(join(root, 'instances')).map(id => [id, readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l) as Record<string, any>)]));
+  for (const [id, log] of logs) for (const e of log) {
+    const run = e.run !== undefined && logs.get(e.see?.inst ?? id)!.find(r => r.op === 'run' && r.run === e.run);
+    const cause = typeof e.cause === 'number' && log[e.cause - 1];
+    assert.ok(e.by.includes('@') || (run && run.runner && run.consent) || (cause && cause.seq < e.seq) || (e.op === 'wake' && e.from !== 'server'), `${id}: ${JSON.stringify(e)}`);
+  }
 });

@@ -73,24 +73,29 @@ export function checkTicks(email: string, ticks: unknown): string[] {
   return ticks;
 }
 
-// An instance's runner is whoever made it, copied it or last took it over, with the offers they ticked for it then or since.
-export function runnerOf(inst: Instance): { by: string; logins: string[] } {
+// An instance's runner is whoever made it, copied it or last took it over, with the offers they ticked for it then or since, and
+// the seq of the act that ticked them, their consent.
+export function runnerOf(inst: Instance): { by: string; logins: string[]; consent: number } {
   const e = inst.log.findLast(e => ['create', 'duplicate', 'takeover', 'logins'].includes(e.op))!;
-  return { by: e.by, logins: (e.logins as string[] | undefined) ?? [] };
+  return { by: e.by, logins: (e.logins as string[] | undefined) ?? [], consent: e.seq };
 }
 
-// An instance's runner, while they may still lend it their logins: they may still sign in and see the instance's workspace.
-export function lender(inst: Instance): { by: string; logins: string[] } {
+// An instance's runner, while they may still lend it their logins: they may still sign in and see the instance's workspace. A run
+// lends only what was ticked as it started, its lease, and still is: a tick taken away stops it at once, one added waits for the
+// next run.
+export function lender(inst: Instance, run?: number): { by: string; logins: string[] } {
   const r = runnerOf(inst), p = asPerson(r.by), t = tree();
   // Admins see every workspace; a try's stand-in instance (cli.ts) is in none.
   if (!p || (p.role !== 'admin' && !canSee(p, t.workspaces[t.series[inst.seriesId].workspace])))
     throw new HttpError(403, `${r.by} can no longer run this instance, so their logins aren't used: someone in its workspace takes it over`);
-  return r;
+  if (run === undefined) return r;
+  const lease = inst.log[(inst.log.find(e => e.op === 'run' && e.run === run)!.consent as number) - 1].logins as string[];
+  return { by: r.by, logins: r.logins.filter(l => lease.includes(l)) };
 }
 
-// The login a run may use for an offer: its lender's, if ticked for the instance and still offered.
-export function use(inst: Instance, offer: string): { email: string; login: Login } {
-  const { by, logins: ticked } = lender(inst);
+// The login a run may use for an offer: its lender's, if ticked for the run and still offered.
+export function use(inst: Instance, run: number, offer: string): { email: string; login: Login } {
+  const { by, logins: ticked } = lender(inst, run);
   if (!ticked.includes(offer)) throw new HttpError(403, `${offer} is not ticked for this instance; its runner, ${by}, ticks logins when starting or taking it over`);
   const login = logins(by).find(l => l.offers.some(o => o.id === offer));
   if (!login) throw Object.assign(new HttpError(409, `${by} no longer has a login offering ${offer}: they sign in again on the Logins page, and the instance carries on`), { login: offer.startsWith('web:') ? offer : offer.split(':')[0] });
