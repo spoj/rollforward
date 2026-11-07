@@ -12,7 +12,7 @@ import { getDomain } from 'tldts';
 import { checkHost, covers, reached, upstreams } from './connections.ts';
 import { model } from './connections/openrouter.ts';
 import { asPerson, can, users, type Me } from './auth.ts';
-import { approved, forget, grants } from './grants.ts';
+import { approved, forgetGrants, grants } from './grants.ts';
 import { act, changes, readJson, rfDir, tree, writeJson } from './system.ts';
 
 // Browsers from the browser service (spoj/rollforward-browser, a repo of its own), whose one client is this server, with its key: a
@@ -174,7 +174,7 @@ export function removeSite(email: string, name: string) {
   website(email, name);
   const { [name]: _, ...rest } = websitesOf(email);
   saveWebsites(email, rest);
-  forget(email, name);
+  forgetGrants(email, name);
   if (logins(email).some(l => l.id === `web:${name}`)) signOut(email, `web:${name}`);
 }
 

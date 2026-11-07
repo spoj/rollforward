@@ -446,9 +446,9 @@ test("as the server starts, a website from before websites were each person's ow
   assert.equal(JSON.parse(readFileSync(join(rfDir(), 'connections.json.bak'), 'utf8'))['e1-prod'].owner, carl);
   const said = JSON.parse(readFileSync(join(rfDir(), 'log.jsonl'), 'utf8').trim().split('\n').at(-1)!);
   assert.deepEqual([said.by, said.op, said.moved], ['server', 'websites', { 'e1-prod': [carl, dora, eve] }]);
-  const { forget, grants } = await import('../src/grants.ts');
-  forget(eve);
-  assert.deepEqual(grants(), {}, 'a person removed takes all their grants with them');
+  const { forgetGrants, grants } = await import('../src/grants.ts');
+  forgetGrants(eve);
+  assert.deepEqual(Object.keys(grants()), [], 'a person removed takes all their grants with them');
 });
 
 test('the proxy reaches nothing, not even what a tick is checked against, for a runner who can no longer lend their login', async () => {

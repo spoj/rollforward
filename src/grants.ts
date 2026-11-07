@@ -94,7 +94,7 @@ export function revoke(me: Me, id: string): Grant {
 }
 
 // A person's website removed takes their grants for it with it, and a person removed all of theirs.
-export function forget(person: string, site?: string) {
+export function forgetGrants(person: string, site?: string) {
   save(Object.fromEntries(Object.entries(grants()).filter(([, g]) => g.person !== person || (site !== undefined && g.site !== site))));
 }
 

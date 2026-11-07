@@ -17,7 +17,7 @@ import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { answered, byLogin, call, connections, intercepts, loginOf, removeConnection, setConnection, upstreams } from './connections.ts';
 import { addSite, adopt, allowHost, Browsers, endSignIn, isSignIn, keepAlive, passUpgrade, reap, refusedHosts, removeSite, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
-import { ask, decide, forget, lapse, revoke, visible } from './grants.ts';
+import { ask, decide, forgetGrants, lapse, revoke, visible } from './grants.ts';
 import { offer } from './connections/graph.ts';
 import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, startIndexing, track } from './indexes.ts';
@@ -839,7 +839,7 @@ async function admin(me: Me, req: IncomingMessage, res: ServerResponse, url: URL
   if (!users()[email]) throw new HttpError(404, `no user ${email}`);
   if (req.method === 'DELETE') {
     if (email === me.email) throw new HttpError(409, 'you cannot remove yourself');
-    forget(email);
+    forgetGrants(email);
     removeUser(email);
   } else if (req.method === 'PUT') {
     const { disabled, signout } = await json(req);
