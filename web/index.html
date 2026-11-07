@@ -238,7 +238,8 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .corner { position: absolute; top: -1px; right: -1px; width: 0; height: 0; border-top: 12px solid var(--ink-3); border-left: 12px solid transparent; border-top-right-radius: var(--r1); }
 .tile.ghost { background: transparent; border: 1px dashed var(--rule-2); }
 .tile.ghost .fn { color: var(--ink-2); font-weight: 400; }
-/* Hovering a tile or a row marks what it's made from. */
+/* Hovering a tile or a row marks it, and what it's made from. */
+.tile:hover { border-color: var(--ink); }
 .tile.made { border-color: var(--ink-2); background: #f1f3f5; }
 .tile.fresh::before { content: ''; position: absolute; top: 9px; left: -4px; width: 7px; height: 7px; border-radius: 50%; background: var(--ink); }
 .tile.flash { animation: flash 1.4s ease-out; }
