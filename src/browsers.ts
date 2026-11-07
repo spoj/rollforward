@@ -349,10 +349,8 @@ export class Browsers {
   lent(site: string) {
     try {
       // A try's stand-in instance (cli.ts) is in no workspace: any approved grant of its runner's does.
-      const { email, login } = use(this.inst, this.run, `web:${site}`), had = this.bySite.get(site), w = websitesOf(email)[site], t = tree(), ws = t.series[this.inst.seriesId]?.workspace;
-      const out = !w ? `${email} has no website ${site}` : !approved(site, email, ws)
-        ? `${email} has no approved grant to use ${site}${ws ? ` in ${t.workspaces[ws].name}` : ''}: they ask its owners for one on the Logins page` : undefined;
-      if (out) throw Object.assign(new HttpError(403, `${out}; this run goes on without it`), { refused: true });
+      const { email, login } = use(this.inst, this.run, `web:${site}`), had = this.bySite.get(site), t = tree(), ws = t.series[this.inst.seriesId]?.workspace;
+      if (!approved(site, email, ws)) throw Object.assign(new HttpError(403, `${email} has no approved grant to use ${site}${ws ? ` in ${t.workspaces[ws].name}` : ''}: they ask its owners for one on the Logins page; this run goes on without it`), { refused: true });
       if (login.expired) throw Object.assign(new HttpError(409, `${email}'s login to ${login.name} has expired: they sign in to it again on the Logins page, and the instance carries on`), { login: login.id });
       if (had && had.email !== email) throw new HttpError(409, `this run's browser on ${site} is in ${had.email}'s login, and ${email} has taken the instance over: the next run opens one in theirs`);
       return { email, login, had };
@@ -519,9 +517,9 @@ export class Browsers {
 
 // ---- Keeping logins alive: those admins grant keepalive may keep their login to a website alive as they sign in to it, until a
 // time at most 7 days ahead, so that runs that come while they're away, such as a weekday's at 8:00, find it signed in. Every
-// `every` minutes the website gives, 10 unless it gives one, such as 8 for PatriArch, which ends sessions left idle after 12, the
-// server loads its keepalive page, or else its address, in the browser of each person keeping a live login there alive who may
-// still use the website, unless a run of theirs holds that browser; where the website writes its state back, the turn holds it, so
+// `every` minutes a person's website gives, 10 unless it gives one, such as 8 for PatriArch, which ends sessions left idle after 12,
+// the server loads its keepalive page, or else its address, in their login's browser, while they keep a live login there alive and
+// may still use the website, unless a run of theirs holds that browser; where the website writes its state back, the turn holds it, so
 // a run that connects meanwhile waits. The browser reaches only that page's host, so a sign-in elsewhere, as single sign-on would
 // make one, never stretches a session past what the site allows: a page asking for a password, or one elsewhere, means the login
 // expired, as rf expired says, and else the browser's state is the login.
@@ -533,31 +531,29 @@ export async function keepAlive(now = new Date()) {
     const key = `${email} ${site}`;
     if (now.getTime() - (lastTurn.get(key) ?? 0) < (w.every ?? 10) * 60_000) continue;
     lastTurn.set(key, now.getTime());
-    {
-      const login = logins(email).find(l => l.id === `web:${site}`);
-      if (!login || login.expired || (login.keepalive ?? '') <= now.toISOString() || !approved(site, email) || held.has(key)) continue;
-      let release!: () => void;
-      if (w.writeback) held.set(key, { released: new Promise<void>(ok => { release = ok; }), release: () => release() });
+    const login = logins(email).find(l => l.id === `web:${site}`);
+    if (!login || login.expired || (login.keepalive ?? '') <= now.toISOString() || !approved(site, email) || held.has(key)) continue;
+    let release!: () => void;
+    if (w.writeback) held.set(key, { released: new Promise<void>(ok => { release = ok; }), release: () => release() });
+    try {
+      const page = new URL(w.keepalive ?? w.url, w.url), id = await open({ ...w, url: page.href, hosts: [] }, 300, JSON.parse(secret(email, login.id)));
+      let shown: { url: string; password: boolean }, state: unknown;
       try {
-        const page = new URL(w.keepalive ?? w.url, w.url), id = await open({ ...w, url: page.href, hosts: [] }, 300, JSON.parse(secret(email, login.id)));
-        let shown: { url: string; password: boolean }, state: unknown;
-        try {
-          shown = await json('GET', `/sessions/${id}/page`);
-        } finally {
-          ({ state } = await close(id));
-        }
-        // Unless they signed in anew or out meanwhile.
-        const after = logins(email).find(l => l.id === login.id);
-        if (after?.since !== login.since || after.expired) continue;
-        const over = shown.password || new URL(shown.url).origin !== page.origin;
-        saveLogin(email, over ? { ...after, expired: true } : after, over ? undefined : JSON.stringify(state));
-      } catch (e) {
-        console.error(`keeping ${email}'s login to ${site} alive:`, e);
+        shown = await json('GET', `/sessions/${id}/page`);
       } finally {
-        if (w.writeback) {
-          held.delete(key);
-          release();
-        }
+        ({ state } = await close(id));
+      }
+      // Unless they signed in anew or out meanwhile.
+      const after = logins(email).find(l => l.id === login.id);
+      if (after?.since !== login.since || after.expired) continue;
+      const over = shown.password || new URL(shown.url).origin !== page.origin;
+      saveLogin(email, over ? { ...after, expired: true } : after, over ? undefined : JSON.stringify(state));
+    } catch (e) {
+      console.error(`keeping ${email}'s login to ${site} alive:`, e);
+    } finally {
+      if (w.writeback) {
+        held.delete(key);
+        release();
       }
     }
   }
