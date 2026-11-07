@@ -1,6 +1,6 @@
 import { connect, isIP } from 'node:net';
 import { connect as tlsConnect } from 'node:tls';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { request as httpRequest, STATUS_CODES, type IncomingMessage, type ServerResponse } from 'node:http';
 import { request as httpsRequest } from 'node:https';
@@ -9,11 +9,11 @@ import { pipeline } from 'node:stream/promises';
 import { HttpError, instance, replaceReadOnly, type Instance } from './store.ts';
 import { logins, personDir, runnerOf, saveLogin, seal, secret, signOut, use } from './logins.ts';
 import { getDomain } from 'tldts';
-import { changeConnection, checkHost, connections, covers, reached, removeConnection, setConnection, upstreams } from './connections.ts';
+import { checkHost, covers, reached, upstreams } from './connections.ts';
 import { model } from './connections/openrouter.ts';
 import { asPerson, can, users, type Me } from './auth.ts';
-import { approved, forget, grants } from './grants.ts';
-import { changes, readJson, rfDir, tree } from './system.ts';
+import { approved, forget } from './grants.ts';
+import { act, changes, readJson, rfDir, tree, writeJson } from './system.ts';
 
 // Browsers from the browser service (spoj/rollforward-browser, a repo of its own), whose one client is this server, with its key: a
 // throwaway container per session, driven over CDP, whose proxy keeps to a website's hosts and logs every request. A website login is
@@ -74,22 +74,42 @@ export function passUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, 
   socket.pipe(up).pipe(socket);
 }
 
-// ---- Websites, connections of type website (connections.ts), which anyone adds: each a name, the address where people sign in,
-// and the other hosts its pages need, such as single sign-on's. Everyone signs in to it in their own login, and a run uses that
-// login only where its runner's grant in the instance's workspace is approved (grants.ts). A browser on one reaches only those
-// hosts; whatever its login may do there, the browser may, so keeping to reads is the agent's, and its request log shows what it
-// did. A website an admin switched off, no one uses.
+// ---- Websites, each person's own, in their folder beside their logins (logins.ts): by a name of theirs, the https address where they
+// sign in, the other hosts its pages need, such as single sign-on's, and how its browsers behave. Two people may each have one at the
+// same address, by the same name or not: a run's browser on NAME is its runner's own NAME, so a series reads alike for whoever runs
+// it where they named theirs alike, as adding one where others have suggests. A run uses it only where its runner's grant in the
+// instance's workspace is approved (grants.ts). A browser on one reaches only its hosts; whatever its login may do there, the browser
+// may, so keeping to reads is the agent's, and its request log shows what it did.
 
-export type Website = { name: string; url: string; hosts: string[]; writeback: boolean; header?: string; keepalive?: string; every?: number; owner?: string; internal?: boolean; off?: boolean; classes?: Record<string, 'tracker' | 'other'> };
-export const websites = (): Record<string, Website> => Object.fromEntries(connections().filter(c => c.type === 'website').map(c => [c.name, {
-  name: c.title ?? c.name, url: c.url, hosts: c.hosts, writeback: c.writeback, header: c.header, keepalive: c.keepalive, every: c.every,
-  ...(c.owner && { owner: c.owner }), ...(c.internal && { internal: true }), ...(c.off && { off: true }), ...(c.classes && { classes: c.classes }),
-}]));
+export type Website = { url: string; hosts: string[]; writeback: boolean; title?: string; header?: string; keepalive?: string; every?: number; internal?: true; classes?: Record<string, 'tracker' | 'other'>; added: string };
+const sitesFile = (email: string) => join(personDir(email), 'websites.json');
+export const websitesOf = (email: string): Record<string, Website> => existsSync(sitesFile(email)) ? JSON.parse(readFileSync(sitesFile(email), 'utf8')) : {};
+function saveWebsites(email: string, all: Record<string, Website>) {
+  mkdirSync(personDir(email), { recursive: true, mode: 0o700 });
+  writeFileSync(sitesFile(email), JSON.stringify(all, null, 1), { mode: 0o600 });
+}
+export const changeWebsite = (email: string, name: string, change: Partial<Website>) => saveWebsites(email, { ...websitesOf(email), [name]: { ...website(email, name), ...change } });
 
-function website(id: string): Website {
-  const w = websites()[id];
-  if (!w) throw new HttpError(404, `no website ${id}; there are ${Object.keys(websites()).join(', ') || 'none'}: anyone adds one with rf site add ${id} URL`);
+function website(email: string, name: string): Website {
+  const w = websitesOf(email)[name];
+  if (!w) throw new HttpError(404, `${email} has no website ${name}: theirs are ${Object.keys(websitesOf(email)).join(', ') || 'none yet'}, added on the Logins page or with rf site add ${name} URL`);
   return w;
+}
+
+// From before websites were each person's own: one left in .rf/connections.json becomes its owner's, and that of each person signed
+// in to it, by the same name, and goes from there, the system's log saying whose it became.
+export function adopt() {
+  const all = readJson<Record<string, any>>('connections.json', {}), moved: Record<string, string[]> = {};
+  for (const [name, c] of Object.entries(all).filter(([, c]) => c.type === 'website')) {
+    moved[name] = Object.keys(users()).filter(e => e === c.owner || logins(e).some(l => l.id === `web:${name}`));
+    for (const e of moved[name]) if (!websitesOf(e)[name]) saveWebsites(e, { ...websitesOf(e), [name]: { url: c.url, hosts: c.hosts ?? [], writeback: c.writeback !== false,
+      ...(c.title && { title: c.title }), ...(c.header && { header: c.header }), ...(c.keepalive && { keepalive: c.keepalive }), ...(c.every && { every: c.every }),
+      ...(c.internal && { internal: true }), ...(c.classes && { classes: c.classes }), added: c.updated_at ?? new Date().toISOString() } });
+    delete all[name];
+  }
+  if (!Object.keys(moved).length) return;
+  writeJson('connections.json', all);
+  act('server', { op: 'websites', moved });
 }
 
 // ---- Signing in: a browser on the website's address with nothing saved, shown to the person on the Logins page, for half an hour.
@@ -101,61 +121,75 @@ function website(id: string): Website {
 const signIns = new Map<string, { email: string; site: string; name: string; token?: string; since: number }>();
 
 export async function startSignIn(email: string, site: string, given: string): Promise<string> {
-  const w = website(site), kept = `web:${site}.header`;
-  if (w.off) throw new HttpError(403, `${w.name} is switched off: an admin switches it on`);
+  const w = website(email, site), kept = `web:${site}.header`, name = w.title ?? site;
   let token;
   if (w.header) {
     token = given.trim() || (existsSync(join(personDir(email), `${kept}.sealed`)) ? secret(email, kept) : '');
-    if (!token) throw new HttpError(400, `${w.name} needs your ${w.header} to sign in: give it in the box under its name, on the Logins page`);
+    if (!token) throw new HttpError(400, `${name} needs your ${w.header} to sign in: give it in the box under its name, on the Logins page`);
     if (/[^\x20-\x7e]/.test(token)) throw new HttpError(400, `${w.header}: letters, digits and punctuation`);
   }
   const id = await open(w, 1800, undefined, token && { [w.header!]: token });
-  signIns.set(id, { email, site, name: w.name, token, since: Date.now() });
+  signIns.set(id, { email, site, name, token, since: Date.now() });
   return id;
 }
 
 export const isSignIn = (email: string, id: string) => signIns.get(id)?.email === email;
 
-// A website anyone adds: its name and the https address where its sign-in starts, the other hosts its pages need allowed as its
-// owner, who added it, signs in to it. An address a website has already is that website, which they sign in to instead.
-export async function addSite(email: string, name: string, url: string): Promise<{ site: string; existing?: true }> {
-  if (!/^https:\/\/[^/]/.test(url)) throw new HttpError(400, 'url: an https address, where its sign-in starts');
-  const same = Object.entries(websites()).find(([, w]) => new URL(w.url).hostname === new URL(url).hostname);
-  if (same) return { site: same[0], existing: true };
-  if (connections().some(c => c.name === name)) throw new HttpError(409, `${name} is taken: name yours otherwise`);
-  await setConnection(name, { type: 'website', url, owner: email }, email);
+// A website of one's own: its name, which runs use, and the https address where its sign-in starts; the other hosts its pages need
+// its person allows as they sign in to it.
+export async function addSite(email: string, name: string, url: string): Promise<{ site: string }> {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(name) || name === PRINT) throw new HttpError(400, `a website's name is lowercase letters, digits and dashes, and not ${PRINT}, the runs' own print browser`);
+  if (!/^https:\/\/[^/]/.test(url) || !URL.canParse(url)) throw new HttpError(400, 'url: an https address, where its sign-in starts');
+  if (websitesOf(email)[name]) throw new HttpError(409, `you have a website ${name} already: name this one otherwise`);
+  await checkHost(new URL(url).hostname, false);
+  saveWebsites(email, { ...websitesOf(email), [name]: { url, hosts: [], writeback: true, added: new Date().toISOString() } });
   return { site: name };
 }
 
-// A website's settings and hosts are its owner's, and admins'.
-const allows = (w: Website, by: { email: string; role: string }) => by.role === 'admin' || w.owner === by.email;
+// The name most others gave their website at the address's host, which adding one there suggests, so that a series reads alike for
+// whoever runs it; none where no one else has one.
+export function suggest(email: string, url: string): string | null {
+  const host = URL.parse(url)?.hostname, n = new Map<string, number>();
+  for (const other of Object.keys(users()).filter(e => e !== email)) for (const [name, w] of Object.entries(websitesOf(other))) if (new URL(w.url).hostname === host) n.set(name, (n.get(name) ?? 0) + 1);
+  return [...n].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+}
 
-// Its owner or an admin changes its title, the header its sign-in needs, its keepalive page and how often, and whether runs write
-// its state back; admins alone switch it off, or let it reach internal addresses.
-export async function setSite(by: Me, name: string, change: Record<string, unknown>) {
-  const w = website(name), c = connections().find(c => c.name === name)!, theirs = ['off', 'internal'].filter(k => change[k] !== undefined);
-  const keys = ['title', 'header', 'keepalive', 'every', 'writeback', 'off', 'internal'], other = Object.keys(change).filter(k => !keys.includes(k));
+const theirs = (by: Me, person: string) => {
+  if (person !== by.email && by.role !== 'admin') throw new HttpError(403, `${person}'s websites are theirs, and admins'`);
+};
+
+// Its person changes its title, the header its sign-in needs, its keepalive page and how often, and whether runs write its state back;
+// admins alone let it reach internal addresses, by exact hosts, as an intranet's need, and change anyone's.
+export async function setSite(by: Me, name: string, change: Record<string, unknown>, person = by.email) {
+  const keys = ['title', 'header', 'keepalive', 'every', 'writeback', 'internal'], other = Object.keys(change).filter(k => !keys.includes(k));
   if (other.length) throw new HttpError(400, `${other.join(', ')}: a website's settings are ${keys.join(', ')}; its hosts are allowed one by one`);
-  if (!allows(w, by)) throw new HttpError(403, `${w.name} is ${w.owner}'s to change, or an admin's`);
-  if (theirs.length && by.role !== 'admin') throw new HttpError(403, `${theirs.join(' and ')}: admins set it`);
-  await setConnection(name, { type: 'website', url: c.url, hosts: c.hosts, title: c.title, writeback: c.writeback, header: c.header, keepalive: c.keepalive,
-    every: c.every && `${c.every}m`, owner: c.owner, off: c.off, internal: c.internal, classes: c.classes, ...change }, by.email);
+  theirs(by, person);
+  if (change.internal !== undefined && by.role !== 'admin') throw new HttpError(403, 'internal: admins set it');
+  const w = website(person, name), x = { ...w, every: w.every && `${w.every}m`, ...change }, every = /^(\d+)([mh])$/.exec(String(x.every ?? ''));
+  if (![undefined, true, false, 'true', 'false'].includes(x.writeback as never)) throw new HttpError(400, 'writeback: true or false');
+  if (x.header !== undefined && !/^[a-z0-9-]+$/i.test(String(x.header))) throw new HttpError(400, 'header: the name of a header its sign-in needs, such as x-bot-token');
+  if (x.keepalive !== undefined && URL.parse(String(x.keepalive), w.url)?.host !== new URL(w.url).host) throw new HttpError(400, 'keepalive: a page of the website, by its address or path, such as https://patriarch.patrina.net/PatriArchMVC/');
+  if (x.every !== undefined && !(every && Number(every[1]) > 0)) throw new HttpError(400, 'every: minutes or hours, such as 10m or 1h');
+  saveWebsites(person, { ...websitesOf(person), [name]: { url: w.url, hosts: w.hosts, writeback: x.writeback !== false && x.writeback !== 'false', added: w.added,
+    ...(typeof x.title === 'string' && x.title.trim() && { title: x.title.trim() }), ...(x.header !== undefined && { header: String(x.header) }),
+    ...(x.keepalive !== undefined && { keepalive: String(x.keepalive) }), ...(every && { every: Number(every[1]) * (every[2] === 'h' ? 60 : 1) }),
+    ...((x.internal === true || x.internal === 'true') && { internal: true }), ...(w.classes && { classes: w.classes }) } });
 }
 
-// A website goes with its grants, and everyone's login to it: its owner's to remove while no one else has a grant to it pending or
-// approved, and else an admin's.
-export function removeSite(by: Me, name: string) {
-  const w = website(name), others = Object.values(grants()).some(g => g.site === name && g.person !== by.email && ['pending', 'approved'].includes(g.state));
-  if (by.role !== 'admin' && (w.owner !== by.email || others)) throw new HttpError(403, w.owner === by.email ? `others use ${w.name}: an admin removes it` : `${w.name} is ${w.owner}'s to remove, or an admin's`);
-  removeConnection(name);
-  forget(name);
-  for (const email of Object.keys(users())) if (logins(email).some(l => l.id === `web:${name}`)) signOut(email, `web:${name}`);
+// A website goes with its person's login to it and their grants for it, no one else's; admins remove anyone's.
+export function removeSite(by: Me, name: string, person = by.email) {
+  theirs(by, person);
+  website(person, name);
+  const { [name]: _, ...rest } = websitesOf(person);
+  saveWebsites(person, rest);
+  forget(person, name);
+  if (logins(person).some(l => l.id === `web:${name}`)) signOut(person, `web:${name}`);
 }
 
-// The hosts a person's sign-in to a website was refused and still is, each with its count, and *.D where two or more of them are
-// under one registrable domain D; and whether they may allow them.
-export async function refusedHosts(by: { email: string; role: string }, site: string) {
-  const w = website(site), id = [...signIns].find(([, s]) => s.email === by.email && s.site === site)?.[0], reach = reached(w);
+// The hosts a person's sign-in to their website was refused and still is, each with its count, and *.D where two or more of them are
+// under one registrable domain D.
+export async function refusedHosts(email: string, site: string) {
+  const w = website(email, site), id = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0], reach = reached(w);
   if (!id) throw new HttpError(404, `no sign-in of yours to ${site} is open`);
   const n = new Map<string, number>();
   for (const e of await json('GET', `/sessions/${id}/log`) as { url: string; blocked?: string }[]) {
@@ -163,31 +197,31 @@ export async function refusedHosts(by: { email: string; role: string }, site: st
     if (host && !reach.some(p => covers(p, host))) n.set(host, (n.get(host) ?? 0) + 1);
   }
   const under = Map.groupBy(n.keys(), h => getDomain(h, { allowPrivateDomains: true }) ?? h);
-  return {
-    allows: allows(w, by),
-    hosts: [...[...under].filter(([d, hs]) => hs.length > 1 && hs.some(h => h !== d)).map(([d, hs]) => ({ host: `*.${d}`, count: hs.reduce((t, h) => t + n.get(h)!, 0) })),
-      ...[...n].map(([host, count]) => ({ host, count }))].sort((a, b) => b.count - a.count),
-  };
+  return { hosts: [...[...under].filter(([d, hs]) => hs.length > 1 && hs.some(h => h !== d)).map(([d, hs]) => ({ host: `*.${d}`, count: hs.reduce((t, h) => t + n.get(h)!, 0) })),
+    ...[...n].map(([host, count]) => ({ host, count }))].sort((a, b) => b.count - a.count) };
 }
 
-// A host a website's pages need, allowed by its owner or an admin; their open sign-in to it, if any, reaches it at once. Once a grant
-// to it is approved, its owner allows only hosts within the registrable domains it reaches already: one elsewhere would widen what
+// A host a website's pages need, allowed by its person, or an admin; their open sign-in to it, if any, reaches it at once. Once a grant
+// to it is approved, its person allows only hosts within the registrable domains it reaches already: one elsewhere would widen what
 // the grant approved, which is admins' to do.
-export async function allowHost(by: { email: string; role: string }, site: string, host: string) {
-  const w = website(site), h = host.trim().toLowerCase(), domain = (x: string) => getDomain(x.replace(/^\*\./, ''), { allowPrivateDomains: true }) ?? x;
-  if (!allows(w, by)) throw new HttpError(403, `${w.name}'s hosts are ${w.owner}'s to allow, or an admin's`);
-  if (by.role !== 'admin' && approved(site) && !reached(w).some(p => domain(p) === domain(h))) throw new HttpError(403, `${h} is outside the domains ${w.name} reaches, which its grants approved: an admin allows it`);
-  await checkHost(site, h, !!w.internal);
-  changeConnection(site, { hosts: [...new Set([...w.hosts, h])] }, by.email);
-  const id = [...signIns].find(([, s]) => s.email === by.email && s.site === site)?.[0];
+export async function allowHost(by: Me, site: string, host: string, person = by.email) {
+  theirs(by, person);
+  const w = website(person, site), h = host.trim().toLowerCase(), domain = (x: string) => getDomain(x.replace(/^\*\./, ''), { allowPrivateDomains: true }) ?? x;
+  if (by.role !== 'admin' && approved(site, person) && !reached(w).some(p => domain(p) === domain(h))) throw new HttpError(403, `${h} is outside the domains ${w.title ?? site} reaches, which its grants approved: an admin allows it`);
+  await checkHost(h, !!w.internal);
+  changeWebsite(person, site, { hosts: [...new Set([...w.hosts, h])] });
+  const id = [...signIns].find(([, s]) => s.email === person && s.site === site)?.[0];
   if (!id) return;
-  await json('PUT', `/sessions/${id}/hosts`, { hosts: reached(website(site)) });
+  await json('PUT', `/sessions/${id}/hosts`, { hosts: reached(website(person, site)) });
   await json('POST', `/sessions/${id}/reload`);
 }
 
-// The hosts a run's browser on a website was refused that it still doesn't reach.
-// The hosts a website doesn't reach, of those asked for, but trackers the server sorted out (classify), which no one is asked to allow.
-export const unreached = (site: string, hosts: string[]) => hosts.filter(h => !reached(websites()[site]).some(p => covers(p, h)) && websites()[site].classes?.[h] !== 'tracker');
+// The hosts a person's website doesn't reach, of those asked for, but trackers the server sorted out (classify), which no one is asked
+// to allow.
+export const unreached = (email: string, site: string, hosts: string[]) => {
+  const w = websitesOf(email)[site];
+  return !w ? [] : hosts.filter(h => !reached(w).some(p => covers(p, h)) && w.classes?.[h] !== 'tracker');
+};
 
 export const viewPage = async (id: string) => (await call('GET', `/sessions/${id}/view`)).toString();
 
@@ -251,7 +285,7 @@ function keep(inst: Instance, b: Opened, { state, log }: { state: unknown; log: 
   for (const h of log.filter(e => e.blocked === 'host not on the list').map(e => URL.parse(e.url)!.hostname)) hosts[h] = (hosts[h] ?? 0) + 1;
   inst.append('server', 'browser', { run: b.run, site: b.site, ...(b.email && { login: b.email }), requests: log.length, writes, blocked: log.filter(e => e.blocked).length, file: b.file,
     ...(Object.keys(hosts).length && { hosts }) });
-  if (Object.keys(hosts).length && websites()[b.site]) classify(inst, b.run, b.site, hosts).catch(e => console.error(`sorting the hosts ${b.site} was refused:`, e));
+  if (Object.keys(hosts).length && websitesOf(b.email)[b.site]) classify(inst, b.run, b.email, b.site, hosts).catch(e => console.error(`sorting the hosts ${b.site} was refused:`, e));
 }
 
 // The hosts a run's browser on a website was refused, sorted once each: one within the registrable domains the website reaches is
@@ -261,26 +295,26 @@ function keep(inst: Instance, b: Opened, { state, log }: { state: unknown; log: 
 // Without the server's key only its own are sorted.
 const CLASSIFY = `A browser on a company's website, run by an automated job, was refused these hosts, which the website may not reach. Say what each is to the website, as one JSON object {"hosts": {HOST: "sign-on" | "cdn" | "tracker" | "other"}}: "sign-on" for the identity provider its sign-in goes through, "cdn" for where its own pages' scripts, styles, fonts or images come from, "tracker" for analytics, advertising, telemetry or chat widgets, and "other" for anything else or anything you're unsure of.`;
 
-async function classify(inst: Instance, run: number, site: string, refused: Record<string, number>) {
-  const w = websites()[site], key = process.env.OPENROUTER_API_KEY, domain = (x: string) => getDomain(x.replace(/^\*\./, ''), { allowPrivateDomains: true }) ?? x;
-  const todo = unreached(site, Object.keys(refused)).filter(h => !w.classes?.[h]), own = todo.filter(h => reached(w).some(p => domain(p) === domain(h)));
+async function classify(inst: Instance, run: number, email: string, site: string, refused: Record<string, number>) {
+  const w = websitesOf(email)[site], key = process.env.OPENROUTER_API_KEY, domain = (x: string) => getDomain(x.replace(/^\*\./, ''), { allowPrivateDomains: true }) ?? x;
+  const todo = unreached(email, site, Object.keys(refused)).filter(h => !w.classes?.[h]), own = todo.filter(h => reached(w).some(p => domain(p) === domain(h)));
   const rest = todo.filter(h => !own.includes(h));
   let sorted: Record<string, string> = {};
   if (rest.length && key) {
     const res = await fetch(`${upstreams['openrouter.ai'] ?? 'https://openrouter.ai'}/api/v1/chat/completions`, {
       method: 'POST', headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' }, signal: AbortSignal.timeout(120_000),
       body: JSON.stringify({ model, provider: { data_collection: 'deny' }, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: CLASSIFY }, { role: 'user', content: JSON.stringify({
-        website: { name: site, title: w.name, address: new URL(w.url).host, hosts: w.hosts }, refused: Object.fromEntries(rest.map(h => [h, refused[h]])),
+        website: { name: site, title: w.title ?? site, address: new URL(w.url).host, hosts: w.hosts }, refused: Object.fromEntries(rest.map(h => [h, refused[h]])),
       }) }] }),
     });
     if (!res.ok) throw new Error(`OpenRouter answered ${res.status}`);
     sorted = JSON.parse((await res.json()).choices[0].message.content).hosts ?? {};
   }
   const allowed: string[] = [];
-  for (const h of own) if (await checkHost(site, h, !!w.internal).then(() => true, () => false)) allowed.push(h);
+  for (const h of own) if (await checkHost(h, !!w.internal).then(() => true, () => false)) allowed.push(h);
   const classes = Object.fromEntries(rest.filter(h => sorted[h]).map(h => [h, ['sign-on', 'cdn', 'tracker'].includes(sorted[h]) ? sorted[h] : 'other']));
   if (!allowed.length && !Object.keys(classes).length) return;
-  changeConnection(site, { hosts: [...new Set([...w.hosts, ...allowed])], classes: { ...w.classes, ...classes } }, 'server');
+  changeWebsite(email, site, { hosts: [...new Set([...w.hosts, ...allowed])], classes: { ...w.classes, ...classes } });
   console.log(`hosts sorted ${JSON.stringify({ site, inst: inst.id, run, allowed, classes })}`);
   if (allowed.length) inst.append('server', 'browser', { run, site, action: 'allowed', allowed });
 }
@@ -323,16 +357,16 @@ export class Browsers {
   lent(site: string) {
     try {
       // A try's stand-in instance (cli.ts) is in no workspace: any approved grant of its runner's does.
-      const { email, login } = use(this.inst, this.run, `web:${site}`), had = this.bySite.get(site), w = websites()[site], t = tree(), ws = t.series[this.inst.seriesId]?.workspace;
-      const out = !w ? undefined : w.off ? `${w.name} is switched off` : !approved(site, email, ws)
-        ? `${email} has no approved grant to use ${w.name}${ws ? ` in ${t.workspaces[ws].name}` : ''}: they ask its owners for one on the Logins page` : undefined;
+      const { email, login } = use(this.inst, this.run, `web:${site}`), had = this.bySite.get(site), w = websitesOf(email)[site], t = tree(), ws = t.series[this.inst.seriesId]?.workspace;
+      const out = !w ? `${email} has no website ${site}` : !approved(site, email, ws)
+        ? `${email} has no approved grant to use ${w.title ?? site}${ws ? ` in ${t.workspaces[ws].name}` : ''}: they ask its owners for one on the Logins page` : undefined;
       if (out) throw Object.assign(new HttpError(403, `${out}; this run goes on without it`), { refused: true });
       if (login.expired) throw Object.assign(new HttpError(409, `${email}'s login to ${login.name} has expired: they sign in to it again on the Logins page, and the instance carries on`), { login: login.id });
       if (had && had.email !== email) throw new HttpError(409, `this run's browser on ${site} is in ${had.email}'s login, and ${email} has taken the instance over: the next run opens one in theirs`);
       return { email, login, had };
     } catch (e) {
       const { login, refused } = e as { login?: string; refused?: true };
-      if (login) this.inst.append('server', 'expired', { run: this.run, login, name: websites()[site]?.name ?? site, runner: runnerOf(this.inst).by });
+      if (login) this.inst.append('server', 'expired', { run: this.run, login, name: websitesOf(runnerOf(this.inst).by)[site]?.title ?? site, runner: runnerOf(this.inst).by });
       if (refused && !this.refused.has(site)) this.inst.append('server', 'browser', { run: this.run, site, action: 'refused', why: (e as Error).message });
       if (refused) this.refused.add(site);
       throw e;
@@ -346,7 +380,7 @@ export class Browsers {
       const { email, login, had } = site === PRINT ? { email: '', login: undefined, had: this.bySite.get(site) } : this.lent(site);
       if (had) return had.id;
       if (this.opening.has(site)) return this.opening.get(site);
-      const w = site === PRINT ? undefined : website(site), writeback = !!w?.writeback, key = `${email} ${site}`, other = writeback ? held.get(key) : undefined;
+      const w = site === PRINT ? undefined : website(email, site), writeback = !!w?.writeback, key = `${email} ${site}`, other = writeback ? held.get(key) : undefined;
       if (other) {
         if (!waited) this.inst.append('server', 'browser', { run: this.run, site, login: email, action: 'wait', held: other.run ? `${tree().series[other.run.inst.seriesId]?.name}/${other.run.inst.label}` : 'keepalive' });
         await Promise.race([other.released, new Promise(ok => conn?.once('close', ok))]);
@@ -503,12 +537,13 @@ const lastTurn = new Map<string, number>();
 
 export async function keepAlive(now = new Date()) {
   const keeping = Object.entries(users()).filter(([email, u]) => { const p = asPerson(email, u); return p && can(p, 'keepalive'); }).map(([email]) => email);
-  for (const [site, w] of Object.entries(websites())) {
-    if (now.getTime() - (lastTurn.get(site) ?? 0) < (w.every ?? 10) * 60_000) continue;
-    lastTurn.set(site, now.getTime());
-    for (const email of keeping) {
-      const login = logins(email).find(l => l.id === `web:${site}`), key = `${email} ${site}`;
-      if (!login || login.expired || (login.keepalive ?? '') <= now.toISOString() || w.off || !approved(site, email) || held.has(key)) continue;
+  for (const email of keeping) for (const [site, w] of Object.entries(websitesOf(email))) {
+    const key = `${email} ${site}`;
+    if (now.getTime() - (lastTurn.get(key) ?? 0) < (w.every ?? 10) * 60_000) continue;
+    lastTurn.set(key, now.getTime());
+    {
+      const login = logins(email).find(l => l.id === `web:${site}`);
+      if (!login || login.expired || (login.keepalive ?? '') <= now.toISOString() || !approved(site, email) || held.has(key)) continue;
       let release!: () => void;
       if (w.writeback) held.set(key, { released: new Promise<void>(ok => { release = ok; }), release: () => release() });
       try {
