@@ -216,8 +216,6 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .lrow.ghost td { color: var(--ink-3); }
 .lrow.fresh .fn::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--ink); vertical-align: 1px; }
 .lrow td.q { color: var(--red); }
-.pane.busy::before { content: ''; position: absolute; top: 0; left: -30%; width: 30%; height: 2px; background: var(--ink); animation: stripe 1.4s ease-in-out infinite; }
-@keyframes stripe { to { left: 100%; } }
 .pane.drag::after { content: '+ Add'; position: absolute; top: 20px; right: 28px; font-weight: 600; color: var(--person); }
 .pane.drag .ph .btn { visibility: hidden; }
 .pane.drag { background: var(--person-bg); }
@@ -819,7 +817,6 @@ function renderPanes() {
   put($('#ins'), head('Inputs', ins, 'in') + body('in', ins) + alsoUsed + (open ? '<div class="hint">Drop files to add them. The agent decides what each one is.</div>' : ''));
   put($('#outs'), head('Outputs', outs, 'out') + body('out', outs) + (open ? '<div class="hint">Drop a revised output here.</div>' : ''));
   put($('#steps'), head('Steps', steps) + `<div class="tiles">${steps.map(tile).join('')}</div>`);
-  $('#outs').classList.toggle('busy', !!data.run);
   prevSigs = Object.fromEntries(items.map(i => [i.id, sig(i)]));
   light();
 }

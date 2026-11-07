@@ -32,7 +32,7 @@ Sources: [Layr design reference](https://layr.design/reference/layr-001-intentio
 
 - Gradients, glass, glow, emoji, or sparkle and robot icons.
 - Pills or badges for ordinary labels, or icons in rounded squares.
-- Motion, except to show state: a spinner while the agent works, a stripe on Outputs during a run, one flash when a tile changes, and a pulsing corner on an ask that waits on a reply.
+- Motion, except to show state: a spinner while the agent works, one flash when a tile changes, and a pulsing corner on an ask that waits on a reply.
 - A colour whose meaning neither the legend nor the button's label gives.
 
 ## Tokens
