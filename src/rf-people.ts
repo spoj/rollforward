@@ -15,7 +15,8 @@ const USAGE = `rf login URL [TOKEN]                without a TOKEN, through the 
 rf ls [--json]                    every workspace, series and instance you see, with its status, runner, asks waiting and wakes
 rf waiting [--json]               what waits on you: asks and notes, requests to start an instance or to use a
                                   website in a workspace you own, proposals, expired logins, and hosts a run's browser on a
-                                  website of yours was refused
+                                  website of yours was refused that the server's check left, or for admins anyone's it rates
+                                  high risk or finds at an internal address
 rf show PATH [--json]             an instance: its items, the threads that wait on someone, by id, and its last run
 rf log PATH [--since SEQ] [--follow] [--json]   its log, a line an entry, after SEQ; --follow prints more as they come;
                                   --json prints the entries as they are, a line each
@@ -57,8 +58,13 @@ rf logins offer|unoffer LOGIN SOURCE|OFFER   what a login offers runs: Microsoft
                                   files, by address or link, a Databricks login's SQL warehouses, by link; unoffer takes the
                                   OFFER rf logins lists
 rf logins allow SITE HOST [--person EMAIL]   a host the pages of your website SITE need; once a grant to it is approved,
-                                  only within the domains it reaches, beyond which admins allow them, with --person
+                                  only within the domains it reaches, beyond which admins allow them, with --person, one at
+                                  an internal address letting the website reach internal addresses
+rf logins disallow SITE HOST      a host your website SITE reaches no more, which stays refused, the server's check letting
+                                  it no more
 rf logins signout LOGIN
+rf sites [--json]                 your websites, each with its address and the other hosts it reaches, with what the server's
+                                  check said of those it let it reach
 rf site add NAME URL [--header NAME]   a website of your own, by a NAME you choose, whose sign-in starts at URL, which you
                                   sign in to on the page; --header names a header its sign-in needs that its pages never
                                   send, such as x-bot-token, whose value you give as you sign in
@@ -387,7 +393,7 @@ if (cmd === 'login' && url) {
     ...series.flatMap(x => x.requests.filter(r => mine(r.who)).map(r => ({ kind: 'request', path: x.path, since: r.at, id: r.id, text: `${r.from} asks to start ${r.label}` }))),
     ...all.filter(w => w.manage && w.proposal?.into === w.id).map(({ proposal: p }) => ({ kind: 'proposal', path: p.to, since: p.at, text: `${p.by} proposes to ${p.kind === 'merge' ? `merge ${p.from} into it` : `move ${p.from}/${p.series} to it`}` })),
     ...s.expired.filter(e => e.who === me.email).map(e => ({ kind: 'expired', login: e.login, holding: e.holding, text: `your ${e.login} login expired` })),
-    ...series.flatMap(x => x.instances.flatMap(i => i.refused.map(r => ({ kind: 'refused', path: `${x.path}/${i.label}`, since: r.at, site: r.site, hosts: r.hosts, text: `run ${r.run}'s browser on ${r.site} was refused ${r.hosts.join(', ')}` })))),
+    ...series.flatMap(x => x.instances.flatMap(i => i.refused.map(r => ({ kind: 'refused', path: `${x.path}/${i.label}`, since: r.at, site: r.site, hosts: r.hosts, person: r.login, why: r.why, text: `run ${r.run}'s browser on ${r.login}'s ${r.site} was refused ${r.hosts.map((h: string) => r.why[h] ? `${h} (${r.why[h]})` : h).join(', ')}` })))),
     ...all.filter(w => w.manage).flatMap(w => w.grants.filter(g => g.state === 'pending').map(g => ({ kind: 'grant', path: w.name, since: g.at, id: g.id, text: `${g.person} asks to use ${g.site}, at ${g.url}, here: ${g.reason} (${g.check?.risk ? `${g.check.risk} risk` : 'not checked'})` }))),
   ];
   if (flags.json) console.log(JSON.stringify(rows, null, 1));
@@ -505,12 +511,17 @@ else if (cmd === 'comment' && args.length === 2) {
     // A website's login offers itself alone.
     for (const o of l.offers.filter(o => o.id !== l.id)) console.log(`  offers ${o.id}  ${o.name}`);
   }
-} else if (cmd === 'logins' && ['offer', 'unoffer', 'allow'].includes(args[0]) && args.length === 3) {
+} else if (cmd === 'logins' && ['offer', 'unoffer', 'allow', 'disallow'].includes(args[0]) && args.length === 3) {
   const [what, login, x] = args, at = `/logins/${encodeURIComponent(login)}`;
   if (what === 'offer') await post(`${at}/offers`, { add: x });
   else if (what === 'unoffer') await api(`${at}/offers/${encodeURIComponent(x)}`, { method: 'DELETE' });
+  else if (what === 'disallow') await api(`/logins/web/${encodeURIComponent(login)}/hosts/${encodeURIComponent(x)}`, { method: 'DELETE' });
   else await post(`/logins/web/${encodeURIComponent(login)}/hosts${flags.person ? `?person=${encodeURIComponent(String(flags.person))}` : ''}`, { host: x });
-  console.log(`${login} ${{ offer: 'offers', unoffer: 'no longer offers', allow: 'reaches' }[what]} ${x}`);
+  console.log(`${login} ${{ offer: 'offers', unoffer: 'no longer offers', allow: 'reaches', disallow: 'no longer reaches' }[what]} ${x}`);
+} else if (cmd === 'sites' && !args.length) {
+  const all = await get('/logins/sites');
+  if (flags.json) console.log(JSON.stringify(all, null, 1));
+  else for (const [name, w] of Object.entries<any>(all)) console.log(`${name}  ${w.url}${w.hosts.map((h: string) => `\n  reaches ${h}${w.checks?.[h]?.verdict === 'pass' ? `: ${w.checks[h].why}` : ''}`).join('')}`);
 } else if (cmd === 'site' && args[0] === 'add' && args.length === 3) {
   const { site } = await (await post('/logins/sites', { name: args[1], url: args[2], header: flags.header })).json();
   console.log(`added ${site}: sign in to it at ${url}/#logins, then rf site ask ${site} WORKSPACE REASON`);

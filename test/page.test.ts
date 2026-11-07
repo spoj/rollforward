@@ -502,7 +502,7 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   writeFileSync(join(rf, 'connections.json'), JSON.stringify({ graph: { type: 'graph' }, adb: { type: 'databricks' } }));
   mkdirSync(mine, { recursive: true });
   const site = (url: string) => ({ url, hosts: [], writeback: true, added: '2026-11-01T00:00:00Z' });
-  writeFileSync(join(mine, 'websites.json'), JSON.stringify({ portal: site('https://portal.test/'), wiki: site('https://wiki.test/start') }));
+  writeFileSync(join(mine, 'websites.json'), JSON.stringify({ portal: { ...site('https://portal.test/'), hosts: ['cdn.portal.test', 'sso.idp.test'], checks: { 'cdn.portal.test': { verdict: 'pass', why: 'Its CDN.' } } }, wiki: site('https://wiki.test/start') }));
   writeFileSync(join(mine, 'logins.json'), JSON.stringify([
     { id: 'm365', kind: 'm365', name: 'Microsoft 365', account: 'admin@demo.test', since: '2026-11-01T00:00:00Z', offers: [{ id: 'm365:onedrive', name: 'OneDrive' }, { id: 'm365:site:s1', name: 'SharePoint Reports' }] },
     { id: 'adb', kind: 'databricks', name: 'Databricks adb', since: '2026-11-01T00:00:00Z', offers: [{ id: 'adb:adb-1.azuredatabricks.net/wh1', name: 'Warehouse Finance, adb-1.azuredatabricks.net' }], expired: true },
@@ -522,7 +522,7 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   assert.deepEqual((await page.$$eval('#pv .lsub', rs => rs.map(r => (r as HTMLElement).innerText.replace(/\s+/g, ' ').trim()))).slice(2), ['Warehouse Finance, adb-1.azuredatabricks.net Remove'], "Databricks' warehouses, as Microsoft 365's sources");
   await page.click('#pv [data-act=logins-show][data-id=adb]');
   await page.click('#pv [data-act=logins-show][data-id=web]');
-  assert.match((await page.$$eval('#pv .lsub', rs => rs.map(r => (r as HTMLElement).innerText.replace(/\s+/g, ' ').trim()))).slice(2).join('\n'), /^portal https:\/\/portal\.test\/ · since .+, kept alive until .+ Sign in again Sign out Remove\nwiki https:\/\/wiki\.test\/start Sign in Remove$/);
+  assert.match((await page.$$eval('#pv .lsub', rs => rs.map(r => (r as HTMLElement).innerText.replace(/\s+/g, ' ').trim()))).slice(2).join('\n'), /^portal https:\/\/portal\.test\/ · since .+, kept alive until .+ Sign in again Sign out Remove\nReaches cdn\.portal\.test: Its CDN\. Remove\nReaches sso\.idp\.test Remove\nwiki https:\/\/wiki\.test\/start Sign in Remove$/);
   // Signing in, those granted keepalive may tick it, a week ahead unless they set less, and Save login sends it.
   const saved: unknown[] = [], routes = ['**/logins/web/portal', '**/logins/web/portal/refused', '**/signins/s1/view?drive', '**/signins/s1'];
   await page.route(routes[0], r => r.fulfill({ json: { id: 's1' } }));
@@ -553,6 +553,13 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   assert.equal(await page.textContent('#ask p'), 'Your login to it and your grants for it go too.');
   await page.click('#ask button:text-is("Remove")');
   await page.waitForSelector('#pv [data-act=site-remove][data-id=wiki]', { state: 'detached' });
+  // Each of its other hosts, with what the server's check said of one it let it reach, its person removes, and it stays refused.
+  await page.click('#pv [data-act=host-remove][data-host="cdn.portal.test"]');
+  assert.equal(await page.textContent('#ask p'), "portal's browsers no longer reach it, and the server's check won't let them again; you may allow it again as you sign in.");
+  await page.click('#ask button:text-is("Remove")');
+  await page.waitForSelector('#pv [data-act=host-remove][data-host="cdn.portal.test"]', { state: 'detached' });
+  const portal = JSON.parse(readFileSync(join(mine, 'websites.json'), 'utf8')).portal;
+  assert.deepEqual([portal.hosts, portal.checks['cdn.portal.test'].verdict], [['sso.idp.test'], 'refused']);
   await page.mouse.click(5, 5);
 
   await page.evaluate(() => openStart('New instance', 'Start', () => {}, '', ['m365:onedrive', 'adb:adb-1.azuredatabricks.net/wh1']));
@@ -586,10 +593,37 @@ test("a request to use a website shows its address, in Waiting on you and the wo
   await page.mouse.click(5, 5);
   await page.hover('.row.ws');
   await page.click('.row.ws [data-act=workspace-settings]');
-  assert.match(await page.locator('#pv .lsub', { hasText: 'For the weekly pull' }).innerText(), / · gg https:\/\/gg\.test\/start · asked: For the weekly pull · low risk/);
+  assert.match(await page.locator('#pv .lsub', { hasText: 'For the weekly pull' }).innerText(), / · gg https:\/\/gg\.test\/start, also sso\.gg\.test · asked: For the weekly pull · low risk/, 'with the other hosts it reaches');
   await page.mouse.click(5, 5);
   rmSync(join(rf, 'grants.json'));
   rmSync(join(his, 'websites.json'));
+});
+
+test("Waiting on you has the hosts a run's browser was refused: on your own website, those the server's check left, and for admins anyone's it rated high or found at an internal address, with why; each with Allow", async () => {
+  const at = new Date().toISOString(), allowed: [string, { host: string }][] = [];
+  const refused = [{ at, run: 1, site: 'gg', login: 'bob@demo.test', hosts: ['files.example.net'], why: { 'files.example.net': 'A file-sharing site.' } },
+    { at, run: 2, site: 'portal', login: 'admin@demo.test', hosts: ['sso.other.test'], why: {} }];
+  // The server's answer, with an instance's refused hosts as the server would give them, until each is allowed.
+  await page.route('**/api', async r => {
+    const res = await r.fetch(), all = await res.json();
+    all.find((w: any) => !w.archived).series.find((s: any) => !s.archived && s.instances.length).instances[0].refused = refused
+      .map(e => ({ ...e, hosts: e.hosts.filter(h => !allowed.some(([, b]) => b.host === h)) })).filter(e => e.hosts.length);
+    await r.fulfill({ response: res, json: all });
+  });
+  await page.route('**/logins/web/*/hosts?*', r => (allowed.push([new URL(r.request().url()).pathname + new URL(r.request().url()).search, r.request().postDataJSON()]), r.fulfill({ body: 'ok' })));
+  await page.reload();
+  await page.click('[data-act=waiting]');
+  const lines = page.locator('#pv .wt', { hasText: 'was refused' });
+  assert.match(await lines.nth(0).innerText(), /: run 1's browser on Bob( <bob@demo\.test>)?'s gg was refused files\.example\.net A file-sharing site\. Allow$/);
+  assert.match(await lines.nth(1).innerText(), /: run 2's browser on portal was refused sso\.other\.test Allow$/);
+  await lines.nth(0).locator('[data-act=allow-host]').click();
+  await page.waitForSelector('#pv .creds:has-text("files.example.net")', { state: 'detached' });
+  await page.locator('#pv [data-act=allow-host][data-host="sso.other.test"]').click();
+  await page.waitForSelector('#pv .creds:has-text("sso.other.test")', { state: 'detached' });
+  assert.deepEqual(allowed, [['/logins/web/gg/hosts?person=bob%40demo.test', { host: 'files.example.net' }], ['/logins/web/portal/hosts?person=admin%40demo.test', { host: 'sso.other.test' }]]);
+  await page.unroute('**/api');
+  await page.unroute('**/logins/web/*/hosts?*');
+  await page.mouse.click(5, 5);
 });
 
 test("while a run's browser is open it plays in a corner of the instance, to watch: one website at a time, folded as the person last left it, one in their login popped over the page while they take control of it, and Stop browser interrupts the run", async () => {

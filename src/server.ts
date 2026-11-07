@@ -16,7 +16,7 @@ import { checkTicks, logins, runnerOf, saveLogin, signOut, unoffer } from './log
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { answered, byLogin, call, connections, intercepts, loginOf, removeConnection, setConnection, upstreams } from './connections.ts';
-import { addSite, adopt, allowHost, Browsers, endSignIn, isSignIn, keepAlive, passUpgrade, reap, refusedHosts, removeSite, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
+import { addSite, adopt, allowHost, Browsers, endSignIn, isSignIn, keepAlive, passUpgrade, reap, refusedHosts, removeHost, removeSite, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
 import { ask, decide, forgetGrants, lapse, revoke, visible } from './grants.ts';
 import { offer } from './connections/graph.ts';
 import { addWarehouse } from './connections/databricks.ts';
@@ -200,9 +200,13 @@ function summary(i: Instance, me: Me, w8 = wakes()) {
     unread: !!news && news.at > s.since && news.seq > (s.at[i.id] ?? 0), corrections: k.corrections,
     // What says it was wrong, for its runner under Waiting on you, for a week, as a correction is never withdrawn.
     wrong: k.wrong.filter(fresh).length,
-    // The hosts a run's browser on a person's website was refused that it still doesn't reach, once the server sorted them
-    // (browsers.ts), for that person to allow under Waiting on you, for a week.
-    refused: k.refused.filter(e => fresh(e.at) && e.login === email && websitesOf(email)[e.site]).map(e => ({ ...e, hosts: unreached(email, e.site, e.hosts), says: websitesOf(email)[e.site].classes ?? {} })).filter(e => e.hosts.length),
+    // The hosts a run's browser on a person's website was refused that it still doesn't reach, under Waiting on you for a week: for
+    // that person, those the server's check left (browsers.ts), as it does without its key; for admins, those it rated high risk or
+    // found at an internal address, each with why.
+    refused: k.refused.filter(e => fresh(e.at) && e.login && websitesOf(e.login)[e.site]).map(e => {
+      const checks = websitesOf(e.login)[e.site].checks ?? {}, hosts = unreached(e.login, e.site, e.hosts).filter(h => checks[h] ? me.role === 'admin' && ['high', 'internal'].includes(checks[h].verdict) : e.login === email);
+      return { ...e, hosts, why: Object.fromEntries(hosts.filter(h => checks[h]).map(h => [h, checks[h].why])) };
+    }).filter(e => e.hosts.length),
   };
 }
 
@@ -1023,6 +1027,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     }
     else if (/^\/logins\/web\/[^/]+\/refused$/.test(url.pathname) && req.method === 'GET') send(res, 200, await refusedHosts(me.email, decodeURIComponent(url.pathname.split('/')[3])));
     else if (/^\/logins\/web\/[^/]+\/hosts$/.test(url.pathname) && req.method === 'POST') send(res, 200, (await allowHost(me, decodeURIComponent(url.pathname.split('/')[3]), String((await json(req)).host ?? ''), url.searchParams.get('person') ?? me.email), 'ok'));
+    else if (/^\/logins\/web\/[^/]+\/hosts\/[^/]+$/.test(url.pathname) && req.method === 'DELETE') send(res, 200, (removeHost(me.email, decodeURIComponent(url.pathname.split('/')[3]), decodeURIComponent(url.pathname.split('/')[5])), 'ok'));
     else if (url.pathname.startsWith('/logins/web/') && req.method === 'POST') send(res, 200, { id: await startSignIn(me.email, decodeURIComponent(url.pathname.slice(12)), String((await json(req)).header ?? '')) });
     // What a person's login offers that they add themselves: Microsoft 365's sources and Databricks' warehouses.
     else if (/^\/logins\/[^/]+\/offers$/.test(url.pathname) && req.method === 'POST') {

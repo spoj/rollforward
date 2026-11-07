@@ -44,7 +44,8 @@ const service = createServer(async (req, res) => {
 }).on('upgrade', (req, socket) => socket.end(`HTTP/1.1 101 Switching Protocols\r\n\r\nservice got ${req.url}`));
 await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
 Object.assign(process.env, { RF_BROWSER_URL: `http://127.0.0.1:${(service.address() as { port: number }).port}`, RF_BROWSER_IDLE_MS: '300' });
-const { Browsers, endSignIn, keepAlive, reap, startSignIn } = await import('../src/browsers.ts');
+const { Browsers, endSignIn, keepAlive, reap, startSignIn, websitesOf } = await import('../src/browsers.ts');
+const { upstreams } = await import('../src/connections.ts');
 const { ask, decide, grants, lapse, revoke } = await import('../src/grants.ts');
 // The server's model checks no website here.
 delete process.env.OPENROUTER_API_KEY;
@@ -410,4 +411,75 @@ test("as the server starts, the browsers a restart left open on the service clos
   assert.equal(readFileSync(join(inst.dir, 'browser/run 4 crm.jsonl'), 'utf8'), `${JSON.stringify(plain[0])}\n`);
   assert.deepEqual(JSON.parse(secret(alice, 'web:crm')), { cookies: ['as it was cut'] });
   assert.deepEqual(JSON.parse(readFileSync(join(tmp, '.rf', 'browsers.json'), 'utf8')), {}, 'nothing left to reap');
+});
+
+// A run's browser's log of hosts its pages asked for and were refused, each with what the browser said of its request, if anything,
+// as a browser service from before it did says nothing; and the checks the server keeps of those hosts, once it has them all.
+const refusing = (...asked: (string | object)[]) => asked.map(a => ({ method: 'GET', status: 403, blocked: 'host not on the list', ...(typeof a === 'string' ? { url: a } : a) }));
+const checked = async (site: string, hosts: string[]) => {
+  for (let i = 0; !hosts.every(h => websitesOf(alice)[site].checks?.[h]); i++) {
+    assert.ok(i < 200, `${hosts.join(', ')} never checked`);
+    await sleep(50);
+  }
+  return websitesOf(alice)[site];
+};
+
+test("the hosts a run's browser was refused: one within the domains its website reaches it reaches at once, logged in the instance and the system's log, but one at an internal address waits on admins, even there; without the server's key the rest are left for its person", async () => {
+  sites({ crm: { url: 'https://crm.example.com/', hosts: ['erp.acme.localhost'], writeback: false } });
+  saveLogin(alice, website('crm', 'CRM'), '{}');
+  requested = refusing('https://cdn.example.com/app.js', 'https://intra.acme.localhost/api', 'https://sso.other.test/login');
+  const inst = running('2028-01', ['web:crm']), browsers = new Browsers(inst, 1), own = "It is within example.com, the website's own domain.";
+  await browsers.browser('crm');
+  await browsers.close();
+  requested = plain;
+  const w = await checked('crm', ['cdn.example.com', 'intra.acme.localhost']);
+  assert.deepEqual([w.hosts, w.checks], [['erp.acme.localhost', 'cdn.example.com'], { 'cdn.example.com': { verdict: 'pass', why: own }, 'intra.acme.localhost': { verdict: 'internal', why: 'It is at an internal address.' } }]);
+  assert.deepEqual(inst.log.filter(e => e.action === 'allowed').map(e => [e.by, e.run, e.site, e.login, e.allowed, e.why]), [['server', 1, 'crm', alice, ['cdn.example.com'], { 'cdn.example.com': own }]]);
+  const act = readFileSync(join(tmp, '.rf', 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)).findLast(a => a.op === 'hosts');
+  assert.deepEqual([act.by, act.person, act.site, act.inst, act.run, act.allowed], ['server', alice, 'crm', inst.id, 1, { 'cdn.example.com': own }]);
+});
+
+test("with the server's key its model decides the rest, from what the browser's log, the runs and a web search say of each, never a path or a query: what the pages need the website reaches at once, what they work without stays refused, and anything else waits on admins", async t => {
+  const asked: { url: string; body: any }[] = [];
+  const stand = createServer(async (req, res) => {
+    const body = JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString());
+    asked.push({ url: req.url!, body });
+    res.end(JSON.stringify(req.url === '/search' ? { results: [{ title: `About ${body.query}`, url: `https://about.test/${body.query}`, highlights: ['One.', 'Two.'] }] }
+      : { choices: [{ message: { content: JSON.stringify({ hosts: { 'static.cdnhost.test': { verdict: 'pass', why: 'Its CDN.' }, 'www.tracker.test': { verdict: 'refused', why: 'Analytics.' } } }) } }] }));
+  });
+  await new Promise<void>(ok => stand.listen(0, '127.0.0.1', ok));
+  const base = `http://127.0.0.1:${(stand.address() as { port: number }).port}`;
+  Object.assign(upstreams, { 'openrouter.ai': base, 'api.exa.ai': base });
+  Object.assign(process.env, { OPENROUTER_API_KEY: 'the-key', EXA_API_KEY: 'the-exa-key' });
+  t.after(() => {
+    for (const k of ['OPENROUTER_API_KEY', 'EXA_API_KEY']) delete process.env[k];
+    for (const h of ['openrouter.ai', 'api.exa.ai']) delete upstreams[h];
+    stand.close();
+  });
+  sites({ crm: { url: 'https://crm.example.com/', hosts: [], writeback: false } });
+  saveLogin(alice, website('crm', 'CRM'), '{}');
+  const inst = running('2028-02', ['web:crm'], 2);
+  // An earlier run's browser was refused the upload host too, before the server checked hosts.
+  inst.append('server', 'browser', { run: 1, site: 'crm', login: alice, requests: 3, writes: 0, blocked: 3, file: 'browser/run 1 crm.jsonl', hosts: { 'upload.elsewhere.test': 3 } });
+  requested = refusing({ url: 'https://static.cdnhost.test/a.js?v=1', dest: 'script', from: 'https://crm.example.com/report?id=7' }, { url: 'https://static.cdnhost.test/b.css', dest: 'style', from: 'https://crm.example.com/report?id=7' },
+    'https://www.tracker.test/c', { url: 'https://upload.elsewhere.test/x', dest: 'empty', from: 'https://crm.example.com/' });
+  const browsers = new Browsers(inst, 2);
+  await browsers.browser('crm');
+  await browsers.close();
+  requested = plain;
+  const w = await checked('crm', ['static.cdnhost.test', 'www.tracker.test', 'upload.elsewhere.test']);
+  const search = (h: string) => ({ title: `About ${h}`, url: `https://about.test/${h}`, text: 'One. Two.' }), model = asked.find(a => a.url === '/api/v1/chat/completions')!.body;
+  assert.deepEqual(asked.filter(a => a.url === '/search').map(a => [a.body.query, a.body.numResults]).sort(), [['static.cdnhost.test', 1], ['upload.elsewhere.test', 1], ['www.tracker.test', 1]], 'one result about each');
+  assert.deepEqual([model.provider, JSON.parse(model.messages[1].content)], [{ data_collection: 'deny' }, {
+    website: { name: 'crm', address: 'crm.example.com', hosts: [] },
+    refused: {
+      'static.cdnhost.test': { as: ['script', 'style'], from: ['crm.example.com'], requests: 2, runs: 1, domain: 'cdnhost.test', search: search('static.cdnhost.test') },
+      'www.tracker.test': { as: [], from: [], requests: 1, runs: 1, domain: 'tracker.test', search: search('www.tracker.test') },
+      'upload.elsewhere.test': { as: ['empty'], from: ['crm.example.com'], requests: 4, runs: 2, domain: 'elsewhere.test', search: search('upload.elsewhere.test') },
+    },
+  }], 'hosts alone, from providers that keep no data');
+  assert.deepEqual([w.hosts, w.checks], [['static.cdnhost.test'], {
+    'static.cdnhost.test': { verdict: 'pass', why: 'Its CDN.' }, 'www.tracker.test': { verdict: 'refused', why: 'Analytics.' }, 'upload.elsewhere.test': { verdict: 'high', why: 'The check gave no verdict for it.' },
+  }], 'one the model leaves out waits on admins');
+  assert.deepEqual(inst.log.filter(e => e.action === 'allowed').map(e => [e.allowed, e.why]), [[['static.cdnhost.test'], { 'static.cdnhost.test': 'Its CDN.' }]]);
 });

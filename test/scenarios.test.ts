@@ -608,7 +608,7 @@ test("whoever sees an instance watches its run's browser live from the page, the
     [BOB, [[ADMIN, 'portal', 'drive'], ['server', 'portal', undefined]], null], "the admin's control logged as theirs, the interrupt as bob's, and the browser gone");
 });
 
-test("anyone adds websites of their own, theirs to set: they allow the hosts its pages need as they sign in, a run uses one where its workspace's owners approved its runner's grant, seeing the server's check, the hosts a run's browser was refused are sorted, and what's left waits on its person, an admin allowing what's beyond its domains", async () => {
+test("anyone adds websites of their own, theirs to set: they allow the hosts its pages need as they sign in, a run uses one where its workspace's owners approved its runner's grant, seeing the server's check, the hosts a run's browser was refused are checked, those it rates high or finds at an internal address waiting on admins, and its person removes one", async () => {
   const carol = await login('carol@demo.test'), add = (body: object, cookie = bob) => call('POST', '/logins/sites', { name: 'bobs', url: 'https://bobs.example.com/', ...body }, cookie);
   const said = async (res: Response) => [res.status, await res.text()];
   const allow = (host: string, cookie = bob, whose = '') => call('POST', `/logins/web/bobs/hosts${whose}`, { host }, cookie);
@@ -660,25 +660,37 @@ test("anyone adds websites of their own, theirs to set: they allow the hosts its
   assert.deepEqual(await said(await call('POST', `/grants/${risky}`, { approve: true }, bob)), [403, 'the check rates bobs high risk: an admin decides']);
   assert.equal((await call('POST', `/grants/${risky}`, { approve: true })).status, 200);
 
-  // A run's browser was refused hosts: its own it reaches from then on, a tracker stays refused and unasked, and the rest, its CDN's
-  // too, waits on its person, under Waiting on you, marked as the server's model says, until they allow it, or an admin what's beyond
-  // its domains.
+  // A run's browser was refused hosts: its own it reaches at once, but one at an internal address waits on admins; the server's model
+  // checks the rest, from evidence alone: one its pages need it reaches at once too, a tracker stays refused and waits on no one, and
+  // one it rates high waits on admins, who allow it, as the internal one, which lets the website reach internal addresses. Each it
+  // reaches is logged in the instance and the system's log. Its person removes one, which stays refused.
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Own pull' }, bob)).json();
-  refused = ['https://cdn.idp.test/x.js', 'https://www.tracker.test/c', 'https://static.cdnhost.test/a.js', 'https://upload.elsewhere.test/x'];
-  verdicts.push({ hosts: { 'www.tracker.test': 'tracker', 'static.cdnhost.test': 'cdn', 'upload.elsewhere.test': 'other' } });
+  refused = ['https://cdn.idp.test/x.js', 'https://www.tracker.test/c', 'https://static.cdnhost.test/a.js', 'https://upload.elsewhere.test/x', 'https://10.9.8.7/app'];
+  verdicts.push({ hosts: { 'www.tracker.test': { verdict: 'refused', why: 'Analytics.' }, 'static.cdnhost.test': { verdict: 'pass', why: 'Its CDN.' }, 'upload.elsewhere.test': { verdict: 'high', why: 'File sharing.' } } });
   scripts.push({ bash: ['curl -s -m 5 -H "connection: upgrade" -H "upgrade: websocket" "$RF_BROWSERS/bobs"'], report: 'Pulled.', saw: [] });
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-12', logins: ['web:bobs'] }, bob)).json();
   await runs(id, 1);
-  await until('the hosts sorted', () => readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').includes('"action":"allowed"'));
-  assert.deepEqual(JSON.parse(checks.at(-1)!.messages[1].content).refused, { 'www.tracker.test': 1, 'static.cdnhost.test': 1, 'upload.elsewhere.test': 1 }, 'its own goes unasked');
+  await until('the hosts checked', () => readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').split('"action":"allowed"').length === 3);
+  const sent = JSON.parse(checks.at(-1)!.messages[1].content);
+  assert.deepEqual(sent.refused, Object.fromEntries(['www.tracker.test', 'static.cdnhost.test', 'upload.elsewhere.test'].map(h => [h, { as: [], from: [], requests: 1, runs: 1, domain: h.split('.').slice(-2).join('.') }])),
+    "its own and the internal one go unasked; a browser service that logs no request's kind or page gives none");
   const log = readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
-  assert.deepEqual(log.find(e => e.action === 'allowed').allowed, ['cdn.idp.test']);
-  assert.deepEqual([(await listed(bob)).hosts.slice(2), (await listed(bob)).classes], [['cdn.idp.test'], { 'www.tracker.test': 'tracker', 'static.cdnhost.test': 'cdn', 'upload.elsewhere.test': 'other' }]);
-  const waits = async (cookie = bob) => (await (await call('GET', '/api', undefined, cookie)).json()).flatMap((w: any) => w.series.flatMap((s: any) => s.instances)).find((i: { id: string }) => i.id === id).refused.map((r: { hosts: string[] }) => r.hosts);
-  assert.deepEqual([await waits(), await waits(admin)], [[['static.cdnhost.test', 'upload.elsewhere.test']], []], 'they wait on its person alone');
+  assert.deepEqual(log.filter(e => e.action === 'allowed').map(e => [e.by, e.login, e.allowed, e.why]), [
+    ['server', BOB, ['cdn.idp.test'], { 'cdn.idp.test': "It is within idp.test, the website's own domain." }], ['server', BOB, ['static.cdnhost.test'], { 'static.cdnhost.test': 'Its CDN.' }]]);
+  const acts = () => readFileSync(join(root, '.rf', 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+  assert.deepEqual(acts().filter(a => a.op === 'hosts').map(a => [a.by, a.person, a.site, a.inst, a.run, Object.keys(a.allowed)]), [['server', BOB, 'bobs', id, 1, ['cdn.idp.test']], ['server', BOB, 'bobs', id, 1, ['static.cdnhost.test']]]);
+  assert.deepEqual([(await listed(bob)).hosts.slice(2), Object.fromEntries(Object.entries((await listed(bob)).checks).map(([h, c]: [string, any]) => [h, c.verdict]))],
+    [['cdn.idp.test', 'static.cdnhost.test'], { 'cdn.idp.test': 'pass', '10.9.8.7': 'internal', 'www.tracker.test': 'refused', 'static.cdnhost.test': 'pass', 'upload.elsewhere.test': 'high' }]);
+  const waits = async (cookie = bob) => (await (await call('GET', '/api', undefined, cookie)).json()).flatMap((w: any) => w.series.flatMap((s: any) => s.instances)).find((i: { id: string }) => i.id === id).refused.map((r: { login: string; hosts: string[]; why: object }) => [r.login, r.hosts, r.why]);
+  assert.deepEqual([await waits(), await waits(admin)], [[], [[BOB, ['upload.elsewhere.test', '10.9.8.7'], { 'upload.elsewhere.test': 'File sharing.', '10.9.8.7': 'It is at an internal address.' }]]], 'they wait on admins alone');
   assert.equal((await allow('upload.elsewhere.test')).status, 403, 'outside its domains, now its grants are approved');
-  for (const host of ['upload.elsewhere.test', 'static.cdnhost.test']) assert.equal((await allow(host, admin, `?person=${BOB}`)).status, 200);
-  assert.deepEqual(await waits(), []);
+  for (const host of ['upload.elsewhere.test', '10.9.8.7']) assert.equal((await allow(host, admin, `?person=${BOB}`)).status, 200);
+  assert.deepEqual([await waits(admin), (await listed(bob)).internal], [[], true], 'an internal host allowed lets the website reach internal addresses');
+  const remove = (host: string) => call('DELETE', `/logins/web/bobs/hosts/${host}`, undefined, bob);
+  assert.equal((await remove('static.cdnhost.test')).status, 200);
+  assert.deepEqual(await said(await remove('static.cdnhost.test')), [404, "bobs doesn't reach static.cdnhost.test: beyond its address it reaches sso.idp.test, *.bobs.example.com, cdn.idp.test, upload.elsewhere.test, 10.9.8.7"]);
+  assert.deepEqual([(await listed(bob)).hosts.includes('static.cdnhost.test'), (await listed(bob)).checks['static.cdnhost.test']], [false, { verdict: 'refused', why: 'Its person removed it.' }], 'it stays refused');
+  assert.deepEqual(acts().filter(a => a.method === 'DELETE' && a.path.includes('/hosts/')).map(a => [a.by, a.path]), [[BOB, '/logins/web/bobs/hosts/static.cdnhost.test']]);
 
   // Bob removes his, with his login to it and his grants for it; Carol's stays.
   assert.equal((await call('DELETE', '/logins/sites/bobs', undefined, bob)).status, 200);

@@ -51,6 +51,8 @@ export const connections = (): Connection[] => Object.entries(readJson<Record<st
 // Whether a host, exact or *.domain for any name under the domain, covers another, which may be either too.
 export const covers = (pattern: string, host: string) => pattern === host || (pattern.startsWith('*.') && host.endsWith(pattern.slice(1)));
 export const reached = (w: { url: string; hosts: string[] }) => [new URL(w.url).hostname, ...w.hosts];
+// Whether a host is at an internal address, as an intranet's is; one that doesn't resolve isn't.
+export const resolvesInternal = async (h: string) => (await lookup(h, { all: true }).catch(() => [])).some(isPrivate);
 
 // What a website may reach (browsers.ts): never rollforward's own host, or a host a connection serves, so that no website goes around
 // its grants or settings; a wildcard within one registrable domain, the public suffixes being the Public Suffix List's, its private ones
@@ -62,7 +64,7 @@ export async function checkHost(h: string, internal: boolean) {
   if ([process.env.RF_PUBLIC_URL, process.env.RF_BROWSER_URL].some(u => u && covers(h, new URL(u).hostname))) throw new HttpError(400, `${h} is rollforward's own: no website reaches it`);
   const other = connections().find(c => types[c.type].serves?.(c, base));
   if (other) throw new HttpError(400, `${h} is ${other.name}'s: no website reaches it`);
-  if (!internal && h === base && (await lookup(h, { all: true }).catch(() => [])).some(isPrivate)) throw new HttpError(400, `${h} is at an internal address: a website reaches one only where an admin lets it`);
+  if (!internal && h === base && await resolvesInternal(h)) throw new HttpError(400, `${h} is at an internal address: a website reaches one only where an admin lets it`);
 }
 
 export async function setConnection(name: string, input: Record<string, unknown>, by: string): Promise<Connection> {
