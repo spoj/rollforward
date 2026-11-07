@@ -74,10 +74,10 @@ export const starter = (inst: Instance, who: string) => {
   return who === runner || seriesSettings(inst.series()).shared?.by === runner;
 };
 // What a person but the runner adds is a note, shared series or not: the agent reads it as context for its runner to take up, never as
-// the runner's word, though it runs on it where it may. A wake that starts nothing is one too. A reply from whom the agent's ask named
-// is no note.
+// the runner's word, though it runs on it where it may. A wake that starts nothing is one too. A reply or a sign-off from whom the
+// agent's ask it answers named is no note: from before replies named what they answer, the thread's last ask.
 export const isNote = (inst: Instance, e: Entry) => !!e.note || (isPerson(e) && ['upload', 'comment', 'signoff'].includes(e.op) && e.by !== runnerOf(inst).by
-  && !(e.op !== 'upload' && inst.log.findLast(x => x.seq < e.seq && x.op === 'comment' && x.thread === e.thread && x.by === 'agent')?.to === e.by));
+  && !(e.op !== 'upload' && (e.parent ?? e.on ? inst.log[(e.parent ?? e.on) as number - 1] : inst.log.findLast(x => x.seq < e.seq && x.op === 'comment' && x.thread === e.thread && x.by === 'agent'))?.to === e.by));
 // A quiet entry, such as rf's without --wake, starts nothing, and its act kicks nothing that waits: the next run reads it with the rest.
 export const starts = (inst: Instance, e: Entry) => !e.quiet && (!isNote(inst, e) || starter(inst, e.by));
 

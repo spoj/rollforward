@@ -223,17 +223,21 @@ export class Instance {
     return up;
   }
 
-  // Each thread's comments, resolves and sign-offs, in order. A comment starts a thread, on an item (at a ref) or on the instance,
-  // and later comments reply in it.
-  threads(): Map<string, Entry[]> {
-    const out = new Map<string, Entry[]>();
-    for (const e of this.log) if (['comment', 'resolve', 'signoff'].includes(e.op)) out.set(e.thread as string, [...(out.get(e.thread as string) ?? []), e]);
-    return out;
+  // Its threads' ids. A comment starts a thread, on an item (at a ref) or on the instance, its id c and its seq, and later comments
+  // reply under one of its comments, their parent.
+  threads(): string[] {
+    return [...new Set(this.log.filter(e => e.op === 'comment').map(e => e.thread as string))];
   }
 
-  // The agent's asks still waiting on people: threads whose last word is an ask.
+  // Whether someone answered a comment: a reply under it, a sign-off of it, or, from before replies named what they answer, any later
+  // word in its thread.
+  answered(c: Entry): boolean {
+    return this.log.some(e => e.seq > c.seq && e.thread === c.thread && ['comment', 'signoff', 'resolve'].includes(e.op) && (e.parent === c.seq || e.on === c.seq || (e.parent === undefined && e.on === undefined)));
+  }
+
+  // The agent's asks still waiting on people: those no one answered.
   asking(): Entry[] {
-    return [...this.threads().values()].map(t => t.at(-1)!).filter(e => e.op === 'comment' && e.by === 'agent' && e.ask);
+    return this.log.filter(e => e.op === 'comment' && e.by === 'agent' && e.ask && !this.answered(e));
   }
 
   // Closing makes the instance the period's record and an example for the next, approving nothing: a shown file in working/ must
@@ -248,7 +252,7 @@ export class Instance {
       if (fd !== undefined) closeSync(fd);
       if (logged && now !== logged) throw new HttpError(409, `${file} changed after it was shown: the agent shows the new version under a new name, and you review that`);
     }
-    const accepted = this.asking().map(e => e.thread);
+    const accepted = this.asking().map(e => `c${e.seq}`);
     this.doc.status = 'closed';
     const hash = await commit(this.dir, by, `Close ${this.label}`).catch(e => {
       this.doc.status = 'open';

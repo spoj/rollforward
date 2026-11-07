@@ -10,23 +10,22 @@ const HELP: Record<string, string> = {
   uploaded): run rf show and merge. It fails, with the reasons, unless every item has a unique id, a name and a kind (input,
   step or output); from names items, never in a circle; file is null or an existing file under upload/ or working/; and status
   is left out or as it is.`,
-  say: `rf say [--in THREAD | --on ITEM[@REF]] [--pin PATH]... TEXT|-
-  Tells people something that needs no reply. --in replies in a thread; --on starts one on an item, at a place in its file
+  say: `rf say [--in cN | --on ITEM[@REF]] [--pin PATH]... TEXT|-
+  Tells people something that needs no reply. --in replies under comment cN, its seq N, a thread's id its first comment's, so
+  a reply under your own ask withdraws it; --on starts a thread on an item, at a place in its file
   such as ar-aging@Sheet1!C22, or a markdown file's line by its opening words; neither starts one on the instance. --pin shows
   a file the comment rests on, under upload/ or working/ of this instance or of another of its series, as
   ../<label>/working/x.csv, as it is now: its sha256 is kept, and this instance's is made read-only, so write a changed one
   under a new name. An image (png, jpg, gif, webp, svg) shows in the thread. - reads TEXT from stdin.`,
-  ask: `rf ask [--in THREAD | --on ITEM[@REF]] [--to EMAIL] [--pin PATH]... TEXT|-
-  Asks for a reply: the thread waits on EMAIL, else the instance's runner, until someone replies (which starts a run) or
-  resolves it. An ask that pins files can be signed off, as they are, by anyone who sees the instance: it commits its folder
+  ask: `rf ask [--in cN | --on ITEM[@REF]] [--to EMAIL] [--pin PATH]... TEXT|-
+  Asks for a reply: it waits on EMAIL, else the instance's runner, until someone replies under it, which starts a run. An ask
+  that pins files can be signed off, as they are, by anyone who sees the instance: it commits its folder
   in their name (rf help commit) and starts a run, and the log's signoff entry names the ask, as on, with the commit. Whose
   sign-off counts, and for what, is the series' instructions' call. The rest as rf say.`,
   commit: `rf commit MESSAGE|-
   Commits your instance's whole folder as it is now, in your name, to its history: the folder is a repository, which only the
   server commits; read it with git log, show or diff, such as git diff HEAD -- working. Each run's end commits it too, in your
   name, and a sign-off and closing, in the name of whoever signed.`,
-  resolve: `rf resolve THREAD [TEXT]
-  Resolves a thread you started, once it no longer applies, saying why.`,
   wake: `rf wake TARGET AT [--label LABEL] [--days DAYS] | rf wake --cancel ID
   Starts a run later, which sees who woke it. TARGET is a folder as you see it, by the names your run started with: an open
   instance, such as . for your own, ../<label> or ../../<series>/<label>, which the wake continues; or a series, such as .. or
@@ -118,7 +117,6 @@ let res;
 if (cmd === 'show') res = await send('GET', `${own}/screen`);
 else if (cmd === 'put' && args[0]) res = await send('PUT', `${own}/screen`, readFileSync(args[0] === '-' ? 0 : args[0]));
 else if (cmd === 'say' || cmd === 'ask') res = await comment();
-else if (cmd === 'resolve' && args[0]) res = await send('POST', `${own}/resolve`, JSON.stringify({ thread: args[0], text: args.slice(1).join(' ') }));
 else if (cmd === 'wake') res = await wake();
 else if (cmd === 'correct') res = await correct();
 else if (cmd === 'commit' && args.length) res = await send('POST', `${own}/commit`, JSON.stringify({ message: args.join(' ') === '-' ? readFileSync(0, 'utf8') : args.join(' ') }));

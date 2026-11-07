@@ -51,22 +51,29 @@ test("an output's destination and an item's as-of date are free text, logged as 
   rmSync(tmp, { recursive: true, force: true });
 });
 
-test("an ask waits on people until someone replies or resolves it, and closing accepts the ones still waiting", async () => {
+test("an ask waits on people until someone replies under it or signs it off, as one from before replies named their parent did until any later word in its thread; closing accepts the ones still waiting", async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-')), sam = 'sam@example.com';
   openStore(tmp);
   const inst = createInstance('weekly', 'w1', 'alex', []);
-  inst.append('agent', 'comment', { thread: 'c1', item: null, ref: null, text: 'The snapshot is a week old; I used it.', ask: true });
-  inst.append('agent', 'comment', { thread: 'c2', item: null, ref: null, text: 'Carried the rate from w0.' });
-  inst.append('agent', 'comment', { thread: 'c3', item: null, ref: null, text: 'One-off, or from now on?', ask: true, to: sam });
-  inst.append(sam, 'comment', { thread: 'c3', text: 'From now on.' });
-  inst.append('agent', 'comment', { thread: 'c4', item: null, ref: null, text: 'Which file is right?', ask: true });
-  inst.append(sam, 'resolve', { thread: 'c4' });
-  assert.deepEqual(inst.asking().map(e => e.thread), ['c1']);
+  const ask = (thread: string, more: object = {}) => inst.append('agent', 'comment', { thread, text: 'Which?', ask: true, ...more });
+  ask('c2', { item: null, ref: null });
+  ask('c3', { item: null, ref: null });
+  inst.append(sam, 'comment', { thread: 'c3', parent: 3, text: 'Why?' });
+  const deeper = ask('c3', { parent: 4 });
+  inst.append(sam, 'comment', { thread: 'c3', parent: 3, text: 'Also this.' });
+  ask('c7', { item: null, ref: null });
+  inst.append(sam, 'signoff', { thread: 'c7', on: 7, commit: 'x' });
+  ask('c9', { item: null, ref: null });
+  inst.append('agent', 'comment', { thread: 'c9', parent: 9, text: 'Found it.' });
+  inst.append('agent', 'comment', { thread: 'c11', item: null, ref: null, text: 'One-off, or from now on?', ask: true });
+  inst.append(sam, 'comment', { thread: 'c11', text: 'From now on.' });
+  inst.append('agent', 'comment', { thread: 'c13', item: null, ref: null, text: 'Which file?', ask: true });
+  inst.append(sam, 'resolve', { thread: 'c13' });
+  assert.deepEqual(inst.asking().map(e => e.seq), [2, deeper.seq], "a reply elsewhere in its thread answers no ask, a reply under it, a sign-off of it, the agent's own word under it and, from before, any later word do");
   await inst.close(alex);
-  assert.deepEqual(inst.log.at(-1)!.accepted, ['c1']);
+  assert.deepEqual(inst.log.at(-1)!.accepted, ['c2', `c${deeper.seq}`]);
   rmSync(tmp, { recursive: true, force: true });
 });
-
 test("a file the screen shows is frozen as it's first shown, logged with its sha256, and closing checks it", async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
   openStore(tmp);

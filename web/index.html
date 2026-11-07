@@ -409,8 +409,16 @@ input[type=checkbox] { accent-color: var(--ink); }
 .thread.waits { border-color: var(--red); }
 .thread .row2 { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .thread .quiet { padding: 2px 0; }
-.thread.resolved { opacity: .6; }
-.post.ask b::after { content: ' asks'; color: var(--red); font-weight: 500; }
+.post.ask > b::after { content: ' asks'; color: var(--red); font-weight: 500; }
+.post.waits { border-left: 2px solid var(--red); padding-left: 8px; }
+.post .kids { margin: 6px 0 0 2px; padding-left: 12px; border-left: 1px solid var(--rule); }
+.post .pb.long { max-height: 15em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
+.post .pa { display: flex; gap: 4px; align-items: center; margin-top: 2px; }
+.post .reply:not([hidden]) { margin-top: 6px; display: grid; gap: 6px; }
+.react { border: 0; background: none; padding: 0 4px; font-size: 12px; color: var(--ink-3); cursor: pointer; border-radius: 3px; }
+.react.on { background: var(--rule); color: var(--ink); }
+.reacts { margin-left: 8px; font-weight: 400; }
+a.more, a.up { display: block; font-size: 12px; color: var(--ink-3); cursor: pointer; margin-top: 4px; }
 .thread .on, .post .tm { color: var(--ink-3); font-size: 12px; }
 .post b.p { color: var(--person, #1d4ed8); }
 .post .f img, img.md { display: block; max-width: 100%; max-height: 240px; margin-top: 4px; border: 1px solid var(--rule); border-radius: var(--r1); cursor: zoom-in; }
@@ -504,10 +512,10 @@ let cardPv = null;
 // showClosed holds the series, and the workspaces for their Ungrouped tasks, whose closed instances the sidebar lists.
 let tree = [], expired = [], myLogins = [], cur = null, data = null, lines = [], linesKey = '', openItem = null, hover = null, showClosed = new Set(), showArchived = false, pv = null, me = null;
 let seen = {}, prevSigs = {}, uploads = [], shown = '', refreshes = 0, threads = [];
-// Threads with a reply box open: those waiting on people have one anyway, the others once Reply is clicked.
+// The comments with a reply box open under them, by seq.
 const replying = new Set();
-// An item's open threads; a new one shows on its tile as a change.
-const talkOn = id => threads.filter(t => t.item === id && !t.resolved);
+// An item's threads; a new one shows on its tile as a change.
+const talkOn = id => threads.filter(t => t.item === id);
 const sig = i => `${i.file}|${talkOn(i.id).length}|${i.headline ?? ''}`;
 
 function markSeen(items) {
@@ -525,8 +533,9 @@ function toast(text, kind = '') {
 }
 // The side panel opens beside the instance where there's room for both; the audit is closed until asked for. sect holds which of the
 // panel's folds are open, where someone opened or closed them; site, which of the run's browsers the player shows, and drive, the
-// one you took control of, as instance/site.
-const ui = { open: innerWidth > 800, on: null, ref: null, audit: false, sect: {}, site: null, drive: null, sort: {} };
+// one you took control of, as instance/site; full, the long comments opened in full, and alone, the comment the conversation shows
+// alone, with what hangs under it, when a thread runs deeper than the panel shows.
+const ui = { open: innerWidth > 800, on: null, ref: null, audit: false, sect: {}, site: null, drive: null, sort: {}, full: new Set(), alone: null };
 // The process, as the conversation shows it.
 let docs = { key: '' };
 const drawn = new WeakMap();
@@ -728,9 +737,9 @@ function renderBar() {
   if (editing) return;
   const open = data?.doc.status === 'open';
   let h = `<button class="menu" data-act="menu">☰</button>`;
-  h += `<div class="ttl"><div class="crumb">${esc(cur?.w.name ?? '')}${cur?.s ? ' · ' + esc(cur.s.single ? 'Ungrouped' : cur.s.name) : ''}</div><h1>${data ? `<span class="t" data-act="rename" title="Rename">${esc(cur.i.label)}</span><button class="ren" data-act="rename" title="Rename">\u270E</button>` : esc(cur?.i?.label ?? 'No instance')}${data ? owner() : ''}</h1></div>`;
+  h += `<div class="ttl"><div class="crumb">${esc(cur?.w.name ?? '')}${cur?.s ? ' · ' + esc(cur.s.single ? 'Ungrouped' : cur.s.name) : ''}</div><h1>${data ? `<span class="t" data-act="rename" title="Rename">${esc(cur.i.label)}</span><button class="ren" data-act="rename" title="Rename">\u270E</button>` : esc(cur?.i?.label ?? 'No instance')}${data ? owner() + `<span class="reacts">${reactHtml()}</span>` : ''}</h1></div>`;
   if (data) {
-    const d = lastDone(), talk = threads.filter(t => t.waits).length;
+    const d = lastDone(), talk = data.waiting.length;
     const state = data.doc.status !== 'open' ? `${data.doc.status === 'closed' ? 'Closed' : 'Abandoned'} · read-only`
       : data.run ? `<span class="spin"></span>Agent working · run ${data.run.n}<button class="quiet" data-act="interrupt">Interrupt</button>`
       : data.queued ? '\u29D7 Queued' : d?.error ? `<span class="bad" title="${esc(d.error)}">Run ${d.run} failed · ${hhmm(d.at)}</span>`
@@ -875,6 +884,7 @@ function logText(e) {
     corrected: () => `${w} marked <a href="#/${esc(e.inst)}">${esc(e.label)}</a>${e.item ? ` ${esc(e.item)}` : ''} ${e.kind}`,
     comment: () => `${w} ${e.note ? `left a note for ${who(data.runner.by)}` : e.by !== 'agent' ? 'commented' : e.ask ? `asked${e.to ? ' ' + who(e.to) : ''}` : 'said'}${e.item ? ` on ${item(e.item)}${e.ref ? ` at ${esc(e.ref)}` : ''}` : ''}<div class="d">${esc(e.text)}</div>`,
     resolve: () => `${w} resolved a thread${e.text ? `<div class="d">${esc(e.text)}</div>` : ''}`,
+    react: () => `${w} ${e.up === null ? 'took back a reaction' : e.up ? 'gave a thumbs up' : 'gave a thumbs down'} on ${e.on ? `comment c${e.on}` : 'the instance'}`,
     wake: () => `${e.note ? `${person(e.from)} would wake it: a note for ${who(data.runner.by)}` : `Woken${e.from ? ` by ${who(e.from)}` : ''}`}${e.reason ? `<div class="d">${esc(e.reason)}</div>` : ''}`,
     expired: () => e.left ? `${who(e.runner)} has left: Microsoft no longer signs them in, so someone takes the instance over` : `Waiting for ${who(e.runner)} ${e.login === 'openrouter' ? 'to save another OpenRouter key, or stop using their own, out of credits' : `to sign in to ${esc(e.name ?? (e.login === 'm365' ? 'Microsoft 365' : e.login))} again`}${e.runner === me.email && !data.log.some(x => x.seq > e.seq && x.op === 'wake' && x.login === e.login) ? `<div>${signInHtml(e.login, e.name ?? e.login)}</div>` : ''}`,
     takeover: () => `${w} took over from ${who(e.from)}${e.logins?.length ? `<div class="d">Logins: ${esc(e.logins.join(', '))}</div>` : ''}`,
@@ -901,8 +911,8 @@ function logText(e) {
 // expired under it. Most of the time there is nothing.
 function renderNeeds() {
   const held = new Map(data?.log.filter(e => e.op === 'expired' && e.runner === me.email && !data.log.some(x => x.seq > e.seq && x.op === 'wake' && x.login === e.login)).map(e => [e.login, e]));
-  const h = (data ? threads.filter(t => t.waits === me.email) : []).map(t => `<div><b>${t.last.note ? 'Note' : 'Ask'}</b><span>${esc(firstLine(t.last.text))}</span>`
-    + `<button class="btn" data-act="thread" data-thread="${esc(t.id)}">Reply</button></div>`).join('')
+  const h = (data ? data.waiting.filter(w => w.who === me.email).map(w => data.log[w.seq - 1]) : []).map(e => `<div><b>${e.ask ? 'Ask' : 'Note'}</b><span>${esc(firstLine(e.text))}</span>`
+    + `<button class="btn" data-act="reply" data-seq="${e.seq}">Reply</button></div>`).join('')
     + [...held.values()].map(e => `<div><b>Login</b><span>${e.login === 'openrouter' ? 'Your OpenRouter key is out of credits' : `Your ${esc(e.name)} login has expired`}: this instance waits for it</span>${signInHtml(e.login, e.name)}</div>`).join('');
   $('#needs').hidden = !h;
   put($('#needs'), h);
@@ -1038,18 +1048,20 @@ function redline(a, b) {
 // instance it waits on a person while its last word is the agent's ask, on whom the ask names or else the runner, and on the
 // agent while its last word is a person's. A file a run cited is kept by its instance's id, and shown by that instance's label now.
 function threadsOf() {
-  const out = new Map(), open = data?.doc.status === 'open';
+  const out = new Map(), open = data?.doc.status === 'open', waiting = new Map((data?.waiting ?? []).map(w => [w.seq, w.who]));
   for (const e of data?.log ?? []) {
     if (!['comment', 'resolve', 'signoff'].includes(e.op)) continue;
     if (!out.has(e.thread)) out.set(e.thread, { id: e.thread, item: e.item, ref: e.ref, posts: [] });
-    const t = out.get(e.thread);
-    if (e.op === 'comment') t.posts.push({ ...e, pinned: e.files?.some(f => f.sha256), files: e.files?.map(f => !f.inst ? f : f.inst === cur.i.id ? f.path : `../${cur.s.instances.find(i => i.id === f.inst)?.label}/${f.path}`) });
-    if (e.op === 'signoff') t.posts.push({ ...e, text: `${e.approved === false ? 'Rejected' : 'Signed off'}${e.text ? `: ${e.text}` : ''}` });
+    const t = out.get(e.thread), root = +e.thread.slice(1);
     t.last = e;
+    if (e.op === 'resolve') continue;
+    // Where it hangs: under its parent, a sign-off under its ask; from before replies named what they answer, under the first.
+    const under = e.parent ?? e.on ?? (e.seq === root ? undefined : root);
+    if (e.op === 'comment') t.posts.push({ ...e, under, waits: waiting.get(e.seq), pinned: e.files?.some(f => f.sha256), files: e.files?.map(f => !f.inst ? f : f.inst === cur.i.id ? f.path : `../${cur.s.instances.find(i => i.id === f.inst)?.label}/${f.path}`) });
+    if (e.op === 'signoff') t.posts.push({ ...e, under, text: `${e.approved === false ? 'Rejected' : 'Signed off'}${e.text ? `: ${e.text}` : ''}` });
   }
   for (const t of out.values()) Object.assign(t, {
-    resolved: t.last.op === 'resolve',
-    waits: open && (t.last.ask || t.last.note) ? t.last.to ?? data.runner.by : null,
+    waits: t.posts.find(p => p.waits)?.waits ?? null,
     pending: open && t.last.op !== 'resolve' && t.last.by !== 'agent' && !t.last.note,
   });
   return [...out.values()];
@@ -1058,16 +1070,33 @@ function threadsOf() {
 const place = t => t.item ? `On <a data-act="opencard" data-item="${esc(t.item)}">${esc(data.doc.items.find(i => i.id === t.item)?.name ?? t.item)}</a>${t.ref ? ` at ${esc(t.ref)}` : ''}` : 'On the instance';
 
 function threadHtml(t) {
-  // The ask a sign-off here signs: the agent's latest that pins files, while this person hasn't signed it off.
-  const off = data.run ? ' disabled title="Available when the run ends"' : '', ask = t.posts.findLast(p => p.ask && p.pinned);
-  const signs = ask && !t.posts.some(p => p.op === 'signoff' && p.on === ask.seq && p.by === me.email);
-  const state = t.waits ? ` \u00b7 waits on ${who(t.waits)}` : t.pending ? ' \u00b7 <span class="spin"></span> the agent picks it up next' : t.resolved ? ` \u00b7 resolved by ${who(t.last.by)}${t.last.text ? `: ${esc(t.last.text)}` : ''}` : '';
-  return `<div class="thread ${t.resolved ? 'resolved' : ''} ${t.waits ? 'waits' : ''}" data-thread="${esc(t.id)}"><div class="on">${place(t)}${state}</div>`
-    + data.log.filter(e => e.op === 'done' && e.rules && e.thread === t.id).map(processNote).join('')
-    + t.posts.map(p => `<div class="post ${p.ask ? 'ask' : ''}"><b class="${p.by === 'agent' ? '' : 'p'}">${who(p.by)}</b> <span class="tm">${hhmm(p.at)}${p.to ? ` \u00b7 to ${who(p.to)}` : ''}${p.note ? ` \u00b7 a note for ${who(data.runner.by)}` : ''}${p.commit ? ` \u00b7 commit <code>${p.commit.slice(0, 7)}</code>` : ''}</span><div>${p.by === 'agent' ? md(p.text) : esc(p.text)}</div>${(p.files ?? []).map(f => `<div class="f">${/\.(png|jpe?g|gif|webp|svg)$/i.test(f) ? `<img src="${fileUrl(f)}" loading="lazy" alt="${esc(fname(f))}" title="${esc(fname(f))}" data-act="preview" data-file="${esc(f)}">` : `<a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a>`}</div>`).join('')}</div>`).join('')
-    + (data.doc.status !== 'open' || t.resolved ? ''
-      : t.waits || replying.has(t.id) || signs ? `<textarea rows="2" placeholder="${signs ? 'Reply, or a note to sign off with' : 'Reply'}"></textarea><input type="file" multiple><div class="row2"><button class="btn" data-act="reply-thread" data-thread="${esc(t.id)}">Reply</button>${signs ? `<button class="btn commit" data-act="signoff" data-thread="${esc(t.id)}"${off} title="Commits the instance as it is now in your name, with the files the ask pins as it pinned them">Sign off</button>` : ''}<button class="btn" data-act="resolve" data-thread="${esc(t.id)}" title="Done with it, without waking the agent">Resolve</button></div>`
-      : `<div class="row2"><button class="quiet" data-act="thread" data-thread="${esc(t.id)}">Reply</button><button class="quiet" data-act="resolve" data-thread="${esc(t.id)}" title="Done with it, without waking the agent">Resolve</button></div>`) + '</div>';
+  const state = t.waits ? ` \u00b7 waits on ${who(t.waits)}` : t.pending ? ' \u00b7 <span class="spin"></span> the agent picks it up next' : '';
+  return `<div class="thread ${t.waits ? 'waits' : ''}" data-thread="${esc(t.id)}"><div class="on">${place(t)}${state}</div>`
+    + data.log.filter(e => e.op === 'done' && e.rules && e.thread === t.id).map(processNote).join('') + postHtml(t, t.posts[0], 0) + '</div>';
+}
+
+// A comment, with its reactions, Reply and, for an ask that pins files this person hasn't signed off, Sign off, which open its reply box,
+// there all along so that it opens where it is; then what hangs under it, three levels deep, past which a link opens the rest as a
+// thread of its own. A long one folds until More.
+function postHtml(t, p, depth) {
+  const kids = t.posts.filter(k => k.under === p.seq), open = data.doc.status === 'open', off = data.run ? ' disabled title="Available when the run ends"' : '';
+  const signs = open && p.ask && p.pinned && !t.posts.some(k => k.op === 'signoff' && k.on === p.seq && k.by === me.email);
+  const long = !ui.full.has(p.seq) && (p.text.length > 900 || p.text.split('\n').length > 12), all = n => t.posts.filter(k => k.under === n).reduce((c, k) => c + 1 + all(k.seq), 0);
+  let h = `<div class="post ${p.ask ? 'ask' : ''} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}"><b class="${p.by === 'agent' ? '' : 'p'}">${who(p.by)}</b> <span class="tm">${hhmm(p.at)}${p.to ? ` \u00b7 to ${who(p.to)}` : ''}${p.note ? ` \u00b7 a note for ${who(data.runner.by)}` : ''}${p.waits ? ` \u00b7 waits on ${who(p.waits)}` : ''}${p.commit ? ` \u00b7 commit <code>${p.commit.slice(0, 7)}</code>` : ''}</span>`
+    + `<div class="pb ${long ? 'long' : ''}">${p.by === 'agent' && p.op === 'comment' ? md(p.text) : esc(p.text)}</div>${long ? `<a class="more" data-act="more" data-seq="${p.seq}">More</a>` : ''}`
+    + (p.files ?? []).map(f => `<div class="f">${/\.(png|jpe?g|gif|webp|svg)$/i.test(f) ? `<img src="${fileUrl(f)}" loading="lazy" alt="${esc(fname(f))}" title="${esc(fname(f))}" data-act="preview" data-file="${esc(f)}">` : `<a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a>`}</div>`).join('');
+  if (p.op === 'comment') h += `<div class="pa">${reactHtml(p.seq)}${open ? `<button class="quiet" data-act="reply" data-seq="${p.seq}">Reply</button>` : ''}${signs ? `<button class="quiet" data-act="reply" data-seq="${p.seq}">Sign off\u2026</button>` : ''}</div>`;
+  if (open && p.op === 'comment') h += `<div class="reply" ${replying.has(p.seq) ? '' : 'hidden'}><textarea rows="2" placeholder="${signs ? 'Reply, or a note to sign off with' : 'Reply'}"></textarea><input type="file" multiple><div class="row2"><button class="btn" data-act="reply-post" data-seq="${p.seq}">Reply</button>${signs ? `<button class="btn commit" data-act="signoff" data-seq="${p.seq}"${off} title="Commits the instance as it is now in your name, with the files the ask pins as it pinned them">Sign off</button>` : ''}<button class="quiet" data-act="reply" data-seq="${p.seq}">Cancel</button></div></div>`;
+  if (kids.length) h += depth < 3 ? `<div class="kids">${kids.map(k => postHtml(t, k, depth + 1)).join('')}</div>` : `<a class="more" data-act="alone" data-seq="${p.seq}">Continue this thread \u2192 ${all(p.seq)} more</a>`;
+  return h + '</div>';
+}
+
+// Thumbs up and down on a comment, or, with no seq, on the instance: each person's last say, the names on hover, yours marked.
+function reactHtml(seq) {
+  const last = new Map();
+  for (const e of data.log) if (e.op === 'react' && e.on === seq) last.set(e.by, e.up);
+  const names = up => [...last].filter(([, u]) => u === up).map(([by]) => nameOf(by));
+  return [[true, '\u{1F44D}'], [false, '\u{1F44E}']].map(([up, icon]) => `<button class="react ${last.get(me.email) === up ? 'on' : ''}" data-act="react" data-up="${up}"${seq === undefined ? '' : ` data-seq="${seq}"`} title="${esc(names(up).join(', '))}">${icon}${names(up).length ? ` ${names(up).length}` : ''}</button>`).join('');
 }
 
 // The rules a run added to the process, or reworded, on the thread whose entry started it, or else on its line.
@@ -1089,6 +1118,14 @@ function conversationHtml() {
   const fold = (key, head, body) => `<details class="sect" data-key="${key}" ${ui.sect[key] ?? mine ? 'open' : ''}><summary>${head}</summary>${body}</details>`;
   const moved = data.log.findLast(e => e.op === 'move'), runs = data.log.filter(e => e.op === 'run');
   let h = moved ? `<div class="sub">Moved ${when(moved.at)} from ${esc(moved.from)} to ${esc(moved.to)}, ${who(moved.accepted_by)} accepting.</div>` : '';
+  const alone = ui.alone && threads.find(t => t.posts.some(p => p.seq === ui.alone));
+  if (alone) {
+    // The comments it hangs under, a line each, any opening the rest from there, then it and what hangs under it.
+    const p = alone.posts.find(p => p.seq === ui.alone), up = [];
+    for (let a = alone.posts.find(x => x.seq === p.under); a; a = alone.posts.find(x => x.seq === a.under)) up.unshift(a);
+    return `<a class="more" data-act="alone">\u2190 Back to the conversation</a><div class="thread"><div class="on">${place(alone)}</div>`
+      + up.map(a => `<a class="up" data-act="alone" data-seq="${a.seq}">${who(a.by)}: ${esc(firstLine(a.text))}</a>`).join('') + postHtml(alone, p, 0) + '</div>';
+  }
   if (docs.process) h += fold('process', `<b>Process</b>${docs.changed ? ' \u00b7 changed' : ''}`, docs.process);
   const ended = r => data.log.find(e => e.op === 'done' && e.run === r.run)?.seq ?? Infinity;
   h += [...threads.map(t => [t.last.seq, threadHtml(t)]), ...runs.map(r => [ended(r), runHtml(r, r === runs.at(-1))])].sort((a, b) => a[0] - b[0]).map(([, x]) => x).join('');
@@ -1657,29 +1694,49 @@ async function onAct(act, el) {
   }
   if (act === 'interrupt') { await api(`${instPath()}/interrupt`, { method: 'POST' }); await refresh(); }
   if (act === 'comment-on') { Object.assign(ui, { open: true, on: el.dataset.item, ref: null }); renderLog(); renderBar(); $('#newcomment')?.focus(); }
-  if (act === 'comment' || act === 'reply-thread') {
-    const box = act === 'comment' ? $('#newcomment') : el.closest('.thread').querySelector('textarea'), text = box.value.trim();
-    const picked = act === 'comment' ? $('#newfiles') : el.closest('.thread').querySelector('input[type=file]');
+  if (act === 'comment' || act === 'reply-post') {
+    const at = act === 'comment' ? null : el.closest('.reply'), box = at ? at.querySelector('textarea') : $('#newcomment'), text = box.value.trim();
+    const picked = at ? at.querySelector('input[type=file]') : $('#newfiles');
     if (!text) return;
     const files = [];
     for (const f of picked.files) files.push((await api(`${instPath()}/attach?name=${enc(f.name)}`, { method: 'POST', body: f })).file);
-    await api(`${instPath()}/comment`, { method: 'POST', body: JSON.stringify(act === 'comment' ? { text, files, ...(ui.on && { item: ui.on }), ...(ui.ref && { ref: ui.ref }) } : { thread: el.dataset.thread, text, files }) });
+    await api(`${instPath()}/comment`, { method: 'POST', body: JSON.stringify(at ? { thread: `c${el.dataset.seq}`, text, files } : { text, files, ...(ui.on && { item: ui.on }), ...(ui.ref && { ref: ui.ref }) }) });
     box.value = '';
     thumbs(picked, new DataTransfer().files);
-    replying.delete(el.dataset.thread);
+    replying.delete(+el.dataset.seq);
     ui.on = ui.ref = null;
     await refresh();
   }
-  if (act === 'resolve') {
-    await api(`${instPath()}/resolve`, { method: 'POST', body: JSON.stringify({ thread: el.dataset.thread }) });
-    await refresh();
-  }
   if (act === 'signoff') {
-    const box = el.closest('.thread').querySelector('textarea');
-    await api(`${instPath()}/signoff`, { method: 'POST', body: JSON.stringify({ thread: el.dataset.thread, text: box.value.trim() }) });
+    const box = el.closest('.reply').querySelector('textarea');
+    await api(`${instPath()}/signoff`, { method: 'POST', body: JSON.stringify({ thread: `c${el.dataset.seq}`, text: box.value.trim() }) });
     box.value = '';
+    replying.delete(+el.dataset.seq);
     await refresh();
   }
+  // A comment's reply box, opened or closed where it is; from elsewhere, such as Needs you, opened, the comment shown alone if it's
+  // deeper than the conversation shows, unless a draft holds the conversation still.
+  if (act === 'reply') {
+    const seq = +el.dataset.seq, toggle = !!el.closest('.post');
+    if (!toggle) {
+      closePv();
+      Object.assign(ui, { open: true, audit: false });
+      if (!$(`#conv .post[data-seq="${seq}"]`)) ui.alone = seq;
+      renderLog(); renderBar();
+    }
+    const box = $(`#conv .post[data-seq="${seq}"] > .reply`);
+    if (!box) return;
+    box.hidden = toggle && !box.hidden;
+    replying[box.hidden ? 'delete' : 'add'](seq);
+    if (!box.hidden) box.querySelector('textarea').focus();
+  }
+  if (act === 'react') {
+    const seq = el.dataset.seq === undefined ? undefined : +el.dataset.seq;
+    await api(`${instPath()}/react`, { method: 'POST', body: JSON.stringify({ ...(seq !== undefined && { on: seq }), up: el.classList.contains('on') ? null : el.dataset.up === 'true' }) });
+    await refresh();
+  }
+  if (act === 'more') { ui.full.add(+el.dataset.seq); renderLog(); }
+  if (act === 'alone') { ui.alone = el.dataset.seq ? +el.dataset.seq : null; renderLog(); $('#log').scrollTop = 0; }
   if (act === 'uncard') { openItem = null; renderCard(); renderPanes(); }
   if (act === 'view') { localStorage.view = el.dataset.id; renderPanes(); placeCard(); }
   if (act === 'sort') {
@@ -1811,14 +1868,17 @@ async function onAct(act, el) {
     const go = t ? `<button class="btn" data-act="thread" data-thread="${esc(t)}">${on ? 'Reply' : 'Open the thread'}</button>` : on ? `<button class="btn" data-act="comment-cell" data-ref="${esc(el.dataset.ref)}">Comment on ${esc(el.dataset.ref)}</button>` : '';
     put($('#pvn'), `${esc(el.dataset.note ?? '')}${go && `<div>${go}</div>`}`);
   }
+  // A thread brought into view, with a reply box under its first comment while the instance is open.
   if (act === 'thread') {
-    replying.add(el.dataset.thread);
     closePv();
-    Object.assign(ui, { open: true, on: null, ref: null });
+    Object.assign(ui, { open: true, on: null, ref: null, alone: null });
     renderLog(); renderBar();
-    const box = document.querySelector(`#log .thread[data-thread="${CSS.escape(el.dataset.thread)}"]`);
-    box?.scrollIntoView({ block: 'center' });
-    box?.querySelector('textarea')?.focus();
+    const t = $(`#conv .thread[data-thread="${CSS.escape(el.dataset.thread)}"]`), box = t?.querySelector('.reply');
+    t?.scrollIntoView({ block: 'center' });
+    if (!box) return;
+    box.hidden = false;
+    replying.add(+el.dataset.thread.slice(1));
+    box.querySelector('textarea').focus();
   }
   if (act === 'comment-cell') {
     const item = pv.item;
@@ -1840,9 +1900,9 @@ async function onAct(act, el) {
   }
   // A task closes as a one-off, or as the first instance of a series it becomes; either may be abandoned instead.
   if (act === 'close') {
-    const waits = threads.filter(t => t.waits), task = cur.s.single;
+    const asks = data.waiting.map(w => data.log[w.seq - 1]).filter(e => e.ask), task = cur.s.single;
     const text = [task ? 'It becomes the record, approving nothing.' : "It becomes this period's record and an example for later instances, approving nothing.",
-      waits.length && 'Closing accepts what the agent did for each ask still waiting:\n' + waits.map(t => `• ${firstLine(t.last.text)}`).join('\n')].filter(Boolean).join('\n\n');
+      asks.length && 'Closing accepts what the agent did for each ask still waiting:\n' + asks.map(e => `• ${firstLine(e.text)}`).join('\n')].filter(Boolean).join('\n\n');
     const html = (task ? `<div class="opt"><button class="btn commit" value="close">Close task</button><span>closes it as a one-off</span></div>`
       + `<div class="opts"><label>Series name<input type="text" id="aseries" value="${esc(cur.i.label)}" autocomplete="off"></label>`
       + `<div class="opt"><button class="btn commit" value="series">Start series and close</button><span>this task becomes its first instance, an example for later ones</span></div></div>` : '')
@@ -2076,7 +2136,8 @@ new ResizeObserver(placeCard).observe($('#panes'));
 matchMedia('(max-width: 800px)').addEventListener('change', renderPanes);
 
 addEventListener('hashchange', () => {
-  openItem = null; ui.sect = {}; prevSigs = {};
+  openItem = null; ui.sect = {}; prevSigs = {}; ui.alone = null;
+  replying.clear(); ui.full.clear();
   for (const el of ['#panes', '#ins', '#outs', '#steps']) $(el).scrollTop = 0;
   $('#log').dataset.end = 'yes';
   closePv();

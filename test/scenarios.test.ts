@@ -178,7 +178,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
       'rf ask --to stranger@example.com Which bank? 2>&1',
       'rf ask Is the bank file coming today? 2>&1',
       'rf say --on nope x 2>&1',
-      () => `rf resolve ${thread} 2>&1`,
+      () => `rf say --in ${walls.saw[12].match(/c\d+/)![0]} It came, never mind. 2>&1`,
       `curl -s -m 10 https://openrouter.ai/api/v1/chat/completions -H 'content-type: application/json' -d '{"model": "openai/gpt-5-mini", "messages": [{"role": "user", "content": "Is this right?"}]}'`,
       'curl -s -m 10 https://openrouter.ai/api/v1/credits',
       'echo 1 > working/x.csv && rf say --pin working/x.csv --pin ../2026-11/working/x.csv Cited. 2>&1',
@@ -205,13 +205,13 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.match(walls.saw[5], /Wide\/Close is in another workspace: you can read it, not wake it/);
   assert.match(walls.saw[6], /at is now, \+<n>m\|h\|d, or a date/);
   assert.match(walls.saw[7], /name it with a label/);
-  assert.match(walls.saw[8], new RegExp(`^said in ${thread}, seq \\d+\\s*$`));
-  assert.match(walls.saw[9], new RegExp(`no thread c99; this instance's threads: ${thread}`));
+  assert.match(walls.saw[8], new RegExp(`^said c\\d+, under ${thread}\\s*$`));
+  assert.match(walls.saw[9], new RegExp(`no comment c99 to reply under; this instance's threads: ${thread}`));
   assert.match(walls.saw[10], /"rev": \d+,\s+"status": "open"/);
   assert.match(walls.saw[11], /stranger@example.com can't see this instance; ask its runner, admin@demo.test/);
-  assert.match(walls.saw[12], /^asked in c\d+, seq \d+\s*$/);
+  assert.match(walls.saw[12], /^asked c\d+\s*$/);
   assert.match(walls.saw[13], /no item nope/);
-  assert.match(walls.saw[14], new RegExp(`admin@demo.test started ${thread}, and resolves it`));
+  assert.match(walls.saw[14], new RegExp(`^said c\\d+, under ${walls.saw[12].trim().slice(6)}\\s*$`), 'the agent withdraws its ask by replying under it');
   assert.match(walls.saw[15], /"content":"A second opinion"/, 'any model, through OpenRouter, with the server\'s key');
   assert.match(walls.saw[16], /^\{\}\s*$/, "any request reaches OpenRouter, with the server's key");
   const x = { inst: id, path: 'working/x.csv', sha256: createHash('sha256').update('1\n').digest('hex') };
@@ -220,7 +220,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.deepEqual(asked.filter(e => !pi.includes(e)).map(e => [e.run, e.method, e.path, e.status, e.model, e.cost]), [[2, 'POST', '/api/v1/chat/completions', 200, 'openai/gpt-5-mini', 0.002], [2, 'GET', '/api/v1/credits', 404, undefined, 0]]);
   assert.deepEqual(pi.map(e => [e.run, e.method, e.status, e.model, e.cost]), [[1, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01], ...Array(walls.bash.length + 1).fill([2, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01]), ...Array(2).fill([3, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01])], "Pi's own calls, a step's each and the report's, through the same connection");
   assert.ok(providers.length && providers.every(p => JSON.stringify(p) === '{"data_collection":"deny"}'), 'every call asked only for providers that collect no data');
-  assert.deepEqual(log.filter(e => e.op === 'comment' && e.by === 'agent').map(e => [e.text, !!e.ask]), [['Walls checked.', false], ['Is the bank file coming today?', true], ['Cited.', false]], "the agent's words are comments of its own, and an ask is marked");
+  assert.deepEqual(log.filter(e => e.op === 'comment' && e.by === 'agent').map(e => [e.text, !!e.ask]), [['Walls checked.', false], ['Is the bank file coming today?', true], ['It came, never mind.', false], ['Cited.', false]], "the agent's words are comments of its own, and an ask is marked");
   assert.match(woken.prompt!, /"op":"wake","from":"[^"]*\/2026-11"/, 'the wake started the next run, saying only who set it');
   assert.match(made.prompt!, /^Instance 2026-11, run 1\. Its runner is Demo Admin <admin@demo\.test>, who lends you /, 'a new Pi hears who the runner is');
   assert.deepEqual([made.first, walls.first], [1, 1], 'a new conversation, of its own prompt alone, as a series made in reach since changed what run 2 sees');
@@ -264,7 +264,7 @@ test('people rename the instance, its series and its workspace mid-run: the run 
   await runs(id, 2);
   const [pwd, ...names] = during.saw[0].trim().split('\n');
   assert.deepEqual([pwd, names.filter(l => l.startsWith(id))], ['/work/Named/Before/2026-11', [`${id}\t/work/Named/Before/2026-11`]]);
-  assert.match(during.saw[1], /^set: \. wakes at .*\nsaid in c\d+, seq \d+\s*$/);
+  assert.match(during.saw[1], /^set: \. wakes at .*\nsaid c\d+\s*$/);
   assert.deepEqual((await (await call('GET', `/api/instances/${id}`)).json()).log.findLast((e: { op: string }) => e.op === 'comment').files, [{ inst: id, path: 'working/x.csv', sha256: createHash('sha256').update('1\n').digest('hex') }]);
   const git = (...args: string[]) => execFileSync('git', args, { cwd: join(root, 'instances', id), encoding: 'utf8' });
   await until("run 2's commit", () => git('log', '-1', '--format=%s') === 'Run 2\n');
@@ -305,7 +305,7 @@ test("sign-offs are git commits: the agent commits a moment worth keeping and pi
   assert.match(ask.saw[1], /^rollforward agent\|Draft pack built\n[^]* M working\/pack.csv/, 'the run reads its history, and sees what changed since');
   assert.match(ask.saw[2], /Read-only file system|Permission denied|unable to/i, 'and never writes it');
   assert.match(ask.saw[3], /no file working\/none\.csv: pin one under upload\/ or working\//);
-  assert.match(ask.saw[4], /^asked in c\d+/);
+  assert.match(ask.saw[4], /^asked c\d+/);
   assert.deepEqual(log.filter(e => e.op === 'commit').map(e => [e.by, e.run, e.message, e.commit]), [['agent', 2, 'Draft pack built', git('rev-parse', ':/^Draft pack built')]]);
   const first = log.findLast(e => e.op === 'comment')!, pack = join(dir, 'working', 'pack.csv'), sum = createHash('sha256').update('200\n').digest('hex');
   const signoff = (body: object, cookie = admin) => call('POST', `/api/instances/${id}/signoff`, { thread: first.thread, ...body }, cookie);
@@ -328,7 +328,7 @@ test("sign-offs are git commits: the agent commits a moment worth keeping and pi
   assert.equal((await signoff({ thread: next.thread, text: 'Go.' })).status, 200);
   log = await runs(id, 4);
   const yes = log.findLast(e => e.op === 'signoff')!;
-  assert.equal(yes.on, next.seq, 'the latest ask that pins files');
+  assert.equal(yes.on, next.seq, 'the ask it names');
   assert.equal(git('log', '-1', '--format=%an%n%B', String(yes.commit)), `Demo Admin\nThe rate is fixed: send it now?\n\nPinned: working/pack2.csv ${sum2}\n\nGo.\n\nSigned-off-by: Demo Admin <admin@demo.test>`);
   assert.match(git('show', `${yes.commit}:log.jsonl`), /"op":"signoff","thread":"c\d+","on":\d+,"text":"Fine by me\."/, 'the whole folder, its log included');
 
@@ -467,7 +467,7 @@ test("a later run corrects a closed instance, never changing it, linking the thr
   await runs(first, 1);
   assert.equal((await call('POST', `/api/instances/${first}/close`)).status, 200);
   const fixing: Script = {
-    bash: ["t=$(rf say m1 used a stale rate. | cut -d' ' -f3 | tr -d ,); rf correct ../m1 --wrong --in $t The rate was a day stale. 2>&1", 'rf correct ../m1 --wrong 2>&1', 'rf correct . --superseded x 2>&1'],
+    bash: ["t=$(rf say m1 used a stale rate. | cut -d' ' -f2); rf correct ../m1 --wrong --in $t The rate was a day stale. 2>&1", 'rf correct ../m1 --wrong 2>&1', 'rf correct . --superseded x 2>&1'],
     report: 'Corrected m1.', saw: [],
   };
   scripts.push(fixing);

@@ -559,7 +559,7 @@ test('an admin can disable someone, which ends their sessions and stops their si
   assert.match(authCli('list'), new RegExp(`^${bob}\\tuser`, 'm'));
 });
 
-test('talking is in threads: a comment starts one on an item or the instance, the agent says in it, and a person resolves it', async () => {
+test('talking is in threads: a comment starts one on an item or the instance, and a reply goes under one of its comments, by its seq; resolving is gone', async () => {
   assert.equal((await call('POST', `${await at(series, '2026-08-30', 'duplicate')}?as=talk`)).status, 200);
   const path = await at(series, 'talk');
   const inst = await json(path), item = inst.doc.items[0].id;
@@ -567,15 +567,17 @@ test('talking is in threads: a comment starts one on an item or the instance, th
   const started = (await json(path)).log.at(-1);
   assert.deepEqual([started.op, started.item, started.ref, started.text], ['comment', item, 'B4', 'Why is this up?']);
   assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ thread: started.thread, text: 'And B5?' }))).status, 200);
-  assert.equal((await json(path)).log.at(-1).item, undefined, 'a reply keeps its thread, not an item');
+  const reply = (await json(path)).log.at(-1);
+  assert.deepEqual([reply.thread, reply.parent, reply.item], [started.thread, started.seq, undefined], 'a reply keeps its thread and names its parent, not an item');
+  assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ thread: `c${reply.seq}`, text: 'B6 too.' }))).status, 200);
+  assert.deepEqual([(await json(path)).log.at(-1).thread, (await json(path)).log.at(-1).parent], [started.thread, reply.seq], 'a reply under a reply is in the same thread');
   assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ thread: 'nope', text: 'x' }))).status, 400);
   const { file } = await (await call('POST', `${path}/attach?name=list.csv`, 'a,b')).json();
   assert.equal(file, 'upload/attachments/list.csv');
   assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ thread: started.thread, text: 'The list', files: [file] }))).status, 200);
   assert.deepEqual((await json(path)).log.at(-1).files, [file], 'a comment names its attachments');
   assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ text: 'x', files: ['upload/../x'] }))).status, 400);
-  assert.equal((await call('POST', `${path}/resolve`, JSON.stringify({ thread: started.thread }))).status, 200);
-  assert.equal((await json(path)).log.at(-1).op, 'resolve');
+  assert.equal((await call('POST', `${path}/resolve`, JSON.stringify({ thread: started.thread }))).status, 404);
 });
 
 test("a quiet act starts no run, which the next run reads: an instance made quietly waits for its first act, and an upload or comment that starts no run is committed at once, in its person's name", async () => {
@@ -778,8 +780,8 @@ test('rf reads without a pull: waiting, what waits on you; show, an instance, th
   assert.match(await rf('waiting'), new RegExp(`^note  ${path} since [\\d-]+ [\\d:]+: Bob notes the rate moved\\.$`, 'm'));
   assert.deepEqual(JSON.parse(await rf('waiting', '--json')).find((r: { path: string }) => r.path === path), { kind: 'note', path, since: note.at, text: note.text });
   const shown = JSON.parse(await rf('show', path, '--json'));
-  assert.deepEqual([shown.id, shown.status, shown.runner, shown.waiting], [id, 'open', adminEmail, [{ thread: note.thread, kind: 'note', for: adminEmail, by: bob, seq: note.seq, item: null, ref: null, text: note.text }]]);
-  assert.match(await rf('show', path), new RegExp(`^${path}  open, runner ${adminEmail}\\n${note.thread}  note for ${adminEmail}, seq ${note.seq}: Bob notes the rate moved\\.\\nlast run \\d+  \\$0\\.00(  .+)?\\n$`));
+  assert.deepEqual([shown.id, shown.status, shown.runner, shown.waiting], [id, 'open', adminEmail, [{ comment: note.thread, thread: note.thread, kind: 'note', for: adminEmail, by: bob, item: null, ref: null, text: note.text }]]);
+  assert.match(await rf('show', path), new RegExp(`^${path}  open, runner ${adminEmail}\\n${note.thread}  note for ${adminEmail}: Bob notes the rate moved\\.\\nlast run \\d+  \\$0\\.00(  .+)?\\n$`));
   const lines = (await rf('log', path)).trim().split('\n');
   assert.equal(lines.length, log.length);
   assert.match(lines.find(l => l.startsWith(`${note.seq}  `))!, new RegExp(`^${note.seq}  [\\d-]+ [\\d:]+  ${bob}  comment  \\{.*"thread":"${note.thread}".*\\}  Bob notes the rate moved\\.$`));
@@ -789,11 +791,17 @@ test('rf reads without a pull: waiting, what waits on you; show, an instance, th
   await assert.rejects(rf('show', 'Reads/Notes'), fails(1, /^rf: Reads\/Notes is a series: name one of its instances, as rf ls lists them\n$/));
 });
 
-test('rf acts on an instance as the page does: resolve, creds, rename, takeover, interrupt, signoff, close, as a series for a task, abandon and correct', async () => {
+test('rf acts on an instance as the page does: react, creds, rename, takeover, interrupt, signoff, close, as a series for a task, abandon and correct', async () => {
   const b = sessionOf(await login(bob))!, rows = async () => JSON.parse(await rf('ls', '--json')) as { path: string; id: string; status?: string; runner?: string }[];
-  const thread = JSON.parse(await rf('show', 'Reads/Notes/a1', '--json')).waiting[0].thread;
-  assert.equal(await rf('resolve', 'Reads/Notes/a1', thread, 'Seen it.'), `resolved ${thread}\n`);
-  assert.deepEqual(JSON.parse(await rf('show', 'Reads/Notes/a1', '--json')).waiting, []);
+  const shown = JSON.parse(await rf('show', 'Reads/Notes/a1', '--json')), on = shown.waiting[0].comment;
+  assert.equal(await rf('react', 'Reads/Notes/a1', on, 'up'), `up on ${on}\n`);
+  assert.equal(await rf('react', 'Reads/Notes/a1', 'down'), 'down on Reads/Notes/a1\n');
+  assert.deepEqual((await json(`/api/instances/${shown.id}`)).log.filter((e: { op: string }) => e.op === 'react').map((e: { on?: number; up: boolean }) => [e.on, e.up]), [[+on.slice(1), true], [undefined, false]]);
+  assert.equal(JSON.parse(await rf('show', 'Reads/Notes/a1', '--json')).waiting.length, 1, 'a reaction answers nothing');
+  for (const [body, why] of [[{ up: 'yes' }, 'up is true, false or null'], [{ on: 1, up: true }, 'no comment at seq 1']] as const) {
+    const r = await call('POST', `/api/instances/${shown.id}/react`, JSON.stringify(body));
+    assert.deepEqual([r.status, await r.text()], [400, why]);
+  }
   assert.match(await rf('creds', 'Reads/Notes/a1'), new RegExp(`^${adminEmail} ticks:\\n(  .+\\n)*yours:\\n`));
   await assert.rejects(rf('creds', 'Reads/Notes/a1', '--set', 'web:nosuch'), fails(1, /^rf: POST \/api\/instances\/\w+\/logins: 400 logins must be offers of your own logins: \["web:nosuch"\]\n$/));
   assert.equal(await rf('creds', 'Reads/Notes/a1', '--clear'), 'saved, with no logins ticked\n');
@@ -807,11 +815,12 @@ test('rf acts on an instance as the page does: resolve, creds, rename, takeover,
   assert.equal(await rf('takeover', 'Readings/Jots/b1'), 'you run Readings/Jots/b1 now, with no logins ticked\n');
   assert.equal((await json(`/api/instances/${his}`)).runner.by, adminEmail);
   await assert.rejects(rf('interrupt', 'Readings/Jots/b1'), fails(1, /^rf: POST \/api\/instances\/\w+\/interrupt: 409 no run going\n$/));
-  await assert.rejects(rf('signoff', 'Readings/Jots/b1', 'c1'), fails(1, /: 409 no ask in c1 pins files to sign off\n$/));
-  await assert.rejects(rf('signoff', 'Readings/Jots/b1', 'c1', 'Fine.', 'more'), fails(2, /^rf signoff PATH THREAD \[TEXT\]/));
+  await assert.rejects(rf('signoff', 'Readings/Jots/b1', 'c1'), fails(1, /: 409 c1 is no ask that pins files\n$/));
+  await assert.rejects(rf('signoff', 'Readings/Jots/b1', 'c1', 'Fine.', 'more'), fails(2, /^rf signoff PATH cN \[TEXT\]/));
   const reject = await call('POST', `/api/instances/${his}/signoff`, JSON.stringify({ thread: 'c1', approved: false }));
   assert.deepEqual([reject.status, await reject.text()], [400, 'a sign-off approves; to say no, reply in the thread'], "rf 0.12's reject, still in use");
   assert.equal(await rf('close', 'Readings/Jots/a2'), 'closed Readings/Jots/a2\n');
+  assert.equal(await rf('react', 'Readings/Jots/a2', 'none'), 'none on Readings/Jots/a2\n', 'a closed instance takes reactions');
   assert.match(await rf('correct', 'Readings/Jots/a2', 'The rate was a day stale.', '--see', 'b1'), /^a2 is marked wrong, seq \d+\n$/);
   await assert.rejects(rf('correct', 'Readings/Jots/a2', 'x', '--see', 'zz'), fails(1, /^rf: no instance zz in its series\n$/));
   assert.equal(await rf('abandon', 'Readings/Jots/b1'), 'abandoned Readings/Jots/b1\n');

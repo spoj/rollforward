@@ -351,24 +351,31 @@ test("what the session names, such as a tool call's name, shows as text in the a
   await page.click('#log .seg [data-act=audit]');
 });
 
-test("an ask that pins files shows them, and anyone who sees the instance signs it off from its thread, which commits the folder, as the thread and the audit say", async () => {
+test("an ask that pins files shows them, and anyone who sees the instance signs it off from under it, which commits the folder, as the thread and the audit say", async () => {
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
   await page.waitForSelector('#log.open');
   await page.locator('#needs', { hasText: 'The pack is ready to send to the bank.' }).waitFor();
   assert.equal(await page.locator('#needs').innerText(), 'Ask\nThe pack is ready to send to the bank.\nReply');
   const thread = page.locator('#log .thread', { hasText: 'The pack is ready to send to the bank.' });
   await thread.waitFor();
-  assert.equal(await page.textContent('#bar .ptog .badge'), String(await page.locator('#log .thread.waits').count()), "the panel's toggle counts what waits there");
+  assert.equal(await page.textContent('#bar .ptog .badge'), String(await page.locator('#log .post.waits').count()), "the panel's toggle counts what waits there");
   assert.match(await thread.locator('.on').innerText(), /waits on you/);
   assert.deepEqual(await thread.locator('.post .f').allInnerTexts(), ['pack.csv'], 'the file it pins');
-  assert.deepEqual(await thread.locator('button').allInnerTexts(), ['Reply', 'Sign off', 'Resolve']);
-  await thread.locator('textarea').fill('Looks right.');
+  assert.deepEqual(await thread.locator('.post > .pa button').allInnerTexts(), ['\u{1F44D}', '\u{1F44E}', 'Reply', 'Sign off\u2026']);
+  await thread.locator('.pa button', { hasText: 'Sign off' }).click();
+  await thread.locator('.reply:not([hidden]) textarea').fill('Looks right.');
   await thread.locator('[data-act=signoff]').click();
-  const post = page.locator('#log .thread .post', { hasText: 'Signed off: Looks right.' });
+  const post = page.locator('#log .thread .post .post', { hasText: 'Signed off: Looks right.' });
   await post.waitFor();
   assert.match(await post.locator('.tm').innerText(), /commit [0-9a-f]{7}/);
   await page.waitForSelector('#needs', { state: 'hidden' });
-  assert.equal(await thread.locator('[data-act=signoff]').count(), 0, 'signed off by you, it asks you no more');
+  assert.equal(await thread.locator('button', { hasText: 'Sign off' }).count(), 0, 'signed off by you, it asks you no more');
+  await thread.locator('.post[data-seq="2"] > .pa [data-act=react][data-up=true]').click();
+  await page.waitForSelector('#log .post[data-seq="2"] > .pa .react.on:text-is("\u{1F44D} 1")');
+  await page.click('#bar .reacts [data-act=react][data-up=false]');
+  await page.waitForSelector('#bar .reacts .react.on:text-is("\u{1F44E} 1")');
+  await page.click('#bar .reacts [data-act=react][data-up=false]');
+  await page.waitForSelector('#bar .reacts .react:not(.on):text-is("\u{1F44E}")');
   await page.click('#log [data-act=audit]');
   await page.locator('#audit .e', { hasText: 'You signed off' }).waitFor();
   await page.click('#log .seg [data-act=audit]');
@@ -542,6 +549,36 @@ test("while a run's browser is open it plays in a corner of the instance, to wat
   for (const url of [at, '**/runs/**', `${at}/interrupt`]) await page.unroute(url);
 });
 
+test('a thread is a tree: a reply hangs under the comment it answers, three levels deep, past which the rest opens on its own, and a long comment folds', async () => {
+  await page.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
+  await page.waitForSelector('#newcomment');
+  const seqs = await page.evaluate(async () => {
+    const out: number[] = [];
+    for (const text of ['Tree root.', 'Level one.', 'Level two.', 'Level three.', 'Level four.', Array(20).fill('A long line.').join('\n')]) {
+      await fetch('/api/instances/a5c0ff5e1f00/comment', { method: 'POST', body: JSON.stringify({ text, quiet: true, ...(out.length && out.length < 5 && { thread: `c${out.at(-1)}` }) }) });
+      out.push((await (await fetch('/api/instances/a5c0ff5e1f00')).json()).log.at(-1).seq);
+    }
+    return out;
+  });
+  const [root, one, two, three, four, long] = seqs.map(n => `.post[data-seq="${n}"]`);
+  await page.waitForSelector(`#conv ${long}`);
+  assert.equal(await page.locator(`#conv ${root} > .kids > ${one} > .kids > ${two} > .kids > ${three}`).count(), 1);
+  assert.equal(await page.locator(`#conv ${four}`).count(), 0);
+  await page.click(`#conv ${three} > a.more:text-is("Continue this thread \u2192 1 more")`);
+  await page.waitForSelector(`#conv ${four}`);
+  assert.deepEqual(await page.locator('#conv a.up').allInnerTexts(), ['you: Tree root.', 'you: Level one.', 'you: Level two.']);
+  await page.click('#conv > a.more:text-is("\u2190 Back to the conversation")');
+  await page.waitForSelector(`#conv ${four}`, { state: 'detached' });
+  assert.equal(await page.locator(`#conv ${long} > .pb.long`).count(), 1);
+  await page.click(`#conv ${long} > a.more:text-is("More")`);
+  await page.waitForSelector(`#conv ${long} > .pb:not(.long)`);
+  await page.click(`#conv ${one} > .pa [data-act=reply]`);
+  await page.fill(`#conv ${one} > .reply textarea`, 'A branch.');
+  await page.click(`#conv ${one} > .reply [data-act=reply-post]`);
+  await page.locator(`#conv ${one} > .kids > .post`, { hasText: 'A branch.' }).waitFor();
+  assert.equal(await page.locator(`#conv ${one} > .reply:not([hidden])`).count(), 0, 'sent, its box closes');
+});
+
 test("a picture pasted into a comment, or a reply, goes with it, shown under the box until it's sent, a screenshot named for when it was pasted; pasted text stays text", async () => {
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
   await page.waitForSelector('#newcomment');
@@ -557,7 +594,8 @@ test("a picture pasted into a comment, or a reply, goes with it, shown under the
   await paste('#newcomment');
   assert.match((await names('#newfiles')).join(), /^screenshot \d\d-\d\d-\d\d\.png$/);
   await page.waitForSelector('#newfiles + .thumbs img');
-  const reply = '#log .thread textarea[placeholder=Reply]';
+  await page.locator('#log .post:not(.ask) > .pa [data-act=reply]').first().click();
+  const reply = '#log .post .reply:not([hidden]) textarea';
   await paste(reply);
   assert.match((await names(`${reply} + input[type=file]`)).join(), /^screenshot /, "a reply's too");
   await page.evaluate(at => { const i = document.querySelector(at) as HTMLInputElement; i.files = new DataTransfer().files; i.dispatchEvent(new Event('change', { bubbles: true })); }, `${reply} + input[type=file]`);
