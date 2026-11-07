@@ -195,12 +195,14 @@ export async function refusedHosts(email: string, site: string) {
 
 // A host a person's website's pages need, allowed by them, or by an admin; their open sign-in to it, if any, reaches it at once. Once
 // a grant to it is approved, its person allows only hosts within the registrable domains it reaches already: one elsewhere would widen
-// what the grant approved, which is an admin's to approve. An admin's at an internal address lets the website reach internal addresses.
+// what the grant approved, which is an admin's to approve. One at an internal address is an admin's alone to allow, which lets the
+// website reach internal addresses.
 export async function allowHost(by: Me, site: string, host: string, email = by.email) {
   if (email !== by.email && by.role !== 'admin') throw new HttpError(403, `${email}'s websites are theirs`);
   const w = website(email, site), h = host.trim().toLowerCase(), domain = (x: string) => getDomain(x.replace(/^\*\./, ''), { allowPrivateDomains: true }) ?? x;
   if (by.role !== 'admin' && approved(site, email) && !reached(w).some(p => domain(p) === domain(h))) throw new HttpError(403, `${h} is outside the domains ${site} reaches, which its approved grants cover: an admin allows it`);
-  const inside = by.role === 'admin' && await resolvesInternal(h);
+  const inside = await resolvesInternal(h);
+  if (inside && by.role !== 'admin') throw new HttpError(403, `${h} is at an internal address: an admin allows it`);
   await checkHost(h, !!w.internal || inside);
   changeWebsite(email, site, { hosts: [...new Set([...w.hosts, h])], ...(inside && { internal: true }) });
   const id = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];

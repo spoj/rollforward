@@ -437,6 +437,8 @@ test("the hosts a run's browser was refused: one within the domains its website 
   assert.deepEqual(inst.log.filter(e => e.action === 'allowed').map(e => [e.by, e.run, e.site, e.login, e.allowed, e.why]), [['server', 1, 'crm', alice, ['cdn.example.com'], { 'cdn.example.com': own }]]);
   const act = readFileSync(join(tmp, '.rf', 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)).findLast(a => a.op === 'hosts');
   assert.deepEqual([act.by, act.person, act.site, act.inst, act.run, act.allowed], ['server', alice, 'crm', inst.id, 1, { 'cdn.example.com': own }]);
+  const { allowHost } = await import('../src/browsers.ts');
+  await assert.rejects(allowHost({ email: alice, role: 'user' } as never, 'crm', 'intra.acme.localhost'), /^Error: intra\.acme\.localhost is at an internal address: an admin allows it$/, 'nor does its person allow it');
 });
 
 test("with the server's key its model decides the rest, from what the browser's log, the runs and a web search say of each, never a path or a query: what the pages need the website reaches at once, what they work without stays refused, and anything else waits on admins", async t => {
