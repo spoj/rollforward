@@ -47,8 +47,9 @@ function mime(body: Buffer | undefined, box: string, bare: string) {
   if (address.toLowerCase() !== box) throw refuse(`mail from ${box} goes out as ${box}, not ${address}`);
 }
 
-// The offer that lets a request through, or why not.
-async function check(runner: string, ticks: string[], { method, url, headers, json, body: raw }: Request): Promise<{ offer: string }> {
+// The offer that lets a request through, or why not; and, for files, their drive's own site, where the answer's Location is a
+// link, as a file's content redirects to its download address.
+async function check(runner: string, ticks: string[], { method, url, headers, json, body: raw }: Request): Promise<{ offer: string; redirect?: string }> {
   if (!/^\/(v1\.0|beta)\//.test(url.pathname)) throw new HttpError(403, `${url.pathname}: Microsoft Graph, under /v1.0/ or /beta/`);
   // Neither another method in a header, nor a Prefer that redeems a sharing link, which grants the runner access.
   if (Object.keys(headers).some(h => /^x-http-method/i.test(h)) || /redeemsharinglink/i.test(String(headers.prefer ?? ''))) throw new HttpError(403, 'no X-HTTP-Method header, and no Prefer that redeems a sharing link');
@@ -67,7 +68,7 @@ async function check(runner: string, ticks: string[], { method, url, headers, js
   const mailbox = top === 'users' && (part === 'messages' || part === 'mailFolders' || (write && actions[2] === 'sendmail'));
   const body = headers['transfer-encoding'] !== undefined || Number(headers['content-length'] ?? 0) > 0, object = typeof json === 'object' && json !== null;
   if (write && body && !object && !mailbox && !(method === 'PUT' && action === 'content')) throw new HttpError(403, `${bare}: a write's body is a JSON object, but a file's content, with PUT …/content, or mail as MIME`);
-  let offer: string | undefined, mail = false;
+  let offer: string | undefined, mail = false, site: string | undefined;
   if (mailbox) {
     const scope = !write ? 'Mail.Read' : ['sendmail', 'send', 'reply', 'replyall', 'forward', 'unsubscribe'].includes(action!) ? 'Mail.Send' : 'Mail.ReadWrite';
     const what = { 'Mail.Read': ['read mail', 'read shared mailboxes'], 'Mail.Send': ['send mail', 'send from shared mailboxes'], 'Mail.ReadWrite': ['write mail', 'write to shared mailboxes'] }[scope];
@@ -90,6 +91,7 @@ async function check(runner: string, ticks: string[], { method, url, headers, js
     const item = await located(runner, addressed(bare.replace(/^\/me\//, `/users/${runner}/`)));
     offer = await covering(runner, ticks, item.parentReference.driveId, item.id, item.parentReference.id);
     if (!offer) throw new HttpError(403, `${bare} is in no folder, file or SharePoint site ticked for this instance`);
+    site = (await siteOf(runner, item.parentReference.driveId)).split(',')[0];
   } else if (top === 'sites') {
     needs(!write ? 'Sites.Read.All' : segs.some(s => /^drives?$/i.test(s)) ? 'Files.ReadWrite.All' : 'Sites.ReadWrite.All', `${write ? 'write' : 'read'} SharePoint sites`);
     if (segments.some(s => /(^|\.)getbypath\(/i.test(s))) throw new HttpError(403, `${bare}: getByPath reaches any site by its path; read the ticked one by its id`);
@@ -107,13 +109,13 @@ async function check(runner: string, ticks: string[], { method, url, headers, js
       if (!await covering(runner, ticks, folder.parentReference.driveId, folder.id, folder.parentReference.id)) throw new HttpError(403, `${bare} would put it in a folder no tick covers`);
     }
   }
-  return { offer };
+  return { offer, redirect: site && `https://${site}` };
 }
 
 // Links an answer gives, which the run may then use as they are, read from the path as check() reads it: an upload session's, from
 // the answer that makes one, at Outlook's host for mail and SharePoint's for files; and a file's download address, on the
-// driveItems an answer about files gives that a tick covers, at its drive's own site's host; never what a file's or a message's
-// content holds.
+// driveItems an answer about files gives that a tick covers, at its drive's own site's host, as is the one its content redirects
+// to (check); never what a file's or a message's content holds.
 async function links(j: any, path: string, email: string, ticks: string[]): Promise<string[]> {
   const parts = path.replace(/^\/[^/]+/, '').split('/').slice(1).map(s => decodeURIComponent(s).replace(/\(.*$/, '').split('.').pop()!.toLowerCase());
   const [top, , part] = parts[0] === 'me' ? ['users', '', ...parts.slice(1)] : parts, action = parts.at(-1)!, url = (u: unknown): u is string => typeof u === 'string' && URL.canParse(u);

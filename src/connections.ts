@@ -23,8 +23,8 @@ import * as exa from './connections/exa.ts';
 // A run reaches those hosts as they are, with real tools and the vendors' own docs: the sandbox's proxy ends TLS for them, as the
 // host, with rollforward's own certificate authority (ca.ts), which runs trust. Each request is checked against the type's policy
 // and the instance's ticks, has its Authorization replaced by the runner's token, and goes on; the answer comes back as it is, and
-// a `call` entry logs it. A link an answer held, such as an upload session's, goes through for that run, as it is, with no
-// credential added. A refusal is a plain 403 with the reason, logged too.
+// a `call` entry logs it. A link an answer held, such as an upload session's, or redirected to, goes through for that run, as it
+// is, with no credential added. A refusal is a plain 403 with the reason, logged too.
 //
 // The server's own connections, OpenRouter and Exa, each a module under connections/ too, are every run's while the server has
 // its key, which no person lends: a request is checked against its policy and has the key put in for the run's stand-in, and what
@@ -37,9 +37,10 @@ export type Type = {
   // Its person's login: an Entra login, with its scope, or a website's, which they sign in to in a live browser.
   login(c: Connection): (EntraLogin | { id: string; kind: string; name: string; scope?: undefined; offers: Offer[] });
   serves?(c: Connection, host: string): boolean;
-  // The offer a request needs ticked, and its JSON body as it goes on, if the type rewrote it; or a refusal.
+  // The offer a request needs ticked, its JSON body as it goes on, if the type rewrote it, and the origin where its answer's
+  // Location, as a redirect's, is a link; or a refusal.
   // A request that sends mail also reads, on asking, what goes, its recipients and its attachments' sha256s, or why that can't be read.
-  check?(c: Connection, runner: string, ticks: string[], r: Request): Promise<{ offer: string; json?: unknown }>;
+  check?(c: Connection, runner: string, ticks: string[], r: Request): Promise<{ offer: string; json?: unknown; redirect?: string }>;
   links?(answer: any, path: string, email: string, ticks: string[]): string[] | Promise<string[]>;
   // What a run's environment holds for it, given the instance's ticks.
   env?(c: Connection, ticks: string[]): Record<string, string>;
@@ -141,10 +142,11 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     // A file's content, PUT …/content, streams on as its bytes, a JSON file's too.
     const raw = !link && (s || ['POST', 'PATCH'].includes(method) || (method === 'PUT' && isJson && !/\/content$/i.test(url.pathname))) ? Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)) : undefined;
     const json = isJson && raw?.length ? JSON.parse(raw.toString()) : undefined, r = { method, url, headers: req.headers, json, body: raw };
-    let out = json, auth: Record<string, string> = {}, as = '', ticks: string[] = [];
+    let out = json, auth: Record<string, string> = {}, as = '', ticks: string[] = [], redirect: string | undefined;
     if (c) {
       const { by, logins } = lender(a.inst, a.n), checked = await types[c.type].check!(c, by, ticks = logins, r), login = loginOf(c) as EntraLogin;
       out = checked.json ?? json;
+      redirect = checked.redirect;
       as = use(a.inst, a.n, checked.offer).email;
       auth = { authorization: `Bearer ${await token(as, login.id, login.scope)}` };
     }
@@ -156,7 +158,10 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     }
     const body = out === undefined ? raw : Buffer.from(JSON.stringify(out));
     if (!s && !['GET', 'HEAD'].includes(method)) sent = a.inst.append('agent', 'send', { run: a.n, name, method, path }).seq;
-    const answer = await forward(`${upstreams[host] ?? url.origin}${url.pathname}${url.search}`, req, res, { auth, body, keep: !link });
+    // A Location where the check lets one go, as a redirect's, is a link for this run before the run can follow it.
+    const answer = await forward(`${upstreams[host] ?? url.origin}${url.pathname}${url.search}`, req, res, {
+      auth, body, keep: !link, location: to => { const l = URL.parse(to); if (l && l.origin === redirect) a.links.set(l.href, name); },
+    });
     // An answer's links go through for this run; what a service's answer cost, whole or in the last event of its stream that says,
     // adds to the run's as it comes.
     if (c && answer.type.includes('json')) for (const l of await types[c.type].links?.(JSON.parse(answer.text || 'null'), url.pathname, as, ticks) ?? []) a.links.set(new URL(l).href, c.name);
@@ -178,15 +183,16 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
   }
 }
 
-// The request goes on as it came, but for its credential and the hop's own headers; the answer comes back as it is, and, where
-// it's kept and is JSON or a stream of events, as text too, for what it holds. A run gone before its answer, as one cut, leaves it
-// read to its end all the same, so what was sent is logged as answered.
-function forward(target: string, req: IncomingMessage, res: ServerResponse, o: { auth: Record<string, string>; body?: Buffer; keep: boolean }) {
+// The request goes on as it came, but for its credential and the hop's own headers; the answer comes back as it is, its Location
+// told first, and, where it's kept and is JSON or a stream of events, as text too, for what it holds. A run gone before its
+// answer, as one cut, leaves it read to its end all the same, so what was sent is logged as answered.
+function forward(target: string, req: IncomingMessage, res: ServerResponse, o: { auth: Record<string, string>; body?: Buffer; keep: boolean; location(to: string): void }) {
   return new Promise<{ status: number; bytes: number; type: string; text: string }>((ok, fail) => {
     const headers = Object.fromEntries(Object.entries(req.headers).filter(([k]) => !HOP.includes(k)));
     const up = (target.startsWith('https:') ? httpsRequest : httpRequest)(target, {
       method: req.method, headers: { ...headers, ...(o.body && { 'content-length': String(o.body.length) }), ...o.auth },
     }, r => {
+      if (r.headers.location) o.location(r.headers.location);
       res.writeHead(r.statusCode!, Object.fromEntries(Object.entries(r.headers).filter(([k]) => !HOP.includes(k))));
       const kept: Buffer[] = [], type = String(r.headers['content-type']), keep = o.keep && /json|event-stream/.test(type);
       let bytes = 0;

@@ -151,6 +151,8 @@ before(async () => {
     if (path === '/me/drive') return send({ id: 'b!own' });
     if ((m = /^\/shares\/u!([\w-]+)\/driveItem$/.exec(path))) return send(shares[Buffer.from(m[1], 'base64url').toString()] ?? { error: { code: 'itemNotFound' } }, shares[Buffer.from(m[1], 'base64url').toString()] ? 200 : 404);
     if ((m = /^\/drives\/b!d1\/(?:items\/(\w+)|root)\/(?:children|search\(q='\w+'\))$/.exec(path))) return send({ value: folders[m[1] ?? 'root1'] ?? [] });
+    // A file's content as Graph gives OneDrive's and SharePoint's: a redirect to its download address, at its drive's own site.
+    if (path === '/drives/b!d1/items/b/content') return void res.writeHead(302, { location: 'https://host/download/a?tempauth=r' }).end();
     if ((m = /^\/drives\/b!d1\/items\/(\w+)\/content$/.exec(path))) return void res.writeHead(200, m[1] === 'c' ? { 'content-type': 'application/json' } : {}).end(content[m[1]]);
     if ((m = /^\/drives\/b!d1\/items\/(\w+)$/.exec(path))) return send(m[1] === 'root1' ? roots['b!d1'] : { ...[...Object.values(folders).flat()].find(i => i.id === m![1]), ...(m[1] === 'a' && { '@microsoft.graph.downloadUrl': 'https://host/download/a?tempauth=t' }) });
     if ((m = /^\/(?:drives\/(b!\w+)|users\/alice@demo\.test\/drive)\/root$/.exec(path))) return send(roots[m[1] ?? 'b!own']);
@@ -330,6 +332,16 @@ test("links an answer gave go through for that run alone, as they are, with no c
   await assert.rejects(via('GET', item['@microsoft.graph.downloadUrl'], { token: 'other' }), /CONNECT answered 403/, "another run's, whose proxy doesn't end its host");
   assert.equal((await via('GET', `${G}/drives/b!d1/items/c/content`)).status, 200, 'a JSON file of links');
   assert.equal((await via('GET', 'https://host/download/b?tempauth=t')).status, 403, "not a link an answer gave, only a file's content");
+});
+
+test("a file's content redirected to its download address, at its drive's own site, goes through for that run alone, as the address on its driveItem does", async () => {
+  runs.set('run4', inst);
+  const redirect = await via('GET', `${G}/drives/b!d1/items/b/content`, { token: 'run4' });
+  assert.deepEqual([redirect.status, redirect.headers.location], [302, 'https://host/download/a?tempauth=r'], "Graph's answer, as it is");
+  const download = await via('GET', redirect.headers.location!, { token: 'run4', headers: { authorization: '' } });
+  assert.deepEqual(JSON.parse(download.text), { downloaded: true, auth: null });
+  assert.deepEqual(calls().slice(-2).map(e => [e.path, e.status]), [['/v1.0/drives/b!d1/items/b/content', 302], ['https://host/download/a', 200]]);
+  await assert.rejects(via('GET', redirect.headers.location!, { token: 'other' }), /CONNECT answered 403/, "another run's");
 });
 
 test('a login Microsoft no longer renews is marked expired, and the run is told its runner signs in again', async () => {
