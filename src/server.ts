@@ -244,7 +244,7 @@ function runs(me: Me, since: string) {
     return i.log.filter(r => r.op === 'run' && r.at >= since).map(r => {
       const d = i.log.find(e => e.op === 'done' && e.run === r.run), seen = (i.log.findLast(e => e.op === 'done' && e.seq < r.seq)?.seen as number | undefined) ?? 0;
       const cause = pending(i, seen).find(e => e.seq <= (r.upto as number));
-      const error = d?.error as string | undefined, outcome = !d ? 'running' : error === CUT ? 'cut' : error ? 'failed' : d.aborted ? 'interrupted' : 'done';
+      const error = d?.error as string | undefined, outcome = !d ? 'running' : !error ? (d.aborted ? 'interrupted' : 'done') : Object.values(CUT).includes(error) ? 'cut' : 'failed';
       return {
         path: `${named(t, sid)}/${i.label}`, run: r.run as number, at: r.at, outcome,
         // Why a failed run failed: out of OpenRouter credits, a provider's policy refusing it, the time limit, or anything else.
@@ -530,9 +530,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     });
     if (req.method !== 'POST') throw new HttpError(405, 'GET it, POST {"owners", "members"} to accept it, or DELETE to withdraw or decline it');
     if (a.archived || b.archived) throw new HttpError(409, `${a.archived ? a.name : b.name} is archived`);
-    // A run going in a series that moves has read what its workspace reaches, which it could copy where the other's people see it.
-    const going = moving.filter(sid => active.has(sid));
-    if (going.length) throw new HttpError(409, `wait for its runs to end: ${going.map(sid => named(t, sid)).join(', ')}`);
+    // The runs going in what moves, and any whose reach it narrows, are cut, and carry on there (waker.ts leases()).
     const [owners, members] = people(payload), moved = move(t);
     b.owners = [...new Set([...b.owners, ...owners])];
     b.members = [...new Set([...b.members, ...members, ...(p.kind === 'merge' ? everyone(a) : [])])].filter(x => !b.owners.includes(x));

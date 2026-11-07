@@ -28,7 +28,7 @@ const full = () => active.size >= MAX_RUNS || (MIN_FREE > 0 && freemem() < MIN_F
 export const MAX_OPEN = 3;
 const SPACING_MS = 15 * 60_000, MAX_WAKES = 20;
 
-export type Active = { inst: Instance; n: number; session: number; token: string; view: View; skills: Record<string, number>; shape: string; run?: Run; sent: number; seen: number; texts: Map<string, number>; interrupted: boolean; done: boolean; cost: number; failed?: string; hosts: Set<string>; links: Map<string, string>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string };
+export type Active = { inst: Instance; n: number; session: number; token: string; view: View; workspace: string; skills: Record<string, number>; shape: string; run?: Run; sent: number; seen: number; texts: Map<string, number>; interrupted: boolean; done: boolean; cost: number; failed?: string; hosts: Set<string>; links: Map<string, string>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string };
 export const active = new Map<string, Active>();
 export const byToken = new Map<string, Active>();
 const debounce = new Map<string, NodeJS.Timeout>();
@@ -191,7 +191,7 @@ async function start(inst: Instance) {
   // The versions live as its Pi starts, which it uses to its end.
   const live = kept ? [] : skills().map(s => ({ ...s, dir: realpathSync(s.dir) }));
   const a: Active = {
-    inst, n, session: kept?.session ?? n, token: kept?.token ?? randomUUID(), view: kept?.view ?? view(inst), skills: kept?.skills ?? Object.fromEntries(live.map(s => [s.id, pushed(s).version])), shape: kept?.shape ?? startsFrom(inst),
+    inst, n, session: kept?.session ?? n, token: kept?.token ?? randomUUID(), view: kept?.view ?? view(inst), workspace: tree().series[series].workspace, skills: kept?.skills ?? Object.fromEntries(live.map(s => [s.id, pushed(s).version])), shape: kept?.shape ?? startsFrom(inst),
     sent: entries.at(-1)!.seq, seen, texts: new Map([[text, entries.at(-1)!.seq]]), interrupted: false, done: false, cost: 0, hosts: new Set(), links: new Map(),
     process: processOf(inst), thread: pending(inst, seen)[0]?.thread as string | undefined,
   };
@@ -222,6 +222,8 @@ async function start(inst: Instance) {
         a.view.env.RF_INDEX = '/index';
       }
       a.run = await startRun({ token: a.token, id: inst.id, n, view: a.view, skills: live, onEvent: e => byToken.has(a.token) && heard(byToken.get(a.token)!, e) });
+      // Cut as it started (leases()).
+      if (a.done) return void end(a.token, a.run);
     }
     ({ settled } = await a.run.turn(text));
   } catch (err) {
@@ -261,7 +263,7 @@ const rules = (was: string, now: string) => {
   return now.split('\n').filter(l => /^\s*([-*+]|\d+[.)])\s/.test(l) && !old.has(l.trim())).length;
 };
 
-function finish(a: Active, aborted: boolean, error?: string) {
+function finish(a: Active, aborted: boolean, error?: string): Entry | undefined {
   if (a.done) return;
   a.done = true;
   clearTimeout(a.timer);
@@ -271,7 +273,7 @@ function finish(a: Active, aborted: boolean, error?: string) {
   a.browsers?.end().catch(e => a.inst.append('server', 'browsers', { run: a.n, error: e.message }));
   // The rules it added to the process, or reworded, for the thread whose entry started it, where they were likely agreed.
   const added = rules(a.process, readFile(a.inst.dir, 'working/process.md') ?? a.process);
-  a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(4), ...(error && { error }), ...(added && { rules: added, thread: a.thread }) });
+  const done = a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(4), ...(error && { error }), ...(added && { rules: added, thread: a.thread }) });
   // Its Pi idles for the instance's next run, or stops, the longest idle too past RF_MAX_IDLE.
   const keep = !aborted && !error && !!a.run && a.inst.doc.status === 'open' && a.run.alone();
   if (keep) {
@@ -288,7 +290,25 @@ function finish(a: Active, aborted: boolean, error?: string) {
     if (next) start(next);
   }
   startWaiting();
+  return done;
 }
+
+// A run is a lease on its view too: a change that would let what it reads reach someone who can't see where it came from, that moves
+// its series, or that takes its workspace from its runner cuts it at once, its token first, so nothing more goes out, and its
+// instance carries on in a run of the new view. Anything else, such as a rename or a series made in reach, waits for the next run.
+function leases() {
+  const t = tree();
+  for (const a of active.values()) {
+    const ws = t.series[a.inst.seriesId].workspace, runner = asPerson(runnerOf(a.inst).by), reads = [a.inst.seriesId, ...reach(t, a.inst.seriesId)];
+    const why = ws !== a.workspace ? CUT.moved : !(runner && canSee(runner, t.workspaces[ws])) ? CUT.runner
+      : Object.values(a.view.series).some(id => !reads.includes(id)) ? CUT.reach : undefined;
+    if (!why) continue;
+    const done = finish(a, true, why)!;
+    a.inst.append('server', 'wake', { reason: `Run ${a.n} was cut: ${why}; carry on`, from: 'server', cause: done.seq });
+    kick(a.inst);
+  }
+}
+changes.on('change', (id: string) => id === 'tree' && setImmediate(leases));
 
 function startWaiting() {
   for (const i of waiting) {
@@ -465,8 +485,9 @@ function fire() {
   saveWakes(w);
 }
 
-// A run a restart cut: its done's error, which `rf runs` tells from a failure.
-export const CUT = 'a restart cut the run';
+// Why a run was cut, its done's error, which `rf runs` tells from a failure: a restart, or a change that broke its lease (leases()).
+// Either way its instance is woken to carry on.
+export const CUT = { restart: 'a restart cut the run', moved: 'its series moved', runner: 'its runner can no longer see it', reach: 'its reach narrowed' };
 
 // A run a restart cut ends as aborted, with what its calls cost so far, its changes committed as at any run's end, and its instance
 // is woken to carry on, so a deploy needn't wait for quiet. A commit the restart cut leaves git's locks, which would refuse the
@@ -477,9 +498,9 @@ export function recover() {
     const run = inst.log.findLast(e => e.op === 'run' || e.op === 'done');
     if (run?.op === 'run') {
       const cost = inst.log.reduce((t, e) => t + (e.op === 'call' && e.run === run.run ? (e.cost as number | undefined) ?? 0 : 0), 0);
-      const done = inst.append('server', 'done', { run: run.run, aborted: true, seen: seenBefore(inst), cost: +cost.toFixed(4), error: CUT });
+      const done = inst.append('server', 'done', { run: run.run, aborted: true, seen: seenBefore(inst), cost: +cost.toFixed(4), error: CUT.restart });
       inst.append('server', 'wake', { reason: `A restart cut run ${run.run}; carry on`, from: 'server', cause: done.seq });
-      commit(inst.dir, AGENT, `Run ${run.run}: ${CUT}`).catch(e => inst.append('server', 'commit', { run: run.run, error: e.message }));
+      commit(inst.dir, AGENT, `Run ${run.run}: ${CUT.restart}`).catch(e => inst.append('server', 'commit', { run: run.run, error: e.message }));
     }
     kick(inst);
   }

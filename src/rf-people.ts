@@ -93,10 +93,10 @@ rf indexes [--json]               each index of a source you index, all for admi
                                   its phase, crawl or follow, pages read, when last caught up, and its error and next try
 rf runs [PATH] [--since DATE] [--failed] [--running] [--long MIN] [--json]
                                   a line per run: start, path, run, outcome, time, cost, what started it, and any error;
-                                  the outcome is done, interrupted by a person, cut by a restart, running, or failed, for
-                                  credits, policy, time limit or other
+                                  the outcome is done, interrupted by a person, cut, by a restart or a change that broke its
+                                  lease, running, or failed, for credits, policy, time limit or other
 rf costs [PATH] [--since DATE] [--by workspace|series|person|day|outcome] [--json]   totals, runs and cost per run; person
-                                  is the runner; runs leave out those a restart cut, as the next run carries each on
+                                  is the runner; runs leave out those that were cut, as the next run carries each on
 rf activity [PATH] [--since DATE] [--json]   per instance, what people and the agent said, what people uploaded and closed, and
                                   each run that failed
 rf wakes [PATH] [--json]          each series' pending wakes and requests to start an instance, and when a wake of it last
@@ -629,7 +629,7 @@ else if (cmd === 'comment' && args.length === 2) {
     outcome: r => r.failure ? `failed, ${r.failure}` : r.outcome,
   }[by];
   if (!key) throw new Error('--by: workspace, series, person, day or outcome');
-  // A run a restart cut is carried on by the next, so it adds its cost, not a run.
+  // A run that was cut is carried on by the next, so it adds its cost, not a run.
   const sums = new Map<string, { runs: number; cost: number }>(), rows = await runsIn(args[0]), counted = (r: { outcome: string }) => r.outcome === 'cut' ? 0 : 1;
   for (const r of rows) sums.set(key(r), { runs: (sums.get(key(r))?.runs ?? 0) + counted(r), cost: (sums.get(key(r))?.cost ?? 0) + r.cost });
   const out = [...sums].map(([k, v]) => ({ [by]: k, runs: v.runs, cost: +v.cost.toFixed(4), per_run: v.runs ? +(v.cost / v.runs).toFixed(4) : null }))

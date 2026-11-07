@@ -280,6 +280,40 @@ test('people rename the instance, its series and its workspace mid-run: the run 
   assert.ok(git('show', 'HEAD:names.tsv').includes(`${id}\t/work/Renamed/After/November\n`));
 });
 
+test("a change that narrows what a run may read cuts it at once, and its instance carries on in a run of the new view: someone joins its workspace who can't see a workspace it reads, then its series moves", async () => {
+  const workspace = async (name: string, members: string[] = []) => {
+    const { id } = await (await call('POST', '/api/workspaces', { name })).json();
+    if (members.length) assert.equal((await call('PUT', `/api/workspaces/${id}`, { members })).status, 200);
+    return id as string;
+  };
+  const source = await workspace('Lease source', [BOB]), reader = await workspace('Lease reader'), elsewhere = await workspace('Lease elsewhere');
+  const { id: ledger } = await (await call('POST', '/api/series', { workspace: source, name: 'Ledger' })).json();
+  assert.equal((await call('POST', `/api/series/${ledger}`, { label: '2026-11', logins: [], quiet: true })).status, 200);
+  const { id: series } = await (await call('POST', '/api/series', { workspace: reader, name: 'Report' })).json();
+  const joined: Script = { bash: ['ls /work', async () => {
+    assert.equal((await call('PUT', `/api/workspaces/${reader}`, { members: ['carol@demo.test'] })).status, 200);
+    return 'sleep 60';
+  }], report: 'Never said.', saw: [] };
+  const moved: Script = { bash: ['ls /work', async () => {
+    assert.equal((await call('PUT', `/api/proposals/${reader}`, { kind: 'move', series, to: elsewhere })).status, 200);
+    assert.equal((await call('POST', `/api/proposals/${reader}`, { owners: [], members: [] })).status, 200, 'accepted though a run of what moves is going');
+    return 'sleep 60';
+  }], report: 'Never said.', saw: [] };
+  const after: Script = { bash: ['pwd'], report: 'Carried on.', saw: [] };
+  scripts.push(joined, moved, after);
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
+  const log = await runs(id, 3), done = log.filter(e => e.op === 'done');
+  assert.ok(joined.saw[0].split('\n').includes('Lease source'), 'its workspace had no one the other lacked, so it read it');
+  assert.deepEqual(moved.saw[0].split('\n').filter(l => l.startsWith('Lease')), ['Lease reader'], 'Carol in its workspace, it no longer does');
+  assert.equal(after.saw[0].trim(), '/work/Lease elsewhere/Report/2026-11');
+  assert.deepEqual(done.map(e => [e.aborted, e.error]), [[true, 'its reach narrowed'], [true, 'its series moved'], [false, undefined]]);
+  assert.deepEqual(log.filter(e => e.op === 'wake' && e.from === 'server').map(e => [e.reason, log[(e.cause as number) - 1].op]),
+    [['Run 1 was cut: its reach narrowed; carry on', 'done'], ['Run 2 was cut: its series moved; carry on', 'done']]);
+  assert.ok(log.findIndex(e => e.op === 'move') < log.indexOf(done[1]), 'the cut follows the change');
+  const ran = (await (await call('GET', '/api/runs')).json()).filter((r: { path: string }) => r.path === 'Lease elsewhere/Report/2026-11');
+  assert.deepEqual(ran.map((r: { outcome: string }) => r.outcome), ['cut', 'cut', 'done'], 'each carried on by the next, as after a restart');
+});
+
 test("sign-offs are git commits: the agent commits a moment worth keeping and pins what it asks about; anyone who sees the instance signs it off in their name, someone else's a note for the runner; closing commits as the runner's", async () => {
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Signed' })).json();
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB] })).status, 200);
