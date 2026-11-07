@@ -892,9 +892,9 @@ test('rf shares and archives series and workspaces, starts or drops a request, l
   saveLogin(adminEmail, { id: 'web:gg', kind: 'website', name: 'GG', since, offers: [{ id: 'web:gg', name: 'GG' }] }, 'state');
   const asked = /^asked, as grant (\w+): one of Making's owners approves or denies it\nnot checked: the server has no OPENROUTER_API_KEY\n$/.exec(await rf('site', 'ask', 'gg', 'Making', 'month-end pulls'))![1];
   await assert.rejects(rf('site', 'ask', 'gg', 'Making', 'again'), fails(1, /: 409 you've asked for gg in Making already/));
-  assert.match(await rf('waiting'), new RegExp(`^grant  Making since .+, grant ${asked}: ${adminEmail} asks to use gg here: month-end pulls \\(not checked\\)$`, 'm'));
+  assert.match(await rf('waiting'), new RegExp(`^grant  Making since .+, grant ${asked}: ${adminEmail} asks to use gg, at https://gg\\.example\\.com/, here: month-end pulls \\(not checked\\)$`, 'm'));
   assert.equal(await rf('grant', 'approve', asked, 'fine'), 'approved\n');
-  assert.match(await rf('grants', 'Making'), new RegExp(`^${asked}  approved  gg in Making for ${adminEmail}, since .+: month-end pulls; approved by ${adminEmail}: fine \\(not checked\\)$`, 'm'));
+  assert.match(await rf('grants', 'Making'), new RegExp(`^${asked}  approved  gg at https://gg\\.example\\.com/ in Making for ${adminEmail}, since .+: month-end pulls; approved by ${adminEmail}: fine \\(not checked\\)$`, 'm'));
   assert.equal(await rf('grant', 'revoke', asked), 'revoked\n');
   assert.ok(!JSON.parse(await rf('logins', '--json')).some((l: { id: string }) => l.id === 'web:gg'), 'with no grant left, the login is signed out');
   assert.equal(await rf('site', 'remove', 'gg'), 'removed gg\n');
