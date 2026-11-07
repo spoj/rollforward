@@ -150,10 +150,6 @@ export function renameInstance(inst: Instance, label: string) {
   setMeta(inst.id, { ...inst.meta, label: freeLabel(inst.seriesId, label) });
 }
 
-export function moveInstance(inst: Instance, seriesId: string) {
-  setMeta(inst.id, { label: freeLabel(seriesId, inst.label), series: seriesId });
-}
-
 export function duplicateInstance(src: Instance, label: string, by: string, logins: string[]): Instance {
   const name = freeLabel(src.seriesId, label), id = newId(), dir = instanceDir(id);
   // Files and folders only, sharing blocks where the disk can: a run may have left links or FIFOs in working/, or a name that isn't

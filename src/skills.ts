@@ -14,7 +14,6 @@ export function openSkills(dataRoot: string) {
   root = join(dataRoot, 'skills', 'live');
   mkdirSync(root, { recursive: true });
 }
-export const skillsDir = () => root;
 export const pushed = (s: Skill): { version: number; by: string; at: string } => JSON.parse(readFileSync(join(s.dir, '.pushed.json'), 'utf8'));
 
 const ID = /^[a-z0-9][a-z0-9-]*$/;
