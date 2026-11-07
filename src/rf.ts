@@ -8,8 +8,8 @@ const HELP: Record<string, string> = {
   put: `rf put FILE|-
   Replaces the screen with FILE, which carries the rev you last read. It fails if the screen moved since (people may have
   uploaded): run rf show and merge. It fails, with the reasons, unless every item has a unique id, a name and a kind (input,
-  step or output); from names items, never in a circle; file is null or an existing file under upload/ or working/; the review
-  sheet, review, is there; and status is left out or as it is.`,
+  step or output); from names items, never in a circle; file is null or an existing file under upload/ or working/; and status
+  is left out or as it is.`,
   say: `rf say [--in THREAD | --on ITEM[@REF]] [--file PATH]... TEXT|-
   Tells people something that needs no reply. --in replies in a thread; --on starts one on an item, at a place in its file
   such as ar-aging@Sheet1!C22, or a markdown file's line by its opening words; neither starts one on the instance. --file cites
@@ -17,7 +17,7 @@ const HELP: Record<string, string> = {
   ../<label>/working/x.csv; an image (png, jpg, gif, webp, svg) shows in the thread. - reads TEXT from stdin.`,
   ask: `rf ask [--in THREAD | --on ITEM[@REF]] [--to EMAIL | --sign-off [--recipients EMAIL,...] [--attach PATH]...] [--file PATH]... TEXT|-
   Asks for a reply: the thread waits on EMAIL, else the instance's runner, until someone replies (which starts a run) or
-  resolves it. --sign-off asks the runner to approve an action outside, such as a mail or a submission, shown under Review, or
+  resolves it. --sign-off asks the runner to approve an action outside, such as a mail or a submission, or
   reject it with a note: either commits its folder in their name (rf help commit) and starts a run, and the log's signoff entry
   says which, with the commit. --recipients, to, cc and bcc alike, and --attach, files under upload/ or working/ frozen as you
   ask, bind it: once a sign-off names recipients, Microsoft 365 sends this instance's mail only as an approval binds it, to

@@ -1,12 +1,12 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { closeSync, constants, cpSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { agentsFile, closedBefore, createInstance, evidence, freeze, type Item, type Pick, duplicateInstance, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, safeName, seriesDir, type Entry, type Instance } from './store.ts';
+import { agentsFile, closedBefore, createInstance, freeze, duplicateInstance, moveInstance, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, safeName, seriesDir, type Entry, type Instance } from './store.ts';
 import { AGENT, commit } from './git.ts';
 import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
@@ -63,64 +63,6 @@ function previous(inst: Instance) {
     const was = prev.doc.items.find(p => p.id === i.id)?.file, now = was && sha256(inst.dir, i.file!);
     return [i.id, !was ? 'new' : now && now === sha256(prev.dir, was) ? 'same' : 'changed'];
   })) };
-}
-
-// A CSV's rows, as RFC 4180 reads them: commas between fields, a quoted one holding commas, line breaks and doubled quotes.
-function csv(text: string): string[][] {
-  const rows: string[][] = [[]];
-  let f = '', quoted = false;
-  for (let k = 0; k < text.length; k++) {
-    const c = text[k];
-    if (quoted && c === '"' && text[k + 1] === '"') (f += '"', k++);
-    else if (c === '"') quoted = !quoted;
-    else if (quoted) f += c;
-    else if (c === ',') (rows.at(-1)!.push(f), f = '');
-    else if (c === '\n') (rows.at(-1)!.push(f.replace(/\r$/, '')), f = '', rows.push([]));
-    else f += c;
-  }
-  rows.at(-1)!.push(f.replace(/\r$/, ''));
-  return rows.filter(r => r.length > 1 || r[0]);
-}
-
-// A population's rows, each its id, its amount and its fields, ids its own and amounts numbers, such as 1,234.50 or (12.00).
-function population(inst: Instance, item: Item) {
-  const p = item.population!, [head = [], ...body] = csv(readFile(inst.dir, item.file!)!.replace(/^\uFEFF/, ''));
-  const at = (c: string) => head.includes(c) ? head.indexOf(c) : (() => { throw new HttpError(400, `${item.file} has no column ${c}; its columns: ${head.join(', ')}`); })();
-  const id = at(p.id), amount = at(p.amount), seen = new Set<string>();
-  const rows = body.map((r, n) => {
-    const a = Number(r[amount]?.replace(/,/g, '').replace(/^\((.*)\)$/, '-$1'));
-    if (!r[amount]?.trim() || !Number.isFinite(a)) throw new HttpError(400, `${item.file}, row ${n + 2}: ${p.amount} ${JSON.stringify(r[amount] ?? '')} is no amount`);
-    if (seen.has(r[id])) throw new HttpError(400, `${item.file}, row ${n + 2}: ${p.id} ${r[id]} again; each row's id is its own`);
-    seen.add(r[id]);
-    return { id: r[id], amount: a, fields: Object.fromEntries(head.map((h, k) => [h, r[k] ?? ''])) };
-  });
-  return { head, rows, total: Math.round(rows.reduce((t, r) => t + r.amount, 0) * 100) / 100 };
-}
-
-// A draw's k-th number in [0, 1): sha256 of "SEED:k", its first four bytes over 2^32, so anyone with the seed draws it again.
-const random = (seed: string, k: number) => createHash('sha256').update(`${seed}:${k}`).digest().readUInt32BE(0) / 2 ** 32;
-
-// The sample: each row whose amount is at least key, then n of the rest, at random, by a shuffle of their order on the seed's
-// numbers, or by amount, monetary unit sampling: n points a step of their total apart, from a random start, each picking the row
-// whose amount spans it, once.
-function draw(rows: { id: string; amount: number }[], n: number, key: number | undefined, byAmount: boolean, seed: string): Pick[] {
-  const keyed = rows.filter(r => key !== undefined && Math.abs(r.amount) >= key), rest = rows.filter(r => !keyed.includes(r)), picked: typeof rows = [];
-  if (byAmount) {
-    const step = rest.reduce((t, r) => t + Math.abs(r.amount), 0) / n;
-    let at = 0, k = 0;
-    for (const r of rest) {
-      at += Math.abs(r.amount);
-      for (; k < n && (random(seed, 0) + k) * step < at; k++) if (picked.at(-1) !== r) picked.push(r);
-    }
-  } else {
-    const order = [...rest];
-    for (let i = 0; i < Math.min(n, order.length); i++) {
-      const j = i + Math.floor(random(seed, i) * (order.length - i));
-      [order[i], order[j]] = [order[j], order[i]];
-      picked.push(order[i]);
-    }
-  }
-  return [...keyed.map(r => ({ id: r.id, as: 'key' as const })), ...picked.map(r => ({ id: r.id, as: 'random' as const }))];
 }
 
 // A free name among a workspace's series: the name, else the name 2, 3 and on.
@@ -730,16 +672,9 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   const a = active.get(inst.seriesId);
   const mine = a?.inst === inst ? a : undefined;
   if (!action) see(by, inst.id, inst.log.at(-1)!.seq);
-  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4), browsers: [...(mine.browsers?.watchable().keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), runner: runner(inst), previous: previous(inst), review: inst.review() });
+  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4), browsers: [...(mine.browsers?.watchable().keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), runner: runner(inst), previous: previous(inst) });
   if (action === 'trace') return send(res, 200, trace(inst));
   if (action === 'summary') return send(res, 200, summary(inst, me));
-  // A population as the page shows it: its count, total and largest rows, and the rows of its picks.
-  if (action === 'sample') {
-    const item = inst.doc.items.find(i => i.id === url.searchParams.get('item') && i.population && i.file);
-    if (!item) throw new HttpError(404, `no population ${url.searchParams.get('item')}`);
-    const { head, rows, total } = population(inst, item), picks = inst.picks(item) ?? [], ids = new Set(picks.map(p => p.id));
-    return send(res, 200, { head, count: rows.length, total, top: [...rows].sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount)).slice(0, 5), picks, picked: rows.filter(r => ids.has(r.id)) });
-  }
   // The screen: anyone who sees the instance reads it; only its own run writes it.
   if (action === 'screen' && req.method === 'GET') return send(res, 200, inst.doc);
   if (action === 'screen' && req.method === 'PUT' && run) return send(res, 200, `saved, rev ${inst.put((await body(req)).toString())}`);
@@ -861,34 +796,6 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const hash = await commit(inst.dir, me, [ask.text, binds, note, approved && `Signed-off-by: ${me.name} <${me.email}>`].filter(Boolean).join('\n\n'));
     if (inst.threads().get(thread)!.at(-1) !== ask) throw new HttpError(409, `${thread} was answered meanwhile`);
     inst.append(by, 'signoff', { thread, approved: !!approved, ...(note && { text: note }), commit: hash, ...(quiet && { quiet: true }) });
-  } else if (action === 'pass') {
-    // A person passes a piece of Review's evidence, as it shows its file now, or a pick of its population, as its evidence page shows
-    // now; a new version reopens it. Nothing runs.
-    const shown = inst.doc.items.filter(i => evidence(i) && i.file), item = shown.find(i => i.id === payload.item), pick = payload.pick;
-    if (!item) throw new HttpError(400, `no ${payload.item} under Review to pass; it shows ${shown.map(i => i.id).join(', ') || 'nothing yet'}`);
-    const file = pick === undefined ? item.file : inst.picks(item)?.some(p => p.id === pick) && item.population!.evidence?.[pick];
-    if (!file) throw new HttpError(400, `${pick} is no pick of ${item.id} with an evidence page yet`);
-    inst.append(by, 'pass', { item: item.id, ...(pick !== undefined && { pick }), file });
-    return send(res, 200, 'ok');
-  } else if (action === 'draw') {
-    // A person draws a population's sample, with a seed of the server's own, never from anything the agent wrote: the draw logs it,
-    // and the population's and the outputs' hashes, with the folder committed as it stood. A draw again is a redraw.
-    const item = inst.doc.items.find(i => i.id === payload.item && i.population && i.file), n = Number(payload.n), key = payload.key == null || payload.key === '' ? undefined : Number(payload.key);
-    if (!item) throw new HttpError(400, `no population ${payload.item}: the agent declares one as an item's population`);
-    if (!Number.isInteger(n) || n < 0 || (key !== undefined && !(key > 0))) throw new HttpError(400, 'n is how many to draw, and key, if any, an amount above 0, at or over which every row is a pick');
-    if (mine) throw new HttpError(409, 'wait for the run to end');
-    const { rows, total } = population(inst, item), seed = randomBytes(32).toString('hex'), picks = draw(rows, n, key, !!payload.by_amount, seed);
-    if (!picks.length) throw new HttpError(400, 'the draw picks nothing: draw more, or a lower key');
-    const outputs = Object.fromEntries(inst.doc.items.filter(i => i.kind === 'output' && !evidence(i) && i.file).map(i => [i.id, sha256(inst.dir, i.file!)])), sum = sha256(inst.dir, item.file!);
-    const hash = await commit(inst.dir, me, [`Draw ${picks.length} of ${item.name}`, `${item.file} ${sum}\n${Object.entries(outputs).map(([id, s]) => `${id} ${s}`).join('\n')}`, `Seed: ${seed}`].join('\n\n'));
-    inst.append(by, 'draw', { item: item.id, file: item.file, sha256: sum, rows: rows.length, total, outputs, n, ...(key !== undefined && { key }), ...(payload.by_amount && { by_amount: true }), seed, picks, commit: hash, ...(quiet && { quiet: true }) });
-  } else if (action === 'pick') {
-    // A person adds a row to the sample, or drops a pick, saying why; the pick stays labelled as theirs.
-    const item = inst.doc.items.find(i => i.id === payload.item && i.population && i.file), picks = item && inst.picks(item), { id, add, reason } = payload;
-    if (!picks) throw new HttpError(409, `${payload.item} has no sample drawn for the file it shows: draw one first`);
-    if (typeof reason !== 'string' || !reason.trim()) throw new HttpError(400, 'a pick added or dropped says why');
-    if (add ? picks.some(p => p.id === id) || !population(inst, item!).rows.some(r => r.id === id) : !picks.some(p => p.id === id)) throw new HttpError(400, `${id} is ${add ? 'a pick already, or no row' : 'no pick'} of ${item!.id}`);
-    inst.append(by, 'pick', { item: item!.id, id, add: !!add, reason: reason.trim(), ...(quiet && { quiet: true }) });
   } else if (action === 'commit' && run) {
     // The agent commits the folder at a moment worth keeping, in its own name.
     const message = typeof payload.message === 'string' ? payload.message.trim() : '';

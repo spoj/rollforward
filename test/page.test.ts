@@ -32,13 +32,12 @@ before(async () => {
     { seq: 1, at: '2026-08-01T09:00:00.000Z', by: 'admin@demo.test', op: 'create', from: null, logins: [] },
     { seq: 2, at: '2026-08-01T09:05:00.000Z', by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'The pack is ready to send to the bank.', ask: true, signoff: true, recipients: ['bank@demo.test'] },
   ].map(e => JSON.stringify(e) + '\n').join(''));
-  // A closed instance of the same series, with its review sheet, whose run, asked to, called a connection and added a rule to its
-  // process.
+  // A closed instance of the same series whose run, asked to, called a connection, added a rule to its process and reported with
+  // images.
   const called = join(root, 'instances', 'a5c0ff5e1f01');
   mkdirSync(join(called, 'working'), { recursive: true });
   writeFileSync(join(called, 'instance.json'), JSON.stringify({ label: '2026-11', series: 'a5c0ff5e1fee' }));
-  writeFileSync(join(called, 'screen.json'), JSON.stringify({ rev: 1, status: 'closed', items: [{ id: 'review', name: 'Review sheet', kind: 'output', file: 'working/review.md' }] }));
-  writeFileSync(join(called, 'working', 'review.md'), '2 need you: C12, C15\n\nThe ledger is off by 4.00.\n\n| ![Ledger](working/months.png) | ![Months](../2026-11/working/months.png) |\n');
+  writeFileSync(join(called, 'screen.json'), JSON.stringify({ rev: 1, status: 'closed', items: [] }));
   writeFileSync(join(called, 'working', 'process.md'), 'The year-end pack for the bank.\n- Read the ledger; never write to it.\n');
   writeFileSync(join(called, 'working', 'months.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64'));
   writeFileSync(join(called, 'working', 'ledger.csv'), 'month,total\n');
@@ -48,31 +47,31 @@ before(async () => {
     { seq: 3, at: '2026-08-01T09:01:00.000Z', by: 'server', op: 'run', run: 1, upto: 2, skills: {} },
     { seq: 4, at: '2026-08-01T09:02:00.000Z', by: 'agent', op: 'call', run: 1, name: 'adb', method: 'POST', path: '/api/2.0/sql/statements', status: 200, bytes: 512 },
     { seq: 5, at: '2026-08-01T09:03:00.000Z', by: 'agent', op: 'call', run: 1, name: 'adb', method: 'POST', path: '/api/2.0/sql/statements', status: 403, bytes: 0, refused: 'adb:adb-1.azuredatabricks.net/wh9 is not ticked for this instance; its runner, admin@demo.test, ticks logins when starting or taking it over' },
-    { seq: 6, at: '2026-08-01T09:04:00.000Z', by: 'server', op: 'done', run: 1, aborted: false, seen: 5, cost: 0.01, summary: 'Read the ledger.', rules: 1, thread: 'c9' },
-    { seq: 7, at: '2026-08-01T09:04:30.000Z', by: 'agent', op: 'comment', thread: 'c10', item: null, ref: null, text: 'The ledger by month.', files: [{ inst: 'a5c0ff5e1f01', path: 'working/months.png' }, { inst: 'a5c0ff5e1f01', path: 'working/ledger.csv' }] },
-    { seq: 8, at: '2026-08-01T09:05:00.000Z', by: 'admin@demo.test', op: 'close' },
+    { seq: 6, at: '2026-08-01T09:03:30.000Z', by: 'agent', op: 'report', run: 1, text: 'Read the ledger.\n\n| ![Ledger](working/months.png) | ![Months](../2026-11/working/months.png) |' },
+    { seq: 7, at: '2026-08-01T09:04:00.000Z', by: 'server', op: 'done', run: 1, aborted: false, seen: 5, cost: 0.01, summary: 'Read the ledger.', rules: 1, thread: 'c9' },
+    { seq: 8, at: '2026-08-01T09:04:30.000Z', by: 'agent', op: 'comment', thread: 'c10', item: null, ref: null, text: 'The ledger by month.', files: [{ inst: 'a5c0ff5e1f01', path: 'working/months.png' }, { inst: 'a5c0ff5e1f01', path: 'working/ledger.csv' }] },
+    { seq: 9, at: '2026-08-01T09:05:00.000Z', by: 'admin@demo.test', op: 'close' },
   ].map(e => JSON.stringify(e) + '\n').join(''));
-  // An open instance of the same series whose Review shows the review sheet and a step.
+  // An open instance of the same series with two steps, notes in markdown and a tie-out.
   const reviewed = join(root, 'instances', 'a5c0ff5e1f02');
   mkdirSync(join(reviewed, 'working'), { recursive: true });
   writeFileSync(join(reviewed, 'instance.json'), JSON.stringify({ label: '2026-10', series: 'a5c0ff5e1fee' }));
-  writeFileSync(join(reviewed, 'working', 'review.md'), '2 checks pass\n\n- The ledger ties to the pack.\n- **Judgment:** the October accrual is carried at the September rate, as agreed with the controller.\n');
+  writeFileSync(join(reviewed, 'working', 'notes.md'), '2 checks pass\n\n- The ledger ties to the pack.\n- **Judgment:** the October accrual is carried at the September rate, as agreed with the controller.\n');
   writeFileSync(join(reviewed, 'working', 'tie.csv'), 'ledger,pack\n');
   writeFileSync(join(reviewed, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [
-    { id: 'review', name: 'Review sheet', kind: 'output', file: 'working/review.md' }, { id: 'tie', name: 'Tie-out', kind: 'step', file: 'working/tie.csv' }] }));
+    { id: 'notes', name: 'Notes', kind: 'step', file: 'working/notes.md' }, { id: 'tie', name: 'Tie-out', kind: 'step', file: 'working/tie.csv' }] }));
   writeFileSync(join(reviewed, 'log.jsonl'), JSON.stringify({ seq: 1, at: '2026-08-01T09:00:00.000Z', by: 'admin@demo.test', op: 'create', from: null, logins: [] }) + '\n');
-  // A series of its own, quiet since July, whose open instance's Review shows a population of five invoices, with an evidence page each.
-  const sampled = join(root, 'instances', 'a5c0ff5e1f05'), ids = ['INV-1', 'INV-2', 'INV-3', 'INV-4', 'INV-5'];
+  // A series of its own, quiet since July.
+  const sampled = join(root, 'instances', 'a5c0ff5e1f05');
   tree.series.a5c0ff5e1fef = { name: 'Invoice checks', workspace: '1b3031035ff6' };
   writeFileSync(join(root, '.rf', 'tree.json'), JSON.stringify(tree));
   mkdirSync(join(root, 'series', 'a5c0ff5e1fef'));
-  mkdirSync(join(sampled, 'working', 'ev'), { recursive: true });
+  mkdirSync(join(sampled, 'working'), { recursive: true });
   writeFileSync(join(sampled, 'instance.json'), JSON.stringify({ label: '2026-07', series: 'a5c0ff5e1fef' }));
   writeFileSync(join(sampled, 'working', 'invoices.csv'), 'invoice,customer,amount\nINV-1,Acme,"1,500.00"\nINV-2,Bolt,200.00\nINV-3,Cask,300.00\nINV-4,Dune,(50.00)\nINV-5,Echo,400.00\n');
   writeFileSync(join(sampled, 'working', 'bb.csv'), 'total\n2350\n');
-  for (const id of ids) writeFileSync(join(sampled, 'working', 'ev', `${id}.md`), `${id} matches its remittance.\n`);
   writeFileSync(join(sampled, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [{ id: 'bb', name: 'Borrowing base', kind: 'output', file: 'working/bb.csv' },
-    { id: 'invoices', name: 'Invoices', kind: 'step', file: 'working/invoices.csv', population: { id: 'invoice', amount: 'amount', ties: { item: 'bb', total: 2350 }, evidence: Object.fromEntries(ids.map(id => [id, `working/ev/${id}.md`])) } }] }));
+    { id: 'invoices', name: 'Invoices', kind: 'step', file: 'working/invoices.csv' }] }));
   writeFileSync(join(sampled, 'log.jsonl'), JSON.stringify({ seq: 1, at: '2026-07-01T09:00:00.000Z', by: 'admin@demo.test', op: 'create', from: null, logins: [] }) + '\n');
   // A step between the fixture's 2026-08-30 input and output, and an as-of date on one input.
   const stepped = join(root, 'instances', '3d70f7ca6f20'), doc = JSON.parse(readFileSync(join(stepped, 'screen.json'), 'utf8'));
@@ -177,8 +176,7 @@ test("only the runner abandons, from the Close dialog, whose buttons for a task 
   await page.waitForSelector('#pv .pvh b:text-is("Credentials")');
   await page.mouse.click(5, 5);
   await page.click('#bar [data-act=close]');
-  assert.deepEqual(await page.locator('#ask button').allTextContents(), ['Abandon instead', 'Close unreviewed', 'Cancel'], 'every instance has a review sheet, so its Close says it is missing');
-  assert.match(await page.textContent('#ask') ?? '', /No one passed Review sheet \(missing\)\./);
+  assert.deepEqual(await page.locator('#ask button').allTextContents(), ['Abandon instead', 'Close', 'Cancel']);
   await page.click('#ask button:text-is("Cancel")');
   assert.match(await page.textContent('#bar .state') ?? '', /Waiting for files/);
   await page.click('#bar [data-act=close]');
@@ -219,17 +217,14 @@ test("the side panel is the instance's conversation, a run a line among its thre
   await page.waitForSelector('#log.open .seg .sel:text-is("Conversation")');
 });
 
-test("the runner sees the review sheet, its verdict first, and the process, open; a thread whose entry started a run that added a rule says so, opening the process; the run's calls to a connection are in the audit, a refusal with why", async () => {
+test("the runner sees the process, open; a report's images show side by side, by their paths in the instance; a thread whose entry started a run that added a rule says so, opening the process; the run's calls to a connection are in the audit, a refusal with why", async () => {
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f01'; });
-  await page.waitForSelector('#log details[data-key=review][open]');
-  assert.equal(await page.locator('#log details[data-key=review] summary').innerText(), 'Review sheet · 2 need you: C12, C15');
-  assert.match(await page.locator('#log details[data-key=review] .post').innerText(), /^The ledger is off by 4\.00\.\s*$/);
-  const pictured = page.locator('#log details[data-key=review] .post td img');
-  assert.deepEqual(await pictured.evaluateAll(is => is.map(i => i.getAttribute('src'))), ['/files/a5c0ff5e1f01/working/months.png', '/files/a5c0ff5e1f01/working/months.png'], "the review sheet's images show side by side, by their paths in the instance");
+  await page.waitForSelector('#log details[data-key=process][open]');
+  const pictured = page.locator('#log details[data-key=run1] .post td img');
+  assert.deepEqual(await pictured.evaluateAll(is => is.map(i => i.getAttribute('src'))), ['/files/a5c0ff5e1f01/working/months.png', '/files/a5c0ff5e1f01/working/months.png']);
   await pictured.first().click();
   await page.waitForSelector('#pv img');
   await page.keyboard.press('Escape');
-  assert.equal(await page.locator('#log details[data-key=process]').evaluate(d => (d as HTMLDetailsElement).open), true);
   await page.click('#log details[data-key=process] > summary');
   const shown = page.locator('#log .thread[data-thread=c10] .post .f');
   assert.deepEqual(await shown.evaluateAll(fs => fs.map(f => f.querySelector('img')?.getAttribute('src') ?? f.textContent)), ['/files/a5c0ff5e1f01/working/months.png', 'ledger.csv'], 'an image shows in the thread, any other file as its name');
@@ -367,7 +362,7 @@ test("a sign-off the agent asks for shows louder, above the instance and in its 
   await thread.waitFor();
   assert.equal(await page.textContent('#bar .ptog .badge'), String(await page.locator('#log .thread.waits').count()), "the panel's toggle counts what waits there");
   assert.match(await thread.locator('.on').innerText(), /waits on your sign-off/);
-  assert.deepEqual(await page.locator('#rev .tile.prop.waits > *').allTextContents(), ['SIGN-OFF', 'The pack is ready to send to the bank.', '\u2192 bank@demo.test', 'Waits on you'], 'Review shows the action and where it goes');
+  assert.deepEqual(await page.locator('#steps .tile.prop.waits > *').allTextContents(), ['SIGN-OFF', 'The pack is ready to send to the bank.', '\u2192 bank@demo.test', 'Waits on you'], 'Steps show the action and where it goes');
   assert.equal(await thread.locator('.binds').textContent(), 'To bank@demo.test');
   assert.deepEqual(await thread.locator('button').allInnerTexts(), ['Approve', 'Reject']);
   await thread.locator('textarea').fill('Looks right.');
@@ -376,7 +371,7 @@ test("a sign-off the agent asks for shows louder, above the instance and in its 
   await post.waitFor();
   assert.match(await post.locator('.tm').innerText(), /commit [0-9a-f]{7}/);
   await page.waitForSelector('#needs', { state: 'hidden' });
-  await page.waitForSelector('#rev .tile.prop .meta:text("Approved")');
+  await page.waitForSelector('#steps .tile.prop .meta:text("Approved")');
   await page.click('#log [data-act=audit]');
   await page.locator('#audit .e', { hasText: 'You signed off' }).waitFor();
   await page.click('#log .seg [data-act=audit]');
@@ -423,8 +418,8 @@ test("the conversation reads as a chat: its folds at the top, then oldest first,
   await page.setViewportSize({ width: 1280, height: 420 });
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f01'; });
   await page.waitForSelector('#bar h1 .t:text-is("2026-11")');
-  await page.waitForSelector('#log details[data-key=review][open]');
-  assert.deepEqual(await order(), ['review', 'process', 'c9', 'runl', 'c10', 'compose']);
+  await page.waitForSelector('#log details[data-key=process][open]');
+  assert.deepEqual(await order(), ['process', 'c9', 'run1', 'c10', 'compose']);
   assert.deepEqual(await where(), ['latest', 0]);
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
   await page.waitForSelector('#bar h1 .t:text-is("2026-12")');
@@ -696,9 +691,9 @@ test("an item's card shows its file's preview on a desktop, to scroll in place o
   await page.click('#card [data-act=uncard]');
 });
 
-test("an instance is its Inputs, Outputs and Review, its steps evidence under Review; hovering an item marks what it's made from, which its card names; the list view, kept in this browser, sorts by a column", async () => {
+test("an instance is its Inputs, Outputs and Steps; hovering an item marks what it's made from, which its card names; the list view, kept in this browser, sorts by a column", async () => {
   await page.evaluate(() => location.hash === '#/3d70f7ca6f20' || new Promise(ok => { addEventListener('hashchange', ok, { once: true }); location.hash = '#/3d70f7ca6f20'; }));
-  await page.waitForSelector('#rev .tile .fn:text-is("Eligible AR")');
+  await page.waitForSelector('#steps .tile .fn:text-is("Eligible AR")');
   assert.deepEqual(await page.locator('#ins .tile .fn').allTextContents(), ['AR aging', 'Inventory at cost']);
   assert.deepEqual(await page.locator('#outs .tile .fn').allTextContents(), ['Borrowing base']);
   await page.hover('#outs .tile[data-item=borrowing-base]');
@@ -719,68 +714,20 @@ test("an instance is its Inputs, Outputs and Review, its steps evidence under Re
   await page.waitForSelector('#ins .tile');
 });
 
-test("anyone passes a piece of Review from its card, as it shows its file now, and a query on it is an exception until resolved; Close says how the review stands", async () => {
+test("a line of an item's markdown someone doesn't accept is a comment at it, by its opening words, marked where it stands", async () => {
   await page.evaluate(() => location.hash === '#/a5c0ff5e1f02' || new Promise(ok => { addEventListener('hashchange', ok, { once: true }); location.hash = '#/a5c0ff5e1f02'; }));
-  await page.waitForSelector('#rev .tile[data-item=tie]');
-  assert.deepEqual([await page.textContent('#bar [data-act=close]'), await page.textContent('#rev .ph .c')], ['Close unreviewed', '0 of 2 passed']);
-  await page.click('#rev .tile[data-item=review]');
-  assert.match(await page.textContent('#card') ?? '', /Passing it accepts its points\. Query one you don't accept where it stands: click it in the preview\./);
-  await page.click('#card [data-act=pass]');
-  await page.waitForSelector('#rev .tile[data-item=review] .ok:text("Passed · ")');
-  assert.equal(await page.textContent('#rev .ph .c'), '1 of 2 passed');
-  await page.click('#rev .tile[data-item=tie]');
-  assert.deepEqual(await page.locator('#card .acts .btn').allTextContents(), ['Download', 'Pass', 'Query', 'Close']);
-  await page.click('#card [data-act=comment-on]');
-  await page.fill('#newcomment', 'Which ledger is this?');
-  await page.click('[data-act=comment]');
-  await page.waitForSelector('#bar [data-act=close]:text-is("Close with 1 exception")');
-  await page.click('#card [data-act=uncard]');
-  await page.click('#bar [data-act=close]');
-  assert.match(await page.textContent('#ask') ?? '', /Its review has 1 exception, queries no one resolved:\s+• Which ledger is this\?/);
-  await page.click('#ask button:text-is("Cancel")');
-  await page.click('#conv .thread:has-text("Which ledger is this?") [data-act=resolve]');
-  await page.waitForSelector('#bar [data-act=close]:text-is("Close unreviewed")');
-  await page.click('#rev .tile[data-item=tie]');
-  await page.click('#card [data-act=pass]');
-  await page.waitForSelector('#bar [data-act=close]:text-is("Close")');
-  await page.click('#card [data-act=uncard]');
-});
-
-test("a point of the review sheet someone doesn't accept is a query at it, by its opening words, marked where it stands: an exception like any other", async () => {
-  await page.click('#rev .tile[data-item=review]');
+  await page.click('#steps .tile[data-item=notes]');
   await page.waitForSelector('#card .say .pt');
   assert.deepEqual(await page.locator('#card .say .pt').allTextContents(), ['2 checks pass', '\u2022 The ledger ties to the pack.', '\u2022 Judgment: the October accrual is carried at the September rate, as agreed with the controller.']);
   await page.click('#card .say .pt:has-text("Judgment")');
   await page.click('#pv .say .pt:has-text("Judgment")');
   await page.click('#pvn [data-act=comment-cell]');
-  assert.equal(await page.textContent('.compose h3'), 'Comment on Review sheet at Judgment: the October accrual is carried at the September\u2026');
+  assert.equal(await page.textContent('.compose h3'), 'Comment on Notes at Judgment: the October accrual is carried at the September\u2026');
   await page.fill('#newcomment', 'Use the October rate.');
   await page.click('[data-act=comment]');
-  await page.waitForSelector('#bar [data-act=close]:text-is("Close with 1 exception")');
   await page.waitForSelector('#card .say .pt.noted:has-text("Judgment")');
   assert.equal(await page.locator('#card .say .pt.noted').count(), 1, 'the point it names, and no other');
   await page.click('#card [data-act=uncard]');
-});
-
-test("a population's Sample shows its count, total, tie-out and largest rows; a person draws picks, key and random, and passes each as its evidence page shows", async () => {
-  await page.evaluate(() => location.hash === '#/a5c0ff5e1f05' || new Promise(ok => { addEventListener('hashchange', ok, { once: true }); location.hash = '#/a5c0ff5e1f05'; }));
-  await page.waitForSelector('#rev .tile.ghost[data-item=review] .meta:text-is("Missing")');
-  assert.equal(await page.textContent('#rev .ph .c'), '0 of 2 passed', 'the review sheet, missing, counts');
-  await page.click('#rev .tile[data-item=invoices]');
-  await page.click('#card [data-act=sample]');
-  await page.waitForSelector('#pv .pvh b:text-is("Sample of Invoices")');
-  assert.equal(await page.locator('#pv .pvb > .sub').first().textContent(), '5 rows · total 2,350.00 · ties to Borrowing base, 2,350.00');
-  assert.deepEqual(await page.locator('#pv .lst').first().locator('td:first-child').allTextContents(), ['INV-1', 'INV-5', 'INV-3', 'INV-2', 'INV-4']);
-  await page.fill('#sn', '2');
-  await page.fill('#skey', '1000');
-  await page.click('#pv [data-act=draw]');
-  await page.waitForSelector('#pv .picks tr[data-pick]');
-  assert.deepEqual(await page.locator('#pv .picks tr[data-pick] td:first-child').allTextContents(), ['Key', 'Random', 'Random']);
-  await page.click('#pv .picks tr[data-pick="INV-1"] [data-act=pick-pass]');
-  await page.waitForSelector('#pv .picks tr[data-pick="INV-1"] .ok');
-  assert.match(await page.locator('#pv .pvb > .sub').last().textContent() ?? '', /^0 exceptions in 3 picks: so the error rate is under 100%, at 95% confidence \(3\/3\)$/);
-  await page.click('#pv [data-act=unpv]');
-  await page.waitForSelector('#rev .tile[data-item=invoices] .hl:text-is("2 picks to pass")');
 });
 
 test("a series' + makes an instance that waits for its first upload or comment, which starts its run", async () => {

@@ -43,7 +43,7 @@ startWaking();
 after(() => (entra.close(), rmSync(tmp, { recursive: true, force: true })));
 
 test("a run's first message names the runner and what they lend, each tick as logged, as does a later one only where its entries change those", () => {
-  assert.match(message(oct, 1, oct.log, true), new RegExp(`^Instance 2026-10, run 1\\. Its runner is .+ <${alice}>, who lends you no login\\. 2026-08, the latest closed instance before it, closed unreviewed\\. New log entries:`));
+  assert.match(message(oct, 1, oct.log, true), new RegExp(`^Instance 2026-10, run 1\\. Its runner is .+ <${alice}>, who lends you no login\\. New log entries:`));
   const ticked = createInstance('s5', '2026-10', alice, ['web:portal', 'm365:mail:ann@demo.test', 'm365:item:d1/i1']);
   assert.match(message(ticked, 1, ticked.log, true), /, who lends you web:portal, m365:mail:ann@demo\.test, m365:item:d1\/i1\. New log entries:/);
   assert.match(message(oct, 2, [{ seq: 98, at: '', by: alice, op: 'comment', text: 'go' }], true), /^Instance 2026-10, run 2\. Its runner is /, 'every run is a new conversation');
@@ -316,22 +316,11 @@ test("a run's first message lists the corrections on its series' closed instance
   await q3.close({ email: alice, name: 'Alice' });
   const r2 = make('s2', 'q3-r2'), q4 = make('s2', 'q4');
   correct(q3, alice, { kind: 'wrong', text: 'The rate was a day stale.' });
-  assert.match(message(q4, 1, q4.log, true), / Corrections on earlier instances: q3 is wrong, "The rate was a day stale\."\. q3, the latest closed instance before it, closed unreviewed\. New log entries:/);
+  assert.match(message(q4, 1, q4.log, true), / Corrections on earlier instances: q3 is wrong, "The rate was a day stale\."\. New log entries:/);
   assert.doesNotMatch(message(q4, 2, q4.log), /Corrections/, 'the first message only');
   await r2.close({ email: alice, name: 'Alice' });
   closed(r2, alice);
   assert.deepEqual([q3.log.at(-1)!.by, q3.log.at(-1)!.kind, q3.log.at(-1)!.see, r2.log.at(-1)!.op], ['server', 'superseded', { inst: r2.id, label: 'q3-r2' }, 'corrected']);
-  assert.match(message(q4, 1, q4.log, true), /Corrections on earlier instances: q3 is wrong, "The rate was a day stale\."; q3 is superseded, "q3-r2 supersedes it", see q3-r2\. q3-r2, the latest closed instance before it, closed unreviewed\. New/);
+  assert.match(message(q4, 1, q4.log, true), /Corrections on earlier instances: q3 is wrong, "The rate was a day stale\."; q3 is superseded, "q3-r2 supersedes it", see q3-r2\. New/);
   await settle();
 });
-
-test("a run's first message says how the review of the latest closed instance before it stood at its close, with its exceptions", async () => {
-  const r1 = make('s2', 'r1'), r2 = make('s2', 'r2');
-  writeFileSync(join(r1.dir, 'working', 'review.md'), 'All tied\n');
-  r1.put(JSON.stringify({ rev: r1.doc.rev, status: 'open', items: [{ id: 'review', name: 'Review sheet', kind: 'output', file: 'working/review.md' }] }));
-  r1.append(alice, 'comment', { thread: 'c7', item: 'review', ref: 'A1', text: 'Tied to what?' });
-  await r1.close({ email: alice, name: 'Alice' });
-  assert.match(message(r2, 1, r2.log, true), / r1, the latest closed instance before it, closed with exceptions: c7 on review@A1, "Tied to what\?"\. New log entries:/);
-  assert.doesNotMatch(message(r2, 2, r2.log), /latest closed/, 'the first message only');
-});
-

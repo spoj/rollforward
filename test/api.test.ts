@@ -54,29 +54,8 @@ async function quiet() {
   assert.fail('the runs never settled');
 }
 
-// A workspace of its own whose open instance's Review shows a population: five invoices, ties to its output, and an evidence page for
-// each, as the agent would write them.
-const invoices = 'invoice,customer,amount\nINV-1,Acme,"1,500.00"\nINV-2,Bolt,200.00\nINV-3,Cask,300.00\nINV-4,Dune,(50.00)\nINV-5,Echo,400.00\n';
-function samples() {
-  const tree = JSON.parse(readFileSync(join(root, '.rf', 'tree.json'), 'utf8')), inst = join(root, 'instances', 'c0ffee000003'), ids = ['INV-1', 'INV-2', 'INV-3', 'INV-4', 'INV-5'];
-  tree.workspaces.c0ffee000001 = { name: 'Samples', owners: [], members: [] };
-  tree.series.c0ffee000002 = { name: 'Invoices', workspace: 'c0ffee000001' };
-  writeFileSync(join(root, '.rf', 'tree.json'), JSON.stringify(tree));
-  mkdirSync(join(root, 'series', 'c0ffee000002'));
-  mkdirSync(join(inst, 'working', 'ev'), { recursive: true });
-  writeFileSync(join(inst, 'instance.json'), JSON.stringify({ label: '2026-10', series: 'c0ffee000002' }));
-  writeFileSync(join(inst, 'working', 'invoices.csv'), invoices);
-  writeFileSync(join(inst, 'working', 'bb.csv'), 'total\n2350\n');
-  writeFileSync(join(inst, 'working', 'review.md'), 'Borrowing base 2,350.00, tied to the invoices\n\n- INV-4 is a credit note, netted.\n- 5 invoices, 2,350.00, tie to it; see the sample.\n');
-  for (const id of ids) writeFileSync(join(inst, 'working', 'ev', `${id}.md`), `${id} matches its remittance.\n`);
-  writeFileSync(join(inst, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [{ id: 'review', name: 'Review sheet', kind: 'output', file: 'working/review.md' }, { id: 'bb', name: 'Borrowing base', kind: 'output', file: 'working/bb.csv' },
-    { id: 'invoices', name: 'Invoices', kind: 'step', file: 'working/invoices.csv', population: { id: 'invoice', amount: 'amount', ties: { item: 'bb', total: 2350 }, evidence: Object.fromEntries(ids.map(id => [id, `working/ev/${id}.md`])) } }] }));
-  writeFileSync(join(inst, 'log.jsonl'), JSON.stringify({ seq: 1, at: '2026-10-01T09:00:00.000Z', by: adminEmail, op: 'create', from: null, logins: [] }) + '\n');
-}
-
 before(async () => {
   cpSync(join(app, 'test', 'fixture'), root, { recursive: true });
-  samples();
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch') };
   mkdirSync(env.HOME);
   delete env.OPENROUTER_API_KEY;
@@ -111,11 +90,11 @@ test('GET /api lists the series and its instances with statuses', async () => {
   ]);
 });
 
-test('a new instance of a series starts with only the review sheet, missing, and runs at once; a new series can be made', async () => {
+test('a new instance of a series starts empty and runs at once; a new series can be made', async () => {
   assert.equal((await create(series, '2026-09-13')).status, 200);
-  const { doc, log, review } = await json(await at(series, '2026-09-13'));
+  const { doc, log } = await json(await at(series, '2026-09-13'));
   assert.equal(doc.status, 'open');
-  assert.deepEqual([doc.items, review], [[{ id: 'review', name: 'Review sheet', kind: 'output', file: null }], { state: 'unreviewed', exceptions: [], unpassed: [{ item: 'review' }] }]);
+  assert.deepEqual(doc.items, []);
   assert.deepEqual(log.slice(0, 2).map((e: { seq: number; at: string }) => ({ ...e, at: undefined })), [
     { seq: 1, at: undefined, by: adminEmail, op: 'create', logins: [] },
     { seq: 2, at: undefined, by: 'server', op: 'wake', from: adminEmail },
@@ -190,44 +169,6 @@ test("an instance says which of its files are new since the series' latest close
   writeFileSync(join(await dir(series, '2026-08-30 copy'), 'working', 'Borrowing base 08.30.2026.csv'), 'revised\n');
   assert.equal((await json(path)).previous.changed['borrowing-base'], 'changed');
   assert.equal((await json(await at(series, '2026-08-23'))).previous, null);
-});
-
-test("a sampled review: a person draws from the agent's population with the server's own seed, logged with the hashes and the folder committed, so anyone draws it again; picks added or dropped say why; each passes as its evidence page shows", async () => {
-  const path = '/api/instances/c0ffee000003', post = (action: string, body: object) => call('POST', `${path}/${action}`, JSON.stringify({ item: 'invoices', quiet: true, ...body }));
-  assert.match(await (await post('draw', { n: 0 })).text(), /the draw picks nothing/);
-  assert.equal((await post('pass', { pick: 'INV-1' })).status, 400, 'no pick before a draw');
-  assert.equal((await post('draw', { n: 2, key: 1000 })).status, 200);
-  let { log, review } = await json(path);
-  const d = log.findLast((e: { op: string }) => e.op === 'draw'), order = ['INV-2', 'INV-3', 'INV-4', 'INV-5'];
-  const random = (k: number) => createHash('sha256').update(`${d.seed}:${k}`).digest().readUInt32BE(0) / 2 ** 32;
-  for (let i = 0; i < 2; i++) {
-    const j = i + Math.floor(random(i) * (order.length - i));
-    [order[i], order[j]] = [order[j], order[i]];
-  }
-  assert.deepEqual(d.picks, [{ id: 'INV-1', as: 'key' }, ...order.slice(0, 2).map(id => ({ id, as: 'random' }))], 'every row of at least 1,000, then 2 drawn again from the seed');
-  assert.deepEqual([d.rows, d.total, d.sha256, Object.keys(d.outputs)], [5, 2350, createHash('sha256').update(invoices).digest('hex'), ['bb']]);
-  assert.match(execFileSync('git', ['log', '-1', '--format=%B', d.commit], { cwd: join(root, 'instances', 'c0ffee000003'), encoding: 'utf8' }), new RegExp(`^Draw 3 of Invoices\n\nworking/invoices.csv ${d.sha256}\nbb [0-9a-f]{64}\n\nSeed: ${d.seed}`));
-  assert.deepEqual(review, { state: 'unreviewed', exceptions: [], unpassed: [{ item: 'review' }, ...d.picks.map((p: { id: string }) => ({ item: 'invoices', pick: p.id }))] }, 'the review sheet, the cover, and each pick');
-  const sample = await json(`${path}/sample?item=invoices`);
-  assert.deepEqual([sample.count, sample.total, sample.top.map((r: { id: string }) => r.id), sample.picked.length], [5, 2350, ['INV-1', 'INV-5', 'INV-3', 'INV-2', 'INV-4'], 3]);
-  const extra = order[2];
-  assert.equal((await post('pick', { id: extra, add: true })).status, 400, 'a pick says why');
-  assert.equal((await post('pick', { id: extra, add: true, reason: 'Disputed last month.' })).status, 200);
-  assert.equal((await post('pick', { id: 'INV-1', add: false, reason: 'Agreed to the remittance.' })).status, 200);
-  ({ review } = await json(path));
-  assert.deepEqual(review.unpassed.map((u: { pick: string }) => u.pick), [undefined, order[0], order[1], extra]);
-  assert.deepEqual((await json(`${path}/sample?item=invoices`)).picks.at(-1), { id: extra, as: 'hand', reason: 'Disputed last month.' });
-  for (const id of [order[0], order[1]]) assert.equal((await post('pass', { pick: id })).status, 200);
-  assert.equal((await json(path)).review.state, 'unreviewed');
-  assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ item: 'invoices', ref: extra, text: 'Which remittance?', quiet: true }))).status, 200);
-  assert.equal((await post('pass', { pick: extra })).status, 200);
-  ({ review } = await json(path));
-  assert.deepEqual([review.state, review.unpassed], ['exceptions', [{ item: 'review' }]], 'a query is an exception, passed or not');
-  assert.equal((await post('pass', { item: 'review' })).status, 200);
-  assert.deepEqual((await json(path)).review.unpassed, []);
-  assert.equal((await post('draw', { n: 2, by_amount: true })).status, 200);
-  const again = (await json(path)).log.findLast((e: { op: string }) => e.op === 'draw');
-  assert.ok(again.by_amount && again.seed !== d.seed && again.picks.length <= 2 && again.picks.every((p: { as: string }) => p.as === 'random'), 'a redraw, by amount, from a seed of its own');
 });
 
 test('rename relabels an instance in any status in its instance.json and logs it; an existing label is refused, a former one free', async () => {
@@ -838,7 +779,7 @@ test('rf reads without a pull: waiting, what waits on you; show, an instance, th
   assert.deepEqual(JSON.parse(await rf('waiting', '--json')).find((r: { path: string }) => r.path === path), { kind: 'note', path, since: note.at, text: note.text });
   const shown = JSON.parse(await rf('show', path, '--json'));
   assert.deepEqual([shown.id, shown.status, shown.runner, shown.waiting], [id, 'open', adminEmail, [{ thread: note.thread, kind: 'note', for: adminEmail, by: bob, seq: note.seq, item: null, ref: null, text: note.text }]]);
-  assert.match(await rf('show', path), new RegExp(`^${path}  open, runner ${adminEmail}\\n  output review  Review sheet  no file yet\\nreview unreviewed: review not passed\\n${note.thread}  note for ${adminEmail}, seq ${note.seq}: Bob notes the rate moved\\.\\nlast run \\d+  \\$0\\.00  .+\\n$`));
+  assert.match(await rf('show', path), new RegExp(`^${path}  open, runner ${adminEmail}\\n${note.thread}  note for ${adminEmail}, seq ${note.seq}: Bob notes the rate moved\\.\\nlast run \\d+  \\$0\\.00  .+\\n$`));
   const lines = (await rf('log', path)).trim().split('\n');
   assert.equal(lines.length, log.length);
   assert.match(lines.find(l => l.startsWith(`${note.seq}  `))!, new RegExp(`^${note.seq}  [\\d-]+ [\\d:]+  ${bob}  comment  \\{.*"thread":"${note.thread}".*\\}  Bob notes the rate moved\\.$`));

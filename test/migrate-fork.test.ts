@@ -64,7 +64,7 @@ test("migrate-fork copies the fork's root by id, with its talk as threads, numbe
   openStore(root);
   const sid = Object.keys(t.series).find(id => t.series[id].name === 'AR weekly')!, [w1, w2] = instances(sid);
   assert.deepEqual(labels(sid).map(l => l.label), ['w1', 'w2']);
-  assert.deepEqual(w1.doc, { rev: 3, status: 'closed', items: [{ id: 'review', name: 'Review sheet', kind: 'output', file: null }, ar] }, 'with the review sheet every screen has');
+  assert.deepEqual(w1.doc, { rev: 3, status: 'closed', items: [ar] });
   assert.equal(statSync(join(w1.dir, 'screen.json')).mode & 0o777, 0o444);
   assert.equal(readFileSync(join(w1.dir, 'upload', 'ar.csv'), 'utf8'), 'a\n');
   assert.deepEqual(readdirSync(join(w1.dir, 'session')), ['s.jsonl']);

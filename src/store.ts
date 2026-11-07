@@ -49,11 +49,7 @@ export function readFile(base: string, rel: string): string | undefined {
   try { return readFileSync(fd, 'utf8'); } finally { closeSync(fd); }
 }
 
-export type Item = { id: string; name: string; kind: 'input' | 'step' | 'output'; file: string | null; from?: string[]; headline?: string; source?: string; destination?: string; as_of?: string; population?: Population };
-// A sampled review's population: a CSV, a row per item, its columns of ids and amounts, the output total it ties to, and each pick's
-// evidence page, by the row's id.
-export type Population = { id: string; amount: string; ties?: { item: string; total: number }; evidence?: Record<string, string> };
-export type Pick = { id: string; as: 'key' | 'random' | 'hand'; reason?: string };
+export type Item = { id: string; name: string; kind: 'input' | 'step' | 'output'; file: string | null; from?: string[]; headline?: string; source?: string; destination?: string; as_of?: string };
 export type Doc = { rev: number; status: 'open' | 'closed' | 'abandoned'; items: Item[] };
 export type Entry = { seq: number; at: string; by: string; op: string; [k: string]: unknown };
 
@@ -109,9 +105,6 @@ export function labels(seriesId: string): { id: string; label: string }[] {
 export function instances(seriesId: string): Instance[] {
   return labels(seriesId).map(l => instance(l.id));
 }
-
-// Review's evidence: the review sheet and the steps.
-export const evidence = (i: Item) => i.id === 'review' || i.kind === 'step';
 
 // The closed instances of its series before it, by label: the examples it rolls forward from.
 export const closedBefore = (inst: Instance) => instances(inst.seriesId).filter(i => i.doc.status === 'closed' && i.label.localeCompare(inst.label, 'en', { numeric: true }) < 0);
@@ -190,8 +183,6 @@ export class Instance {
     this.id = basename(dir);
     const ws = join(dir, 'screen.json'), log = join(dir, 'log.jsonl');
     this.doc = existsSync(ws) ? JSON.parse(readFileSync(ws, 'utf8')) : { rev: 0, status: 'open', items: [] };
-    // Every screen has the review sheet, missing until the agent writes it, a screen from before it too.
-    if (!this.doc.items.some(i => i.id === 'review')) this.doc.items.unshift({ id: 'review', name: 'Review sheet', kind: 'output', file: null });
     this.log = existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : [];
   }
 
@@ -245,47 +236,27 @@ export class Instance {
     return [...this.threads().values()].map(t => t.at(-1)!).filter(e => e.op === 'comment' && e.by === 'agent' && e.ask);
   }
 
-  // A population's sample, as drawn for the file it shows: the last draw's picks, then those people added or dropped since.
-  picks(item: Item): Pick[] | undefined {
-    const d = this.log.findLast(e => e.op === 'draw' && e.item === item.id);
-    if (d?.file !== item.file) return undefined;
-    let out = d!.picks as Pick[];
-    for (const e of this.log.filter(e => e.op === 'pick' && e.item === item.id && e.seq > d!.seq)) out = e.add ? [...out, { id: e.id as string, as: 'hand', reason: e.reason as string }] : out.filter(p => p.id !== e.id);
-    return out;
-  }
-
-  // The review: the review sheet, unpassed while it's missing, and the steps Review shows, each passed by a person while it shows the
-  // file they passed, or, for a population drawn, each pick passed while its evidence is what they passed; and its exceptions, the
-  // threads people started on them and haven't resolved.
-  review(): { state: 'passed' | 'exceptions' | 'unreviewed'; exceptions: string[]; unpassed: { item: string; pick?: string }[] } {
-    const items = this.doc.items.filter(i => i.id === 'review' || (i.kind === 'step' && i.file)), ids = new Set(items.map(i => i.id));
-    const exceptions = [...this.threads()].filter(([, t]) => isPerson(t[0]) && ids.has(t[0].item as string) && t.at(-1)!.op !== 'resolve').map(([id]) => id);
-    const passed = (i: Item, file?: string, pick?: string) => file && this.log.some(e => e.op === 'pass' && e.item === i.id && e.file === file && e.pick === pick);
-    const unpassed = items.flatMap(i => this.picks(i)?.filter(p => !passed(i, i.population!.evidence?.[p.id], p.id)).map(p => ({ item: i.id, pick: p.id })) ?? (passed(i, i.file!) ? [] : [{ item: i.id }]));
-    return { state: exceptions.length ? 'exceptions' : unpassed.length ? 'unreviewed' : 'passed', exceptions, unpassed };
-  }
-
   // Closing makes the instance the period's record and an example for the next, approving nothing: a shown file in working/ must
   // still be what its point logged, as people saw it. Its folder is the run's, so read-only alone doesn't stop a file being
-  // replaced. The asks still waiting are accepted as the agent said it did them, and the review is logged as it stands. It commits
-  // the folder in the runner's name. The instance is closed meanwhile, so nothing changes it, but saved only once committed: a
-  // failed commit, or a restart, leaves it open.
+  // replaced. The asks still waiting are accepted as the agent said it did them. It commits the folder in the runner's name. The
+  // instance is closed meanwhile, so nothing changes it, but saved only once committed: a failed commit, or a restart, leaves it
+  // open.
   async close(by: Who) {
-    for (const file of this.doc.items.flatMap(i => [i.file, ...Object.values(i.population?.evidence ?? {})]).filter(f => f?.startsWith('working/'))) {
+    for (const file of this.doc.items.map(i => i.file).filter(f => f?.startsWith('working/'))) {
       const fd = openFile(this.dir, file!), logged = this.log.findLast(e => e.op === 'point' && e.file === file && e.sha256)?.sha256;
       const now = fd === undefined ? undefined : createHash('sha256').update(readFileSync(fd)).digest('hex');
       if (fd !== undefined) closeSync(fd);
       if (logged && now !== logged) throw new HttpError(409, `${file} changed after it was shown: the agent shows the new version under a new name, and you review that`);
     }
-    const accepted = this.asking().map(e => e.thread), review = this.review(), n = review.exceptions.length;
+    const accepted = this.asking().map(e => e.thread);
     this.doc.status = 'closed';
-    const hash = await commit(this.dir, by, `Close ${this.label}, ${n ? `${n} exception${n > 1 ? 's' : ''}` : review.state}`).catch(e => {
+    const hash = await commit(this.dir, by, `Close ${this.label}`).catch(e => {
       this.doc.status = 'open';
       throw e;
     });
     await pack(this.dir);
     this.save();
-    this.append(by.email, 'close', { ...(accepted.length && { accepted }), review: review.state, ...(n && { exceptions: review.exceptions }), commit: hash });
+    this.append(by.email, 'close', { ...(accepted.length && { accepted }), commit: hash });
   }
 
   abandon(by: string) {
@@ -300,7 +271,7 @@ export class Instance {
     if (doc.rev !== this.doc.rev) throw new HttpError(409, `stale rev ${doc.rev}: the workspace is now at rev ${this.doc.rev}. Run rf show and merge.`);
     if (doc.status !== undefined && doc.status !== this.doc.status) throw new HttpError(400, 'status is set by the server; leave it out or as it is');
     if (!Array.isArray(doc.items)) throw new HttpError(400, 'items must be an array');
-    const errors: string[] = [], ids = new Set<string>(), sums = new Map<string, string | undefined>(), shown: { item: string; pick: string; file: string; sha256: string }[] = [];
+    const errors: string[] = [], ids = new Set<string>(), sums = new Map<string, string | undefined>();
     const old = new Map(this.doc.items.map(i => [i.id, i]));
     for (const i of doc.items) {
       if (typeof i.id !== 'string' || !i.id || ids.has(i.id)) errors.push(`item id missing or repeated: ${JSON.stringify(i.id)}`);
@@ -322,17 +293,6 @@ export class Instance {
           else closeSync(fd);
         }
       }
-      if (i.population !== undefined) {
-        const p = i.population, was = old.get(i.id)?.population?.evidence ?? {};
-        if (typeof p?.id !== 'string' || typeof p.amount !== 'string' || !/\.csv$/i.test(i.file ?? '')) errors.push(`${i.id}: a population is a CSV, a row per item, and says the columns of its ids and amounts: {"id": COLUMN, "amount": COLUMN}`);
-        if (p?.ties !== undefined && !(doc.items.some(o => o.id === p.ties?.item && o.kind === 'output') && typeof p.ties.total === 'number')) errors.push(`${i.id}: population.ties is {"item": an output's id, "total": the total it ties to}`);
-        for (const [pick, file] of Object.entries(p?.evidence ?? {})) {
-          if (was[pick] === file) continue;
-          const sum = freeze(this.dir, file);
-          if (sum) shown.push({ item: i.id, pick, file, sha256: sum });
-          else errors.push(`${i.id}: no file ${file} for ${pick}'s evidence: one under upload/ or working/ (links are not followed)`);
-        }
-      }
     }
     const from = new Map(doc.items.map(i => [i.id, Array.isArray(i.from) ? i.from : []]));
     for (const [id, fs] of from) for (const f of fs) if (!from.has(f)) errors.push(`${id}: from names no item ${JSON.stringify(f)}`);
@@ -341,7 +301,6 @@ export class Instance {
       for (const [id, fs] of from) if (!fs.some(f => from.has(f))) peeled = from.delete(id);
     }
     if (from.size) errors.push(`from goes round in a circle among ${[...from.keys()].join(', ')}`);
-    if (!ids.has('review')) errors.push('review: every screen keeps the review sheet, its file null until you write it');
     if (errors.length) throw new HttpError(400, errors.join('\n'));
 
     for (const i of doc.items) {
@@ -349,10 +308,9 @@ export class Instance {
       if (i.file !== (o?.file ?? null) && i.file !== null) {
         this.append('agent', 'point', { item: i.id, file: i.file, was: o?.file ?? null, sha256: sums.get(i.id) });
       } else if (i.file === null && o?.file) this.append('agent', 'point', { item: i.id, file: null, was: o.file });
-      if (!o || o.name !== i.name || o.kind !== i.kind || JSON.stringify(o.from) !== JSON.stringify(i.from) || o.headline !== i.headline || o.source !== i.source || o.destination !== i.destination || o.as_of !== i.as_of || JSON.stringify({ ...o.population, evidence: undefined }) !== JSON.stringify({ ...i.population, evidence: undefined }))
-        this.append('agent', 'item', { item: i.id, name: i.name, kind: i.kind, from: i.from, headline: i.headline, source: i.source, destination: i.destination, as_of: i.as_of, population: i.population && { ...i.population, evidence: undefined } });
+      if (!o || o.name !== i.name || o.kind !== i.kind || JSON.stringify(o.from) !== JSON.stringify(i.from) || o.headline !== i.headline || o.source !== i.source || o.destination !== i.destination || o.as_of !== i.as_of)
+        this.append('agent', 'item', { item: i.id, name: i.name, kind: i.kind, from: i.from, headline: i.headline, source: i.source, destination: i.destination, as_of: i.as_of });
     }
-    for (const e of shown) this.append('agent', 'point', e);
     for (const o of this.doc.items) if (!ids.has(o.id)) this.append('agent', 'remove', { item: o.id });
     this.doc = { rev: this.doc.rev, status: this.doc.status, items: doc.items };
     this.save();

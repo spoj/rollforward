@@ -76,13 +76,13 @@ export const starter = (inst: Instance, who: string) => {
 // What a person but the runner adds is a note, shared series or not: the agent reads it as context for its runner to take up, never as
 // the runner's word, though it runs on it where it may. A wake that starts nothing is one too. A reply from whom the agent's ask named
 // is no note.
-export const isNote = (inst: Instance, e: Entry) => !!e.note || (isPerson(e) && ['upload', 'comment', 'draw', 'pick'].includes(e.op) && e.by !== runnerOf(inst).by
+export const isNote = (inst: Instance, e: Entry) => !!e.note || (isPerson(e) && ['upload', 'comment'].includes(e.op) && e.by !== runnerOf(inst).by
   && !(e.op === 'comment' && inst.log.findLast(x => x.seq < e.seq && x.op === 'comment' && x.thread === e.thread && x.by === 'agent')?.to === e.by));
 // A quiet entry, such as rf's without --wake, starts nothing, and its act kicks nothing that waits: the next run reads it with the rest.
 export const starts = (inst: Instance, e: Entry) => !e.quiet && (!isNote(inst, e) || starter(inst, e.by));
 
 export function pending(inst: Instance, seen: number): Entry[] {
-  return inst.log.filter(e => e.seq > seen && starts(inst, e) && (e.op === 'wake' || (isPerson(e) && ['upload', 'comment', 'signoff', 'draw', 'pick'].includes(e.op))));
+  return inst.log.filter(e => e.seq > seen && starts(inst, e) && (e.op === 'wake' || (isPerson(e) && ['upload', 'comment', 'signoff'].includes(e.op))));
 }
 
 // Whether an instance has something for a run: what came since its last run, or since an Interrupt, which waits for the next act.
@@ -98,17 +98,10 @@ export function message(inst: Instance, n: number, entries: Entry[], first = fal
     const see = e.see as { label: string; thread?: string } | undefined;
     return `${i.label}${e.item ? ` ${e.item}${e.ref ? `@${e.ref}` : ''}` : ''} is ${e.kind}, ${JSON.stringify(e.text)}${see ? `, see ${see.label}${see.thread ? ` ${see.thread}` : ''}` : ''}`;
   }));
-  // How the review of the latest of them stood at its close, and its exceptions, the threads people left open on its evidence.
-  const prev = first ? closedBefore(inst).at(-1) : undefined, shut = prev?.log.findLast(e => e.op === 'close');
-  const open = ((shut?.exceptions ?? []) as string[]).map(t => {
-    const q = prev!.threads().get(t)![0];
-    return `${t} on ${q.item}${q.ref ? `@${q.ref}` : ''}, ${JSON.stringify(q.text)}`;
-  });
   return `Instance ${inst.label}, run ${n}.`
     + (first || made ? ` Its runner is ${made?.op === 'takeover' ? `now ${who(made.by)}, taking over from ${who(made.from as string)}` : who(runnerOf(inst).by)}, who lends you ${runnerOf(inst).logins.join(', ') || 'no login'}.` : '')
     + (first && set.length ? ` Pending wakes: ${set.map(k => `${k.id}, ${k.target === inst.id ? 'waking this instance' : `starting ${k.label}`} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''}`).join('; ')}.` : '')
     + (fixed.length ? ` Corrections on earlier instances: ${fixed.join('; ')}.` : '')
-    + (shut?.review ? ` ${prev!.label}, the latest closed instance before it, closed ${open.length ? `with exceptions: ${open.join('; ')}` : shut.review === 'passed' ? 'with its review passed' : 'unreviewed'}.` : '')
     + ' New log entries:\n'
     + entries.map(e => JSON.stringify(isNote(inst, e) ? { ...e, note: true } : e)).join('\n');
 }

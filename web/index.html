@@ -179,8 +179,8 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 
 /* The instance's slices, Inputs, Outputs and Review, side by side, each scrolling on its own; in the list view, Inputs over Outputs,
    with Review beside them. */
-.panes { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr); grid-template-areas: "ins outs rev"; position: relative; }
-.panes.list { grid-template-columns: minmax(0, 1fr) minmax(240px, 28%); grid-template-rows: fit-content(55%) minmax(0, 1fr); grid-template-areas: "ins rev" "outs rev"; }
+.panes { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr); grid-template-areas: "ins outs steps"; position: relative; }
+.panes.list { grid-template-columns: minmax(0, 1fr) minmax(240px, 28%); grid-template-rows: fit-content(55%) minmax(0, 1fr); grid-template-areas: "ins steps" "outs steps"; }
 .pane { padding: 22px 28px 20px; display: flex; flex-direction: column; position: relative; overflow: auto; min-width: 0; scrollbar-gutter: stable; }
 /* Always-visible scrollbars, so a long list of inputs or outputs shows it goes on (Edge's overlay scrollbars hide until hovered). */
 .pane::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -190,7 +190,7 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 @supports not selector(::-webkit-scrollbar) { .pane { scrollbar-width: thin; scrollbar-color: var(--edge) var(--rule); } }
 .ins { grid-area: ins; }
 .outs { grid-area: outs; border-left: 1px solid var(--rule); }
-.rev { grid-area: rev; border-left: 1px solid var(--rule); }
+.steps { grid-area: steps; border-left: 1px solid var(--rule); }
 .panes.list .outs { border-left: 0; border-top: 1px solid var(--rule); }
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; align-content: start; }
 .tiles:empty { display: none; }
@@ -216,11 +216,6 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .lrow.ghost td { color: var(--ink-3); }
 .lrow.fresh .fn::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--ink); vertical-align: 1px; }
 .lrow td.q { color: var(--red); }
-.lst td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.pvb .q { color: var(--red); }
-.picks td:last-child { white-space: nowrap; }
-.picks .quiet { display: inline; margin-left: 6px; }
-.pvb .ok { color: #1f6f43; }
 .pane.busy::before { content: ''; position: absolute; top: 0; left: -30%; width: 30%; height: 2px; background: var(--ink); animation: stripe 1.4s ease-in-out infinite; }
 @keyframes stripe { to { left: 100%; } }
 .pane.drag::after { content: '+ Add'; position: absolute; top: 20px; right: 28px; font-weight: 600; color: var(--person); }
@@ -263,8 +258,6 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .hl { font-size: 12px; line-height: 1.35; }
 .dst, .sent { font-size: 11.5px; color: var(--ink-2); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .sent { color: #1f6f43; }
-/* A pass, green as a delivery: a person's decision on the agent's evidence. */
-.tile .ok, .cp.ok { font-size: 11.5px; color: #1f6f43; }
 .src { font-size: 11.5px; color: var(--ink-3); word-break: break-all; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .also { margin-top: 16px; font-size: 12.5px; display: grid; gap: 4px; }
 .also .ah { font-size: 12px; color: var(--ink-3); }
@@ -457,7 +450,7 @@ input[type=checkbox] { accent-color: var(--ink); }
   .pane { padding: 16px 14px; overflow: clip; }
   .ph { position: static; margin: 0 0 4px; padding: 0; background: none; }
   .outs { border-left: 0; border-bottom: 1px solid var(--rule); }
-  .rev { border-left: 0; border-top: 1px solid var(--rule); }
+  .steps { border-left: 0; border-top: 1px solid var(--rule); }
   .tiles { grid-template-columns: repeat(2, 1fr); }
   .ph:empty, .view { display: none; }
   .hint { display: none; }
@@ -479,7 +472,7 @@ input[type=checkbox] { accent-color: var(--ink); }
     <div class="panes" id="panes">
       <section class="pane outs" id="outs" data-pane="out"></section>
       <section class="pane ins" id="ins" data-pane="in"></section>
-      <section class="pane rev" id="rev" data-pane="in" hidden></section>
+      <section class="pane steps" id="steps" data-pane="in" hidden></section>
       <div class="view" id="view"></div>
       <div class="key" tabindex="0">Key<div class="legend"><div><i class="p">Blue</i> uploaded by a person</div><div><i>Black</i> made by the agent</div><div><span class="tri"></span>comments</div><div><span class="tri q"></span>waiting on a reply</div><div><span class="dash"></span>expected, not there yet</div><div class="keys"><div><kbd>j k</kbd> move through the sidebar, <kbd>h l</kbd> fold and open, <kbd>Enter</kbd> go</div><div><kbd>c</kbd> the comment box</div><div><kbd>Ctrl Enter</kbd> sends, <kbd>Esc</kbd> leaves a field, <kbd>?</kbd> shows this</div></div></div></div>
     </div>
@@ -519,11 +512,6 @@ let seen = {}, prevSigs = {}, uploads = [], shown = '', refreshes = 0, threads =
 const replying = new Set();
 // An item's open threads; a new one shows on its tile as a change.
 const talkOn = id => threads.filter(t => t.item === id && !t.resolved);
-// Review's evidence, the review sheet and the steps, and the pass a person gave one as it shows its file now.
-const evidence = i => i.id === 'review' || i.kind === 'step';
-const passOf = i => data.log.findLast(e => e.op === 'pass' && e.item === i.id && e.file === i.file && !e.pick);
-const drawOf = i => i.population && data.log.findLast(e => e.op === 'draw' && e.item === i.id && e.file === i.file);
-const unpassedOf = i => data.review.unpassed.filter(u => u.item === i.id);
 const sig = i => `${i.file}|${talkOn(i.id).length}|${i.headline ?? ''}`;
 
 function markSeen(items) {
@@ -543,7 +531,7 @@ function toast(text, kind = '') {
 // panel's folds are open, where someone opened or closed them; site, which of the run's browsers the player shows, and drive, the
 // one you took control of, as instance/site.
 const ui = { open: innerWidth > 800, on: null, ref: null, audit: false, sect: {}, site: null, drive: null, sort: {} };
-// The review sheet, where it's a text, and the process, as the conversation shows them.
+// The process, as the conversation shows it.
 let docs = { key: '' };
 const drawn = new WeakMap();
 
@@ -754,8 +742,7 @@ function renderBar() {
     const wake = open ? `<span>\u00b7 <a data-act="wakes">${cur.i.wakes[0] ? `next wake ${when(cur.i.wakes[0].at)}` : 'no wake'}</a></span>` : '';
     h += `<div class="state">${state}${wake}</div>`;
     const off = data.run ? 'disabled title="Available when the run ends"' : '';
-    const r = data.review, closing = `Close${r.state === 'exceptions' ? ` with ${plural(r.exceptions.length, 'exception')}` : r.state === 'unreviewed' ? ' unreviewed' : ''}`;
-    if (open) h += data.runner.by === me.email ? `<button class="btn commit top" data-act="close" ${off}>${closing}</button>`
+    if (open) h += data.runner.by === me.email ? `<button class="btn commit top" data-act="close" ${off}>Close</button>`
       : `<button class="btn top" data-act="takeover" ${off || `title="${esc(nameOf(data.runner.by))} runs it: their logins, their sign-off. Taking over makes it yours."`}>Take over</button>`;
     else h += cur.s.single ? '<button class="btn top" data-act="start-series">Start series</button>' : '<button class="btn top" data-act="duplicate">Duplicate</button>';
     // One control opens and closes the side panel, where it stays, with what waits there as its badge.
@@ -799,24 +786,22 @@ function tile(item) {
   const corner = on.length ? `<span class="corner ${open ? 'ask' : ''}"></span>` : '';
   const mark = `${seen[item.id] !== sig(item) ? 'fresh' : ''} ${prevSigs[item.id] && prevSigs[item.id] !== sig(item) ? 'flash' : ''}`;
   if (!item.file) {
-    return `<div class="tile ghost ${mark}" data-item="${esc(item.id)}">${corner}<div class="ext"><span>${esc(item.kind.toUpperCase())}</span><span class="nc ${open ? 'q' : ''}">${count}</span></div><div class="fn">${esc(item.name)}</div><div class="meta">${item.kind === 'input' || item.id === 'review' ? 'Missing' : 'Not built yet'}</div></div>`;
+    return `<div class="tile ghost ${mark}" data-item="${esc(item.id)}">${corner}<div class="ext"><span>${esc(item.kind.toUpperCase())}</span><span class="nc ${open ? 'q' : ''}">${count}</span></div><div class="fn">${esc(item.name)}</div><div class="meta">${item.kind === 'input' ? 'Missing' : 'Not built yet'}</div></div>`;
   }
   const p = provenance(item.file), sent = data.log.findLast(e => e.op === 'delivered' && e.item === item.id);
-  const v = data.log.filter(e => e.op === 'point' && e.item === item.id && e.file && !e.pick).length;
-  return `<div class="tile ${p.person ? 'person' : 'agent'} ${openItem === item.id ? 'on' : ''} ${mark}" data-item="${esc(item.id)}">${corner}<div class="ext"><span>${esc(ext(item.file))}${v > 1 ? ' · v' + v : ''}</span><span class="nc ${open ? 'q' : ''}">${count}</span></div><div class="fn">${esc(item.name)}</div><div class="file">${esc(fname(item.file))}</div>${item.headline ? `<div class="hl">${esc(item.headline)}</div>` : ''}${item.source ? `<div class="src">${esc(item.source)}</div>` : ''}${item.destination ? `<div class="dst" title="${esc(item.destination)}">\u2192 ${esc(item.destination)}</div>` : ''}${sent ? `<div class="sent" title="${esc(sent.receipt)}">Sent ${hhmm(sent.at)} to ${esc(sent.to)}</div>` : ''}${drawOf(item) ? `<div class="${unpassedOf(item).length ? 'hl' : 'ok'}">${unpassedOf(item).length ? `${plural(unpassedOf(item).length, 'pick')} to pass` : 'Every pick passed'}</div>` : evidence(item) && passOf(item) ? `<div class="ok">Passed · ${person(passOf(item).by)}</div>` : ''}<div class="meta"><b>${person(p.by)}</b> · ${hhmm(p.at)}</div></div>`;
+  const v = data.log.filter(e => e.op === 'point' && e.item === item.id && e.file).length;
+  return `<div class="tile ${p.person ? 'person' : 'agent'} ${openItem === item.id ? 'on' : ''} ${mark}" data-item="${esc(item.id)}">${corner}<div class="ext"><span>${esc(ext(item.file))}${v > 1 ? ' · v' + v : ''}</span><span class="nc ${open ? 'q' : ''}">${count}</span></div><div class="fn">${esc(item.name)}</div><div class="file">${esc(fname(item.file))}</div>${item.headline ? `<div class="hl">${esc(item.headline)}</div>` : ''}${item.source ? `<div class="src">${esc(item.source)}</div>` : ''}${item.destination ? `<div class="dst" title="${esc(item.destination)}">\u2192 ${esc(item.destination)}</div>` : ''}${sent ? `<div class="sent" title="${esc(sent.receipt)}">Sent ${hhmm(sent.at)} to ${esc(sent.to)}</div>` : ''}<div class="meta"><b>${person(p.by)}</b> · ${hhmm(p.at)}</div></div>`;
 }
 
-// The instance in three slices: Inputs; Outputs; and Review, the evidence for whoever closes it, the review sheet first, missing until
-// the agent writes it, and then the steps. On a desktop a toggle, kept in this browser, shows Inputs and Outputs as lists, each sorting by
+// The instance in three slices: Inputs, Outputs and Steps. On a desktop a toggle, kept in this browser, shows Inputs and Outputs as lists, each sorting by
 // the column its heading names; a phone shows tiles, Outputs first.
 function renderPanes() {
-  $('#outs').hidden = $('#rev').hidden = $('#view').hidden = !data;
+  $('#outs').hidden = $('#steps').hidden = $('#view').hidden = !data;
   if (!data) return put($('#ins'), `<div class="empty">${cur?.s ? 'No instance yet. Make one with + by the series.' : cur ? 'No series yet. Make one with + by the workspace.' : me.can.includes('create') ? 'No workspace yet. Make one with + by the filter.' : 'No workspace yet: an admin makes one or adds you to one.'}</div>`);
   const open = data.doc.status === 'open', stored = localStorage[`seen:${instPath()}`], items = data.doc.items, list = localStorage.view === 'list' && innerWidth > 800;
   seen = stored ? JSON.parse(stored) : {};
   if (!stored) markSeen(items);
-  const ins = items.filter(i => i.kind === 'input'), outs = items.filter(i => i.kind === 'output' && !evidence(i));
-  const rev = [...items.filter(i => i.id === 'review'), ...items.filter(i => i.kind === 'step' && i.id !== 'review')], counted = rev.filter(i => i.file || i.id === 'review');
+  const ins = items.filter(i => i.kind === 'input'), outs = items.filter(i => i.kind === 'output'), steps = items.filter(i => i.kind === 'step');
   const head = (title, list, pane, count = list.length ? `${list.filter(i => i.file).length} of ${list.length}` : '') => `<div class="ph"><h2>${title}</h2><span class="c">${count}</span>${open && pane ? `<button class="btn" data-act="add" data-pane="${pane}">+ Add files</button>` : ''}</div>`;
   const adding = pane => uploads.filter(u => u.pane === pane && u.path === instPath()).map(u => `<div class="tile ghost"><div class="ext"><span>UPLOADING</span></div><div class="fn">${esc(u.f.name)}</div><div class="prog"><i style="width:${u.pct}%"></i></div></div>`).join('');
   const files = new Set(items.map(i => i.file)), also = new Map();
@@ -829,7 +814,7 @@ function renderPanes() {
   put($('#ins'), head('Inputs', ins, 'in') + body('in', ins) + alsoUsed + (open ? '<div class="hint">Drop files to add them. The agent decides what each one is.</div>' : ''));
   put($('#outs'), head('Outputs', outs, 'out') + body('out', outs) + (open ? '<div class="hint">Drop a revised output here.</div>' : ''));
   const asked = threads.filter(t => t.posts.some(p => p.signoff));
-  put($('#rev'), head('Review', rev, undefined, `${counted.filter(i => !unpassedOf(i).length).length} of ${counted.length} passed`) + `<div class="tiles">${rev.map(tile).join('')}${asked.map(proposal).join('')}</div>`);
+  put($('#steps'), head('Steps', steps) + `<div class="tiles">${steps.map(tile).join('')}${asked.map(proposal).join('')}</div>`);
   $('#outs').classList.toggle('busy', !!data.run);
   prevSigs = Object.fromEntries(items.map(i => [i.id, sig(i)]));
   light();
@@ -891,16 +876,13 @@ function logText(e) {
   return {
     create: () => `${w} opened the instance`,
     upload: () => `${w} uploaded ${e.pane === 'out' ? 'an output' : 'an input'}${e.onto ? ' onto ' + item(e.onto) : ''}${f}`,
-    point: () => `${w} ${e.file ? 'showed' : 'cleared'} ${item(e.item)}${e.pick ? `'s evidence for ${esc(e.pick)}` : ''}${e.was ? `<div class="d">Replacing ${esc(fname(e.was))}</div>` : ''}${f}`,
+    point: () => `${w} ${e.file ? 'showed' : 'cleared'} ${item(e.item)}${e.was ? `<div class="d">Replacing ${esc(fname(e.was))}</div>` : ''}${f}`,
     item: () => `${w} set up ${esc(e.name)}${e.from?.length ? `<div class="d">From ${e.from.map(item).join(', ')}</div>` : ''}${e.headline ? `<div class="d">${esc(e.headline)}</div>` : ''}${e.source ? `<div class="d">Source: ${esc(e.source)}</div>` : ''}${e.destination ? `<div class="d">Destination: ${esc(e.destination)}</div>` : ''}${e.as_of ? `<div class="d">As of ${esc(e.as_of)}</div>` : ''}`,
     remove: () => `${w} removed ${esc(e.item)} from the screen`,
     run: () => `Run ${e.run} started${data.run?.n === e.run ? ` \u00b7 ${usd(data.run.cost)} so far` : ''}`,
     done: () => `Run ${e.run} finished${e.aborted ? ' (stopped)' : ''} · ${took(e)} · ${usd(e.cost)}${e.summary ? `<div class="d">${esc(e.summary)}</div>` : ''}${e.error ? `<div class="d">${esc(e.error)}</div>` : ''}`,
     interrupt: () => `${w} interrupted the run`,
-    pass: () => `${w} passed ${item(e.item)}${e.pick ? ` ${esc(e.pick)}` : ''}${f}`,
-    draw: () => `${w} drew ${plural(e.picks.length, 'pick')} from ${item(e.item)}<div class="d">${e.n} ${e.by_amount ? 'by amount' : 'at random'}${e.key ? `, every row of ${e.key} or more` : ''} · seed <code>${esc(e.seed.slice(0, 12))}</code> · Commit <code>${e.commit.slice(0, 7)}</code></div>`,
-    pick: () => `${w} ${e.add ? 'added' : 'dropped'} ${esc(e.id)} ${e.add ? 'to' : 'from'} ${item(e.item)}'s sample<div class="d">${esc(e.reason)}</div>`,
-    close: () => `${w} closed the instance${e.review ? `, ${e.review === 'exceptions' ? `with ${plural(e.exceptions.length, 'exception')}` : e.review}` : ''}${e.accepted ? `<div class="d">Accepting what the agent did for ${e.accepted.length} ask${e.accepted.length > 1 ? 's' : ''} still waiting</div>` : ''}${e.commit ? `<div class="d">Commit <code>${e.commit.slice(0, 7)}</code></div>` : ''}`,
+    close: () => `${w} closed the instance${e.accepted ? `<div class="d">Accepting what the agent did for ${e.accepted.length} ask${e.accepted.length > 1 ? 's' : ''} still waiting</div>` : ''}${e.commit ? `<div class="d">Commit <code>${e.commit.slice(0, 7)}</code></div>` : ''}`,
     signoff: () => `${w} ${e.approved ? 'signed off' : 'rejected the sign-off'}<div class="d">${e.text ? `${esc(e.text)} · ` : ''}Commit <code>${e.commit.slice(0, 7)}</code></div>`,
     commit: () => e.error ? `Run ${e.run}'s changes weren't committed<div class="d">${esc(e.error)}</div>` : `${w} committed the folder<div class="d">${esc(e.message)} · Commit <code>${e.commit.slice(0, 7)}</code></div>`,
     abandon: () => `${w} abandoned the instance`,
@@ -1020,7 +1002,7 @@ const firstLine = t => t.trim().split('\n')[0];
 const inline = s => s.replace(/!\[([^\]]*)\]\(([^)\s&]+\.(?:png|jpe?g|gif|webp|svg))\)/gi, (_, alt, f) => `<img class="md" src="${fileUrl(f)}" loading="lazy" alt="${alt}" title="${alt}" data-act="preview" data-file="${f}">`)
   .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>');
 
-// With an item's threads, each line but a heading or a table's is a point, as of the review sheet, to comment on where it stands: a
+// With an item's threads, each line but a heading or a table's is a point to comment on where it stands: a
 // thread there names it by its opening words, its ref, and marks it.
 function md(text, threads) {
   let h = '', rows = [];
@@ -1037,19 +1019,18 @@ function md(text, threads) {
   table();
   return h.trimEnd();
 }
-// The review sheet, the output item review, as text where it's one, its first line its verdict; and the process, the instance's
-// working/process.md, redlined against the series' latest closed instance before it by label.
+// The process, the instance's working/process.md, redlined against the series' latest closed instance before it by label.
 async function loadDocs(key) {
   // The instance's own, until they're read again, as after a run; another's never.
   docs = docs.key.startsWith(`${cur.i.id}:`) ? { ...docs, key } : { key };
-  const review = data.doc.items.find(i => i.id === 'review' && i.file), prev = cur.s.instances.filter(i => i.status === 'closed' && i.label < cur.i.label).map(i => i.label).sort().at(-1);
+  const prev = cur.s.instances.filter(i => i.status === 'closed' && i.label < cur.i.label).map(i => i.label).sort().at(-1);
   const get = async path => { const r = await fetch(fileUrl(path)); return r.ok ? r.text() : ''; };
-  const [now, was, sheet] = await Promise.all([get('working/process.md'), prev ? get(`../${prev}/working/process.md`) : '', /\.(md|txt)$/i.test(review?.file) ? get(review.file) : null]);
+  const [now, was] = await Promise.all([get('working/process.md'), prev ? get(`../${prev}/working/process.md`) : '']);
   if (docs.key !== key) return;
   // Until this instance's agent writes its own, the process is still the one before it.
   const lines = now ? redline(was, now) : redline('', was), changed = lines.some(([k]) => k);
   docs = {
-    key, review, verdict: sheet ? firstLine(sheet).replace(/^#+\s*/, '') : review?.headline, sheet: sheet && md(sheet.trim().split('\n').slice(1).join('\n').trim()), changed,
+    key, changed,
     process: (now || was) && `<div class="sub">${!now ? `As of ${esc(prev)}, until the agent updates it here.` : prev ? (changed ? `Changes since ${esc(prev)} are marked.` : `Unchanged since ${esc(prev)}.`) : 'The series\' first process.'}</div>`
       + `<div class="proc">${lines.map(([k, l]) => `<div class="${k}">${md(l) || '&nbsp;'}</div>`).join('')}</div>`,
   };
@@ -1104,39 +1085,6 @@ function threadHtml(t) {
       : `<div class="row2"><button class="quiet" data-act="thread" data-thread="${esc(t.id)}">Reply</button><button class="quiet" data-act="resolve" data-thread="${esc(t.id)}" title="Done with it, without waking the agent">Resolve</button></div>`) + '</div>';
 }
 
-// A population's sample: its count, total, what it ties to and its largest rows; how it was drawn, with the seed, which draws it
-// again, and a draw or a redraw; then each pick, labelled key, random or by hand, with its evidence page and where it stands, Pass,
-// Query and Drop, and a row to add by its id, saying why.
-function sampleHtml(s) {
-  const item = data.doc.items.find(i => i.id === s.item), p = item.population, d = drawOf(item), open = data.doc.status === 'open';
-  const money = n => n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }), ties = p.ties && data.doc.items.find(i => i.id === p.ties.item);
-  const off = Math.round((s.total - (p.ties?.total ?? 0)) * 100) / 100, others = s.head.filter(h => h !== p.id && h !== p.amount).slice(0, 3);
-  let h = `<div class="sub">${s.count.toLocaleString()} rows \u00b7 total ${money(s.total)}${ties ? ` \u00b7 ${off ? `<b class="q">differs by ${money(off)}</b> from` : 'ties to'} ${esc(ties.name)}, ${money(p.ties.total)}` : ''}</div>`;
-  h += `<h3>Largest</h3><table class="lst">${s.top.map(r => `<tr><td>${esc(r.id)}</td><td class="n">${money(r.amount)}</td></tr>`).join('')}</table>`;
-  if (d) h += `<div class="sub">${d.by === me.email ? 'You' : person(d.by)} drew ${d.n} ${d.by_amount ? 'by amount' : 'at random'}${d.key ? `, and every row of ${money(d.key)} or more` : ''}, ${when(d.at)} \u00b7 seed <code title="${esc(d.seed)}">${d.seed.slice(0, 12)}</code></div>`;
-  if (open) h += `<div class="row2"><label>Draw <input type="number" id="sn" min="0" value="${d?.n ?? 25}" style="width:5em"></label><label>and every row of at least <input type="number" id="skey" min="0" step="any" value="${d?.key ?? ''}" style="width:8em"></label><label><input type="checkbox" id="sby" ${d?.by_amount ? 'checked' : ''}> by amount</label><button class="btn" data-act="draw" data-item="${esc(item.id)}">${d ? 'Redraw' : 'Draw'}</button></div>`;
-  if (!d) return h;
-  const rows = new Map(s.picked.map(r => [r.id, r])), ev = p.evidence ?? {}, queried = id => threads.filter(t => t.item === item.id && t.ref === id && !t.resolved && t.posts[0].by !== 'agent');
-  const exceptions = s.picks.filter(k => queried(k.id).length).length, n = s.picks.length;
-  h += `<h3>Picks</h3><table class="lst picks"><tr><th></th><th>${esc(p.id)}</th><th>${esc(p.amount)}</th>${others.map(o => `<th>${esc(o)}</th>`).join('')}<th>Evidence</th><th></th></tr>`;
-  for (const k of s.picks) {
-    const r = rows.get(k.id), pass = ev[k.id] && data.log.findLast(e => e.op === 'pass' && e.item === item.id && e.pick === k.id && e.file === ev[k.id]), q = queried(k.id);
-    h += `<tr data-pick="${esc(k.id)}"><td title="${esc(k.reason ?? '')}">${{ key: 'Key', random: 'Random', hand: 'By hand' }[k.as]}</td><td>${esc(k.id)}</td><td class="n">${money(r.amount)}</td>${others.map(o => `<td>${esc(r.fields[o])}</td>`).join('')}`
-      + `<td>${ev[k.id] ? `<a data-act="preview" data-file="${esc(ev[k.id])}">${esc(fname(ev[k.id]))}</a>` : '<span class="sub">not yet</span>'}</td>`
-      + `<td>${q.length ? `<a class="q" data-act="thread" data-thread="${esc(q[0].id)}">Queried</a>` : pass ? `<span class="ok">Passed \u00b7 ${person(pass.by)}</span>` : ''}`
-      + `${open && ev[k.id] && !pass && !q.length ? ` <button class="quiet" data-act="pick-pass" data-item="${esc(item.id)}" data-id="${esc(k.id)}">Pass</button>` : ''}`
-      + `${open ? ` <button class="quiet" data-act="pick-query" data-item="${esc(item.id)}" data-id="${esc(k.id)}">Query</button> <button class="quiet" data-act="pick-drop" data-item="${esc(item.id)}" data-id="${esc(k.id)}">Drop</button>` : ''}</td></tr>`;
-  }
-  h += '</table>';
-  if (open) h += `<div class="row2"><input type="text" id="sadd" placeholder="${esc(p.id)} to add" autocomplete="off"><input type="text" id="swhy" placeholder="Why" autocomplete="off"><button class="btn" data-act="pick-add" data-item="${esc(item.id)}">Add pick</button></div>`;
-  return h + `<div class="sub">${plural(exceptions, 'exception')} in ${plural(n, 'pick')}${exceptions ? '' : `: so the error rate is under ${+(300 / n).toFixed(1)}%, at 95% confidence (3/${n})`}</div>`;
-}
-
-async function openSample(id) {
-  pv = { title: `Sample of ${data.doc.items.find(i => i.id === id).name}`, settings: { kind: 'sample', item: id, ...await api(`${instPath()}/sample?item=${enc(id)}`) } };
-  renderPv();
-}
-
 // The rules a run added to the process, or reworded, on the thread whose entry started it, or else on its line.
 const processNote = d => `<div class="pnote"><a data-act="process">Process: +${plural(d.rules, 'rule')}</a> in run ${d.run}</div>`;
 
@@ -1148,7 +1096,7 @@ function runHtml(r, latest) {
   return body ? `<details class="runl" data-key="run${r.run}" ${ui.sect[`run${r.run}`] ?? latest ? 'open' : ''}><summary>${line}</summary>${body}</details>` : `<div class="runl">${line}</div>`;
 }
 
-// The conversation, as a chat reads: the review sheet and the process, open for the runner, folded for others; the threads and the
+// The conversation, as a chat reads: the process, open for the runner, folded for others; the threads and the
 // runs among them, oldest first, a thread where its last word is and a run where it ended; and at the panel's foot, kept there as it
 // scrolls, the box to comment on the instance.
 function conversationHtml() {
@@ -1156,7 +1104,6 @@ function conversationHtml() {
   const fold = (key, head, body) => `<details class="sect" data-key="${key}" ${ui.sect[key] ?? mine ? 'open' : ''}><summary>${head}</summary>${body}</details>`;
   const moved = data.log.findLast(e => e.op === 'move'), runs = data.log.filter(e => e.op === 'run');
   let h = moved ? `<div class="sub">Moved ${when(moved.at)} from ${esc(moved.from)} to ${esc(moved.to)}, ${who(moved.accepted_by)} accepting.</div>` : '';
-  if (docs.review) h += fold('review', `<b>Review sheet</b>${docs.verdict ? ` \u00b7 ${esc(docs.verdict)}` : ''}`, docs.sheet ? `<div class="post">${docs.sheet}</div>` : `<div><a data-act="preview" data-file="${esc(docs.review.file)}">Open ${esc(fname(docs.review.file))}</a></div>`);
   if (docs.process) h += fold('process', `<b>Process</b>${docs.changed ? ' \u00b7 changed' : ''}`, docs.process);
   const ended = r => data.log.find(e => e.op === 'done' && e.run === r.run)?.seq ?? Infinity;
   h += [...threads.map(t => [t.last.seq, threadHtml(t)]), ...runs.map(r => [ended(r), runHtml(r, r === runs.at(-1))])].sort((a, b) => a[0] - b[0]).map(([, x]) => x).join('');
@@ -1191,9 +1138,7 @@ function renderCard() {
       + (item.kind === 'output' ? `<br>Destination: ${item.destination ? esc(item.destination) : 'stays here'}` : '')
       + data.log.filter(e => e.op === 'delivered' && e.item === item.id).map(e => `<br><span class="sent">Sent to ${esc(e.to)} ${when(e.at)} · ${esc(e.receipt)}</span>`).join('') + '</div>';
   } else h += `<div class="cp">${item.kind === 'input' ? 'Expected input, not there yet' : `${item.kind === 'step' ? 'Step' : 'Output'} not built yet`}</div>`;
-  const from = (item.from ?? []).map(f => data.doc.items.find(i => i.id === f)).filter(Boolean), passed = item.file && evidence(item) && passOf(item);
-  if (passed) h += `<div class="cp ok">Passed by ${person(passed.by)} at ${hhmm(passed.at)}</div>`;
-  else if (open && item.id === 'review' && item.file) h += '<div class="cp">Passing it accepts its points. Query one you don\'t accept where it stands: click it in the preview.</div>';
+  const from = (item.from ?? []).map(f => data.doc.items.find(i => i.id === f)).filter(Boolean);
   if (from.length) h += `<div class="cp">Made from ${from.map(f => `<a data-act="opencard" data-item="${esc(f.id)}">${esc(f.name)}</a>`).join(', ')}</div>`;
   if (wide) h += `<div class="cpv">${cardPv.att ? `<div class="sub"><a data-act="attachment-back">\u2190 ${esc(cardPv.title)}</a> \u00b7 ${esc(cardPv.att.title)}</div>` : ''}${previewBody(cardPv.att ?? cardPv)}</div>`
     + `<div class="full"><a data-act="preview" data-file="${esc(item.file)}" data-item="${esc(item.id)}">Open full</a></div>`;
@@ -1207,9 +1152,7 @@ function renderCard() {
   h += '<div class="acts">';
   if (item.file) h += `${wide ? '' : `<button class="btn" data-act="preview" data-file="${esc(item.file)}" data-item="${esc(item.id)}">Preview</button>`}<a class="btn" href="${fileUrl(item.file)}">Download</a>`;
   if (open && !wide) h += `<button class="btn" data-act="add" data-item="${esc(item.id)}" data-pane="${item.kind === 'output' ? 'out' : 'in'}">Upload…</button>`;
-  if (item.file && item.population) h += `<button class="btn" data-act="sample" data-item="${esc(item.id)}">Sample…</button>`;
-  if (open && item.file && evidence(item) && !passed && !drawOf(item)) h += `<button class="btn" data-act="pass" data-item="${esc(item.id)}">Pass</button>`;
-  if (open) h += `<button class="btn" data-act="comment-on" data-item="${esc(item.id)}">${evidence(item) ? 'Query' : 'Comment'}</button>`;
+  if (open) h += `<button class="btn" data-act="comment-on" data-item="${esc(item.id)}">Comment</button>`;
   if (data.doc.status === 'closed') h += `<button class="btn" data-act="correct" data-item="${esc(item.id)}">Correct\u2026</button>`;
   h += `<button class="btn" data-act="uncard" style="margin-left:auto">Close</button></div>`;
   put(card, h);
@@ -1275,7 +1218,7 @@ function sheetTable(p, s, first) {
 function renderPv() {
   const d = $('#pv');
   if (!pv) return void (d.open && d.close());
-  d.className = 'pv' + (pv.settings && pv.settings.kind !== 'sample' ? ' small' : '');
+  d.className = 'pv' + (pv.settings ? ' small' : '');
   let h = `<div class="pvh"><b>${esc(pv.title)}</b><span class="saved"></span>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${(pv.att ?? pv).doc ? '<button class="btn" data-act="layout">Exact layout</button>' : ''}${pv.path ? `<a class="btn" href="${fileUrl(pv.path)}">Download</a>` : ''}${pv.signin ? '<button class="btn primary" data-act="signin-save">Save login</button>' : ''}<button class="btn" data-act="unpv">${pv.signin ? 'Cancel' : 'Close'}</button></div>`;
   // Your account's dialog: Logins and Tokens, as tabs.
   const account = [['logins', 'Logins'], ['tokens', 'Tokens']];
@@ -1288,7 +1231,6 @@ function renderPv() {
   else if (pv.settings?.kind === 'wakes') h += `<div class="pvb vl">${wakesHtml(cur.i.id, cur.i.wakes, false)}</div>`;
   else if (pv.settings?.kind === 'waiting') h += `<div class="pvb vl">${waiting().join('') || '<div class="sub">Nothing waits on you.</div>'}</div>`;
   else if (pv.settings?.kind === 'start') h += `<div class="pvb vl">${startHtml(pv.settings)}</div>`;
-  else if (pv.settings?.kind === 'sample') h += `<div class="pvb vl">${sampleHtml(pv.settings)}</div>`;
   else if (pv.settings) {
     const s = pv.settings;
     h += '<div class="pvb vl">';
@@ -1754,29 +1696,6 @@ async function onAct(act, el) {
     await refresh();
   }
   if (act === 'uncard') { openItem = null; renderCard(); renderPanes(); }
-  if (act === 'pass') {
-    await api(`${instPath()}/pass`, { method: 'POST', body: JSON.stringify({ item: el.dataset.item }) });
-    await refresh();
-  }
-  if (act === 'sample') await openSample(el.dataset.item);
-  // A draw, a pick added, dropped or passed: the sample again, as it stands.
-  if (['draw', 'pick-add', 'pick-pass'].includes(act) || (act === 'pick-drop' && await ask({ title: `Drop ${el.dataset.id}?`, text: 'The drop is logged, with why.', value: '', placeholder: 'Why', ok: 'Drop',
-    act: why => api(`${instPath()}/pick`, { method: 'POST', body: JSON.stringify({ item: el.dataset.item, id: el.dataset.id, add: false, reason: why }) }) }))) {
-    const item = el.dataset.item;
-    if (act === 'draw') await api(`${instPath()}/draw`, { method: 'POST', body: JSON.stringify({ item, n: Number($('#sn').value), key: $('#skey').value, by_amount: $('#sby').checked }) });
-    if (act === 'pick-add') await api(`${instPath()}/pick`, { method: 'POST', body: JSON.stringify({ item, id: $('#sadd').value.trim(), add: true, reason: $('#swhy').value.trim() }) });
-    if (act === 'pick-pass') await api(`${instPath()}/pass`, { method: 'POST', body: JSON.stringify({ item, pick: el.dataset.id }) });
-    await refresh();
-    await openSample(item);
-  }
-  if (act === 'pick-query') {
-    closePv();
-    Object.assign(ui, { open: true, on: el.dataset.item, ref: el.dataset.id });
-    renderLog();
-    renderBar();
-    $('#newcomment')?.focus();
-  }
-
   if (act === 'view') { localStorage.view = el.dataset.id; renderPanes(); placeCard(); }
   if (act === 'sort') {
     const { pane, key } = el.dataset, was = ui.sort[pane];
@@ -1936,10 +1855,8 @@ async function onAct(act, el) {
   }
   // A task closes as a one-off, or as the first instance of a series it becomes; either may be abandoned instead.
   if (act === 'close') {
-    const waits = threads.filter(t => t.waits), task = cur.s.single, r = data.review, named = (i, pick) => `${i.name}${i.file ? '' : ' (missing)'}${pick === undefined ? '' : ` ${pick}`}`;
-    const review = r.state === 'exceptions' ? `Its review has ${plural(r.exceptions.length, 'exception')}, queries no one resolved:\n${threads.filter(t => r.exceptions.includes(t.id)).map(t => `• ${firstLine(t.posts[0].text)}`).join('\n')}`
-      : r.state === 'unreviewed' ? `No one passed ${r.unpassed.map(u => named(data.doc.items.find(i => i.id === u.item), u.pick)).join(', ')}.` : 'Its review passed.';
-    const text = [task ? 'It becomes the record, approving nothing.' : "It becomes this period's record and an example for later instances, approving nothing.", review,
+    const waits = threads.filter(t => t.waits), task = cur.s.single;
+    const text = [task ? 'It becomes the record, approving nothing.' : "It becomes this period's record and an example for later instances, approving nothing.",
       waits.length && 'Closing accepts what the agent did for each ask still waiting:\n' + waits.map(t => `• ${firstLine(t.last.text)}`).join('\n')].filter(Boolean).join('\n\n');
     const html = (task ? `<div class="opt"><button class="btn commit" value="close">Close task</button><span>closes it as a one-off</span></div>`
       + `<div class="opts"><label>Series name<input type="text" id="aseries" value="${esc(cur.i.label)}" autocomplete="off"></label>`
@@ -2175,7 +2092,7 @@ matchMedia('(max-width: 800px)').addEventListener('change', renderPanes);
 
 addEventListener('hashchange', () => {
   openItem = null; ui.sect = {}; prevSigs = {};
-  for (const el of ['#panes', '#ins', '#outs', '#rev']) $(el).scrollTop = 0;
+  for (const el of ['#panes', '#ins', '#outs', '#steps']) $(el).scrollTop = 0;
   $('#log').dataset.end = 'yes';
   closePv();
   $('#side').classList.remove('open');
