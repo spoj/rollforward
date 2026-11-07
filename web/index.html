@@ -411,6 +411,9 @@ input[type=checkbox] { accent-color: var(--ink); }
 .post.ask > b::after { content: ' asks'; color: var(--red); font-weight: 500; }
 .post.waits { border-left: 2px solid var(--red); padding-left: 8px; }
 .post .kids { margin: 6px 0 0 2px; padding-left: 12px; border-left: 1px solid var(--rule); }
+.post .fold { border: 0; background: none; padding: 0 5px 0 0; font-size: 11px; color: var(--ink-3); cursor: pointer; }
+.post .fold:hover { color: var(--ink); }
+.conv .post.folded { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink-2); }
 .post .pb.long { max-height: 15em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
 .post .pa { display: flex; gap: 4px; align-items: center; margin-top: 2px; }
 .post .reply:not([hidden]) { margin-top: 6px; display: grid; gap: 6px; }
@@ -1075,12 +1078,15 @@ function threadHtml(t) {
 
 // A comment, with its reactions, Reply and, for an ask that pins files this person hasn't signed off, Sign off, which open its reply box,
 // there all along so that it opens where it is; then what hangs under it, three levels deep, past which a link opens the rest as a
-// thread of its own. A long one folds until More.
+// thread of its own. A long one folds until More. Its twisty collapses it, with what hangs under it, to its first line, as this
+// browser keeps it until someone adds to it.
 function postHtml(t, p, depth) {
   const kids = t.posts.filter(k => k.under === p.seq), open = data.doc.status === 'open', off = data.run ? ' disabled title="Available when the run ends"' : '';
   const signs = open && p.ask && p.pinned && !t.posts.some(k => k.op === 'signoff' && k.on === p.seq && k.by === me.email);
   const long = !ui.full.has(p.seq) && (p.text.length > 900 || p.text.split('\n').length > 12), all = n => t.posts.filter(k => k.under === n).reduce((c, k) => c + 1 + all(k.seq), 0);
-  let h = `<div class="post ${p.ask ? 'ask' : ''} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}"><b class="${p.by === 'agent' ? '' : 'p'}">${who(p.by)}</b> <span class="tm">${hhmm(p.at)}${p.to ? ` \u00b7 to ${who(p.to)}` : ''}${p.note ? ` \u00b7 a note for ${who(data.runner.by)}` : ''}${p.waits ? ` \u00b7 waits on ${who(p.waits)}` : ''}${p.commit ? ` \u00b7 commit <code>${p.commit.slice(0, 7)}</code>` : ''}</span>`
+  const end = q => Math.max(q.seq, ...t.posts.filter(k => k.under === q.seq).map(end)), head = `<b class="${p.by === 'agent' ? '' : 'p'}">${who(p.by)}</b> <span class="tm">`;
+  if (JSON.parse(localStorage[`folds:${cur.i.id}`] ?? '{}')[p.seq] === end(p)) return `<div class="post folded ${p.ask ? 'ask' : ''} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}"><button class="fold" data-act="fold" data-seq="${p.seq}" title="Expand">\u25B8</button>${head}${hhmm(p.at)}</span> ${esc(firstLine(p.text))}${kids.length ? `<span class="tm"> \u00b7 ${all(p.seq)} more</span>` : ''}</div>`;
+  let h = `<div class="post ${p.ask ? 'ask' : ''} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}"><button class="fold" data-act="fold" data-seq="${p.seq}" data-end="${end(p)}" title="Collapse">\u25BE</button>${head}${hhmm(p.at)}${p.to ? ` \u00b7 to ${who(p.to)}` : ''}${p.note ? ` \u00b7 a note for ${who(data.runner.by)}` : ''}${p.waits ? ` \u00b7 waits on ${who(p.waits)}` : ''}${p.commit ? ` \u00b7 commit <code>${p.commit.slice(0, 7)}</code>` : ''}</span>`
     + `<div class="pb ${long ? 'long' : ''}">${p.by === 'agent' && p.op === 'comment' ? md(p.text) : esc(p.text)}</div>${long ? `<a class="more" data-act="more" data-seq="${p.seq}">More</a>` : ''}`
     + (p.files ?? []).map(f => `<div class="f">${/\.(png|jpe?g|gif|webp|svg)$/i.test(f) ? `<img src="${fileUrl(f)}" loading="lazy" alt="${esc(fname(f))}" title="${esc(fname(f))}" data-act="preview" data-file="${esc(f)}">` : `<a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a>`}</div>`).join('');
   if (p.op === 'comment') h += `<div class="pa">${reactHtml(p.seq)}${open ? `<button class="quiet" data-act="reply" data-seq="${p.seq}">Reply</button>` : ''}${signs ? `<button class="quiet" data-act="reply" data-seq="${p.seq}">Sign off\u2026</button>` : ''}</div>`;
@@ -1747,6 +1753,13 @@ async function onAct(act, el) {
     await refresh();
   }
   if (act === 'more') { ui.full.add(+el.dataset.seq); renderLog(); }
+  if (act === 'fold') {
+    const k = `folds:${cur.i.id}`, folds = JSON.parse(localStorage[k] ?? '{}');
+    if (el.dataset.end) folds[el.dataset.seq] = +el.dataset.end;
+    else delete folds[el.dataset.seq];
+    localStorage[k] = JSON.stringify(folds);
+    renderLog();
+  }
   if (act === 'alone') { ui.alone = el.dataset.seq ? +el.dataset.seq : null; renderLog(); $('#log').scrollTop = 0; }
   if (act === 'uncard') { openItem = null; renderCard(); renderPanes(); }
   if (act === 'view') { localStorage.view = el.dataset.id; renderPanes(); placeCard(); }

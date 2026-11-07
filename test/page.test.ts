@@ -440,6 +440,27 @@ test("the conversation reads as a chat: its folds at the top, then oldest first,
   await page.setViewportSize({ width: 1280, height: 720 });
 });
 
+test("a comment's twisty collapses it, with what hangs under it, to its first line, as this browser keeps it until someone adds to it", async () => {
+  const url = (path: string) => new URL(path, page.url()).href, signin = await entra.signIn(new URL(page.url()).origin, 'bob@demo.test');
+  const bobs = signin.headers.getSetCookie().find(c => c.startsWith('rf_session='))!.split(';')[0];
+  const note = async (text: string, thread?: string) => {
+    assert.equal((await fetch(url('/api/instances/a5c0ff5e1f00/comment'), { method: 'POST', body: JSON.stringify({ text, thread }), headers: { cookie: bobs } })).status, 200);
+    await page.locator('#log .post', { hasText: text }).last().waitFor();
+  };
+  await page.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
+  await page.waitForSelector('#bar h1 .t:text-is("2026-12")');
+  await note('The rates, line by line.\nAll twelve months.');
+  const thread = page.locator('#log .thread', { hasText: 'The rates, line by line.' }), id = await thread.getAttribute('data-thread');
+  await note('September is off.', id!);
+  await thread.locator('[data-act=fold]').first().click();
+  assert.deepEqual(await thread.locator('.post').evaluateAll(ps => ps.map(p => [p.classList.contains('folded'), p.textContent!.includes('The rates, line by line.'), p.textContent!.includes('All twelve months'), p.textContent!.endsWith('\u00b7 1 more')])), [[true, true, false, true]], 'one line, its first, and a count of the rest');
+  await page.reload();
+  await page.waitForSelector(`#log .thread[data-thread=${id}] .post.folded`);
+  await note('And October.', id!);
+  assert.equal(await thread.locator('.post.folded').count(), 0, 'a reply opens it again');
+  assert.equal(await thread.locator('.post').count(), 3);
+});
+
 test("a name two people share shows with their email, a group among a workspace's people is marked as one, and a person's request to start a series names them", async () => {
   const bob = 'bob@demo.test', users = join(root, '.rf', 'users.json'), group = '6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b';
   writeFileSync(join(root, '.rf', 'wakes.json'), JSON.stringify({ pending: {}, fired: {}, requests: { r9: { series: 'a5c0ff5e1fee', label: '2027-01', from: bob, at: new Date().toISOString() } } }));
