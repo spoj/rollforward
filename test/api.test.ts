@@ -807,8 +807,10 @@ test('rf acts on an instance as the page does: resolve, creds, rename, takeover,
   assert.equal(await rf('takeover', 'Readings/Jots/b1'), 'you run Readings/Jots/b1 now, with no logins ticked\n');
   assert.equal((await json(`/api/instances/${his}`)).runner.by, adminEmail);
   await assert.rejects(rf('interrupt', 'Readings/Jots/b1'), fails(1, /^rf: POST \/api\/instances\/\w+\/interrupt: 409 no run going\n$/));
-  await assert.rejects(rf('signoff', 'Readings/Jots/b1', 'c1', 'approve'), fails(1, /: 409 no sign-off waits in c1\n$/));
-  await assert.rejects(rf('signoff', 'Readings/Jots/b1', 'c1', 'maybe'), fails(2, /^rf signoff PATH THREAD approve\|reject/));
+  await assert.rejects(rf('signoff', 'Readings/Jots/b1', 'c1'), fails(1, /: 409 no ask in c1 pins files to sign off\n$/));
+  await assert.rejects(rf('signoff', 'Readings/Jots/b1', 'c1', 'Fine.', 'more'), fails(2, /^rf signoff PATH THREAD \[TEXT\]/));
+  const reject = await call('POST', `/api/instances/${his}/signoff`, JSON.stringify({ thread: 'c1', approved: false }));
+  assert.deepEqual([reject.status, await reject.text()], [400, 'a sign-off approves; to say no, reply in the thread'], "rf 0.12's reject, still in use");
   assert.equal(await rf('close', 'Readings/Jots/a2'), 'closed Readings/Jots/a2\n');
   assert.match(await rf('correct', 'Readings/Jots/a2', 'The rate was a day stale.', '--see', 'b1'), /^a2 is marked wrong, seq \d+\n$/);
   await assert.rejects(rf('correct', 'Readings/Jots/a2', 'x', '--see', 'zz'), fails(1, /^rf: no instance zz in its series\n$/));

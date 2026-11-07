@@ -76,8 +76,8 @@ export const starter = (inst: Instance, who: string) => {
 // What a person but the runner adds is a note, shared series or not: the agent reads it as context for its runner to take up, never as
 // the runner's word, though it runs on it where it may. A wake that starts nothing is one too. A reply from whom the agent's ask named
 // is no note.
-export const isNote = (inst: Instance, e: Entry) => !!e.note || (isPerson(e) && ['upload', 'comment'].includes(e.op) && e.by !== runnerOf(inst).by
-  && !(e.op === 'comment' && inst.log.findLast(x => x.seq < e.seq && x.op === 'comment' && x.thread === e.thread && x.by === 'agent')?.to === e.by));
+export const isNote = (inst: Instance, e: Entry) => !!e.note || (isPerson(e) && ['upload', 'comment', 'signoff'].includes(e.op) && e.by !== runnerOf(inst).by
+  && !(e.op !== 'upload' && inst.log.findLast(x => x.seq < e.seq && x.op === 'comment' && x.thread === e.thread && x.by === 'agent')?.to === e.by));
 // A quiet entry, such as rf's without --wake, starts nothing, and its act kicks nothing that waits: the next run reads it with the rest.
 export const starts = (inst: Instance, e: Entry) => !e.quiet && (!isNote(inst, e) || starter(inst, e.by));
 
@@ -506,9 +506,9 @@ export function resolveFor(a: Active, folder: string): string {
   throw new HttpError(404, `no series you can read at ${folder}`);
 }
 
-// A file a run cites in a comment, under upload/ or working/ of its instance, or of another of its series as ../<label>/...: its
+// A file a run pins in a comment, under upload/ or working/ of its instance, or of another of its series as ../<label>/...: its
 // instance's id, by the names the run started with, and its path there.
-export function citedFor(a: Active, f: unknown): { inst: string; path: string } | undefined {
+export function pinFor(a: Active, f: unknown): { inst: string; path: string } | undefined {
   const m = typeof f === 'string' && posix.normalize(f) === f ? f.match(/^(?:\.\.\/([^/]+)\/)?((?:upload|working)\/.+)$/) : null;
   const inst = m && (m[1] === undefined ? a.inst.id : a.view.names[posix.join(posix.dirname(a.view.instance), m[1])]);
   return inst && !m[2].split('/').includes('..') && existsSync(join(instanceDir(inst), m[2])) ? { inst, path: m[2] } : undefined;

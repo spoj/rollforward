@@ -20,7 +20,7 @@ const native: string[] = [];
 
 before(async () => {
   cpSync(join(app, 'test', 'fixture'), root, { recursive: true });
-  // An open instance of a series of its own, whose agent asks its runner, the admin, for a sign-off.
+  // An open instance of a series of its own, whose agent asks its runner, the admin, to sign off the file it pins.
   const tree = JSON.parse(readFileSync(join(root, '.rf', 'tree.json'), 'utf8')), signed = join(root, 'instances', 'a5c0ff5e1f00');
   tree.series.a5c0ff5e1fee = { name: 'Year-end pack', workspace: '1b3031035ff6' };
   writeFileSync(join(root, '.rf', 'tree.json'), JSON.stringify(tree));
@@ -28,9 +28,11 @@ before(async () => {
   mkdirSync(join(signed, 'working'), { recursive: true });
   writeFileSync(join(signed, 'instance.json'), JSON.stringify({ label: '2026-12', series: 'a5c0ff5e1fee' }));
   writeFileSync(join(signed, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [] }));
+  writeFileSync(join(signed, 'working', 'pack.csv'), 'pack\n');
+  const pinned = { inst: 'a5c0ff5e1f00', path: 'working/pack.csv', sha256: createHash('sha256').update('pack\n').digest('hex') };
   writeFileSync(join(signed, 'log.jsonl'), [
     { seq: 1, at: '2026-08-01T09:00:00.000Z', by: 'admin@demo.test', op: 'create', from: null, logins: [] },
-    { seq: 2, at: '2026-08-01T09:05:00.000Z', by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'The pack is ready to send to the bank.', ask: true, signoff: true, recipients: ['bank@demo.test'] },
+    { seq: 2, at: '2026-08-01T09:05:00.000Z', by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'The pack is ready to send to the bank.', ask: true, files: [pinned] },
   ].map(e => JSON.stringify(e) + '\n').join(''));
   // A closed instance of the same series whose run, asked to, called a connection, added a rule to its process and posted images.
   const called = join(root, 'instances', 'a5c0ff5e1f01');
@@ -349,25 +351,24 @@ test("what the session names, such as a tool call's name, shows as text in the a
   await page.click('#log .seg [data-act=audit]');
 });
 
-test("a sign-off the agent asks for shows louder, above the instance and in its thread, with Approve and Reject for its runner; approving commits the folder, as the thread and the audit say", async () => {
+test("an ask that pins files shows them, and anyone who sees the instance signs it off from its thread, which commits the folder, as the thread and the audit say", async () => {
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
   await page.waitForSelector('#log.open');
   await page.locator('#needs', { hasText: 'The pack is ready to send to the bank.' }).waitFor();
-  assert.equal(await page.locator('#needs').innerText(), 'Sign-off\nThe pack is ready to send to the bank.\nReview');
-  const thread = page.locator('#log .thread.waits.signoff');
+  assert.equal(await page.locator('#needs').innerText(), 'Ask\nThe pack is ready to send to the bank.\nReply');
+  const thread = page.locator('#log .thread', { hasText: 'The pack is ready to send to the bank.' });
   await thread.waitFor();
   assert.equal(await page.textContent('#bar .ptog .badge'), String(await page.locator('#log .thread.waits').count()), "the panel's toggle counts what waits there");
-  assert.match(await thread.locator('.on').innerText(), /waits on your sign-off/);
-  assert.deepEqual(await page.locator('#steps .tile.prop.waits > *').allTextContents(), ['SIGN-OFF', 'The pack is ready to send to the bank.', '\u2192 bank@demo.test', 'Waits on you'], 'Steps show the action and where it goes');
-  assert.equal(await thread.locator('.binds').textContent(), 'To bank@demo.test');
-  assert.deepEqual(await thread.locator('button').allInnerTexts(), ['Approve', 'Reject']);
+  assert.match(await thread.locator('.on').innerText(), /waits on you/);
+  assert.deepEqual(await thread.locator('.post .f').allInnerTexts(), ['pack.csv'], 'the file it pins');
+  assert.deepEqual(await thread.locator('button').allInnerTexts(), ['Reply', 'Sign off', 'Resolve']);
   await thread.locator('textarea').fill('Looks right.');
-  await thread.locator('[data-act=signoff][data-ok]').click();
+  await thread.locator('[data-act=signoff]').click();
   const post = page.locator('#log .thread .post', { hasText: 'Signed off: Looks right.' });
   await post.waitFor();
   assert.match(await post.locator('.tm').innerText(), /commit [0-9a-f]{7}/);
   await page.waitForSelector('#needs', { state: 'hidden' });
-  await page.waitForSelector('#steps .tile.prop .meta:text("Approved")');
+  assert.equal(await thread.locator('[data-act=signoff]').count(), 0, 'signed off by you, it asks you no more');
   await page.click('#log [data-act=audit]');
   await page.locator('#audit .e', { hasText: 'You signed off' }).waitFor();
   await page.click('#log .seg [data-act=audit]');

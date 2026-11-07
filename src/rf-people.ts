@@ -13,7 +13,7 @@ process.on('uncaughtException', e => {
 
 const USAGE = `rf login URL [TOKEN]                without a TOKEN, through the browser: type rf's code on the page, and allow it
 rf ls [--json]                    every workspace, series and instance you see, with its status, runner, asks waiting and wakes
-rf waiting [--json]               what waits on you: asks, sign-offs and notes, requests to start an instance or to use a
+rf waiting [--json]               what waits on you: asks and notes, requests to start an instance or to use a
                                   website in a workspace you own, proposals, expired logins, and hosts a run's browser on a
                                   website you added was refused
 rf show PATH [--json]             an instance: its items, the threads that wait on someone, by id, and its last run
@@ -30,8 +30,8 @@ rf comment PATH TEXT [--item ID] [--ref REF] [--thread T] [--wake|--wait]   a ne
                                   ask; --wake starts a run on it, as --wait does, which prints what the agent says back
 rf upload PATH FILE [--onto ITEM] [--output] [--wake]
 rf resolve PATH THREAD [TEXT]     resolves a thread, with TEXT as a last word; nothing wakes
-rf signoff PATH THREAD approve|reject [TEXT] [--wake]   the runner's answer to a sign-off the agent asks for, which commits
-                                  the folder
+rf signoff PATH THREAD [TEXT] [--wake]   signs off the agent's latest ask in THREAD that pins files, as they are, which
+                                  commits the folder in your name; to say no, reply
 rf close PATH [--as-series NAME] [--wake]   the runner makes it the record and an example,
                                   approving nothing; a task closes as a one-off, or as the first instance of the series NAME it
                                   becomes; --wake starts runs of the series' later open instances, which may have used its draft
@@ -142,18 +142,17 @@ What there is
   reads it at its next run; rf wake PATH now starts one. A quiet upload or comment is committed to the instance's history at once.
 - A comment starts a thread, on the instance or on an item, at a cell such as Base!C25 or a line of a markdown file by its
   opening words, and others reply in it. An ask is the agent's comment that waits on someone,
-  the one it names or else the runner, until they reply or resolve it. rf ls says how many asks wait in each instance. A sign-off,
-  an ask with signoff true, is for an action outside, such as a mail, and waits on the runner, who approves or rejects it: either
-  commits the instance's folder to its history, .git in it, as closing does. One that names recipients and attached files, frozen
-  by their sha256, binds the instance's mail: it goes only as an approval says.
+  the one it names or else the runner, until they reply or resolve it. rf ls says how many asks wait in each instance. An ask
+  may pin files, kept with their sha256 as the agent asks; anyone who sees the instance may sign it off, which commits the
+  instance's folder to its history, .git in it, as closing does. Whose sign-off counts, and for what, is the series' call.
 
 What rf pull copies, the folders as the agent sees them
   AGENTS.md                  the company's conventions; <workspace>/AGENTS.md the workspace's
   <workspace>/<series>/<label>/
     screen.json              the screen: {rev, status, items: [{id, name, kind, file, from, headline, source, destination, as_of}]}
     log.jsonl                every event, by seq: by is a person's email, "server" or "agent"; op is upload, comment (thread, item,
-                             ref, text, ask, to, signoff), resolve, signoff (the runner's answer, with its commit), commit, point and
-                             item (the screen changing), run, done (its cost, or error), close, and the rest
+                             ref, text, files, ask, to), resolve, signoff (someone's, on the ask it names, with its commit),
+                             commit, point and item (the screen changing), run, done (its cost, or error), close, and the rest
     upload/                  what people uploaded, their comments' attachments in upload/attachments/
     working/                 what the agent made, its scripts, and process.md, how it does this series
     session/                 each session's transcript, which may carry several runs: every message and tool call
@@ -166,8 +165,8 @@ The copy is read-only: only rf's commands change what's on the server.
 
 Usual work
 - What waits on me: rf waiting, then rf show PATH, which names each thread that waits by its id.
-- Answer an ask: rf comment PATH TEXT --thread T --wait, which prints what the agent says back; a sign-off, as its runner:
-  rf signoff PATH T approve|reject [TEXT] --wake, for the agent to carry on. Close an
+- Answer an ask: rf comment PATH TEXT --thread T --wait, which prints what the agent says back; sign off one that pins files:
+  rf signoff PATH T [TEXT] --wake, for the agent to carry on. Close an
   instance once it's the record: rf close PATH.
 - Take an instance over: rf creds PATH lists the offers of your logins, and rf takeover PATH --creds OFFER,... ticks them.
 - Your logins: rf logins lists them, with what each offers, and an expired one's link to sign in again on the page.
@@ -379,7 +378,7 @@ if (cmd === 'login' && url) {
   const [me, s, all] = await Promise.all([get('/me'), get('/api/status'), get('/api')]), mine = (who: string | null) => (who ?? me.email) === me.email;
   const series = all.flatMap(w => w.series.map(x => ({ ...x, path: `${w.name}/${x.name}` })));
   const rows = [
-    ...s.asks.filter(a => a.who === me.email).map(a => ({ kind: a.signoff ? 'sign-off' : a.note ? 'note' : 'ask', path: a.path, since: a.since, text: a.text })),
+    ...s.asks.filter(a => a.who === me.email).map(a => ({ kind: a.note ? 'note' : 'ask', path: a.path, since: a.since, text: a.text })),
     ...series.flatMap(x => x.requests.filter(r => mine(r.who)).map(r => ({ kind: 'request', path: x.path, since: r.at, id: r.id, text: `${r.from} asks to start ${r.label}` }))),
     ...all.filter(w => w.manage && w.proposal?.into === w.id).map(({ proposal: p }) => ({ kind: 'proposal', path: p.to, since: p.at, text: `${p.by} proposes to ${p.kind === 'merge' ? `merge ${p.from} into it` : `move ${p.from}/${p.series} to it`}` })),
     ...s.expired.filter(e => e.who === me.email).map(e => ({ kind: 'expired', login: e.login, holding: e.holding, text: `your ${e.login} login expired` })),
@@ -393,8 +392,8 @@ if (cmd === 'login' && url) {
   const threads = Map.groupBy(log.filter(e => ['comment', 'resolve', 'signoff'].includes(e.op)), e => e.thread);
   const waiting = doc.status !== 'open' ? [] : [...threads.values()].flatMap(t => {
     const e = t.at(-1);
-    return e.op === 'comment' && ((e.by === 'agent' && e.ask) || e.note)
-      ? [{ thread: e.thread, kind: e.signoff ? 'sign-off' : e.ask ? 'ask' : 'note', for: e.to ?? runner.by, by: e.by, seq: e.seq, item: t[0].item, ref: t[0].ref, text: e.text }] : [];
+    return (e.by === 'agent' && e.ask) || e.note
+      ? [{ thread: e.thread, kind: e.ask ? 'ask' : 'note', for: e.to ?? runner.by, by: e.by, seq: e.seq, item: t[0].item, ref: t[0].ref, text: e.text }] : [];
   });
   const done = log.findLast(e => e.op === 'done'), last = done ? { run: done.run, cost: done.cost, error: done.error ?? null } : null;
   if (flags.json) console.log(JSON.stringify({ path: args[0], id: inst.id, status: doc.status, runner: runner.by, running: run, queued, items: doc.items, waiting, last_run: last }, null, 1));
@@ -438,9 +437,9 @@ else if (cmd === 'comment' && args.length === 2) {
   }
 } else if (cmd === 'resolve' && [2, 3].includes(args.length)) {
   console.log(await (await post(`${(await instanceAt(args[0])).at}/resolve`, { thread: args[1], text: args[2] })).text());
-} else if (cmd === 'signoff' && ['approve', 'reject'].includes(args[2]) && args.length <= 4) {
-  await post(`${(await instanceAt(args[0])).at}/signoff`, { thread: args[1], approved: args[2] === 'approve', text: args[3], quiet: !flags.wake });
-  console.log(`${args[2] === 'approve' ? 'approved' : 'rejected'} ${args[1]}`);
+} else if (cmd === 'signoff' && [2, 3].includes(args.length)) {
+  await post(`${(await instanceAt(args[0])).at}/signoff`, { thread: args[1], text: args[2], quiet: !flags.wake });
+  console.log(`signed off ${args[1]}`);
 } else if (['close', 'abandon', 'interrupt'].includes(cmd) && args.length === 1) {
   const { series, at } = await instanceAt(args[0]);
   if (cmd === 'close' && typeof flags['as-series'] === 'string') await post(`/api/series/${series.id}/promote`, { name: flags['as-series'] });
@@ -603,7 +602,7 @@ else if (cmd === 'comment' && args.length === 2) {
       [`Waiting`, [
         ...[...s.asks, ...s.requests.map(r => ({ ...r, who: r.who ?? 'anyone', since: r.at, text: `${r.from} asks to start ${r.label}`, request: true })),
           ...s.proposals.map(p => ({ who: `${p.to}'s owners`, path: p.to, since: p.at, text: `${p.by} proposes to ${p.kind === 'merge' ? `merge ${p.from} into it` : `move ${p.from}/${p.series} to it`}`, proposal: true }))]
-          .sort((a, b) => a.who.localeCompare(b.who) || a.since.localeCompare(b.since)).map(a => `${a.who}  ${a.proposal ? 'a proposal' : a.request ? 'a request' : a.signoff ? 'a sign-off' : a.note ? 'a note' : 'an ask'} in ${a.path} since ${when(a.since)}: ${a.text.split('\n')[0].slice(0, 80)}`),
+          .sort((a, b) => a.who.localeCompare(b.who) || a.since.localeCompare(b.since)).map(a => `${a.who}  ${a.proposal ? 'a proposal' : a.request ? 'a request' : a.note ? 'a note' : 'an ask'} in ${a.path} since ${when(a.since)}: ${a.text.split('\n')[0].slice(0, 80)}`),
         ...s.expired.map(e => `${e.who}  their ${e.login} login expired${e.holding.length ? `, holding ${e.holding.join(', ')}` : ''}`),
       ]],
       [`Last run failed`, s.failed.map(f => `${f.path}  run ${f.run} at ${when(f.at)}: ${f.error}`)],

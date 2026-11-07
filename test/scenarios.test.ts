@@ -181,7 +181,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
       () => `rf resolve ${thread} 2>&1`,
       `curl -s -m 10 https://openrouter.ai/api/v1/chat/completions -H 'content-type: application/json' -d '{"model": "openai/gpt-5-mini", "messages": [{"role": "user", "content": "Is this right?"}]}'`,
       'curl -s -m 10 https://openrouter.ai/api/v1/credits',
-      'echo 1 > working/x.csv && rf say --file working/x.csv --file ../2026-11/working/x.csv Cited. 2>&1',
+      'echo 1 > working/x.csv && rf say --pin working/x.csv --pin ../2026-11/working/x.csv Cited. 2>&1',
     ],
     report: 'Checked the walls, and woke myself for the bank file.', saw: [],
   };
@@ -214,7 +214,8 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.match(walls.saw[14], new RegExp(`admin@demo.test started ${thread}, and resolves it`));
   assert.match(walls.saw[15], /"content":"A second opinion"/, 'any model, through OpenRouter, with the server\'s key');
   assert.match(walls.saw[16], /^\{\}\s*$/, "any request reaches OpenRouter, with the server's key");
-  assert.deepEqual(log.findLast(e => e.text === 'Cited.')!.files, [{ inst: id, path: 'working/x.csv' }, { inst: id, path: 'working/x.csv' }], "a cited file is kept by its instance's id");
+  const x = { inst: id, path: 'working/x.csv', sha256: createHash('sha256').update('1\n').digest('hex') };
+  assert.deepEqual(log.findLast(e => e.text === 'Cited.')!.files, [x, x], "a pinned file is kept by its instance's id, with its sha256");
   const asked = log.filter(e => e.op === 'call' && e.name === 'openrouter'), pi = asked.filter(e => (e.path as string).startsWith('/api/v1/messages'));
   assert.deepEqual(asked.filter(e => !pi.includes(e)).map(e => [e.run, e.method, e.path, e.status, e.model, e.cost]), [[2, 'POST', '/api/v1/chat/completions', 200, 'openai/gpt-5-mini', 0.002], [2, 'GET', '/api/v1/credits', 404, undefined, 0]]);
   assert.deepEqual(pi.map(e => [e.run, e.method, e.status, e.model, e.cost]), [[1, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01], ...Array(walls.bash.length + 1).fill([2, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01]), ...Array(2).fill([3, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01])], "Pi's own calls, a step's each and the report's, through the same connection");
@@ -256,7 +257,7 @@ test('people rename the instance, its series and its workspace mid-run: the run 
       assert.equal((await call(body ? 'PUT' : 'POST', path, body)).status, 200, path);
     return 'pwd; cat names.tsv';
   };
-  const during: Script = { bash: [rename, 'rf wake . +1d 2>&1; echo 1 > working/x.csv; rf say --file ../2026-11/working/x.csv Cited. 2>&1'], report: 'Renamed under me.', saw: [] };
+  const during: Script = { bash: [rename, 'rf wake . +1d 2>&1; echo 1 > working/x.csv; rf say --pin ../2026-11/working/x.csv Cited. 2>&1'], report: 'Renamed under me.', saw: [] };
   const next: Script = { bash: ['pwd; cat names.tsv'], report: 'New names.', saw: [] };
   scripts.push(during, next);
   assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Go.' })).status, 200);
@@ -264,7 +265,7 @@ test('people rename the instance, its series and its workspace mid-run: the run 
   const [pwd, ...names] = during.saw[0].trim().split('\n');
   assert.deepEqual([pwd, names.filter(l => l.startsWith(id))], ['/work/Named/Before/2026-11', [`${id}\t/work/Named/Before/2026-11`]]);
   assert.match(during.saw[1], /^set: \. wakes at .*\nsaid in c\d+, seq \d+\s*$/);
-  assert.deepEqual((await (await call('GET', `/api/instances/${id}`)).json()).log.findLast((e: { op: string }) => e.op === 'comment').files, [{ inst: id, path: 'working/x.csv' }]);
+  assert.deepEqual((await (await call('GET', `/api/instances/${id}`)).json()).log.findLast((e: { op: string }) => e.op === 'comment').files, [{ inst: id, path: 'working/x.csv', sha256: createHash('sha256').update('1\n').digest('hex') }]);
   const git = (...args: string[]) => execFileSync('git', args, { cwd: join(root, 'instances', id), encoding: 'utf8' });
   await until("run 2's commit", () => git('log', '-1', '--format=%s') === 'Run 2\n');
   assert.ok(git('show', 'HEAD:names.tsv').includes(`${id}\t/work/Named/Before/2026-11\n`), "the run's commit holds the names its changes were written under");
@@ -276,7 +277,7 @@ test('people rename the instance, its series and its workspace mid-run: the run 
   assert.ok(git('show', 'HEAD:names.tsv').includes(`${id}\t/work/Renamed/After/November\n`));
 });
 
-test('sign-offs are git commits: the agent commits a moment worth keeping, the runner approves or rejects in their name, and closing commits as theirs', async () => {
+test("sign-offs are git commits: the agent commits a moment worth keeping and pins what it asks about; anyone who sees the instance signs it off in their name, someone else's a note for the runner; closing commits as the runner's", async () => {
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Signed' })).json();
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB] })).status, 200);
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Pack' })).json();
@@ -289,12 +290,12 @@ test('sign-offs are git commits: the agent commits a moment worth keeping, the r
       'echo 100 > working/pack.csv && rf commit Draft pack built 2>&1',
       "git log --format='%an|%s' 2>&1; echo 200 > working/pack.csv; git status --short 2>&1",
       'git commit --allow-empty -qm mine 2>&1 | head -1',
-      'rf ask --sign-off --to bob@demo.test Send it? 2>&1',
-      'rf ask --sign-off The pack is ready to send to the bank. 2>&1',
+      'rf ask --pin working/none.csv Send it? 2>&1',
+      'rf ask --pin working/pack.csv The pack is ready to send to the bank. 2>&1',
     ],
     report: 'Built the pack; asked for a sign-off.', saw: [],
   };
-  const again: Script = { bash: ['rf ask --sign-off --recipients Bank@demo.test,ops@demo.test --attach working/pack.csv The rate is fixed: send it now? 2>&1'], report: 'Fixed the rate; asked again.', saw: [] };
+  const again: Script = { bash: ['echo 250 > working/pack2.csv && rf ask --pin working/pack2.csv The rate is fixed: send it now? 2>&1'], report: 'Fixed the rate; asked again.', saw: [] };
   const approved: Script = { bash: [], report: 'Signed off: sending.', saw: [] };
   scripts.push(ask, again, approved);
 
@@ -303,33 +304,33 @@ test('sign-offs are git commits: the agent commits a moment worth keeping, the r
   assert.match(ask.saw[0], /^committed [0-9a-f]{40}\s*$/);
   assert.match(ask.saw[1], /^rollforward agent\|Draft pack built\n[^]* M working\/pack.csv/, 'the run reads its history, and sees what changed since');
   assert.match(ask.saw[2], /Read-only file system|Permission denied|unable to/i, 'and never writes it');
-  assert.match(ask.saw[3], /a sign-off is the runner's, admin@demo.test: leave out --to/);
+  assert.match(ask.saw[3], /no file working\/none\.csv: pin one under upload\/ or working\//);
   assert.match(ask.saw[4], /^asked in c\d+/);
   assert.deepEqual(log.filter(e => e.op === 'commit').map(e => [e.by, e.run, e.message, e.commit]), [['agent', 2, 'Draft pack built', git('rev-parse', ':/^Draft pack built')]]);
-  const thread = log.findLast(e => e.op === 'comment')!.thread as string, signoff = (body: object, cookie = admin) => call('POST', `/api/instances/${id}/signoff`, { thread, ...body }, cookie);
-  assert.equal(log.findLast(e => e.op === 'comment')!.signoff, true);
+  const first = log.findLast(e => e.op === 'comment')!, pack = join(dir, 'working', 'pack.csv'), sum = createHash('sha256').update('200\n').digest('hex');
+  const signoff = (body: object, cookie = admin) => call('POST', `/api/instances/${id}/signoff`, { thread: first.thread, ...body }, cookie);
+  assert.deepEqual([first.files, statSync(pack).mode & 0o777], [[{ inst: id, path: 'working/pack.csv', sha256: sum }], 0o444], 'its file pinned, frozen');
 
-  assert.equal((await signoff({ approved: true }, bob)).status, 403, "only the runner signs");
-  assert.equal((await signoff({ approved: false, text: 'Use the new rate.' })).status, 200);
-  log = await runs(id, 3);
-  const rejected = log.find(e => e.op === 'signoff')!;
-  assert.deepEqual([rejected.by, rejected.approved, rejected.text], [ADMIN, false, 'Use the new rate.']);
-  assert.equal(git('log', '-1', '--format=%an <%ae>%n%B', String(rejected.commit)), 'Demo Admin <admin@demo.test>\nThe pack is ready to send to the bank.\n\nUse the new rate.', 'a rejection commits too, without a Signed-off-by');
-  assert.equal(git('show', `${rejected.commit}:working/pack.csv`), '200', 'the folder as it stood');
-  assert.match(again.prompt!, /"op":"signoff".*"approved":false.*"text":"Use the new rate."/, 'the answer starts a run, as a reply does');
-  assert.equal((await signoff({ approved: true })).status, 409, 'nothing waits in that thread now');
-
-  const next = log.findLast(e => e.op === 'comment')!, pack = join(dir, 'working', 'pack.csv'), sum = createHash('sha256').update('200\n').digest('hex');
-  assert.deepEqual([next.recipients, next.attach, statSync(pack).mode & 0o777], [['bank@demo.test', 'ops@demo.test'], [{ file: 'working/pack.csv', sha256: sum }], 0o444], 'it binds the mail, its file frozen');
+  assert.equal((await signoff({ text: 'Fine by me.' }, bob)).status, 200, 'anyone who sees it');
+  ({ log } = await (await call('GET', `/api/instances/${id}`)).json());
+  const bobs = log.findLast(e => e.op === 'signoff')!;
+  assert.deepEqual([bobs.by, bobs.on, bobs.note, log.filter(e => e.op === 'run').length], [BOB, first.seq, true, 2], "someone else's is a note for the runner, which starts no run");
+  assert.equal(git('log', '-1', '--format=%an <%ae>%n%B', String(bobs.commit)), `Bob <${BOB}>\nThe pack is ready to send to the bank.\n\nPinned: working/pack.csv ${sum}\n\nFine by me.\n\nSigned-off-by: Bob <${BOB}>`);
   chmodSync(pack, 0o644);
   writeFileSync(pack, '300\n');
-  assert.match(await (await call('POST', `/api/instances/${id}/signoff`, { thread: next.thread, approved: true })).text(), /working\/pack\.csv changed since the agent asked/);
+  assert.match(await (await signoff({})).text(), /working\/pack\.csv changed since the agent asked/);
   writeFileSync(pack, '200\n');
-  assert.equal((await call('POST', `/api/instances/${id}/signoff`, { thread: next.thread, approved: true, text: 'Go.' })).status, 200);
+  assert.equal((await call('POST', `/api/instances/${id}/comment`, { thread: first.thread, text: 'Use the new rate.' })).status, 200, 'saying no is a reply');
+  log = await runs(id, 3);
+  assert.match(again.prompt!, /"op":"signoff".*"note":true[^]*"text":"Use the new rate\."/, 'the run reads the note, then the reply');
+
+  const next = log.findLast(e => e.op === 'comment')!, sum2 = createHash('sha256').update('250\n').digest('hex');
+  assert.equal((await signoff({ thread: next.thread, text: 'Go.' })).status, 200);
   log = await runs(id, 4);
   const yes = log.findLast(e => e.op === 'signoff')!;
-  assert.equal(git('log', '-1', '--format=%an%n%B', String(yes.commit)), `Demo Admin\nThe rate is fixed: send it now?\n\nTo: bank@demo.test, ops@demo.test\nAttached: working/pack.csv ${sum}\n\nGo.\n\nSigned-off-by: Demo Admin <admin@demo.test>`);
-  assert.match(git('show', `${yes.commit}:log.jsonl`), /"op":"signoff","thread":"c\d+","approved":false/, 'the whole folder, its log included');
+  assert.equal(yes.on, next.seq, 'the latest ask that pins files');
+  assert.equal(git('log', '-1', '--format=%an%n%B', String(yes.commit)), `Demo Admin\nThe rate is fixed: send it now?\n\nPinned: working/pack2.csv ${sum2}\n\nGo.\n\nSigned-off-by: Demo Admin <admin@demo.test>`);
+  assert.match(git('show', `${yes.commit}:log.jsonl`), /"op":"signoff","thread":"c\d+","on":\d+,"text":"Fine by me\."/, 'the whole folder, its log included');
 
   assert.equal((await call('POST', `/api/instances/${id}/close`)).status, 200);
   log = (await (await call('GET', `/api/instances/${id}`)).json()).log;
@@ -337,9 +338,9 @@ test('sign-offs are git commits: the agent commits a moment worth keeping, the r
   assert.equal(git('log', '-1', '--format=%an%n%B'), 'Demo Admin\nClose 2026-12');
   assert.deepEqual(git('log', '--reverse', '--format=%an|%s').split('\n'), [
     'rollforward agent|Run 1', 'rollforward agent|Draft pack built', 'rollforward agent|Run 2',
-    'Demo Admin|The pack is ready to send to the bank.', 'rollforward agent|Run 3', 'Demo Admin|The rate is fixed: send it now?',
+    'Bob|The pack is ready to send to the bank.', 'rollforward agent|Run 3', 'Demo Admin|The rate is fixed: send it now?',
     'rollforward agent|Run 4', 'Demo Admin|Close 2026-12',
-  ], "each run's end, the agent's commit, the two answers and the close");
+  ], "each run's end, the agent's commit, the two sign-offs and the close");
   const pulled = await (await call('GET', '/api/files?path=Signed/Pack/2026-12')).json();
   assert.ok(pulled.length && !pulled.some((f: { path: string }) => f.path.includes('/.git/')), 'rf pull leaves the history out');
   const { id: copy } = await (await call('POST', `/api/instances/${id}/duplicate?as=copy`, { logins: [] })).json();

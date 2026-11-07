@@ -14,7 +14,7 @@ delete process.env.OPENROUTER_API_KEY;
 process.env.RF_WAKE_TICK_MS = '50';
 const entra = await idp();
 Object.assign(process.env, entra.env('http://127.0.0.1:1'));
-const { cancelWakes, citedFor, closed, kick, message, recover, resolveFor, setWake, startWaking, view, wakes, wakesOf, weekly } = await import('../src/waker.ts');
+const { cancelWakes, pinFor, closed, kick, message, recover, resolveFor, setWake, startWaking, view, wakes, wakesOf, weekly } = await import('../src/waker.ts');
 const { saveLogin } = await import('../src/logins.ts');
 const { keepSignIn } = await import('../src/entra.ts');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-wake-')), alice = 'alice@demo.test';
@@ -62,7 +62,7 @@ test("a run names a series or an instance by its folder, from its own instance's
   assert.throws(() => resolveFor(run, '../2026-13'), /no instance 2026-13 in Bank rec/);
 });
 
-test('a run names folders, and cites files, by the names it started with, though people renamed them since', () => {
+test('a run names folders, and pins files, by the names it started with, though people renamed them since', () => {
   const nov = make('s1', '2026-11'), started = { inst: sep, view: view(sep) } as unknown as Active, t = tree();
   writeFileSync(join(nov.dir, 'working', 'x.csv'), '1');
   renameInstance(nov, 'November');
@@ -71,10 +71,10 @@ test('a run names folders, and cites files, by the names it started with, though
   assert.equal(resolveFor(started, '../../Borrowing base'), 's2');
   assert.throws(() => resolveFor(started, '../November'), /no instance November in Bank rec/);
   assert.throws(() => resolveFor(started, '../../BB'), /no series you can read/);
-  assert.deepEqual(citedFor(started, '../2026-11/working/x.csv'), { inst: nov.id, path: 'working/x.csv' }, "kept by the instance's id");
-  assert.deepEqual(citedFor(started, 'upload/../working/x.csv'), undefined);
-  assert.deepEqual(citedFor(started, '../2026-11/working/y.csv'), undefined, 'a file that is there');
-  assert.deepEqual(citedFor(started, '../../Borrowing base/working/x.csv'), undefined, 'of its own series');
+  assert.deepEqual(pinFor(started, '../2026-11/working/x.csv'), { inst: nov.id, path: 'working/x.csv' }, "kept by the instance's id");
+  assert.deepEqual(pinFor(started, 'upload/../working/x.csv'), undefined);
+  assert.deepEqual(pinFor(started, '../2026-11/working/y.csv'), undefined, 'a file that is there');
+  assert.deepEqual(pinFor(started, '../../Borrowing base/working/x.csv'), undefined, 'of its own series');
   saveTree(t);
 });
 
