@@ -778,6 +778,7 @@ test("an instance is its Inputs, Steps and Outputs, left to right, each heading 
   assert.deepEqual(await page.locator('#outs .tile .fn').allTextContents(), ['Borrowing base']);
   await page.hover('#outs .tile[data-item=borrowing-base]');
   assert.deepEqual(await page.locator('#panes .made').evaluateAll(els => els.map(e => (e as HTMLElement).dataset.item)), ['ar-aging', 'inventory', 'eligible'], 'through the step too');
+  assert.deepEqual(await page.locator('#panes .far').evaluateAll(els => els.map(e => (e as HTMLElement).dataset.item)), ['ar-aging'], 'what its sources are made from, fainter');
   await page.click('#view [data-id=list]');
   assert.equal(await page.evaluate(() => localStorage.view), 'list');
   assert.deepEqual(await page.locator('#ins .lst th').allTextContents(), ['Name', 'Source', 'As of', 'By', 'Rows · total', 'Changed', 'Threads']);
