@@ -17,7 +17,7 @@ import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { answered, byLogin, call, connections, intercepts, loginOf, removeConnection, setConnection, upstreams } from './connections.ts';
 import { addSite, allowHost, Browsers, endSignIn, isSignIn, keepAlive, passUpgrade, reap, refusedHosts, removeHost, removeSite, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
-import { ask, decide, forgetGrants, lapse, revoke, visible } from './grants.ts';
+import { ask, decide, forgetGrants, forgetWorkspace, lapse, revoke, visible } from './grants.ts';
 import { offer } from './connections/graph.ts';
 import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, startIndexing, track } from './indexes.ts';
@@ -565,6 +565,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       if (add) writeFileSync(agentsFile(p.into), `${keep && `${keep}\n\n`}## ${a.name}\n\n${add}`);
       rmSync(agentsFile(id), { force: true });
       delete t.workspaces[id];
+      forgetWorkspace(id);
       for (const o of Object.values(t.workspaces)) o.readers &&= o.readers.filter(x => x !== id);
     } else {
       delete a.proposal;

@@ -179,7 +179,9 @@ async function parentOf(email: string, driveId: string, id: string): Promise<str
 }
 async function siteOf(email: string, driveId: string): Promise<string> {
   if (!sites.has(driveId)) {
-    const s = await graph(email, `/drives/${encodeURIComponent(driveId)}?$select=sharePointIds`).then(d => d.sharePointIds, () => undefined);
+    // A lookup that failed, as Graph throttling it, is tried again next time.
+    const d = await graph(email, `/drives/${encodeURIComponent(driveId)}?$select=sharePointIds`).catch(() => undefined), s = d?.sharePointIds;
+    if (!d) return '';
     sites.set(driveId, s ? `${new URL(s.siteUrl).hostname},${s.siteId},${s.webId}` : '');
   }
   return sites.get(driveId)!;

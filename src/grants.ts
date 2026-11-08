@@ -2,7 +2,7 @@ import { HttpError, newId } from './store.ts';
 import { act, canManage, canSee, readJson, tree, writeJson } from './system.ts';
 import { users, type Me } from './auth.ts';
 import { logins, signOut, type Trace } from './logins.ts';
-import { checkHost, upstreams } from './connections.ts';
+import { checkHost, resolvesInternal, upstreams } from './connections.ts';
 import { model } from './connections/openrouter.ts';
 import { changeWebsite, websitesOf } from './browsers.ts';
 
@@ -67,7 +67,7 @@ async function checkSite(email: string, site: string, trace: Trace | undefined, 
     });
     if (!res.ok) throw new Error(`OpenRouter answered ${res.status}`);
     const a = JSON.parse((await res.json()).choices[0].message.content), hosts: string[] = [];
-    for (const h of new Set((a.hosts ?? []).map((h: unknown) => String(h).toLowerCase()) as string[])) if (await checkHost(h, !!w.internal).then(() => true, () => false)) hosts.push(h);
+    for (const h of new Set((a.hosts ?? []).map((h: unknown) => String(h).toLowerCase()) as string[])) if (!await resolvesInternal(h) && await checkHost(h, !!w.internal).then(() => true, () => false)) hosts.push(h);
     return { risk: ['low', 'medium'].includes(a.risk) ? a.risk : 'high', flags: (a.flags ?? []).map(String), summary: String(a.summary ?? ''), hosts };
   } catch (e) {
     return { error: (e as Error).message };
@@ -94,6 +94,11 @@ export function revoke(me: Me, id: string): Grant {
   save(all);
   unused(g.person, g.site);
   return g;
+}
+
+// A workspace merged into another takes its grants with it: its series' runs are the other's now, whose owners approve anew.
+export function forgetWorkspace(workspace: string) {
+  save(Object.fromEntries(Object.entries(grants()).filter(([, g]) => g.workspace !== workspace)));
 }
 
 // A person's website removed takes their grants for it with it, and a person removed all of theirs.

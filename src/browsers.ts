@@ -219,6 +219,8 @@ export async function endSignIn(email: string, id: string, save: boolean, keepal
   if (save && !(await json('GET', `/sessions/${id}/log`)).some((e: { live?: true }) => e.live)) throw new HttpError(409, 'Take control and sign in first, then Save login.');
   const { site, name, token, since } = signIns.get(id)!, { state, log } = await close(id);
   signIns.delete(id);
+  // Removed meanwhile, as from another tab, it saves nothing.
+  if (save) website(email, site);
   const requests: Record<string, Record<number, number>> = {}, blocked = { count: 0, hosts: [] as string[] }, failed: string[] = [];
   for (const e of log) {
     const host = URL.parse(e.url)?.host || 'an address that does not parse';

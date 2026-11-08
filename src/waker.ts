@@ -171,6 +171,9 @@ async function start(inst: Instance) {
   }
   if (stopping || active.has(series) || !due(inst)) return void changes.emit('change', inst.id);
   if (full()) return void waiting.add(inst);
+  // One who can no longer see its workspace, as after being removed from it, waits for someone to take the instance over.
+  const p = asPerson(runner), t = tree();
+  if (!(p && canSee(p, t.workspaces[t.series[inst.seriesId].workspace]))) return void changes.emit('change', inst.id);
   let kept = idle.get(inst.id);
   idle.delete(inst.id);
   if (kept && stale(kept)) {
