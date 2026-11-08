@@ -106,11 +106,7 @@ async function agent(req: IncomingMessage, res: ServerResponse, url: URL) {
   if (!a) throw new HttpError(401, 'no run for this token');
   if (url.pathname.startsWith('/api/')) return api({ email: 'agent', name: 'Agent', role: 'user', groups: [], run: a }, req, res, url);
   // Browsers and deliveries: rf expired, rf delivered (see agent-api.ts).
-  // A login the run's runner must sign in to again is logged, so the instance carries on once they do.
-  const r = await agentCall(a, url.pathname, req.method ?? 'GET', () => body(req)).catch((e: HttpError & { login?: string }) => {
-    if (e.login) a.inst.append('server', 'expired', { run: a.n, login: e.login, name: byLogin(e.login) ? loginOf(byLogin(e.login)!).name : e.login, runner: runnerOf(a.inst).by });
-    throw e;
-  });
+  const r = await agentCall(a, url.pathname, req.method ?? 'GET', () => body(req));
   if (r) return send(res, r.status, r.data);
   throw new HttpError(404, 'not found');
 }

@@ -98,7 +98,7 @@ function website(email: string, name: string): Website {
 
 // From before websites were each person's own: one left in .rf/connections.json becomes its owner's, and that of each person signed
 // in to it or with a grant for it, by the same name, and goes from there, connections.json.bak keeping it as it was, and the system's
-// log saying whose it became.
+// log saying whose it became. A grant whose website an older version removed without it goes, logged too.
 export function adopt() {
   const all = readJson<Record<string, any>>('connections.json', {}), moved: Record<string, string[]> = {}, given = Object.values(grants());
   for (const [name, c] of Object.entries(all).filter(([, c]) => c.type === 'website')) {
@@ -108,10 +108,14 @@ export function adopt() {
       ...(c.internal && { internal: true }), added: c.updated_at ?? new Date().toISOString() } });
     delete all[name];
   }
-  if (!Object.keys(moved).length) return;
-  copyFileSync(join(rfDir(), 'connections.json'), join(rfDir(), 'connections.json.bak'));
-  writeJson('connections.json', all);
-  act('server', { op: 'websites', moved });
+  if (Object.keys(moved).length) {
+    copyFileSync(join(rfDir(), 'connections.json'), join(rfDir(), 'connections.json.bak'));
+    writeJson('connections.json', all);
+    act('server', { op: 'websites', moved });
+  }
+  const left = Object.entries(grants()).filter(([, g]) => !websitesOf(g.person)[g.site]);
+  for (const [, g] of left) forgetGrants(g.person, g.site);
+  if (left.length) act('server', { op: 'grants', dropped: Object.fromEntries(left) });
 }
 
 // ---- Signing in: a browser on the website's address with nothing saved, shown to the person on the Logins page, for half an hour.
@@ -391,7 +395,7 @@ export class Browsers {
       // A try's stand-in instance (cli.ts) is in no workspace: any approved grant of its runner's does.
       const { email, login } = use(this.inst, this.run, `web:${site}`), had = this.bySite.get(site), t = tree(), ws = t.series[this.inst.seriesId]?.workspace;
       if (!approved(site, email, ws)) throw Object.assign(new HttpError(403, `${email} has no approved grant to use ${site}${ws ? ` in ${t.workspaces[ws].name}` : ''}: they ask its owners for one on the Logins page; this run goes on without it`), { refused: true });
-      if (login.expired) throw Object.assign(new HttpError(409, `${email}'s login to ${login.name} has expired: they sign in to it again on the Logins page, and the instance carries on`), { login: login.id });
+      if (login.expired) throw Object.assign(new HttpError(409, `${email}'s login to ${site} has expired: they sign in to it again on the Logins page, and the instance carries on`), { login: login.id });
       if (had && had.email !== email) throw new HttpError(409, `this run's browser on ${site} is in ${had.email}'s login, and ${email} has taken the instance over: the next run opens one in theirs`);
       return { email, login, had };
     } catch (e) {
@@ -488,13 +492,14 @@ export class Browsers {
     return this.bySite.get(site)!.id;
   }
 
-  // The agent found the website signed out: the runner's login is marked expired, for them to sign in again, which wakes the instance,
-  // and its browser closes.
+  // The agent found the website signed out: the runner's login is marked expired, and logged so, for them to sign in again, which
+  // wakes the instance, and its browser closes.
   async expire(site: string): Promise<never> {
     const { email, login } = use(this.inst, this.run, `web:${site}`);
     saveLogin(email, { ...login, expired: true });
     await this.close(site);
-    throw Object.assign(new HttpError(409, `${email}'s login to ${login.name} has expired: they sign in to it again on the Logins page, and the instance carries on`), { login: login.id });
+    this.inst.append('server', 'expired', { run: this.run, login: login.id, name: site, runner: runnerOf(this.inst).by });
+    throw new HttpError(409, `${email}'s login to ${site} has expired: they sign in to it again on the Logins page, and the instance carries on`);
   }
 
   // A file in the machine of the run's browser on `site`, such as a download where Playwright says it is, streamed, and logged as a

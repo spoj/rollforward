@@ -23,10 +23,10 @@ const live = (g: Grant) => g.state === 'pending' || g.state === 'approved';
 export const approved = (site: string, person?: string, workspace?: string) => Object.values(grants())
   .some(g => g.state === 'approved' && g.site === site && (!person || g.person === person) && (!workspace || g.workspace === workspace));
 
-// The grants `me` sees, each with its website's address and the other hosts it reaches, none for one whose person no longer has it:
-// their own, and those of the workspaces they manage, all for admins.
+// The grants `me` sees, each with its website's address and the other hosts it reaches: their own, and those of the workspaces they
+// manage, all for admins.
 export const visible = (me: Me) => Object.entries(grants()).filter(([, g]) => g.person === me.email || canManage(me, tree().workspaces[g.workspace]))
-  .map(([id, g]) => ({ id, ...g, url: websitesOf(g.person)[g.site]?.url ?? null, hosts: websitesOf(g.person)[g.site]?.hosts ?? [] }));
+  .map(([id, g]) => ({ id, ...g, url: websitesOf(g.person)[g.site].url, hosts: websitesOf(g.person)[g.site].hosts }));
 
 export async function ask(me: Me, site: string, workspace: string, reason: string): Promise<{ id: string; check: Check }> {
   const w = tree().workspaces[workspace], login = logins(me.email).find(l => l.id === `web:${site}`);
@@ -38,6 +38,8 @@ export async function ask(me: Me, site: string, workspace: string, reason: strin
   if (had()) throw asked(had()!);
   const check = await checkSite(me.email, site, login.trace, reason.trim(), w.name), again = had();
   if (again) throw asked(again);
+  // Removing the website meanwhile signed them out of it, and took their grants for it.
+  if (!logins(me.email).some(l => l.id === login.id)) throw new HttpError(409, `you removed ${site} or signed out of it while it was checked`);
   const all = grants(), id = newId();
   all[id] = { workspace, person: me.email, site, reason: reason.trim().slice(0, 500), at: new Date().toISOString(), state: 'pending', check };
   save(all);

@@ -93,8 +93,9 @@ test("the agent says a website signed it out: its runner's login is marked expir
   saveLogin(alice, erp, '{}');
   const inst = running('2026-12', ['web:erp']), browsers = new Browsers(inst, 1);
   browsers.bySite.set('erp', { id: 'b1', email: alice, since: '', writeback: true, file: 'browser/run 1 erp.jsonl', conns: 0 });
-  await assert.rejects(browsers.expire('erp'), (e: { status: number; login: string }) => e.status === 409 && e.login === 'web:erp');
+  await assert.rejects(browsers.expire('erp'), (e: { status: number }) => e.status === 409);
   assert.equal(logins(alice).find(l => l.id === 'web:erp')!.expired, true);
+  assert.deepEqual(inst.log.filter(e => e.op === 'expired').map(e => [e.by, e.run, e.login, e.name, e.runner]), [['server', 1, 'web:erp', 'erp', alice]], 'logged, so the instance carries on once they sign in again');
   assert.equal(browsers.bySite.size, 0);
   assert.deepEqual(inst.log.filter(e => e.op === 'browser').map(e => [e.site, e.requests]), [['erp', 1]]);
   await assert.rejects(browsers.browser('erp'), (e: { status: number; login: string }) => e.status === 409 && e.login === 'web:erp', 'no browser opens in it until they sign in again');

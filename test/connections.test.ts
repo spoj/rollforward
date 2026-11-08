@@ -438,14 +438,15 @@ test("as the server starts, a website from before websites were each person's ow
   for (const e of [carl, dora, eve]) upsertUser(e, { role: 'user' });
   writeJson('connections.json', { ...kept, 'e1-prod': { type: 'website', url: 'https://e1.test/jde/E1Menu.maf', hosts: ['dms.e1.test'], writeback: true, owner: carl, internal: true, updated_by: carl, updated_at: '2026-11-07T16:18:39Z' } });
   saveLogin(dora, { id: 'web:e1-prod', kind: 'website', name: 'e1-prod', since: '2026-11-08T00:00:00Z', offers: [{ id: 'web:e1-prod', name: 'e1-prod' }] } as never, '{}');
-  writeJson('grants.json', { g1: { workspace: 'w', person: eve, site: 'e1-prod', reason: 'r', at: '', state: 'approved' } });
+  writeJson('grants.json', { g1: { workspace: 'w', person: eve, site: 'e1-prod', reason: 'r', at: '', state: 'approved' }, g2: { workspace: 'w', person: dora, site: 'jj', reason: 'r', at: '', state: 'approved' } });
   adopt();
   for (const e of [carl, dora, eve]) assert.deepEqual(websitesOf(e)['e1-prod'], { url: 'https://e1.test/jde/E1Menu.maf', hosts: ['dms.e1.test'], writeback: true, internal: true, added: '2026-11-07T16:18:39Z' }, e);
   assert.equal(websitesOf(ALICE)['e1-prod'], undefined, "no one else's");
   assert.deepEqual(readJson('connections.json', {}), kept, 'it goes from connections.json');
   assert.equal(JSON.parse(readFileSync(join(rfDir(), 'connections.json.bak'), 'utf8'))['e1-prod'].owner, carl);
-  const said = JSON.parse(readFileSync(join(rfDir(), 'log.jsonl'), 'utf8').trim().split('\n').at(-1)!);
+  const [said, dropped] = readFileSync(join(rfDir(), 'log.jsonl'), 'utf8').trim().split('\n').slice(-2).map(l => JSON.parse(l));
   assert.deepEqual([said.by, said.op, said.moved], ['server', 'websites', { 'e1-prod': [carl, dora, eve] }]);
+  assert.deepEqual([dropped.by, dropped.op, Object.keys(dropped.dropped), Object.keys((await import('../src/grants.ts')).grants())], ['server', 'grants', ['g2'], ['g1']], 'a grant whose website an older version removed goes');
   const { forgetGrants, grants } = await import('../src/grants.ts');
   forgetGrants(eve);
   assert.deepEqual(Object.keys(grants()), [], 'a person removed takes all their grants with them');
