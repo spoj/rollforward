@@ -474,12 +474,12 @@ export class Browsers {
 
   // The agent found the website signed out: the runner's login is marked expired, and logged so, for them to sign in again, which
   // wakes the instance, and its browser closes.
-  async expire(site: string): Promise<never> {
+  async expire(site: string): Promise<string> {
     const { email, login } = use(this.inst, this.run, `web:${site}`);
     saveLogin(email, { ...login, expired: true });
     await this.close(site);
     this.inst.append('server', 'expired', { run: this.run, login: login.id, name: site, runner: runnerOf(this.inst).by });
-    throw new HttpError(409, `${email}'s login to ${site} has expired: they sign in to it again on the Logins page, and the instance carries on`);
+    return `recorded: ${site} signed ${email} out; they sign in to it again on the Logins page, and the instance carries on`;
   }
 
   // A file in the machine of the run's browser on `site`, such as a download where Playwright says it is, streamed, and logged as a
@@ -586,13 +586,25 @@ export async function keepAlive(now = new Date()) {
 
 // A run's browsers at $RF_BROWSERS/NAME, its token's path: GET NAME/json/version, CDP's discovery, as Playwright's connect_over_cdp
 // asks it; GET NAME/downloads/PATH, a file in that browser's machine; and the CDP websocket at NAME itself, passed to the service.
+// $RF_BROWSERS itself says what's there and how it's used: the websites ticked for the run, by its runner's names for them.
+const BROWSERS = `Each website ticked for this run is a browser signed in as your runner, at $RF_BROWSERS/NAME for Playwright's connect_over_cdp, NAME
+being your runner's name for it; another runner may name the same website otherwise. The run's connections share its browser, and
+where a website writes its state back, a run of your runner's that holds it makes another wait. A download is at
+$RF_BROWSERS/NAME/downloads/PATH, PATH its path on the browser's machine; a file you upload is at most 50 MB.
+$RF_BROWSERS/print reaches nothing, for rendering to PDF with page.pdf(): your connections share it, so give each page a tab of its
+own (new_page()).
+Ticked for this run:`;
 export async function serveBrowsers(b: Browsers, base: string, [site, what, ...path]: string[], req: IncomingMessage, res: ServerResponse) {
+  if (req.method === 'GET' && !site) {
+    const { by, logins: ticked } = runnerOf(b.inst), sites = websitesOf(by), mine = ticked.filter(l => l.startsWith('web:') && sites[l.slice(4)]).map(l => l.slice(4));
+    return void res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' }).end(`${BROWSERS}\n${mine.map(s => `  ${s}  ${sites[s].url}`).join('\n') || '  no website'}\n`);
+  }
   if (req.method === 'GET' && what === 'json' && path.join('/').replace(/\/$/, '') === 'version') {
     if (site !== PRINT) b.lent(site);
     return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ webSocketDebuggerUrl: `ws://${req.headers.host}${base}/${site}` }));
   }
   if (req.method === 'GET' && what === 'downloads') return b.download(site, path.map(decodeURIComponent).join('/'), res);
-  throw new HttpError(404, `$RF_BROWSERS/${site} is the CDP address of this run's browser there; GET $RF_BROWSERS/${site}/downloads/PATH gives a file from it`);
+  throw new HttpError(404, `$RF_BROWSERS/${site} is the CDP address of this run's browser there; curl $RF_BROWSERS says how they're used`);
 }
 
 export async function upgradeBrowser(b: Browsers, site: string, req: IncomingMessage, socket: Duplex, head: Buffer) {

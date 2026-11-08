@@ -46,8 +46,11 @@ test("a run's first message names the runner and what they lend, each tick as lo
   assert.match(message(oct, 1, oct.log, true), new RegExp(`^Instance 2026-10, run 1\\. Its runner is .+ <${alice}>, who lends you no login\\. New log entries:`));
   mkdirSync(personDir(alice), { recursive: true });
   writeFileSync(join(personDir(alice), 'websites.json'), JSON.stringify({ portal: { url: 'https://portal.test/login', hosts: [], writeback: true, added: '' } }));
+  saveLogin(alice, { id: 'm365', kind: 'm365', name: 'Microsoft 365', since: '', offers: [{ id: 'm365:item:d1/i1', name: 'Folder LFM, Reports' }] }, 'r');
   const ticked = createInstance('s5', '2026-10', alice, ['web:portal', 'm365:mail:ann@demo.test', 'm365:item:d1/i1']);
-  assert.match(message(ticked, 1, ticked.log, true), /, who lends you web:portal at https:\/\/portal\.test\/login, m365:mail:ann@demo\.test, m365:item:d1\/i1\. New log entries:/);
+  assert.match(message(ticked, 1, ticked.log, true), /, who lends you web:portal at https:\/\/portal\.test\/login, m365:mail:ann@demo\.test, m365:item:d1\/i1 \(Folder LFM, Reports\)\. New log entries:/, 'each tick with what it is, where its login still offers it');
+  const said = message(ticked, 2, [{ seq: 90, at: '', by: 'server', op: 'run', run: 1 }, { seq: 91, at: '', by: 'server', op: 'shot', run: 1 }, { seq: 92, at: '', by: 'server', op: 'done', run: 1, aborted: false }, { seq: 93, at: '', by: 'server', op: 'done', run: 2, aborted: true }, { seq: 94, at: '', by: alice, op: 'comment', text: 'go' }]);
+  assert.deepEqual(said.split('\n').slice(1).map(l => JSON.parse(l).seq), [93, 94], "people's acts and a run cut, not the server's bookkeeping");
   assert.match(message(oct, 2, [{ seq: 98, at: '', by: alice, op: 'comment', text: 'go' }], true), /^Instance 2026-10, run 2\. Its runner is /, 'every run is a new conversation');
   assert.match(message(oct, 2, []), /^Instance 2026-10, run 2\. New log entries:/);
   assert.match(message(oct, 3, [{ seq: 99, at: '', by: 'bob@demo.test', op: 'takeover', from: alice }]), new RegExp(`run 3\\. Its runner is now .+ <bob@demo\\.test>, taking over from .+ <${alice}>, who lends you no login\\.`));

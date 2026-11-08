@@ -93,7 +93,7 @@ test("the agent says a website signed it out: its runner's login is marked expir
   saveLogin(alice, erp, '{}');
   const inst = running('2026-12', ['web:erp']), browsers = new Browsers(inst, 1);
   browsers.bySite.set('erp', { id: 'b1', email: alice, since: '', writeback: true, file: 'browser/run 1 erp.jsonl', conns: 0 });
-  await assert.rejects(browsers.expire('erp'), (e: { status: number }) => e.status === 409);
+  assert.equal(await browsers.expire('erp'), `recorded: erp signed ${alice} out; they sign in to it again on the Logins page, and the instance carries on`);
   assert.equal(logins(alice).find(l => l.id === 'web:erp')!.expired, true);
   assert.deepEqual(inst.log.filter(e => e.op === 'expired').map(e => [e.by, e.run, e.login, e.name, e.runner]), [['server', 1, 'web:erp', 'erp', alice]], 'logged, so the instance carries on once they sign in again');
   assert.equal(browsers.bySite.size, 0);
@@ -222,6 +222,7 @@ test("$RF_BROWSERS/NAME is the run's browser there: its CDP discovery, its webso
   const inst = running('2027-07', ['web:crm'], 0), api = await serveAgent(inst), base = `${api.url}/browsers/${api.token}`;
   assert.deepEqual(await (await fetch(`${base}/crm/json/version/`)).json(), { webSocketDebuggerUrl: `${base.replace('http', 'ws')}/crm` });
   assert.match(await (await fetch(`${base}/erp/json/version`)).text(), /web:erp is not ticked/);
+  assert.match(await (await fetch(base)).text(), /^Each website ticked for this run is a browser signed in as your runner[^]*\nTicked for this run:\n  crm  https:\/\/crm\.example\.com\n$/, '$RF_BROWSERS itself says what is there, and how it is used');
   assert.equal((await fetch(`${base}/crm/downloads/tmp/x.csv`)).status, 409, 'no browser before a connection');
   const raw = connect(Number(new URL(api.url).port), '127.0.0.1');
   raw.end(`GET /browsers/${api.token}/crm HTTP/1.1\r\nhost: x\r\nconnection: upgrade\r\nupgrade: websocket\r\n\r\n`);

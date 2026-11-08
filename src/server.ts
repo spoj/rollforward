@@ -674,7 +674,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   if (action === 'duplicate') {
     if (t.series[inst.seriesId].single) throw new HttpError(400, 'a task has one instance: Start another based on this makes it a series');
     if (inst.doc.status === 'open') throw new HttpError(409, 'only a closed or abandoned instance can be duplicated');
-    if (instances(inst.seriesId).filter(i => i.doc.status === 'open').length >= MAX_OPEN) throw new HttpError(409, `${MAX_OPEN} instances are open; close one first`);
+    if (instances(inst.seriesId).filter(i => i.doc.status === 'open').length >= MAX_OPEN) throw new HttpError(409, `${MAX_OPEN} instances of ${t.series[inst.seriesId].name} are open: a new one waits until one closes`);
     return send(res, 200, { id: duplicateInstance(inst, url.searchParams.get('as') ?? '', by, checkTicks(by, payload.logins ?? [])).id });
   }
   if (action === 'rename') {

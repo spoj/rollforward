@@ -92,22 +92,28 @@ export function pending(inst: Instance, seen: number): Entry[] {
 // Whether an instance has something for a run: what came since its last run, or since an Interrupt, which waits for the next act.
 const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math.max(seenBefore(inst), inst.log.findLast(e => e.op === 'interrupt')?.seq ?? 0)).length > 0;
 
-// A run's first message names the runner, on whose behalf the agent acts, and what they lend it, each tick as logged, as does a
-// later one whose entries change those: a takeover and a runner's new ticks.
+// What a run is told of: people's acts, and the server's wakes, expired logins, uploads made items, renames and a run cut or failed;
+// not the server's bookkeeping, such as a run's start, its hosts and screenshots, which the log keeps.
+const told = (e: Entry) => isPerson(e) || ['wake', 'expired', 'point', 'rename'].includes(e.op) || (e.op === 'done' && (!!e.aborted || !!e.error));
+
+// A run's first message names the runner, on whose behalf the agent acts, and what they lend it, each tick as logged with what it
+// is, a website's at its address, as does a later one whose entries change those: a takeover and a runner's new ticks.
 export function message(inst: Instance, n: number, entries: Entry[], first = false): string {
   const made = entries.findLast(e => ['takeover', 'logins'].includes(e.op)), us = users(), who = (by: string) => `${us[by]?.name || by} <${by}>`;
-  const set = [...wakesOf(inst.id), ...wakesOf(inst.seriesId)], sites = websitesOf(runnerOf(inst).by);
+  const { by, logins: ticked } = runnerOf(inst), set = [...wakesOf(inst.id), ...wakesOf(inst.seriesId)], sites = websitesOf(by);
+  const offers = new Map(logins(by).flatMap(l => l.offers.map(o => [o.id, o.name])));
+  const lent = (l: string) => l.startsWith('web:') && sites[l.slice(4)] ? `${l} at ${sites[l.slice(4)].url}` : offers.has(l) ? `${l} (${offers.get(l)})` : l;
   // The corrections on the instances before it, so an error isn't rolled forward.
   const fixed = !first ? [] : closedBefore(inst).flatMap(i => i.log.filter(e => e.op === 'correction').map(e => {
     const see = e.see as { label: string; thread?: string } | undefined;
     return `${i.label}${e.item ? ` ${e.item}${e.ref ? `@${e.ref}` : ''}` : ''} is ${e.kind}, ${JSON.stringify(e.text)}${see ? `, see ${see.label}${see.thread ? ` ${see.thread}` : ''}` : ''}`;
   }));
   return `Instance ${inst.label}, run ${n}.`
-    + (first || made ? ` Its runner is ${made?.op === 'takeover' ? `now ${who(made.by)}, taking over from ${who(made.from as string)}` : who(runnerOf(inst).by)}, who lends you ${runnerOf(inst).logins.map(l => l.startsWith('web:') && sites[l.slice(4)] ? `${l} at ${sites[l.slice(4)].url}` : l).join(', ') || 'no login'}.` : '')
+    + (first || made ? ` Its runner is ${made?.op === 'takeover' ? `now ${who(made.by)}, taking over from ${who(made.from as string)}` : who(by)}, who lends you ${ticked.map(lent).join(', ') || 'no login'}.` : '')
     + (first && set.length ? ` Pending wakes: ${set.map(k => `${k.id}, ${k.target === inst.id ? 'waking this instance' : `starting ${k.label}`} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''}`).join('; ')}.` : '')
     + (fixed.length ? ` Corrections on earlier instances: ${fixed.join('; ')}.` : '')
     + ' New log entries:\n'
-    + entries.map(e => JSON.stringify(isNote(inst, e) ? { ...e, note: true } : e)).join('\n');
+    + entries.filter(told).map(e => JSON.stringify(isNote(inst, e) ? { ...e, note: true } : e)).join('\n');
 }
 
 // What a series' agent may read: the other series of its workspace, and those of each workspace whose managers let its workspace's
@@ -121,12 +127,12 @@ export function reach(t: Tree, seriesId: string): string[] {
 
 export const named = (t: Tree, seriesId: string) => `${t.workspaces[t.series[seriesId].workspace].name}/${t.series[seriesId].name}`;
 
-// The run's view of the data, by name, built when it starts: /work/<workspace>/<series>/<label>/ for every instance in its reach,
-// the company's AGENTS.md at /work/AGENTS.md and each workspace's at /work/<workspace>/AGENTS.md, and the environment its
-// runner's connections set.
+// The run's view of the data, by name, built when it starts: /work/<workspace>/<series>/<label>/ for every instance in its reach but
+// an abandoned one, neither an example nor a starting point; the company's AGENTS.md at /work/AGENTS.md and each workspace's at
+// /work/<workspace>/AGENTS.md; and the environment its runner's connections set.
 export function view(inst: Instance): View {
   const t = tree(), at = (id: string) => `/work/${named(t, id)}`, series = [inst.seriesId, ...reach(t, inst.seriesId)];
-  const names = Object.fromEntries(series.flatMap(id => labels(id).map(l => [`${at(id)}/${l.label}`, l.id])));
+  const names = Object.fromEntries(series.flatMap(id => labels(id).filter(l => instance(l.id).doc.status !== 'abandoned').map(l => [`${at(id)}/${l.label}`, l.id])));
   const agents = [...new Set(series.map(id => t.series[id].workspace))].map(w => [agentsFile(w), `/work/${t.workspaces[w].name}/AGENTS.md`] as [string, string]);
   return {
     instance: `${at(inst.seriesId)}/${inst.label}`, dir: inst.dir, pylib: join(inst.series(), '.pylib'),
@@ -441,7 +447,7 @@ export function dropRequest(id: string): Request {
 // Makes an instance of a series, run by `by` with the logins they ticked, and starts it with a wake after its create, for a wake, a
 // request or a person; without one, as a person makes it quietly, it waits for its first act.
 export function startWith(seriesId: string, label: string, by: string, logins: string[], wake?: { from: string }): Instance {
-  if (instances(seriesId).filter(i => i.doc.status === 'open').length >= MAX_OPEN) throw new HttpError(409, `${MAX_OPEN} instances are open; close one first`);
+  if (instances(seriesId).filter(i => i.doc.status === 'open').length >= MAX_OPEN) throw new HttpError(409, `${MAX_OPEN} instances of ${tree().series[seriesId].name} are open: a new one waits until one closes`);
   const inst = createInstance(seriesId, label, by, logins);
   if (wake) {
     inst.append('server', 'wake', wake);

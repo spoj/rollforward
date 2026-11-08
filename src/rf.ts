@@ -42,9 +42,9 @@ const HELP: Record<string, string> = {
   delivered: `rf delivered ITEM --to WHERE --receipt WHAT
   Records that you delivered the output ITEM outside: where to, such as "E1, batch 4471" or the mail's recipients, and what
   proves it, such as the document number a website gave, or the Message-ID or the file's id and eTag Microsoft 365 gave.`,
-  expired: `rf expired SITE
-  Says the website SITE signed your runner's login out, as when it shows its sign-in page: its browser closes, and your runner
-  is asked to sign in again, after which the instance carries on.`,
+  expired: `rf expired NAME
+  Says the website NAME signed your runner out, as when it shows its sign-in page: its browser closes, your runner is asked to
+  sign in again, and the instance carries on once they do.`,
 };
 const USAGE = `${Object.values(HELP).map(h => h.split('\n  ')[0]).join('\n')}\nrf help COMMAND`;
 

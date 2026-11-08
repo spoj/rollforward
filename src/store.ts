@@ -245,7 +245,7 @@ export class Instance {
   put(text: string, run: number) {
     let doc: Doc;
     try { doc = JSON.parse(text); } catch (e) { throw new HttpError(400, `not JSON: ${(e as Error).message}`); }
-    if (doc.rev !== this.doc.rev) throw new HttpError(409, `stale rev ${doc.rev}: the workspace is now at rev ${this.doc.rev}. Run rf show and merge.`);
+    if (doc.rev !== this.doc.rev) throw new HttpError(409, `stale rev ${doc.rev}: the screen is at rev ${this.doc.rev} now, as each put and upload moves it on: run rf show and merge`);
     if (doc.status !== undefined && doc.status !== this.doc.status) throw new HttpError(400, 'status is set by the server; leave it out or as it is');
     if (!Array.isArray(doc.items)) throw new HttpError(400, 'items must be an array');
     const errors: string[] = [], ids = new Set<string>();

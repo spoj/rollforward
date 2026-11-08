@@ -238,10 +238,25 @@ export function sources(inst: Instance): { o: Offer; c: Cache }[] {
   });
 }
 
+// What a run's $RF_INDEX holds, in its README.md.
+const README = `# $RF_INDEX
+
+Your runner's own caches of the Microsoft 365 sources ticked for this run, two files for each that has one, by its name in your
+first message:
+
+- NAME.ndjson.zst: its delta feed from Graph, its crawl then its changes, in Graph's own JSON, one item per line, with no paths,
+  which parent ids rebuild. A later line for an id replaces an earlier one, and a \`deleted\` facet or an \`@removed\` removes it,
+  a folder's with everything under it.
+- NAME.json: its \`source\`, the tick; \`as_of\`, when it was last caught up, null while it's still being built; and your runner's
+  \`deltaLinks\`, to follow as they are for what changed since.
+
+A ticked source with neither file has no cache yet.
+`;
+
 // Before a run starts, for each of its caches: into `to`, on the same disk, a copy of the feed as its .json accounts for it, by
 // reflink where the disk does that, as <name>.ndjson.zst, and <name>.json: the source, their own deltaLinks, to follow for what
-// changed since, and as_of, when the oldest of them was reached, null while the cache is still being built. All of it runs at
-// once, so no tidy-up starts a new feed in between. Whether there was any.
+// changed since, and as_of, when the oldest of them was reached, null while the cache is still being built; and the README.md that
+// says so. All of it runs at once, so no tidy-up starts a new feed in between. Whether there was any.
 export function prepare(inst: Instance, to: string): boolean {
   const names = new Set<string>();
   for (const { o, c } of sources(inst)) {
@@ -256,6 +271,7 @@ export function prepare(inst: Instance, to: string): boolean {
     }
     writeFileSync(join(to, `${name}.json`), JSON.stringify({ source: o.id, as_of: ps.length && ps.every(p => p.as_of) ? ps.map(p => p.as_of!).sort()[0] : null, deltaLinks: ps.flatMap(p => p.delta ?? []) }, null, 1));
   }
+  if (names.size) writeFileSync(join(to, 'README.md'), README);
   return names.size > 0;
 }
 

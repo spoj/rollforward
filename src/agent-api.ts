@@ -6,7 +6,7 @@ import { Browsers, serveBrowsers, upgradeBrowser } from './browsers.ts';
 // What only a run has, behind `rf`: its runner's browsers. (For its own instance, its screen,
 // threads and wakes, `rf` calls the people's API; see server.ts.) Shared by the server, for runs, and by `cli.ts try`, which lets
 // an admin run a skill's steps without the model.
-//   POST /agent/expired {args}     rf expired SITE: the website signed the run out, so its runner signs in to it again
+//   POST /agent/expired {args}     rf expired NAME: the website signed the run out, so its runner signs in to it again
 // A run's browsers are at $RF_BROWSERS/SITE, on its socket (see browsers.ts).
 // A run as the agent API sees it: its instance, its number, and its browsers.
 export type AgentRun = { inst: Instance; n: number; browsers?: Browsers };
@@ -60,8 +60,8 @@ export async function agentCall(a: AgentRun, path: string, method: string, body:
   const words = async () => ((await json()).args ?? []).map(String) as string[];
   if (path === '/agent/expired' && method === 'POST') {
     const [site, ...more] = await words();
-    if (!site || more.length) throw new HttpError(400, 'rf expired SITE');
-    return (a.browsers ??= new Browsers(a.inst, a.n)).expire(site);
+    if (!site || more.length) throw new HttpError(400, 'rf expired NAME');
+    return { status: 200, data: await (a.browsers ??= new Browsers(a.inst, a.n)).expire(site) };
   }
   // The agent's word for an output it delivered; the run's calls, or its browser's request log, bear it out.
   if (path === '/agent/delivered' && method === 'POST') {
