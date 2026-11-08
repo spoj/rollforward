@@ -49,9 +49,13 @@ function startsFrom(inst: Instance): string {
   return JSON.stringify([v.instance, v.names, v.series, v.env, v.ro.filter(([, at]) => at.endsWith('/AGENTS.md')).map(([p]) => existsSync(p) && readFileSync(p, 'utf8')),
     skills().map(s => [s.id, pushed(s).version]), sources(inst).map(({ o }) => o.id)]);
 }
+// Whether an instance's runner can still see its workspace, as each run of theirs needs.
+function sees(i: Instance, t = tree()) {
+  const runner = asPerson(runnerOf(i).by);
+  return !!runner && canSee(runner, t.workspaces[t.series[i.seriesId].workspace]);
+}
 function stale(i: Idle): boolean {
-  const t = tree(), runner = asPerson(runnerOf(i.inst).by);
-  return Date.now() - i.since > IDLE_MS || i.inst.doc.status !== 'open' || !(runner && canSee(runner, t.workspaces[t.series[i.inst.seriesId].workspace]))
+  return Date.now() - i.since > IDLE_MS || i.inst.doc.status !== 'open' || !sees(i.inst)
     || i.inst.log.some(e => e.seq > i.seq && ['takeover', 'logins'].includes(e.op)) || startsFrom(i.inst) !== i.shape;
 }
 // A run's Pi stopped, and its copies of indexes gone.
@@ -172,8 +176,7 @@ async function start(inst: Instance) {
   if (stopping || active.has(series) || !due(inst)) return void changes.emit('change', inst.id);
   if (full()) return void waiting.add(inst);
   // One who can no longer see its workspace, as after being removed from it, waits for someone to take the instance over.
-  const p = asPerson(runner), t = tree();
-  if (!(p && canSee(p, t.workspaces[t.series[inst.seriesId].workspace]))) return void changes.emit('change', inst.id);
+  if (!sees(inst)) return void changes.emit('change', inst.id);
   let kept = idle.get(inst.id);
   idle.delete(inst.id);
   if (kept && stale(kept)) {
@@ -298,8 +301,8 @@ function finish(a: Active, aborted: boolean, error?: string): Entry | undefined 
 function leases() {
   const t = tree();
   for (const a of active.values()) {
-    const ws = t.series[a.inst.seriesId].workspace, runner = asPerson(runnerOf(a.inst).by), reads = [a.inst.seriesId, ...reach(t, a.inst.seriesId)];
-    const why = ws !== a.workspace ? CUT.moved : !(runner && canSee(runner, t.workspaces[ws])) ? CUT.runner
+    const ws = t.series[a.inst.seriesId].workspace, reads = [a.inst.seriesId, ...reach(t, a.inst.seriesId)];
+    const why = ws !== a.workspace ? CUT.moved : !sees(a.inst, t) ? CUT.runner
       : Object.values(a.view.series).some(id => !reads.includes(id)) ? CUT.reach : undefined;
     if (!why) continue;
     const done = finish(a, true, why)!;

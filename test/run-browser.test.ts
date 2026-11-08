@@ -44,7 +44,7 @@ const service = createServer(async (req, res) => {
 }).on('upgrade', (req, socket) => socket.end(`HTTP/1.1 101 Switching Protocols\r\n\r\nservice got ${req.url}`));
 await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
 Object.assign(process.env, { RF_BROWSER_URL: `http://127.0.0.1:${(service.address() as { port: number }).port}`, RF_BROWSER_IDLE_MS: '300' });
-const { Browsers, endSignIn, keepAlive, reap, startSignIn, websitesOf } = await import('../src/browsers.ts');
+const { Browsers, endSignIn, keepAlive, reap, removeSite, startSignIn, websitesOf } = await import('../src/browsers.ts');
 const { upstreams } = await import('../src/connections.ts');
 const { ask, decide, grants, lapse, revoke } = await import('../src/grants.ts');
 // The server's model checks no website here.
@@ -320,6 +320,14 @@ test("saving a sign-in keeps its login alive until a time within the next 7 days
   assert.equal(logins(alice).find(l => l.id === 'web:crm')!.keepalive, new Date(week - 60_000).toISOString());
   await endSignIn(alice, await startSignIn(alice, 'crm', ''), true);
   assert.equal(logins(alice).find(l => l.id === 'web:crm')!.keepalive, undefined);
+});
+
+test("a sign-in whose website its person removed meanwhile, as from another tab, saves nothing", async () => {
+  sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });
+  const id = await startSignIn(alice, 'crm', '');
+  removeSite(alice, 'crm');
+  await assert.rejects(endSignIn(alice, id, true), /alice@demo\.test has no website crm/);
+  assert.ok(!logins(alice).some(l => l.id === 'web:crm'));
 });
 
 test("a person's keepalive turn that fails leaves the others' to go on, and a person disabled has none", async () => {

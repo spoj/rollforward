@@ -1111,7 +1111,10 @@ test("a workspace's owners propose to merge it into another or move a series the
   assert.deepEqual((await json('/api/status')).proposals.map((p: { kind: string; from: string; to: string; by: string }) => [p.kind, p.from, p.to, p.by]), [['merge', 'Moves A', 'Moves B', adminEmail]]);
   await json(`/api/instances/${other}`);
   await json(`/api/instances/${other}`, b);
+  const grantsFile = join(root, '.rf', 'grants.json'), had = existsSync(grantsFile) ? JSON.parse(readFileSync(grantsFile, 'utf8')) : {};
+  writeFileSync(grantsFile, JSON.stringify({ ...had, gm: { workspace: from, person: bob, site: 'gone', reason: 'r', at: '', state: 'denied' } }));
   assert.equal((await accept({ owners: [bob], members: [] })).status, 200);
+  assert.deepEqual([(await call('GET', '/api', undefined, b)).status, 'gm' in JSON.parse(readFileSync(grantsFile, 'utf8'))], [200, false], "its grants go with it, so no one's listing meets a workspace that's gone");
   const merged = await listed(into, b);
   assert.deepEqual([merged.owners, merged.members, merged.series.map((s: { name: string }) => s.name), merged.agents],
     [[adminEmail, bob], [], ['Aging', 'Late', 'Rec', 'Rec 2'], 'Amounts in HKD.\n\n## Moves A\n\nFiscal months end on Saturdays.\n']);

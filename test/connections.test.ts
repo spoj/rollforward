@@ -250,6 +250,14 @@ test("a run reads a ticked SharePoint library at Graph's own address, as Graph a
   assert.equal(logins.secret(ALICE, 'm365'), 'r1', 'the refresh token turned over and was sealed again');
 });
 
+test("a drive whose site Graph didn't say, as when it throttled the lookup, is looked up again the next time", async () => {
+  shares['https://share.test/d2'] = item('d2', 'd2.csv', '2026-10-20T00:00:00Z', false, 'd2root', { driveId: 'b!d2', driveType: 'documentLibrary', siteId: '' });
+  const read = () => via('GET', `${G}${share('https://share.test/d2')}/driveItem`);
+  assert.match((await read()).text, /is in no folder, file or SharePoint site ticked/);
+  drives['b!d2'] = drives['b!d1'];
+  assert.equal((await read()).status, 200, 'its site ticked, it reads');
+});
+
 test("the proxy refuses, with a plain 403 and why, what isn't ticked: the runner's OneDrive unticked, anyone else's, an unticked mailbox, a path climbing out, the rest of Graph", async () => {
   const refused = async (path: string, why: RegExp, headers?: Record<string, string>) => {
     const r = await via('GET', path.startsWith('https:') ? path : `${G}${path}`, { headers });

@@ -167,8 +167,8 @@ async function covering(email: string, ticks: string[], driveId: string, id: str
   if (ticks.includes('m365:onedrive') && driveId === await ownDrive(email)) return 'm365:onedrive';
 }
 
-// What Graph says doesn't change often: who an item's parent is, for 5 minutes; whose a drive is, and which site's, for good. A
-// parent the person can't read ends the climb, as does a drive whose site they can't see.
+// What Graph says doesn't change often: who an item's parent is, for 5 minutes; whose a drive is, and which site's, for good once
+// Graph answers. A parent the person can't read ends the climb, as does a drive whose site they can't see.
 const parents = new Map<string, { parent?: string; at: number }>(), sites = new Map<string, string>(), own = new Map<string, string>();
 async function parentOf(email: string, driveId: string, id: string): Promise<string | undefined> {
   const k = `${driveId}/${id}`, known = parents.get(k);
@@ -179,7 +179,6 @@ async function parentOf(email: string, driveId: string, id: string): Promise<str
 }
 async function siteOf(email: string, driveId: string): Promise<string> {
   if (!sites.has(driveId)) {
-    // A lookup that failed, as Graph throttling it, is tried again next time.
     const d = await graph(email, `/drives/${encodeURIComponent(driveId)}?$select=sharePointIds`).catch(() => undefined), s = d?.sharePointIds;
     if (!d) return '';
     sites.set(driveId, s ? `${new URL(s.siteUrl).hostname},${s.siteId},${s.webId}` : '');

@@ -161,7 +161,7 @@ test("a commit a restart cut leaves git's locks, which the next start clears for
 });
 
 test('a run a restart cut ends as aborted, with what its calls cost so far, and its instance is woken to carry on', async () => {
-  const cut = make('s3', 'cut');
+  const cut = make('s8', 'cut');
   cut.append('server', 'run', { run: 1, upto: 1 });
   cut.append('agent', 'call', { run: 1, name: 'openrouter', cost: 5 });
   cut.append('server', 'done', { run: 1, aborted: false, seen: 1, cost: 5 });
@@ -246,6 +246,7 @@ test("others' comments and wakes are notes for an instance's runner, unless the 
 
 test("a run starts only for a runner Microsoft still signs in: one it no longer does waits for them to sign in again, which wakes it, and one disabled or gone is disabled here too; while Microsoft can't be reached, nothing starts", async () => {
   const lee = 'lee@demo.test', inst = createInstance('s7', 'books', lee, []), runs = () => inst.log.filter(e => e.op === 'run').length;
+  writeJson('users.json', { ...readJson('users.json', {}), [lee]: { role: 'user' } });
   const go = async () => (inst.append(lee, 'comment', { thread: 'g', text: 'go' }), kick(inst), await settle());
   await go();
   assert.deepEqual([runs(), inst.log.at(-1)!.op, inst.log.at(-1)!.error], [0, 'expired', "lee@demo.test hasn't signed in to rollforward since sign-ins are kept"], 'no sign-in kept, nor a Microsoft 365 login');
@@ -325,4 +326,16 @@ test("a run's first message lists the corrections on its series' closed instance
   assert.deepEqual([q3.log.at(-1)!.by, q3.log.at(-1)!.kind, q3.log.at(-1)!.see, r2.log.at(-1)!.op], [alice, 'superseded', { inst: r2.id, label: 'q3-r2' }, 'corrected']);
   assert.match(message(q4, 1, q4.log, true), /Corrections on earlier instances: q3 is wrong, "The rate was a day stale\."; q3 is superseded, "q3-r2 supersedes it", see q3-r2\. New/);
   await settle();
+});
+
+test("a run starts only for a runner who still sees its workspace: one removed from it, as their run waited, has none, and the instance waits for someone to take it over", async () => {
+  const t = tree();
+  saveTree({ workspaces: { ...t.workspaces, r: { name: 'Removes', owners: ['zed@demo.test'], members: [alice] } }, series: { ...t.series, s9: { name: 'Gone', workspace: 'r' } } });
+  mkdirSync(join(tmp, 'series', 's9'), { recursive: true });
+  const inst = make('s9', 'removed');
+  inst.append(alice, 'comment', { thread: 'r1', text: 'go' });
+  saveTree({ ...tree(), workspaces: { ...tree().workspaces, r: { ...tree().workspaces.r, members: [] } } });
+  kick(inst);
+  await settle();
+  assert.ok(!ops(inst).includes('run'));
 });

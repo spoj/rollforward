@@ -40,6 +40,7 @@ export async function ask(me: Me, site: string, workspace: string, reason: strin
   if (again) throw asked(again);
   // Removing the website meanwhile signed them out of it, and took their grants for it.
   if (!logins(me.email).some(l => l.id === login.id)) throw new HttpError(409, `you removed ${site} or signed out of it while it was checked`);
+  if (!tree().workspaces[workspace]) throw new HttpError(409, `${w.name} was merged into another while it was checked: ask there`);
   const all = grants(), id = newId();
   all[id] = { workspace, person: me.email, site, reason: reason.trim().slice(0, 500), at: new Date().toISOString(), state: 'pending', check };
   save(all);

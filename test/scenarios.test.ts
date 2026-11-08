@@ -694,6 +694,12 @@ test("anyone adds websites of their own, theirs to set: they allow the hosts its
   assert.deepEqual([(await listed(bob)).hosts.includes('static.cdnhost.test'), (await listed(bob)).checks['static.cdnhost.test']], [false, { verdict: 'refused', why: 'Its person removed it.' }], 'it stays refused');
   assert.deepEqual(acts().filter(a => a.method === 'DELETE' && a.path.includes('/hosts/')).map(a => [a.by, a.path]), [[BOB, '/logins/web/bobs/hosts/static.cdnhost.test']]);
 
+  // Though the website reaches internal addresses, a grant's check never has an owner's approval reach an internal host: an admin alone allows one.
+  const { id: third } = await (await call('POST', '/api/workspaces', { name: 'Intranet pulls' })).json();
+  assert.equal((await call('PUT', `/api/workspaces/${third}`, { owners: [BOB] })).status, 200);
+  verdicts.push({ risk: 'low', flags: [], summary: 'The same portal.', hosts: ['10.9.8.6', 'cdn2.idp.test'] });
+  assert.deepEqual((await (await call('POST', '/grants', { site: 'bobs', workspace: third, reason: 'intranet pulls' }, bob)).json()).check.hosts, ['cdn2.idp.test']);
+
   // Bob removes his, with his login to it and his grants for it; Carol's stays.
   assert.equal((await call('DELETE', '/logins/sites/bobs', undefined, bob)).status, 200);
   assert.deepEqual([await listed(bob), (await (await call('GET', '/logins', undefined, bob)).json()).some((l: { id: string }) => l.id === 'web:bobs'), await pending(), (await listed(carol)).url],
