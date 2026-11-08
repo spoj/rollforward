@@ -67,6 +67,7 @@ function comment() {
   const o: { in?: string; on?: string; to?: string; pin: string[]; words: string[] } = { pin: [], words: [] };
   for (let i = 0; i < args.length; i++) {
     const flag = /^--(in|on|to|pin)$/.exec(args[i])?.[1] as 'in' | 'on' | 'to' | 'pin' | undefined;
+    if (!flag && /^--\w/.test(args[i])) return { ok: false, text: `rf ${cmd} has no ${args[i]}\n${HELP[cmd]}` };
     if (!flag || args[i + 1] === undefined) o.words.push(args[i]);
     else if (flag === 'pin') o.pin.push(args[++i]);
     else o[flag] = args[++i];

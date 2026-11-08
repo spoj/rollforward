@@ -194,6 +194,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
       'echo 1 > working/x.csv && rf say --pin working/x.csv --pin ../2026-11/working/x.csv Cited. 2>&1',
       'curl -s -m 5 -X POST -H "authorization: Bearer $RF_TOKEN" "$RF_URL/api/instances/$RF_INSTANCE/close"; echo',
       'curl -s -m 5 -H "authorization: Bearer $RF_TOKEN" "$RF_URL/api/workspaces"; echo',
+      'rf ask --pin working/x.csv --sign-off Sure. 2>&1',
     ],
     report: 'Checked the walls, and woke myself for the bank file.', saw: [],
   };
@@ -229,6 +230,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   const x = { inst: id, path: 'working/x.csv', sha256: createHash('sha256').update('1\n').digest('hex') };
   assert.deepEqual(log.findLast(e => e.text === 'Cited.')!.files, [x, x], "a pinned file is kept by its instance's id, with its sha256");
   assert.deepEqual([walls.saw[18].trim(), walls.saw[19].trim()], ['not found', 'not found'], "a run's token does only what a run may: not close its instance, nor read what people do"); 
+  assert.match(walls.saw[20], /^rf ask has no --sign-off\nrf ask \[--in cN/, 'an option it has not is no part of the text');
   const asked = log.filter(e => e.op === 'call' && e.name === 'openrouter'), pi = asked.filter(e => (e.path as string).startsWith('/api/v1/messages'));
   assert.deepEqual(asked.filter(e => !pi.includes(e)).map(e => [e.run, e.method, e.path, e.status, e.model, e.cost]), [[2, 'POST', '/api/v1/chat/completions', 200, 'openai/gpt-5-mini', 0.002], [2, 'GET', '/api/v1/credits', 404, undefined, 0]]);
   assert.deepEqual(pi.map(e => [e.run, e.method, e.status, e.model, e.cost]), [[1, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01], ...Array(walls.bash.length + 1).fill([2, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01]), ...Array(2).fill([3, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01])], "Pi's own calls, a step's each and the report's, through the same connection");
