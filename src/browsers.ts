@@ -1,6 +1,6 @@
 import { connect, isIP } from 'node:net';
 import { connect as tlsConnect } from 'node:tls';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { request as httpRequest, STATUS_CODES, type IncomingMessage, type ServerResponse } from 'node:http';
 import { request as httpsRequest } from 'node:https';
@@ -12,8 +12,8 @@ import { getDomain } from 'tldts';
 import { checkHost, covers, reached, resolvesInternal, upstreams } from './connections.ts';
 import { model } from './connections/openrouter.ts';
 import { asPerson, can, users, type Me } from './auth.ts';
-import { approved, forgetGrants, grants } from './grants.ts';
-import { act, changes, readJson, rfDir, tree, writeJson } from './system.ts';
+import { approved, forgetGrants } from './grants.ts';
+import { act, changes, readJson, rfDir, tree } from './system.ts';
 
 // Browsers from the browser service (spoj/rollforward-browser, a repo of its own), whose one client is this server, with its key: a
 // throwaway container per session, driven over CDP, whose proxy keeps to a website's hosts and logs every request. A website login is
@@ -94,28 +94,6 @@ function website(email: string, name: string): Website {
   const w = websitesOf(email)[name];
   if (!w) throw new HttpError(404, `${email} has no website ${name}: theirs are ${Object.keys(websitesOf(email)).join(', ') || 'none yet'}, added on the Logins page or with rf site add ${name} URL`);
   return w;
-}
-
-// From before websites were each person's own: one left in .rf/connections.json becomes its owner's, and that of each person signed
-// in to it or with a grant for it, by the same name, and goes from there, connections.json.bak keeping it as it was, and the system's
-// log saying whose it became. A grant whose website an older version removed without it goes, logged too.
-export function adopt() {
-  const all = readJson<Record<string, any>>('connections.json', {}), moved: Record<string, string[]> = {}, given = Object.values(grants());
-  for (const [name, c] of Object.entries(all).filter(([, c]) => c.type === 'website')) {
-    moved[name] = [...new Set([...Object.keys(users()), ...given.map(g => g.person)])].filter(e => e === c.owner || logins(e).some(l => l.id === `web:${name}`) || given.some(g => g.person === e && g.site === name));
-    for (const e of moved[name]) if (!websitesOf(e)[name]) saveWebsites(e, { ...websitesOf(e), [name]: { url: c.url, hosts: c.hosts ?? [], writeback: c.writeback !== false,
-      ...(c.header && { header: c.header }), ...(c.keepalive && { keepalive: c.keepalive }), ...(c.every && { every: c.every }),
-      ...(c.internal && { internal: true }), added: c.updated_at ?? new Date().toISOString() } });
-    delete all[name];
-  }
-  if (Object.keys(moved).length) {
-    copyFileSync(join(rfDir(), 'connections.json'), join(rfDir(), 'connections.json.bak'));
-    writeJson('connections.json', all);
-    act('server', { op: 'websites', moved });
-  }
-  const left = Object.entries(grants()).filter(([, g]) => !websitesOf(g.person)[g.site]);
-  for (const [, g] of left) forgetGrants(g.person, g.site);
-  if (left.length) act('server', { op: 'grants', dropped: Object.fromEntries(left) });
 }
 
 // ---- Signing in: a browser on the website's address with nothing saved, shown to the person on the Logins page, for half an hour.

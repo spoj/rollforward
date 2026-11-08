@@ -4,7 +4,7 @@ import { createServer, request, type IncomingHttpHeaders, type Server } from 'no
 import { request as httpsRequest } from 'node:https';
 import { connect as tlsConnect } from 'node:tls';
 import type { Socket } from 'node:net';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Instance } from '../src/store.ts';
@@ -427,29 +427,6 @@ test("a website is its person's own, by a name of theirs and an https address, s
   removeSite(ALICE, 'erp');
   assert.deepEqual([Object.keys(websitesOf(ALICE)), Object.keys(websitesOf(AP))], [['erp-sso'], ['erp']], "AP's stays");
   assert.throws(() => removeSite(ALICE, 'erp'), /has no website erp/);
-});
-
-test("as the server starts, a website from before websites were each person's own becomes its owner's, and that of everyone signed in to it or with a grant for it, by the same name, connections.json.bak keeping the file as it was", async () => {
-  const { adopt, websitesOf } = await import('../src/browsers.ts');
-  const { upsertUser } = await import('../src/auth.ts');
-  const { saveLogin } = await import('../src/logins.ts');
-  const { readJson, rfDir, writeJson } = await import('../src/system.ts');
-  const [carl, dora, eve] = ['carl@demo.test', 'dora@demo.test', 'eve@demo.test'], kept = readJson('connections.json', {});
-  for (const e of [carl, dora, eve]) upsertUser(e, { role: 'user' });
-  writeJson('connections.json', { ...kept, 'e1-prod': { type: 'website', url: 'https://e1.test/jde/E1Menu.maf', hosts: ['dms.e1.test'], writeback: true, owner: carl, internal: true, updated_by: carl, updated_at: '2026-11-07T16:18:39Z' } });
-  saveLogin(dora, { id: 'web:e1-prod', kind: 'website', name: 'e1-prod', since: '2026-11-08T00:00:00Z', offers: [{ id: 'web:e1-prod', name: 'e1-prod' }] } as never, '{}');
-  writeJson('grants.json', { g1: { workspace: 'w', person: eve, site: 'e1-prod', reason: 'r', at: '', state: 'approved' }, g2: { workspace: 'w', person: dora, site: 'jj', reason: 'r', at: '', state: 'approved' } });
-  adopt();
-  for (const e of [carl, dora, eve]) assert.deepEqual(websitesOf(e)['e1-prod'], { url: 'https://e1.test/jde/E1Menu.maf', hosts: ['dms.e1.test'], writeback: true, internal: true, added: '2026-11-07T16:18:39Z' }, e);
-  assert.equal(websitesOf(ALICE)['e1-prod'], undefined, "no one else's");
-  assert.deepEqual(readJson('connections.json', {}), kept, 'it goes from connections.json');
-  assert.equal(JSON.parse(readFileSync(join(rfDir(), 'connections.json.bak'), 'utf8'))['e1-prod'].owner, carl);
-  const [said, dropped] = readFileSync(join(rfDir(), 'log.jsonl'), 'utf8').trim().split('\n').slice(-2).map(l => JSON.parse(l));
-  assert.deepEqual([said.by, said.op, said.moved], ['server', 'websites', { 'e1-prod': [carl, dora, eve] }]);
-  assert.deepEqual([dropped.by, dropped.op, Object.keys(dropped.dropped), Object.keys((await import('../src/grants.ts')).grants())], ['server', 'grants', ['g2'], ['g1']], 'a grant whose website an older version removed goes');
-  const { forgetGrants, grants } = await import('../src/grants.ts');
-  forgetGrants(eve);
-  assert.deepEqual(Object.keys(grants()), [], 'a person removed takes all their grants with them');
 });
 
 test('the proxy reaches nothing, not even what a tick is checked against, for a runner who can no longer lend their login', async () => {

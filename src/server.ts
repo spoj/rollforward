@@ -16,7 +16,7 @@ import { checkTicks, logins, runnerOf, saveLogin, signOut, unoffer } from './log
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { answered, byLogin, call, connections, intercepts, loginOf, removeConnection, setConnection, upstreams } from './connections.ts';
-import { addSite, adopt, allowHost, Browsers, endSignIn, isSignIn, keepAlive, passUpgrade, reap, refusedHosts, removeHost, removeSite, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
+import { addSite, allowHost, Browsers, endSignIn, isSignIn, keepAlive, passUpgrade, reap, refusedHosts, removeHost, removeSite, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
 import { ask, decide, forgetGrants, lapse, revoke, visible } from './grants.ts';
 import { offer } from './connections/graph.ts';
 import { addWarehouse } from './connections/databricks.ts';
@@ -43,7 +43,6 @@ mkdirSync(backups, { recursive: true, mode: 0o700 });
 cpSync(join(root, '.rf'), join(backups, new Date().toISOString().replace(/[:.]/g, '-')), { recursive: true, filter: p => !['index', 'runs'].includes(basename(p)) });
 for (const old of readdirSync(backups).sort().slice(0, -5)) rmSync(join(backups, old), { recursive: true });
 openStore(root);
-adopt();
 // A new data root starts with one connection, Microsoft 365's, graph.
 if (!existsSync(join(root, '.rf', 'connections.json'))) writeJson('connections.json', { graph: { type: 'graph', updated_by: 'server', updated_at: new Date().toISOString() } });
 
