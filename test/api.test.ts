@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -805,7 +805,7 @@ test('rf acts on an instance as the page does: react, creds, rename, takeover, i
   assert.equal(await rf('takeover', 'Readings/Jots/b1'), 'you run Readings/Jots/b1 now, with no logins ticked\n');
   assert.equal((await json(`/api/instances/${his}`)).runner.by, adminEmail);
   await assert.rejects(rf('interrupt', 'Readings/Jots/b1'), fails(1, /^rf: POST \/api\/instances\/\w+\/interrupt: 409 no run going\n$/));
-  await assert.rejects(rf('signoff', 'Readings/Jots/b1', 'c1'), fails(1, /: 409 c1 is no ask that pins files\n$/));
+  await assert.rejects(rf('signoff', 'Readings/Jots/b1', 'c1'), fails(1, /: 409 c1 is no ask of the agent's\n$/));
   await assert.rejects(rf('signoff', 'Readings/Jots/b1', 'c1', 'Fine.', 'more'), fails(2, /^rf signoff PATH cN \[TEXT\]/));
   const reject = await call('POST', `/api/instances/${his}/signoff`, JSON.stringify({ thread: 'c1', approved: false }));
   assert.deepEqual([reject.status, await reject.text()], [400, 'a sign-off approves; to say no, reply in the thread'], "rf 0.12's reject, still in use");
@@ -996,20 +996,6 @@ test('the second audit: a bad request line, a bad workbook and a slow body hurt 
   assert.equal((await named('larkfield')).agents, 'held open');
   await call('PUT', `/api/workspaces/${other.id}`, JSON.stringify({ archived: false }));
   await call('PUT', `/api/workspaces/${lark.id}`, JSON.stringify({ agents: lark.agents }));
-});
-
-test('closing refuses a shown file the agent replaced after it was shown', async () => {
-  assert.equal((await call('POST', `${await at(series, '2026-08-30', 'duplicate')}?as=tamper`)).status, 200);
-  const d = await dir(series, 'tamper'), doc = JSON.parse(readFileSync(join(d, 'screen.json'), 'utf8'));
-  const shownFile = doc.items.find((i: { file: string | null }) => i.file?.startsWith('working/')).file, was = readFileSync(join(d, shownFile));
-  writeFileSync(join(d, 'working', 'swap.tmp'), 'other bytes');
-  renameSync(join(d, 'working', 'swap.tmp'), join(d, shownFile));
-  const r = await call('POST', await at(series, 'tamper', 'close'));
-  assert.equal(r.status, 409);
-  assert.match(await r.text(), /changed after it was shown/);
-  writeFileSync(join(d, 'working', 'swap.tmp'), was);
-  renameSync(join(d, 'working', 'swap.tmp'), join(d, shownFile));
-  assert.equal((await call('POST', await at(series, 'tamper', 'close'))).status, 200);
 });
 
 test("an instance is new to a person while it has others' or the agent's news they haven't viewed; their own acts aren't news", async () => {

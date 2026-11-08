@@ -1,5 +1,5 @@
-import { appendFileSync, chmodSync, closeSync, constants, cpSync, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
-import { createHash, randomBytes } from 'node:crypto';
+import { appendFileSync, chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { basename, extname, join, posix } from 'node:path';
 import { changes, tree } from './system.ts';
 import { commit, pack, type Who } from './git.ts';
@@ -27,19 +27,6 @@ export function openFile(base: string, rel: string): number | undefined {
     closeSync(fd);
   } catch (e) {
     if (!['EACCES', 'ELOOP', 'ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code!)) throw e;
-  }
-}
-
-// A file a screen shows, under upload/ or working/, as it first shows it: its sha256, and, in working/, made read-only; undefined
-// where there is none, a link not followed.
-export function freeze(base: string, rel: unknown): string | undefined {
-  const fd = typeof rel === 'string' && normalize(rel) === rel && /^(upload|working)\/./.test(rel) && !rel.split('/').includes('..') ? openFile(base, rel) : undefined;
-  if (fd === undefined) return undefined;
-  try {
-    if ((rel as string).startsWith('working/')) fchmodSync(fd, 0o444);
-    return createHash('sha256').update(readFileSync(fd)).digest('hex');
-  } finally {
-    closeSync(fd);
   }
 }
 
@@ -234,18 +221,10 @@ export class Instance {
     return this.log.filter(e => e.op === 'comment' && e.by === 'agent' && e.ask && !this.answered(e));
   }
 
-  // Closing makes the instance the period's record and an example for the next, approving nothing: a shown file in working/ must
-  // still be what its point logged, as people saw it. Its folder is the run's, so read-only alone doesn't stop a file being
-  // replaced. The asks still waiting are accepted as the agent said it did them. It commits the folder in the runner's name. The
-  // instance is closed meanwhile, so nothing changes it, but saved only once committed: a failed commit, or a restart, leaves it
-  // open.
+  // Closing makes the instance the period's record and an example for the next, approving nothing: the asks still waiting are
+  // accepted as the agent said it did them. It commits the folder in the runner's name. The instance is closed meanwhile, so nothing
+  // changes it, but saved only once committed: a failed commit, or a restart, leaves it open.
   async close(by: Who) {
-    for (const file of this.doc.items.map(i => i.file).filter(f => f?.startsWith('working/'))) {
-      const fd = openFile(this.dir, file!), logged = this.log.findLast(e => e.op === 'point' && e.file === file && e.sha256)?.sha256;
-      const now = fd === undefined ? undefined : createHash('sha256').update(readFileSync(fd)).digest('hex');
-      if (fd !== undefined) closeSync(fd);
-      if (logged && now !== logged) throw new HttpError(409, `${file} changed after it was shown: the agent shows the new version under a new name, and you review that`);
-    }
     const accepted = this.asking().map(e => `c${e.seq}`);
     this.doc.status = 'closed';
     const hash = await commit(this.dir, by, `Close ${this.label}`).catch(e => {
@@ -269,7 +248,7 @@ export class Instance {
     if (doc.rev !== this.doc.rev) throw new HttpError(409, `stale rev ${doc.rev}: the workspace is now at rev ${this.doc.rev}. Run rf show and merge.`);
     if (doc.status !== undefined && doc.status !== this.doc.status) throw new HttpError(400, 'status is set by the server; leave it out or as it is');
     if (!Array.isArray(doc.items)) throw new HttpError(400, 'items must be an array');
-    const errors: string[] = [], ids = new Set<string>(), sums = new Map<string, string | undefined>();
+    const errors: string[] = [], ids = new Set<string>();
     const old = new Map(this.doc.items.map(i => [i.id, i]));
     for (const i of doc.items) {
       if (typeof i.id !== 'string' || !i.id || ids.has(i.id)) errors.push(`item id missing or repeated: ${JSON.stringify(i.id)}`);
@@ -281,11 +260,7 @@ export class Instance {
       if (i.file !== null) {
         const ok = typeof i.file === 'string' && normalize(i.file) === i.file && /^(upload|working)\/./.test(i.file) && !i.file.split('/').includes('..');
         if (!ok) errors.push(`${i.id}: file must be null or a path under upload/ or working/, relative to the instance folder`);
-        else if (i.file !== old.get(i.id)?.file) {
-          const sum = freeze(this.dir, i.file);
-          if (sum) sums.set(i.id, sum);
-          else errors.push(`${i.id}: no file ${i.file} (links are not followed)`);
-        } else {
+        else {
           const fd = openFile(this.dir, i.file);
           if (fd === undefined) errors.push(`${i.id}: no file ${i.file} (links are not followed)`);
           else closeSync(fd);
@@ -304,7 +279,7 @@ export class Instance {
     for (const i of doc.items) {
       const o = old.get(i.id);
       if (i.file !== (o?.file ?? null) && i.file !== null) {
-        this.append('agent', 'point', { run, item: i.id, file: i.file, was: o?.file ?? null, sha256: sums.get(i.id) });
+        this.append('agent', 'point', { run, item: i.id, file: i.file, was: o?.file ?? null });
       } else if (i.file === null && o?.file) this.append('agent', 'point', { run, item: i.id, file: null, was: o.file });
       if (!o || o.name !== i.name || o.kind !== i.kind || JSON.stringify(o.from) !== JSON.stringify(i.from) || o.headline !== i.headline || o.source !== i.source || o.destination !== i.destination)
         this.append('agent', 'item', { run, item: i.id, name: i.name, kind: i.kind, from: i.from, headline: i.headline, source: i.source, destination: i.destination });

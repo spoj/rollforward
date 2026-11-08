@@ -515,7 +515,7 @@ let seen = {}, prevSigs = {}, uploads = [], shown = '', refreshes = 0, threads =
 const replying = new Set();
 // An item's threads; a new one shows on its tile as a change.
 const talkOn = id => threads.filter(t => t.item === id);
-const sig = i => `${i.file}|${talkOn(i.id).length}|${i.headline ?? ''}`;
+const sig = i => `${i.file}|${data.sums[i.id] ?? ''}|${talkOn(i.id).length}|${i.headline ?? ''}`;
 
 function markSeen(items) {
   for (const i of items) seen[i.id] = sig(i);
@@ -990,8 +990,10 @@ async function toggleAudit() {
 
 const VERB = { read: 'Read', bash: 'Ran', edit: 'Edited', write: 'Wrote' };
 const firstLine = t => t.trim().split('\n')[0];
-// An image in the agent's markdown, ![name](working/x.png), by its path in the instance, shows as a thread's file does.
+// A file in the agent's markdown, by its path in the instance, or ../<label>/… in another of its series: [name](working/x.csv) links it,
+// opening the preview, and an image, ![name](working/x.png), shows as a thread's file does.
 const inline = s => s.replace(/!\[([^\]]*)\]\(([^)\s&]+\.(?:png|jpe?g|gif|webp|svg))\)/gi, (_, alt, f) => `<img class="md" src="${fileUrl(f)}" loading="lazy" alt="${alt}" title="${alt}" data-act="preview" data-file="${f}">`)
+  .replace(/\[([^\]]+)\]\(((?:\.\.\/[^/)]+\/)?(?:upload|working)\/[^)&]+)\)/g, (_, name, f) => `<a data-act="preview" data-file="${f}">${name}</a>`)
   .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>');
 
 // With an item's threads, each line but a heading or a table's is a point to comment on where it stands: a
@@ -1024,7 +1026,7 @@ function threadsOf() {
     if (e.op === 'resolve') continue;
     // Where it hangs: under its parent, a sign-off under its ask; from before replies named what they answer, under the first.
     const under = e.parent ?? e.on ?? (e.seq === root ? undefined : root);
-    if (e.op === 'comment') t.posts.push({ ...e, under, waits: waiting.get(e.seq), pinned: e.files?.some(f => f.sha256), files: e.files?.map(f => !f.inst ? f : f.inst === cur.i.id ? f.path : `../${cur.s.instances.find(i => i.id === f.inst)?.label}/${f.path}`) });
+    if (e.op === 'comment') t.posts.push({ ...e, under, waits: waiting.get(e.seq), files: e.files?.map(f => !f.inst ? f : f.inst === cur.i.id ? f.path : `../${cur.s.instances.find(i => i.id === f.inst)?.label}/${f.path}`) });
     if (e.op === 'signoff') t.posts.push({ ...e, under, text: `${e.approved === false ? 'Rejected' : 'Signed off'}${e.text ? `: ${e.text}` : ''}` });
   }
   for (const t of out.values()) Object.assign(t, {
@@ -1042,17 +1044,18 @@ function threadHtml(t) {
     + data.log.filter(e => e.op === 'done' && e.rules && e.thread === t.id).map(processNote).join('') + postHtml(t, t.posts[0], 0) + '</div>';
 }
 
-// A comment, with its reactions, Reply and, for an ask that pins files this person hasn't signed off, Sign off, which open its reply box,
+// A comment, with its reactions, Reply and, for an ask this person hasn't signed off, Sign off, which open its reply box, and how many
+// runs went since the ask, which may have changed what it links,
 // there all along so that it opens where it is; then what hangs under it, three levels deep, past which a link opens the rest as a
 // thread of its own. A long one folds until More. Its twisty collapses it, with what hangs under it, to its first line, as this
 // browser keeps it until someone adds to it.
 function postHtml(t, p, depth) {
   const kids = t.posts.filter(k => k.under === p.seq), open = data.doc.status === 'open', off = data.run ? ' disabled title="Available when the run ends"' : '';
-  const signs = open && p.ask && p.pinned && !t.posts.some(k => k.op === 'signoff' && k.on === p.seq && k.by === me.email);
+  const signs = open && p.ask && !t.posts.some(k => k.op === 'signoff' && k.on === p.seq && k.by === me.email), since = signs && data.log.filter(e => e.op === 'run' && e.seq > p.seq).length;
   const long = !ui.full.has(p.seq) && (p.text.length > 900 || p.text.split('\n').length > 12), all = n => t.posts.filter(k => k.under === n).reduce((c, k) => c + 1 + all(k.seq), 0);
   const end = q => Math.max(q.seq, ...t.posts.filter(k => k.under === q.seq).map(end)), head = `<b class="${p.by === 'agent' ? '' : 'p'}">${who(p.by)}</b> <span class="tm">`;
   if (JSON.parse(localStorage[`folds:${cur.i.id}`] ?? '{}')[p.seq] === end(p)) return `<div class="post folded ${p.ask ? 'ask' : ''} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}"><button class="fold" data-act="fold" data-seq="${p.seq}" title="Expand">\u25B8</button>${head}${hhmm(p.at)}</span> ${esc(firstLine(p.text))}${kids.length ? `<span class="tm"> \u00b7 ${all(p.seq)} more</span>` : ''}</div>`;
-  let h = `<div class="post ${p.ask ? 'ask' : ''} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}"><button class="fold" data-act="fold" data-seq="${p.seq}" data-end="${end(p)}" title="Collapse">\u25BE</button>${head}${hhmm(p.at)}${p.to ? ` \u00b7 to ${who(p.to)}` : ''}${p.note ? ` \u00b7 a note for ${who(data.runner.by)}` : ''}${p.waits ? ` \u00b7 waits on ${who(p.waits)}` : ''}${p.commit ? ` \u00b7 commit <code>${p.commit.slice(0, 7)}</code>` : ''}</span>`
+  let h = `<div class="post ${p.ask ? 'ask' : ''} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}"><button class="fold" data-act="fold" data-seq="${p.seq}" data-end="${end(p)}" title="Collapse">\u25BE</button>${head}${hhmm(p.at)}${p.to ? ` \u00b7 to ${who(p.to)}` : ''}${p.note ? ` \u00b7 a note for ${who(data.runner.by)}` : ''}${p.waits ? ` \u00b7 waits on ${who(p.waits)}` : ''}${since ? ` \u00b7 <span title="What it links may have changed since: check it before signing off">${since} run${since > 1 ? 's' : ''} since</span>` : ''}${p.commit ? ` \u00b7 commit <code>${p.commit.slice(0, 7)}</code>` : ''}</span>`
     + `<div class="pb ${long ? 'long' : ''}">${p.by === 'agent' && p.op === 'comment' ? md(p.text) : esc(p.text)}</div>${long ? `<a class="more" data-act="more" data-seq="${p.seq}">More</a>` : ''}`
     + (p.files ?? []).map(f => `<div class="f">${/\.(png|jpe?g|gif|webp|svg)$/i.test(f) ? `<img src="${fileUrl(f)}" loading="lazy" alt="${esc(fname(f))}" title="${esc(fname(f))}" data-act="preview" data-file="${esc(f)}">` : `<a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a>`}</div>`).join('');
   if (p.op === 'comment') h += `<div class="pa">${reactHtml(p.seq)}${open ? `<button class="quiet" data-act="reply" data-seq="${p.seq}">Reply</button>` : ''}${signs ? `<button class="quiet" data-act="reply" data-seq="${p.seq}">Sign off\u2026</button>` : ''}</div>`;

@@ -543,11 +543,3 @@ export function resolveFor(a: Active, folder: string): string {
   if (a.view.series[posix.dirname(path)]) throw new HttpError(404, `no instance ${posix.basename(path)} in ${posix.basename(posix.dirname(path))}`);
   throw new HttpError(404, `no series you can read at ${folder}`);
 }
-
-// A file a run pins in a comment, under upload/ or working/ of its instance, or of another of its series as ../<label>/...: its
-// instance's id, by the names the run started with, and its path there.
-export function pinFor(a: Active, f: unknown): { inst: string; path: string } | undefined {
-  const m = typeof f === 'string' && posix.normalize(f) === f ? f.match(/^(?:\.\.\/([^/]+)\/)?((?:upload|working)\/.+)$/) : null;
-  const inst = m && (m[1] === undefined ? a.inst.id : a.view.names[posix.join(posix.dirname(a.view.instance), m[1])]);
-  return inst && !m[2].split('/').includes('..') && existsSync(join(instanceDir(inst), m[2])) ? { inst, path: m[2] } : undefined;
-}

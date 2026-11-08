@@ -29,10 +29,11 @@ before(async () => {
   writeFileSync(join(signed, 'instance.json'), JSON.stringify({ label: '2026-12', series: 'a5c0ff5e1fee' }));
   writeFileSync(join(signed, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [] }));
   writeFileSync(join(signed, 'working', 'pack.csv'), 'pack\n');
-  const pinned = { inst: 'a5c0ff5e1f00', path: 'working/pack.csv', sha256: createHash('sha256').update('pack\n').digest('hex') };
   writeFileSync(join(signed, 'log.jsonl'), [
     { seq: 1, at: '2026-08-01T09:00:00.000Z', by: 'admin@demo.test', op: 'create', from: null, logins: [] },
-    { seq: 2, at: '2026-08-01T09:05:00.000Z', by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'The pack is ready to send to the bank.', ask: true, files: [pinned] },
+    { seq: 2, at: '2026-08-01T09:05:00.000Z', by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'The pack is ready to send to the bank.\n\n[The pack](working/pack.csv)', ask: true },
+    { seq: 3, at: '2026-08-01T09:10:00.000Z', by: 'server', op: 'run', run: 2, runner: 'admin@demo.test', upto: 1 },
+    { seq: 4, at: '2026-08-01T09:12:00.000Z', by: 'server', op: 'done', run: 2, aborted: false, seen: 1, cost: 0 },
   ].map(e => JSON.stringify(e) + '\n').join(''));
   // A closed instance of the same series whose run, asked to, called a connection, added a rule to its process and posted images.
   const called = join(root, 'instances', 'a5c0ff5e1f01');
@@ -350,7 +351,7 @@ test("what the session names, such as a tool call's name, shows as text in the a
   await page.click('#log .seg [data-act=audit]');
 });
 
-test("an ask that pins files shows them, and anyone who sees the instance signs it off from under it, which commits the folder, as the thread and the audit say", async () => {
+test("an ask shows the files it links and the runs since it, and anyone who sees the instance signs it off from under it, which commits the folder, as the thread and the audit say", async () => {
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
   await page.waitForSelector('#log.open');
   await page.locator('#needs', { hasText: 'The pack is ready to send to the bank.' }).waitFor();
@@ -359,7 +360,8 @@ test("an ask that pins files shows them, and anyone who sees the instance signs 
   await thread.waitFor();
   assert.equal(await page.textContent('#bar .ptog .badge'), String(await page.locator('#log .post.waits').count()), "the panel's toggle counts what waits there");
   assert.match(await thread.locator('.on').innerText(), /waits on you/);
-  assert.deepEqual(await thread.locator('.post .f').allInnerTexts(), ['pack.csv'], 'the file it pins');
+  assert.deepEqual(await thread.locator('.post .pb a[data-act=preview]').allInnerTexts(), ['The pack'], 'the file it links');
+  assert.match(await thread.locator('.post[data-seq="2"] > .tm').innerText(), /waits on you · 1 run since/, 'what it links may have changed since');
   assert.deepEqual(await thread.locator('.post > .pa button').allInnerTexts(), ['\u{1F44D}', '\u{1F44E}', 'Reply', 'Sign off\u2026']);
   await thread.locator('.pa button', { hasText: 'Sign off' }).click();
   await thread.locator('.reply:not([hidden]) textarea').fill('Looks right.');

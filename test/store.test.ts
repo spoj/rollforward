@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -63,17 +62,16 @@ test("an ask waits on people until someone replies under it or signs it off, as 
   assert.deepEqual(inst.log.at(-1)!.accepted, ['c2', `c${deeper.seq}`]);
   rmSync(tmp, { recursive: true, force: true });
 });
-test("a file the screen shows is frozen as it's first shown, logged with its sha256, and closing checks it", async () => {
+test("a file the screen shows stays the agent's to change, and closing takes it as it is", async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
   openStore(tmp);
   const inst = createInstance('weekly', 'w1', 'alex', []), page = join(inst.dir, 'working', 'a1.md');
   writeFileSync(page, 'a1 is right\n');
   inst.put(JSON.stringify({ rev: inst.doc.rev, status: 'open', items: [{ id: 'a1', name: 'A1', kind: 'step', file: 'working/a1.md' }] }), 1);
-  assert.deepEqual(inst.log.filter(e => e.op === 'point').map(e => [e.item, e.file, e.sha256]), [['a1', 'working/a1.md', createHash('sha256').update('a1 is right\n').digest('hex')]]);
-  assert.equal(statSync(page).mode & 0o222, 0, 'frozen');
-  chmodSync(page, 0o644);
+  assert.deepEqual(inst.log.filter(e => e.op === 'point').map(e => [e.item, e.file, e.was]), [['a1', 'working/a1.md', null]]);
   writeFileSync(page, 'changed\n');
-  await assert.rejects(inst.close(alex), /working\/a1.md changed after it was shown/);
+  await inst.close(alex);
+  assert.equal(inst.doc.status, 'closed');
   rmSync(tmp, { recursive: true, force: true });
 });
 

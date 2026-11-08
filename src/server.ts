@@ -6,7 +6,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { agentsFile, closedBefore, createInstance, freeze, duplicateInstance, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, safeName, seriesDir, type Entry, type Instance } from './store.ts';
+import { agentsFile, closedBefore, createInstance, duplicateInstance, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, safeName, seriesDir, type Entry, type Instance } from './store.ts';
 import { AGENT, commit } from './git.ts';
 import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
@@ -23,7 +23,7 @@ import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, startIndexing, track } from './indexes.ts';
 import { seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, byToken, cancelWake, cancelWakes, closed, correct, dropRequest, isNote, kick, MAX_OPEN, named, pending, pinFor, queued, resolveFor, setWake, startWaking, starts, startWith, stop, wakes, wakesOf, weekly, reads, CUT, type Active, type Request } from './waker.ts';
+import { active, byToken, cancelWake, cancelWakes, closed, correct, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, resolveFor, setWake, startWaking, starts, startWith, stop, wakes, wakesOf, weekly, reads, CUT, type Active, type Request } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -663,7 +663,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   const a = active.get(inst.seriesId);
   const mine = a?.inst === inst ? a : undefined;
   if (!action) see(by, inst.id, inst.log.at(-1)!.seq);
-  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4), browsers: [...(mine.browsers?.watchable().keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), runner: runner(inst), previous: previous(inst), waiting: waits(inst).map(({ who, e }) => ({ who, seq: e.seq })) });
+  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4), browsers: [...(mine.browsers?.watchable().keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), runner: runner(inst), previous: previous(inst), sums: Object.fromEntries(inst.doc.items.filter(i => i.file).map(i => [i.id, sha256(inst.dir, i.file!)])), waiting: waits(inst).map(({ who, e }) => ({ who, seq: e.seq })) });
   if (action === 'trace') return send(res, 200, trace(inst));
   if (action === 'summary') return send(res, 200, summary(inst, me));
   // The screen: anyone who sees the instance reads it; only its own run writes it.
@@ -738,26 +738,17 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // A comment starts a thread, on an item (at a ref, such as a cell, if given) or on the instance, or replies under one of its
     // comments, which `thread` names by its seq, as cN, a thread's own id its first comment's. A person's starts a run, unless quiet.
     // The agent's starts nothing: it says something, or asks, and then the ask waits on a reply under it, from the one it names or else
-    // the runner. The files it pins are as it posts them, frozen where they're its own instance's.
+    // the runner. A person's may attach files, uploaded to upload/attachments/ first.
     const { thread, item, ref, text, files = [], ask, to } = payload, under = thread === undefined ? undefined : inst.log.find(e => e.op === 'comment' && `c${e.seq}` === thread);
     if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a comment has text');
     if (thread !== undefined && !under) throw new HttpError(400, `no comment ${thread} to reply under; this instance's threads: ${inst.threads().join(', ') || 'none yet'}`);
     if (thread === undefined && item != null && !inst.doc.items.some(i => i.id === item)) throw new HttpError(400, `no item ${item}; the screen's items: ${inst.doc.items.map(i => i.id).join(', ')}`);
-    // A run's pin keeps its instance's id, so a rename of that instance leaves it found, and its sha256.
-    const kept = files.map((f: unknown) => {
-      if (!run) {
-        if (!(typeof f === 'string' && f.startsWith('upload/attachments/') && !f.includes('..') && existsSync(join(inst.dir, f)))) throw new HttpError(400, `no attachment ${f}`);
-        return f;
-      }
-      const pin = pinFor(run, f), sum = pin && (pin.inst === inst.id ? freeze(inst.dir, pin.path) : sha256(instanceDir(pin.inst), pin.path));
-      if (!sum) throw new HttpError(400, `no file ${f}: pin one under upload/ or working/ of this instance, or of another of its series as ../<label>/..., links not followed`);
-      return { ...pin, sha256: sum };
-    });
+    for (const f of files) if (!(typeof f === 'string' && f.startsWith('upload/attachments/') && !f.includes('..') && existsSync(join(inst.dir, f)))) throw new HttpError(400, `no attachment ${f}`);
     const who = typeof to === 'string' ? to.toLowerCase() : undefined, p = who && asPerson(who);
     if (who && !(p && canSee(p, t.workspaces[t.series[inst.seriesId].workspace])))
       throw new HttpError(400, `${to} can't see this instance; ask its runner, ${runnerOf(inst).by}, or someone in its workspace`);
     const said = inst.append(by, 'comment', {
-      ...(under ? { thread: under.thread, parent: under.seq } : { thread: `c${inst.log.length + 1}`, item: item ?? null, ref: ref ?? null }), text: text.trim(), ...(kept.length && { files: kept }),
+      ...(under ? { thread: under.thread, parent: under.seq } : { thread: `c${inst.log.length + 1}`, item: item ?? null, ref: ref ?? null }), text: text.trim(), ...(files.length && { files }),
       ...(run && { run: run.n, ...(ask && { ask: true, ...(who && { to: who }) }) }), ...(quiet && { quiet: true }),
     });
     if (run) return send(res, 200, `${ask ? 'asked' : 'said'} c${said.seq}${under ? `, under ${thread}` : ''}`);
@@ -772,17 +763,15 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     }
     if (!starts(inst, said) && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, me, `Comment in ${said.thread}`).catch(err => inst.append('server', 'commit', { cause: said.seq, error: err.message }));
   } else if (action === 'signoff') {
-    // Anyone who sees the instance signs off an ask of the agent's that pins files, which `thread` names as cN, with a note, the files
-    // still as it pinned them: it commits the folder in their name, the ask, its files and the note its message, with their
-    // Signed-off-by, and starts a run, as a reply does, unless quiet. To say no is to reply, as rf 0.12's reject, still in use, is told.
-    const { thread, text, approved } = payload, ask = inst.log.find(e => `c${e.seq}` === thread && e.op === 'comment' && e.by === 'agent' && e.ask && (e.files as { sha256?: string }[] | undefined)?.some(f => f.sha256));
+    // Anyone who sees the instance signs off an ask of the agent's, which `thread` names as cN, with a note: it commits the folder in
+    // their name, as they say yes to it, the ask and the note its message, with their Signed-off-by, and starts a run, as a reply
+    // does, unless quiet. To say no is to reply, as rf 0.12's reject, still in use, is told.
+    const { thread, text, approved } = payload, ask = inst.log.find(e => `c${e.seq}` === thread && e.op === 'comment' && e.by === 'agent' && e.ask);
     if (approved === false) throw new HttpError(400, 'a sign-off approves; to say no, reply in the thread');
-    if (!ask) throw new HttpError(409, `${thread} is no ask that pins files`);
+    if (!ask) throw new HttpError(409, `${thread} is no ask of the agent's`);
     if (mine) throw new HttpError(409, 'wait for the run to end');
-    const note = typeof text === 'string' ? text.trim() : '', pins = ask.files as { inst: string; path: string; sha256: string }[];
-    for (const f of pins) if (sha256(instanceDir(f.inst), f.path) !== f.sha256) throw new HttpError(409, `${f.path} changed since the agent asked: it asks again with the file as it is`);
-    const pinned = pins.map(f => `Pinned: ${f.inst === inst.id ? '' : `../${instance(f.inst).label}/`}${f.path} ${f.sha256}`).join('\n');
-    const hash = await commit(inst.dir, me, [ask.text, pinned, note, `Signed-off-by: ${me.name} <${me.email}>`].filter(Boolean).join('\n\n'));
+    const note = typeof text === 'string' ? text.trim() : '';
+    const hash = await commit(inst.dir, me, [ask.text, note, `Signed-off-by: ${me.name} <${me.email}>`].filter(Boolean).join('\n\n'));
     inst.append(by, 'signoff', { thread: ask.thread, on: ask.seq, ...(note && { text: note }), commit: hash, ...(quiet && { quiet: true }) });
   } else if (action === 'commit' && run) {
     // The agent commits the folder at a moment worth keeping, in its own name.

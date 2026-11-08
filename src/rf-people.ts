@@ -30,7 +30,7 @@ rf --version                      rf's own version, to tell whether it's older t
 rf comment PATH TEXT [--item ID] [--ref REF] [--thread cN] [--wake|--wait]   a new thread, or a reply under comment cN, as to
                                   an agent's ask; --wake starts a run on it, as --wait does, which prints what the agent says back
 rf upload PATH FILE [--onto ITEM] [--output] [--wake]
-rf signoff PATH cN [TEXT] [--wake]   signs off the agent's ask cN, which pins files, as they are, which commits the folder
+rf signoff PATH cN [TEXT] [--wake]   signs off the agent's ask cN, saying yes to it, which commits the folder
                                   in your name; to say no, reply
 rf react PATH [cN] up|down|none   your thumbs up or down on comment cN, or on the instance, or none; quiet, open or closed
 rf close PATH [--as-series NAME] [--wake]   the runner makes it the record and an example,
@@ -153,9 +153,9 @@ What there is
 - A comment starts a thread, on the instance or on an item, at a cell such as Base!C25 or a line of a markdown file by its
   opening words, and replies go under any comment in it, cN by its seq, a thread's id its first comment's. An ask is the agent's
   comment that waits on someone, the one it names or else the runner, until someone replies under it. rf ls says how many asks
-  wait in each instance. Reactions, thumbs up or down, are quiet signals kept for later. An ask
-  may pin files, kept with their sha256 as the agent asks; anyone who sees the instance may sign it off, which commits the
-  instance's folder to its history, .git in it, as closing does. Whose sign-off counts, and for what, is the series' call.
+  wait in each instance. Reactions, thumbs up or down, are quiet signals kept for later. Anyone
+  who sees the instance may sign an ask off, saying yes, which commits the instance's folder to its history, .git in it, as it
+  is then, as closing does. Whose sign-off counts, and for what, is the series' call.
 
 What rf pull copies, the folders as the agent sees them
   AGENTS.md                  the company's conventions; <workspace>/AGENTS.md the workspace's
@@ -176,7 +176,7 @@ The copy is read-only: only rf's commands change what's on the server.
 
 Usual work
 - What waits on me: rf waiting, then rf show PATH, which names each comment that waits by its id.
-- Answer an ask: rf comment PATH TEXT --thread cN --wait, which prints what the agent says back; sign off one that pins files:
+- Answer an ask: rf comment PATH TEXT --thread cN --wait, which prints what the agent says back; or sign it off:
   rf signoff PATH cN [TEXT] --wake, for the agent to carry on. Close an
   instance once it's the record: rf close PATH.
 - Take an instance over: rf creds PATH lists the offers of your logins, and rf takeover PATH --creds OFFER,... ticks them.
