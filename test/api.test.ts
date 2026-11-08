@@ -322,6 +322,7 @@ test('without a session the site shows Sign in with Microsoft, which goes to Mic
   assert.equal((await fetch(base + '/api', { headers: { cookie: admin.replace(/.$/, c => (c === 'A' ? 'B' : 'A')) } })).status, 401, 'a tampered cookie is refused');
   const me = await json('/me');
   assert.deepEqual([me.email, me.role], [adminEmail, 'admin']);
+  assert.match(me.version, /^(v\d+\.\d+\.\d+|[0-9a-f]{7,}$)/, 'the release the checkout is at, as git describes it, or its commit where it has no tags, as CI\'s; the page shows it on hover over the account');
   for (const next of ['/#/abc', '//evil.com', '/\\evil.com', '/\t/evil.com', 'https://evil.com'])
     assert.equal((await entra.signIn(base, adminEmail, `/auth/login?next=${encodeURIComponent(next)}`)).headers.get('location'), next === '/#/abc' ? next : '/', `a sign-in goes on only to this site: ${JSON.stringify(next)}`);
   assert.match((await fetch(base + '/auth/login', { redirect: 'manual', headers: { cookie: admin } })).headers.get('location')!, /\/authorize\?.*scope=openid\+profile\+email\+offline_access&/, 'signed in already, it signs in again, as Sign in again asks, keeping the sign-in');

@@ -722,7 +722,7 @@ function renderSide() {
   const kf = $('#tree').contains(document.activeElement) && document.activeElement.getAttribute('href');
   put($('#tree'), h);
   if (kf) $(`#tree [href="${kf}"]`)?.focus();
-  put($('#acct'), `<div class="me" tabindex="0"><span>${esc(me.name)}${me.role === 'user' ? '' : ' · ' + me.role}</span><span class="mail">${esc(me.email)}</span></div>`
+  put($('#acct'), `<div class="me" tabindex="0"${me.version ? ` title="rollforward ${esc(me.version)}"` : ''}><span>${esc(me.name)}${me.role === 'user' ? '' : ' · ' + me.role}</span><span class="mail">${esc(me.email)}</span></div>`
     + `<span class="acts2"><button class="add" data-act="logins" title="Logins, tokens${me.role === 'admin' ? ', people' : ''}">\u2699</button><button class="quiet" data-act="signout">Sign out</button></span>`);
 }
 
