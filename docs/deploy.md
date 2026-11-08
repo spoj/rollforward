@@ -16,7 +16,7 @@ rollforward runs on one host and the browser service ([spoj/rollforward-browser]
 
   If traffic out must go through a proxy, say so before you start: runs' own connections don't use one yet.
 - **Routes out of the browser host** to the websites people sign in to, such as the ERP and the portals.
-- **An app registered in Entra ID** (README, Access), with an admin's consent to its delegated Graph permissions.
+- **An app registered in Entra ID** ([system.md](system.md), Access), with an admin's consent to its delegated Graph permissions.
 - **A model API key** for OpenRouter, and one for Exa if runs are to search the web.
 
 ## The browser host
@@ -35,7 +35,7 @@ Run the image under podman, as a systemd service. The image is the agent image, 
 2. Make an empty data folder, `~/rollforward-data`.
 3. Write `~/.config/rollforward.env` with:
    - `OPENROUTER_API_KEY`, and `EXA_API_KEY` for web search;
-   - the `RF_OIDC_*` lines and `RF_PUBLIC_URL` (README, Access);
+   - the `RF_OIDC_*` lines and `RF_PUBLIC_URL` ([system.md](system.md), Access);
    - `RF_ADMINS`, the first admins;
    - `RF_BROWSER_URL` and `RF_BROWSER_KEY`;
    - `RF_SANDBOX_RO`, only if runs should read folders besides their data, such as a read-only mount of a file share.
@@ -68,7 +68,7 @@ Run the image under podman, as a systemd service. The image is the agent image, 
 
    A proxy that buffers, such as nginx, needs `proxy_buffering off` for the page's live updates and `client_max_body_size 0` for uploads. nginx also passes websockets, which the live view of a website's sign-in uses, only when told: `proxy_http_version 1.1`, `proxy_set_header Upgrade $http_upgrade` and `proxy_set_header Connection "upgrade"`.
 
-**Where the image can't be built,** such as on a host whose filter blocks Debian's mirrors, run the server as README's Without Docker says, as a systemd user service of the same user. The host's own programs don't matter to runs, whose userland is the agent image, never the host's:
+**Where the image can't be built,** such as on a host whose filter blocks Debian's mirrors, run the server as [system.md](system.md)'s Without Docker says, as a systemd user service of the same user. The host's own programs don't matter to runs, whose userland is the agent image, never the host's:
 
 - Node 26 beside the system's, such as in `/opt/node-v26`, bubblewrap, and GNU tar; no zstd, Python or LibreOffice.
 - `npm ci --omit=dev`, then `/opt/node-v26/bin/node scripts/agent.ts`, which unpacks the agent image the checkout runs, CI's `agent-<id>` prerelease, into `.agent/<id>` (about 720 MB to fetch, 2.5 GB unpacked).

@@ -11,7 +11,7 @@ import { token } from './entra.ts';
 import { lender, logins, personDir, type Offer } from './logins.ts';
 import { endpoints, scope } from './connections/graph.ts';
 
-// Indexes of outside sources (README: Indexes). A person's Microsoft 365 login keeps a cache of each offer it makes, but a file: the
+// Indexes of outside sources (docs/system.md: Indexes). A person's Microsoft 365 login keeps a cache of each offer it makes, but a file: the
 // delta feed Graph gave their own token, its crawl then its changes, Graph's own JSON, one item per line, in
 // .rf/people/<p>/index/<sha256(offer)[:16]>.<gen>.ndjson.zst, a zstd frame per batch of pages. A later line for an id replaces an
 // earlier one, and a deleted facet or an @removed removes it. The .json beside it, <sha256(offer)[:16]>.json, holds the cursors, one
