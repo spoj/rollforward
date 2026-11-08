@@ -561,6 +561,7 @@ const go = id => { location.hash = '#/' + id; };
 // workspace's newest series'. A series' instances keep their labels' order.
 const recent = i => i.running ? new Date().toISOString() : i.active, newest = xs => xs.reduce((m, x) => x > m ? x : m, '');
 const sAct = s => newest(s.instances.map(recent)), wAct = w => newest(w.series.map(sAct)), byAct = f => (a, b) => (f(b) > f(a)) - (f(b) < f(a));
+const sorted = (xs, act, name) => [...xs].sort(localStorage.order === 'name' ? (x, y) => name(x).localeCompare(name(y), undefined, { numeric: true }) : byAct(act));
 // How long ago, compactly, as a row's last activity: now, 5m, 3h, 2d, 7w.
 const initials = name => {
   const w = name.replace(/^v-/i, '').match(/\p{L}+/gu);
@@ -576,12 +577,15 @@ const ago = iso => {
 async function refresh() {
   me ??= await api('/me');
   const n = ++refreshes, [t, mine] = await Promise.all([api('/api'), api('/logins')]);
-  const id = location.hash.slice(2), all = t.flatMap(w => [[w], ...w.series.flatMap(s => [[w, s], ...s.instances.map(i => [w, s, i])])]);
-  let [w, s, i] = all.find(e => e.at(-1).id === id) ?? [t.find(w => !w.archived)];
+  const id = location.hash.slice(2), all = t.flatMap(w => [[w], ...w.series.flatMap(s => [[w, s], ...s.instances.map(i => [w, s, i])])]), at = all.find(e => e.at(-1).id === id);
+  // An address that names nothing here opens the sidebar's first workspace, and then names what it shows.
+  const ws = t.filter(w => !w.archived && (w.mine || localStorage.workspaces === 'all' || !t.some(w => w.mine)));
+  let [w, s, i] = at ?? [sorted(ws, wAct, w => w.name)[0]];
   s ??= w?.series.filter(s => !s.archived).sort(byAct(sAct))[0];
   i ??= s?.instances.find(i => i.status === 'open') ?? s?.instances.at(-1);
   const path = i ? `/api/instances/${i.id}` : '', [d, st] = path ? await fetchInstance(path) : [null, null];
   if (n !== refreshes) return;
+  if (!at && w) history.replaceState(null, '', `#/${(i ?? s ?? w).id}`);
   [tree, expired, myLogins] = [t, mine.filter(l => l.expired), mine];
   land(w && { w, s, i }, path, d, st);
 }
@@ -654,7 +658,6 @@ function renderSide() {
   if (editing) return;
   const listed = (x, on) => !x.archived || showArchived || on, mine = localStorage.workspaces !== 'all' && tree.some(w => w.mine), byName = localStorage.order === 'name';
   const q = $('#find').value.trim().toLowerCase(), hit = name => name.toLowerCase().includes(q), opened = new Set(), shut = id => !expanded.has(id) && !opened.has(id);
-  const sorted = (xs, act, name) => [...xs].sort(byName ? (x, y) => name(x).localeCompare(name(y), undefined, { numeric: true }) : byAct(act));
   // A dot on a folded row: red for asks waiting on people, else blue for something new to you.
   const asks = s => !s.archived && s.instances.some(i => i.asks.length), news = s => !s.archived && s.instances.some(i => i.unread);
   const dot = (id, ss) => !shut(id) ? '' : ss.some(asks) ? '<span class="dot"></span>' : ss.some(news) ? '<span class="dot u"></span>' : '';

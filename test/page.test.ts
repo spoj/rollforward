@@ -902,3 +902,13 @@ test("a series' + makes an instance that waits for its first upload or comment, 
   await page.click('[data-act=comment]');
   await page.waitForSelector('#bar .state .bad:text("Run 1 failed")');
 });
+
+test("the site's bare address opens the sidebar's first workspace, not the first by name, which is no one's, and then names what it shows", async () => {
+  const { id } = await page.evaluate(() => fetch('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: 'Apple' }) }).then(r => r.json()));
+  await page.evaluate(id => fetch(`/api/workspaces/${id}`, { method: 'PUT', body: JSON.stringify({ owners: [] }) }), id);
+  await page.evaluate(() => history.replaceState(null, '', '/'));
+  await page.reload();
+  await page.waitForSelector('.row.ws.on');
+  assert.equal(await page.textContent('.row.ws.on .l'), 'larkfield');
+  assert.equal(await page.evaluate(() => location.hash), await page.getAttribute('a.row.inst.on', 'href'));
+});
