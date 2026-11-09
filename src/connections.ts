@@ -54,9 +54,19 @@ export const reached = (w: { url: string; hosts: string[] }) => [new URL(w.url).
 // Whether a host is at an internal address, as an intranet's is; one that doesn't resolve isn't.
 export const resolvesInternal = async (h: string) => (await lookup(h, { all: true }).catch(() => [])).some(isPrivate);
 
+// The hosts at internal addresses an admin let websites reach, as an intranet's ERP and its sign-on: once each, for everyone's, so any
+// person's website at one, or that allows one, reaches it with no admin again; .rf/internal.json, by host, who let it and when.
+export const letIn = () => readJson<Record<string, { by: string; at: string }>>('internal.json', {});
+export function setLetIn(hosts: string[], by: string, let_: boolean) {
+  const all = letIn(), at = new Date().toISOString();
+  for (const h of hosts) if (let_) all[h] ??= { by, at }; else delete all[h];
+  writeJson('internal.json', all);
+}
+
 // What a website may reach (browsers.ts): never rollforward's own host, or a host a connection serves, so that no website goes around
 // its grants or settings; a wildcard within one registrable domain, the public suffixes being the Public Suffix List's, its private ones
-// too; and never an internal address, which the browser refuses it too, unless an admin lets the website reach them, by exact hosts.
+// too; and never an internal address, which the browser refuses it too, unless an admin lets the website, or every website, reach it,
+// by exact hosts.
 export async function checkHost(h: string, internal: boolean) {
   if (!/^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(h)) throw new HttpError(400, `${h}: a host, such as sso.example.com, or *.example.com for any name under it`);
   const base = h.replace(/^\*\./, '');
@@ -64,7 +74,7 @@ export async function checkHost(h: string, internal: boolean) {
   if ([process.env.RF_PUBLIC_URL, process.env.RF_BROWSER_URL].some(u => u && covers(h, new URL(u).hostname))) throw new HttpError(400, `${h} is rollforward's own: no website reaches it`);
   const other = connections().find(c => types[c.type].serves?.(c, base));
   if (other) throw new HttpError(400, `${h} is ${other.name}'s: no website reaches it`);
-  if (!internal && h === base && await resolvesInternal(h)) throw new HttpError(400, `${h} is at an internal address: a website reaches one only where an admin lets it`);
+  if (!internal && h === base && !letIn()[h] && await resolvesInternal(h)) throw new HttpError(400, `${h} is at an internal address: a website reaches one only where an admin lets it`);
 }
 
 export async function setConnection(name: string, input: Record<string, unknown>, by: string): Promise<Connection> {

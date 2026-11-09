@@ -58,8 +58,8 @@ rf logins offer|unoffer LOGIN SOURCE|OFFER   what a login offers runs: Microsoft
                                   files, by address or link, a Databricks login's SQL warehouses, by link; unoffer takes the
                                   OFFER rf logins lists
 rf logins allow SITE HOST [--person EMAIL]   a host the pages of your website SITE need; once a grant to it is approved,
-                                  only within the domains it reaches, beyond which admins allow them, with --person, one at
-                                  an internal address letting the website reach internal addresses
+                                  only within the domains it reaches, beyond which admins allow them, with --person; one at
+                                  an internal address an admin allows once, for everyone's websites
 rf logins disallow SITE HOST      a host your website SITE reaches no more, which stays refused, the server's check letting
                                   it no more
 rf logins signout LOGIN
@@ -73,7 +73,8 @@ rf site set NAME [--header NAME] [--keepalive PAGE] [--every 10m] [--writeback f
                                   x-bot-token, whose value you give as you sign in, the page a login kept alive loads, by
                                   address or path, else its address, and how often, 10m unless given, and whether a run's
                                   browser writes its state back; admins set --internal true|false, with --person EMAIL for
-                                  someone's, for its browsers to reach internal hosts
+                                  someone's, for its browsers to reach internal hosts, and its hosts at internal addresses
+                                  everyone's websites, with no admin again, until one sets it false
 rf site remove NAME               your website NAME, with your login to it and your grants for it
 rf site ask NAME WORKSPACE REASON to use your login to NAME in WORKSPACE's runs, for REASON, which one of its owners approves
                                   or denies, seeing the server's check of the website, or an admin, where it rates it high

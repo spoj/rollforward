@@ -22,7 +22,7 @@ import { changes, initSystem, rfDir, saveTree, tree, writeJson } from '../src/sy
 let page = Buffer.from('page 1'), back: unknown = { cookies: [] }, listed: string[] = [], shown = { url: '', password: false };
 const plain = [{ method: 'GET', url: 'https://crm.example.com/', status: 200 }];
 let requested: object[] = plain;
-const states: unknown[] = [], headers: unknown[] = [], deleted: string[] = [], starts: string[] = [];
+const states: unknown[] = [], headers: unknown[] = [], deleted: string[] = [], starts: string[] = [], publics: boolean[] = [];
 const service = createServer(async (req, res) => {
   if (req.method === 'DELETE') {
     deleted.push(req.url!.split('/')[2]);
@@ -33,6 +33,7 @@ const service = createServer(async (req, res) => {
     states.push(state);
     headers.push(site.headers);
     starts.push(`${site.start_url} ${site.hosts.join(',')}`);
+    publics.push(!!site.public);
     if (state?.cookies?.[0] === 'refused') return res.writeHead(500).end('{"error":"refused"}');
     return res.writeHead(201).end(JSON.stringify({ id: 'b9' }));
   }
@@ -449,6 +450,38 @@ test("the hosts a run's browser was refused: one within the domains its website 
   assert.deepEqual([act.by, act.person, act.site, act.inst, act.run, act.allowed], ['server', alice, 'crm', inst.id, 1, { 'cdn.example.com': own }]);
   const { allowHost } = await import('../src/browsers.ts');
   await assert.rejects(allowHost({ email: alice, role: 'user' } as never, 'crm', 'intra.acme.localhost'), /^Error: intra\.acme\.localhost is at an internal address: an admin allows it$/, 'nor does its person allow it');
+});
+
+test("an admin lets websites reach a host at an internal address once, for everyone's: then anyone signs in to theirs there, its browser reaching internal addresses, and allows it as any other host, until an admin lets it no more", async () => {
+  const { addSite, allowHost, setSite } = await import('../src/browsers.ts'), { letIn } = await import('../src/connections.ts');
+  const alice = 'alice@demo.test', bob = 'bob@demo.test', carol = 'carol@demo.test', admin = { email: alice, role: 'admin' } as never, user = (email: string) => ({ email, role: 'user' }) as never;
+  sites({});
+  for (const p of [alice, bob, carol]) await addSite(p, 'intra', 'https://10.1.2.3/');
+  await assert.rejects(startSignIn(bob, 'intra', ''), /^Error: 10\.1\.2\.3 is at an internal address: a website reaches one only where an admin lets it$/);
+  await assert.rejects(allowHost(user(bob), 'intra', '10.9.8.7'), /^Error: 10\.9\.8\.7 is at an internal address: an admin allows it$/);
+  await assert.rejects(setSite(user(bob), 'intra', { internal: 'true' }), /^Error: internal: admins set it$/);
+
+  // The admin lets their own website at it reach internal addresses: everyone's at it does too.
+  await setSite(admin, 'intra', { internal: 'true' });
+  assert.deepEqual(Object.keys(letIn()), ['10.1.2.3']);
+  for (const p of [bob, carol]) {
+    await endSignIn(p, await startSignIn(p, 'intra', ''), false);
+    assert.equal(publics.at(-1), false, `${p}'s browser reaches internal addresses`);
+    assert.equal(websitesOf(p).intra.internal, undefined, 'nothing set on their website itself');
+  }
+
+  // A host its sign-on needs at an internal address: once an admin allowed it on a website, anyone allows it on theirs.
+  await allowHost(admin, 'intra', '10.9.8.7');
+  await allowHost(user(bob), 'intra', '10.9.8.7');
+  assert.deepEqual(websitesOf(bob).intra.hosts, ['10.9.8.7']);
+  const acts = readFileSync(join(tmp, '.rf', 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(a => a.op === 'internal');
+  assert.deepEqual(acts.map(a => [a.by, a.person, a.site, a.hosts, a.let]), [[alice, alice, 'intra', ['10.1.2.3'], true], [alice, alice, 'intra', ['10.9.8.7'], true]]);
+
+  // An admin lets it no more: no one's website reaches those hosts until one lets them again.
+  await setSite(admin, 'intra', { internal: 'false' });
+  assert.deepEqual(Object.keys(letIn()), []);
+  await assert.rejects(startSignIn(carol, 'intra', ''), /is at an internal address/);
+  sites({});
 });
 
 test("with the server's key its model decides the rest, from what the browser's log, the runs and a web search say of each, never a path or a query: what the pages need the website reaches at once, what they work without stays refused, and anything else waits on admins", async t => {

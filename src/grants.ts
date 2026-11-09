@@ -2,7 +2,7 @@ import { HttpError, newId } from './store.ts';
 import { act, canManage, canSee, readJson, tree, writeJson } from './system.ts';
 import { users, type Me } from './auth.ts';
 import { logins, signOut, type Trace } from './logins.ts';
-import { checkHost, resolvesInternal, upstreams } from './connections.ts';
+import { checkHost, letIn, resolvesInternal, upstreams } from './connections.ts';
 import { model } from './connections/openrouter.ts';
 import { changeWebsite, websitesOf } from './browsers.ts';
 
@@ -49,7 +49,8 @@ export async function ask(me: Me, site: string, workspace: string, reason: strin
 
 // The server's check of a website a person asks to use, by its model, from what it may reach, and what their sign-in to it reached,
 // by host and status, and was refused: never a path, a query, a body or a cookie. It answers how risky it looks and why, in two
-// sentences for the approver, and the hosts its pages need, as many as pass what any website may reach (connections.ts). Approving
+// sentences for the approver, and the hosts its pages need, as many as pass what any website may reach (connections.ts), an internal
+// address's only where admins let every website reach it. Approving
 // it lets the website reach those hosts; one it rates high only an admin approves. Without the server's key, or if the model fails,
 // it's not checked.
 const CHECK = `You check a website for a company's finance team, before a workspace's owners let a colleague's login to it be used by automated runs. You see its address, the hosts it may reach, the hosts the colleague's own sign-in to it reached, with HTTP status counts, and was refused, and what they'll use it for. Answer with one JSON object:
@@ -68,7 +69,7 @@ async function checkSite(email: string, site: string, trace: Trace | undefined, 
     });
     if (!res.ok) throw new Error(`OpenRouter answered ${res.status}`);
     const a = JSON.parse((await res.json()).choices[0].message.content), hosts: string[] = [];
-    for (const h of new Set((a.hosts ?? []).map((h: unknown) => String(h).toLowerCase()) as string[])) if (!await resolvesInternal(h) && await checkHost(h, !!w.internal).then(() => true, () => false)) hosts.push(h);
+    for (const h of new Set((a.hosts ?? []).map((h: unknown) => String(h).toLowerCase()) as string[])) if ((letIn()[h] || !await resolvesInternal(h)) && await checkHost(h, !!w.internal).then(() => true, () => false)) hosts.push(h);
     return { risk: ['low', 'medium'].includes(a.risk) ? a.risk : 'high', flags: (a.flags ?? []).map(String), summary: String(a.summary ?? ''), hosts };
   } catch (e) {
     return { error: (e as Error).message };
