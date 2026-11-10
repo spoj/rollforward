@@ -178,7 +178,7 @@ test("an act just after a run ends, as its folder is committed, starts the next 
   while (!late.log.some(e => e.op === 'done')) await new Promise(r => setTimeout(r, 5));
   late.append(alice, 'comment', { thread: 't1', text: 'and this' });
   kick(late);
-  await settle();
+  for (let i = 0; i < 200 && late.log.filter(e => e.op === 'run').length < 2; i++) await new Promise(r => setTimeout(r, 50));
   assert.equal(late.log.filter(e => e.op === 'run').length, 2);
 });
 
