@@ -637,6 +637,18 @@ test("a run that adds rules to the process, or rewords them, says how many in it
   assert.equal(log.findLast(e => e.op === 'done')!.rules, undefined, 'none, none said');
 });
 
+test('the process for Week 10 starts from closed Week 9, so carried rules are not new', async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Weekly rules' })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Weeks' })).json();
+  scripts.push({ bash: ["printf -- '- Read the ledger.\\n- Never write to it.\\n' > working/process.md"], report: 'Two rules.', saw: [] });
+  const { id: before } = await (await call('POST', `/api/series/${series}`, { label: 'Week 9', logins: [] })).json();
+  await runs(before, 1);
+  assert.equal((await call('POST', `/api/instances/${before}/close`)).status, 200);
+  scripts.push({ bash: ["cp '../Week 9/working/process.md' working/process.md; printf -- '- Round to the cent.\\n' >> working/process.md"], report: 'One new rule.', saw: [] });
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: 'Week 10', logins: [] })).json();
+  assert.equal((await runs(id, 1)).find(e => e.op === 'done')!.rules, 1);
+});
+
 test("a later run corrects a closed instance, never changing it, linking the thread of its own that says why; the next instance's run hears of it", async () => {
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Fixes' })).json();
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Fixed' })).json();
