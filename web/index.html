@@ -511,8 +511,9 @@ let cardPv = null;
 // showClosed holds the series, and the workspaces for their Ungrouped tasks, whose closed instances the sidebar lists.
 let tree = [], expired = [], myLogins = [], cur = null, data = null, lines = [], linesKey = '', openItem = null, hover = null, showClosed = new Set(), showArchived = false, pv = null, me = null;
 let seen = {}, prevSigs = {}, uploads = [], shown = '', refreshes = 0, threads = [];
-// The comments with a reply box open under them, by seq.
-const replying = new Set();
+// Each instance keeps its conversation's boxes, picked files and place to comment while the page stays open.
+const drafts = new Map();
+let draft = null;
 // An item's threads; a new one shows on its tile as a change.
 const talkOn = id => threads.filter(t => t.item === id);
 const sig = i => `${i.file}|${data.sums[i.id] ?? ''}|${talkOn(i.id).length}|${i.headline ?? ''}`;
@@ -534,7 +535,7 @@ function toast(text, kind = '') {
 // panel's folds are open, where someone opened or closed them; site, which of the run's browsers the player shows, and drive, the
 // one you took control of, as instance/site; full, the long comments opened in full, and alone, the comment the conversation shows
 // alone, with what hangs under it, when a thread runs deeper than the panel shows.
-const ui = { open: innerWidth > 800, on: null, ref: null, audit: false, sect: {}, site: null, drive: null, sort: {}, full: new Set(), alone: null };
+const ui = { open: innerWidth > 800, audit: false, sect: {}, site: null, drive: null, sort: {}, full: new Set(), alone: null };
 const drawn = new WeakMap();
 
 function put(el, html) {
@@ -614,6 +615,11 @@ function land(next, path, d, st) {
   // A new selection opens its rows in the sidebar; from then on only their chevrons fold and open them.
   if (next?.w && next.w.id !== cur?.w.id) expandRow(next.w.id, true);
   if (next?.s && next.s.id !== cur?.s?.id) expandRow(next.s.id, true);
+  if (path !== shown && d) {
+    if (!drafts.has(path)) drafts.set(path, { el: $('#conv').cloneNode(false), on: null, ref: null, replying: new Set() });
+    draft = drafts.get(path);
+    $('#conv').replaceWith(draft.el);
+  }
   [cur, data, shown] = [next, d, path];
   if (cur?.i) cur.i.unread = false;
   threads = threadsOf();
@@ -934,7 +940,7 @@ function renderLog() {
   if (ui.open && data && !$('#log').classList.contains('open')) $('#log').dataset.end = 'yes';
   $('#log').className = 'log' + (ui.open && data ? ' open' : '');
   if (!data || !ui.open) return;
-  // A half-written comment or reply, or files picked for one, holds the conversation still until it's sent or cleared.
+  // This instance's half-written comment or reply, or files picked for one, holds its conversation still until sent or cleared.
   const drafting = [...$('#conv').querySelectorAll('textarea')].some(t => t.value.trim()) || [...$('#conv').querySelectorAll('input[type=file]')].some(f => f.files.length);
   const focused = document.activeElement?.id === 'newcomment';
   // Its two sides, the conversation and the audit, one shown at a time: a half-written comment waits on the other's.
@@ -1062,7 +1068,7 @@ function postHtml(t, p, depth) {
     + `<div class="pb ${long ? 'long' : ''}">${p.by === 'agent' && p.op === 'comment' ? md(p.text) : esc(p.text)}</div>${long ? `<a class="more" data-act="more" data-seq="${p.seq}">More</a>` : ''}`
     + (p.files ?? []).map(f => `<div class="f">${/\.(png|jpe?g|gif|webp|svg)$/i.test(f) ? `<img src="${fileUrl(f)}" loading="lazy" alt="${esc(fname(f))}" title="${esc(fname(f))}" data-act="preview" data-file="${esc(f)}">` : `<a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a>`}</div>`).join('');
   if (p.op === 'comment') h += `<div class="pa">${reactHtml(p.seq)}${open ? `<button class="quiet" data-act="reply" data-seq="${p.seq}">Reply</button>` : ''}${signs ? `<button class="quiet" data-act="reply" data-seq="${p.seq}">Sign off\u2026</button>` : ''}</div>`;
-  if (open && p.op === 'comment') h += `<div class="reply" ${replying.has(p.seq) ? '' : 'hidden'}><textarea rows="2" placeholder="${signs ? 'Reply, or a note to sign off with' : 'Reply'}"></textarea><input type="file" multiple><div class="row2"><button class="btn" data-act="reply-post" data-seq="${p.seq}">Reply</button>${signs ? `<button class="btn commit" data-act="signoff" data-seq="${p.seq}"${off} title="Commits the instance as it is now in your name, with the files the ask pins as it pinned them">Sign off</button>` : ''}<button class="quiet" data-act="reply" data-seq="${p.seq}">Cancel</button></div></div>`;
+  if (open && p.op === 'comment') h += `<div class="reply" ${draft.replying.has(p.seq) ? '' : 'hidden'}><textarea rows="2" placeholder="${signs ? 'Reply, or a note to sign off with' : 'Reply'}"></textarea><input type="file" multiple><div class="row2"><button class="btn" data-act="reply-post" data-seq="${p.seq}">Reply</button>${signs ? `<button class="btn commit" data-act="signoff" data-seq="${p.seq}"${off} title="Commits the instance as it is now in your name, with the files the ask pins as it pinned them">Sign off</button>` : ''}<button class="quiet" data-act="reply" data-seq="${p.seq}">Cancel</button></div></div>`;
   if (kids.length) h += depth < 3 ? `<div class="kids">${kids.map(k => postHtml(t, k, depth + 1)).join('')}</div>` : `<a class="more" data-act="alone" data-seq="${p.seq}">Continue this thread \u2192 ${all(p.seq)} more</a>`;
   return h + '</div>';
 }
@@ -1104,7 +1110,7 @@ function conversationHtml() {
   h += [...threads.map(t => [t.last.seq, threadHtml(t)]), ...runs.map(r => [ended(r), runHtml(r, r === runs.at(-1))])].sort((a, b) => a[0] - b[0]).map(([, x]) => x).join('');
   // Before its first run, its runner may tick its logins anew where they write its first prompt.
   const first = mine && !runs.length, lends = first && myLogins.some(l => l.offers.length);
-  if (open) h += `<div class="compose"><h3>${ui.on ? `Comment on ${name(ui.on)}${ui.ref ? ` at ${esc(ui.ref)}` : ''}` : 'Comment on the instance'}</h3>`
+  if (open) h += `<div class="compose"><h3>${draft.on ? `Comment on ${name(draft.on)}${draft.ref ? ` at ${esc(draft.ref)}` : ''}` : 'Comment on the instance'}</h3>`
     + (lends ? `<div class="ticks2">Credentials:${ticksHtml(myLogins, data.runner.logins)}</div>` : '')
     + `<textarea id="newcomment" rows="3" placeholder="${first ? 'What should the agent do? Drop files here too' : mine || cur.s.shared_by === data.runner.by ? 'The agent replies in the thread' : `A note for ${esc(nameOf(data.runner.by))}: the agent takes it up once they do`}"></textarea><input type="file" id="newfiles" multiple>${lends ? '<div class="consent">By clicking Comment, you agree that agents carry these credentials while acting as you.</div>' : ''}<div><button class="btn primary" data-act="comment">Comment</button></div></div>`;
   if (data.doc.status === 'closed') h += '<div class="compose"><div><button class="btn" data-act="correct">Add a correction</button></div></div>';
@@ -1671,29 +1677,30 @@ async function onAct(act, el) {
   if (act === 'player') { localStorage.player = localStorage.player === 'folded' ? 'open' : 'folded'; renderPlayer(); }
   // A rule the process gained: the Process fold, open, in view.
   if (act === 'panel') {
-    Object.assign(ui, { open: !ui.open, on: null, ref: null });
+    ui.open = !ui.open;
+    draft.on = draft.ref = null;
     renderLog(); renderBar(); placeCard();
   }
   if (act === 'interrupt') { await api(`${instPath()}/interrupt`, { method: 'POST' }); await refresh(); }
-  if (act === 'comment-on') { Object.assign(ui, { open: true, on: el.dataset.item, ref: null }); renderLog(); renderBar(); $('#newcomment')?.focus(); }
+  if (act === 'comment-on') { ui.open = true; Object.assign(draft, { on: el.dataset.item, ref: null }); renderLog(); renderBar(); $('#newcomment')?.focus(); }
   if (act === 'comment' || act === 'reply-post') {
     const at = act === 'comment' ? null : el.closest('.reply'), box = at ? at.querySelector('textarea') : $('#newcomment'), text = box.value.trim();
     const picked = at ? at.querySelector('input[type=file]') : $('#newfiles');
     if (!text) return;
-    const files = [];
-    for (const f of picked.files) files.push((await api(`${instPath()}/attach?name=${enc(f.name)}`, { method: 'POST', body: f })).file);
-    await api(`${instPath()}/comment`, { method: 'POST', body: JSON.stringify(at ? { thread: `c${el.dataset.seq}`, text, files } : { text, files, ...(ui.on && { item: ui.on }), ...(ui.ref && { ref: ui.ref }) }) });
+    const path = instPath(), own = draft, files = [], place = at ? { thread: `c${el.dataset.seq}` } : { ...(own.on && { item: own.on }), ...(own.ref && { ref: own.ref }) };
+    for (const f of picked.files) files.push((await api(`${path}/attach?name=${enc(f.name)}`, { method: 'POST', body: f })).file);
+    await api(`${path}/comment`, { method: 'POST', body: JSON.stringify({ ...place, text, files }) });
     box.value = '';
     thumbs(picked, new DataTransfer().files);
-    replying.delete(+el.dataset.seq);
-    ui.on = ui.ref = null;
+    own.replying.delete(+el.dataset.seq);
+    own.on = own.ref = null;
     await refresh();
   }
   if (act === 'signoff') {
-    const box = el.closest('.reply').querySelector('textarea');
+    const box = el.closest('.reply').querySelector('textarea'), own = draft;
     await api(`${instPath()}/signoff`, { method: 'POST', body: JSON.stringify({ thread: `c${el.dataset.seq}`, text: box.value.trim() }) });
     box.value = '';
-    replying.delete(+el.dataset.seq);
+    own.replying.delete(+el.dataset.seq);
     await refresh();
   }
   // A comment's reply box, opened or closed where it is; from elsewhere, such as Needs you, opened, the comment shown alone if it's
@@ -1709,7 +1716,7 @@ async function onAct(act, el) {
     const box = $(`#conv .post[data-seq="${seq}"] > .reply`);
     if (!box) return;
     box.hidden = toggle && !box.hidden;
-    replying[box.hidden ? 'delete' : 'add'](seq);
+    draft.replying[box.hidden ? 'delete' : 'add'](seq);
     if (!box.hidden) box.querySelector('textarea').focus();
   }
   if (act === 'react') {
@@ -1867,20 +1874,22 @@ async function onAct(act, el) {
   // A thread brought into view, with a reply box under its first comment while the instance is open.
   if (act === 'thread') {
     closePv();
-    Object.assign(ui, { open: true, on: null, ref: null, alone: null });
+    Object.assign(ui, { open: true, alone: null });
+    draft.on = draft.ref = null;
     renderLog(); renderBar();
     const t = $(`#conv .thread[data-thread="${CSS.escape(el.dataset.thread)}"]`), box = t?.querySelector('.reply');
     t?.scrollIntoView({ block: 'center' });
     if (!box) return;
     box.hidden = false;
-    replying.add(+el.dataset.thread.slice(1));
+    draft.replying.add(+el.dataset.thread.slice(1));
     box.querySelector('textarea').focus();
   }
   if (act === 'comment-cell') {
     const item = pv.item;
     pv = null;
     renderPv();
-    Object.assign(ui, { open: true, on: item, ref: el.dataset.ref });
+    ui.open = true;
+    Object.assign(draft, { on: item, ref: el.dataset.ref });
     renderLog(); renderBar();
     $('#newcomment')?.focus();
   }
@@ -1915,7 +1924,7 @@ async function onAct(act, el) {
   if (act === 'new-task') {
     const offers = new Set((await api('/logins')).filter(l => !l.expired).flatMap(l => l.offers.map(o => o.id))), logins = JSON.parse(localStorage.ticks ?? '[]').filter(id => offers.has(id));
     const { instance } = await api('/api/series', { method: 'POST', body: JSON.stringify({ workspace: cur.w.id, single: true, logins }) });
-    Object.assign(ui, { open: true, on: null, ref: null, focus: instance });
+    Object.assign(ui, { open: true, focus: instance });
     go(instance);
   }
   if (act === 'ticks') await openStart('Credentials', 'Save', ({ logins }) => api(`${instPath()}/logins`, { method: 'POST', body: JSON.stringify({ logins }) }), undefined, data.runner.logins);
@@ -2138,7 +2147,7 @@ matchMedia('(max-width: 800px)').addEventListener('change', renderPanes);
 
 addEventListener('hashchange', () => {
   openItem = null; ui.sect = {}; prevSigs = {}; ui.alone = null;
-  replying.clear(); ui.full.clear();
+  ui.full.clear();
   for (const el of ['#panes', '#ins', '#outs', '#steps']) $(el).scrollTop = 0;
   $('#log').dataset.end = 'yes';
   closePv();
@@ -2155,7 +2164,8 @@ function navigate(e) {
   else if (key === 'l' && chev) open ? rows[at + 1]?.focus() : chev.click();
   else if (key === 'h' && row) open ? chev.click() : row.closest('.tree')?.previousElementSibling.querySelector('a[href]').focus();
   else if (key === 'c' && data) {
-    Object.assign(ui, { open: true, audit: false, on: null, ref: null, focus: cur.i.id });
+    Object.assign(ui, { open: true, audit: false, focus: cur.i.id });
+    draft.on = draft.ref = null;
     renderLog(); renderBar(); renderAudit(); placeCard();
   } else if (key === '?') $('.key').classList.toggle('show');
   else return;

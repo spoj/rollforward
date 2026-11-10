@@ -61,7 +61,10 @@ before(async () => {
   writeFileSync(join(reviewed, 'working', 'tie.csv'), 'ledger,pack\n');
   writeFileSync(join(reviewed, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [
     { id: 'notes', name: 'Notes', kind: 'step', file: 'working/notes.md' }, { id: 'tie', name: 'Tie-out', kind: 'step', file: 'working/tie.csv' }] }));
-  writeFileSync(join(reviewed, 'log.jsonl'), JSON.stringify({ seq: 1, at: '2026-08-01T09:00:00.000Z', by: 'admin@demo.test', op: 'create', from: null, logins: [] }) + '\n');
+  writeFileSync(join(reviewed, 'log.jsonl'), [
+    { seq: 1, at: '2026-08-01T09:00:00.000Z', by: 'admin@demo.test', op: 'create', from: null, logins: [] },
+    { seq: 2, at: '2026-08-01T09:05:00.000Z', by: 'agent', op: 'comment', thread: 'c2', text: 'Review the October notes.' },
+  ].map(e => JSON.stringify(e) + '\n').join(''));
   // A series of its own, quiet since July.
   const sampled = join(root, 'instances', 'a5c0ff5e1f05');
   tree.series.a5c0ff5e1fef = { name: 'Invoice checks', workspace: '1b3031035ff6' };
@@ -693,6 +696,71 @@ test('a thread is a tree: a reply hangs under the comment it answers, three leve
   await page.click(`#conv ${one} > .reply [data-act=reply-post]`);
   await page.locator(`#conv ${one} > .kids > .post`, { hasText: 'A branch.' }).waitFor();
   assert.equal(await page.locator(`#conv ${one} > .reply:not([hidden])`).count(), 0, 'sent, its box closes');
+});
+
+test("conversation drafts and picked files stay with their instance, including an open reply at the same seq", async () => {
+  const tab = await browser.newPage({ storageState: await page.context().storageState() });
+  try {
+    await tab.goto(new URL('/#/a5c0ff5e1f00', page.url()).href);
+    await tab.waitForSelector('#newcomment');
+    await tab.fill('#newcomment', 'A draft for the pack');
+    await tab.setInputFiles('#newfiles', { name: 'draft.txt', mimeType: 'text/plain', buffer: Buffer.from('draft') });
+    await tab.click('#conv .post[data-seq="2"] > .pa [data-act=reply]');
+    await tab.fill('#conv .post[data-seq="2"] > .reply textarea', 'A reply for the pack');
+    await tab.setInputFiles('#conv .post[data-seq="2"] > .reply input[type=file]', { name: 'reply.txt', mimeType: 'text/plain', buffer: Buffer.from('reply') });
+    await tab.evaluate(() => { location.hash = '#/a5c0ff5e1f02'; });
+    await tab.waitForSelector('#bar h1 .t:text-is("2026-10")');
+    assert.equal(await tab.inputValue('#newcomment'), '');
+    assert.equal(await tab.locator('#conv .post[data-seq="2"] > .reply').isHidden(), true);
+    assert.equal(await tab.locator('#conv').textContent().then(s => s!.includes('The pack is ready')), false);
+    await tab.fill('#newcomment', 'A draft for October');
+    await tab.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
+    await tab.waitForSelector('#bar h1 .t:text-is("2026-12")');
+    assert.equal(await tab.inputValue('#newcomment'), 'A draft for the pack');
+    assert.equal(await tab.inputValue('#conv .post[data-seq="2"] > .reply textarea'), 'A reply for the pack');
+    assert.equal(await tab.locator('#conv .post[data-seq="2"] > .reply input[type=file]').evaluate((e: HTMLInputElement) => e.files![0].name), 'reply.txt');
+    assert.equal(await tab.locator('#newfiles').evaluate((e: HTMLInputElement) => e.files![0].name), 'draft.txt');
+    assert.equal(await tab.locator('#conv .post[data-seq="2"] > .reply').isVisible(), true);
+    await tab.evaluate(() => { location.hash = '#/a5c0ff5e1f02'; });
+    await tab.waitForSelector('#bar h1 .t:text-is("2026-10")');
+    assert.equal(await tab.inputValue('#newcomment'), 'A draft for October');
+  } finally { await tab.close(); }
+});
+
+test("a comment or reply uploading attachments posts to its original instance after navigation", async () => {
+  const tab = await browser.newPage({ storageState: await page.context().storageState() });
+  try {
+    for (const reply of [false, true]) {
+      await tab.goto(new URL('/#/a5c0ff5e1f00', page.url()).href);
+      await tab.waitForSelector('#newcomment');
+      const box = reply ? '#conv .post[data-seq="2"] > .reply' : '#conv .compose';
+      if (reply) await tab.click('#conv .post[data-seq="2"] > .pa [data-act=reply]');
+      await tab.fill(`${box} textarea`, `Uploading ${reply ? 'reply' : 'comment'}`);
+      await tab.setInputFiles(`${box} input[type=file]`, ['one', 'two'].map(name => ({ name: `${name}.txt`, mimeType: 'text/plain', buffer: Buffer.from(name) })));
+      let release!: () => void, started!: () => void;
+      const held = new Promise<void>(ok => { release = ok; }), uploading = new Promise<void>(ok => { started = ok; });
+      const paths: string[] = [];
+      await tab.route('**/attach?*', async r => {
+        paths.push(new URL(r.request().url()).pathname);
+        if (paths.length === 1) { started(); await held; }
+        await r.continue();
+      });
+      const posted = tab.waitForRequest(r => r.method() === 'POST' && r.url().endsWith('/comment'));
+      await tab.click(`${box} [data-act=${reply ? 'reply-post' : 'comment'}]`);
+      await uploading;
+      await tab.evaluate(() => { location.hash = '#/a5c0ff5e1f02'; });
+      await tab.waitForSelector('#bar h1 .t:text-is("2026-10")');
+      await tab.fill('#newcomment', 'Do not clear this draft');
+      release();
+      const request = await posted;
+      assert.equal(new URL(request.url()).pathname, '/api/instances/a5c0ff5e1f00/comment');
+      assert.deepEqual(paths, ['/api/instances/a5c0ff5e1f00/attach', '/api/instances/a5c0ff5e1f00/attach']);
+      assert.equal(request.postDataJSON().thread, reply ? 'c2' : undefined);
+      await tab.waitForResponse(r => r.request() === request);
+      assert.equal(await tab.inputValue('#newcomment'), 'Do not clear this draft');
+      await tab.unroute('**/attach?*');
+    }
+  } finally { await tab.close(); }
 });
 
 test("a picture pasted into a comment, or a reply, goes with it, shown under the box until it's sent, a screenshot named for when it was pasted; pasted text stays text", async () => {
