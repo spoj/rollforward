@@ -70,7 +70,7 @@ function answer(who: string, url: string, prefer?: string): { status: number; he
   if ((m = /^\/drives\/([^/]+)\/(?:items\/([^/]+)|root)\/delta$/.exec(path))) return delta(who, m[1], m[2], token);
   if (path === '/me/drive/root/delta' && who === DAN) return delta(who, 'b!own', undefined, token);
   if ((m = /^\/users\/[^/]+\/mailFolders\/(?:([^/]+)\/messages\/)?delta$/.exec(path))) return mail(m[1], token);
-  if (path === '/sites/host,s1,w1/drives') return { status: 200, body: { value: [{ id: 'b!d' }, { id: 'b!big' }] } };
+  if (path === '/sites/host,s1,w1/drives') return { status: 200, body: u.searchParams.has('$skiptoken') ? { value: [{ id: 'b!big' }] } : { value: [{ id: 'b!d' }], '@odata.nextLink': `${base}/v1.0/sites/host,s1,w1/drives?$select=id&$skiptoken=libraries%2Bpage%2F2` } };
   return { status: 404, body: { error: { code: 'itemNotFound', message: path } } };
 }
 
@@ -395,9 +395,11 @@ test("a mailbox: its folder list, then every folder's messages, 20 folders to a 
   assert.deepEqual(lines(feedOf(CAROL, MAIL)).map(l => l.id).sort(), ['fin', 'm2', 'm3'], 'tidied');
 });
 
-test("a site: each library's root delta, and a library closed to its person goes, with what is under it", async () => {
+test("a site: every page of its libraries, each library's root delta, and a library closed to its person goes, with what is under it", async () => {
+  const from = asked.length;
   offer(CAROL, [{ id: MAIL, name: `Mailbox ${BOX}` }, { id: SITE, name: 'Site Reports' }]);
   await work(settled(CAROL, SITE));
+  assert.deepEqual(asked.slice(from).filter(q => q.who === CAROL && q.url.includes('/sites/')).map(q => q.url), ['/v1.0/sites/host,s1,w1/drives?$select=id', '/v1.0/sites/host,s1,w1/drives?$select=id&$skiptoken=libraries%2Bpage%2F2']);
   const big = ['b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7', 'b8', 'bigroot', 'bigtop'];
   assert.deepEqual(now(run(CAROL, [SITE])('Site Reports').lines), [...big, 'droot', 'f1', 'f4', 'out', 'pub', 'top'].sort());
   assert.equal(cache(CAROL, SITE).parts['b!d'].link.split('?')[0], `${base}/v1.0/drives/b!d/root/delta`);

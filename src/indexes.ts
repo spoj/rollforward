@@ -204,7 +204,14 @@ async function tidy(c: Cache) {
 async function begin(o: Offer, person: string) {
   const [k, id] = kind(o.id), c = load(person, o.id) ?? { person, source: o.id, name: o.name, gen: 0, length: 0, lines: 0, base: 0, parts: k === 'site' ? {} : { '': fresh(start(o.id, '')) } };
   c.name = o.name;
-  if (k === 'site') for (const d of (await call(person, `/sites/${id}/drives?$select=id`)).value) c.parts[d.id] ??= fresh(start(o.id, d.id));
+  if (k === 'site') {
+    let path: string | undefined = `/sites/${id}/drives?$select=id`;
+    while (path) {
+      const page = await call(person, path);
+      for (const d of page.value) c.parts[d.id] ??= fresh(start(o.id, d.id));
+      path = page['@odata.nextLink']?.slice(G().length);
+    }
+  }
   mkdirSync(dirname(at(person, o.id)), { recursive: true, mode: 0o700 });
   save(c);
 }
