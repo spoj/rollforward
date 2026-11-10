@@ -150,7 +150,7 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .bar h1 { margin: 2px 0 0; font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
 .bar .ttl { flex: 1 1 0; }
 .ren { all: unset; cursor: pointer; color: var(--ink-3); font-size: 15px; font-weight: 400; margin-left: 6px; }
-.bar h1 .t { cursor: text; }
+.bar h1 .t[data-act=rename] { cursor: text; }
 .bar h1:hover .ren { color: var(--ink); }
 /* Whose an instance is: a chip by its title, which tells more on hover or a click, and their initials on others' rows. */
 .owner { position: relative; display: inline-block; vertical-align: 3px; margin-left: 10px; padding: 1px 9px; border-radius: 10px; font-size: 12.5px; font-weight: 500; letter-spacing: 0; color: var(--person); background: var(--person-bg); cursor: default; }
@@ -415,7 +415,8 @@ input[type=checkbox] { accent-color: var(--ink); }
 .post .pb.long { max-height: 15em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
 .post .pa { display: flex; gap: 4px; align-items: center; margin-top: 2px; }
 .post .reply:not([hidden]) { margin-top: 6px; display: grid; gap: 6px; }
-.react { border: 0; background: none; padding: 0 4px; font-size: 12px; color: var(--ink-3); cursor: pointer; border-radius: 3px; }
+.react { border: 0; background: none; padding: 0 4px; font-size: 12px; color: var(--ink-3); border-radius: 3px; }
+button.react { cursor: pointer; }
 .react.on { background: var(--rule); color: var(--ink); }
 .reacts { margin-left: 8px; font-weight: 400; }
 a.more, a.up { display: block; font-size: 12px; color: var(--ink-3); cursor: pointer; margin-top: 4px; }
@@ -557,6 +558,8 @@ addEventListener('unhandledrejection', e => toast(e.reason?.message ?? String(e.
 const seriesPath = c => `/api/series/${c.s.id}`;
 const instPath = () => `/api/instances/${cur.i.id}`;
 const go = id => { location.hash = '#/' + id; };
+const archived = (w = cur?.w, s = cur?.s) => !!(w?.archived || s?.archived);
+const editable = () => data?.doc.status === 'open' && !archived();
 
 // Newest activity first, as in a chat: an instance's latest log entry, now while it runs; a series' newest instance's, and a
 // workspace's newest series'. A series' instances keep their labels' order.
@@ -614,16 +617,20 @@ async function fetchInstance(path) {
 }
 
 function land(next, path, d, st) {
-  const was = data && path === shown ? lastDone()?.seq ?? 0 : undefined;
+  const was = data && path === shown ? lastDone()?.seq ?? 0 : undefined, wasArchived = archived(), wasWorkspace = cur?.w.archived, wasSeries = cur?.s?.archived;
   // A new selection opens its rows in the sidebar; from then on only their chevrons fold and open them.
   if (next?.w && next.w.id !== cur?.w.id) expandRow(next.w.id, true);
   if (next?.s && next.s.id !== cur?.s?.id) expandRow(next.s.id, true);
-  if (path !== shown && d) {
+  if (d && (path !== shown || wasArchived !== archived(next.w, next.s))) {
     if (!drafts.has(path)) drafts.set(path, { el: $('#conv').cloneNode(false), on: null, ref: null, replying: new Set() });
     draft = drafts.get(path);
-    $('#conv').replaceWith(draft.el);
+    $('#conv').replaceWith(archived(next.w, next.s) ? draft.el.cloneNode(false) : draft.el);
   }
   [cur, data, shown] = [next, d, path];
+  if ((wasWorkspace !== cur?.w.archived || wasSeries !== cur?.s?.archived) && ['workspace', 'series'].includes(pv?.settings?.kind)) {
+    Object.assign(pv.settings, pv.settings.kind === 'workspace' ? cur.w : cur.s);
+    renderPv();
+  }
   if (cur?.i) cur.i.unread = false;
   threads = threadsOf();
   if (st) [lines, linesKey] = st;
@@ -692,7 +699,7 @@ function renderSide() {
     shown++;
     if (!wHit) opened.add(w.id);
     h += `<div class="row ws ${won ? 'on' : ''} ${w.archived ? 'archived' : ''}">${chev(w.id)}<a class="nm" href="#/${w.id}" title="${esc(w.name)}"><span class="l">${esc(w.name)}</span>${dot(w.id, w.series)}</a>`
-      + `<span class="n">${w.archived ? 'archived' : ''}</span>${age(wAct(w), w.series.some(s => s.instances.some(i => i.running)))}` + btn('workspace-settings', 'Settings', '\u2699', w.id) + btn('new-task', 'New task', '+', w.id) + '</div>';
+      + `<span class="n">${w.archived ? 'archived' : ''}</span>${age(wAct(w), w.series.some(s => s.instances.some(i => i.running)))}` + btn('workspace-settings', 'Settings', '\u2699', w.id) + (w.archived ? '' : btn('new-task', 'New task', '+', w.id)) + '</div>';
     if (shut(w.id)) continue;
     h += '<div class="tree">';
     for (const [s, found] of series) {
@@ -700,7 +707,7 @@ function renderSide() {
       if (found) opened.add(s.id);
       const note = s.archived ? 'archived' : s.requests.length ? `<span class="q">${s.requests.length} to start</span>` : open.length && shut(s.id) ? `${open.length} open` : s.wakes[0] && shut(s.id) ? `<span title="${when(s.wakes[0].at)}">wakes ${soon(s.wakes[0].at)}</span>` : '';
       h += `<div class="row ser ${on ? 'on' : ''} ${s.archived ? 'archived' : ''}">${chev(s.id)}<a class="nm" href="#/${s.id}" title="${esc(s.name)}"><span class="l">${esc(s.name)}</span>${dot(s.id, [s])}</a>`
-        + `<span class="n">${note}</span>${age(sAct(s), s.instances.some(i => i.running))}` + btn('settings', 'Settings', '\u2699', s.id) + btn('new-instance', 'New instance', '+', s.id) + '</div>';
+        + `<span class="n">${note}</span>${age(sAct(s), s.instances.some(i => i.running))}` + btn('settings', 'Settings', '\u2699', s.id) + (archived(w, s) ? '' : btn('new-instance', 'New instance', '+', s.id)) + '</div>';
       if (shut(s.id)) continue;
       if (found) {
         h += `<div class="tree">${found.map(row).join('')}</div>`;
@@ -710,7 +717,7 @@ function renderSide() {
       h += '<div class="tree">';
       for (const k of s.wakes) h += `<div class="row wake"><span class="nm" title="Starts ${esc(k.label)} ${when(k.at)}"><span class="l">Starts ${esc(k.label)} ${soon(k.at)}</span></span><span class="n">${k.days ? 'weekly' : 'wake'}</span></div>`;
       for (const r of s.requests) h += `<div class="row req"><span class="nm" title="${esc(`${r.from} asks to start ${r.label}`)}"><span class="l">${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)}</span></span>`
-        + `<button class="add" data-act="req-start" data-id="${r.id}" title="Start it">\u25B6</button><button class="add" data-act="req-drop" data-id="${r.id}" title="Dismiss">\u00D7</button></div>`;
+        + (archived(w, s) ? '' : `<button class="add" data-act="req-start" data-id="${r.id}" title="Start it">\u25B6</button><button class="add" data-act="req-drop" data-id="${r.id}" title="Dismiss">\u00D7</button>`) + '</div>';
       h += s.instances.filter(i => i.status === 'open' || showClosed.has(s.id) || i.id === cur?.i?.id).map(row).join('');
       if (closed) h += `<button class="quiet" data-act="toggle-closed" data-id="${s.id}">${showClosed.has(s.id) ? 'Hide' : 'Show'} closed (${closed})</button>`;
       h += '</div>';
@@ -723,11 +730,11 @@ function renderSide() {
       + (done ? `<button class="quiet" data-act="toggle-closed" data-id="${w.id}">${showClosed.has(w.id) ? 'Hide' : 'Show'} closed (${done})</button>` : '');
     h += '</div>';
   }
-  const archived = tree.filter(w => w.archived).length + tree.filter(w => expanded.has(w.id)).flatMap(w => w.series).filter(s => s.archived).length;
+  const archivedCount = tree.filter(w => w.archived).length + tree.filter(w => expanded.has(w.id)).flatMap(w => w.series).filter(s => s.archived).length;
   if (q && !shown) h += '<div class="empty">Nothing matches.</div>';
   const opt = (act, id, on, label) => `<button class="opt ${on ? 'sel' : ''}" data-act="${act}" data-id="${id}">${label}</button>`;
   put($('#sortpop'), '<div class="head">Show</div>' + opt('workspaces', 'mine', mine, 'My workspaces') + opt('workspaces', 'all', !mine, 'All workspaces')
-    + (archived ? opt('toggle-archived', '', showArchived, `Archived (${archived})`) : '') + '<div class="head">Sort</div>' + opt('order', 'activity', !byName, 'Newest activity') + opt('order', 'name', byName, 'Name'));
+    + (archivedCount ? opt('toggle-archived', '', showArchived, `Archived (${archivedCount})`) : '') + '<div class="head">Sort</div>' + opt('order', 'activity', !byName, 'Newest activity') + opt('order', 'name', byName, 'Name'));
   $('#sorter').classList.toggle('on', localStorage.workspaces === 'all' || showArchived || byName);
   put($('#newws'), me.can.includes('create') ? btn('new-workspace', 'New workspace', '+') : '');
   // Keys move a focus through the rows' links (j, k), which a new drawing keeps.
@@ -744,12 +751,12 @@ const stepText = s => `${s.do}${s.target ? ` ${s.target}` : ''}${s.value !== und
 
 function renderBar() {
   if (editing) return;
-  const open = data?.doc.status === 'open';
+  const open = editable();
   let h = `<button class="menu" data-act="menu">☰</button>`;
-  h += `<div class="ttl"><div class="crumb">${esc(cur?.w.name ?? '')}${cur?.s ? ' · ' + esc(cur.s.single ? 'Ungrouped' : cur.s.name) : ''}</div><h1>${data ? `<span class="t" data-act="rename" title="Rename">${esc(cur.i.label)}</span><button class="ren" data-act="rename" title="Rename">\u270E</button>` : esc(cur?.i?.label ?? 'No instance')}${data ? owner() + `<span class="reacts">${reactHtml()}</span>` : ''}</h1></div>`;
+  h += `<div class="ttl"><div class="crumb">${esc(cur?.w.name ?? '')}${cur?.s ? ' · ' + esc(cur.s.single ? 'Ungrouped' : cur.s.name) : ''}</div><h1>${data ? `<span class="t"${archived() ? '' : ' data-act="rename" title="Rename"'}>${esc(cur.i.label)}</span>${archived() ? '' : '<button class="ren" data-act="rename" title="Rename">\u270E</button>'}` : esc(cur?.i?.label ?? 'No instance')}${data ? owner() + `<span class="reacts">${reactHtml()}</span>` : ''}</h1></div>`;
   if (data) {
     const d = lastDone(), talk = data.waiting.length;
-    const state = data.doc.status !== 'open' ? `${data.doc.status === 'closed' ? 'Closed' : 'Abandoned'} · read-only`
+    const state = archived() ? 'Archived · read-only' : data.doc.status !== 'open' ? `${data.doc.status === 'closed' ? 'Closed' : 'Abandoned'} · read-only`
       : data.run ? `<span class="spin"></span>Agent working · run ${data.run.n}<button class="quiet" data-act="interrupt">Interrupt</button>`
       : data.queued ? '\u29D7 Queued' : d?.error ? `<span class="bad" title="${esc(d.error)}">Run ${d.run} failed · ${hhmm(d.at)}</span>`
       : d ? `Agent idle · last run ${hhmm(d.at)}` : 'Waiting for files';
@@ -758,7 +765,7 @@ function renderBar() {
     const off = data.run ? 'disabled title="Available when the run ends"' : '';
     if (open) h += data.runner.by === me.email ? `<button class="btn commit top" data-act="close" ${off}>Close</button>`
       : `<button class="btn top" data-act="takeover" ${off || `title="${esc(nameOf(data.runner.by))} runs it, with their logins. Taking over makes it yours."`}>Take over</button>`;
-    else h += cur.s.single ? '<button class="btn top" data-act="start-series">Start series</button>' : '<button class="btn top" data-act="duplicate">Duplicate</button>';
+    else if (!archived()) h += cur.s.single ? '<button class="btn top" data-act="start-series">Start series</button>' : '<button class="btn top" data-act="duplicate">Duplicate</button>';
     // One control opens and closes the side panel, where it stays, with what waits there as its badge.
     h += `<button class="ptog ${ui.open ? 'on' : ''}" data-act="panel" title="${ui.open ? 'Close' : 'Open'} the conversation"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M10 2.5v11"/>${ui.open ? '<rect x="10" y="2.5" width="4.5" height="11" fill="currentColor" stroke="none" opacity=".35"/>' : ''}</svg>${talk ? `<span class="badge">${talk}</span>` : ''}</button>`;
   }
@@ -770,9 +777,9 @@ function owner() {
   const r = data.runner, mine = r.by === me.email, name = mine ? 'You' : person(r.by), e = data.log.findLast(e => ['create', 'duplicate', 'takeover'].includes(e.op));
   const how = { create: 'Made it', duplicate: `Copied it from ${esc(e.from)}`, takeover: `Took it over from ${who(e.from)}` }[e.op];
   return `<span class="owner" tabindex="0">${mine ? 'Yours' : name}<span class="about">`
-    + (data.doc.status === 'open' ? `${name} run${mine ? '' : 's'} it: runs use ${mine ? 'your' : 'their'} logins, and only ${mine ? 'you' : 'they'} close it.` : `${name} ran it.`)
+    + (editable() ? `${name} run${mine ? '' : 's'} it: runs use ${mine ? 'your' : 'their'} logins, and only ${mine ? 'you' : 'they'} close it.` : `${name} ran it.`)
     + `<br>${how} ${when(e.at)}.<br>${r.ticked.length ? `Credentials: ${esc(r.ticked.join(', '))}` : 'No credentials ticked.'}</span></span>`
-    + (mine && data.doc.status === 'open' ? `<button class="creds" data-act="ticks" title="${esc(r.ticked.join(', '))}">Credentials: ${credentials(r)}</button>` : '');
+    + (mine && editable() ? `<button class="creds" data-act="ticks" title="${esc(r.ticked.join(', '))}">Credentials: ${credentials(r)}</button>` : '');
 }
 
 // The runner's ticks at a glance, by kind, such as "Mail · 2 folders".
@@ -811,8 +818,8 @@ function tile(item) {
 // the column its heading names; a phone shows tiles, Outputs first.
 function renderPanes() {
   $('#outs').hidden = $('#steps').hidden = $('#view').hidden = !data;
-  if (!data) return put($('#ins'), `<div class="empty">${cur?.s ? 'No instance yet. Make one with + by the series.' : cur ? 'No series yet. Make one with + by the workspace.' : me.can.includes('create') ? 'No workspace yet. Make one with + by the filter.' : 'No workspace yet: an admin makes one or adds you to one.'}</div>`);
-  const open = data.doc.status === 'open', stored = localStorage[`seen:${instPath()}`], items = data.doc.items, list = localStorage.view === 'list' && innerWidth > 800;
+  if (!data) return put($('#ins'), `<div class="empty">${archived() ? 'Archived · read-only' : cur?.s ? 'No instance yet. Make one with + by the series.' : cur ? 'No series yet. Make one with + by the workspace.' : me.can.includes('create') ? 'No workspace yet. Make one with + by the filter.' : 'No workspace yet: an admin makes one or adds you to one.'}</div>`);
+  const open = editable(), stored = localStorage[`seen:${instPath()}`], items = data.doc.items, list = localStorage.view === 'list' && innerWidth > 800;
   seen = stored ? JSON.parse(stored) : {};
   if (!stored) markSeen(items);
   const ins = items.filter(i => i.kind === 'input'), outs = items.filter(i => i.kind === 'output'), steps = items.filter(i => i.kind === 'step');
@@ -924,7 +931,7 @@ function logText(e) {
 function renderNeeds() {
   const held = new Map(data?.log.filter(e => e.op === 'expired' && e.runner === me.email && !data.log.some(x => x.seq > e.seq && x.op === 'wake' && x.login === e.login)).map(e => [e.login, e]));
   const h = (data ? data.waiting.filter(w => w.who === me.email).map(w => data.log[w.seq - 1]) : []).map(e => `<div><b>${e.ask ? 'Ask' : 'Note'}</b><span>${esc(firstLine(e.text))}</span>`
-    + `<button class="btn" data-act="reply" data-seq="${e.seq}">Reply</button></div>`).join('')
+    + (editable() ? `<button class="btn" data-act="reply" data-seq="${e.seq}">Reply</button>` : `<button class="btn" data-act="thread" data-thread="${e.thread}">Open</button>`) + '</div>').join('')
     + [...held.values()].map(e => `<div><b>Login</b><span>${e.login === 'openrouter' ? 'Your OpenRouter key is out of credits' : `Your ${esc(e.name)} login has expired`}: this instance waits for it</span>${signInHtml(e.login, e.name)}</div>`).join('');
   $('#needs').hidden = !h;
   put($('#needs'), h);
@@ -1029,7 +1036,7 @@ function md(text, threads) {
 // instance it waits on a person while its last word is the agent's ask, on whom the ask names or else the runner, and on the
 // agent while its last word is a person's. A file a run cited is kept by its instance's id, and shown by that instance's label now.
 function threadsOf() {
-  const out = new Map(), open = data?.doc.status === 'open', waiting = new Map((data?.waiting ?? []).map(w => [w.seq, w.who]));
+  const out = new Map(), open = editable(), waiting = new Map((data?.waiting ?? []).map(w => [w.seq, w.who]));
   for (const e of data?.log ?? []) {
     if (!['comment', 'resolve', 'signoff'].includes(e.op)) continue;
     if (!out.has(e.thread)) out.set(e.thread, { id: e.thread, item: e.item, ref: e.ref, posts: [] });
@@ -1062,7 +1069,7 @@ function threadHtml(t) {
 // thread of its own. A long one folds until More. Its twisty collapses it, with what hangs under it, to its first line, as this
 // browser keeps it until someone adds to it.
 function postHtml(t, p, depth) {
-  const kids = t.posts.filter(k => k.under === p.seq), open = data.doc.status === 'open', off = data.run ? ' disabled title="Available when the run ends"' : '';
+  const kids = t.posts.filter(k => k.under === p.seq), open = editable(), off = data.run ? ' disabled title="Available when the run ends"' : '';
   const signs = open && p.ask && !t.posts.some(k => k.op === 'signoff' && k.on === p.seq && k.by === me.email), since = signs && data.log.filter(e => e.op === 'run' && e.seq > p.seq).length;
   const long = !ui.full.has(p.seq) && (p.text.length > 900 || p.text.split('\n').length > 12), all = n => t.posts.filter(k => k.under === n).reduce((c, k) => c + 1 + all(k.seq), 0);
   const end = q => Math.max(q.seq, ...t.posts.filter(k => k.under === q.seq).map(end)), head = `<b class="${p.by === 'agent' ? '' : 'p'}">${who(p.by)}</b> <span class="tm">`;
@@ -1080,8 +1087,8 @@ function postHtml(t, p, depth) {
 function reactHtml(seq) {
   const last = new Map();
   for (const e of data.log) if (e.op === 'react' && e.on === seq) last.set(e.by, e.up);
-  const names = up => [...last].filter(([, u]) => u === up).map(([by]) => nameOf(by));
-  return [[true, '\u{1F44D}'], [false, '\u{1F44E}']].map(([up, icon]) => `<button class="react ${last.get(me.email) === up ? 'on' : ''}" data-act="react" data-up="${up}"${seq === undefined ? '' : ` data-seq="${seq}"`} title="${esc(names(up).join(', '))}">${icon}${names(up).length ? ` ${names(up).length}` : ''}</button>`).join('');
+  const names = up => [...last].filter(([, u]) => u === up).map(([by]) => nameOf(by)), tag = archived() ? 'span' : 'button';
+  return [[true, '\u{1F44D}'], [false, '\u{1F44E}']].map(([up, icon]) => `<${tag} class="react ${last.get(me.email) === up ? 'on' : ''}"${archived() ? '' : ` data-act="react" data-up="${up}"${seq === undefined ? '' : ` data-seq="${seq}"`}`} title="${esc(names(up).join(', '))}">${icon}${names(up).length ? ` ${names(up).length}` : ''}</${tag}>`).join('');
 }
 
 // The rules a run added to the process, or reworded, on the thread whose entry started it, or else on its line.
@@ -1098,7 +1105,7 @@ function runHtml(r, latest) {
 // The conversation, as a chat reads: the threads and the runs among them, oldest first, a thread where its last word is and a run
 // where it ended; and at the panel's foot, kept there as it scrolls, the box to comment on the instance.
 function conversationHtml() {
-  const open = data.doc.status === 'open', name = id => esc(data.doc.items.find(i => i.id === id)?.name ?? id), mine = data.runner.by === me.email;
+  const open = editable(), name = id => esc(data.doc.items.find(i => i.id === id)?.name ?? id), mine = data.runner.by === me.email;
   const moved = data.log.findLast(e => e.op === 'move'), runs = data.log.filter(e => e.op === 'run');
   let h = moved ? `<div class="sub">Moved ${when(moved.at)} from ${esc(moved.from)} to ${esc(moved.to)}, ${who(moved.accepted_by ?? moved.by)} accepting.</div>` : '';
   const alone = ui.alone && threads.find(t => t.posts.some(p => p.seq === ui.alone));
@@ -1116,7 +1123,7 @@ function conversationHtml() {
   if (open) h += `<div class="compose"><h3>${draft.on ? `Comment on ${name(draft.on)}${draft.ref ? ` at ${esc(draft.ref)}` : ''}` : 'Comment on the instance'}</h3>`
     + (lends ? `<div class="ticks2">Credentials:${ticksHtml(myLogins, data.runner.logins)}</div>` : '')
     + `<textarea id="newcomment" rows="3" placeholder="${first ? 'What should the agent do? Drop files here too' : mine || cur.s.shared_by === data.runner.by ? 'The agent replies in the thread' : `A note for ${esc(nameOf(data.runner.by))}: the agent takes it up once they do`}"></textarea><input type="file" id="newfiles" multiple>${lends ? '<div class="consent">By clicking Comment, you agree that agents carry these credentials while acting as you.</div>' : ''}<div><button class="btn primary" data-act="comment">Comment</button></div></div>`;
-  if (data.doc.status === 'closed') h += '<div class="compose"><div><button class="btn" data-act="correct">Add a correction</button></div></div>';
+  if (data.doc.status === 'closed' && !archived()) h += '<div class="compose"><div><button class="btn" data-act="correct">Add a correction</button></div></div>';
   return h;
 }
 
@@ -1129,7 +1136,7 @@ function renderCard() {
     return;
   }
   // On a desktop, the card shows its file's preview, which scrolls inside it; a phone's opens it in full.
-  const open = data.doc.status === 'open', wide = item.file && innerWidth > 800;
+  const open = editable(), wide = item.file && innerWidth > 800;
   if (wide && cardPv?.path !== item.file) {
     const p = cardPv = previewOf(item.file, item);
     load(p).then(() => cardPv === p && renderCard());
@@ -1157,7 +1164,7 @@ function renderCard() {
   if (item.file) h += `${wide ? '' : `<button class="btn" data-act="preview" data-file="${esc(item.file)}" data-item="${esc(item.id)}">Preview</button>`}<a class="btn" href="${fileUrl(item.file)}">Download</a>`;
   if (open && !wide) h += `<button class="btn" data-act="add" data-item="${esc(item.id)}" data-pane="${item.kind === 'output' ? 'out' : 'in'}">Upload…</button>`;
   if (open) h += `<button class="btn" data-act="comment-on" data-item="${esc(item.id)}">Comment</button>`;
-  if (data.doc.status === 'closed') h += `<button class="btn" data-act="correct" data-item="${esc(item.id)}">Correct\u2026</button>`;
+  if (data.doc.status === 'closed' && !archived()) h += `<button class="btn" data-act="correct" data-item="${esc(item.id)}">Correct\u2026</button>`;
   h += `<button class="btn" data-act="uncard" style="margin-left:auto">Close</button></div>`;
   put(card, h);
   card.hidden = false;
@@ -1251,10 +1258,15 @@ function renderPv() {
     if (s.kind === 'series') h += `<h3>Name</h3><input type="text" id="sname" value="${esc(s.name)}">`
       + `<h3>Who starts runs</h3>${startsHtml(s)}<h3>Wakes</h3>${wakesHtml(s.id, s.wakes, true)}`
       + `<h3>Cost</h3><div class="sub">This series' runs have cost ${usd(s.cost)} so far, ${usd(s.cost / Math.max(1, s.closed))} per closed instance.</div>`
-      + `<div class="row2"><button class="btn danger" data-act="archive-series">${s.archived ? 'Restore series' : 'Archive series'}</button></div>`;
+      + (cur.w.archived ? (cur.w.manage ? '<div class="row2"><button class="btn danger" data-act="archive-workspace">Restore workspace</button></div>' : '') : `<div class="row2"><button class="btn danger" data-act="archive-series">${s.archived ? 'Restore series' : 'Archive series'}</button></div>`);
     h += '</div>';
   }
   d.innerHTML = h + '<div class="pvn" id="pvn"></div>';
+  if (pv.settings?.kind === 'workspace' ? cur.w.archived : pv.settings?.kind === 'series' && archived()) {
+    d.querySelector('.pvb').insertAdjacentHTML('afterbegin', '<div class="sub">Archived · read-only</div>');
+    for (const el of d.querySelectorAll('.pvb input, .pvb textarea, .pvb select')) el.disabled = true;
+    for (const el of d.querySelectorAll('.pvb button:not([data-act=archive-series]):not([data-act=archive-workspace])')) el.remove();
+  }
   if (!d.open) d.showModal();
   if ((pv.att ?? pv).pdf) watchPages(d, pv.att ?? pv);
 }
@@ -1768,7 +1780,7 @@ async function onAct(act, el) {
   if (act === 'archive-series' || act === 'archive-workspace') {
     const x = act === 'archive-series' ? cur.s : cur.w, flip = () => api(act === 'archive-series' ? seriesPath(cur) : `/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ archived: !x.archived }) });
     if (x.archived) await flip();
-    else if (!await ask({ title: `Archive ${x.name}?`, text: 'It leaves the sidebar, except under Show archived. Nothing in it changes.', ok: 'Archive', act: flip })) return;
+    else if (!await ask({ title: `Archive ${x.name}?`, text: "It leaves the sidebar, except under Show archived. Nothing in it changes or runs until it's restored.", ok: 'Archive', act: flip })) return;
     closePv();
     await refresh();
   }
@@ -1872,7 +1884,7 @@ async function onAct(act, el) {
   if (act === 'cell' && el.closest('#card')) await preview(cardPv.path, data.doc.items.find(i => i.id === cardPv.item));
   else if (act === 'cell') {
     // A cell's threads and what changed there; on an item's file in an open instance, a reply there, or a new comment.
-    const on = data?.doc.status === 'open' && pv.item, t = el.dataset.thread;
+    const on = editable() && pv.item, t = el.dataset.thread;
     const go = t ? `<button class="btn" data-act="thread" data-thread="${esc(t)}">${on ? 'Reply' : 'Open the thread'}</button>` : on ? `<button class="btn" data-act="comment-cell" data-ref="${esc(el.dataset.ref)}">Comment on ${esc(el.dataset.ref)}</button>` : '';
     put($('#pvn'), `${esc(el.dataset.note ?? '')}${go && `<div>${go}</div>`}`);
   }
@@ -2103,7 +2115,7 @@ $('#pv').addEventListener('click', e => {
 for (const type of ['dragover', 'dragleave', 'drop']) {
   $('#panes').addEventListener(type, e => {
     const pane = e.target.closest('.pane'), t = e.target.closest('.tile, .lrow');
-    if (!pane || data?.doc.status !== 'open' || !e.dataTransfer.types.includes('Files')) return;
+    if (!pane || !editable() || !e.dataTransfer.types.includes('Files')) return;
     e.preventDefault();
     document.querySelectorAll('.drag').forEach(x => x.classList.remove('drag'));
     if (type === 'dragover') (t ?? pane).classList.add('drag');

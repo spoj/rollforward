@@ -145,6 +145,93 @@ test("a series' gear opens its settings, which save as they change; a click besi
   await page.waitForSelector('#pv:not([open])', { state: 'attached' });
 });
 
+for (const kind of ['series', 'workspace']) test(`an archived ${kind} is read-only, including its settings, until restored`, async () => {
+  const tab = await browser.newPage({ storageState: await page.context().storageState() });
+  const target = kind === 'series' ? '/api/series/a5c0ff5e1fee' : '/api/workspaces/1b3031035ff6';
+  try {
+    await tab.goto(new URL('/#/a5c0ff5e1f00', page.url()).href);
+    await tab.waitForSelector('#bar h1 .t:text-is("2026-12")');
+    await tab.fill('#newcomment', 'A draft before archiving');
+    await tab.click('#conv .pa [data-act=reply]:text-is("Reply")');
+    await tab.fill('#conv .reply:not([hidden]) textarea', 'A reply before archiving');
+    const row = kind === 'series' ? '.row.ser.on' : '.row.ws.on';
+    await tab.hover(row);
+    await tab.click(`${row} [data-act=${kind === 'series' ? 'settings' : 'workspace-settings'}]`);
+    await tab.click(`#pv [data-act=archive-${kind}]`);
+    const confirmation = await tab.textContent('#ask');
+    await tab.click('#ask button:text-is("Cancel")');
+    assert.equal((await tab.request.put(new URL(target, tab.url()).href, { data: { archived: true } })).ok(), true);
+    await tab.waitForSelector(`${row}.archived`);
+    assert.equal(await tab.textContent('#bar .state'), 'Archived · read-only');
+    assert.match(confirmation!, /Nothing in it changes or runs until it's restored\./);
+    assert.deepEqual(await tab.locator('#pv .pvb button').allTextContents(), [`Restore ${kind}`], 'settings already open become read-only too');
+    assert.equal(await tab.locator('#pv .pvb input:enabled, #pv .pvb textarea:enabled, #pv .pvb select:enabled').count(), 0);
+    await tab.click('#pv [data-act=unpv]');
+    assert.equal(await tab.locator('#bar [data-act=rename], #bar .creds, #bar .btn, #bar [data-act=wakes], #needs [data-act=reply], #conv textarea, #conv input, #conv [data-act=reply], #conv [data-act=react], #panes [data-act=add]').count(), 0);
+    assert.equal(await tab.locator(`${row} [data-act=${kind === 'series' ? 'new-instance' : 'new-task'}]`).count(), 0);
+    if (kind === 'workspace') assert.equal(await tab.locator('.row.ws.on + .tree [data-act=new-instance]').count(), 0);
+    await tab.locator('#ins').evaluate(el => {
+      const dataTransfer = new DataTransfer();
+      dataTransfer.items.add(new File(['no change'], 'archive.txt'));
+      el.dispatchEvent(new DragEvent('dragover', { bubbles: true, dataTransfer }));
+      el.dispatchEvent(new DragEvent('drop', { bubbles: true, dataTransfer }));
+    });
+    assert.equal(await tab.locator('.drag').count(), 0);
+    assert.equal((await (await tab.request.get(new URL('/api/instances/a5c0ff5e1f00', tab.url()).href)).json()).log.some((e: any) => e.file?.endsWith('archive.txt')), false);
+    await tab.click('#conv .pb [data-act=preview]:text-is("The pack")');
+    await tab.waitForSelector('#pv .sh');
+    assert.equal(await (await tab.request.get(new URL((await tab.getAttribute('#pv .pvh a', 'href'))!, tab.url()).href)).text(), 'pack\n');
+    await tab.click('#pv [data-act=unpv]');
+    await tab.click('#log [data-act=audit]');
+    await tab.waitForSelector('#audit .e');
+    await tab.click('#log [data-act=audit]');
+    await tab.hover(row);
+    await tab.click(`${row} [data-act=${kind === 'series' ? 'settings' : 'workspace-settings'}]`);
+    await tab.waitForSelector(`#pv [data-act=archive-${kind}]:text-is("Restore ${kind}")`);
+    assert.deepEqual(await tab.locator('#pv .pvb button').allTextContents(), [`Restore ${kind}`]);
+    assert.equal(await tab.locator('#pv .pvb input:enabled, #pv .pvb textarea:enabled, #pv .pvb select:enabled').count(), 0);
+    await tab.click('#pv [data-act=unpv]');
+    if (kind === 'workspace') {
+      await tab.hover('.row.ser.on');
+      await tab.click('.row.ser.on [data-act=settings]');
+      await tab.waitForSelector('#pv [data-act=archive-workspace]:text-is("Restore workspace")');
+      assert.deepEqual(await tab.locator('#pv .pvb button').allTextContents(), ['Restore workspace']);
+      assert.equal(await tab.locator('#pv .pvb input:enabled, #pv .pvb select:enabled').count(), 0);
+      await tab.click('#pv [data-act=unpv]');
+    }
+    for (const [id, label] of [['a5c0ff5e1f02', '2026-10'], ['a5c0ff5e1f01', '2026-11']]) {
+      await tab.evaluate(id => { location.hash = '#/' + id; }, id);
+      await tab.waitForSelector(`#bar h1 .t:text-is("${label}")`);
+      assert.equal(await tab.textContent('#bar .state'), 'Archived · read-only');
+      assert.equal(await tab.locator('#bar .btn, #conv [data-act=correct]').count(), 0, 'closed instances cannot be copied or corrected either');
+      if (id === 'a5c0ff5e1f02') {
+        await tab.click('.tile[data-item=notes]');
+        await tab.waitForSelector('#card .say');
+        assert.equal(await tab.locator('#card [data-act=comment-on], #card [data-act=add], #card [data-act=correct]').count(), 0);
+        assert.equal(await tab.locator('#card a:text-is("Download")').count(), 1);
+        await tab.click('#card [data-act=preview]');
+        await tab.click('#pv .pt:text("2 checks pass")');
+        assert.equal(await tab.locator('#pvn button').count(), 0, 'previewing a point cannot start a comment');
+        await tab.click('#pv [data-act=unpv]');
+      }
+    }
+    await tab.hover(row);
+    await tab.click(`${row} [data-act=${kind === 'series' ? 'settings' : 'workspace-settings'}]`);
+    await tab.click(`#pv [data-act=archive-${kind}]`);
+    await tab.waitForSelector('#bar .state:text-is("Closed · read-only")');
+    assert.equal(await tab.locator('#bar [data-act=duplicate]').count(), 1);
+    await tab.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
+    await tab.waitForSelector('#newcomment');
+    assert.equal(await tab.inputValue('#newcomment'), 'A draft before archiving');
+    assert.equal(await tab.inputValue('#conv .reply:not([hidden]) textarea'), 'A reply before archiving');
+    assert.equal(await tab.locator('#bar .creds, #bar [data-act=close]').count(), 2);
+    assert.equal(await tab.locator('#conv .pa [data-act=reply]:text-is("Sign off…")').count(), 1);
+  } finally {
+    await tab.request.put(new URL(target, tab.url()).href, { data: { archived: false } });
+    await tab.close();
+  }
+});
+
 test("the workspace's + starts a task at once, which its first prompt names, newest first under Ungrouped; closing makes it a series if asked", async () => {
   for (const prompt of ['Apple orchard audit for 2026', 'Zebra crossing survey']) {
     await page.hover('.row.ws.on');
