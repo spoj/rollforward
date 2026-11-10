@@ -457,8 +457,8 @@ else if (cmd === 'comment' && args.length === 2) {
   console.log(`signed off ${args[1]}`);
 } else if (['close', 'abandon', 'interrupt'].includes(cmd) && args.length === 1) {
   const { series, at } = await instanceAt(args[0]);
-  if (cmd === 'close' && typeof flags['as-series'] === 'string') await post(`/api/series/${series.id}/promote`, { name: flags['as-series'] });
   await post(`${at}/${cmd}`, { quiet: !flags.wake });
+  if (cmd === 'close' && typeof flags['as-series'] === 'string') await post(`/api/series/${series.id}/promote`, { name: flags['as-series'] });
   console.log(`${cmd === 'close' ? 'closed' : `${cmd}ed`} ${args[0]}`);
 } else if (cmd === 'takeover' && args.length === 1) {
   await post(`${(await instanceAt(args[0])).at}/takeover`, { logins: ticks() });

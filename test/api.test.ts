@@ -853,6 +853,20 @@ test('rf reads without a pull: waiting, what waits on you; show, an instance, th
   await assert.rejects(rf('show', 'Reads/Notes'), fails(1, /^rf: Reads\/Notes is a series: name one of its instances, as rf ls lists them\n$/));
 });
 
+test('rf close --as-series closes before promoting: a refused close leaves the task named and single, ready to retry', async () => {
+  const { id: workspace } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Closing' }))).json();
+  await call('PUT', `/api/workspaces/${workspace}`, JSON.stringify({ members: [bob] }));
+  const { id, instance } = await (await call('POST', '/api/series', JSON.stringify({ workspace, single: true }), sessionOf(await login(bob))!)).json();
+  const path = 'Closing/Untitled/Untitled';
+  await assert.rejects(rf('close', path, '--as-series', 'Monthly'), fails(1, /: 403 only the runner, bob@demo\.test, closes it/));
+  const task = (await named('Closing')).series.find((s: { id: string }) => s.id === id);
+  assert.deepEqual([task.name, task.single, task.instances[0].status], ['Untitled', true, 'open']);
+  assert.deepEqual((await json(`/api/instances/${instance}`)).log.map((e: { op: string }) => e.op), ['create']);
+  await rf('takeover', path);
+  assert.equal(await rf('close', path, '--as-series', 'Monthly'), `closed ${path}\n`);
+  assert.deepEqual((await json(`/api/instances/${instance}`)).log.map((e: { op: string }) => e.op), ['create', 'takeover', 'close', 'promote']);
+});
+
 test('rf acts on an instance as the page does: react, creds, rename, takeover, interrupt, signoff, close, as a series for a task, abandon and correct', async () => {
   const b = sessionOf(await login(bob))!, rows = async () => JSON.parse(await rf('ls', '--json')) as { path: string; id: string; status?: string; runner?: string }[];
   const shown = JSON.parse(await rf('show', 'Reads/Notes/a1', '--json')), on = shown.waiting[0].comment;
