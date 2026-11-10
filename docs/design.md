@@ -1,6 +1,6 @@
 # Design notes
 
-The brief asked for a look that is "mature and dependable, but at the same time fresh and appealing", without the generic AI-generated look. The page, [web/index.html](../web/index.html), follows these notes.
+The brief asked for a look that is "mature and dependable, but at the same time fresh and appealing", without the generic AI-generated look. The page, [web/index.html](../web/index.html), follows these notes in its default theme (see Themes).
 
 ## What the sources say
 
@@ -24,8 +24,9 @@ Sources: [Layr design reference](https://layr.design/reference/layr-001-intentio
   - the asks still waiting at close, which closing accepts as the agent did them.
 - **The slices:** Inputs, Steps and Outputs, side by side, each scrolling on its own, with no lines between tiles: hovering a tile outlines it and shades what it's made from, and its card names them. A Tiles | List toggle shows the slices as dense tables, one over the other, for a long list; tiles stay the default, the reviewer's view.
 - **The sidebar is a cascade:** workspace, series, instance, each level indented under a rule. A row's actions sit in its corner, ⋯ for a menu and + for a new child, so the list holds only things and never grows a row of buttons. A row is a link all over, and shades under the pointer.
+- **The frame:** a top bar names the app, what the page shows and you, whose menu has Sign out; the sidebar's foot has Settings, the version the server runs, and « to fold the sidebar to a rail. Counts sit at a row's end; the bar's wake and Take over, Add files and the panel's tabs lead with a line icon in their words' colour.
 - **Menus and dialogs are the page's own.** A ⋯ menu drops from its button, with a rule before Archive or Abandon. A dialog dims the page behind it and closes on Escape or a click beside it. Names change in place, and settings save as they change, with Saved in the dialog's header. Buttons darken under the pointer, and stay dimmed while what they started runs.
-- **Copy** names objects and consequences. There is no helper text that repeats a label. A Key chip on the canvas teaches the colour code on hover.
+- **Copy** names objects and consequences. There is no helper text that repeats a label. A Key chip on the canvas teaches the colour code on hover, by swatches, so that it holds in any theme.
 - **Light throughout.** A dark band of the agent's work looked like leftover developer scaffolding.
 
 ## Never
@@ -35,12 +36,18 @@ Sources: [Layr design reference](https://layr.design/reference/layr-001-intentio
 - Motion, except to show state: a spinner while the agent works, one flash when a tile changes, and a pulsing corner on an ask that waits on a reply.
 - A colour whose meaning neither the legend nor the button's label gives.
 
-## Tokens
+## Themes
 
-    paper #f6f7f8   sheet #ffffff   rule #e3e6ea   rule-2 #cdd2d9
-    ink #15181d     ink-2 #474e5b   ink-3 #6b7280
-    person #1f48c7  person-bg #eef2fc   red #d42a1e   edge #a3aab4   control #e83
-    radius 4px (tiles, buttons), 8px (cards)
+The look is a layout and a theme, under [web/css/](../web/css). The page's layout, [layout.css](../web/css/layout.css), and the sign-in pages', [signin.css](../web/css/signin.css), draw everything in tokens and name no colour of their own; a theme gives the tokens their values. [test/themes.test.ts](../test/themes.test.ts) checks that the layouts name no colour and that the default gives every token.
+
+- **default**, [theme-default.css](../web/css/theme-default.css), is the one these notes describe:
+
+      paper #f6f7f8   sheet #ffffff   rule #e3e6ea   rule-2 #cdd2d9
+      ink #15181d     ink-2 #474e5b   ink-3 #6b7280
+      person #1f48c7  person-bg #eef2fc   red #d42a1e   edge #a3aab4   control #e83
+      radius 4px (tiles, buttons), 8px (cards)
+
+- **A deployment's own** is a stylesheet kept outside the checkout, which `RF_THEME` names by its absolute path. It is served on the default's tokens and gives only those it changes, so a token added here later keeps the default's value there; below its tokens it may restyle a few things beyond colour. A logo of the same name beside it, `.svg` or `.png`, tops the sidebar, level with the top bar, and the sign-in pages, wherever the deployment's brand has none. A deployment's theme answers to its own brand, and may part from the Never list where that does.
 
 ## Outside critique
 

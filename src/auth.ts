@@ -6,8 +6,9 @@ import { HttpError } from './store.ts';
 import { forgetPerson, isIn, key, readJson, rfDir, writeJson } from './system.ts';
 import { forgetLogins, logins, saveLogin, type Offer } from './logins.ts';
 import { keepSignIn } from './entra.ts';
+import { themeLogo } from './theme.ts';
 
-// Sign-in with a Microsoft account. People press "Sign in with Microsoft" and type nothing: the button goes to Microsoft Entra ID
+// Sign-in with a Microsoft account. People press "Continue with Microsoft" and type nothing: the button goes to Microsoft Entra ID
 // (OpenID Connect, code flow with PKCE), at RF_OIDC_ISSUER, for the app RF_OIDC_CLIENT_ID, which the server needs to start. The server
 // redeems the code, with the app's secret if it has one.
 
@@ -158,30 +159,28 @@ function admit(res: ServerResponse, email: string, name: string | undefined, who
   res.end();
 }
 
-const LOGO = '<svg width="20" height="20" viewBox="0 0 21 21" aria-hidden="true"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>';
-const STYLE = `<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
-<style>* { box-sizing: border-box; }
-body { margin: 0; min-height: 100dvh; display: grid; place-items: center; padding: 16px; font: 15px/1.5 "IBM Plex Sans", system-ui, sans-serif; color: #15181d; background: #f6f7f8; }
-.box { width: min(400px, 100%); padding: 32px 28px; background: #fff; border: 1px solid #e3e6ea; border-radius: 8px; box-shadow: 0 2px 8px rgba(21,24,29,.04); }
-.box p { overflow-wrap: anywhere; }
-h1 { font-size: 22px; font-weight: 600; margin: 0 0 6px; } p { margin: 0 0 22px; color: #474e5b; font-size: 14px; } .bad { color: #b42318; }
-.ms { display: flex; align-items: center; justify-content: center; gap: 12px; width: 100%; padding: 11px 12px; font: 600 15px "Segoe UI", "IBM Plex Sans", sans-serif;
-  color: #5e5e5e; background: #fff; border: 1px solid #8c8c8c; border-radius: 2px; text-decoration: none; cursor: pointer; }
-.ms:hover { background: #f3f3f3; }
-</style>`;
+// The sign-in pages wear the page's theme (web/css/signin.css and the theme RF_THEME names): a bar with the brand's logo, else the
+// theme's, else the brand's text or the app's name, atop a box in the middle, whose one button goes to Microsoft.
+const APP = 'RollForward';
+const SHIELD = '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1 13.5 3v4.2c0 3.4-2.3 6.3-5.5 7.8-3.2-1.5-5.5-4.4-5.5-7.8V3z" fill="currentColor"/><path class="tick" d="M5.6 8.1 7.3 9.8l3.2-3.4" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+// The box repeats a logo, never the name its heading says.
+const shell = (title: string, box: string) => {
+  const { text, logo } = readJson<{ text?: string; logo?: string }>('brand.json', {});
+  const img = logo ? '<img class="logo" src="/brand/logo" alt="">' : themeLogo ? '<img class="logo theme" src="/css/logo" alt="">' : '';
+  return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${title}</title>
+<link rel="stylesheet" href="/css/signin.css"><link rel="stylesheet" href="/css/theme.css">
+<header class="masthead">${img || `<b class="logo">${esc(text || APP)}</b>`}</header><main><div class="box">${img}${box}</div></main>`;
+};
+const button = (href: string) => `<a class="ms" href="${href}">${SHIELD}Continue with Microsoft</a>`;
 
 function page(res: ServerResponse, status: number, text: string) {
   res.writeHead(status, { 'content-type': 'text/html; charset=utf-8' });
-  res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>rollforward</title>${STYLE}
-<div class="box"><h1>rollforward</h1><p class="bad">${esc(text)}</p><a class="ms" href="/auth/login">${LOGO}Sign in with Microsoft</a></div>
-<script>history.replaceState(null, '', '/')</script>`);
+  res.end(shell('rollforward', `<h1>${APP}</h1><p class="bad">${esc(text)}</p>${button('/auth/login')}`) + "\n<script>history.replaceState(null, '', '/')</script>");
 }
 
 function signInPage(res: ServerResponse, next: string) {
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-  res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Sign in · rollforward</title>${STYLE}
-<div class="box"><h1>rollforward</h1><p>Recurring tasks, files in and files out. Sign in with your work account.</p>
-<a class="ms" href="/auth/login?next=${encodeURIComponent(next)}">${LOGO}Sign in with Microsoft</a></div>`);
+  res.end(shell('Sign in · rollforward', `<h1>Welcome to ${APP}</h1><p>Recurring tasks, files in and files out.</p>${button(`/auth/login?next=${encodeURIComponent(next)}`)}`));
 }
 
 // rf login URL, without a token, signs in through the browser, as gh auth login --web does: rf asks for a request, whose code the
@@ -227,7 +226,7 @@ export async function cli(req: IncomingMessage, res: ServerResponse, url: URL) {
   const form = req.method === 'POST' ? new URLSearchParams(await small(req)) : new URLSearchParams();
   const typed = (form.get('code') ?? '').toUpperCase().replace(/[^A-Z]/g, ''), a = typed && pending((_, a) => a.code.replace('-', '') === typed)?.[1];
   const show = (body: string) => res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-    .end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>rf login · rollforward</title>${STYLE}<div class="box"><h1>rollforward</h1>${body}</div>`);
+    .end(shell('rf login · rollforward', `<h1>${APP}</h1>${body}`));
   if (!typed) return show(`<form method="post" action="/cli"><p>Type the code rf shows you.</p><input name="code" required autofocus autocomplete="off" placeholder="ABCD-EFGH" style="width:100%;margin:0 0 14px;padding:10px;font:600 18px monospace;letter-spacing:2px;text-transform:uppercase"><button class="ms">Next</button></form>
 <p class="bad" style="margin:16px 0 0">Type only a code rf showed on your own computer. Anyone who asks you to type theirs is asking for your access.</p>`);
   if (!a) return show('<p class="bad">No sign-in request has that code: it expired, was answered, or was mistyped. Run rf login URL again.</p>');
