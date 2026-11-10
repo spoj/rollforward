@@ -798,6 +798,39 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   assert.match(await rf('people', '--set', file, '--force'), /^bob@demo\.test: admin -> user\nsaved$/m);
 });
 
+test("rf pull refuses a link where a folder goes, dangling ones too, but follows its destination's and replaces a file's own", async () => {
+  const { id: workspace } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Pulling' }))).json();
+  const { instance } = await (await call('POST', '/api/series', JSON.stringify({ workspace, single: true }))).json();
+  mkdirSync(join(root, 'instances', instance, 'working', 'nested'));
+  writeFileSync(join(root, 'instances', instance, 'working', 'nested', 'victim.txt'), 'from the server');
+  const outside = join(tmp, 'pull-outside'), missing = join(tmp, 'pull-missing'), path = 'Pulling/Untitled/Untitled/';
+  mkdirSync(outside);
+  writeFileSync(join(outside, 'victim.txt'), 'local');
+  let n = 0;
+  for (const [from, folder, target] of [
+    [path, 'working/nested', outside], ['Pulling', 'Pulling', outside],
+    [path, 'working', missing], [path, 'working', join(outside, 'victim.txt')],
+  ]) {
+    const dest = join(tmp, `pull-link-${n++}`), link = join(dest, folder);
+    mkdirSync(dirname(link), { recursive: true });
+    symlinkSync(target, link);
+    for (const flags of [[], ['--delete'], ['-n']]) {
+      await assert.rejects(rf('pull', from, dest, ...flags), fails(1, /is a symlink: remove it or pull into another directory\n$/));
+      assert.deepEqual(readdirSync(outside), ['victim.txt']);
+      assert.equal(readFileSync(join(outside, 'victim.txt'), 'utf8'), 'local');
+      assert.ok(!existsSync(missing));
+    }
+  }
+  const dest = join(tmp, 'pull-file-link'), file = join(dest, 'working', 'nested', 'victim.txt');
+  mkdirSync(dirname(file), { recursive: true });
+  symlinkSync(join(outside, 'victim.txt'), file);
+  await rf('pull', path, dest);
+  assert.equal(readFileSync(file, 'utf8'), 'from the server');
+  assert.equal(readFileSync(join(outside, 'victim.txt'), 'utf8'), 'local');
+  symlinkSync(dest, join(tmp, 'pull-linked'));
+  assert.match(await rf('pull', path, join(tmp, 'pull-linked')), /fetched 0, \d+ up to date/);
+});
+
 test("rf alone lists its commands and rf help COMMAND gives one's usage; every read takes --json; a failure is one line, with exit code 1, and a command used wrongly prints its usage, with exit code 2", async () => {
   assert.match(await rf(), /^rf login URL \[TOKEN\] .*\nrf ls \[--json\] /);
   assert.equal(await rf('--version'), `${JSON.parse(readFileSync(join(app, 'cli', 'package.json'), 'utf8')).version}\n`);

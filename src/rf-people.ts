@@ -1,6 +1,6 @@
 // rf for people: what the page does, from a shell or a desktop agent, as you, with a personal token made on the page (Tokens).
 // Published to npm as @rfany/rf, from cli/. PATH is workspace/series/label, as `rf ls` prints it.
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { homedir, hostname } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
@@ -287,11 +287,16 @@ function write(path: string, data: string | Uint8Array, mtime: string) {
 
 // A path the server named, under `base`, or undefined where a name in it can't be one here: on Windows a name may hold \ or :, which
 // would put the file elsewhere, even in another workspace's folder, or another file's stream; or name a device, such as CON; or end
-// in a dot or a space, which Windows drops.
+// in a dot or a space, which Windows drops. A link where one of its folders goes, or `base`, would take the file elsewhere too, and is refused.
 const under = (base: string, rel: string) => {
   const names = rel.split('/');
   if (names.some(n => !n || n === '.' || n === '..' || basename(n) !== n
     || (process.platform === 'win32' && (/[<>:"|?*\x00-\x1f]|[. ]$/.test(n) || /^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/i.test(n))))) return undefined;
+  let folder = base;
+  for (const name of ['', ...names.slice(0, -1)]) {
+    folder = join(folder, name);
+    if (lstatSync(folder, { throwIfNoEntry: false })?.isSymbolicLink()) throw new Error(`${folder} is a symlink: remove it or pull into another directory`);
+  }
   return join(base, ...names);
 };
 
@@ -301,7 +306,8 @@ const globs = excludes.map(p => [p.replace(/^\/|\/$/g, '').includes('/'), new Re
 const excluded = (rel: string) => globs.some(([whole, re]) => rel.split('/').some((name, k, all) => re.test(whole ? all.slice(0, k + 1).join('/') : name)));
 
 // Copies PATH's files into DIR as rsync does, from the server only and whole: a file whose size or time differ from the server's is
-// fetched, and given the server's time, so the next pull compares against it. Nothing is kept besides the files.
+// fetched, and given the server's time, so the next pull compares against it. Nothing is kept besides the files. DIR may be a link, as the
+// person who names it chose; no folder in it may.
 async function pull(path: string, dir: string) {
   const at = path.replace(/^\/+/, ''), from = at.replace(/\/+$/, ''), dry = !!flags['dry-run'];
   const size = /^(\d+)([KMG]?)$/i.exec(String(flags['max-size'] ?? '0'));
@@ -309,7 +315,8 @@ async function pull(path: string, dir: string) {
   const max = flags['max-size'] === undefined ? Infinity : Number(size[1]) * 1024 ** ' KMG'.indexOf(size[2].toUpperCase() || ' ');
   const list: { path: string; size: number; mtime: string; url?: string; text?: string }[] = await get(`/api/files?path=${encodeURIComponent(from)}`);
   if (!list.length) throw new Error(`nothing you can see at ${path}`);
-  const into = !from || at.endsWith('/') ? resolve(dir) : under(resolve(dir), from.slice(from.lastIndexOf('/') + 1)), rel = (f: { path: string }) => f.path.slice(from ? from.length + 1 : 0);
+  const to = existsSync(dir) ? realpathSync(dir) : resolve(dir);
+  const into = !from || at.endsWith('/') ? to : under(to, from.slice(from.lastIndexOf('/') + 1)), rel = (f: { path: string }) => f.path.slice(from ? from.length + 1 : 0);
   if (!into) throw new Error(`${from} can't be a name here: pull ${from}/ into a folder of your choosing`);
   let fetched = 0, same = 0, deleted = 0, failed = 0, big = 0;
   const fetches: (() => Promise<void>)[] = [];
