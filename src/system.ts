@@ -46,7 +46,7 @@ export const rfDir = () => dir;
 
 // The system's log, .rf/log.jsonl: what people did beyond an instance, one act a line, by seq, each by who did it; an instance's acts
 // are in its own log. A secret, or a file's content, is never written: such a field goes, however deep.
-const UNLOGGED = ['key', 'header', 'token', 'secret', 'password', 'data'];
+const UNLOGGED = ['key', 'header', 'token', 'secret', 'password', 'data', 'files'];
 let acts = 0;
 export function act(by: string, fields: Record<string, unknown>) {
   const p = join(dir, 'log.jsonl');

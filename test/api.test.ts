@@ -1331,6 +1331,16 @@ test("a workspace's owners propose to merge it into another or move a series the
   assert.deepEqual([(await listed(reader)).reads, (await listed(reader)).readers, (await listed(into)).reads], [[], [], []], "the merged workspace's links go, both ways");
 });
 
+test("a skill push's files stay out of the system's log", async () => {
+  const files = { 'SKILL.md': Buffer.from('---\nname: audit\ndescription: Audit\n---\nPrivate instructions\n').toString('base64'), 'scripts/read.py': Buffer.from('print("private script")\n').toString('base64') };
+  assert.equal((await call('POST', '/skills/audit/versions', JSON.stringify({ files }))).status, 200);
+  const logged = readFileSync(join(root, '.rf/log.jsonl'), 'utf8');
+  const act = logged.trim().split('\n').map(l => JSON.parse(l)).findLast(a => a.path === '/skills/audit/versions');
+  assert.deepEqual(act.body, {});
+  for (const data of Object.values(files)) assert.ok(!logged.includes(data));
+  assert.deepEqual(await json('/skills/audit/versions/1'), files);
+});
+
 test("what a person changes beyond an instance is an act of theirs in the system's log, once it's done, its secrets and files' contents left out", async () => {
   const acts = () => readFileSync(join(root, '.rf', 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
   const before = acts().length;
