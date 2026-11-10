@@ -202,7 +202,7 @@ export async function allowHost(by: Me, site: string, host: string, email = by.e
   const inside = await resolvesInternal(h), admin = inside && by.role === 'admin';
   if (inside && !admin && !letIn()[h]) throw new HttpError(403, `${h} is at an internal address: an admin allows it`);
   await checkHost(h, !!w.internal || inside);
-  changeWebsite(email, site, { hosts: [...new Set([...w.hosts, h])], ...(admin && { internal: true }) });
+  changeWebsite(email, site, { hosts: [...new Set([...website(email, site).hosts, h])], ...(admin && { internal: true }) });
   if (admin && !letIn()[h]) {
     setLetIn([h], by.email, true);
     act(by.email, { op: 'internal', person: email, site, hosts: [h], let: true });

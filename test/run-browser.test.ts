@@ -502,6 +502,13 @@ test("the hosts a run's browser was refused: one within the domains its website 
   await assert.rejects(allowHost({ email: alice, role: 'user' } as never, 'crm', 'intra.acme.localhost'), /^Error: intra\.acme\.localhost is at an internal address: an admin allows it$/, 'nor does its person allow it');
 });
 
+test('two hosts allowed at once both stay on the website', async () => {
+  const { allowHost } = await import('../src/browsers.ts');
+  sites({ crm: { url: 'https://crm.example.com/', hosts: [], writeback: false } });
+  await Promise.all(['one.example.com', 'two.example.com'].map(h => allowHost(asPerson(alice)!, 'crm', h)));
+  assert.deepEqual(websitesOf(alice).crm.hosts.sort(), ['one.example.com', 'two.example.com']);
+});
+
 test("an admin lets websites reach a host at an internal address once, for everyone's: then anyone signs in to theirs there, its browser reaching internal addresses, and allows it as any other host, until an admin lets it no more", async () => {
   const { addSite, allowHost, setSite } = await import('../src/browsers.ts'), { letIn } = await import('../src/connections.ts');
   const alice = 'alice@demo.test', bob = 'bob@demo.test', carol = 'carol@demo.test', admin = { email: alice, role: 'admin' } as never, user = (email: string) => ({ email, role: 'user' }) as never;
