@@ -175,6 +175,7 @@ async function start(inst: Instance) {
   try {
     await confirm(runner);
   } catch (e) {
+    if (runnerOf(inst).by !== runner) return void kick(inst);
     if ((e as HttpError).status !== 401) {
       console.error(`a run of ${inst.id} waits a minute: Microsoft didn't confirm ${runner}'s sign-in`, e);
       return void setTimeout(() => kick(inst), 60_000).unref();
@@ -183,6 +184,7 @@ async function start(inst: Instance) {
     return void changes.emit('change', inst.id);
   }
   if (stopping || active.has(series) || !due(inst)) return void changes.emit('change', inst.id);
+  if (runnerOf(inst).by !== runner) return void kick(inst);
   if (full()) return void waiting.add(inst);
   // One who can no longer see its workspace, as after being removed from it, waits for someone to take the instance over.
   if (!sees(inst)) return void changes.emit('change', inst.id);

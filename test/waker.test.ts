@@ -272,6 +272,39 @@ test("a run starts only for a runner Microsoft still signs in: one it no longer 
   assert.deepEqual([runs(), inst.log.at(-1)!.left, users()[lee].disabled], [2, true, true], 'Microsoft says the account is disabled: so is its person here');
 });
 
+for (const stale of [false, true]) test(`a takeover while Microsoft ${stale ? 'refuses' : 'confirms'} the runner starts over, confirming the new runner before any run`, async t => {
+  const before = `before-${stale}@demo.test`, next = `next-${stale}@demo.test`;
+  writeJson('users.json', { ...readJson('users.json', {}), [before]: { role: 'user' }, [next]: { role: 'user' } });
+  saveTree({ ...tree(), workspaces: { ...tree().workspaces, w: { ...tree().workspaces.w, members: [before, next] } } });
+  keepSignIn(before, entra.refresh(before));
+  keepSignIn(next, entra.refresh(next));
+  entra.who.stale.add(next);
+  if (stale) entra.who.stale.add(before);
+  const inst = createInstance('s8', `takeover-during-confirm-${stale}`, before, []);
+  inst.append('server', 'wake', { from: before });
+  let release!: () => void, entered!: () => void;
+  const held = new Promise<void>(ok => { release = ok; }), waiting = new Promise<void>(ok => { entered = ok; });
+  const fetch = globalThis.fetch;
+  let asked = false;
+  t.mock.method(globalThis, 'fetch', async (input, init) => {
+    if (String(input).endsWith('/token') && String(init?.body).includes(encodeURIComponent(entra.refresh(next)))) asked = true;
+    if (String(input).endsWith('/token') && String(init?.body).includes(encodeURIComponent(entra.refresh(before)))) {
+      entered();
+      await held;
+    }
+    return fetch(input, init);
+  });
+  kick(inst);
+  await waiting;
+  inst.append(next, 'takeover', { from: before, logins: [] });
+  kick(inst);
+  release();
+  for (let i = 0; i < 100 && !inst.log.some(e => ['run', 'expired'].includes(e.op)); i++) await new Promise(ok => setTimeout(ok, 50));
+  assert.ok(!ops(inst).includes('run'), 'the new runner has an expired sign-in');
+  assert.equal(inst.log.findLast(e => e.op === 'expired')?.runner, next);
+  assert.ok(asked, 'Microsoft was asked about the new runner');
+});
+
 test("a weekly wake's days are such as mon-fri or mon,wed,fri, and it first fires on one of them; a series' label holds the date it fires or the one before that it fires on", () => {
   const fri = new Date(2020, 0, 3, 8), mon = new Date(2020, 0, 6, 8), weekdays = ['mon', 'tue', 'wed', 'thu', 'fri'];
   assert.deepEqual(weekly('mon-fri', fri, '2020-01-03'), weekdays, 'the day it fires');
