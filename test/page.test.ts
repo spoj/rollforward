@@ -431,6 +431,19 @@ test("people show by name, with their email on hover, and Entra groups by label;
   assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('#needs, #log')].map(e => e.scrollWidth <= e.clientWidth).concat([...document.querySelectorAll('#needs .btn')].map(b => b.getBoundingClientRect().right <= document.querySelector('#needs')!.getBoundingClientRect().right))), [true, true, true, true], 'a long line ends in an ellipsis, and its Reply shows; the panel keeps its width');
 });
 
+test("a runner's name without letters shows its first characters in the sidebar", async () => {
+  const tab = await browser.newPage({ storageState: await page.context().storageState() });
+  try {
+    await tab.goto(new URL('/#/3d70f7ca6f20', page.url()).href);
+    await tab.waitForSelector('#bar h1 .t:text-is("2026-08-30")');
+    for (const [name, short] of [['123', '12'], ['🚀🎯', '🚀🎯']]) {
+      await tab.evaluate(name => { me.names[cur.i.runner] = name; renderSide(); }, name);
+      assert.equal(await tab.textContent('.row.inst.on .who'), short);
+      assert.equal(await tab.getAttribute('.row.inst.on .who', 'title'), `${name} runs it`);
+    }
+  } finally { await tab.close(); }
+});
+
 test("the conversation reads as a chat: oldest first, a run below the comment that started it and a thread where its last post is, and the box to comment at the panel's foot; it opens at the latest and keeps there as posts come, unless the reader has scrolled up", async () => {
   const url = (path: string) => new URL(path, page.url()).href, signin = await entra.signIn(new URL(page.url()).origin, 'bob@demo.test');
   const bobs = signin.headers.getSetCookie().find(c => c.startsWith('rf_session='))!.split(';')[0];

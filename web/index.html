@@ -566,6 +566,7 @@ const sorted = (xs, act, name) => [...xs].sort(localStorage.order === 'name' ? (
 // How long ago, compactly, as a row's last activity: now, 5m, 3h, 2d, 7w.
 const initials = name => {
   const w = name.replace(/^v-/i, '').match(/\p{L}+/gu);
+  if (!w) return [...name].slice(0, 2).join('');
   return (w.length > 1 ? w[0][0] + w[1][0] : w[0].slice(0, 2)).toUpperCase();
 };
 // A time to come, compactly: its time today, else its day.
