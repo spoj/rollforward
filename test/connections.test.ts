@@ -709,6 +709,36 @@ test('adding Databricks warehouses keeps concurrent adds and removals and never 
   }
 });
 
+test('Databricks requests use the connection ticked for their workspace host, not the first Databricks connection', async () => {
+  const { setConnection, removeConnection, upstreams } = await import('../src/connections.ts');
+  await setConnection('adb2', { type: 'databricks' }, 'admin');
+  upstreams['adb-2.azuredatabricks.net'] = upstreams['adb-1.azuredatabricks.net'];
+  logins.saveLogin(ALICE, { id: 'adb2', kind: 'databricks', name: 'Databricks adb2', account: ALICE, since: '2026-11-04T00:00:00Z', offers: [
+    { id: 'adb2:adb-1.azuredatabricks.net/wh2', name: 'Second login, first workspace' },
+    { id: 'adb2:adb-2.azuredatabricks.net/wh2', name: 'Second login, second workspace' },
+  ] }, 'dbx');
+  try {
+    for (const [token, ticks, hosts] of [
+      ['second-only', ['adb2:adb-1.azuredatabricks.net/wh2'], [['adb-1', 'adb2', 'wh2']]],
+      ['two-workspaces', ['adb:adb-1.azuredatabricks.net/wh1', 'adb2:adb-2.azuredatabricks.net/wh2'], [['adb-1', 'adb', 'wh1'], ['adb-2', 'adb2', 'wh2']]],
+    ] as [string, string[], string[][]][]) {
+      runs.set(token, { ...inst, log: started(ticks) } as unknown as Instance);
+      for (const [host, connection, warehouse] of hosts) {
+        for (const path of ['/api/2.0/sql/statements', '/api/2.0/sql/statements/s1', '/api/2.1/unity-catalog/catalogs']) {
+          const post = path.endsWith('/statements');
+          const answer = await via(post ? 'POST' : 'GET', `https://${host}.azuredatabricks.net${path}`, { token, ...(post && json({ statement: 'SELECT 1', warehouse_id: warehouse })) });
+          assert.equal(answer.status, 200, `${token} ${host}: ${answer.text}`);
+          assert.equal(calls().at(-1)!.name, connection);
+        }
+      }
+    }
+  } finally {
+    logins.signOut(ALICE, 'adb2');
+    removeConnection('adb2');
+    delete upstreams['adb-2.azuredatabricks.net'];
+  }
+});
+
 test("a run queries Databricks at its own address as the runner: statements on a warehouse ticked for its instance, whatever they do, as the runner's own grants allow, their results through the links they give, and the catalogue", async () => {
   runs.set('dbx', { ...inst, log: started(['adb:adb-1.azuredatabricks.net/wh1']) } as unknown as Instance);
   const D = 'https://adb-1.azuredatabricks.net', go = (method: string, path: string, body?: unknown) => via(method, `${D}${path}`, { token: 'dbx', ...(body !== undefined && json(body)) });

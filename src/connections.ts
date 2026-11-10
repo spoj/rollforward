@@ -142,8 +142,10 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     if (!url) throw new HttpError(403, `invalid request target: ${req.url}`);
     const link = a.links.get(url.href), s = link ? undefined : own(host);
     // The runner's own OpenRouter key, where they use it, in place of the server's, never falling back to it.
-    const runner = runnerOf(a.inst).by, mine = s === openrouter ? logins(runner).find(l => l.id === 'openrouter' && l.enabled) : undefined;
-    const c = link || s ? undefined : connections().find(c => types[c.type].hosts?.some(h => covers(h, host)));
+    const { by: runner, logins: ticked } = runnerOf(a.inst), mine = s === openrouter ? logins(runner).find(l => l.id === 'openrouter' && l.enabled) : undefined;
+    // Of the connections that take the host, the one a tick names it under, as a Databricks workspace's warehouse does, or the first.
+    const serving = link || s ? [] : connections().filter(c => types[c.type].hosts?.some(h => covers(h, host)));
+    const c = serving.find(c => ticked.some(t => t.startsWith(`${loginOf(c).id}:${host}/`))) ?? serving[0];
     name = link?.name ?? c?.name ?? s?.name ?? host;
     path = link ? url.origin + url.pathname : url.pathname + url.search;
     // A target such as //elsewhere/… or https://elsewhere/… would take the request, and the credential put in, to another host, and
