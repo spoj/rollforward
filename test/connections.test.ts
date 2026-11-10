@@ -446,6 +446,13 @@ test("a website is its person's own, by a name of theirs and an https address, s
   assert.throws(() => removeSite(ALICE, 'erp'), /has no website erp/);
 });
 
+test('a website cannot reach a wildcard that covers Graph or Databricks', async () => {
+  const { checkHost } = await import('../src/connections.ts');
+  for (const host of ['*.microsoft.com', '*.azuredatabricks.net', '*.eu.azuredatabricks.net'])
+    await assert.rejects(checkHost(host, false), /no website reaches it/);
+  for (const host of ['*.graph.microsoft.com', '*.example.com']) await checkHost(host, false);
+});
+
 test('the proxy reaches nothing, not even what a tick is checked against, for a runner who can no longer lend their login', async () => {
   const { upsertUser } = await import('../src/auth.ts'), before = methods.length;
   upsertUser(ALICE, { disabled: true });

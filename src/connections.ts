@@ -35,7 +35,7 @@ export type Type = {
   settings(input: Record<string, unknown>): Record<string, unknown>;
   // Its person's login: an Entra login, with its scope.
   login(c: Connection): (EntraLogin | { id: string; kind: string; name: string; scope?: undefined; offers: Offer[] });
-  serves?(c: Connection, host: string): boolean;
+  hosts?: string[];
   // The offer a request needs ticked, its JSON body as it goes on, if the type rewrote it, and the origin where its answer's
   // Location, as a redirect's, is a link; or a refusal.
   // A request that sends mail also reads, on asking, what goes, its recipients and its attachments' sha256s, or why that can't be read.
@@ -72,7 +72,7 @@ export async function checkHost(h: string, internal: boolean) {
   const base = h.replace(/^\*\./, '');
   if (h !== base && !getDomain(base, { allowPrivateDomains: true })) throw new HttpError(400, `${h}: a wildcard stays within one registrable domain, such as *.example.com`);
   if ([process.env.RF_PUBLIC_URL, process.env.RF_BROWSER_URL].some(u => u && covers(h, new URL(u).hostname))) throw new HttpError(400, `${h} is rollforward's own: no website reaches it`);
-  const other = connections().find(c => types[c.type].serves?.(c, base));
+  const other = connections().find(c => types[c.type].hosts?.some(host => covers(h, host) || covers(host, h)));
   if (other) throw new HttpError(400, `${h} is ${other.name}'s: no website reaches it`);
   if (!internal && h === base && !letIn()[h] && await resolvesInternal(h)) throw new HttpError(400, `${h} is at an internal address: a website reaches one only where an admin lets it`);
 }
@@ -116,7 +116,7 @@ export const upstreams: Record<string, string> = {};
 const own = (host: string) => [openrouter, exa].find(s => s.host === host && process.env[s.key]);
 
 export const intercepts = (a: CallRun, host: string) =>
-  !!own(host) || connections().some(c => types[c.type].serves?.(c, host)) || [...a.links.keys()].some(u => new URL(u).host === host);
+  !!own(host) || connections().some(c => types[c.type].hosts?.some(h => covers(h, host))) || [...a.links.keys()].some(u => new URL(u).host === host);
 
 const HOP = ['authorization', 'connection', 'host', 'keep-alive', 'proxy-authorization', 'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade'];
 
@@ -143,7 +143,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     const link = a.links.get(url.href), s = link ? undefined : own(host);
     // The runner's own OpenRouter key, where they use it, in place of the server's, never falling back to it.
     const runner = runnerOf(a.inst).by, mine = s === openrouter ? logins(runner).find(l => l.id === 'openrouter' && l.enabled) : undefined;
-    const c = link || s ? undefined : connections().find(c => types[c.type].serves?.(c, host));
+    const c = link || s ? undefined : connections().find(c => types[c.type].hosts?.some(h => covers(h, host)));
     name = link ?? c?.name ?? s?.name ?? host;
     path = link ? url.origin + url.pathname : url.pathname + url.search;
     // A target such as //elsewhere/… or https://elsewhere/… would take the request, and the credential put in, to another host, and

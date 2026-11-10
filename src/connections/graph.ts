@@ -130,7 +130,7 @@ async function links(j: any, path: string, email: string, ticks: string[]): Prom
 export default {
   settings: () => ({}),
   login: () => ({ id: 'm365', kind: 'm365', name: 'Microsoft 365', scope: scope() }),
-  serves: (_, host) => host === 'graph.microsoft.com',
+  hosts: ['graph.microsoft.com'],
   check: (_, runner, ticks, r) => check(runner, ticks, r),
   links,
 } satisfies Type;
