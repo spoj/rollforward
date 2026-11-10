@@ -187,7 +187,7 @@ export class Instance {
     const clean = safeName(name), ext = extname(clean), stem = clean.slice(0, clean.length - ext.length);
     mkdirSync(join(this.dir, folder), { recursive: true });
     let file = `${folder}/${clean}`;
-    for (let n = 2; existsSync(join(this.dir, file)); n++) file = `${folder}/${stem}_${n}${ext}`;
+    for (let n = 2; file === 'upload/attachments' || existsSync(join(this.dir, file)); n++) file = `${folder}/${stem}_${n}${ext}`;
     renameSync(tmp, join(this.dir, file));
     chmodSync(join(this.dir, file), 0o444);
     return file;

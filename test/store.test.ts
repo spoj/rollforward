@@ -13,6 +13,24 @@ test("a name is a folder's and a line's: slashes, control characters and line br
   assert.throws(() => safeName('AGENTS.md'), /AGENTS\.md is the name of the agents' instructions/);
 });
 
+test('an upload named attachments takes the next free name, leaving the folder for comment attachments', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
+  openStore(tmp);
+  const inst = createInstance('weekly', 'w1', 'alex', []), incoming = join(tmp, 'incoming');
+  writeFileSync(incoming, 'first');
+  const up = inst.upload('alex', 'attachments', incoming, 'hash', 'in', null, true);
+  assert.equal(up.file, 'upload/attachments_2');
+  assert.equal(inst.doc.items[0].file, up.file);
+  assert.equal(readFileSync(join(inst.dir, up.file as string), 'utf8'), 'first');
+  assert.equal(statSync(join(inst.dir, up.file as string)).mode & 0o222, 0);
+  writeFileSync(incoming, 'comment');
+  assert.equal(inst.keep('note.txt', incoming, 'upload/attachments'), 'upload/attachments/note.txt');
+  writeFileSync(incoming, 'second');
+  assert.equal(inst.upload('alex', 'attachments', incoming, 'hash', 'out', null, true).file, 'upload/attachments_3');
+  assert.equal(readFileSync(join(inst.dir, 'upload/attachments/note.txt'), 'utf8'), 'comment');
+  rmSync(tmp, { recursive: true, force: true });
+});
+
 test('a screen starts empty; a put takes steps and from, which must name items and not go round in a circle', async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-')), series = 'weekly';
   openStore(tmp);
