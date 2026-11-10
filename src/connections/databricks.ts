@@ -27,14 +27,15 @@ const links = (j: any, path: string): string[] => !path.startsWith('/api/2.0/sql
 
 // A SQL warehouse its person adds to their Databricks login by its link, such as its page's, checked by reading it as them.
 export async function addWarehouse(email: string, id: string, add: string) {
-  const login = logins(email).find(l => l.id === id && l.kind === 'databricks'), u = URL.parse(add.trim()), warehouse = /\/warehouses\/([\w-]+)/.exec(u?.pathname ?? '')?.[1];
-  if (!login) throw new HttpError(409, `connect ${id} first`);
+  const u = URL.parse(add.trim()), warehouse = /\/warehouses\/([\w-]+)/.exec(u?.pathname ?? '')?.[1];
+  if (!logins(email).some(l => l.id === id && l.kind === 'databricks')) throw new HttpError(409, `connect ${id} first`);
   if (!u || !WORKSPACE.test(u.hostname) || !warehouse) throw new HttpError(400, 'a link to a SQL warehouse of an Azure Databricks workspace, such as https://adb-123.4.azuredatabricks.net/sql/warehouses/1a2b3c4d5e6f7a8b');
   const r = await fetch(`${upstreams[u.hostname] ?? `https://${u.hostname}`}/api/2.0/sql/warehouses/${warehouse}`, { headers: { authorization: `Bearer ${await token(email, id, scope)}` }, signal: AbortSignal.timeout(30_000) });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new HttpError(r.status === 403 || r.status === 404 ? r.status : 502, `Databricks answered ${r.status} ${j.error_code ?? ''}: ${j.message ?? ''}`);
   const o = { id: `${id}:${u.hostname}/${warehouse}`, name: `Warehouse ${j.name ?? warehouse}, ${u.hostname}` };
-  saveLogin(email, { ...login, offers: [...login.offers.filter(x => x.id !== o.id), o] });
+  const login = logins(email).find(l => l.id === id && l.kind === 'databricks');
+  if (login) saveLogin(email, { ...login, offers: [...login.offers.filter(x => x.id !== o.id), o] });
 }
 
 export default {

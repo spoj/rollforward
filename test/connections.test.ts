@@ -361,6 +361,42 @@ test('a person adds, in one box, a mailbox by its address, a site by its link, a
   ], 'the same item again replaces its offer');
 });
 
+test('adding Microsoft 365 sources keeps concurrent adds and removals and never restores a signed-out login', async () => {
+  const { offer, scope } = await import('../src/connections/graph.ts');
+  await (await import('../src/entra.ts')).token(ALICE, 'm365', scope());
+  const fetch = globalThis.fetch, login = m365(), secret = logins.secret(ALICE, 'm365');
+  try {
+    for (const change of ['add', 'remove', 'signout']) {
+      logins.saveLogin(ALICE, login, secret);
+      const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+      let waiting = 0;
+      globalThis.fetch = async (input, init) => {
+        if (/\/users\/race[12]@demo.test\/mailFolders\/inbox$/.test(decodeURIComponent(new URL(String(input)).pathname))) {
+          if (++waiting === (change === 'add' ? 2 : 1)) entered.resolve();
+          await release.promise;
+          return Response.json({ id: 'inbox' });
+        }
+        return fetch(input, init);
+      };
+      const pending = [offer(ALICE, 'race1@demo.test')];
+      if (change === 'add') pending.push(offer(ALICE, 'race2@demo.test'));
+      await entered.promise;
+      if (change === 'remove') logins.unoffer(ALICE, 'm365', login.offers[0].id);
+      if (change === 'signout') logins.signOut(ALICE, 'm365');
+      release.resolve();
+      await Promise.all(pending);
+      if (change === 'signout') assert.equal(m365(), undefined);
+      else assert.deepEqual(m365().offers.map(o => o.id), [
+        ...login.offers.filter(o => change !== 'remove' || o.id !== login.offers[0].id).map(o => o.id),
+        'm365:mail:race1@demo.test', ...(change === 'add' ? ['m365:mail:race2@demo.test'] : []),
+      ], change);
+    }
+  } finally {
+    globalThis.fetch = fetch;
+    logins.saveLogin(ALICE, login, secret);
+  }
+});
+
 test("a ticked folder reaches what's under it, at any depth, and a search within it; not its parent, a sibling, or a search of the whole drive", async () => {
   runs.set('run2', { ...inst, log: started(['m365:item:b!d1/y2026']) } as unknown as Instance);
   const get = (path: string) => via('GET', `${G}${path}`, { token: 'run2' });
@@ -635,6 +671,42 @@ test("a person adds a SQL warehouse to their Databricks login by its link, check
   await assert.rejects(addWarehouse(ALICE, 'adb', 'https://adb-1.azuredatabricks.net/sql/warehouses/nope'), /Databricks answered 404 NOT_FOUND/);
   for (const link of ['https://adb-1.test/sql/warehouses/wh1', 'https://adb-1.azuredatabricks.net/jobs/1'])
     await assert.rejects(addWarehouse(ALICE, 'adb', link), /a link to a SQL warehouse of an Azure Databricks workspace/, link);
+});
+
+test('adding Databricks warehouses keeps concurrent adds and removals and never restores a signed-out login', async () => {
+  const { addWarehouse } = await import('../src/connections/databricks.ts');
+  const fetch = globalThis.fetch, login = logins.logins(ALICE).find(l => l.id === 'adb')!, secret = logins.secret(ALICE, 'adb');
+  try {
+    for (const change of ['add', 'remove', 'signout']) {
+      logins.saveLogin(ALICE, login, secret);
+      const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+      let waiting = 0;
+      globalThis.fetch = async (input, init) => {
+        if (/\/api\/2.0\/sql\/warehouses\/race[12]$/.test(new URL(String(input)).pathname)) {
+          if (++waiting === (change === 'add' ? 2 : 1)) entered.resolve();
+          await release.promise;
+          return Response.json({ name: 'Race' });
+        }
+        return fetch(input, init);
+      };
+      const pending = [addWarehouse(ALICE, 'adb', 'https://adb-1.azuredatabricks.net/sql/warehouses/race1')];
+      if (change === 'add') pending.push(addWarehouse(ALICE, 'adb', 'https://adb-1.azuredatabricks.net/sql/warehouses/race2'));
+      await entered.promise;
+      if (change === 'remove') logins.unoffer(ALICE, 'adb', login.offers[0].id);
+      if (change === 'signout') logins.signOut(ALICE, 'adb');
+      release.resolve();
+      await Promise.all(pending);
+      const now = logins.logins(ALICE).find(l => l.id === 'adb');
+      if (change === 'signout') assert.equal(now, undefined);
+      else assert.deepEqual(now!.offers.map(o => o.id), [
+        ...login.offers.filter(o => change !== 'remove' || o.id !== login.offers[0].id).map(o => o.id),
+        'adb:adb-1.azuredatabricks.net/race1', ...(change === 'add' ? ['adb:adb-1.azuredatabricks.net/race2'] : []),
+      ], change);
+    }
+  } finally {
+    globalThis.fetch = fetch;
+    logins.saveLogin(ALICE, login, secret);
+  }
 });
 
 test("a run queries Databricks at its own address as the runner: statements on a warehouse ticked for its instance, whatever they do, as the runner's own grants allow, their results through the links they give, and the catalogue", async () => {

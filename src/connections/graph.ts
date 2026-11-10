@@ -200,8 +200,8 @@ async function ownDrive(email: string): Promise<string> {
 // address, their own or one they may read; a SharePoint site, whole, by its link; or a folder, with all that is under it, or a
 // file, in SharePoint or in anyone's OneDrive, by any link to it. A whole OneDrive or library is its top folder's link.
 export async function offer(email: string, add: string): Promise<void> {
-  const login = logins(email).find(l => l.id === 'm365'), v = add.trim();
-  if (!login) throw new HttpError(409, 'connect Microsoft 365 first');
+  const v = add.trim();
+  if (!logins(email).some(l => l.id === 'm365')) throw new HttpError(409, 'connect Microsoft 365 first');
   let o: Offer;
   if (/^[^@\s/]+@[^@\s/]+$/.test(v)) {
     const box = v.toLowerCase();
@@ -227,5 +227,6 @@ export async function offer(email: string, add: string): Promise<void> {
       o = { id: `m365:item:${item.parentReference.driveId}/${item.id}`, name: item.root ? where : `${item.folder ? 'Folder' : 'File'} ${item.name}, ${where}` };
     }
   }
-  saveLogin(email, { ...login, offers: [...login.offers.filter(x => x.id !== o.id), o] });
+  const login = logins(email).find(l => l.id === 'm365');
+  if (login) saveLogin(email, { ...login, offers: [...login.offers.filter(x => x.id !== o.id), o] });
 }
