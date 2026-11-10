@@ -703,6 +703,27 @@ test('old website internal flags do not let browsers reach hosts absent from the
   }
 });
 
+test("a website set --internal true before 0.3.12 keeps its reach: at the server's start its hosts at internal addresses join the shared record and its flag goes, but for a host an admin took out since, and one that resolves nowhere yet waits for the next start", async () => {
+  const { enrolFlagged } = await import('../src/browsers.ts'), { letIn, setLetIn } = await import('../src/connections.ts');
+  // 10.1.2.3 an admin took out above.
+  sites({ crm: { url: 'https://crm.example.com/', hosts: ['10.4.5.6', '10.1.2.3'], writeback: false, internal: true }, later: { url: 'https://later.invalid/', hosts: [], writeback: false, internal: true } });
+  await enrolFlagged();
+  assert.deepEqual(Object.entries(letIn()).map(([h, { by }]) => [h, by]), [['10.4.5.6', 'server']]);
+  assert.deepEqual(websitesOf(alice), { crm: { url: 'https://crm.example.com/', hosts: ['10.4.5.6', '10.1.2.3'], writeback: false }, later: { url: 'https://later.invalid/', hosts: [], writeback: false, internal: true } });
+  const act = readFileSync(join(tmp, '.rf', 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)).findLast(a => a.person === alice);
+  assert.deepEqual([act.by, act.op, act.site, act.hosts, act.let], ['server', 'internal', 'crm', ['10.4.5.6'], true]);
+  saveLogin(alice, website('crm', 'CRM'), '{}');
+  const browsers = new Browsers(running('internal-kept', ['web:crm']), 1);
+  try {
+    await browsers.browser('crm');
+    assert.equal(publics.at(-1), false);
+  } finally {
+    await browsers.close();
+  }
+  setLetIn(['10.4.5.6'], alice, false);
+  sites({});
+});
+
 test('a host that gets a verdict while the model answers keeps it, including one its person removed', async t => {
   const { allowHost, changeWebsite, removeHost } = await import('../src/browsers.ts');
   let answer!: () => void, asked!: () => void;

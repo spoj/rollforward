@@ -167,6 +167,22 @@ export async function setSite(by: Me, name: string, change: Record<string, unkno
   act(by.email, { op: 'internal', person, site: name, hosts, let: let_ });
 }
 
+// A website set --internal true before 0.3.12 carries that as a flag of its own, which grants nothing now. At the server's start
+// its exact hosts at internal addresses join those admins let websites reach, as setting it again would, but for one an admin took
+// out since, and the flag goes; one none of whose hosts resolves so yet, as before its network is up, keeps it for the next start.
+export async function enrolFlagged() {
+  const log = join(rfDir(), 'log.jsonl');
+  const out = new Set(existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(a => a.op === 'internal' && a.let === false).flatMap(a => a.hosts as string[]) : []);
+  for (const email of Object.keys(users())) for (const [name, { internal, ...w }] of Object.entries(websitesOf(email) as Record<string, Website & { internal?: true }>)) {
+    if (!internal) continue;
+    const hosts = (await Promise.all(reached(w).filter(h => !h.startsWith('*.') && !out.has(h)).map(async h => await resolvesInternal(h) && h))).filter(h => h) as string[];
+    if (!hosts.length) continue;
+    setLetIn(hosts, 'server', true);
+    act('server', { op: 'internal', person: email, site: name, hosts, let: true });
+    saveWebsites(email, { ...websitesOf(email), [name]: w });
+  }
+}
+
 // A website goes with its person's login to it and their grants for it, no one else's.
 export function removeSite(email: string, name: string) {
   website(email, name);
