@@ -1236,6 +1236,24 @@ test("rf login without a token signs in through the browser: the person allows r
   for (const path of ['/auth/cli', '/auth/cli/poll']) assert.equal((await fetch(`${base}${path}`, { method: 'POST', body: ' '.repeat(65_537) })).status, 413, `${path} takes 64 KB at most`);
 });
 
+test('merging a workspace deletes proposals into it, including one whose proposer no longer manages its workspace', async () => {
+  const b = sessionOf(await login(bob))!;
+  const make = async (name: string) => (await (await call('POST', '/api/workspaces', JSON.stringify({ name }))).json()).id;
+  const from = await make('Lapsed source'), target = await make('Lapsed target'), into = await make('Lapsed survivor');
+  const owners = (owners: string[]) => call('PUT', `/api/workspaces/${from}`, JSON.stringify({ owners }));
+  assert.equal((await owners([bob])).status, 200);
+  assert.equal((await call('PUT', `/api/workspaces/${target}`, JSON.stringify({ members: [bob] }))).status, 200);
+  assert.equal((await call('PUT', `/api/proposals/${from}`, JSON.stringify({ kind: 'merge', to: target }), b)).status, 200);
+  assert.equal((await owners([])).status, 200);
+  assert.equal((await call('PUT', `/api/proposals/${target}`, JSON.stringify({ kind: 'merge', to: into }))).status, 200);
+  assert.equal((await call('POST', `/api/proposals/${target}`, JSON.stringify({ owners: [], members: [] }))).status, 200);
+  assert.equal((await owners([bob])).status, 200);
+  assert.equal((await call('GET', '/api')).status, 200);
+  assert.equal((await call('GET', '/api/status')).status, 200);
+  assert.equal((await named('Lapsed source')).proposal, null);
+  assert.equal(JSON.parse(readFileSync(join(root, '.rf/tree.json'), 'utf8')).workspaces[from].proposal, undefined);
+});
+
 test("a workspace's owners propose to merge it into another or move a series there, whose owners accept or decline within a week; what moves keeps its ids, and both sides hear of it", async () => {
   const b = sessionOf(await login(bob))!;
   const make = async (name: string) => (await (await call('POST', '/api/workspaces', JSON.stringify({ name }))).json()).id as string;

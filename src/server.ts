@@ -581,7 +581,10 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       rmSync(agentsFile(id), { force: true });
       delete t.workspaces[id];
       forgetWorkspace(id);
-      for (const o of Object.values(t.workspaces)) o.readers &&= o.readers.filter(x => x !== id);
+      for (const o of Object.values(t.workspaces)) {
+        o.readers &&= o.readers.filter(x => x !== id);
+        if (o.proposal?.to === id) delete o.proposal;
+      }
     } else {
       delete a.proposal;
       a.moved = [...(a.moved ?? []).filter(m => fresh(m.at)), { name: p.series!, to: moved[0].to, at: new Date().toISOString() }];
