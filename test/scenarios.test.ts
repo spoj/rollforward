@@ -23,7 +23,7 @@ let model: ReturnType<typeof createServer>, proc: ChildProcess, base = '', admin
 // The browser service, a stand-in: the browsers it opens are b1, b2…, each with a person in control and a live view, and a websocket
 // to one answers with the path it reached. Their pages asked for the addresses in `refused`, which they don't reach; what else they
 // were told, as hosts allowed, is in `told`.
-let refused: string[] = [];
+let refused: string[] = [], holdCdp = false, cdpOpened = 0, cdpClosed = 0;
 const told: string[] = [];
 const service = createServer(async (req, res) => {
   const blocked = refused.map(url => ({ method: 'GET', url, status: 403, blocked: 'host not on the list' }));
@@ -31,7 +31,14 @@ const service = createServer(async (req, res) => {
   if (req.method === 'PUT' || req.method === 'POST') return void res.end((told.push(`${req.method} ${req.url} ${Buffer.concat(await Array.fromAsync(req)).toString()}`), '{}'));
   if (req.method === 'DELETE') return void res.end(JSON.stringify({ state: { cookies: [] }, log: blocked }));
   res.end(req.url === '/sessions' ? '[]' : req.url!.endsWith('/log') ? JSON.stringify([{ live: true }, ...blocked]) : req.url!.endsWith('/view') ? 'the live view' : '');
-}).on('upgrade', (req, socket) => socket.end(`HTTP/1.1 101 Switching Protocols\r\n\r\nservice got ${req.url}`));
+}).on('upgrade', (req, socket) => {
+  if (holdCdp && req.url!.endsWith('/cdp')) {
+    cdpOpened++;
+    socket.on('end', () => { cdpClosed++; socket.destroy(); });
+    socket.resume();
+    socket.write('HTTP/1.1 101 Switching Protocols\r\nconnection: upgrade\r\nupgrade: websocket\r\n\r\n');
+  } else socket.end(`HTTP/1.1 101 Switching Protocols\r\n\r\nservice got ${req.url}`);
+});
 
 const text = (c: unknown): string => typeof c === 'string' ? c : (c as { type: string; text?: string; content?: unknown }[]).map(b => b.text ?? (b.content === undefined ? '' : text(b.content))).join('');
 const isResult = (m: { role: string; content: unknown }) => Array.isArray(m.content) && m.content.some((b: { type: string }) => b.type === 'tool_result');
@@ -627,6 +634,37 @@ test("whoever sees an instance watches its run's browser live from the page, the
   const { log, run } = await (await call('GET', `/api/instances/${id}`, undefined, bob)).json();
   assert.deepEqual([log.find((e: { op: string }) => e.op === 'interrupt').by, log.filter((e: { op: string }) => e.op === 'browser').map((e: { by: string; site: string; action?: string }) => [e.by, e.site, e.action]), run],
     [BOB, [[ADMIN, 'portal', 'drive'], ['server', 'portal', undefined]], null], "the admin's control logged as theirs, the interrupt as bob's, and the browser gone");
+});
+
+test('unticking, removing, signing out or revoking a website closes a going run\'s browser and its open CDP pipe', async t => {
+  holdCdp = true;
+  t.after(() => { holdCdp = false; });
+  const { id: workspace } = await (await call('POST', '/api/workspaces', { name: 'Browser lending' })).json();
+  for (const stop of ['untick', 'remove', 'signout', 'revoke']) await t.test(stop, async () => {
+    const site = `lent-${stop}`;
+    assert.equal((await call('POST', '/logins/sites', { name: site, url: 'https://portal.example.com/' })).status, 200);
+    const { id: signIn } = await (await call('POST', `/logins/web/${site}`, {})).json();
+    assert.equal((await call('POST', `/signins/${signIn}`)).status, 200);
+    const { id: grant } = await (await call('POST', '/grants', { site, workspace, reason: 'portal pulls' })).json();
+    assert.equal((await call('POST', `/grants/${grant}`, { approve: true })).status, 200);
+    const { id: series } = await (await call('POST', '/api/series', { workspace, name: site })).json();
+    scripts.push({ bash: [`curl -s -m 120 -H "connection: upgrade" -H "upgrade: websocket" "$RF_BROWSERS/${site}"; touch working/disconnected; sleep 120`], report: 'Never said.', saw: [] });
+    const opened = cdpOpened, closed = cdpClosed;
+    const { id } = await (await call('POST', `/api/series/${series}`, { label: '1', logins: [`web:${site}`] })).json();
+    try {
+      await until('the CDP pipe open', () => cdpOpened > opened);
+      const response = stop === 'untick' ? await call('POST', `/api/instances/${id}/logins`, { logins: [] })
+        : await call('DELETE', stop === 'remove' ? `/logins/sites/${site}` : stop === 'signout' ? `/logins/web:${site}` : `/grants/${grant}`);
+      assert.equal(response.status, 200);
+      const { run } = await (await call('GET', `/api/instances/${id}`)).json();
+      assert.deepEqual(run.browsers, [], stop);
+      await until('the CDP pipe closed', () => cdpClosed > closed);
+      await until('the agent disconnected', () => existsSync(join(root, 'instances', id, 'working/disconnected')));
+    } finally {
+      await call('POST', `/api/instances/${id}/interrupt`);
+      await runs(id, 1);
+    }
+  });
 });
 
 test("anyone adds websites of their own, theirs to set: they allow the hosts its pages need as they sign in, a run uses one where its workspace's owners approved its runner's grant, seeing the server's check, the hosts a run's browser was refused are checked, those it rates high or finds at an internal address waiting on admins, and its person removes one", async () => {

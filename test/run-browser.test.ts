@@ -108,6 +108,30 @@ test('an answer of the browser service that is no JSON, as a proxy in front of i
   await assert.rejects(browsers.shoot(), (e: { status: number; message: string }) => e.status === 502 && e.message.startsWith('browser service: 404 page'));
 });
 
+test("a run's open browser and connections close as soon as its login is no longer lent", async () => {
+  for (const stop of ['untick', 'remove', 'signout', 'revoke']) {
+    sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });
+    writeJson('grants.json', everyone);
+    saveLogin('alice@demo.test', { id: 'web:crm', kind: 'website', name: 'CRM', since: '', offers: [{ id: 'web:crm', name: 'CRM' }] }, '{}');
+    const inst = running(`unlent-${stop}`, ['web:crm']), browsers = new Browsers(inst, 1), conn = new PassThrough();
+    await browsers.browser('crm');
+    browsers.connected('crm', conn);
+    if (stop === 'untick') inst.append('alice@demo.test', 'logins', { logins: [] });
+    if (stop === 'remove') removeSite('alice@demo.test', 'crm');
+    if (stop === 'signout') signOut('alice@demo.test', 'web:crm');
+    if (stop === 'revoke') revoke(asPerson('alice@demo.test')!, 'alice@demo.test crm');
+    try {
+      await browsers.closeUnlent();
+      assert.equal(browsers.bySite.size, 0, stop);
+      assert.equal(conn.destroyed, true, stop);
+    } finally {
+      conn.destroy();
+      await browsers.close();
+    }
+  }
+  writeJson('grants.json', everyone);
+});
+
 test("closing a run's browser hands its login back refreshed, unless its person signed in to it anew since it opened", async () => {
   const alice = 'alice@demo.test', crm = (since: string) => ({ id: 'web:crm', kind: 'website' as const, name: 'CRM', since, offers: [{ id: 'web:crm', name: 'CRM' }] });
   sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });

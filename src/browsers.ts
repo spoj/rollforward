@@ -73,6 +73,7 @@ export function passUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, 
   const up = tls ? tlsConnect({ host: u.hostname, port, servername: isIP(u.hostname) ? undefined : u.hostname }) : connect(port, u.hostname);
   up.on('error', () => socket.destroy());
   socket.on('error', () => up.destroy());
+  socket.on('close', () => up.destroy());
   const headers: Record<string, unknown> = { ...req.headers, host: u.host, ...key() };
   delete headers.cookie;
   up.write(`GET ${path} HTTP/1.1\r\n${Object.entries(headers).map(([k, v]) => `${k}: ${v}\r\n`).join('')}\r\n`);
@@ -377,7 +378,7 @@ export class Browsers {
   private opening = new Map<string, Promise<string>>();
   private opens = new Map<string, number>();
   private refused = new Set<string>();
-  private conns = new Set<Duplex>();
+  private conns = new Map<Duplex, string>();
   private ended = false;
   shots = 0;
   constructor(inst: Instance, run: number) {
@@ -385,9 +386,8 @@ export class Browsers {
     this.run = run;
   }
 
-  // The login a browser on a website may use now, and the run's browser there if open: checked at every call and every new
-  // connection, so a login its runner can no longer lend, or whose grant in the instance's workspace was revoked, stops at the next
-  // one. One its runner must sign in to again is logged, as the agent API logs it, so the instance carries on once they do.
+  // The login a browser on a website may use now, and the run's browser there if open: checked at every call and new connection,
+  // and as its lending changes. One its runner must sign in to again is logged, so the instance carries on once they do.
   lent(site: string) {
     try {
       // A try's stand-in instance (cli.ts) is in no workspace: any approved grant of its runner's does.
@@ -447,7 +447,7 @@ export class Browsers {
   connected(site: string, conn: Duplex) {
     const b = this.bySite.get(site)!;
     b.conns++;
-    this.conns.add(conn);
+    this.conns.set(conn, site);
     clearTimeout(b.idle);
     conn.on('close', () => {
       this.conns.delete(conn);
@@ -457,7 +457,7 @@ export class Browsers {
 
   // A stop cuts every connection to the run's browsers; the browsers stay open for the next start to close (reap()).
   cut() {
-    for (const c of this.conns) c.destroy();
+    for (const c of this.conns.keys()) c.destroy();
   }
 
   private idle(site: string, b: { writeback: boolean; idle?: NodeJS.Timeout }) {
@@ -469,6 +469,12 @@ export class Browsers {
     if (h?.run !== this) return;
     held.delete(key);
     h.release();
+  }
+
+  async closeUnlent() {
+    await Promise.all([...this.bySite.keys()].filter(site => site !== PRINT).map(async site => {
+      try { this.lent(site); } catch { await this.close(site); }
+    }));
   }
 
   // The run's open browsers on websites, which whoever sees its instance may watch, by website, with their sessions.
@@ -546,6 +552,7 @@ export class Browsers {
     await Promise.all([...this.bySite].filter(([site]) => !only || site === only).map(async ([site, { id, email, since, writeback, file, idle }]) => {
       this.bySite.delete(site);
       clearTimeout(idle);
+      for (const [conn, on] of this.conns) if (on === site) conn.destroy();
       try {
         const closed = await close(id), all = journal();
         delete all[id];

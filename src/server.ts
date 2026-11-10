@@ -117,6 +117,10 @@ function mustSee(me: Me, w: Workspace | undefined): Workspace {
   return w;
 }
 
+async function closeUnlent() {
+  await Promise.all([...active.values()].map(a => a.browsers?.closeUnlent()));
+}
+
 // A run's browser on a website, for whoever sees its instance to watch, if they may use the website: the run's browsers, and its
 // session on the browser service.
 function watched(me: Me, id: string, site: string): { browsers: Browsers; id: string } {
@@ -817,6 +821,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // The runner ticks the instance's logins anew, as before its first prompt.
     if (runnerOf(inst).by !== by) throw new HttpError(403, `${runnerOf(inst).by} runs it, and ticks its logins`);
     inst.append(by, 'logins', { logins: checkTicks(by, payload.logins ?? []) });
+    await closeUnlent();
     return send(res, 200, 'ok');
   } else if (action === 'takeover') {
     // Taking over makes you the runner from now on, with your own logins ticked; whoever closes answers for the whole instance.
@@ -1033,7 +1038,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       send(res, 200, await addSite(me.email, String(name ?? ''), String(start ?? ''), String(header ?? '').trim()));
     }
     else if (/^\/logins\/sites\/[^/]+$/.test(url.pathname) && req.method === 'PATCH') send(res, 200, (await setSite(me, decodeURIComponent(url.pathname.split('/')[3]), await json(req), url.searchParams.get('person') ?? me.email), 'ok'));
-    else if (/^\/logins\/sites\/[^/]+$/.test(url.pathname) && req.method === 'DELETE') send(res, 200, (removeSite(me.email, decodeURIComponent(url.pathname.split('/')[3])), 'ok'));
+    else if (/^\/logins\/sites\/[^/]+$/.test(url.pathname) && req.method === 'DELETE') send(res, 200, (removeSite(me.email, decodeURIComponent(url.pathname.split('/')[3])), await closeUnlent(), 'ok'));
     // Grants: a person asks to use their login to a website in a workspace, whose owners approve or deny it, and revoke it, as its
     // person may withdraw it; revoked, that person's run browsers there in the workspace close at once.
     else if (url.pathname === '/grants' && req.method === 'GET') send(res, 200, visible(me));
@@ -1046,8 +1051,8 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       send(res, 200, (decide(me, url.pathname.slice(8), approve === true, String(text ?? '')), 'ok'));
     }
     else if (/^\/grants\/\w+$/.test(url.pathname) && req.method === 'DELETE') {
-      const g = revoke(me, url.pathname.slice(8)), t = tree();
-      for (const a of active.values()) if (t.series[a.inst.seriesId].workspace === g.workspace && a.browsers?.bySite.get(g.site)?.email === g.person) await a.browsers.close(g.site);
+      revoke(me, url.pathname.slice(8));
+      await closeUnlent();
       send(res, 200, 'ok');
     }
     else if (/^\/logins\/web\/[^/]+\/refused$/.test(url.pathname) && req.method === 'GET') send(res, 200, await refusedHosts(me.email, decodeURIComponent(url.pathname.split('/')[3])));
@@ -1090,7 +1095,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       saveLogin(me.email, { id: 'openrouter', kind: 'key', name: 'OpenRouter', since: k ? new Date().toISOString() : was!.since, offers: [], enabled: !!enabled, ...(!k && enabled && was!.expired && { expired: true }) }, k || undefined);
       send(res, 200, 'saved');
     }
-    else if (url.pathname.startsWith('/logins/') && req.method === 'DELETE') send(res, 200, (signOut(me.email, decodeURIComponent(url.pathname.slice(8))), url.pathname === '/logins/m365' && forget(me.email), 'ok'));
+    else if (url.pathname.startsWith('/logins/') && req.method === 'DELETE') send(res, 200, (signOut(me.email, decodeURIComponent(url.pathname.slice(8))), url.pathname === '/logins/m365' && forget(me.email), await closeUnlent(), 'ok'));
     else if (url.pathname === '/users' || url.pathname.startsWith('/users/')) await admin(me, req, res, url);
     else if (url.pathname === '/skills' || url.pathname.startsWith('/skills/')) await skillsRoute(me, req, res, url);
     else if (url.pathname === '/connections' || url.pathname.startsWith('/connections/')) await connectionsRoute(me, req, res, url);
