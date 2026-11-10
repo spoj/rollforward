@@ -223,15 +223,18 @@ export class Instance {
 
   // Closing makes the instance the period's record and an example for the next, approving nothing: the asks still waiting are
   // accepted as the agent said it did them. It commits the folder in the runner's name. The instance is closed meanwhile, so nothing
-  // changes it, but saved only once committed: a failed commit, or a restart, leaves it open.
+  // changes it, but saved only once committed and packed: either failing, or a restart, leaves it open.
   async close(by: Who) {
     const accepted = this.asking().map(e => `c${e.seq}`);
     this.doc.status = 'closed';
-    const hash = await commit(this.dir, by, `Close ${this.label}`).catch(e => {
+    let hash: string;
+    try {
+      hash = await commit(this.dir, by, `Close ${this.label}`);
+      await pack(this.dir);
+    } catch (e) {
       this.doc.status = 'open';
       throw e;
-    });
-    await pack(this.dir);
+    }
     this.save();
     this.append(by.email, 'close', { ...(accepted.length && { accepted }), commit: hash });
   }

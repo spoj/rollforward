@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInstance, openStore, safeName } from '../src/store.ts';
 
@@ -90,6 +90,22 @@ test("a file the screen shows stays the agent's to change, and closing takes it 
   writeFileSync(page, 'changed\n');
   await inst.close(alex);
   assert.equal(inst.doc.status, 'closed');
+  rmSync(tmp, { recursive: true, force: true });
+});
+
+test('a close whose commit succeeds but packing fails leaves the instance open, with no close entry, and can be retried', async () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
+  openStore(tmp);
+  const inst = createInstance('monthly', 'pack-fails', 'alex', []);
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: inst.dir });
+  const lock = join(inst.dir, '.git', 'gc.pid');
+  writeFileSync(lock, `${process.pid} ${hostname()}`);
+  await assert.rejects(inst.close(alex), /gc is already running/);
+  assert.equal(execFileSync('git', ['log', '-1', '--format=%s'], { cwd: inst.dir, encoding: 'utf8' }).trim(), 'Close pack-fails', 'the commit succeeded');
+  assert.deepEqual([inst.doc.status, JSON.parse(readFileSync(join(inst.dir, 'screen.json'), 'utf8')).status, inst.log.at(-1)!.op], ['open', 'open', 'create']);
+  rmSync(lock);
+  await inst.close(alex);
+  assert.deepEqual([inst.doc.status, JSON.parse(readFileSync(join(inst.dir, 'screen.json'), 'utf8')).status, inst.log.at(-1)!.op], ['closed', 'closed', 'close']);
   rmSync(tmp, { recursive: true, force: true });
 });
 
