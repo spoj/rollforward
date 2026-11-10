@@ -163,6 +163,22 @@ after(async () => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
+test('a Pi killed mid-turn fails its run at once, frees its series, and starts a new session on the next act', async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Crash' })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec' })).json();
+  scripts.push({ bash: ['kill -9 2'], report: 'unreached', saw: [] });
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
+  const done = (await runs(id, 1)).find(e => e.op === 'done')!;
+  assert.equal(done.aborted, true);
+  assert.match(done.error as string, /Pi exited.*(code|signal)/);
+  assert.equal((await call('POST', `/api/instances/${id}/interrupt`)).status, 409, 'no run remains to interrupt');
+  scripts.push({ bash: [], report: 'A new session.', saw: [] });
+  assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Carry on.' })).status, 200);
+  const log = await runs(id, 2);
+  assert.equal(log.findLast(e => e.op === 'run')!.continues, undefined);
+  assert.equal(log.findLast(e => e.op === 'done')!.aborted, false);
+});
+
 test("a run meets its walls, wakes itself, and after a takeover runs as its new runner, with the new runner's ticks", async () => {
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Scenarios' })).json();
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB], agents: 'Scenarios: amounts in USD.' })).status, 200);

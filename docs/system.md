@@ -192,7 +192,7 @@ The runner, [src/runner.ts](../src/runner.ts), drives Pi through Pi's `RpcClient
 - **prompt.md replaces Pi's own system prompt,** and Pi adds the context files it finds from `/` down to its working folder, the instance's: the run's AGENTS.md files. The run's Pi home holds none, so nothing of whoever runs the server reaches it.
 - **Pi's own commands drive a run:** `prompt` starts it, and `steer` delivers mid-run entries, with steering mode `all`, so what queued by the end of a turn arrives together. Interrupt is `clear_queue`, then `abort`.
 - **Each run has its own Pi home,** in its sandbox's scratch, with `settings.json`. Pi reaches OpenRouter at its own address, through the sandbox's proxy as any of the run's calls do, with a stand-in key (see Connections). `PI_OFFLINE` keeps Pi from checking for updates.
-- **One process per run,** stopped at `agent_settled`, or after an abort at the time limit.
+- **Pi's `agent_settled` ends a turn;** Pi exiting mid-turn fails the run at once, with its exit code or signal and stderr, and its next run starts a new session.
 - **The model key,** `OPENROUTER_API_KEY`, stays with the server, whose proxy puts it in each request a run sends OpenRouter, Pi's own among them. A server without one ends each run at once with that error.
 - **`--skill`** loads each live skill, and `--no-skills` keeps out the Pi skills of whoever runs the server.
 - **`RpcClient` starts `node`** from the `PATH` it's given; the runner puts [bin/sandbox](../bin/sandbox) first, whose `node` starts Pi in the run's sandbox.

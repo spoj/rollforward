@@ -20,8 +20,9 @@ chmodSync(scratch, 0o700);
 const SCOPE = 'systemd-run --user --scope --quiet --collect --slice=rollforward-runs -p MemoryHigh=4G -p MemoryMax=8G --';
 
 // A run's Pi, which takes turns: each a prompt the agent takes, and steers it may get, until it settles, aborted or not.
+export type TurnEnd = { aborted: boolean; error?: string };
 export type Run = {
-  turn(text: string): Promise<{ settled: Promise<boolean> }>;
+  turn(text: string): Promise<{ settled: Promise<TurnEnd> }>;
   steer(text: string): Promise<unknown>;
   interrupt(): Promise<void>;
   stop(): Promise<void>;
@@ -113,14 +114,16 @@ export async function startRun(o: Parameters<typeof pi>[0] & { onEvent: (e: Json
   // A run may leave folders it can't write in its home; they're made writable first, never through a link.
   const writable = (d: string) => { chmodSync(d, 0o700); for (const e of readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) writable(join(d, e.name)); };
   const stop = async () => { await client.stop(); unlistenRun(o.token); writable(run); rmSync(run, { recursive: true, force: true }); };
-  let settle = (_: boolean) => {}, settled = Promise.resolve(false);
-  client.onEvent(e => e.type === 'agent_settled' && settle(e.aborted));
+  let settle = (_: TurnEnd) => {}, settled = Promise.resolve<TurnEnd>({ aborted: false });
+  client.onEvent(e => e.type === 'agent_settled' && settle({ aborted: e.aborted }));
   client.onEvent(o.onEvent);
   await client.start();
+  const child = (client as unknown as { process: ChildProcess }).process;
+  child.once('exit', (code, signal) => settle({ aborted: true, error: `Pi exited with ${signal ? `signal ${signal}` : `code ${code}`}: ${client.getStderr()}` }));
   await ready(client).catch(async e => { await stop(); throw e; });
   return {
     turn: async text => {
-      settled = new Promise<boolean>(resolve => { settle = resolve; });
+      settled = new Promise<TurnEnd>(resolve => { settle = resolve; });
       await client.prompt(text);
       return { settled };
     },
@@ -129,7 +132,7 @@ export async function startRun(o: Parameters<typeof pi>[0] & { onEvent: (e: Json
     interrupt: async () => { await Promise.race([client.clearQueue().then(() => client.abort()), settled]); },
     stop,
     // The sandbox by the process Pi's client started, which is its outer bwrap (bin/sandbox/node).
-    alone: () => alone((client as unknown as { process: ChildProcess }).process.pid!),
+    alone: () => alone(child.pid!),
   };
 }
 

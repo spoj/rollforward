@@ -3,7 +3,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync, rmSync } from 'nod
 import { createHash, randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
 import { agentsFile, closedBefore, createInstance, HttpError, instance, instanceDir, instances, isPerson, labels, newId, readFile, seriesDir, type Entry, type Instance } from './store.ts';
-import { startRun, type Run, type View } from './runner.ts';
+import { startRun, type Run, type TurnEnd, type View } from './runner.ts';
 import type { JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { prepare, sources } from './indexes.ts';
 import { canSee, changes, readJson, rfDir, tree, type Tree, writeJson } from './system.ts';
@@ -214,7 +214,7 @@ async function start(inst: Instance) {
   // files it reads, by their sha256.
   const lease = runnerOf(inst), agents = Object.fromEntries(a.view.ro.filter(([p, at]) => at.endsWith('/AGENTS.md') && existsSync(p)).map(([p, at]) => [at, createHash('sha256').update(readFileSync(p)).digest('hex')]));
   inst.append('server', 'run', { run: n, runner: lease.by, consent: lease.consent, agents, upto: a.sent, skills: a.skills, key, ...(kept && { continues: kept.session }) });
-  let settled: Promise<boolean>;
+  let settled: Promise<TurnEnd>;
   try {
     // A continued run's index copies are made again, in the folder its Pi reads them from, so it reads what's indexed since, and
     // nothing of a source no longer ticked.
@@ -247,7 +247,7 @@ async function start(inst: Instance) {
     await a.run!.interrupt().catch(() => {});
     finish(a, true, 'time limit');
   }, LIMIT_MS);
-  settled.then(aborted => finish(a, aborted, a.failed));
+  settled.then(({ aborted, error }) => finish(a, aborted, error ?? a.failed));
 }
 
 // What its Pi says as a run goes, the run now its token's.
