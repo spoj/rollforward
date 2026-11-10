@@ -23,8 +23,10 @@ let page = Buffer.from('page 1'), back: unknown = { cookies: [] }, listed: strin
 const plain = [{ method: 'GET', url: 'https://crm.example.com/', status: 200 }];
 let requested: object[] = plain;
 const states: unknown[] = [], headers: unknown[] = [], deleted: string[] = [], starts: string[] = [], publics: boolean[] = [];
+let nextId = 'b9', refuseClose = false;
 const service = createServer(async (req, res) => {
   if (req.method === 'DELETE') {
+    if (refuseClose) return res.writeHead(404).end('{"error":"session gone"}');
     deleted.push(req.url!.split('/')[2]);
     return res.writeHead(200).end(JSON.stringify({ state: back, log: requested }));
   }
@@ -35,7 +37,7 @@ const service = createServer(async (req, res) => {
     starts.push(`${site.start_url} ${site.hosts.join(',')}`);
     publics.push(!!site.public);
     if (state?.cookies?.[0] === 'refused') return res.writeHead(500).end('{"error":"refused"}');
-    return res.writeHead(201).end(JSON.stringify({ id: 'b9' }));
+    return res.writeHead(201).end(JSON.stringify({ id: nextId }));
   }
   if (req.url === '/sessions') return res.writeHead(200).end(JSON.stringify(listed.map(id => ({ id }))));
   if (req.url === '/sessions/b9/page') return res.writeHead(200).end(JSON.stringify(shown));
@@ -45,7 +47,7 @@ const service = createServer(async (req, res) => {
 }).on('upgrade', (req, socket) => socket.end(`HTTP/1.1 101 Switching Protocols\r\n\r\nservice got ${req.url}`));
 await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
 Object.assign(process.env, { RF_BROWSER_URL: `http://127.0.0.1:${(service.address() as { port: number }).port}`, RF_BROWSER_IDLE_MS: '300' });
-const { Browsers, endSignIn, keepAlive, reap, removeSite, startSignIn, websitesOf } = await import('../src/browsers.ts');
+const { Browsers, endSignIn, isSignIn, keepAlive, reap, removeSite, startSignIn, websitesOf } = await import('../src/browsers.ts');
 const { upstreams } = await import('../src/connections.ts');
 const { ask, decide, grants, lapse, revoke } = await import('../src/grants.ts');
 // The server's model checks no website here.
@@ -148,6 +150,30 @@ test("closing a run's browser hands its login back refreshed, unless its person 
 
 const sleep = (ms: number) => new Promise(ok => setTimeout(ok, ms));
 const alice = 'alice@demo.test', website = (id: string, name: string) => ({ id: `web:${id}`, kind: 'website' as const, name, since: 't1', offers: [{ id: `web:${id}`, name }] });
+
+test('starting a sign-in ends the one before, even if the service has ended it, and ending forgets one whose browser is gone', async () => {
+  sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });
+  const old = await startSignIn(alice, 'crm', '');
+  try {
+    nextId = 'b10';
+    const fresh = await startSignIn(alice, 'crm', '');
+    assert.equal(isSignIn(alice, old), false);
+    assert.equal(isSignIn(alice, fresh), true);
+    refuseClose = true;
+    await assert.rejects(endSignIn(alice, fresh, false), /session gone/);
+    assert.equal(isSignIn(alice, fresh), false);
+    const abandoned = await startSignIn(alice, 'crm', '');
+    nextId = 'b11';
+    const replacement = await startSignIn(alice, 'crm', '');
+    assert.equal(isSignIn(alice, abandoned), false);
+    assert.equal(isSignIn(alice, replacement), true);
+    refuseClose = false;
+    await endSignIn(alice, replacement, false);
+  } finally {
+    refuseClose = false;
+    nextId = 'b9';
+  }
+});
 
 test("a website's header goes, with its person's value, to their sign-in's browser alone: sealed as they save the login, used again when they sign in again with none, replaced by a new one, and gone as they sign out", async () => {
   sites({ rl: { url: 'https://rl.example.com/login', hosts: [], writeback: true, header: 'x-bot-token' } });

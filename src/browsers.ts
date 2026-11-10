@@ -121,6 +121,8 @@ export async function startSignIn(email: string, site: string, given: string): P
     if (!token) throw new HttpError(400, `${site} needs your ${w.header} to sign in: give it in the box under its name, on the Logins page`);
     if (/[^\x20-\x7e]/.test(token)) throw new HttpError(400, `${w.header}: letters, digits and punctuation`);
   }
+  const before = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
+  if (before) await endSignIn(email, before, false).catch(e => console.error(`ending the previous sign-in to ${site}:`, e));
   const id = await open(w, 1800, undefined, token && { [w.header!]: token });
   signIns.set(id, { email, site, name: site, token, since: Date.now() });
   return id;
@@ -234,9 +236,10 @@ export async function endSignIn(email: string, id: string, save: boolean, keepal
   if (!isSignIn(email, id)) throw new HttpError(404, 'no such sign-in');
   const until = keepalive === undefined ? undefined : Date.parse(String(keepalive));
   if (until !== undefined && !(until > Date.now() && until <= Date.now() + 7 * 86_400_000)) throw new HttpError(400, 'keepalive: a time within the next 7 days, until which your login is kept alive');
-  if (save && !(await json('GET', `/sessions/${id}/log`)).some((e: { live?: true }) => e.live)) throw new HttpError(409, 'Take control and sign in first, then Save login.');
-  const { site, name, token, since } = signIns.get(id)!, { state, log } = await close(id);
+  if (save && !(await json('GET', `/sessions/${id}/log`).catch(e => { signIns.delete(id); throw e; })).some((e: { live?: true }) => e.live)) throw new HttpError(409, 'Take control and sign in first, then Save login.');
+  const { site, name, token, since } = signIns.get(id)!;
   signIns.delete(id);
+  const { state, log } = await close(id);
   // Removed meanwhile, as from another tab, it saves nothing.
   if (save) website(email, site);
   const requests: Record<string, Record<number, number>> = {}, blocked = { count: 0, hosts: [] as string[] }, failed: string[] = [];
