@@ -766,6 +766,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       ...(run && { run: run.n, ...(ask && { ask: true, ...(who && { to: who }) }) }), ...(quiet && { quiet: true }),
     });
     if (run) return send(res, 200, `${ask ? 'asked' : 'said'} c${said.seq}${under ? `, under ${thread}` : ''}`);
+    res.setHeader('X-RF-Comment-Seq', said.seq);
     // Until a task is renamed, its first prompt's opening words name it.
     const s = t.series[inst.seriesId], words = text.trim().split(/\s+/).slice(0, 6).join(' ').replace(/^\.+/, '').slice(0, 60);
     if (s.single && words && !inst.log.some(e => e.op === 'rename' || (e.op === 'comment' && e !== said && isPerson(e)))) {

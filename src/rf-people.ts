@@ -434,8 +434,8 @@ if (cmd === 'login' && url) {
 } else if (cmd === 'pull' && args.length === 2) await pull(args[0], args[1]);
 else if (cmd === 'comment' && args.length === 2) {
   const { at } = await instanceAt(args[0]);
-  await post(`${at}/comment`, { text: args[1], item: flags.item, ref: flags.ref, thread: flags.thread, quiet: !flags.wake && !flags.wait });
-  const { log, runner } = await get(at), { seq, note } = log.at(-1);
+  const posted = await post(`${at}/comment`, { text: args[1], item: flags.item, ref: flags.ref, thread: flags.thread, quiet: !flags.wake && !flags.wait });
+  const seq = Number(posted.headers.get('X-RF-Comment-Seq')), { log, runner } = await get(at), { note } = log.find(e => e.seq === seq);
   if (note) console.log(`a note for the runner, ${runner.by}, seq ${seq}: it starts no run until they act`);
   else if (!flags.wait) console.log(`commented, seq ${seq}`);
   else for (;;) {

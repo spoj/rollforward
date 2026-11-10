@@ -816,6 +816,19 @@ test("rf alone lists its commands and rf help COMMAND gives one's usage; every r
   assert.deepEqual(JSON.parse(await rf('skill', 'versions', 'tool', '--json')).map((v: { version: number }) => v.version), [1, 2, 3, 4]);
 });
 
+test('rf comment reports its own seq and note when the first comment renames a task, and --wait on a note returns without a run', async () => {
+  const { id: workspace } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Commenting' }))).json();
+  await call('PUT', `/api/workspaces/${workspace}`, JSON.stringify({ members: [bob] }));
+  const { instance } = await (await call('POST', '/api/series', JSON.stringify({ workspace, single: true }))).json();
+  assert.equal(await rf('comment', 'Commenting/Untitled/Untitled', '  From the shell  '), 'commented, seq 2\n');
+  const { log } = await json(`/api/instances/${instance}`);
+  assert.deepEqual(log.map((e: { op: string }) => e.op), ['create', 'comment', 'rename']);
+  const { instance: his } = await (await call('POST', '/api/series', JSON.stringify({ workspace, single: true }), sessionOf(await login(bob))!)).json();
+  assert.equal(await rf('comment', 'Commenting/Untitled/Untitled', 'A note for Bob', '--wait'), `a note for the runner, ${bob}, seq 2: it starts no run until they act\n`);
+  const note = (await json(`/api/instances/${his}`)).log;
+  assert.deepEqual(note.map((e: { op: string; note?: true }) => [e.op, e.note]), [['create', undefined], ['comment', true], ['rename', undefined]]);
+});
+
 test('rf reads without a pull: waiting, what waits on you; show, an instance, the threads that wait by id and its last run; log, its entries, or those after a seq; and cat, one file', async () => {
   const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Reads' }))).json();
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ members: [bob] }))).status, 200);
