@@ -529,7 +529,7 @@ test("a website is its person's own, by a name of theirs and an https address, s
   await assert.rejects(setSite(alice, 'erp', { header: 'y' }, AP), /ap@demo\.test's website is theirs to change/);
   await assert.rejects(setSite(admin, 'erp', { header: 'y' }, ALICE), /admins only let it reach internal addresses/);
   await setSite(admin, 'erp', { internal: true }, ALICE);
-  assert.equal(mine().internal, true);
+  assert.ok(!('internal' in mine()));
   // What a website may reach: not what a connection serves, and a wildcard within one registrable domain, the Public Suffix List's
   // private suffixes counting as public; another website's address it may, as one sign-on serves many.
   for (const [host, why] of [['graph.microsoft.com', /graph\.microsoft\.com is graph's/], ['*.co.uk', /\*\.co\.uk: a wildcard stays within one registrable domain/], ['*.github.io', /\*\.github\.io: a wildcard stays/]])

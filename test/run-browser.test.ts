@@ -524,21 +524,35 @@ test("an admin lets websites reach a host at an internal address once, for every
   for (const p of [bob, carol]) {
     await endSignIn(p, await startSignIn(p, 'intra', ''), false);
     assert.equal(publics.at(-1), false, `${p}'s browser reaches internal addresses`);
-    assert.equal(websitesOf(p).intra.internal, undefined, 'nothing set on their website itself');
+    assert.ok(!('internal' in websitesOf(p).intra), 'nothing set on their website itself');
   }
+
+  await setSite(admin, 'intra', { internal: 'true' }, bob);
 
   // A host its sign-on needs at an internal address: once an admin allowed it on a website, anyone allows it on theirs.
   await allowHost(admin, 'intra', '10.9.8.7');
   await allowHost(user(bob), 'intra', '10.9.8.7');
   assert.deepEqual(websitesOf(bob).intra.hosts, ['10.9.8.7']);
   const acts = readFileSync(join(tmp, '.rf', 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(a => a.op === 'internal');
-  assert.deepEqual(acts.map(a => [a.by, a.person, a.site, a.hosts, a.let]), [[alice, alice, 'intra', ['10.1.2.3'], true], [alice, alice, 'intra', ['10.9.8.7'], true]]);
+  assert.deepEqual(acts.map(a => [a.by, a.person, a.site, a.hosts, a.let]), [[alice, alice, 'intra', ['10.1.2.3'], true], [alice, bob, 'intra', ['10.1.2.3'], true], [alice, alice, 'intra', ['10.9.8.7'], true]]);
 
   // An admin lets it no more: no one's website reaches those hosts until one lets them again.
   await setSite(admin, 'intra', { internal: 'false' });
   assert.deepEqual(Object.keys(letIn()), []);
-  await assert.rejects(startSignIn(carol, 'intra', ''), /is at an internal address/);
+  for (const p of [alice, bob, carol]) await assert.rejects(startSignIn(p, 'intra', ''), /is at an internal address/);
   sites({});
+});
+
+test('old website internal flags do not let browsers reach hosts absent from the shared record', async () => {
+  sites({ crm: { url: 'https://crm.example.com/', hosts: ['10.1.2.3'], writeback: false, internal: true } });
+  saveLogin(alice, website('crm', 'CRM'), '{}');
+  const browsers = new Browsers(running('internal-removed', ['web:crm']), 1);
+  try {
+    await browsers.browser('crm');
+    assert.equal(publics.at(-1), true);
+  } finally {
+    await browsers.close();
+  }
 });
 
 test("with the server's key its model decides the rest, from what the browser's log, the runs and a web search say of each, never a path or a query: what the pages need the website reaches at once, what they work without stays refused, and anything else waits on admins", async t => {

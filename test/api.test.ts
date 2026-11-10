@@ -538,7 +538,7 @@ test("everyone sees the skills, which every run loads; admins keep the connectio
   assert.equal((await call('PATCH', `/logins/sites/portal?person=${bob}`, JSON.stringify({ every: '1h' }))).status, 403, "admins change no one else's settings");
   assert.equal((await call('PATCH', `/logins/sites/portal?person=${bob}`, JSON.stringify({ internal: true }))).status, 200, 'but let it reach internal addresses');
   const { added, ...site } = (await json('/logins/sites', b)).portal;
-  assert.deepEqual(site, { url: 'https://portal.test/#/login', hosts: [], writeback: true, header: 'x-bot-token', every: 5, internal: true });
+  assert.deepEqual(site, { url: 'https://portal.test/#/login', hosts: [], writeback: true, header: 'x-bot-token', every: 5 });
   assert.equal((await call('GET', `/logins/sites?person=${adminEmail}`, undefined, b)).status, 403, 'a person sees their own');
   assert.deepEqual(Object.keys(await json(`/logins/sites?person=${bob}`)), ['portal'], "admins see anyone's");
   assert.equal((await call('DELETE', '/logins/sites/portal')).status, 200, 'admins remove their own');

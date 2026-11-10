@@ -59,11 +59,10 @@ const printer = async () => (await json('POST', '/sessions', { site: { hosts: []
 
 const open = async (w: Website, ttl_s: number, state?: unknown, headers?: Record<string, string>): Promise<string> =>
   (await json('POST', '/sessions', { site: { hosts: [new URL(w.url).hostname, ...w.hosts], start_url: w.url, headers, ...(!internalOf(w) && { public: true }) }, state, ttl_s })).id;
-// Whether a website's browsers reach internal addresses, by its exact hosts: an admin let it, or let every website reach one of its
-// hosts, its address's or one its person allowed.
+// Whether admins let websites reach one of its exact hosts, its address's or one its person allowed.
 const internalOf = (w: Website) => {
   const let_ = letIn();
-  return !!w.internal || reached(w).some(h => !!let_[h]);
+  return reached(w).some(h => !!let_[h]);
 };
 const close = (id: string): Promise<{ state: unknown; log: { method: string; url: string; status: number; blocked?: string; error?: string }[] }> => json('DELETE', `/sessions/${id}`);
 
@@ -89,7 +88,7 @@ export function passUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, 
 // may, so keeping to reads is the agent's, and its request log shows what it did. Admins only let websites reach internal addresses,
 // a host once for everyone's.
 
-export type Website = { url: string; hosts: string[]; writeback: boolean; header?: string; keepalive?: string; every?: number; internal?: true; checks?: Record<string, { verdict: 'pass' | 'refused' | 'high' | 'internal'; why: string }>; added: string };
+export type Website = { url: string; hosts: string[]; writeback: boolean; header?: string; keepalive?: string; every?: number; checks?: Record<string, { verdict: 'pass' | 'refused' | 'high' | 'internal'; why: string }>; added: string };
 const sitesFile = (email: string) => join(personDir(email), 'websites.json');
 export const websitesOf = (email: string): Record<string, Website> => existsSync(sitesFile(email)) ? JSON.parse(readFileSync(sitesFile(email), 'utf8')) : {};
 function saveWebsites(email: string, all: Record<string, Website>) {
@@ -114,7 +113,7 @@ const signIns = new Map<string, { email: string; site: string; name: string; tok
 
 export async function startSignIn(email: string, site: string, given: string): Promise<string> {
   const w = website(email, site), kept = `web:${site}.header`;
-  await checkHost(new URL(w.url).hostname, !!w.internal);
+  await checkHost(new URL(w.url).hostname, false);
   let token;
   if (w.header) {
     token = given.trim() || (existsSync(join(personDir(email), `${kept}.sealed`)) ? secret(email, kept) : '');
@@ -159,7 +158,7 @@ export async function setSite(by: Me, name: string, change: Record<string, unkno
   saveWebsites(person, { ...websitesOf(person), [name]: { url: w.url, hosts: w.hosts, writeback: x.writeback !== false && x.writeback !== 'false', added: w.added,
     ...(x.header !== undefined && { header: String(x.header) }),
     ...(x.keepalive !== undefined && { keepalive: String(x.keepalive) }), ...(every && { every: Number(every[1]) * (every[2] === 'h' ? 60 : 1) }),
-    ...((x.internal === true || x.internal === 'true') && { internal: true }), ...(w.checks && { checks: w.checks }) } });
+    ...(w.checks && { checks: w.checks }) } });
   if (change.internal === undefined) return;
   const let_ = change.internal === true || change.internal === 'true', exact = reached(w).filter(h => !h.startsWith('*.'));
   const hosts = let_ ? (await Promise.all(exact.map(async h => await resolvesInternal(h) && h))).filter(h => h) as string[] : exact.filter(h => letIn()[h]);
@@ -201,8 +200,8 @@ export async function allowHost(by: Me, site: string, host: string, email = by.e
   if (by.role !== 'admin' && approved(site, email) && !reached(w).some(p => domain(p) === domain(h))) throw new HttpError(403, `${h} is outside the domains ${site} reaches, which its approved grants cover: an admin allows it`);
   const inside = await resolvesInternal(h), admin = inside && by.role === 'admin';
   if (inside && !admin && !letIn()[h]) throw new HttpError(403, `${h} is at an internal address: an admin allows it`);
-  await checkHost(h, !!w.internal || inside);
-  changeWebsite(email, site, { hosts: [...new Set([...website(email, site).hosts, h])], ...(admin && { internal: true }) });
+  await checkHost(h, inside);
+  changeWebsite(email, site, { hosts: [...new Set([...website(email, site).hosts, h])] });
   if (admin && !letIn()[h]) {
     setLetIn([h], by.email, true);
     act(by.email, { op: 'internal', person: email, site, hosts: [h], let: true });
@@ -316,7 +315,7 @@ async function checkRefused(inst: Instance, run: number, email: string, site: st
   const settle = async (checks: NonNullable<Website['checks']>) => {
     const allowed: string[] = [];
     for (const h of Object.keys(checks).filter(h => checks[h].verdict === 'pass')) {
-      const out = await checkHost(h, !!w.internal).then(() => '', (e: Error) => e.message);
+      const out = await checkHost(h, false).then(() => '', (e: Error) => e.message);
       if (out) checks[h] = { verdict: 'refused', why: out };
       else allowed.push(h);
     }

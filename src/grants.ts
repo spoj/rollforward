@@ -69,7 +69,7 @@ async function checkSite(email: string, site: string, trace: Trace | undefined, 
     });
     if (!res.ok) throw new Error(`OpenRouter answered ${res.status}`);
     const a = JSON.parse((await res.json()).choices[0].message.content), hosts: string[] = [];
-    for (const h of new Set((a.hosts ?? []).map((h: unknown) => String(h).toLowerCase()) as string[])) if ((letIn()[h] || !await resolvesInternal(h)) && await checkHost(h, !!w.internal).then(() => true, () => false)) hosts.push(h);
+    for (const h of new Set((a.hosts ?? []).map((h: unknown) => String(h).toLowerCase()) as string[])) if ((letIn()[h] || !await resolvesInternal(h)) && await checkHost(h, false).then(() => true, () => false)) hosts.push(h);
     return { risk: ['low', 'medium'].includes(a.risk) ? a.risk : 'high', flags: (a.flags ?? []).map(String), summary: String(a.summary ?? ''), hosts };
   } catch (e) {
     return { error: (e as Error).message };

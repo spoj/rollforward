@@ -744,7 +744,7 @@ test("anyone adds websites of their own, theirs to set: they allow the hosts its
   assert.deepEqual([await waits(), await waits(admin)], [[], [[BOB, ['upload.elsewhere.test', '10.9.8.7'], { 'upload.elsewhere.test': 'File sharing.', '10.9.8.7': 'It is at an internal address.' }]]], 'they wait on admins alone');
   assert.equal((await allow('upload.elsewhere.test')).status, 403, 'outside its domains, now its grants are approved');
   for (const host of ['upload.elsewhere.test', '10.9.8.7']) assert.equal((await allow(host, admin, `?person=${BOB}`)).status, 200);
-  assert.deepEqual([await waits(admin), (await listed(bob)).internal], [[], true], 'an internal host allowed lets the website reach internal addresses');
+  assert.deepEqual([await waits(admin), Object.keys(JSON.parse(readFileSync(join(root, '.rf', 'internal.json'), 'utf8')))], [[], ['10.9.8.7']], 'an internal host allowed is kept for every website');
   const remove = (host: string) => call('DELETE', `/logins/web/bobs/hosts/${host}`, undefined, bob);
   assert.equal((await remove('static.cdnhost.test')).status, 200);
   assert.deepEqual(await said(await remove('static.cdnhost.test')), [404, "bobs doesn't reach static.cdnhost.test: beyond its address it reaches sso.idp.test, *.bobs.example.com, cdn.idp.test, upload.elsewhere.test, 10.9.8.7"]);
