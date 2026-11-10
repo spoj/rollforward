@@ -250,7 +250,41 @@ test("a run reads a ticked SharePoint library at Graph's own address, as Graph a
   assert.equal(logins.secret(ALICE, 'm365'), 'r1', 'the refresh token turned over and was sealed again');
 });
 
-test("a drive whose site Graph didn't say, as when it throttled the lookup, is looked up again the next time", async () => {
+test('a failed parent or site lookup fails the request, not its ticks, and is retried without a cached denial', async () => {
+  const fetch = globalThis.fetch, login = m365();
+  try {
+    for (const lookup of ['parent', 'site']) for (const failure of [429, 500, 'timeout', 403, 404]) {
+      const drive = `lookup-${lookup}-${failure}`, link = `https://share.test/${drive}`, token = drive;
+      const tick = lookup === 'parent' ? `m365:item:${drive}/top` : 'm365:site:host,site1,web1';
+      shares[link] = item('leaf', 'leaf.csv', '', false, 'middle', { ...lib, driveId: drive });
+      logins.saveLogin(ALICE, { ...login, offers: [...login.offers, { id: tick, name: tick }] });
+      runs.set(token, { ...inst, log: started([tick]) } as unknown as Instance);
+      let failed = false;
+      globalThis.fetch = async (input, init) => {
+        const u = new URL(String(input));
+        if (u.pathname === `/v1.0/drives/${drive}/items/middle` || u.pathname === `/v1.0/drives/${drive}`) {
+          const parent = u.pathname.endsWith('/middle');
+          if (!failed && parent === (lookup === 'parent')) {
+            failed = true;
+            if (failure === 'timeout') throw new DOMException('lookup timed out', 'TimeoutError');
+            return Response.json({ error: { message: 'lookup failed' } }, { status: failure as number });
+          }
+          return Response.json(parent ? { parentReference: { id: 'top' } } : drives['b!d1']);
+        }
+        return fetch(input, init);
+      };
+      const read = () => via('GET', `${G}${share(link)}/driveItem`, { token });
+      const denied = failure === 403 || failure === 404, first = await read();
+      assert.equal(first.status, denied ? 403 : 502, `${drive}: ${first.text}`);
+      assert.equal((await read()).status, denied && lookup === 'parent' ? 403 : 200, drive);
+    }
+  } finally {
+    globalThis.fetch = fetch;
+    logins.saveLogin(ALICE, login);
+  }
+});
+
+test("a drive whose site Graph didn't say, as when it refused the lookup, is looked up again the next time", async () => {
   shares['https://share.test/d2'] = item('d2', 'd2.csv', '2026-10-20T00:00:00Z', false, 'd2root', { driveId: 'b!d2', driveType: 'documentLibrary', siteId: '' });
   const read = () => via('GET', `${G}${share('https://share.test/d2')}/driveItem`);
   assert.match((await read()).text, /is in no folder, file or SharePoint site ticked/);

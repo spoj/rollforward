@@ -173,13 +173,19 @@ const parents = new Map<string, { parent?: string; at: number }>(), sites = new 
 async function parentOf(email: string, driveId: string, id: string): Promise<string | undefined> {
   const k = `${driveId}/${id}`, known = parents.get(k);
   if (known && known.at > Date.now() - 300_000) return known.parent;
-  const parent = await graph(email, `/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(id)}?$select=parentReference`).then(j => j.parentReference?.id, () => undefined);
+  const parent = await graph(email, `/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(id)}?$select=parentReference`).then(j => j.parentReference?.id, e => {
+    if (e instanceof HttpError && (e.status === 403 || e.status === 404)) return undefined;
+    throw e;
+  });
   parents.set(k, { parent, at: Date.now() });
   return parent;
 }
 async function siteOf(email: string, driveId: string): Promise<string> {
   if (!sites.has(driveId)) {
-    const d = await graph(email, `/drives/${encodeURIComponent(driveId)}?$select=sharePointIds`).catch(() => undefined), s = d?.sharePointIds;
+    const d = await graph(email, `/drives/${encodeURIComponent(driveId)}?$select=sharePointIds`).catch(e => {
+      if (e instanceof HttpError && (e.status === 403 || e.status === 404)) return undefined;
+      throw e;
+    }), s = d?.sharePointIds;
     if (!d) return '';
     sites.set(driveId, s ? `${new URL(s.siteUrl).hostname},${s.siteId},${s.webId}` : '');
   }
