@@ -283,6 +283,15 @@ test("the proxy refuses, with a plain 403 and why, what isn't ticked: the runner
   assert.equal((await via('GET', `${G}/me/messages`, { headers: { prefer: 'outlook.body-content-type="text"' } })).status, 200);
 });
 
+test('a malformed request target is refused and logged, and the proxy keeps serving', async () => {
+  const { call } = await import('../src/connections.ts');
+  await assert.doesNotReject(call({ inst, n: 1, links: new Map(), cost: 0 }, 'openrouter.ai', { url: '//[', method: 'GET' } as any, { writeHead: () => ({ end() {} }) } as any));
+  const r = await via('GET', 'https://openrouter.ai/', { path: '//[' });
+  assert.equal(r.status, 403);
+  assert.deepEqual(calls().at(-1), { run: 1, name: 'openrouter.ai', method: 'GET', path: '//[', status: 403, bytes: 0, refused: 'invalid request target: //[' });
+  assert.equal((await via('GET', 'https://openrouter.ai/api/v1/models')).status, 200);
+});
+
 test('a request is for the host it was sent to, over https: a target naming another, such as //elsewhere.test/…, or http://, is refused before anything is put in', async () => {
   const before = seen.length, r = await via('GET', `${G.replace('/v1.0', '')}//elsewhere.test/v1.0/me/messages`);
   assert.deepEqual([r.status, r.text], [403, 'graph.microsoft.com takes requests for https://graph.microsoft.com, not https://elsewhere.test\n']);

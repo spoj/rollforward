@@ -128,11 +128,8 @@ export async function answered(ms: number) {
 }
 
 export async function call(a: CallRun, host: string, req: IncomingMessage, res: ServerResponse) {
-  const url = new URL(req.url!, `https://${host}`), method = req.method!, link = a.links.get(url.href), s = link ? undefined : own(host);
-  // The runner's own OpenRouter key, where they use it, in place of the server's, never falling back to it.
-  const runner = runnerOf(a.inst).by, mine = s === openrouter ? logins(runner).find(l => l.id === 'openrouter' && l.enabled) : undefined;
-  const c = link || s ? undefined : connections().find(c => types[c.type].serves?.(c, host));
-  const name = link ?? c?.name ?? s?.name ?? host, path = link ? url.origin + url.pathname : url.pathname + url.search;
+  const method = req.method!;
+  let name = host, path = req.url!;
   // A request that may write, to anything but the server's own services, is logged as it goes too, so a cut leaves it as sent,
   // and a stop waits for its answer.
   let sent: number | undefined;
@@ -141,6 +138,14 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     sending.delete(req);
   };
   try {
+    const url = URL.parse(req.url!, `https://${host}`);
+    if (!url) throw new HttpError(403, `invalid request target: ${req.url}`);
+    const link = a.links.get(url.href), s = link ? undefined : own(host);
+    // The runner's own OpenRouter key, where they use it, in place of the server's, never falling back to it.
+    const runner = runnerOf(a.inst).by, mine = s === openrouter ? logins(runner).find(l => l.id === 'openrouter' && l.enabled) : undefined;
+    const c = link || s ? undefined : connections().find(c => types[c.type].serves?.(c, host));
+    name = link ?? c?.name ?? s?.name ?? host;
+    path = link ? url.origin + url.pathname : url.pathname + url.search;
     // A target such as //elsewhere/… or https://elsewhere/… would take the request, and the credential put in, to another host, and
     // one such as http://HOST/… to it in the clear.
     if (url.origin !== `https://${host}`) throw new HttpError(403, `${host} takes requests for https://${host}, not ${url.origin}`);
