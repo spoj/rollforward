@@ -379,7 +379,7 @@ export class Browsers {
   inst: Instance;
   run: number;
   bySite = new Map<string, { id: string; email: string; since: string; writeback: boolean; file: string; conns: number; idle?: NodeJS.Timeout; shot?: Buffer }>();
-  private opening = new Map<string, Promise<string>>();
+  private opening = new Map<string, Promise<string | undefined>>();
   private opens = new Map<string, number>();
   private refused = new Set<string>();
   private conns = new Map<Duplex, string>();
@@ -428,22 +428,29 @@ export class Browsers {
         held.set(key, { run: this, released: new Promise<void>(ok => { release = ok; }), release: () => release() });
       }
       const opening = w ? open(w, 7200, JSON.parse(secret(email, login!.id))) : printer();
-      this.opening.set(site, opening);
-      try {
-        const id = await opening, n = (this.opens.get(site) ?? 0) + 1, file = `browser/run ${this.run} ${site}${n > 1 ? ` ${n}` : ''}.jsonl`;
+      const ready = opening.then(async id => {
+        const n = (this.opens.get(site) ?? 0) + 1, file = `browser/run ${this.run} ${site}${n > 1 ? ` ${n}` : ''}.jsonl`;
         const b = { id, email, since: login?.since ?? '', writeback, file, conns: 0 };
         this.opens.set(site, n);
         this.bySite.set(site, b);
         changes.emit('change', this.inst.id); // for its instance's page to show it
         setJournal({ ...journal(), [id]: { inst: this.inst.id, run: this.run, site, email, since: b.since, writeback, file } });
+        if (this.ended) {
+          await this.close(site);
+          return undefined;
+        }
+        if (site !== PRINT) try { this.lent(site); } catch (e) {
+          await this.close(site);
+          throw e;
+        }
         this.idle(site, b);
         return id;
-      } catch (e) {
+      }).catch(e => {
         if (writeback) this.release(key);
         throw e;
-      } finally {
-        this.opening.delete(site);
-      }
+      }).finally(() => this.opening.delete(site));
+      this.opening.set(site, ready);
+      return ready;
     }
   }
 

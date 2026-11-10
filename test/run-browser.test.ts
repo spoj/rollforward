@@ -23,7 +23,7 @@ let page = Buffer.from('page 1'), back: unknown = { cookies: [] }, listed: strin
 const plain = [{ method: 'GET', url: 'https://crm.example.com/', status: 200 }];
 let requested: object[] = plain;
 const states: unknown[] = [], headers: unknown[] = [], deleted: string[] = [], starts: string[] = [], publics: boolean[] = [];
-let nextId = 'b9', refuseClose = false;
+let nextId = 'b9', refuseClose = false, openGate: Promise<void> | undefined;
 const service = createServer(async (req, res) => {
   if (req.method === 'DELETE') {
     if (refuseClose) return res.writeHead(404).end('{"error":"session gone"}');
@@ -37,6 +37,7 @@ const service = createServer(async (req, res) => {
     starts.push(`${site.start_url} ${site.hosts.join(',')}`);
     publics.push(!!site.public);
     if (state?.cookies?.[0] === 'refused') return res.writeHead(500).end('{"error":"refused"}');
+    await openGate;
     return res.writeHead(201).end(JSON.stringify({ id: nextId }));
   }
   if (req.url === '/sessions') return res.writeHead(200).end(JSON.stringify(listed.map(id => ({ id }))));
@@ -245,6 +246,41 @@ test("a person has one browser at a time on a website that writes its state back
   await Promise.all([one.close(), two.close()]);
   assert.deepEqual(states, [{ cookies: ['seed'] }, { cookies: ['seed'] }]);
   assert.deepEqual(JSON.parse(secret(alice, 'web:ledger')), { cookies: ['seed'] }, 'nothing comes back');
+});
+
+test('a browser that finishes opening after its run ends or its grant is revoked closes at once', async t => {
+  t.after(() => {
+    writeJson('grants.json', everyone);
+    sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });
+    saveLogin(alice, website('crm', 'CRM'), '{}');
+  });
+  for (const stop of ['end', 'revoke']) for (const writeback of [false, true]) {
+    sites({ crm: { url: 'https://crm.example.com/', hosts: [], writeback } });
+    writeJson('grants.json', everyone);
+    saveLogin(alice, website('crm', 'CRM'), '{}');
+    let release!: () => void;
+    openGate = new Promise<void>(ok => { release = ok; });
+    const browsers = new Browsers(running(`opening-${stop}-${writeback}`, ['web:crm']), 1), before = states.length;
+    const first = browsers.browser('crm'), second = browsers.browser('crm');
+    const outcomes = Promise.allSettled([first, second]);
+    try {
+      while (states.length === before) await sleep(5);
+      if (stop === 'end') await browsers.end();
+      else revoke(asPerson(alice)!, 'alice@demo.test crm');
+      const closed = deleted.length;
+      release();
+      const results = await outcomes;
+      assert.equal(deleted.length, closed + 1);
+      assert.equal(browsers.bySite.size, 0);
+      for (const r of results) assert.ok(r.status === 'rejected' || r.value === undefined);
+    } finally {
+      release();
+      openGate = undefined;
+      await outcomes;
+      await browsers.close();
+    }
+  }
+  writeJson('grants.json', everyone);
 });
 
 test("a browser that writes its state back is released once no connection has been open for a while, handing its login back, and a waiting connection that goes away stops waiting", async () => {
