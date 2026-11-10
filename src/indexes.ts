@@ -257,11 +257,18 @@ A ticked source with neither file has no cache yet.
 // Before a run starts, for each of its caches: into `to`, on the same disk, a copy of the feed as its .json accounts for it, by
 // reflink where the disk does that, as <name>.ndjson.zst, and <name>.json: the source, their own deltaLinks, to follow for what
 // changed since, and as_of, when the oldest of them was reached, null while the cache is still being built; and the README.md that
-// says so. All of it runs at once, so no tidy-up starts a new feed in between. Whether there was any.
+// says so. All of it runs at once, so no tidy-up starts a new feed in between. Stopped parts resume in their cache's queue, without
+// holding up the copy. Whether there was any.
 export function prepare(inst: Instance, to: string): boolean {
   const names = new Set<string>();
   for (const { o, c } of sources(inst)) {
     const base = o.name.replace(/[/\0]/g, '-'), ps = Object.values(c.parts);
+    if (ps.some(p => p.due === null && p.tries >= TRIES)) queue(at(c.person, c.source), async () => {
+      const now = load(c.person, c.source);
+      if (!now) return;
+      for (const p of Object.values(now.parts)) if (p.due === null && p.tries >= TRIES) Object.assign(p, { due: Date.now(), tries: 0 });
+      save(now);
+    }).then(() => poke());
     let name = base;
     for (let k = 2; names.has(name); k++) name = `${base} ${k}`;
     names.add(name);

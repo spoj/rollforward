@@ -303,6 +303,32 @@ test('a 429 waits as Retry-After says, at the same page', async () => {
   assert.deepEqual(now(run(ALICE, [FOLDER])('Folder LFM, Reports').lines), ['f1', 'f4', 'pub', 'top']);
 });
 
+test("a person's next run resumes parts stopped after five failures, without waiting or restarting their page", async () => {
+  const link = cache(ALICE, FOLDER).parts[''].link;
+  for (let i = 1; i <= 5; i++) {
+    once.set(ALICE, 500);
+    await due(ALICE, FOLDER);
+    assert.equal(cache(ALICE, FOLDER).parts[''].tries, i);
+    if (i === 1) {
+      const retry = cache(ALICE, FOLDER).parts[''].due;
+      run(ALICE, [FOLDER]);
+      await new Promise(setImmediate);
+      assert.equal(cache(ALICE, FOLDER).parts[''].due, retry, 'a run leaves a scheduled retry alone');
+    }
+  }
+  assert.equal(cache(ALICE, FOLDER).parts[''].due, null);
+  const from = asked.length, bytes = readFileSync(feedOf(ALICE, FOLDER)), copy = run(ALICE, [FOLDER])('Folder LFM, Reports');
+  assert.equal(asked.length, from, 'the copy asked Graph nothing');
+  assert.deepEqual(readFileSync(copy.file), bytes);
+  await new Promise(setImmediate);
+  const p = cache(ALICE, FOLDER).parts[''];
+  assert.notEqual(p.due, null, 'the stopped part is due again');
+  assert.equal(p.tries, 0);
+  assert.equal(p.link, link);
+  await work(() => cache(ALICE, FOLDER).parts[''].error === null && settled(ALICE, FOLDER)());
+  assert.equal(asked.slice(from).find(q => q.who === ALICE)!.url, link.slice(`${base}/v1.0`.length));
+});
+
 test('an expired login pauses its cache until its person signs in again, then it goes on at the same page', async () => {
   const link = cache(ALICE, FOLDER).parts[''].link;
   offer(ALICE, [{ id: FOLDER, name: 'Folder LFM, Reports' }], '2026-11-04T00:00:00Z', 'expired');
@@ -310,6 +336,8 @@ test('an expired login pauses its cache until its person signs in again, then it
   assert.equal(cache(ALICE, FOLDER).parts[''].due, null);
   assert.match(cache(ALICE, FOLDER).parts[''].error, /login/);
   assert.equal(run(ALICE, [FOLDER])('Folder LFM, Reports').lines.length, 4, 'a run gets what there is');
+  await new Promise(setImmediate);
+  assert.equal(cache(ALICE, FOLDER).parts[''].due, null, 'a run leaves an expired login paused');
   const from = asked.length;
   offer(ALICE, [{ id: FOLDER, name: 'Folder LFM, Reports' }], '2026-11-04T01:00:00Z');
   await work(() => cache(ALICE, FOLDER).parts[''].error === null && settled(ALICE, FOLDER)());
