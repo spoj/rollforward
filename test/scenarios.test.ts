@@ -179,6 +179,25 @@ test('a Pi killed mid-turn fails its run at once, frees its series, and starts a
   assert.equal(log.findLast(e => e.op === 'done')!.aborted, false);
 });
 
+test('the time limit fails a run with its reason, rather than recording an ordinary interrupt', async () => {
+  proc.kill('SIGKILL');
+  await once(proc, 'exit');
+  await serve({ RF_LIMIT_MIN: '0.02' });
+  try {
+    const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Limit' })).json();
+    const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec' })).json();
+    scripts.push({ bash: ['sleep 30'], report: 'unreached', saw: [] });
+    const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
+    const done = (await runs(id, 1)).find(e => e.op === 'done')!;
+    assert.deepEqual([done.aborted, done.error], [true, 'time limit']);
+    const history = await (await call('GET', '/api/runs')).json();
+    const failed = history.find((r: { path: string }) => r.path === 'Limit/Rec/2026-11');
+    assert.deepEqual([failed.outcome, failed.failure], ['failed', 'time limit']);
+  } finally {
+    await cut();
+  }
+});
+
 test("a run meets its walls, wakes itself, and after a takeover runs as its new runner, with the new runner's ticks", async () => {
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Scenarios' })).json();
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB], agents: 'Scenarios: amounts in USD.' })).status, 200);

@@ -28,7 +28,7 @@ const full = () => active.size >= MAX_RUNS || (MIN_FREE > 0 && freemem() < MIN_F
 export const MAX_OPEN = 3;
 const SPACING_MS = 15 * 60_000, MAX_WAKES = 20;
 
-export type Active = { inst: Instance; n: number; session: number; token: string; view: View; workspace: string; skills: Record<string, number>; shape: string; run?: Run; sent: number; seen: number; texts: Map<string, number>; interrupted: boolean; done: boolean; cost: number; failed?: string; hosts: Set<string>; links: Map<string, { name: string; offer: string }>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string };
+export type Active = { inst: Instance; n: number; session: number; token: string; view: View; workspace: string; skills: Record<string, number>; shape: string; run?: Run; sent: number; seen: number; texts: Map<string, number>; done: boolean; cost: number; failed?: string; hosts: Set<string>; links: Map<string, { name: string; offer: string }>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string };
 export const active = new Map<string, Active>();
 export const byToken = new Map<string, Active>();
 const debounce = new Map<string, NodeJS.Timeout>();
@@ -203,7 +203,7 @@ async function start(inst: Instance) {
   const live = kept ? [] : skills().map(s => ({ ...s, dir: realpathSync(s.dir) }));
   const a: Active = {
     inst, n, session: kept?.session ?? n, token: kept?.token ?? randomUUID(), view: kept?.view ?? view(inst), workspace: tree().series[series].workspace, skills: kept?.skills ?? Object.fromEntries(live.map(s => [s.id, pushed(s).version])), shape: kept?.shape ?? startsFrom(inst),
-    sent: entries.at(-1)!.seq, seen, texts: new Map([[text, entries.at(-1)!.seq]]), interrupted: false, done: false, cost: 0, hosts: new Set(), links: new Map(),
+    sent: entries.at(-1)!.seq, seen, texts: new Map([[text, entries.at(-1)!.seq]]), done: false, cost: 0, hosts: new Set(), links: new Map(),
     process: processOf(inst), thread: pending(inst, seen)[0]?.thread as string | undefined,
   };
   active.set(series, a);
@@ -242,11 +242,7 @@ async function start(inst: Instance) {
     return;
   }
   flush(a);
-  a.timer = setTimeout(async () => {
-    a.interrupted = true;
-    await a.run!.interrupt().catch(() => {});
-    finish(a, true, 'time limit');
-  }, LIMIT_MS);
+  a.timer = setTimeout(() => finish(a, true, 'time limit'), LIMIT_MS);
   settled.then(({ aborted, error }) => finish(a, aborted, error ?? a.failed));
 }
 

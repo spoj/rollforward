@@ -814,7 +814,6 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   } else if (action === 'interrupt') {
     if (!mine?.run) throw new HttpError(409, 'no run going');
     inst.append(by, 'interrupt');
-    mine.interrupted = true;
     await mine.run.interrupt();
     return send(res, 200, 'ok');
   } else if (action === 'logins') {
