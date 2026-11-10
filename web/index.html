@@ -595,11 +595,13 @@ async function refresh() {
 // Instances changed: each one's row in the sidebar, and the open one's data. One the sidebar lacks takes a full refresh.
 async function patch(ids) {
   const rows = tree.flatMap(w => w.series.flatMap(s => s.instances)), others = ids.filter(id => id !== cur?.i?.id);
+  const n = others.length === ids.length ? refreshes : ++refreshes;
   const sums = await Promise.all(others.map(id => api(`/api/instances/${id}/summary`)));
+  if (n !== refreshes) return;
   if (sums.some(x => !rows.some(r => r.id === x.id))) return refresh();
   for (const x of sums) Object.assign(rows.find(r => r.id === x.id), x);
   if (others.length === ids.length) return render();
-  const n = ++refreshes, path = shown, [[d, st], sum] = await Promise.all([fetchInstance(path), api(`${path}/summary`)]);
+  const path = shown, [[d, st], sum] = await Promise.all([fetchInstance(path), api(`${path}/summary`)]);
   if (n !== refreshes) return;
   Object.assign(cur.i, sum);
   land(cur, path, d, st);

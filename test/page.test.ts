@@ -213,6 +213,29 @@ test("Back to another instance closes a confirmation dialog without acting on ei
   } finally { await tab.close(); }
 });
 
+test("a patch waiting for another instance's summary gives way to navigation", async () => {
+  const tab = await browser.newPage({ storageState: await page.context().storageState() });
+  try {
+    await tab.goto(new URL('/#/a5c0ff5e1f00', page.url()).href);
+    await tab.waitForSelector('#bar h1 .t:text-is("2026-12")');
+    let releaseSummary!: () => void, summaryStarted!: () => void, releaseTree!: () => void, treeStarted!: () => void;
+    const summaryHeld = new Promise<void>(ok => { releaseSummary = ok; }), summaryReady = new Promise<void>(ok => { summaryStarted = ok; });
+    const treeHeld = new Promise<void>(ok => { releaseTree = ok; }), treeReady = new Promise<void>(ok => { treeStarted = ok; });
+    await tab.route('**/api/instances/a5c0ff5e1f02/summary', async r => { summaryStarted(); await summaryHeld; await r.continue(); });
+    await tab.evaluate(() => { window.pendingPatch = patch(['a5c0ff5e1f00', 'a5c0ff5e1f02']); });
+    await summaryReady;
+    await tab.route('**/api', async r => { treeStarted(); await treeHeld; await r.continue(); });
+    await tab.evaluate(() => { location.hash = '#/a5c0ff5e1f02'; });
+    await treeReady;
+    releaseSummary();
+    await tab.evaluate(() => window.pendingPatch);
+    releaseTree();
+    await tab.waitForSelector('#bar h1 .t:text-is("2026-10")', { timeout: 5000 });
+    assert.equal(await tab.evaluate(() => cur.i.id), 'a5c0ff5e1f02');
+    assert.equal(new URL(tab.url()).hash, '#/a5c0ff5e1f02');
+  } finally { await tab.close(); }
+});
+
 test("the side panel is the instance's conversation, a run a line among its threads, or its audit, by the switch at its top: the log and the agent's steps, a plain line each", async () => {
   await page.evaluate(() => { location.hash = '#/3d70f7ca6f20'; });
   await page.waitForSelector('#bar h1 .t:text-is("2026-08-30")');
