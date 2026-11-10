@@ -4,7 +4,7 @@ import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:net';
+import { connect, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -338,6 +338,16 @@ test('without a session the site shows Sign in with Microsoft, which goes to Mic
     assert.equal((await entra.signIn(base, adminEmail, `/auth/login?next=${encodeURIComponent(next)}`)).headers.get('location'), next === '/#/abc' ? next : '/', `a sign-in goes on only to this site: ${JSON.stringify(next)}`);
   assert.match((await fetch(base + '/auth/login', { redirect: 'manual', headers: { cookie: admin } })).headers.get('location')!, /\/authorize\?.*scope=openid\+profile\+email\+offline_access&/, 'signed in already, it signs in again, as Sign in again asks, keeping the sign-in');
   await login(adminEmail);
+});
+
+test('a websocket upgrade with a non-ASCII session signature is refused without stopping the server', async () => {
+  const url = new URL(base), email = Buffer.from(adminEmail).toString('base64url');
+  const socket = connect(Number(url.port), url.hostname);
+  await once(socket, 'connect');
+  socket.write(Buffer.from(`GET /signins/x/view/watch HTTP/1.1\r\nHost: ${url.host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nOrigin: ${url.origin}\r\nCookie: rf_session=${email}.9999999999999.${'a'.repeat(42)}é\r\n\r\n`, 'latin1'));
+  const answer = Buffer.concat(await Array.fromAsync(socket)).toString();
+  assert.match(answer, /^HTTP\/1\.1 404 Not Found/);
+  assert.equal((await call('GET', '/me')).status, 200);
 });
 
 test('an id that every object has a property by, such as __proto__, names nothing, for admins too', async () => {
