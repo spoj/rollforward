@@ -278,6 +278,20 @@ test("a person has one browser at a time on a website that writes its state back
   assert.deepEqual(JSON.parse(secret(alice, 'web:ledger')), { cookies: ['seed'] }, 'nothing comes back');
 });
 
+test('a sealed state that cannot be read does not hold the person\'s browser', async () => {
+  sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });
+  saveLogin(alice, website('crm', 'CRM'), 'not JSON');
+  const first = new Browsers(running('unreadable-state', ['web:crm']), 1);
+  await assert.rejects(first.browser('crm'), SyntaxError);
+  saveLogin(alice, website('crm', 'CRM'), '{}');
+  const next = new Browsers(running('after-unreadable-state', ['web:crm']), 1);
+  try {
+    assert.equal(await Promise.race([next.browser('crm'), sleep(500).then(() => 'still held')]), 'b9');
+  } finally {
+    await next.end();
+  }
+});
+
 test('a browser that finishes opening after its run ends or its grant is revoked closes at once', async t => {
   t.after(() => {
     writeJson('grants.json', everyone);

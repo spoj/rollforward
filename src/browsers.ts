@@ -426,11 +426,12 @@ export class Browsers {
         if (conn?.destroyed) return undefined;
         continue;
       }
+      const state = w ? JSON.parse(secret(email, login!.id)) : undefined;
       if (writeback) {
         let release!: () => void;
         held.set(key, { run: this, released: new Promise<void>(ok => { release = ok; }), release: () => release() });
       }
-      const opening = w ? open(w, 7200, JSON.parse(secret(email, login!.id))) : printer();
+      const opening = w ? open(w, 7200, state) : printer();
       const ready = opening.then(async id => {
         const n = (this.opens.get(site) ?? 0) + 1, file = `browser/run ${this.run} ${site}${n > 1 ? ` ${n}` : ''}.jsonl`;
         const b = { id, email, since: login?.since ?? '', writeback, file, conns: 0 };
