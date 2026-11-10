@@ -736,6 +736,9 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const tmp = join(tmpDir, randomUUID());
     try {
       await pipeline(req, createWriteStream(tmp));
+      const now = tree(), who = asPerson(by);
+      if (!who) throw new HttpError(401, 'sign in');
+      mustSee(who, now.workspaces[now.series[inst.seriesId].workspace]);
       return send(res, 200, { file: inst.keep(url.searchParams.get('name') ?? 'file', tmp, 'upload/attachments') });
     } finally {
       rmSync(tmp, { force: true });
@@ -745,6 +748,9 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const pane = url.searchParams.get('pane') === 'out' ? 'out' : 'in', tmp = join(tmpDir, randomUUID()), hash = createHash('sha256');
     try {
       await pipeline(req, async function* (chunks: AsyncIterable<Buffer>) { for await (const c of chunks) { hash.update(c); yield c; } }, createWriteStream(tmp));
+      const now = tree(), who = asPerson(by);
+      if (!who) throw new HttpError(401, 'sign in');
+      mustSee(who, now.workspaces[now.series[inst.seriesId].workspace]);
       const up = inst.upload(by, url.searchParams.get('name') ?? 'file', tmp, hash.digest('hex'), pane, url.searchParams.get('onto'), quiet);
       // What starts no run, quiet or a note, is committed at once in its person's name; a run going commits it as it ends.
       if (!starts(inst, up) && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, me, `Upload ${up.file}`).catch(err => inst.append('server', 'commit', { cause: up.seq, error: err.message }));

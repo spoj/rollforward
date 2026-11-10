@@ -158,6 +158,29 @@ test('an upload streams to disk as it arrives, and is refused if its instance cl
   assert.ok(!existsSync(join(await dir(monthly, label), 'upload', 'big.bin')));
 });
 
+test('uploads and comment attachments are refused if their person loses workspace access while the body streams', async t => {
+  const b = sessionOf(await login(bob))!;
+  const ws = (await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Streaming' }))).json()).id;
+  const sid = (await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'Files' }))).json()).id;
+  for (const action of ['upload', 'attach']) await t.test(action, async () => {
+    const id = (await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: action, quiet: true }))).json()).id;
+    assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ members: [bob] }))).status, 200);
+    let release!: () => void, sent = false;
+    const held = new Promise<void>(ok => { release = ok; });
+    const body = new ReadableStream({ async pull(c) { if (!sent) { sent = true; c.enqueue(new Uint8Array(1 << 20)); } else { await held; c.close(); } } });
+    const request = fetch(`${base}/api/instances/${id}/${action}?name=${action}.bin&quiet`, { method: 'POST', body, duplex: 'half', headers: { cookie: b } } as RequestInit);
+    try {
+      for (let n = 0; !readdirSync(join(root, '.tmp')).some(f => statSync(join(root, '.tmp', f)).size === 1 << 20) && n < 200; n++) await new Promise(r => setTimeout(r, 25));
+      assert.equal(readdirSync(join(root, '.tmp')).length, 1);
+      assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ members: [] }))).status, 200);
+    } finally { release(); }
+    assert.equal((await request).status, 404, action);
+    assert.deepEqual(readdirSync(join(root, '.tmp')), []);
+    assert.deepEqual(readdirSync(join(root, 'instances', id, 'upload')), []);
+    assert.deepEqual((await json(`/api/instances/${id}`)).log.map((e: { op: string }) => e.op), ['create']);
+  });
+});
+
 test('duplicate copies a closed instance into an open one, once', async () => {
   assert.equal((await call('POST', `${await at(series, '2026-09-06', 'duplicate')}?as=x`)).status, 409);
   const dup = `${await at(series, '2026-08-30', 'duplicate')}?as=${encodeURIComponent('2026-08-30 copy')}`;
