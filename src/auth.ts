@@ -146,12 +146,12 @@ export function session(req: IncomingMessage): Me | null {
 // app is set to send them), then sets the session cookie. Entra's sub differs for each app, but its tenant and object ids (oid, kept as
 // tid/oid) name the person whatever the app, so a record from before them, made through an app since replaced, takes them at its
 // next sign-in; another issuer's sub must match.
-function admit(res: ServerResponse, email: string, name: string | undefined, who: { sub?: string; oid?: string }, groups: string[] | undefined, next: string, extra: string[], refresh?: string) {
+function admit(res: ServerResponse, email: string, name: string | undefined, who: { sub?: string; oid?: string }, groups: string[], next: string, extra: string[], refresh?: string) {
   const known = users()[email];
   if (!known && env.RF_AUTO_PROVISION === '0' && !admins.has(email)) return page(res, 403, `${email} has no access yet. Ask an admin to add you.`);
   if (known?.disabled) return page(res, 403, `${email} is disabled. Ask an admin.`);
   if (who.oid ? known?.oid && known.oid !== who.oid : known?.sub && who.sub && known.sub !== who.sub) return page(res, 403, `${email} belongs to another Microsoft account.`);
-  const u = upsertUser(email, { name: name ?? known?.name, ...(who.sub && { sub: who.sub }), ...(who.oid && { oid: who.oid }), ...(groups && { groups }), last_login: new Date().toISOString(), ...(admins.has(email) && { role: 'admin' as Role }) });
+  const u = upsertUser(email, { name: name ?? known?.name, ...(who.sub && { sub: who.sub }), ...(who.oid && { oid: who.oid }), groups, last_login: new Date().toISOString(), ...(admins.has(email) && { role: 'admin' as Role }) });
   if (refresh) keepSignIn(email, refresh);
   const exp = String(Date.now() + SESSION_MS);
   res.writeHead(302, { location: next, 'set-cookie': [cookie('rf_session', `${b64(email)}.${exp}.${mac(`${email} ${exp} ${u.epoch ?? 0}`)}`, SESSION_MS / 1000), ...extra] });
@@ -290,7 +290,7 @@ async function finishSignIn(res: ServerResponse, claims: any, p: Pending, refres
   const email = String(claims.email ?? claims.preferred_username ?? claims.upn ?? '').toLowerCase();
   if (!email.includes('@')) return page(res, 403, 'Your account has no email address.');
   if (domains.length && !domains.includes(email.split('@')[1])) return page(res, 403, `${email} is not in an allowed domain.`);
-  admit(res, email, claims.name, { sub: claims.sub, ...(claims.oid && { oid: `${claims.tid}/${claims.oid}` }) }, Array.isArray(claims.groups) ? claims.groups.map(String) : undefined, p.next, [cookie(pendingCookie(p.state), '', 0)], refresh);
+  admit(res, email, claims.name, { sub: claims.sub, ...(claims.oid && { oid: `${claims.tid}/${claims.oid}` }) }, Array.isArray(claims.groups) ? claims.groups.map(String) : [], p.next, [cookie(pendingCookie(p.state), '', 0)], refresh);
 }
 
 async function callback(req: IncomingMessage, res: ServerResponse, url: URL) {
@@ -329,11 +329,11 @@ async function finishLogin(req: IncomingMessage, res: ServerResponse, claims: an
   res.writeHead(302, { location: p.next, 'set-cookie': cookie(pendingCookie(p.state), '', 0) }).end();
 }
 
-// A fresh access token for a person's login, and the refresh token that replaces theirs. Microsoft refusing the login answers 401,
+// Fresh access and ID tokens for a person's login, and the refresh token that replaces theirs. Microsoft refusing the login answers 401,
 // as for one expired, revoked or made through another app, for its person to sign in again. A refusal that names this server's own
 // app, as when its secret expired, is the server's to mend, and answers 502, as other failures do; one that wants the person's
 // consent to permissions the server asks for anew carries `consent`.
-export async function renew(refreshToken: string, scope: string[]): Promise<{ access: string; refresh: string; expires: number; scopes?: string[] }> {
+export async function renew(refreshToken: string, scope: string[]): Promise<{ access: string; idToken: string; refresh: string; expires: number; scopes?: string[] }> {
   const d = await discovery();
   const r = await fetch(d.token_endpoint, {
     method: 'POST', signal: AbortSignal.timeout(20_000),
@@ -342,7 +342,7 @@ export async function renew(refreshToken: string, scope: string[]): Promise<{ ac
   const t = await r.json().catch(() => ({}));
   const refused = ['invalid_grant', 'invalid_client', 'unauthorized_client'].includes(t.error) && !String(t.error_description).includes(`'${oidc.clientId}'`);
   if (!r.ok || !t.access_token) throw Object.assign(new HttpError(refused ? 401 : 502, `Microsoft did not renew the login: ${(t.error_description ?? t.error ?? r.status).toString().split('\r\n')[0]}`), { consent: t.suberror === 'consent_required' });
-  return { access: t.access_token, refresh: t.refresh_token ?? refreshToken, expires: Date.now() + (Number(t.expires_in ?? 3600) - 120) * 1000, scopes: granted(t.scope) };
+  return { access: t.access_token, idToken: t.id_token, refresh: t.refresh_token ?? refreshToken, expires: Date.now() + (Number(t.expires_in ?? 3600) - 120) * 1000, scopes: granted(t.scope) };
 }
 
 // Where a sign-in goes once done: a path on this site, as a browser reads it, which takes \ for / and drops tabs and line breaks.

@@ -386,8 +386,9 @@ test("each person sees the workspaces they're in, by email or Entra group; owner
   assert.equal((await people('larkfield', { members: [] }, b)).status, 403, 'a member does not manage who is in');
   assert.equal((await people('larkfield', { members: ['not an email'] })).status, 400);
 
-  const group = '0b8e5c8a-6d3e-4c21-9f2a-1d2e3f4a5b6c', users = join(root, '.rf', 'users.json');
-  writeFileSync(users, JSON.stringify({ ...JSON.parse(readFileSync(users, 'utf8')), [bob]: { ...JSON.parse(readFileSync(users, 'utf8'))[bob], groups: [group] } }));
+  const group = '0b8e5c8a-6d3e-4c21-9f2a-1d2e3f4a5b6c';
+  entra.who.groups[bob] = [group];
+  await login(bob);
   await grant('create', [group.toUpperCase()]);
   assert.deepEqual((await json('/me', b)).can, ['create'], 'by an Entra group too');
   await grant('create', []);
@@ -396,6 +397,7 @@ test("each person sees the workspaces they're in, by email or Entra group; owner
   assert.ok(!(await workspaces(b)).some((w: { name: string }) => w.name === 'Acme Payroll'));
   assert.equal((await people('Acme Payroll', { members: [group] })).status, 200);
   assert.ok((await workspaces(b)).some((w: { name: string }) => w.name === 'Acme Payroll'), 'through the Entra group');
+  delete entra.who.groups[bob];
 
   // What a workspace's agents read beyond it is what other workspaces' owners let them, whoever is in either.
   const links = async (ws: string) => { const w = await named(ws); return [w.reads, w.readers].map(l => l.map((r: { name: string }) => r.name)); };
@@ -418,6 +420,42 @@ test("each person sees the workspaces they're in, by email or Entra group; owner
   assert.equal((await people('larkfield', { owners: [], members: [] })).status, 200);
   assert.equal((await call('GET', await at(series, '2026-08-30'), undefined, b)).status, 404);
   assert.deepEqual(await links('Acme Payroll'), [['larkfield'], []]);
+});
+
+test('each sign-in replaces the groups, and a token without groups removes their workspaces and capabilities', async () => {
+  const email = 'groups@demo.test', group = 'a3ec3016-372f-4fbb-804d-3267627d819f';
+  const { id } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Group access' }))).json();
+  assert.equal((await call('PUT', `/api/workspaces/${id}`, JSON.stringify({ members: [group] }))).status, 200);
+  assert.equal((await call('PUT', '/capabilities', JSON.stringify({ cap: 'create', people: [group] }))).status, 200);
+  entra.who.groups[email] = [group];
+  const cookie = sessionOf(await login(email))!;
+  assert.deepEqual([(await json('/me', cookie)).groups, (await json('/me', cookie)).can], [[group], ['create']]);
+  assert.deepEqual((await workspaces(cookie)).map((w: { id: string }) => w.id), [id]);
+  delete entra.who.groups[email];
+  assert.ok(sessionOf(await login(email)));
+  assert.deepEqual([(await json('/me', cookie)).groups, (await json('/me', cookie)).can], [[], []]);
+  assert.deepEqual(await workspaces(cookie), []);
+  await call('PUT', '/capabilities', JSON.stringify({ cap: 'create', people: [] }));
+});
+
+test("each run renews its runner's groups from Microsoft, including a renewal with no groups, without another browser sign-in", async () => {
+  const email = 'runner-groups@demo.test', first = '8d7e332d-b4c7-4ff5-aac3-10a87909a40b', second = '0e3dcbbb-bb2e-4fb3-b21d-a87f9b5aa624';
+  entra.who.groups[email] = [first];
+  const cookie = sessionOf(await login(email))!;
+  const { token } = await (await call('POST', '/tokens', JSON.stringify({ name: 'runs', days: 90 }), cookie)).json();
+  const { id: workspace } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Runner groups' }))).json();
+  assert.equal((await call('PUT', `/api/workspaces/${workspace}`, JSON.stringify({ members: [email] }))).status, 200);
+  const { id: series } = await (await call('POST', '/api/series', JSON.stringify({ workspace, name: 'Renew groups' }))).json();
+  entra.who.groups[email] = [second];
+  const made = await fetch(`${base}/api/series/${series}`, { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ label: 'one' }) });
+  assert.equal(made.status, 200);
+  const { id } = await made.json(), path = `/api/instances/${id}`;
+  await ran(path);
+  assert.deepEqual((await json('/me', cookie)).groups, [second]);
+  delete entra.who.groups[email];
+  assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ text: 'Run again' }), cookie)).status, 200);
+  await ran(path, 2);
+  assert.deepEqual((await json('/me', cookie)).groups, []);
 });
 
 test("the page names everyone who has signed in, and the Entra groups in the workspaces you see by the labels their owners give", async () => {

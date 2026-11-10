@@ -42,14 +42,16 @@ export function keepSignIn(email: string, refresh: string) {
 }
 
 // Whether Microsoft still signs the person in, as each run of theirs asks before it starts: their sign-in renews, its refresh token
-// turning over as it does. Without one kept, or Microsoft refusing it, it answers 401, as for one expired or revoked, for its person to sign in again; one disabled here, or that Microsoft says is disabled or gone
+// turning over as it does, and their groups replaced by those its ID token names. Without one kept, or Microsoft refusing it, it answers 401, as for one expired or revoked, for its person to sign in again; one disabled here, or that Microsoft says is disabled or gone
 // (AADSTS50057, AADSTS50034), carries `left`, and is disabled here too. Other failures, as when Microsoft can't be reached, throw
 // as they come.
 export async function confirm(email: string) {
   if (users()[email]?.disabled) throw Object.assign(new HttpError(401, `${email} is disabled here`), { left: true });
   if (!existsSync(join(personDir(email), 'entra.sealed'))) throw new HttpError(401, `${email} hasn't signed in to rollforward since sign-ins are kept`);
   try {
-    seal(email, 'entra', (await renew(secret(email, 'entra'), [])).refresh);
+    const r = await renew(secret(email, 'entra'), []), claims = JSON.parse(Buffer.from(r.idToken.split('.')[1], 'base64url').toString());
+    seal(email, 'entra', r.refresh);
+    upsertUser(email, { groups: Array.isArray(claims.groups) ? claims.groups.map(String) : [] });
   } catch (e) {
     if (!/AADSTS(50057|50034)\b/.test((e as Error).message)) throw e;
     upsertUser(email, { disabled: true });

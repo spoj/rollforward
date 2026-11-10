@@ -8,7 +8,7 @@ import { createServer } from 'node:http';
 const NAMES: Record<string, string> = { 'admin@demo.test': 'Demo Admin', 'bob@demo.test': 'Bob' };
 
 export async function idp() {
-  const b64 = (s: string) => Buffer.from(s).toString('base64url'), who = { as: '', gone: new Set<string>(), stale: new Set<string>(), down: false, renewed: [] as string[] };
+  const b64 = (s: string) => Buffer.from(s).toString('base64url'), who = { as: '', groups: {} as Record<string, string[]>, gone: new Set<string>(), stale: new Set<string>(), down: false, renewed: [] as string[] };
   const refresh = (email: string) => `rt.${b64(email)}`;
   let issuer = '';
   const server = createServer(async (req, res) => {
@@ -28,11 +28,12 @@ export async function idp() {
       if (who.gone.has(email)) return refused('AADSTS50057: The user account is disabled.');
       if (who.stale.has(email)) return refused('AADSTS700082: The refresh token has expired due to inactivity.');
       who.renewed.push(email);
-      return send({ access_token: `at.${b64(email)}`, refresh_token: refresh(email), expires_in: 3600, scope: f.get('scope') });
+      const claims = { iss: issuer, aud: 'rf-test', exp: Date.now() / 1000 + 300, email, sub: `sub-${email}`, tid: 't1', oid: `oid-${email}`, groups: who.groups[email] };
+      return send({ id_token: `${b64('{"alg":"none"}')}.${b64(JSON.stringify(claims))}.`, access_token: `at.${b64(email)}`, refresh_token: refresh(email), expires_in: 3600, scope: f.get('scope') });
     }
     const c = JSON.parse(Buffer.from(f.get('code')!, 'base64url').toString());
     if (f.get('client_secret') !== 'shh' || createHash('sha256').update(f.get('code_verifier')!).digest('base64url') !== c.challenge) return void res.writeHead(400).end('{"error":"invalid_grant"}');
-    const claims = { iss: issuer, aud: 'rf-test', exp: Date.now() / 1000 + 300, nonce: c.nonce, email: c.email, name: NAMES[c.email], sub: `sub-${c.email}`, tid: 't1', oid: `oid-${c.email}` };
+    const claims = { iss: issuer, aud: 'rf-test', exp: Date.now() / 1000 + 300, nonce: c.nonce, email: c.email, name: NAMES[c.email], sub: `sub-${c.email}`, tid: 't1', oid: `oid-${c.email}`, groups: who.groups[c.email] };
     send({ id_token: `${b64('{"alg":"none"}')}.${b64(JSON.stringify(claims))}.`, access_token: `at.${b64(c.email)}`, ...(c.scope.split(' ').includes('offline_access') && { refresh_token: refresh(c.email) }) });
   });
   await new Promise<void>(ok => server.listen(0, '127.0.0.1', ok));
