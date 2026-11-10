@@ -370,8 +370,8 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
   if (fd === undefined) throw new HttpError(404, 'no such file');
   if (preview) {
     // preview.py runs in the agent's userland, with no network and nothing of the host's: the file, up to 100 MB, streams to its
-    // stdin. What it makes is kept, until the server restarts, by the file's name and content, as a file doesn't change once
-    // written; and at most 2 run at once, the rest waiting their turn, so previews never crowd out runs.
+    // stdin. What it makes is kept, until the server restarts, by the file's name and the content it was given; at most 2 run at
+    // once, the rest waiting their turn, so previews never crowd out runs.
     if (fstatSync(fd).size > 100e6) {
       closeSync(fd);
       throw new HttpError(413, `${basename(rel)} is over 100 MB, too big to preview: download it`);
@@ -392,10 +392,13 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
         '--unshare-all', '--die-with-parent', '--new-session', '--clearenv', ...userland(), '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
         '--ro-bind', join(app, 'src', 'preview.py'), '/preview.py', '--setenv', 'HOME', '/tmp', '--setenv', 'LANG', 'C.UTF-8', '--', '/opt/venv/bin/python', '/preview.py', basename(rel), part,
       ], { timeout: 30_000, maxBuffer: 64e6 });
-      const [{ stdout }] = await Promise.all([run, pipeline(createReadStream('', { fd, start: 0 }), run.child.stdin!)]);
+      const content = createHash('sha256').update(`${basename(rel)}\n${part}\n`);
+      const [{ stdout }] = await Promise.all([run, pipeline(createReadStream('', { fd, start: 0 }), async function* (chunks: AsyncIterable<Buffer>) {
+        for await (const c of chunks) { content.update(c); yield c; }
+      }, run.child.stdin!)]);
       const tmp = join(tmpDir, randomUUID());
       writeFileSync(tmp, stdout);
-      renameSync(tmp, kept);
+      renameSync(tmp, join(previews, content.digest('hex')));
       res.writeHead(200, { 'content-type': 'application/json' });
       return void res.end(stdout);
     } finally {

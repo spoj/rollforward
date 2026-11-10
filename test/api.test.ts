@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import { connect, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -59,6 +59,15 @@ before(async () => {
   (await import('../src/system.ts')).initSystem(root);
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch') };
   mkdirSync(env.HOME);
+  const bin = join(tmp, 'bin'), bwrap = execFileSync('which', ['bwrap'], { encoding: 'utf8' }).trim();
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'bwrap'), `#!/bin/sh
+case "$*" in
+  *race-hold-*) touch "${tmp}/holding-$$"; while [ ! -f "${tmp}/release-previews" ]; do sleep 0.05; done; cat >/dev/null; echo '{}'; exit;;
+esac
+exec "${bwrap}" "$@"
+`, { mode: 0o755 });
+  env.PATH = `${bin}:${env.PATH}`;
   delete env.OPENROUTER_API_KEY;
   const probe = createServer();
   await new Promise(ok => probe.listen(0, '127.0.0.1', ok));
@@ -1053,6 +1062,42 @@ test('the page hears of changes from an event stream, only of instances it can s
   assert.equal((await call('GET', `${path}/summary`, undefined, b)).status, 404);
   mine.stop();
   bobs.stop();
+});
+
+test('a preview queued while a working file changes is kept under the content the preview read', async () => {
+  const id = await iid(series, '2026-08-30'), folder = join(root, 'instances', id, 'working');
+  const preview = (name: string) => call('GET', `/preview/${id}/working/${name}`);
+  for (const name of ['race-hold-1.csv', 'race-hold-2.csv']) writeFileSync(join(folder, name), name);
+  const holds = [preview('race-hold-1.csv'), preview('race-hold-2.csv')];
+  let queued: Promise<Response>;
+  const path = join(folder, 'race-content.csv'), old = 'value\nold\n', fresh = 'value\nnew\n';
+  try {
+    for (let n = 0; readdirSync(tmp).filter(f => f.startsWith('holding-')).length < 2 && n < 200; n++) await new Promise(r => setTimeout(r, 25));
+    assert.equal(readdirSync(tmp).filter(f => f.startsWith('holding-')).length, 2);
+    writeFileSync(path, old);
+    queued = preview('race-content.csv');
+    let hashed = false;
+    for (let n = 0; !hashed && n < 200; n++) {
+      await new Promise(r => setTimeout(r, 25));
+      hashed = readdirSync(`/proc/${proc.pid}/fd`).some(fd => {
+        try {
+          return readlinkSync(`/proc/${proc.pid}/fd/${fd}`) === path;
+        } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; return false; }
+      });
+    }
+    assert.ok(hashed, 'the queued preview has opened the old bytes');
+    await new Promise(r => setTimeout(r, 100));
+    writeFileSync(path, fresh);
+  } finally {
+    writeFileSync(join(tmp, 'release-previews'), '');
+    await Promise.all(holds);
+  }
+  assert.deepEqual((await (await queued!).json()).sheets[0].rows, [['value'], ['new']]);
+  mkdirSync(join(root, 'instances', id, 'upload'), { recursive: true });
+  writeFileSync(join(root, 'instances', id, 'upload', 'race-content.csv'), old);
+  const upload = await call('GET', `/preview/${id}/upload/race-content.csv`);
+  assert.deepEqual((await upload.json()).sheets[0].rows, [['value'], ['old']]);
+  for (const f of readdirSync(join(root, '.previews'))) rmSync(join(root, '.previews', f));
 });
 
 test('the second audit: a bad request line, a bad workbook and a slow body hurt nothing; a token makes tokens for no one', async () => {
