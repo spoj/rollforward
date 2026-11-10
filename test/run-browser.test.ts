@@ -23,9 +23,14 @@ let page = Buffer.from('page 1'), back: unknown = { cookies: [] }, listed: strin
 const plain = [{ method: 'GET', url: 'https://crm.example.com/', status: 200 }];
 let requested: object[] = plain;
 const states: unknown[] = [], headers: unknown[] = [], deleted: string[] = [], starts: string[] = [], publics: boolean[] = [];
-let nextId = 'b9', refuseClose = false, openGate: Promise<void> | undefined;
+let nextId = 'b9', refuseClose = false, dropClose = false, openGate: Promise<void> | undefined;
 const service = createServer(async (req, res) => {
   if (req.method === 'DELETE') {
+    if (dropClose) {
+      res.writeHead(500, { 'content-length': 100 });
+      res.write('{"error":');
+      return setTimeout(() => res.destroy(), 10);
+    }
     if (refuseClose) return res.writeHead(404).end('{"error":"session gone"}');
     deleted.push(req.url!.split('/')[2]);
     return res.writeHead(200).end(JSON.stringify({ state: back, log: requested }));
@@ -109,6 +114,24 @@ test('an answer of the browser service that is no JSON, as a proxy in front of i
   const inst = running('2027-01', [], 3), browsers = new Browsers(inst, 3);
   browsers.bySite.set('erp', { id: 'gone', email: 'alice@demo.test', since: '', writeback: true, file: 'browser/run 3 erp.jsonl', conns: 0 });
   await assert.rejects(browsers.shoot(), (e: { status: number; message: string }) => e.status === 502 && e.message.startsWith('browser service: 404 page'));
+});
+
+test('a dropped error response fails closing a browser and releases its login for the next run', async t => {
+  sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });
+  saveLogin('alice@demo.test', { id: 'web:crm', kind: 'website', name: 'CRM', since: '', offers: [{ id: 'web:crm', name: 'CRM' }] }, '{}');
+  const first = new Browsers(running('dropped-close', ['web:crm']), 1);
+  await first.browser('crm');
+  dropClose = true;
+  t.after(() => { dropClose = false; });
+  const result = await Promise.race([
+    first.close().then(() => 'closed', (e: { status: number }) => e.status),
+    new Promise(ok => setTimeout(() => ok('still waiting'), 500)),
+  ]);
+  assert.equal(result, 502);
+  dropClose = false;
+  const next = new Browsers(running('after-dropped-close', ['web:crm']), 1);
+  await next.browser('crm');
+  await next.close();
 });
 
 test("a run's open browser and connections close as soon as its login is no longer lent", async () => {

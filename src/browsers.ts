@@ -30,6 +30,7 @@ function request(method: string, path: string, body?: unknown): Promise<Incoming
     const req = (tls ? httpsRequest : httpRequest)(base + path, { method, headers: key() }, res => {
       if (res.statusCode! < 300) return ok(res);
       const chunks: Buffer[] = [];
+      res.on('error', e => fail(new HttpError(502, `browser service: ${e.message}`)));
       res.on('data', c => chunks.push(c)).on('end', () => {
         const data = Buffer.concat(chunks);
         // The service answers {error}; a proxy in front of it, such as one that ends TLS, may answer anything, and a throw here would
