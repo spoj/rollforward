@@ -318,14 +318,14 @@ async function checkRefused(inst: Instance, run: number, email: string, site: st
   }
   // Verdicts kept as they come, those above before the model's, so a model or a search that fails leaves them.
   const settle = async (checks: NonNullable<Website['checks']>) => {
-    const allowed: string[] = [];
     for (const h of Object.keys(checks).filter(h => checks[h].verdict === 'pass')) {
       const out = await checkHost(h, false).then(() => '', (e: Error) => e.message);
       if (out) checks[h] = { verdict: 'refused', why: out };
-      else allowed.push(h);
     }
+    const now = website(email, site);
+    checks = Object.fromEntries(Object.entries(checks).filter(([h]) => !now.checks?.[h]));
     if (!Object.keys(checks).length) return;
-    const now = website(email, site), why = Object.fromEntries(allowed.map(h => [h, checks[h].why]));
+    const allowed = Object.keys(checks).filter(h => checks[h].verdict === 'pass'), why = Object.fromEntries(allowed.map(h => [h, checks[h].why]));
     changeWebsite(email, site, { hosts: [...new Set([...now.hosts, ...allowed])], checks: { ...now.checks, ...checks } });
     console.log(`hosts checked ${JSON.stringify({ site, email, inst: inst.id, run, checks })}`);
     if (!allowed.length) return;

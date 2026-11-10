@@ -642,6 +642,45 @@ test('old website internal flags do not let browsers reach hosts absent from the
   }
 });
 
+test('a host that gets a verdict while the model answers keeps it, including one its person removed', async t => {
+  const { allowHost, changeWebsite, removeHost } = await import('../src/browsers.ts');
+  let answer!: () => void, asked!: () => void;
+  const gate = new Promise<void>(ok => { answer = ok; }), seen = new Promise<void>(ok => { asked = ok; });
+  const stand = createServer(async (req, res) => {
+    await Array.fromAsync(req);
+    asked();
+    await gate;
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ hosts: Object.fromEntries(['cdn.other.test', 'upload.other.test', 'done.other.test'].map(h => [h, { verdict: 'pass', why: 'Its CDN.' }])) }) } }] }));
+  });
+  await new Promise<void>(ok => stand.listen(0, '127.0.0.1', ok));
+  upstreams['openrouter.ai'] = `http://127.0.0.1:${(stand.address() as { port: number }).port}`;
+  process.env.OPENROUTER_API_KEY = 'key';
+  t.after(() => {
+    answer();
+    delete process.env.OPENROUTER_API_KEY;
+    delete upstreams['openrouter.ai'];
+    stand.close();
+    requested = plain;
+  });
+  sites({ crm: { url: 'https://crm.example.com/', hosts: [], writeback: false } });
+  saveLogin(alice, website('crm', 'CRM'), '{}');
+  requested = refusing('https://cdn.other.test/a.js', 'https://upload.other.test/x', 'https://done.other.test/a.js');
+  const browsers = new Browsers(running('verdict-during-check', ['web:crm']), 1);
+  await browsers.browser('crm');
+  await browsers.close();
+  requested = plain;
+  await seen;
+  await allowHost(asPerson(alice)!, 'crm', 'cdn.other.test');
+  await removeHost(alice, 'crm', 'cdn.other.test');
+  const high = { verdict: 'high' as const, why: 'An earlier check.' };
+  changeWebsite(alice, 'crm', { checks: { ...websitesOf(alice).crm.checks, 'upload.other.test': high } });
+  answer();
+  const w = await checked('crm', ['done.other.test']);
+  assert.deepEqual(w.hosts, ['done.other.test']);
+  assert.deepEqual(w.checks?.['cdn.other.test'], { verdict: 'refused', why: 'Its person removed it.' });
+  assert.deepEqual(w.checks?.['upload.other.test'], high);
+});
+
 test("with the server's key its model decides the rest, from what the browser's log, the runs and a web search say of each, never a path or a query: what the pages need the website reaches at once, what they work without stays refused, and anything else waits on admins", async t => {
   const asked: { url: string; body: any }[] = [];
   const stand = createServer(async (req, res) => {
