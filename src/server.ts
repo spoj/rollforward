@@ -188,7 +188,7 @@ function summary(i: Instance, me: Me, w8 = wakes()) {
   const key = `${i.log.length}:${i.doc.rev}:${seriesSettings(i.series()).shared?.by ?? ''}`;
   const news = i.log.findLast(e => e.by !== email && e.accepted_by !== email && NEWS.includes(e.op)), s = seen(email);
   let k = kept.get(i);
-  if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i).map(w => w.who), runner: runnerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: +i.log.reduce((t, e) => t + (e.op === 'done' ? e.cost as number : 0), 0).toFixed(4), corrections: i.log.filter(e => e.op === 'correction').length,
+  if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i).map(w => w.who), runner: runnerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: +i.log.slice(i.log.findLastIndex(e => e.op === 'duplicate') + 1).reduce((t, e) => t + (e.op === 'done' ? e.cost as number : 0), 0).toFixed(4), corrections: i.log.filter(e => e.op === 'correction').length,
     wrong: i.log.filter(e => e.op === 'correction' && e.kind === 'wrong').map(e => e.at),
     refused: i.log.filter(e => e.op === 'browser' && e.hosts).map(e => ({ at: e.at, run: e.run as number, site: e.site as string, login: e.login as string, hosts: Object.keys(e.hosts as object) })) });
   return {
@@ -250,7 +250,7 @@ function runs(me: Me, since: string) {
   const t = tree();
   return Object.entries(t.series).filter(([, s]) => canSee(me, t.workspaces[s.workspace])).flatMap(([sid]) => instances(sid).flatMap(i => {
     const a = active.get(sid);
-    return i.log.filter(r => r.op === 'run' && r.at >= since).map(r => {
+    return i.log.slice(i.log.findLastIndex(e => e.op === 'duplicate') + 1).filter(r => r.op === 'run' && r.at >= since).map(r => {
       const d = i.log.find(e => e.op === 'done' && e.run === r.run), seen = (i.log.findLast(e => e.op === 'done' && e.seq < r.seq)?.seen as number | undefined) ?? 0;
       const cause = pending(i, seen).find(e => e.seq <= (r.upto as number));
       const error = d?.error as string | undefined, outcome = !d ? 'running' : !error ? (d.aborted ? 'interrupted' : 'done') : Object.values(CUT).includes(error) ? 'cut' : 'failed';

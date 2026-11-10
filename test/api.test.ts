@@ -196,6 +196,23 @@ test('duplicate copies a closed instance into an open one, once', async () => {
   assert.equal((await call('POST', dup)).status, 409);
 });
 
+test("a duplicate keeps its conversation but counts only runs and cost since its latest duplication", async () => {
+  const source = await at(series, '2026-08-30');
+  const before = (await json('/api/runs')).filter((r: { path: string }) => !r.path.endsWith('/2026-08-30 copy'));
+  assert.ok((await json(`${source}/summary`)).cost > 0);
+  const path = await at(series, '2026-08-30 copy'), sum = await json(`${path}/summary`);
+  assert.ok(readFileSync(join(root, 'instances', sum.id, 'log.jsonl'), 'utf8').startsWith(readFileSync(join(root, 'instances', source.split('/').pop()!, 'log.jsonl'), 'utf8')));
+  assert.deepEqual([sum.cost, await json('/api/runs')], [0, before]);
+  const listed = (await shown(series)).instances.find((i: { id: string }) => i.id === sum.id);
+  assert.equal(listed.cost, 0);
+  const inherited = (await json(path)).log.filter((e: { op: string }) => e.op === 'done').length;
+  assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ text: 'Run the copy.' }))).status, 200);
+  const log = await ran(path, inherited + 1), run = log.findLast(e => e.op === 'run')!, done = log.findLast(e => e.op === 'done')!;
+  const own = (await json('/api/runs')).filter((r: { path: string }) => r.path.endsWith('/2026-08-30 copy'));
+  assert.deepEqual(own.map((r: { run: number; cost: number }) => [r.run, r.cost]), [[run.run, done.cost]]);
+  assert.equal((await json(`${path}/summary`)).cost, done.cost);
+});
+
 test("an instance says which of its files are new since the series' latest closed instance before it, changed or the same, by content", async () => {
   const path = await at(series, '2026-08-30 copy');
   assert.deepEqual((await json(path)).previous, { label: '2026-08-30', changed: { 'ar-aging': 'same', inventory: 'same', 'borrowing-base': 'same' } });
