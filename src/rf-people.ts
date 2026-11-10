@@ -50,7 +50,7 @@ rf new workspace NAME             yours to own, for admins and those they grant 
 rf copy PATH LABEL [--creds OFFER,...]   a closed or abandoned instance, copied into a new open one without its agent session
 rf share PATH on|off [--creds OFFER,...]   the series' people, and their agents, wake it as you, with those offers ticked;
                                   off stops it, for its sharer or its workspace's owners
-rf archive PATH [--undo]          a workspace or a series leaves the sidebar as it is, until --undo brings it back
+rf archive PATH [--undo]          a workspace or a series leaves the sidebar, and nothing in it changes or runs, until --undo brings it back
 rf request start|drop ID [--creds OFFER,...] [--wake]   a request to start an instance, by the ID rf waiting and rf wakes
                                   print; --wake runs the instance it starts
 rf logins [--json]                your logins, each with its state, keepalive and offers; you sign in to them on the page
