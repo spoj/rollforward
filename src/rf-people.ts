@@ -124,6 +124,9 @@ rf people [--set FILE|-] [-n] [--force]   everyone as lines of ROLE EMAIL, each 
 rf user add EMAIL [admin] | role EMAIL admin|user [--force] | disable EMAIL | enable EMAIL | signout EMAIL | remove EMAIL
 rf egress [add|remove HOST]       the hosts runs may reach beyond package registries, GitHub and documentation sites, such as
                                   api.example.com or *.example.org; admins add and remove them
+rf internal [remove HOST] [--json]   the hosts at internal addresses admins let every website reach, each with who let it and
+                                  when, as rf site set NAME --internal true or allowing one does; remove takes one out, after
+                                  which everyone's websites at it wait for an admin again
 rf connection set NAME TYPE       an outside system runs reach as their runner, by a login each person makes: graph,
                                   Microsoft 365, or databricks, Azure Databricks, as each person adds what their login
                                   offers; websites are rf site's
@@ -687,6 +690,14 @@ else if (cmd === 'comment' && args.length === 2) {
   let hosts: string[] = await (await api('/egress')).json();
   if (args.length) hosts = await (await post('/egress', { hosts: args[0] === 'add' ? [...new Set([...hosts, args[1]])] : hosts.filter(h => h !== args[1]) }, 'PUT')).json();
   console.log(hosts.join('\n'));
+} else if (cmd === 'internal' && (!args.length || (args.length === 2 && args[0] === 'remove'))) {
+  const hosts: Record<string, { by: string; at: string }> = args.length ? await (await api(`/internal/${encodeURIComponent(args[1])}`, { method: 'DELETE' })).json() : await get('/internal');
+  if (flags.json) console.log(JSON.stringify(hosts, null, 1));
+  else {
+    const w = Math.max(0, ...Object.keys(hosts).map(h => h.length));
+    for (const [h, { by, at }] of Object.entries(hosts)) console.log(`${h.padEnd(w)}  ${when(at)}  ${by}`);
+    if (!Object.keys(hosts).length) console.log('none: an admin lets websites reach one with rf site set NAME --internal true');
+  }
 } else if (cmd === 'people' && args.length <= 1) {
   // People as lines to edit and set: ROLE EMAIL for everyone, owner|member EMAIL-OR-GROUP for a workspace, each with a comment.
   const ws = args[0] === undefined ? undefined : await workspaceNamed(args[0]);

@@ -15,7 +15,7 @@ import { act, canManage, canSee, changes, everyone, initSystem, isPeople, readJs
 import { checkTicks, logins, runnerOf, saveLogin, signOut, unoffer } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
-import { answered, byLogin, call, connections, intercepts, loginOf, removeConnection, setConnection, upstreams } from './connections.ts';
+import { answered, byLogin, call, connections, intercepts, letIn, loginOf, removeConnection, setConnection, setLetIn, upstreams } from './connections.ts';
 import { addSite, allowHost, Browsers, endSignIn, isSignIn, keepAlive, passUpgrade, reap, refusedHosts, removeHost, removeSite, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
 import { ask, decide, forgetGrants, forgetWorkspace, lapse, revoke, visible } from './grants.ts';
 import { offer } from './connections/graph.ts';
@@ -933,6 +933,17 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
         writeJson('egress.json', hosts.map(h => h.toLowerCase()));
       }
       send(res, 200, readJson<string[]>('egress.json', []));
+    } else if (url.pathname === '/internal' || /^\/internal\/[^/]+$/.test(url.pathname)) {
+      // The hosts at internal addresses admins let every website reach (connections.ts), with who let each and when: admins see them,
+      // and take one out, after which everyone's websites at it wait for an admin again.
+      if (me.role !== 'admin') throw new HttpError(403, 'admins see the internal hosts they let websites reach');
+      if (req.method === 'DELETE') {
+        const host = decodeURIComponent(url.pathname.split('/')[2]).toLowerCase();
+        if (!letIn()[host]) throw new HttpError(404, `${host} isn't one admins let websites reach: they are ${Object.keys(letIn()).join(', ') || 'none'}`);
+        setLetIn([host], me.email, false);
+        act(me.email, { op: 'internal', hosts: [host], let: false });
+      } else if (req.method !== 'GET') throw new HttpError(405, 'GET lists them, DELETE /internal/HOST takes one out');
+      send(res, 200, letIn());
     } else if (url.pathname === '/brand' && req.method === 'PUT') {
       if (me.role !== 'admin') throw new HttpError(403, "the deployment's brand is the admins'");
       const { text, logo, clear } = await json(req), b = { ...(!clear && brand()) };

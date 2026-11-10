@@ -1138,3 +1138,19 @@ test('admins keep the hosts runs may reach beyond the sandbox\'s own list, with 
   assert.equal((await call('PUT', '/egress', JSON.stringify({ hosts: [] }), sessionOf(await login(bob))!)).status, 403, 'admins alone');
   assert.equal(await rf('egress', 'remove', '*.example.org'), '\n');
 });
+
+test("admins see the hosts at internal addresses they let every website reach, with who let each and when, and take one out, with rf internal", async () => {
+  assert.equal(await rf('internal'), 'none: an admin lets websites reach one with rf site set NAME --internal true\n');
+  writeFileSync(join(root, '.rf', 'internal.json'), JSON.stringify({ 'erp.corp.test': { by: adminEmail, at: '2026-11-09T10:00:00.000Z' }, '10.1.2.3': { by: adminEmail, at: '2026-11-09T11:00:00.000Z' } }));
+  const lines = (await rf('internal')).trim().split('\n');
+  assert.deepEqual(lines.map(l => l.split(/\s+/)[0]), ['erp.corp.test', '10.1.2.3']);
+  assert.ok(lines.every(l => l.trim().endsWith(adminEmail)), lines.join('\n'));
+  assert.deepEqual(Object.keys(JSON.parse(await rf('internal', '--json'))), ['erp.corp.test', '10.1.2.3']);
+  assert.equal((await call('GET', '/internal', undefined, sessionOf(await login(bob))!)).status, 403, 'admins alone');
+  await assert.rejects(rf('internal', 'remove', 'other.corp.test'), fails(1, /other\.corp\.test isn't one admins let websites reach: they are erp\.corp\.test, 10\.1\.2\.3/));
+  assert.match(await rf('internal', 'remove', 'erp.corp.test'), /^10\.1\.2\.3 /);
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(root, '.rf', 'internal.json'), 'utf8'))), ['10.1.2.3']);
+  const act = readFileSync(join(root, '.rf', 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)).findLast(a => a.op === 'internal');
+  assert.deepEqual([act.by, act.hosts, act.let], [adminEmail, ['erp.corp.test'], false]);
+  await rf('internal', 'remove', '10.1.2.3');
+});
