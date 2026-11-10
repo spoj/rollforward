@@ -1024,6 +1024,31 @@ test("an item's card shows its file's preview on a desktop, to scroll in place o
   await page.click('#card [data-act=uncard]');
 });
 
+for (const act of ['comment-on', 'thread', 'comment-cell']) test(`${act} from a card or Preview switches Audit to the conversation and focuses a visible box`, async () => {
+  const tab = await browser.newPage({ storageState: await page.context().storageState() });
+  try {
+    await tab.goto(new URL('/#/a5c0ff5e1f02', page.url()).href);
+    await tab.waitForSelector('#newcomment');
+    await tab.evaluate(async () => {
+      await api(`${instPath()}/comment`, { method: 'POST', body: JSON.stringify({ text: 'Check the tie-out.', item: 'tie', quiet: true }) });
+      await refresh();
+    });
+    await tab.click('#log .seg [data-act=audit]');
+    await tab.waitForSelector('#audit:not([hidden])');
+    await tab.click('#steps .tile[data-item=tie]');
+    await tab.waitForSelector('#card .cpv table.sh');
+    if (act === 'comment-cell') {
+      await tab.click('#card .full [data-act=preview]');
+      await tab.click('#pv table.sh [data-act=cell]');
+      await tab.click('#pvn [data-act=comment-cell]');
+    } else await tab.click(`#card [data-act=${act}] >> nth=0`);
+    assert.equal(await tab.locator('#conv').isVisible(), true);
+    assert.equal(await tab.locator('#audit').isVisible(), false);
+    assert.equal(await tab.textContent('#log .seg .sel'), 'Conversation');
+    assert.equal(await tab.evaluate(() => document.activeElement?.matches('#conv textarea') && (document.activeElement as HTMLElement).checkVisibility()), true);
+  } finally { await tab.close(); }
+});
+
 test("an instance is its Inputs, Steps and Outputs, left to right, each heading whole over its tiles; hovering an item marks what it's made from, which its card names; the list view, kept in this browser, shows each slice as a list, one over the other, sorting by a column", async () => {
   await page.evaluate(() => location.hash === '#/3d70f7ca6f20' || new Promise(ok => { addEventListener('hashchange', ok, { once: true }); location.hash = '#/3d70f7ca6f20'; }));
   await page.waitForSelector('#steps .tile .fn:text-is("Eligible AR")');

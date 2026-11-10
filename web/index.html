@@ -1687,7 +1687,7 @@ async function onAct(act, el) {
     renderLog(); renderBar(); placeCard();
   }
   if (act === 'interrupt') { await api(`${instPath()}/interrupt`, { method: 'POST' }); await refresh(); }
-  if (act === 'comment-on') { ui.open = true; Object.assign(draft, { on: el.dataset.item, ref: null }); renderLog(); renderBar(); $('#newcomment')?.focus(); }
+  if (act === 'comment-on') { Object.assign(ui, { open: true, audit: false }); Object.assign(draft, { on: el.dataset.item, ref: null }); renderLog(); renderBar(); renderAudit(); $('#newcomment')?.focus(); }
   if (act === 'comment' || act === 'reply-post') {
     const at = act === 'comment' ? null : el.closest('.reply'), box = at ? at.querySelector('textarea') : $('#newcomment'), text = box.value.trim();
     const picked = at ? at.querySelector('input[type=file]') : $('#newfiles');
@@ -1879,9 +1879,9 @@ async function onAct(act, el) {
   // A thread brought into view, with a reply box under its first comment while the instance is open.
   if (act === 'thread') {
     closePv();
-    Object.assign(ui, { open: true, alone: null });
+    Object.assign(ui, { open: true, audit: false, alone: null });
     draft.on = draft.ref = null;
-    renderLog(); renderBar();
+    renderLog(); renderBar(); renderAudit();
     const t = $(`#conv .thread[data-thread="${CSS.escape(el.dataset.thread)}"]`), box = t?.querySelector('.reply');
     t?.scrollIntoView({ block: 'center' });
     if (!box) return;
@@ -1893,9 +1893,9 @@ async function onAct(act, el) {
     const item = pv.item;
     pv = null;
     renderPv();
-    ui.open = true;
+    Object.assign(ui, { open: true, audit: false });
     Object.assign(draft, { on: item, ref: el.dataset.ref });
-    renderLog(); renderBar();
+    renderLog(); renderBar(); renderAudit();
     $('#newcomment')?.focus();
   }
   if (act === 'toggle-closed') { showClosed[showClosed.has(el.dataset.id) ? 'delete' : 'add'](el.dataset.id); renderSide(); }
