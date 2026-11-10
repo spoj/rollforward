@@ -2,7 +2,7 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -456,6 +456,39 @@ test("sign-offs are git commits: the agent commits a moment worth keeping and pi
   assert.ok(pulled.length && !pulled.some((f: { path: string }) => f.path.includes('/.git/')), 'rf pull leaves the history out');
   const { id: copy } = await (await call('POST', `/api/instances/${id}/duplicate?as=copy`, { logins: [] })).json();
   assert.ok(!existsSync(join(root, 'instances', copy, '.git')), 'a duplicate starts afresh');
+});
+
+test("a start removes its data root's abandoned scratch, for active and idle Pis without indexes, and leaves another root's scratch alone", async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Scratch' })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Idle' })).json();
+  const { id: busy } = await (await call('POST', '/api/series', { workspace: ws, name: 'Busy' })).json();
+  const { id: running } = await (await call('POST', `/api/series/${busy}`, { label: '2026-11', logins: [], quiet: true })).json();
+  scripts.push({ bash: [], report: 'Idle.', saw: [] });
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
+  await runs(id, 1);
+  let reached = false;
+  scripts.push({ bash: [], report: 'Never said.', saw: [], hold: () => { reached = true; } });
+  await call('POST', `/api/instances/${running}/comment`, { text: 'Start.' });
+  await until('the held run', () => reached);
+  const scratch = join(tmp, 'scratch', 'runs'), tokens = readdirSync(scratch);
+  assert.ok(tokens.length >= 2);
+  const foreign = 'another-data-root';
+  mkdirSync(join(tmp, 'other-data', '.rf', 'runs', foreign), { recursive: true });
+  mkdirSync(join(scratch, foreign, 'home'), { recursive: true });
+  writeFileSync(join(scratch, foreign, 'home', 'kept'), 'the other server');
+  symlinkSync(join(scratch, foreign), join(scratch, tokens[0], 'link'));
+  const locked = join(scratch, tokens[0], 'home', 'locked');
+  mkdirSync(locked);
+  writeFileSync(join(locked, 'file'), 'unreadable');
+  chmodSync(locked, 0);
+  scripts.push({ bash: [], report: 'Carried on.', saw: [] });
+  await cut();
+  for (const token of tokens) assert.ok(!existsSync(join(scratch, token)), `old scratch ${token} remains`);
+  assert.equal(readFileSync(join(scratch, foreign, 'home', 'kept'), 'utf8'), 'the other server');
+  rmSync(join(scratch, foreign), { recursive: true });
+  await runs(running, 2);
+  const records = readdirSync(join(root, '.rf', 'runs'));
+  assert.ok(records.length, 'a run without index sources still has an ownership folder');
 });
 
 test('a cut anywhere leaves the instance right, its log whole, and the next run carries on: mid model call, mid tool call, mid commit and mid upload', async () => {

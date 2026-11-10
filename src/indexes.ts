@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { closeSync, constants, copyFileSync, createReadStream, createWriteStream, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, truncateSync, writeFileSync, writeSync } from 'node:fs';
+import { chmodSync, closeSync, constants, copyFileSync, createReadStream, createWriteStream, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, truncateSync, writeFileSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
@@ -10,6 +10,7 @@ import { users } from './auth.ts';
 import { token } from './entra.ts';
 import { lender, logins, personDir, type Offer } from './logins.ts';
 import { endpoints, scope } from './connections/graph.ts';
+import { scratch } from './runner.ts';
 
 // Indexes of outside sources (docs/system.md: Indexes). A person's Microsoft 365 login keeps a cache of each offer it makes, but a file: the
 // delta feed Graph gave their own token, its crawl then its changes, Graph's own JSON, one item per line, in
@@ -297,8 +298,15 @@ let stopping = false, worker: Promise<void> | undefined, poke = () => {};
 const rest = (ms: number) => new Promise<void>(ok => { poke = ok; setTimeout(ok, Math.max(0, Math.min(ms, 60_000))).unref(); });
 export function startIndexing() {
   stopping = false;
-  // Copies of runs cut short.
-  rmSync(join(rfDir(), 'runs'), { recursive: true, force: true });
+  // Scratch and index copies of this data root's runs cut short, or left idle.
+  const runs = join(rfDir(), 'runs');
+  const writable = (d: string) => { chmodSync(d, 0o700); for (const e of readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) writable(join(d, e.name)); };
+  for (const token of existsSync(runs) ? readdirSync(runs) : []) {
+    const run = join(scratch, 'runs', token);
+    if (existsSync(run)) writable(run);
+    rmSync(run, { recursive: true, force: true });
+  }
+  rmSync(runs, { recursive: true, force: true });
   for (const email of Object.keys(users())) track(email);
   worker = (async () => {
     while (!stopping) {

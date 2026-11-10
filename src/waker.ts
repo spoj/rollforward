@@ -1,5 +1,5 @@
 import { freemem } from 'node:os';
-import { existsSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
 import { agentsFile, closedBefore, createInstance, HttpError, instance, instanceDir, instances, isPerson, labels, newId, readFile, seriesDir, type Entry, type Instance } from './store.ts';
@@ -228,6 +228,7 @@ async function start(inst: Instance) {
     } else {
       // Copies of the indexes of what its runner ticked, on the indexes' own disk, read-only at $RF_INDEX.
       const index = join(rfDir(), 'runs', a.token);
+      mkdirSync(index, { recursive: true });
       if (prepare(inst, index)) {
         a.view.ro.push([index, '/index']);
         a.view.env.RF_INDEX = '/index';
