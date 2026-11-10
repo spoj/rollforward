@@ -214,9 +214,10 @@ def workbook(data, part):
             while chunk := src.read(1 << 22):
                 refs.update(re.findall(rb'<(?:\w+:)?mergeCell ref="([A-Z]+[0-9]+:[A-Z]+[0-9]+)"', tail + chunk))
                 tail = chunk[-100:]
+        rows, cols = len(out['rows']), max(map(len, out['rows']), default=0)
         for c1, r1, c2, r2 in sorted(range_boundaries(ref.decode()) for ref in refs):
-            if r1 <= ROWS and c1 <= COLS:
-                out['merged'].append([r1 - 1, c1 - 1, r2 - 1, c2 - 1])
+            if r1 <= rows and c1 <= cols:
+                out['merged'].append([r1 - 1, c1 - 1, min(r2, rows) - 1, min(c2, cols) - 1])
         return out
 
     # The sheets' names, the hidden ones after the others, and the sheet the workbook opens on, read; or, asked for by its place, one

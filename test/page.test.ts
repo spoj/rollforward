@@ -1,6 +1,6 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { appendFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -868,6 +868,43 @@ test("a sheet shows as its workbook does: number formats, bold, colours, column 
   await page.locator('#pv table.sh td', { hasText: 'later' }).waitFor();
   await page.unroute('**/preview/**');
   await page.keyboard.press('Escape');
+});
+
+test("a workbook's full-sheet merge is clipped to the preview's rows and columns", async () => {
+  const book = execFileSync('python3', ['-c', `
+import io, sys, zipfile
+out = io.BytesIO()
+with zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())) as src, zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as dst:
+    for name in src.namelist():
+        data = src.read(name)
+        if name == 'xl/workbook.xml':
+            data = data.replace(b'activeTab="2"', b'activeTab="0"')
+        if name == 'xl/worksheets/sheet1.xml':
+            data = data.replace(b'ref="A5:C5"', b'ref="A1:XFD1048576"')
+        dst.writestr(name, data)
+sys.stdout.buffer.write(out.getvalue())
+`], { input: readFileSync(join(app, 'test', 'formats.xlsx')) });
+  writeFileSync(join(root, 'instances', 'a5c0ff5e1f00', 'working', 'merged.xlsx'), book);
+  const response = await page.request.get(new URL('/preview/a5c0ff5e1f00/working/merged.xlsx', page.url()).href);
+  assert.equal(response.status(), 200);
+  const sheet = (await response.json()).sheets[0];
+  assert.deepEqual(sheet.merged, [[0, 0, sheet.rows.length - 1, Math.max(...sheet.rows.map((r: unknown[]) => r.length)) - 1]]);
+});
+
+test("the page expands a merge only over the cells the preview shows", async () => {
+  const html = await page.evaluate(() => {
+    const add = Set.prototype.add;
+    let cells = 0;
+    Set.prototype.add = function (value) {
+      if (typeof value === 'string' && /^\d+,\d+$/.test(value) && ++cells > 6) throw new Error('merge expanded outside the preview');
+      return add.call(this, value);
+    };
+    try {
+      return sheetTable({}, { name: 'Sheet', rows: [['merged', null, null], [null, null, null]], merged: [[0, 0, 1048575, 16383]] }, true);
+    } finally { Set.prototype.add = add; }
+  });
+  assert.match(html, /rowspan="2" colspan="3"/);
+  assert.equal((html.match(/data-act="cell"/g) ?? []).length, 1);
 });
 
 test('an email previews in a frame that runs and loads nothing, and its attachments open in its place', async () => {

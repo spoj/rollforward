@@ -1194,7 +1194,9 @@ function sheetTable(p, s, first) {
   // columns.
   const look = s.look ?? {}, hidden = { rows: new Set(s.hidden?.rows), cols: new Set(s.hidden?.cols) }, span = new Map(), covered = new Set();
   const cols = Array.from({ length: width }, (_, c) => c).filter(c => !hidden.cols.has(c));
-  for (const [r1, c1, r2, c2] of s.merged ?? []) {
+  for (let [r1, c1, r2, c2] of s.merged ?? []) {
+    r2 = Math.min(r2, rows.length - 1);
+    c2 = Math.min(c2, width - 1);
     for (let r = r1; r <= r2; r++) for (let c = c1; c <= c2; c++) if (r > r1 || c > c1) covered.add(`${r},${c}`);
     span.set(`${r1},${c1}`, [rows.slice(r1, r2 + 1).filter((_, k) => !hidden.rows.has(r1 + k)).length, cols.filter(c => c >= c1 && c <= c2).length]);
   }
