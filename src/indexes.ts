@@ -17,7 +17,7 @@ import { endpoints, scope } from './connections/graph.ts';
 // earlier one, and a deleted facet or an @removed removes it. The .json beside it, <sha256(offer)[:16]>.json, holds the cursors, one
 // per part of the source, and which feed is the cache and how much of it they account for. A batch is appended and synced first,
 // and only then is the .json replaced; each write starts by cutting the feed back to that length, so a crash in between replays the
-// batch and nothing else. What the .json accounts for never changes under a feed's name: a tidy-up, or a source lost, starts a new
+// batch and nothing else. What the .json accounts for never changes under a feed's name: a tidy-up, a 410, or a source lost, starts a new
 // one, so a run copies a cache as it is, without waiting.
 const SLICE_MS = 5_000, REFRESH_MS = 60 * 60_000, TRIES = 5;
 
@@ -82,7 +82,7 @@ const prefer = (offer: string) => (offer.startsWith('m365:mail:') ? 'outlook.bod
 const fresh = (link: string): Part => ({ link, delta: null, as_of: null, pages: 0, due: Date.now(), error: null, tries: 0 });
 
 // A failure keeps the page: throttling waits as Graph asks, an expired login waits for its person to sign in again, an expired
-// delta token (410) crawls again, appending, for the tidy-up to fold, and anything else backs off, 1, 2, 4 and 8 minutes, then stops.
+// delta token (410) starts a new feed and crawls again, and anything else backs off, 1, 2, 4 and 8 minutes, then stops.
 function failed(p: Part, e: any, link: string) {
   p.error = e.message;
   if (e.login) p.due = null;
@@ -109,7 +109,7 @@ async function slice(person: string, offer: string, until: number): Promise<void
       return save(c);
     }
     const lines: string[] = [];
-    let lost: [string, Part, Error] | undefined;
+    let lost: [string, Part, Error & { status: number }] | undefined;
     for (const a of answers) {
       const [part, p] = due[Number(a.id)];
       if (a.status !== 200) {
@@ -119,7 +119,8 @@ async function slice(person: string, offer: string, until: number): Promise<void
           delete c.parts[part];
           lines.push(ndjson(JSON.stringify({ id: part, '@removed': { reason: 'deleted' } })));
           c.base = 0;
-        } else if (a.status === 403 || a.status === 404) lost = [part, p, e];
+        } else if (a.status === 410) lost = [part, p, e];
+        else if (a.status === 403 || a.status === 404) lost ??= [part, p, e];
         else failed(p, e, start(offer, part));
         continue;
       }
@@ -135,7 +136,7 @@ async function slice(person: string, offer: string, until: number): Promise<void
     }
     if (lost) {
       const [part, p, e] = lost, was = feed(c);
-      Object.assign(c, { gen: c.gen + 1, length: 0, lines: 0, base: 0, parts: { [part]: { ...fresh(start(offer, part)), tries: p.tries } } });
+      Object.assign(c, { gen: c.gen + 1, length: 0, lines: 0, base: 0, parts: e.status === 410 ? Object.fromEntries(Object.keys(c.parts).map(part => [part, fresh(start(offer, part))])) : { [part]: { ...fresh(start(offer, part)), tries: p.tries } } });
       failed(c.parts[part], e, start(offer, part));
       save(c);
       return rmSync(was, { force: true });

@@ -240,15 +240,24 @@ test('a crash after a batch is appended but before its .json is replaced replays
   assert.equal(statSync(feedOf(ALICE, FOLDER)).size, cache(ALICE, FOLDER).length);
 });
 
-test('a 410 crawls again, appending', async () => {
-  const c = cache(ALICE, FOLDER);
+test('a 410 starts a new feed, leaving nothing from before the gap in the cache or a new run', async () => {
+  put('b!d', file('b!d', 'gap', 'no-longer-visible.xlsx', 'top'));
+  await due(ALICE, FOLDER);
+  assert.ok(now(lines(feedOf(ALICE, FOLDER))).includes('gap'));
+  state['b!d'].set('gap', { id: 'gap', deleted: {} });
+  const c = cache(ALICE, FOLDER), old = feedOf(ALICE, FOLDER);
   c.parts[''].link = `${base}/v1.0/drives/b!d/items/top/delta?token=gone`;
   writeFileSync(`${at(ALICE, FOLDER)}.json`, JSON.stringify(c));
   const from = asked.length;
   await due(ALICE, FOLDER);
   assert.deepEqual(asked.slice(from).filter(q => q.who === ALICE).map(q => new URL(q.url, base).search).slice(0, 2), ['?token=gone', '']);
-  assert.deepEqual(now(lines(feedOf(ALICE, FOLDER))), ['f1', 'f2', 'f4', 'pub', 'sub', 'top']);
+  const current = now(lines(feedOf(ALICE, FOLDER))), copy = now(run(ALICE, [FOLDER])('Folder LFM, Reports').lines), oldExists = existsSync(old);
+  put('b!d', { id: 'gap', deleted: {} });
+  await due(ALICE, FOLDER);
+  assert.deepEqual(current, ['f1', 'f2', 'f4', 'pub', 'sub', 'top']);
   assert.ok(cache(ALICE, FOLDER).parts[''].delta);
+  assert.equal(oldExists, false, 'the feed from before the gap is gone');
+  assert.deepEqual(copy, ['f1', 'f2', 'f4', 'pub', 'sub', 'top']);
 });
 
 test('the tidy-up writes a new feed without what later lines replaced or removed, a deleted folder with everything under it, and a run copying it meanwhile gets the old feed or the new', async () => {
@@ -370,6 +379,25 @@ test("a site: each library's root delta, and a library closed to its person goes
   assert.equal(cache(CAROL, SITE).parts['b!big'], undefined);
   assert.ok(cache(CAROL, SITE).parts['b!d'].delta, 'the other library goes on');
   assert.deepEqual(lines(feedOf(CAROL, SITE)).map(l => l.id).sort(), ['droot', 'f1', 'f4', 'out', 'pub', 'top'], 'tidied');
+});
+
+test('a 410 in one site library starts every library again in the new feed', async () => {
+  await work(() => !!cache(CAROL, SITE).parts['b!big']?.delta && settled(CAROL, SITE)());
+  put('b!d', file('b!d', 'site-gap', 'no-longer-visible.xlsx', 'top'));
+  await due(CAROL, SITE);
+  state['b!d'].set('site-gap', { id: 'site-gap', deleted: {} });
+  const c = cache(CAROL, SITE), old = feedOf(CAROL, SITE);
+  c.parts['b!big'].link = `${base}/v1.0/drives/b!big/root/delta?token=gone`;
+  writeFileSync(`${at(CAROL, SITE)}.json`, JSON.stringify(c));
+  const from = asked.length;
+  await due(CAROL, SITE);
+  const current = now(lines(feedOf(CAROL, SITE))), oldExists = existsSync(old);
+  put('b!d', { id: 'site-gap', deleted: {} });
+  await due(CAROL, SITE);
+  assert.ok(!current.includes('site-gap'));
+  assert.ok(current.includes('f1') && current.includes('b1'), 'both libraries are in the new feed');
+  assert.equal(oldExists, false);
+  for (const drive of ['b!d', 'b!big']) assert.ok(asked.slice(from).some(q => q.who === CAROL && q.url === `/drives/${drive}/root/delta`), `${drive} crawled from the start`);
 });
 
 test("a whole OneDrive: its person's own drive's root delta", async () => {
