@@ -195,6 +195,24 @@ test("only the runner abandons, from the Close dialog, whose buttons for a task 
   assert.deepEqual(native, [], "the browser's own dialogs never show");
 });
 
+test("Back to another instance closes a confirmation dialog without acting on either instance", async () => {
+  const tab = await browser.newPage({ storageState: await page.context().storageState() });
+  try {
+    await tab.goto(new URL('/#/a5c0ff5e1f02', page.url()).href);
+    await tab.waitForSelector('#bar h1 .t:text-is("2026-10")');
+    await tab.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
+    await tab.waitForSelector('#bar h1 .t:text-is("2026-12")');
+    await tab.click('#bar [data-act=close]');
+    await tab.waitForSelector('#ask[open]');
+    await tab.goBack();
+    await tab.waitForSelector('#bar h1 .t:text-is("2026-10")');
+    assert.equal(await tab.locator('#ask').evaluate((e: HTMLDialogElement) => e.open), false);
+    for (const id of ['a5c0ff5e1f00', 'a5c0ff5e1f02']) {
+      assert.equal((await (await tab.request.get(new URL(`/api/instances/${id}`, tab.url()).href)).json()).doc.status, 'open');
+    }
+  } finally { await tab.close(); }
+});
+
 test("the side panel is the instance's conversation, a run a line among its threads, or its audit, by the switch at its top: the log and the agent's steps, a plain line each", async () => {
   await page.evaluate(() => { location.hash = '#/3d70f7ca6f20'; });
   await page.waitForSelector('#bar h1 .t:text-is("2026-08-30")');

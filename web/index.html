@@ -2146,6 +2146,7 @@ new ResizeObserver(placeCard).observe($('#panes'));
 matchMedia('(max-width: 800px)').addEventListener('change', renderPanes);
 
 addEventListener('hashchange', () => {
+  $('#ask').close();
   openItem = null; ui.sect = {}; prevSigs = {}; ui.alone = null;
   ui.full.clear();
   for (const el of ['#panes', '#ins', '#outs', '#steps']) $(el).scrollTop = 0;
