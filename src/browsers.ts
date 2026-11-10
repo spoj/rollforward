@@ -216,10 +216,12 @@ export async function allowHost(by: Me, site: string, host: string, email = by.e
 }
 
 // A host its person no longer lets their website reach: it stays refused from then on, the check passing it no more.
-export function removeHost(email: string, site: string, host: string) {
+export async function removeHost(email: string, site: string, host: string) {
   const w = website(email, site);
   if (!w.hosts.includes(host)) throw new HttpError(404, `${site} doesn't reach ${host}: beyond its address it reaches ${w.hosts.join(', ') || 'no host'}`);
   changeWebsite(email, site, { hosts: w.hosts.filter(h => h !== host), checks: { ...w.checks, [host]: { verdict: 'refused', why: 'Its person removed it.' } } });
+  const id = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
+  if (id) await json('PUT', `/sessions/${id}/hosts`, { hosts: reached(website(email, site)) });
 }
 
 // The hosts a person's website doesn't reach, of those asked for.

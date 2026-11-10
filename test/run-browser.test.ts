@@ -23,8 +23,13 @@ let page = Buffer.from('page 1'), back: unknown = { cookies: [] }, listed: strin
 const plain = [{ method: 'GET', url: 'https://crm.example.com/', status: 200 }];
 let requested: object[] = plain;
 const states: unknown[] = [], headers: unknown[] = [], deleted: string[] = [], starts: string[] = [], publics: boolean[] = [];
+const toldHosts: { path: string; hosts: string[] }[] = [];
 let nextId = 'b9', refuseClose = false, dropClose = false, openGate: Promise<void> | undefined;
 const service = createServer(async (req, res) => {
+  if (req.method === 'PUT') {
+    toldHosts.push({ path: req.url!, ...JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString()) });
+    return res.end('{}');
+  }
   if (req.method === 'DELETE') {
     if (dropClose) {
       res.writeHead(500, { 'content-length': 100 });
@@ -569,6 +574,18 @@ test('hosts the check rates high or internal wait on admins even within a websit
     assert.deepEqual(websitesOf(alice).crm.hosts, []);
     await allowHost(asPerson(alice)!, 'crm', 'upload.example.com');
     assert.deepEqual(websitesOf(alice).crm.hosts, ['upload.example.com']);
+  }
+});
+
+test('removing a host takes it out of the open sign-in browser too', async () => {
+  const { removeHost } = await import('../src/browsers.ts');
+  sites({ crm: { url: 'https://crm.example.com/', hosts: ['cdn.example.com'], writeback: false } });
+  const id = await startSignIn(alice, 'crm', ''), before = toldHosts.length;
+  try {
+    await removeHost(alice, 'crm', 'cdn.example.com');
+    assert.deepEqual(toldHosts.slice(before), [{ path: `/sessions/${id}/hosts`, hosts: ['crm.example.com'] }]);
+  } finally {
+    await endSignIn(alice, id, false);
   }
 });
 
