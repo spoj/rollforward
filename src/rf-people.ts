@@ -481,7 +481,9 @@ else if (cmd === 'comment' && args.length === 2) {
   else await post(`/api/workspaces/${(await workspaceNamed(w)).id}`, { name: args[1] }, 'PUT');
   console.log(`renamed ${args[0]} ${args[1]}`);
 } else if (cmd === 'new' && args[0] === 'task' && [2, 3].includes(args.length)) {
-  const { instance } = await (await post('/api/series', { workspace: (await workspaceNamed(args[1])).id, single: true, logins: ticks() })).json();
+  const workspace = await workspaceNamed(args[1]);
+  if (workspace.series.some(s => s.name === args[2])) throw new Error(`${args[2]} exists`);
+  const { instance } = await (await post('/api/series', { workspace: workspace.id, single: true, logins: ticks() })).json();
   if (args[2]) await post(`/api/instances/${instance}/rename?as=${encodeURIComponent(args[2])}`, {});
   if (typeof flags.comment === 'string') await post(`/api/instances/${instance}/comment`, { text: flags.comment, quiet: !flags.wake });
   console.log(`made ${await pathOf(instance)}${consent(ticks())}`);

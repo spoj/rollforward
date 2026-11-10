@@ -907,6 +907,18 @@ test('rf acts on an instance as the page does: react, creds, rename, takeover, i
   assert.deepEqual((await rows()).filter(r => r.path.startsWith('Readings/Jots/')).map(r => [r.path, r.status]), [['Readings/Jots/a2', 'closed'], ['Readings/Jots/b1', 'abandoned']]);
 });
 
+test('rf new task refuses an existing task or series name before making anything', async () => {
+  const { id: workspace } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Naming' }))).json();
+  await call('POST', '/api/series', JSON.stringify({ workspace, name: 'Taken_name' }));
+  await rf('new', 'task', 'Naming', 'Taken');
+  const before = await named('Naming');
+  for (const name of ['Taken', 'Taken_name']) {
+    await assert.rejects(rf('new', 'task', 'Naming', name), fails(1, /Taken(_name)? exists\n$/));
+    assert.deepEqual(await named('Naming'), before);
+  }
+  assert.equal(await rf('new', 'task', 'Naming'), 'made Naming/Untitled/Untitled, with no logins ticked\n');
+});
+
 test('rf makes what the page makes: a workspace, a task, named or by its first comment, a series from a task, its next instance, and a copy of a closed one', async () => {
   const status = async (path: string) => JSON.parse(await rf('ls', '--json')).find((r: { path: string }) => r.path === path)?.status;
   assert.equal(await rf('new', 'workspace', 'Making'), 'made Making\n');
