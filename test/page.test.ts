@@ -330,6 +330,29 @@ test('keys: c goes to the comment box, Ctrl+Enter sends it, Esc leaves it, and j
   assert.ok(await page.evaluate(() => !!document.activeElement?.closest('#tree')), 'a row has the focus');
 });
 
+test("Ctrl+Enter and Cmd+Enter send from the reply box being edited, including a reply under a reply", async () => {
+  const tab = await browser.newPage({ storageState: await page.context().storageState() });
+  try {
+    await tab.goto(new URL('/#/a5c0ff5e1f00', page.url()).href);
+    await tab.waitForSelector('#newcomment');
+    let seq = await tab.evaluate(async () => {
+      await api(`${instPath()}/comment`, { method: 'POST', body: JSON.stringify({ text: 'A thread for keyboard replies.', quiet: true }) });
+      await refresh();
+      return String(data.log.at(-1).seq);
+    });
+    for (const key of ['Control+Enter', 'Meta+Enter']) {
+      const post = `#conv .post[data-seq="${seq}"]`, text = `Reply sent with ${key}`;
+      await tab.click(`${post} > .pa [data-act=reply]`);
+      await tab.fill(`${post} > .reply textarea`, text);
+      await tab.press(`${post} > .reply textarea`, key);
+      const reply = tab.locator(`${post} > .kids > .post > .pb:text-is("${text}")`);
+      await reply.waitFor({ timeout: 5000 });
+      assert.equal(await tab.locator(`${post} > .reply`).isHidden(), true);
+      seq = (await reply.locator('..').getAttribute('data-seq'))!;
+    }
+  } finally { await tab.close(); }
+});
+
 test("the deployment's brand tops the sidebar and titles the page, its logo the page's icon; unset, there is none", async () => {
   const brand = (data: object) => page.request.put(new URL('/brand', page.url()).href, { data });
   assert.equal(await page.locator('#brand').isVisible(), false);

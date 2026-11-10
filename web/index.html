@@ -2182,7 +2182,7 @@ addEventListener('keydown', e => {
   // Ctrl+Enter, or Cmd+Enter on a Mac, sends from the panel's comment and reply boxes.
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.target.matches('#log textarea')) {
     e.preventDefault();
-    return (e.target.id === 'newcomment' ? $('#log [data-act=comment]') : e.target.closest('.thread').querySelector('[data-act=reply-thread]'))?.click();
+    return (e.target.id === 'newcomment' ? $('#log [data-act=comment]') : e.target.closest('.reply').querySelector('[data-act=reply-post]'))?.click();
   }
   if (e.key === 'Escape' && e.target.matches('textarea, input:not(.inline)') && !document.querySelector('dialog[open]')) return e.target.blur();
   if (!e.target.matches('input, textarea, select') && !e.ctrlKey && !e.metaKey && !e.altKey && !document.querySelector('dialog[open]')) navigate(e);
