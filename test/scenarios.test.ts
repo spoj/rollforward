@@ -289,6 +289,32 @@ test('people rename the instance, its series and its workspace mid-run: the run 
   assert.ok(git('show', 'HEAD:names.tsv').includes(`${id}\t/work/Renamed/After/November\n`));
 });
 
+test('an archived series or workspace does no work: one with a run going is archived once the run ends, and what waited for a run as it was archived runs once it is restored', async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Shelf' })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec' })).json();
+  let mid: unknown[] = [];
+  const archive = async () => {
+    const r = await call('PUT', `/api/series/${series}`, { archived: true });
+    mid = [r.status, await r.text()];
+    return 'true';
+  };
+  scripts.push({ bash: [archive], report: 'Made.', saw: [] });
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
+  await runs(id, 1);
+  assert.deepEqual(mid, [409, 'Shelf/Rec/2026-11 is running: archive Rec once its run ends, or interrupt it first']);
+  // A comment, and its workspace archived before the comment's run starts.
+  const waited: Script = { bash: [], report: 'Carried on.', saw: [] };
+  scripts.push(waited);
+  assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Go on.' })).status, 200);
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, { archived: true })).status, 200);
+  await new Promise(ok => setTimeout(ok, 3000));
+  assert.equal((await runs(id, 1)).filter(e => e.op === 'run').length, 1, 'no run starts while it is archived');
+  assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'And?' })).status, 409);
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, { archived: false })).status, 200);
+  await runs(id, 2);
+  assert.match(waited.prompt!, /Go on\./, 'restored, the run that waited starts');
+});
+
 test("a run reads what its workspace's links let it as it started: someone joining changes nothing, while a link taken off, or its series moving, cuts it at once, and its instance carries on in a run of the new view", async () => {
   const workspace = async (name: string) => (await (await call('POST', '/api/workspaces', { name })).json()).id as string;
   const source = await workspace('Lease source'), reader = await workspace('Lease reader'), elsewhere = await workspace('Lease elsewhere');

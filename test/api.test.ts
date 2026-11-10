@@ -251,7 +251,7 @@ test("series settings write series.json; a rename edits .rf/tree.json", async ()
   assert.equal((await put(renamed, { name: series })).status, 200);
 });
 
-test('a workspace can be made; a workspace or a series is archived and restored, and a renamed series stays archived', async () => {
+test('a workspace can be made; a workspace or a series is archived and restored, taking nothing meanwhile but being restored, and a renamed series stays archived', async () => {
   const acme = () => named('Acme');
   const { id } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Acme' }))).json();
   const { series: made, ...rest } = await acme();
@@ -260,12 +260,23 @@ test('a workspace can be made; a workspace or a series is archived and restored,
   assert.equal((await call('POST', '/api/workspaces', JSON.stringify({ name: 'Acme' }))).status, 409);
   assert.equal((await call('PUT', `/api/workspaces/${id}`, JSON.stringify({ archived: true }))).status, 200);
   assert.equal((await acme()).archived, true);
+  // Archived, nothing in it changes: every act in it is refused but restoring it, and it is read as it is.
+  const refused = async (method: string, path: string, body = '{}') => { const r = await call(method, path, body); return [r.status, await r.text()]; };
+  const shut = (name: string) => [409, `${name} is archived: nothing in it changes until it's restored`];
+  assert.deepEqual(await refused('POST', '/api/series', JSON.stringify({ workspace: id, name: 'Payroll' })), shut('Acme'));
+  assert.deepEqual(await refused('PUT', `/api/workspaces/${id}`, JSON.stringify({ name: 'Acme 2', members: [bob] })), shut('Acme'));
   assert.equal((await call('PUT', `/api/workspaces/${id}`, JSON.stringify({ archived: false }))).status, 200);
   assert.equal((await acme()).archived, false);
 
   const put = async (name: string, to: string, archived: boolean) => call('PUT', await at(name), JSON.stringify({ name: to, archived }));
   assert.equal((await put(series, renamed, true)).status, 200);
   assert.equal((await shown(renamed)).archived, true);
+  assert.deepEqual(await refused('POST', await at(renamed, '2026-09-06', 'comment'), '{"text":"x"}'), shut(renamed));
+  assert.deepEqual(await refused('POST', `${await at(renamed, '2026-09-06', 'upload')}?name=a.txt`, 'a'), shut(renamed));
+  assert.deepEqual(await refused('POST', `${await at(renamed, '2026-09-06', 'rename')}?as=x`), shut(renamed));
+  assert.deepEqual(await refused('POST', await at(renamed), '{"label":"2026-09-13"}'), shut(renamed));
+  assert.deepEqual(await refused('PUT', await at(renamed), '{"name":"x"}'), shut(renamed));
+  assert.equal((await call('GET', await at(renamed, '2026-09-06'))).status, 200);
   assert.equal((await put(renamed, series, false)).status, 200);
   assert.equal((await shown(series)).archived, false);
 });

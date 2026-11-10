@@ -23,7 +23,7 @@ import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, startIndexing, track } from './indexes.ts';
 import { seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, byToken, cancelWake, cancelWakes, closed, correct, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, resolveFor, setWake, startWaking, starts, startWith, stop, wakes, wakesOf, weekly, reads, CUT, type Active, type Request } from './waker.ts';
+import { active, archived, byToken, cancelWake, cancelWakes, closed, correct, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, resolveFor, setWake, startWaking, starts, startWith, stop, wakes, wakesOf, weekly, reads, CUT, type Active, type Request } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -454,6 +454,14 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   // The body before the tree: a request held open must not save a tree from before others' changes, such as an owner's removal.
   const payload = ['upload', 'attach', 'screen'].includes(action) ? {} : await json(req);
   const t = tree(), by = me.email;
+  // Archived, a workspace or a series takes nothing but being restored: nothing in it changes, and none of its instances runs.
+  const about = t.series[kind === 'instances' ? instance(id).seriesId : kind === 'series' ? id : ''];
+  const within = t.workspaces[kind === 'workspaces' ? id : about ? about.workspace : kind === 'series' ? payload.workspace : ''];
+  const shut = [within, about].find(x => x?.archived);
+  if (shut && req.method !== 'GET' && !(payload.archived === false && !action && kind !== 'instances')) {
+    if (!run) mustSee(me, within);
+    throw new HttpError(409, `${shut.name} is archived: nothing in it changes until it's restored`);
+  }
   if (kind === 'resolve') {
     if (!run) throw new HttpError(404, 'not found');
     const target = resolveFor(run, url.searchParams.get('path') ?? '');
@@ -511,10 +519,14 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       if (g.includes('@') || !everyone(w).includes(g) || typeof label !== 'string' || !label.trim() || label.includes('@')) throw new HttpError(400, `a label is some text, without an @, for an Entra group in this workspace: not ${g}: ${JSON.stringify(label)}`);
       (t.groups ??= {})[g] = label.trim();
     }
+    // Archived, it does no work: a run going in it ends first, and what waited for one as it was archived runs once it's restored.
+    const its = Object.keys(t.series).filter(sid => t.series[sid].workspace === id), going = change.archived && its.map(sid => active.get(sid)).find(a => a);
+    if (going) throw new HttpError(409, `${named(t, going.inst.seriesId)}/${going.inst.label} is running: archive ${w.name} once its run ends, or interrupt it first`);
     if (change.archived !== undefined) w.archived = !!change.archived;
-    if (change.archived) cancelWakes(Object.keys(t.series).filter(sid => t.series[sid].workspace === id).flatMap(sid => [sid, ...labels(sid).map(l => l.id)]));
+    if (change.archived) cancelWakes(its.flatMap(sid => [sid, ...labels(sid).map(l => l.id)]));
     if (change.agents !== undefined) writeFileSync(agentsFile(id), String(change.agents));
     saveTree(t);
+    if (change.archived === false) for (const i of its.flatMap(instances)) kick(i);
     return send(res, 200, 'ok');
   }
   // A proposal to merge a workspace into another, or to move one of its series there, is the workspace's, by its id: whoever manages
@@ -610,6 +622,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       if (Object.values(t.series).some(x => x.workspace === s.workspace && x.name === name)) throw new HttpError(409, `${name} exists`);
       s.name = name;
     }
+    if (change.archived && active.has(id)) throw new HttpError(409, `${named(t, id)}/${active.get(id)!.inst.label} is running: archive ${s.name} once its run ends, or interrupt it first`);
     if (change.archived !== undefined) s.archived = !!change.archived;
     if (change.archived) cancelWakes([id, ...labels(id).map(l => l.id)]);
     // Anyone may share it as themselves in place of whoever does; only they, or whoever manages the workspace, stop sharing it.
@@ -619,6 +632,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const shared = change.share === undefined ? was : change.share ? { by, since: new Date().toISOString(), logins: checkTicks(by, change.logins ?? []) } : undefined;
     saveTree(t);
     replaceReadOnly(join(seriesDir(id), 'series.json'), JSON.stringify({ ...(shared && { shared }) }, null, 1));
+    if (change.archived === false) for (const i of instances(id)) kick(i);
     return send(res, 200, 'ok');
   }
   if (kind === 'wakes') {
@@ -634,7 +648,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const { at: when = '', label, days } = payload, w = String(when);
     const at = w === 'now' ? Date.now() : /^\+\d+[mhd]$/.test(w) ? Date.now() + Number(w.slice(1, -1)) * { m: 60e3, h: 3600e3, d: 86400e3 }[w.at(-1) as 'm'] : Date.parse(w);
     if (req.method !== 'PUT' || Number.isNaN(at)) throw new HttpError(400, 'PUT {"at", "label" for a series, "days"}, or DELETE; at is now, +<n>m|h|d, or a date and time such as 2026-09-14T07:00+08:00');
-    if (t.series[sid].archived || t.workspaces[t.series[sid].workspace].archived) throw new HttpError(409, `${named(t, sid)} is archived`);
+    if (archived(t, sid)) throw new HttpError(409, `${named(t, sid)} is archived`);
     if (t.series[to] && !label) throw new HttpError(400, `waking a series starts a new instance: name it with a label${run ? '; to wake your own instance, name its folder: .' : ''}`);
     if (!t.series[to] && instance(to).doc.status !== 'open') throw new HttpError(409, `${instance(to).label} is ${instance(to).doc.status}: to correct it, wake its series with the label ${instance(to).label}-r2`);
     const first = new Date(at), starts = t.series[to] ? safeName(String(label)) : undefined;

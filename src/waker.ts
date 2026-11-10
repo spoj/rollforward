@@ -89,8 +89,10 @@ export function pending(inst: Instance, seen: number): Entry[] {
   return inst.log.filter(e => e.seq > seen && starts(inst, e) && (e.op === 'wake' || (isPerson(e) && ['upload', 'comment', 'signoff'].includes(e.op))));
 }
 
-// Whether an instance has something for a run: what came since its last run, or since an Interrupt, which waits for the next act.
-const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math.max(seenBefore(inst), inst.log.findLast(e => e.op === 'interrupt')?.seq ?? 0)).length > 0;
+// Whether an instance has something for a run: what came since its last run, or since an Interrupt, which waits for the next act;
+// nothing while its series or its workspace is archived, which does no work until it's restored.
+const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math.max(seenBefore(inst), inst.log.findLast(e => e.op === 'interrupt')?.seq ?? 0)).length > 0
+  && !archived(tree(), inst.seriesId);
 
 // What a run is told of: people's acts, and the server's wakes, expired logins, uploads made items, renames and a run cut or failed;
 // not the server's bookkeeping, such as a run's start, its hosts and screenshots, which the log keeps.
@@ -126,6 +128,7 @@ export function reach(t: Tree, seriesId: string): string[] {
 }
 
 export const named = (t: Tree, seriesId: string) => `${t.workspaces[t.series[seriesId].workspace].name}/${t.series[seriesId].name}`;
+export const archived = (t: Tree, seriesId: string) => !!(t.series[seriesId].archived || t.workspaces[t.series[seriesId].workspace].archived);
 
 // The run's view of the data, by name, built when it starts: /work/<workspace>/<series>/<label>/ for every instance in its reach but
 // an abandoned one, neither an example nor a starting point; the company's AGENTS.md at /work/AGENTS.md and each workspace's at
