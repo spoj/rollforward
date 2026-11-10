@@ -1121,7 +1121,7 @@ server.on('upgrade', (req, socket, head) => {
   if (!to) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
   passUpgrade(req, socket, head, to);
 });
-if (process.env.RF_BROWSER_URL) reap().catch(e => console.error('the browser service: browsers a restart left open are still open', e));
+if (process.env.RF_BROWSER_URL) await reap().catch(e => console.error('the browser service: browsers a restart left open are still open', e));
 // A stop, as an update's, cuts the runs (waker.ts stop()) and exits once what they had sent is answered and logged, within 10 s.
 process.on('SIGTERM', async () => {
   stop();

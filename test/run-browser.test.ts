@@ -1,5 +1,7 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { connect } from 'node:net';
 import { PassThrough } from 'node:stream';
@@ -517,6 +519,51 @@ test('a request lapses a week after it was asked, and a login no approved grant 
   signOut(bob, 'web:crm');
   writeJson('users.json', { [alice]: { role: 'admin' } });
   writeJson('grants.json', everyone);
+});
+
+test('the server reaps leftover browsers before it takes requests', async t => {
+  let list!: () => void, close!: () => void, sawList!: () => void, sawClose!: () => void;
+  const listing = new Promise<void>(ok => { list = ok; }), closing = new Promise<void>(ok => { close = ok; });
+  const listed = new Promise<void>(ok => { sawList = ok; }), closed = new Promise<void>(ok => { sawClose = ok; });
+  const reaper = createServer(async (req, res) => {
+    if (req.method === 'GET') {
+      sawList();
+      await listing;
+      return res.end('[{"id":"leftover"}]');
+    }
+    sawClose();
+    await closing;
+    res.end('{"state":{},"log":[]}');
+  });
+  await new Promise<void>(ok => reaper.listen(0, '127.0.0.1', ok));
+  const probe = createServer();
+  await new Promise<void>(ok => probe.listen(0, '127.0.0.1', ok));
+  const port = (probe.address() as { port: number }).port, base = `http://127.0.0.1:${port}`;
+  await new Promise<void>(ok => probe.close(() => ok()));
+  const proc = spawn(process.execPath, [join(import.meta.dirname, '../src/server.ts'), join(tmp, 'startup'), String(port)], {
+    env: { ...process.env, RF_BROWSER_URL: `http://127.0.0.1:${(reaper.address() as { port: number }).port}`, RF_PUBLIC_URL: base, RF_OIDC_ISSUER: 'https://login.test', RF_OIDC_CLIENT_ID: 'client' },
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  const ready = new Promise<void>((ok, fail) => {
+    proc.stdout!.on('data', d => String(d).includes('rollforward on') && ok());
+    proc.on('exit', code => fail(new Error(`server exited with ${code}`)));
+  });
+  t.after(async () => {
+    list();
+    close();
+    await ready;
+    proc.kill();
+    await once(proc, 'exit');
+    reaper.close();
+  });
+  await listed;
+  await assert.rejects(fetch(base), /fetch failed/);
+  list();
+  await closed;
+  await assert.rejects(fetch(base), /fetch failed/);
+  close();
+  await ready;
+  assert.equal((await fetch(base)).status, 200);
 });
 
 test("as the server starts, the browsers a restart left open on the service close: a run's keeps its request log and hands its login back, as its run would have, and a sign-in's just goes", async t => {
