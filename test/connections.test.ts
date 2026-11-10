@@ -384,6 +384,35 @@ test("links an answer gave go through for that run alone, as they are, with no c
   assert.equal((await via('GET', 'https://host/download/b?tempauth=t')).status, 403, "not a link an answer gave, only a file's content");
 });
 
+test('an answer’s links stop when their source is unticked or their runner can no longer lend', async () => {
+  const { upsertUser } = await import('../src/auth.ts');
+  for (const source of ['download', 'redirect', 'upload']) {
+    const token = `revoke-${source}`, own = { ...inst, log: started(ticks) } as unknown as Instance;
+    runs.set(token, own);
+    const answer = await via(source === 'upload' ? 'POST' : 'GET', `${G}${source === 'upload' ? '/me/messages/d1/attachments/createUploadSession' : `/drives/b!d1/items/${source === 'redirect' ? 'b/content' : 'a'}`}`, { token, ...(source === 'upload' && json({ AttachmentItem: { attachmentType: 'file', name: 'pack.xlsx', size: 9 } })) });
+    assert.equal(answer.status, source === 'upload' ? 201 : source === 'redirect' ? 302 : 200);
+    const link = source === 'redirect' ? answer.headers.location! : JSON.parse(answer.text)[source === 'upload' ? 'uploadUrl' : '@microsoft.graph.downloadUrl'];
+    const request = () => via(source === 'upload' ? 'PUT' : 'GET', link, { token, headers: { authorization: '' }, ...(source === 'upload' && { body: 'PK pack!!' }) });
+    assert.equal((await request()).status, source === 'upload' ? 201 : 200);
+    const before = writes.length;
+    own.log.push({ seq: 3, op: 'logins', by: ALICE, logins: ticks.filter(t => t !== (source === 'upload' ? `m365:mail:${ALICE}` : 'm365:site:host,site1,web1')) } as any);
+    const unticked = await request();
+    assert.equal(unticked.status, 403, source);
+    assert.match(unticked.text, /is not ticked for this instance/);
+    assert.deepEqual(calls().at(-1), { run: 1, name: 'graph', method: source === 'upload' ? 'PUT' : 'GET', path: link.split('?')[0], status: 403, bytes: 0, refused: unticked.text.trim() });
+    own.log.pop();
+    upsertUser(ALICE, { disabled: true });
+    try {
+      const disabled = await request();
+      assert.equal(disabled.status, 403, source);
+      assert.match(disabled.text, /can no longer run this instance/);
+    } finally {
+      upsertUser(ALICE, { disabled: false });
+    }
+    assert.equal(writes.length, before, 'no revoked upload reached its host');
+  }
+});
+
 test("a file's content redirected to its download address, at its drive's own site, goes through for that run alone, as the address on its driveItem does", async () => {
   runs.set('run4', inst);
   const redirect = await via('GET', `${G}/drives/b!d1/items/b/content`, { token: 'run4' });

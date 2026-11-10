@@ -23,7 +23,7 @@ import * as exa from './connections/exa.ts';
 // host, with rollforward's own certificate authority (ca.ts), which runs trust. Each request is checked against the type's policy
 // and the instance's ticks, has its Authorization replaced by the runner's token, and goes on; the answer comes back as it is, and
 // a `call` entry logs it. A link an answer held, such as an upload session's, or redirected to, goes through for that run, as it
-// is, with no credential added. A refusal is a plain 403 with the reason, logged too.
+// is, with no credential added, while the offer that allowed the answer may still be used. A refusal is a plain 403 with the reason, logged too.
 //
 // The server's own connections, OpenRouter and Exa, each a module under connections/ too, are every run's while the server has
 // its key, which no person lends: a request is checked against its policy and has the key put in for the run's stand-in, and what
@@ -107,8 +107,8 @@ export const reachable = (inst: Instance) => {
 };
 
 // What a run, as the proxy knows it, has: its instance, its number, the links its connections' answers held, each the name of
-// the connection that gave it, and what its calls have cost.
-export type CallRun = { inst: Instance; n: number; links: Map<string, string>; cost: number };
+// the connection that gave it and the offer that allowed it, and what its calls have cost.
+export type CallRun = { inst: Instance; n: number; links: Map<string, { name: string; offer: string }>; cost: number };
 
 // Tests point a host at a stand-in.
 export const upstreams: Record<string, string> = {};
@@ -144,13 +144,14 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     // The runner's own OpenRouter key, where they use it, in place of the server's, never falling back to it.
     const runner = runnerOf(a.inst).by, mine = s === openrouter ? logins(runner).find(l => l.id === 'openrouter' && l.enabled) : undefined;
     const c = link || s ? undefined : connections().find(c => types[c.type].hosts?.some(h => covers(h, host)));
-    name = link ?? c?.name ?? s?.name ?? host;
+    name = link?.name ?? c?.name ?? s?.name ?? host;
     path = link ? url.origin + url.pathname : url.pathname + url.search;
     // A target such as //elsewhere/… or https://elsewhere/… would take the request, and the credential put in, to another host, and
     // one such as http://HOST/… to it in the clear.
     if (url.origin !== `https://${host}`) throw new HttpError(403, `${host} takes requests for https://${host}, not ${url.origin}`);
     // A runner's own key only while they may lend to the instance, never the server's in its place.
     if (mine) lender(a.inst, a.n);
+    if (link) use(a.inst, a.n, link.offer);
     if (mine?.expired) throw Object.assign(new HttpError(409, `${runner}'s own OpenRouter key is out of credits: they save another, or stop using it, on the Logins page, and the instance carries on`), { login: 'openrouter' });
     if (!link && !c && !s) throw new HttpError(403, `${url.origin + url.pathname} is no link a connection's answer gave this run`);
     // A POST's or PATCH's body, a JSON one, or any to the server's own services, is read whole, for the policy; a JSON body goes on as the JSON it read, as it rewrote
@@ -159,12 +160,12 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     // A file's content, PUT …/content, streams on as its bytes, a JSON file's too.
     const raw = !link && (s || ['POST', 'PATCH'].includes(method) || (method === 'PUT' && isJson && !/\/content$/i.test(url.pathname))) ? Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)) : undefined;
     const json = isJson && raw?.length ? JSON.parse(raw.toString()) : undefined, r = { method, url, headers: req.headers, json, body: raw };
-    let out = json, auth: Record<string, string> = {}, as = '', ticks: string[] = [], redirect: string | undefined;
+    let out = json, auth: Record<string, string> = {}, as = '', ticks: string[] = [], redirect: string | undefined, offer = '';
     if (c) {
       const { by, logins } = lender(a.inst, a.n), checked = await types[c.type].check!(c, by, ticks = logins, r), login = loginOf(c) as EntraLogin;
       out = checked.json ?? json;
       redirect = checked.redirect;
-      as = use(a.inst, a.n, checked.offer).email;
+      as = use(a.inst, a.n, offer = checked.offer).email;
       auth = { authorization: `Bearer ${await token(as, login.id, login.scope)}` };
     }
     if (s) {
@@ -180,11 +181,11 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     }
     // A Location where the check lets one go, as a redirect's, is a link for this run before the run can follow it.
     const answer = await forward(`${upstreams[host] ?? url.origin}${url.pathname}${url.search}`, req, res, {
-      auth, body, keep: !link, location: to => { const l = URL.parse(to); if (l && l.origin === redirect) a.links.set(l.href, name); },
+      auth, body, keep: !link, location: to => { const l = URL.parse(to); if (l && l.origin === redirect) a.links.set(l.href, { name, offer }); },
     });
     // An answer's links go through for this run; what a service's answer cost, whole or in the last event of its stream that says,
     // adds to the run's as it comes.
-    if (c && answer.type.includes('json')) for (const l of await types[c.type].links?.(JSON.parse(answer.text || 'null'), url.pathname, as, ticks) ?? []) a.links.set(new URL(l).href, c.name);
+    if (c && answer.type.includes('json')) for (const l of await types[c.type].links?.(JSON.parse(answer.text || 'null'), url.pathname, as, ticks) ?? []) a.links.set(new URL(l).href, { name: c.name, offer });
     const cost = !s ? 0 : (answer.text.trimStart().startsWith('{') ? [answer.text] : answer.text.split('\n').filter(l => l.startsWith('data: {')).map(l => l.slice(6)))
       .map(e => s.cost(JSON.parse(e))).findLast(x => x !== undefined) ?? 0;
     a.cost += cost;
