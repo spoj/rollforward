@@ -502,6 +502,17 @@ test("the hosts a run's browser was refused: one within the domains its website 
   await assert.rejects(allowHost({ email: alice, role: 'user' } as never, 'crm', 'intra.acme.localhost'), /^Error: intra\.acme\.localhost is at an internal address: an admin allows it$/, 'nor does its person allow it');
 });
 
+test('hosts the check rates high or internal wait on admins even within a website\'s domains', async () => {
+  const { allowHost } = await import('../src/browsers.ts');
+  for (const verdict of ['high', 'internal']) {
+    sites({ crm: { url: 'https://crm.example.com/', hosts: [], writeback: false, checks: { 'upload.example.com': { verdict, why: 'Wait for an admin.' } } } });
+    await assert.rejects(allowHost({ email: alice, role: 'user' } as never, 'crm', 'upload.example.com'), (e: { status: number }) => e.status === 403);
+    assert.deepEqual(websitesOf(alice).crm.hosts, []);
+    await allowHost(asPerson(alice)!, 'crm', 'upload.example.com');
+    assert.deepEqual(websitesOf(alice).crm.hosts, ['upload.example.com']);
+  }
+});
+
 test('two hosts allowed at once both stay on the website', async () => {
   const { allowHost } = await import('../src/browsers.ts');
   sites({ crm: { url: 'https://crm.example.com/', hosts: [], writeback: false } });

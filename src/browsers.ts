@@ -200,6 +200,8 @@ export async function allowHost(by: Me, site: string, host: string, email = by.e
   if (by.role !== 'admin' && approved(site, email) && !reached(w).some(p => domain(p) === domain(h))) throw new HttpError(403, `${h} is outside the domains ${site} reaches, which its approved grants cover: an admin allows it`);
   const inside = await resolvesInternal(h), admin = inside && by.role === 'admin';
   if (inside && !admin && !letIn()[h]) throw new HttpError(403, `${h} is at an internal address: an admin allows it`);
+  const verdict = w.checks?.[h]?.verdict;
+  if (by.role !== 'admin' && (verdict === 'high' || verdict === 'internal')) throw new HttpError(403, `the check rates ${h} ${verdict}: an admin allows it`);
   await checkHost(h, inside);
   changeWebsite(email, site, { hosts: [...new Set([...website(email, site).hosts, h])] });
   if (admin && !letIn()[h]) {
