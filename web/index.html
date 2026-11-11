@@ -163,6 +163,8 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .creds a { text-decoration: underline; cursor: pointer; }
 .who { flex: none; display: inline-block; margin-left: 6px; padding: 0 4px; border-radius: 6px; font-size: 10px; font-weight: 600; line-height: 15px; vertical-align: 1px; color: var(--person); background: var(--person-bg); }
 .state { margin-left: auto; font-size: 13px; color: var(--ink-2); display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.bar .del { font-size: 13px; color: var(--ink-3); text-decoration: underline; cursor: pointer; white-space: nowrap; }
+.bar .del:hover { color: var(--red); }
 .ptog { position: relative; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 1px solid var(--rule-2); border-radius: var(--r1); background: var(--sheet); color: var(--ink-3); cursor: pointer; }
 .ptog:hover, .ptog.on { color: var(--ink); }
 .ptog .badge { position: absolute; top: -7px; right: -7px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--red); color: #fff; font: 600 10.5px/16px var(--sans); }
@@ -451,6 +453,7 @@ a.more, a.up { display: block; font-size: 12px; color: var(--ink-3); cursor: poi
   .bar { padding: 10px 14px; }
   .bar h1 { font-size: 17px; }
   .state { margin-left: 0; order: 5; width: 100%; }
+  .bar .del { order: 6; }
   .bar .btn.top { padding: 6px 9px; font-size: 12px; }
   .panes { display: block; overflow: auto; }
   .player { left: 8px; right: 8px; bottom: 8px; width: auto; }
@@ -767,8 +770,9 @@ function renderBar() {
       : data.queued ? '\u29D7 Queued' : d?.error ? `<span class="bad" title="${esc(d.error)}">Run ${d.run} failed · ${hhmm(d.at)}</span>`
       : d ? `Agent idle · last run ${hhmm(d.at)}` : 'Waiting for files';
     const wake = open ? `<span>\u00b7 <a data-act="wakes">${cur.i.wakes[0] ? `next wake ${when(cur.i.wakes[0].at)}` : 'no wake'}</a></span>` : '';
-    const del = cur.w.manage && !gone() ? '<span>\u00b7 <a data-act="delete" title="For those who manage the workspace: delete it, and all the server holds of it">Delete\u2026</a></span>' : '';
-    h += `<div class="state">${state}${wake}${del}</div>`;
+    // Beside the state, not in it: for those who manage the workspace, in any status, archived too.
+    const del = cur.w.manage && !gone() ? '<a class="del" data-act="delete" title="For those who manage the workspace: delete it, and all the server holds of it">Delete\u2026</a>' : '';
+    h += `<div class="state">${state}${wake}</div>${del}`;
     const off = data.run ? 'disabled title="Available when the run ends"' : '';
     if (open) h += data.runner.by === me.email ? `<button class="btn commit top" data-act="close" ${off}>Close</button>`
       : `<button class="btn top" data-act="takeover" ${off || `title="${esc(nameOf(data.runner.by))} runs it, with their logins. Taking over makes it yours."`}>Take over</button>`;
