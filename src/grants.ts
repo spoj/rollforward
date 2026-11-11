@@ -3,7 +3,7 @@ import { act, canManage, canSee, readJson, tree, writeJson } from './system.ts';
 import { users, type Me } from './auth.ts';
 import { logins, signOut, type Trace } from './logins.ts';
 import { checkHost, letIn, resolvesInternal, upstreams } from './connections.ts';
-import { model } from './connections/openrouter.ts';
+import { answer, model } from './connections/openrouter.ts';
 import { changeWebsite, websitesOf } from './browsers.ts';
 
 // Grants, in .rf/grants.json: a person's use of their login to their website in one workspace, (workspace, person, site). The person
@@ -68,7 +68,7 @@ async function checkSite(email: string, site: string, trace: Trace | undefined, 
       }) }] }),
     });
     if (!res.ok) throw new Error(`OpenRouter answered ${res.status}`);
-    const a = JSON.parse((await res.json()).choices[0].message.content), hosts: string[] = [];
+    const a = answer((await res.json()).choices[0].message.content), hosts: string[] = [];
     for (const h of new Set((a.hosts ?? []).map((h: unknown) => String(h).toLowerCase()) as string[])) if ((letIn()[h] || !await resolvesInternal(h)) && await checkHost(h, false).then(() => true, () => false)) hosts.push(h);
     return { risk: ['low', 'medium'].includes(a.risk) ? a.risk : 'high', flags: (a.flags ?? []).map(String), summary: String(a.summary ?? ''), hosts };
   } catch (e) {

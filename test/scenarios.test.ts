@@ -16,7 +16,7 @@ import { idp } from './idp.ts';
 type Script = { bash: (string | (() => string | Promise<string>))[]; report: string; prompt?: string; system?: string; first?: number; saw: string[]; fail?: string; hold?: () => void };
 const scripts: Script[] = [], byPrompt = new Map<string, Script>(), providers: unknown[] = [], keys: string[] = [];
 // The server's own checks of websites (grants.ts, browsers.ts): what they asked, and the verdicts the stand-in model answers, in turn.
-const checks: { provider: unknown; messages: { content: string }[] }[] = [], verdicts: object[] = [];
+const checks: { provider: unknown; messages: { content: string }[] }[] = [], verdicts: (object | string)[] = [];
 const app = join(import.meta.dirname, '..'), tmp = mkdtempSync(join(tmpdir(), 'rf-scenario-')), root = join(tmp, 'data');
 const ADMIN = 'admin@demo.test', BOB = 'bob@demo.test';
 let model: ReturnType<typeof createServer>, proc: ChildProcess, base = '', admin = '', bob = '', sessions = 0;
@@ -47,7 +47,7 @@ const isResult = (m: { role: string; content: unknown }) => Array.isArray(m.cont
 // costing a cent, unless the key is out of credits; and a chat completion, for a script's own call.
 async function answer(req: IncomingMessage, res: ServerResponse) {
   const body = JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString());
-  if (body.response_format) return void (checks.push(body), res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: JSON.stringify(verdicts.shift()) } }] })));
+  if (body.response_format) return void (checks.push(body), res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: (v => typeof v === 'string' ? v : JSON.stringify(v))(verdicts.shift()) } }] })));
   keys.push(String(req.headers['x-api-key']));
   if (keys.at(-1) === 'sk-or-broke') return void res.writeHead(402, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: 'Insufficient credits', code: 402 } }));
   providers.push(body.provider);
@@ -796,7 +796,8 @@ test("anyone adds websites of their own, theirs to set: they allow the hosts its
   // In a workspace bob owns, a check that rates the website high risk leaves it for an admin to approve.
   const { id: his } = await (await call('POST', '/api/workspaces', { name: "Bob's own" })).json();
   assert.equal((await call('PUT', `/api/workspaces/${his}`, { owners: [BOB] })).status, 200);
-  verdicts.push({ risk: 'high', flags: ['looks like a lookalike'], summary: 'Not what it says.', hosts: [] });
+  // A model that fences its JSON in ```json is still read.
+  verdicts.push('```json\n' + JSON.stringify({ risk: 'high', flags: ['looks like a lookalike'], summary: 'Not what it says.', hosts: [] }) + '\n```');
   const { id: risky } = await (await call('POST', '/grants', { site: 'bobs', workspace: his, reason: 'more pulls' }, bob)).json();
   assert.deepEqual(await said(await call('POST', `/grants/${risky}`, { approve: true }, bob)), [403, 'the check rates bobs high risk: an admin decides']);
   assert.equal((await call('POST', `/grants/${risky}`, { approve: true })).status, 200);
