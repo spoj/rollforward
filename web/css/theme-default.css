@@ -1,0 +1,28 @@
+/* The default theme: the tokens web/css/layout.css draws the page with (docs/design.md). Blue is what a person uploaded, ink what
+   the agent made, and red what waits on a reply. A deployment's own theme, outside the checkout, gives those it changes. */
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+:root {
+  --paper: #f6f7f8; --sheet: #ffffff; --rule: #e3e6ea; --rule-2: #cdd2d9;
+  --ink: #15181d; --ink-2: #474e5b; --ink-3: #6b7280;
+  --person: #1f48c7; --person-bg: #eef2fc; --red: #d42a1e; --edge: #a3aab4; --control: #e83;
+  --r1: 4px; --r2: 8px;
+  --sans: "IBM Plex Sans", "Noto Sans", sans-serif; --mono: "IBM Plex Mono", "DejaVu Sans Mono", monospace;
+  /* Where a theme may part from the tokens above: the sidebar's and the side panel's ground, the tree's rule, its rows' names and
+     marks, buttons, and the runner's initials and chip. */
+  --side-bg: var(--paper); --panel-bg: var(--sheet); --tree-rule: var(--rule-2);
+  --workspace: var(--ink); --series: #1f5f8b; --inst-ink: var(--ink-2); --hover: #eceff2; --selected: #e7eaee;
+  --who: var(--person); --who-bg: var(--person-bg); --owner: var(--person); --owner-bg: var(--person-bg);
+  --primary: var(--ink); --primary-hover: #2b3039; --person-hover: #1a3eae; --on-fill: #fff;
+  --btn-ink: var(--ink); --btn-rule: var(--rule-2); --btn-hover-rule: var(--ink-3); --seg-ink: var(--ink-3); --seg-sel-ink: var(--ink);
+  /* The top bar's app name and avatar, the sidebar's foot and counts, and the sign-in pages' ground. */
+  --app-ink: var(--ink); --avatar-bg: var(--rule); --avatar-ink: var(--ink); --foot-ink: var(--ink-2); --version-bg: var(--sheet);
+  --num-bg: var(--ink-3); --open-bg: var(--ink-2); --signin-bg: var(--paper);
+  /* States: a danger's hover, an ask's band, a correction's amber, a delivery's green, what a file is made from, a changed cell. */
+  --red-bg: #fdf1f0; --ask-bg: #fff8f6; --amber: #b45309; --amber-bg: #fff7ed; --corr-bg: #fffbeb; --green: #1f6f43;
+  --made: #eef0f3; --made-far: #f5f6f8; --tile-made: #f1f3f5; --tile-made-far: #f6f7f8; --changed: #fdf0c4; --chip: #eceff3;
+  /* A document's pages and a browser's screen keep grounds of their own. */
+  --doc: #fff; --screen: #222;
+  --backdrop: rgba(21,24,29,.3); --shadow-inset: inset 0 1px 2px rgba(0,0,0,.08); --shadow-menu: 0 6px 18px rgba(0, 0, 0, .12);
+  --shadow-pop: 0 6px 20px rgba(21,24,29,.12); --shadow-card: 0 3px 10px rgba(21,24,29,.10); --shadow-dialog: 0 6px 24px rgba(21,24,29,.18);
+  --shadow-player: 0 6px 24px rgba(21,24,29,.16); --shadow-page: 0 1px 3px rgba(21, 24, 29, .12); --shadow-drawer: 0 0 40px rgba(0,0,0,.2);
+}

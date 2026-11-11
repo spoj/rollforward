@@ -190,3 +190,42 @@ test("a public client's Microsoft 365 login comes back to its root, asking for m
   assert.equal(site.status, 409);
   assert.match(await site.text(), /don't read SharePoint sites: RF_M365_SCOPES has no Sites.Read.All/);
 });
+
+test("the sign-in page wears the theme, the default or one RF_THEME names outside the checkout, on the default's tokens, its stylesheets and the logos there before sign-in, the brand's else the theme's; a theme that isn't there stops the server at its start", async () => {
+  const css = (f: string) => readFileSync(join(app, 'web', 'css', f), 'utf8');
+  const sheet = async (base: string, path: string) => { const r = await fetch(base + path); return [r.status, r.headers.get('content-type'), await r.text()]; };
+  assert.match(await (await fetch(confidential)).text(), /<link rel="stylesheet" href="\/css\/signin\.css"><link rel="stylesheet" href="\/css\/theme\.css">\s*<header class="masthead"><b class="logo">RollForward<\/b><\/header><main><div class="box"><h1>Welcome to RollForward<\/h1>[\s\S]*Continue with Microsoft<\/a>/, "the app's name atop it, and the box doesn't repeat it");
+  for (const [path, file] of [['/css/layout.css', 'layout.css'], ['/css/signin.css', 'signin.css'], ['/css/theme-default.css', 'theme-default.css'], ['/css/theme.css', 'theme-default.css']])
+    assert.deepEqual(await sheet(confidential, path), [200, 'text/css; charset=utf-8', css(file)], path);
+  assert.equal((await fetch(`${confidential}/css/theme-other.css`)).status, 401, 'those alone, by those names');
+  assert.equal((await fetch(`${confidential}/brand/logo`)).status, 404);
+  assert.equal((await fetch(`${confidential}/css/logo`)).status, 401, 'the default theme has no logo');
+  const a = await start(confidential, 'alex@acme.test'), s = sessionOf(await fetch(a.back, { redirect: 'manual', headers: { cookie: a.cookie } }))!;
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  const brand = (b: object) => fetch(`${confidential}/brand`, { method: 'PUT', headers: { cookie: s }, body: JSON.stringify(b) });
+  assert.equal((await brand({ logo: { name: 'logo.png', data: png } })).status, 200);
+  const logo = await fetch(`${confidential}/brand/logo`);
+  assert.deepEqual([logo.status, logo.headers.get('content-type'), Buffer.from(await logo.arrayBuffer()).toString('base64')], [200, 'image/png', png]);
+  assert.match(await (await fetch(confidential)).text(), /<header class="masthead"><img class="logo" src="\/brand\/logo" alt=""><\/header>/, 'the logo in place of the name');
+  assert.equal((await brand({ clear: true })).status, 200);
+  // A theme of the deployment's own, outside the checkout, giving the tokens it changes, with its logo beside it; on a server of its
+  // own, started last so as to slow none of the tests before it.
+  const own = join(tmp, 'themes', 'house.css'), mark = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><rect width="8" height="8" fill="#0a7f6a"/></svg>';
+  mkdirSync(dirname(own), { recursive: true });
+  writeFileSync(own, ':root { --primary: #0a7f6a; }\n');
+  writeFileSync(join(tmp, 'themes', 'house.svg'), mark);
+  const themed = await serve({ RF_OIDC_CLIENT_ID: 'rf-test', RF_OIDC_CLIENT_SECRET: 'shh', RF_THEME: own });
+  assert.deepEqual(await sheet(themed, '/css/theme.css'), [200, 'text/css; charset=utf-8', '@import url("/css/theme-default.css");\n:root { --primary: #0a7f6a; }\n'], "on the default's tokens");
+  assert.deepEqual(await sheet(themed, '/css/logo'), [200, 'image/svg+xml', mark]);
+  assert.match(await (await fetch(themed)).text(), /<header class="masthead"><img class="logo theme" src="\/css\/logo" alt=""><\/header><main><div class="box"><img class="logo theme" src="\/css\/logo" alt=""><h1>/, 'in place of the name, and in the box');
+  const t = await start(themed, 'alex@acme.test'), ts = sessionOf(await fetch(t.back, { redirect: 'manual', headers: { cookie: t.cookie } }))!;
+  const me = await (await fetch(`${themed}/me`, { headers: { cookie: ts } })).json();
+  assert.deepEqual([me.brand, me.themeLogo], [{ text: null, logo: false }, true], 'and the page shows it, where the brand has none');
+  // Not spawnSync, which would hold the event loop while the servers close the connections fetch keeps.
+  const none = spawn(process.execPath, [join(app, 'src', 'server.ts'), join(tmp, 'bare'), '0'], { env: { ...process.env, HOME: tmp, RF_THEME: 'nope' }, stdio: ['ignore', 'ignore', 'pipe'] });
+  let said = '';
+  none.stderr!.on('data', d => { said += d; });
+  const [code] = await once(none, 'close');
+  assert.notEqual(code, 0);
+  assert.match(said, /RF_THEME is default, or the absolute path of a theme's \.css file, not "nope"/);
+});

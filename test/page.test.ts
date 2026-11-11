@@ -256,8 +256,8 @@ test("the workspace's + starts a task at once, which its first prompt names, new
 test("only the runner abandons, from the Close dialog, whose buttons for a task weigh the same, the series' name with the one that makes it", async () => {
   await page.click('.row.ser .l:text-is("Weekly borrowing base")');
   await page.waitForSelector('#bar [data-act=takeover]');
-  assert.deepEqual([await page.locator('#bar .btn').allTextContents(), await page.textContent('#bar .state'), await page.locator('#bar .creds').count()], [['Take over'], 'Waiting for files· no wake', 0], 'alex runs it');
-  await page.click('#bar .state [data-act=wakes]');
+  assert.deepEqual([await page.locator('#bar .btn').allTextContents(), await page.textContent('#bar .state'), await page.locator('#bar .creds').count()], [['No wake', 'Take over'], 'Waiting for files', 0], 'alex runs it');
+  await page.click('#bar [data-act=wakes]');
   assert.equal(await page.textContent('#pv .pvh b'), 'Wakes of 2026-09-06 b', 'anyone in its workspace sets its wakes');
   await page.mouse.click(5, 5);
   await page.click('[data-act=takeover]');
@@ -493,6 +493,28 @@ test("the sidebar's and the side panel's inner edges drag their widths, within b
   await page.dblclick('.grip[data-pane=side]');
   await page.dblclick('.grip[data-pane=panel]');
   assert.deepEqual(await widths(), [256, 352]);
+});
+
+test("the top bar names the app, what the page shows and you, whose menu has your role and Sign out; the sidebar's foot has Settings, the version, and « to fold it to a rail, as this browser keeps it", async () => {
+  await page.waitForSelector('#bar h1 .t');
+  assert.deepEqual(await page.$$eval('#masthead :is(.app-name b, .pagename, .avatar, .mail)', es => es.map(e => e.textContent)), ['RollForward', 'Instance workspace', 'DA', 'admin@demo.test']);
+  await page.click('#user summary');
+  assert.deepEqual(await page.$$eval('#user .upop > *', es => es.map(e => (e as HTMLElement).innerText)), ['Demo Admin · admin', 'admin@demo.test', 'Sign out']);
+  await page.click('#masthead .app-name');
+  assert.equal(await page.getAttribute('#user', 'open'), null, 'a click beside it closes it');
+  assert.match(await page.textContent('#sidefoot .release') ?? '', /^rollforward (v\d+\.\d+\.\d+|[0-9a-f]{7,})/);
+  const rail = () => page.evaluate(() => [$('#side')!.offsetWidth, ($('#tree') as HTMLElement).offsetParent === null, $('[data-act=fold-side]')!.textContent]);
+  await page.click('#sidefoot [data-act=fold-side]');
+  assert.deepEqual(await rail(), [44, true, '»']);
+  await page.reload();
+  await page.waitForSelector('#bar h1 .t');
+  assert.deepEqual(await rail(), [44, true, '»'], 'kept in this browser');
+  await page.click('#sidefoot [data-act=fold-side]');
+  assert.deepEqual(await rail(), [256, false, '«']);
+  await page.click('#sidefoot [data-act=logins]');
+  await page.waitForSelector('#pv[open] [data-act=logins-show]');
+  await page.keyboard.press('Escape');
+  await page.waitForSelector('#pv:not([open])', { state: 'attached' });
 });
 
 test("what the session names, such as a tool call's name, shows as text in the audit, never as markup", async () => {

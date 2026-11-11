@@ -374,15 +374,15 @@ test('a cross-site POST is refused, so another web page cannot talk to the agent
   assert.equal(r.status, 403);
 });
 
-test('without a session the site shows Sign in with Microsoft, which goes to Microsoft', async () => {
+test('without a session the site shows Continue with Microsoft, which goes to Microsoft', async () => {
   assert.equal((await fetch(base + '/api')).status, 401);
-  assert.match(await (await fetch(base + '/')).text(), /href="\/auth\/login[^"]*">[\s\S]*Sign in with Microsoft/);
+  assert.match(await (await fetch(base + '/')).text(), /href="\/auth\/login[^"]*">[\s\S]*Continue with Microsoft/);
   assert.equal((await fetch(base + '/agent/delivered', { method: 'POST' })).status, 401, "the agent API is only on the sandboxes' socket");
   assert.match((await fetch(base + '/auth/login', { redirect: 'manual' })).headers.get('location')!, /^http:\/\/127\.0\.0\.1:\d+\/authorize\?/);
   assert.equal((await fetch(base + '/api', { headers: { cookie: admin.replace(/.$/, c => (c === 'A' ? 'B' : 'A')) } })).status, 401, 'a tampered cookie is refused');
   const me = await json('/me');
   assert.deepEqual([me.email, me.role], [adminEmail, 'admin']);
-  assert.match(me.version, /^(v\d+\.\d+\.\d+|[0-9a-f]{7,}$)/, 'the release the checkout is at, as git describes it, or its commit where it has no tags, as CI\'s; the page shows it on hover over the account');
+  assert.match(me.version, /^(v\d+\.\d+\.\d+|[0-9a-f]{7,}$)/, 'the release the checkout is at, as git describes it, or its commit where it has no tags, as CI\'s; the page shows it at the sidebar\'s foot');
   for (const next of ['/#/abc', '//evil.com', '/\\evil.com', '/\t/evil.com', 'https://evil.com'])
     assert.equal((await entra.signIn(base, adminEmail, `/auth/login?next=${encodeURIComponent(next)}`)).headers.get('location'), next === '/#/abc' ? next : '/', `a sign-in goes on only to this site: ${JSON.stringify(next)}`);
   assert.match((await fetch(base + '/auth/login', { redirect: 'manual', headers: { cookie: admin } })).headers.get('location')!, /\/authorize\?.*scope=openid\+profile\+email\+offline_access&/, 'signed in already, it signs in again, as Sign in again asks, keeping the sign-in');

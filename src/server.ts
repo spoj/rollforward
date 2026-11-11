@@ -10,6 +10,7 @@ import { agentsFile, closedBefore, createInstance, duplicateInstance, renameInst
 import { AGENT, commit } from './git.ts';
 import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
+import { checkTheme, stylesheet, themeLogo } from './theme.ts';
 import { asPerson, authenticate, CAPS, can, capabilities, checkConfig, cli, connect, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
 import { act, canManage, canSee, changes, everyone, initSystem, isPeople, readJson, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
 import { checkTicks, logins, runnerOf, saveLogin, signOut, unoffer } from './logins.ts';
@@ -28,6 +29,7 @@ import { active, archived, byToken, cancelWake, cancelWakes, closed, correct, dr
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const page = join(app, 'web', 'index.html');
+checkTheme();
 // The release this checkout is at, as git describes it; an image built without .git has none.
 const version = existsSync(join(app, '.git')) ? execFileSync('git', ['describe', '--tags', '--always'], { cwd: app, encoding: 'utf8' }).trim() : null;
 const exec = promisify(execFile);
@@ -938,6 +940,22 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     const url = new URL(req.url!, 'http://x');
     const site = req.headers['sec-fetch-site'];
     if (req.method !== 'GET' && site && site !== 'same-origin') throw new HttpError(403, 'cross-site request refused');
+    // What the sign-in pages show, before anyone signs in: the stylesheets, the theme's logo and the brand's.
+    const css = req.method === 'GET' ? stylesheet(url.pathname) : undefined;
+    if (css !== undefined) {
+      res.writeHead(200, { 'content-type': 'text/css; charset=utf-8', 'cache-control': 'no-cache', 'x-content-type-options': 'nosniff' });
+      return void res.end(css);
+    }
+    if (req.method === 'GET' && url.pathname === '/css/logo' && themeLogo) {
+      res.writeHead(200, { 'content-type': themeLogo.type, 'cache-control': 'no-cache', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" });
+      return void res.end(readFileSync(themeLogo.file));
+    }
+    if (req.method === 'GET' && url.pathname === '/brand/logo') {
+      const { logo, type } = brand();
+      if (!logo) throw new HttpError(404, 'no logo');
+      res.writeHead(200, { 'content-type': type, 'cache-control': 'no-cache', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" });
+      return void res.end(Buffer.from(logo, 'base64'));
+    }
     const me = await authenticate(req, res, url);
     if (!me) return;
     // What a person changes beyond an instance is an act of theirs in the system's log, once it's done.
@@ -948,7 +966,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       res.end(readFileSync(page));
     } else if (url.pathname === '/me') {
       const { text, logo } = brand();
-      send(res, 200, { ...me, names: names(me), browsers: !!process.env.RF_BROWSER_URL, brand: { text: text || null, logo: !!logo }, can: CAPS.filter(c => can(me, c)), version });
+      send(res, 200, { ...me, names: names(me), browsers: !!process.env.RF_BROWSER_URL, brand: { text: text || null, logo: !!logo }, themeLogo: !!themeLogo, can: CAPS.filter(c => can(me, c)), version });
     } else if (url.pathname === '/capabilities') {
       if (me.role !== 'admin') throw new HttpError(403, 'admins grant capabilities');
       if (req.method === 'PUT') {
@@ -989,11 +1007,6 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       }
       writeJson('brand.json', b);
       send(res, 200, 'saved');
-    } else if (url.pathname === '/brand/logo') {
-      const { logo, type } = brand();
-      if (!logo) throw new HttpError(404, 'no logo');
-      res.writeHead(200, { 'content-type': type, 'cache-control': 'no-cache', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" });
-      res.end(Buffer.from(logo, 'base64'));
     }
     else if (url.pathname === '/api/events') events(me, req, res);
     else if (url.pathname === '/api') send(res, 200, listing(me));
