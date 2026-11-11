@@ -1353,8 +1353,14 @@ test("a workspace's owners propose to merge it into another or move a series the
 test("a skill push's files stay out of the system's log", async () => {
   const files = { 'SKILL.md': Buffer.from('---\nname: audit\ndescription: Audit\n---\nPrivate instructions\n').toString('base64'), 'scripts/read.py': Buffer.from('print("private script")\n').toString('base64') };
   assert.equal((await call('POST', '/skills/audit/versions', JSON.stringify({ files }))).status, 200);
-  const logged = readFileSync(join(root, '.rf/log.jsonl'), 'utf8');
-  const act = logged.trim().split('\n').map(l => JSON.parse(l)).findLast(a => a.path === '/skills/audit/versions');
+  // The act is logged as the response finishes, so it may land a moment after the response arrives.
+  let logged = '', act;
+  for (let i = 0; !act; i++) {
+    if (i) await new Promise(r => setTimeout(r, 50));
+    assert.ok(i < 100, 'the skill push was never logged');
+    logged = readFileSync(join(root, '.rf/log.jsonl'), 'utf8');
+    act = logged.trim().split('\n').map(l => JSON.parse(l)).findLast(a => a.path === '/skills/audit/versions');
+  }
   assert.deepEqual(act.body, {});
   for (const data of Object.values(files)) assert.ok(!logged.includes(data));
   assert.deepEqual(await json('/skills/audit/versions/1'), files);
