@@ -92,7 +92,9 @@ a { color: inherit; }
 /* An icon leads its button's words. */
 .ico { flex: none; vertical-align: -3px; }
 .btn:has(> .ico), .seg button:has(> .ico) { display: inline-flex; align-items: center; gap: 6px; }
-.vl { padding: 14px 16px; display: grid; gap: 10px; align-content: start; font-size: 13.5px; }
+/* A settings dialog keeps to its width: one column as wide as it, long addresses broken, nothing scrolling sideways. */
+.vl { padding: 14px 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; align-content: start; font-size: 13.5px; overflow-wrap: anywhere; }
+.pvb.vl { overflow-x: hidden; }
 .vl h3 { margin: 4px 0 0; font-size: 13px; font-weight: 600; }
 .vl .sub { color: var(--ink-3); font-size: 12.5px; }
 .vl hr { width: 100%; margin: 6px 0 0; border: 0; border-top: 1px solid var(--rule); }
@@ -106,12 +108,29 @@ a { color: inherit; }
 .twisty { all: unset; flex: none; width: 20px; height: 20px; display: grid; place-items: center; border-radius: var(--r1); color: var(--ink-2); font-size: 15px; cursor: pointer; }
 button.twisty:hover { background: var(--rule); color: var(--ink); }
 .vl textarea { font: 12.5px/1.5 var(--mono); padding: 7px 9px; border: 1px solid var(--rule-2); border-radius: var(--r1); resize: vertical; min-height: 4.5em; }
-.vl :is(input[type=email], input[type=password], select) { font: inherit; padding: 7px 9px; border: 1px solid var(--rule-2); border-radius: var(--r1); background: var(--sheet); min-width: 0; max-width: 100%; }
+.vl :is(input[type=email], input[type=password], input[type=datetime-local], select) { font: inherit; padding: 7px 9px; border: 1px solid var(--rule-2); border-radius: var(--r1); background: var(--sheet); min-width: 0; max-width: 100%; }
 .vl .row2 { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .ut { border-collapse: collapse; font-size: 12.5px; width: 100%; }
 .ut td, .ut th { border-top: 1px solid var(--rule); padding: 6px 6px 6px 0; text-align: left; vertical-align: top; }
 .ut th { font-weight: 500; color: var(--ink-3); }
 .ut select { max-width: 100px; }
+/* A workspace's people: the name takes what the role and the two buttons, of one width, leave; past five, Show all. */
+.ut.people td:not(:first-child) { width: 1%; white-space: nowrap; }
+.ut.people.folded tr.more { display: none; }
+.pacts { display: inline-grid; grid-template-columns: 1fr 1fr; gap: 6px; width: max-content; }
+.pacts .btn { width: 100%; min-width: 9.2em; text-align: center; }
+/* Merge or move: what, an arrow, and where, side by side, and on a phone one over the other. */
+.mv { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: end; gap: 10px; }
+.vl .mv label { display: grid; gap: 4px; min-width: 0; }
+.mv select { width: 100%; }
+.mvarrow::before { content: '\2192'; display: block; padding-bottom: 7px; font-size: 18px; line-height: 1; color: var(--ink-3); }
+.mvgo { justify-content: space-between; }
+.mvgo .sub { flex: 1 1 12em; }
+/* A wake: its time and the label it starts side by side and one width, or one over the other where two times wouldn't show whole,
+   then its days and buttons. */
+.wakerow { display: grid; grid-template-columns: repeat(auto-fit, minmax(14em, 1fr)); gap: 8px; }
+.wakerow > input { width: 100%; }
+.wakerow > .row2 { grid-column: 1 / -1; }
 /* The sidebar's foot: Settings, which opens your logins and tokens, the version the server runs, and « to fold the sidebar to a
    rail, as this browser keeps it. */
 .sidefoot { display: grid; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--rule); }
@@ -192,7 +211,7 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .btn { border: 1px solid var(--btn-rule); background: var(--sheet); color: var(--btn-ink); border-radius: var(--r1); padding: 7px 12px; font-size: 13px; font-weight: 500; white-space: nowrap; text-decoration: none; display: inline-block; }
 .btn.primary { background: var(--primary); border-color: var(--primary); color: var(--on-fill); }
 .btn.commit { background: var(--person); border-color: var(--person); color: var(--on-fill); }
-.btn.danger { color: var(--red); border-color: var(--red); }
+.btn.danger { color: var(--danger-ink); border-color: var(--danger-rule); background: var(--danger-bg); }
 .btn.share { background: var(--person); border-color: var(--person); color: var(--on-fill); transition: background .3s, border-color .3s; }
 .btn.share.armed { background: var(--amber); border-color: var(--amber); }
 .warn { display: grid; gap: 8px; border: 1px solid var(--amber); background: var(--amber-bg); border-radius: var(--r1); padding: 10px 12px; font-size: 13px; }
@@ -232,9 +251,9 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .lst td { padding: 5px 8px; border-bottom: 1px solid var(--rule); vertical-align: top; overflow-wrap: break-word; }
 .lst td:nth-child(n+3):not(.headline) { white-space: nowrap; }
 .lrow { cursor: pointer; }
-.lrow:hover { background: var(--selected); box-shadow: inset 3px 0 0 var(--ink); }
+.lrow:hover { background: var(--selected); box-shadow: inset 3px 0 0 var(--hover-rule); }
 .lrow.on, .lrow.drag { background: var(--selected); }
-.lrow.made { background: var(--made); box-shadow: inset 3px 0 0 var(--ink-2); }
+.lrow.made { background: var(--made); box-shadow: inset 3px 0 0 var(--made-rule); }
 .lrow.made.far { background: var(--made-far); box-shadow: none; }
 .lrow .fn { display: block; }
 .lst td:first-child { min-width: 9em; }
@@ -254,7 +273,7 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .ph .c { font-size: 13px; color: var(--ink-3); }
 .ph .btn { margin-left: auto; padding: 4px 10px; font-size: 12px; }
 .tile { position: relative; z-index: 2; background: var(--sheet); border: 1px solid var(--rule); border-radius: var(--r1); padding: 11px 12px 10px; min-height: 96px; display: flex; flex-direction: column; gap: 4px; cursor: pointer; text-align: left; }
-.tile.on, .tile.drag { border-color: var(--ink); box-shadow: 0 0 0 1px var(--ink); }
+.tile.on, .tile.drag { border-color: var(--on-rule); box-shadow: 0 0 0 1px var(--on-rule); }
 .ext { font: 500 10px/1 var(--mono); letter-spacing: .04em; color: var(--ink-3); display: flex; justify-content: space-between; align-items: baseline; }
 .nc { font: 500 11.5px/1 var(--sans); letter-spacing: 0; color: var(--ink-3); padding-right: 10px; }
 .nc.q, .legend .tri.q { color: var(--red); border-top-color: var(--red); }
@@ -267,9 +286,9 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .tile.ghost { background: transparent; border: 1px dashed var(--rule-2); }
 .tile.ghost .fn { color: var(--ink-2); font-weight: 400; }
 /* Hovering a tile or a row marks it, what it's made from, and, fainter, what those are made from, all the way back. */
-.tile:hover { border-color: var(--ink); }
-.tile.made { border-color: var(--ink-2); background: var(--tile-made); }
-.tile.made.far { border-color: var(--rule-2); background: var(--tile-made-far); }
+.tile:not(.on):hover { border-color: var(--hover-rule); }
+.tile.made { border-color: var(--made-rule); background: var(--tile-made); }
+.tile.made.far { border-color: var(--made-far-rule); background: var(--tile-made-far); }
 .tile.fresh::before { content: ''; position: absolute; top: 9px; left: -4px; width: 7px; height: 7px; border-radius: 50%; background: var(--ink); }
 .tile.flash { animation: flash 1.4s ease-out; }
 @keyframes flash { from { box-shadow: 0 0 0 4px var(--rule-2); } }
@@ -296,7 +315,7 @@ a[data-act=preview], a[data-act=opencard], .vl a[data-act], .state a[data-act] {
 dialog { padding: 0; border: 1px solid var(--rule-2); color: var(--ink); max-width: none; max-height: none; }
 dialog::backdrop { background: var(--backdrop); }
 .saved { font-size: 12px; color: var(--ink-3); }
-.dlg { width: min(400px, 92vw); padding: 18px 20px 16px; border-radius: var(--r2); box-shadow: var(--shadow-dialog); }
+.dlg { width: min(400px, 92vw); padding: 18px 20px 16px; border-radius: var(--r2); box-shadow: var(--shadow-dialog); overflow-x: hidden; overflow-wrap: anywhere; }
 .dlg h3 { margin: 0 0 6px; font-size: 15px; font-weight: 600; }
 .dlg p { margin: 0 0 12px; font-size: 13px; color: var(--ink-2); white-space: pre-wrap; }
 .dlg input { width: 100%; font: inherit; padding: 7px 9px; border: 1px solid var(--rule-2); border-radius: var(--r1); }
@@ -352,13 +371,11 @@ iframe.mail { width: 100%; border: 0; background: var(--doc); }
 .pvn:empty { display: none; }
 .empty { color: var(--ink-3); font-size: 13px; padding: 40px 28px; }
 
-.card { position: fixed; z-index: 20; width: 396px; max-height: 80dvh; overflow: auto; background: var(--sheet); border: 1px solid var(--rule-2); border-radius: var(--r2); box-shadow: var(--shadow-card); padding: 14px 16px 12px; }
+.card { position: fixed; z-index: 20; width: 396px; max-height: 80dvh; overflow: auto; overflow-x: hidden; overflow-wrap: anywhere; background: var(--sheet); border: 1px solid var(--rule-2); border-radius: var(--r2); box-shadow: var(--shadow-card); padding: 14px 16px 12px; }
 .card .cf { font-weight: 600; font-size: 13px; word-break: break-word; }
 .card.wide { width: 600px; }
 .cpv { display: flex; flex-direction: column; height: 340px; margin: 4px 0 2px; border: 1px solid var(--rule); border-radius: var(--r1); overflow: hidden; }
 .cpv .tabs { padding: 6px 8px; }
-.card .full { margin-bottom: 8px; font-size: 12px; text-align: right; }
-.card .full a { text-decoration: underline; cursor: pointer; }
 .card .cp { font-size: 12px; color: var(--ink-3); margin: 2px 0 10px; }
 .card .cp b { font-weight: 500; color: var(--ink); }
 .card .cp b.p { color: var(--person); }
@@ -474,6 +491,8 @@ a.more, a.up { display: block; font-size: 12px; color: var(--ink-3); cursor: poi
   .bar { padding: 10px 14px; }
   .masthead { padding: 0 14px; }
   .app-name .pagename, .user .mail, .sidefold { display: none; }
+  .mv { grid-template-columns: minmax(0, 1fr); }
+  .mvarrow::before { content: '\2193'; padding: 0; text-align: center; }
   .main { height: calc(100dvh - var(--top)); }
   .bar h1 { font-size: 17px; }
   .state { margin-left: 0; order: 5; width: 100%; }

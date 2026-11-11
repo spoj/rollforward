@@ -688,6 +688,41 @@ test("a workspace's settings say what its agents read and which workspaces' agen
   await page.mouse.click(5, 5);
 });
 
+test("a workspace's settings: five people shown until Show all, each row's two buttons of one width; Merge or move sets what beside where and names what Propose asks; Close is the primary button; no dialog scrolls sideways, on a phone either", async () => {
+  const ws = '1b3031035ff6', put = (body: object) => page.evaluate(([id, b]) => fetch(`/api/workspaces/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.status), [ws, body] as const);
+  const before = await page.evaluate(id => tree.find(w => w.id === id), ws);
+  const people = ['christopher.wellington-smythe@finance-operations.example.com', 'bob@demo.test', 'sharon.huang@accounts-payable.example.com', 'echo.wong@example.com', 'a.very.long.name.indeed@shared-services.example.org', '0b8e5c8a-6d3e-4c21-9f2a-1d2e3f4a5b6c'];
+  assert.equal(await put({ owners: ['admin@demo.test', people[0]], members: people.slice(1) }), 200);
+  await page.evaluate(id => { location.hash = `#/${id}`; }, ws);
+  await page.waitForSelector(`#tree .row.ws.on`);
+  await page.evaluate(async () => { await refresh(); openWorkspaceSettings(); });
+  await page.waitForSelector('#pv[open] .ut.people');
+  // Wider than its box, whether or not it shows a scrollbar for it.
+  const sideways = () => page.evaluate(() => [...document.querySelectorAll('#pv[open], #pv[open] .pvb')].filter(e => e.scrollWidth > e.clientWidth + 1).map(e => e.className));
+  const rows = () => page.locator('#pv .ut.people tr').evaluateAll(trs => trs.filter(tr => (tr as HTMLElement).offsetParent).map(tr => tr.querySelector('td')!.textContent));
+  assert.deepEqual([(await rows()).length, await page.textContent('#pv [data-act=people-all]')], [5, 'Show all7']);
+  const widths = await page.locator('#pv .pacts').first().evaluate(p => [...p.querySelectorAll('.btn')].map(b => [(b as HTMLElement).offsetWidth, (b as HTMLElement).offsetTop, getComputedStyle(b).textAlign]));
+  assert.deepEqual([widths[0][0] === widths[1][0], widths[0][1] === widths[1][1], widths[1][2]], [true, true, 'center'], `Make member and Remove: ${JSON.stringify(widths)}`);
+  assert.equal(await page.getAttribute('#pv [data-act=wremove]', 'class'), 'btn danger');
+  await page.click('#pv [data-act=people-all]');
+  assert.deepEqual([(await rows()).length, await page.textContent('#pv [data-act=people-all]')], [7, 'Show fewer7']);
+  assert.deepEqual(await sideways(), [], 'workspace settings');
+  await page.selectOption('#pv #mvto', { label: 'Readers' });
+  assert.deepEqual([await page.textContent('#pv #mvgo'), await page.textContent('#pv #mvsay')], ['Propose merge', 'Merges larkfield into Readers: everyone here joins it.']);
+  await page.selectOption('#pv #mvwhat', { label: 'Weekly borrowing base' });
+  assert.deepEqual([await page.textContent('#pv #mvgo'), await page.textContent('#pv #mvsay')], ['Propose move', "Moves Weekly borrowing base into Readers; whoever isn't in Readers no longer sees it."]);
+  const [what, arrow, into] = await page.locator('#pv .mv > *').evaluateAll(es => es.map(e => Math.round(e.getBoundingClientRect().top + e.getBoundingClientRect().height)));
+  assert.ok(Math.abs(what - into) <= 1 && Math.abs(what - arrow) <= 8, `on one line: ${[what, arrow, into]}`);
+  assert.equal(await page.getAttribute('#pv [data-act=unpv]', 'class'), 'btn primary');
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.deepEqual(await sideways(), [], 'and on a phone');
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.keyboard.press('Escape');
+  await page.waitForSelector('#pv:not([open])', { state: 'attached' });
+  assert.equal(await put({ owners: before.owners, members: before.members }), 200);
+  await page.evaluate(() => refresh());
+});
+
 test("Logins shows what needs you first, then a line for each kind, Microsoft 365's sources and the websites opening in place; ticks go by kind, Microsoft 365's sources under a tick of their own, an expired login's flagged and off", async () => {
   const rf = join(root, '.rf'), mine = join(rf, 'people', createHash('sha256').update('admin@demo.test').digest('hex').slice(0, 16));
   writeFileSync(join(rf, 'connections.json'), JSON.stringify({ graph: { type: 'graph' }, adb: { type: 'databricks' } }));
@@ -1127,7 +1162,7 @@ test("an item's card shows its file's preview on a desktop, to scroll in place o
   assert.equal(await page.locator('#card .cpv table.sh tr').nth(1).locator('td').nth(1).textContent(), 'Customer');
   const acts = await page.locator('#card .acts .btn').allTextContents();
   assert.ok(acts.includes('Download') && !acts.includes('Preview') && !acts.includes('Upload…'), acts.join());
-  await page.click('#card .full [data-act=preview]');
+  await page.click('#card .acts [data-act=preview]');
   await page.waitForSelector('#pv table.sh td');
   await page.keyboard.press('Escape');
   await page.click('#card [data-act=uncard]');
@@ -1147,7 +1182,7 @@ for (const act of ['comment-on', 'thread', 'comment-cell']) test(`${act} from a 
     await tab.click('#steps .tile[data-item=tie]');
     await tab.waitForSelector('#card .cpv table.sh');
     if (act === 'comment-cell') {
-      await tab.click('#card .full [data-act=preview]');
+      await tab.click('#card .acts [data-act=preview]');
       await tab.click('#pv table.sh [data-act=cell]');
       await tab.click('#pvn [data-act=comment-cell]');
     } else await tab.click(`#card [data-act=${act}] >> nth=0`);

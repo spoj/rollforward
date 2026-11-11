@@ -8,7 +8,7 @@ import { forgetLogins, logins, saveLogin, type Offer } from './logins.ts';
 import { keepSignIn } from './entra.ts';
 import { themeLogo } from './theme.ts';
 
-// Sign-in with a Microsoft account. People press "Continue with Microsoft" and type nothing: the button goes to Microsoft Entra ID
+// Sign-in with a Microsoft account. People press "Login with Microsoft" and type nothing: the button goes to Microsoft Entra ID
 // (OpenID Connect, code flow with PKCE), at RF_OIDC_ISSUER, for the app RF_OIDC_CLIENT_ID, which the server needs to start. The server
 // redeems the code, with the app's secret if it has one.
 
@@ -159,19 +159,18 @@ function admit(res: ServerResponse, email: string, name: string | undefined, who
   res.end();
 }
 
-// The sign-in pages wear the page's theme (web/css/signin.css and the theme RF_THEME names): a bar with the brand's logo, else the
-// theme's, else the brand's text or the app's name, atop a box in the middle, whose one button goes to Microsoft.
+// The sign-in pages wear the page's theme (web/css/signin.css and the theme RF_THEME names): a box in the middle, with the brand's
+// logo, else the theme's, whose one button goes to Microsoft.
 const APP = 'RollForward';
 const SHIELD = '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1 13.5 3v4.2c0 3.4-2.3 6.3-5.5 7.8-3.2-1.5-5.5-4.4-5.5-7.8V3z" fill="currentColor"/><path class="tick" d="M5.6 8.1 7.3 9.8l3.2-3.4" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-// The box repeats a logo, never the name its heading says.
 const shell = (title: string, box: string) => {
-  const { text, logo } = readJson<{ text?: string; logo?: string }>('brand.json', {});
+  const { logo } = readJson<{ logo?: string }>('brand.json', {});
   const img = logo ? '<img class="logo" src="/brand/logo" alt="">' : themeLogo ? '<img class="logo theme" src="/css/logo" alt="">' : '';
   return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${title}</title>
 <link rel="stylesheet" href="/css/signin.css"><link rel="stylesheet" href="/css/theme.css">
-<header class="masthead">${img || `<b class="logo">${esc(text || APP)}</b>`}</header><main><div class="box">${img}${box}</div></main>`;
+<main><div class="box">${img}${box}</div></main>`;
 };
-const button = (href: string) => `<a class="ms" href="${href}">${SHIELD}Continue with Microsoft</a>`;
+const button = (href: string) => `<a class="ms" href="${href}">${SHIELD}Login with Microsoft</a>`;
 
 function page(res: ServerResponse, status: number, text: string) {
   res.writeHead(status, { 'content-type': 'text/html; charset=utf-8' });

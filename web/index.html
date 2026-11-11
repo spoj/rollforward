@@ -502,7 +502,7 @@ function logText(e) {
 function renderNeeds() {
   const held = new Map(data?.log.filter(e => e.op === 'expired' && e.runner === me.email && !data.log.some(x => x.seq > e.seq && x.op === 'wake' && x.login === e.login)).map(e => [e.login, e]));
   const h = (data ? data.waiting.filter(w => w.who === me.email).map(w => data.log[w.seq - 1]) : []).map(e => `<div><b>${e.ask ? 'Ask' : 'Note'}</b><span>${esc(firstLine(e.text))}</span>`
-    + (editable() ? `<button class="btn" data-act="reply" data-seq="${e.seq}">Reply</button>` : `<button class="btn" data-act="thread" data-thread="${e.thread}">Open</button>`) + '</div>').join('')
+    + (editable() ? `<button class="btn reply-to" data-act="reply" data-seq="${e.seq}">Reply</button>` : `<button class="btn" data-act="thread" data-thread="${e.thread}">Open</button>`) + '</div>').join('')
     + [...held.values()].map(e => `<div><b>Login</b><span>${e.login === 'openrouter' ? 'Your OpenRouter key is out of credits' : `Your ${esc(e.name)} login has expired`}: this instance waits for it</span>${signInHtml(e.login, e.name)}</div>`).join('');
   $('#needs').hidden = !h;
   put($('#needs'), h);
@@ -648,7 +648,7 @@ function postHtml(t, p, depth) {
   let h = `<div class="post ${p.ask ? 'ask' : ''} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}"><button class="fold" data-act="fold" data-seq="${p.seq}" data-end="${end(p)}" title="Collapse">\u25BE</button>${head}${hhmm(p.at)}${p.to ? ` \u00b7 to ${who(p.to)}` : ''}${p.note ? ` \u00b7 a note for ${who(data.runner.by)}` : ''}${p.waits ? ` \u00b7 waits on ${who(p.waits)}` : ''}${since ? ` \u00b7 <span title="What it links may have changed since: check it before signing off">${since} run${since > 1 ? 's' : ''} since</span>` : ''}${p.commit ? ` \u00b7 commit <code>${p.commit.slice(0, 7)}</code>` : ''}</span>`
     + `<div class="pb ${long ? 'long' : ''}">${p.by === 'agent' && p.op === 'comment' ? md(p.text) : esc(p.text)}</div>${long ? `<a class="more" data-act="more" data-seq="${p.seq}">More</a>` : ''}`
     + (p.files ?? []).map(f => `<div class="f">${/\.(png|jpe?g|gif|webp|svg)$/i.test(f) ? `<img src="${fileUrl(f)}" loading="lazy" alt="${esc(fname(f))}" title="${esc(fname(f))}" data-act="preview" data-file="${esc(f)}">` : `<a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a>`}</div>`).join('');
-  if (p.op === 'comment') h += `<div class="pa">${reactHtml(p.seq)}${open ? `<button class="quiet" data-act="reply" data-seq="${p.seq}">Reply</button>` : ''}${signs ? `<button class="quiet" data-act="reply" data-seq="${p.seq}">Sign off\u2026</button>` : ''}</div>`;
+  if (p.op === 'comment') h += `<div class="pa">${reactHtml(p.seq)}${open ? `<button class="quiet reply-to" data-act="reply" data-seq="${p.seq}">Reply</button>` : ''}${signs ? `<button class="quiet" data-act="reply" data-seq="${p.seq}">Sign off\u2026</button>` : ''}</div>`;
   if (open && p.op === 'comment') h += `<div class="reply" ${draft.replying.has(p.seq) ? '' : 'hidden'}><textarea rows="2" placeholder="${signs ? 'Reply, or a note to sign off with' : 'Reply'}"></textarea><input type="file" multiple><div class="row2"><button class="btn" data-act="reply-post" data-seq="${p.seq}">Reply</button>${signs ? `<button class="btn commit" data-act="signoff" data-seq="${p.seq}"${off} title="Commits the instance as it is now in your name, with the files the ask pins as it pinned them">Sign off</button>` : ''}<button class="quiet" data-act="reply" data-seq="${p.seq}">Cancel</button></div></div>`;
   if (kids.length) h += depth < 3 ? `<div class="kids">${kids.map(k => postHtml(t, k, depth + 1)).join('')}</div>` : `<a class="more" data-act="alone" data-seq="${p.seq}">Continue this thread \u2192 ${all(p.seq)} more</a>`;
   return h + '</div>';
@@ -722,21 +722,20 @@ function renderCard() {
   } else h += `<div class="cp">${item.kind === 'input' ? 'Expected input, not there yet' : `${item.kind === 'step' ? 'Step' : 'Output'} not built yet`}</div>`;
   const from = (item.from ?? []).map(f => data.doc.items.find(i => i.id === f)).filter(Boolean);
   if (from.length) h += `<div class="cp">Made from ${from.map(f => `<a data-act="opencard" data-item="${esc(f.id)}">${esc(f.name)}</a>`).join(', ')}</div>`;
-  if (wide) h += `<div class="cpv">${cardPv.att ? `<div class="sub"><a data-act="attachment-back">\u2190 ${esc(cardPv.title)}</a> \u00b7 ${esc(cardPv.att.title)}</div>` : ''}${previewBody(cardPv.att ?? cardPv)}</div>`
-    + `<div class="full"><a data-act="preview" data-file="${esc(item.file)}" data-item="${esc(item.id)}">Open full</a></div>`;
+  if (wide) h += `<div class="cpv">${cardPv.att ? `<div class="sub"><a data-act="attachment-back">\u2190 ${esc(cardPv.title)}</a> \u00b7 ${esc(cardPv.att.title)}</div>` : ''}${previewBody(cardPv.att ?? cardPv)}</div>`;
   // The item's open threads, each as it began, with where it stands.
   for (const t of talkOn(item.id)) {
     const p = t.posts[0], more = t.posts.length - 1;
     h += `<div class="nb ${t.waits ? 'waits' : ''}">${t.ref ? `<span class="ref">${esc(t.ref)}</span>` : ''}${p.by === 'agent' ? '' : `<b>${who(p.by)}</b>: `}${esc(p.text)}`
       + (p.files?.length ? `<div class="cites">${p.files.map(f => `<a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a>`).join('')}</div>` : '')
-      + `<div class="by">${more ? `${more} repl${more > 1 ? 'ies' : 'y'} \u00b7 ` : ''}${t.waits ? `Waits on ${who(t.waits)} \u00b7 ` : t.pending ? '<span class="spin"></span> the agent picks it up next \u00b7 ' : ''}<a data-act="thread" data-thread="${esc(t.id)}">${open ? 'Reply' : 'Open'}</a></div></div>`;
+      + `<div class="by">${more ? `${more} repl${more > 1 ? 'ies' : 'y'} \u00b7 ` : ''}${t.waits ? `Waits on ${who(t.waits)} \u00b7 ` : t.pending ? '<span class="spin"></span> the agent picks it up next \u00b7 ' : ''}<a data-act="thread" data-thread="${esc(t.id)}"${open ? ' class="reply-to"' : ''}>${open ? 'Reply' : 'Open'}</a></div></div>`;
   }
   h += '<div class="acts">';
-  if (item.file) h += `${wide ? '' : `<button class="btn" data-act="preview" data-file="${esc(item.file)}" data-item="${esc(item.id)}">Preview</button>`}<a class="btn" href="${fileUrl(item.file)}">Download</a>`;
+  if (item.file) h += `<button class="btn" data-act="preview" data-file="${esc(item.file)}" data-item="${esc(item.id)}">Open full</button><a class="btn" href="${fileUrl(item.file)}">Download</a>`;
   if (open && !wide) h += `<button class="btn" data-act="add" data-item="${esc(item.id)}" data-pane="${item.kind === 'output' ? 'out' : 'in'}">Upload…</button>`;
   if (open) h += `<button class="btn" data-act="comment-on" data-item="${esc(item.id)}">Comment</button>`;
   if (data.doc.status === 'closed' && !archived()) h += `<button class="btn" data-act="correct" data-item="${esc(item.id)}">Correct\u2026</button>`;
-  h += `<button class="btn" data-act="uncard" style="margin-left:auto">Close</button></div>`;
+  h += `<button class="btn primary" data-act="uncard" style="margin-left:auto">Close</button></div>`;
   put(card, h);
   card.hidden = false;
   if (wide && (cardPv.att ?? cardPv).pdf) watchPages(card, cardPv.att ?? cardPv);
@@ -805,8 +804,8 @@ function renderPv() {
   if (!pv) return void (d.open && d.close());
   // Your account's dialog: Logins and Tokens, as tabs.
   const account = [['logins', 'Logins'], ['tokens', 'Tokens']], mine = account.some(([k]) => k === pv.settings?.kind);
-  d.className = 'pv' + (pv.settings ? ' small' : '') + (mine ? ' wide' : '');
-  let h = `<div class="pvh"><b>${esc(pv.title)}</b><span class="saved"></span>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${(pv.att ?? pv).doc ? '<button class="btn" data-act="layout">Exact layout</button>' : ''}${pv.path ? `<a class="btn" href="${fileUrl(pv.path)}">Download</a>` : ''}${pv.signin ? '<button class="btn primary" data-act="signin-save">Save login</button>' : ''}<button class="btn" data-act="unpv">${pv.signin ? 'Cancel' : 'Close'}</button></div>`;
+  d.className = 'pv' + (pv.settings ? ' small' : '') + (mine || pv.settings?.kind === 'workspace' ? ' wide' : '');
+  let h = `<div class="pvh"><b>${esc(pv.title)}</b><span class="saved"></span>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${(pv.att ?? pv).doc ? '<button class="btn" data-act="layout">Exact layout</button>' : ''}${pv.path ? `<a class="btn" href="${fileUrl(pv.path)}">Download</a>` : ''}${pv.signin ? '<button class="btn primary" data-act="signin-save">Save login</button>' : ''}<button class="btn${pv.signin ? '' : ' primary'}" data-act="unpv">${pv.signin ? 'Cancel' : 'Close'}</button></div>`;
   if (mine) h += `<div class="pvtabs">${account.map(([k, name]) => `<button class="tab ${pv.settings.kind === k ? 'sel' : ''}" data-act="${k}">${name}</button>`).join('')}</div>`;
   if (pv.att) h += `<div class="sub" style="padding:8px 14px"><a data-act="attachment-back">\u2190 ${esc(pv.title)}</a> \u00b7 ${esc(pv.att.title)}</div>` + previewBody(pv.att);
   else if (pv.path) h += previewBody(pv);
@@ -825,11 +824,11 @@ function renderPv() {
       + readingHtml(s)
       + agentsHtml(s, 'Every agent in this workspace reads it at the start of each run: its conventions, and changes that cut across its series, such as a renamed entity.', s.manage)
       + (s.manage && !s.archived ? moveHtml(s) : '')
-      + (s.manage ? `<div class="row2"><button class="btn danger" data-act="archive-workspace">${s.archived ? 'Restore workspace' : 'Archive workspace'}</button></div>` : '');
+      + (s.manage ? `<div class="row2"><button class="btn${s.archived ? '' : ' danger'}" data-act="archive-workspace">${s.archived ? 'Restore workspace' : 'Archive workspace'}</button></div>` : '');
     if (s.kind === 'series') h += `<h3>Name</h3><input type="text" id="sname" value="${esc(s.name)}">`
       + `<h3>Who starts runs</h3>${startsHtml(s)}<h3>Wakes</h3>${wakesHtml(s.id, s.wakes, true)}`
       + `<h3>Cost</h3><div class="sub">This series' runs have cost ${usd(s.cost)} so far, ${usd(s.cost / Math.max(1, s.closed))} per closed instance.</div>`
-      + (cur.w.archived ? (cur.w.manage ? '<div class="row2"><button class="btn danger" data-act="archive-workspace">Restore workspace</button></div>' : '') : `<div class="row2"><button class="btn danger" data-act="archive-series">${s.archived ? 'Restore series' : 'Archive series'}</button></div>`);
+      + (cur.w.archived ? (cur.w.manage ? '<div class="row2"><button class="btn" data-act="archive-workspace">Restore workspace</button></div>' : '') : `<div class="row2"><button class="btn${s.archived ? '' : ' danger'}" data-act="archive-series">${s.archived ? 'Restore series' : 'Archive series'}</button></div>`);
     h += '</div>';
   }
   d.innerHTML = h + '<div class="pvn" id="pvn"></div>';
@@ -838,6 +837,7 @@ function renderPv() {
     for (const el of d.querySelectorAll('.pvb input, .pvb textarea, .pvb select')) el.disabled = true;
     for (const el of d.querySelectorAll('.pvb button:not([data-act=archive-series]):not([data-act=archive-workspace])')) el.remove();
   }
+  mvSay();
   if (!d.open) d.showModal();
   if ((pv.att ?? pv).pdf) watchPages(d, pv.att ?? pv);
 }
@@ -855,10 +855,10 @@ function startsHtml(s) {
 // A series' starts the instance it names, a weekly one's label holding the date it first fires or the one before it fires on.
 const WEEK = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 function wakesHtml(target, list, series) {
-  const row = (k = {}) => `<div class="wakerow row2" data-id="${k.id ?? ''}" data-target="${target}"><input type="datetime-local" class="wat" value="${k.at ? localInput(k.at) : ''}">`
+  const row = (k = {}) => `<div class="wakerow" data-id="${k.id ?? ''}" data-target="${target}"><input type="datetime-local" class="wat" value="${k.at ? localInput(k.at) : ''}">`
     + (series ? `<input type="text" class="wlabel" placeholder="Label it starts" value="${esc(k.label ?? '')}">` : '')
-    + WEEK.map(d => `<label class="sub"><input type="checkbox" value="${d}" ${k.days?.includes(d) ? 'checked' : ''}>${d[0].toUpperCase() + d.slice(1)}</label>`).join('')
-    + `<button class="btn" data-act="wake-save">${k.id ? 'Save' : 'Add'}</button>${k.id ? '<button class="quiet" data-act="wake-delete">Delete</button>' : ''}</div>`;
+    + '<div class="row2">' + WEEK.map(d => `<label class="sub"><input type="checkbox" value="${d}" ${k.days?.includes(d) ? 'checked' : ''}>${d[0].toUpperCase() + d.slice(1)}</label>`).join('')
+    + `<button class="btn" data-act="wake-save">${k.id ? 'Save' : 'Add'}</button>${k.id ? '<button class="quiet" data-act="wake-delete">Delete</button>' : ''}</div></div>`;
   return `<div class="sub">${series ? 'Each starts the instance it names, or continues it if the series has it.' : 'Each continues this instance.'} Tick days to repeat it weekly at its time.</div>${list.map(row).join('')}${row()}`;
 }
 
@@ -883,9 +883,19 @@ function moveHtml(s) {
   const p = s.proposal, others = tree.filter(w => w.id !== s.id && !w.archived);
   if (p) return `<h3>Merge or move</h3><div class="sub">${person(p.by)} proposed ${when(p.at)} ${proposalText(p)}, for its owners to accept within a week.</div>`
     + (p.id === s.id ? `<div class="row2"><button class="btn" data-act="proposal-drop" data-id="${p.id}">Withdraw</button></div>` : '');
-  return !others.length ? '' : '<h3>Merge or move</h3><div class="sub">All of it, or a series, into another workspace, once one of its owners accepts. A merge brings everyone here into that one; a series moved leaves behind whoever isn\'t in it.</div>'
-    + `<div class="row2"><select id="mvwhat"><option value="">All of ${esc(s.name)}</option>${s.series.filter(x => !x.archived).map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select>`
-    + `<span class="sub">into</span><select id="mvto">${others.map(w => `<option value="${w.id}">${esc(w.name)}</option>`).join('')}</select><button class="btn" data-act="propose">Propose</button></div>`;
+  return !others.length ? '' : '<h3>Merge or move</h3><div class="sub">All of it, or one series, into another workspace you see, once one of its owners accepts.</div>'
+    + `<div class="mv"><label><span class="sub">From</span><select id="mvwhat"><option value="">All of ${esc(s.name)}</option>${s.series.filter(x => !x.archived).map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select></label>`
+    + `<span class="mvarrow" aria-hidden="true"></span><label><span class="sub">Into</span><select id="mvto">${others.map(w => `<option value="${w.id}">${esc(w.name)}</option>`).join('')}</select></label></div>`
+    + '<div class="row2 mvgo"><span class="sub" id="mvsay"></span><button class="btn" data-act="propose" id="mvgo">Propose</button></div>';
+}
+
+// What Propose would ask, as the two choices stand: the whole workspace merged into the other, or a series moved there.
+function mvSay() {
+  const what = $('#mvwhat'), to = $('#mvto');
+  if (!what || !to) return;
+  const into = to.selectedOptions[0]?.text ?? '', series = what.value && what.selectedOptions[0].text;
+  $('#mvsay').textContent = series ? `Moves ${series} into ${into}; whoever isn't in ${into} no longer sees it.` : `Merges ${pv.settings.name} into ${into}: everyone here joins it.`;
+  $('#mvgo').textContent = series ? 'Propose move' : 'Propose merge';
 }
 
 // AGENTS.md, the company's or a workspace's: a text every agent in scope reads, which only admins, or the workspace's owners, change.
@@ -894,12 +904,15 @@ const agentsHtml = (s, sub, edit) => `<h3>AGENTS.md</h3><div class="sub">${sub}<
     : `<div class="sub">${s.agents ? esc(s.agents) : 'None yet.'}</div>`);
 
 // A workspace's people, each an email or an Entra group's id: owners manage who is in it, and owners and members see and work in all
-// of it.
+// of it. Owners come first, then members, the first five shown until Show all; each row's two buttons are of one width, on one line.
+const PEOPLE_SHOWN = 5;
 function peopleHtml(s) {
-  const row = (p, owner) => `<tr><td>${person(p)}${p.includes('@') ? '' : ' · group'}</td><td>${owner ? 'Owner' : 'Member'}</td>`
-    + (s.manage ? `<td><div class="row2"><button class="btn" data-act="wrole" data-p="${esc(p)}">${owner ? 'Make member' : 'Make owner'}</button><button class="btn" data-act="wremove" data-p="${esc(p)}">Remove</button></div></td>` : '') + '</tr>';
-  return `<h3>People</h3><div class="sub">Owners and members see and work in everything here, and its agents read across it. Owners manage who is in it.${s.owners.length + s.members.length ? '' : ' No one is in it yet, so only admins see it.'}</div>`
-    + `<table class="ut">${s.owners.map(p => row(p, true)).join('')}${s.members.map(p => row(p, false)).join('')}</table>`
+  const row = ([p, owner], k) => `<tr${k >= PEOPLE_SHOWN ? ' class="more"' : ''}><td>${person(p)}${p.includes('@') ? '' : ' · group'}</td><td>${owner ? 'Owner' : 'Member'}</td>`
+    + (s.manage ? `<td><div class="pacts"><button class="btn" data-act="wrole" data-p="${esc(p)}">${owner ? 'Make member' : 'Make owner'}</button><button class="btn danger" data-act="wremove" data-p="${esc(p)}">Remove</button></div></td>` : '') + '</tr>';
+  const people = [...s.owners.map(p => [p, true]), ...s.members.map(p => [p, false])], all = pv.peopleAll || s.archived;
+  return `<h3>People</h3><div class="sub">Owners and members see and work in everything here, and its agents read across it. Owners manage who is in it.${people.length ? '' : ' No one is in it yet, so only admins see it.'}</div>`
+    + `<table class="ut people${s.manage ? ' manage' : ''}${all ? '' : ' folded'}">${people.map(row).join('')}</table>`
+    + (people.length > PEOPLE_SHOWN ? `<button class="quiet closed" data-act="people-all">${all ? `${ICON.up}Show fewer` : `${ICON.down}Show all`}<span class="tally">${people.length}</span></button>` : '')
     + (s.manage ? `<div class="row2"><input type="text" id="wperson" list="known" autocomplete="off" placeholder="A name or email, or an Entra group's id, as Finance HK <id>" style="flex:1"><datalist id="known">${Object.entries(me.names).map(([id, n]) => `<option value="${esc(`${n} <${id}>`)}">`).join('')}</datalist><button class="btn primary" data-act="wadd">Add</button></div>` : '');
 }
 
@@ -1250,6 +1263,7 @@ const holder = el => (el.closest('#card') ? [cardPv, renderCard] : [pv, renderPv
 // What a click on an element with data-act does.
 async function onAct(act, el) {
   if (act === 'menu') $('#side').classList.toggle('open');
+  if (act === 'people-all') { pv.peopleAll = !pv.peopleAll; renderPv(); }
   if (act === 'fold-side') { foldSide(!$('.app').classList.contains('folded')); renderSide(); }
   if (act === 'expand') { expandRow(el.dataset.id); renderSide(); }
   if (act === 'workspaces') { localStorage.workspaces = el.dataset.id; renderSide(); }
@@ -1353,7 +1367,7 @@ async function onAct(act, el) {
   if (act === 'archive-series' || act === 'archive-workspace') {
     const x = act === 'archive-series' ? cur.s : cur.w, flip = () => api(act === 'archive-series' ? seriesPath(cur) : `/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ archived: !x.archived }) });
     if (x.archived) await flip();
-    else if (!await ask({ title: `Archive ${x.name}?`, text: "It leaves the sidebar, except under Show archived. Nothing in it changes or runs until it's restored.", ok: 'Archive', act: flip })) return;
+    else if (!await ask({ title: `Archive ${x.name}?`, text: "It leaves the sidebar, except under Show archived. Nothing in it changes or runs until it's restored.", ok: 'Archive', kind: 'danger', act: flip })) return;
     closePv();
     await refresh();
   }
@@ -1622,12 +1636,12 @@ async function onAct(act, el) {
     await refresh();
     if (pv.settings.kind === 'logins') await openLogins(); else openWorkspaceSettings();
   }
-  if (act === 'site-remove' && await ask({ title: `Remove ${el.dataset.id}?`, text: 'Your login to it and your grants for it go too.', ok: 'Remove',
+  if (act === 'site-remove' && await ask({ title: `Remove ${el.dataset.id}?`, text: 'Your login to it and your grants for it go too.', ok: 'Remove', kind: 'danger',
     act: () => api(`/logins/sites/${enc(el.dataset.id)}`, { method: 'DELETE' }) })) {
     [pv.settings.logins, pv.settings.sites, pv.settings.grants] = await Promise.all([api('/logins'), api('/logins/sites'), api('/grants')]);
     renderPv();
   }
-  if (act === 'host-remove' && await ask({ title: `Remove ${el.dataset.host}?`, text: `${el.dataset.site}'s browsers no longer reach it, and the server's check won't let them again; you may allow it again as you sign in.`, ok: 'Remove',
+  if (act === 'host-remove' && await ask({ title: `Remove ${el.dataset.host}?`, text: `${el.dataset.site}'s browsers no longer reach it, and the server's check won't let them again; you may allow it again as you sign in.`, ok: 'Remove', kind: 'danger',
     act: () => api(`/logins/web/${enc(el.dataset.site)}/hosts/${enc(el.dataset.host)}`, { method: 'DELETE' }) })) {
     pv.settings.sites = await api('/logins/sites');
     renderPv();
@@ -1663,6 +1677,7 @@ document.addEventListener('change', async ev => {
     return kids[0].dispatchEvent(new Event('change', { bubbles: true }));
   }
   if (group) group.querySelector('.tickall').checked = [...group.querySelectorAll('input.tick')].every(k => k.checked);
+  if (el.matches('#mvwhat, #mvto')) return mvSay();
   if (el.id === 'sname') await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) });
   else if (el.matches('#pv input.tick') && pv.settings.kind === 'series' && pv.settings.shared_by === me.email) await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ share: true, logins: ticked() }) });
   else if (el.id === 'wname') await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) });
