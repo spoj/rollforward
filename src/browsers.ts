@@ -10,7 +10,7 @@ import { HttpError, instance, instances, replaceReadOnly, type Instance } from '
 import { logins, personDir, runnerOf, saveLogin, seal, secret, signOut, use } from './logins.ts';
 import { getDomain } from 'tldts';
 import { checkHost, covers, letIn, reached, resolvesInternal, setLetIn, upstreams } from './connections.ts';
-import { model } from './connections/openrouter.ts';
+import { answer, model } from './connections/openrouter.ts';
 import { asPerson, can, users, type Me } from './auth.ts';
 import { approved, forgetGrants } from './grants.ts';
 import { act, changes, readJson, rfDir, tree } from './system.ts';
@@ -372,7 +372,7 @@ async function checkRefused(inst: Instance, run: number, email: string, site: st
       }) }] }),
     });
     if (!res.ok) throw new Error(`OpenRouter answered ${res.status}`);
-    const said = JSON.parse((await res.json()).choices[0].message.content).hosts ?? {};
+    const said = answer((await res.json()).choices[0].message.content).hosts ?? {};
     await settle(Object.fromEntries(rest.map(h => [h, { verdict: ['pass', 'refused'].includes(said[h]?.verdict) ? said[h].verdict : 'high', why: String(said[h]?.why ?? 'The check gave no verdict for it.') }])));
   }
 }
