@@ -76,7 +76,9 @@ export function checkTicks(email: string, ticks: unknown): string[] {
 // An instance's runner is whoever made it, copied it or last took it over, with the offers they ticked for it then or since, and
 // the seq of the act that ticked them, their consent.
 export function runnerOf(inst: Instance): { by: string; logins: string[]; consent: number } {
-  const e = inst.log.findLast(e => ['create', 'duplicate', 'takeover', 'logins'].includes(e.op))!;
+  // A deleted instance keeps no runner (store.ts wipe()).
+  const e = inst.log.findLast(e => ['create', 'duplicate', 'takeover', 'logins'].includes(e.op));
+  if (!e) return { by: '', logins: [], consent: 0 };
   return { by: e.by, logins: (e.logins as string[] | undefined) ?? [], consent: e.seq };
 }
 
