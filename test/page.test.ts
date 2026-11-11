@@ -537,7 +537,11 @@ test("an ask shows the files it links and the runs since it, and anyone who sees
   assert.equal(await page.textContent('#bar .ptog .badge'), String(await page.locator('#log .post.waits').count()), "the panel's toggle counts what waits there");
   assert.match(await thread.locator('.on').innerText(), /waits on you/);
   assert.deepEqual(await thread.locator('.post .pb a[data-act=preview]').allInnerTexts(), ['The pack'], 'the file it links');
-  assert.match(await thread.locator('.post[data-seq="2"] > .tm').innerText(), /waits on you · 1 run since/, 'what it links may have changed since');
+  // The runs since the ask, as its log has them: the fixture's one, and any an earlier test's act woke since, as the waker's tick allows.
+  const since = await thread.locator('.post[data-seq="2"] > .tm').innerText();
+  const runs = (await (await page.request.get(new URL('/api/instances/a5c0ff5e1f00', page.url()).href)).json()).log.filter((e: { op: string; seq: number }) => e.op === 'run' && e.seq > 2).length;
+  assert.ok(runs >= 1, 'the fixture has a run since the ask');
+  assert.match(since, new RegExp(`waits on you · ${runs} runs? since`), 'what it links may have changed since');
   assert.deepEqual(await thread.locator('.post > .pa button').allInnerTexts(), ['\u{1F44D}', '\u{1F44E}', 'Reply', 'Sign off\u2026']);
   await thread.locator('.pa button', { hasText: 'Sign off' }).click();
   await thread.locator('.reply:not([hidden]) textarea').fill('Looks right.');
