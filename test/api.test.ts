@@ -973,6 +973,8 @@ test('rf acts on an instance as the page does: react, creds, rename, takeover, i
   assert.equal(await rf('takeover', 'Readings/Jots/b1'), 'you run Readings/Jots/b1 now, with no logins ticked\n');
   assert.equal((await json(`/api/instances/${his}`)).runner.by, adminEmail);
   await assert.rejects(rf('interrupt', 'Readings/Jots/b1'), fails(1, /^rf: POST \/api\/instances\/\w+\/interrupt: 409 no run going\n$/));
+  const stop = await call('POST', `/api/instances/${his}/interrupt`, undefined, b);
+  assert.deepEqual([stop.status, await stop.text()], [403, `only its runner, ${adminEmail}, the workspace's owners and admins stop its run`], 'bob sees it, but neither runs it now nor owns its workspace');
   await assert.rejects(rf('signoff', 'Readings/Jots/b1', 'c1'), fails(1, /: 409 c1 is no ask of the agent's\n$/));
   await assert.rejects(rf('signoff', 'Readings/Jots/b1', 'c1', 'Fine.', 'more'), fails(2, /^rf signoff PATH cN \[TEXT\]/));
   const reject = await call('POST', `/api/instances/${his}/signoff`, JSON.stringify({ thread: 'c1', approved: false }));

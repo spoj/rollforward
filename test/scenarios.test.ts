@@ -683,7 +683,7 @@ const upgrade = (path: string, cookie: string, origin = base) => new Promise<str
     .write(`GET ${path} HTTP/1.1\r\nhost: x\r\nconnection: upgrade\r\nupgrade: websocket\r\ncookie: ${cookie}\r\norigin: ${origin}\r\n\r\n`);
 });
 
-test("whoever sees an instance watches its run's browser live from the page, the person whose login it's in alone taking control of it, and their Stop browser interrupts the run, closing it", async () => {
+test("whoever sees an instance watches its run's browser live from the page, the person whose login it's in alone taking control of it, and its runner's Stop browser interrupts the run, closing it, which a member who only sees it may not", async () => {
   const carol = await login('carol@demo.test');
   assert.equal((await call('POST', '/logins/sites', { name: 'portal', url: 'https://portal.example.com/' })).status, 200);
   assert.equal((await call('PATCH', '/logins/sites/portal', { writeback: false })).status, 200);
@@ -707,13 +707,15 @@ test("whoever sees an instance watches its run's browser live from the page, the
   for (const [path, cookie, origin, why] of [[`${view}/drive`, bob, base, 'no one else drives it'], [`${view}/watch`, bob, 'https://evil.example.com', "only from the server's own pages"], [`${view}/watch`, carol, base, 'nor for anyone who sees no instance']])
     assert.match(await upgrade(path, cookie, origin), /^HTTP\/1.1 404/, why);
   assert.equal((await call('GET', view, undefined, carol)).status, 404);
-  assert.equal((await call('POST', `/api/instances/${id}/interrupt`, undefined, bob)).status, 200, 'Stop browser');
+  const refused = await call('POST', `/api/instances/${id}/interrupt`, undefined, bob);
+  assert.deepEqual([refused.status, await refused.text()], [403, `only its runner, ${ADMIN}, the workspace's owners and admins stop its run`], 'bob sees it, but neither runs it nor owns its workspace');
+  assert.equal((await call('POST', `/api/instances/${id}/interrupt`)).status, 200, 'Stop browser');
   const done = (await runs(id, 1)).find(e => e.op === 'done')!;
   assert.equal(done.aborted, true);
   await until('the browser closed', () => readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').includes('"requests":'));
   const { log, run } = await (await call('GET', `/api/instances/${id}`, undefined, bob)).json();
   assert.deepEqual([log.find((e: { op: string }) => e.op === 'interrupt').by, log.filter((e: { op: string }) => e.op === 'browser').map((e: { by: string; site: string; action?: string }) => [e.by, e.site, e.action]), run],
-    [BOB, [[ADMIN, 'portal', 'drive'], ['server', 'portal', undefined]], null], "the admin's control logged as theirs, the interrupt as bob's, and the browser gone");
+    [ADMIN, [[ADMIN, 'portal', 'drive'], ['server', 'portal', undefined]], null], "the admin's control and interrupt logged as theirs, and the browser gone");
 });
 
 test('unticking, removing, signing out or revoking a website closes a going run\'s browser and its open CDP pipe', async t => {

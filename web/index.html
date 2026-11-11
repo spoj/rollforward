@@ -560,6 +560,8 @@ const instPath = () => `/api/instances/${cur.i.id}`;
 const go = id => { location.hash = '#/' + id; };
 const archived = (w = cur?.w, s = cur?.s) => !!(w?.archived || s?.archived);
 const editable = () => data?.doc.status === 'open' && !archived();
+// Whoever sees an instance watches its run; its runner, the workspace's owners and admins alone stop it.
+const canStop = () => data?.runner.by === me.email || !!cur?.w.manage;
 
 // Newest activity first, as in a chat: an instance's latest log entry, now while it runs; a series' newest instance's, and a
 // workspace's newest series'. A series' instances keep their labels' order.
@@ -757,7 +759,7 @@ function renderBar() {
   if (data) {
     const d = lastDone(), talk = data.waiting.length;
     const state = archived() ? 'Archived · read-only' : data.doc.status !== 'open' ? `${data.doc.status === 'closed' ? 'Closed' : 'Abandoned'} · read-only`
-      : data.run ? `<span class="spin"></span>Agent working · run ${data.run.n}<button class="quiet" data-act="interrupt">Interrupt</button>`
+      : data.run ? `<span class="spin"></span>Agent working · run ${data.run.n}${canStop() ? '<button class="quiet" data-act="interrupt">Interrupt</button>' : ''}`
       : data.queued ? '\u29D7 Queued' : d?.error ? `<span class="bad" title="${esc(d.error)}">Run ${d.run} failed · ${hhmm(d.at)}</span>`
       : d ? `Agent idle · last run ${hhmm(d.at)}` : 'Waiting for files';
     const wake = open ? `<span>\u00b7 <a data-act="wakes">${cur.i.wakes[0] ? `next wake ${when(cur.i.wakes[0].at)}` : 'no wake'}</a></span>` : '';
@@ -994,7 +996,7 @@ function renderPlayer() {
   put($('#player'), !site ? '' : `<div class="plh"><b>Run ${data.run.n}'s browser</b>${sites.length > 1 && !drive ? `<span class="seg">${sites.map(s => `<button class="${s === site ? 'sel' : ''}" data-act="watch" data-site="${esc(s)}">${esc(s)}</button>`).join('')}</span>` : `<span>on ${esc(site)}${drive ? ', in your control' : ''}</span>`}`
     + (drive ? '<button class="quiet" data-act="drive">Give back control</button></div>'
       : `${data.run.yours.includes(site) ? `<button class="quiet" data-act="drive" data-site="${esc(site)}" title="Pops it over the page for you to use, in your login, while the run goes on">Take control</button>` : ''}`
-        + `<button class="quiet" data-act="interrupt" title="Interrupts the run, which closes its browsers">Stop browser</button><button class="x" data-act="player" title="${folded ? 'Open' : 'Fold'}">${folded ? '\u25B4' : '\u25BE'}</button></div>`)
+        + `${canStop() ? '<button class="quiet" data-act="interrupt" title="Interrupts the run, which closes its browsers">Stop browser</button>' : ''}<button class="x" data-act="player" title="${folded ? 'Open' : 'Fold'}">${folded ? '\u25B4' : '\u25BE'}</button></div>`)
     + (folded && !drive ? '' : `<iframe src="/runs/${cur.i.id}/${enc(site)}/view?${drive ? 'drive' : 'watch'}" title="Run ${data.run.n}'s browser on ${esc(site)}"></iframe>`));
 }
 

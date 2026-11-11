@@ -812,6 +812,9 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     inst.append('agent', 'commit', { run: run.n, message, commit: hash });
     return send(res, 200, `committed ${hash}`);
   } else if (action === 'interrupt') {
+    // Whoever sees the instance watches its run; its runner, the workspace's owners and admins alone stop it.
+    if (!run && runnerOf(inst).by !== by && !canManage(me, t.workspaces[t.series[inst.seriesId].workspace]))
+      throw new HttpError(403, `only its runner, ${runnerOf(inst).by}, the workspace's owners and admins stop its run`);
     if (!mine?.run) throw new HttpError(409, 'no run going');
     inst.append(by, 'interrupt');
     await mine.run.interrupt();

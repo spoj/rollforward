@@ -37,7 +37,7 @@ rf close PATH [--as-series NAME] [--wake]   the runner makes it the record and a
                                   approving nothing; a task closes as a one-off, or as the first instance of the series NAME it
                                   becomes; --wake starts runs of the series' later open instances, which may have used its draft
 rf abandon PATH                   the runner leaves it as it is, neither an example nor a starting point
-rf interrupt PATH                 stops its run
+rf interrupt PATH                 stops its run: its runner, an owner of its workspace or an admin
 rf takeover PATH [--creds OFFER,...]   you run it from now on, with those offers of your logins ticked
 rf creds PATH [--set OFFER,...|--clear]   what its runs may use: its runner's ticks, and the offers of your logins; --set
                                   ticks anew, as its runner
