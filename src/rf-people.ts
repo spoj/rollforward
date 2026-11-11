@@ -37,6 +37,9 @@ rf close PATH [--as-series NAME] [--wake]   the runner makes it the record and a
                                   approving nothing; a task closes as a one-off, or as the first instance of the series NAME it
                                   becomes; --wake starts runs of the series' later open instances, which may have used its draft
 rf abandon PATH                   the runner leaves it as it is, neither an example nor a starting point
+rf delete PATH [--yes]            its workspace's owners and admins delete an instance, in any status, once they confirm, or
+                                  with --yes: a run for it is cut, and all the server holds of it goes but its label and place,
+                                  shown as deleted, by whom and when; it can't be undone, and copies outside the server stay
 rf interrupt PATH                 stops its run
 rf takeover PATH [--creds OFFER,...]   you run it from now on, with those offers of your logins ticked
 rf creds PATH [--set OFFER,...|--clear]   what its runs may use: its runner's ticks, and the offers of your logins; --set
@@ -106,8 +109,8 @@ rf runs [PATH] [--since DATE] [--failed] [--running] [--long MIN] [--json]
                                   lease, running, or failed, for credits, policy, time limit or other
 rf costs [PATH] [--since DATE] [--by workspace|series|person|day|outcome] [--json]   totals, runs and cost per run; person
                                   is the runner; runs leave out those that were cut, as the next run carries each on
-rf activity [PATH] [--since DATE] [--json]   per instance, what people and the agent said, what people uploaded and closed, and
-                                  each run that failed
+rf activity [PATH] [--since DATE] [--json]   per instance, what people and the agent said, what people uploaded, closed and
+                                  deleted, and each run that failed
 rf wakes [PATH] [--json]          each series' pending wakes and requests to start an instance, and when a wake of it last
                                   fired, and each instance's pending wakes
 rf people WORKSPACE [--set FILE|-] [-n] [--force]   its owners and admins: its people as lines of owner|member EMAIL-OR-GROUP,
@@ -218,7 +221,7 @@ const flags: Record<string, string | true> = {}, excludes: string[] = [], args: 
 for (let i = 0; i < argv.length; i++) {
   const flag = argv[i] === '-n' ? 'dry-run' : argv[i].match(/^--(.+)$/)?.[1];
   if (!flag) args.push(argv[i]);
-  else if (['wait', 'wake', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear', 'follow', 'superseded', 'undo', 'by-amount'].includes(flag)) flags[flag] = true;
+  else if (['wait', 'wake', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear', 'follow', 'superseded', 'undo', 'by-amount', 'yes'].includes(flag)) flags[flag] = true;
   else if (argv[i + 1] === undefined) throw new Error(`--${flag} takes a value`);
   else if (flag === 'exclude') excludes.push(argv[++i]);
   else flags[flag] = argv[++i];
@@ -389,11 +392,11 @@ if (cmd === 'login' && url) {
 } else if (cmd === 'ls' && !args.length) {
   const rows = (await get('/api')).flatMap(w => w.series.flatMap(s => [
     { path: `${w.name}/${s.name}`, id: s.id, requests: s.requests.length, wakes: s.wakes },
-    ...s.instances.map(i => ({ path: `${w.name}/${s.name}/${i.label}`, id: i.id, status: i.status, running: i.running, asks: i.asks.length, runner: i.runner, wakes: i.wakes })),
+    ...s.instances.map(i => ({ path: `${w.name}/${s.name}/${i.label}`, id: i.id, status: i.status, running: i.running, asks: i.asks.length, runner: i.runner, wakes: i.wakes, ...(i.deleted && { deleted: i.deleted }) })),
   ]));
   if (flags.json) console.log(JSON.stringify(rows, null, 1));
   else for (const r of rows) {
-    console.log(r.status ? `${r.path}  ${r.status}${r.running ? ', running' : ''}${r.asks ? `, ${r.asks} asks waiting` : ''}, runner ${r.runner}` : `${r.path}${r.requests ? `  ${r.requests} asking to start` : ''}`);
+    console.log(r.deleted ? `${r.path}  deleted by ${r.deleted.by} ${when(r.deleted.at)}` : r.status ? `${r.path}  ${r.status}${r.running ? ', running' : ''}${r.asks ? `, ${r.asks} asks waiting` : ''}, runner ${r.runner}` : `${r.path}${r.requests ? `  ${r.requests} asking to start` : ''}`);
     for (const k of r.wakes) console.log(`  wake ${k.id} ${k.at}${k.label ? ` starts ${k.label}` : ''}${k.days ? `, then each ${k.days.join(', ')}` : ''}`);
   }
 } else if (cmd === 'waiting' && !args.length) {
@@ -418,7 +421,7 @@ if (cmd === 'login' && url) {
   const done = log.findLast(e => e.op === 'done'), last = done ? { run: done.run, cost: done.cost, error: done.error ?? null } : null;
   if (flags.json) console.log(JSON.stringify({ path: args[0], id: inst.id, status: doc.status, runner: runner.by, running: run, queued, items: doc.items, waiting, last_run: last }, null, 1));
   else {
-    console.log(`${args[0]}  ${doc.status}, runner ${runner.by}${run ? `, run ${run.n} going, ${usd(run.cost)}` : queued ? ', queued' : ''}`);
+    console.log(doc.status === 'deleted' ? `${args[0]}  deleted by ${log[0].by} ${when(log[0].at)}` : `${args[0]}  ${doc.status}, runner ${runner.by}${run ? `, run ${run.n} going, ${usd(run.cost)}` : queued ? ', queued' : ''}`);
     for (const i of doc.items) console.log(`  ${i.kind.padEnd(6)} ${i.id}  ${i.name}  ${i.file ?? 'no file yet'}${i.from?.length ? `  from ${i.from.join(', ')}` : ''}${i.headline ? `  ${i.headline}` : ''}`);
     for (const w of waiting) console.log(`${w.comment}  ${w.kind} for ${w.for}${w.comment === w.thread ? '' : ` in ${w.thread}`}${w.item ? `, on ${w.item}${w.ref ? ` at ${w.ref}` : ''}` : ''}: ${w.text.split('\n')[0].slice(0, 160)}`);
     if (last) console.log(`last run ${last.run}  ${usd(last.cost ?? 0)}${last.error ? `  ${last.error}` : ''}`);
@@ -467,6 +470,19 @@ else if (cmd === 'comment' && args.length === 2) {
   await post(`${at}/${cmd}`, { quiet: !flags.wake });
   if (cmd === 'close' && typeof flags['as-series'] === 'string') await post(`/api/series/${series.id}/promote`, { name: flags['as-series'] });
   console.log(`${cmd === 'close' ? 'closed' : `${cmd}ed`} ${args[0]}`);
+} else if (cmd === 'delete' && args.length === 1) {
+  // One confirm, which says it can't be undone and what stays outside the server.
+  const { at } = await instanceAt(args[0]);
+  if (!flags.yes) {
+    const warning = `Deleting ${args[0]} can't be undone. A run for it is cut, and everything the server holds of it goes: its uploads, the agent's files, its items, threads and log, its runs' transcripts and browser logs, and its history; its label stays in its place, shown as deleted by you. Copies outside the server stay: its duplicates, files other runs copied, rf pull copies, mail sent.`;
+    if (!process.stdin.isTTY) throw new Error(`${warning} Confirm with --yes`);
+    const { createInterface } = await import('node:readline/promises'), rl = createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await rl.question(`${warning}\nType delete to delete it: `);
+    rl.close();
+    if (answer.trim() !== 'delete') throw new Error(`kept ${args[0]}`);
+  }
+  await post(`${at}/delete`, {});
+  console.log(`deleted ${args[0]}`);
 } else if (cmd === 'takeover' && args.length === 1) {
   await post(`${(await instanceAt(args[0])).at}/takeover`, { logins: ticks() });
   console.log(`you run ${args[0]} now${consent(ticks())}`);
@@ -693,7 +709,7 @@ else if (cmd === 'comment' && args.length === 2) {
   else for (const b of blocks) {
     console.log(b.path);
     for (const e of b.entries) console.log(`  ${when(e.at)}  ${e.op === 'done' ? `run ${e.run} failed: ${e.error}`
-      : `${e.by}  ${e.op === 'comment' ? `says: ${e.text.split('\n')[0].slice(0, 200)}` : e.op === 'upload' ? `uploads ${e.file}` : `${e.op === 'close' ? 'closes' : 'abandons'} it`}`}`);
+      : `${e.by}  ${e.op === 'comment' ? `says: ${e.text.split('\n')[0].slice(0, 200)}` : e.op === 'upload' ? `uploads ${e.file}` : `${{ close: 'closes', abandon: 'abandons', delete: 'deletes' }[e.op]} it`}`}`);
   }
 } else if (cmd === 'egress' && (!args.length || (args.length === 2 && ['add', 'remove'].includes(args[0])))) {
   let hosts: string[] = await (await api('/egress')).json();

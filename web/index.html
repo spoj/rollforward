@@ -93,6 +93,8 @@ a { color: inherit; }
 .wt { padding: 7px 0; border-bottom: 1px solid var(--rule); }
 .wt .btn { margin-left: 8px; }
 .inst.abandoned .nm { text-decoration: line-through; }
+.inst.deleted .nm { text-decoration: line-through; color: var(--ink-3); }
+.dlg .gone { margin: 8px 0 0; padding-left: 18px; font-size: 13px; }
 .archived .nm { color: var(--ink-3); }
 .add { all: unset; cursor: pointer; flex: none; width: 24px; height: 24px; display: grid; place-items: center; border-radius: var(--r1); color: var(--ink-3); font-size: 17px; line-height: 1; }
 .add:hover { background: var(--rule); color: var(--ink); }
@@ -683,8 +685,9 @@ function renderSide() {
   const chev = id => `<button class="chev" data-act="expand" data-id="${id}">${shut(id) ? '\u25B8' : '\u25BE'}</button>`;
   const row = i => {
     const st = i.queued ? '\u29D7 queued' : i.asks.length ? `<span class="cnt" title="${i.asks.length} to answer">${i.asks.length}</span>` : i.wakes[0] ? `<span title="${when(i.wakes[0].at)}">wakes ${soon(i.wakes[0].at)}</span>` : i.status === 'open' ? ''
+      : i.deleted ? `<span title="Deleted by ${esc(nameOf(i.deleted.by))} ${when(i.deleted.at)}">deleted</span>`
       : i.corrections ? `<span class="corr" title="Read with ${plural(i.corrections, 'correction')}">corrected</span>` : i.status;
-    return `<a class="row inst ${i.status} ${cur?.i?.id === i.id ? 'on' : ''}" href="#/${i.id}" title="${esc(i.label)}"><span class="nm ${i.unread ? 'b' : ''}"><span class="l">${esc(i.label)}</span>${i.runner === me.email ? '' : `<span class="who" title="${esc(nameOf(i.runner))} runs it">${esc(initials(me.names[i.runner] ?? i.runner))}</span>`}${i.unread && !i.asks.length ? '<span class="dot u"></span>' : ''}</span><span class="n">${st}</span>${age(i.active, i.running)}</a>`;
+    return `<a class="row inst ${i.status} ${cur?.i?.id === i.id ? 'on' : ''}" href="#/${i.id}" title="${esc(i.label)}"><span class="nm ${i.unread ? 'b' : ''}"><span class="l">${esc(i.label)}</span>${i.runner === me.email || i.deleted ? '' : `<span class="who" title="${esc(nameOf(i.runner))} runs it">${esc(initials(me.names[i.runner] ?? i.runner))}</span>`}${i.unread && !i.asks.length ? '<span class="dot u"></span>' : ''}</span><span class="n">${st}</span>${age(i.active, i.running)}</a>`;
   };
   const waits = waiting().length;
   let h = waits ? `<div class="row waits"><a class="nm" data-act="waiting">Waiting on you<span class="q"> ${waits}</span></a></div>` : '';
@@ -746,6 +749,8 @@ function renderSide() {
 }
 
 function lastDone() { return data.log.findLast(e => e.op === 'done'); }
+// A deleted instance's delete entry, the only one its log keeps.
+function gone() { return data?.doc.status === 'deleted' ? data.log[0] : null; }
 
 const stepText = s => `${s.do}${s.target ? ` ${s.target}` : ''}${s.value !== undefined ? ` = "${s.value}"` : ''}`;
 
@@ -753,19 +758,21 @@ function renderBar() {
   if (editing) return;
   const open = editable();
   let h = `<button class="menu" data-act="menu">☰</button>`;
-  h += `<div class="ttl"><div class="crumb">${esc(cur?.w.name ?? '')}${cur?.s ? ' · ' + esc(cur.s.single ? 'Ungrouped' : cur.s.name) : ''}</div><h1>${data ? `<span class="t"${archived() ? '' : ' data-act="rename" title="Rename"'}>${esc(cur.i.label)}</span>${archived() ? '' : '<button class="ren" data-act="rename" title="Rename">\u270E</button>'}` : esc(cur?.i?.label ?? 'No instance')}${data ? owner() + `<span class="reacts">${reactHtml()}</span>` : ''}</h1></div>`;
+  h += `<div class="ttl"><div class="crumb">${esc(cur?.w.name ?? '')}${cur?.s ? ' · ' + esc(cur.s.single ? 'Ungrouped' : cur.s.name) : ''}</div><h1>${data && !gone() ? `<span class="t"${archived() ? '' : ' data-act="rename" title="Rename"'}>${esc(cur.i.label)}</span>${archived() ? '' : '<button class="ren" data-act="rename" title="Rename">\u270E</button>'}` : esc(cur?.i?.label ?? 'No instance')}${data && !gone() ? owner() + `<span class="reacts">${reactHtml()}</span>` : ''}</h1></div>`;
   if (data) {
     const d = lastDone(), talk = data.waiting.length;
-    const state = archived() ? 'Archived · read-only' : data.doc.status !== 'open' ? `${data.doc.status === 'closed' ? 'Closed' : 'Abandoned'} · read-only`
+    const state = gone() ? `Deleted by ${esc(nameOf(gone().by))} · ${when(gone().at)}`
+      : archived() ? 'Archived · read-only' : data.doc.status !== 'open' ? `${data.doc.status === 'closed' ? 'Closed' : 'Abandoned'} · read-only`
       : data.run ? `<span class="spin"></span>Agent working · run ${data.run.n}<button class="quiet" data-act="interrupt">Interrupt</button>`
       : data.queued ? '\u29D7 Queued' : d?.error ? `<span class="bad" title="${esc(d.error)}">Run ${d.run} failed · ${hhmm(d.at)}</span>`
       : d ? `Agent idle · last run ${hhmm(d.at)}` : 'Waiting for files';
     const wake = open ? `<span>\u00b7 <a data-act="wakes">${cur.i.wakes[0] ? `next wake ${when(cur.i.wakes[0].at)}` : 'no wake'}</a></span>` : '';
-    h += `<div class="state">${state}${wake}</div>`;
+    const del = cur.w.manage && !gone() ? '<span>\u00b7 <a data-act="delete" title="For those who manage the workspace: delete it, and all the server holds of it">Delete\u2026</a></span>' : '';
+    h += `<div class="state">${state}${wake}${del}</div>`;
     const off = data.run ? 'disabled title="Available when the run ends"' : '';
     if (open) h += data.runner.by === me.email ? `<button class="btn commit top" data-act="close" ${off}>Close</button>`
       : `<button class="btn top" data-act="takeover" ${off || `title="${esc(nameOf(data.runner.by))} runs it, with their logins. Taking over makes it yours."`}>Take over</button>`;
-    else if (!archived()) h += cur.s.single ? '<button class="btn top" data-act="start-series">Start series</button>' : '<button class="btn top" data-act="duplicate">Duplicate</button>';
+    else if (!archived() && !gone()) h += cur.s.single ? '<button class="btn top" data-act="start-series">Start series</button>' : '<button class="btn top" data-act="duplicate">Duplicate</button>';
     // One control opens and closes the side panel, where it stays, with what waits there as its badge.
     h += `<button class="ptog ${ui.open ? 'on' : ''}" data-act="panel" title="${ui.open ? 'Close' : 'Open'} the conversation"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M10 2.5v11"/>${ui.open ? '<rect x="10" y="2.5" width="4.5" height="11" fill="currentColor" stroke="none" opacity=".35"/>' : ''}</svg>${talk ? `<span class="badge">${talk}</span>` : ''}</button>`;
   }
@@ -819,6 +826,10 @@ function tile(item) {
 function renderPanes() {
   $('#outs').hidden = $('#steps').hidden = $('#view').hidden = !data;
   if (!data) return put($('#ins'), `<div class="empty">${archived() ? 'Archived · read-only' : cur?.s ? 'No instance yet. Make one with + by the series.' : cur ? 'No series yet. Make one with + by the workspace.' : me.can.includes('create') ? 'No workspace yet. Make one with + by the filter.' : 'No workspace yet: an admin makes one or adds you to one.'}</div>`);
+  if (gone()) {
+    $('#outs').hidden = $('#steps').hidden = $('#view').hidden = true;
+    return put($('#ins'), `<div class="empty">${esc(nameOf(gone().by))} deleted ${esc(cur.i.label)} ${when(gone().at)}. Nothing is left of it here but its place in ${esc(cur.s.single ? 'the workspace' : cur.s.name)}.</div>`);
+  }
   const open = editable(), stored = localStorage[`seen:${instPath()}`], items = data.doc.items, list = localStorage.view === 'list' && innerWidth > 800;
   seen = stored ? JSON.parse(stored) : {};
   if (!stored) markSeen(items);
@@ -898,6 +909,7 @@ function logText(e) {
     signoff: () => `${w} ${e.approved === false ? 'rejected the sign-off' : 'signed off'}<div class="d">${e.text ? `${esc(e.text)} · ` : ''}Commit <code>${e.commit.slice(0, 7)}</code></div>`,
     commit: () => e.error ? `${e.run ? `Run ${e.run}'s changes weren't` : "What's above wasn't"} committed<div class="d">${esc(e.error)}</div>` : `${w} committed the folder<div class="d">${esc(e.message)} · Commit <code>${e.commit.slice(0, 7)}</code></div>`,
     abandon: () => `${w} abandoned the instance`,
+    delete: () => `${w} deleted the instance, and all the server held of it`,
     correction: () => `${w} marked ${e.item ? item(e.item) : 'the instance'}${e.ref ? ` at ${esc(e.ref)}` : ''} ${e.kind}<div class="d">${esc(e.text)}${seeHtml(e.see)}</div>`,
     corrected: () => `${w} marked <a href="#/${esc(e.inst)}">${esc(e.label)}</a>${e.item ? ` ${esc(e.item)}` : ''} ${e.kind}`,
     comment: () => `${w} ${e.note ? `left a note for ${who(data.runner.by)}` : e.by !== 'agent' ? 'commented' : e.ask ? `asked${e.to ? ' ' + who(e.to) : ''}` : 'said'}${e.item ? ` on ${item(e.item)}${e.ref ? ` at ${esc(e.ref)}` : ''}` : ''}<div class="d">${esc(e.text)}</div>`,
@@ -1919,6 +1931,13 @@ async function onAct(act, el) {
     p.multiple = !el.dataset.item;
     p.value = '';
     p.click();
+  }
+  // Those who manage the workspace delete an instance, in any status: one confirm, which says it can't be undone, and what stays.
+  if (act === 'delete') {
+    const html = '<p>Everything the server holds of it goes, and can\u2019t be brought back: its uploads, the agent\u2019s files, its items, threads and log, its runs\u2019 transcripts and browser logs, and its history.'
+      + `${data.run || data.queued ? ' Its run is stopped first.' : ''} Its label stays in its place, shown as deleted by you; what it cost still counts.</p>`
+      + '<p>Copies outside the server stay:</p><ul class="gone"><li>its duplicates</li><li>files other runs copied</li><li>copies made with rf pull</li><li>mail and anything else already sent</li></ul>';
+    if (await ask({ title: `Delete ${cur.i.label}?`, html, ok: 'Delete', kind: 'danger', act: () => api(`${instPath()}/delete`, { method: 'POST' }) })) await refresh();
   }
   // A task closes as a one-off, or as the first instance of a series it becomes; either may be abandoned instead.
   if (act === 'close') {
