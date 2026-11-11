@@ -907,6 +907,39 @@ test("a run's Pi idles only with nothing but Pi running in its sandbox, and ends
   await serve();
 });
 
+test("deleting an instance cuts a run whose view holds it, which carries on without it, and a run going for it, whose sandbox stops before its folder goes", async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Purge' })).json();
+  const { id: payroll } = await (await call('POST', '/api/series', { workspace: ws, name: 'Payroll' })).json();
+  const { id: report } = await (await call('POST', '/api/series', { workspace: ws, name: 'Report' })).json();
+  const { id: old } = await (await call('POST', `/api/series/${payroll}`, { label: '2026-10', logins: [], quiet: true })).json();
+  const reader: Script = { bash: ['ls /work/Purge/Payroll', async () => {
+    assert.equal((await call('POST', `/api/instances/${old}/delete`)).status, 200, 'deleted while a run in reach goes');
+    return 'sleep 60';
+  }], report: 'Never said.', saw: [] };
+  const after: Script = { bash: ['ls /work/Purge/Payroll 2>/dev/null; echo end'], report: 'Carried on.', saw: [] };
+  scripts.push(reader, after);
+  const { id } = await (await call('POST', `/api/series/${report}`, { label: '2026-11', logins: [] })).json();
+  const log = await runs(id, 2);
+  assert.equal(reader.saw[0].trim(), '2026-10');
+  assert.equal(after.saw[0].trim(), 'end', 'its next run sees nothing of it');
+  assert.deepEqual(log.filter(e => e.op === 'done').map(e => [e.aborted, e.error]), [[true, 'an instance in its reach was deleted'], [false, undefined]]);
+
+  // A run of its own, going as it's deleted: cut, its sandbox stopped, and nothing it wrote left behind.
+  const runsDir = join(tmp, 'scratch', 'runs'), pi = (i: string) => existsSync(runsDir) && readdirSync(runsDir).some(t => existsSync(join(runsDir, t, 'bwrap.args')) && readFileSync(join(runsDir, t, 'bwrap.args'), 'utf8').includes(`RF_INSTANCE\0${i}\0`));
+  scripts.push({ bash: ['echo draft > draft.txt; sleep 60'], report: 'Never said.', saw: [] });
+  const { id: going } = await (await call('POST', `/api/series/${payroll}`, { label: '2026-11', logins: [] })).json();
+  await until('its run going in its sandbox', () => pi(going));
+  await new Promise(ok => setTimeout(ok, 1500));
+  assert.equal((await call('POST', `/api/instances/${going}/delete`)).status, 200);
+  assert.ok(!pi(going), 'its sandbox stopped before the deletion answered');
+  assert.deepEqual(readdirSync(join(root, 'instances', going)).sort(), ['instance.json', 'log.jsonl', 'screen.json']);
+  const { log: hole } = await (await call('GET', `/api/instances/${going}`)).json();
+  assert.deepEqual(hole.map((e: { op: string }) => e.op), ['delete']);
+  assert.deepEqual(hole[0].runs.map((r: { outcome: string }) => r.outcome), ['cut'], 'its run, cut, still counts');
+  await new Promise(ok => setTimeout(ok, 1500));
+  assert.deepEqual(readdirSync(join(root, 'instances', going)).sort(), ['instance.json', 'log.jsonl', 'screen.json'], 'nothing commits or writes there after');
+});
+
 test("every entry names its source: a person, a run whose entry names its runner and the act whose ticks it uses, or what caused it", () => {
   const logs = new Map(readdirSync(join(root, 'instances')).map(id => [id, readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l) as Record<string, any>)]));
   for (const [id, log] of logs) for (const e of log) {

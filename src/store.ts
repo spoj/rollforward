@@ -1,6 +1,6 @@
-import { appendFileSync, chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { basename, extname, join, posix } from 'node:path';
+import { basename, extname, join, posix, sep } from 'node:path';
 import { changes, tree } from './system.ts';
 import { commit, pack, type Who } from './git.ts';
 
@@ -36,8 +36,22 @@ export function readFile(base: string, rel: string): string | undefined {
   try { return readFileSync(fd, 'utf8'); } finally { closeSync(fd); }
 }
 
+// What a deleted instance keeps of its folder.
+const HOLE = ['instance.json', 'screen.json', 'log.jsonl'];
+
+// Removes what a run may have left anything in, by its name's bytes, as a name needn't be UTF-8, and never through a link: a folder
+// it made unreadable or unwritable is the server's own, so is opened up first.
+function wipe(path: Buffer) {
+  const st = lstatSync(path, { throwIfNoEntry: false });
+  if (!st) return;
+  if (!st.isDirectory()) return rmSync(path, { force: true });
+  chmodSync(path, 0o700);
+  for (const name of readdirSync(path, { encoding: 'buffer' })) wipe(Buffer.concat([path, Buffer.from(sep), name]));
+  rmdirSync(path);
+}
+
 export type Item = { id: string; name: string; kind: 'input' | 'step' | 'output'; file: string | null; from?: string[]; headline?: string; source?: string; destination?: string };
-export type Doc = { rev: number; status: 'open' | 'closed' | 'abandoned'; items: Item[] };
+export type Doc = { rev: number; status: 'open' | 'closed' | 'abandoned' | 'deleted'; items: Item[] };
 export type Entry = { seq: number; at: string; by: string; op: string; [k: string]: unknown };
 
 export class HttpError extends Error {
@@ -165,9 +179,18 @@ export class Instance {
     const ws = join(dir, 'screen.json'), log = join(dir, 'log.jsonl');
     this.doc = existsSync(ws) ? JSON.parse(readFileSync(ws, 'utf8')) : { rev: 0, status: 'open', items: [] };
     this.log = existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : [];
+    // Its log is written first as it's deleted, so a restart that cut a deletion finds it deleted (waker.ts recover()).
+    if (this.hole) this.doc = { rev: this.doc.rev, status: 'deleted', items: [] };
+  }
+
+  // Deleted: its log is its delete entry alone.
+  get hole(): boolean {
+    return this.log[0]?.op === 'delete';
   }
 
   append(by: string, op: string, fields: Record<string, unknown> = {}): Entry {
+    // Nothing more is said of a deleted instance, such as by a run its deletion cut, as it ends.
+    if (this.hole) return { seq: 0, at: new Date().toISOString(), by, op, ...fields };
     const e = { seq: this.log.length + 1, at: new Date().toISOString(), by, op, ...fields };
     this.log.push(e);
     appendFileSync(join(this.dir, 'log.jsonl'), JSON.stringify(e) + '\n');
@@ -243,6 +266,27 @@ export class Instance {
     this.doc.status = 'abandoned';
     this.save();
     this.append(by, 'abandon');
+  }
+
+  // Deleting leaves a hole: instance.json, its label and place in its series; a screen with no items, deleted; and a log of one
+  // entry, the delete, by whom and when, with what it cost (`fields`). Everything else in its folder goes, whatever a run left
+  // there. The log comes first, so a restart that cut it finds it deleted and clears what's left.
+  wipe(by: string, fields: Record<string, unknown>): Entry {
+    const e = { seq: this.log.length + 1, at: new Date().toISOString(), by, op: 'delete', ...fields };
+    writeFileSync(join(this.dir, 'log.jsonl.tmp'), JSON.stringify(e) + '\n');
+    renameSync(join(this.dir, 'log.jsonl.tmp'), join(this.dir, 'log.jsonl'));
+    this.log = [e];
+    this.clear();
+    return e;
+  }
+
+  clear() {
+    const ws = join(this.dir, 'screen.json'), was: Doc | undefined = existsSync(ws) ? JSON.parse(readFileSync(ws, 'utf8')) : undefined;
+    if (was?.status !== 'deleted' || was.items.length) {
+      this.doc = { rev: this.doc.rev, status: 'deleted', items: [] };
+      this.save();
+    }
+    for (const name of readdirSync(this.dir, { encoding: 'buffer' })) if (!HOLE.includes(name.toString('latin1'))) wipe(Buffer.concat([Buffer.from(this.dir + sep), name]));
   }
 
   put(text: string, run: number) {
