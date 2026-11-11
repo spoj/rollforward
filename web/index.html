@@ -338,8 +338,8 @@ function renderBar() {
       : d ? `Agent idle · Last run ${hhmm(d.at)}` : 'Waiting for files';
     const next = open && cur.i.wakes[0];
     const wake = open ? `<button class="btn top wake" data-act="wakes"${next ? ` title="Next wake ${when(next.at)}"` : ''}>${ICON.alarm}${next ? `Wakes ${soon(next.at)}` : 'No wake'}</button>` : '';
-    const del = cur.w.manage && !gone() ? '<span>\u00b7 <a data-act="delete" title="For those who manage the workspace: delete it, and all the server holds of it">Delete\u2026</a></span>' : '';
-    h += `<div class="state">${state}${del}</div>${wake}`;
+    const del = cur.w.manage && !gone() ? '<a class="del" data-act="delete" title="For those who manage the workspace: delete it, and all the server holds of it">Delete\u2026</a>' : '';
+    h += `<div class="state">${state}</div>${wake}${del}`;
     const off = data.run ? 'disabled title="Available when the run ends"' : '';
     if (open) h += data.runner.by === me.email ? `<button class="btn commit top" data-act="close" ${off}>Close</button>`
       : `<button class="btn top" data-act="takeover" ${off || `title="${esc(nameOf(data.runner.by))} runs it, with their logins. Taking over makes it yours."`}>${ICON.hand}Take over</button>`;
