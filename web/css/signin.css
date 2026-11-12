@@ -1,9 +1,7 @@
-/* The sign-in pages' layout: a bar with the brand's logo atop a box in the middle, drawn in the tokens of the theme RF_THEME names. */
+/* The sign-in pages' layout: a box in the middle, with the brand's logo or the theme's, drawn in the theme's tokens. */
 * { box-sizing: border-box; }
 body { margin: 0; min-height: 100dvh; display: flex; flex-direction: column; font: 14px/1.5 var(--sans); color: var(--ink); background: var(--signin-bg); }
-.masthead { flex: none; display: flex; align-items: center; height: 62px; padding: 0 28px; background: var(--sheet); border-bottom: 1px solid var(--rule); }
 .logo { display: block; max-width: 220px; max-height: 24px; }
-b.logo { font-size: 18px; font-weight: 600; line-height: 24px; color: var(--app-ink); }
 main { flex: 1; display: grid; place-items: center; padding: 16px; }
 .box { width: min(346px, 100%); padding: 26px 18px 39px; text-align: center; background: var(--sheet); border: 1px solid var(--rule); border-radius: var(--r2); box-shadow: var(--shadow-page); overflow-wrap: anywhere; }
 .box .logo { margin: 0 auto 26px; }

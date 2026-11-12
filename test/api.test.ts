@@ -374,9 +374,9 @@ test('a cross-site POST is refused, so another web page cannot talk to the agent
   assert.equal(r.status, 403);
 });
 
-test('without a session the site shows Continue with Microsoft, which goes to Microsoft', async () => {
+test('without a session the site shows Login with Microsoft, which goes to Microsoft', async () => {
   assert.equal((await fetch(base + '/api')).status, 401);
-  assert.match(await (await fetch(base + '/')).text(), /href="\/auth\/login[^"]*">[\s\S]*Continue with Microsoft/);
+  assert.match(await (await fetch(base + '/')).text(), /href="\/auth\/login[^"]*">[\s\S]*Login with Microsoft/);
   assert.equal((await fetch(base + '/agent/delivered', { method: 'POST' })).status, 401, "the agent API is only on the sandboxes' socket");
   assert.match((await fetch(base + '/auth/login', { redirect: 'manual' })).headers.get('location')!, /^http:\/\/127\.0\.0\.1:\d+\/authorize\?/);
   assert.equal((await fetch(base + '/api', { headers: { cookie: admin.replace(/.$/, c => (c === 'A' ? 'B' : 'A')) } })).status, 401, 'a tampered cookie is refused');

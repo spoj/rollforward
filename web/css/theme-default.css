@@ -14,6 +14,9 @@
   --who: var(--person); --who-bg: var(--person-bg); --owner: var(--person); --owner-bg: var(--person-bg);
   --primary: var(--ink); --primary-hover: #2b3039; --person-hover: #1a3eae; --on-fill: #fff;
   --btn-ink: var(--ink); --btn-rule: var(--rule-2); --btn-hover-rule: var(--ink-3); --seg-ink: var(--ink-3); --seg-sel-ink: var(--ink);
+  --danger-ink: var(--red); --danger-rule: var(--red); --danger-bg: var(--sheet);
+  /* A tile or a list's row under the pointer, picked, and what it's made from, near and far. */
+  --hover-rule: var(--ink); --on-rule: var(--ink); --made-rule: var(--ink-2); --made-far-rule: var(--rule-2);
   /* The top bar's app name and avatar, the sidebar's foot and counts, and the sign-in pages' ground. */
   --app-ink: var(--ink); --avatar-bg: var(--rule); --avatar-ink: var(--ink); --foot-ink: var(--ink-2); --version-bg: var(--sheet);
   --num-bg: var(--ink-3); --open-bg: var(--ink-2); --signin-bg: var(--paper);
