@@ -119,11 +119,13 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .ut.people.folded tr.more { display: none; }
 .pacts { display: inline-grid; grid-template-columns: 1fr 1fr; gap: 6px; width: max-content; }
 .pacts .btn { width: 100%; min-width: 9.2em; text-align: center; }
-/* Merge or move: what, an arrow, and where, side by side, and on a phone one over the other. */
-.mv { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: end; gap: 10px; }
-.vl .mv label { display: grid; gap: 4px; min-width: 0; }
+/* Merge or move: what, an arrow, and where, side by side, the arrow level with the fields however tall a theme makes them, and on
+   a phone one over the other, the arrow turned down. */
+.mv { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 4px 10px; }
+.vl .mv label { display: grid; grid-row: span 2; grid-template-rows: subgrid; min-width: 0; }
+.mv > label:last-child { grid-column: 3; }
 .mv select { width: 100%; }
-.mvarrow::before { content: '\2192'; display: block; padding-bottom: 7px; font-size: 18px; line-height: 1; color: var(--ink-3); }
+.mvarrow { grid-area: 2 / 2; align-self: center; color: var(--ink); }
 .mvgo { justify-content: space-between; }
 .mvgo .sub { flex: 1 1 12em; }
 /* A wake: its time and the label it starts side by side and one width, or one over the other where two times wouldn't show whole,
@@ -492,7 +494,8 @@ a.more, a.up { display: block; font-size: 12px; color: var(--ink-3); cursor: poi
   .masthead { padding: 0 14px; }
   .app-name .pagename, .user .mail, .sidefold { display: none; }
   .mv { grid-template-columns: minmax(0, 1fr); }
-  .mvarrow::before { content: '\2193'; padding: 0; text-align: center; }
+  .mv > label:last-child { grid-column: auto; }
+  .mvarrow { grid-area: auto; justify-self: center; transform: rotate(90deg); }
   .main { height: calc(100dvh - var(--top)); }
   .bar h1 { font-size: 17px; }
   .state { margin-left: 0; order: 5; width: 100%; }
