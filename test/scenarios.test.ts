@@ -689,6 +689,45 @@ test("a later run corrects a closed instance, never changing it, linking the thr
   assert.match(next.prompt!, new RegExp(`Corrections on earlier instances: m1 is wrong, "The rate was a day stale\\.", see m2 ${said.thread}\\.`));
 });
 
+test("a run leaves notes elsewhere in its workspace, in another instance and on a series, which start nothing unshared, and settles its own series' open notes, which its first message lists; it asks only in its own instance", async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Notes' })).json();
+  const { id: rec } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec' })).json();
+  const { id: feed } = await (await call('POST', '/api/series', { workspace: ws, name: 'Feed' })).json();
+  const { id: fed } = await (await call('POST', `/api/series/${feed}`, { label: 'f1', logins: [], quiet: true })).json();
+  const { id: n } = await (await call('POST', `/api/series/${rec}/notes`, { text: 'Use the new bank from now on.' })).json();
+  const noting: Script = {
+    bash: [
+      'rf say --at ../../Feed/f1 The rec is done: 1,200 matched. 2>&1',
+      'rf ask --at ../../Feed/f1 Shall I? 2>&1',
+      'rf say --at ../../Feed Rates. 2>&1',
+      'rf note ../../Feed The feed should carry the rates. 2>&1',
+      `rf note --taken ${n} Using the new bank, in the process. 2>&1`,
+      `rf note --aside ${n} again 2>&1`,
+      'wc -l < ../.notes/log.jsonl',
+    ],
+    report: 'Noted.', saw: [],
+  };
+  scripts.push(noting);
+  const { id } = await (await call('POST', `/api/series/${rec}`, { label: 'r1', logins: [] })).json();
+  const log = await runs(id, 1);
+  assert.match(noting.prompt!, new RegExp(`Open notes on the series: ${n}, from Demo Admin <admin@demo\\.test> at [^,]+, "Use the new bank from now on\\."\\. New log entries:`));
+  assert.match(noting.saw[0], /^said c\d+ in Notes\/Feed\/f1, a note for its runner\s*$/);
+  assert.match(noting.saw[1], /you ask only your own runner/);
+  assert.match(noting.saw[2], /Feed is a series: say it in one of its open instances, or rf note it/);
+  assert.match(noting.saw[3], /^noted n1 on Notes\/Feed, which its runs read\s*$/);
+  assert.match(noting.saw[4], new RegExp(`^${n} taken\\s*$`));
+  assert.match(noting.saw[5], new RegExp(`${n} is settled already, taken by agent`));
+  assert.equal(noting.saw[6].trim(), '2', "its series' notes, as the run started, read where it reads its series");
+  const there = (await (await call('GET', `/api/instances/${fed}`)).json()).log, note = there.find((e: { op: string }) => e.op === 'comment');
+  assert.deepEqual([note.by, note.note, note.run, note.runner, note.see.inst, note.see.label], ['agent', true, 1, ADMIN, id, 'r1']);
+  assert.ok(!there.some((e: { op: string }) => e.op === 'run'), 'unshared, it starts nothing there');
+  assert.deepEqual(log.filter(e => e.op === 'said').map(e => [e.inst, e.seq]), [[fed, note.seq]], 'its own log points to it');
+  const [taken] = await (await call('GET', `/api/series/${rec}/notes`)).json();
+  assert.deepEqual([taken.settled.op, taken.settled.by, taken.settled.runner, taken.settled.see.inst], ['taken', 'agent', ADMIN, id]);
+  const [left] = await (await call('GET', `/api/series/${feed}/notes`)).json();
+  assert.deepEqual([left.by, left.text, left.run, left.see.inst], ['agent', 'The feed should carry the rates.', 1, id]);
+});
+
 // A websocket's opening, as a page at `origin` asks for it, and all that came back.
 const upgrade = (path: string, cookie: string, origin = base) => new Promise<string>(ok => {
   let got = '';
