@@ -1550,7 +1550,7 @@ test('a service connects with one click and no sign-in, then lends the admin\'s 
   await page.evaluate(() => api('/connections/drop', { method: 'DELETE' }));
 });
 
-test("a website ticked without an approved grant in the instance's workspace says so where it's ticked, with the ask there, whom it waits on, or to sign in first; asked by one who may approve it, it's approved at once", async t => {
+test("a website ticked without an approved grant in the instance's workspace says so where it's ticked, with the ask there, whom it waits on, or to sign in first; asked by one who may approve it, it's approved at once, which it says in place above a first prompt being written", async t => {
   const rf = join(root, '.rf'), mine = join(rf, 'people', createHash('sha256').update('admin@demo.test').digest('hex').slice(0, 16)), since = new Date().toISOString();
   const site = (url: string) => ({ url, hosts: [], writeback: true, added: since, profile: { what: 'A company ledger.', category: 'company', risk: 'low', flags: [] } });
   const login = (name: string, expired = false) => ({ id: `web:${name}`, kind: 'website', name, since, offers: [{ id: `web:${name}`, name }], ...(expired && { expired }) });
@@ -1575,8 +1575,11 @@ test("a website ticked without an approved grant in the instance's workspace say
   assert.equal(await needs('#log', 'ledger').locator('> :not(.row2)').count(), 0);
   assert.match(await needs('#log', 'ledger').innerText(), /^Runs in larkfield can't use ledger until it's approved there\. Say what runs here use it for and ask: you manage larkfield, so it's approved at once\.\s+Ask to use$/);
   await needs('#log', 'ledger').locator('input').fill('Month-end ledger pulls');
+  await page.fill('#newcomment', 'Pull the ledger.');
   await needs('#log', 'ledger').locator('[data-act=grant-ask]').click();
   await needs('#log', 'ledger').waitFor({ state: 'detached' });
+  assert.equal(await page.inputValue('#newcomment'), 'Pull the ledger.', 'a first prompt being written stays as the ask is said to be approved');
+  await page.fill('#newcomment', '');
   assert.equal(await toast(), "Approved at once, as you're an admin.", 'larkfield has no owners: it is the admins\'');
   const [granted] = Object.values(JSON.parse(readFileSync(join(rf, 'grants.json'), 'utf8'))) as any[];
   assert.deepEqual([granted.site, granted.workspace, granted.reason, granted.state, granted.by, typeof granted.decided], ['ledger', '1b3031035ff6', 'Month-end ledger pulls', 'approved', 'admin@demo.test', 'string']);
