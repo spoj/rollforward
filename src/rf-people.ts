@@ -11,7 +11,8 @@ process.on('uncaughtException', e => {
   process.exit(1);
 });
 
-const USAGE = `rf login URL [TOKEN]                without a TOKEN, through the browser: type rf's code on the page, and allow it
+const usage = (c?: string, vpn = false, admin = false) => {
+  const all = `rf login URL [TOKEN]                without a TOKEN, through the browser: type rf's code on the page, and allow it
 rf ls [--json]                    every workspace, series and instance you see, with its status, runner, asks waiting and wakes
 rf waiting [--json]               what waits on you: asks and notes, requests to start an instance or to use a
                                   website in a workspace you own, proposals and expired logins; only admins see hosts a run's
@@ -63,19 +64,19 @@ rf logins allow SITE HOST --person EMAIL   admins alone allow a host the server 
                                   is allowed once for everyone's websites
 rf logins disallow SITE HOST      a host your website SITE reaches no more, which stays refused, the server's check letting
                                   it no more
-rf logins signout LOGIN
+rf logins signout LOGIN${vpn ? '\nrf vpns [--json]                  client VPNs and whether you are connected to each; sign in on the page' : ''}
 rf sites [--json]                 your websites, each with its address and the other hosts it reaches, with what the server's
                                   check said of those it let it reach
 rf site add NAME URL [--header NAME]   a website of your own, by a NAME you choose, whose sign-in starts at URL, which you
                                   sign in to on the page; --header names a header its sign-in needs that its pages never
                                   send, such as x-bot-token, whose value you give as you sign in
-rf site set NAME [--header NAME] [--keepalive PAGE] [--every 10m] [--writeback false]
+rf site set NAME [--header NAME] [--keepalive PAGE] [--every 10m] [--writeback false]${vpn ? ' [--via VPN]' : ''}
                                   your website NAME: a header its sign-in needs that its pages never send, such as
                                   x-bot-token, whose value you give as you sign in, the page a login kept alive loads, by
                                   address or path, else its address, and how often, 10m unless given, and whether a run's
                                   browser writes its state back; admins set --internal true|false, with --person EMAIL for
                                   someone's, for its browsers to reach internal hosts, and its hosts at internal addresses
-                                  everyone's websites, with no admin again, until one sets it false
+                                  everyone's websites, with no admin again, until one sets it false${vpn ? "\n                                  --via VPN routes this website through your connection to that client VPN; --via '' clears it" : ''}
 rf site remove NAME               your website NAME, with your login to it and your grants for it
 rf site ask NAME WORKSPACE REASON to use your login to NAME in WORKSPACE's runs, for REASON, which one of its owners approves
                                   or denies, seeing what the system is and what runs may do; an admin decides general platforms,
@@ -139,7 +140,9 @@ rf can [CAP [EMAIL|GROUP,...] [--clear]]   what users may do beyond the rest, as
                                   create, make workspaces; and keepalive, keep their website logins alive for up to a
                                   week as they sign in; a list grants CAP to those
                                   emails and Entra group ids in place of whom it had, --clear to no one, and with neither it
-                                  prints whom each is granted to`;
+                                  prints whom each is granted to${vpn ? '\n                                  vpn, using client VPNs, needs an explicit grant even for admins' : ''}${vpn && admin ? '\nrf vpn add NAME fortinet HOST:PORT   admins with vpn add a client VPN definition; each person signs in on the page\nrf vpn remove NAME               admins with vpn remove a client VPN definition' : ''}`;
+  return (c && all.split(/\n(?=\S)/).map(e => e.trimEnd()).filter(e => e.split(/\s/)[1] === c).join('\n')) || all;
+};
 
 const GUIDE = `rollforward runs a team's recurring work, such as a weekly borrowing base or a month-end reconciliation, with an agent
 that does each period's work and people who check it. rf does what its page does, as you: rf alone lists its commands, rf help
@@ -210,9 +213,6 @@ Watching over it, for admins and power users; each sees what the caller sees
   does); for a workspace it replaces its people. A change that would hide an open instance from the person who runs it is refused,
   naming them, unless --force: have someone who stays take those over first.`;
 
-// A command's usage, as USAGE gives it; with none known, every command's.
-const usage = (c?: string) => (c && USAGE.split(/\n(?=\S)/).map(e => e.trimEnd()).filter(e => e.split(/\s/)[1] === c).join('\n')) || USAGE;
-
 const config = join(homedir(), '.config', 'rollforward.json');
 const [cmd, ...argv] = process.argv.slice(2);
 const flags: Record<string, string | true> = {}, excludes: string[] = [], args: string[] = [];
@@ -229,8 +229,8 @@ if (cmd === '--version') {
   console.log(JSON.parse(readFileSync(new URL(import.meta.url.endsWith('.ts') ? '../cli/package.json' : 'package.json', import.meta.url), 'utf8')).version);
   process.exit();
 }
-if (!cmd || cmd === 'help') {
-  console.log(!cmd ? USAGE : args[0] ? usage(args[0]) : GUIDE);
+if ((!cmd || cmd === 'help') && !existsSync(config)) {
+  console.log(!cmd ? usage() : args[0] ? usage(args[0]) : GUIDE);
   process.exit();
 }
 if (cmd !== 'login' && !existsSync(config)) throw new Error('sign in first: rf login URL');
@@ -243,6 +243,16 @@ async function api(path: string, init: RequestInit = {}) {
 }
 const get = async (path: string) => (await api(path)).json();
 const post = (path: string, body: unknown, method = 'POST') => api(path, { method, body: JSON.stringify(body) });
+
+if (!cmd || cmd === 'help') {
+  const me = await get('/me'), vpn = me.can.includes('vpn'), admin = me.role === 'admin';
+  const guide = GUIDE + (vpn ? `\n\nClient VPNs
+${usage('vpns', vpn, admin)}
+${admin ? `${usage('vpn', vpn, admin)}\n` : ''}rf site set NAME --via VPN uses your connection to that client VPN for this website; --via '' clears it.
+Sign in to a VPN on the page. VPN access needs an explicit grant, even for admins.` : '');
+  console.log(!cmd || args[0] ? usage(args[0], vpn, admin) : guide);
+  process.exit();
+}
 
 async function find(path: string) {
   const [w, s, l] = path.split('/'), series = (await get('/api')).find(x => x.name === w)?.series.find(x => x.name === s);
@@ -546,10 +556,21 @@ else if (cmd === 'comment' && args.length === 2) {
   else if (what === 'disallow') await api(`/logins/web/${encodeURIComponent(login)}/hosts/${encodeURIComponent(x)}`, { method: 'DELETE' });
   else await post(`/logins/web/${encodeURIComponent(login)}/hosts${flags.person ? `?person=${encodeURIComponent(String(flags.person))}` : ''}`, { host: x });
   console.log(`${login} ${{ offer: 'offers', unoffer: 'no longer offers', allow: 'reaches', disallow: 'no longer reaches' }[what]} ${x}`);
-} else if (cmd === 'sites' && !args.length) {
-  const all = await get('/logins/sites');
+} else if (cmd === 'vpns' && !args.length) {
+  const all = await get('/vpns');
   if (flags.json) console.log(JSON.stringify(all, null, 1));
-  else for (const [name, w] of Object.entries<any>(all)) console.log(`${name}  ${w.url}${w.hosts.map((h: string) => `\n  reaches ${h}${w.checks?.[h]?.verdict === 'pass' ? `: ${w.checks[h].why}` : ''}`).join('')}`);
+  else for (const v of all) console.log(`${v.name}  ${v.type}  ${v.gateway}  ${v.connected ? `connected${v.since ? ` since ${when(v.since)}` : ''}` : 'disconnected'}${v.error ? `: ${v.error}` : ''}`);
+} else if (cmd === 'vpn' && args[0] === 'add' && args.length === 4) {
+  await post('/vpns', { name: args[1], type: args[2], gateway: args[3] });
+  console.log(`added ${args[1]}`);
+} else if (cmd === 'vpn' && args[0] === 'remove' && args.length === 2) {
+  await api(`/vpns/${encodeURIComponent(args[1])}`, { method: 'DELETE' });
+  console.log(`removed ${args[1]}`);
+} else if (cmd === 'sites' && !args.length) {
+  const [all, me] = await Promise.all([get('/logins/sites'), get('/me')]);
+  if (!me.can.includes('vpn')) for (const w of Object.values<any>(all)) delete w.via;
+  if (flags.json) console.log(JSON.stringify(all, null, 1));
+  else for (const [name, w] of Object.entries<any>(all)) console.log(`${name}  ${w.url}${w.via ? ` via ${w.via}` : ''}${w.hosts.map((h: string) => `\n  reaches ${h}${w.checks?.[h]?.verdict === 'pass' ? `: ${w.checks[h].why}` : ''}`).join('')}`);
 } else if (cmd === 'site' && args[0] === 'add' && args.length === 3) {
   const { site } = await (await post('/logins/sites', { name: args[1], url: args[2], header: flags.header })).json();
   console.log(`added ${site}: sign in to it at ${url}/#logins, then rf site ask ${site} WORKSPACE REASON`);
@@ -764,7 +785,7 @@ else if (cmd === 'comment' && args.length === 2) {
   const [cap, list] = args, people = flags.clear ? [] : list?.split(',').map(p => p.trim()).filter(Boolean);
   const all: Record<string, string[]> = await (await (people ? post('/capabilities', { cap, people }, 'PUT') : api('/capabilities'))).json();
   if (flags.json) console.log(JSON.stringify(all, null, 1));
-  else for (const [c, who] of Object.entries(all)) if (!cap || c === cap) console.log(`${c}: ${who.join(', ') || 'admins only'}`);
+  else for (const [c, who] of Object.entries(all)) if (!cap || c === cap) console.log(`${c}: ${who.join(', ') || (c === 'vpn' ? 'no one' : 'admins only')}`);
 } else if (cmd === 'user' && args.length >= 2) {
   const [what, email, role] = args, at = `/users/${encodeURIComponent(email)}`;
   if (what === 'add') await post('/users', { roles: { [email]: role ?? 'user' } }, 'PUT');
@@ -778,6 +799,7 @@ else if (cmd === 'comment' && args.length === 2) {
   }
   console.log('done');
 } else {
-  console.error(usage(cmd));
+  const me = await get('/me');
+  console.error(usage(cmd, me.can.includes('vpn'), me.role === 'admin'));
   process.exitCode = 2;
 }

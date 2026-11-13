@@ -817,12 +817,12 @@ function renderPv() {
   // Your account's dialog: Logins and Tokens, as tabs.
   const account = [['logins', 'Logins'], ['tokens', 'Tokens']], mine = account.some(([k]) => k === pv.settings?.kind);
   d.className = 'pv' + (pv.settings ? ' small' : '') + (mine || ['workspace', 'waiting'].includes(pv.settings?.kind) ? ' wide' : '');
-  let h = `<div class="pvh"><b>${esc(pv.title)}</b><span class="saved"></span>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${(pv.att ?? pv).doc ? '<button class="btn" data-act="layout">Exact layout</button>' : ''}${pv.path ? `<a class="btn" href="${fileUrl(pv.path)}">Download</a>` : ''}${pv.signin ? `<button class="btn primary" data-act="signin-save"${pv.signinExpired ? ' disabled' : ''}>Save login</button>` : ''}<button class="btn${pv.signin && !pv.signinExpired ? '' : ' primary'}" data-act="unpv">${pv.signin && !pv.signinExpired ? 'Cancel' : 'Close'}</button></div>`;
+  let h = `<div class="pvh"><b>${esc(pv.title)}</b><span class="saved"></span>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${(pv.att ?? pv).doc ? '<button class="btn" data-act="layout">Exact layout</button>' : ''}${pv.path ? `<a class="btn" href="${fileUrl(pv.path)}">Download</a>` : ''}${pv.signin ? `<button class="btn primary" data-act="signin-save"${pv.signinExpired ? ' disabled' : ''}>${pv.vpn ? 'Connect' : 'Save login'}</button>` : ''}<button class="btn${pv.signin && !pv.signinExpired ? '' : ' primary'}" data-act="unpv">${pv.signin && !pv.signinExpired ? 'Cancel' : 'Close'}</button></div>`;
   if (mine) h += `<div class="pvtabs">${account.map(([k, name]) => `<button class="tab ${pv.settings.kind === k ? 'sel' : ''}" data-act="${k}">${name}</button>`).join('')}</div>`;
   if (pv.att) h += `<div class="sub" style="padding:8px 14px"><a data-act="attachment-back">\u2190 ${esc(pv.title)}</a> \u00b7 ${esc(pv.att.title)}</div>` + previewBody(pv.att);
   else if (pv.path) h += previewBody(pv);
   else if (pv.signin) h += pv.signinExpired ? '<div class="pvb"><div class="empty" role="status">Sign-in expired. Close this and sign in again.</div></div>'
-    : `<div class="sub" style="padding:8px 14px">Sign in as you always do, then Save login. Only you see this browser. It closes in <b id="signin-clock"></b>.${me.can.includes('keepalive') ? `<label style="display:block;margin-top:6px"><input type="checkbox" id="keep"> Keep the login alive until <input type="datetime-local" id="keep-until" value="${localInput(Date.now() + 7 * 864e5)}" max="${localInput(Date.now() + 7 * 864e5)}">, a week at most: the server opens the site every few minutes, so runs while you're away find you signed in.</label>` : ''}</div><div class="pvb"><iframe src="/signins/${pv.signin}/view?drive" title="${esc(pv.title)}" style="width:100%;height:100%;border:0"></iframe></div>`;
+    : `<div class="sub" style="padding:8px 14px">Sign in as you always do, then ${pv.vpn ? 'Connect' : 'Save login'}. Only you see this browser. It closes in <b id="signin-clock"></b>.${!pv.vpn && me.can.includes('keepalive') ? `<label style="display:block;margin-top:6px"><input type="checkbox" id="keep"> Keep the login alive until <input type="datetime-local" id="keep-until" value="${localInput(Date.now() + 7 * 864e5)}" max="${localInput(Date.now() + 7 * 864e5)}">, a week at most: the server opens the site every few minutes, so runs while you're away find you signed in.</label>` : ''}</div><div class="pvb"><iframe src="/signins/${pv.signin}/view?drive" title="${esc(pv.title)}" style="width:100%;height:100%;border:0"></iframe></div>`;
   else if (pv.settings?.kind === 'tokens') h += `<div class="pvb vl">${tokensHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'logins') h += `<div class="pvb vl">${loginsHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'wakes') h += `<div class="pvb vl">${wakesHtml(cur.i.id, cur.i.wakes, false)}</div>`;
@@ -844,7 +844,7 @@ function renderPv() {
       + (cur.w.archived ? (cur.w.manage ? '<div class="row2"><button class="btn" data-act="archive-workspace">Restore workspace</button></div>' : '') : `<div class="row2"><button class="btn${s.archived ? '' : ' danger'}" data-act="archive-series">${s.archived ? 'Restore series' : 'Archive series'}</button></div>`);
     h += '</div>';
   }
-  d.innerHTML = h + '<div class="pvn" id="pvn"></div>';
+  d.innerHTML = h + `<div class="pvn${pv.signin ? ' err' : ''}" id="pvn"${pv.signin ? ' role="alert"' : ''}></div>`;
   if (pv.settings?.kind === 'workspace' ? cur.w.archived : pv.settings?.kind === 'series' && archived()) {
     d.querySelector('.pvb').insertAdjacentHTML('afterbegin', '<div class="sub">Archived · read-only</div>');
     for (const el of d.querySelectorAll('.pvb input, .pvb textarea, .pvb select')) el.disabled = true;
@@ -863,6 +863,7 @@ function grantHtml(g, cls = 'lsub') {
   return `<div class="${cls} grant" data-grant="${esc(g.id)}"><div>${person(g.person)} ${pending ? 'asks for' : 'lets'} runs in <a href="#/${esc(g.workspace)}">${esc(ws)}</a> ${pending ? 'to ' : ''}use their <b>${esc(g.site)}</b> login to ${esc(new URL(g.url).hostname)}.</div>`
     + `<div class="sub">${esc(g.url)}${category ? ` · ${category}` : ''}${!g.profile && c?.risk ? ` · ${esc(c.risk)} risk` : ''}</div>`
     + (what ? `<div class="sub">${esc(what)}</div>` : '')
+    + (g.via ? `<div class="sub">Through ${esc(g.via)} VPN into the client's network.</div>` : '')
     + (!c || c.error ? `<div class="sub">Not checked${c?.error ? `: ${esc(c.error)}` : ''}.</div>` : '')
     + `<div>Runs may do whatever ${esc(nameOf(g.person))} can there, including submitting and approving.</div>`
     + `<div>Reason: ${esc(g.reason)}</div>`
@@ -1023,7 +1024,7 @@ function loginsHtml(s) {
     + sites.map(([n, w]) => {
       const l = mine(`web:${n}`), gs = s.grants.filter(g => g.person === me.email && g.site === n && ['pending', 'approved'].includes(g.state));
       const free = tree.filter(x => !x.archived && !gs.some(g => g.workspace === x.id));
-      return `<div class="lsub"><span>${esc(n)} <span class="sub">${esc(w.url)}${l ? ` · ${l.expired ? 'expired' : `since ${esc(when(l.since))}${l.keepalive > new Date().toISOString() ? `, kept alive until ${esc(when(l.keepalive))}` : ''}`}` : ''}</span>`
+      return `<div class="lsub"><span>${esc(n)} <span class="sub">${esc(w.url)}${l ? ` · ${l.expired ? 'expired' : `since ${esc(when(l.since))}${l.keepalive > new Date().toISOString() ? `, kept alive until ${esc(when(l.keepalive))}` : ''}`}` : ''}</span>${me.can.includes('vpn') && w.via ? `<span class="sub website-via">Via ${esc(w.via)} VPN</span>` : ''}`
         + `${w.header ? `<input type="password" id="hdr-${esc(n)}" placeholder="${l ? `New ${esc(w.header)}, if any` : `Your ${esc(w.header)}`}" autocomplete="off" style="display:block;width:100%;margin-top:6px">` : ''}</span>`
         + `<button class="btn" data-act="web-signin" data-id="${esc(n)}" data-name="${esc(n)}">${l ? 'Sign in again' : 'Sign in'}</button>${l ? signOut(l.id) : ''}`
         + `<button class="quiet" data-act="site-remove" data-id="${esc(n)}">Remove</button></div>`
@@ -1034,6 +1035,13 @@ function loginsHtml(s) {
     }).join('');
   if (me.browsers && shown('web')) h += `<div class="sub">A new website: a name for it, the https address where you sign in and, if its sign-in needs a header its pages never send, such as x-bot-token, that header's name, whose value you give as you sign in. Sign-in opens a browser briefly; the server checks which other hosts its pages need for runs.</div>`
     + '<div class="row2"><input type="text" id="site-name" placeholder="Name" style="width:30%"><input type="text" id="site-url" placeholder="https://… where you sign in" style="flex:1"><input type="text" id="site-header" placeholder="Header, if any" style="width:20%"><button class="btn" data-act="site-add">Add</button></div>';
+  if (me.can.includes('vpn')) {
+    h += `<section class="vpn" aria-label="VPN trial"><h3>VPN · Trial</h3><div class="sub">Connect to reach websites on the client's network. Only your websites set to use that VPN go through it.</div>`;
+    if (s.vpn.error === undefined) h += s.vpn.rows.map(v => `<div class="vpn-row" data-vpn="${esc(v.name)}"><span><b>${esc(v.name)}</b><span class="sub">${esc(v.gateway)}</span><span class="sub">${v.connected ? `Connected since ${esc(when(v.since))}` : 'Disconnected'}${v.error ? ` · ${esc(v.error)}` : ''}</span></span>`
+      + `<button class="btn" data-act="vpn-signin" data-id="${esc(v.name)}">${v.connected ? 'Reconnect' : 'Connect'}</button>${v.connected ? `<button class="quiet" data-act="vpn-disconnect" data-id="${esc(v.name)}">Disconnect</button>` : ''}</div>`).join('')
+      + (s.vpn.rows.length ? '' : '<div class="sub">No VPNs set up on this server.</div>');
+    h += `<div class="err" id="vpn-error" role="alert">${esc(s.vpn.error)}</div></section>`;
+  }
   h += line('Model key', !k ? "the server's" : k.enabled ? `yours${k.expired ? ', out of credits' : ''}` : "the server's · yours saved",
     (k ? `<label><input type="checkbox" id="oruse" ${k.enabled ? 'checked' : ''}> use mine</label>` : '') + `<button class="quiet" data-act="logins-show" data-id="key">${k ? 'Change' : 'Add mine'}</button>`);
   if (shown('key')) h += `<div class="sub">Runs you run use the server's OpenRouter key, or your own: on yours, one that runs out of credits waits for you.</div>`
@@ -1094,8 +1102,9 @@ async function saveKey() {
 }
 
 async function openLogins() {
-  const [logins, connections, grants, sites] = await Promise.all([api('/logins'), api('/connections'), api('/grants'), api('/logins/sites')]);
-  pv = { title: 'Logins', settings: { kind: 'logins', logins, connections, grants, sites } };
+  const [logins, connections, grants, sites, vpn] = await Promise.all([api('/logins'), api('/connections'), api('/grants'), api('/logins/sites'),
+    me.can.includes('vpn') ? api('/vpns').then(rows => ({ rows }), e => ({ error: e.message })) : null]);
+  pv = { title: 'Logins', settings: { kind: 'logins', logins, connections, grants, sites, vpn } };
   renderPv();
 }
 
@@ -1154,9 +1163,9 @@ function editName(el, name, save) {
   input.onblur = () => end(true);
 }
 
-// A sign-in's live browser; closing it otherwise than by Save login throws it away.
+// Closing a sign-in without saving or connecting throws its browser away.
 function closePv() {
-  if (pv?.signin) api(`/signins/${pv.signin}`, { method: 'DELETE' }).catch(() => {});
+  if (pv?.signin) api(`/signins/${pv.signin}`, { method: 'DELETE' }).catch(e => toast(e.message));
   pv = null;
   renderPv();
 }
@@ -1631,10 +1640,21 @@ async function onAct(act, el) {
     pv.settings.logins = await api('/logins');
     renderPv();
   }
-  if (act === 'web-signin') {
-    const header = document.getElementById(`hdr-${el.dataset.id}`)?.value ?? '';
-    const r = await api(`/logins/web/${enc(el.dataset.id)}`, { method: 'POST', body: JSON.stringify({ header }) });
-    const p = pv = { title: `Sign in to ${el.dataset.name}`, signin: r.id, expires: r.expires };
+  if (act === 'web-signin' || act === 'vpn-signin' && me.can.includes('vpn')) {
+    const before = pv, vpn = act === 'vpn-signin', header = document.getElementById(`hdr-${el.dataset.id}`)?.value ?? '';
+    let r;
+    try {
+      r = await api(vpn ? `/vpns/${enc(el.dataset.id)}/signins` : `/logins/web/${enc(el.dataset.id)}`, { method: 'POST', body: vpn ? undefined : JSON.stringify({ header }) });
+    } catch (e) {
+      if (!vpn || pv !== before) throw e;
+      $('#vpn-error').textContent = e.message;
+      return;
+    }
+    if (pv !== before) {
+      await api(`/signins/${r.id}`, { method: 'DELETE' });
+      return;
+    }
+    const p = pv = { title: `Sign in to ${vpn ? `${el.dataset.id} VPN` : el.dataset.name}`, signin: r.id, expires: r.expires, vpn };
     renderPv();
     while (pv === p) {
       const seconds = Math.max(0, Math.ceil((Date.parse(p.expires) - Date.now()) / 1000));
@@ -1688,8 +1708,26 @@ async function onAct(act, el) {
     renderPv();
   }
   if (act === 'signin-save') {
-    await api(`/signins/${pv.signin}`, { method: 'POST', body: JSON.stringify({ keepalive: $('#keep')?.checked ? new Date($('#keep-until').value) : undefined }) });
-    await openLogins();
+    const p = pv;
+    try {
+      await api(`/signins/${p.signin}`, { method: 'POST', body: p.vpn ? undefined : JSON.stringify({ keepalive: $('#keep')?.checked ? new Date($('#keep-until').value) : undefined }) });
+    } catch (e) {
+      if (!p.vpn || pv !== p) throw e;
+      $('#pvn').textContent = e.message;
+      return;
+    }
+    if (pv === p) await openLogins();
+  }
+  if (act === 'vpn-disconnect' && me.can.includes('vpn')) {
+    const p = pv;
+    try {
+      await api(`/vpns/${enc(el.dataset.id)}/connection`, { method: 'DELETE' });
+    } catch (e) {
+      if (pv !== p) throw e;
+      $('#vpn-error').textContent = e.message;
+      return;
+    }
+    if (pv === p) await openLogins();
   }
   if (act === 'orkey-save') await saveKey();
   if (act === 'logins-show') {

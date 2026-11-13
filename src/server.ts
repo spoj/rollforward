@@ -18,6 +18,7 @@ import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { answered, byLogin, call, connections, intercepts, letIn, loginOf, removeConnection, setConnection, setLetIn, upstreams } from './connections.ts';
 import { addSite, allowHost, Browsers, endSignIn, enrolFlagged, isSignIn, keepAlive, passUpgrade, reap, removeHost, removeSite, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
+import { addVpn, cancelVpnSignIn, disconnectVpn, isVpnSignIn, reapVpns, removeVpn, saveVpnSignIn, startVpnSignIn, vpns } from './vpns.ts';
 import { ask, decide, forgetGrants, forgetWorkspace, lapse, revoke, visible } from './grants.ts';
 import { offer } from './connections/graph.ts';
 import { addWarehouse } from './connections/databricks.ts';
@@ -1013,11 +1014,12 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       if (me.role !== 'admin') throw new HttpError(403, 'admins grant capabilities');
       if (req.method === 'PUT') {
         const { cap, people } = await json(req);
-        if (!CAPS.includes(cap)) throw new HttpError(400, `a capability is one of ${CAPS.join(', ')}`);
+        if (!CAPS.includes(cap)) throw new HttpError(400, `a capability is one of ${CAPS.filter(c => c !== 'vpn' || can(me, c)).join(', ')}`);
         if (!isPeople(people)) throw new HttpError(400, `${cap}: a list of emails and Entra group ids: ${JSON.stringify(people)}`);
         writeJson('capabilities.json', { ...capabilities(), [cap]: people.map(p => p.toLowerCase()) });
+        if (cap === 'vpn') await closeUnlent();
       }
-      send(res, 200, Object.fromEntries(CAPS.map(c => [c, capabilities()[c] ?? []])));
+      send(res, 200, Object.fromEntries(CAPS.filter(c => c !== 'vpn' || can(me, c)).map(c => [c, capabilities()[c] ?? []])));
     } else if (url.pathname === '/egress') {
       // The hosts runs may reach beyond the sandbox's own list (sandbox.ts), which admins keep.
       if (req.method === 'PUT') {
@@ -1083,6 +1085,30 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       if (!login?.scope) throw new HttpError(404, 'no connection signs in to Microsoft with that login');
       await connect(res, me.email, login);
     }
+    else if (url.pathname === '/vpns' || url.pathname.startsWith('/vpns/')) {
+      if (!can(me, 'vpn')) throw new HttpError(404, 'not found');
+      if (url.pathname === '/vpns' && req.method === 'GET') send(res, 200, await vpns(me));
+      else if (url.pathname === '/vpns' && req.method === 'POST') {
+        const { name, type, gateway } = await json(req);
+        addVpn(me, String(name ?? ''), { type, gateway });
+        send(res, 200, 'saved');
+      } else {
+        const match = /^\/vpns\/([^/]+)(?:\/(signins|connection))?$/.exec(url.pathname);
+        if (!match) throw new HttpError(404, 'not found');
+        const name = decodeURIComponent(match[1]);
+        if (!match[2] && req.method === 'DELETE') {
+          try { await removeVpn(me, name); } finally { await closeUnlent(); }
+          send(res, 200, 'ok');
+        } else if (match[2] === 'connection' && req.method === 'DELETE') {
+          try { await disconnectVpn(me, name); } finally { await closeUnlent(); }
+          send(res, 200, 'ok');
+        }
+        else if (match[2] === 'signins' && req.method === 'POST') {
+          const since = Date.now(), id = await startVpnSignIn(me, name);
+          send(res, 200, { id, expires: new Date(since + Number(process.env.RF_SIGNIN_S ?? 600) * 1000).toISOString() });
+        } else throw new HttpError(404, 'not found');
+      }
+    }
     // Websites are personal; admins alone allow hosts the server leaves for them.
     else if (url.pathname === '/logins/sites' && req.method === 'GET') {
       const person = url.searchParams.get('person') ?? me.email;
@@ -1093,7 +1119,12 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       const { name, url: start, header } = await json(req);
       send(res, 200, await addSite(me.email, String(name ?? ''), String(start ?? ''), String(header ?? '').trim()));
     }
-    else if (/^\/logins\/sites\/[^/]+$/.test(url.pathname) && req.method === 'PATCH') send(res, 200, (await setSite(me, decodeURIComponent(url.pathname.split('/')[3]), await json(req), url.searchParams.get('person') ?? me.email), 'ok'));
+    else if (/^\/logins\/sites\/[^/]+$/.test(url.pathname) && req.method === 'PATCH') {
+      const change = await json(req);
+      await setSite(me, decodeURIComponent(url.pathname.split('/')[3]), change, url.searchParams.get('person') ?? me.email);
+      if (change.via !== undefined) await closeUnlent();
+      send(res, 200, 'ok');
+    }
     else if (/^\/logins\/sites\/[^/]+$/.test(url.pathname) && req.method === 'DELETE') send(res, 200, (removeSite(me.email, decodeURIComponent(url.pathname.split('/')[3])), await closeUnlent(), 'ok'));
     // Grants: a person asks to use their login to a website in a workspace, whose owners approve or deny it, and revoke it, as its
     // person may withdraw it; revoked, that person's run browsers there in the workspace close at once.
@@ -1130,7 +1161,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     }
     else if (/^\/signins\/\w+\/view$/.test(url.pathname) && req.method === 'GET') {
       const id = url.pathname.split('/')[2];
-      if (!isSignIn(me.email, id)) throw new HttpError(404, 'no such sign-in');
+      if (!isSignIn(me.email, id) && !(can(me, 'vpn') && isVpnSignIn(me.email, id))) throw new HttpError(404, 'no such sign-in');
       const html = await viewPage(id);
       res.writeHead(200, { 'content-type': 'text/html' }).end(html);
     }
@@ -1140,11 +1171,24 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     }
     // Saved, a login may be kept alive, by those granted keepalive; or thrown away.
     else if (/^\/signins\/\w+$/.test(url.pathname) && req.method === 'POST') {
-      const { keepalive } = await json(req);
-      if (keepalive !== undefined && !can(me, 'keepalive')) throw new HttpError(403, 'keeping a login alive is for admins and those they grant keepalive: ask an admin');
-      send(res, 200, (await endSignIn(me.email, url.pathname.slice(9), true, keepalive), 'ok'));
+      const id = url.pathname.slice(9);
+      if (can(me, 'vpn') && isVpnSignIn(me.email, id)) {
+        try { await saveVpnSignIn(me, id); } finally { await closeUnlent(); }
+        send(res, 200, 'ok');
+      } else {
+        const { keepalive } = await json(req);
+        if (keepalive !== undefined && !can(me, 'keepalive')) throw new HttpError(403, 'keeping a login alive is for admins and those they grant keepalive: ask an admin');
+        send(res, 200, (await endSignIn(me.email, id, true, keepalive), 'ok'));
+      }
     }
-    else if (/^\/signins\/\w+$/.test(url.pathname) && req.method === 'DELETE') send(res, 200, (await endSignIn(me.email, url.pathname.slice(9), false), 'ok'));
+    else if (/^\/signins\/\w+$/.test(url.pathname) && req.method === 'DELETE') {
+      const id = url.pathname.slice(9);
+      if (can(me, 'vpn') && isVpnSignIn(me.email, id)) {
+        await cancelVpnSignIn(me, id);
+        await closeUnlent();
+      } else await endSignIn(me.email, id, false);
+      send(res, 200, 'ok');
+    }
     // Your own OpenRouter key, checked with OpenRouter as you save it, and whether your runs use it: a new one, or not using it, ends
     // its running out of credits.
     else if (url.pathname === '/logins/openrouter' && req.method === 'PUT') {
@@ -1172,7 +1216,7 @@ server.on('upgrade', (req, socket, head) => {
   const me = req.headers.origin === new URL(process.env.RF_PUBLIC_URL!).origin ? session(req) : null, path = URL.parse(req.url!, 'http://x')?.pathname ?? '';
   const signIn = /^\/signins\/(\w+)\/(view\/(?:watch|drive))$/.exec(path), run = /^\/runs\/(\w+)\/([a-z0-9-]+)\/view\/(watch|drive)$/.exec(path);
   let to;
-  if (me && signIn && isSignIn(me.email, signIn[1])) to = `/sessions/${signIn[1]}/${signIn[2]}`;
+  if (me && signIn && (isSignIn(me.email, signIn[1]) || can(me, 'vpn') && isVpnSignIn(me.email, signIn[1]))) to = `/sessions/${signIn[1]}/${signIn[2]}`;
   if (me && run) try {
     const w = watched(me, run[1], run[2]);
     to = `/sessions/${run[3] === 'drive' ? w.browsers.drive(run[2], me.email, socket) : w.id}/view/${run[3]}`;
@@ -1182,6 +1226,7 @@ server.on('upgrade', (req, socket, head) => {
 });
 await enrolFlagged();
 if (process.env.RF_BROWSER_URL) await reap().catch(e => console.error('the browser service: browsers a restart left open are still open', e));
+await reapVpns();
 // A stop, as an update's, cuts the runs (waker.ts stop()) and exits once what they had sent is answered and logged, within 10 s.
 process.on('SIGTERM', async () => {
   stop();

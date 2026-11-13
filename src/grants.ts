@@ -57,8 +57,8 @@ export function visible(me: Me) {
     const host = new URL(website.url).hostname;
     const what = profile && 'what' in profile ? `${profile.what} (${profile.category} system, ${host})`
       : g.check && 'summary' in g.check ? `${g.check.summary} (${g.check.risk} risk, ${host})` : website.url;
-    return { id, ...g, url: website.url, profile, personName, workspaceName,
-      description: `${personName} asks that runs in ${workspaceName} use their login to ${g.site} — ${what}. Runs there can do whatever ${personName} can, including submitting and approving. Their reason: ${g.reason}. The reason is not an enforced limit.`,
+    return { id, ...g, url: website.url, ...(website.via && { via: website.via }), profile, personName, workspaceName,
+      description: `${personName} asks that runs in ${workspaceName} use their login to ${g.site} — ${what}${website.via ? ` through client VPN ${website.via}` : ''}. Runs there can do whatever ${personName} can, including submitting and approving. Their reason: ${g.reason}. The reason is not an enforced limit.`,
       flags: [...new Set([...flags, ...why])], adminOnly: why.length > 0, adminWhy: why.length ? `${why.join('; ')}: an admin decides` : '', use };
   });
 }

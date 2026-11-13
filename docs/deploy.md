@@ -1,6 +1,6 @@
 # Deploying on two hosts
 
-rollforward runs on one host and the browser service ([spoj/rollforward-browser](https://github.com/spoj/rollforward-browser)) on another. Both sit on the company's private network: people reach rollforward over HTTPS, and nothing needs to reach either host from the internet. This page goes in the order you work in, and links the READMEs rather than repeating them.
+rollforward runs on one host and the browser service ([spoj/rollforward-browser](https://github.com/spoj/rollforward-browser)) on another. Both sit on the company's private network: people reach rollforward over HTTPS, and nothing needs to reach either host from the internet. The VPN trial adds an optional third service, each deployment's own [rollforward-tunnel](https://github.com/spoj/rollforward-tunnel), not part of the shared browser service. This page goes in the order you work in, and links the READMEs rather than repeating them.
 
 ## What to ask for
 
@@ -12,11 +12,11 @@ rollforward runs on one host and the browser service ([spoj/rollforward-browser]
   - the model's API (`openrouter.ai`), for runs and website checks, and Exa's (`api.exa.ai`), for runs' web search and the website check's web-search tool;
   - Microsoft (`login.microsoftonline.com` and `graph.microsoft.com`);
   - the package registries and GitHub that runs install from (`rf egress add HOST` adds hosts);
-  - the browser host's port.
+  - the browser host's port, and, for the VPN trial, this deployment's tunnel API.
 
   If traffic out must go through a proxy, say so before you start: runs' own connections don't use one yet.
 - **Routes out of the browser host:**
-  - the websites people sign in to, such as the ERP and the portals, and their sign-on and page dependencies;
+  - the websites people sign in to, such as the ERP and the portals, and their sign-on and page dependencies; for the VPN trial, the public gateways' SAML sign-in pages and the tunnel service's proxy;
   - `raw.githubusercontent.com` over HTTPS for the default threat blocklist, or the hosts of the URLs set in `BROWSER_BLOCKLISTS`. This blocklist fetch is browser host → GitHub raw; it does not use rollforward's run egress permissions.
 - **An app registered in Entra ID** ([system.md](system.md), Access), with an admin's consent to its delegated Graph permissions.
 - **A model API key** for OpenRouter, also used to profile websites and check their hosts, and one for Exa if runs and the website check are to search the web.
@@ -30,6 +30,20 @@ rollforward runs on one host and the browser service ([spoj/rollforward-browser]
    - TLS, or a private link such as WireGuard.
 3. Leave `BROWSER_BLOCKLISTS` at its default, `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/tif.medium-onlydomains.txt`, or set it in the browser service's environment to a whitespace-separated list of reachable text-file URLs, one domain per line. The service loads them at startup and every 24 hours; a domain covers its subdomains. With no successful load yet, open sign-ins and `GET /blocked?host=HOST` answer 503; a failed refresh keeps the previous list. Ordinary, host-bounded browsers are unaffected. Check `/blocked` from the rollforward host with its client key before trying a sign-in.
 
+## The tunnel service, optional
+
+Only deployments trialling VPNs need this piece. Deploy a browser-service release that supports `site.via` before enabling it. Give it a user of its own, on the rollforward host or a host of its own, never shared between deployments: rollforward deletes every tunnel on it at startup. Follow the tunnel service's README's Run: Node 26, rootless podman, its image and a systemd user service with lingering on. There is no updater or published image; build its image and restart to change it. Each tunnel is capped at 256 MB. The trial is Fortinet SAML only, and has not been tested against a real FortiGate ([system.md](system.md), VPNs).
+
+Keep its API and CONNECT proxy separate:
+
+- **rollforward host → tunnel API:** allow only the rollforward host to `TUNNEL_HOST:TUNNEL_PORT` (default port 8798). Set `RF_TUNNEL_URL` to that API's http(s) address and `RF_TUNNEL_KEY` to its `TUNNEL_KEY`; every API call carries that bearer key, including creation with the gateway cookie.
+- **browser host → tunnel proxy:** allow only the browser host to `TUNNEL_PROXY_HOST:TUNNEL_PROXY_PORT` (default port 8799). Set `RF_TUNNEL_PROXY` on rollforward to the proxy's http(s) address as the browser host reaches it. Each CONNECT carries a per-tunnel bearer token, not the service key; the browser service receives it only as a generic upstream proxy's token and knows nothing of VPNs.
+- **tunnel host → public VPN gateways:** allow TCP to the gateways' configured ports. Neither rollforward nor the browser service runs a VPN client or gains a VPN route; the browser host reaches the public gateway directly for SAML sign-in, then the website's own-domain traffic goes through the proxy.
+
+Encrypt both inter-service links: use WireGuard or Tailscale, or keep the listeners on loopback behind TLS-ending reverse proxies. The proxy frontend must forward HTTP CONNECT, not just ordinary HTTP. Set `TUNNEL_HOST` and `TUNNEL_PROXY_HOST` to private interfaces only for the encrypted private-link case; use `NODE_EXTRA_CA_CERTS` on the rollforward and browser hosts for a private CA on those links. Neither port is for people or the public internet. From the rollforward host, `curl -fsS -H "authorization: Bearer $RF_TUNNEL_KEY" "$RF_TUNNEL_URL/tunnels"` answers `[]` on a fresh service.
+
+Without `RF_TUNNEL_URL`, the feature stays absent. With it, the tunnel API must be up before rollforward starts: failed startup cleanup stops the server. Admins must explicitly opt each person in with `rf can vpn EMAIL|GROUP,...`, even themselves; configuration and admin role alone expose no VPN controls. Tunnels and their credentials are memory-only, lost on restart, with no VPN-specific scheduled sign-in, reconnect or keepalive. An ordinary website keepalive may use an already connected tunnel and keep it active, never reconnect it. People connect on demand before using a website set to that VPN.
+
 ## The rollforward host
 
 Run the image under podman, as a systemd service. The image is the agent image, the runs' userland ([agent/](../agent)), with the server on it, and an update is a rebuild and a restart. Running without Docker (README) would instead give each run a memory cap of its own and seal the keys to the TPM, and updates come by themselves; its runs use the same agent image, which CI publishes.
@@ -41,7 +55,8 @@ Run the image under podman, as a systemd service. The image is the agent image, 
    - the `RF_OIDC_*` lines and `RF_PUBLIC_URL` ([system.md](system.md), Access);
    - `RF_ADMINS`, the first admins;
    - `RF_BROWSER_URL` and this server's `RF_BROWSER_KEY`, matching the browser service's `BROWSER_KEY` or one entry in its `BROWSER_KEYS`;
-   - `RF_SIGNIN_S` only to change the 600-second sign-in window; the page shows its countdown;
+   - `RF_TUNNEL_URL`, `RF_TUNNEL_KEY` and `RF_TUNNEL_PROXY`, only for the optional tunnel service above;
+   - `RF_SIGNIN_S` only to change the 600-second website and VPN sign-in window; the page shows its countdown;
    - `RF_SANDBOX_RO`, only if runs should read folders besides their data, such as a read-only mount of a file share.
 
 4. Install the unit, then run `systemctl --user daemon-reload && systemctl --user start rollforward`:
@@ -108,5 +123,6 @@ Run the image under podman, as a systemd service. The image is the agent image, 
 2. From the rollforward host, `curl -fsS -H "authorization: Bearer $RF_BROWSER_KEY" "$RF_BROWSER_URL/sessions"` answers `[]`, and `curl -fsS -H "authorization: Bearer $RF_BROWSER_KEY" "$RF_BROWSER_URL/blocked?host=example.com"` answers a host-to-boolean map, not 503.
 3. Sign in at `RF_PUBLIC_URL` as one of `RF_ADMINS` and make a workspace. With its +, start a task and comment "Reply OK". The run ends within a few minutes, for about $0.05.
 4. Under Logins, Connect Microsoft 365.
-5. Under Logins, Websites, add a website by its name and address, sign in before the countdown ends, and save the login. The server checks the website and its hosts; no one is asked to approve hosts during sign-in. An internal primary host must first be allowed by an admin ([system.md](system.md), Hosts).
-6. Ask to use that account in the workspace. Under Waiting on you, check whose account it is, its purpose and flags, then approve its use, not its hosts. General-purpose or high-risk websites need an admin. A failed website check is shown as an error and retried when the person asks to use it or a run encounters hosts to check; it never opens unchecked hosts.
+5. Under Logins, Websites, add a website by its name and address, sign in before the countdown ends, and save the login. The server checks the website and its hosts; no one is asked to approve hosts during sign-in. A directly reached internal primary host must first be allowed by an admin ([system.md](system.md), Hosts).
+6. Ask to use that account in the workspace. Under Waiting on you, check whose account it is, its purpose, flags and any client-VPN disclosure, then approve its use, not its hosts. General-purpose or high-risk websites need an admin. A failed website check is shown as an error and retried when the person asks to use it or a run encounters hosts to check; it never opens unchecked hosts.
+7. For the VPN trial, explicitly grant yourself `vpn`, add a definition with `rf vpn add NAME fortinet HOST:PORT`, connect under Logins, VPN · Trial, and set your website with `rf site set SITE --via NAME`. Without a live tunnel its browser must ask you to connect first, not go direct. Confirm a person without the capability, even an admin, has no VPN controls and gets 404 from `/vpns`.

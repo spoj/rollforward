@@ -14,6 +14,7 @@ import { answer, model } from './connections/openrouter.ts';
 import { asPerson, can, users, type Me } from './auth.ts';
 import { approved, forgetGrants } from './grants.ts';
 import { act, changes, readJson, rfDir, tree } from './system.ts';
+import { vpnDefinitions, vpnHosts, vpnVia, type Via } from './vpns.ts';
 
 // Browsers from the browser service (spoj/rollforward-browser, a repo of its own), whose one client is this server, with its key: a
 // throwaway container per session, driven over CDP, whose proxy keeps to a website's hosts and logs every request. A website login is
@@ -45,7 +46,7 @@ function request(method: string, path: string, body?: unknown): Promise<Incoming
   });
 }
 const call = async (method: string, path: string, body?: unknown) => Buffer.concat(await Array.fromAsync(await request(method, path, body)));
-const json = async (method: string, path: string, body?: unknown) => JSON.parse((await call(method, path, body)).toString());
+export const browserJson = async (method: string, path: string, body?: unknown) => JSON.parse((await call(method, path, body)).toString());
 // A file in a session's browser, its parts encoded and none . or .., which would lead out of the session to the service's other calls.
 export function files(id: string, path: string) {
   const parts = path.replace(/\\/g, '/').replace(/^\//, '').split('/');
@@ -56,18 +57,19 @@ export function files(id: string, path: string) {
 // The runs' own print browser, at $RF_BROWSERS/print: no website, login or host, for a run to render what it has, such as a mail as
 // HTML, and print it with page.pdf(); it reaches nothing, and closes with its last connection, for half an hour at most.
 export const PRINT = 'print';
-const printer = async () => (await json('POST', '/sessions', { site: { hosts: [], public: true }, ttl_s: 1800 })).id as string;
+const printer = async () => (await browserJson('POST', '/sessions', { site: { hosts: [], public: true }, ttl_s: 1800 })).id as string;
 
-const open = async (w: Website, ttl_s: number, state?: unknown, headers?: Record<string, string>): Promise<string> =>
-  (await json('POST', '/sessions', { site: { hosts: reached(w).filter(h => !w.checks?.[h] || w.checks[h].verdict === 'pass'), start_url: w.url, headers, ...(!internalOf(w) && { public: true }) }, state, ttl_s })).id;
+const open = async (w: Website, ttl_s: number, state?: unknown, via?: Via): Promise<string> =>
+  (await browserJson('POST', '/sessions', { site: { hosts: reached(w).filter(h => !w.checks?.[h] || w.checks[h].verdict === 'pass'), start_url: w.url, via, ...(!internalOf(w) && { public: true }) }, state, ttl_s })).id;
+const throughVpn = (w: Website, host: string) => !!w.via && vpnHosts(w.url).some(p => covers(p, host));
 // Whether one of the website's exact hosts has an admin's internal-address permission.
 const internalOf = (w: Website) => {
   const let_ = letIn();
-  return reached(w).some(h => !!let_[h]);
+  return reached(w).some(h => !throughVpn(w, h) && !!let_[h]);
 };
-const internalHosts = (w: Website) => reached(w).filter(h => !h.startsWith('*.') && letIn()[h]);
+const internalHosts = (w: Website) => [...new Set([...reached(w).filter(h => !throughVpn(w, h) && !h.startsWith('*.') && letIn()[h]), ...(w.via ? vpnHosts(w.url) : [])])];
 type Entry = { method: string; url: string; status: number; dest?: string; from?: string; blocked?: string; error?: string; live?: boolean };
-const close = (id: string): Promise<{ state: unknown; log: Entry[] }> => json('DELETE', `/sessions/${id}`);
+const close = (id: string): Promise<{ state: unknown; log: Entry[] }> => browserJson('DELETE', `/sessions/${id}`);
 
 // A websocket passed through to the service's `path`, with the key added.
 export function passUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, path: string) {
@@ -92,7 +94,7 @@ export function passUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, 
 // a host once for everyone's.
 
 export type Profile = { what: string; category: 'company' | 'vendor' | 'bank' | 'government' | 'general'; risk: 'low' | 'medium' | 'high'; flags: string[] } | { error: string };
-export type Website = { url: string; hosts: string[]; writeback: boolean; header?: string; keepalive?: string; every?: number; profile?: Profile; checks?: Record<string, { verdict: 'pass' | 'refused' | 'high' | 'internal'; why: string }>; added: string };
+export type Website = { url: string; hosts: string[]; writeback: boolean; via?: string; header?: string; keepalive?: string; every?: number; profile?: Profile; checks?: Record<string, { verdict: 'pass' | 'refused' | 'high' | 'internal'; why: string }>; added: string };
 const websiteGenerations = new Map<string, number>();
 const sitesFile = (email: string) => join(personDir(email), 'websites.json');
 export const websitesOf = (email: string): Record<string, Website> => existsSync(sitesFile(email)) ? JSON.parse(readFileSync(sitesFile(email), 'utf8')) : {};
@@ -119,7 +121,7 @@ const signIns = new Map<string, SignIn>(), signInGenerations = new Map<string, n
 
 function currentSignIn(s: SignIn) {
   const key = `${s.email} ${s.site}`, w = websitesOf(s.email)[s.site];
-  if (!w || w.url !== s.website.url || w.added !== s.website.added || websiteGenerations.get(key) !== s.websiteGeneration || signInGenerations.get(key) !== s.generation || logins(s.email).find(l => l.id === `web:${s.site}`)?.since !== s.loginSince)
+  if (!w || w.url !== s.website.url || w.via !== s.website.via || w.added !== s.website.added || websiteGenerations.get(key) !== s.websiteGeneration || signInGenerations.get(key) !== s.generation || logins(s.email).find(l => l.id === `web:${s.site}`)?.since !== s.loginSince)
     throw new HttpError(409, 'This sign-in was superseded; sign in again.');
   return w;
 }
@@ -137,12 +139,13 @@ export async function startSignIn(email: string, site: string, given: string): P
   signInGenerations.set(key, generation);
   const ttl_s = Number(process.env.RF_SIGNIN_S ?? 600), since = Date.now();
   const signing = { email, site, name: site, token, since, expires: since + ttl_s * 1000, website: w, websiteGeneration, generation, loginSince };
-  await checkHost(new URL(w.url).hostname, false);
+  await checkHost(new URL(w.url).hostname, !!w.via);
+  const via = await vpnVia(email, w);
   currentSignIn(signing);
   const before = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
   if (before) await endSignIn(email, before, false).catch(e => console.error(`ending the previous sign-in to ${site}:`, e));
   const except = [...[process.env.RF_PUBLIC_URL, base].filter(Boolean).map(u => new URL(u!).hostname), ...connections().flatMap(c => types[c.type].hosts ?? [])];
-  const id = (await json('POST', '/sessions', { site: { hosts: internalHosts(w), open: true, except, start_url: w.url, ...(token && { headers: { [w.header!]: token } }) }, ttl_s })).id;
+  const id = (await browserJson('POST', '/sessions', { site: { hosts: internalHosts(w), open: true, except, start_url: w.url, via, ...(token && { headers: { [w.header!]: token } }) }, ttl_s })).id;
   try { currentSignIn(signing); } catch (e) { await close(id); throw e; }
   signIns.set(id, signing);
   return id;
@@ -165,21 +168,29 @@ export async function addSite(email: string, name: string, url: string, header =
 // alone let it reach internal addresses, by exact hosts, as an intranet's need, anyone's: its hosts at internal addresses, its
 // address's among them, every person's websites reach from then on, with no admin again, until an admin sets one at them false.
 export async function setSite(by: Me, name: string, change: Record<string, unknown>, person = by.email) {
-  const keys = ['header', 'keepalive', 'every', 'writeback', 'internal'], other = Object.keys(change).filter(k => !keys.includes(k));
+  const keys = ['header', 'keepalive', 'every', 'writeback', 'internal', 'via'], other = Object.keys(change).filter(k => !keys.includes(k));
   if (other.length) throw new HttpError(400, `${other.join(', ')}: a website's settings are ${keys.join(', ')}; its hosts are allowed one by one`);
   if (person !== by.email && (by.role !== 'admin' || Object.keys(change).some(k => k !== 'internal'))) throw new HttpError(403, `${person}'s website is theirs to change; admins only let it reach internal addresses`);
   if (change.internal !== undefined && by.role !== 'admin') throw new HttpError(403, 'internal: admins set it');
+  if (change.via !== undefined && !can(by, 'vpn')) throw new HttpError(403, 'via: requires the explicit vpn capability');
+  if (change.via !== undefined && typeof change.via !== 'string') throw new HttpError(400, 'via: a VPN name, or empty to clear');
+  if (change.via && !vpnDefinitions()[String(change.via)]) throw new HttpError(404, `no VPN ${change.via}`);
   const w = website(person, name), x = { ...w, every: w.every && `${w.every}m`, ...change }, every = /^(\d+)([mh])$/.exec(String(x.every ?? ''));
+  const viaChanged = change.via !== undefined && change.via !== (w.via ?? '');
   if (![undefined, true, false, 'true', 'false'].includes(x.writeback as never)) throw new HttpError(400, 'writeback: true or false');
   if (x.header !== undefined && !/^[a-z0-9-]+$/i.test(String(x.header))) throw new HttpError(400, 'header: the name of a header its sign-in needs, such as x-bot-token');
   if (x.keepalive !== undefined && URL.parse(String(x.keepalive), w.url)?.host !== new URL(w.url).host) throw new HttpError(400, 'keepalive: a page of the website, by its address or path, such as https://patriarch.patrina.net/PatriArchMVC/');
   if (x.every !== undefined && !(every && Number(every[1]) > 0)) throw new HttpError(400, 'every: minutes or hours, such as 10m or 1h');
   saveWebsites(person, { ...websitesOf(person), [name]: { url: w.url, hosts: w.hosts, writeback: x.writeback !== false && x.writeback !== 'false', added: w.added,
-    ...(x.header !== undefined && { header: String(x.header) }),
+    ...(x.header !== undefined && { header: String(x.header) }), ...(x.via && { via: String(x.via) }),
     ...(x.keepalive !== undefined && { keepalive: String(x.keepalive) }), ...(every && { every: Number(every[1]) * (every[2] === 'h' ? 60 : 1) }),
-    ...(w.profile && { profile: w.profile }), ...(w.checks && { checks: w.checks }) } });
+    ...(w.profile && { profile: w.profile }), ...(w.checks && { checks: viaChanged ? Object.fromEntries(Object.entries(w.checks).filter(([h, c]) => c.verdict === 'refused' || !vpnHosts(w.url).some(p => covers(p, h)))) : w.checks }) } });
+  if (viaChanged) {
+    const key = `${person} ${name}`;
+    websiteGenerations.set(key, (websiteGenerations.get(key) ?? 0) + 1);
+  }
   if (change.internal === undefined) return;
-  const let_ = change.internal === true || change.internal === 'true', exact = reached(w).filter(h => !h.startsWith('*.'));
+  const next = website(person, name), let_ = change.internal === true || change.internal === 'true', exact = reached(next).filter(h => !throughVpn(next, h) && !h.startsWith('*.'));
   const hosts = let_ ? (await Promise.all(exact.map(async h => await resolvesInternal(h) && h))).filter(h => h) as string[] : exact.filter(h => letIn()[h]);
   setLetIn(hosts, by.email, let_);
   act(by.email, { op: 'internal', person, site: name, hosts, let: let_ });
@@ -193,7 +204,7 @@ export async function enrolFlagged() {
   const out = new Set(existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(a => a.op === 'internal' && a.let === false).flatMap(a => a.hosts as string[]) : []);
   for (const email of Object.keys(users())) for (const [name, { internal, ...w }] of Object.entries(websitesOf(email) as Record<string, Website & { internal?: true }>)) {
     if (!internal) continue;
-    const hosts = (await Promise.all(reached(w).filter(h => !h.startsWith('*.') && !out.has(h)).map(async h => await resolvesInternal(h) && h))).filter(h => h) as string[];
+    const hosts = (await Promise.all(reached(w).filter(h => !throughVpn(w, h) && !h.startsWith('*.') && !out.has(h)).map(async h => await resolvesInternal(h) && h))).filter(h => h) as string[];
     if (!hosts.length) continue;
     setLetIn(hosts, 'server', true);
     act('server', { op: 'internal', person: email, site: name, hosts, let: true });
@@ -215,9 +226,8 @@ export function removeSite(email: string, name: string) {
 // Admins may override a host verdict, including an exact internal host for everyone's websites.
 export async function allowHost(by: Me, site: string, host: string, email = by.email) {
   if (by.role !== 'admin') throw new HttpError(403, 'admins allow website hosts');
-  website(email, site);
-  const h = host.trim().toLowerCase(), inside = await resolvesInternal(h);
-  await checkHost(h, inside);
+  const before = website(email, site), h = host.trim().toLowerCase(), routed = throughVpn(before, h), inside = !routed && await resolvesInternal(h);
+  await checkHost(h, routed || inside);
   const w = website(email, site);
   changeWebsite(email, site, { hosts: [...new Set([...w.hosts, h])], checks: { ...w.checks, [h]: { verdict: 'pass', why: 'An admin allowed it.' } } });
   if (inside && !letIn()[h]) {
@@ -226,8 +236,8 @@ export async function allowHost(by: Me, site: string, host: string, email = by.e
   }
   const id = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
   if (!id) return;
-  await json('PUT', `/sessions/${id}/hosts`, { hosts: internalHosts(website(email, site)) });
-  await json('POST', `/sessions/${id}/reload`);
+  await browserJson('PUT', `/sessions/${id}/hosts`, { hosts: internalHosts(website(email, site)) });
+  await browserJson('POST', `/sessions/${id}/reload`);
 }
 
 // A host its person no longer lets their website reach: it stays refused from then on, the check passing it no more.
@@ -236,7 +246,7 @@ export async function removeHost(email: string, site: string, host: string) {
   if (!w.hosts.includes(host)) throw new HttpError(404, `${site} doesn't reach ${host}: beyond its address it reaches ${w.hosts.join(', ') || 'no host'}`);
   changeWebsite(email, site, { hosts: w.hosts.filter(h => h !== host), checks: { ...w.checks, [host]: { verdict: 'refused', why: 'Its person removed it.' } } });
   const id = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
-  if (id) await json('PUT', `/sessions/${id}/hosts`, { hosts: internalHosts(website(email, site)) });
+  if (id) await browserJson('PUT', `/sessions/${id}/hosts`, { hosts: internalHosts(website(email, site)) });
 }
 
 // The hosts a person's website doesn't reach, of those asked for.
@@ -258,7 +268,7 @@ export async function endSignIn(email: string, id: string, save: boolean, keepal
   const signing = signIns.get(id)!, { site, name, token, since, expires, generation } = signing, key = `${email} ${site}`;
   let expired = Date.now() >= expires;
   if (save && !expired) {
-    const log = await json('GET', `/sessions/${id}/log`).catch(e => { signIns.delete(id); throw e; });
+    const log = await browserJson('GET', `/sessions/${id}/log`).catch(e => { signIns.delete(id); throw e; });
     try { currentSignIn(signing); } catch (e) {
       if (signIns.get(id) === signing) {
         signIns.delete(id);
@@ -344,13 +354,13 @@ Decide only the unchecked hosts: pass what its pages need, such as sign-on, scri
 export async function checkWebsite(email: string, site: string, given?: Trace): Promise<Profile> {
   const w = website(email, site), trace = given ?? logins(email).find(l => l.id === `web:${site}`)?.trace, address = new URL(w.url).hostname, siteKey = `${email} ${site}`, generation = websiteGenerations.get(siteKey);
   const candidates = [...new Set([address, ...w.hosts.filter(h => !h.startsWith('*.')), ...Object.keys(trace?.requests ?? {}), ...trace?.blocked ?? []])];
-  const todo = candidates.filter(h => !w.checks?.[h] || (w.checks[h].verdict === 'internal' && !!letIn()[h]));
+  const todo = candidates.filter(h => !w.checks?.[h] || (w.checks[h].verdict === 'internal' && (!!letIn()[h] || throughVpn(w, h))));
   const checks: NonNullable<Website['checks']> = {}, queries: string[] = [];
   let profile = w.profile;
   const settle = (decisions: NonNullable<Website['checks']>, result?: Profile) => {
     const now = websitesOf(email)[site];
     if (!now || now.url !== w.url || now.added !== w.added || websiteGenerations.get(siteKey) !== generation) throw new HttpError(409, `${site} was removed or replaced while it was checked`);
-    const fresh = Object.fromEntries(Object.entries(decisions).filter(([h]) => !now.checks?.[h] || (now.checks[h].verdict === 'internal' && !!letIn()[h])));
+    const fresh = Object.fromEntries(Object.entries(decisions).filter(([h]) => !now.checks?.[h] || (now.checks[h].verdict === 'internal' && (!!letIn()[h] || throughVpn(now, h)))));
     const hosts = now.hosts.filter(p => !Object.entries(fresh).some(([h, c]) => c.verdict !== 'pass' && covers(p, h))), all = { ...now.checks, ...fresh };
     const allowed = Object.keys(all).filter(h => all[h].verdict === 'pass' && !reached({ ...now, hosts }).some(p => covers(p, h)));
     if (Object.keys(fresh).length || result) changeWebsite(email, site, { hosts: [...new Set([...hosts, ...allowed])], checks: all, ...(result && { profile: result }) });
@@ -365,9 +375,10 @@ export async function checkWebsite(email: string, site: string, given?: Trace): 
     settle(rules);
     const validHosts = todo.filter(h => !rules[h]);
     if (validHosts.length) {
-      const blocked = await json('GET', `/blocked?${new URLSearchParams(validHosts.map(h => ['host', h]))}`);
+      const blocked = await browserJson('GET', `/blocked?${new URLSearchParams(validHosts.map(h => ['host', h]))}`);
       await Promise.all(validHosts.map(async h => {
         if (blocked[h]) rules[h] = { verdict: 'refused', why: 'It is on a browser blocklist.' };
+        else if (throughVpn(w, h)) rules[h] = { verdict: 'pass', why: `It is within the website's own domain, through client VPN ${w.via}.` };
         else if (!letIn()[h] && await resolvesInternal(h)) rules[h] = { verdict: 'internal', why: 'It is at an internal address.' };
         else if (letIn()[h]) rules[h] = { verdict: 'pass', why: 'An admin allowed this internal host.' };
         else {
@@ -381,7 +392,7 @@ export async function checkWebsite(email: string, site: string, given?: Trace): 
     if (profile && !('error' in profile) && !rest.length) return profile;
     const key = process.env.OPENROUTER_API_KEY, exa = process.env.EXA_API_KEY;
     if (!key) throw new Error('the server has no OPENROUTER_API_KEY');
-    const messages: any[] = [{ role: 'system', content: CHECK }, { role: 'user', content: JSON.stringify({ website: { name: site, address, hosts: website(email, site).hosts, profile: profile && !('error' in profile) ? profile : null }, evidence: trace ?? null, checks: website(email, site).checks, unchecked: rest }) }];
+    const messages: any[] = [{ role: 'system', content: CHECK + (w.via ? '\nThis website is reached through a client VPN. Its own DNS names are not public search targets; search only external dependencies. Classify the system, not its route: a VPN does not make a general-purpose or high-risk website safe.' : '') }, { role: 'user', content: JSON.stringify({ website: { name: site, address, hosts: website(email, site).hosts, profile: profile && !('error' in profile) ? profile : null, ...(w.via && { via: w.via }) }, evidence: trace ?? null, checks: website(email, site).checks, unchecked: rest }) }];
     const tools = [{ type: 'function', function: { name: 'search', description: 'Search the public web for a website or host.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false } } }];
     for (;;) {
       const res = await fetch(`${upstreams['openrouter.ai'] ?? 'https://openrouter.ai'}/api/v1/chat/completions`, {
@@ -397,6 +408,10 @@ export async function checkWebsite(email: string, site: string, given?: Trace): 
           const { query } = JSON.parse(t.function.arguments);
           if (typeof query !== 'string') throw new Error('The website check gave no search query.');
           queries.push(query);
+          if (w.via && query.toLowerCase().includes(vpnHosts(w.url)[0])) {
+            messages.push({ role: 'tool', tool_call_id: t.id, content: JSON.stringify({ error: 'VPN website DNS names are not public search targets. Search only external dependencies.' }) });
+            continue;
+          }
           const found = await fetch(`${upstreams['api.exa.ai'] ?? 'https://api.exa.ai'}/search`, { method: 'POST', headers: { 'x-api-key': exa, 'content-type': 'application/json' }, signal: AbortSignal.timeout(30_000),
             body: JSON.stringify({ query, numResults: 3, contents: { highlights: true } }) });
           if (!found.ok) throw new Error(`Exa answered ${found.status}`);
@@ -445,7 +460,7 @@ async function checkRefused(inst: Instance, run: number, email: string, site: st
 // close, a run's kept as its run would have kept it, and any other, such as a sign-in's, gone.
 export async function reap() {
   const left = journal();
-  for (const { id } of await json('GET', '/sessions')) {
+  for (const { id } of await browserJson('GET', '/sessions')) {
     try {
       const closed = await close(id);
       if (left[id]) keep(instance(left[id].inst), left[id], closed);
@@ -461,7 +476,7 @@ export async function reap() {
 export class Browsers {
   inst: Instance;
   run: number;
-  bySite = new Map<string, { id: string; email: string; since: string; writeback: boolean; file: string; conns: number; idle?: NodeJS.Timeout; shot?: Buffer }>();
+  bySite = new Map<string, { id: string; email: string; since: string; writeback: boolean; file: string; conns: number; via?: Via; idle?: NodeJS.Timeout; shot?: Buffer }>();
   private opening = new Map<string, Promise<string | undefined>>();
   private closing = new Set<Promise<unknown>>();
   private opens = new Map<string, number>();
@@ -476,14 +491,21 @@ export class Browsers {
 
   // The login a browser on a website may use now, and the run's browser there if open: checked at every call and new connection,
   // and as its lending changes. One its runner must sign in to again is logged, so the instance carries on once they do.
-  lent(site: string) {
+  async lent(site: string) {
     try {
       // A try's stand-in instance (cli.ts) is in no workspace: any approved grant of its runner's does.
       const { email, login } = use(this.inst, this.run, `web:${site}`), had = this.bySite.get(site), t = tree(), ws = t.series[this.inst.seriesId]?.workspace;
       if (!approved(site, email, ws)) throw Object.assign(new HttpError(403, `${email} has no approved grant to use ${site}${ws ? ` in ${t.workspaces[ws].name}` : ''}: they ask its owners for one on the Logins page; this run goes on without it`), { refused: true });
       if (login.expired) throw Object.assign(new HttpError(409, `${email}'s login to ${site} has expired: they sign in to it again on the Logins page, and the instance carries on`), { login: login.id });
       if (had && had.email !== email) throw new HttpError(409, `this run's browser on ${site} is in ${had.email}'s login, and ${email} has taken the instance over: the next run opens one in theirs`);
-      return { email, login, had };
+      const w = website(email, site), via = await vpnVia(email, w), current = use(this.inst, this.run, `web:${site}`);
+      if (current.email !== email || current.login.since !== login.since || current.login.expired || website(email, site).via !== w.via || this.bySite.get(site) !== had) return this.lent(site);
+      if (!approved(site, email, tree().series[this.inst.seriesId]?.workspace)) throw Object.assign(new HttpError(403, `${email}'s grant to use ${site} was revoked; this run goes on without it`), { refused: true });
+      if (had && (had.via?.token !== via?.token || had.via?.url !== via?.url)) {
+        await this.close(site);
+        return this.lent(site);
+      }
+      return { email, login, had, via };
     } catch (e) {
       const { login, refused } = e as { login?: string; refused?: true };
       if (login) this.inst.append('server', 'expired', { run: this.run, login, name: site, runner: runnerOf(this.inst).by });
@@ -497,7 +519,8 @@ export class Browsers {
   async browser(site: string, conn?: Duplex): Promise<string | undefined> {
     for (let waited = false; ; waited = true) {
       if (this.ended) return undefined;
-      const { email, login, had } = site === PRINT ? { email: '', login: undefined, had: this.bySite.get(site) } : this.lent(site);
+      const { email, login, had, via } = site === PRINT ? { email: '', login: undefined, had: this.bySite.get(site), via: undefined } : await this.lent(site);
+      if (this.ended) return undefined;
       if (had) return had.id;
       if (this.opening.has(site)) return this.opening.get(site);
       const w = site === PRINT ? undefined : website(email, site), writeback = !!w?.writeback, key = `${email} ${site}`, other = writeback ? held.get(key) : undefined;
@@ -512,10 +535,10 @@ export class Browsers {
         let release!: () => void;
         held.set(key, { run: this, released: new Promise<void>(ok => { release = ok; }), release: () => release() });
       }
-      const opening = w ? open(w, 7200, state) : printer();
+      const opening = w ? open(w, 7200, state, via) : printer();
       const ready = opening.then(async id => {
         const n = (this.opens.get(site) ?? 0) + 1, file = `browser/run ${this.run} ${site}${n > 1 ? ` ${n}` : ''}.jsonl`;
-        const b = { id, email, since: login?.since ?? '', writeback, file, conns: 0 };
+        const b = { id, email, since: login?.since ?? '', writeback, file, conns: 0, via };
         this.opens.set(site, n);
         this.bySite.set(site, b);
         changes.emit('change', this.inst.id); // for its instance's page to show it
@@ -524,7 +547,9 @@ export class Browsers {
           await this.close(site);
           return undefined;
         }
-        if (site !== PRINT) try { this.lent(site); } catch (e) {
+        if (site !== PRINT) try {
+          if ((await this.lent(site)).had?.id !== id) return undefined;
+        } catch (e) {
           await this.close(site);
           throw e;
         }
@@ -569,7 +594,7 @@ export class Browsers {
 
   async closeUnlent() {
     await Promise.all([...this.bySite.keys()].filter(site => site !== PRINT).map(async site => {
-      try { this.lent(site); } catch { await this.close(site); }
+      try { await this.lent(site); } catch { await this.close(site); }
     }));
   }
 
@@ -607,7 +632,7 @@ export class Browsers {
   async download(site: string, path: string, res: ServerResponse) {
     let status = 200, bytes = 0, refused: string | undefined;
     try {
-      const { had } = this.lent(site);
+      const { had } = await this.lent(site);
       if (!had) throw new HttpError(409, `no browser on ${site} in this run: connect to it at $RF_BROWSERS/${site} first`);
       const file = await request('GET', files(had.id, path));
       file.on('data', c => (bytes += c.length));
@@ -685,10 +710,11 @@ export async function keepAlive(now = new Date()) {
     let release!: () => void;
     if (w.writeback) held.set(key, { released: new Promise<void>(ok => { release = ok; }), release: () => release() });
     try {
-      const page = new URL(w.keepalive ?? w.url, w.url), id = await open({ ...w, url: page.href, hosts: [] }, 300, JSON.parse(secret(email, login.id)));
+      const via = await vpnVia(email, w);
+      const page = new URL(w.keepalive ?? w.url, w.url), id = await open({ ...w, url: page.href, hosts: [] }, 300, JSON.parse(secret(email, login.id)), via);
       let shown: { url: string; password: boolean }, state: unknown;
       try {
-        shown = await json('GET', `/sessions/${id}/page`);
+        shown = await browserJson('GET', `/sessions/${id}/page`);
       } finally {
         ({ state } = await close(id));
       }
@@ -724,7 +750,7 @@ export async function serveBrowsers(b: Browsers, base: string, [site, what, ...p
     return void res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' }).end(`${BROWSERS}\n${mine.map(s => `  ${s}  ${sites[s].url}`).join('\n') || '  no website'}\n`);
   }
   if (req.method === 'GET' && what === 'json' && path.join('/').replace(/\/$/, '') === 'version') {
-    if (site !== PRINT) b.lent(site);
+    if (site !== PRINT) await b.lent(site);
     return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ webSocketDebuggerUrl: `ws://${req.headers.host}${base}/${site}` }));
   }
   if (req.method === 'GET' && what === 'downloads') return b.download(site, path.map(decodeURIComponent).join('/'), res);

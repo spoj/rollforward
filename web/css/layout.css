@@ -39,6 +39,12 @@ a { color: inherit; }
 .lsub > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .grant { display: grid; align-items: start; gap: 6px; padding-top: 8px; padding-bottom: 8px; }
 .grant .row2 .btn { margin-left: 0; }
+.website-via, .vpn-row .sub { display: block; }
+.vpn { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--rule); border-radius: var(--r1); }
+.vpn-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.vpn-row > span { flex: 1 1 16em; min-width: 0; }
+.vpn .err, .pvn.err { color: var(--red); white-space: pre-wrap; overflow-wrap: anywhere; }
+.vpn .err:empty { display: none; }
 .tgroup summary { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .tgroup summary .sub::after { content: ' \25B8'; }
 .log details.tgroup > summary::before, .log details.tgroup[open] > summary::before { content: none; }

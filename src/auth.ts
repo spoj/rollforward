@@ -19,9 +19,9 @@ export type User = { name?: string; role: Role; disabled?: boolean; sub?: string
 export type Me = { email: string; name: string; role: Role; groups: string[] };
 // Capabilities beyond what every user has, each granted by admins to people and Entra groups: publish, pushing skills, which every
 // run loads; create, making workspaces; and keepalive, keeping one's website logins alive (browsers.ts), which loads the website
-// every few minutes. Admins have them all.
-export const CAPS = ['publish', 'create', 'keepalive'], capabilities = () => readJson<Record<string, string[]>>('capabilities.json', {});
-export const can = (me: Me, cap: string) => me.role === 'admin' || isIn(me, capabilities()[cap] ?? []);
+// every few minutes. Admins have those implicitly; trial VPN access is explicit, even for admins.
+export const CAPS = ['publish', 'create', 'keepalive', 'vpn'], capabilities = () => readJson<Record<string, string[]>>('capabilities.json', {});
+export const can = (me: Me, cap: string) => cap === 'vpn' ? !!process.env.RF_TUNNEL_URL && isIn(me, capabilities()[cap] ?? []) : me.role === 'admin' || isIn(me, capabilities()[cap] ?? []);
 
 const env = process.env;
 const oidc = {
