@@ -22,14 +22,17 @@ const queue = new Map<string, Promise<unknown>>();
 
 // A closed instance's history no longer grows, so its objects go into one pack instead of a file each, and what a failed commit
 // left behind goes.
-export const pack = (dir: string) => git(dir, 'gc', '-q', '--prune=now');
+export function pack(dir: string) {
+  if (gone.has(dir)) return Promise.reject(new Error('the instance was deleted, with its history'));
+  const next = (queue.get(dir) ?? Promise.resolve()).then(() => git(dir, 'gc', '-q', '--prune=now'));
+  queue.set(dir, next.catch(() => {}));
+  return next;
+}
 
 // `after`, such as a run's sandbox stopping, comes first: the commit, and those queued after it, wait for it.
 export function commit(dir: string, who: Who, message: string, after?: Promise<unknown>): Promise<string> {
-  const next = (queue.get(dir) ?? Promise.resolve()).then(() => after).then(() => {
-    if (gone.has(dir)) throw new Error('the instance was deleted, with its history');
-    return snapshot(dir, who, message);
-  });
+  if (gone.has(dir)) return Promise.reject(new Error('the instance was deleted, with its history'));
+  const next = (queue.get(dir) ?? Promise.resolve()).then(() => after).then(() => snapshot(dir, who, message));
   queue.set(dir, next.catch(() => {}));
   return next;
 }
@@ -37,7 +40,7 @@ export function commit(dir: string, who: Who, message: string, after?: Promise<u
 // Once the folder's commits queued so far are done.
 export const committed = (dir: string) => queue.get(dir);
 
-// A deleted instance's folder takes no more commits: those queued go by, committing nothing, and the history can go once they have.
+// A deleted instance's folder takes no more commits or packing; its history can go once those already queued have finished.
 const gone = new Set<string>();
 export function forget(dir: string): Promise<unknown> {
   gone.add(dir);

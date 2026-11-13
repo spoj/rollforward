@@ -5,8 +5,24 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writ
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInstance, openStore, safeName } from '../src/store.ts';
+import { commit, forget } from '../src/git.ts';
 
 const alex = { email: 'alex', name: 'Alex' };
+
+test('deleting during a close never restores the instance or writes a close over its tombstone', async () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
+  openStore(tmp);
+  const inst = createInstance('monthly', 'deleted', 'alex', []), gate = Promise.withResolvers<void>();
+  const last = commit(inst.dir, alex, 'Last run', gate.promise), closing = inst.close(alex);
+  const forgotten = forget(inst.dir);
+  inst.markDeleted(alex.email, { cost: 0, runs: [] });
+  const refused = assert.rejects(closing, /deleted/);
+  gate.resolve();
+  await Promise.all([last, forgotten, refused]);
+  assert.equal(inst.doc.status, 'deleted');
+  assert.deepEqual(inst.log.map(e => e.op), ['delete']);
+  rmSync(tmp, { recursive: true, force: true });
+});
 
 test("a name is a folder's and a line's: slashes, control characters and line breaks become _, and AGENTS.md, where the view binds instructions, is refused", () => {
   assert.equal(safeName('Bank/rec\\Q1\nlines\u2028\u2029\x85\x7f'), 'Bank_rec_Q1_lines____');

@@ -255,9 +255,10 @@ export class Instance {
       hash = await commit(this.dir, by, `Close ${this.label}`);
       await pack(this.dir);
     } catch (e) {
-      this.doc.status = 'open';
+      if (this.doc.status !== 'deleted') this.doc.status = 'open';
       throw e;
     }
+    if (this.doc.status === 'deleted') throw new HttpError(409, `${this.label} was deleted during the close`);
     this.save();
     this.append(by.email, 'close', { ...(accepted.length && { accepted }), commit: hash });
   }
@@ -268,15 +269,13 @@ export class Instance {
     this.append(by, 'abandon');
   }
 
-  // Deleting leaves a hole: instance.json, its label and place in its series; a screen with no items, deleted; and a log of one
-  // entry, the delete, by whom and when, with what it cost (`fields`). Everything else in its folder goes, whatever a run left
-  // there. The log comes first, so a restart that cut it finds it deleted and clears what's left.
-  wipe(by: string, fields: Record<string, unknown>): Entry {
+  // The tombstone precedes waiting for runs and commits: a restart finishes clearing the folder.
+  markDeleted(by: string, fields: Record<string, unknown>): Entry {
     const e = { seq: this.log.length + 1, at: new Date().toISOString(), by, op: 'delete', ...fields };
     writeFileSync(join(this.dir, 'log.jsonl.tmp'), JSON.stringify(e) + '\n');
     renameSync(join(this.dir, 'log.jsonl.tmp'), join(this.dir, 'log.jsonl'));
     this.log = [e];
-    this.clear();
+    this.doc = { rev: this.doc.rev, status: 'deleted', items: [] };
     return e;
   }
 
@@ -287,6 +286,7 @@ export class Instance {
       this.save();
     }
     for (const name of readdirSync(this.dir, { encoding: 'buffer' })) if (!HOLE.includes(name.toString('latin1'))) wipe(Buffer.concat([Buffer.from(this.dir + sep), name]));
+    if (tree().series[this.seriesId].single) wipe(Buffer.from(join(this.series(), '.pylib')));
   }
 
   put(text: string, run: number) {

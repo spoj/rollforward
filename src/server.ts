@@ -723,12 +723,10 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // holds of it goes, but its id, label and place in its series, and who deleted it and when, with what its runs cost, for the
     // totals (waker.ts remove()); the system's log records it.
     if (!canManage(me, t.workspaces[t.series[inst.seriesId].workspace])) throw new HttpError(403, "only the workspace's owners and admins delete an instance");
-    const path = `${named(t, inst.seriesId)}/${inst.label}`;
     await remove(inst, by, () => ({ cost: costOf(inst), runs: runsOf(inst).map(({ started, error, ...r }) => r) }));
     for (const p of previewed.get(inst.id) ?? []) rmSync(p, { force: true });
     previewed.delete(inst.id);
     for (const k of sums.keys()) if (k.startsWith(inst.dir + sep)) sums.delete(k);
-    act(by, { method: 'POST', path: url.pathname, deleted: path });
     return send(res, 200, 'ok');
   }
   if (action === 'duplicate') {
