@@ -909,7 +909,7 @@ test('a deployment service gets streamed requests only under the runner\'s ticke
     });
     await t.test('ticks are prefix boundaries, and raw traversal and encoding tricks never reach the service', async () => {
       const before = requests.length;
-      for (const path of ['/AP', '/APother/x', '/GL/2026/file', '/AP/../AP/file', '/AP/%2e%2e/AP/file', '/AP/.%2E/AP/file', '/AP/./file', '/AP/%2ffile', '/AP/x%5cfile', '/AP/%252e%252e/file', '/AP//file', '/AP/%00file', '/AP/%', '/AP/x#ignored', '/AP/..\\AP/file']) {
+      for (const path of ['/AP', '/APother/x', '/GL/2026/file', '/AP/../AP/file', '/AP/%2e%2e/AP/file', '/AP/.%2E/AP/file', '/AP/./file', '/AP/%2ffile', '/AP/x%5cfile', '/AP/%252e%252e/file', '/AP//file', '/AP/%00file', '/AP/%', '/AP/x#ignored', '/AP/..\\AP/file', '/AP/..;/GL/2026/file', '/AP/%2e%2e%3bx/GL/2026/file', '/AP/..%20/GL/2026/file', '/AP/.../file', '/AP/%20/file']) {
         const r = await via('PUT', S, { token: 'service', path, body: 'not sent' });
         assert.equal(r.status, 403, path);
         assert.match(r.text, /ticked prefixes: AP\//, path);

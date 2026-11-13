@@ -17,8 +17,8 @@ export default {
     const refuse = (why: string) => new HttpError(403, `${why}; ${c.name}'s ticked prefixes: ${prefixes.join(', ') || 'none'}`);
     let path: string;
     try { path = decodeURIComponent(target); } catch { throw refuse('invalid path encoding'); }
-    if (!target.startsWith('/') || target.startsWith('//') || /[%\\?#\x00-\x1f\x7f]/.test(path) || path.slice(1).split('/').some((s, i, parts) => s === '.' || s === '..' || (!s && i < parts.length - 1)) || /%2f/i.test(target))
-      throw refuse('a path has no empty, . or .. part, encoded separator, backslash or nested encoding');
+    if (!target.startsWith('/') || target.startsWith('//') || /[%\\?#\x00-\x1f\x7f]/.test(path) || path.slice(1).split('/').some((s, i, parts) => /^[. ]+(;|$)/.test(s) || (!s && i < parts.length - 1)) || /%2f/i.test(target))
+      throw refuse('a path has no empty part, no part of dots and spaces alone or before ;, as .. or ..;, no encoded separator, backslash or nested encoding');
     const prefix = prefixes.find((p: string) => path.startsWith(`/${p}`));
     if (!prefix) throw refuse(`${path} is under no prefix ticked for this instance`);
     return { offer: `${c.name}:${prefix}` };
