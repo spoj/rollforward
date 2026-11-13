@@ -984,7 +984,7 @@ test('rf close --as-series closes before promoting: a refused close leaves the t
   assert.deepEqual((await json(`/api/instances/${instance}`)).log.map((e: { op: string }) => e.op), ['create', 'takeover', 'close', 'promote']);
 });
 
-test('rf acts on an instance as the page does: react, creds, rename, takeover, interrupt, signoff, close, as a series for a task, abandon and correct', async () => {
+test('rf acts on an instance as the page does: react, creds, rename, takeover, interrupt, approve and reject, close, as a series for a task, abandon and correct', async () => {
   const b = sessionOf(await login(bob))!, rows = async () => JSON.parse(await rf('ls', '--json')) as { path: string; id: string; status?: string; runner?: string }[];
   const shown = JSON.parse(await rf('show', 'Reads/Notes/a1', '--json')), on = shown.waiting[0].comment;
   assert.equal(await rf('react', 'Reads/Notes/a1', on, 'up'), `up on ${on}\n`);
@@ -1010,10 +1010,12 @@ test('rf acts on an instance as the page does: react, creds, rename, takeover, i
   await assert.rejects(rf('interrupt', 'Readings/Jots/b1'), fails(1, /^rf: POST \/api\/instances\/\w+\/interrupt: 409 no run going\n$/));
   const stop = await call('POST', `/api/instances/${his}/interrupt`, undefined, b);
   assert.deepEqual([stop.status, await stop.text()], [403, `only its runner, ${adminEmail}, the workspace's owners and admins stop its run`], 'bob sees it, but neither runs it now nor owns its workspace');
-  await assert.rejects(rf('signoff', 'Readings/Jots/b1', 'c1'), fails(1, /: 409 c1 is no ask of the agent's\n$/));
-  await assert.rejects(rf('signoff', 'Readings/Jots/b1', 'c1', 'Fine.', 'more'), fails(2, /^rf signoff PATH cN \[TEXT\]/));
+  await assert.rejects(rf('approve', 'Readings/Jots/b1', 'c1'), fails(1, /^rf: POST \/api\/instances\/\w+\/signoff: 409 c1 is no proposal of the agent's\n$/));
+  await assert.rejects(rf('reject', 'Readings/Jots/b1', 'c1', 'No.'), fails(1, /^rf: POST \/api\/instances\/\w+\/reject: 409 c1 is no proposal of the agent's\n$/));
+  await assert.rejects(rf('approve', 'Readings/Jots/b1', 'c1', 'Fine.', 'more'), fails(2, /^rf approve PATH cN \[TEXT\]/));
+  await assert.rejects(rf('signoff', 'Readings/Jots/b1', 'c1'), fails(2, /^rf login URL/), 'rf approve is the command now');
   const reject = await call('POST', `/api/instances/${his}/signoff`, JSON.stringify({ thread: 'c1', approved: false }));
-  assert.deepEqual([reject.status, await reject.text()], [400, 'a sign-off approves; to say no, reply in the thread'], "rf 0.12's reject, still in use");
+  assert.deepEqual([reject.status, await reject.text()], [400, 'a sign-off approves; to say no, reject it, on the page or with rf reject'], "rf 0.12's reject, still in use");
   assert.equal(await rf('close', 'Readings/Jots/a2'), 'closed Readings/Jots/a2\n');
   assert.equal(await rf('react', 'Readings/Jots/a2', 'none'), 'none on Readings/Jots/a2\n', 'a closed instance takes reactions');
   assert.match(await rf('correct', 'Readings/Jots/a2', 'The rate was a day stale.', '--see', 'b1'), /^a2 is marked wrong, seq \d+\n$/);

@@ -240,7 +240,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
       'rf ask --to stranger@example.com Which bank? 2>&1',
       'rf ask Is the bank file coming today? 2>&1',
       'rf say --on nope x 2>&1',
-      () => `rf say --in ${walls.saw[12].match(/c\d+/)![0]} It came, never mind. 2>&1`,
+      () => `rf say --in ${walls.saw[12].match(/c\d+/)![0]} It came, never mind. 2>&1; rf withdraw ${walls.saw[12].match(/c\d+/)![0]} It came. 2>&1`,
       `curl -s -m 10 https://openrouter.ai/api/v1/chat/completions -H 'content-type: application/json' -d '{"model": "openai/gpt-5-mini", "messages": [{"role": "user", "content": "Is this right?"}]}'`,
       'curl -s -m 10 https://openrouter.ai/api/v1/credits',
       'echo 1 > working/x.csv && rf say "Cited [x](working/x.csv), as [last time](../2026-11/working/x.csv)." 2>&1',
@@ -277,7 +277,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.match(walls.saw[11], /stranger@example.com can't see this instance; ask its runner, admin@demo.test/);
   assert.match(walls.saw[12], /^asked c\d+\s*$/);
   assert.match(walls.saw[13], /no item nope/);
-  assert.match(walls.saw[14], new RegExp(`^said c\\d+, under ${walls.saw[12].trim().slice(6)}\\s*$`), 'the agent withdraws its ask by replying under it');
+  assert.match(walls.saw[14], new RegExp(`^said c\\d+, under ${walls.saw[12].trim().slice(6)}\\nwithdrew ${walls.saw[12].trim().slice(6)}\\s*$`), 'a reply under its own question withdraws nothing, rf withdraw does');
   assert.match(walls.saw[15], /"content":"A second opinion"/, 'any model, through OpenRouter, with the server\'s key');
   assert.match(walls.saw[16], /^\{\}\s*$/, "any request reaches OpenRouter, with the server's key");
   assert.match(walls.saw[17], /^said c\d+\s*$/, 'a post links files in its text');
@@ -405,7 +405,7 @@ test("a run reads what its workspace's links let it as it started: someone joini
   assert.deepEqual(ran.map((r: { outcome: string }) => r.outcome), ['cut', 'cut', 'done'], 'each carried on by the next, as after a restart');
 });
 
-test("sign-offs are git commits: the agent commits a moment worth keeping and pins what it asks about; anyone who sees the instance signs it off in their name, someone else's a note for the runner; closing commits as the runner's", async () => {
+test("approvals are git commits: the agent commits a moment worth keeping and proposes what it will do; anyone who sees the instance approves it in their name, someone else's a note for the runner, or rejects it; a reply under it approves nothing, a question takes no approval, and the agent withdraws what it no longer needs; closing commits as the runner's", async () => {
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Signed' })).json();
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB] })).status, 200);
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Pack' })).json();
@@ -418,12 +418,22 @@ test("sign-offs are git commits: the agent commits a moment worth keeping and pi
       'echo 100 > working/pack.csv && rf commit Draft pack built 2>&1',
       "git log --format='%an|%s' 2>&1; echo 200 > working/pack.csv; git status --short 2>&1",
       'git commit --allow-empty -qm mine 2>&1 | head -1',
-      'rf ask "The pack is ready to send to the bank: [pack](working/pack.csv)" 2>&1',
+      'rf propose "The pack is ready to send to the bank: [pack](working/pack.csv)" 2>&1',
+      'rf ask "Which bank account does it go to?" 2>&1',
     ],
-    report: 'Built the pack; asked for a sign-off.', saw: [],
+    report: 'Built the pack; proposed sending it.', saw: [],
   };
-  const again: Script = { bash: ['echo 250 > working/pack.csv && rf ask "The rate is fixed: send it now?" 2>&1'], report: 'Fixed the rate in place; asked again.', saw: [] };
-  const approved: Script = { bash: [], report: 'Signed off: sending.', saw: [] };
+  const question = () => ask.saw[4].match(/c\d+/)![0];
+  const again: Script = {
+    bash: [
+      'echo 250 > working/pack.csv && rf propose "The rate is fixed: send it now?" 2>&1',
+      () => `rf withdraw ${question()} --see ${ask.saw[3].match(/c\d+/)![0]} The file names the account. 2>&1`,
+      () => `rf withdraw ${question()} Again. 2>&1`,
+      'rf withdraw c1 2>&1',
+    ],
+    report: 'Fixed the rate in place; proposed again.', saw: [],
+  };
+  const approved: Script = { bash: [], report: 'Approved: sending.', saw: [] };
   scripts.push(ask, again, approved);
 
   assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Build the pack.' })).status, 200);
@@ -431,27 +441,41 @@ test("sign-offs are git commits: the agent commits a moment worth keeping and pi
   assert.match(ask.saw[0], /^committed [0-9a-f]{40}\s*$/);
   assert.match(ask.saw[1], /^rollforward agent\|Draft pack built\n[^]* M working\/pack.csv/, 'the run reads its history, and sees what changed since');
   assert.match(ask.saw[2], /Read-only file system|Permission denied|unable to/i, 'and never writes it');
-  assert.match(ask.saw[3], /^asked c\d+/);
+  assert.match(ask.saw[3], /^proposed c\d+/);
+  assert.match(ask.saw[4], /^asked c\d+/);
   assert.deepEqual(log.filter(e => e.op === 'commit').map(e => [e.by, e.run, e.message, e.commit]), [['agent', 2, 'Draft pack built', git('rev-parse', ':/^Draft pack built')]]);
-  const first = log.findLast(e => e.op === 'comment')!, pack = join(dir, 'working', 'pack.csv');
-  const signoff = (body: object, cookie = admin) => call('POST', `/api/instances/${id}/signoff`, { thread: first.thread, ...body }, cookie);
+  const first = log.findLast(e => e.op === 'comment' && e.ask === 'proposal')!, pack = join(dir, 'working', 'pack.csv');
+  const decide = (how: string, body: object, cookie = admin) => call('POST', `/api/instances/${id}/${how}`, { thread: first.thread, ...body }, cookie);
   assert.deepEqual([first.files, statSync(pack).mode & 0o222 && 'writable'], [undefined, 'writable'], 'what it links stays the agent\'s');
+  const refused = await decide('signoff', { thread: question() });
+  assert.deepEqual([refused.status, await refused.text()], [409, `${question()} is no proposal of the agent's`], 'a question takes no approval');
 
-  assert.equal((await signoff({ text: 'Fine by me.' }, bob)).status, 200, 'anyone who sees it');
+  assert.equal((await decide('signoff', { text: 'Fine by me.' }, bob)).status, 200, 'anyone who sees it');
   ({ log } = await (await call('GET', `/api/instances/${id}`)).json());
   const bobs = log.findLast(e => e.op === 'signoff')!;
   assert.deepEqual([bobs.by, bobs.on, bobs.note, log.filter(e => e.op === 'run').length], [BOB, first.seq, true, 2], "someone else's is a note for the runner, which starts no run");
   assert.equal(git('log', '-1', '--format=%an <%ae>%n%B', String(bobs.commit)), `Bob <${BOB}>\nThe pack is ready to send to the bank: [pack](working/pack.csv)\n\nFine by me.\n\nSigned-off-by: Bob <${BOB}>`);
   assert.equal(git('show', `${bobs.commit}:working/pack.csv`), '200', 'the folder as they said yes');
-  assert.equal((await call('POST', `/api/instances/${id}/comment`, { thread: first.thread, text: 'Use the new rate.' })).status, 200, 'saying no is a reply');
+  assert.equal((await decide('reject', { text: 'Use the new rate.' })).status, 200, 'the runner says no');
   log = await runs(id, 3);
-  assert.match(again.prompt!, /"op":"signoff".*"note":true[^]*"text":"Use the new rate\."/, 'the run reads the note, then the reply');
+  const no = log.findLast(e => e.op === 'reject')!;
+  assert.deepEqual([no.by, no.thread, no.on, no.text, no.commit], [ADMIN, first.thread, first.seq, 'Use the new rate.', undefined], 'a rejection commits nothing');
+  assert.match(again.prompt!, /"op":"signoff".*"note":true[^]*"op":"reject".*"text":"Use the new rate\."/, 'the run reads the note, then the rejection');
+  assert.match(again.saw[1], new RegExp(`^withdrew ${question()}\\s*$`));
+  assert.match(again.saw[2], new RegExp(`${question()} is no question or proposal of yours still waiting; those that are: c\\d+`), 'once');
+  assert.match(again.saw[3], /^rf withdraw cN \[--see cM\] REASON/, 'a withdrawal says why');
+  const withdrawn = log.find(e => e.op === 'withdraw')!;
+  assert.deepEqual([withdrawn.by, withdrawn.run, `c${withdrawn.on}`, withdrawn.text, withdrawn.see], ['agent', 3, question(), 'The file names the account.', first.seq]);
 
-  const next = log.findLast(e => e.op === 'comment')!;
-  assert.equal((await signoff({ thread: next.thread, text: 'Go.' })).status, 200);
+  const next = log.findLast(e => e.op === 'comment' && e.ask === 'proposal')!, waiting = async () => (await (await call('GET', `/api/instances/${id}`)).json()).waiting.map((w: { seq: number }) => w.seq);
+  assert.deepEqual(await waiting(), [next.seq], 'a rejected proposal and a withdrawn question wait no more');
+  assert.equal((await decide('comment', { thread: next.thread, text: 'Go ahead.', quiet: true })).status, 200);
+  assert.deepEqual(await waiting(), [next.seq], 'a reply, however worded, approves nothing');
+  assert.equal((await decide('signoff', { thread: next.thread, text: 'Go.' })).status, 200);
   log = await runs(id, 4);
   const yes = log.findLast(e => e.op === 'signoff')!;
-  assert.equal(yes.on, next.seq, 'the ask it names');
+  assert.equal(yes.on, next.seq, 'the proposal it names');
+  assert.deepEqual(await waiting(), []);
   assert.equal(git('log', '-1', '--format=%an%n%B', String(yes.commit)), 'Demo Admin\nThe rate is fixed: send it now?\n\nGo.\n\nSigned-off-by: Demo Admin <admin@demo.test>');
   assert.equal(git('diff', String(bobs.commit), String(yes.commit), '--', 'working/pack.csv').split('\n').filter(l => /^[-+]\d/.test(l)).join(' '), '-200 +250', 'git diff between sign-offs shows what changed');
   assert.match(git('show', `${yes.commit}:log.jsonl`), /"op":"signoff","thread":"c\d+","on":\d+,"text":"Fine by me\."/, 'the whole folder, its log included');
@@ -462,9 +486,9 @@ test("sign-offs are git commits: the agent commits a moment worth keeping and pi
   assert.equal(git('log', '-1', '--format=%an%n%B'), 'Demo Admin\nClose 2026-12');
   assert.deepEqual(git('log', '--reverse', '--format=%an|%s').split('\n'), [
     'rollforward agent|Run 1', 'rollforward agent|Draft pack built', 'rollforward agent|Run 2',
-    'Bob|The pack is ready to send to the bank: [pack](working/pack.csv)', 'rollforward agent|Run 3', 'Demo Admin|The rate is fixed: send it now?',
+    'Bob|The pack is ready to send to the bank: [pack](working/pack.csv)', 'rollforward agent|Run 3', `Demo Admin|Comment in ${next.thread}`, 'Demo Admin|The rate is fixed: send it now?',
     'rollforward agent|Run 4', 'Demo Admin|Close 2026-12',
-  ], "each run's end, the agent's commit, the two sign-offs and the close");
+  ], "each run's end, the agent's commit, the two approvals, the quiet reply and the close");
   const pulled = await (await call('GET', '/api/files?path=Signed/Pack/2026-12')).json();
   assert.ok(pulled.length && !pulled.some((f: { path: string }) => f.path.includes('/.git/')), 'rf pull leaves the history out');
   const { id: copy } = await (await call('POST', `/api/instances/${id}/duplicate?as=copy`, { logins: [] })).json();
