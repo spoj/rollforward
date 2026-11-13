@@ -2059,11 +2059,24 @@ async function drain() {
   busy = false;
   drain();
 }
-const events = new EventSource('/api/events');
-events.onmessage = e => { pend.add(e.data); drain(); };
-events.onopen = () => { pend.add('tree'); drain(); };
-// The browser gives up on a stream that comes back with an error, as during a deploy or once the session has ended.
-events.onerror = () => events.readyState === EventSource.CLOSED && setTimeout(() => location.reload(), 5000);
+// The browser gives up on a stream that comes back with an error, as during a deploy behind a proxy or once the session has ended: the
+// page asks who it is every 5 s until the server answers, reloading only to sign in again, and else listens again, catching up as it
+// opens, so a restart keeps what is being written.
+function listen() {
+  const events = new EventSource('/api/events');
+  events.onmessage = e => { pend.add(e.data); drain(); };
+  events.onopen = () => { pend.add('tree'); drain(); };
+  events.onerror = async () => {
+    if (events.readyState !== EventSource.CLOSED) return;
+    for (;;) {
+      await new Promise(ok => setTimeout(ok, 5000));
+      const r = await fetch('/me').catch(() => null);
+      if (r?.status === 401) return location.reload();
+      if (r?.ok) return listen();
+    }
+  };
+}
+listen();
 addEventListener('visibilitychange', drain);
 // The rows' ages move on as the minutes pass.
 setInterval(renderSide, 60_000);

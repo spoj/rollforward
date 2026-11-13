@@ -1276,6 +1276,22 @@ test("a link opened signed out lands where it points once signed in, and a sessi
   } finally { await context.close(); }
 });
 
+test("a page whose event stream fails, as behind a proxy while the server restarts, waits for the server rather than reloading, then listens again and catches up", async () => {
+  const tab = await browser.newPage({ storageState: await page.context().storageState() }), down = (r: { fulfill: (o: object) => Promise<void> }) => r.fulfill({ status: 502, body: '' });
+  try {
+    await tab.route('**/api/events', down);
+    await tab.goto(new URL('/#/a5c0ff5e1f07', page.url()).href);
+    await tab.waitForSelector('#bar h1 .t:text-is("January")');
+    await tab.route('**/me', down);
+    await tab.evaluate(() => { (window as unknown as { kept: boolean }).kept = true; });
+    await tab.waitForTimeout(7000);
+    await tab.unrouteAll();
+    await page.evaluate(() => api('/api/instances/a5c0ff5e1f07/comment', { method: 'POST', body: JSON.stringify({ text: 'Said while it was away.', quiet: true }) }));
+    await tab.waitForFunction(() => data.log.some((e: { text?: string }) => e.text === 'Said while it was away.'), null, { timeout: 15_000 });
+    assert.equal(await tab.evaluate(() => (window as unknown as { kept?: boolean }).kept), true, 'never reloaded');
+  } finally { await tab.close(); }
+});
+
 test("a comment or reply uploading attachments posts to its original instance after navigation", async () => {
   const tab = await browser.newPage({ storageState: await page.context().storageState() });
   try {
