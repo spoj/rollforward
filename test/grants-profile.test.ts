@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { initSystem, saveTree, writeJson } from '../src/system.ts';
+import { initSystem, saveTree, tree, writeJson } from '../src/system.ts';
 import { upsertUser, type Me } from '../src/auth.ts';
 import { changeWebsite, websitesOf, type Profile } from '../src/browsers.ts';
 import { logins, personDir, saveLogin } from '../src/logins.ts';
 import { createInstance, duplicateInstance, openStore } from '../src/store.ts';
-import { approved, ask, decide, forgetGrants, forgetWorkspace, grants, lapse, revoke, visible, type Grant } from '../src/grants.ts';
+import { approved, ask, decide, forgetGrants, forgetWorkspace, grants, lapse, revoke, unapproved, visible, type Grant } from '../src/grants.ts';
 
 const person: Me = { email: 'bob@demo.test', name: 'Bob Baker', role: 'user', groups: [] };
 const owner: Me = { email: 'alice@demo.test', name: 'Alice Owner', role: 'user', groups: [] };
@@ -158,6 +158,42 @@ test('general-purpose, high-risk, unchecked and legacy high-risk grants need adm
   writeJson('grants.json', { g: { ...grant, check: { error: 'Old model was unavailable' } } });
   assert.ok(visible(owner)[0].flags.includes('The old check failed: Old model was unavailable'));
   decide(owner, 'g', true, '');
+});
+
+test('whoever may approve their own ask has it approved as they ask, by them, but what the check reserves for admins waits for one; a refused run names the step and whose it is', async () => {
+  const group = '6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b', t = tree();
+  saveTree({ ...t, groups: { [group]: 'Finance HK' }, workspaces: { ...t.workspaces,
+    mine: { name: 'Mine', owners: [person.email], members: [] }, team: { name: 'Team', owners: [group, owner.email], members: [person.email] }, none: { name: 'Nobody', owners: [], members: [] } } });
+  const refused = (ws: string, then: string) => `bob@demo.test has no approved grant to use portal in ${ws}, so this run goes on without it: ${then}`;
+  assert.equal(unapproved(person.email, 'portal', 'mine'), refused('Mine', "they ask for one on the Logins page, under portal, choosing Mine, and, as they're an owner of Mine, it's approved at once"));
+  assert.equal(unapproved(person.email, 'portal', 'team'), refused('Team', "they ask for one on the Logins page, under portal, choosing Team, and it then waits on Team's owners, Finance HK and Alice Owner, to approve it"));
+  assert.equal(unapproved(person.email, 'portal', 'none'), refused('Nobody', 'they ask for one on the Logins page, under portal, choosing Nobody, and it then waits on an admin to approve it'));
+  assert.equal(unapproved(person.email, 'portal'), 'bob@demo.test has no approved grant to use portal: they ask for one on the Logins page, under portal; this run goes on without it', "a try's instance is in no workspace");
+
+  const own = await ask(person, 'portal', 'mine', grant.reason), at = grants()[own.id];
+  assert.deepEqual([own.state, own.said], ['approved', "Approved at once, as you're an owner of Mine."]);
+  assert.deepEqual(Object.keys(at), ['workspace', 'person', 'site', 'reason', 'at', 'state', 'by', 'decided'], 'recorded as their approval is, with no text');
+  assert.deepEqual([at.state, at.by, Date.parse(at.decided!) >= Date.parse(at.at)], ['approved', person.email, true]);
+  assert.equal(approved('portal', person.email, 'mine'), true);
+  const asked = await ask(person, 'portal', 'team', grant.reason);
+  assert.deepEqual([asked.state, asked.said, grants()[asked.id].state], ['pending', "Asked: it waits on Team's owners, Finance HK and Alice Owner, to approve it.", 'pending']);
+  assert.equal(unapproved(person.email, 'portal', 'team'), refused('Team', `they asked for one on ${grants()[asked.id].at.slice(0, 10)}, which waits on Team's owners, Finance HK and Alice Owner, to approve it`));
+
+  forgetGrants(person.email, 'portal');
+  changeWebsite(person.email, 'portal', { profile: { ...profile, category: 'general' } });
+  assert.equal(unapproved(person.email, 'portal', 'mine'), refused('Mine', 'they ask for one on the Logins page, under portal, choosing Mine, and it then waits on an admin to approve it, as this is a general-purpose website'));
+  const reserved = await ask(person, 'portal', 'mine', grant.reason);
+  assert.deepEqual([reserved.state, reserved.said], ['pending', 'Asked: it waits on an admin to approve it, as this is a general-purpose website.'], 'an owner asking for what the check reserves for admins waits for one');
+  assert.equal(unapproved(person.email, 'portal', 'mine'), refused('Mine', `they asked for one on ${grants()[reserved.id].at.slice(0, 10)}, which waits on an admin to approve it, as this is a general-purpose website`));
+  decide(admin, reserved.id, true, '');
+
+  saveTree({ ...tree(), workspaces: { ...tree().workspaces, mine: { name: 'Mine', owners: [], members: [person.email] } } });
+  writeJson('grants.json', { old: { ...grant, workspace: 'mine', person: admin.email } });
+  saveLogin(admin.email, { id: 'web:portal', kind: 'website', name: 'portal', since: grant.at, offers: [{ id: 'web:portal', name: 'portal' }] });
+  writeFileSync(join(personDir(admin.email), 'websites.json'), JSON.stringify({ portal: { ...websitesOf(person.email).portal } }));
+  assert.equal(unapproved(admin.email, 'portal', 'mine'), `admin@demo.test has no approved grant to use portal in Mine, so this run goes on without it: they asked for one on 2026-11-02, which waits on them, as an admin, to approve it under Waiting on you`, 'a request from before asking approved at once waits on whoever may decide it');
+  const mine = await ask(admin, 'portal', 'team', grant.reason);
+  assert.deepEqual([mine.state, mine.said, grants()[mine.id].by], ['approved', "Approved at once, as you're an admin.", admin.email], 'an admin, even of a general-purpose website');
 });
 
 test('approved usage counts distinct runs with browser summaries and writes, scoped to workspace, person and site, excluding copied history', () => {
