@@ -24,7 +24,8 @@ rf cat PATH/FILE                  one file, to stdout
 rf pull PATH DIR [--delete] [-n|--dry-run] [--exclude PATTERN]... [--max-size SIZE]
                                   PATH's files into DIR as rsync copies them, whole, if their size or time differ: PATH/ fills DIR,
                                   PATH makes DIR/<its name>, / is all you see; --delete removes what the server no longer has;
-                                  --max-size skips files bigger than SIZE, such as 50M
+                                  --max-size skips files bigger than SIZE, such as 50M; on Windows and macOS, of two names
+                                  that differ only in case, the second is skipped
 rf help [COMMAND]                 how rollforward works and how to use rf, for an agent, or COMMAND's usage
 rf --version                      rf's own version, to tell whether it's older than what the guide names
 rf comment PATH TEXT [--item ID] [--ref REF] [--thread cN] [--wake|--wait]   a new thread, or a reply under comment cN, as to
@@ -347,12 +348,20 @@ async function pull(path: string, dir: string) {
   const into = !from || at.endsWith('/') ? to : under(to, from.slice(from.lastIndexOf('/') + 1)), rel = (f: { path: string }) => f.path.slice(from ? from.length + 1 : 0);
   if (!into) throw new Error(`${from} can't be a name here: pull ${from}/ into a folder of your choosing`);
   let fetched = 0, same = 0, deleted = 0, failed = 0, big = 0;
-  const fetches: (() => Promise<void>)[] = [];
+  const fetches: (() => Promise<void>)[] = [], cased = new Map<string, string>();
   for (const f of list.filter(f => !excluded(rel(f)))) {
     const local = rel(f) ? under(into, rel(f)) : into, st = local && existsSync(local) ? statSync(local) : undefined;
     if (!local) {
       console.error(`skipped ${f.path}: it can't be a file's name here`);
       continue;
+    }
+    // Windows' and macOS's disks take two names that differ only in case for one file: the second is skipped.
+    if (['win32', 'darwin'].includes(process.platform)) {
+      if (cased.has(f.path.toLowerCase())) {
+        console.error(`skipped ${f.path}: this disk takes it for ${cased.get(f.path.toLowerCase())}, which differs only in case`);
+        continue;
+      }
+      cased.set(f.path.toLowerCase(), f.path);
     }
     if (st && st.size === f.size && Math.floor(st.mtimeMs / 1000) === Math.floor(Date.parse(f.mtime) / 1000)) {
       same++;

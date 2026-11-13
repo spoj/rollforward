@@ -1,6 +1,6 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
@@ -949,6 +949,18 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   writeFileSync(file, `user ${bob}\n`);
   await assert.rejects(rf('people', '--set', file), /Guarded\/Weekly\/one, run by Bob <bob@demo\.test>/);
   assert.match(await rf('people', '--set', file, '--force'), /^bob@demo\.test: admin -> user\nsaved$/m);
+});
+
+test("rf pull on Windows or macOS, whose disks ignore case, skips the second of two files whose names differ only in case, saying so, rather than writing both to one file", async () => {
+  const { id: workspace } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Cases' }))).json();
+  const { id: s } = await (await call('POST', '/api/series', JSON.stringify({ workspace, name: 'Rec' }))).json();
+  const { id } = await (await call('POST', `/api/series/${s}`, JSON.stringify({ label: 'jan', quiet: true }))).json();
+  for (const name of ['AR.csv', 'ar.csv']) assert.equal((await call('POST', `/api/instances/${id}/upload?pane=in&quiet&name=${name}`, name)).status, 200);
+  const dest = join(tmp, 'pull-cases'), { stdout, stderr } = spawnSync(process.execPath, ['--import', "data:text/javascript,Object.defineProperty(process, 'platform', { value: 'darwin' })",
+    join(app, 'src', 'rf-people.ts'), 'pull', 'Cases/Rec/jan/upload/', dest], { env: { ...process.env, HOME: home }, encoding: 'utf8' });
+  assert.equal(stderr, 'skipped Cases/Rec/jan/upload/ar.csv: this disk takes it for Cases/Rec/jan/upload/AR.csv, which differs only in case\n');
+  assert.match(stdout, /fetched 1, /);
+  assert.deepEqual(readdirSync(dest), ['AR.csv']);
 });
 
 test("rf pull refuses a link where a folder goes, dangling ones too, but follows its destination's and replaces a file's own", async () => {
