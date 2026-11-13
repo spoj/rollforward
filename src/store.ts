@@ -241,12 +241,12 @@ export class Instance {
   }
 
   // Whether a comment waits no more: the agent withdrew it; a proposal was approved (signoff) or rejected; a question has a person's
-  // reply under it, and any other comment anyone's. An ask from before questions and proposals, `ask: true`, takes any of these, its
-  // agent's reply withdrawing it; and from before replies named what they answer, any later word in its thread.
+  // reply under it, and any other comment anyone's; a close accepted it. An ask from before questions and proposals, `ask: true`,
+  // takes any of these, its agent's reply withdrawing it; and from before replies named what they answer, any later word in its thread.
   answered(c: Entry): boolean {
-    return this.log.some(e => e.seq > c.seq && e.thread === c.thread && (e.on === c.seq ? ['signoff', 'reject', 'withdraw'].includes(e.op)
+    return this.log.some(e => e.seq > c.seq && (e.op === 'close' && (e.accepted as string[] | undefined)?.includes(`c${c.seq}`) || e.thread === c.thread && (e.on === c.seq ? ['signoff', 'reject', 'withdraw'].includes(e.op)
       : e.parent === c.seq ? e.op === 'comment' && c.ask !== 'proposal' && !(c.ask === 'question' && e.by === 'agent')
-      : e.parent === undefined && e.on === undefined && ['comment', 'signoff', 'resolve'].includes(e.op)));
+      : e.parent === undefined && e.on === undefined && ['comment', 'signoff', 'resolve'].includes(e.op))));
   }
 
   // The agent's asks still waiting on people: those no one answered.

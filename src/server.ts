@@ -908,6 +908,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (inst.log.some(e => e.op === 'withdraw' && e.on === ask.seq)) throw new HttpError(409, `the agent withdrew ${thread}`);
     const decided = ask.ask === 'proposal' && inst.log.find(e => e.on === ask.seq && (e.op === 'signoff' || e.op === 'reject'));
     if (decided) throw new HttpError(409, `${thread} was ${decided.op === 'signoff' ? 'approved' : 'rejected'} already, by ${decided.by}`);
+    const closed = inst.log.find(e => e.op === 'close' && (e.accepted as string[] | undefined)?.includes(thread));
+    if (closed) throw new HttpError(409, `${thread} was accepted as done at the close, by ${closed.by}`);
     const note = typeof text === 'string' ? text.trim() : '';
     if (action === 'reject') inst.append(by, 'reject', { thread: ask.thread, on: ask.seq, ...(note && { text: note }), ...(quiet && { quiet: true }) });
     else {
