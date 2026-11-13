@@ -259,7 +259,13 @@ export async function endSignIn(email: string, id: string, save: boolean, keepal
   let expired = Date.now() >= expires;
   if (save && !expired) {
     const log = await json('GET', `/sessions/${id}/log`).catch(e => { signIns.delete(id); throw e; });
-    currentSignIn(signing);
+    try { currentSignIn(signing); } catch (e) {
+      if (signIns.get(id) === signing) {
+        signIns.delete(id);
+        await close(id);
+      }
+      throw e;
+    }
     if (!log.some((e: Entry) => e.live)) throw new HttpError(409, 'Take control and sign in first, then Save login.');
   }
   if (!save && signInGenerations.get(key) === generation) signInGenerations.set(key, generation + 1);
