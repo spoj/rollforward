@@ -1,6 +1,6 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInstance, instance, labels, openStore, renameInstance, Instance } from '../src/store.ts';
@@ -124,6 +124,17 @@ test('a process.md a run made unreadable is none to the server, so the next run 
   while (!locked.log.some(e => e.op === 'done')) await new Promise(r => setTimeout(r, 5));
   await committed(locked.dir);
   assert.equal(statSync(md).mode & 0o777, 0o400);
+});
+
+test('a process.md over 1 MB is none to the server, which would fail to read one over 512 MB as text, at every start', async () => {
+  const huge = make('s8', 'huge'), md = join(huge.dir, 'working', 'process.md');
+  writeFileSync(md, '');
+  truncateSync(md, 600 * 2 ** 20);
+  huge.append(alice, 'comment', { thread: 'n1', text: 'go' });
+  kick(huge);
+  while (!huge.log.some(e => e.op === 'done')) await new Promise(r => setTimeout(r, 5));
+  rmSync(md);
+  await committed(huge.dir);
 });
 
 test("a series' wake starts an instance as whoever shares the series, its text a note unless its runner, or a run of theirs in the series, set it; unshared, or with 3 open, it's a request, which keeps the text", async () => {
