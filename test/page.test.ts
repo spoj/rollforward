@@ -1399,3 +1399,72 @@ test('a service connects with one click and no sign-in, then lends the admin\'s 
   await page.mouse.click(5, 5);
   await page.evaluate(() => api('/connections/drop', { method: 'DELETE' }));
 });
+
+test("a website ticked without an approved grant in the instance's workspace says so where it's ticked, with the ask there, whom it waits on, or to sign in first; asked by one who may approve it, it's approved at once", async t => {
+  const rf = join(root, '.rf'), mine = join(rf, 'people', createHash('sha256').update('admin@demo.test').digest('hex').slice(0, 16)), since = new Date().toISOString();
+  const site = (url: string) => ({ url, hosts: [], writeback: true, added: since, profile: { what: 'A company ledger.', category: 'company', risk: 'low', flags: [] } });
+  const login = (name: string, expired = false) => ({ id: `web:${name}`, kind: 'website', name, since, offers: [{ id: `web:${name}`, name }], ...(expired && { expired }) });
+  mkdirSync(mine, { recursive: true });
+  writeFileSync(join(mine, 'websites.json'), JSON.stringify({ ledger: site('https://ledger.test/'), bank: site('https://bank.test/'), erp: site('https://erp.test/') }));
+  writeFileSync(join(mine, 'logins.json'), JSON.stringify([login('ledger'), login('bank'), login('erp', true)]));
+  t.after(async () => {
+    for (const f of [join(mine, 'logins.json'), join(mine, 'websites.json'), join(rf, 'grants.json')]) rmSync(f, { force: true });
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => refresh());
+  });
+  const { id } = await page.evaluate(() => api('/api/series/a5c0ff5e1fef', { method: 'POST', body: JSON.stringify({ label: '2027-02', logins: [], quiet: true }) }));
+  await page.evaluate(async id => { location.hash = `#/${id}`; await refresh(); }, id);
+  await page.waitForSelector('#bar h1 .t:text-is("2027-02")');
+  if (!await page.locator('#log.open').count()) await page.click('#bar [data-act=panel]');
+  const needs = (where: string, name: string) => page.locator(`${where} label:has(input.tick[value="web:${name}"]) + .nogrant`), toast = () => page.locator('#toasts .toast').last().textContent();
+
+  // Above the comment box before the first run: said only once ticked, with the ask right there.
+  assert.equal(await needs('#log', 'ledger').isVisible(), false, 'unticked, it says nothing');
+  await page.check('#log input.tick[value="web:ledger"]');
+  await page.waitForFunction(() => data.runner.logins.includes('web:ledger'));
+  assert.equal(await needs('#log', 'ledger').locator('> :not(.row2)').count(), 0);
+  assert.match(await needs('#log', 'ledger').innerText(), /^Runs in larkfield can't use ledger until it's approved there\. Say what runs here use it for and ask: you manage larkfield, so it's approved at once\.\s+Ask to use$/);
+  await needs('#log', 'ledger').locator('input').fill('Month-end ledger pulls');
+  await needs('#log', 'ledger').locator('[data-act=grant-ask]').click();
+  await needs('#log', 'ledger').waitFor({ state: 'detached' });
+  assert.equal(await toast(), "Approved at once, as you're an admin.", 'larkfield has no owners: it is the admins\'');
+  const [granted] = Object.values(JSON.parse(readFileSync(join(rf, 'grants.json'), 'utf8'))) as any[];
+  assert.deepEqual([granted.site, granted.workspace, granted.reason, granted.state, granted.by, typeof granted.decided], ['ledger', '1b3031035ff6', 'Month-end ledger pulls', 'approved', 'admin@demo.test', 'string']);
+
+  // With the Credentials chip later: an expired login says to sign in first, with the link; asking keeps the ticks not yet saved.
+  await page.click('#bar [data-act=ticks]');
+  await page.waitForSelector('#pv input.tick[value="web:bank"]');
+  assert.deepEqual([await needs('#pv', 'ledger').count(), await needs('#pv', 'bank').isVisible(), await needs('#pv', 'erp').isVisible()], [0, false, false], 'approved, or unticked, it says nothing');
+  await page.check('#pv input.tick[value="web:erp"]');
+  assert.equal(await needs('#pv', 'erp').innerText(), "Runs in larkfield can't use erp until it's approved there. Sign in to it again under Logins first, then ask here.");
+  assert.equal(await needs('#pv', 'erp').locator('a[data-act=logins]').textContent(), 'Logins');
+  await page.check('#pv input.tick[value="web:bank"]');
+  await needs('#pv', 'bank').locator('input').fill('Bank statements');
+  await needs('#pv', 'bank').locator('[data-act=grant-ask]').click();
+  await needs('#pv', 'bank').waitFor({ state: 'detached' });
+  assert.equal(await toast(), "Approved at once, as you're an admin.");
+  assert.deepEqual(await page.$$eval('#pv input.tick:checked', ts => ts.map(t => (t as HTMLInputElement).value)), ['web:ledger', 'web:bank'], 'the ticks not yet saved stay, an expired login\'s off as ever');
+
+  // For someone who doesn't manage the workspace: who approves, by name, and once asked, whom it waits on.
+  const as = (grants: object[]) => page.evaluate(grants => { Object.assign(tree.find(w => w.id === cur.w.id), { manage: false, owners: ['bob@demo.test'], grants }); pv.settings.on = ticked(); renderPv(); }, grants);
+  await as([]);
+  assert.match(await needs('#pv', 'ledger').innerText(), /^Runs in larkfield can't use ledger until it's approved there\. Say what runs here use it for and ask: larkfield's owners, (Bob|Bob <bob@demo\.test>|bob@demo\.test), approve it\.\s+Ask to use$/);
+  const asked = { id: 'p1', workspace: '1b3031035ff6', person: 'admin@demo.test', site: 'ledger', state: 'pending', at: new Date().toISOString(), adminOnly: false };
+  await as([asked]);
+  assert.match(await needs('#pv', 'ledger').innerText(), /^Runs in larkfield can't use ledger until it's approved there\. You asked .+; it waits on larkfield's owners, (Bob|Bob <bob@demo\.test>|bob@demo\.test)\.$/);
+  assert.equal(await needs('#pv', 'ledger').locator('[data-act=grant-ask]').count(), 0);
+  await as([{ ...asked, adminOnly: true }]);
+  assert.match(await needs('#pv', 'ledger').innerText(), /You asked .+; it waits on an admin\.$/, 'what the check reserves for admins waits on one');
+  await page.keyboard.press('Escape');
+
+  // On the Logins page, under the website, choosing the workspace, the page says what came of it.
+  await page.evaluate(async () => { await api('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: 'Ledgers' }) }); await refresh(); await openLogins(); });
+  await page.click('#pv [data-act=logins-show][data-id=web]');
+  const row = page.locator('#pv .row2:has([data-act=grant-ask][data-id=ledger])');
+  await row.locator('select').selectOption({ label: 'Ledgers' });
+  await row.locator('input').fill('Ledger pulls there too');
+  await row.locator('[data-act=grant-ask]').click();
+  await page.locator('#pv .grant', { hasText: 'Ledgers' }).waitFor();
+  assert.equal(await toast(), "Approved at once, as you're an owner of Ledgers.");
+  assert.equal(Object.values(JSON.parse(readFileSync(join(rf, 'grants.json'), 'utf8'))).filter((g: any) => g.site === 'ledger' && g.state === 'approved').length, 2);
+});

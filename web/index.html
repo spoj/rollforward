@@ -534,7 +534,7 @@ function renderLog() {
   $('#log').className = 'log' + (ui.open && data ? ' open' : '');
   if (!data || !ui.open) return;
   // This instance's half-written comment or reply, or files picked for one, holds its conversation still until sent or cleared.
-  const drafting = [...$('#conv').querySelectorAll('textarea')].some(t => t.value.trim()) || [...$('#conv').querySelectorAll('input[type=file]')].some(f => f.files.length);
+  const drafting = [...$('#conv').querySelectorAll('textarea, input[type=text]')].some(t => t.value.trim()) || [...$('#conv').querySelectorAll('input[type=file]')].some(f => f.files.length);
   const focused = document.activeElement?.id === 'newcomment';
   // Its two sides, the conversation and the audit, one shown at a time: a half-written comment waits on the other's.
   put($('#lh'), `<span class="seg">${[['Conversation', !ui.audit], ['Audit', ui.audit]].map(([side, on]) => `<button class="${on ? 'sel' : ''}" ${on ? '' : 'data-act="audit"'}>${ICON[side === 'Audit' ? 'person' : 'chat']}${side}</button>`).join('')}</span>`
@@ -704,7 +704,7 @@ function conversationHtml() {
   // Before its first run, its runner may tick its logins anew where they write its first prompt.
   const first = mine && !runs.length, lends = first && myLogins.some(l => l.offers.length);
   if (open) h += `<div class="compose"><h3>${draft.on ? `Comment on ${name(draft.on)}${draft.ref ? ` at ${esc(draft.ref)}` : ''}` : 'Comment on the instance'}</h3>`
-    + (lends ? `<div class="ticks2">Credentials:${ticksHtml(myLogins, data.runner.logins)}</div>` : '')
+    + (lends ? `<div class="ticks2">Credentials:${ticksHtml(myLogins, data.runner.logins, cur.w)}</div>` : '')
     + `<textarea id="newcomment" rows="3" placeholder="${first ? 'What should the agent do? Drop files here too' : mine || cur.s.shared_by === data.runner.by ? 'The agent replies in the thread' : `A note for ${esc(nameOf(data.runner.by))}: the agent takes it up once they do`}"></textarea><input type="file" id="newfiles" multiple>${lends ? '<div class="consent">By clicking Comment, you agree that agents carry these credentials while acting as you.</div>' : ''}<div><button class="btn primary" data-act="comment">Comment</button></div></div>`;
   if (data.doc.status === 'closed' && !archived()) h += '<div class="compose"><div><button class="btn" data-act="correct">Add a correction</button></div></div>';
   return h;
@@ -1025,7 +1025,7 @@ function loginsHtml(s) {
   for (const l of s.logins.filter(l => !ids.has(l.id))) h += line(l.name, 'no longer a connection on this server, so no run uses it', signOut(l.id));
   h += line('Websites', sites.length ? `${signed} of ${sites.length} signed in` : me.browsers ? 'none yet: add one' : 'not set up on this server: website logins need the browser service (docs/system.md, Websites)', sites.length || me.browsers ? show('web') : '');
   if (sites.length && shown('web')) h += `<div class="sub">Sign in yourself, in a browser shown here. Your login is what that browser keeps, its cookies, never your password; a run's browser starts from it and brings it back refreshed. Runs reach only its address's host and the others the server allows, but there they can do whatever you can, including submitting and approving. Each run's log counts its writes.${sites.some(([, w]) => w.header) ? " Where a site's sign-in needs a token, give it in the box under its name: it goes only to that sign-in, never to a run's browser, and is kept, sealed, for the next." : ''}</div>`
-    + `<div class="sub">A run uses your login only in a workspace whose owners approved it: once signed in, ask to use it there, saying what for. Until one approves it, your login is signed out a week after you signed in.</div>`
+    + `<div class="sub">A run uses your login only in a workspace whose owners approved it: once signed in, ask to use it there, saying what for. In a workspace you own, it's approved as you ask. Until one approves it, your login is signed out a week after you signed in.</div>`
     + sites.map(([n, w]) => {
       const l = mine(`web:${n}`), gs = s.grants.filter(g => g.person === me.email && g.site === n && ['pending', 'approved'].includes(g.state));
       const free = tree.filter(x => !x.archived && !gs.some(g => g.workspace === x.id));
@@ -1035,8 +1035,8 @@ function loginsHtml(s) {
         + `<button class="quiet" data-act="site-remove" data-id="${esc(n)}">Remove</button></div>`
         + w.hosts.map(x => `<div class="lsub"><span class="sub">Reaches ${esc(x)}${w.checks?.[x]?.verdict === 'pass' ? `: ${esc(w.checks[x].why)}` : ''}</span><button class="quiet" data-act="host-remove" data-site="${esc(n)}" data-host="${esc(x)}">Remove</button></div>`).join('')
         + gs.map(g => grantHtml(g)).join('')
-        + (l && !l.expired && free.length ? `<div class="row2"><select id="ask-ws-${esc(n)}">${free.map(x => `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join('')}</select>`
-          + `<input type="text" id="ask-why-${esc(n)}" placeholder="What runs there use it for" style="flex:1"><button class="btn" data-act="grant-ask" data-id="${esc(n)}">Ask to use</button></div>` : '');
+        + (l && !l.expired && free.length ? `<div class="row2"><select>${free.map(x => `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join('')}</select>`
+          + `<input type="text" placeholder="What runs there use it for" style="flex:1"><button class="btn" data-act="grant-ask" data-id="${esc(n)}">Ask to use</button></div>` : '');
     }).join('');
   if (me.browsers && shown('web')) h += `<div class="sub">A new website: a name for it, the https address where you sign in and, if its sign-in needs a header its pages never send, such as x-bot-token, that header's name, whose value you give as you sign in. Sign-in opens a browser briefly; the server checks which other hosts its pages need for runs.</div>`
     + '<div class="row2"><input type="text" id="site-name" placeholder="Name" style="width:30%"><input type="text" id="site-url" placeholder="https://… where you sign in" style="flex:1"><input type="text" id="site-header" placeholder="Header, if any" style="width:20%"><button class="btn" data-act="site-add">Add</button></div>';
@@ -1056,9 +1056,10 @@ function loginsHtml(s) {
 
 // Ticks: which of your logins an instance may use, asked whenever you start, copy or take over one, or share a series, by kind:
 // Microsoft 365's sources fold under a tick of its own, unless some are ticked and some not, and an expired login is flagged, its
-// ticks off.
-function ticksHtml(logins, on = []) {
-  const n = l => l.expired ? 0 : l.offers.filter(o => on.includes(o.id)).length, tick = (l, o) => `<label><input type="checkbox" class="tick" value="${esc(o.id)}" ${on.includes(o.id) && !l.expired ? 'checked' : ''}> ${esc(o.name)}${l.expired ? ' <span class="q">expired</span>' : ''}</label>`;
+// ticks off. For an instance in workspace w, a website ticked there without your approved grant says so, with the ask or whom it
+// waits on.
+function ticksHtml(logins, on = [], w) {
+  const n = l => l.expired ? 0 : l.offers.filter(o => on.includes(o.id)).length, tick = (l, o) => `<label><input type="checkbox" class="tick" value="${esc(o.id)}" ${on.includes(o.id) && !l.expired ? 'checked' : ''}> ${esc(o.name)}${l.expired ? ' <span class="q">expired</span>' : ''}</label>${w && l.kind === 'website' ? nogrant(l, w) : ''}`;
   const h = [['m365', ''], ['databricks', 'Databricks'], ['service', 'Services'], ['website', 'Websites']].map(([kind, name]) => logins.filter(l => l.kind === kind && l.offers.length).map(l => kind === 'm365'
     ? `<details class="tgroup" ${n(l) && n(l) < l.offers.length ? 'open' : ''}><summary><label><input type="checkbox" class="tickall" ${n(l) === l.offers.length ? 'checked' : ''}> ${esc(l.name)}${l.expired ? ' <span class="q">expired</span>' : ''}</label><span class="sub">${l.offers.length} source${l.offers.length === 1 ? '' : 's'}</span></summary>${l.offers.map(o => tick(l, o)).join('')}</details>`
     : `<div class="tkind"><span class="sub">${name}</span>${l.offers.map(o => tick(l, o)).join('')}</div>`).join('')).join('');
@@ -1066,9 +1067,19 @@ function ticksHtml(logins, on = []) {
 }
 const ticked = () => [...document.querySelectorAll('#pv input.tick:checked')].map(i => i.value);
 
+function nogrant(l, w) {
+  const site = l.id.slice(4), g = w.grants.find(g => g.person === me.email && g.site === site), owners = new Intl.ListFormat('en').format(w.owners.map(person));
+  if (g?.state === 'approved') return '';
+  const not = `Runs in ${esc(w.name)} can't use ${esc(site)} until it's approved there.`;
+  return `<div class="nogrant">${g ? `${not} You asked ${esc(when(g.at))}; it waits on ${g.adminOnly || !owners ? 'an admin' : `${esc(w.name)}'s owners, ${owners}`}.`
+    : l.expired ? `${not} Sign in to it again under <a data-act="logins">Logins</a> first, then ask here.`
+    : `${not} Say what runs here use it for and ask: ${w.manage ? `you manage ${esc(w.name)}, so it's approved at once${me.role === 'admin' ? '' : ', unless only an admin may approve this website'}` : owners ? `${esc(w.name)}'s owners, ${owners}, approve it` : 'an admin approves it'}.`
+      + `<div class="row2"><input type="text" placeholder="What runs here use it for" style="flex:1"><button class="btn" data-act="grant-ask" data-id="${esc(site)}" data-ws="${esc(w.id)}">Ask to use</button></div>`}</div>`;
+}
+
 function startHtml(s) {
   return (s.label !== undefined ? `<h3>Label</h3><input type="text" id="slabel" value="${esc(s.label)}" placeholder="such as a date">` : '')
-    + `<h3>Credentials</h3>` + ticksHtml(s.logins, s.on)
+    + `<h3>Credentials</h3>` + ticksHtml(s.logins, s.on, tree.find(w => w.id === s.ws))
     + (s.logins.some(l => l.offers.length) ? `<div class="consent">By clicking ${esc(s.go)}, you agree that agents carry these credentials while acting as you.</div>` : '')
     + `<div><button class="btn primary" data-act="start-go">${esc(s.go)}</button></div>`;
 }
@@ -1175,8 +1186,8 @@ function closePv() {
   renderPv();
 }
 
-async function openStart(title, go, then, label, on) {
-  pv = { title, settings: { kind: 'start', go, then, label, on, logins: await api('/logins') } };
+async function openStart(title, go, then, label, on, ws) {
+  pv = { title, settings: { kind: 'start', go, then, label, on, ws, logins: await api('/logins') } };
   renderPv();
   $('#slabel')?.focus();
 }
@@ -1579,7 +1590,7 @@ async function onAct(act, el) {
     Object.assign(ui, { open: true, focus: instance });
     go(instance);
   }
-  if (act === 'ticks') await openStart('Credentials', 'Save', ({ logins }) => api(`${instPath()}/logins`, { method: 'POST', body: JSON.stringify({ logins }) }), undefined, data.runner.logins);
+  if (act === 'ticks') await openStart('Credentials', 'Save', ({ logins }) => api(`${instPath()}/logins`, { method: 'POST', body: JSON.stringify({ logins }) }), undefined, data.runner.logins, cur.w.id);
   // A closed task made a series is its only instance, an example for the instances the series starts later.
   // A closed instance is never changed, but a correction is read with it: on it or one of its items, at a ref if given, and where
   // the change is, another instance of its series.
@@ -1682,11 +1693,15 @@ async function onAct(act, el) {
     pv.settings.sites = await api('/logins/sites');
     renderPv();
   }
+  // Asked from the Logins page, in the workspace chosen, or under a website ticked for an instance, in its workspace.
   if (act === 'grant-ask') {
-    const id = CSS.escape(el.dataset.id);
-    await api('/grants', { method: 'POST', body: JSON.stringify({ site: el.dataset.id, workspace: $(`#ask-ws-${id}`).value, reason: $(`#ask-why-${id}`).value }) });
-    pv.settings.grants = await api('/grants');
-    renderPv();
+    const why = el.closest('.row2').querySelector('input');
+    toast((await api('/grants', { method: 'POST', body: JSON.stringify({ site: el.dataset.id, workspace: el.dataset.ws ?? el.closest('.row2').querySelector('select').value, reason: why.value }) })).said, 'ok');
+    why.value = '';
+    if (pv?.settings.kind === 'logins') pv.settings.grants = await api('/grants');
+    if (pv?.settings.kind === 'start') pv.settings.on = ticked();
+    await refresh();
+    if (pv) renderPv();
   }
   if (act === 'grant-approve' || act === 'grant-deny') {
     await api(`/grants/${el.dataset.id}`, { method: 'POST', body: JSON.stringify({ approve: act === 'grant-approve' }) });
