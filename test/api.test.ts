@@ -863,6 +863,12 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   const runs = JSON.parse(await rf('runs', `larkfield/${series}`, '--json'));
   assert.ok(runs.every((r: { path: string }) => r.path.startsWith(`larkfield/${series}/`)));
   assert.deepEqual(runs[0], { path: `larkfield/${series}/2026-08-23`, run: 1, at: '2026-08-23T23:01:00.000Z', outcome: 'done', seconds: 240, cost: 0.21, runner: 'alex', started: { op: 'upload', by: 'alex' }, error: null, failure: null });
+  // A --since date starts at its midnight on rf's clock, as --by day groups: 23:01 UTC on the 23rd is the 24th in Hong Kong.
+  const tz = process.env.TZ;
+  process.env.TZ = 'Asia/Hong_Kong';
+  assert.deepEqual(JSON.parse(await rf('runs', `larkfield/${series}/2026-08-23`, '--since', '2026-08-24', '--json')).map((r: { at: string }) => r.at), ['2026-08-23T23:01:00.000Z']);
+  if (tz === undefined) delete process.env.TZ;
+  else process.env.TZ = tz;
   assert.match(await rf('runs', '--failed'), /  run \d+  failed \(other\)  \d+[sm]  \$0\.00  (upload|comment|create|wake) by \S+  /, 'without a model key, the runs the tests start fail');
   const scratch = `larkfield/${series}/scratch`;
   assert.deepEqual(JSON.parse(await rf('runs', scratch, '--json')).map((r: { outcome: string; failure: string }) => [r.outcome, r.failure]), [['cut', null], ['failed', 'credits']]);

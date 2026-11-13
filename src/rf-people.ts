@@ -217,7 +217,8 @@ Watching over it, for admins and power users; each sees what the caller sees
   person whether it is crawling or following changes, pages read, when last caught up, and an error, if any, with its next try.
 - History: rf runs [PATH] [--since DATE] [--failed] [--running] [--long MIN] prints a line per run: its start, path, run number,
   outcome, time taken, cost, what started it and by whom, and any error. rf costs [PATH] [--since DATE] [--by
-  workspace|series|person|day] totals them, by the runner for person.
+  workspace|series|person|day] totals them, by the runner for person. A DATE such as 2026-11-01 starts at its midnight on
+  this machine's clock, the days --by day groups by.
 - People: rf people (admins) prints everyone as ROLE EMAIL lines, and rf people WORKSPACE (its owners and admins) its owners and
   members as owner|member lines; a comment after each says when they last signed in and which open instances they run, and for
   everyone those they run in workspaces they aren't in. Edit the lines, see the changes with --set FILE -n (FILE may be - for
@@ -298,7 +299,9 @@ const when = (iso: string) => new Date(iso).toLocaleString('sv-SE', { dateStyle:
 const grantText = (g: any) => `${g.description}${g.flags.length ? ` Flags: ${g.flags.join('; ')}.` : ''}${g.adminOnly ? ` ${g.adminWhy}.` : ''}`;
 const took = (s: number) => s < 60 ? `${Math.round(s)}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${Math.floor(s / 3600)}h${String(Math.round((s % 3600) / 60)).padStart(2, '0')}`;
 const usd = (n: number) => `$${n.toFixed(2)}`;
-const runsIn = async (path = '') => (await get(`/api/runs?since=${encodeURIComponent(String(flags.since ?? ''))}`))
+// --since DATE from its midnight on this machine's clock, as --by day groups by.
+const since = encodeURIComponent(/^\d{4}-\d{2}-\d{2}$/.test(String(flags.since)) ? new Date(`${flags.since}T00:00`).toISOString() : String(flags.since ?? ''));
+const runsIn = async (path = '') => (await get(`/api/runs?since=${since}`))
   .filter(r => !path || r.path === path.replace(/\/+$/, '') || r.path.startsWith(path.replace(/\/+$/, '') + '/'));
 
 function write(path: string, data: string | Uint8Array, mtime: string) {
@@ -745,7 +748,7 @@ else if (cmd === 'comment' && args.length === 2) {
     for (const q of r.requests) console.log(`  request ${q.id} to start ${q.label}, from ${q.from} since ${when(q.at)}, waits on ${q.who ?? 'anyone'}${q.text ? `: ${q.text}` : ''}`);
   }
 } else if (cmd === 'activity' && args.length <= 1) {
-  const at = (args[0] ?? '').replace(/\/+$/, ''), blocks = (await get(`/api/activity?since=${encodeURIComponent(String(flags.since ?? ''))}`))
+  const at = (args[0] ?? '').replace(/\/+$/, ''), blocks = (await get(`/api/activity?since=${since}`))
     .filter(b => !at || b.path === at || b.path.startsWith(at + '/'));
   if (flags.json) console.log(JSON.stringify(blocks, null, 1));
   else for (const b of blocks) {
