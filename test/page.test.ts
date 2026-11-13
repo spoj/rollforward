@@ -64,6 +64,8 @@ before(async () => {
   writeFileSync(join(reviewed, 'log.jsonl'), [
     { seq: 1, at: '2026-08-01T09:00:00.000Z', by: 'admin@demo.test', op: 'create', from: null, logins: [] },
     { seq: 2, at: '2026-08-01T09:05:00.000Z', by: 'agent', op: 'comment', thread: 'c2', text: 'Review the October notes.' },
+    // A note from the agent of 2026-12, for its runner.
+    { seq: 3, at: '2026-08-01T09:06:00.000Z', by: 'agent', op: 'comment', thread: 'c3', item: null, ref: null, text: 'The pack went to the bank.', run: 2, runner: 'admin@demo.test', see: { inst: 'a5c0ff5e1f00', label: '2026-12', thread: 'c2' }, note: true },
   ].map(e => JSON.stringify(e) + '\n').join(''));
   // A series of its own, quiet since July.
   const sampled = join(root, 'instances', 'a5c0ff5e1f05');
@@ -1398,4 +1400,50 @@ test('a service connects with one click and no sign-in, then lends the admin\'s 
   await page.waitForSelector('#pv [data-act=service-connect][data-id=drop]');
   await page.mouse.click(5, 5);
   await page.evaluate(() => api('/connections/drop', { method: 'DELETE' }));
+});
+
+test("a wake carries a message; a series' notes thread takes notes from the sidebar, counted on its open instances, which its runners settle, folded with who and why; another instance's agent's note says whose it is", async () => {
+  const tab = await browser.newPage({ storageState: await page.context().storageState() });
+  try {
+    await tab.goto(new URL('/#/a5c0ff5e1f02', page.url()).href);
+    await tab.waitForSelector('#bar h1 .t:text-is("2026-10")');
+    if (!await tab.locator('#log.open').count()) await tab.click('#bar [data-act=panel]');
+    assert.equal(await tab.locator('#conv .post[data-seq="3"] > b').innerText(), 'Agent of Year-end pack \u00b7 2026-12, for Demo Admin');
+    assert.equal(await tab.locator('#conv .post[data-seq="3"] > b a').getAttribute('href'), '#/a5c0ff5e1f00');
+
+    await tab.click('#bar [data-act=wakes]');
+    const add = tab.locator('#pv .wakerow').last();
+    await add.locator('.wat').fill('2031-01-06T09:00');
+    await add.locator('.wtext').fill('The bank file should be in');
+    await add.locator('[data-act=wake-save]').click();
+    await tab.waitForSelector('#pv .wakerow[data-id]:not([data-id=""])');
+    assert.equal(await tab.locator('#pv .wakerow[data-id]:not([data-id=""]) .wtext').inputValue(), 'The bank file should be in');
+    await tab.locator('#pv .wakerow[data-id]:not([data-id=""]) [data-act=wake-delete]').click();
+    await tab.mouse.click(5, 5);
+
+    assert.equal(await tab.locator('#bar .crumb a').count(), 0, 'no open notes, no link');
+    await tab.click('.row.ser.on + .tree .row.notes [data-act=notes]');
+    await tab.waitForSelector('#pv .pvh b:text-is("Notes on Year-end pack")');
+    assert.match(await tab.locator('#pv .pvb').innerText(), /No open notes/);
+    await tab.fill('#notetext', 'From January the pack goes to the new bank');
+    await tab.click('#pv [data-act=note-post]');
+    await tab.waitForSelector('#pv .note .pb:text-is("From January the pack goes to the new bank")');
+    await tab.waitForSelector('.row.ser.on + .tree .row.notes .n:text-is("1 open")');
+    await tab.mouse.click(5, 5);
+    await tab.click('#bar .crumb a:text-is("1 open note")');
+    await tab.waitForSelector('#pv .pvh b:text-is("Notes on Year-end pack")');
+    await tab.click('#pv [data-act=note-taken]');
+    assert.equal(await tab.locator('#pv details.note').count(), 0, 'settling takes a why');
+    await tab.fill('#pv .note input', 'In the process now');
+    await tab.click('#pv [data-act=note-taken]');
+    await tab.waitForSelector('#pv details.note');
+    assert.equal(await tab.locator('#pv details.note summary').innerText(), 'From January the pack goes to the new bank \u00b7 Acted on by Demo Admin');
+    await tab.click('#pv details.note summary');
+    assert.match(await tab.locator('#pv details.note').innerText(), /Acted on by Demo Admin · .+: In the process now/);
+    await tab.mouse.click(5, 5);
+    await tab.waitForSelector('#bar .crumb a', { state: 'detached' });
+    assert.equal(await tab.locator('.row.ser.on + .tree .row.notes .n').innerText(), '');
+  } finally {
+    await tab.close();
+  }
 });
