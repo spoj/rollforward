@@ -82,7 +82,8 @@ rf site set NAME [--header NAME] [--keepalive PAGE] [--every 10m] [--writeback f
 rf site remove NAME               your website NAME, with your login to it and your grants for it
 rf site ask NAME WORKSPACE REASON to use your login to NAME in WORKSPACE's runs, for REASON, which one of its owners approves
                                   or denies, seeing what the system is and what runs may do; an admin decides general platforms,
-                                  high risk and failed checks; a login no approved grant uses is signed out a week after sign-in, and once
+                                  high risk and failed checks; asked by someone who may approve it, an owner or an admin, it's
+                                  approved at once; a login no approved grant uses is signed out a week after sign-in, and once
                                   you have no grant to it pending or approved
 rf grants [WORKSPACE] [--json]    the grants to use websites, yours and those of the workspaces you own, with their states
 rf grant approve|deny ID [TEXT]   a request to use a website in a workspace you own, with TEXT for its asker
@@ -586,8 +587,8 @@ else if (cmd === 'comment' && args.length === 2) {
   await api(`/logins/sites/${encodeURIComponent(args[1])}`, { method: 'DELETE' });
   console.log(`removed ${args[1]}`);
 } else if (cmd === 'site' && args[0] === 'ask' && args.length === 4) {
-  const { id } = await (await post('/grants', { site: args[1], workspace: (await workspaceNamed(args[2])).id, reason: args[3] })).json();
-  console.log(`asked, as grant ${id}: ${grantText((await get('/grants')).find(g => g.id === id))}`);
+  const { id, said } = await (await post('/grants', { site: args[1], workspace: (await workspaceNamed(args[2])).id, reason: args[3] })).json();
+  console.log(`${said} Grant ${id}: ${grantText((await get('/grants')).find(g => g.id === id))}`);
 } else if (cmd === 'grants' && args.length <= 1) {
   const [all, ws] = await Promise.all([get('/grants'), get('/api')]), name = (id: string) => ws.find(w => w.id === id)?.name ?? id;
   const shown = all.filter(g => !args[0] || name(g.workspace) === args[0]);

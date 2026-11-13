@@ -1,15 +1,16 @@
 import { HttpError, instances, newId, type Entry, type Instance } from './store.ts';
-import { act, canManage, canSee, readJson, tree, writeJson } from './system.ts';
-import { users, type Me } from './auth.ts';
+import { act, canManage, canSee, isIn, readJson, tree, writeJson } from './system.ts';
+import { asPerson, users, type Me } from './auth.ts';
 import { logins, signOut } from './logins.ts';
 import { checkWebsite, websitesOf, type Profile } from './browsers.ts';
 
 // Grants, in .rf/grants.json: a person's use of their login to their website in one workspace, (workspace, person, site). The person
 // asks, with a reason, once they've signed in to it; one of the workspace's owners, or an admin, approves or denies it, and may
-// revoke it at any time, as the person may withdraw it. A run's browser on a website opens only from its runner's login, and only
-// where their grant in the instance's workspace is approved (browsers.ts). A request lapses a week after it was asked; a login to a
-// website no approved grant uses is signed out a week after its sign-in; and once a person has nothing pending or approved for a
-// website, as after a denial or a revocation, they're signed out of it. Owners see the website's profile; old grants keep their check.
+// revoke it at any time, as the person may withdraw it; whoever may approve their own ask has it approved as they ask. A run's
+// browser on a website opens only from its runner's login, and only where their grant in the instance's workspace is approved
+// (browsers.ts). A request lapses a week after it was asked; a login to a website no approved grant uses is signed out a week after
+// its sign-in; and once a person has nothing pending or approved for a website, as after a denial or a revocation, they're signed
+// out of it. Owners see the website's profile; old grants keep their check.
 export type Check = { risk: 'low' | 'medium' | 'high'; flags: string[]; summary: string; hosts: string[] } | { error: string };
 export type Grant = { workspace: string; person: string; site: string; reason: string; at: string; state: 'pending' | 'approved' | 'denied' | 'revoked' | 'lapsed'; by?: string; decided?: string; text?: string; check?: Check };
 export const grants = () => readJson<Record<string, Grant>>('grants.json', {});
@@ -41,19 +42,8 @@ export function visible(me: Me) {
   return shown.map(([id, g]) => {
     const website = websitesOf(g.person)[g.site], profile = website.profile ?? null;
     const personName = people[g.person]?.name ?? g.person, workspaceName = t.workspaces[g.workspace].name;
-    const why: string[] = [], flags: string[] = [];
-    if (!profile) {
-      if (!g.check || 'error' in g.check) why.push('the website profile is missing');
-    } else if ('error' in profile) why.push(`the website profile could not be checked: ${profile.error}`);
-    else {
-      flags.push(...profile.flags);
-      if (profile.category === 'general') why.push('this is a general-purpose website');
-      if (profile.risk === 'high') why.push(`the website profile rates ${g.site} high risk`);
-    }
-    if (g.check && 'risk' in g.check) {
-      flags.push(...g.check.flags);
-      if (g.check.risk === 'high') why.push(`the old check rates ${g.site} high risk`);
-    } else if (g.check) flags.push(`The old check failed: ${g.check.error}`);
+    const why = reserved(g.site, website.profile, g.check), flags = [...profile && 'flags' in profile ? profile.flags : [],
+      ...g.check && 'risk' in g.check ? g.check.flags : g.check ? [`The old check failed: ${g.check.error}`] : []];
     const u = used.get(`${g.workspace} ${g.person} ${g.site}`), use = g.state === 'approved' ? { runs: u?.runs.size ?? 0, wrote: u?.wrote.size ?? 0, last: u?.last ?? null } : null;
     const host = new URL(website.url).hostname;
     const what = profile && 'what' in profile ? `${profile.what} (${profile.category} system, ${host})`
@@ -64,7 +54,43 @@ export function visible(me: Me) {
   });
 }
 
-export async function ask(me: Me, site: string, workspace: string, reason: string): Promise<{ id: string; profile: Profile }> {
+// Why only an admin may approve a website's use, if so: its profile is missing, failed, general-purpose or high risk, or an old
+// grant's check rated it high risk.
+function reserved(site: string, profile?: Profile, check?: Check) {
+  const why: string[] = [];
+  if (!profile) {
+    if (!check || 'error' in check) why.push('the website profile is missing');
+  } else if ('error' in profile) why.push(`the website profile could not be checked: ${profile.error}`);
+  else {
+    if (profile.category === 'general') why.push('this is a general-purpose website');
+    if (profile.risk === 'high') why.push(`the website profile rates ${site} high risk`);
+  }
+  if (check && 'risk' in check && check.risk === 'high') why.push(`the old check rates ${site} high risk`);
+  return why;
+}
+
+// Who approves a person's ask to use their website in a workspace: they do, as they ask, where they manage it and its check doesn't
+// reserve it for admins, or they are one; else an admin, where it does or no one owns it; else its owners, by name.
+function approver(person: Me, site: string, workspace: string) {
+  const t = tree(), w = t.workspaces[workspace], people = users(), why = reserved(site, websitesOf(person.email)[site].profile);
+  if (canManage(person, w) && (!why.length || person.role === 'admin')) return { self: true, who: isIn(person, w.owners) ? `an owner of ${w.name}` : 'an admin' };
+  const owners = new Intl.ListFormat('en').format(w.owners.map(p => people[p]?.name ?? t.groups?.[p] ?? p));
+  return { self: false, who: why.length ? `an admin to approve it, as ${why.join('; ')}` : owners ? `${w.name}'s owners, ${owners}, to approve it` : 'an admin to approve it' };
+}
+
+// A run's refusal of a website for want of an approved grant, naming the next step and whose it is. A try's stand-in instance
+// (cli.ts) is in no workspace.
+export function unapproved(email: string, site: string, workspace?: string) {
+  if (!workspace) return `${email} has no approved grant to use ${site}: they ask for one on the Logins page, under ${site}; this run goes on without it`;
+  const name = tree().workspaces[workspace].name, a = approver(asPerson(email)!, site, workspace);
+  const asked = Object.values(grants()).find(g => g.state === 'pending' && g.workspace === workspace && g.person === email && g.site === site);
+  return `${email} has no approved grant to use ${site} in ${name}, so this run goes on without it: ` + (asked
+    ? `they asked for one on ${asked.at.slice(0, 10)}, which waits on ${a.self ? `them, as ${a.who}, to approve it under Waiting on you` : a.who}`
+    : `they ask for one on the Logins page, under ${site}, choosing ${name}, ${a.self ? `and, as they're ${a.who}, it's approved at once` : `and it then waits on ${a.who}`}`);
+}
+
+// Asked by someone who may approve it, a request is approved at once, by them, as their approval of it would be.
+export async function ask(me: Me, site: string, workspace: string, reason: string): Promise<{ id: string; profile: Profile; state: Grant['state']; said: string }> {
   const w = tree().workspaces[workspace], login = logins(me.email).find(l => l.id === `web:${site}`);
   if (!w || !canSee(me, w)) throw new HttpError(404, `no workspace ${workspace} of yours`);
   if (!login) throw new HttpError(409, `sign in to ${site} first, on the Logins page: you ask to use your login to it`);
@@ -81,7 +107,9 @@ export async function ask(me: Me, site: string, workspace: string, reason: strin
   const all = grants(), id = newId();
   all[id] = { workspace, person: me.email, site, reason: reason.trim().slice(0, 500), at: new Date().toISOString(), state: 'pending' };
   save(all);
-  return { id, profile };
+  const a = approver(me, site, workspace);
+  if (a.self) decide(me, id, true, '');
+  return { id, profile, state: a.self ? 'approved' : 'pending', said: a.self ? `Approved at once, as you're ${a.who}.` : `Asked: it waits on ${a.who}.` };
 }
 
 export function decide(me: Me, id: string, approve: boolean, text: string) {

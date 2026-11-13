@@ -12,7 +12,7 @@ import { getDomain } from 'tldts';
 import { checkHost, covers, except, letIn, reached, resolvesInternal, setLetIn, upstreams } from './connections.ts';
 import { answer, model } from './connections/openrouter.ts';
 import { asPerson, can, users, type Me } from './auth.ts';
-import { approved, forgetGrants } from './grants.ts';
+import { approved, forgetGrants, unapproved } from './grants.ts';
 import { act, changes, readJson, rfDir, tree } from './system.ts';
 import { vpnDefinitions, vpnHosts, vpnVia, type Via } from './vpns.ts';
 
@@ -498,8 +498,8 @@ export class Browsers {
   async lent(site: string) {
     try {
       // A try's stand-in instance (cli.ts) is in no workspace: any approved grant of its runner's does.
-      const { email, login } = use(this.inst, this.run, `web:${site}`), had = this.bySite.get(site), t = tree(), ws = t.series[this.inst.seriesId]?.workspace;
-      if (!approved(site, email, ws)) throw Object.assign(new HttpError(403, `${email} has no approved grant to use ${site}${ws ? ` in ${t.workspaces[ws].name}` : ''}: they ask its owners for one on the Logins page; this run goes on without it`), { refused: true });
+      const { email, login } = use(this.inst, this.run, `web:${site}`), had = this.bySite.get(site), ws = tree().series[this.inst.seriesId]?.workspace;
+      if (!approved(site, email, ws)) throw Object.assign(new HttpError(403, unapproved(email, site, ws)), { refused: true });
       if (login.expired) throw Object.assign(new HttpError(409, `${email}'s login to ${site} has expired: they sign in to it again on the Logins page, and the instance carries on`), { login: login.id });
       if (had && had.email !== email) throw new HttpError(409, `this run's browser on ${site} is in ${had.email}'s login, and ${email} has taken the instance over: the next run opens one in theirs`);
       const w = website(email, site), via = await vpnVia(email, w), current = use(this.inst, this.run, `web:${site}`);

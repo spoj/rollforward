@@ -596,9 +596,9 @@ test("a person's keepalive turn that fails leaves the others' to go on, and a pe
 
 test("a run gets its browser on a website only where its runner's grant to it in the instance's workspace is approved, else goes on without it, logged once; a login is kept alive only while a grant of its person's is approved, and revoked, signed out", async () => {
   const bob = 'bob@demo.test', until = new Date(2026, 10, 9).toISOString();
-  writeJson('users.json', { [alice]: { role: 'admin' }, [bob]: { role: 'user' } });
+  writeJson('users.json', { [alice]: { role: 'admin', name: 'Alice Ng' }, [bob]: { role: 'user' } });
   saveTree({ ...tree(), workspaces: { w: { ...tree().workspaces.w, members: [bob] } } });
-  sites({ bank: { url: 'https://bank.example.com', hosts: [], writeback: false, keepalive: '/home', every: 10 } });
+  sites({ bank: { url: 'https://bank.example.com', hosts: [], writeback: false, keepalive: '/home', every: 10, profile: { what: 'A bank', category: 'bank', risk: 'low', flags: [] } } });
   writeJson('capabilities.json', { keepalive: [bob] });
   writeJson('grants.json', {});
   saveLogin(alice, { ...website('bank', 'Bank'), keepalive: until }, JSON.stringify(state('alice')));
@@ -606,10 +606,10 @@ test("a run gets its browser on a website only where its runner's grant to it in
   const his = running('b2', ['web:bank'], 1, bob);
   for (const run of [2, 3, 4]) his.append('server', 'run', { run, runner: bob, consent: 1 });
   const first = new Browsers(his, 1);
-  for (const _ of [1, 2]) await assert.rejects(first.browser('bank'), /^Error: bob@demo\.test has no approved grant to use bank in Acme: they ask its owners for one on the Logins page; this run goes on without it$/);
+  for (const _ of [1, 2]) await assert.rejects(first.browser('bank'), { message: "bob@demo.test has no approved grant to use bank in Acme, so this run goes on without it: they ask for one on the Logins page, under bank, choosing Acme, and it then waits on Acme's owners, Alice Ng, to approve it" });
   assert.deepEqual(his.log.filter(e => e.action === 'refused').map(e => e.run), [1], 'logged once a run');
   const { id } = await ask(asPerson(bob)!, 'bank', 'w', 'daily balances');
-  await assert.rejects(new Browsers(his, 2).browser('bank'), /no approved grant/, 'asked is not approved');
+  await assert.rejects(new Browsers(his, 2).browser('bank'), { message: `bob@demo.test has no approved grant to use bank in Acme, so this run goes on without it: they asked for one on ${grants()[id].at.slice(0, 10)}, which waits on Acme's owners, Alice Ng, to approve it` }, 'asked is not approved');
   decide(asPerson(alice)!, id, true, '');
   const run = new Browsers(his, 3), heard: string[] = [], hear = (x: string) => heard.push(x);
   changes.on('change', hear);

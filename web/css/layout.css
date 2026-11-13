@@ -50,6 +50,11 @@ a { color: inherit; }
 .log details.tgroup > summary::before, .log details.tgroup[open] > summary::before { content: none; }
 .tgroup[open] summary .sub::after { content: ' \25BE'; }
 .tgroup > label, .tkind > label { padding-left: 20px; }
+/* What a website ticked without an approved grant in the instance's workspace needs, shown while it's ticked. */
+.nogrant { padding-left: 20px; font-size: 12.5px; color: var(--ink-2); }
+.nogrant .row2 { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+.nogrant input[type=text] { font: inherit; padding: 6px 8px; border: 1px solid var(--rule-2); border-radius: var(--r1); min-width: 0; }
+label:has(> input.tick:not(:checked)) + .nogrant { display: none; }
 .row.wake, .row.req { font-size: 12px; color: var(--ink-2); }
 /* A row keeps to one line: its name gives way, cut short with the whole of it on hover; what follows it never does. */
 .row .nm { flex: 1 1 0; min-width: 0; display: flex; align-items: center; padding: 5px 0; text-decoration: none; }

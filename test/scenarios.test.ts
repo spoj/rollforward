@@ -731,8 +731,7 @@ test("whoever sees an instance watches its run's browser live from the page, the
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Watching' })).json();
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB] })).status, 200);
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Portal pull' })).json();
-  const { id: grant } = await (await call('POST', '/grants', { site: 'portal', workspace: ws, reason: 'portal pulls' })).json();
-  assert.equal((await call('POST', `/grants/${grant}`, { approve: true })).status, 200);
+  assert.equal((await (await call('POST', '/grants', { site: 'portal', workspace: ws, reason: 'portal pulls' })).json()).state, 'approved', 'asked by its owner, approved at once');
   scripts.push({ bash: ['curl -s -m 5 -H "connection: upgrade" -H "upgrade: websocket" "$RF_BROWSERS/portal"; touch working/opened; sleep 120'], report: 'Never said.', saw: [] });
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: ['web:portal'] })).json(), view = `/runs/${id}/portal/view`;
   await until('the browser', () => existsSync(join(root, 'instances', id, 'working', 'opened')));
@@ -764,8 +763,8 @@ test('unticking, removing, signing out or revoking a website closes a going run\
     assert.equal((await call('POST', '/logins/sites', { name: site, url: 'https://portal.example.com/' })).status, 200);
     const { id: signIn } = await (await call('POST', `/logins/web/${site}`, {})).json();
     assert.equal((await call('POST', `/signins/${signIn}`)).status, 200);
-    const { id: grant } = await (await call('POST', '/grants', { site, workspace, reason: 'portal pulls' })).json();
-    assert.equal((await call('POST', `/grants/${grant}`, { approve: true })).status, 200);
+    const { id: grant, state } = await (await call('POST', '/grants', { site, workspace, reason: 'portal pulls' })).json();
+    assert.equal(state, 'approved', 'asked by its owner, approved at once');
     const { id: series } = await (await call('POST', '/api/series', { workspace, name: site })).json();
     scripts.push({ bash: [`curl -s -m 120 -H "connection: upgrade" -H "upgrade: websocket" "$RF_BROWSERS/${site}"; touch working/disconnected; sleep 120`], report: 'Never said.', saw: [] });
     const opened = cdpOpened, closed = cdpClosed;
@@ -844,7 +843,7 @@ test("personal websites are checked on Save, grants reuse the profile without wi
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB] })).status, 200);
   assert.deepEqual(await said(await call('POST', '/grants', { site: 'bobs', workspace: ws, reason: '' }, bob)), [400, "a reason: what you'll use it for, for the workspace's owners"]);
   const requested = await (await call('POST', '/grants', { site: 'bobs', workspace: ws, reason: 'own pulls' }, bob)).json(), grant = requested.id;
-  assert.deepEqual(requested, { id: grant, profile: portalProfile });
+  assert.deepEqual(requested, { id: grant, profile: portalProfile, state: 'pending', said: "Asked: it waits on Own sites's owners, Demo Admin, to approve it." });
   assert.equal(checks.length, beforeSave + 1, 'asking reuses the successful saved profile');
   const stored = JSON.parse(readFileSync(join(root, '.rf', 'grants.json'), 'utf8'))[grant];
   assert.deepEqual(['check', 'hosts'].filter(k => k in stored), []);
@@ -862,16 +861,18 @@ test("personal websites are checked on Save, grants reuse the profile without wi
 
   const { id: his } = await (await call('POST', '/api/workspaces', { name: "Bob's own" })).json();
   assert.equal((await call('PUT', `/api/workspaces/${his}`, { owners: [BOB] })).status, 200);
-  const { id: ownGrant } = await (await call('POST', '/grants', { site: 'bobs', workspace: his, reason: 'more pulls' }, bob)).json();
-  assert.equal((await call('POST', `/grants/${ownGrant}`, { approve: true }, bob)).status, 200, 'an owner can approve a company profile');
+  const own = await (await call('POST', '/grants', { site: 'bobs', workspace: his, reason: 'more pulls' }, bob)).json();
+  assert.deepEqual([own.state, own.said], ['approved', "Approved at once, as you're an owner of Bob's own."], 'an owner asking for a company profile has it approved at once');
+  assert.equal(JSON.parse(readFileSync(join(root, '.rf', 'grants.json'), 'utf8'))[own.id].by, BOB);
   assert.equal(checks.length, beforeSave + 1, 'a second workspace still reuses the profile');
   assert.equal((await add({ name: 'risky', url: 'https://lookalike.vendor.test/' })).status, 200);
   const { id: riskySignIn } = await (await call('POST', '/logins/web/risky', {}, bob)).json();
   const riskyProfile = { what: 'Imposter Ltd operates a portal imitating Bobco.', category: 'company', risk: 'high', flags: ['looks like a lookalike'] };
   verdicts.push('```json\n' + JSON.stringify({ profile: riskyProfile, hosts: {} }) + '\n```');
   assert.equal((await call('POST', `/signins/${riskySignIn}`, undefined, bob)).status, 200);
-  const { id: risky, profile: checkedRisk } = await (await call('POST', '/grants', { site: 'risky', workspace: his, reason: 'risky pulls' }, bob)).json();
+  const { id: risky, profile: checkedRisk, said: riskySaid } = await (await call('POST', '/grants', { site: 'risky', workspace: his, reason: 'risky pulls' }, bob)).json();
   assert.deepEqual(checkedRisk, riskyProfile, 'a fenced model answer saved a usable profile');
+  assert.equal(riskySaid, 'Asked: it waits on an admin to approve it, as the website profile rates risky high risk.', 'its owner asking for what the check reserves for admins waits for one');
   assert.deepEqual(await said(await call('POST', `/grants/${risky}`, { approve: true }, bob)), [403, 'the website profile rates risky high risk: an admin decides']);
   assert.equal((await call('POST', `/grants/${risky}`, { approve: true })).status, 200);
   assert.equal((await call('DELETE', '/logins/sites/risky', undefined, bob)).status, 200);
@@ -928,11 +929,11 @@ test("personal websites are checked on Save, grants reuse the profile without wi
   assert.equal((await call('PUT', `/api/workspaces/${third}`, { owners: [BOB] })).status, 200);
   const beforeAsk = checks.length, beforeApproval = (await listed(bob)).hosts;
   verdicts.push({ profile: portalProfile, hosts: {} });
-  const { id: thirdGrant, profile: thirdProfile } = await (await call('POST', '/grants', { site: 'bobs', workspace: third, reason: 'intranet pulls' }, bob)).json();
+  const { profile: thirdProfile, state: thirdState } = await (await call('POST', '/grants', { site: 'bobs', workspace: third, reason: 'intranet pulls' }, bob)).json();
   assert.deepEqual(thirdProfile, portalProfile);
   const retryInput = JSON.parse(checks.at(-1)!.messages[1].content);
   assert.deepEqual([retryInput.website.profile, retryInput.evidence, retryInput.unchecked], [null, trace, []], 'asking retries an errored profile from the saved sign-in trace');
-  assert.equal((await call('POST', `/grants/${thirdGrant}`, { approve: true }, bob)).status, 200);
+  assert.equal(thirdState, 'approved', 'its owner asking, approved at once');
   assert.deepEqual([(await listed(bob)).hosts, checks.length], [beforeApproval, beforeAsk + 1], 'even a website allowed internal access gains no hosts from a grant');
 
   assert.equal((await call('DELETE', '/logins/sites/bobs', undefined, bob)).status, 200);
