@@ -1,7 +1,7 @@
-import { appendFileSync, chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { basename, extname, join, posix, sep } from 'node:path';
-import { changes, tree } from './system.ts';
+import { appendLine, changes, readLines, tree } from './system.ts';
 import { commit, pack, type Who } from './git.ts';
 
 // Paths in the screen are /-separated on every system.
@@ -190,7 +190,7 @@ export class Instance {
     this.id = basename(dir);
     const ws = join(dir, 'screen.json'), log = join(dir, 'log.jsonl');
     this.doc = existsSync(ws) ? JSON.parse(readFileSync(ws, 'utf8')) : { rev: 0, status: 'open', items: [] };
-    this.log = existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : [];
+    this.log = readLines(log);
     // Its log is written first as it's deleted, so a restart that cut a deletion finds it deleted (waker.ts recover()).
     if (this.hole) this.doc = { rev: this.doc.rev, status: 'deleted', items: [] };
   }
@@ -204,8 +204,8 @@ export class Instance {
     // Nothing more is said of a deleted instance, such as by a run its deletion cut, as it ends.
     if (this.hole) return { seq: 0, at: new Date().toISOString(), by, op, ...fields };
     const e = { seq: this.log.length + 1, at: new Date().toISOString(), by, op, ...fields };
+    appendLine(join(this.dir, 'log.jsonl'), JSON.stringify(e));
     this.log.push(e);
-    appendFileSync(join(this.dir, 'log.jsonl'), JSON.stringify(e) + '\n');
     changes.emit('change', this.id);
     return e;
   }

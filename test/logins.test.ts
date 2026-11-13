@@ -1,8 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { initSystem, rfDir, saveTree } from '../src/system.ts';
 import { upsertUser } from '../src/auth.ts';
 import { forgetLogins, logins, saveLogin, secret, signOut, use } from '../src/logins.ts';
@@ -41,5 +43,21 @@ test("a login's secret is sealed to its person and id, so a copy into another's 
   forgetLogins(alice);
   assert.deepEqual(logins(alice), []);
   assert.throws(() => use(inst(['m365:mail:alice@demo.test']), 1, 'm365:mail:alice@demo.test'), /no longer has a login/);
+  rmSync(tmp, { recursive: true, force: true });
+});
+
+test("a person's logins are rewritten whole, so a write a full disk cuts short leaves the ones before", () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-logins-')), alice = 'alice@demo.test';
+  initSystem(tmp);
+  const login = { id: 'm365', kind: 'm365', name: 'Microsoft 365', since: '2026-11-02T00:00:00Z', offers: [] };
+  saveLogin(alice, login, 'refresh-token-1');
+  // A file size limit stands in for a full disk.
+  const out = execFileSync('bash', ['-c', `trap '' XFSZ; ulimit -f 64; exec "${process.execPath}" --input-type=module -e "$0"`, `
+    import { initSystem } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, '..', 'src', 'system.ts')).href)};
+    import { saveLogin } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, '..', 'src', 'logins.ts')).href)};
+    initSystem(${JSON.stringify(tmp)});
+    try { saveLogin(${JSON.stringify(alice)}, { id: 'web:big', kind: 'website', name: 'Big', since: '2026-11-02T00:00:00Z', offers: [], trace: { requests: {}, blocked: Array(20000).fill('host.example.com'), seconds: 1 } }); } catch (e) { console.log(e.code); }`], { encoding: 'utf8' });
+  assert.equal(out.trim(), 'EFBIG');
+  assert.deepEqual(logins(alice).map(l => l.id), ['m365']);
   rmSync(tmp, { recursive: true, force: true });
 });

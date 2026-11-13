@@ -2,7 +2,7 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -533,6 +533,19 @@ test("a start removes its data root's abandoned scratch, for active and idle Pis
   await runs(running, 2);
   const records = readdirSync(join(root, '.rf', 'runs'));
   assert.ok(records.length, 'a run without index sources still has an ownership folder');
+});
+
+test("a start drops the torn last line a kill left in an instance's log or the system's, saying so, and starts", async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Torn' })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Logs' })).json();
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [], quiet: true })).json();
+  const log = join(root, 'instances', id, 'log.jsonl'), system = join(root, '.rf', 'log.jsonl'), was = readFileSync(log, 'utf8');
+  appendFileSync(log, '{"seq":99,"by":"ser');
+  appendFileSync(system, '{"seq":99,"by":"ser');
+  await cut();
+  assert.equal(readFileSync(log, 'utf8'), was);
+  assert.equal((await call('GET', `/api/instances/${id}`)).status, 200);
+  assert.ok(readFileSync(system, 'utf8').split('\n').filter(Boolean).every(l => JSON.parse(l)));
 });
 
 test('a cut anywhere leaves the instance right, its log whole, and the next run carries on: mid model call, mid tool call, mid commit and mid upload', async () => {

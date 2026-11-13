@@ -1,11 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createInstance, openFile, openStore, safeName } from '../src/store.ts';
+import { pathToFileURL } from 'node:url';
+import { createInstance, instance, openFile, openStore, safeName } from '../src/store.ts';
 import { commit, forget } from '../src/git.ts';
+import { addNote, notes } from '../src/series.ts';
+import { act, initSystem } from '../src/system.ts';
 
 const alex = { email: 'alex', name: 'Alex' };
 
@@ -173,5 +176,47 @@ test("closing commits the folder in the runner's name, files and folders a run m
   assert.equal(git('log', '-1', '--format=%an <%ae>%n%B'), 'Alex <alex>\nClose m1');
   assert.deepEqual([git('show', 'HEAD:working/locked.csv'), git('show', 'HEAD:working/shut/in.csv')], ['x', 'y']);
   assert.match(git('count-objects', '-v'), /^count: 0\n[^]*^packs: 1$/m, 'closed, its history is one pack');
+  rmSync(tmp, { recursive: true, force: true });
+});
+
+// A file size limit stands in for a full disk: writes past it fail part-way, as with ENOSPC.
+const cutShort = (script: string) => execFileSync('bash', ['-c', `trap '' XFSZ; ulimit -f 64; exec "${process.execPath}" --input-type=module -e "$0"`, script], { encoding: 'utf8' });
+
+test("an append a full disk cuts short is taken back, and a torn last line a kill left is dropped as the log is read, said in the server's log: the instance still loads", t => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
+  openStore(tmp);
+  const id = createInstance('monthly', 'torn', 'alex', []).id, log = join(tmp, 'instances', id, 'log.jsonl');
+  const [kept, code] = cutShort(`
+    import { instance, openStore } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, '..', 'src', 'store.ts')).href)};
+    openStore(${JSON.stringify(tmp)});
+    const inst = instance(${JSON.stringify(id)});
+    try { for (;;) inst.append('agent', 'comment', { text: 'x'.repeat(3000) }); } catch (e) { console.log(inst.log.length, e.code); }`).trim().split(' ');
+  assert.equal(code, 'EFBIG');
+  openStore(tmp);
+  assert.equal(instance(id).log.length, Number(kept), 'what memory holds is what the log holds');
+  assert.ok(readFileSync(log, 'utf8').endsWith('\n'));
+  appendFileSync(log, '{"seq":99,"by":"ser');
+  const said = t.mock.method(console, 'error', () => {});
+  openStore(tmp);
+  assert.equal(instance(id).log.length, Number(kept));
+  assert.match(said.mock.calls[0].arguments[0], /log\.jsonl: dropped a torn last line, 19 bytes: \{"seq":99/);
+  assert.equal(instance(id).append('alex', 'comment', { text: 'After.' }).seq, Number(kept) + 1);
+  openStore(tmp);
+  assert.equal(instance(id).log.at(-1)!.text, 'After.');
+  rmSync(tmp, { recursive: true, force: true });
+});
+
+test("a series' notes and the system's log drop a torn last line as they're read, and go on by seq", t => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-')), book = join(tmp, 'series', 's1'), system = join(tmp, '.rf', 'log.jsonl');
+  initSystem(tmp);
+  t.mock.method(console, 'error', () => {});
+  addNote(book, 'alex', 'note', { text: 'First.' });
+  appendFileSync(join(book, 'notes', 'log.jsonl'), '{"seq":2,"by":"al');
+  assert.deepEqual(notes(book).map(n => n.seq), [1]);
+  assert.equal(addNote(book, 'alex', 'note', { text: 'Second.' }).seq, 2);
+  assert.deepEqual(notes(book).map(n => n.text), ['First.', 'Second.']);
+  writeFileSync(system, `${JSON.stringify({ seq: 1, by: 'alex', op: 'x' })}\n{"seq":2,"by`);
+  act('alex', { op: 'y' });
+  assert.deepEqual(readFileSync(system, 'utf8').trim().split('\n').map(l => JSON.parse(l).seq), [1, 2]);
   rmSync(tmp, { recursive: true, force: true });
 });

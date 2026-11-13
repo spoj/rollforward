@@ -1,6 +1,6 @@
 import { connect, isIP } from 'node:net';
 import { connect as tlsConnect } from 'node:tls';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { request as httpRequest, STATUS_CODES, type IncomingMessage, type ServerResponse } from 'node:http';
 import { request as httpsRequest } from 'node:https';
@@ -13,7 +13,7 @@ import { checkHost, covers, except, letIn, reached, resolvesInternal, setLetIn, 
 import { answer, model } from './connections/openrouter.ts';
 import { asPerson, can, users, type Me } from './auth.ts';
 import { approved, forgetGrants, unapproved } from './grants.ts';
-import { act, changes, readJson, rfDir, tree } from './system.ts';
+import { act, changes, readJson, readLines, replaceFile, rfDir, tree } from './system.ts';
 import { vpnDefinitions, vpnHosts, vpnVia, type Via } from './vpns.ts';
 
 // Browsers from the browser service (spoj/rollforward-browser, a repo of its own), whose one client is this server, with its key: a
@@ -100,7 +100,7 @@ const sitesFile = (email: string) => join(personDir(email), 'websites.json');
 export const websitesOf = (email: string): Record<string, Website> => existsSync(sitesFile(email)) ? JSON.parse(readFileSync(sitesFile(email), 'utf8')) : {};
 function saveWebsites(email: string, all: Record<string, Website>) {
   mkdirSync(personDir(email), { recursive: true, mode: 0o700 });
-  writeFileSync(sitesFile(email), JSON.stringify(all, null, 1), { mode: 0o600 });
+  replaceFile(sitesFile(email), JSON.stringify(all, null, 1));
 }
 export const changeWebsite = (email: string, name: string, change: Partial<Website>) => saveWebsites(email, { ...websitesOf(email), [name]: { ...website(email, name), ...change } });
 
@@ -200,7 +200,7 @@ export async function setSite(by: Me, name: string, change: Record<string, unkno
 // out since, and the flag goes; one none of whose hosts resolves so yet, as before its network is up, keeps it for the next start.
 export async function enrolFlagged() {
   const log = join(rfDir(), 'log.jsonl');
-  const out = new Set(existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(a => a.op === 'internal' && a.let === false).flatMap(a => a.hosts as string[]) : []);
+  const out = new Set(readLines<{ op: string; let?: boolean; hosts: string[] }>(log).filter(a => a.op === 'internal' && a.let === false).flatMap(a => a.hosts));
   for (const email of Object.keys(users())) for (const [name, { internal, ...w }] of Object.entries(websitesOf(email) as Record<string, Website & { internal?: true }>)) {
     if (!internal) continue;
     const hosts = (await Promise.all(reached(w).filter(h => !throughVpn(w, h) && !h.startsWith('*.') && !out.has(h)).map(async h => await resolvesInternal(h) && h))).filter(h => h) as string[];
