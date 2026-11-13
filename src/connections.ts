@@ -16,13 +16,13 @@ import * as openrouter from './connections/openrouter.ts';
 import * as exa from './connections/exa.ts';
 
 // Connections: the outside systems runs reach, which admins keep with rf connection set NAME TYPE: each a name, a type and the
-// type's settings, in .rf/connections.json. A type is a module under connections/, saying how its person signs in and what that
+// type's settings, in .rf/connections.json. A type is a module under connections/, saying how its person connects and what that
 // login offers runs; for a system reached over HTTPS, the hosts it serves, which requests to them may go and the links its answers
 // hold.
 //
 // A run reaches those hosts as they are, with real tools and the vendors' own docs: the sandbox's proxy ends TLS for them, as the
 // host, with rollforward's own certificate authority (ca.ts), which runs trust. Each request is checked against the type's policy
-// and the instance's ticks, has its Authorization replaced by the runner's token, and goes on; the answer comes back as it is, and
+// and the instance's ticks, has its Authorization replaced by the runner's token or the deployment service's key, and goes on; the answer comes back as it is, and
 // a `call` entry logs it. A link an answer held, such as an upload session's, or redirected to, goes through for that run, as it
 // is, with no credential added, while the offer that allowed the answer may still be used. A refusal is a plain 403 with the reason, logged too.
 //
@@ -34,7 +34,7 @@ export type Connection = { name: string; type: string; [setting: string]: any };
 export type Request = { method: string; url: URL; headers: Record<string, string | string[] | undefined>; json?: any; body?: Buffer; target?: string };
 export type Type = {
   settings(input: Record<string, unknown>): Record<string, unknown>;
-  // Its person's login: an Entra login, with its scope.
+  // Its person's login: Entra with its scope, or a credential-free service with its offers.
   login(c: Connection): (EntraLogin | { id: string; kind: string; name: string; scope?: undefined; offers: Offer[] });
   hosts?(c: Connection): string[];
   // The offer a request needs ticked, its JSON body as it goes on, if the type rewrote it, and the origin where its answer's
@@ -210,7 +210,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     const cost = !s ? 0 : (answer.text.trimStart().startsWith('{') ? [answer.text] : answer.text.split('\n').filter(l => l.startsWith('data: {')).map(l => l.slice(6)))
       .map(e => s.cost(JSON.parse(e))).findLast(x => x !== undefined) ?? 0;
     a.cost += cost;
-    log(answer.status, answer.bytes, s ? { ...(json?.model && { model: json.model }), cost } : undefined);
+    log(answer.status, answer.bytes, s ? { ...(json?.model && { model: json.model }), cost } : answer.incomplete ? { incomplete: true } : undefined);
     if (mine && answer.status === 402) {
       saveLogin(runner, { ...mine, expired: true });
       a.inst.append('server', 'expired', { run: a.n, login: 'openrouter', name: 'OpenRouter', runner });
@@ -229,7 +229,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
 // told first, and, where it's kept and is JSON or a stream of events, as text too, for what it holds. A run gone before its
 // answer, as one cut, leaves it read to its end all the same, so what was sent is logged as answered.
 function forward(target: string, req: IncomingMessage, res: ServerResponse, o: { auth: Record<string, string>; body?: Buffer; digest?: { hash: Hash; size: number }; keep: boolean; location(to: string): void }) {
-  return new Promise<{ status: number; bytes: number; type: string; text: string }>((ok, fail) => {
+  return new Promise<{ status: number; bytes: number; type: string; text: string; incomplete?: boolean }>((ok, fail) => {
     const headers = Object.fromEntries(Object.entries(req.headers).filter(([k]) => k !== 'authorization' && k !== 'host' && !HOP.includes(k)));
     const up = (target.startsWith('https:') ? httpsRequest : httpRequest)(target, {
       method: req.method, headers: { ...headers, ...(o.body && { 'content-length': String(o.body.length) }), ...o.auth },
@@ -244,7 +244,20 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
       r.on('end', () => {
         const raw = Buffer.concat(kept), enc = r.headers['content-encoding'];
         const text = keep ? (enc === 'gzip' ? gunzipSync(raw) : enc === 'deflate' ? inflateSync(raw) : enc === 'br' ? brotliDecompressSync(raw) : raw).toString() : '';
-        ok({ status: r.statusCode!, bytes, type, text });
+        const answer = { status: r.statusCode!, bytes, type, text };
+        if (!o.digest || req.readableEnded) return ok(answer);
+        const finish = () => {
+          req.off('end', finish);
+          req.off('error', finish);
+          req.socket.off('close', finish);
+          const incomplete = !req.readableEnded;
+          if (incomplete) up.destroy();
+          ok({ ...answer, ...(incomplete && { incomplete }) });
+        };
+        req.once('end', finish);
+        req.once('error', finish);
+        req.socket.once('close', finish);
+        req.resume();
       });
       r.on('error', fail);
     });
@@ -253,6 +266,7 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
     else {
       if (o.digest) req.on('data', (b: Buffer) => { o.digest!.hash.update(b); o.digest!.size += b.length; });
       req.on('error', e => up.destroy(e));
+      if (o.digest) up.once('close', () => req.resume());
       req.pipe(up);
     }
   });

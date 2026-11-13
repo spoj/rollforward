@@ -842,6 +842,7 @@ test('a deployment service gets streamed requests only under the runner\'s ticke
   const requests: { method: string; path: string; headers: IncomingHttpHeaders; body: string; size: number; sha256: string }[] = [];
   let received: (() => void) | undefined;
   const service = createServer(async (req, res) => {
+    if (req.url === '/base/AP/early') return void res.writeHead(409).end('exists');
     const hash = createHash('sha256'), chunks: Buffer[] = [];
     let size = 0;
     for await (const b of req) {
@@ -851,7 +852,7 @@ test('a deployment service gets streamed requests only under the runner\'s ticke
       received?.();
     }
     requests.push({ method: req.method!, path: req.url!, headers: req.headers, body: Buffer.concat(chunks).toString(), size, sha256: hash.digest('hex') });
-    res.writeHead(201, { 'content-type': 'application/json', 'x-receipt': 'kept', location: 'https://elsewhere.test/receipt' }).end('{not JSON, passed unchanged}');
+    res.writeHead(201, { 'content-type': 'application/json', authorization: 'receipt-token', 'x-receipt': 'kept', location: 'https://elsewhere.test/receipt' }).end('{not JSON, passed unchanged}');
   });
   await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
   const url = `http://127.0.0.1:${(service.address() as { port: number }).port}/base`, S = 'https://drop.rf.internal';
@@ -876,7 +877,7 @@ test('a deployment service gets streamed requests only under the runner\'s ticke
       const body = '{"n": 1, "n": 2}\n';
       const r = await via('PATCH', `${S}/AP/file%20name?overwrite=1&x=%2F`, { token: 'service', body, headers: { 'content-type': 'application/json', 'x-custom': 'kept', authorization: 'Bearer stolen', 'x-rf-runner': 'fake', 'x-rf-instance': 'fake', 'x-rf-run': '99', 'x-rf-series': 'fake', 'x-rf-workspace': 'fake' } });
       const q = requests.at(-1)!;
-      assert.deepEqual([r.status, r.text, r.headers['x-receipt'], r.headers.location], [201, '{not JSON, passed unchanged}', 'kept', 'https://elsewhere.test/receipt']);
+      assert.deepEqual([r.status, r.text, r.headers['x-receipt'], r.headers.location, r.headers.authorization], [201, '{not JSON, passed unchanged}', 'kept', 'https://elsewhere.test/receipt', 'receipt-token']);
       assert.deepEqual([q.method, q.path, q.body, q.headers['content-type'], q.headers['x-custom'], q.headers.authorization], ['PATCH', '/base/AP/file%20name?overwrite=1&x=%2F', body, 'application/json', 'kept', 'Bearer deployment-secret']);
       assert.deepEqual(['runner', 'instance', 'run', 'series', 'workspace'].map(k => q.headers[`x-rf-${k}`]), [ALICE, 'w1', '1', 'weekly', 'w']);
       assert.deepEqual(calls().at(-1), { run: 1, name: 'drop', method: 'PATCH', path: '/AP/file%20name?overwrite=1&x=%2F', status: 201, bytes: r.text.length, sent: log.length - 1, sha256: createHash('sha256').update(body).digest('hex'), size: Buffer.byteLength(body) });
@@ -902,6 +903,20 @@ test('a deployment service gets streamed requests only under the runner\'s ticke
       }
       assert.equal(requests.length, before);
       assert.match((await via('GET', `${S}/AP/`)).text, /ticked prefixes: none/);
+    });
+    await t.test('an early answer logs a stopped upload as incomplete, with the bytes received, rather than hanging the write', async t => {
+      let release!: () => void;
+      const held = new Promise<void>(ok => release = ok), from = log.length;
+      t.after(() => release());
+      const body = async function* () { yield Buffer.from('first'); await held; };
+      const r = await via('PUT', `${S}/AP/early`, { token: 'service', body: body() });
+      assert.deepEqual([r.status, r.text], [409, 'exists']);
+      assert.equal(log.slice(from).filter(e => e.op === 'call').length, 0);
+      for (let n = 0; !log.slice(from).some(e => e.op === 'call'); n++) {
+        assert.ok(n < 100, 'the write was answered and hashed');
+        await new Promise(ok => setTimeout(ok, 10));
+      }
+      assert.deepEqual([calls().at(-1)!.status, calls().at(-1)!.size, calls().at(-1)!.sha256, calls().at(-1)!.incomplete], [409, 5, createHash('sha256').update('first').digest('hex'), true]);
     });
     await t.test('a 256 MiB POST streams before its producer supplies the rest, even as application/json', async () => {
       let first!: () => void;
