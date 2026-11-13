@@ -658,6 +658,8 @@ test("a series' notes: whoever sees it leaves one, with files, which starts no r
   assert.equal((await shown(series)).notes, 1, 'the listing counts its open notes');
   const got = await call('GET', `${s}/files/rates.csv`, undefined, b);
   assert.deepEqual([got.status, got.headers.get('content-disposition'), await got.text()], [200, "attachment; filename*=UTF-8''rates.csv", 'month,rate\n10,5%']);
+  for (const rel of ['../log.jsonl', `../../../../instances/${await iid(series, '2026-08-30')}/log.jsonl`, '../../../../.rf/users.json', '../../../../.rf/seal.key'])
+    assert.equal((await call('GET', `${s}/files/${encodeURIComponent(rel)}`, undefined, b)).status, 404, `${rel}: nothing out of its files`);
   const settle = (how: string, text: string, cookie = admin) => call('POST', `${s}/notes/${told.id}`, JSON.stringify({ how, text }), cookie);
   assert.equal((await settle('taken', 'mine now', b)).status, 403, 'a member who runs none of its open instances settles nothing');
   assert.equal((await settle('done', 'x')).status, 400);

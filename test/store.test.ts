@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createInstance, openStore, safeName } from '../src/store.ts';
+import { createInstance, openFile, openStore, safeName } from '../src/store.ts';
 import { commit, forget } from '../src/git.ts';
 
 const alex = { email: 'alex', name: 'Alex' };
@@ -27,6 +27,16 @@ test('deleting during a close never restores the instance or writes a close over
 test("a name is a folder's and a line's: slashes, control characters and line breaks become _, and AGENTS.md, where the view binds instructions, is refused", () => {
   assert.equal(safeName('Bank/rec\\Q1\nlines\u2028\u2029\x85\x7f'), 'Bank_rec_Q1_lines____');
   assert.throws(() => safeName('AGENTS.md'), /AGENTS\.md is the name of the agents' instructions/);
+});
+
+test('openFile opens only what is under its base: a path that climbs with .., or is not normal, names nothing, though the file it would reach is there', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-')), base = join(tmp, 'a', 'b');
+  mkdirSync(base, { recursive: true });
+  writeFileSync(join(tmp, 'secret'), 'x');
+  writeFileSync(join(base, 'mine'), 'y');
+  for (const rel of ['../../secret', 'mine/../../../secret', './mine', 'c//../mine']) assert.equal(openFile(base, rel), undefined, rel);
+  assert.equal(typeof openFile(base, 'mine'), 'number');
+  rmSync(tmp, { recursive: true, force: true });
 });
 
 test('an upload named attachments takes the next free name, leaving the folder for comment attachments', () => {

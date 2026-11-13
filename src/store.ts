@@ -15,10 +15,11 @@ export function replaceReadOnly(path: string, data: string | Buffer) {
   renameSync(path + '.tmp', path);
 }
 
-// Opens `rel` under `base` where a run may have put anything: only a regular file reached without a link, else undefined. The real
-// path of what was opened is checked, so a folder swapped for a link meanwhile is refused too; and what a run made unreadable, or
-// changed as it was opened, is none either.
+// Opens `rel` under `base` where a run may have put anything: only a regular file reached without a link, else undefined. A `rel`
+// that isn't normal or climbs with .. names nothing. The real path of what was opened is checked, so a folder swapped for a link
+// meanwhile is refused too; and what a run made unreadable, or changed as it was opened, is none either.
 export function openFile(base: string, rel: string): number | undefined {
+  if (normalize(rel) !== rel || rel.split('/').includes('..')) return undefined;
   const path = join(base, rel);
   try {
     if (!lstatSync(path, { throwIfNoEntry: false })?.isFile()) return undefined;
