@@ -180,7 +180,7 @@ test('all VPN controls require explicit capability; only opted-in admins may def
   assert.equal(tunnelCalls.length, 0);
 });
 
-test('definitions validate fortinet gateway host:port and persist only the declared fields', () => {
+test('definitions validate fortinet gateway host:port and an optional key pin, and persist only the declared fields', async () => {
   for (const gateway of ['vpn.gateway.test', 'https://vpn.gateway.test:443', 'vpn.gateway.test:0', 'vpn.gateway.test:65536', 'vpn.gateway.test:443/path', 'person@vpn.gateway.test:443'])
     assert.throws(() => addVpn(admin, 'invalid', { ...definition, gateway }), /gateway: host:port/);
   assert.throws(() => addVpn(admin, 'invalid', { ...definition, type: 'other' as never }), /type: fortinet/);
@@ -188,6 +188,9 @@ test('definitions validate fortinet gateway host:port and persist only the decla
   addVpn(admin, 'second', { ...definition, cookie: 'not-persisted', token: 'not-persisted' } as never);
   assert.deepEqual(JSON.parse(readFileSync(join(rfDir(), 'vpns.json'), 'utf8')).second, definition);
   assert.equal(disk().includes('not-persisted'), false);
+  for (const servercert of ['sha256:abc', 'pin-sha256:short=', `pin-sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=x`]) assert.throws(() => addVpn(admin, 'pinned', { ...definition, servercert }), /servercert: /);
+  addVpn(admin, 'pinned', { ...definition, servercert: 'pin-sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' });
+  assert.deepEqual((await connectVpn(alice, 'pinned')).body, { ...definition, servercert: 'pin-sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=', cookie: 'SVPNCOOKIE=vpn-cookie-secret' }, 'the pin goes to the tunnel service with the cookie');
 });
 
 test('VPN sign-in is a short open browser, with protected hosts excluded and no website or sealed login', async () => {

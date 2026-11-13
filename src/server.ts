@@ -1096,8 +1096,8 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       if (!can(me, 'vpn')) throw new HttpError(404, 'not found');
       if (url.pathname === '/vpns' && req.method === 'GET') send(res, 200, await vpns(me));
       else if (url.pathname === '/vpns' && req.method === 'POST') {
-        const { name, type, gateway } = await json(req);
-        addVpn(me, String(name ?? ''), { type, gateway });
+        const { name, type, gateway, servercert } = await json(req);
+        addVpn(me, String(name ?? ''), { type, gateway, servercert });
         send(res, 200, 'saved');
       } else {
         const match = /^\/vpns\/([^/]+)(?:\/(signins|connection))?$/.exec(url.pathname);

@@ -141,7 +141,7 @@ rf can [CAP [EMAIL|GROUP,...] [--clear]]   what users may do beyond the rest, as
                                   create, make workspaces; and keepalive, keep their website logins alive for up to a
                                   week as they sign in; a list grants CAP to those
                                   emails and Entra group ids in place of whom it had, --clear to no one, and with neither it
-                                  prints whom each is granted to${vpn ? '\n                                  vpn, using client VPNs, needs an explicit grant even for admins' : ''}${vpn && admin ? '\nrf vpn add NAME fortinet HOST:PORT   admins with vpn add a client VPN definition; each person signs in on the page\nrf vpn remove NAME               admins with vpn remove a client VPN definition' : ''}`;
+                                  prints whom each is granted to${vpn ? '\n                                  vpn, using client VPNs, needs an explicit grant even for admins' : ''}${vpn && admin ? '\nrf vpn add NAME fortinet HOST:PORT [--servercert pin-sha256:HASH]   admins with vpn add a client VPN definition, which each\n                                  person signs in to on the page; --servercert pins the gateway key, as a refusal names it\nrf vpn remove NAME               admins with vpn remove a client VPN definition' : ''}`;
   return (c && all.split(/\n(?=\S)/).map(e => e.trimEnd()).filter(e => e.split(/\s/)[1] === c).join('\n')) || all;
 };
 
@@ -562,7 +562,7 @@ else if (cmd === 'comment' && args.length === 2) {
   if (flags.json) console.log(JSON.stringify(all, null, 1));
   else for (const v of all) console.log(`${v.name}  ${v.type}  ${v.gateway}  ${v.connected ? `connected${v.since ? ` since ${when(v.since)}` : ''}` : 'disconnected'}${v.error ? `: ${v.error}` : ''}`);
 } else if (cmd === 'vpn' && args[0] === 'add' && args.length === 4) {
-  await post('/vpns', { name: args[1], type: args[2], gateway: args[3] });
+  await post('/vpns', { name: args[1], type: args[2], gateway: args[3], servercert: flags.servercert });
   console.log(`added ${args[1]}`);
 } else if (cmd === 'vpn' && args[0] === 'remove' && args.length === 2) {
   await api(`/vpns/${encodeURIComponent(args[1])}`, { method: 'DELETE' });

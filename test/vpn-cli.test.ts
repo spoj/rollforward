@@ -118,7 +118,7 @@ test('explicit VPN users see list and site routing help, but only opted-in admin
 test('syntax errors use the same contextual help without exposing VPN to noncap admins', async () => {
   await assert.rejects(rf('vpn'), e => e instanceof Error && (e as any).code === 2 && !/vpn|--via/i.test(e.message));
   me.can.push('vpn');
-  await assert.rejects(rf('vpn'), e => e instanceof Error && (e as any).code === 2 && /^rf vpn add NAME fortinet HOST:PORT[^\n]+\nrf vpn remove NAME[^\n]+\n$/.test(e.message));
+  await assert.rejects(rf('vpn'), e => e instanceof Error && (e as any).code === 2 && /^rf vpn add NAME fortinet HOST:PORT[^\n]+\n +[^\n]+--servercert[^\n]+\nrf vpn remove NAME[^\n]+\n$/.test(e.message));
   await assert.rejects(rf('site'), e => e instanceof Error && (e as any).code === 2 && /--via VPN/.test(e.message));
 });
 
@@ -150,6 +150,8 @@ test('VPN commands use the raw API and preserve capability and admin refusals', 
   me.role = 'admin';
   assert.equal(await rf('vpn', 'add', 'client-one', 'fortinet', 'vpn.client.test:443'), 'added client-one\n');
   assert.deepEqual(calls.at(-1), { method: 'POST', path: '/vpns', body: { name: 'client-one', type: 'fortinet', gateway: 'vpn.client.test:443' }, authorization: 'Bearer rft_test' });
+  assert.equal(await rf('vpn', 'add', 'client-two', 'fortinet', 'vpn.other.test:10443', '--servercert', 'pin-sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='), 'added client-two\n');
+  assert.deepEqual(calls.at(-1)!.body, { name: 'client-two', type: 'fortinet', gateway: 'vpn.other.test:10443', servercert: 'pin-sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' });
   assert.equal(await rf('vpn', 'remove', 'Client west'), 'removed Client west\n');
   assert.deepEqual(calls.at(-1), { method: 'DELETE', path: '/vpns/Client%20west', body: undefined, authorization: 'Bearer rft_test' });
   await assert.rejects(rf('vpn', 'add', 'client-one', 'unsupported', 'vpn.client.test:443'), { code: 1, message: 'rf: POST /vpns: 400 VPN type must be fortinet\n' });

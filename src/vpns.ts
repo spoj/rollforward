@@ -5,7 +5,7 @@ import { checkHost, except } from './connections.ts';
 import { HttpError } from './store.ts';
 import { act, changes, readJson, writeJson } from './system.ts';
 
-export type Vpn = { type: 'fortinet'; gateway: string };
+export type Vpn = { type: 'fortinet'; gateway: string; servercert?: string };
 export type VpnRow = Vpn & { name: string; connected: boolean; since?: string; error?: string };
 export type Via = { url: string; token: string; hosts: string[] };
 export const vpnDefinitions = () => readJson<Record<string, Vpn>>('vpns.json', {});
@@ -58,9 +58,10 @@ export function addVpn(me: Me, name: string, definition: Vpn) {
   if (definition.type !== 'fortinet') throw new HttpError(400, 'type: fortinet');
   const gateway = String(definition.gateway).trim().toLowerCase(), match = /^([a-z0-9-]+(?:\.[a-z0-9-]+)+):(\d+)$/.exec(gateway);
   if (!match || !(Number(match[2]) > 0 && Number(match[2]) <= 65535)) throw new HttpError(400, 'gateway: host:port, such as vpn.example.com:10443');
+  if (definition.servercert !== undefined && !/^pin-sha256:[A-Za-z0-9+/]{43}=$/.test(String(definition.servercert))) throw new HttpError(400, "servercert: the gateway's public key hash, pin-sha256:<base64>, as the tunnel service's refusal names it");
   const all = vpnDefinitions();
   if (all[name]) throw new HttpError(409, `a VPN ${name} already exists`);
-  all[name] = { type: 'fortinet', gateway };
+  all[name] = { type: 'fortinet', gateway, ...(definition.servercert && { servercert: definition.servercert }) };
   definitionGenerations.set(name, (definitionGenerations.get(name) ?? 0) + 1);
   writeJson('vpns.json', all);
   act(me.email, { op: 'vpn-add', name, ...all[name] });
