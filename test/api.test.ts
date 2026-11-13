@@ -967,6 +967,21 @@ test("rf pull refuses a link where a folder goes, dangling ones too, but follows
   assert.match(await rf('pull', path, join(tmp, 'pull-linked')), /fetched 0, \d+ up to date/);
 });
 
+test("rf pull --delete on Windows or macOS, whose disks ignore case, keeps a file renamed only in case, as it fetched it into the old name", async () => {
+  const { id: workspace } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Cased' }))).json();
+  const { id: s } = await (await call('POST', '/api/series', JSON.stringify({ workspace, name: 'Rec' }))).json();
+  const { id } = await (await call('POST', `/api/series/${s}`, JSON.stringify({ label: 'jan', quiet: true }))).json();
+  const pullOn = (platform: string, dest: string) => execFileSync(process.execPath, ['--import', `data:text/javascript,Object.defineProperty(process, 'platform', { value: '${platform}' })`,
+    join(app, 'src', 'rf-people.ts'), 'pull', '--delete', 'Cased/Rec/', dest], { env: { ...process.env, HOME: home }, encoding: 'utf8' });
+  const [mac, linux] = [join(tmp, 'pull-mac'), join(tmp, 'pull-linux')];
+  for (const dest of [mac, linux]) pullOn('linux', dest);
+  assert.equal((await call('POST', `/api/instances/${id}/rename?as=Jan`)).status, 200);
+  pullOn('darwin', mac);
+  pullOn('linux', linux);
+  assert.ok(existsSync(join(mac, 'jan', 'log.jsonl')), 'kept where the disk ignores case');
+  assert.ok(!existsSync(join(linux, 'jan')), 'deleted where it does not');
+});
+
 test("rf alone lists its commands and rf help COMMAND gives one's usage; every read takes --json; a failure is one line, with exit code 1, and a command used wrongly prints its usage, with exit code 2", async () => {
   assert.match(await rf(), /^rf login URL \[TOKEN\] .*\nrf ls \[--json\] /);
   assert.equal(await rf('--version'), `${JSON.parse(readFileSync(join(app, 'cli', 'package.json'), 'utf8')).version}\n`);

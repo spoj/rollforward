@@ -375,10 +375,12 @@ async function pull(path: string, dir: string) {
     for (let next; (next = fetches.shift());) await next();
   }));
   if (flags.delete && list.some(rel) && existsSync(into)) {
-    const keep = new Set(list.map(rel)), mine = (d: string): string[] => readdirSync(d, { withFileTypes: true }).flatMap(e => e.isDirectory() ? mine(join(d, e.name)) : [join(d, e.name)]);
+    // Windows' and macOS's disks ignore case, as the fetches above did: a file renamed only in case is kept, as fetched.
+    const fold = (r: string) => ['win32', 'darwin'].includes(process.platform) ? r.toLowerCase() : r;
+    const keep = new Set(list.map(f => fold(rel(f)))), mine = (d: string): string[] => readdirSync(d, { withFileTypes: true }).flatMap(e => e.isDirectory() ? mine(join(d, e.name)) : [join(d, e.name)]);
     for (const p of mine(into)) {
       const r = relative(into, p).split(sep).join('/');
-      if (keep.has(r) || excluded(r)) continue;
+      if (keep.has(fold(r)) || excluded(r)) continue;
       console.log(`deleted  ${r}`);
       deleted++;
       if (!dry) rmSync(p, { force: true });
