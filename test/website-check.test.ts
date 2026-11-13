@@ -33,9 +33,9 @@ const service = createServer(async (req, res) => {
     await gate;
     if (mode === 'fail') return void res.writeHead(500).end('{}');
     const toolCount = body.messages.filter((m: any) => m.role === 'tool').length;
-    if ((mode === 'search' && !toolCount) || (mode === 'five' && toolCount < 5) || mode === 'limit') {
-      const count = mode === 'limit' ? 6 : 1;
-      return void res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: null, tool_calls: Array.from({ length: count }, (_, i) => ({ id: `search-${i}`, type: 'function', function: { name: 'search', arguments: JSON.stringify({ query: `auth.vendor.test identity ${i}` }) } })) } }] }));
+    if ((['search', 'internal'].includes(mode) && !toolCount) || (mode === 'five' && toolCount < 5) || mode === 'limit') {
+      const queries = mode === 'internal' ? ['ERP.company.test operator', 'auth.vendor.test identity'] : Array.from({ length: mode === 'limit' ? 6 : 1 }, (_, i) => `auth.vendor.test identity ${i}`);
+      return void res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: null, tool_calls: queries.map((query, i) => ({ id: `search-${i}`, type: 'function', function: { name: 'search', arguments: JSON.stringify({ query }) } })) } }] }));
     }
     const evidence = JSON.parse(body.messages[1].content);
     const hosts = Object.fromEntries(evidence.unchecked.filter((h: string) => mode !== 'partial' || !h.startsWith('later.')).map((h: string) => [h, { verdict: h.startsWith('metrics.') ? 'refused' : h.startsWith('upload.') ? 'high' : 'pass', why: 'Its role was checked.' }]));
@@ -128,6 +128,17 @@ test('one shared conversation searches with Exa and persists profile and rule/mo
   assert.deepEqual([checked.by, checked.evidence, checked.queries, checked.profile, checked.checks], ['server', evidence, [searches[0].body.query], profile, w.checks]);
   await checkWebsite(email, 'rules', evidence);
   assert.equal(models.length, 2, 'a successful profile and completed verdicts are cached');
+});
+
+test('a search naming an internal host never reaches Exa, and still counts towards the five', async () => {
+  await site('intranet');
+  setLetIn(['erp.company.test'], 'admin@company.test', true);
+  mode = 'internal';
+  await checkWebsite(email, 'intranet', trace('erp.company.test', 'auth.vendor.test'));
+  assert.deepEqual(searches.map(s => s.body.query), ['auth.vendor.test identity']);
+  assert.match(models[1].messages.find((m: any) => m.tool_call_id === 'search-0').content, /not public search targets/);
+  const acts = readFileSync(join(rfDir(), 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+  assert.deepEqual(acts.findLast(a => a.op === 'website-check' && a.site === 'intranet').queries, ['ERP.company.test operator', 'auth.vendor.test identity']);
 });
 
 test('model and blocklist failures store only profile.error; unchecked hosts can be retried', async () => {

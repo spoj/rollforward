@@ -388,7 +388,7 @@ export async function checkWebsite(email: string, site: string, given?: Trace): 
       }));
       settle(rules);
     }
-    const rest = validHosts.filter(h => !rules[h]);
+    const rest = validHosts.filter(h => !rules[h]), internal = candidates.filter(h => letIn()[h] || (rules[h] ?? w.checks?.[h])?.verdict === 'internal');
     if (profile && !('error' in profile) && !rest.length) return profile;
     const key = process.env.OPENROUTER_API_KEY, exa = process.env.EXA_API_KEY;
     if (!key) throw new Error('the server has no OPENROUTER_API_KEY');
@@ -407,6 +407,11 @@ export async function checkWebsite(email: string, site: string, given?: Trace): 
           if (!exa || t.function.name !== 'search' || queries.length === 5) throw new Error('The website check exceeded its search tools.');
           const { query } = JSON.parse(t.function.arguments);
           if (typeof query !== 'string') throw new Error('The website check gave no search query.');
+          if (internal.some(h => query.toLowerCase().includes(h))) {
+            queries.push(query);
+            messages.push({ role: 'tool', tool_call_id: t.id, content: JSON.stringify({ error: 'Internal DNS names are not public search targets. Search only external dependencies.' }) });
+            continue;
+          }
           queries.push(query);
           if (w.via && query.toLowerCase().includes(vpnHosts(w.url)[0])) {
             messages.push({ role: 'tool', tool_call_id: t.id, content: JSON.stringify({ error: 'VPN website DNS names are not public search targets. Search only external dependencies.' }) });
