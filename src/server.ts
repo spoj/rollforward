@@ -1233,7 +1233,7 @@ server.on('upgrade', (req, socket, head) => {
 });
 await enrolFlagged();
 if (process.env.RF_BROWSER_URL) await reap().catch(e => console.error('the browser service: browsers a restart left open are still open', e));
-await reapVpns();
+await reapVpns().catch(e => console.error('the tunnel service: tunnels a restart left may still be open, and VPNs fail until it answers', e));
 // A stop, as an update's, cuts the runs (waker.ts stop()) and exits once what they had sent is answered and logged, within 10 s.
 process.on('SIGTERM', async () => {
   stop();

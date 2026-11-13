@@ -91,14 +91,14 @@ const grant = async (people = [ADMIN, BOB, GROUP]) => {
   assert.equal(r.status, 200, await r.clone().text());
   return r.json();
 };
-async function startServer(enabled = true, seconds = '600') {
+async function startServer(enabled = true, seconds = '600', tunnelUrl = tunnelBase) {
   const probe = createServer();
   await new Promise<void>(ok => probe.listen(0, '127.0.0.1', ok));
   base = `http://127.0.0.1:${(probe.address() as { port: number }).port}`;
   await new Promise<void>(ok => probe.close(() => ok()));
   const env = { ...process.env, ...entra.env(base), HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch'), RF_ADMINS: `${ADMIN},${SECOND}`, RF_BROWSER_URL: browserBase, RF_BROWSER_KEY: 'browser-key', RF_SIGNIN_S: seconds, RF_TUNNEL_KEY: 'tunnel-key', RF_TUNNEL_PROXY: 'http://proxy.test:8799', OPENROUTER_API_KEY: '', EXA_API_KEY: '' };
   delete env.RF_TUNNEL_URL;
-  if (enabled) env.RF_TUNNEL_URL = tunnelBase;
+  if (enabled) env.RF_TUNNEL_URL = tunnelUrl;
   proc = spawn(process.execPath, [join(app, 'src/server.ts'), root, new URL(base).port], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   proc.stderr!.on('data', d => { output += d; });
   await new Promise<void>((ok, fail) => {
@@ -344,6 +344,23 @@ test('restarting removes every service-side leftover and persists only VPN defin
   assert.equal((await call('DELETE', `/signins/${discard}`)).status, 200);
   assert.ok(browserDeleted.includes(discard), 'Close also collects an expired browser result');
   assert.equal(created.at(-1)!.id, connected.id, 'an expired browser cannot create a tunnel');
+});
+
+test('a tunnel service down at startup is logged, and the server starts with each VPN action failing until it answers', async () => {
+  await stopServer();
+  const probe = createServer();
+  await new Promise<void>(ok => probe.listen(0, '127.0.0.1', ok));
+  const down = `http://127.0.0.1:${(probe.address() as { port: number }).port}`;
+  await new Promise<void>(ok => probe.close(() => ok()));
+  output = '';
+  await startServer(true, '600', down);
+  assert.match(output, /the tunnel service: tunnels a restart left may still be open/);
+  const { id } = await openVpn('other');
+  const r = await call('POST', `/signins/${id}`, undefined);
+  assert.equal(r.status, 502);
+  assert.match(await r.text(), /the tunnel service at .* does not answer/);
+  await stopServer();
+  await startServer();
 });
 
 test('without a tunnel service, explicit stored grants expose no VPN API, capability, or website selector', async () => {
