@@ -10,7 +10,7 @@ import type { Trace } from '../src/logins.ts';
 
 const root = mkdtempSync(join(tmpdir(), 'rf-website-check-')), email = 'alice@company.test';
 const profile = { what: 'A business portal.', category: 'vendor', risk: 'low', flags: [] };
-let mode = 'normal', blockFailure = false, blocked = new Set<string>(), serial = 0;
+let mode = 'normal', exaDown = false, blockFailure = false, blocked = new Set<string>(), serial = 0;
 let log: Record<string, unknown>[] = [], state: unknown = { cookies: [], origins: [] };
 let release: (() => void) | undefined, modelSeen: (() => void) | undefined, gate: Promise<void> | undefined;
 const openings: any[] = [], models: any[] = [], searches: any[] = [], blockQueries: string[][] = [], deleted: string[] = [];
@@ -23,6 +23,7 @@ const service = createServer(async (req, res) => {
     return void res.end(JSON.stringify(Object.fromEntries(url.searchParams.getAll('host').map(h => [h, blocked.has(h)]))));
   }
   if (url.pathname === '/search') {
+    if (exaDown) return void res.writeHead(402).end('{}');
     searches.push({ body: JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString()), key: req.headers['x-api-key'] });
     return void res.end(JSON.stringify({ results: [{ title: 'Business sign-on', url: 'https://public.test/info', highlights: ['An identity provider.'] }] }));
   }
@@ -63,7 +64,7 @@ Object.assign(upstreams, { 'openrouter.ai': base, 'api.exa.ai': base });
 initSystem(root);
 after(() => { service.close(); rmSync(root, { recursive: true, force: true }); });
 beforeEach(() => {
-  mode = 'normal'; blockFailure = false; blocked = new Set(); gate = undefined; modelSeen = undefined; release = undefined;
+  mode = 'normal'; exaDown = false; blockFailure = false; blocked = new Set(); gate = undefined; modelSeen = undefined; release = undefined;
   log = []; state = { cookies: [], origins: [] };
   openings.length = models.length = searches.length = blockQueries.length = deleted.length = 0;
   Object.assign(process.env, { OPENROUTER_API_KEY: 'server-key', EXA_API_KEY: 'exa-key' });
@@ -158,6 +159,22 @@ test('model and blocklist failures store only profile.error; unchecked hosts can
   blockFailure = false;
   await checkWebsite(email, 'lists', trace('cdn.company.test'));
   assert.equal(websitesOf(email).lists.checks!['cdn.company.test'].verdict, 'pass');
+});
+
+test("a failed search is the model's to weigh, as the tool's error, and a check that fails keeps an earlier good profile", async () => {
+  await site('outage');
+  assert.deepEqual(await checkWebsite(email, 'outage', trace('cdn.company.test')), profile);
+  mode = 'search';
+  exaDown = true;
+  assert.deepEqual(await checkWebsite(email, 'outage', trace('cdn.company.test', 'auth.vendor.test')), profile);
+  assert.equal(models.at(-1).messages.at(-1).content, JSON.stringify({ error: 'The search failed: Exa answered 402' }));
+  assert.equal(websitesOf(email).outage.checks!['auth.vendor.test'].verdict, 'pass');
+  mode = 'fail';
+  assert.deepEqual(await checkWebsite(email, 'outage', trace('cdn.company.test', 'later.vendor.test')), profile);
+  assert.deepEqual(websitesOf(email).outage.profile, profile);
+  assert.equal(websitesOf(email).outage.checks!['later.vendor.test'], undefined, 'its host stays unchecked, for the next check');
+  const acts = readFileSync(join(rfDir(), 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+  assert.deepEqual(acts.findLast(a => a.op === 'website-check' && a.site === 'outage').error, 'OpenRouter answered 500');
 });
 
 test('search is capped at five upstream calls; incomplete model host verdicts remain unchecked', async () => {

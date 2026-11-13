@@ -357,7 +357,7 @@ export async function checkWebsite(email: string, site: string, given?: Trace): 
   const candidates = [...new Set([address, ...w.hosts.filter(h => !h.startsWith('*.')), ...Object.keys(trace?.requests ?? {}), ...trace?.blocked ?? []])];
   const todo = candidates.filter(h => !w.checks?.[h] || (w.checks[h].verdict === 'internal' && (!!letIn()[h] || throughVpn(w, h))));
   const checks: NonNullable<Website['checks']> = {}, queries: string[] = [];
-  let profile = w.profile;
+  let profile = w.profile, failed: string | undefined;
   const settle = (decisions: NonNullable<Website['checks']>, result?: Profile) => {
     const now = websitesOf(email)[site];
     if (!now || now.url !== w.url || now.added !== w.added || websiteGenerations.get(siteKey) !== generation) throw new HttpError(409, `${site} was removed or replaced while it was checked`);
@@ -418,10 +418,11 @@ export async function checkWebsite(email: string, site: string, given?: Trace): 
             messages.push({ role: 'tool', tool_call_id: t.id, content: JSON.stringify({ error: 'VPN website DNS names are not public search targets. Search only external dependencies.' }) });
             continue;
           }
+          // A failed search is the tool's error, for the model to weigh, as a refused one is.
           const found = await fetch(`${upstreams['api.exa.ai'] ?? 'https://api.exa.ai'}/search`, { method: 'POST', headers: { 'x-api-key': exa, 'content-type': 'application/json' }, signal: AbortSignal.timeout(30_000),
-            body: JSON.stringify({ query, numResults: 3, contents: { highlights: true } }) });
-          if (!found.ok) throw new Error(`Exa answered ${found.status}`);
-          messages.push({ role: 'tool', tool_call_id: t.id, content: JSON.stringify((await found.json()).results) });
+            body: JSON.stringify({ query, numResults: 3, contents: { highlights: true } }) }).catch((e: Error) => e);
+          const results = found instanceof Response && found.ok ? (await found.json()).results : { error: `The search failed: ${found instanceof Response ? `Exa answered ${found.status}` : found.message}` };
+          messages.push({ role: 'tool', tool_call_id: t.id, content: JSON.stringify(results) });
         }
         continue;
       }
@@ -437,10 +438,12 @@ export async function checkWebsite(email: string, site: string, given?: Trace): 
       break;
     }
   } catch (e) {
-    profile = { error: (e as Error).message };
+    // A check that fails keeps an earlier good profile.
+    failed = (e as Error).message;
+    if (!profile || 'error' in profile) profile = { error: failed };
     settle({}, profile);
   } finally {
-    act('server', { op: 'website-check', person: email, site, evidence: trace ?? null, queries, profile, checks });
+    act('server', { op: 'website-check', person: email, site, evidence: trace ?? null, queries, profile, checks, ...(failed && { error: failed }) });
   }
   return profile!;
 }
