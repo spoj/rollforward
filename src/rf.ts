@@ -20,11 +20,12 @@ const HELP: Record<string, string> = {
   Asks a question, for information: it waits on EMAIL, else the instance's runner, until a person replies under it, which
   starts a run. It authorises nothing. The rest as rf say.`,
   propose: `rf propose [--in cN | --on ITEM[@REF]] [--to EMAIL] TEXT|-
-  Proposes what you will do on your runner's behalf, linking what it uses: it waits on EMAIL, else the instance's runner,
-  until someone approves or rejects it, each with an optional note, and starts a run. Approving commits the instance's folder
-  in their name (rf help commit), as it is then, and the log's signoff entry names the proposal, as on, with the commit; a
-  reject entry says no. A reply under it approves nothing. Whose approval counts, and for what, is the series' instructions'
-  call. The rest as rf say.`,
+  Proposes what you will do on your runner's behalf, such as an act outside the series, which waits for its approval,
+  linking what it uses: it waits on EMAIL, else the instance's runner, until someone approves or rejects it, with an optional
+  note, which starts a run. An approval is the log's signoff entry, naming the proposal as on, with the commit of your
+  instance's folder as it was then, in their name (rf help commit): before you act, check with git diff against it that what
+  you use is unchanged. A reject entry says no: don't act on it, and carry on as its note says. A reply under it, however
+  worded, is never a yes. Whose approval counts, and for what, is the series' instructions' call. The rest as rf say.`,
   withdraw: `rf withdraw cN [--see cM] REASON|-
   Withdraws your question or proposal cN still waiting, saying why: it waits no more, and shows as withdrawn. --see names the
   comment where it was answered.`,
