@@ -405,7 +405,7 @@ test("a run reads what its workspace's links let it as it started: someone joini
   assert.deepEqual(ran.map((r: { outcome: string }) => r.outcome), ['cut', 'cut', 'done'], 'each carried on by the next, as after a restart');
 });
 
-test("approvals are git commits: the agent commits a moment worth keeping and proposes what it will do; anyone who sees the instance approves it in their name, someone else's a note for the runner, or rejects it; a reply under it approves nothing, a question takes no approval, and the agent withdraws what it no longer needs; closing commits as the runner's", async () => {
+test("approvals are git commits: the agent commits a moment worth keeping and proposes what it will do; anyone who sees the instance approves it in their name, someone else's a note for the runner, or rejects it, once; a reply under it approves nothing, a question takes no approval, and the agent withdraws what it no longer needs; closing commits as the runner's", async () => {
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Signed' })).json();
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB] })).status, 200);
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Pack' })).json();
@@ -420,6 +420,7 @@ test("approvals are git commits: the agent commits a moment worth keeping and pr
       'git commit --allow-empty -qm mine 2>&1 | head -1',
       'rf propose "The pack is ready to send to the bank: [pack](working/pack.csv)" 2>&1',
       'rf ask "Which bank account does it go to?" 2>&1',
+      'rf propose "Send a copy to the auditors too?" 2>&1',
     ],
     report: 'Built the pack; proposed sending it.', saw: [],
   };
@@ -444,7 +445,7 @@ test("approvals are git commits: the agent commits a moment worth keeping and pr
   assert.match(ask.saw[3], /^proposed c\d+/);
   assert.match(ask.saw[4], /^asked c\d+/);
   assert.deepEqual(log.filter(e => e.op === 'commit').map(e => [e.by, e.run, e.message, e.commit]), [['agent', 2, 'Draft pack built', git('rev-parse', ':/^Draft pack built')]]);
-  const first = log.findLast(e => e.op === 'comment' && e.ask === 'proposal')!, pack = join(dir, 'working', 'pack.csv');
+  const first = log.find(e => e.op === 'comment' && e.ask === 'proposal')!, auditors = log.findLast(e => e.op === 'comment' && e.ask === 'proposal')!, pack = join(dir, 'working', 'pack.csv');
   const decide = (how: string, body: object, cookie = admin) => call('POST', `/api/instances/${id}/${how}`, { thread: first.thread, ...body }, cookie);
   assert.deepEqual([first.files, statSync(pack).mode & 0o222 && 'writable'], [undefined, 'writable'], 'what it links stays the agent\'s');
   const refused = await decide('signoff', { thread: question() });
@@ -456,10 +457,16 @@ test("approvals are git commits: the agent commits a moment worth keeping and pr
   assert.deepEqual([bobs.by, bobs.on, bobs.note, log.filter(e => e.op === 'run').length], [BOB, first.seq, true, 2], "someone else's is a note for the runner, which starts no run");
   assert.equal(git('log', '-1', '--format=%an <%ae>%n%B', String(bobs.commit)), `Bob <${BOB}>\nThe pack is ready to send to the bank: [pack](working/pack.csv)\n\nFine by me.\n\nSigned-off-by: Bob <${BOB}>`);
   assert.equal(git('show', `${bobs.commit}:working/pack.csv`), '200', 'the folder as they said yes');
-  assert.equal((await decide('reject', { text: 'Use the new rate.' })).status, 200, 'the runner says no');
+  for (const how of ['signoff', 'reject']) {
+    const again = await decide(how, { text: 'Use the new rate.' });
+    assert.deepEqual([again.status, await again.text()], [409, `${first.thread} was approved already, by ${BOB}`], 'a proposal is approved or rejected once');
+  }
+  assert.equal((await decide('reject', { thread: auditors.thread, text: 'Use the new rate.' })).status, 200, 'the runner says no');
   log = await runs(id, 3);
   const no = log.findLast(e => e.op === 'reject')!;
-  assert.deepEqual([no.by, no.thread, no.on, no.text, no.commit], [ADMIN, first.thread, first.seq, 'Use the new rate.', undefined], 'a rejection commits nothing');
+  assert.deepEqual([no.by, no.thread, no.on, no.text, no.commit], [ADMIN, auditors.thread, auditors.seq, 'Use the new rate.', undefined], 'a rejection commits nothing');
+  const twice = await decide('signoff', { thread: auditors.thread });
+  assert.deepEqual([twice.status, await twice.text()], [409, `${auditors.thread} was rejected already, by ${ADMIN}`]);
   assert.match(again.prompt!, /"op":"signoff".*"note":true[^]*"op":"reject".*"text":"Use the new rate\."/, 'the run reads the note, then the rejection');
   assert.match(again.saw[1], new RegExp(`^withdrew ${question()}\\s*$`));
   assert.match(again.saw[2], new RegExp(`${question()} is no question or proposal of yours still waiting; those that are: c\\d+`), 'once');
