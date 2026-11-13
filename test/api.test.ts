@@ -224,6 +224,13 @@ test("an instance says which of its files are new since the series' latest close
   writeFileSync(join(await dir(series, '2026-08-30 copy'), 'working', 'Borrowing base 08.30.2026.csv'), 'revised\n');
   assert.equal((await json(path)).previous.changed['borrowing-base'], 'changed');
   assert.equal((await json(await at(series, '2026-08-23'))).previous, null);
+  // One over 2 GiB, which no Buffer holds, is summed as it streams.
+  const big = join(await dir(series, '2026-08-30 copy'), 'working', 'Borrowing base 08.30.2026.csv');
+  truncateSync(big, 2 ** 31 + 1);
+  const r = await call('GET', path);
+  assert.equal(r.status, 200);
+  assert.match((await r.json()).sums['borrowing-base'], /^[0-9a-f]{64}$/);
+  writeFileSync(big, 'revised\n');
 });
 
 test('rename relabels an instance in any status in its instance.json and logs it; an existing label is refused, a former one free', async () => {

@@ -49,31 +49,33 @@ openStore(root);
 // A new data root starts with one connection, Microsoft 365's, graph.
 if (!existsSync(join(root, '.rf', 'connections.json'))) writeJson('connections.json', { graph: { type: 'graph', updated_by: 'server', updated_at: new Date().toISOString() } });
 
-// A file's sha256, kept by its path, size and change time, as each view of an instance compares its files again.
+// A file's sha256, kept by its path, size and change time, as each view of an instance compares its files again; streamed, as a run
+// may leave a file of any size.
 const sums = new Map<string, [string, string]>();
-function sha256(dir: string, file: string): string | undefined {
+async function sha256(dir: string, file: string): Promise<string | undefined> {
   const fd = openFile(dir, file);
   if (fd === undefined) return undefined;
-  try {
-    const st = fstatSync(fd), key = `${st.size}:${st.mtimeMs}`, hit = sums.get(join(dir, file));
-    if (hit?.[0] === key) return hit[1];
-    const sum = createHash('sha256').update(readFileSync(fd)).digest('hex');
-    sums.set(join(dir, file), [key, sum]);
-    return sum;
-  } finally {
+  const st = fstatSync(fd), key = `${st.size}:${st.mtimeMs}`, hit = sums.get(join(dir, file));
+  if (hit?.[0] === key) {
     closeSync(fd);
+    return hit[1];
   }
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream('', { fd })) hash.update(chunk);
+  const sum = hash.digest('hex');
+  sums.set(join(dir, file), [key, sum]);
+  return sum;
 }
 
 // The series' latest closed instance before this one, by label, and whether each of this one's files is new since it, changed or
 // the same, by content, as its item of the same id had it.
-function previous(inst: Instance) {
+async function previous(inst: Instance) {
   const prev = closedBefore(inst).at(-1);
   if (!prev) return null;
-  return { label: prev.label, changed: Object.fromEntries(inst.doc.items.filter(i => i.file).map(i => {
-    const was = prev.doc.items.find(p => p.id === i.id)?.file, now = was && sha256(inst.dir, i.file!);
-    return [i.id, !was ? 'new' : now && now === sha256(prev.dir, was) ? 'same' : 'changed'];
-  })) };
+  return { label: prev.label, changed: Object.fromEntries(await Promise.all(inst.doc.items.filter(i => i.file).map(async i => {
+    const was = prev.doc.items.find(p => p.id === i.id)?.file, now = was && await sha256(inst.dir, i.file!);
+    return [i.id, !was ? 'new' : now && now === await sha256(prev.dir, was) ? 'same' : 'changed'];
+  }))) };
 }
 
 // A free name among a workspace's series: the name, else the name 2, 3 and on.
@@ -765,7 +767,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   const a = active.get(inst.seriesId);
   const mine = a?.inst === inst ? a : undefined;
   if (!action) see(by, inst.id, inst.log.at(-1)!.seq);
-  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4), browsers: [...(mine.browsers?.watchable().keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), runner: runner(inst), previous: previous(inst), sums: Object.fromEntries(inst.doc.items.filter(i => i.file).map(i => [i.id, sha256(inst.dir, i.file!)])), waiting: waits(inst).map(({ who, e }) => ({ who, seq: e.seq })) });
+  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4), browsers: [...(mine.browsers?.watchable().keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), runner: runner(inst), previous: await previous(inst), sums: Object.fromEntries(await Promise.all(inst.doc.items.filter(i => i.file).map(async i => [i.id, await sha256(inst.dir, i.file!)]))), waiting: waits(inst).map(({ who, e }) => ({ who, seq: e.seq })) });
   if (action === 'trace') return send(res, 200, trace(inst));
   if (action === 'summary') return send(res, 200, summary(inst, me));
   // The screen: anyone who sees the instance reads it; only its own run writes it.
