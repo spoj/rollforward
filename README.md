@@ -8,7 +8,7 @@ An agentic system people use for their recurring work, which accretes knowledge 
 
 ## Deploy
 
-A Linux host with Node 26, git, GNU tar and bubblewrap, and about 2 GB of memory for each run at once; an OpenRouter API key, and Exa's for web search; an app registered in Microsoft Entra ID, for sign-in and Microsoft 365; and, for websites, [rollforward-browser](https://github.com/spoj/rollforward-browser) on a host of its own.
+A Linux host, 5.14 or later, with Node 26, git, GNU tar and bubblewrap, and about 2 GB of memory for each run at once; an OpenRouter API key, and Exa's for web search; an app registered in Microsoft Entra ID, for sign-in and Microsoft 365; and, for websites, [rollforward-browser](https://github.com/spoj/rollforward-browser) on a host of its own.
 
     npm ci --omit=dev && node scripts/agent.ts           # its packages, and the agent image this checkout runs
     cp .env.example .env                                 # the keys, the Entra app and RF_PUBLIC_URL
