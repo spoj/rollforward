@@ -706,6 +706,19 @@ test("a cN link to a reply under a withdrawn ask opens the ask to show it", asyn
   await page.waitForSelector('#conv .post.withdrawn.folded[data-seq="3"]');
 });
 
+test("hovering a link to a deleted instance's comment says nothing of it, and no error", async () => {
+  await page.evaluate(() => { location.hash = '#/a5c0ff5e1f0a'; });
+  await page.waitForSelector('#bar h1 .t:text-is("February")');
+  await page.evaluate(() => api('/api/instances/a5c0ff5e1f09/delete', { method: 'POST' }));
+  const toasts = await page.locator('#toasts .toast').count();
+  for (let i = 0; i < 2; i++) {
+    await page.mouse.move(0, 0);
+    await page.hover('#conv .post[data-seq="6"] a.cref[data-inst="a5c0ff5e1f09"]');
+    await page.waitForTimeout(500);
+  }
+  assert.deepEqual([await page.locator('#toasts .toast').count(), await page.locator('#conv a.cref[data-inst="a5c0ff5e1f09"]').getAttribute('title')], [toasts, null]);
+});
+
 test("people show by name, with their email on hover, and Entra groups by label; adding to a workspace suggests people by name and takes a group's label", async () => {
   const bob = 'bob@demo.test', group = '6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b', url = (path: string) => new URL(path, page.url()).href;
   const signin = await entra.signIn(new URL(page.url()).origin, bob);

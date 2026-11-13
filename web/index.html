@@ -2045,12 +2045,13 @@ addEventListener('visibilitychange', drain);
 // The rows' ages move on as the minutes pass.
 setInterval(renderSide, 60_000);
 $('#log').addEventListener('scroll', e => { const el = e.currentTarget; el.dataset.end = el.scrollTop + el.clientHeight >= el.scrollHeight - 8 ? 'yes' : 'no'; });
-// A link to another instance's comment names who wrote it and its first words as it's hovered, once that instance's log is fetched.
+// A link to another instance's comment names who wrote it and its first words as it's hovered, once that instance's log is fetched;
+// a deleted instance's has none.
 const logs = new Map();
 document.addEventListener('mouseover', async e => {
   const a = e.target.closest('a.cref:not([title])'), inst = a?.dataset.inst;
   if (!a || inst === cur.i.id) return;
-  if (!logs.has(inst)) logs.set(inst, fetch(`/files/${inst}/log.jsonl`).then(r => r.text()).then(t => t.trim().split('\n').map(l => JSON.parse(l))));
+  if (!logs.has(inst)) logs.set(inst, fetch(`/files/${inst}/log.jsonl`).then(async r => r.ok ? (await r.text()).trim().split('\n').map(l => JSON.parse(l)) : []));
   const c = (await logs.get(inst))[a.dataset.seq - 1];
   if (c?.op === 'comment') a.title = `${nameOf(c.by)}: ${firstLine(c.text).slice(0, 80)}`;
 });
