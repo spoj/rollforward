@@ -120,12 +120,18 @@ export function safeName(s: string): string {
   return name;
 }
 
-// Keeps a person's file in folder/ under dir, read-only, under its own name made unique; answers its path there.
+// Keeps a person's file in folder/ under dir, read-only, under its own name made unique, its stem cut short where the name would
+// pass the 255 bytes a file's name holds; answers its path there.
 export function keep(dir: string, folder: string, name: string, tmp: string): string {
   const clean = safeName(name), ext = extname(clean), stem = clean.slice(0, clean.length - ext.length);
+  const fit = (suffix: string) => {
+    let s = '';
+    for (const c of stem) if (Buffer.byteLength(s + c + suffix + ext) <= 255) s += c; else break;
+    return `${folder}/${s}${suffix}${ext}`;
+  };
   mkdirSync(join(dir, folder), { recursive: true });
-  let file = `${folder}/${clean}`;
-  for (let n = 2; file === 'upload/attachments' || existsSync(join(dir, file)); n++) file = `${folder}/${stem}_${n}${ext}`;
+  let file = fit('');
+  for (let n = 2; file === 'upload/attachments' || existsSync(join(dir, file)); n++) file = fit(`_${n}`);
   renameSync(tmp, join(dir, file));
   chmodSync(join(dir, file), 0o444);
   return file;

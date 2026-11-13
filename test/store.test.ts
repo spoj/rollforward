@@ -230,3 +230,17 @@ test('a read-only temporary file a write cut short left stops no later save', ()
   assert.equal(JSON.parse(readFileSync(join(inst.dir, 'screen.json'), 'utf8')).rev, inst.doc.rev);
   rmSync(tmp, { recursive: true, force: true });
 });
+
+test("a file whose name passes the 255 bytes a name holds, as an Outlook mail saved under a long subject, is kept under its stem cut short", () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
+  openStore(tmp);
+  const inst = createInstance('monthly', 'long', 'alex', []), incoming = join(tmp, 'incoming'), name = `${'发票'.repeat(45)}.xlsx`;
+  for (const n of [1, 2]) {
+    writeFileSync(incoming, `copy ${n}`);
+    const { file } = inst.upload('alex', name, incoming, 'hash', 'in', null, true), base = (file as string).slice('upload/'.length);
+    assert.ok(Buffer.byteLength(base) <= 255 && name.startsWith(base.slice(0, 80)) && base.endsWith(n === 1 ? '.xlsx' : '_2.xlsx'), base);
+    assert.equal(readFileSync(join(inst.dir, file as string), 'utf8'), `copy ${n}`);
+  }
+  assert.equal(inst.doc.items[0].name, name.slice(0, -5), 'the item keeps the whole name');
+  rmSync(tmp, { recursive: true, force: true });
+});
