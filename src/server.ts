@@ -17,7 +17,7 @@ import { checkTicks, logins, runnerOf, saveLogin, signOut, unoffer } from './log
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { answered, byLogin, call, connections, intercepts, letIn, loginOf, removeConnection, setConnection, setLetIn, upstreams } from './connections.ts';
-import { addSite, allowHost, Browsers, endSignIn, enrolFlagged, isSignIn, keepAlive, passUpgrade, reap, removeHost, removeSite, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
+import { addSite, allowHost, Browsers, endSignIn, enrolFlagged, isSignIn, keepAlive, passAllowed, passUpgrade, reap, removeHost, removeSite, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
 import { addVpn, cancelVpnSignIn, disconnectVpn, isVpnSignIn, reapVpns, removeVpn, saveVpnSignIn, startVpnSignIn, vpns } from './vpns.ts';
 import { ask, decide, forgetGrants, forgetWorkspace, lapse, revoke, visible } from './grants.ts';
 import { offer } from './connections/graph.ts';
@@ -1306,6 +1306,7 @@ server.on('upgrade', (req, socket, head) => {
   if (!to) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
   passUpgrade(req, socket, head, to);
 });
+passAllowed();
 await enrolFlagged();
 if (process.env.RF_BROWSER_URL) await reap().catch(e => console.error('the browser service: browsers a restart left open are still open', e));
 await reapVpns().catch(e => console.error('the tunnel service: tunnels a restart left may still be open, and VPNs fail until it answers', e));

@@ -57,7 +57,7 @@ const service = createServer(async (req, res) => {
 await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
 const base = `http://127.0.0.1:${(service.address() as { port: number }).port}`;
 Object.assign(process.env, { RF_BROWSER_URL: base, RF_BROWSER_KEY: 'browser-key', RF_PUBLIC_URL: 'https://rf.company.test' });
-const { Browsers, addSite, allowHost, changeWebsite, checkWebsite, endSignIn, isSignIn, keepAlive, removeHost, setSite, startSignIn, websitesOf } = await import('../src/browsers.ts');
+const { Browsers, addSite, allowHost, changeWebsite, checkWebsite, endSignIn, isSignIn, keepAlive, passAllowed, removeHost, setSite, startSignIn, websitesOf } = await import('../src/browsers.ts');
 const { checkHost, setLetIn, upstreams } = await import('../src/connections.ts');
 const { logins, saveLogin, secret } = await import('../src/logins.ts');
 Object.assign(upstreams, { 'openrouter.ai': base, 'api.exa.ai': base });
@@ -259,11 +259,21 @@ test('a blocklisted starting host is not relisted implicitly for a restricted br
   writeJson('users.json', {});
 });
 
-test('new refusals narrow legacy wildcard hosts while retaining exact passed hosts', async () => {
-  await site('legacy', { hosts: ['*.vendor.test'], checks: { 'auth.vendor.test': { verdict: 'pass', why: 'Its sign-on.' } } });
-  await checkWebsite(email, 'legacy', trace('auth.vendor.test', 'metrics.vendor.test', 'static.vendor.test'));
-  assert.deepEqual(websitesOf(email).legacy.hosts.sort(), ['auth.vendor.test', 'static.vendor.test']);
-  assert.equal(websitesOf(email).legacy.checks!['metrics.vendor.test'].verdict, 'refused');
+test("at the start, a website from before checks has its exact hosts pass, as they were allowed, once; a check never takes off a wildcard someone put there", async () => {
+  await site('legacy', { hosts: ['files.share.test', 'cdn.other.test', 'sso.idp.test', '*.vendor.test'], checks: { 'files.share.test': { verdict: 'high', why: 'May take data elsewhere.' }, 'cdn.other.test': { verdict: 'refused', why: 'Optional.' } } });
+  writeJson('users.json', { [email]: { role: 'user', name: 'Alice' } });
+  passAllowed();
+  const verdicts = () => Object.fromEntries(Object.entries(websitesOf(email).legacy.checks!).map(([h, c]) => [h, `${c.verdict}: ${c.why}`]));
+  const before = 'pass: Allowed before checks.';
+  assert.deepEqual(verdicts(), { 'files.share.test': before, 'cdn.other.test': before, 'sso.idp.test': before });
+  await checkWebsite(email, 'legacy', trace('sso.idp.test', 'metrics.vendor.test', 'static.vendor.test', 'upload.vendor.test'));
+  assert.deepEqual(models.at(-1).messages[1].content.match(/"unchecked":(\[.*?\])/)[1], JSON.stringify(['metrics.vendor.test', 'static.vendor.test', 'upload.vendor.test']), 'what was allowed before is not judged again');
+  assert.deepEqual(websitesOf(email).legacy.hosts, ['files.share.test', 'cdn.other.test', 'sso.idp.test', '*.vendor.test']);
+  assert.deepEqual([websitesOf(email).legacy.checks!['metrics.vendor.test'].verdict, websitesOf(email).legacy.checks!['upload.vendor.test'].verdict], ['refused', 'high']);
+  changeWebsite(email, 'legacy', { checks: { ...websitesOf(email).legacy.checks, 'sso.idp.test': { verdict: 'high', why: 'Refused since.' } } });
+  passAllowed();
+  assert.equal(verdicts()['sso.idp.test'], 'high: Refused since.', 'checked, its website has a profile, and nothing passes again');
+  writeJson('users.json', {});
 });
 
 test('a concurrent admin verdict or personal removal wins over an in-flight model answer', async t => {

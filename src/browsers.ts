@@ -213,6 +213,16 @@ export async function enrolFlagged() {
   }
 }
 
+// The exact hosts a website reached before the server checked websites, its person's, an old grant's or an admin's over the check's
+// verdict, pass, at the server's start, as they were allowed: only on a website with no profile, which every one from before checks
+// is, and none once checked, so a host a later check or an admin refuses stays refused.
+export function passAllowed() {
+  for (const email of Object.keys(users())) for (const [name, w] of Object.entries(websitesOf(email))) {
+    const allowed = w.profile ? [] : w.hosts.filter(h => !h.startsWith('*.') && w.checks?.[h]?.verdict !== 'pass');
+    if (allowed.length) changeWebsite(email, name, { checks: { ...w.checks, ...Object.fromEntries(allowed.map(h => [h, { verdict: 'pass' as const, why: 'Allowed before checks.' }])) } });
+  }
+}
+
 // A website goes with its person's login to it and their grants for it, no one else's.
 export function removeSite(email: string, name: string) {
   website(email, name);
@@ -362,7 +372,7 @@ export async function checkWebsite(email: string, site: string, given?: Trace): 
     const now = websitesOf(email)[site];
     if (!now || now.url !== w.url || now.added !== w.added || websiteGenerations.get(siteKey) !== generation) throw new HttpError(409, `${site} was removed or replaced while it was checked`);
     const fresh = Object.fromEntries(Object.entries(decisions).filter(([h]) => !now.checks?.[h] || (now.checks[h].verdict === 'internal' && (!!letIn()[h] || throughVpn(now, h)))));
-    const hosts = now.hosts.filter(p => !Object.entries(fresh).some(([h, c]) => c.verdict !== 'pass' && covers(p, h))), all = { ...now.checks, ...fresh };
+    const hosts = now.hosts.filter(p => p.startsWith('*.') || (fresh[p]?.verdict ?? 'pass') === 'pass'), all = { ...now.checks, ...fresh };
     const allowed = Object.keys(all).filter(h => all[h].verdict === 'pass' && !reached({ ...now, hosts }).some(p => covers(p, h)));
     if (Object.keys(fresh).length || result) changeWebsite(email, site, { hosts: [...new Set([...hosts, ...allowed])], checks: all, ...(result && { profile: result }) });
     Object.assign(checks, fresh);
