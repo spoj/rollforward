@@ -80,7 +80,7 @@ exec "${bwrap}" "$@"
   await new Promise(ok => probe.close(ok));
   base = `http://127.0.0.1:${port}`;
   entra = await idp();
-  Object.assign(env, entra.env(base), { RF_ADMINS: adminEmail });
+  Object.assign(env, entra.env(base), { RF_ADMINS: adminEmail, RF_MAX_UPLOAD_MB: '5' });
   proc = spawn(process.execPath, [join(app, 'src', 'server.ts'), root, String(port)], { env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'inherit'] });
   await new Promise((ok, fail) => {
     proc.stdout!.on('data', d => String(d).includes('rollforward on') && ok(null));
@@ -184,6 +184,26 @@ test('uploads and comment attachments are refused if their person loses workspac
     assert.deepEqual(readdirSync(join(root, 'instances', id, 'upload')), []);
     assert.deepEqual((await json(`/api/instances/${id}`)).log.map((e: { op: string }) => e.op), ['create']);
   });
+});
+
+test('a JSON body holds 10 MB at most, and an upload, attachment or note file RF_MAX_UPLOAD_MB, each refused with 413 as it comes, before it ends', async () => {
+  const held = (size: number) => {
+    let sent = false;
+    return new ReadableStream({ async pull(c) { if (!sent) { sent = true; c.enqueue(new Uint8Array(size).fill(0x20)); } else await new Promise(() => {}); } });
+  };
+  const send = async (path: string, size: number) => {
+    const r = await fetch(base + path, { method: 'POST', body: held(size), duplex: 'half', headers: { cookie: admin } } as RequestInit);
+    return [r.status, await r.text()];
+  };
+  assert.deepEqual(await send('/api/workspaces', 10 * 2 ** 20 + 1), [413, 'a request body holds 10 MB at most']);
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Capped' }))).json();
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'Files' }))).json();
+  const { id } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'big', quiet: true }))).json();
+  for (const path of [`/api/instances/${id}/upload?name=big.bin&quiet`, `/api/instances/${id}/attach?name=big.bin`, `/api/series/${sid}/attach?name=big.bin`])
+    assert.deepEqual(await send(path, 5 * 2 ** 20 + 1), [413, 'an upload holds 5 MB at most'], path);
+  assert.deepEqual(readdirSync(join(root, '.tmp')), []);
+  assert.deepEqual(readdirSync(join(root, 'instances', id, 'upload')), []);
+  assert.equal((await call('POST', `/api/instances/${id}/upload?name=fits.bin&quiet`, new Uint8Array(5 * 2 ** 20))).status, 200);
 });
 
 test('duplicate copies a closed instance into an open one, once', async () => {

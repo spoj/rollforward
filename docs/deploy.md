@@ -58,6 +58,7 @@ Run the image under podman, as a systemd service. The image is the agent image, 
    - `RF_BROWSER_URL` and this server's `RF_BROWSER_KEY`, matching the browser service's `BROWSER_KEY` or one entry in its `BROWSER_KEYS`;
    - `RF_TUNNEL_URL`, `RF_TUNNEL_KEY` and `RF_TUNNEL_PROXY`, only for the optional tunnel service above;
    - `RF_SIGNIN_S` only to change the 600-second website and VPN sign-in window; the page shows its countdown;
+   - `RF_MAX_UPLOAD_MB` only to change the 2048 MB an upload holds at most;
    - `RF_SANDBOX_RO`, only if runs should read folders besides their data, such as a read-only mount of a file share.
 
 4. Install the unit, then run `systemctl --user daemon-reload && systemctl --user start rollforward`:

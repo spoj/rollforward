@@ -91,10 +91,25 @@ for (const dir of [tmpDir, previews]) {
   mkdirSync(dir);
 }
 
+// A request's body, JSON or a screen, of 10 MB at most, refused as it comes past that.
 async function body(req: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(c as Buffer);
+  let size = 0;
+  for await (const c of req as AsyncIterable<Buffer>) {
+    if ((size += c.length) > 10 * 2 ** 20) throw new HttpError(413, 'a request body holds 10 MB at most');
+    chunks.push(c);
+  }
   return Buffer.concat(chunks);
+}
+
+// An upload, an attachment or a note's file, as it streams to disk, refused as it comes past RF_MAX_UPLOAD_MB.
+const maxUpload = Number(process.env.RF_MAX_UPLOAD_MB ?? 2048);
+async function* capped(chunks: AsyncIterable<Buffer>) {
+  let size = 0;
+  for await (const c of chunks) {
+    if ((size += c.length) > maxUpload * 2 ** 20) throw new HttpError(413, `an upload holds ${maxUpload} MB at most`);
+    yield c;
+  }
 }
 
 function send(res: ServerResponse, status: number, data: unknown) {
@@ -469,8 +484,9 @@ const brand = () => readJson<{ text?: string; logo?: string; type?: string }>('b
 // Each request's JSON body, as read, for the system's log.
 const bodies = new WeakMap<IncomingMessage, object>();
 const json = async (req: IncomingMessage) => {
+  const text = (await body(req)).toString();
   let parsed;
-  try { parsed = JSON.parse((await body(req)).toString() || '{}'); } catch { throw new HttpError(400, 'the body is JSON'); }
+  try { parsed = JSON.parse(text || '{}'); } catch { throw new HttpError(400, 'the body is JSON'); }
   bodies.set(req, parsed);
   return parsed;
 };
@@ -673,7 +689,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (action === 'attach' && req.method === 'POST') {
       const tmp = join(tmpDir, randomUUID());
       try {
-        await pipeline(req, createWriteStream(tmp));
+        await pipeline(req, capped, createWriteStream(tmp));
         const now = tree(), who = asPerson(by);
         if (!who) throw new HttpError(401, 'sign in');
         mustSee(who, now.workspaces[now.series[id].workspace]);
@@ -834,7 +850,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // A comment's attachment, kept in upload/attachments/ and named in the comment that follows; it starts nothing by itself.
     const tmp = join(tmpDir, randomUUID());
     try {
-      await pipeline(req, createWriteStream(tmp));
+      await pipeline(req, capped, createWriteStream(tmp));
       const now = tree(), who = asPerson(by);
       if (!who) throw new HttpError(401, 'sign in');
       mustSee(who, now.workspaces[now.series[inst.seriesId].workspace]);
@@ -851,7 +867,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   if (action === 'upload') {
     const pane = url.searchParams.get('pane') === 'out' ? 'out' : 'in', tmp = join(tmpDir, randomUUID()), hash = createHash('sha256');
     try {
-      await pipeline(req, async function* (chunks: AsyncIterable<Buffer>) { for await (const c of chunks) { hash.update(c); yield c; } }, createWriteStream(tmp));
+      await pipeline(req, capped, async function* (chunks: AsyncIterable<Buffer>) { for await (const c of chunks) { hash.update(c); yield c; } }, createWriteStream(tmp));
       const now = tree(), who = asPerson(by);
       if (!who) throw new HttpError(401, 'sign in');
       mustSee(who, now.workspaces[now.series[inst.seriesId].workspace]);

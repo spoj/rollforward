@@ -56,7 +56,7 @@ export async function serveAgent(inst: Instance): Promise<{ url: string; token: 
 }
 
 export async function agentCall(a: AgentRun, path: string, method: string, body: () => Promise<Buffer>): Promise<{ status: number; data: unknown } | null> {
-  const json = async () => { try { return JSON.parse((await body()).toString() || '{}'); } catch { throw new HttpError(400, 'the body is JSON'); } };
+  const json = async () => { const text = (await body()).toString(); try { return JSON.parse(text || '{}'); } catch { throw new HttpError(400, 'the body is JSON'); } };
   const words = async () => ((await json()).args ?? []).map(String) as string[];
   if (path === '/agent/expired' && method === 'POST') {
     const [site, ...more] = await words();
