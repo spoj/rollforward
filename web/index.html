@@ -220,7 +220,7 @@ function land(next, path, d, st) {
 }
 
 function render() {
-  const qs = tree.filter(w => !w.archived).flatMap(w => w.series.filter(s => !s.archived).flatMap(s => s.instances)).reduce((t, i) => t + i.asks.filter(e => e === me.email).length, 0);
+  const qs = tree.filter(w => !w.archived).flatMap(w => w.series.filter(s => !s.archived).flatMap(s => s.instances)).reduce((t, i) => t + i.asks.filter(a => a.who === me.email).length, 0);
   document.title = `${qs ? `(${qs}) ` : ''}${cur?.i ? cur.i.label + ' \u00b7 ' : ''}${me.brand.text ?? 'rollforward'}`;
   renderBrand();
   renderTop();
@@ -1176,8 +1176,8 @@ function waiting() {
     + ` <button class="btn" data-act="accept" data-id="${p.id}">Accept…</button><button class="btn" data-act="proposal-drop" data-id="${p.id}">Decline</button></div>`), at = (w, s, i) => `<a href="#/${i?.id ?? w.id}">${esc(w.name)}${s.single ? '' : ' · ' + esc(s.name)}${i ? ' · ' + esc(i.label) : ''}</a>`;
   for (const w of tree.filter(w => !w.archived)) for (const s of w.series.filter(s => !s.archived)) {
     for (const i of s.instances) {
-      const n = i.asks.filter(e => e === me.email).length;
-      if (n) out.push(`<div class="wt">${at(w, s, i)}: ${n} ask${n > 1 ? 's' : ''} for you</div>`);
+      const n = ['question', 'proposal', 'ask', 'note'].map(k => [k, i.asks.filter(a => a.who === me.email && a.kind === k).length]).filter(([, c]) => c);
+      if (n.length) out.push(`<div class="wt">${at(w, s, i)}: ${n.map(([k, c]) => plural(c, k)).join(', ')} for you</div>`);
       if (me.role === 'admin') for (const r of i.refused) out.push(`<div class="wt">${at(w, s, i)}: run ${r.run}'s browser on ${r.login === me.email ? '' : `${person(r.login)}'s `}${esc(r.site)} was refused`
         + r.hosts.map(x => ` <span class="creds">${esc(x)}${r.why[x] ? ` <span class="sub">${esc(r.why[x])}</span>` : ''} <a data-act="allow-host" data-site="${esc(r.site)}" data-host="${esc(x)}" data-person="${esc(r.login)}">Allow</a></span>`).join('') + '</div>');
       if (i.wrong && i.runner === me.email) out.push(`<div class="wt">${at(w, s, i)}: ${plural(i.wrong, 'correction')} say${i.wrong > 1 ? '' : 's'} it's wrong</div>`);

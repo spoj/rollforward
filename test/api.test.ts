@@ -607,9 +607,9 @@ test("people see, set, move and cancel wakes, one-off or weekly, share a series 
   assert.equal((await call('POST', `${await at(series, '2026-08-30 rework', 'comment')}`, JSON.stringify({ text: 'fyi' }), b)).status, 200);
   assert.equal(JSON.parse(readFileSync(wakes, 'utf8')).pending.k2?.at, due, "bob's note for the runner starts nothing, so the wake stays");
   const asks = async () => (await shown(series)).instances.find((i: { id: string }) => i.id === sep).asks;
-  assert.deepEqual(await asks(), [adminEmail], "bob's note waits on the runner");
+  assert.deepEqual(await asks(), [{ who: adminEmail, kind: 'note' }], "bob's note waits on the runner");
   assert.equal((await call('PUT', await at(series), JSON.stringify({ share: true }))).status, 200);
-  assert.deepEqual(await asks(), [adminEmail], 'where the runner shares the series it is still a note for them');
+  assert.deepEqual(await asks(), [{ who: adminEmail, kind: 'note' }], 'where the runner shares the series it is still a note for them');
   assert.equal((await call('PUT', await at(series), JSON.stringify({ share: false }))).status, 200);
   assert.equal((await call('POST', `${await at(series, '2026-08-30 rework', 'comment')}`, JSON.stringify({ text: 'go' }))).status, 200);
   assert.equal(JSON.parse(readFileSync(wakes, 'utf8')).pending.k2?.at, due, "the runner's act starts a run now, and the wake still comes when it's due");

@@ -168,7 +168,7 @@ function guard(before: string[], after: string[], force: unknown) {
 
 // An instance as the sidebar shows it. What comes from its log and screen is kept until either moves on, or its series' sharing,
 // which says whose entries are notes, changes, so a listing reads each instance's log once, not on every refresh.
-const kept = new WeakMap<Instance, { key: string; active: string; asks: string[]; runner: string; acted: string[]; cost: number; corrections: number; wrong: string[];
+const kept = new WeakMap<Instance, { key: string; active: string; asks: { who: string; kind: string }[]; runner: string; acted: string[]; cost: number; corrections: number; wrong: string[];
   refused: { at: string; run: number; site: string; login: string; hosts: string[] }[] }>();
 // Who runs an instance, and the logins they ticked for it, by name while they still offer them.
 function runner(inst: Instance) {
@@ -198,7 +198,7 @@ function summary(i: Instance, me: Me, w8 = wakes()) {
   const key = `${i.log.length}:${i.doc.rev}:${seriesSettings(i.series()).shared?.by ?? ''}`;
   const news = i.log.findLast(e => e.by !== email && e.accepted_by !== email && NEWS.includes(e.op)), s = seen(email);
   let k = kept.get(i);
-  if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i).map(w => w.who), runner: runnerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: costOf(i), corrections: i.log.filter(e => e.op === 'correction').length,
+  if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i).map(({ who, e }) => ({ who, kind: e.ask === true ? 'ask' : (e.ask as string | undefined) ?? 'note' })), runner: runnerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: costOf(i), corrections: i.log.filter(e => e.op === 'correction').length,
     wrong: i.log.filter(e => e.op === 'correction' && e.kind === 'wrong').map(e => e.at),
     refused: i.log.filter(e => e.op === 'browser' && e.hosts).map(e => ({ at: e.at, run: e.run as number, site: e.site as string, login: e.login as string, hosts: Object.keys(e.hosts as object) })) });
   return {
