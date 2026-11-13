@@ -652,7 +652,7 @@ test("a series' notes: whoever sees it leaves one, with files, which starts no r
   const { file } = await (await call('POST', `${s}/attach?name=rates.csv`, 'month,rate\n10,5%', b)).json();
   assert.equal(file, 'files/rates.csv');
   assert.equal((await call('POST', `${s}/notes`, JSON.stringify({ text: ' ' }), b)).status, 400, 'a note has text');
-  assert.equal((await call('POST', `${s}/notes`, JSON.stringify({ text: 'x', files: ['../log.jsonl'] }), b)).status, 400);
+  for (const f of ['../log.jsonl', 'files/..', 'files/.']) assert.equal((await call('POST', `${s}/notes`, JSON.stringify({ text: 'x', files: [f] }), b)).status, 400, f);
   const told = await (await call('POST', `${s}/notes`, JSON.stringify({ text: 'From October the rate is 5%', files: [file] }), b)).json();
   assert.match(told.id, /^n\d+$/);
   assert.equal((await shown(series)).notes, 1, 'the listing counts its open notes');

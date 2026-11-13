@@ -684,7 +684,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       const { text, files = [], how, thread } = payload, from = run && { run: run.n, runner: runnerOf(run.inst).by };
       if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a note has text');
       if (!other) {
-        for (const f of files) if (!(typeof f === 'string' && /^files\/[^/]+$/.test(f) && existsSync(join(book, 'notes', f)))) throw new HttpError(400, `no attachment ${f}`);
+        for (const f of files) if (!(typeof f === 'string' && /^files\/[^./][^/]*$/.test(f) && existsSync(join(book, 'notes', f)))) throw new HttpError(400, `no attachment ${f}`);
         const e = addNote(book, by, 'note', { text: text.trim(), ...(files.length && { files }), ...(run && { ...from, see: { inst: run.inst.id, label: run.inst.label, ...(run.thread && { thread: run.thread }) } }) });
         noted(id);
         return send(res, 200, run ? `noted n${e.seq} on ${named(t, id)}, which its runs read` : { id: `n${e.seq}` });
