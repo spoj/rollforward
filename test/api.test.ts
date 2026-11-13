@@ -627,7 +627,7 @@ test("people see, set, move and cancel wakes, one-off or weekly, share a series 
   const started = await call('POST', '/api/requests/r1');
   assert.equal(started.status, 200);
   const made = await json(`/api/instances/${(await started.json()).id}`);
-  assert.deepEqual([made.log[0].by, made.log[1].op, made.log[1].from], [adminEmail, 'wake', 'larkfield/Bank rec/2026-09']);
+  assert.deepEqual(made.log.slice(0, 3).map((e: { by: string; op: string; from?: string; note?: true }) => [e.by, e.op, e.from, e.note]), [[adminEmail, 'create', undefined, undefined], ['server', 'wake', 'larkfield/Bank rec/2026-09', true], ['server', 'wake', adminEmail, undefined]]);
   assert.equal((await call('POST', await at(series), JSON.stringify({ label: 'third' }))).status, 200);
   assert.equal((await call('POST', await at(series), JSON.stringify({ label: 'fourth' }))).status, 409, '3 open already');
   assert.equal((await call('DELETE', '/api/wakes/k1')).status, 200);
@@ -643,6 +643,15 @@ test("people see, set, move and cancel wakes, one-off or weekly, share a series 
   assert.deepEqual(Object.values(JSON.parse(readFileSync(wakes, 'utf8')).pending), [], "archiving a series cancels its wakes and its instances'");
   assert.equal((await set(sep, { at: later })).status, 409, 'and none is set while it is archived');
   assert.equal((await call('PUT', await at(series), JSON.stringify({ archived: false }))).status, 200);
+});
+
+test("starting a request is its starter's act, which starts a run in a series no one shares, its wake and text logged beside it as a note, though the old server saved the request without the instance that set it", async () => {
+  const workspace = (await named('larkfield')).id, wakes = join(root, '.rf', 'wakes.json');
+  const { id } = await (await call('POST', '/api/series', JSON.stringify({ workspace, name: 'Fed' }))).json();
+  const w = JSON.parse(readFileSync(wakes, 'utf8'));
+  writeFileSync(wakes, JSON.stringify({ ...w, requests: { ...w.requests, old: { series: id, label: '2026-10', from: 'larkfield/Feeder/2026-09', at: new Date().toISOString(), text: 'inputs are in' } } }));
+  const made = (await (await call('POST', '/api/requests/old')).json()).id, log = await ran(`/api/instances/${made}`);
+  assert.deepEqual(log.filter(e => e.op === 'wake').map(e => [e.from, e.text, e.note]), [['larkfield/Feeder/2026-09', 'inputs are in', true], [adminEmail, undefined, undefined]]);
 });
 
 test("a series' notes: whoever sees it leaves one, with files, which starts no run; the runners of its open instances, its workspace's owners and admins settle one, acted on or set aside, and nothing is deleted", async () => {

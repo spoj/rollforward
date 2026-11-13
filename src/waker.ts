@@ -508,16 +508,14 @@ export function dropRequest(id: string): Request {
   return r;
 }
 
-// Makes an instance of a series, run by `by` with the logins they ticked, and starts it with a wake after its create, for a wake, a
-// request or a person; without one, as a person makes it quietly, it waits for its first act. The wake is the runner's word if they
-// set it, or a run of an instance of theirs in the series did; anyone else's is a note.
-export function startWith(seriesId: string, label: string, by: string, logins: string[], wake?: { from: string; text?: string; inst?: string }): Instance {
+// Makes an instance of a series, run by `by` with the logins they ticked, and starts it with wakes after its create: a wake's, a
+// person's, or a request's and the person who starts it; without one, as a person makes it quietly, it waits for its first act. A wake
+// is the runner's word if they set it, or a run of an instance of theirs in the series did; anyone else's is a note.
+export function startWith(seriesId: string, label: string, by: string, logins: string[], wakes: { from: string; text?: string; inst?: string }[]): Instance {
   if (instances(seriesId).filter(i => i.doc.status === 'open').length >= MAX_OPEN) throw new HttpError(409, `${MAX_OPEN} instances of ${tree().series[seriesId].name} are open: a new one waits until one closes`);
   const inst = createInstance(seriesId, label, by, logins);
-  if (wake) {
-    inst.append('server', 'wake', { from: wake.from, ...(wake.text && { text: wake.text }), ...(!runnersWake(inst, wake) && { note: true }) });
-    kick(inst);
-  }
+  for (const wake of wakes) inst.append('server', 'wake', { from: wake.from, ...(wake.text && { text: wake.text }), ...(!runnersWake(inst, wake) && { note: true }) });
+  if (wakes.length) kick(inst);
   return inst;
 }
 
@@ -561,7 +559,7 @@ function fire() {
     const runs = sharer && canSee(sharer, t.workspaces[t.series[target].workspace]);
     try {
       if (!runs) throw new Error('not shared');
-      startWith(target, label!, shared.by, shared.logins, { from, text: wake.text, inst: wake.inst });
+      startWith(target, label!, shared.by, shared.logins, [{ from, text: wake.text, inst: wake.inst }]);
     } catch {
       w.requests[newId()] = { series: target, label: label!, from, at: now, ...(wake.inst && { inst: wake.inst }), ...(wake.text && { text: wake.text }) };
     }

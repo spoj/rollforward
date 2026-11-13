@@ -699,7 +699,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       addNote(book, by, how, { on: n.seq, text: text.trim(), ...(run && { ...from, see: { inst: run.inst.id, label: run.inst.label, ...(thread != null && { thread }) } }) });
       return send(res, 200, run ? `${other} ${how === 'taken' ? 'taken' : 'set aside'}` : 'ok');
     }
-    if (req.method === 'POST') return send(res, 200, { id: startWith(id, String(payload.label ?? ''), by, checkTicks(by, payload.logins ?? []), payload.quiet ? undefined : { from: by }).id });
+    if (req.method === 'POST') return send(res, 200, { id: startWith(id, String(payload.label ?? ''), by, checkTicks(by, payload.logins ?? []), payload.quiet ? [] : [{ from: by }]).id });
     if (req.method !== 'PUT') throw new HttpError(405, 'PUT, or POST a new instance');
     const change = payload;
     if (change.name !== undefined && change.name !== s.name) {
@@ -744,13 +744,14 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       ...(starts && { label: starts }), ...(days !== undefined && { days: weekly(String(days), first, starts) }), ...(text?.trim() && { text: text.trim() }),
     }));
   }
-  // A request to start an instance, which people start or dismiss.
+  // A request to start an instance, which people start or dismiss: whoever starts it acts, so its wake is logged, a note unless its
+  // runner's, beside their own.
   if (kind === 'requests') {
     const r = wakes().requests[id];
     if (!r) throw new HttpError(404, `no request ${id}`);
     mustSee(me, t.workspaces[t.series[r.series].workspace]);
     if (req.method === 'POST') {
-      const inst = startWith(r.series, r.label, by, checkTicks(by, payload.logins ?? []), payload.quiet ? undefined : { from: r.from, text: r.text, inst: r.inst });
+      const inst = startWith(r.series, r.label, by, checkTicks(by, payload.logins ?? []), payload.quiet ? [] : [{ from: r.from, text: r.text, inst: r.inst }, { from: by }]);
       dropRequest(id);
       return send(res, 200, { id: inst.id });
     }
