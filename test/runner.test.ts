@@ -115,6 +115,11 @@ test("no key or server setting is inside: OpenRouter and Exa are at their own ad
   assert.equal(await sh('rf show 2>&1 | head -1'), `agent API, as Bearer ${TOKEN}`);
 });
 
+test('a run has at most RF_RUN_TASKS (2048) processes and threads, and no file over RF_RUN_FILE_GB (16), sparse or not', async () => {
+  assert.equal(await sh('ulimit -Hu'), '2048');
+  assert.match(await sh('truncate -s 17G /tmp/big 2>&1; echo $?; truncate -s 16G /tmp/big && echo ok; rm /tmp/big'), /File size limit exceeded[\s\S]*\nok$/);
+});
+
 test("the run's socket is its own: another run's token, as one it read in that run's transcript, opens nothing there", async () => {
   assert.equal(await sh(`curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${OTHER}" http://127.0.0.1:7000/agent/delivered`), '401');
   assert.equal(await sh(`curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:7000/browsers/${OTHER}/crm/json/version`), '404');

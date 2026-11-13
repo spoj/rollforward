@@ -19,6 +19,8 @@ mkdirSync(scratch, { recursive: true });
 chmodSync(scratch, 0o700);
 // Each run's own cgroup, where systemd runs the server; the container image sets this empty.
 const SCOPE = 'systemd-run --user --scope --quiet --collect --slice=rollforward-runs -p MemoryHigh=4G -p MemoryMax=8G --';
+// A run's processes and threads at most, a fork bomb's end, and its biggest file, which bounds a runaway write and a sparse file.
+const TASKS = process.env.RF_RUN_TASKS ?? '2048', FILE_GB = Number(process.env.RF_RUN_FILE_GB ?? 16);
 
 // A run's Pi, which takes turns: each a prompt the agent takes, and steers it may get, until it settles, aborted or not.
 export type TurnEnd = { aborted: boolean; error?: string };
@@ -89,7 +91,7 @@ export function pi(o: { token: string; id: string; n: number; view: View; skills
   writeFileSync(join(run, 'bwrap.args'), `${args.join('\0')}\0`);
   return new RpcClient({
     cliPath, cwd: dir, provider, model,
-    env: { PATH: [join(app, 'bin', 'sandbox'), process.env.PATH].join(delimiter), RF_SANDBOX_ARGS: join(run, 'bwrap.args'), RF_SANDBOX_SCOPE: process.env.RF_SANDBOX_SCOPE ?? SCOPE },
+    env: { PATH: [join(app, 'bin', 'sandbox'), process.env.PATH].join(delimiter), RF_SANDBOX_ARGS: join(run, 'bwrap.args'), RF_SANDBOX_SCOPE: process.env.RF_SANDBOX_SCOPE ?? SCOPE, RF_RUN_TASKS: TASKS, RF_RUN_FILE_BYTES: String(FILE_GB * 2 ** 30) },
     args: ['--no-extensions', '--no-skills', '--no-mcp', '--no-prompt-templates', ...o.skills.flatMap(s => ['--skill', `/skills/${s.id}`]),
       '--tools', 'read,bash,edit,write', '--system-prompt', '/app/prompt.md',
       '--thinking', process.env.RF_THINKING ?? 'high',
