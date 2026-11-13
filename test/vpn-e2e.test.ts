@@ -70,8 +70,9 @@ test('rollforward signs in, connects, and routes only its website through the re
   });
   const here = Object.values(networkInterfaces()).flat().find(a => a!.family === 'IPv4' && !a!.internal)!.address;
   await new Promise<void>(ok => gateway.listen(0, here, ok));
-  await new Promise<void>(ok => viaProxy.listen(0, here, ok));
-  const viaProxyUrl = `http://${here}:${(viaProxy.address() as { port: number }).port}`;
+  // The proxy is the tunnel service's, a host no website reaches, apart from the gateway and SSO doubles' address.
+  await new Promise<void>(ok => viaProxy.listen(0, '127.0.0.1', ok));
+  const viaProxyUrl = `http://127.0.0.1:${(viaProxy.address() as { port: number }).port}`;
   const authority = `${here}:${(gateway.address() as { port: number }).port}`;
   mkdirSync(join(root, '.rf'), { recursive: true });
   mkdirSync(join(tmp, 'home'));
