@@ -748,7 +748,11 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (!run) mustSee(me, t.workspaces[t.series[sid].workspace]);
     else if (t.series[sid].workspace !== t.series[run.inst.seriesId].workspace) throw new HttpError(403, `${named(t, sid)} is in another workspace: you can read it, not wake it`);
     if (t.series[to]?.single) throw new HttpError(400, `${t.series[to].name} is a task, with one instance: wake that`);
-    if (req.method === 'DELETE') return void (cancelWake(id), send(res, 200, 'ok'));
+    if (req.method === 'DELETE') {
+      // A person's cancellation is theirs in the system's log; a run's is recorded there too, with the wake, its instance and run.
+      if (run) act('agent', { method: 'DELETE', path: url.pathname, wake, inst: run.inst.id, run: run.n });
+      return void (cancelWake(id), send(res, 200, 'ok'));
+    }
     const { at: when = '', label, days, text } = payload, w = String(when);
     const at = w === 'now' ? Date.now() : /^\+\d+[mhd]$/.test(w) ? Date.now() + Number(w.slice(1, -1)) * { m: 60e3, h: 3600e3, d: 86400e3 }[w.at(-1) as 'm'] : Date.parse(w);
     if (req.method !== 'PUT' || Number.isNaN(at)) throw new HttpError(400, 'PUT {"at", "label" for a series, "days", "text"}, or DELETE; at is now, +<n>m|h|d, or a date and time such as 2026-09-14T07:00+08:00');

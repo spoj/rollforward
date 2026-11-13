@@ -142,7 +142,8 @@ Stored data is files on the host's disk, in folders named by random ids, with no
 
     .rf/                      the server's own: log.jsonl (the system's log: each change a person made beyond an instance, by
                               seq, with who, the method, path and body, its secrets and files' contents left out, and the
-                              server's own, such as website checks' host-only evidence, search queries and verdicts),
+                              server's own, such as website checks' host-only evidence, search queries and verdicts, and a
+                              run's cancelling a wake, with the wake and the run's instance and number),
                               users.json, tree.json, people/<sha256(email)[:16]>/ (each person's logins, their websites,
                               and in index/ their caches, see Indexes),
                               connections.json, ca/ (the runs' certificate authority), wakes.json (pending wakes and requests), egress.json (hosts runs may reach), browsers.json (the runs' browsers open on the browser service), vpns.json (the deployment's VPN definitions, never live tunnels or credentials),

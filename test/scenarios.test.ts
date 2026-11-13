@@ -556,6 +556,20 @@ test("a run learns nothing of an instance in another workspace by acting on it, 
   assert.deepEqual(s.saw.map(x => x.trim()), Array(4).fill('that instance is in another workspace: you can read it if it lets you, not act there'));
 });
 
+test("a run's cancelling a person's wake is recorded in the system's log, with the wake, the run's instance and its number", async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Cancelling' })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Payroll' })).json();
+  const text = 'Payroll cut-off: collect the timesheets', at = new Date(Date.now() + 30 * 86400e3).toISOString();
+  assert.equal((await call('PUT', `/api/wakes/${series}`, { at, label: '2026-12', text })).status, 200);
+  const s: Script = { bash: [() => `rf wake --cancel ${/Pending wakes: (\w+)/.exec(s.prompt!)![1]} 2>&1`], report: 'Cancelled.', saw: [] };
+  scripts.push(s);
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
+  await runs(id, 1);
+  const wake = /Pending wakes: (\w+)/.exec(s.prompt!)![1];
+  const acts = readFileSync(join(root, '.rf', 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+  assert.deepEqual(acts.filter(a => a.path === `/api/wakes/${wake}`).map(a => [a.by, a.method, a.wake.text, a.wake.from, a.inst, a.run]), [['agent', 'DELETE', text, ADMIN, id, 1]]);
+});
+
 test("a proposal still waiting as its instance closes is accepted, so a duplicate neither waits on it nor takes its approval", async () => {
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Accepted' })).json();
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Pack' })).json();
