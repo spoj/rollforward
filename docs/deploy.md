@@ -18,6 +18,7 @@ rollforward runs on one host and the browser service ([spoj/rollforward-browser]
 - **Routes out of the browser host** to the websites people sign in to, such as the ERP and the portals.
 - **An app registered in Entra ID** ([system.md](system.md), Access), with an admin's consent to its delegated Graph permissions.
 - **A model API key** for OpenRouter, and one for Exa if runs are to search the web.
+- **Deployment services,** if needed: run each beside the server on a private, firewalled HTTP link, then `rf connection set NAME service --url http://HOST:PORT --paths 'AP/,GL/2026/' --key KEY`; its bearer key and streaming HTTP contract are in [system.md](system.md#connections).
 
 ## The browser host
 

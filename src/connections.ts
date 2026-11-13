@@ -1,16 +1,17 @@
 import { request as httpRequest, type IncomingMessage, type ServerResponse } from 'node:http';
 import { request as httpsRequest } from 'node:https';
-import { join } from 'node:path';
+import { createCipheriv, createDecipheriv, createHash, randomBytes, type Hash } from 'node:crypto';
 import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib';
 import { HttpError, type Instance } from './store.ts';
 import { lookup } from 'node:dns/promises';
 import { getDomain } from 'tldts';
-import { isPrivate, readJson, writeJson } from './system.ts';
+import { isPrivate, key, readJson, tree, writeJson } from './system.ts';
 import type { EntraLogin } from './auth.ts';
 import { token } from './entra.ts';
 import { lender, logins, runnerOf, saveLogin, secret, use, type Offer } from './logins.ts';
 import graph from './connections/graph.ts';
 import databricks from './connections/databricks.ts';
+import service from './connections/service.ts';
 import * as openrouter from './connections/openrouter.ts';
 import * as exa from './connections/exa.ts';
 
@@ -30,12 +31,12 @@ import * as exa from './connections/exa.ts';
 // its answer cost adds to the run's.
 
 export type Connection = { name: string; type: string; [setting: string]: any };
-export type Request = { method: string; url: URL; headers: Record<string, string | string[] | undefined>; json?: any; body?: Buffer };
+export type Request = { method: string; url: URL; headers: Record<string, string | string[] | undefined>; json?: any; body?: Buffer; target?: string };
 export type Type = {
   settings(input: Record<string, unknown>): Record<string, unknown>;
   // Its person's login: an Entra login, with its scope.
   login(c: Connection): (EntraLogin | { id: string; kind: string; name: string; scope?: undefined; offers: Offer[] });
-  hosts?: string[];
+  hosts?(c: Connection): string[];
   // The offer a request needs ticked, its JSON body as it goes on, if the type rewrote it, and the origin where its answer's
   // Location, as a redirect's, is a link; or a refusal.
   // A request that sends mail also reads, on asking, what goes, its recipients and its attachments' sha256s, or why that can't be read.
@@ -44,7 +45,7 @@ export type Type = {
   // What a run's environment holds for it, given the instance's ticks.
   env?(c: Connection, ticks: string[]): Record<string, string>;
 };
-export const types: Record<string, Type> = { graph, databricks };
+export const types: Record<string, Type> = { graph, databricks, service };
 
 export const connections = (): Connection[] => Object.entries(readJson<Record<string, any>>('connections.json', {})).map(([name, c]) => ({ name, ...c }));
 
@@ -72,7 +73,7 @@ export async function checkHost(h: string, internal: boolean) {
   const base = h.replace(/^\*\./, '');
   if (h !== base && !getDomain(base, { allowPrivateDomains: true })) throw new HttpError(400, `${h}: a wildcard stays within one registrable domain, such as *.example.com`);
   if ([process.env.RF_PUBLIC_URL, process.env.RF_BROWSER_URL].some(u => u && covers(h, new URL(u).hostname))) throw new HttpError(400, `${h} is rollforward's own: no website reaches it`);
-  const other = connections().find(c => types[c.type].hosts?.some(host => covers(h, host) || covers(host, h)));
+  const other = connections().find(c => types[c.type].hosts?.(c).some(host => covers(h, host) || covers(host, h)));
   if (other) throw new HttpError(400, `${h} is ${other.name}'s: no website reaches it`);
   if (!internal && h === base && !letIn()[h] && await resolvesInternal(h)) throw new HttpError(400, `${h} is at an internal address: a website reaches one only where an admin lets it`);
 }
@@ -84,9 +85,16 @@ export async function setConnection(name: string, input: Record<string, unknown>
   if (!type) throw new HttpError(400, `type: one of ${Object.keys(types).join(', ')}`);
   const settings = type.settings(input);
   const all = readJson<Record<string, any>>('connections.json', {});
-  all[name] = { type: input.type, ...settings, updated_by: by, updated_at: new Date().toISOString() };
+  let sealed = input.type === 'service' ? all[name]?.key : undefined;
+  if (input.type === 'service' && input.key !== undefined) {
+    const iv = randomBytes(12), cipher = createCipheriv('aes-256-gcm', key('seal.key'), iv).setAAD(Buffer.from(`service\n${name}`));
+    const body = Buffer.concat([cipher.update(String(input.key), 'utf8'), cipher.final()]);
+    sealed = Buffer.concat([iv, cipher.getAuthTag(), body]).toString('base64');
+  }
+  all[name] = { type: input.type, ...settings, ...(sealed && { key: sealed }), updated_by: by, updated_at: new Date().toISOString() };
   writeJson('connections.json', all);
-  return { name, ...all[name] };
+  const { key: _key, ...saved } = all[name];
+  return { name, ...saved };
 }
 
 // People's logins to a connection removed stay theirs to sign out of; no run can use them.
@@ -116,9 +124,9 @@ export const upstreams: Record<string, string> = {};
 const own = (host: string) => [openrouter, exa].find(s => s.host === host && process.env[s.key]);
 
 export const intercepts = (a: CallRun, host: string) =>
-  !!own(host) || connections().some(c => types[c.type].hosts?.some(h => covers(h, host))) || [...a.links.keys()].some(u => new URL(u).host === host);
+  !!own(host) || connections().some(c => types[c.type].hosts?.(c).some(h => covers(h, host))) || [...a.links.keys()].some(u => new URL(u).host === host);
 
-const HOP = ['authorization', 'connection', 'host', 'keep-alive', 'proxy-authorization', 'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade'];
+const HOP = ['connection', 'keep-alive', 'proxy-authorization', 'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade'];
 
 // The sends going: each logged as sent, its answer not yet.
 const sending = new Set<IncomingMessage>();
@@ -132,9 +140,9 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
   let name = host, path = req.url!;
   // A request that may write, to anything but the server's own services, is logged as it goes too, so a cut leaves it as sent,
   // and a stop waits for its answer.
-  let sent: number | undefined;
+  let sent: number | undefined, digest: { hash: Hash; size: number } | undefined;
   const log = (status: number, bytes: number, more?: object) => {
-    a.inst.append('agent', 'call', { run: a.n, name, method, path, status, bytes, ...(sent && { sent }), ...more });
+    a.inst.append('agent', 'call', { run: a.n, name, method, path, status, bytes, ...(sent && { sent }), ...(digest && { sha256: digest.hash.copy().digest('hex'), size: digest.size }), ...more });
     sending.delete(req);
   };
   try {
@@ -144,7 +152,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     // The runner's own OpenRouter key, where they use it, in place of the server's, never falling back to it.
     const { by: runner, logins: ticked } = runnerOf(a.inst), mine = s === openrouter ? logins(runner).find(l => l.id === 'openrouter' && l.enabled) : undefined;
     // Of the connections that take the host, the one a tick names it under, as a Databricks workspace's warehouse does, or the first.
-    const serving = link || s ? [] : connections().filter(c => types[c.type].hosts?.some(h => covers(h, host)));
+    const serving = link || s ? [] : connections().filter(c => types[c.type].hosts?.(c).some(h => covers(h, host)));
     const c = serving.find(c => ticked.some(t => t.startsWith(`${loginOf(c).id}:${host}/`))) ?? serving[0];
     name = link?.name ?? c?.name ?? s?.name ?? host;
     path = link ? url.origin + url.pathname : url.pathname + url.search;
@@ -157,18 +165,28 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     if (mine?.expired) throw Object.assign(new HttpError(409, `${runner}'s own OpenRouter key is out of credits: they save another, or stop using it, on the Logins page, and the instance carries on`), { login: 'openrouter' });
     if (!link && !c && !s) throw new HttpError(403, `${url.origin + url.pathname} is no link a connection's answer gave this run`);
     // A POST's or PATCH's body, a JSON one, or any to the server's own services, is read whole, for the policy; a JSON body goes on as the JSON it read, as it rewrote
-    // it, never as bytes another parser might read otherwise, such as a key twice. Anything else, such as a file's content, streams.
+    // it, never as bytes another parser might read otherwise, such as a key twice. A deployment's service takes any body as bytes,
+    // streamed, as a file's content is.
     const isJson = /json/i.test(String(req.headers['content-type']));
     // A file's content, PUT …/content, streams on as its bytes, a JSON file's too.
-    const raw = !link && (s || ['POST', 'PATCH'].includes(method) || (method === 'PUT' && isJson && !/\/content$/i.test(url.pathname))) ? Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)) : undefined;
-    const json = isJson && raw?.length ? JSON.parse(raw.toString()) : undefined, r = { method, url, headers: req.headers, json, body: raw };
+    const raw = c?.type !== 'service' && !link && (s || ['POST', 'PATCH'].includes(method) || (method === 'PUT' && isJson && !/\/content$/i.test(url.pathname))) ? Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)) : undefined;
+    const json = isJson && raw?.length ? JSON.parse(raw.toString()) : undefined, r = { method, url, headers: req.headers, json, body: raw, target: req.url! };
     let out = json, auth: Record<string, string> = {}, as = '', ticks: string[] = [], redirect: string | undefined, offer = '';
     if (c) {
       const { by, logins } = lender(a.inst, a.n), checked = await types[c.type].check!(c, by, ticks = logins, r), login = loginOf(c) as EntraLogin;
       out = checked.json ?? json;
       redirect = checked.redirect;
       as = use(a.inst, a.n, offer = checked.offer).email;
-      auth = { authorization: `Bearer ${await token(as, login.id, login.scope)}` };
+      if (c.type === 'service') {
+        let k = process.env[`RF_SERVICE_KEY_${c.name.toUpperCase().replaceAll('-', '_')}`];
+        if (c.key) {
+          const b = Buffer.from(c.key, 'base64'), decipher = createDecipheriv('aes-256-gcm', key('seal.key'), b.subarray(0, 12)).setAAD(Buffer.from(`service\n${c.name}`));
+          decipher.setAuthTag(b.subarray(12, 28));
+          k = Buffer.concat([decipher.update(b.subarray(28)), decipher.final()]).toString('utf8');
+        }
+        if (!k) throw new HttpError(502, `${c.name}: set --key or RF_SERVICE_KEY_${c.name.toUpperCase().replaceAll('-', '_')}`);
+        auth = { authorization: `Bearer ${k}`, 'x-rf-runner': as, 'x-rf-instance': a.inst.id, 'x-rf-run': String(a.n), 'x-rf-series': a.inst.seriesId, 'x-rf-workspace': a.inst.seriesId ? tree().series[a.inst.seriesId].workspace : '' };
+      } else auth = { authorization: `Bearer ${await token(as, login.id, login.scope)}` };
     }
     if (s) {
       // The key goes in both headers SDKs send one in: Authorization, and x-api-key, as Anthropic's, Pi's among them, and Exa's do.
@@ -177,17 +195,18 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       auth = { authorization: `Bearer ${k}`, 'x-api-key': k };
     }
     const body = out === undefined ? raw : Buffer.from(JSON.stringify(out));
-    if (!s && !['GET', 'HEAD'].includes(method)) {
+    if (!s && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+      if (c?.type === 'service') digest = { hash: createHash('sha256'), size: 0 };
       sent = a.inst.append('agent', 'send', { run: a.n, name, method, path }).seq;
       sending.add(req);
     }
     // A Location where the check lets one go, as a redirect's, is a link for this run before the run can follow it.
-    const answer = await forward(`${upstreams[host] ?? url.origin}${url.pathname}${url.search}`, req, res, {
-      auth, body, keep: !link, location: to => { const l = URL.parse(to); if (l && l.origin === redirect) a.links.set(l.href, { name, offer }); },
+    const answer = await forward(`${c?.type === 'service' ? c.url : upstreams[host] ?? url.origin}${url.pathname}${url.search}`, req, res, {
+      auth, body, digest, keep: !link && c?.type !== 'service', location: to => { const l = URL.parse(to); if (l && l.origin === redirect) a.links.set(l.href, { name, offer }); },
     });
     // An answer's links go through for this run; what a service's answer cost, whole or in the last event of its stream that says,
     // adds to the run's as it comes.
-    if (c && answer.type.includes('json')) for (const l of await types[c.type].links?.(JSON.parse(answer.text || 'null'), url.pathname, as, ticks) ?? []) a.links.set(new URL(l).href, { name: c.name, offer });
+    if (c && types[c.type].links && answer.type.includes('json')) for (const l of await types[c.type].links?.(JSON.parse(answer.text || 'null'), url.pathname, as, ticks) ?? []) a.links.set(new URL(l).href, { name: c.name, offer });
     const cost = !s ? 0 : (answer.text.trimStart().startsWith('{') ? [answer.text] : answer.text.split('\n').filter(l => l.startsWith('data: {')).map(l => l.slice(6)))
       .map(e => s.cost(JSON.parse(e))).findLast(x => x !== undefined) ?? 0;
     a.cost += cost;
@@ -209,9 +228,9 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
 // The request goes on as it came, but for its credential and the hop's own headers; the answer comes back as it is, its Location
 // told first, and, where it's kept and is JSON or a stream of events, as text too, for what it holds. A run gone before its
 // answer, as one cut, leaves it read to its end all the same, so what was sent is logged as answered.
-function forward(target: string, req: IncomingMessage, res: ServerResponse, o: { auth: Record<string, string>; body?: Buffer; keep: boolean; location(to: string): void }) {
+function forward(target: string, req: IncomingMessage, res: ServerResponse, o: { auth: Record<string, string>; body?: Buffer; digest?: { hash: Hash; size: number }; keep: boolean; location(to: string): void }) {
   return new Promise<{ status: number; bytes: number; type: string; text: string }>((ok, fail) => {
-    const headers = Object.fromEntries(Object.entries(req.headers).filter(([k]) => !HOP.includes(k)));
+    const headers = Object.fromEntries(Object.entries(req.headers).filter(([k]) => k !== 'authorization' && k !== 'host' && !HOP.includes(k)));
     const up = (target.startsWith('https:') ? httpsRequest : httpRequest)(target, {
       method: req.method, headers: { ...headers, ...(o.body && { 'content-length': String(o.body.length) }), ...o.auth },
     }, r => {
@@ -231,6 +250,10 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
     });
     up.on('error', fail);
     if (o.body) up.end(o.body);
-    else req.pipe(up);
+    else {
+      if (o.digest) req.on('data', (b: Buffer) => { o.digest!.hash.update(b); o.digest!.size += b.length; });
+      req.on('error', e => up.destroy(e));
+      req.pipe(up);
+    }
   });
 }
