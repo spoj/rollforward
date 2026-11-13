@@ -39,9 +39,13 @@ test('a duplicate that fails part way, as on a full disk, leaves nothing in inst
   rmSync(tmp, { recursive: true, force: true });
 });
 
-test("a name is a folder's and a line's: slashes, control characters and line breaks become _, and AGENTS.md, where the view binds instructions, is refused", () => {
+test("a name is a folder's and a line's: slashes, control characters and line breaks become _, and AGENTS.md, where the view binds instructions, is refused, as is a folder's name over 200 bytes", () => {
   assert.equal(safeName('Bank/rec\\Q1\nlines\u2028\u2029\x85\x7f'), 'Bank_rec_Q1_lines____');
   assert.throws(() => safeName('AGENTS.md'), /AGENTS\.md is the name of the agents' instructions/);
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
+  openStore(tmp);
+  assert.throws(() => createInstance('s', '供应商对账单'.repeat(15), 'alex', []), /a name is 200 bytes at most/, "a label is a folder's in a run's view, which holds 255 bytes");
+  rmSync(tmp, { recursive: true, force: true });
 });
 
 test('openFile opens only what is under its base: a path that climbs with .., or is not normal, names nothing, though the file it would reach is there', () => {

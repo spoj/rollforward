@@ -6,7 +6,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { agentsFile, closedBefore, createInstance, duplicateInstance, keep, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, safeName, seriesDir, type Entry, type Instance } from './store.ts';
+import { agentsFile, closedBefore, createInstance, duplicateInstance, keep, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, folderName, seriesDir, type Entry, type Instance } from './store.ts';
 import { AGENT, commit } from './git.ts';
 import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
@@ -509,7 +509,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   }
   if (kind === 'workspaces' && !id && req.method === 'POST') {
     if (!can(me, 'create')) throw new HttpError(403, 'making a workspace is for admins and those they grant create: ask an admin');
-    const name = safeName(String(payload.name ?? ''));
+    const name = folderName(String(payload.name ?? ''));
     if (Object.values(t.workspaces).some(w => w.name === name)) throw new HttpError(409, `the name ${name} is taken; choose another`);
     const wid = newId();
     t.workspaces[wid] = { name, owners: [me.email], members: [] };
@@ -545,7 +545,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (!canManage(me, w)) throw new HttpError(403, "only the workspace's owners and admins change it");
     const change = payload;
     if (change.name !== undefined) {
-      const name = safeName(String(change.name));
+      const name = folderName(String(change.name));
       if (name !== w.name && Object.values(t.workspaces).some(x => x.name === name)) throw new HttpError(409, `the name ${name} is taken; choose another`);
       w.name = name;
     }
@@ -634,7 +634,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // A series, or a task: a single series named Untitled, until its first prompt or a rename names it, and its one instance.
     const { workspace, name: asked, single, logins } = payload;
     mustSee(me, t.workspaces[workspace]);
-    const name = single ? freeName(t, workspace, 'Untitled') : safeName(String(asked ?? ''));
+    const name = single ? freeName(t, workspace, 'Untitled') : folderName(String(asked ?? ''));
     if (Object.values(t.series).some(s => s.workspace === workspace && s.name === name)) throw new HttpError(409, `${name} exists`);
     const ticks = checkTicks(by, logins ?? []), sid = newId();
     t.series[sid] = { name, workspace, ...(single && { single: true }) };
@@ -650,7 +650,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       // A task made a series, as it is, under a name of its own, its one instance the series' first.
       if (!s.single) throw new HttpError(400, `${s.name} is a series already`);
       if (instances(id)[0].hole) throw new HttpError(409, `${s.name} was deleted`);
-      const name = safeName(String(payload.name ?? ''));
+      const name = folderName(String(payload.name ?? ''));
       if (name !== s.name && Object.values(t.series).some(x => x.workspace === s.workspace && x.name === name)) throw new HttpError(409, `${name} exists`);
       s.name = name;
       delete s.single;
@@ -705,7 +705,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (req.method !== 'PUT') throw new HttpError(405, 'PUT, or POST a new instance');
     const change = payload;
     if (change.name !== undefined && change.name !== s.name) {
-      const name = safeName(String(change.name));
+      const name = folderName(String(change.name));
       if (Object.values(t.series).some(x => x.workspace === s.workspace && x.name === name)) throw new HttpError(409, `${name} exists`);
       s.name = name;
     }
@@ -739,7 +739,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (archived(t, sid)) throw new HttpError(409, `${named(t, sid)} is archived`);
     if (t.series[to] && !label) throw new HttpError(400, `waking a series starts a new instance: name it with a label${run ? '; to wake your own instance, name its folder: .' : ''}`);
     if (!t.series[to] && instance(to).doc.status !== 'open') throw new HttpError(409, `${instance(to).label} is ${instance(to).doc.status}: to correct it, wake its series with the label ${instance(to).label}-r2`);
-    const first = new Date(at), starts = t.series[to] ? safeName(String(label)) : undefined;
+    const first = new Date(at), starts = t.series[to] ? folderName(String(label)) : undefined;
     if (starts && labels(to).some(l => l.label === starts && instance(l.id).hole)) throw new HttpError(409, `${starts} was deleted, and its label stays with it: choose another`);
     return send(res, 200, setWake(to, {
       at: first.toISOString(), from: run ? `${named(t, run.inst.seriesId)}/${run.inst.label}` : by, ...(run && { inst: run.inst.id }),
@@ -794,7 +794,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   }
   if (action === 'rename') {
     // In any status, and mid-run: a run keeps the names it started with (view()).
-    const from = inst.label, s = t.series[inst.seriesId], to = safeName(url.searchParams.get('as') ?? '');
+    const from = inst.label, s = t.series[inst.seriesId], to = folderName(url.searchParams.get('as') ?? '');
     // A task's name is its label.
     if (s.single && to !== s.name && Object.values(t.series).some(x => x.workspace === s.workspace && x.name === to)) throw new HttpError(409, `${to} exists`);
     renameInstance(inst, to);
@@ -892,7 +892,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const s = t.series[inst.seriesId], words = text.trim().split(/\s+/).slice(0, 6).join(' ').replace(/^\.+/, '').slice(0, 60);
     if (s.single && words && !inst.log.some(e => e.op === 'rename' || (e.op === 'comment' && e !== said && isPerson(e)))) {
       const from = inst.label;
-      s.name = freeName(t, s.workspace, safeName(words));
+      s.name = freeName(t, s.workspace, folderName(words));
       saveTree(t);
       renameInstance(inst, s.name);
       inst.append('server', 'rename', { from, cause: said.seq });

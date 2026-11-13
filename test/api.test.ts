@@ -324,6 +324,9 @@ test("series settings write series.json; a rename edits .rf/tree.json", async ()
   assert.equal((await shown(renamed)).id, id);
 
   assert.equal((await put(renamed, { name: monthly })).status, 409);
+  // A name is a folder's in every run's view, which holds 255 bytes, about 85 Chinese characters.
+  const long = await put(renamed, { name: '供应商对账单'.repeat(15) });
+  assert.deepEqual([long.status, await long.text()], [400, 'a name is 200 bytes at most, about 66 Chinese characters, not 270']);
   assert.equal((await put(renamed, { name: series })).status, 200);
 });
 

@@ -109,6 +109,14 @@ export function instances(seriesId: string): Instance[] {
 // The closed instances of its series before it, by label: the examples it rolls forward from.
 export const closedBefore = (inst: Instance) => instances(inst.seriesId).filter(i => i.doc.status === 'closed' && i.label.localeCompare(inst.label, 'en', { numeric: true }) < 0);
 
+// A workspace's, a series' or an instance's name is a folder's in a run's view, which holds 255 bytes: one over 200 is refused, leaving
+// room for a number freeName() adds.
+export function folderName(s: string): string {
+  const name = safeName(s);
+  if (Buffer.byteLength(name) > 200) throw new HttpError(400, `a name is 200 bytes at most, about 66 Chinese characters, not ${Buffer.byteLength(name)}`);
+  return name;
+}
+
 // A name is a folder's in a run's view, a line of names.tsv: no slash, control character or line break, which a reader such as
 // Python's splitlines() would split it at; and not AGENTS.md, where the instructions the view binds go.
 export function safeName(s: string): string {
@@ -141,7 +149,7 @@ function setMeta(id: string, meta: Meta) {
 }
 
 function freeLabel(seriesId: string, label: string): string {
-  const name = safeName(label);
+  const name = folderName(label);
   if (labels(seriesId).some(l => l.label === name)) throw new HttpError(409, `${name} exists`);
   return name;
 }
