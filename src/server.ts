@@ -137,11 +137,11 @@ function watched(me: Me, id: string, site: string): { browsers: Browsers; id: st
 }
 
 // Whom an open instance waits on, and with what: each ask no one answered on the person it names, else the runner, and each such
-// note on the runner; a copy's since it was copied.
+// note on the runner but their own, from before they took it over; a copy's since it was copied.
 function waits(inst: Instance): { who: string; e: Entry }[] {
   if (inst.doc.status !== 'open') return [];
   const runner = runnerOf(inst).by, from = inst.copied;
-  return inst.log.filter(e => e.seq > from && e.op === 'comment' && ((e.by === 'agent' && e.ask) || isNote(inst, e)) && !inst.answered(e)).map(e => ({ who: (e.to as string | undefined) ?? runner, e }));
+  return inst.log.filter(e => e.seq > from && e.op === 'comment' && ((e.by === 'agent' && e.ask) || (isNote(inst, e) && e.by !== runner)) && !inst.answered(e)).map(e => ({ who: (e.to as string | undefined) ?? runner, e }));
 }
 
 // Whom a request to start an instance of a series waits on: whoever shares it, else the runner of its newest instance, else the

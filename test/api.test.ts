@@ -265,6 +265,21 @@ test("only the runner closes or abandons; taking over makes you the runner with 
   assert.deepEqual(await json('/logins'), [], 'signing out deletes the record');
 });
 
+test("after a takeover, what the previous runner said stays their word, never notes waiting on the new runner, and the new runner's own notes from before wait on no one", async () => {
+  const b = sessionOf(await login(bob))!, ws = (await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Takeovers' }))).json()).id;
+  const sid = (await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'Bank' }))).json()).id;
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ members: [bob] }))).status, 200);
+  const id = (await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'TO', quiet: true }))).json()).id;
+  for (const [text, cookie] of [['Use the HSBC statement this time.', admin], ['And cut off at the 25th.', admin], ['The rate moved.', b]])
+    assert.equal((await call('POST', `/api/instances/${id}/comment`, JSON.stringify({ text, quiet: true }), cookie)).status, 200);
+  assert.deepEqual((await json(`/api/instances/${id}`)).waiting.map((w: { who: string }) => w.who), [adminEmail], "bob's note waits on the runner");
+  assert.equal((await call('POST', `/api/instances/${id}/takeover`, JSON.stringify({ logins: [] }), b)).status, 200);
+  const { log, waiting } = await json(`/api/instances/${id}`, b);
+  assert.deepEqual([waiting, log.filter((e: { op: string }) => e.op === 'comment').map((e: { note?: boolean }) => !!e.note)], [[], [false, false, true]]);
+  assert.equal((await call('POST', `/api/instances/${id}/abandon`, undefined, b)).status, 200);
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ members: [] }))).status, 200);
+});
+
 test('close and abandon end an open instance; a closed one takes no actions', async () => {
   assert.equal((await call('POST', await at(series, '2026-09-06', 'close'))).status, 200);
   const closed = await json(await at(series, '2026-09-06'));
