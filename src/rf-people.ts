@@ -410,7 +410,7 @@ if (cmd === 'login' && url) {
     ...all.filter(w => w.manage).flatMap(w => w.grants.filter(g => g.state === 'pending').map(g => ({ kind: 'grant', path: w.name, since: g.at, id: g.id, text: grantText(g) }))),
   ];
   if (flags.json) console.log(JSON.stringify(rows, null, 1));
-  else console.log(rows.map(r => `${r.kind}  ${r.path ?? r.login}${r.since ? ` since ${when(r.since)}` : ''}${r.id ? `, ${r.kind === 'grant' ? 'grant' : 'request'} ${r.id}` : ''}: ${r.text.split('\n')[0].slice(0, 120)}`).join('\n') || 'Nothing waits on you.');
+  else console.log(rows.map(r => `${r.kind}  ${r.path ?? r.login}${r.since ? ` since ${when(r.since)}` : ''}${r.id ? `, ${r.kind === 'grant' ? 'grant' : 'request'} ${r.id}` : ''}: ${r.kind === 'grant' ? r.text : r.text.split('\n')[0].slice(0, 120)}`).join('\n') || 'Nothing waits on you.');
 } else if (cmd === 'show' && args.length === 1) {
   const { inst, at } = await instanceAt(args[0]), { doc, log, run, queued, runner, waiting: w } = await get(at);
   const waiting = w.map(({ who, seq }) => {

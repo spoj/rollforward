@@ -127,7 +127,6 @@ function currentSignIn(s: SignIn) {
 export async function startSignIn(email: string, site: string, given: string): Promise<string> {
   const w = website(email, site), kept = `web:${site}.header`, key = `${email} ${site}`;
   const websiteGeneration = websiteGenerations.get(key), loginSince = logins(email).find(l => l.id === `web:${site}`)?.since;
-  await checkHost(new URL(w.url).hostname, false);
   let token;
   if (w.header) {
     token = given.trim() || (existsSync(join(personDir(email), `${kept}.sealed`)) ? secret(email, kept) : '');
@@ -136,10 +135,12 @@ export async function startSignIn(email: string, site: string, given: string): P
   }
   const generation = (signInGenerations.get(key) ?? 0) + 1;
   signInGenerations.set(key, generation);
-  const before = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
-  if (before) await endSignIn(email, before, false).catch(e => console.error(`ending the previous sign-in to ${site}:`, e));
   const ttl_s = Number(process.env.RF_SIGNIN_S ?? 600), since = Date.now();
   const signing = { email, site, name: site, token, since, expires: since + ttl_s * 1000, website: w, websiteGeneration, generation, loginSince };
+  await checkHost(new URL(w.url).hostname, false);
+  currentSignIn(signing);
+  const before = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
+  if (before) await endSignIn(email, before, false).catch(e => console.error(`ending the previous sign-in to ${site}:`, e));
   const except = [...[process.env.RF_PUBLIC_URL, base].filter(Boolean).map(u => new URL(u!).hostname), ...connections().flatMap(c => types[c.type].hosts ?? [])];
   const id = (await json('POST', '/sessions', { site: { hosts: internalHosts(w), open: true, except, start_url: w.url, ...(token && { headers: { [w.header!]: token } }) }, ttl_s })).id;
   try { currentSignIn(signing); } catch (e) { await close(id); throw e; }
@@ -265,7 +266,6 @@ export async function endSignIn(email: string, id: string, save: boolean, keepal
   signIns.delete(id);
   const { state, log } = await close(id);
   expired ||= Date.now() >= expires || state === null;
-  if (save && !expired) currentSignIn(signing);
   const requests: Trace['requests'] = {}, kinds: NonNullable<Trace['kinds']> = {}, blocked = { count: 0, hosts: [] as string[] }, failed: string[] = [];
   for (const e of log) {
     const host = new URL(e.url).hostname, from = URL.parse(e.from ?? '')?.hostname;
@@ -279,15 +279,21 @@ export async function endSignIn(email: string, id: string, save: boolean, keepal
     } else if (e.status >= 400) failed.push(`${e.method} ${host} ${e.status}${e.error ? ` ${e.error}` : ''}`);
   }
   const seconds = Math.round((Date.now() - since) / 1000), trace = { requests, kinds, blocked: blocked.hosts, seconds };
-  console.log(`sign-in ended ${JSON.stringify({ id, site, email, saved: save && !expired, seconds, requests, blocked, failed })}`);
-  if (save && expired) throw new HttpError(410, 'This sign-in expired; sign in again.');
-  if (!save) return;
-  await checkWebsite(email, site, trace);
-  const w = currentSignIn(signing), hosts = Object.keys(requests).filter(h => reached(w).some(p => covers(p, h))), s = state as { cookies: { domain: string }[]; origins: { origin: string }[] };
-  const trimmed = s && { ...s, cookies: s.cookies.filter(c => hosts.some(h => c.domain === h || (c.domain.startsWith('.') && (h === c.domain.slice(1) || h.endsWith(c.domain))))),
-    origins: s.origins.filter(o => hosts.includes(new URL(o.origin).hostname)) };
-  saveLogin(email, { id: `web:${site}`, kind: 'website', name, since: new Date().toISOString(), offers: [{ id: `web:${site}`, name }], ...(until && { keepalive: new Date(until).toISOString() }), trace }, JSON.stringify(trimmed));
-  if (token) seal(email, `web:${site}.header`, token);
+  let saved = false;
+  try {
+    if (save && expired) throw new HttpError(410, 'This sign-in expired; sign in again.');
+    if (!save) return;
+    currentSignIn(signing);
+    await checkWebsite(email, site, trace);
+    const w = currentSignIn(signing), hosts = Object.keys(requests).filter(h => reached(w).some(p => covers(p, h))), s = state as { cookies: { domain: string }[]; origins: { origin: string }[] };
+    const trimmed = s && { ...s, cookies: s.cookies.filter(c => hosts.some(h => c.domain === h || (c.domain.startsWith('.') && (h === c.domain.slice(1) || h.endsWith(c.domain))))),
+      origins: s.origins.filter(o => hosts.includes(new URL(o.origin).hostname)) };
+    saveLogin(email, { id: `web:${site}`, kind: 'website', name, since: new Date().toISOString(), offers: [{ id: `web:${site}`, name }], ...(until && { keepalive: new Date(until).toISOString() }), trace }, JSON.stringify(trimmed));
+    if (token) seal(email, `web:${site}.header`, token);
+    saved = true;
+  } finally {
+    console.log(`sign-in ended ${JSON.stringify({ id, site, email, saved, seconds, requests, blocked, failed })}`);
+  }
 }
 
 // ---- A run's browsers, at their fixed addresses, $RF_BROWSERS/NAME: one per website, opened from its runner's login, if ticked for
@@ -330,14 +336,14 @@ Company means a company's own business portal; vendor a business service; bank a
 Decide only the unchecked hosts: pass what its pages need, such as sign-on, scripts, styles, fonts and images; refuse analytics, advertising, telemetry and optional chat widgets; high for data export services and anything uncertain. Own-domain, blocklist and internal-address rules are already decided and cannot be overridden.`;
 
 export async function checkWebsite(email: string, site: string, given?: Trace): Promise<Profile> {
-  const w = website(email, site), trace = given ?? logins(email).find(l => l.id === `web:${site}`)?.trace, address = new URL(w.url).hostname, key = `${email} ${site}`, generation = websiteGenerations.get(key);
+  const w = website(email, site), trace = given ?? logins(email).find(l => l.id === `web:${site}`)?.trace, address = new URL(w.url).hostname, siteKey = `${email} ${site}`, generation = websiteGenerations.get(siteKey);
   const candidates = [...new Set([address, ...w.hosts.filter(h => !h.startsWith('*.')), ...Object.keys(trace?.requests ?? {}), ...trace?.blocked ?? []])];
   const todo = candidates.filter(h => !w.checks?.[h] || (w.checks[h].verdict === 'internal' && !!letIn()[h]));
   const checks: NonNullable<Website['checks']> = {}, queries: string[] = [];
   let profile = w.profile;
   const settle = (decisions: NonNullable<Website['checks']>, result?: Profile) => {
     const now = websitesOf(email)[site];
-    if (!now || now.url !== w.url || now.added !== w.added || websiteGenerations.get(key) !== generation) throw new HttpError(409, `${site} was removed or replaced while it was checked`);
+    if (!now || now.url !== w.url || now.added !== w.added || websiteGenerations.get(siteKey) !== generation) throw new HttpError(409, `${site} was removed or replaced while it was checked`);
     const fresh = Object.fromEntries(Object.entries(decisions).filter(([h]) => !now.checks?.[h] || (now.checks[h].verdict === 'internal' && !!letIn()[h])));
     const hosts = now.hosts.filter(p => !Object.entries(fresh).some(([h, c]) => c.verdict !== 'pass' && covers(p, h))), all = { ...now.checks, ...fresh };
     const allowed = Object.keys(all).filter(h => all[h].verdict === 'pass' && !reached({ ...now, hosts }).some(p => covers(p, h)));
@@ -404,7 +410,8 @@ export async function checkWebsite(email: string, site: string, given?: Trace): 
       break;
     }
   } catch (e) {
-    settle({}, { error: (e as Error).message });
+    profile = { error: (e as Error).message };
+    settle({}, profile);
   } finally {
     act('server', { op: 'website-check', person: email, site, evidence: trace ?? null, queries, profile, checks });
   }
