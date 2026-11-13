@@ -156,13 +156,16 @@ async function refresh() {
   if (at && i) showComment(+at.slice(1));
 }
 
-// A comment brought into view and marked a moment: the panel open on the conversation, its thread unfolded down to it, shown alone
-// from it if it's deeper than the conversation shows; a half-written reply holds the conversation still, as it was.
+// A comment brought into view and marked a moment: the panel open on the conversation, its thread unfolded and withdrawn asks opened
+// down to it, shown alone from it if it's deeper than the conversation shows; a half-written reply holds the conversation still, as it was.
 function showComment(seq) {
   const t = threads.find(t => t.posts.some(p => p.seq === seq)), k = `folds:${cur.i.id}`, folds = JSON.parse(localStorage[k] ?? '{}');
   if (!t) return;
   let depth = 0;
-  for (let p = t.posts.find(p => p.seq === seq); p; p = t.posts.find(x => x.seq === p.under), depth++) delete folds[p.seq];
+  for (let p = t.posts.find(p => p.seq === seq); p; p = t.posts.find(x => x.seq === p.under), depth++) {
+    delete folds[p.seq];
+    if (p.withdrawn) ui.withdrawn.add(p.seq);
+  }
   localStorage[k] = JSON.stringify(folds);
   closePv();
   Object.assign(ui, { open: true, audit: false, alone: depth > 4 ? seq : null });

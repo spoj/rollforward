@@ -697,6 +697,15 @@ test("[text](#cN) to a comment whose first line links a file is a link by that t
   assert.equal(await post.locator('a.cref').first().getAttribute('title'), 'Agent: I will send [the pack](working/pack.csv) to the bank, as [last month](../Decembe');
 });
 
+test("a cN link to a reply under a withdrawn ask opens the ask to show it", async () => {
+  await page.evaluate(() => { location.hash = '#/a5c0ff5e1f0a'; });
+  await page.waitForSelector('#bar h1 .t:text-is("February")');
+  await page.click('#conv .post.withdrawn.folded[data-seq="3"] a.cref');
+  await page.waitForSelector('#conv .post.flash[data-seq="4"]');
+  await page.locator('#conv .post[data-seq="3"] > .gone').click({ position: { x: 4, y: 4 } });
+  await page.waitForSelector('#conv .post.withdrawn.folded[data-seq="3"]');
+});
+
 test("people show by name, with their email on hover, and Entra groups by label; adding to a workspace suggests people by name and takes a group's label", async () => {
   const bob = 'bob@demo.test', group = '6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b', url = (path: string) => new URL(path, page.url()).href;
   const signin = await entra.signIn(new URL(page.url()).origin, bob);
