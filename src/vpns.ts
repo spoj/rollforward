@@ -36,7 +36,8 @@ async function tunnelJson(method: string, path: string, body?: unknown) {
   const res = await fetch(base + path, { method, headers: { authorization: `Bearer ${process.env.RF_TUNNEL_KEY}`, 'content-type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(90_000) })
     .catch(e => { throw new HttpError(502, `the tunnel service at ${base} does not answer: ${e.message}`); });
-  const answer = await res.json();
+  // A proxy in front of it, such as one ending TLS, may answer other than JSON.
+  const answer = await res.json().catch(() => ({ error: `${res.status} ${res.statusText}` }));
   if (!res.ok && !(method === 'DELETE' && res.status === 404)) throw new HttpError(502, `tunnel service: ${answer.error}`);
   return answer;
 }

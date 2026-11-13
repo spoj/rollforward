@@ -69,7 +69,7 @@ const service = createServer(async (req, res) => {
     return void res.end(JSON.stringify([...remote.values()]));
   }
   if (req.method === 'POST') {
-    if (tunnelError) return void res.writeHead(502).end(JSON.stringify({ error: tunnelError }));
+    if (tunnelError) return void res.writeHead(502).end(tunnelError.startsWith('<') ? tunnelError : JSON.stringify({ error: tunnelError }));
     const id = `t${++serial}`;
     remote.set(id, { id, up: true });
     const gate = postGate;
@@ -269,6 +269,8 @@ test('browser and tunnel authentication and service errors retain actionable ser
   process.env.RF_TUNNEL_KEY = 'tunnel-key';
   tunnelError = 'openconnect exited with code 2: cookie rejected';
   await assert.rejects(connectVpn(), /openconnect exited with code 2: cookie rejected/);
+  tunnelError = '<html>proxy error</html>';
+  await assert.rejects(connectVpn(), { status: 502, message: 'tunnel service: 502 Bad Gateway' });
   assert.equal((await vpns(alice))[0].connected, false);
 });
 
