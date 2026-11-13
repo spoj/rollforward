@@ -153,6 +153,18 @@ test("a series' wake starts an instance as whoever shares the series, its text a
   assert.ok(Object.values(wakes().requests).some(r => r.label === '2027-02'), '3 open already');
 });
 
+test("a series' wake for a label it has already is its runner's word where a run of an instance of theirs in the series set it, as for one it starts, and a note where another series' run did", async () => {
+  const feed = make('s2', 'feed'), woke = () => oct.log.findLast(e => e.op === 'wake')!;
+  setWake('s1', { at: new Date().toISOString(), from: 'Acme/Bank rec/2026-09', label: '2026-10', inst: sep.id, text: 'next period' });
+  await settle();
+  assert.deepEqual([woke().text, woke().note], ['next period', undefined]);
+  writeJson('wakes.json', { ...readJson('wakes.json', {}), fired: {} });
+  setWake('s1', { at: new Date().toISOString(), from: 'Acme/Borrowing base/feed', label: '2026-10', inst: feed.id, text: 'inputs are in' });
+  await settle();
+  assert.deepEqual([woke().text, woke().note], ['inputs are in', true]);
+  writeJson('wakes.json', { ...readJson('wakes.json', {}), fired: {} });
+});
+
 test("closing an instance wakes the later open ones of its series, not the earlier; a note for those the closer doesn't start, and a quiet close's wake is quiet", async () => {
   const before = make('s1', '2026-07');
   await sep.close({ email: alice, name: 'Alice' });

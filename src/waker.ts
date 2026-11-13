@@ -84,8 +84,13 @@ export const starter = (inst: Instance, who: string) => {
   const runner = runnerOf(inst).by;
   return who === runner || seriesSettings(inst.series()).shared?.by === runner;
 };
+// A wake is the runner's word if they set it, or a run of an instance of theirs in the series did, this one's own among them.
+const runnersWake = (inst: Instance, wake: { from: string; inst?: string }) => {
+  const runner = runnerOf(inst).by;
+  return wake.from === runner || (!!wake.inst && instance(wake.inst).seriesId === inst.seriesId && runnerOf(instance(wake.inst)).by === runner);
+};
 // What a person but the runner adds is a note, shared series or not: the agent reads it as context for its runner to take up, never as
-// the runner's word, though it runs on it where it may. A wake that neither the runner nor the instance's own run set is one too,
+// the runner's word, though it runs on it where it may. A wake that neither the runner nor a run of theirs in the series set is one too,
 // and so is another instance's agent's comment. A reply, an approval or a rejection from whom the agent's ask it answers named is no note:
 // from before replies named what they answer, the thread's last ask.
 export const isNote = (inst: Instance, e: Entry) => !!e.note || (isPerson(e) && ['upload', 'comment', 'signoff', 'reject'].includes(e.op) && e.by !== runnerOf(inst).by
@@ -510,8 +515,7 @@ export function startWith(seriesId: string, label: string, by: string, logins: s
   if (instances(seriesId).filter(i => i.doc.status === 'open').length >= MAX_OPEN) throw new HttpError(409, `${MAX_OPEN} instances of ${tree().series[seriesId].name} are open: a new one waits until one closes`);
   const inst = createInstance(seriesId, label, by, logins);
   if (wake) {
-    const own = wake.from === by || (!!wake.inst && instance(wake.inst).seriesId === seriesId && runnerOf(instance(wake.inst)).by === by);
-    inst.append('server', 'wake', { from: wake.from, ...(wake.text && { text: wake.text }), ...(!own && { note: true }) });
+    inst.append('server', 'wake', { from: wake.from, ...(wake.text && { text: wake.text }), ...(!runnersWake(inst, wake) && { note: true }) });
     kick(inst);
   }
   return inst;
@@ -549,7 +553,7 @@ function fire() {
         console.log(`a wake found ${named(t, inst.seriesId)}/${inst.label} ${inst.doc.status}, so it woke nothing`);
         continue;
       }
-      inst.append('server', 'wake', { from, ...(wake.text && { text: wake.text }), ...(wake.inst !== inst.id && wake.from !== runnerOf(inst).by && { note: true }) });
+      inst.append('server', 'wake', { from, ...(wake.text && { text: wake.text }), ...(!runnersWake(inst, wake) && { note: true }) });
       kick(inst);
       continue;
     }
