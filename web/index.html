@@ -2006,10 +2006,11 @@ function navigate(e) {
 }
 
 addEventListener('keydown', e => {
-  // Ctrl+Enter, or Cmd+Enter on a Mac, sends from the panel's comment and reply boxes.
+  // Ctrl+Enter, or Cmd+Enter on a Mac, sends from the panel's comment and reply boxes, unless what it presses is still sending.
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.target.matches('#log textarea')) {
     e.preventDefault();
-    return (e.target.id === 'newcomment' ? $('#log [data-act=comment]') : e.target.closest('.reply').querySelector('.row2 .btn'))?.click();
+    const send = e.target.id === 'newcomment' ? $('#log [data-act=comment]') : e.target.closest('.reply').querySelector('.row2 .btn');
+    return send?.hasAttribute('aria-busy') || send?.click();
   }
   if (e.key === 'Escape' && e.target.matches('textarea, input:not(.inline)') && !document.querySelector('dialog[open]')) return e.target.blur();
   if (!e.target.matches('input, textarea, select') && !e.ctrlKey && !e.metaKey && !e.altKey && !document.querySelector('dialog[open]')) navigate(e);

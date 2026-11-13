@@ -460,6 +460,22 @@ test('keys: c goes to the comment box, Ctrl+Enter sends it, Esc leaves it, and j
   assert.ok(await page.evaluate(() => !!document.activeElement?.closest('#tree')), 'a row has the focus');
 });
 
+test("Ctrl+Enter pressed again while a comment is still sending sends it once", async () => {
+  const tab = await browser.newPage({ storageState: await page.context().storageState() });
+  try {
+    await tab.goto(new URL('/#/a5c0ff5e1f00', page.url()).href);
+    await tab.waitForSelector('#newcomment');
+    await tab.route('**/comment', async r => { await new Promise(ok => setTimeout(ok, 1500)); await r.continue(); });
+    await tab.fill('#newcomment', 'Sent once with keys');
+    await tab.press('#newcomment', 'Control+Enter');
+    await tab.waitForSelector('#log [data-act=comment][aria-busy]', { state: 'attached' });
+    await tab.press('#newcomment', 'Control+Enter');
+    await tab.waitForSelector('#log [data-act=comment]:not([aria-busy])', { state: 'attached' });
+    await tab.waitForTimeout(1600);
+    assert.equal(await tab.evaluate(() => api('/api/instances/a5c0ff5e1f00').then(d => d.log.filter((e: { text?: string }) => e.text === 'Sent once with keys').length)), 1);
+  } finally { await tab.close(); }
+});
+
 test("Ctrl+Enter and Cmd+Enter send from the reply box being edited, including a reply under a reply", async () => {
   const tab = await browser.newPage({ storageState: await page.context().storageState() });
   try {
