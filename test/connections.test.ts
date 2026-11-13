@@ -893,6 +893,14 @@ test('a deployment service gets streamed requests only under the runner\'s ticke
         assert.equal(requests.at(-1)!.method, method);
       }
     });
+    await t.test('a chunked body goes on chunked whatever the method, never as a request of its own', async () => {
+      const smuggled = 'GET /base/GL/2026/smuggled HTTP/1.1\r\nhost: x\r\n\r\n';
+      for (const method of ['GET', 'DELETE', 'OPTIONS']) {
+        assert.equal((await via(method, `${S}/AP/`, { token: 'service', body: smuggled, headers: { 'transfer-encoding': 'chunked' } })).status, 201, method);
+        assert.deepEqual([requests.at(-1)!.method, requests.at(-1)!.body], [method, smuggled]);
+      }
+      assert.ok(!requests.some(q => q.path.includes('smuggled')));
+    });
     await t.test('ticks are prefix boundaries, and raw traversal and encoding tricks never reach the service', async () => {
       const before = requests.length;
       for (const path of ['/AP', '/APother/x', '/GL/2026/file', '/AP/../AP/file', '/AP/%2e%2e/AP/file', '/AP/.%2E/AP/file', '/AP/./file', '/AP/%2ffile', '/AP/x%5cfile', '/AP/%252e%252e/file', '/AP//file', '/AP/%00file', '/AP/%', '/AP/x#ignored', '/AP/..\\AP/file']) {

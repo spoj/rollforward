@@ -232,7 +232,8 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
   return new Promise<{ status: number; bytes: number; type: string; text: string; incomplete?: boolean }>((ok, fail) => {
     const headers = Object.fromEntries(Object.entries(req.headers).filter(([k]) => k !== 'authorization' && k !== 'host' && !HOP.includes(k)));
     const up = (target.startsWith('https:') ? httpsRequest : httpRequest)(target, {
-      method: req.method, headers: { ...headers, ...(o.body && { 'content-length': String(o.body.length) }), ...o.auth },
+      // A chunked body goes on chunked: Node sends a GET's, DELETE's or OPTIONS' otherwise unframed, as a request of its own.
+      method: req.method, headers: { ...headers, ...(o.body ? { 'content-length': String(o.body.length) } : req.headers['transfer-encoding'] && { 'transfer-encoding': 'chunked' }), ...o.auth },
     }, r => {
       if (r.headers.location) o.location(r.headers.location);
       res.writeHead(r.statusCode!, Object.fromEntries(Object.entries(r.headers).filter(([k]) => !HOP.includes(k))));
