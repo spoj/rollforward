@@ -93,6 +93,13 @@ before(async () => {
       { by: 'agent', op: 'comment', thread: 'c5', item: null, ref: null, text: 'Is the rate final?', ask: 'question' },
       { by: 'agent', op: 'withdraw', thread: 'c5', on: 5, text: 'The file says so.', see: 2 },
     ]],
+    // Closed with an accepted proposal, a note for its runner and a delivery, which a copy of it takes as history.
+    ['a5c0ff5e1f0b', 'October', 'closed', [{ id: 'pack', name: 'Pack', kind: 'output', file: 'working/pack.csv' }], [
+      { by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'I will email the pack to the bank.', ask: 'proposal' },
+      { by: 'bob@demo.test', op: 'comment', thread: 'c3', item: null, ref: null, text: 'Use the HSBC statement.' },
+      { by: 'agent', op: 'delivered', item: 'pack', to: 'bank@demo.test', receipt: 'sent' },
+      { by: 'admin@demo.test', op: 'close', accepted: ['c2'] },
+    ]],
     ['a5c0ff5e1f09', 'November', 'closed', [], [{ by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'Sent it late.' }, { by: 'admin@demo.test', op: 'close' }]],
     ['a5c0ff5e1f0a', 'February', 'open', [], [
       { by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'I will send [the pack](working/pack.csv) to the bank, as [last month](../December#c2).', ask: 'proposal' },
@@ -671,6 +678,20 @@ test("a question asks, with Reply alone; a proposal proposes, apart, with Approv
   await last.click();
   await page.waitForSelector('#bar h1 .t:text-is("December")');
   await page.waitForSelector('#conv .post.flash[data-seq="2"]');
+});
+
+test("a copy's history is the copied instance's: its asks and notes wait on no one, its proposals take no approval, and its outputs show no sends", async () => {
+  const { id } = await (await page.request.post(new URL('/api/instances/a5c0ff5e1f0b/duplicate?as=October%20copy', page.url()).href, { data: { logins: [] } })).json();
+  assert.deepEqual((await (await page.request.get(new URL(`/api/instances/${id}`, page.url()).href)).json()).waiting, []);
+  assert.equal((await page.request.post(new URL(`/api/instances/${id}/signoff`, page.url()).href, { data: { thread: 'c2' } })).status(), 409);
+  await page.evaluate(id => { location.hash = `#/${id}`; }, id);
+  await page.waitForSelector('#bar h1 .t:text-is("October copy")');
+  if (!await page.locator('#log.open').count()) await page.click('#bar [data-act=panel]');
+  await page.locator('#conv .post[data-seq="2"]').waitFor();
+  await page.click('.tile[data-item=pack]');
+  await page.locator('#card .cp').first().waitFor();
+  assert.deepEqual(await Promise.all(['#conv .post[data-seq="2"] [data-mode=approve]', '.tile[data-item=pack] .sent', '#card .sent', '#needs .propose'].map(s => page.locator(s).count())), [0, 0, 0, 0]);
+  assert.equal((await page.request.post(new URL(`/api/instances/${id}/abandon`, page.url()).href, { data: {} })).status(), 200);
 });
 
 test("text left in a closed Reply box holds nothing still: once approved, the conversation shows it and offers Approve no more", async () => {

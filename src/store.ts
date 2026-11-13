@@ -250,7 +250,8 @@ export class Instance {
 
   // The agent's asks still waiting on people: those no one answered.
   asking(): Entry[] {
-    return this.log.filter(e => e.op === 'comment' && e.by === 'agent' && e.ask && !this.answered(e));
+    const from = this.copied;
+    return this.log.filter(e => e.seq > from && e.op === 'comment' && e.by === 'agent' && e.ask && !this.answered(e));
   }
 
   // Closing makes the instance the period's record and an example for the next, approving nothing: the asks still waiting are
@@ -344,6 +345,11 @@ export class Instance {
     this.doc = { rev: this.doc.rev, status: this.doc.status, items: doc.items };
     this.save();
     return this.doc.rev;
+  }
+
+  // A copy's own history starts at its latest duplicate entry: what came before is the copied instance's, settled, pending nothing.
+  get copied(): number {
+    return this.log.findLast(e => e.op === 'duplicate')?.seq ?? 0;
   }
 
   get meta(): Meta {

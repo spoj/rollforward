@@ -76,7 +76,7 @@ function drop(id: string) {
 }
 
 function seenBefore(inst: Instance): number {
-  return (inst.log.findLast(e => e.op === 'done')?.seen as number | undefined) ?? 0;
+  return Math.max((inst.log.findLast(e => e.op === 'done')?.seen as number | undefined) ?? 0, inst.copied);
 }
 
 // Who starts an instance's runs: its runner, and anyone, people or agents, where the runner shares the series.

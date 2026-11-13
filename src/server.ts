@@ -135,11 +135,11 @@ function watched(me: Me, id: string, site: string): { browsers: Browsers; id: st
 }
 
 // Whom an open instance waits on, and with what: each ask no one answered on the person it names, else the runner, and each such
-// note on the runner.
+// note on the runner; a copy's since it was copied.
 function waits(inst: Instance): { who: string; e: Entry }[] {
   if (inst.doc.status !== 'open') return [];
-  const runner = runnerOf(inst).by;
-  return inst.log.filter(e => e.op === 'comment' && ((e.by === 'agent' && e.ask) || isNote(inst, e)) && !inst.answered(e)).map(e => ({ who: (e.to as string | undefined) ?? runner, e }));
+  const runner = runnerOf(inst).by, from = inst.copied;
+  return inst.log.filter(e => e.seq > from && e.op === 'comment' && ((e.by === 'agent' && e.ask) || isNote(inst, e)) && !inst.answered(e)).map(e => ({ who: (e.to as string | undefined) ?? runner, e }));
 }
 
 // Whom a request to start an instance of a series waits on: whoever shares it, else the runner of its newest instance, else the
@@ -902,7 +902,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // entry's name: it commits the folder in their name, as they say yes to it, the proposal and the note its message, with their
     // Signed-off-by. Either starts a run, as a reply does, unless quiet, and a proposal takes one of them. rf 0.12's reject, a sign-off
     // with approved false, is refused.
-    const { thread, text, approved } = payload, ask = inst.log.find(e => `c${e.seq}` === thread && e.op === 'comment' && e.by === 'agent' && (e.ask === true || e.ask === 'proposal'));
+    const { thread, text, approved } = payload, ask = inst.log.find(e => `c${e.seq}` === thread && e.seq > inst.copied && e.op === 'comment' && e.by === 'agent' && (e.ask === true || e.ask === 'proposal'));
     if (approved === false) throw new HttpError(400, 'a sign-off approves; to say no, reject it, on the page or with rf reject');
     if (!ask) throw new HttpError(409, `${thread} is no proposal of the agent's`);
     if (inst.log.some(e => e.op === 'withdraw' && e.on === ask.seq)) throw new HttpError(409, `the agent withdrew ${thread}`);
