@@ -875,11 +875,12 @@ test('a deployment service gets streamed requests only under the runner\'s ticke
     });
     await t.test('method, path, query and bytes go unchanged, but credentials and identity come from the server', async () => {
       const body = '{"n": 1, "n": 2}\n';
-      const r = await via('PATCH', `${S}/AP/file%20name?overwrite=1&x=%2F`, { token: 'service', body, headers: { 'content-type': 'application/json', 'x-custom': 'kept', authorization: 'Bearer stolen', 'x-rf-runner': 'fake', 'x-rf-instance': 'fake', 'x-rf-run': '99', 'x-rf-series': 'fake', 'x-rf-workspace': 'fake' } });
+      const r = await via('PATCH', `${S}/AP/file%20name?overwrite=1&x=%2F`, { token: 'service', body, headers: { 'content-type': 'application/json', 'x-custom': 'kept', authorization: 'Bearer stolen', 'x-rf-runner': 'fake', 'x-rf-instance': 'fake', 'x-rf-run': '99', 'x-rf-series': 'fake', 'x-rf-workspace': 'fake', 'x-rf-role': 'admin', 'x_rf_runner': 'fake' } });
       const q = requests.at(-1)!;
       assert.deepEqual([r.status, r.text, r.headers['x-receipt'], r.headers.location, r.headers.authorization], [201, '{not JSON, passed unchanged}', 'kept', 'https://elsewhere.test/receipt', 'receipt-token']);
       assert.deepEqual([q.method, q.path, q.body, q.headers['content-type'], q.headers['x-custom'], q.headers.authorization], ['PATCH', '/base/AP/file%20name?overwrite=1&x=%2F', body, 'application/json', 'kept', 'Bearer deployment-secret']);
       assert.deepEqual(['runner', 'instance', 'run', 'series', 'workspace'].map(k => q.headers[`x-rf-${k}`]), [ALICE, 'w1', '1', 'weekly', 'w']);
+      assert.deepEqual([q.headers['x-rf-role'], q.headers['x_rf_runner']], [undefined, undefined]);
       assert.deepEqual(calls().at(-1), { run: 1, name: 'drop', method: 'PATCH', path: '/AP/file%20name?overwrite=1&x=%2F', status: 201, bytes: r.text.length, sent: log.length - 1, sha256: createHash('sha256').update(body).digest('hex'), size: Buffer.byteLength(body) });
       assert.ok(!JSON.stringify(log).includes('deployment-secret'));
     });

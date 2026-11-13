@@ -230,7 +230,8 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
 // answer, as one cut, leaves it read to its end all the same, so what was sent is logged as answered.
 function forward(target: string, req: IncomingMessage, res: ServerResponse, o: { auth: Record<string, string>; body?: Buffer; digest?: { hash: Hash; size: number }; keep: boolean; location(to: string): void }) {
   return new Promise<{ status: number; bytes: number; type: string; text: string; incomplete?: boolean }>((ok, fail) => {
-    const headers = Object.fromEntries(Object.entries(req.headers).filter(([k]) => k !== 'authorization' && k !== 'host' && !HOP.includes(k)));
+    // X-RF- headers are the server's, X_RF_ too, which some servers read as the same.
+    const headers = Object.fromEntries(Object.entries(req.headers).filter(([k]) => k !== 'authorization' && k !== 'host' && !HOP.includes(k) && !/^x[-_]rf[-_]/.test(k)));
     const up = (target.startsWith('https:') ? httpsRequest : httpRequest)(target, {
       // A chunked body goes on chunked: Node sends a GET's, DELETE's or OPTIONS' otherwise unframed, as a request of its own.
       method: req.method, headers: { ...headers, ...(o.body ? { 'content-length': String(o.body.length) } : req.headers['transfer-encoding'] && { 'transfer-encoding': 'chunked' }), ...o.auth },
