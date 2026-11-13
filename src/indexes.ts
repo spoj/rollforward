@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
-import { chmodSync, closeSync, constants, copyFileSync, createReadStream, createWriteStream, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, truncateSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, constants, copyFileSync, createReadStream, createWriteStream, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, truncateSync, writeFileSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
 import { createZstdCompress, createZstdDecompress, zstdCompress } from 'node:zlib';
-import type { Instance } from './store.ts';
+import { wipe, type Instance } from './store.ts';
 import { changes, rfDir } from './system.ts';
 import { users } from './auth.ts';
 import { token } from './entra.ts';
@@ -300,12 +300,7 @@ export function startIndexing() {
   stopping = false;
   // Scratch and index copies of this data root's runs cut short, or left idle.
   const runs = join(rfDir(), 'runs');
-  const writable = (d: string) => { chmodSync(d, 0o700); for (const e of readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) writable(join(d, e.name)); };
-  for (const token of existsSync(runs) ? readdirSync(runs) : []) {
-    const run = join(scratch, 'runs', token);
-    if (existsSync(run)) writable(run);
-    rmSync(run, { recursive: true, force: true });
-  }
+  for (const token of existsSync(runs) ? readdirSync(runs) : []) wipe(Buffer.from(join(scratch, 'runs', token)));
   rmSync(runs, { recursive: true, force: true });
   for (const email of Object.keys(users())) track(email);
   worker = (async () => {

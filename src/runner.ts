@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { listenRun, PORT, sandboxArgs, unlistenRun } from './sandbox.ts';
 import { bundle } from './ca.ts';
 import { model, provider } from './connections/openrouter.ts';
+import { wipe } from './store.ts';
 
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 // Inside, the app is at /app, read-only.
@@ -111,9 +112,8 @@ async function ready(client: RpcClient, tries = 4): Promise<void> {
 export async function startRun(o: Parameters<typeof pi>[0] & { onEvent: (e: JsonAgentSessionEvent) => void }): Promise<Run> {
   if (!process.env.OPENROUTER_API_KEY) throw new Error('no model key: the server has no OPENROUTER_API_KEY');
   const client = pi(o), run = join(scratch, 'runs', o.token);
-  // A run may leave folders it can't write in its home; they're made writable first, never through a link.
-  const writable = (d: string) => { chmodSync(d, 0o700); for (const e of readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) writable(join(d, e.name)); };
-  const stop = async () => { await client.stop(); unlistenRun(o.token); writable(run); rmSync(run, { recursive: true, force: true }); };
+  // A run may leave folders it can't write in its home, or named in bytes that aren't UTF-8: wipe() removes them all.
+  const stop = async () => { await client.stop(); unlistenRun(o.token); wipe(Buffer.from(run)); };
   let settle = (_: TurnEnd) => {}, settled = Promise.resolve<TurnEnd>({ aborted: false });
   client.onEvent(e => e.type === 'agent_settled' && settle({ aborted: e.aborted }));
   client.onEvent(o.onEvent);

@@ -353,7 +353,7 @@ function trace(inst: Instance) {
 
 // Files by hand, never into a link: a run may have made links anywhere in working/. A .git, such as the instance's history, isn't
 // copied.
-const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(d => d.isDirectory() ? (d.name === '.git' ? [] : walk(join(dir, d.name))) : d.isFile() ? [join(dir, d.name)] : []);
+const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).filter(d => existsSync(join(dir, d.name))).flatMap(d => d.isDirectory() ? (d.name === '.git' ? [] : walk(join(dir, d.name))) : d.isFile() ? [join(dir, d.name)] : []);
 
 // What rf pull copies: every file under `path` that `me` sees, in the layout runs see (workspace/series/label/ and the instance's own
 // files), with its size and time; the AGENTS.md files whole, and each instance file at its /files address.

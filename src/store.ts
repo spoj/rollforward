@@ -43,7 +43,7 @@ const HOLE = ['instance.json', 'screen.json', 'log.jsonl'];
 
 // Removes what a run may have left anything in, by its name's bytes, as a name needn't be UTF-8, and never through a link: a folder
 // it made unreadable or unwritable is the server's own, so is opened up first.
-function wipe(path: Buffer) {
+export function wipe(path: Buffer) {
   const st = lstatSync(path, { throwIfNoEntry: false });
   if (!st) return;
   if (!st.isDirectory()) return rmSync(path, { force: true });

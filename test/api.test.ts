@@ -347,6 +347,20 @@ test("files: an instance's own download as attachments, as rf pull fetches them;
     assert.equal((await call('GET', file(rel))).status, 400, rel);
 });
 
+test("rf pull's listing leaves out a folder whose name isn't UTF-8, as unzipping an old archive leaves, and lists the rest", async () => {
+  const d = await dir(series, '2026-08-30'), gbk = Buffer.concat([Buffer.from(join(d, 'working') + '/'), Buffer.from([0xb7, 0xa2, 0xc6, 0xb1])]);
+  mkdirSync(gbk);
+  writeFileSync(Buffer.concat([gbk, Buffer.from('/invoice.csv')]), 'x');
+  try {
+    const r = await call('GET', `/api/files?path=${encodeURIComponent(`larkfield/${series}/2026-08-30`)}`);
+    assert.equal(r.status, 200);
+    const paths = (await r.json()).map((f: { path: string }) => f.path);
+    assert.ok(paths.includes(`larkfield/${series}/2026-08-30/upload/Larkfield AR aging 083026.csv`) && !paths.some((p: string) => p.includes('invoice.csv')));
+  } finally {
+    rmSync(gbk, { recursive: true });
+  }
+});
+
 test("a run's links, FIFOs and folders in working/ and session/ are never followed or read", async () => {
   const id = await iid(series, '2026-08-30'), d = join(root, 'instances', id), file = (rel: string) => `/files/${id}/${encodeURIComponent(rel)}`;
   writeFileSync(join(d, 'working', 'real.txt'), 'mine');

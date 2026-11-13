@@ -525,6 +525,10 @@ test("a start removes its data root's abandoned scratch, for active and idle Pis
   mkdirSync(locked);
   writeFileSync(join(locked, 'file'), 'unreadable');
   chmodSync(locked, 0);
+  // A folder an unzip named in GBK, which reads back as another name.
+  const gbk = Buffer.concat([Buffer.from(join(scratch, tokens[1], 'tmp') + '/'), Buffer.from([0xb7, 0xa2])]);
+  mkdirSync(Buffer.concat([gbk, Buffer.from('/x')]), { recursive: true });
+  chmodSync(gbk, 0o500);
   scripts.push({ bash: [], report: 'Carried on.', saw: [] });
   await cut();
   for (const token of tokens) assert.ok(!existsSync(join(scratch, token)), `old scratch ${token} remains`);
@@ -533,6 +537,19 @@ test("a start removes its data root's abandoned scratch, for active and idle Pis
   await runs(running, 2);
   const records = readdirSync(join(root, '.rf', 'runs'));
   assert.ok(records.length, 'a run without index sources still has an ownership folder');
+});
+
+test("a run's end removes its scratch, though it left a folder there named in bytes that aren't UTF-8 and can't be written", async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Unzipped' })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Archive' })).json();
+  const scratch = join(tmp, 'scratch', 'runs');
+  mkdirSync(scratch, { recursive: true });
+  const before = readdirSync(scratch), s: Script = { bash: [() => { s.fail = 'The model refused.'; return "mkdir -p \"/tmp/$(printf '\\267\\242')/x\" && chmod 500 \"/tmp/$(printf '\\267\\242')\" && ls /tmp"; }], report: 'Never said.', saw: [] };
+  scripts.push(s);
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
+  await runs(id, 1);
+  assert.match(s.saw[0], /\?\?|\ufffd/, 'the folder was made');
+  await until('the scratch removed', () => readdirSync(scratch).every(t => before.includes(t)));
 });
 
 test("a start drops the torn last line a kill left in an instance's log or the system's, saying so, and starts", async () => {
