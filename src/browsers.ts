@@ -10,7 +10,7 @@ import { HttpError, instance, instances, replaceReadOnly, type Instance } from '
 import { logins, personDir, runnerOf, saveLogin, seal, secret, signOut, use } from './logins.ts';
 import { getDomain } from 'tldts';
 import { checkHost, covers, letIn, reached, resolvesInternal, setLetIn, upstreams } from './connections.ts';
-import { model } from './connections/openrouter.ts';
+import { answer, model } from './connections/openrouter.ts';
 import { asPerson, can, users, type Me } from './auth.ts';
 import { approved, forgetGrants } from './grants.ts';
 import { act, changes, readJson, rfDir, tree } from './system.ts';
@@ -306,6 +306,7 @@ type Entry = { method: string; url: string; blocked?: string; dest?: string; fro
 function keep(inst: Instance, b: Opened, { state, log }: { state: unknown; log: Entry[] }) {
   const login = b.writeback && logins(b.email).find(l => l.id === `web:${b.site}`);
   if (login && state && !login.expired && login.since === b.since) saveLogin(b.email, login, JSON.stringify(state));
+  if (inst.hole) return;
   mkdirSync(join(inst.dir, 'browser'), { recursive: true });
   replaceReadOnly(join(inst.dir, b.file), log.map(e => JSON.stringify(e) + '\n').join(''));
   const writes = log.filter(e => !e.blocked && !['GET', 'HEAD', 'OPTIONS'].includes(e.method)).length, hosts: Record<string, number> = {};
@@ -372,7 +373,7 @@ async function checkRefused(inst: Instance, run: number, email: string, site: st
       }) }] }),
     });
     if (!res.ok) throw new Error(`OpenRouter answered ${res.status}`);
-    const said = JSON.parse((await res.json()).choices[0].message.content).hosts ?? {};
+    const said = answer((await res.json()).choices[0].message.content).hosts ?? {};
     await settle(Object.fromEntries(rest.map(h => [h, { verdict: ['pass', 'refused'].includes(said[h]?.verdict) ? said[h].verdict : 'high', why: String(said[h]?.why ?? 'The check gave no verdict for it.') }])));
   }
 }
@@ -399,6 +400,7 @@ export class Browsers {
   run: number;
   bySite = new Map<string, { id: string; email: string; since: string; writeback: boolean; file: string; conns: number; idle?: NodeJS.Timeout; shot?: Buffer }>();
   private opening = new Map<string, Promise<string | undefined>>();
+  private closing = new Set<Promise<unknown>>();
   private opens = new Map<string, number>();
   private refused = new Set<string>();
   private conns = new Map<Duplex, string>();
@@ -560,14 +562,15 @@ export class Browsers {
   // The run ended: its browsers close, and a connection still waiting for its person's browser on a website gets none.
   end() {
     this.ended = true;
-    return this.close();
+    this.close();
+    return Promise.all([...this.closing, ...[...this.opening.values()].map(p => p.catch(() => {}))]);
   }
 
   // A screenshot of each browser's newest tab, unless it looks as it did at the last, logged as shot for the audit.
   async shoot() {
     await Promise.all([...this.bySite].map(async ([site, b]) => {
       const png = await call('GET', `/sessions/${b.id}/screenshot`);
-      if (b.shot?.equals(png)) return;
+      if (this.ended || this.inst.hole || b.shot?.equals(png)) return;
       b.shot = png;
       const file = `browser/run ${this.run} ${site} ${++this.shots}.png`;
       mkdirSync(join(this.inst.dir, 'browser'), { recursive: true });
@@ -579,8 +582,8 @@ export class Browsers {
   // The run's browsers, or the one on `only`, close: each leaves its request log, and one that writes its state back hands its login
   // back refreshed, unless it expired or its person signed in to it anew since the browser opened, which a stale state would
   // overwrite, and lets the next run have its person's browser there.
-  async close(only?: string) {
-    await Promise.all([...this.bySite].filter(([site]) => !only || site === only).map(async ([site, { id, email, since, writeback, file, idle }]) => {
+  close(only?: string) {
+    const closing = Promise.all([...this.bySite].filter(([site]) => !only || site === only).map(async ([site, { id, email, since, writeback, file, idle }]) => {
       this.bySite.delete(site);
       clearTimeout(idle);
       for (const [conn, on] of this.conns) if (on === site) conn.destroy();
@@ -592,7 +595,9 @@ export class Browsers {
       } finally {
         if (writeback) this.release(`${email} ${site}`);
       }
-    }));
+    })).finally(() => this.closing.delete(closing));
+    this.closing.add(closing);
+    return closing;
   }
 }
 

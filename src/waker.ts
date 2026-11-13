@@ -6,12 +6,12 @@ import { agentsFile, closedBefore, createInstance, HttpError, instance, instance
 import { startRun, type Run, type TurnEnd, type View } from './runner.ts';
 import type { JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { prepare, sources } from './indexes.ts';
-import { canSee, changes, readJson, rfDir, tree, type Tree, writeJson } from './system.ts';
+import { act, canSee, changes, readJson, rfDir, tree, type Tree, writeJson } from './system.ts';
 import { asPerson, users } from './auth.ts';
 import { websitesOf, type Browsers } from './browsers.ts';
 import { seriesSettings } from './series.ts';
 import { pushed, skills } from './skills.ts';
-import { AGENT, commit, committed } from './git.ts';
+import { AGENT, commit, committed, forget } from './git.ts';
 import { logins, runnerOf } from './logins.ts';
 import { confirm } from './entra.ts';
 import { reachable, types } from './connections.ts';
@@ -28,11 +28,14 @@ const full = () => active.size >= MAX_RUNS || (MIN_FREE > 0 && freemem() < MIN_F
 export const MAX_OPEN = 3;
 const SPACING_MS = 15 * 60_000, MAX_WAKES = 20;
 
-export type Active = { inst: Instance; n: number; session: number; token: string; view: View; workspace: string; skills: Record<string, number>; shape: string; run?: Run; sent: number; seen: number; texts: Map<string, number>; done: boolean; cost: number; failed?: string; hosts: Set<string>; links: Map<string, { name: string; offer: string }>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string };
+export type Active = { inst: Instance; n: number; session: number; token: string; view: View; workspace: string; skills: Record<string, number>; shape: string; run?: Run; sent: number; seen: number; texts: Map<string, number>; done: boolean; cost: number; failed?: string; hosts: Set<string>; links: Map<string, { name: string; offer: string }>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string;
+  // Its Pi as it starts, and once its Pi, sandbox and browsers have stopped, after it ends.
+  ready?: Promise<Run>; ended?: Promise<unknown> };
 export const active = new Map<string, Active>();
 export const byToken = new Map<string, Active>();
 const debounce = new Map<string, NodeJS.Timeout>();
 const waiting = new Set<Instance>();
+const retiring = new Set<Active>();
 
 // A run's Pi, idle once the run ends cleanly, which its instance's next run within RF_IDLE_MIN carries on, as a new turn of the same
 // session whose message is the new log entries; at most RF_MAX_IDLE are idle, the longest ended first, and none holds its series'
@@ -59,12 +62,17 @@ function stale(i: Idle): boolean {
     || i.inst.log.some(e => e.seq > i.seq && ['takeover', 'logins'].includes(e.op)) || startsFrom(i.inst) !== i.shape;
 }
 // A run's Pi stopped, and its copies of indexes gone.
-const end = (token: string, run: Run) => run.stop().catch(e => console.error('a run left its scratch folder', e))
-  .finally(() => rmSync(join(rfDir(), 'runs', token), { recursive: true, force: true }));
+const ending = new Set<{ view: View; done: Promise<void> }>();
+function end(token: string, run: Run | Promise<Run>, view: View) {
+  const e = { view, done: Promise.resolve(run).then(r => r.stop().catch(e => console.error('a run left its scratch folder', e)), () => {})
+    .finally(() => { rmSync(join(rfDir(), 'runs', token), { recursive: true, force: true }); ending.delete(e); }) };
+  ending.add(e);
+  return e.done;
+}
 function drop(id: string) {
   const i = idle.get(id)!;
   idle.delete(id);
-  end(i.token, i.run);
+  end(i.token, i.run, i.view);
 }
 
 function seenBefore(inst: Instance): number {
@@ -131,11 +139,11 @@ export const named = (t: Tree, seriesId: string) => `${t.workspaces[t.series[ser
 export const archived = (t: Tree, seriesId: string) => !!(t.series[seriesId].archived || t.workspaces[t.series[seriesId].workspace].archived);
 
 // The run's view of the data, by name, built when it starts: /work/<workspace>/<series>/<label>/ for every instance in its reach but
-// an abandoned one, neither an example nor a starting point; the company's AGENTS.md at /work/AGENTS.md and each workspace's at
-// /work/<workspace>/AGENTS.md; and the environment its runner's connections set.
+// an abandoned one, neither an example nor a starting point, and a deleted one, of which nothing is left; the company's AGENTS.md at
+// /work/AGENTS.md and each workspace's at /work/<workspace>/AGENTS.md; and the environment its runner's connections set.
 export function view(inst: Instance): View {
   const t = tree(), at = (id: string) => `/work/${named(t, id)}`, series = [inst.seriesId, ...reach(t, inst.seriesId)];
-  const names = Object.fromEntries(series.flatMap(id => labels(id).filter(l => instance(l.id).doc.status !== 'abandoned').map(l => [`${at(id)}/${l.label}`, l.id])));
+  const names = Object.fromEntries(series.flatMap(id => labels(id).filter(l => !['abandoned', 'deleted'].includes(instance(l.id).doc.status)).map(l => [`${at(id)}/${l.label}`, l.id])));
   const agents = [...new Set(series.map(id => t.series[id].workspace))].map(w => [agentsFile(w), `/work/${t.workspaces[w].name}/AGENTS.md`] as [string, string]);
   return {
     instance: `${at(inst.seriesId)}/${inst.label}`, dir: inst.dir, pylib: join(inst.series(), '.pylib'),
@@ -191,7 +199,7 @@ async function start(inst: Instance) {
   let kept = idle.get(inst.id);
   idle.delete(inst.id);
   if (kept && stale(kept)) {
-    end(kept.token, kept.run);
+    end(kept.token, kept.run, kept.view);
     kept = undefined;
   }
   if (!kept) {
@@ -235,9 +243,10 @@ async function start(inst: Instance) {
         a.view.ro.push([index, '/index']);
         a.view.env.RF_INDEX = '/index';
       }
-      a.run = await startRun({ token: a.token, id: inst.id, n, view: a.view, skills: live, onEvent: e => byToken.has(a.token) && heard(byToken.get(a.token)!, e) });
-      // Cut as it started (leases()).
-      if (a.done) return void end(a.token, a.run);
+      a.ready = startRun({ token: a.token, id: inst.id, n, view: a.view, skills: live, onEvent: e => byToken.has(a.token) && heard(byToken.get(a.token)!, e) });
+      a.run = await a.ready;
+      // Cut as it started (leases(), remove()).
+      if (a.done) return;
     }
     ({ settled } = await a.run.turn(text));
   } catch (err) {
@@ -280,7 +289,7 @@ function finish(a: Active, aborted: boolean, error?: string): Entry | undefined 
   byToken.delete(a.token);
   const series = a.inst.seriesId;
   active.delete(series);
-  a.browsers?.end().catch(e => a.inst.append('server', 'browsers', { run: a.n, error: e.message }));
+  const closing = a.browsers?.end().catch(e => a.inst.append('server', 'browsers', { run: a.n, error: e.message }));
   // The rules it added to the process, or reworded, for the thread whose entry started it, where they were likely agreed.
   const added = rules(a.process, readFile(a.inst.dir, 'working/process.md') ?? a.process);
   const done = a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(4), ...(error && { error }), ...(added && { rules: added, thread: a.thread }) });
@@ -292,8 +301,10 @@ function finish(a: Active, aborted: boolean, error?: string): Entry | undefined 
   }
   // The run's changes are one commit, with the names.tsv they were written under, which the instance's next run and its other
   // commits wait for: once its sandbox has stopped, or, idle, as it is, nothing running in it.
-  if (!a.run) rmSync(join(rfDir(), 'runs', a.token), { recursive: true, force: true });
-  const stopped = keep || !a.run ? undefined : end(a.token, a.run);
+  if (!a.run && !a.ready) rmSync(join(rfDir(), 'runs', a.token), { recursive: true, force: true });
+  const stopped = keep || (!a.run && !a.ready) ? undefined : end(a.token, a.run ?? a.ready!, a.view);
+  retiring.add(a);
+  a.ended = Promise.all([closing, stopped]).finally(() => retiring.delete(a));
   commit(a.inst.dir, AGENT, [`Run ${a.n}`, error].filter(Boolean).join(': '), stopped).catch(e => a.inst.append('server', 'commit', { run: a.n, error: e.message }));
   if (a.run) { // one that never started, as with a missing API key, waits for the next act or a restart rather than retrying at once
     const next = due(a.inst) ? a.inst : instances(series).find(i => i !== a.inst && due(i));
@@ -312,11 +323,43 @@ function leases() {
     const ws = t.series[a.inst.seriesId].workspace, reads = [a.inst.seriesId, ...reach(t, a.inst.seriesId)];
     const why = ws !== a.workspace ? CUT.moved : !sees(a.inst, t) ? CUT.runner
       : Object.values(a.view.series).some(id => !reads.includes(id)) ? CUT.reach : undefined;
-    if (!why) continue;
-    const done = finish(a, true, why)!;
-    a.inst.append('server', 'wake', { reason: `Run ${a.n} was cut: ${why}; carry on`, from: 'server', cause: done.seq });
-    kick(a.inst);
+    if (why) cut(a, why);
   }
+}
+
+// A run cut, its token first, so nothing more goes out, then its browsers and its sandbox; its instance carries on in a new run.
+function cut(a: Active, why: string) {
+  const done = finish(a, true, why)!;
+  a.inst.append('server', 'wake', { reason: `Run ${a.n} was cut: ${why}; carry on`, from: 'server', cause: done.seq });
+  kick(a.inst);
+}
+
+// Deleting an instance (store.ts markDeleted()) cuts a run going for it, as a lease is cut, and one queued or idling for it, and any run,
+// going or idle, whose view holds it, which carries on in a run of a view without it; its wakes go, and its series' one-off wakes
+// and requests for its label, or all of a task's. Once nothing runs in its folder, its last commit is done and its runs' browsers
+// have logged what they did, it becomes a hole. `fields` says what it cost, as its runs ended.
+export async function remove(inst: Instance, by: string, fields: () => Record<string, unknown>): Promise<Entry> {
+  const t = tree(), task = !!t.series[inst.seriesId].single;
+  inst.doc.status = 'deleted';
+  clearTimeout(debounce.get(inst.id));
+  debounce.delete(inst.id);
+  waiting.delete(inst);
+  const runs = [...active.values()].filter(a => a.inst === inst || Object.values(a.view.names).includes(inst.id));
+  for (const a of runs) a.inst === inst ? finish(a, true, CUT.deleted) : cut(a, CUT.gone);
+  for (const [id, i] of idle) if (i.inst === inst || Object.values(i.view.names).includes(inst.id)) {
+    idle.delete(id);
+    end(i.token, i.run, i.view);
+  }
+  const w = wakes();
+  for (const [id, k] of Object.entries(w.pending)) if (k.target === inst.id || (k.target === inst.seriesId && (task || (k.label === inst.label && !k.days)))) delete w.pending[id];
+  for (const [id, r] of Object.entries(w.requests)) if (r.series === inst.seriesId && (task || r.label === inst.label)) delete w.requests[id];
+  delete w.fired[inst.id];
+  saveWakes(w);
+  const commits = forget(inst.dir), deleted = inst.markDeleted(by, fields());
+  act(by, { method: 'POST', path: `/api/instances/${inst.id}/delete`, deleted: `${named(t, inst.seriesId)}/${inst.label}` });
+  await Promise.all([...[...retiring].filter(a => a.inst === inst || Object.values(a.view.names).includes(inst.id)).map(a => a.ended), ...[...ending].filter(e => e.view.dir === inst.dir || Object.values(e.view.names).includes(inst.id)).map(e => e.done), commits]);
+  inst.clear();
+  return deleted;
 }
 changes.on('change', (id: string) => id === 'tree' && setImmediate(leases));
 
@@ -508,12 +551,14 @@ function fire() {
 
 // Why a run was cut, its done's error, which `rf runs` tells from a failure: a restart, or a change that broke its lease (leases()).
 // Either way its instance is woken to carry on.
-export const CUT = { restart: 'a restart cut the run', moved: 'its series moved', runner: 'its runner can no longer see it', reach: 'its reach narrowed' };
+export const CUT = { restart: 'a restart cut the run', moved: 'its series moved', runner: 'its runner can no longer see it', reach: 'its reach narrowed', deleted: 'its instance was deleted', gone: 'an instance in its reach was deleted' };
 
 // A run a restart cut ends as aborted, with what its calls cost so far, its changes committed as at any run's end, and its instance
 // is woken to carry on, so a deploy needn't wait for quiet. A commit the restart cut leaves git's locks, which would refuse the
 // instance's next; no git runs as it starts.
 export function recover() {
+  // A deletion a restart cut is done: what's left of its folder goes.
+  for (const id of Object.keys(tree().series)) for (const inst of instances(id).filter(i => i.hole)) inst.clear();
   for (const id of Object.keys(tree().series)) for (const inst of instances(id).filter(i => i.doc.status === 'open')) {
     for (const f of ['index.lock', 'HEAD.lock', 'config.lock', 'packed-refs.lock', 'refs/heads/main.lock']) rmSync(join(inst.dir, '.git', f), { force: true });
     const run = inst.log.findLast(e => e.op === 'run' || e.op === 'done');

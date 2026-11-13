@@ -1,9 +1,10 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createInstance, instance, labels, openStore, renameInstance, type Instance } from '../src/store.ts';
+import { createInstance, instance, labels, openStore, renameInstance, Instance } from '../src/store.ts';
+import type { Run } from '../src/runner.ts';
 import { initSystem, readJson, saveTree, tree, writeJson } from '../src/system.ts';
 import type { Active } from '../src/waker.ts';
 import { committed } from '../src/git.ts';
@@ -14,7 +15,7 @@ delete process.env.OPENROUTER_API_KEY;
 process.env.RF_WAKE_TICK_MS = '50';
 const entra = await idp();
 Object.assign(process.env, entra.env('http://127.0.0.1:1'));
-const { cancelWakes, closed, kick, message, recover, resolveFor, setWake, startWaking, view, wakes, wakesOf, weekly } = await import('../src/waker.ts');
+const { active, byToken, cancelWakes, closed, kick, message, recover, remove, resolveFor, setWake, startWaking, view, wakes, wakesOf, weekly } = await import('../src/waker.ts');
 const { personDir, saveLogin } = await import('../src/logins.ts');
 const { keepSignIn } = await import('../src/entra.ts');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-wake-')), alice = 'alice@demo.test';
@@ -369,4 +370,45 @@ test("a run starts only for a runner who still sees its workspace: one removed f
   kick(inst);
   await settle();
   assert.ok(!ops(inst).includes('run'));
+});
+
+test('deletion records its tombstone before waiting for a starting sandbox, and another deletion waits for that retiring reader too', async () => {
+  const own = make('s1', 'deleting-start'), read = make('s2', 'deleting-read'), late = make('s2', 'deleting-late');
+  const ready = Promise.withResolvers<Run>(), stopped = Promise.withResolvers<void>(), browsers = Promise.withResolvers<void>();
+  const a = { inst: own, n: 1, token: 'deleting-start', view: view(own), ready: ready.promise, process: '', cost: 0, seen: 0, done: false, browsers: { end: () => browsers.promise } } as Active;
+  own.append('server', 'run', { run: 1 });
+  active.set(own.seriesId, a);
+  byToken.set(a.token, a);
+  let done = false, readDone = false;
+  const removing = remove(own, alice, () => ({ cost: 0, runs: [] })).then(() => { done = true; });
+  assert.equal(byToken.has(a.token), false);
+  assert.equal(new Instance(own.dir).hole, true, 'a restart already finds the tombstone');
+  const removingRead = remove(read, alice, () => ({ cost: 0, runs: [] })).then(() => { readDone = true; });
+  await new Promise(ok => setImmediate(ok));
+  assert.deepEqual([done, readDone], [false, false]);
+  ready.resolve({ stop: () => stopped.promise } as Run);
+  await new Promise(ok => setImmediate(ok));
+  assert.deepEqual([done, readDone], [false, false], 'starting is not stopping');
+  stopped.resolve();
+  await new Promise(ok => setImmediate(ok));
+  let lateDone = false;
+  const removingLate = remove(late, alice, () => ({ cost: 0, runs: [] })).then(() => { lateDone = true; });
+  await new Promise(ok => setImmediate(ok));
+  assert.deepEqual([done, readDone, lateDone], [false, false, false], 'a retired sandbox can still have browsers closing');
+  browsers.resolve();
+  await Promise.all([removing, removingRead, removingLate]);
+  for (const inst of [own, read, late]) assert.deepEqual(readdirSync(inst.dir).sort(), ['instance.json', 'log.jsonl', 'screen.json']);
+});
+
+test('recovery clears a deletion interrupted before its files and a task\'s locked packages were removed', async () => {
+  const task = make('s4', 'deleted-task'), lib = join(task.series(), '.pylib');
+  mkdirSync(lib);
+  writeFileSync(join(lib, 'secret'), 'private');
+  chmodSync(lib, 0);
+  writeFileSync(join(task.dir, 'working', 'secret'), 'private');
+  task.markDeleted(alice, { cost: 1, runs: [] });
+  recover();
+  assert.equal(existsSync(lib), false);
+  assert.deepEqual(readdirSync(task.dir).sort(), ['instance.json', 'log.jsonl', 'screen.json']);
+  await settle();
 });

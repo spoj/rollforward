@@ -1273,3 +1273,36 @@ test("the site's bare address opens the sidebar's first workspace, not the first
   assert.equal(await page.textContent('.row.ws.on .l'), 'larkfield');
   assert.equal(await page.evaluate(() => location.hash), await page.getAttribute('a.row.inst.on', 'href'));
 });
+
+test('only managers see Delete in an archive, its confirmation warns what stays, and a deleted instance has no change controls', async () => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const origin = new URL(page.url()).origin;
+  const { id, sid } = await page.evaluate(async () => {
+    const post = (path, body) => fetch(path, { method: 'POST', body: JSON.stringify(body) }).then(r => r.json());
+    const { id: ws } = await post('/api/workspaces', { name: 'Deleted page', members: ['watcher@demo.test'] });
+    await fetch(`/api/workspaces/${ws}`, { method: 'PUT', body: JSON.stringify({ owners: ['admin@demo.test'], members: ['watcher@demo.test'] }) });
+    const { id: sid } = await post('/api/series', { workspace: ws, name: 'Records' });
+    const { id } = await post(`/api/series/${sid}`, { label: 'Private', quiet: true });
+    await fetch(`/api/series/${sid}`, { method: 'PUT', body: JSON.stringify({ archived: true }) });
+    return { id, sid };
+  });
+  entra.who.as = 'watcher@demo.test';
+  const watcher = await browser.newPage();
+  await watcher.goto(`${origin}/auth/login`);
+  await watcher.goto(`${origin}/#/${id}`);
+  await watcher.waitForSelector('#bar .state:text-is("Archived · read-only")');
+  assert.equal(await watcher.locator('[data-act=delete]').count(), 0);
+  await watcher.close();
+  entra.who.as = 'admin@demo.test';
+  await page.goto(`${origin}/#/${id}`);
+  await page.waitForSelector('#bar .state:text-is("Archived · read-only")');
+  await page.click('#bar [data-act=delete]');
+  assert.match(await page.textContent('#ask') ?? '', /can.t be brought back/);
+  assert.match(await page.textContent('#ask') ?? '', /Copies outside the server stay/);
+  await page.click('#ask button[value=ok]');
+  await page.waitForSelector('#bar .state:text("Deleted by")');
+  assert.equal(await page.locator('#bar [data-act=delete], #bar [data-act=rename], #bar [data-act=duplicate], #bar [data-act=takeover], #bar [data-act=start-series]').count(), 0);
+  assert.match(await page.textContent('#ins') ?? '', /Nothing is left of it here/);
+  if (!await page.locator(`a.row.inst.deleted[href="#/${id}"]`).count()) await page.click(`[data-act=toggle-closed][data-id="${sid}"]`);
+  assert.equal(await page.locator(`a.row.inst.deleted[href="#/${id}"] .nm`).evaluate(el => getComputedStyle(el).textDecorationLine), 'line-through');
+});

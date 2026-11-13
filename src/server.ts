@@ -24,7 +24,7 @@ import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, startIndexing, track } from './indexes.ts';
 import { seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, archived, byToken, cancelWake, cancelWakes, closed, correct, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, resolveFor, setWake, startWaking, starts, startWith, stop, wakes, wakesOf, weekly, reads, CUT, type Active, type Request } from './waker.ts';
+import { active, archived, byToken, cancelWake, cancelWakes, closed, correct, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, remove, resolveFor, setWake, startWaking, starts, startWith, stop, wakes, wakesOf, weekly, reads, CUT, type Active, type Request } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -144,7 +144,7 @@ function waits(inst: Instance): { who: string; e: Entry }[] {
 // Whom a request to start an instance of a series waits on: whoever shares it, else the runner of its newest instance, else the
 // person who asked, if a person did; no one in particular, who anyone in its workspace may answer, else.
 function asked(r: Request): string | null {
-  const newest = instances(r.series).at(-1);
+  const newest = instances(r.series).filter(i => !i.hole).at(-1);
   return seriesSettings(seriesDir(r.series)).shared?.by ?? (newest ? runnerOf(newest).by : r.from.includes('@') ? r.from : null);
 }
 
@@ -186,21 +186,26 @@ function names(me: Me) {
 }
 
 // What makes an instance new to a person, when someone else or the agent did it: a run's end, a comment, a sign-off, an upload, a
-// takeover, a close, or a move to another workspace that someone else accepted.
-const NEWS = ['done', 'comment', 'signoff', 'upload', 'takeover', 'close', 'abandon', 'move'];
+// takeover, a close, a deletion, or a move to another workspace that someone else accepted.
+const NEWS = ['done', 'comment', 'signoff', 'upload', 'takeover', 'close', 'abandon', 'delete', 'move'];
+
+// What an instance's runs cost, since its latest duplication, a deleted one's as its deletion kept it.
+const costOf = (i: Instance) => +i.log.slice(i.log.findLastIndex(e => e.op === 'duplicate') + 1).reduce((t, e) => t + (['done', 'delete'].includes(e.op) ? e.cost as number : 0), 0).toFixed(4);
 
 function summary(i: Instance, me: Me, w8 = wakes()) {
   const email = me.email;
   const key = `${i.log.length}:${i.doc.rev}:${seriesSettings(i.series()).shared?.by ?? ''}`;
   const news = i.log.findLast(e => e.by !== email && e.accepted_by !== email && NEWS.includes(e.op)), s = seen(email);
   let k = kept.get(i);
-  if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i).map(w => w.who), runner: runnerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: +i.log.slice(i.log.findLastIndex(e => e.op === 'duplicate') + 1).reduce((t, e) => t + (e.op === 'done' ? e.cost as number : 0), 0).toFixed(4), corrections: i.log.filter(e => e.op === 'correction').length,
+  if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i).map(w => w.who), runner: runnerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: costOf(i), corrections: i.log.filter(e => e.op === 'correction').length,
     wrong: i.log.filter(e => e.op === 'correction' && e.kind === 'wrong').map(e => e.at),
     refused: i.log.filter(e => e.op === 'browser' && e.hosts).map(e => ({ at: e.at, run: e.run as number, site: e.site as string, login: e.login as string, hosts: Object.keys(e.hosts as object) })) });
   return {
     id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(i.seriesId)?.inst === i, queued: !!queued(i),
     asks: k.asks, wakes: wakesOf(i.id, w8), fired: w8.fired[i.id] ?? null, runner: k.runner, cost: k.cost, active: k.active,
     unread: !!news && news.at > s.since && news.seq > (s.at[i.id] ?? 0), corrections: k.corrections,
+    // A deleted instance's hole: who deleted it, and when.
+    deleted: i.hole ? { by: i.log[0].by, at: i.log[0].at } : null,
     // What says it was wrong, for its runner under Waiting on you, for a week, as a correction is never withdrawn.
     wrong: k.wrong.filter(fresh).length,
     // The hosts a run's browser on a person's website was refused that it still doesn't reach, under Waiting on you for a week: for
@@ -251,34 +256,42 @@ function listing(me: Me) {
   });
 }
 
-// Every run in what `me` sees, started since `since`: where and when, how it ended, its cost, whose it was and what started it.
-function runs(me: Me, since: string) {
-  const t = tree();
-  return Object.entries(t.series).filter(([, s]) => canSee(me, t.workspaces[s.workspace])).flatMap(([sid]) => instances(sid).flatMap(i => {
-    const a = active.get(sid);
-    return i.log.slice(i.log.findLastIndex(e => e.op === 'duplicate') + 1).filter(r => r.op === 'run' && r.at >= since).map(r => {
-      const d = i.log.find(e => e.op === 'done' && e.run === r.run), seen = (i.log.findLast(e => e.op === 'done' && e.seq < r.seq)?.seen as number | undefined) ?? 0;
-      const cause = pending(i, seen).find(e => e.seq <= (r.upto as number));
-      const error = d?.error as string | undefined, outcome = !d ? 'running' : !error ? (d.aborted ? 'interrupted' : 'done') : Object.values(CUT).includes(error) ? 'cut' : 'failed';
-      return {
-        path: `${named(t, sid)}/${i.label}`, run: r.run as number, at: r.at, outcome,
-        // Why a failed run failed: out of OpenRouter credits, a provider's policy refusing it, the time limit, or anything else.
-        failure: outcome !== 'failed' ? null : /\b402\b|credits/i.test(error!) ? 'credits' : /\b403\b|terms of service|usage polic|flagged/i.test(error!) ? 'policy' : error === 'time limit' ? 'time limit' : 'other',
-        seconds: Math.round(((d ? Date.parse(d.at) : Date.now()) - Date.parse(r.at)) / 1000), cost: d ? d.cost as number : a?.inst === i ? +a.cost.toFixed(4) : 0,
-        runner: i.log.findLast(e => e.seq < r.seq && ['create', 'duplicate', 'takeover'].includes(e.op))!.by,
-        started: cause ? { op: cause.op, by: cause.op === 'wake' ? cause.from as string : cause.by } : null,
-        error: d?.error ?? null,
-      };
-    });
-  })).sort((x, y) => x.at.localeCompare(y.at));
+// An instance's runs started since `since`, and since its latest duplication: when, how each ended, its cost, whose it was and what started it. A deleted instance's are
+// as its deletion kept them, for the totals: when, how each ended, its cost and whose it was.
+type RunRow = { run: number; at: string; outcome: string; failure: string | null; seconds: number; cost: number; runner: string; started: { op: string; by: string } | null; error: string | null };
+function runsOf(i: Instance, since = ''): RunRow[] {
+  if (i.hole) return ((i.log[0].runs ?? []) as RunRow[]).filter(r => r.at >= since).map(r => ({ ...r, started: null, error: null }));
+  const a = active.get(i.seriesId);
+  return i.log.slice(i.log.findLastIndex(e => e.op === 'duplicate') + 1).filter(r => r.op === 'run' && r.at >= since).map(r => {
+    const d = i.log.find(e => e.op === 'done' && e.run === r.run), seen = (i.log.findLast(e => e.op === 'done' && e.seq < r.seq)?.seen as number | undefined) ?? 0;
+    const cause = pending(i, seen).find(e => e.seq <= (r.upto as number));
+    const error = d?.error as string | undefined, outcome = !d ? 'running' : !error ? (d.aborted ? 'interrupted' : 'done') : Object.values(CUT).includes(error) ? 'cut' : 'failed';
+    return {
+      run: r.run as number, at: r.at, outcome,
+      // Why a failed run failed: out of OpenRouter credits, a provider's policy refusing it, the time limit, or anything else.
+      failure: outcome !== 'failed' ? null : /\b402\b|credits/i.test(error!) ? 'credits' : /\b403\b|terms of service|usage polic|flagged/i.test(error!) ? 'policy' : error === 'time limit' ? 'time limit' : 'other',
+      seconds: Math.round(((d ? Date.parse(d.at) : Date.now()) - Date.parse(r.at)) / 1000), cost: d ? d.cost as number : a?.inst === i ? +a.cost.toFixed(4) : 0,
+      runner: i.log.findLast(e => e.seq < r.seq && ['create', 'duplicate', 'takeover'].includes(e.op))!.by,
+      started: cause ? { op: cause.op, by: cause.op === 'wake' ? cause.from as string : cause.by } : null,
+      error: error ?? null,
+    };
+  });
 }
 
-// What people and the agent said, what people uploaded and closed, and each run's failure, per instance `me` sees, since `since`.
+// Every run in what `me` sees, started since `since`, by where it ran.
+function runs(me: Me, since: string) {
+  const t = tree();
+  return Object.entries(t.series).filter(([, s]) => canSee(me, t.workspaces[s.workspace])).flatMap(([sid]) => instances(sid).flatMap(i => runsOf(i, since).map(r => ({ path: `${named(t, sid)}/${i.label}`, ...r }))))
+    .sort((x, y) => x.at.localeCompare(y.at));
+}
+
+// What people and the agent said, what people uploaded, closed and deleted, and each run's failure, per instance `me` sees, since
+// `since`.
 function activity(me: Me, since: string) {
   const t = tree();
   return Object.entries(t.series).filter(([, s]) => canSee(me, t.workspaces[s.workspace])).flatMap(([sid]) => instances(sid).map(i => ({
     path: `${named(t, sid)}/${i.label}`,
-    entries: i.log.filter(e => e.at >= since && ((e.op === 'done' && e.error) || e.op === 'comment' || (isPerson(e) && ['upload', 'close', 'abandon'].includes(e.op)))).map(e => ({
+    entries: i.log.filter(e => e.at >= since && ((e.op === 'done' && e.error) || e.op === 'comment' || (isPerson(e) && ['upload', 'close', 'abandon', 'delete'].includes(e.op)))).map(e => ({
       at: e.at, by: e.by, op: e.op, ...(e.op === 'comment' && { text: e.text }), ...(e.op === 'upload' && { file: e.file }), ...(e.op === 'done' && { run: e.run, error: e.error }),
     })),
   })).filter(b => b.entries.length));
@@ -312,6 +325,7 @@ function status(me: Me) {
 
 function trace(inst: Instance) {
   const dir = join(inst.dir, 'session');
+  if (inst.doc.status === 'deleted') return [];
   type Line = { kind: string; text: string; at?: string; result?: string; lines?: number; error?: boolean };
   const out: Line[] = [], calls = new Map<string, Line>();
   for (const f of existsSync(dir) ? readdirSync(dir).filter(f => f.endsWith('.jsonl')).sort() : []) {
@@ -349,15 +363,20 @@ function pullable(me: Me, path: string) {
   // A name that isn't UTF-8, as unzipping an old archive leaves, reads back as another name, which no file has: it is left out.
   const add = (at: string, file: string, more: { url?: string; text?: string }) => {
     const st = statSync(file, { throwIfNoEntry: false });
-    if (st) out.push({ path: at, size: st.size, mtime: st.mtime.toISOString(), ...more });
+    if (st) out.push({ path: at, size: more.text === undefined ? st.size : Buffer.byteLength(more.text), mtime: st.mtime.toISOString(), ...more });
   };
   const near = (at: string) => !path || at === path || at.startsWith(path + '/') || path.startsWith(at + '/');
   if (existsSync(agentsFile())) add('AGENTS.md', agentsFile(), { text: text(agentsFile()) });
   for (const [wid, w] of Object.entries(t.workspaces).filter(([, w]) => canSee(me, w))) {
     if (existsSync(agentsFile(wid))) add(`${w.name}/AGENTS.md`, agentsFile(wid), { text: text(agentsFile(wid)) });
     for (const [sid, s] of Object.entries(t.series).filter(([, s]) => s.workspace === wid)) for (const l of labels(sid)) {
-      const at = `${w.name}/${s.name}/${l.label}`, dir = instanceDir(l.id);
-      if (near(at)) for (const f of walk(dir)) add(`${at}/${relative(dir, f).split(sep).join('/')}`, f, { url: `/files/${l.id}/${relative(dir, f).split(sep).map(encodeURIComponent).join('/')}` });
+      const at = `${w.name}/${s.name}/${l.label}`, dir = instanceDir(l.id), inst = instance(l.id);
+      if (!near(at)) continue;
+      if (inst.hole) {
+        add(`${at}/instance.json`, join(dir, 'instance.json'), { text: text(join(dir, 'instance.json')) });
+        add(`${at}/screen.json`, join(dir, 'screen.json'), { text: JSON.stringify(inst.doc) });
+        add(`${at}/log.jsonl`, join(dir, 'log.jsonl'), { text: JSON.stringify(inst.log[0]) + '\n' });
+      } else for (const f of walk(dir)) add(`${at}/${relative(dir, f).split(sep).join('/')}`, f, { url: `/files/${l.id}/${relative(dir, f).split(sep).map(encodeURIComponent).join('/')}` });
     }
   }
   return out.filter(f => !path || f.path === path || f.path.startsWith(path + '/'));
@@ -372,6 +391,7 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
   if (posix.normalize(rel) !== rel || rel.split('/').includes('..')) throw new HttpError(400, 'bad path');
   const inst = instance(id);
   mustSee(me, tree().workspaces[tree().series[inst.seriesId].workspace]);
+  if (inst.doc.status === 'deleted') throw new HttpError(404, 'the instance was deleted');
   const fd = openFile(inst.dir, rel);
   if (fd === undefined) throw new HttpError(404, 'no such file');
   if (preview) {
@@ -385,7 +405,11 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
     // A part of the file, as its query asks, such as a workbook's sheet or an email's attachment, is a preview of its own.
     const part = url.search.slice(1), sum = createHash('sha256').update(`${basename(rel)}\n${part}\n`);
     for await (const c of createReadStream('', { fd, start: 0, autoClose: false })) sum.update(c);
-    const kept = join(previews, sum.digest('hex'));
+    const kept = join(previews, `${inst.id}-${sum.digest('hex')}`);
+    if (inst.doc.status === 'deleted') {
+      closeSync(fd);
+      throw new HttpError(404, 'the instance was deleted');
+    }
     if (existsSync(kept)) {
       closeSync(fd);
       res.writeHead(200, { 'content-type': 'application/json' });
@@ -394,6 +418,10 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
     if (previewing < 2) previewing++;
     else await new Promise<void>(go => turns.push(go));
     try {
+      if (inst.doc.status === 'deleted') {
+        closeSync(fd);
+        throw new HttpError(404, 'the instance was deleted');
+      }
       const run = exec('bwrap', [
         '--unshare-all', '--die-with-parent', '--new-session', '--clearenv', ...userland(), '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
         '--ro-bind', join(app, 'src', 'preview.py'), '/preview.py', '--setenv', 'HOME', '/tmp', '--setenv', 'LANG', 'C.UTF-8', '--', '/opt/venv/bin/python', '/preview.py', basename(rel), part,
@@ -402,9 +430,10 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
       const [{ stdout }] = await Promise.all([run, pipeline(createReadStream('', { fd, start: 0 }), async function* (chunks: AsyncIterable<Buffer>) {
         for await (const c of chunks) { content.update(c); yield c; }
       }, run.child.stdin!)]);
+      if (inst.doc.status === 'deleted') throw new HttpError(404, 'the instance was deleted');
       const tmp = join(tmpDir, randomUUID());
       writeFileSync(tmp, stdout);
-      renameSync(tmp, join(previews, content.digest('hex')));
+      renameSync(tmp, join(previews, `${inst.id}-${content.digest('hex')}`));
       res.writeHead(200, { 'content-type': 'application/json' });
       return void res.end(stdout);
     } finally {
@@ -463,11 +492,12 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   // The body before the tree: a request held open must not save a tree from before others' changes, such as an owner's removal.
   const payload = ['upload', 'attach', 'screen'].includes(action) ? {} : await json(req);
   const t = tree(), by = me.email;
-  // Archived, a workspace or a series takes nothing but being restored: nothing in it changes, and none of its instances runs.
+  // Archived, a workspace or a series takes nothing but being restored, and an instance's deletion, as what shouldn't be kept may be
+  // in one: nothing else in it changes, and none of its instances runs.
   const about = t.series[kind === 'instances' ? instance(id).seriesId : kind === 'series' ? id : ''];
   const within = t.workspaces[kind === 'workspaces' ? id : about ? about.workspace : kind === 'series' ? payload.workspace : ''];
   const shut = [within, about].find(x => x?.archived);
-  if (shut && req.method !== 'GET' && !(payload.archived === false && !action && kind !== 'instances')) {
+  if (shut && req.method !== 'GET' && !(payload.archived === false && !action && kind !== 'instances') && !(kind === 'instances' && action === 'delete')) {
     if (!run) mustSee(me, within);
     throw new HttpError(409, `${shut.name} is archived: nothing in it changes until it's restored`);
   }
@@ -617,6 +647,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (action === 'promote') {
       // A task made a series, as it is, under a name of its own, its one instance the series' first.
       if (!s.single) throw new HttpError(400, `${s.name} is a series already`);
+      if (instances(id)[0].hole) throw new HttpError(409, `${s.name} was deleted`);
       const name = safeName(String(payload.name ?? ''));
       if (name !== s.name && Object.values(t.series).some(x => x.workspace === s.workspace && x.name === name)) throw new HttpError(409, `${name} exists`);
       s.name = name;
@@ -664,6 +695,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (t.series[to] && !label) throw new HttpError(400, `waking a series starts a new instance: name it with a label${run ? '; to wake your own instance, name its folder: .' : ''}`);
     if (!t.series[to] && instance(to).doc.status !== 'open') throw new HttpError(409, `${instance(to).label} is ${instance(to).doc.status}: to correct it, wake its series with the label ${instance(to).label}-r2`);
     const first = new Date(at), starts = t.series[to] ? safeName(String(label)) : undefined;
+    if (starts && labels(to).some(l => l.label === starts && instance(l.id).hole)) throw new HttpError(409, `${starts} was deleted, and its label stays with it: choose another`);
     return send(res, 200, setWake(to, {
       at: first.toISOString(), from: run ? `${named(t, run.inst.seriesId)}/${run.inst.label}` : by, ...(run && { inst: run.inst.id }),
       ...(starts && { label: starts }), ...(days !== undefined && { days: weekly(String(days), first, starts) }),
@@ -697,6 +729,17 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   if (action === 'screen' && req.method === 'PUT' && run) return send(res, 200, `saved, rev ${inst.put((await body(req)).toString(), run.n)}`);
   if (action === 'screen') throw new HttpError(405, "GET, or PUT by the instance's own run");
   if (req.method !== 'POST') throw new HttpError(405, 'POST only');
+  if (inst.doc.status === 'deleted') throw new HttpError(409, `${inst.label} was deleted: nothing is left of it but its place in its series`);
+  if (action === 'delete') {
+    // Whoever manages its workspace deletes an instance, in any status, people only: what's going for it is cut, and all the server
+    // holds of it goes, but its id, label and place in its series, and who deleted it and when, with what its runs cost, for the
+    // totals (waker.ts remove()); the system's log records it.
+    if (!canManage(me, t.workspaces[t.series[inst.seriesId].workspace])) throw new HttpError(403, "only the workspace's owners and admins delete an instance");
+    await remove(inst, by, () => ({ cost: costOf(inst), runs: runsOf(inst).map(({ started, error, ...r }) => r) }));
+    for (const p of readdirSync(previews)) if (p.startsWith(inst.id + '-')) rmSync(join(previews, p));
+    for (const k of sums.keys()) if (k.startsWith(inst.dir + sep)) sums.delete(k);
+    return send(res, 200, 'ok');
+  }
   if (action === 'duplicate') {
     if (t.series[inst.seriesId].single) throw new HttpError(400, 'a task has one instance: Start another based on this makes it a series');
     if (inst.doc.status === 'open') throw new HttpError(409, 'only a closed or abandoned instance can be duplicated');
@@ -722,6 +765,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (inst.doc.status !== 'closed') throw new HttpError(409, `${inst.label} is ${inst.doc.status}: only a closed instance takes corrections, as nothing else changes it`);
     if (run && t.series[inst.seriesId].workspace !== t.series[run.inst.seriesId].workspace) throw new HttpError(403, `${named(t, inst.seriesId)} is in another workspace: you can read it, not correct it`);
     if (see && !run) mustSee(me, t.workspaces[t.series[see.seriesId].workspace]);
+    if (see?.hole) throw new HttpError(409, `${see.label} was deleted`);
     if (!['wrong', 'superseded'].includes(k) || typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a correction is {"kind": "wrong" or "superseded", "text", "item", "ref", "see", "thread"}');
     if (item != null && !inst.doc.items.some(i => i.id === item)) throw new HttpError(400, `no item ${item}; ${inst.label}'s items: ${inst.doc.items.map(i => i.id).join(', ')}`);
     if (thread != null && !see?.threads().includes(thread)) throw new HttpError(400, `no thread ${thread} in ${see?.label ?? 'the instance it names'}`);

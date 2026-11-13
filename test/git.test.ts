@@ -5,9 +5,24 @@ import { randomBytes } from 'node:crypto';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { commit } from '../src/git.ts';
+import { commit, forget, pack } from '../src/git.ts';
 
 const git = (dir: string, ...args: string[]) => execFileSync('git', args, { cwd: dir, maxBuffer: 64 << 20 });
+
+test('forget fences new history immediately but waits for commits and packing already queued', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rf-git-')), who = { name: 'Agent', email: 'agent@x' };
+  writeFileSync(join(dir, 'file'), 'kept');
+  const gate = Promise.withResolvers<void>(), queued = commit(dir, who, 'Last run', gate.promise), packing = pack(dir);
+  let forgotten = false;
+  const done = forget(dir).then(() => { forgotten = true; });
+  await assert.rejects(commit(dir, who, 'Too late'), /deleted/);
+  await assert.rejects(pack(dir), /deleted/);
+  assert.equal(forgotten, false);
+  gate.resolve();
+  await Promise.all([queued, packing, done]);
+  assert.equal(git(dir, 'log', '-1', '--format=%s').toString().trim(), 'Last run');
+  rmSync(dir, { recursive: true, force: true });
+});
 
 test('a commit holds the whole folder, every file whatever its size or name, and links as links; nothing a run leaves bends it', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'rf-git-')), big = randomBytes(5 << 20), w = (rel: string, data: string | Buffer) => {

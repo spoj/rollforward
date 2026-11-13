@@ -16,7 +16,7 @@ import { idp } from './idp.ts';
 type Script = { bash: (string | (() => string | Promise<string>))[]; report: string; prompt?: string; system?: string; first?: number; saw: string[]; fail?: string; hold?: () => void };
 const scripts: Script[] = [], byPrompt = new Map<string, Script>(), providers: unknown[] = [], keys: string[] = [];
 // The server's own checks of websites (grants.ts, browsers.ts): what they asked, and the verdicts the stand-in model answers, in turn.
-const checks: { provider: unknown; messages: { content: string }[] }[] = [], verdicts: object[] = [];
+const checks: { provider: unknown; messages: { content: string }[] }[] = [], verdicts: (object | string)[] = [];
 const app = join(import.meta.dirname, '..'), tmp = mkdtempSync(join(tmpdir(), 'rf-scenario-')), root = join(tmp, 'data');
 const ADMIN = 'admin@demo.test', BOB = 'bob@demo.test';
 let model: ReturnType<typeof createServer>, proc: ChildProcess, base = '', admin = '', bob = '', sessions = 0;
@@ -47,7 +47,7 @@ const isResult = (m: { role: string; content: unknown }) => Array.isArray(m.cont
 // costing a cent, unless the key is out of credits; and a chat completion, for a script's own call.
 async function answer(req: IncomingMessage, res: ServerResponse) {
   const body = JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString());
-  if (body.response_format) return void (checks.push(body), res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: JSON.stringify(verdicts.shift()) } }] })));
+  if (body.response_format) return void (checks.push(body), res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: (v => typeof v === 'string' ? v : JSON.stringify(v))(verdicts.shift()) } }] })));
   keys.push(String(req.headers['x-api-key']));
   if (keys.at(-1) === 'sk-or-broke') return void res.writeHead(402, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: 'Insufficient credits', code: 402 } }));
   providers.push(body.provider);
@@ -236,6 +236,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
       'curl -s -m 5 -X POST -H "authorization: Bearer $RF_TOKEN" "$RF_URL/api/instances/$RF_INSTANCE/close"; echo',
       'curl -s -m 5 -H "authorization: Bearer $RF_TOKEN" "$RF_URL/api/workspaces"; echo',
       'rf ask --sign-off Sure. 2>&1',
+      'curl -s -m 5 -w "\\n%{http_code}" -X POST -H "authorization: Bearer $RF_TOKEN" "$RF_URL/api/instances/$RF_INSTANCE/delete"',
     ],
     report: 'Checked the walls, and woke myself for the bank file.', saw: [],
   };
@@ -271,6 +272,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.match(walls.saw[17], /^said c\d+\s*$/, 'a post links files in its text');
   assert.deepEqual([walls.saw[18].trim(), walls.saw[19].trim()], ['not found', 'not found'], "a run's token does only what a run may: not close its instance, nor read what people do"); 
   assert.match(walls.saw[20], /^rf ask has no --sign-off\nrf ask \[--in cN/, 'an option it has not is no part of the text');
+  assert.equal(walls.saw[21].trim(), 'not found\n404', 'even a workspace manager\'s run cannot delete');
   const asked = log.filter(e => e.op === 'call' && e.name === 'openrouter'), pi = asked.filter(e => (e.path as string).startsWith('/api/v1/messages'));
   assert.deepEqual(asked.filter(e => !pi.includes(e)).map(e => [e.run, e.method, e.path, e.status, e.model, e.cost]), [[2, 'POST', '/api/v1/chat/completions', 200, 'openai/gpt-5-mini', 0.002], [2, 'GET', '/api/v1/credits', 404, undefined, 0]]);
   assert.deepEqual(pi.map(e => [e.run, e.method, e.status, e.model, e.cost]), [[1, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01], ...Array(walls.bash.length + 1).fill([2, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01]), ...Array(2).fill([3, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01])], "Pi's own calls, a step's each and the report's, through the same connection");
@@ -796,7 +798,8 @@ test("anyone adds websites of their own, theirs to set: they allow the hosts its
   // In a workspace bob owns, a check that rates the website high risk leaves it for an admin to approve.
   const { id: his } = await (await call('POST', '/api/workspaces', { name: "Bob's own" })).json();
   assert.equal((await call('PUT', `/api/workspaces/${his}`, { owners: [BOB] })).status, 200);
-  verdicts.push({ risk: 'high', flags: ['looks like a lookalike'], summary: 'Not what it says.', hosts: [] });
+  // A model that fences its JSON in ```json is still read.
+  verdicts.push('```json\n' + JSON.stringify({ risk: 'high', flags: ['looks like a lookalike'], summary: 'Not what it says.', hosts: [] }) + '\n```');
   const { id: risky } = await (await call('POST', '/grants', { site: 'bobs', workspace: his, reason: 'more pulls' }, bob)).json();
   assert.deepEqual(await said(await call('POST', `/grants/${risky}`, { approve: true }, bob)), [403, 'the check rates bobs high risk: an admin decides']);
   assert.equal((await call('POST', `/grants/${risky}`, { approve: true })).status, 200);
@@ -907,6 +910,46 @@ test("a run's Pi idles only with nothing but Pi running in its sandbox, and ends
   proc.kill();
   await once(proc, 'exit');
   await serve();
+});
+
+test("deleting an instance cuts a run whose view holds it, which carries on without it, and a run going for it, whose sandbox stops before its folder goes", async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Purge' })).json();
+  const { id: payroll } = await (await call('POST', '/api/series', { workspace: ws, name: 'Payroll' })).json();
+  const { id: report } = await (await call('POST', '/api/series', { workspace: ws, name: 'Report' })).json();
+  const { id: old } = await (await call('POST', `/api/series/${payroll}`, { label: '2026-10', logins: [], quiet: true })).json();
+  const reader: Script = { bash: ['ls /work/Purge/Payroll', async () => {
+    assert.equal((await call('POST', `/api/instances/${old}/delete`)).status, 200, 'deleted while a run in reach goes');
+    return 'sleep 60';
+  }], report: 'Never said.', saw: [] };
+  const after: Script = { bash: ['ls /work/Purge/Payroll 2>/dev/null; echo end'], report: 'Carried on.', saw: [] };
+  scripts.push(reader, after);
+  const { id } = await (await call('POST', `/api/series/${report}`, { label: '2026-11', logins: [] })).json();
+  const log = await runs(id, 2);
+  assert.equal(reader.saw[0].trim(), '2026-10');
+  assert.equal(after.saw[0].trim(), 'end', 'its next run sees nothing of it');
+  assert.deepEqual(log.filter(e => e.op === 'done').map(e => [e.aborted, e.error]), [[true, 'an instance in its reach was deleted'], [false, undefined]]);
+
+  // A run of its own, going as it's deleted: cut, its sandbox stopped, and nothing it wrote left behind.
+  const runsDir = join(tmp, 'scratch', 'runs'), pi = (i: string) => existsSync(runsDir) && readdirSync(runsDir).some(t => existsSync(join(runsDir, t, 'bwrap.args')) && readFileSync(join(runsDir, t, 'bwrap.args'), 'utf8').includes(`RF_INSTANCE\0${i}\0`));
+  scripts.push({ bash: ['echo draft > draft.txt; sleep 60'], report: 'Never said.', saw: [] });
+  const { id: going } = await (await call('POST', `/api/series/${payroll}`, { label: '2026-11', logins: [] })).json();
+  await until('its run going in its sandbox', () => pi(going));
+  await new Promise(ok => setTimeout(ok, 1500));
+  assert.equal((await call('POST', `/api/instances/${going}/delete`)).status, 200);
+  assert.ok(!pi(going), 'its sandbox stopped before the deletion answered');
+  assert.deepEqual(readdirSync(join(root, 'instances', going)).sort(), ['instance.json', 'log.jsonl', 'screen.json']);
+  const { log: hole } = await (await call('GET', `/api/instances/${going}`)).json();
+  assert.deepEqual(hole.map((e: { op: string }) => e.op), ['delete']);
+  assert.deepEqual(hole[0].runs.map((r: { outcome: string }) => r.outcome), ['cut'], 'its run, cut, still counts');
+  await new Promise(ok => setTimeout(ok, 1500));
+  assert.deepEqual(readdirSync(join(root, 'instances', going)).sort(), ['instance.json', 'log.jsonl', 'screen.json'], 'nothing commits or writes there after');
+  const path = 'Purge/Report/2026-11', before = (await (await call('GET', '/api/runs')).json()).filter(r => r.path === path);
+  assert.ok(before.reduce((n, r) => n + r.cost, 0) > 0);
+  const cost = (await (await call('GET', `/api/instances/${id}/summary`)).json()).cost;
+  assert.equal((await call('POST', `/api/instances/${id}/delete`)).status, 200);
+  const retained = (await (await call('GET', '/api/runs')).json()).filter(r => r.path === path);
+  assert.deepEqual(retained, before.map(r => ({ ...r, started: null, error: null })));
+  assert.equal((await (await call('GET', `/api/instances/${id}/summary`)).json()).cost, cost);
 });
 
 test("every entry names its source: a person, a run whose entry names its runner and the act whose ticks it uses, or what caused it", () => {

@@ -1406,3 +1406,101 @@ test("admins see the hosts at internal addresses they let every website reach, w
   assert.deepEqual([act.by, act.hosts, act.let], [adminEmail, ['erp.corp.test'], false]);
   await rf('internal', 'remove', '10.1.2.3');
 });
+
+test("whoever manages a workspace deletes an instance, in any status, once: all the server holds of it goes but its place, shown as deleted, by whom and when, and what it cost still counts", async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Purge' }))).json(), b = sessionOf(await login(bob))!;
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ owners: [adminEmail], members: [bob] }))).status, 200);
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'Payroll' }))).json();
+  const { id } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: '2026-11-07', quiet: true }))).json(), path = `/api/instances/${id}`, dir = join(root, 'instances', id);
+  const bytes = 'name,pay\nann,100\n';
+  assert.equal((await call('POST', `${path}/upload?name=salaries.csv&quiet`, bytes)).status, 200);
+  assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ text: 'The password is hunter2.' }))).status, 200);
+  await ran(path);
+  await quiet();
+  assert.equal((await call('GET', `/preview/${id}/upload/salaries.csv`)).status, 200);
+  const kept = join(root, '.previews', `${id}-${createHash('sha256').update(`salaries.csv\n\n${bytes}`).digest('hex')}`);
+  assert.ok(existsSync(kept), 'a preview kept of its file');
+  assert.equal((await call('PUT', `/api/wakes/${id}`, JSON.stringify({ at: '+1d' }))).status, 200);
+  assert.equal((await call('PUT', `/api/wakes/${sid}`, JSON.stringify({ at: '+1d', label: '2026-11-07' }))).status, 200);
+  const before = readFileSync(join(root, '.rf', 'log.jsonl'), 'utf8').trim().split('\n').length;
+
+  assert.equal((await call('POST', `${path}/delete`, '{}', b)).status, 403, "a member doesn't delete; its owners and admins do");
+  await assert.rejects(rf('delete', 'Purge/Payroll/2026-11-07'), fails(1, /can't be undone.*Confirm with --yes\n$/s), 'rf asks once, saying it cannot be undone');
+  assert.equal(await rf('delete', 'Purge/Payroll/2026-11-07', '--yes'), 'deleted Purge/Payroll/2026-11-07\n');
+
+  assert.deepEqual(readdirSync(dir).sort(), ['instance.json', 'log.jsonl', 'screen.json'], 'upload/, working/, session/, names.tsv and .git/ go');
+  assert.ok(!existsSync(kept), 'its previews go');
+  const { doc, log } = await json(path);
+  assert.deepEqual(doc, { rev: doc.rev, status: 'deleted', items: [] });
+  assert.equal(log.length, 1, 'its log holds the delete entry alone');
+  assert.deepEqual([log[0].op, log[0].by, log[0].runs.map((r: { runner: string }) => r.runner)], ['delete', adminEmail, [adminEmail]]);
+  assert.doesNotMatch(readFileSync(join(dir, 'log.jsonl'), 'utf8'), /hunter2|salaries/);
+  const listed = (await workspaces()).find((w: { id: string }) => w.id === ws).series[0].instances[0];
+  assert.deepEqual([listed.label, listed.status, listed.deleted.by], ['2026-11-07', 'deleted', adminEmail], 'its place, shown as deleted, by whom');
+  assert.ok((await json('/api/runs')).some((r: { path: string }) => r.path === 'Purge/Payroll/2026-11-07'), 'its runs still count');
+  assert.deepEqual(Object.values(JSON.parse(readFileSync(join(root, '.rf', 'wakes.json'), 'utf8')).pending).filter((k: { target: string }) => [id, sid].includes(k.target)), [], 'its wakes go, and its series\' for its label');
+  const act = JSON.parse(readFileSync(join(root, '.rf', 'log.jsonl'), 'utf8').trim().split('\n')[before]);
+  assert.deepEqual([act.by, act.path, act.deleted], [adminEmail, `${path}/delete`, 'Purge/Payroll/2026-11-07'], "the system's log records it");
+
+  for (const action of ['delete', 'duplicate', 'rename?as=x', 'react', 'comment', 'upload?name=y.csv'])
+    assert.equal((await call('POST', `${path}/${action}`, action === 'react' ? JSON.stringify({ up: true }) : '{}')).status, 409, action);
+  assert.equal((await call('POST', `/api/series/${sid}`, JSON.stringify({ label: '2026-11-07', quiet: true }))).status, 409, 'its label stays taken');
+  assert.equal((await call('PUT', `/api/wakes/${sid}`, JSON.stringify({ at: '+1d', label: '2026-11-07' }))).status, 409, 'nothing wakes it');
+  assert.equal((await call('GET', `/files/${id}/upload/salaries.csv`)).status, 404);
+  assert.match(await rf('ls'), /^Purge\/Payroll\/2026-11-07  deleted by admin@demo\.test /m);
+  assert.match(await rf('show', 'Purge/Payroll/2026-11-07'), /^Purge\/Payroll\/2026-11-07  deleted by admin@demo\.test /);
+  assert.deepEqual(JSON.parse(await rf('show', 'Purge/Payroll/2026-11-07', '--json')).deleted, listed.deleted);
+  assert.match(await rf('activity', 'Purge/Payroll'), /admin@demo\.test  deletes it/);
+});
+
+test('deleting during a preview discards its answer and cached bytes, without removing another instance\'s copy', async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Preview deletion' }))).json();
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'Files' }))).json();
+  const { id } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'gone', quiet: true }))).json();
+  const { id: other } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'kept', quiet: true }))).json();
+  for (const i of [id, other]) assert.equal((await call('POST', `/api/instances/${i}/upload?name=same.csv&quiet`, 'secret\n1\n')).status, 200);
+  for (const i of [id, other]) assert.equal((await call('GET', `/preview/${i}/upload/same.csv`)).status, 200);
+  rmSync(join(tmp, 'release-previews'));
+  for (const f of readdirSync(tmp).filter(f => f.startsWith('holding-'))) rmSync(join(tmp, f));
+  assert.equal((await call('POST', `/api/instances/${id}/upload?name=race-hold-delete.csv&quiet`, 'secret\n2\n')).status, 200);
+  const preview = call('GET', `/preview/${id}/upload/race-hold-delete.csv`);
+  try {
+    for (let n = 0; !readdirSync(tmp).some(f => f.startsWith('holding-')) && n < 200; n++) await new Promise(r => setTimeout(r, 25));
+    assert.ok(readdirSync(tmp).some(f => f.startsWith('holding-')));
+    assert.equal((await call('POST', `/api/instances/${id}/delete`, '{}')).status, 200);
+  } finally {
+    writeFileSync(join(tmp, 'release-previews'), '');
+  }
+  assert.equal((await preview).status, 404);
+  const cache = readdirSync(join(root, '.previews'));
+  assert.ok(!cache.some(f => f.startsWith(id + '-')));
+  assert.ok(cache.some(f => f.startsWith(other + '-')));
+  assert.equal((await call('GET', `/preview/${other}/upload/same.csv`)).status, 200);
+  const pulled = join(tmp, 'deleted-pull');
+  mkdirSync(join(pulled, 'gone'), { recursive: true });
+  writeFileSync(join(pulled, 'gone', 'secret'), 'local copy');
+  await rf('pull', 'Preview deletion/Files/', pulled, '--delete');
+  assert.ok(!existsSync(join(pulled, 'gone', 'secret')));
+  assert.equal((await call('POST', `/api/instances/${other}/delete`, '{}')).status, 200);
+  await rf('pull', 'Preview deletion/Files/', pulled, '--delete');
+  assert.ok(!existsSync(join(pulled, 'kept', 'upload', 'same.csv')));
+});
+
+test('a workspace owner deletes open, closed and abandoned instances in archives, while all other changes remain refused', async () => {
+  const b = sessionOf(await login(bob))!;
+  assert.equal((await json('/me', b)).role, 'user');
+  for (const status of ['open', 'closed', 'abandoned']) {
+    const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: `Delete ${status}` }))).json();
+    const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'Records' }))).json();
+    const { id } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'period', quiet: true }))).json();
+    const path = `/api/instances/${id}`;
+    if (status !== 'open') assert.equal((await call('POST', `${path}/${status === 'closed' ? 'close' : 'abandon'}`, '{}')).status, 200);
+    assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ owners: [bob], members: [] }))).status, 200);
+    const archive = status === 'open' ? `/api/workspaces/${ws}` : `/api/series/${sid}`;
+    assert.equal((await call('PUT', archive, JSON.stringify({ archived: true }))).status, 200);
+    assert.equal((await call('POST', `${path}/rename?as=changed`, '{}', b)).status, 409);
+    assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ text: 'no change' }), b)).status, 409);
+    assert.equal((await call('POST', `${path}/delete`, '{}', b)).status, 200);
+    assert.equal((await json(path, b)).doc.status, 'deleted');
+  }
+});
