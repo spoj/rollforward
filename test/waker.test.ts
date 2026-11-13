@@ -57,6 +57,18 @@ test("a run's first message names the runner and what they lend, each tick as lo
   assert.match(message(oct, 3, [{ seq: 99, at: '', by: 'bob@demo.test', op: 'takeover', from: alice }]), new RegExp(`run 3\\. Its runner is now .+ <bob@demo\\.test>, taking over from .+ <${alice}>, who lends you no login\\.`));
 });
 
+test("a service prefix is lent at its private address in the run's first message, with no SDK environment", async () => {
+  const { setConnection, removeConnection, loginOf } = await import('../src/connections.ts');
+  const { signOut } = await import('../src/logins.ts');
+  const c = await setConnection('drop', { type: 'service', url: 'http://127.0.0.1:9000', paths: 'AP/,GL/2026/' }, 'admin');
+  saveLogin(alice, { ...loginOf(c), since: '' } as never);
+  const inst = createInstance('s5', 'Service', alice, ['drop:AP/']);
+  assert.match(message(inst, 1, inst.log, true), /who lends you drop:AP\/ \(AP\/ at https:\/\/drop\.rf\.internal\/\)\. New log entries:/);
+  assert.deepEqual(view(inst).env, {});
+  signOut(alice, 'drop');
+  removeConnection('drop');
+});
+
 test("a run names a series or an instance by its folder, from its own instance's", () => {
   assert.equal(resolveFor(run, '.'), sep.id);
   assert.equal(resolveFor(run, '../2026-10'), oct.id);

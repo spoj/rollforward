@@ -41,7 +41,7 @@ export async function addWarehouse(email: string, id: string, add: string) {
 export default {
   settings: () => ({}),
   login: c => ({ id: c.name, kind: 'databricks', name: `Databricks ${c.name}`, scope }),
-  hosts: ['*.azuredatabricks.net'],
+  hosts: () => ['*.azuredatabricks.net'],
   check: async (c, _runner, ticks, r) => check(c, ticks, r),
   links,
   // The first warehouse ticked, for its CLI and SDK; the ticks name any others.

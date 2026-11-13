@@ -1016,6 +1016,11 @@ function loginsHtml(s) {
       + (l.expired ? '' : `<div class="sub">${hint}</div><div class="row2"><input type="text" id="offer-add-${esc(l.id)}" placeholder="${box}" style="flex:1"><button class="btn" data-act="offer-add" data-id="${esc(l.id)}">Add</button></div>`)
       + `<div class="row2">${signOut(l.id)}</div>`;
   }
+  for (const c of s.connections.filter(c => c.type === 'service')) {
+    const l = mine(c.login.id);
+    h += line(c.login.name, `https://${esc(c.name)}.rf.internal/`, l ? show(l.id) : `<button class="btn primary" data-act="service-connect" data-id="${esc(c.login.id)}">Connect</button>`);
+    if (l && shown(l.id)) h += l.offers.map(o => `<div class="lsub"><span>${esc(o.name)}</span></div>`).join('') + `<div class="row2">${signOut(l.id)}</div>`;
+  }
   const ids = new Set([...s.connections.map(c => c.login.id), ...sites.map(([n]) => `web:${n}`), 'openrouter']), signed = sites.filter(([n]) => mine(`web:${n}`) && !mine(`web:${n}`).expired).length;
   for (const l of s.logins.filter(l => !ids.has(l.id))) h += line(l.name, 'no longer a connection on this server, so no run uses it', signOut(l.id));
   h += line('Websites', sites.length ? `${signed} of ${sites.length} signed in` : me.browsers ? 'none yet: add one' : 'not set up on this server: website logins need the browser service (docs/system.md, Websites)', sites.length || me.browsers ? show('web') : '');
@@ -1054,7 +1059,7 @@ function loginsHtml(s) {
 // ticks off.
 function ticksHtml(logins, on = []) {
   const n = l => l.expired ? 0 : l.offers.filter(o => on.includes(o.id)).length, tick = (l, o) => `<label><input type="checkbox" class="tick" value="${esc(o.id)}" ${on.includes(o.id) && !l.expired ? 'checked' : ''}> ${esc(o.name)}${l.expired ? ' <span class="q">expired</span>' : ''}</label>`;
-  const h = [['m365', ''], ['databricks', 'Databricks'], ['website', 'Websites']].map(([kind, name]) => logins.filter(l => l.kind === kind && l.offers.length).map(l => kind === 'm365'
+  const h = [['m365', ''], ['databricks', 'Databricks'], ['service', 'Services'], ['website', 'Websites']].map(([kind, name]) => logins.filter(l => l.kind === kind && l.offers.length).map(l => kind === 'm365'
     ? `<details class="tgroup" ${n(l) && n(l) < l.offers.length ? 'open' : ''}><summary><label><input type="checkbox" class="tickall" ${n(l) === l.offers.length ? 'checked' : ''}> ${esc(l.name)}${l.expired ? ' <span class="q">expired</span>' : ''}</label><span class="sub">${l.offers.length} source${l.offers.length === 1 ? '' : 's'}</span></summary>${l.offers.map(o => tick(l, o)).join('')}</details>`
     : `<div class="tkind"><span class="sub">${name}</span>${l.offers.map(o => tick(l, o)).join('')}</div>`).join('')).join('');
   return h || '<div class="sub">You have no logins yet; add them under <a data-act="logins">Logins</a>. The agent can still work with the files people bring.</div>';
@@ -1733,6 +1738,10 @@ async function onAct(act, el) {
   if (act === 'logins-show') {
     pv.shown = pv.shown?.includes(el.dataset.id) ? pv.shown.filter(x => x !== el.dataset.id) : [...pv.shown ?? [], el.dataset.id];
     renderPv();
+  }
+  if (act === 'service-connect') {
+    await api(`/logins/${enc(el.dataset.id)}/connect`, { method: 'POST' });
+    return openLogins();
   }
   if (act === 'signout-login') {
     await api(`/logins/${enc(el.dataset.id)}`, { method: 'DELETE' });

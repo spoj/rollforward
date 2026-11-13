@@ -20,6 +20,7 @@ rollforward runs on one host and the browser service ([spoj/rollforward-browser]
   - `raw.githubusercontent.com` over HTTPS for the default threat blocklist, or the hosts of the URLs set in `BROWSER_BLOCKLISTS`. This blocklist fetch is browser host → GitHub raw; it does not use rollforward's run egress permissions.
 - **An app registered in Entra ID** ([system.md](system.md), Access), with an admin's consent to its delegated Graph permissions.
 - **A model API key** for OpenRouter, also used to profile websites and check their hosts, and one for Exa if runs and the website check are to search the web.
+- **Deployment services,** if needed: run each beside the server on a private, firewalled HTTP link, then `rf connection set NAME service --url http://HOST:PORT --paths 'AP/,GL/2026/' --key KEY`; its bearer key and streaming HTTP contract are in [system.md](system.md#connections).
 
 ## The browser host
 

@@ -41,7 +41,7 @@ async function tryIt(args: string[]) {
   mkdirSync(join(out, 'working'), { recursive: true });
   // A stand-in series and instance: what the agent API needs of one, its log printed rather than kept.
   const seriesDir = mkdtempSync(join(tmpdir(), 'rf-try-'));
-  const inst = { dir: out, log: [{ seq: 1, op: 'create', by: as, logins: logins(as).flatMap(l => l.offers.map(o => o.id)) }, { seq: 2, op: 'run', run: 0, runner: as, consent: 1 }], series: () => seriesDir, append: (_by: string, op: string, data: object) => { console.log(`  [log] ${op} ${JSON.stringify(data)}`); return { seq: 0 }; } } as unknown as Instance;
+  const inst = { id: 'try', seriesId: '', dir: out, log: [{ seq: 1, op: 'create', by: as, logins: logins(as).flatMap(l => l.offers.map(o => o.id)) }, { seq: 2, op: 'run', run: 0, runner: as, consent: 1 }], series: () => seriesDir, append: (_by: string, op: string, data: object) => { console.log(`  [log] ${op} ${JSON.stringify(data)}`); return { seq: 0 }; } } as unknown as Instance;
   const api = await serveAgent(inst);
   // The proxy a run has, on a port of its own, for the connections and the hosts runs may reach.
   const token = randomUUID(), run: CallRun = { inst: inst as unknown as Instance, n: 0, links: new Map(), cost: 0 };

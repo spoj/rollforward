@@ -100,7 +100,7 @@ export async function startVpnSignIn(me: Me, name: string): Promise<string> {
     currentVpnSignIn(signing);
   }
   const except = [process.env.RF_PUBLIC_URL, process.env.RF_BROWSER_URL ?? 'http://127.0.0.1:8797'].filter(Boolean).map(u => new URL(u!).hostname)
-    .concat(connections().flatMap(c => types[c.type].hosts ?? []));
+    .concat(connections().flatMap(c => types[c.type].hosts?.(c) ?? []));
   const { id } = await browserJson('POST', '/sessions', { site: { hosts: [], open: true, except, start_url: start.href }, ttl_s });
   try { currentVpnSignIn(signing); } catch (e) { await browserJson('DELETE', `/sessions/${id}`); throw e; }
   signIns.set(id, signing);

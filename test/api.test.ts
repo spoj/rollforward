@@ -1547,3 +1547,27 @@ test('a workspace owner deletes open, closed and abandoned instances in archives
     assert.equal((await json(path, b)).doc.status, 'deleted');
   }
 });
+
+test('admins define service connections without exposing their keys, and people connect once to lend their current prefixes', async () => {
+  const b = sessionOf(await login(bob))!;
+  assert.equal(await rf('connection', 'set', 'drop', 'service', '--url', 'http://127.0.0.1:9000', '--paths', 'AP/,GL/2026/', '--key', 'deployment-secret'), 'saved\n');
+  assert.equal((await call('PUT', '/connections/drop', JSON.stringify({ type: 'service', url: 'http://elsewhere:9000', paths: 'AP/' }), b)).status, 403);
+  const listed = await rf('connections', '--json'), c = JSON.parse(listed).find((c: { name: string }) => c.name === 'drop');
+  assert.ok(!('key' in c));
+  assert.ok(!listed.includes('deployment-secret'));
+  assert.match(await rf('connections'), /drop  service  .*"paths":\["AP\/","GL\/2026\/"\]/);
+  assert.equal((await call('GET', '/logins/drop/connect')).status, 404, 'no GET changes a service login');
+  assert.equal((await call('POST', '/logins/drop/connect', undefined, b)).status, 200);
+  assert.ok(!(await json('/logins')).some((l: { id: string }) => l.id === 'drop'), 'another person has not connected');
+  assert.equal((await call('POST', '/logins/drop/connect')).status, 200);
+  assert.match(await rf('logins'), /drop  Service drop  connected since/);
+  assert.match(await rf('logins'), /offers drop:AP\/  AP\/ at https:\/\/drop\.rf\.internal\//);
+  assert.deepEqual(JSON.parse(await rf('logins', '--json')).find((l: { id: string }) => l.id === 'drop').offers.map((o: { id: string }) => o.id), ['drop:AP/', 'drop:GL/2026/']);
+  assert.equal(await rf('connection', 'set', 'drop', 'service', '--url', 'http://127.0.0.1:9000', '--paths', 'AP/,AR/'), 'saved\n');
+  assert.deepEqual((await json('/logins', b)).find((l: { id: string }) => l.id === 'drop').offers.map((o: { id: string }) => o.id), ['drop:AP/', 'drop:AR/']);
+  assert.equal((await call('DELETE', '/logins/drop/offers/drop%3AAP%2F')).status, 400, 'prefixes are the admin\'s, not personal offers to edit');
+  assert.equal(await rf('logins', 'signout', 'drop'), 'signed out of drop\n');
+  assert.equal(await rf('connection', 'remove', 'drop'), 'removed\n');
+  assert.deepEqual((await json('/logins', b)).find((l: { id: string }) => l.id === 'drop').offers, [], 'a removed connection offers nothing');
+  assert.equal((await call('DELETE', '/logins/drop', undefined, b)).status, 200);
+});

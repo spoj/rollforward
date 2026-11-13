@@ -131,7 +131,8 @@ rf internal [remove HOST] [--json]   the hosts at internal addresses admins let 
                                   which everyone's websites at it wait for an admin again
 rf connection set NAME TYPE       an outside system runs reach as their runner, by a login each person makes: graph,
                                   Microsoft 365, or databricks, Azure Databricks, as each person adds what their login
-                                  offers; websites are rf site's
+                                  offers; service --url http://HOST:PORT --paths 'AP/,GL/2026/' [--key KEY] lends paths
+                                  through a deployment's service at https://NAME.rf.internal/; websites are rf site's
 rf connection remove NAME
 rf brand [--text TEXT] [--logo FILE] [--clear]   the deployment's text and logo, a .png, .jpg, .gif, .webp or .svg, which top
                                   the sidebar and are the page's title and icon; --clear goes back to the plain look, and with
@@ -545,7 +546,7 @@ else if (cmd === 'comment' && args.length === 2) {
   const all = await get('/logins');
   if (flags.json) console.log(JSON.stringify(all, null, 1));
   else for (const l of all) {
-    console.log(`${l.id}  ${l.name}  ${l.expired ? `expired: sign in again at ${url}/#logins` : `${l.kind === 'key' ? 'saved' : 'signed in'} since ${when(l.since)}`}${l.kind === 'key' ? (l.enabled ? ', in use' : ', not in use') : ''}${l.keepalive > new Date().toISOString() ? `, kept alive until ${when(l.keepalive)}` : ''}${l.missing.length ? `, missing ${l.missing.join(', ')}` : ''}`);
+    console.log(`${l.id}  ${l.name}  ${l.expired ? `expired: sign in again at ${url}/#logins` : `${l.kind === 'key' ? 'saved' : l.kind === 'service' ? 'connected' : 'signed in'} since ${when(l.since)}`}${l.kind === 'key' ? (l.enabled ? ', in use' : ', not in use') : ''}${l.keepalive > new Date().toISOString() ? `, kept alive until ${when(l.keepalive)}` : ''}${l.missing.length ? `, missing ${l.missing.join(', ')}` : ''}`);
     // A website's login offers itself alone.
     for (const o of l.offers.filter(o => o.id !== l.id)) console.log(`  offers ${o.id}  ${o.name}`);
   }

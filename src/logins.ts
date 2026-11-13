@@ -2,11 +2,12 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { HttpError, type Instance } from './store.ts';
-import { canSee, changes, key, rfDir, tree } from './system.ts';
+import { canSee, changes, key, readJson, rfDir, tree } from './system.ts';
 import { asPerson } from './auth.ts';
+import service from './connections/service.ts';
 
-// Every login is personal: a person's own sign-in to Microsoft 365, Databricks or a website, or their own OpenRouter key, which,
-// `enabled`, their runs use in place of the server's (connections.ts), kept in .rf/people/<id>/. logins.json
+// Every login is personal: a person's sign-in to Microsoft 365, Databricks or a website, their opt-in to a deployment's service,
+// or their own OpenRouter key, which, `enabled`, their runs use in place of the server's (connections.ts), kept in .rf/people/<id>/. logins.json
 // lists them, each with what it offers a run, such as a mailbox, a site or a SQL warehouse; each login's secret (Microsoft's refresh
 // token, a website's saved browser state) is sealed in <login id>.sealed with AES-256-GCM, its person and id as authenticated data,
 // so a record copied into another person's folder won't open. A run uses only its runner's logins, and only the offers ticked for
@@ -20,7 +21,12 @@ export const personDir = (email: string) => join(rfDir(), 'people', createHash('
 const list = (email: string) => join(personDir(email), 'logins.json');
 
 export function logins(email: string): Login[] {
-  return existsSync(list(email)) ? JSON.parse(readFileSync(list(email), 'utf8')) : [];
+  const all: Login[] = existsSync(list(email)) ? JSON.parse(readFileSync(list(email), 'utf8')) : [];
+  return all.map(l => {
+    if (l.kind !== 'service') return l;
+    const c = readJson<Record<string, any>>('connections.json', {})[l.id];
+    return { ...l, offers: c?.type === 'service' ? service.login({ name: l.id, ...c }).offers : [] };
+  });
 }
 
 // A login that becomes usable, new or signed in again after it expired, wakes the runs that waited for it (waker.ts).
@@ -61,6 +67,7 @@ export function forgetLogins(email: string) {
 export function unoffer(email: string, id: string, offer: string) {
   const login = logins(email).find(l => l.id === id);
   if (!login) throw new HttpError(404, `you have no login ${id}`);
+  if (login.kind === 'service') throw new HttpError(400, 'admins keep a service connection\'s prefixes; untick one for the instance instead');
   saveLogin(email, { ...login, offers: login.offers.filter(o => o.id !== offer) });
 }
 

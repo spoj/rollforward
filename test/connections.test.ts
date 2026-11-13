@@ -1,4 +1,6 @@
 import { after, before, test } from 'node:test';
+import { createHash } from 'node:crypto';
+import { once } from 'node:events';
 import assert from 'node:assert/strict';
 import { createServer, request, type IncomingHttpHeaders, type Server } from 'node:http';
 import { request as httpsRequest } from 'node:https';
@@ -53,7 +55,7 @@ const MIME = 'Subject: FW: Request successfully processed\r\n\r\nThe payment run
 const ticks = ['m365:mail:alice@demo.test', 'm365:site:host,site1,web1'];
 // An instance's log as its run 1 started, with the logins ticked as it was made.
 const started = (logins: string[]) => [{ seq: 1, op: 'create', by: ALICE, logins }, { seq: 2, op: 'run', run: 1, runner: ALICE, consent: 1 }];
-const inst = { dir: instDir, seriesId: 'weekly', log: started(ticks), doc: { items: [{ id: 'pack', name: 'Pack', kind: 'output', file: null }] }, series: () => seriesDir, append: (_by: string, op: string, data: any) => { log.push({ op, data }); return { seq: log.length }; } } as unknown as Instance;
+const inst = { id: 'w1', dir: instDir, seriesId: 'weekly', log: started(ticks), doc: { items: [{ id: 'pack', name: 'Pack', kind: 'output', file: null }] }, series: () => seriesDir, append: (_by: string, op: string, data: any) => { log.push({ op, data }); return { seq: log.length }; } } as unknown as Instance;
 const run: AgentRun = { inst, n: 1, token: 'run' };
 let call: (path: string, body?: unknown) => Promise<{ status: number; data: unknown } | null>;
 let agentCall: typeof import('../src/agent-api.ts').agentCall;
@@ -68,7 +70,7 @@ const m365 = () => logins.logins(ALICE).find(l => l.id === 'm365')!;
 
 // A request as a run's tool makes it: CONNECT through the proxy with the run's token, then TLS to the host, trusting what the run
 // trusts, and HTTP/1.1; `data` sees the answer as it comes, and `cut` hangs up at its first bytes, as a run cut then would.
-async function via(method: string, url: string, o: { body?: string | Buffer; headers?: Record<string, string>; token?: string; data?: (b: Buffer) => void; path?: string; cut?: boolean } = {}): Promise<{ status: number; text: string; headers: IncomingHttpHeaders }> {
+async function via(method: string, url: string, o: { body?: string | Buffer | AsyncIterable<Buffer>; headers?: Record<string, string>; token?: string; data?: (b: Buffer) => void; path?: string; cut?: boolean } = {}): Promise<{ status: number; text: string; headers: IncomingHttpHeaders }> {
   const u = new URL(url), token = o.token ?? 'run';
   const socket = await new Promise<Socket>((ok, fail) => request({ socketPath: sock, method: 'CONNECT', path: `${u.hostname}:443`, headers: { 'proxy-authorization': `Basic ${Buffer.from(`rf:${token}`).toString('base64')}` } })
     .on('connect', (r, s) => r.statusCode === 200 ? ok(s) : fail(new Error(`CONNECT answered ${r.statusCode}`))).on('error', fail).end());
@@ -83,7 +85,11 @@ async function via(method: string, url: string, o: { body?: string | Buffer; hea
       }).on('end', () => ok({ status: res.statusCode!, text: Buffer.concat(chunks).toString(), headers: res.headers }));
     });
     r.on('error', fail);
-    r.end(o.body);
+    if (o.body && typeof o.body !== 'string' && !Buffer.isBuffer(o.body)) void (async () => {
+      for await (const b of o.body) if (!r.write(b)) await once(r, 'drain');
+      r.end();
+    })().catch(fail);
+    else r.end(o.body);
   });
 }
 const G = 'https://graph.microsoft.com/v1.0', json = (body: unknown) => ({ body: JSON.stringify(body), headers: { 'content-type': 'application/json' } });
@@ -497,7 +503,7 @@ test('admins keep connections, each a name, a type and its settings', async () =
   const { connections, removeConnection, setConnection } = await import('../src/connections.ts');
   assert.deepEqual(connections().map(c => [c.name, c.type]), [['graph', 'graph'], ['adb', 'databricks']]);
   await assert.rejects(setConnection('Adb', { type: 'databricks' }, 'admin'), /a connection's name is/);
-  await assert.rejects(setConnection('erp', { type: 'website', url: 'https://erp.test/' }, 'admin'), /type: one of graph, databricks$/);
+  await assert.rejects(setConnection('erp', { type: 'website', url: 'https://erp.test/' }, 'admin'), /type: one of graph, databricks, service$/);
   await setConnection('adb2', { type: 'databricks' }, 'admin');
   removeConnection('adb2');
   assert.throws(() => removeConnection('adb2'), /no connection adb2/);
@@ -832,4 +838,152 @@ test('a login Microsoft asks to consent to what the server asks for anew renews 
   logins.saveLogin(ALICE, { ...m365(), since: new Date().toISOString() });
   await fresh.token(ALICE, 'm365', scope);
   assert.equal(refreshes, n + 1, 'a token is kept until its login is signed in to again');
+});
+
+test('a deployment service gets streamed requests only under the runner\'s ticked prefixes, with its key and the run\'s identity', { timeout: 30_000 }, async t => {
+  const { setConnection, removeConnection, connections, loginOf, checkHost } = await import('../src/connections.ts');
+  const { readJson } = await import('../src/system.ts');
+  const requests: { method: string; path: string; headers: IncomingHttpHeaders; body: string; size: number; sha256: string }[] = [];
+  let received: (() => void) | undefined;
+  const service = createServer(async (req, res) => {
+    if (req.url === '/base/AP/early') return void res.writeHead(409).end('exists');
+    const hash = createHash('sha256'), chunks: Buffer[] = [];
+    let size = 0;
+    for await (const b of req) {
+      hash.update(b);
+      size += b.length;
+      if (size < 4096) chunks.push(b);
+      received?.();
+    }
+    requests.push({ method: req.method!, path: req.url!, headers: req.headers, body: Buffer.concat(chunks).toString(), size, sha256: hash.digest('hex') });
+    res.writeHead(201, { 'content-type': 'application/json', authorization: 'receipt-token', 'x-receipt': 'kept', location: 'https://elsewhere.test/receipt' }).end('{not JSON, passed unchanged}');
+  });
+  await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
+  const url = `http://127.0.0.1:${(service.address() as { port: number }).port}/base`, S = 'https://drop.rf.internal';
+  const own = { ...inst, log: started(['drop:AP/']) } as unknown as Instance;
+  runs.set('service', own);
+  try {
+    await t.test('settings, sealed key and offers stay generic, and a service host is no website\'s', async () => {
+      for (const change of [{ url: 'https://example.test' }, { url: 'http://user:pass@example.test' }, { url: 'http://example.test/?key=x' },
+        { paths: '' }, { paths: '/AP/' }, { paths: 'AP' }, { paths: 'AP/../GL/' }, { paths: 'AP/%2e/' }, { paths: 'AP//x/' }, { key: '' }])
+        await assert.rejects(setConnection('drop', { type: 'service', url, paths: 'AP/,GL/2026/', ...change }, 'admin'), /url:|paths:|key:/);
+      const saved = await setConnection('drop', { type: 'service', url, paths: 'AP/,GL/2026/', key: 'deployment-secret' }, 'admin');
+      assert.ok(!('key' in saved));
+      assert.ok(!JSON.stringify(readJson('connections.json', {})).includes('deployment-secret'));
+      const c = connections().find(c => c.name === 'drop')!, login = loginOf(c);
+      assert.deepEqual(login.offers, [{ id: 'drop:AP/', name: 'AP/ at https://drop.rf.internal/' }, { id: 'drop:GL/2026/', name: 'GL/2026/ at https://drop.rf.internal/' }]);
+      logins.saveLogin(ALICE, { ...login, since: '2026-11-04T00:00:00Z' } as never);
+      assert.deepEqual(logins.checkTicks(ALICE, ['drop:AP/']), ['drop:AP/']);
+      await assert.rejects(checkHost('drop.rf.internal', true), /drop's: no website reaches it/);
+      await assert.rejects(checkHost('*.rf.internal', true), /drop's: no website reaches it/);
+    });
+    await t.test('method, path, query and bytes go unchanged, but credentials and identity come from the server', async () => {
+      const body = '{"n": 1, "n": 2}\n';
+      const r = await via('PATCH', `${S}/AP/file%20name?overwrite=1&x=%2F`, { token: 'service', body, headers: { 'content-type': 'application/json', 'x-custom': 'kept', authorization: 'Bearer stolen', 'x-rf-runner': 'fake', 'x-rf-instance': 'fake', 'x-rf-run': '99', 'x-rf-series': 'fake', 'x-rf-workspace': 'fake', 'x-rf-role': 'admin', 'x_rf_runner': 'fake' } });
+      const q = requests.at(-1)!;
+      assert.deepEqual([r.status, r.text, r.headers['x-receipt'], r.headers.location, r.headers.authorization], [201, '{not JSON, passed unchanged}', 'kept', 'https://elsewhere.test/receipt', 'receipt-token']);
+      assert.deepEqual([q.method, q.path, q.body, q.headers['content-type'], q.headers['x-custom'], q.headers.authorization], ['PATCH', '/base/AP/file%20name?overwrite=1&x=%2F', body, 'application/json', 'kept', 'Bearer deployment-secret']);
+      assert.deepEqual(['runner', 'instance', 'run', 'series', 'workspace'].map(k => q.headers[`x-rf-${k}`]), [ALICE, 'w1', '1', 'weekly', 'w']);
+      assert.deepEqual([q.headers['x-rf-role'], q.headers['x_rf_runner']], [undefined, undefined]);
+      assert.deepEqual(calls().at(-1), { run: 1, name: 'drop', method: 'PATCH', path: '/AP/file%20name?overwrite=1&x=%2F', status: 201, bytes: r.text.length, sent: log.length - 1, sha256: createHash('sha256').update(body).digest('hex'), size: Buffer.byteLength(body) });
+      assert.ok(!JSON.stringify(log).includes('deployment-secret'));
+    });
+    await t.test('GET, HEAD and OPTIONS are reads; every other HTTP method is a write', async () => {
+      for (const method of ['GET', 'HEAD', 'OPTIONS', 'POST', 'PUT', 'DELETE', 'PROPFIND']) {
+        const from = log.length;
+        assert.equal((await via(method, `${S}/AP/`, { token: 'service' })).status, 201, method);
+        const write = !['GET', 'HEAD', 'OPTIONS'].includes(method);
+        assert.equal(log.slice(from).filter(e => e.op === 'send').length, Number(write), method);
+        assert.equal(calls().at(-1)!.size, write ? 0 : undefined, method);
+        assert.equal(requests.at(-1)!.method, method);
+      }
+    });
+    await t.test('a chunked body goes on chunked whatever the method, never as a request of its own', async () => {
+      const smuggled = 'GET /base/GL/2026/smuggled HTTP/1.1\r\nhost: x\r\n\r\n';
+      for (const method of ['GET', 'DELETE', 'OPTIONS']) {
+        assert.equal((await via(method, `${S}/AP/`, { token: 'service', body: smuggled, headers: { 'transfer-encoding': 'chunked' } })).status, 201, method);
+        assert.deepEqual([requests.at(-1)!.method, requests.at(-1)!.body], [method, smuggled]);
+      }
+      assert.ok(!requests.some(q => q.path.includes('smuggled')));
+    });
+    await t.test('a TRACE, which would echo the key, is refused', async () => {
+      const before = requests.length;
+      assert.match((await via('TRACE', `${S}/AP/`, { token: 'service' })).text, /would echo the credential/);
+      assert.equal(requests.length, before);
+    });
+    await t.test('ticks are prefix boundaries, and raw traversal and encoding tricks never reach the service', async () => {
+      const before = requests.length;
+      for (const path of ['/AP', '/APother/x', '/GL/2026/file', '/AP/../AP/file', '/AP/%2e%2e/AP/file', '/AP/.%2E/AP/file', '/AP/./file', '/AP/%2ffile', '/AP/x%5cfile', '/AP/%252e%252e/file', '/AP//file', '/AP/%00file', '/AP/%', '/AP/x#ignored', '/AP/..\\AP/file', '/AP/..;/GL/2026/file', '/AP/%2e%2e%3bx/GL/2026/file', '/AP/..%20/GL/2026/file', '/AP/.../file', '/AP/%20/file']) {
+        const r = await via('PUT', S, { token: 'service', path, body: 'not sent' });
+        assert.equal(r.status, 403, path);
+        assert.match(r.text, /ticked prefixes: AP\//, path);
+        assert.ok(calls().at(-1)!.refused, path);
+      }
+      assert.equal(requests.length, before);
+      assert.match((await via('GET', `${S}/AP/`)).text, /ticked prefixes: none/);
+    });
+    await t.test('an early answer logs a stopped upload as incomplete, with the bytes received, rather than hanging the write', async t => {
+      let release!: () => void;
+      const held = new Promise<void>(ok => release = ok), from = log.length;
+      t.after(() => release());
+      const body = async function* () { yield Buffer.from('first'); await held; };
+      const r = await via('PUT', `${S}/AP/early`, { token: 'service', body: body() });
+      assert.deepEqual([r.status, r.text], [409, 'exists']);
+      assert.equal(log.slice(from).filter(e => e.op === 'call').length, 0);
+      for (let n = 0; !log.slice(from).some(e => e.op === 'call'); n++) {
+        assert.ok(n < 100, 'the write was answered and hashed');
+        await new Promise(ok => setTimeout(ok, 10));
+      }
+      assert.deepEqual([calls().at(-1)!.status, calls().at(-1)!.size, calls().at(-1)!.sha256, calls().at(-1)!.incomplete], [409, 5, createHash('sha256').update('first').digest('hex'), true]);
+    });
+    await t.test('a 256 MiB POST streams before its producer supplies the rest, even as application/json', async () => {
+      let first!: () => void;
+      const arrived = new Promise<void>(ok => first = ok), chunk = Buffer.alloc(1 << 20, 120), hash = createHash('sha256');
+      received = first;
+      const body = async function* () {
+        hash.update(chunk);
+        yield chunk;
+        await arrived;
+        for (let n = 1; n < 256; n++) { hash.update(chunk); yield chunk; }
+      };
+      const r = await via('POST', `${S}/AP/big`, { token: 'service', body: body(), headers: { 'content-type': 'application/json' } });
+      received = undefined;
+      assert.equal(r.status, 201);
+      assert.deepEqual([requests.at(-1)!.size, calls().at(-1)!.size, calls().at(-1)!.sha256], [256 << 20, 256 << 20, hash.digest('hex')]);
+      assert.equal(requests.at(-1)!.sha256, calls().at(-1)!.sha256);
+    });
+    await t.test('offers follow admin settings, a run keeps its starting lease, and signing out stops its use', async () => {
+      await setConnection('drop', { type: 'service', url, paths: 'AP/,AR/' }, 'admin');
+      assert.deepEqual(logins.logins(ALICE).find(l => l.id === 'drop')!.offers.map(o => o.id), ['drop:AP/', 'drop:AR/']);
+      own.log.push({ seq: 3, op: 'logins', by: ALICE, logins: ['drop:AP/', 'drop:AR/'] } as any);
+      assert.match((await via('GET', `${S}/AR/`, { token: 'service' })).text, /ticked prefixes: AP\//, 'a new tick waits for the next run');
+      assert.equal((await via('GET', `${S}/AP/`, { token: 'service' })).status, 201, 'the sealed key survives settings without --key');
+      logins.signOut(ALICE, 'drop');
+      assert.equal((await via('GET', `${S}/AP/`, { token: 'service' })).status, 409);
+      logins.saveLogin(ALICE, { ...loginOf(connections().find(c => c.name === 'drop')!), since: '2026-11-04T00:00:00Z' } as never);
+      own.log.push({ seq: 4, op: 'logins', by: ALICE, logins: [] } as any);
+      assert.match((await via('GET', `${S}/AP/`, { token: 'service' })).text, /ticked prefixes: none/);
+      own.log.pop();
+      await setConnection('drop', { type: 'service', url, paths: 'AR/' }, 'admin');
+      assert.match((await via('GET', `${S}/AP/`, { token: 'service' })).text, /ticked prefixes: none/, 'an admin removing an offer stops it too');
+    });
+    await t.test('an environment key works, and a service that is down answers 502', async () => {
+      removeConnection('drop');
+      await setConnection('drop', { type: 'service', url, paths: 'AP/' }, 'admin');
+      assert.equal((await via('GET', `${S}/AP/`, { token: 'service' })).status, 502, 'no key is never Bearer undefined');
+      process.env.RF_SERVICE_KEY_DROP = 'environment-secret';
+      assert.equal((await via('GET', `${S}/AP/`, { token: 'service' })).status, 201);
+      assert.equal(requests.at(-1)!.headers.authorization, 'Bearer environment-secret');
+      await new Promise<void>(ok => service.close(() => ok()));
+      assert.equal((await via('PUT', `${S}/AP/file`, { token: 'service', body: 'file' })).status, 502);
+      assert.ok(calls().at(-1)!.failed);
+    });
+  } finally {
+    service.close();
+    service.closeAllConnections();
+    removeConnection('drop');
+    logins.signOut(ALICE, 'drop');
+    delete process.env.RF_SERVICE_KEY_DROP;
+    runs.delete('service');
+  }
 });

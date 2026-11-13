@@ -944,7 +944,7 @@ async function skillsRoute(me: Me, req: IncomingMessage, res: ServerResponse, ur
 // with rf.
 async function connectionsRoute(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) {
   const name = decodeURIComponent(url.pathname.slice(13));
-  if (!name && req.method === 'GET') return send(res, 200, connections().map(c => ({ ...c, login: loginOf(c) })));
+  if (!name && req.method === 'GET') return send(res, 200, connections().map(({ key: _key, ...c }) => ({ ...c, login: loginOf(c) })));
   if (me.role !== 'admin') throw new HttpError(403, 'admins keep connections');
   const body = req.method === 'PUT' ? await json(req) : {};
   if (req.method === 'PUT') return send(res, 200, await setConnection(name, body, me.email));
@@ -1078,6 +1078,13 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       const { name, days } = await json(req);
       send(res, 200, { token: newToken(own.email, String(name ?? '').trim(), Number(days)) });
     } else if (url.pathname === '/logins' && req.method === 'GET') send(res, 200, logins(me.email).map(l => ({ ...l, missing: ungranted(l) })));
+    else if (/^\/logins\/[^/]+\/connect$/.test(url.pathname) && req.method === 'POST') {
+      const c = byLogin(decodeURIComponent(url.pathname.split('/')[2]));
+      if (c?.type !== 'service') throw new HttpError(404, 'no service connection with that login');
+      const login = loginOf(c);
+      saveLogin(me.email, { ...login, offers: login.offers!, since: new Date().toISOString() });
+      send(res, 200, 'ok');
+    }
     else if (/^\/logins\/[^/]+\/connect$/.test(url.pathname)) {
       // A link on another site must not start it: Microsoft may sign in again without asking.
       if (req.headers['sec-fetch-site'] && req.headers['sec-fetch-site'] !== 'same-origin') throw new HttpError(403, 'connect from the Logins page');
