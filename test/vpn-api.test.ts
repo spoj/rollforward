@@ -271,11 +271,11 @@ test('a down or idle-deleted remote tunnel is not connected and never advertised
   assert.equal((await json('/vpns')).find((v: any) => v.name === 'client').connected, false);
 });
 
-test('website via settings require explicit capability, survive other changes, and are disclosed to noncap grant owners', async () => {
+test('website via settings require explicit capability to set, not to clear, which admins do for others too, survive other changes, and are disclosed to noncap grant owners', async () => {
   await connectVpn('client', bob);
   assert.equal((await call('POST', '/logins/sites', { name: 'portal', url: 'https://accounts.client.example.org/login' }, bob)).status, 200);
   assert.equal((await call('POST', '/logins/sites', { name: 'portal', url: 'https://accounts.client.example.org/login' }, second)).status, 200);
-  for (const via of ['client', '']) assert.equal((await call('PATCH', '/logins/sites/portal', { via }, second)).status, 403, 'admin without opt-in cannot select or clear a VPN');
+  assert.equal((await call('PATCH', '/logins/sites/portal', { via: 'client' }, second)).status, 403, 'admin without opt-in cannot select a VPN');
   assert.equal((await call('PATCH', '/logins/sites/portal', { via: 'not-defined' }, bob)).status, 404);
   assert.equal((await call('PATCH', '/logins/sites/portal', { via: 3 }, bob)).status, 400);
   assert.equal((await call('PATCH', '/logins/sites/portal', { via: 'client' }, bob)).status, 200);
@@ -300,10 +300,16 @@ test('website via settings require explicit capability, survive other changes, a
   await grant([ADMIN, GROUP]);
   assert.equal((await json('/me', bob)).can.includes('vpn'), false);
   assert.equal((await call('PATCH', '/logins/sites/portal', { every: '10m' }, bob)).status, 200, 'ordinary settings still work without VPN permission');
-  assert.equal((await call('PATCH', '/logins/sites/portal', { via: '' }, bob)).status, 403);
+  assert.equal((await call('PATCH', '/logins/sites/portal', { via: 'client' }, bob)).status, 403);
   await grant();
   assert.equal((await json('/logins/sites', bob)).portal.via, 'client', 'unrelated changes did not clear the stored VPN');
-  assert.equal((await call('PATCH', '/logins/sites/portal', { via: '' }, bob)).status, 200);
+  await grant([ADMIN, GROUP]);
+  assert.equal((await call('PATCH', '/logins/sites/portal', { via: '' }, bob)).status, 200, 'without the capability, a website left with a VPN is taken off it');
+  await grant();
+  assert.equal('via' in (await json('/logins/sites', bob)).portal, false);
+  assert.equal((await call('PATCH', '/logins/sites/portal', { via: 'client' }, bob)).status, 200);
+  assert.equal((await call('PATCH', `/logins/sites/portal?person=${BOB}`, { via: 'client' }, second)).status, 403, "an admin doesn't set someone's VPN");
+  assert.equal((await call('PATCH', `/logins/sites/portal?person=${BOB}`, { via: '' }, second)).status, 200, 'but takes it off');
   assert.equal('via' in (await json('/logins/sites', bob)).portal, false);
 });
 
@@ -371,7 +377,7 @@ test('without a tunnel service, explicit stored grants expose no VPN API, capabi
   for (const [method, path] of [['GET', '/vpns'], ['POST', '/vpns'], ['DELETE', '/vpns/other'], ['POST', '/vpns/other/signins'], ['DELETE', '/vpns/other/connection']])
     assert.equal((await call(method, path, {})).status, 404, `${method} ${path}`);
   assert.equal((await call('PATCH', '/logins/sites/portal', { via: 'other' }, bob)).status, 403);
-  assert.equal((await call('PATCH', '/logins/sites/portal', { via: '' }, bob)).status, 403);
+  assert.equal((await call('PATCH', '/logins/sites/portal', { via: '' }, bob)).status, 200, 'a website left with a VPN is taken off it');
   assert.equal((await call('PATCH', '/logins/sites/portal', { every: '15m' }, bob)).status, 200);
   assert.equal((await call('PUT', '/capabilities', { cap: 'vpn', people: [ADMIN] })).status, 200, 'admins can still bootstrap a grant before deployment');
 });
