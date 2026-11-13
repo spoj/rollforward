@@ -103,7 +103,7 @@ const { Browsers, addSite, allowHost, changeWebsite, checkWebsite, endSignIn, ke
 const { CAPS, can } = await import('../src/auth.ts');
 const { logins, personDir, saveLogin, secret } = await import('../src/logins.ts');
 const { visible } = await import('../src/grants.ts');
-const { covers, upstreams } = await import('../src/connections.ts');
+const { checkHost, covers, upstreams } = await import('../src/connections.ts');
 upstreams['openrouter.ai'] = upstreams['api.exa.ai'] = `http://127.0.0.1:${(modelService.address() as { port: number }).port}`;
 mock.method(dns, 'lookup', async (host: string) => {
   lookups.push(host);
@@ -197,7 +197,7 @@ test('VPN sign-in is a short open browser, with protected hosts excluded and no 
   assert.equal(opened.site.start_url, 'https://vpn.gateway.test:10443/remote/saml/start');
   assert.equal(opened.site.open, true);
   assert.deepEqual(opened.site.hosts, []);
-  for (const host of ['rf.company.test', '127.0.0.1', 'graph.microsoft.com', '*.azuredatabricks.net']) assert.ok(opened.site.except.includes(host));
+  for (const host of ['rf.company.test', '127.0.0.1', 'proxy.company.test', 'graph.microsoft.com', '*.azuredatabricks.net']) assert.ok(opened.site.except.includes(host), host);
   assert.equal(opened.site.via, undefined);
   assert.equal(isVpnSignIn(alice.email, id), true);
   assert.equal(isVpnSignIn(bob.email, id), false);
@@ -367,6 +367,8 @@ test('website sign-in needs its own person\'s VPN and routes only its registrabl
   assert.equal(opened.site.via.url, process.env.RF_TUNNEL_PROXY);
   assert.ok(opened.site.via.token.startsWith('private-token-'));
   assert.ok(opened.site.via.hosts.every((p: string) => !covers(p, 'login.identity.test') && !covers(p, 'cdn.vendor.test')));
+  for (const host of ['127.0.0.1', 'proxy.company.test']) assert.ok(opened.site.except.includes(host), `the tunnel's ${host} is excepted`);
+  await assert.rejects(checkHost('proxy.company.test', true), /rollforward's own/);
   assert.equal(lookups.includes('erp.client.test'), false);
   await endSignIn(alice.email, id, false);
   assert.deepEqual(vpnHosts('https://erp.tenant.github.io/'), ['tenant.github.io', '*.tenant.github.io']);

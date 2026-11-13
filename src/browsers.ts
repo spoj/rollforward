@@ -9,7 +9,7 @@ import { pipeline } from 'node:stream/promises';
 import { HttpError, instance, replaceReadOnly, type Instance } from './store.ts';
 import { logins, personDir, runnerOf, saveLogin, seal, secret, signOut, use, type Trace } from './logins.ts';
 import { getDomain } from 'tldts';
-import { checkHost, connections, covers, letIn, reached, resolvesInternal, setLetIn, types, upstreams } from './connections.ts';
+import { checkHost, covers, except, letIn, reached, resolvesInternal, setLetIn, upstreams } from './connections.ts';
 import { answer, model } from './connections/openrouter.ts';
 import { asPerson, can, users, type Me } from './auth.ts';
 import { approved, forgetGrants } from './grants.ts';
@@ -144,8 +144,7 @@ export async function startSignIn(email: string, site: string, given: string): P
   currentSignIn(signing);
   const before = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
   if (before) await endSignIn(email, before, false).catch(e => console.error(`ending the previous sign-in to ${site}:`, e));
-  const except = [...[process.env.RF_PUBLIC_URL, base].filter(Boolean).map(u => new URL(u!).hostname), ...connections().flatMap(c => types[c.type].hosts?.(c) ?? [])];
-  const id = (await browserJson('POST', '/sessions', { site: { hosts: internalHosts(w), open: true, except, start_url: w.url, via, ...(token && { headers: { [w.header!]: token } }) }, ttl_s })).id;
+  const id = (await browserJson('POST', '/sessions', { site: { hosts: internalHosts(w), open: true, except: except(), start_url: w.url, via, ...(token && { headers: { [w.header!]: token } }) }, ttl_s })).id;
   try { currentSignIn(signing); } catch (e) { await close(id); throw e; }
   signIns.set(id, signing);
   return id;

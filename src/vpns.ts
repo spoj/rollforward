@@ -1,7 +1,7 @@
 import { getDomain } from 'tldts';
 import { asPerson, can, type Me } from './auth.ts';
 import { browserJson } from './browsers.ts';
-import { checkHost, connections, types } from './connections.ts';
+import { checkHost, except } from './connections.ts';
 import { HttpError } from './store.ts';
 import { act, changes, readJson, writeJson } from './system.ts';
 
@@ -99,9 +99,7 @@ export async function startVpnSignIn(me: Me, name: string): Promise<string> {
     await cancelVpnSignIn(me, id);
     currentVpnSignIn(signing);
   }
-  const except = [process.env.RF_PUBLIC_URL, process.env.RF_BROWSER_URL ?? 'http://127.0.0.1:8797'].filter(Boolean).map(u => new URL(u!).hostname)
-    .concat(connections().flatMap(c => types[c.type].hosts?.(c) ?? []));
-  const { id } = await browserJson('POST', '/sessions', { site: { hosts: [], open: true, except, start_url: start.href }, ttl_s });
+  const { id } = await browserJson('POST', '/sessions', { site: { hosts: [], open: true, except: except(), start_url: start.href }, ttl_s });
   try { currentVpnSignIn(signing); } catch (e) { await browserJson('DELETE', `/sessions/${id}`); throw e; }
   signIns.set(id, signing);
   return id;

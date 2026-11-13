@@ -64,6 +64,11 @@ export function setLetIn(hosts: string[], by: string, let_: boolean) {
   writeJson('internal.json', all);
 }
 
+// rollforward's own hosts, and its browser and tunnel services', which no website reaches, nor an open sign-in, as a connection's
+// hosts aren't.
+const rollforward = () => [process.env.RF_PUBLIC_URL, process.env.RF_BROWSER_URL ?? 'http://127.0.0.1:8797', process.env.RF_TUNNEL_URL, process.env.RF_TUNNEL_PROXY].flatMap(u => URL.parse(u ?? '')?.hostname || []);
+export const except = () => [...rollforward(), ...connections().flatMap(c => types[c.type].hosts?.(c) ?? [])];
+
 // What a website may reach (browsers.ts): never rollforward's own host, or a host a connection serves, so that no website goes around
 // its grants or settings; a wildcard within one registrable domain, the public suffixes being the Public Suffix List's, its private ones
 // too; and never an internal address, which the browser refuses it too, unless an admin lets the website, or every website, reach it,
@@ -72,7 +77,7 @@ export async function checkHost(h: string, internal: boolean) {
   if (!/^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(h)) throw new HttpError(400, `${h}: a host, such as sso.example.com, or *.example.com for any name under it`);
   const base = h.replace(/^\*\./, '');
   if (h !== base && !getDomain(base, { allowPrivateDomains: true })) throw new HttpError(400, `${h}: a wildcard stays within one registrable domain, such as *.example.com`);
-  if ([process.env.RF_PUBLIC_URL, process.env.RF_BROWSER_URL ?? 'http://127.0.0.1:8797'].some(u => u && covers(h, new URL(u).hostname))) throw new HttpError(400, `${h} is rollforward's own: no website reaches it`);
+  if (rollforward().some(o => covers(h, o))) throw new HttpError(400, `${h} is rollforward's own: no website reaches it`);
   const other = connections().find(c => types[c.type].hosts?.(c).some(host => covers(h, host) || covers(host, h)));
   if (other) throw new HttpError(400, `${h} is ${other.name}'s: no website reaches it`);
   if (!internal && h === base && !letIn()[h] && await resolvesInternal(h)) throw new HttpError(400, `${h} is at an internal address: a website reaches one only where an admin lets it`);
