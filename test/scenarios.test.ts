@@ -964,9 +964,9 @@ test("personal websites are checked on Save, grants reuse the profile without wi
   scripts.push({ bash: ['curl -s -m 5 -H "connection: upgrade" -H "upgrade: websocket" "$RF_BROWSERS/bobs"'], report: 'Unchecked host refused.', saw: [] });
   assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Try the new page.' }, bob)).status, 200);
   const retried = await runs(id, 2);
-  await until('the failed host check', () => acts().some(a => a.op === 'website-check' && a.site === 'bobs' && a.profile.error));
+  await until('the failed host check', () => acts().some(a => a.op === 'website-check' && a.site === 'bobs' && a.error));
   const failed = await listed(bob);
-  assert.ok('error' in failed.profile);
+  assert.deepEqual(failed.profile, portalProfile, 'a failed check keeps the good profile');
   assert.deepEqual([failed.checks['unreviewed.host.test'], failed.checks['static.cdnhost.test']], [undefined, { verdict: 'refused', why: 'Its person removed it.' }]);
   assert.deepEqual([await waits(), await waits(admin)], [[], []], 'unchecked and personally removed hosts never wait on anyone');
   assert.deepEqual((await pending())[0].use, { runs: 2, wrote: 0, last: retried.findLast(e => e.op === 'browser' && !e.action)!.at });
@@ -974,13 +974,10 @@ test("personal websites are checked on Save, grants reuse the profile without wi
   const { id: third } = await (await call('POST', '/api/workspaces', { name: 'Intranet pulls' })).json();
   assert.equal((await call('PUT', `/api/workspaces/${third}`, { owners: [BOB] })).status, 200);
   const beforeAsk = checks.length, beforeApproval = (await listed(bob)).hosts;
-  verdicts.push({ profile: portalProfile, hosts: {} });
   const { profile: thirdProfile, state: thirdState } = await (await call('POST', '/grants', { site: 'bobs', workspace: third, reason: 'intranet pulls' }, bob)).json();
   assert.deepEqual(thirdProfile, portalProfile);
-  const retryInput = JSON.parse(checks.at(-1)!.messages[1].content);
-  assert.deepEqual([retryInput.website.profile, retryInput.evidence, retryInput.unchecked], [null, trace, []], 'asking retries an errored profile from the saved sign-in trace');
   assert.equal(thirdState, 'approved', 'its owner asking, approved at once');
-  assert.deepEqual([(await listed(bob)).hosts, checks.length], [beforeApproval, beforeAsk + 1], 'even a website allowed internal access gains no hosts from a grant');
+  assert.deepEqual([(await listed(bob)).hosts, checks.length], [beforeApproval, beforeAsk], 'even a website allowed internal access gains no hosts from a grant, which takes its good profile unchecked');
 
   assert.equal((await call('DELETE', '/logins/sites/bobs', undefined, bob)).status, 200);
   assert.deepEqual([await listed(bob), (await (await call('GET', '/logins', undefined, bob)).json()).some((l: { id: string }) => l.id === 'web:bobs'), await pending(), (await listed(carol)).url],
