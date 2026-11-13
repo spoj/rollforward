@@ -1157,7 +1157,7 @@ function nogrant(l, w) {
   const not = `Runs in ${esc(w.name)} can't use ${esc(site)} until it's approved there.`;
   return `<div class="nogrant">${g ? `${not} You asked ${esc(when(g.at))}; it waits on ${g.adminOnly || !owners ? 'an admin' : `${esc(w.name)}'s owners, ${owners}`}.`
     : l.expired ? `${not} Sign in to it again under <a data-act="logins">Logins</a> first, then ask here.`
-    : `${not} Say what runs here use it for and ask: ${w.manage ? `you manage ${esc(w.name)}, so it's approved at once${me.role === 'admin' ? '' : ', unless only an admin may approve this website'}` : owners ? `${esc(w.name)}'s owners, ${owners}, approve it` : 'an admin approves it'}.`
+    : `${not} Say what runs here use it for and ask: ${w.manage ? `you manage ${esc(w.name)}, so it's approved at once${me.role === 'admin' ? '' : ', unless only an admin may approve this website'}` : owners ? `${esc(w.name)}'s owners, ${owners}, approve it, unless only an admin may approve this website` : 'an admin approves it'}.`
       + `<div class="row2"><input type="text" placeholder="What runs here use it for" style="flex:1"><button class="btn" data-act="grant-ask" data-id="${esc(site)}" data-ws="${esc(w.id)}">Ask to use</button></div>`}</div>`;
 }
 

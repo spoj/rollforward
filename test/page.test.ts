@@ -1601,7 +1601,7 @@ test("a website ticked without an approved grant in the instance's workspace say
   // For someone who doesn't manage the workspace: who approves, by name, and once asked, whom it waits on.
   const as = (grants: object[]) => page.evaluate(grants => { Object.assign(tree.find(w => w.id === cur.w.id), { manage: false, owners: ['bob@demo.test'], grants }); pv.settings.on = ticked(); renderPv(); }, grants);
   await as([]);
-  assert.match(await needs('#pv', 'ledger').innerText(), /^Runs in larkfield can't use ledger until it's approved there\. Say what runs here use it for and ask: larkfield's owners, (Bob|Bob <bob@demo\.test>|bob@demo\.test), approve it\.\s+Ask to use$/);
+  assert.match(await needs('#pv', 'ledger').innerText(), /^Runs in larkfield can't use ledger until it's approved there\. Say what runs here use it for and ask: larkfield's owners, (Bob|Bob <bob@demo\.test>|bob@demo\.test), approve it, unless only an admin may approve this website\.\s+Ask to use$/);
   const asked = { id: 'p1', workspace: '1b3031035ff6', person: 'admin@demo.test', site: 'ledger', state: 'pending', at: new Date().toISOString(), adminOnly: false };
   await as([asked]);
   assert.match(await needs('#pv', 'ledger').innerText(), /^Runs in larkfield can't use ledger until it's approved there\. You asked .+; it waits on larkfield's owners, (Bob|Bob <bob@demo\.test>|bob@demo\.test)\.$/);
