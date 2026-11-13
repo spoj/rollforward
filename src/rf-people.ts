@@ -157,9 +157,9 @@ What there is
 - A comment starts a thread, on the instance or on an item, at a cell such as Base!C25 or a line of a markdown file by its
   opening words, and replies go under any comment in it, cN by its seq, a thread's id its first comment's. An ask is the agent's
   comment that waits on someone, the one it names or else the runner, until someone replies under it. rf ls says how many asks
-  wait in each instance. Reactions, thumbs up or down, are quiet signals kept for later. Anyone
-  who sees the instance may sign an ask off, saying yes, which commits the instance's folder to its history, .git in it, as it
-  is then, as closing does. Whose sign-off counts, and for what, is the series' call.
+  wait in each instance. Reactions, thumbs up or down, are quiet signals kept for later. The
+  runner alone may sign an ask off, saying yes, which commits the instance's folder to its history, .git in it, as it is then,
+  as closing does; anyone else takes it over first. Whose sign-off counts, and for what, is the series' call.
 
 What rf pull copies, the folders as the agent sees them
   AGENTS.md                  the company's conventions; <workspace>/AGENTS.md the workspace's

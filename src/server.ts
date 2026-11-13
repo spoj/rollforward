@@ -800,10 +800,11 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     }
     if (!starts(inst, said) && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, me, `Comment in ${said.thread}`).catch(err => inst.append('server', 'commit', { cause: said.seq, error: err.message }));
   } else if (action === 'signoff') {
-    // Anyone who sees the instance signs off an ask of the agent's, which `thread` names as cN, with a note: it commits the folder in
-    // their name, as they say yes to it, the ask and the note its message, with their Signed-off-by, and starts a run, as a reply
-    // does, unless quiet. To say no is to reply, as rf 0.12's reject, still in use, is told.
+    // Its runner alone signs off an ask of the agent's, which `thread` names as cN, with a note: it commits the folder in their name,
+    // as they say yes to it, the ask and the note its message, with their Signed-off-by, and starts a run, as a reply does, unless
+    // quiet. Anyone else takes it over first. To say no is to reply, as rf 0.12's reject, still in use, is told.
     const { thread, text, approved } = payload, ask = inst.log.find(e => `c${e.seq}` === thread && e.op === 'comment' && e.by === 'agent' && e.ask);
+    if (runnerOf(inst).by !== by) throw new HttpError(403, `${runnerOf(inst).by} runs it, and alone signs off: take it over to sign off`);
     if (approved === false) throw new HttpError(400, 'a sign-off approves; to say no, reply in the thread');
     if (!ask) throw new HttpError(409, `${thread} is no ask of the agent's`);
     if (mine) throw new HttpError(409, 'wait for the run to end');
