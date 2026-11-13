@@ -91,6 +91,8 @@ rf wake PATH AT [TEXT] [--label LABEL] [--days DAYS] | rf wake --cancel ID
                                   AT now, +<n>m|h|d or a date; PATH an open instance, or a series with LABEL; TEXT a short
                                   message for the run it starts; DAYS, such as mon-fri, repeats it weekly at AT's time; rf ls
                                   shows each wake's ID
+rf note SERIES [TEXT] [--json]    tells the series something for its runs, about the series rather than one period or while no
+                                  instance is open, which starts no run; without TEXT, its notes, open and settled
 rf agents [WORKSPACE] [--set FILE|-]     the company's AGENTS.md, or a workspace's; setting the company's is for admins
 rf readers WORKSPACE [add|remove OTHER]   the workspaces whose agents read WORKSPACE and those its own read, as each one's
                                   owners let them; its owners let OTHER's agents read it, one they see, and its owners or
@@ -196,6 +198,8 @@ Usual work
 - Start an instance: rf new instance SERIES LABEL --wake, as you, or rf wake SERIES now --label LABEL, which starts it as
   whoever shares the series, else asks on the page for someone to start it; take one you run up later: rf wake PATH +2h. A
   one-off: rf new task WORKSPACE --comment TEXT --wake, which becomes a series with rf new series PATH NAME.
+- Tell a series something for its runs, such as a rule from now on, or while no instance is open: rf note SERIES TEXT, which
+  starts no run; rf note SERIES lists its notes, open, and settled by a run or by hand.
 - Read what a run did: rf show PATH for its last run, rf log PATH for every entry, --follow as they come, and rf cat PATH/FILE
   for a file; rf pull PATH/ DIR copies the folder, with session/ for every step.
 
@@ -618,6 +622,14 @@ else if (cmd === 'comment' && args.length === 2) {
   const at = args[1] === 'now' ? Date.now() : args[1].startsWith('+') ? Date.now() + Number(args[1].slice(1, -1)) * { m: 60e3, h: 3600e3, d: 86400e3 }[args[1].at(-1)!]! : Date.parse(args[1]);
   const w = await (await post(`/api/wakes/${inst?.id ?? series.id}`, { at: new Date(at).toISOString(), label: flags.label, days: flags.days, text: args[2] }, 'PUT')).json();
   console.log(`wake ${w.id} at ${w.at}${w.days ? `, then each ${w.days.join(', ')}` : ''}`);
+} else if (cmd === 'note' && [1, 2].includes(args.length)) {
+  const at = `/api/series/${(await seriesAt(args[0])).id}/notes`;
+  if (args[1]) console.log(`noted ${(await (await post(at, { text: args[1] })).json()).id} on ${args[0]}: it starts no run, and its runs read it`);
+  else {
+    const all = await get(at);
+    if (flags.json) console.log(JSON.stringify(all, null, 1));
+    else for (const n of all) console.log(`n${n.seq}  ${when(n.at)}  ${n.by === 'agent' ? `agent of ${n.see.label}, for ${n.runner}` : n.by}  ${n.settled ? `${n.settled.op === 'taken' ? 'taken' : 'set aside'} by ${n.settled.by === 'agent' ? 'agent' : n.settled.by}: ${n.settled.text}` : 'open'}\n  ${n.text.split('\n')[0].slice(0, 200)}`);
+  }
 } else if (cmd === 'agents' && args.length <= 1) {
   const ws = args[0] === undefined ? undefined : await workspaceNamed(args[0]);
   if (typeof flags.set !== 'string') console.log(ws ? ws.agents : (await get('/agents')).text);

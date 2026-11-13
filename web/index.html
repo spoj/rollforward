@@ -290,6 +290,7 @@ function renderSide() {
         + (archived(w, s) ? '' : `<button class="add" data-act="req-start" data-id="${r.id}" title="Start it">\u25B6</button><button class="add" data-act="req-drop" data-id="${r.id}" title="Dismiss">\u00D7</button>`) + '</div>';
       h += s.instances.filter(i => i.status === 'open' || showClosed.has(s.id) || i.id === cur?.i?.id).map(row).join('');
       if (closed) h += closedToggle(s.id, closed);
+      h += `<div class="row wake notes"><a class="nm" data-act="notes" data-id="${s.id}" title="Tell this series something for its runs"><span class="l">Notes</span></a><span class="n">${s.notes ? `${s.notes} open` : ''}</span></div>`;
       h += '</div>';
     }
     // A series moved to another workspace, for a week, where people who aren't in that one see it go.
@@ -328,7 +329,7 @@ function renderBar() {
   if (editing) return;
   const open = editable();
   let h = `<button class="menu" data-act="menu">☰</button>`;
-  h += `<div class="ttl"><div class="crumb">${esc(cur?.w.name ?? '')}${cur?.s ? ' · ' + esc(cur.s.single ? 'Ungrouped' : cur.s.name) : ''}</div><h1>${data && !gone() ? `<span class="t"${archived() ? '' : ' data-act="rename" title="Rename"'}>${esc(cur.i.label)}</span>${archived() ? '' : '<button class="ren" data-act="rename" title="Rename">' + ICON.edit + '</button>'}` : esc(cur?.i?.label ?? 'No instance')}${data && !gone() ? owner() + `<span class="reacts">${reactHtml()}</span>` : ''}</h1></div>`;
+  h += `<div class="ttl"><div class="crumb">${esc(cur?.w.name ?? '')}${cur?.s ? ' · ' + esc(cur.s.single ? 'Ungrouped' : cur.s.name) : ''}${open && cur.s.notes ? ` · <a data-act="notes" data-id="${cur.s.id}">${plural(cur.s.notes, 'open note')}</a>` : ''}</div><h1>${data && !gone() ? `<span class="t"${archived() ? '' : ' data-act="rename" title="Rename"'}>${esc(cur.i.label)}</span>${archived() ? '' : '<button class="ren" data-act="rename" title="Rename">' + ICON.edit + '</button>'}` : esc(cur?.i?.label ?? 'No instance')}${data && !gone() ? owner() + `<span class="reacts">${reactHtml()}</span>` : ''}</h1></div>`;
   if (data) {
     const d = lastDone(), talk = data.waiting.length;
     const state = gone() ? `Deleted by ${esc(nameOf(gone().by))} · ${when(gone().at)}`
@@ -831,6 +832,7 @@ function renderPv() {
   else if (pv.settings?.kind === 'tokens') h += `<div class="pvb vl">${tokensHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'logins') h += `<div class="pvb vl">${loginsHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'wakes') h += `<div class="pvb vl">${wakesHtml(cur.i.id, cur.i.wakes, false)}</div>`;
+  else if (pv.settings?.kind === 'notes') h += `<div class="pvb vl">${notesHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'waiting') h += `<div class="pvb vl">${waiting().join('') || '<div class="sub">Nothing waits on you.</div>'}</div>`;
   else if (pv.settings?.kind === 'start') h += `<div class="pvb vl">${startHtml(pv.settings)}</div>`;
   else if (pv.settings) {
@@ -888,6 +890,28 @@ function startsHtml(s) {
   return `<div>${s.shared_by ? `People in ${ws} and their agents wake this series, as ${mine ? 'you, with these credentials:' : person(s.shared_by) + '.'}` : "Each instance's runner, and nobody else: others' comments are notes for them, and a wake asks someone to start the instance."}</div>`
     + (mine ? ticksHtml(s.logins, s.shared_logins) + '<div class="row2"><button class="btn" data-act="share-off">Stop</button></div>' : `<div class="row2">${arm}</div>`)
     + (pv.arming ? `<div class="warn"><h3>Credentials</h3>${ticksHtml(s.logins)}<div class="consent">By allowing, people in ${ws} and their agents can wake this series: start or continue its instances, with a short reason, and add notes and files. Those runs act as you, using the selected credentials, and do the series' usual work.</div><div><button class="btn danger" data-act="share-on">Allow ${ws} to wake this series</button></div></div>` : '');
+}
+
+// A series' notes, for its runs: the open ones, then those settled, folded, with who settled them, how and why; and a box to tell it
+// something. The runners of its open instances, the workspace's owners and admins settle one by hand.
+async function openNotes(id) {
+  const [w, s] = tree.flatMap(w => w.series.filter(s => s.id === id).map(s => [w, s]))[0];
+  pv = { title: `Notes on ${s.name}`, settings: { kind: 'notes', id, w, s, list: await api(`/api/series/${id}/notes`) } };
+  renderPv();
+}
+
+function notesHtml({ id, w, s, list }) {
+  const shut = archived(w, s), settles = !shut && (w.manage || s.instances.some(i => i.status === 'open' && i.runner === me.email));
+  const by = e => e.by === 'agent' ? agentOf(e) : person(e.by), how = e => e.op === 'taken' ? 'Acted on' : 'Set aside';
+  const body = n => `<div class="pb">${esc(n.text)}</div>` + (n.files ?? []).map(f => `<div class="f"><a href="/api/series/${id}/${f.split('/').map(enc).join('/')}">${esc(fname(f))}</a></div>`).join('');
+  const open = list.filter(n => !n.settled), done = list.filter(n => n.settled);
+  return `<div class="sub">Something for this series' agent to know: about the series as a whole, or while no period is open. A note doesn't start the agent. Each time it next works on ${esc(s.name)}, it reads the open notes, acts on them, and marks each one done or set aside, saying why.</div>`
+    + (open.length ? '' : '<div class="sub">No open notes.</div>')
+    + open.map(n => `<div class="note"><div class="sub"><b>${by(n)}</b> \u00b7 ${when(n.at)}</div>${body(n)}`
+      + (settles ? `<div class="row2"><input type="text" placeholder="What was done, or why not"><button class="btn" data-act="note-taken" data-seq="${n.seq}">Mark done</button><button class="quiet" data-act="note-aside" data-seq="${n.seq}">Set aside</button></div>` : '') + '</div>').join('')
+    + done.map(n => `<details class="note"><summary>${esc(firstLine(n.text))} \u00b7 ${how(n.settled)} by ${by(n.settled)}</summary><div class="sub"><b>${by(n)}</b> \u00b7 ${when(n.at)}</div>${body(n)}`
+      + `<div class="sub">${how(n.settled)} by ${by(n.settled)} \u00b7 ${when(n.settled.at)}: ${esc(n.settled.text)}${seeHtml(n.settled.see)}</div></details>`).join('')
+    + (shut ? '' : '<h3>Tell this series</h3><textarea id="notetext" rows="3" placeholder="Such as: from October, the bank file comes from the new portal"></textarea><input type="file" id="notefiles" multiple><div class="row2"><button class="btn primary" data-act="note-post">Tell</button></div>');
 }
 
 // Wakes for an instance or a series, each one-off or weekly on the days ticked at its time, editable in place, and a row to add one.
@@ -1334,6 +1358,20 @@ async function onAct(act, el) {
   }
   if (act === 'interrupt') { await api(`${instPath()}/interrupt`, { method: 'POST' }); await refresh(); }
   if (act === 'comment-on') { Object.assign(ui, { open: true, audit: false }); Object.assign(draft, { on: el.dataset.item, ref: null }); renderLog(); renderBar(); renderAudit(); $('#newcomment')?.focus(); }
+  if (act === 'notes') await openNotes(el.dataset.id);
+  if (act === 'note-post') {
+    const { id } = pv.settings, text = $('#notetext').value.trim(), files = [];
+    if (!text) return;
+    for (const f of $('#notefiles').files) files.push((await api(`/api/series/${id}/attach?name=${enc(f.name)}`, { method: 'POST', body: f })).file);
+    await api(`/api/series/${id}/notes`, { method: 'POST', body: JSON.stringify({ text, files }) });
+    await openNotes(id);
+  }
+  if (act === 'note-taken' || act === 'note-aside') {
+    const box = el.closest('.row2').querySelector('input');
+    if (!box.value.trim()) return box.focus();
+    await api(`/api/series/${pv.settings.id}/notes/n${el.dataset.seq}`, { method: 'POST', body: JSON.stringify({ how: act === 'note-taken' ? 'taken' : 'aside', text: box.value.trim() }) });
+    await openNotes(pv.settings.id);
+  }
   if (act === 'comment' || act === 'reply-post') {
     const at = act === 'comment' ? null : el.closest('.reply'), box = at ? at.querySelector('textarea') : $('#newcomment'), text = box.value.trim();
     const picked = at ? at.querySelector('input[type=file]') : $('#newfiles');

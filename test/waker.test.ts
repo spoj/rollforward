@@ -432,3 +432,15 @@ test('recovery clears a deletion interrupted before its files and a task\'s lock
   assert.deepEqual(readdirSync(task.dir).sort(), ['instance.json', 'log.jsonl', 'screen.json']);
   await settle();
 });
+
+test("a run's first message lists its series' open notes, each with who left it and its files, which its runs read at <series>/.notes/", async () => {
+  const { addNote, notes } = await import('../src/series.ts'), book = join(tmp, 'series', 's1');
+  addNote(book, alice, 'note', { text: 'use the new rate', files: ['files/rates.csv'] });
+  addNote(book, 'agent', 'note', { text: 'the bank moved', run: 3, runner: alice, see: { inst: oct.id, label: oct.label } });
+  const old = addNote(book, 'bob@demo.test', 'note', { text: 'old news' });
+  addNote(book, alice, 'aside', { on: old.seq, text: 'not so' });
+  assert.deepEqual(notes(book).map(n => [n.seq, n.settled?.op]), [[1, undefined], [2, undefined], [3, 'aside']]);
+  assert.match(message(oct, 9, [], true, notes(book).filter(n => !n.settled)), new RegExp(`Open notes on the series: n1, from .+ <${alice}> at [^,]+, "use the new rate", \\.\\./\\.notes/files/rates\\.csv; n2, from the agent of Acme/Bank rec/2026-10, run 3, for .+ <${alice}> at [^,]+, "the bank moved"\\. New log entries:`));
+  const read = view(oct).ro.filter(([, at]) => at.endsWith('/.notes'));
+  assert.deepEqual(read.filter(([, at]) => /Bank rec|Close|Lunch/.test(at)), [[join(book, 'notes'), '/work/Acme/Bank rec/.notes'], [join(tmp, 'series', 's5', 'notes'), '/work/Main/Close/.notes']], "its own series', and those in reach, but a task's");
+});

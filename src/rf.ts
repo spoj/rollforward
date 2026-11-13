@@ -38,6 +38,11 @@ const HELP: Record<string, string> = {
   apart; setting a series' wake for a LABEL already pending moves it. Each run's first message lists the wakes pending for
   its instance and series, by ID, which --cancel cancels. A closed instance can't be woken: to correct one, wake its series
   with --label <its label>-r2.`,
+  note: `rf note SERIES TEXT|- | rf note --taken ID [--see cN] TEXT|- | rf note --aside ID TEXT|-
+  Leaves a note on a series of your workspace, such as .. for your own or ../../<series>, for its runs, whether or not an
+  instance is open; it names you, your run, your runner and this instance, and starts no run. Each run's first message lists
+  its series' open notes, by ID, their files under ../.notes/, all of them in ../.notes/log.jsonl. --taken settles one of your
+  series' as acted on, saying where, --see cN a thread of yours; --aside sets it aside, saying why.`,
   correct: `rf correct PATH [--on ITEM[@REF]] --wrong|--superseded [--in THREAD] TEXT|-
   Says that a closed instance of your workspace, such as ../<label>, or an item of it, at a place in its file if given, is wrong
   or superseded, and why, as a later entry it keeps; it is never changed. It links your instance, and THREAD of yours, where the
@@ -77,7 +82,7 @@ async function comment() {
   if (!text.trim() || (o.in && o.on) || (o.to && cmd === 'say')) return usage(cmd);
   const found = o.at === undefined ? undefined : await send('GET', `api/resolve?path=${encodeURIComponent(o.at)}`);
   if (found && !found.ok) return found;
-  if (found && JSON.parse(found.text).kind === 'series') return { ok: false, text: `${o.at} is a series: say it in one of its open instances` };
+  if (found && JSON.parse(found.text).kind === 'series') return { ok: false, text: `${o.at} is a series: say it in one of its open instances, or rf note it` };
   const at = o.on?.indexOf('@') ?? -1, item = at >= 0 ? o.on!.slice(0, at) : o.on, ref = at >= 0 ? o.on!.slice(at + 1) : undefined;
   return send('POST', found ? `api/instances/${JSON.parse(found.text).id}/comment` : `${own}/comment`, JSON.stringify({ thread: o.in, item, ref, text, ask: cmd === 'ask', to: o.to }));
 }
@@ -118,12 +123,30 @@ const correct = async () => {
   return send('POST', `api/instances/${JSON.parse(found.text).id}/correct`, JSON.stringify({ kind: o.kind, item, ref, text, thread: o.in }));
 };
 
+// rf note: a note on a series, the folder made an id, or settling one of its own series'.
+const note = async () => {
+  const o: Record<string, string> = {}, words: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const flag = /^--(taken|aside|see)$/.exec(args[i])?.[1];
+    if (flag && args[i + 1] !== undefined) o[flag] = args[++i];
+    else words.push(args[i]);
+  }
+  const settle = o.taken ?? o.aside, [path, ...said] = settle ? ['..', ...words] : words, text = said.join(' ') === '-' ? readFileSync(0, 'utf8') : said.join(' ');
+  if (!path || !text.trim() || (o.taken && o.aside) || (o.see && !o.taken)) return usage('note');
+  const found = await send('GET', `api/resolve?path=${encodeURIComponent(path)}`);
+  if (!found.ok) return found;
+  const { id, kind } = JSON.parse(found.text);
+  if (kind !== 'series') return { ok: false, text: `${path} is an instance: name its series, such as ..` };
+  return send('POST', `api/series/${id}/notes${settle ? `/${settle}` : ''}`, JSON.stringify({ text, how: o.taken ? 'taken' : o.aside && 'aside', thread: o.see }));
+};
+
 let res;
 if (cmd === 'show') res = await send('GET', `${own}/screen`);
 else if (cmd === 'put' && args[0]) res = await send('PUT', `${own}/screen`, readFileSync(args[0] === '-' ? 0 : args[0]));
 else if (cmd === 'say' || cmd === 'ask') res = await comment();
 else if (cmd === 'wake') res = await wake();
 else if (cmd === 'correct') res = await correct();
+else if (cmd === 'note') res = await note();
 else if (cmd === 'commit' && args.length) res = await send('POST', `${own}/commit`, JSON.stringify({ message: args.join(' ') === '-' ? readFileSync(0, 'utf8') : args.join(' ') }));
 else if (['expired', 'delivered'].includes(cmd) && args.length >= 1) res = await send('POST', `agent/${cmd}`, JSON.stringify({ args }));
 else if (cmd === 'help') res = { ok: true, text: HELP[args[0]] ?? USAGE };

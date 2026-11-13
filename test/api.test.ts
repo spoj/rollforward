@@ -645,6 +645,32 @@ test("people see, set, move and cancel wakes, one-off or weekly, share a series 
   assert.equal((await call('PUT', await at(series), JSON.stringify({ archived: false }))).status, 200);
 });
 
+test("a series' notes: whoever sees it leaves one, with files, which starts no run; the runners of its open instances, its workspace's owners and admins settle one, acted on or set aside, and nothing is deleted", async () => {
+  const s = await at(series), ws = `/api/workspaces/${(await named('larkfield')).id}`, b = sessionOf(await login(bob))!;
+  assert.equal((await call('PUT', ws, JSON.stringify({ owners: [adminEmail], members: [bob] }))).status, 200);
+  const before = (await json('/api/runs')).length;
+  const { file } = await (await call('POST', `${s}/attach?name=rates.csv`, 'month,rate\n10,5%', b)).json();
+  assert.equal(file, 'files/rates.csv');
+  assert.equal((await call('POST', `${s}/notes`, JSON.stringify({ text: ' ' }), b)).status, 400, 'a note has text');
+  assert.equal((await call('POST', `${s}/notes`, JSON.stringify({ text: 'x', files: ['../log.jsonl'] }), b)).status, 400);
+  const told = await (await call('POST', `${s}/notes`, JSON.stringify({ text: 'From October the rate is 5%', files: [file] }), b)).json();
+  assert.match(told.id, /^n\d+$/);
+  assert.equal((await shown(series)).notes, 1, 'the listing counts its open notes');
+  const got = await call('GET', `${s}/files/rates.csv`, undefined, b);
+  assert.deepEqual([got.status, got.headers.get('content-disposition'), await got.text()], [200, "attachment; filename*=UTF-8''rates.csv", 'month,rate\n10,5%']);
+  const settle = (how: string, text: string, cookie = admin) => call('POST', `${s}/notes/${told.id}`, JSON.stringify({ how, text }), cookie);
+  assert.equal((await settle('taken', 'mine now', b)).status, 403, 'a member who runs none of its open instances settles nothing');
+  assert.equal((await settle('done', 'x')).status, 400);
+  assert.equal((await settle('aside', 'October is not ours')).status, 200);
+  assert.equal((await settle('taken', 'again')).status, 409, 'settled once');
+  const [n] = (await json(`${s}/notes`, b)).filter((n: { by: string }) => n.by === bob);
+  assert.deepEqual([n.text, n.files, n.settled.op, n.settled.by, n.settled.text], ['From October the rate is 5%', ['files/rates.csv'], 'aside', adminEmail, 'October is not ours']);
+  assert.equal((await shown(series)).notes, 0);
+  assert.equal(readFileSync(join(root, 'series', (await shown(series)).id, 'notes', 'log.jsonl'), 'utf8').trim().split('\n').length, 2, 'the thread is an append-only log beside the series');
+  assert.equal((await json('/api/runs')).length, before, 'a note starts no run');
+  assert.equal((await call('PUT', ws, JSON.stringify({ owners: [], members: [] }))).status, 200);
+});
+
 test("AGENTS.md: the company's is the admins', a workspace's its owners', and both are files every agent in scope reads", async () => {
   const b = sessionOf(await login(bob))!;
   assert.equal((await call('PUT', '/agents', 'Fiscal months end on the last Saturday.', b)).status, 403);

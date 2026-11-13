@@ -9,7 +9,7 @@ import { prepare, sources } from './indexes.ts';
 import { act, canSee, changes, readJson, rfDir, tree, type Tree, writeJson } from './system.ts';
 import { asPerson, users } from './auth.ts';
 import { websitesOf, type Browsers } from './browsers.ts';
-import { seriesSettings } from './series.ts';
+import { notes, seriesSettings, type Note } from './series.ts';
 import { pushed, skills } from './skills.ts';
 import { AGENT, commit, committed, forget } from './git.ts';
 import { logins, runnerOf } from './logins.ts';
@@ -28,7 +28,7 @@ const full = () => active.size >= MAX_RUNS || (MIN_FREE > 0 && freemem() < MIN_F
 export const MAX_OPEN = 3;
 const SPACING_MS = 15 * 60_000, MAX_WAKES = 20;
 
-export type Active = { inst: Instance; n: number; session: number; token: string; view: View; workspace: string; skills: Record<string, number>; shape: string; run?: Run; sent: number; seen: number; texts: Map<string, number>; done: boolean; cost: number; failed?: string; hosts: Set<string>; links: Map<string, { name: string; offer: string }>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string;
+export type Active = { inst: Instance; n: number; session: number; token: string; view: View; workspace: string; skills: Record<string, number>; shape: string; run?: Run; sent: number; noted: number; seen: number; texts: Map<string, number>; done: boolean; cost: number; failed?: string; hosts: Set<string>; links: Map<string, { name: string; offer: string }>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string;
   // Its Pi as it starts, and once its Pi, sandbox and browsers have stopped, after it ends.
   ready?: Promise<Run>; ended?: Promise<unknown> };
 export const active = new Map<string, Active>();
@@ -108,8 +108,9 @@ const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math
 const told = (e: Entry) => isPerson(e) || !!e.note || ['wake', 'expired', 'point', 'rename'].includes(e.op) || (e.op === 'done' && (!!e.aborted || !!e.error));
 
 // A run's first message names the runner, on whose behalf the agent acts, and what they lend it, each tick as logged with what it
-// is, a website's at its address, as does a later one whose entries change those: a takeover and a runner's new ticks.
-export function message(inst: Instance, n: number, entries: Entry[], first = false): string {
+// is, a website's at its address, as does a later one whose entries change those: a takeover and a runner's new ticks. It lists
+// the series' open notes, and a later one those left since.
+export function message(inst: Instance, n: number, entries: Entry[], first = false, open: Note[] = []): string {
   const made = entries.findLast(e => ['takeover', 'logins'].includes(e.op)), us = users(), who = (by: string) => `${us[by]?.name || by} <${by}>`;
   const { by, logins: ticked } = runnerOf(inst), set = [...wakesOf(inst.id), ...wakesOf(inst.seriesId)], sites = websitesOf(by);
   const offers = new Map(logins(by).flatMap(l => l.offers.map(o => [o.id, o.name])));
@@ -119,10 +120,12 @@ export function message(inst: Instance, n: number, entries: Entry[], first = fal
     const see = e.see as { label: string; thread?: string } | undefined;
     return `${i.label}${e.item ? ` ${e.item}${e.ref ? `@${e.ref}` : ''}` : ''} is ${e.kind}, ${JSON.stringify(e.text)}${see ? `, see ${see.label}${see.thread ? ` ${see.thread}` : ''}` : ''}`;
   }));
+  const from = (e: Note) => e.by !== 'agent' ? who(e.by) : `the agent of ${named(tree(), instance((e.see as { inst: string }).inst).seriesId)}/${instance((e.see as { inst: string }).inst).label}, run ${e.run}, for ${who(e.runner as string)}`;
   return `Instance ${inst.label}, run ${n}.`
     + (first || made ? ` Its runner is ${made?.op === 'takeover' ? `now ${who(made.by)}, taking over from ${who(made.from as string)}` : who(by)}, who lends you ${ticked.map(lent).join(', ') || 'no login'}.` : '')
     + (first && set.length ? ` Pending wakes: ${set.map(k => `${k.id}, ${k.target === inst.id ? 'waking this instance' : `starting ${k.label}`} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''}${k.text ? `, saying ${JSON.stringify(k.text)}` : ''}`).join('; ')}.` : '')
     + (fixed.length ? ` Corrections on earlier instances: ${fixed.join('; ')}.` : '')
+    + (open.length ? ` Open notes on the series: ${open.map(e => `n${e.seq}, from ${from(e)} at ${e.at}, ${JSON.stringify(e.text)}${(e.files as string[] | undefined)?.map(f => `, ../.notes/${f}`).join('') ?? ''}`).join('; ')}.` : '')
     + ' New log entries:\n'
     + entries.filter(told).map(e => JSON.stringify(isNote(inst, e) ? { ...e, note: true } : e)).join('\n');
 }
@@ -140,17 +143,25 @@ export const named = (t: Tree, seriesId: string) => `${t.workspaces[t.series[ser
 export const archived = (t: Tree, seriesId: string) => !!(t.series[seriesId].archived || t.workspaces[t.series[seriesId].workspace].archived);
 
 // The run's view of the data, by name, built when it starts: /work/<workspace>/<series>/<label>/ for every instance in its reach but
-// an abandoned one, neither an example nor a starting point, and a deleted one, of which nothing is left; the company's AGENTS.md at
+// an abandoned one, neither an example nor a starting point, and a deleted one, of which nothing is left, and each series' notes at
+// /work/<workspace>/<series>/.notes/; the company's AGENTS.md at
 // /work/AGENTS.md and each workspace's at /work/<workspace>/AGENTS.md; and the environment its runner's connections set.
 export function view(inst: Instance): View {
   const t = tree(), at = (id: string) => `/work/${named(t, id)}`, series = [inst.seriesId, ...reach(t, inst.seriesId)];
   const names = Object.fromEntries(series.flatMap(id => labels(id).filter(l => !['abandoned', 'deleted'].includes(instance(l.id).doc.status)).map(l => [`${at(id)}/${l.label}`, l.id])));
   const agents = [...new Set(series.map(id => t.series[id].workspace))].map(w => [agentsFile(w), `/work/${t.workspaces[w].name}/AGENTS.md`] as [string, string]);
+  const noting = series.filter(id => !t.series[id].single).map(id => [join(seriesDir(id), 'notes'), `${at(id)}/.notes`] as [string, string]);
   return {
     instance: `${at(inst.seriesId)}/${inst.label}`, dir: inst.dir, pylib: join(inst.series(), '.pylib'),
-    ro: [[agentsFile(), '/work/AGENTS.md'], ...agents, ...Object.entries(names).map(([path, id]) => [instanceDir(id), path] as [string, string])],
+    ro: [[agentsFile(), '/work/AGENTS.md'], ...agents, ...noting, ...Object.entries(names).map(([path, id]) => [instanceDir(id), path] as [string, string])],
     names, series: Object.fromEntries(series.map(id => [at(id), id])), env: Object.assign({}, ...reachable(inst).map(c => types[c.type].env?.(c, runnerOf(inst).logins))),
   };
+}
+
+// A note on a series reaches a run of it going at once.
+export function noted(seriesId: string) {
+  const a = active.get(seriesId);
+  if (a?.run) flush(a);
 }
 
 export function kick(inst: Instance) {
@@ -161,11 +172,12 @@ export function kick(inst: Instance) {
 }
 
 function flush(a: Active) {
-  const entries = a.inst.log.filter(e => e.seq > a.sent && (e.by !== 'agent' || e.note));
-  // What it is told of reaches it at once, notes too: the next act's run would read them anyway.
-  if (!entries.some(told)) return;
-  const text = message(a.inst, a.n, entries);
-  a.sent = entries.at(-1)!.seq;
+  const entries = a.inst.log.filter(e => e.seq > a.sent && (e.by !== 'agent' || e.note)), fresh = notes(a.inst.series()).filter(e => e.seq > a.noted && !e.settled);
+  // What it is told of reaches it at once, notes too.
+  if (!entries.some(told) && !fresh.length) return;
+  const text = message(a.inst, a.n, entries, false, fresh);
+  a.sent = entries.at(-1)?.seq ?? a.sent;
+  a.noted = fresh.at(-1)?.seq ?? a.noted;
   a.texts.set(text, a.sent);
   a.run!.steer(text).catch(err => finish(a, true, String(err)));
 }
@@ -209,13 +221,13 @@ async function start(inst: Instance) {
     started.splice(0, started.length - MAX_RUNS);
   }
   const n = inst.log.filter(e => e.op === 'run').length + 1;
-  const entries = inst.log.filter(e => e.seq > seen && (e.by !== 'agent' || e.note));
-  const text = message(inst, n, entries, !kept);
+  const entries = inst.log.filter(e => e.seq > seen && (e.by !== 'agent' || e.note)), left = notes(inst.series());
+  const text = message(inst, n, entries, !kept, left.filter(e => !e.settled));
   // The versions live as its Pi starts, which it uses to its end.
   const live = kept ? [] : skills().map(s => ({ ...s, dir: realpathSync(s.dir) }));
   const a: Active = {
     inst, n, session: kept?.session ?? n, token: kept?.token ?? randomUUID(), view: kept?.view ?? view(inst), workspace: tree().series[series].workspace, skills: kept?.skills ?? Object.fromEntries(live.map(s => [s.id, pushed(s).version])), shape: kept?.shape ?? startsFrom(inst),
-    sent: entries.at(-1)!.seq, seen, texts: new Map([[text, entries.at(-1)!.seq]]), done: false, cost: 0, hosts: new Set(), links: new Map(),
+    sent: entries.at(-1)!.seq, noted: left.at(-1)?.seq ?? 0, seen, texts: new Map([[text, entries.at(-1)!.seq]]), done: false, cost: 0, hosts: new Set(), links: new Map(),
     process: processOf(inst), thread: pending(inst, seen)[0]?.thread as string | undefined,
   };
   active.set(series, a);

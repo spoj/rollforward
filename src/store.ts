@@ -118,6 +118,17 @@ export function safeName(s: string): string {
   return name;
 }
 
+// Keeps a person's file in folder/ under dir, read-only, under its own name made unique; answers its path there.
+export function keep(dir: string, folder: string, name: string, tmp: string): string {
+  const clean = safeName(name), ext = extname(clean), stem = clean.slice(0, clean.length - ext.length);
+  mkdirSync(join(dir, folder), { recursive: true });
+  let file = `${folder}/${clean}`;
+  for (let n = 2; file === 'upload/attachments' || existsSync(join(dir, file)); n++) file = `${folder}/${stem}_${n}${ext}`;
+  renameSync(tmp, join(dir, file));
+  chmodSync(join(dir, file), 0o444);
+  return file;
+}
+
 export function isPerson(e: Entry): boolean {
   return e.by !== 'server' && e.by !== 'agent';
 }
@@ -207,13 +218,7 @@ export class Instance {
   // Keeps a person's file under folder/ of upload/, read-only, under its own name made unique; answers its path in the instance.
   keep(name: string, tmp: string, folder = 'upload'): string {
     if (this.doc.status !== 'open') throw new HttpError(409, 'the instance was closed during the upload');
-    const clean = safeName(name), ext = extname(clean), stem = clean.slice(0, clean.length - ext.length);
-    mkdirSync(join(this.dir, folder), { recursive: true });
-    let file = `${folder}/${clean}`;
-    for (let n = 2; file === 'upload/attachments' || existsSync(join(this.dir, file)); n++) file = `${folder}/${stem}_${n}${ext}`;
-    renameSync(tmp, join(this.dir, file));
-    chmodSync(join(this.dir, file), 0o444);
-    return file;
+    return keep(this.dir, folder, name, tmp);
   }
 
   upload(by: string, name: string, tmp: string, sha256: string, pane: 'in' | 'out', onto: string | null, quiet: boolean): Entry {
