@@ -301,7 +301,7 @@ test("the workspace's + starts a task at once, which its first prompt names, new
 test("only the runner abandons, from the Close dialog, whose buttons for a task weigh the same, the series' name with the one that makes it", async () => {
   await page.click('.row.ser .l:text-is("Weekly borrowing base")');
   await page.waitForSelector('#bar [data-act=takeover]');
-  assert.deepEqual([await page.locator('#bar .btn').allTextContents(), await page.textContent('#bar .state'), await page.locator('#bar .creds').count()], [['No wake', 'Take over'], 'Waiting for files', 0], 'alex runs it');
+  assert.deepEqual([await page.locator('#bar .btn').allTextContents(), await page.textContent('#bar .state'), await page.locator('#bar .creds').count()], [['No wake', 'Take over', 'Assign\u2026'], 'Waiting for files', 0], 'alex runs it, and the admin may assign it');
   await page.click('#bar [data-act=wakes]');
   assert.equal(await page.textContent('#pv .pvh b'), 'Wakes of 2026-09-06 b', 'anyone in its workspace sets its wakes');
   await page.mouse.click(5, 5);
@@ -1782,4 +1782,47 @@ test("a wake carries a message; a series' notes thread takes notes from the side
   } finally {
     await tab.close();
   }
+});
+
+test("Assign… on the bar hands an instance to whoever sees its workspace, who sees it under Waiting on you until they open it; Mine shows only the open instances you run, as this browser keeps it for you", async () => {
+  const origin = new URL(page.url()).origin;
+  entra.who.as = 'handed@demo.test';
+  const handed = await browser.newPage();
+  await handed.goto(`${origin}/auth/login`);
+  entra.who.as = 'admin@demo.test';
+  const { mine, theirs } = await page.evaluate(async () => {
+    const post = (path, body) => fetch(path, { method: 'POST', body: JSON.stringify(body) }).then(r => r.json());
+    const { id: ws } = await post('/api/workspaces', { name: 'Handing' });
+    await fetch(`/api/workspaces/${ws}`, { method: 'PUT', body: JSON.stringify({ owners: ['admin@demo.test'], members: ['handed@demo.test'] }) });
+    const { id: sid } = await post('/api/series', { workspace: ws, name: 'Rec' });
+    return { theirs: (await post(`/api/series/${sid}`, { label: 'H1', quiet: true })).id, mine: (await post(`/api/series/${sid}`, { label: 'H2', quiet: true })).id };
+  });
+  await page.goto(`${origin}/#/${theirs}`);
+  await page.waitForSelector('#bar [data-act=assign]');
+  assert.deepEqual(await page.locator('#bar .btn').allTextContents(), ['No wake', 'Close', 'Assign\u2026'], 'its runner closes it or hands it on');
+  await page.click('#bar [data-act=assign]');
+  await page.waitForSelector('#assignto option', { state: 'attached' });
+  assert.deepEqual(await page.locator('#assignto option').evaluateAll(os => os.map(o => (o as HTMLOptionElement).value)), ['handed@demo.test'], 'whoever sees its workspace but its runner and you');
+  assert.doesNotMatch(await page.textContent('#ask') ?? '', /stops it/);
+  await page.click('#ask button[value=ok]');
+  await page.waitForSelector('#bar [data-act=takeover]');
+  assert.match(await page.textContent('#bar .owner .about') ?? '', /Assigned by you, from you,/);
+  await handed.goto(`${origin}/`);
+  await handed.click('[data-act=waiting]');
+  assert.match(await handed.textContent('#pv') ?? '', /Demo Admin assigned you Handing · Rec · H1/);
+  await handed.click(`#pv a[href="#/${theirs}"]`);
+  await handed.waitForSelector('#bar .owner:text-is("Yours")');
+  await handed.reload();
+  await handed.waitForSelector('#bar h1 .t');
+  assert.equal(await handed.locator('.row.waits').count(), 0, 'opening it, they were told');
+  await handed.close();
+  await page.goto(`${origin}/#/${mine}`);
+  await page.waitForSelector(`a.row.inst[href="#/${theirs}"]`);
+  await page.click('.find .mine');
+  await page.waitForSelector(`a.row.inst[href="#/${theirs}"]`, { state: 'detached' });
+  assert.equal(await page.locator(`a.row.inst[href="#/${mine}"]`).count(), 1);
+  assert.ok(await page.locator('a.row.inst').evaluateAll(rows => rows.length > 0));
+  assert.equal(await page.evaluate(() => localStorage['mine:admin@demo.test']), 'on');
+  await page.click('.find .mine');
+  await page.waitForSelector(`a.row.inst[href="#/${theirs}"]`);
 });
