@@ -128,7 +128,8 @@ async function closeUnlent() {
 function watched(me: Me, id: string, site: string): { browsers: Browsers; id: string } {
   const t = tree(), inst = instance(id), a = active.get(inst.seriesId);
   mustSee(me, t.workspaces[t.series[inst.seriesId].workspace]);
-  const b = a?.inst === inst ? a.browsers?.watchable().get(site) : undefined;
+  // Its runner alone watches it: anyone else takes the instance over first.
+  const b = a?.inst === inst && runnerOf(inst).by === me.email ? a.browsers?.watchable().get(site) : undefined;
   if (!b) throw new HttpError(404, `no browser of a run on ${site} for you to watch`);
   return { browsers: a!.browsers!, id: b };
 }
@@ -689,7 +690,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   const a = active.get(inst.seriesId);
   const mine = a?.inst === inst ? a : undefined;
   if (!action) see(by, inst.id, inst.log.at(-1)!.seq);
-  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4), browsers: [...(mine.browsers?.watchable().keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), runner: runner(inst), previous: previous(inst), sums: Object.fromEntries(inst.doc.items.filter(i => i.file).map(i => [i.id, sha256(inst.dir, i.file!)])), waiting: waits(inst).map(({ who, e }) => ({ who, seq: e.seq })) });
+  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4), browsers: runnerOf(inst).by === by ? [...(mine.browsers?.watchable().keys() ?? [])] : [], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), runner: runner(inst), previous: previous(inst), sums: Object.fromEntries(inst.doc.items.filter(i => i.file).map(i => [i.id, sha256(inst.dir, i.file!)])), waiting: waits(inst).map(({ who, e }) => ({ who, seq: e.seq })) });
   if (action === 'trace') return send(res, 200, trace(inst));
   if (action === 'summary') return send(res, 200, summary(inst, me));
   // The screen: anyone who sees the instance reads it; only its own run writes it.
@@ -774,6 +775,9 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const { thread, item, ref, text, files = [], ask, to } = payload, under = thread === undefined ? undefined : inst.log.find(e => e.op === 'comment' && `c${e.seq}` === thread);
     if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a comment has text');
     if (thread !== undefined && !under) throw new HttpError(400, `no comment ${thread} to reply under; this instance's threads: ${inst.threads().join(', ') || 'none yet'}`);
+    // People's comments are its runner's, and replies in a thread where the agent asks someone else, theirs: anyone else takes it over.
+    if (!run && runnerOf(inst).by !== by && !(under && inst.log.some(e => e.thread === under.thread && e.by === 'agent' && e.ask && e.to === by)))
+      throw new HttpError(403, `${runnerOf(inst).by} runs it, and alone comments: take it over to comment`);
     if (thread === undefined && item != null && !inst.doc.items.some(i => i.id === item)) throw new HttpError(400, `no item ${item}; the screen's items: ${inst.doc.items.map(i => i.id).join(', ')}`);
     for (const f of files) if (!(typeof f === 'string' && f.startsWith('upload/attachments/') && !f.includes('..') && existsSync(join(inst.dir, f)))) throw new HttpError(400, `no attachment ${f}`);
     const who = typeof to === 'string' ? to.toLowerCase() : undefined, p = who && asPerson(who);
@@ -796,10 +800,11 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     }
     if (!starts(inst, said) && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, me, `Comment in ${said.thread}`).catch(err => inst.append('server', 'commit', { cause: said.seq, error: err.message }));
   } else if (action === 'signoff') {
-    // Anyone who sees the instance signs off an ask of the agent's, which `thread` names as cN, with a note: it commits the folder in
-    // their name, as they say yes to it, the ask and the note its message, with their Signed-off-by, and starts a run, as a reply
-    // does, unless quiet. To say no is to reply, as rf 0.12's reject, still in use, is told.
+    // Its runner alone signs off an ask of the agent's, which `thread` names as cN, with a note: it commits the folder in their name,
+    // as they say yes to it, the ask and the note its message, with their Signed-off-by, and starts a run, as a reply does, unless
+    // quiet. Anyone else takes it over first. To say no is to reply, as rf 0.12's reject, still in use, is told.
     const { thread, text, approved } = payload, ask = inst.log.find(e => `c${e.seq}` === thread && e.op === 'comment' && e.by === 'agent' && e.ask);
+    if (runnerOf(inst).by !== by) throw new HttpError(403, `${runnerOf(inst).by} runs it, and alone signs off: take it over to sign off`);
     if (approved === false) throw new HttpError(400, 'a sign-off approves; to say no, reply in the thread');
     if (!ask) throw new HttpError(409, `${thread} is no ask of the agent's`);
     if (mine) throw new HttpError(409, 'wait for the run to end');

@@ -583,7 +583,11 @@ test("people show by name, with their email on hover, and Entra groups by label;
   await page.click('[data-act=wadd]');
   await page.waitForSelector(`#pv .ut span[title="${group}"]:text-is("Finance HK")`);
   await page.mouse.click(5, 5);
-  assert.equal((await fetch(url('/api/instances/a5c0ff5e1f00/comment'), { method: 'POST', body: JSON.stringify({ text: 'The bank wants it by Friday.' }), headers: { cookie: bobs } })).status, 200);
+  // Only its runner comments: what Bob says while he runs it is a note for the admin once they take it back.
+  const post = (path: string, body: object, cookie?: string) => cookie ? fetch(url(path), { method: 'POST', body: JSON.stringify(body), headers: { cookie } }).then(r => r.status)
+    : page.evaluate(([p, b]) => fetch(p, { method: 'POST', body: JSON.stringify(b) }).then(r => r.status), [path, body] as const);
+  const note = async (text: string) => assert.deepEqual([await post('/api/instances/a5c0ff5e1f00/takeover', { logins: [] }, bobs), await post('/api/instances/a5c0ff5e1f00/comment', { text, quiet: true }, bobs), await post('/api/instances/a5c0ff5e1f00/takeover', { logins: [] })], [200, 200, 200]);
+  await note('The bank wants it by Friday.');
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
   await page.waitForSelector(`#log .thread .post b.p span[title="${bob}"]:text-is("Bob")`);
   assert.equal(await page.locator('#needs').innerText(), 'Note\nThe bank wants it by Friday.\nReply');
@@ -591,7 +595,7 @@ test("people show by name, with their email on hover, and Entra groups by label;
   await page.locator('#audit .e', { hasText: 'Bob left a note for you' }).waitFor();
   await page.click('#log .seg [data-act=audit]');
   const long = `Wide${'_'.repeat(400)}`;
-  assert.equal((await fetch(url('/api/instances/a5c0ff5e1f00/comment'), { method: 'POST', body: JSON.stringify({ text: long }), headers: { cookie: bobs } })).status, 200);
+  await note(long);
   await page.waitForSelector(`#needs span:text-is("${long}")`);
   assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('#needs, #log')].map(e => e.scrollWidth <= e.clientWidth).concat([...document.querySelectorAll('#needs .btn')].map(b => b.getBoundingClientRect().right <= document.querySelector('#needs')!.getBoundingClientRect().right))), [true, true, true, true], 'a long line ends in an ellipsis, and its Reply shows; the panel keeps its width');
 });
@@ -610,10 +614,9 @@ test("a runner's name without letters shows its first characters in the sidebar"
 });
 
 test("the conversation reads as a chat: oldest first, a run below the comment that started it and a thread where its last post is, and the box to comment at the panel's foot; it opens at the latest and keeps there as posts come, unless the reader has scrolled up", async () => {
-  const url = (path: string) => new URL(path, page.url()).href, signin = await entra.signIn(new URL(page.url()).origin, 'bob@demo.test');
-  const bobs = signin.headers.getSetCookie().find(c => c.startsWith('rf_session='))!.split(';')[0];
+  // Its runner's quiet comments, posted elsewhere, which start no run.
   const note = async (text: string, thread?: string) => {
-    assert.equal((await fetch(url('/api/instances/a5c0ff5e1f00/comment'), { method: 'POST', body: JSON.stringify({ text, thread }), headers: { cookie: bobs } })).status, 200);
+    assert.equal(await page.evaluate(b => fetch('/api/instances/a5c0ff5e1f00/comment', { method: 'POST', body: JSON.stringify(b) }).then(r => r.status), { text, thread, quiet: true }), 200);
     await page.locator('#log .thread', { hasText: text }).waitFor();
   };
   const order = () => page.$$eval('#conv > *', es => es.map(e => (e as HTMLElement).dataset.key ?? (e as HTMLElement).dataset.thread ?? e.className));
@@ -641,10 +644,9 @@ test("the conversation reads as a chat: oldest first, a run below the comment th
 });
 
 test("a comment's twisty collapses it, with what hangs under it, to its first line, as this browser keeps it until someone adds to it", async () => {
-  const url = (path: string) => new URL(path, page.url()).href, signin = await entra.signIn(new URL(page.url()).origin, 'bob@demo.test');
-  const bobs = signin.headers.getSetCookie().find(c => c.startsWith('rf_session='))!.split(';')[0];
+  // Its runner's quiet comments, posted elsewhere, which start no run.
   const note = async (text: string, thread?: string) => {
-    assert.equal((await fetch(url('/api/instances/a5c0ff5e1f00/comment'), { method: 'POST', body: JSON.stringify({ text, thread }), headers: { cookie: bobs } })).status, 200);
+    assert.equal(await page.evaluate(b => fetch('/api/instances/a5c0ff5e1f00/comment', { method: 'POST', body: JSON.stringify(b) }).then(r => r.status), { text, thread, quiet: true }), 200);
     await page.locator('#log .post', { hasText: text }).last().waitFor();
   };
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });

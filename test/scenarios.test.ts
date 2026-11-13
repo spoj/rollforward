@@ -392,7 +392,7 @@ test("a run reads what its workspace's links let it as it started: someone joini
   assert.deepEqual(ran.map((r: { outcome: string }) => r.outcome), ['cut', 'cut', 'done'], 'each carried on by the next, as after a restart');
 });
 
-test("sign-offs are git commits: the agent commits a moment worth keeping and pins what it asks about; anyone who sees the instance signs it off in their name, someone else's a note for the runner; closing commits as the runner's", async () => {
+test("sign-offs are git commits: the agent commits a moment worth keeping and pins what it asks about; its runner alone signs it off, in their name, anyone else taking it over first; closing commits as the runner's", async () => {
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Signed' })).json();
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB] })).status, 200);
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Pack' })).json();
@@ -424,15 +424,17 @@ test("sign-offs are git commits: the agent commits a moment worth keeping and pi
   const signoff = (body: object, cookie = admin) => call('POST', `/api/instances/${id}/signoff`, { thread: first.thread, ...body }, cookie);
   assert.deepEqual([first.files, statSync(pack).mode & 0o222 && 'writable'], [undefined, 'writable'], 'what it links stays the agent\'s');
 
-  assert.equal((await signoff({ text: 'Fine by me.' }, bob)).status, 200, 'anyone who sees it');
+  const refused = await signoff({ text: 'Fine by me.' }, bob);
+  assert.deepEqual([refused.status, await refused.text()], [403, `${ADMIN} runs it, and alone signs off: take it over to sign off`], 'bob sees it but does not run it');
+  assert.equal((await signoff({ text: 'Fine by me.', quiet: true })).status, 200, 'its runner signs it off');
   ({ log } = await (await call('GET', `/api/instances/${id}`)).json());
-  const bobs = log.findLast(e => e.op === 'signoff')!;
-  assert.deepEqual([bobs.by, bobs.on, bobs.note, log.filter(e => e.op === 'run').length], [BOB, first.seq, true, 2], "someone else's is a note for the runner, which starts no run");
-  assert.equal(git('log', '-1', '--format=%an <%ae>%n%B', String(bobs.commit)), `Bob <${BOB}>\nThe pack is ready to send to the bank: [pack](working/pack.csv)\n\nFine by me.\n\nSigned-off-by: Bob <${BOB}>`);
-  assert.equal(git('show', `${bobs.commit}:working/pack.csv`), '200', 'the folder as they said yes');
+  const fine = log.findLast(e => e.op === 'signoff')!;
+  assert.deepEqual([fine.by, fine.on, fine.quiet, log.filter(e => e.op === 'run').length], [ADMIN, first.seq, true, 2], 'quiet, it starts no run');
+  assert.equal(git('log', '-1', '--format=%an <%ae>%n%B', String(fine.commit)), `Demo Admin <${ADMIN}>\nThe pack is ready to send to the bank: [pack](working/pack.csv)\n\nFine by me.\n\nSigned-off-by: Demo Admin <${ADMIN}>`);
+  assert.equal(git('show', `${fine.commit}:working/pack.csv`), '200', 'the folder as they said yes');
   assert.equal((await call('POST', `/api/instances/${id}/comment`, { thread: first.thread, text: 'Use the new rate.' })).status, 200, 'saying no is a reply');
   log = await runs(id, 3);
-  assert.match(again.prompt!, /"op":"signoff".*"note":true[^]*"text":"Use the new rate\."/, 'the run reads the note, then the reply');
+  assert.match(again.prompt!, /"op":"signoff".*"quiet":true[^]*"text":"Use the new rate\."/, 'the run reads the quiet sign-off, then the reply');
 
   const next = log.findLast(e => e.op === 'comment')!;
   assert.equal((await signoff({ thread: next.thread, text: 'Go.' })).status, 200);
@@ -440,7 +442,7 @@ test("sign-offs are git commits: the agent commits a moment worth keeping and pi
   const yes = log.findLast(e => e.op === 'signoff')!;
   assert.equal(yes.on, next.seq, 'the ask it names');
   assert.equal(git('log', '-1', '--format=%an%n%B', String(yes.commit)), 'Demo Admin\nThe rate is fixed: send it now?\n\nGo.\n\nSigned-off-by: Demo Admin <admin@demo.test>');
-  assert.equal(git('diff', String(bobs.commit), String(yes.commit), '--', 'working/pack.csv').split('\n').filter(l => /^[-+]\d/.test(l)).join(' '), '-200 +250', 'git diff between sign-offs shows what changed');
+  assert.equal(git('diff', String(fine.commit), String(yes.commit), '--', 'working/pack.csv').split('\n').filter(l => /^[-+]\d/.test(l)).join(' '), '-200 +250', 'git diff between sign-offs shows what changed');
   assert.match(git('show', `${yes.commit}:log.jsonl`), /"op":"signoff","thread":"c\d+","on":\d+,"text":"Fine by me\."/, 'the whole folder, its log included');
 
   assert.equal((await call('POST', `/api/instances/${id}/close`)).status, 200);
@@ -449,7 +451,7 @@ test("sign-offs are git commits: the agent commits a moment worth keeping and pi
   assert.equal(git('log', '-1', '--format=%an%n%B'), 'Demo Admin\nClose 2026-12');
   assert.deepEqual(git('log', '--reverse', '--format=%an|%s').split('\n'), [
     'rollforward agent|Run 1', 'rollforward agent|Draft pack built', 'rollforward agent|Run 2',
-    'Bob|The pack is ready to send to the bank: [pack](working/pack.csv)', 'rollforward agent|Run 3', 'Demo Admin|The rate is fixed: send it now?',
+    'Demo Admin|The pack is ready to send to the bank: [pack](working/pack.csv)', 'rollforward agent|Run 3', 'Demo Admin|The rate is fixed: send it now?',
     'rollforward agent|Run 4', 'Demo Admin|Close 2026-12',
   ], "each run's end, the agent's commit, the two sign-offs and the close");
   const pulled = await (await call('GET', '/api/files?path=Signed/Pack/2026-12')).json();
@@ -676,6 +678,21 @@ test("a later run corrects a closed instance, never changing it, linking the thr
   assert.match(next.prompt!, new RegExp(`Corrections on earlier instances: m1 is wrong, "The rate was a day stale\\.", see m2 ${said.thread}\\.`));
 });
 
+test("only an instance's runner comments in it, but for a reply in a thread where the agent asks someone else, who answers without taking it over", async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Talking' })).json();
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB] })).status, 200);
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rates' })).json();
+  scripts.push({ bash: [`rf ask --to ${BOB} Which rate? 2>&1`], report: 'Asked Bob.', saw: [] }, { bash: [], report: 'Using the new rate.', saw: [] });
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-12', logins: [] })).json();
+  const ask = (await runs(id, 1)).findLast(e => e.op === 'comment')!, say = (body: object) => call('POST', `/api/instances/${id}/comment`, body, bob);
+  assert.deepEqual([ask.ask, ask.to], [true, BOB]);
+  const refused = await say({ text: 'Mine to say.' });
+  assert.deepEqual([refused.status, await refused.text()], [403, `${ADMIN} runs it, and alone comments: take it over to comment`], 'bob sees it but does not run it');
+  assert.equal((await say({ thread: ask.thread, text: 'The new one.' })).status, 200, 'he answers the ask that names him');
+  const log = await runs(id, 2);
+  assert.deepEqual(log.filter(e => e.op === 'comment' && e.by === BOB).map(e => [e.thread, e.note]), [[ask.thread, undefined]], 'no note: his answer starts a run');
+});
+
 // A websocket's opening, as a page at `origin` asks for it, and all that came back.
 const upgrade = (path: string, cookie: string, origin = base) => new Promise<string>(ok => {
   let got = '';
@@ -683,7 +700,7 @@ const upgrade = (path: string, cookie: string, origin = base) => new Promise<str
     .write(`GET ${path} HTTP/1.1\r\nhost: x\r\nconnection: upgrade\r\nupgrade: websocket\r\ncookie: ${cookie}\r\norigin: ${origin}\r\n\r\n`);
 });
 
-test("whoever sees an instance watches its run's browser live from the page, the person whose login it's in alone taking control of it, and its runner's Stop browser interrupts the run, closing it, which a member who only sees it may not", async () => {
+test("an instance's runner alone watches its run's browser live from the page, the person whose login it's in alone taking control of it, and its runner's Stop browser interrupts the run, closing it, which a member who only sees it may not", async () => {
   const carol = await login('carol@demo.test');
   assert.equal((await call('POST', '/logins/sites', { name: 'portal', url: 'https://portal.example.com/' })).status, 200);
   assert.equal((await call('PATCH', '/logins/sites/portal', { writeback: false })).status, 200);
@@ -700,13 +717,13 @@ test("whoever sees an instance watches its run's browser live from the page, the
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: ['web:portal'] })).json(), view = `/runs/${id}/portal/view`;
   await until('the browser', () => existsSync(join(root, 'instances', id, 'working', 'opened')));
   const shown = async (cookie: string) => (await (await call('GET', `/api/instances/${id}`, undefined, cookie)).json()).run, [his, mine] = [await shown(bob), await shown(admin)];
-  assert.deepEqual([his.browsers, his.yours, mine.yours], [['portal'], [], ['portal']], "the page shows it to bob, who sees the instance, and it's the admin's to take control of, in their login");
-  assert.equal(await (await call('GET', view, undefined, bob)).text(), 'the live view');
-  assert.match(await upgrade(`${view}/watch`, bob), /service got \/sessions\/b2\/view\/watch$/);
+  assert.deepEqual([his.browsers, his.yours, mine.browsers, mine.yours], [[], [], ['portal'], ['portal']], "the page shows it to its runner, the admin, to take control of in their login, and not to bob, who only sees the instance");
+  assert.equal(await (await call('GET', view)).text(), 'the live view');
+  assert.match(await upgrade(`${view}/watch`, admin), /service got \/sessions\/b2\/view\/watch$/);
   assert.match(await upgrade(`${view}/drive`, admin), /service got \/sessions\/b2\/view\/drive$/, 'the admin takes control of it');
-  for (const [path, cookie, origin, why] of [[`${view}/drive`, bob, base, 'no one else drives it'], [`${view}/watch`, bob, 'https://evil.example.com', "only from the server's own pages"], [`${view}/watch`, carol, base, 'nor for anyone who sees no instance']])
+  for (const [path, cookie, origin, why] of [[`${view}/watch`, bob, base, 'bob sees the instance but does not run it'], [`${view}/drive`, bob, base, 'no one else drives it'], [`${view}/watch`, admin, 'https://evil.example.com', "only from the server's own pages"], [`${view}/watch`, carol, base, 'nor for anyone who sees no instance']])
     assert.match(await upgrade(path, cookie, origin), /^HTTP\/1.1 404/, why);
-  assert.equal((await call('GET', view, undefined, carol)).status, 404);
+  for (const cookie of [bob, carol]) assert.equal((await call('GET', view, undefined, cookie)).status, 404);
   const refused = await call('POST', `/api/instances/${id}/interrupt`, undefined, bob);
   assert.deepEqual([refused.status, await refused.text()], [403, `only its runner, ${ADMIN}, the workspace's owners and admins stop its run`], 'bob sees it, but neither runs it nor owns its workspace');
   assert.equal((await call('POST', `/api/instances/${id}/interrupt`)).status, 200, 'Stop browser');
