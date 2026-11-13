@@ -228,6 +228,14 @@ test("an instance whose run met its runner's expired login carries on when they 
   assert.ok(waits.log.some(e => e.op === 'run'), 'the wake started a run');
 });
 
+test("signing in again wakes only an instance its signer still runs, not one taken over since their run met the expired login", () => {
+  const taken = make('s2', 'taken-over');
+  taken.append('server', 'expired', { login: 'web:erp', runner: alice });
+  taken.append('bob@demo.test', 'takeover', { from: alice, logins: [], quiet: true });
+  saveLogin(alice, { id: 'web:erp', kind: 'website', name: 'erp', since: '', offers: [] }, '{}');
+  assert.ok(!taken.log.some(e => e.op === 'wake'));
+});
+
 test('after a restart every open instance with something for a run starts; an Interrupt holds until the next act, and a quiet entry is nothing for a run, which the next reads', async () => {
   const queued = make('s6', 'queued'), held = make('s6', 'held'), hushed = make('s8', 'hushed');
   queued.append(alice, 'comment', { thread: 't1', text: 'please redo' });
