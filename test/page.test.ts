@@ -1306,3 +1306,26 @@ test('only managers see Delete in an archive, its confirmation warns what stays,
   if (!await page.locator(`a.row.inst.deleted[href="#/${id}"]`).count()) await page.click(`[data-act=toggle-closed][data-id="${sid}"]`);
   assert.equal(await page.locator(`a.row.inst.deleted[href="#/${id}"] .nm`).evaluate(el => getComputedStyle(el).textDecorationLine), 'line-through');
 });
+
+test('a service connects with one click and no sign-in, then lends the admin\'s prefixes as ordinary instance ticks', async () => {
+  assert.equal(await page.evaluate(() => api('/connections/drop', { method: 'PUT', body: JSON.stringify({ type: 'service', url: 'http://127.0.0.1:9000', paths: 'AP/,GL/2026/', key: 'deployment-secret' }) }).then(() => 200)), 200);
+  await page.evaluate(() => openLogins());
+  await page.waitForSelector('#pv [data-act=service-connect][data-id=drop]');
+  assert.match(await page.locator('#pv .lline', { hasText: 'Service drop' }).innerText(), /https:\/\/drop\.rf\.internal\//);
+  await page.click('#pv [data-act=service-connect][data-id=drop]');
+  await page.waitForSelector('#pv [data-act=logins-show][data-id=drop]');
+  await page.click('#pv [data-act=logins-show][data-id=drop]');
+  assert.deepEqual(await page.locator('#pv .lsub').allTextContents(), ['AP/ at https://drop.rf.internal/', 'GL/2026/ at https://drop.rf.internal/']);
+  assert.equal(await page.locator('#pv [data-act=unoffer][data-login=drop]').count(), 0);
+  await page.mouse.click(5, 5);
+  await page.evaluate(() => openStart('New instance', 'Start', () => {}, '', ['drop:AP/']));
+  await page.waitForSelector('#pv input.tick[value="drop:AP/"]');
+  assert.deepEqual(await page.locator('#pv .tkind', { hasText: 'Services' }).locator('input.tick').evaluateAll(ts => ts.map(t => [(t as HTMLInputElement).value, (t as HTMLInputElement).checked])), [['drop:AP/', true], ['drop:GL/2026/', false]]);
+  await page.mouse.click(5, 5);
+  await page.evaluate(() => openLogins());
+  await page.click('#pv [data-act=logins-show][data-id=drop]');
+  await page.click('#pv [data-act=signout-login][data-id=drop]');
+  await page.waitForSelector('#pv [data-act=service-connect][data-id=drop]');
+  await page.mouse.click(5, 5);
+  await page.evaluate(() => api('/connections/drop', { method: 'DELETE' }));
+});
