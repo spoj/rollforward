@@ -902,6 +902,11 @@ test('a deployment service gets streamed requests only under the runner\'s ticke
       }
       assert.ok(!requests.some(q => q.path.includes('smuggled')));
     });
+    await t.test('a TRACE, which would echo the key, is refused', async () => {
+      const before = requests.length;
+      assert.match((await via('TRACE', `${S}/AP/`, { token: 'service' })).text, /would echo the credential/);
+      assert.equal(requests.length, before);
+    });
     await t.test('ticks are prefix boundaries, and raw traversal and encoding tricks never reach the service', async () => {
       const before = requests.length;
       for (const path of ['/AP', '/APother/x', '/GL/2026/file', '/AP/../AP/file', '/AP/%2e%2e/AP/file', '/AP/.%2E/AP/file', '/AP/./file', '/AP/%2ffile', '/AP/x%5cfile', '/AP/%252e%252e/file', '/AP//file', '/AP/%00file', '/AP/%', '/AP/x#ignored', '/AP/..\\AP/file']) {

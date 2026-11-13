@@ -159,6 +159,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     // A target such as //elsewhere/… or https://elsewhere/… would take the request, and the credential put in, to another host, and
     // one such as http://HOST/… to it in the clear.
     if (url.origin !== `https://${host}`) throw new HttpError(403, `${host} takes requests for https://${host}, not ${url.origin}`);
+    if (method === 'TRACE') throw new HttpError(403, 'a TRACE would echo the credential put in');
     // A runner's own key only while they may lend to the instance, never the server's in its place.
     if (mine) lender(a.inst, a.n);
     if (link) use(a.inst, a.n, link.offer);
