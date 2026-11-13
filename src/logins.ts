@@ -1,7 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { HttpError, type Instance } from './store.ts';
+import { HttpError, type Entry, type Instance } from './store.ts';
 import { canSee, changes, key, readJson, replaceFile, rfDir, tree } from './system.ts';
 import { asPerson } from './auth.ts';
 import service from './connections/service.ts';
@@ -78,13 +78,20 @@ export function checkTicks(email: string, ticks: unknown): string[] {
   return ticks;
 }
 
-// An instance's runner is whoever made it, copied it or last took it over, with the offers they ticked for it then or since, and
-// the seq of the act that ticked them, their consent.
+// What makes someone an instance's runner: making it, an earlier version's copy, or an assign, a takeover being an assign to oneself.
+const MADE = ['create', 'duplicate', 'takeover', 'assign'];
+const ranBy = (e: Entry) => e.op === 'assign' ? e.to as string : e.by;
+
+// Who ran an instance as an entry, by its seq, was made, as the page shows history and costs count runs.
+export const runnerAt = (log: Entry[], seq: number) => ranBy(log.findLast(e => e.seq < seq && MADE.includes(e.op))!);
+
+// An instance's runner is whoever made it, copied it or was last assigned it, with the offers they ticked for it then or since, and
+// the seq of the act that ticked them, their consent. An assign to someone else ticks none: they tick their own.
 export function runnerOf(inst: Instance): { by: string; logins: string[]; consent: number } {
   // A deleted instance keeps no runner.
   if (inst.hole) return { by: '', logins: [], consent: 0 };
-  const e = inst.log.findLast(e => ['create', 'duplicate', 'takeover', 'logins'].includes(e.op))!;
-  return { by: e.by, logins: (e.logins as string[] | undefined) ?? [], consent: e.seq };
+  const e = inst.log.findLast(e => [...MADE, 'logins'].includes(e.op))!;
+  return { by: ranBy(e), logins: (e.logins as string[] | undefined) ?? [], consent: e.seq };
 }
 
 // An instance's runner, while they may still lend it their logins: they may still sign in and see the instance's workspace. A run
@@ -96,7 +103,9 @@ export function lender(inst: Instance, run?: number): { by: string; logins: stri
   if (!p || (p.role !== 'admin' && !canSee(p, t.workspaces[t.series[inst.seriesId].workspace])))
     throw new HttpError(403, `${r.by} can no longer run this instance, so their logins aren't used: someone in its workspace takes it over`);
   if (run === undefined) return r;
-  const lease = inst.log[(inst.log.find(e => e.op === 'run' && e.run === run)!.consent as number) - 1].logins as string[];
+  const started = inst.log.find(e => e.op === 'run' && e.run === run)!, lease = inst.log[(started.consent as number) - 1].logins as string[];
+  // An assign stops the run going first; what it still sends as it stops lends nothing of the new runner's.
+  if (started.runner !== r.by) throw new HttpError(403, `run ${run} was ${started.runner}'s, and ${r.by} runs the instance now`);
   return { by: r.by, logins: r.logins.filter(l => lease.includes(l)) };
 }
 

@@ -10,7 +10,7 @@
 </head>
 <body>
 <div class="app">
-  <aside class="side" id="side"><div class="brand" id="brand"></div><div class="find"><input type="search" id="find" placeholder="Filter" autocomplete="off" spellcheck="false" aria-label="Filter workspaces, series and instances"><details class="sorter" id="sorter"><summary class="add" title="Show and sort"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 4h12M4.5 8h7M7 12h2"/></svg></summary><div class="pop" id="sortpop"></div></details><span id="newws"></span></div><div class="scroll" id="tree"></div><div class="sidefoot" id="sidefoot"></div></aside>
+  <aside class="side" id="side"><div class="brand" id="brand"></div><div class="find"><input type="search" id="find" placeholder="Filter" autocomplete="off" spellcheck="false" aria-label="Filter workspaces, series and instances"><button class="add mine" data-act="mine-only" title="Only the open instances you run">Mine</button><details class="sorter" id="sorter"><summary class="add" title="Show and sort"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 4h12M4.5 8h7M7 12h2"/></svg></summary><div class="pop" id="sortpop"></div></details><span id="newws"></span></div><div class="scroll" id="tree"></div><div class="sidefoot" id="sidefoot"></div></aside>
   <header class="masthead" id="masthead"></header>
   <main class="main">
     <div class="bar" id="bar"></div>
@@ -275,7 +275,12 @@ function expandRow(id, open = !expanded.has(id)) {
 
 function renderSide() {
   if (editing) return;
-  const listed = (x, on) => !x.archived || showArchived || on, mine = localStorage.workspaces !== 'all' && tree.some(w => w.mine), byName = localStorage.order === 'name';
+  // Mine, as this browser keeps it for you: only the open instances you run, and the one shown, with the rows that hold them, their
+  // marks and counts theirs alone.
+  const only = localStorage[`mine:${me.email}`] === 'on', ours = i => (i.status === 'open' && i.runner === me.email) || i.id === cur?.i?.id;
+  const side = only ? tree.map(w => ({ ...w, series: w.series.map(s => ({ ...s, instances: s.instances.filter(ours) })).filter(s => s.instances.length) })).filter(w => w.series.length) : tree;
+  $('.find .mine').classList.toggle('on', only);
+  const listed = (x, on) => !x.archived || showArchived || on, mine = localStorage.workspaces !== 'all' && side.some(w => w.mine), byName = localStorage.order === 'name';
   const q = $('#find').value.trim().toLowerCase(), hit = name => name.toLowerCase().includes(q), opened = new Set(), shut = id => !expanded.has(id) && !opened.has(id);
   // A dot on a folded row: red for asks waiting on people, else blue for something new to you.
   const asks = s => !s.archived && s.instances.some(i => i.asks.length), news = s => !s.archived && s.instances.some(i => i.unread);
@@ -294,7 +299,7 @@ function renderSide() {
   const waits = waiting().length;
   let h = waits ? `<div class="row waits"><a class="nm" data-act="waiting">Waiting on you<span class="q"> ${waits}</span></a></div>` : '';
   let shown = 0;
-  for (const w of sorted(tree, wAct, w => w.name)) {
+  for (const w of sorted(side, wAct, w => w.name)) {
     const won = cur?.w.id === w.id, wHit = !q || hit(w.name);
     if (!listed(w, won) || (mine && !w.mine && !won)) continue;
     // Each series with the instances that match, where only they do.
@@ -321,7 +326,7 @@ function renderSide() {
       const closed = s.instances.length - open.length;
       h += '<div class="tree">';
       for (const k of s.wakes) h += `<div class="row wake"><span class="nm" title="Starts ${esc(k.label)} ${when(k.at)}${k.text ? `: ${esc(k.text)}` : ''}"><span class="l">Starts ${esc(k.label)} ${soon(k.at)}</span></span><span class="n">${k.days ? 'weekly' : 'wake'}</span></div>`;
-      for (const r of s.requests) h += `<div class="row req"><span class="nm" title="${esc(`${r.from} asks to start ${r.label}${r.text ? `: ${r.text}` : ''}`)}"><span class="l">${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)}</span></span>`
+      for (const r of s.requests) h += `<div class="row req"><span class="nm" title="${esc(`${r.from} asks to ${r.target ? 'wake' : 'start'} ${r.label}${r.text ? `: ${r.text}` : ''}`)}"><span class="l">${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to ${r.target ? 'wake' : 'start'} ${esc(r.label)}</span></span>`
         + (archived(w, s) ? '' : `<button class="add" data-act="req-start" data-id="${r.id}" title="Start it">\u25B6</button><button class="add" data-act="req-drop" data-id="${r.id}" title="Dismiss">\u00D7</button>`) + '</div>';
       h += s.instances.filter(i => i.status === 'open' || showClosed.has(s.id) || i.id === cur?.i?.id).map(row).join('');
       if (closed) h += closedToggle(s.id, closed);
@@ -336,7 +341,7 @@ function renderSide() {
       + (done ? closedToggle(w.id, done) : '');
     h += '</div>';
   }
-  const archivedCount = tree.filter(w => w.archived).length + tree.filter(w => expanded.has(w.id)).flatMap(w => w.series).filter(s => s.archived).length;
+  const archivedCount = side.filter(w => w.archived).length + side.filter(w => expanded.has(w.id)).flatMap(w => w.series).filter(s => s.archived).length;
   if (q && !shown) h += '<div class="empty">Nothing matches.</div>';
   const opt = (act, id, on, label) => `<button class="opt ${on ? 'sel' : ''}" data-act="${act}" data-id="${id}">${label}</button>`;
   put($('#sortpop'), '<div class="head">Show</div>' + opt('workspaces', 'mine', mine, 'My workspaces') + opt('workspaces', 'all', !mine, 'All workspaces')
@@ -376,9 +381,12 @@ function renderBar() {
     const wake = open ? `<button class="btn top wake" data-act="wakes"${next ? ` title="Next wake ${when(next.at)}"` : ''}>${ICON.alarm}${next ? `Wakes ${soon(next.at)}` : 'No wake'}</button>` : '';
     const del = cur.w.manage && !gone() ? '<a class="del" data-act="delete" title="For those who manage the workspace: delete it, and all the server holds of it">Delete\u2026</a>' : '';
     h += `<div class="state">${state}</div>${wake}${del}`;
-    const off = data.run ? 'disabled title="Available when the run ends"' : '';
-    if (open) h += data.runner.by === me.email ? `<button class="btn commit top" data-act="close" ${off}>Close</button>`
-      : `<button class="btn top" data-act="takeover" ${off || `title="${esc(nameOf(data.runner.by))} runs it, with their logins. Taking over makes it yours."`}>${ICON.hand}Take over</button>`;
+    // Close for its runner; Take over for anyone else, while no run goes unless they may stop it; and Assign… for its runner and those
+    // who manage the workspace, a run going stopped first.
+    const off = data.run ? 'disabled title="Available when the run ends"' : '', mine = data.runner.by === me.email;
+    if (open) h += `${mine ? `<button class="btn commit top" data-act="close" ${off}>Close</button>`
+      : `<button class="btn top" data-act="takeover" ${data.run && !canStop() ? off : `title="${esc(nameOf(data.runner.by))} runs it, with their logins. Taking over makes it yours${data.run ? `, stopping run ${data.run.n}` : ''}."`}>${ICON.hand}Take over</button>`}`
+      + `${mine || cur.w.manage ? `<button class="btn top" data-act="assign" title="Make someone else its runner${data.run ? `, stopping run ${data.run.n}` : ''}">Assign\u2026</button>` : ''}`;
     else if (cur.s.single && !archived() && !gone()) h += '<button class="btn top" data-act="start-series">Start series</button>';
     // One control opens and closes the side panel, where it stays, with what waits there as its badge.
     h += `<button class="ptog ${ui.open ? 'on' : ''}" data-act="panel" title="${ui.open ? 'Close' : 'Open'} the conversation"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M10 2.5v11"/>${ui.open ? '<rect x="10" y="2.5" width="4.5" height="11" fill="currentColor" stroke="none" opacity=".35"/>' : ''}</svg>${talk ? `<span class="badge">${talk}</span>` : ''}</button>`;
@@ -388,8 +396,8 @@ function renderBar() {
 
 // The runner's chip: Yours, or their name; on hover or a click, what that means, since when, and the logins they ticked.
 function owner() {
-  const r = data.runner, mine = r.by === me.email, name = mine ? 'You' : person(r.by), e = data.log.findLast(e => ['create', 'duplicate', 'takeover'].includes(e.op));
-  const how = { create: 'Made it', duplicate: `Copied it from ${esc(e.from)}`, takeover: `Took it over from ${who(e.from)}` }[e.op];
+  const r = data.runner, mine = r.by === me.email, name = mine ? 'You' : person(r.by), e = made();
+  const how = { create: 'Made it', duplicate: `Copied it from ${esc(e.from)}`, takeover: `Took it over from ${who(e.from)}`, assign: e.by === e.to ? `Took it over from ${who(e.from)}` : `Assigned by ${who(e.by)}, from ${who(e.from)},` }[e.op];
   return `<span class="owner" tabindex="0">${mine ? 'Yours' : name}<span class="about">`
     + (editable() ? `${name} run${mine ? '' : 's'} it: runs use ${mine ? 'your' : 'their'} logins, and only ${mine ? 'you' : 'they'} close it.` : `${name} ran it.`)
     + `<br>${how} ${when(e.at)}.<br>${r.ticked.length ? `Credentials: ${esc(r.ticked.join(', '))}` : 'No credentials ticked.'}</span></span>`
@@ -496,8 +504,11 @@ const called = id => Object.values(me.names).filter(n => n === me.names[id]).len
 const person = id => me.names[id] ? `<span title="${esc(id)}">${esc(called(id))}</span>` : esc(id);
 const who = id => id === 'agent' ? 'Agent' : id === me.email ? 'you' : person(id);
 const nameOf = id => id === 'agent' ? 'Agent' : id === me.email ? 'you' : me.names[id] ? called(id) : id;
+// What made someone the instance's runner as of a time: making it, an earlier version's copy, or an assign, a takeover being one to
+// oneself; and whom it made the runner.
+const made = (at = '\uffff') => data.log.findLast(x => x.at <= at && ['create', 'duplicate', 'takeover', 'assign'].includes(x.op)), ranBy = e => e.op === 'assign' ? e.to : e.by;
 const actor = (by, at) => {
-  const r = by === 'agent' && data.log.findLast(x => x.at <= at && ['create', 'duplicate', 'takeover'].includes(x.op)).by;
+  const r = by === 'agent' && ranBy(made(at));
   return by === 'server' ? '<span class="w">Server</span>' : `<span class="w p" title="${esc(r ? `Acting for ${r}` : by)}">${esc(r ? (r === me.email ? 'Your agent' : `${nameOf(r)}'s agent`) : by === me.email ? 'You' : nameOf(by))}</span>`;
 };
 // An instance by its label now, with its series' name where it's a series', else as an entry named it then.
@@ -518,7 +529,7 @@ function logText(e) {
     remove: () => `${w} removed ${esc(e.item)} from the screen`,
     run: () => `Run ${e.run} started${data.run?.n === e.run ? ` \u00b7 ${usd(data.run.cost)} so far` : ''}`,
     done: () => `Run ${e.run} finished${e.aborted ? ' (stopped)' : ''} · ${took(e)} · ${usd(e.cost)}${e.error ? `<div class="d">${esc(e.error)}</div>` : ''}`,
-    interrupt: () => `${w} interrupted the run`,
+    interrupt: () => `${w} interrupted the run${e.why ? `<div class="d">${esc(e.why)}</div>` : ''}`,
     close: () => `${w} closed the instance${e.accepted ? `<div class="d">Accepting what the agent did for ${e.accepted.length} ask${e.accepted.length > 1 ? 's' : ''} still waiting</div>` : ''}${e.commit ? `<div class="d">Commit <code>${e.commit.slice(0, 7)}</code></div>` : ''}`,
     signoff: () => `${w} ${e.approved === false ? 'rejected' : 'approved'}${e.on ? ` c${e.on}` : ''}<div class="d">${e.text ? `${esc(e.text)} · ` : ''}Commit <code>${e.commit.slice(0, 7)}</code></div>`,
     reject: () => `${w} rejected c${e.on}${e.text ? `<div class="d">${esc(e.text)}</div>` : ''}`,
@@ -529,12 +540,13 @@ function logText(e) {
     correction: () => `${w} marked ${e.item ? item(e.item) : 'the instance'}${e.ref ? ` at ${esc(e.ref)}` : ''} ${e.kind}<div class="d">${esc(e.text)}${seeHtml(e.see)}</div>`,
     said: () => `${w} left a note in <a href="#/${esc(e.inst)}">${esc(labelOf(e.inst, e.label))}</a>, ${esc(e.thread)}`,
     corrected: () => `${w} marked <a href="#/${esc(e.inst)}">${esc(e.label)}</a>${e.item ? ` ${esc(e.item)}` : ''} ${e.kind}`,
-    comment: () => `${w} ${e.note ? `left a note for ${who(data.runner.by)}` : e.by !== 'agent' ? 'commented' : e.ask ? `${e.ask === 'proposal' ? 'proposed' : 'asked'}${e.to ? ' ' + who(e.to) : ''}` : 'said'}${e.item ? ` on ${item(e.item)}${e.ref ? ` at ${esc(e.ref)}` : ''}` : ''}<div class="d">${esc(e.text)}</div>`,
+    comment: () => `${w} ${e.standing === 'note' ? `left a note for ${who(data.runner.by)}` : e.by !== 'agent' ? 'commented' : e.ask ? `${e.ask === 'proposal' ? 'proposed' : 'asked'}${e.to ? ' ' + who(e.to) : ''}` : 'said'}${e.item ? ` on ${item(e.item)}${e.ref ? ` at ${esc(e.ref)}` : ''}` : ''}<div class="d">${esc(e.text)}</div>`,
     resolve: () => `${w} resolved a thread${e.text ? `<div class="d">${esc(e.text)}</div>` : ''}`,
     react: () => `${w} ${e.up === null ? 'took back a reaction' : e.up ? 'gave a thumbs up' : 'gave a thumbs down'} on ${e.on ? `comment c${e.on}` : 'the instance'}`,
-    wake: () => `${e.note ? `${person(e.from)} would wake it: a note for ${who(data.runner.by)}` : `Woken${e.from ? ` by ${who(e.from)}` : ''}`}${[e.reason, e.text].filter(Boolean).map(t => `<div class="d">${esc(t)}</div>`).join('')}`,
+    wake: () => `${e.standing === 'note' ? `${person(e.from)} would wake it: a note for ${who(data.runner.by)}` : `Woken${e.from ? ` by ${who(e.from)}` : ''}`}${[e.reason, e.text].filter(Boolean).map(t => `<div class="d">${esc(t)}</div>`).join('')}`,
     expired: () => e.left ? `${who(e.runner)} has left: Microsoft no longer signs them in, so someone takes the instance over` : `Waiting for ${who(e.runner)} ${e.login === 'openrouter' ? 'to save another OpenRouter key, or stop using their own, out of credits' : `to sign in to ${esc(e.name ?? (e.login === 'm365' ? 'Microsoft 365' : e.login))} again`}${e.runner === me.email && !data.log.some(x => x.seq > e.seq && x.op === 'wake' && x.login === e.login) ? `<div>${signInHtml(e.login, e.name ?? e.login)}</div>` : ''}`,
     takeover: () => `${w} took over from ${who(e.from)}${e.logins?.length ? `<div class="d">Logins: ${esc(e.logins.join(', '))}</div>` : ''}`,
+    assign: () => `${w} ${e.to === e.by ? 'took over' : `assigned it to ${who(e.to)}`} from ${who(e.from)}${e.logins?.length ? `<div class="d">Logins: ${esc(e.logins.join(', '))}</div>` : ''}`,
     promote: () => `${w} made it a series, ${esc(e.series)}`,
     logins: () => `${w} ticked logins: ${esc(e.logins.join(', ') || 'none')}`,
     egress: () => `Run ${e.run} ${e.allowed ? 'reached' : 'was refused'} ${esc(e.host)}`,
@@ -705,7 +717,7 @@ function threadsOf() {
   }
   for (const t of out.values()) Object.assign(t, {
     waits: t.posts.find(p => p.waits)?.waits ?? null,
-    pending: open && t.last.op !== 'resolve' && t.last.by !== 'agent' && !t.last.note,
+    pending: open && t.last.op !== 'resolve' && t.last.by !== 'agent' && t.last.standing !== 'note',
   });
   return [...out.values()];
 }
@@ -734,7 +746,7 @@ function postHtml(t, p, depth) {
   if (gone && !ui.withdrawn.has(p.seq)) return `<div class="post withdrawn folded" data-seq="${p.seq}" data-act="withdrawn" title="Show what it said"><span class="fold">\u25B8</span>${gone}${kids.length ? ` \u00b7 ${all(p.seq)} more` : ''}</div>`;
   if (JSON.parse(localStorage[`folds:${cur.i.id}`] ?? '{}')[p.seq] === end(p)) return `<div class="post folded ${kind} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}"><button class="fold" data-act="fold" data-seq="${p.seq}" title="Expand">\u25B8</button>${head}${hhmm(p.at)}</span> ${esc(firstLine(p.text))}${kids.length ? `<span class="tm"> \u00b7 ${all(p.seq)} more</span>` : ''}</div>`;
   const box = (mode, hint, placeholder, button) => `<div class="reply" data-mode="${mode}" ${draft.replying.get(p.seq) === mode ? '' : 'hidden'}>${hint ? `<div class="hint">${hint}</div>` : ''}<textarea rows="2" placeholder="${placeholder}"></textarea>${mode === 'reply' ? '<input type="file" multiple>' : ''}<div class="row2">${button}<button class="quiet" data-act="reply" data-mode="${mode}" data-seq="${p.seq}">Cancel</button></div></div>`;
-  let h = `<div class="post ${kind} ${gone ? 'withdrawn' : ''} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}">${gone ? `<div class="gone" data-act="withdrawn" data-seq="${p.seq}" title="Fold it again"><span class="fold">\u25BE</span>${gone}</div>` : ''}<button class="fold" data-act="fold" data-seq="${p.seq}" data-end="${end(p)}" title="Collapse">\u25BE</button>${head}${hhmm(p.at)}${p.op === 'comment' ? ` <a class="cn" data-act="copylink" data-seq="${p.seq}" title="Copy a link to this comment">c${p.seq}</a>` : ''}${p.to ? ` \u00b7 to ${who(p.to)}` : ''}${p.note ? ` \u00b7 a note for ${who(data.runner.by)}` : ''}${p.waits ? ` \u00b7 waits on ${who(p.waits)}` : ''}${since ? ` \u00b7 <span title="What it links may have changed since: check it before approving">${since} run${since > 1 ? 's' : ''} since</span>` : ''}${p.commit ? ` \u00b7 commit <code>${p.commit.slice(0, 7)}</code>` : ''}</span>`
+  let h = `<div class="post ${kind} ${gone ? 'withdrawn' : ''} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}">${gone ? `<div class="gone" data-act="withdrawn" data-seq="${p.seq}" title="Fold it again"><span class="fold">\u25BE</span>${gone}</div>` : ''}<button class="fold" data-act="fold" data-seq="${p.seq}" data-end="${end(p)}" title="Collapse">\u25BE</button>${head}${hhmm(p.at)}${p.op === 'comment' ? ` <a class="cn" data-act="copylink" data-seq="${p.seq}" title="Copy a link to this comment">c${p.seq}</a>` : ''}${p.to ? ` \u00b7 to ${who(p.to)}` : ''}${p.standing === 'note' ? ` \u00b7 a note for ${who(data.runner.by)}` : ''}${p.waits ? ` \u00b7 waits on ${who(p.waits)}` : ''}${since ? ` \u00b7 <span title="What it links may have changed since: check it before approving">${since} run${since > 1 ? 's' : ''} since</span>` : ''}${p.commit ? ` \u00b7 commit <code>${p.commit.slice(0, 7)}</code>` : ''}</span>`
     + `<div class="pb ${long ? 'long' : ''}">${p.see ? esc(p.text) : crefs(p.by === 'agent' && p.op === 'comment' ? md(p.text) : esc(p.text))}</div>${long ? `<a class="more" data-act="more" data-seq="${p.seq}">More</a>` : ''}`
     + (p.files ?? []).map(f => `<div class="f">${/\.(png|jpe?g|gif|webp|svg)$/i.test(f) ? `<img src="${fileUrl(f)}" loading="lazy" alt="${esc(fname(f))}" title="${esc(fname(f))}" data-act="preview" data-file="${esc(f)}">` : `<a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a>`}</div>`).join('');
   if (p.op === 'comment') h += `<div class="pa">${reactHtml(p.seq)}${open ? `<button class="quiet reply-to" data-act="reply" data-seq="${p.seq}">Reply</button>` : ''}`
@@ -785,7 +797,7 @@ function conversationHtml() {
   const first = mine && !runs.length, lends = first && myLogins.some(l => l.offers.length);
   if (open) h += `<div class="compose"><h3>${draft.on ? `Comment on ${name(draft.on)}${draft.ref ? ` at ${esc(draft.ref)}` : ''}` : 'Comment on the instance'}</h3>`
     + (lends ? `<div class="ticks2">Credentials:${ticksHtml(myLogins, data.runner.logins, cur.w)}</div>` : '')
-    + `<textarea id="newcomment" rows="3" placeholder="${first ? 'What should the agent do? Drop files here too' : mine || cur.s.shared_by === data.runner.by ? 'The agent replies in the thread' : `A note for ${esc(nameOf(data.runner.by))}: the agent takes it up once they do`}"></textarea><input type="file" id="newfiles" multiple>${lends ? '<div class="consent">By clicking Comment, you agree that agents carry these credentials while acting as you.</div>' : ''}<div><button class="btn primary" data-act="comment">Comment</button></div></div>`;
+    + `<textarea id="newcomment" rows="3" placeholder="${first ? 'What should the agent do? Drop files here too' : data.starts ? 'The agent replies in the thread' : `A note for ${esc(nameOf(data.runner.by))}: the agent takes it up once they do`}"></textarea><input type="file" id="newfiles" multiple>${lends ? '<div class="consent">By clicking Comment, you agree that agents carry these credentials while acting as you.</div>' : ''}<div><button class="btn primary" data-act="comment">Comment</button></div></div>`;
   if (data.doc.status === 'closed' && !archived()) h += '<div class="compose"><div><button class="btn" data-act="correct">Add a correction</button></div></div>';
   return h;
 }
@@ -1185,7 +1197,7 @@ function startHtml(s) {
   return (s.label !== undefined ? `<h3>Label</h3><input type="text" id="slabel" value="${esc(s.label)}" placeholder="such as a date">` : '')
     + `<h3>Credentials</h3>` + ticksHtml(s.logins, s.on, tree.find(w => w.id === s.ws))
     + (s.logins.some(l => l.offers.length) ? `<div class="consent">By clicking ${esc(s.go)}, you agree that agents carry these credentials while acting as you.</div>` : '')
-    + `<div><button class="btn primary" data-act="start-go">${esc(s.go)}</button></div>`;
+    + (s.warn ? `<div class="warn">${esc(s.warn)}</div>` : '') + `<div><button class="btn primary" data-act="start-go">${esc(s.go)}</button></div>`;
 }
 
 // Signing in again, from wherever a login is said to have expired: Microsoft's own page, or a website's live browser.
@@ -1203,11 +1215,12 @@ function waiting() {
     for (const i of s.instances) {
       const n = ['question', 'proposal', 'ask', 'note'].map(k => [k, i.asks.filter(a => a.who === me.email && a.kind === k).length]).filter(([, c]) => c);
       if (n.length) out.push(`<div class="wt">${at(w, s, i)}: ${n.map(([k, c]) => plural(c, k)).join(', ')} for you</div>`);
+      if (i.assigned) out.push(`<div class="wt">${person(i.assigned.by)} assigned you ${at(w, s, i)}</div>`);
       if (me.role === 'admin') for (const r of i.refused) out.push(`<div class="wt">${at(w, s, i)}: run ${r.run}'s browser on ${r.login === me.email ? '' : `${person(r.login)}'s `}${esc(r.site)} was refused`
         + r.hosts.map(x => ` <span class="creds">${esc(x)}${r.why[x] ? ` <span class="sub">${esc(r.why[x])}</span>` : ''} <a data-act="allow-host" data-site="${esc(r.site)}" data-host="${esc(x)}" data-person="${esc(r.login)}">Allow</a></span>`).join('') + '</div>');
       if (i.wrong && i.runner === me.email) out.push(`<div class="wt">${at(w, s, i)}: ${plural(i.wrong, 'correction')} say${i.wrong > 1 ? '' : 's'} it's wrong</div>`);
     }
-    for (const r of s.requests.filter(r => (r.who ?? me.email) === me.email)) out.push(`<div class="wt">${at(w, s)}: ${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)} <button class="btn" data-act="req-start" data-id="${esc(r.id)}">Start</button></div>`);
+    for (const r of s.requests.filter(r => (r.who ?? me.email) === me.email)) out.push(`<div class="wt">${at(w, s)}: ${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to ${r.target ? 'wake' : 'start'} ${esc(r.label)} <button class="btn" data-act="req-start" data-id="${esc(r.id)}">Start</button></div>`);
   }
   for (const w of tree.filter(w => !w.archived && w.manage)) for (const g of w.grants.filter(g => g.state === 'pending')) out.push(grantHtml(g, 'wt'));
   return [...out, ...expired.map(l => `<div class="wt">Your ${l.kind === 'key' ? 'OpenRouter key is out of credits' : `${esc(l.name)} login has expired`}. ${signInHtml(l.id, l.name)}</div>`)];
@@ -1290,8 +1303,8 @@ function closePv() {
   renderPv();
 }
 
-async function openStart(title, go, then, label, on, ws) {
-  pv = { title, settings: { kind: 'start', go, then, label, on, ws, logins: await api('/logins') } };
+async function openStart(title, go, then, label, on, ws, warn) {
+  pv = { title, settings: { kind: 'start', go, then, label, on, ws, warn, logins: await api('/logins') } };
   renderPv();
   $('#slabel')?.focus();
 }
@@ -1423,6 +1436,7 @@ async function onAct(act, el) {
   if (act === 'fold-side') { foldSide(!$('.app').classList.contains('folded')); renderSide(); }
   if (act === 'expand') { expandRow(el.dataset.id); renderSide(); }
   if (act === 'workspaces') { localStorage.workspaces = el.dataset.id; renderSide(); }
+  if (act === 'mine-only') { localStorage[`mine:${me.email}`] = localStorage[`mine:${me.email}`] === 'on' ? '' : 'on'; renderSide(); }
   if (act === 'order') { localStorage.order = el.dataset.id; renderSide(); }
   // A row's settings and + act on that row, which they open first: after the hash change's own refresh starts, which this one
   // supersedes, so it lands before they act.
@@ -1742,7 +1756,15 @@ async function onAct(act, el) {
     title: `Start a series from ${cur.i.label}`, text: 'This task becomes its first instance, an example for later ones.', value: cur.i.label, placeholder: 'Series name', ok: 'Start series',
     act: name => api(`${seriesPath(cur)}/promote`, { method: 'POST', body: JSON.stringify({ name }) }),
   })) await refresh();
-  if (act === 'takeover') await openStart(`Take over ${cur.i.label}`, 'Take over', ({ logins }) => api(`${instPath()}/takeover`, { method: 'POST', body: JSON.stringify({ logins }) }));
+  if (act === 'takeover') await openStart(`Take over ${cur.i.label}`, 'Take over', ({ logins }) => api(`${instPath()}/assign`, { method: 'POST', body: JSON.stringify({ logins }) }), undefined, undefined, undefined, data.run && `Run ${data.run.n} is going: taking over stops it.`);
+  if (act === 'assign') {
+    const people = (await api(`${instPath()}/assignees`)).filter(p => p !== me.email).sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
+    if (await ask({
+      title: `Assign ${cur.i.label}`, text: `They run it from now on, with their own logins, none ticked until they tick them; what came before is history to its agent, and its next run waits for them.${data.run ? ` Run ${data.run.n} is going: assigning stops it.` : ''}`,
+      html: `<select id="assignto">${people.map(p => `<option value="${esc(p)}">${esc(me.names[p] ? `${called(p)} <${p}>` : p)}</option>`).join('')}</select>`, ok: 'Assign',
+      act: () => api(`${instPath()}/assign`, { method: 'POST', body: JSON.stringify({ to: $('#assignto').value }) }),
+    })) await refresh();
+  }
   if (act === 'start-go') {
     const s = pv.settings, label = $('#slabel')?.value.trim();
     if (label === '') return toast('Give it a label');

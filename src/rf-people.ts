@@ -13,8 +13,10 @@ process.on('uncaughtException', e => {
 
 const usage = (c?: string, vpn = false, admin = false) => {
   const all = `rf login URL [TOKEN]                without a TOKEN, through the browser: type rf's code on the page, and allow it
-rf ls [--json]                    every workspace, series and instance you see, with its status, runner, asks waiting and wakes
-rf waiting [--json]               what waits on you: asks and notes, requests to start an instance or to use a
+rf ls [--mine] [--json]           every workspace, series and instance you see, with its status, runner, asks waiting and wakes;
+                                  --mine, only the open instances you run
+rf waiting [--json]               what waits on you: asks and notes, instances someone assigned you, requests to start or wake an
+                                  instance or to use a
                                   website in a workspace you own, proposals and expired logins; only admins see hosts a run's
                                   browser was refused that the server rates high or finds at an internal address
 rf show PATH [--json]             an instance: its items, the threads that wait on someone, by id, and its last run
@@ -44,7 +46,10 @@ rf delete PATH [--yes]            its workspace's owners and admins delete an in
                                   with --yes: a run for it is cut, and all the server holds of it goes but its label and place,
                                   shown as deleted, by whom and when; it can't be undone, and copies outside the server stay
 rf interrupt PATH                 stops its run: its runner, an owner of its workspace or an admin
-rf takeover PATH [--creds OFFER,...]   you run it from now on, with those offers of your logins ticked
+rf takeover PATH [--creds OFFER,...]   you run it from now on, with those offers of your logins ticked; a run going is stopped
+                                  first, if you may stop it
+rf assign PATH EMAIL              EMAIL runs it from now on, ticking their own logins, none until they do: its runner, its
+                                  workspace's owners and admins; a run going is stopped first
 rf creds PATH [--set OFFER,...|--clear]   what its runs may use: its runner's ticks, and the offers of your logins; --set
                                   ticks anew, as its runner
 rf rename PATH NAME               an instance, a series or a workspace, by its path
@@ -57,8 +62,8 @@ rf share PATH on|off [--creds OFFER,...]   the series' people, and their agents,
                                   off stops it, for its sharer or its workspace's owners
 rf archive PATH [--undo]          a workspace or a series leaves the sidebar, and nothing in it changes or runs, until --undo brings it back;
                                   its wakes and requests are cancelled for good
-rf request start|drop ID [--creds OFFER,...] [--wake]   a request to start an instance, by the ID rf waiting and rf wakes
-                                  print; --wake runs the instance it starts
+rf request start|drop ID [--creds OFFER,...] [--wake]   a request to start or wake an instance, by the ID rf waiting and rf
+                                  wakes print; --wake runs the instance it starts or wakes
 rf logins [--json]                your logins, each with its state, keepalive and offers; you sign in to them on the page
 rf logins offer|unoffer LOGIN SOURCE|OFFER   what a login offers runs: Microsoft 365's (m365) mailboxes, sites, folders and
                                   files, by address or link, a Databricks login's SQL warehouses, by link; unoffer takes the
@@ -164,7 +169,8 @@ What there is
   instance, making it the period's record and an example for the next, which approves nothing. Their comments and uploads start a run of the agent, which reads them and carries on, as do everyone's where the
   runner shares the series, and a reply, approval or rejection from whom an ask names; anyone else's is a note, as are a wake someone else sets, another
   instance's agent's comment and rf note's notes on a series: the agent's next run reads it, using what it brings and putting what
-  it asks for to the runner.
+  it asks for to the runner. The runner changes only by an assign, rf takeover or rf assign, which stops a run going: what came
+  before it is a note to the agent, whoever said it, and starts nothing.
 - rf is quiet: a comment, upload, approval, rejection, close, new instance or request it starts begins no run unless --wake, and the agent
   reads it at its next run; rf wake PATH now starts one. A quiet upload or comment is committed to the instance's history at once.
 - A comment starts a thread, on the instance or on an item, at a cell such as Base!C25 or a line of a markdown file by its
@@ -200,7 +206,9 @@ Usual work
 - Answer a question: rf comment PATH TEXT --thread cN --wait, which prints what the agent says back. Decide a proposal:
   rf approve PATH cN [TEXT] --wake, for the agent to go ahead, or rf reject PATH cN [TEXT] --wake. Close an
   instance once it's the record: rf close PATH.
-- Take an instance over: rf creds PATH lists the offers of your logins, and rf takeover PATH --creds OFFER,... ticks them.
+- Take an instance over: rf creds PATH lists the offers of your logins, and rf takeover PATH --creds OFFER,... ticks them. Hand
+  one you run, or one in a workspace you own, to someone else: rf assign PATH EMAIL; they tick their own logins with rf creds
+  PATH --set. Either way, what came before is history to the agent, and the next run waits for the new runner's act.
 - Your logins: rf logins lists them, with what each offers, and an expired one's link to sign in again on the page.
 - Give an input or a corrected output: rf upload PATH FILE [--onto ITEM] [--output], with --wake on the last for a run on them
   all.
@@ -235,7 +243,7 @@ const flags: Record<string, string | true> = {}, excludes: string[] = [], args: 
 for (let i = 0; i < argv.length; i++) {
   const flag = argv[i] === '-n' ? 'dry-run' : argv[i].match(/^--(.+)$/)?.[1];
   if (!flag) args.push(argv[i]);
-  else if (['wait', 'wake', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear', 'follow', 'superseded', 'undo', 'by-amount', 'yes'].includes(flag)) flags[flag] = true;
+  else if (['wait', 'wake', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear', 'follow', 'superseded', 'undo', 'by-amount', 'yes', 'mine'].includes(flag)) flags[flag] = true;
   else if (argv[i + 1] === undefined) throw new Error(`--${flag} takes a value`);
   else if (flag === 'exclude') excludes.push(argv[++i]);
   else flags[flag] = argv[++i];
@@ -429,9 +437,10 @@ if (cmd === 'login' && url) {
   writeFileSync(config, JSON.stringify({ url, token }), { mode: 0o600 });
   console.log(`signed in as ${me.email}`);
 } else if (cmd === 'ls' && !args.length) {
-  const rows = (await get('/api')).flatMap(w => w.series.flatMap(s => [
-    { path: `${w.name}/${s.name}`, id: s.id, requests: s.requests.length, wakes: s.wakes },
-    ...s.instances.map(i => ({ path: `${w.name}/${s.name}/${i.label}`, id: i.id, status: i.status, running: i.running, asks: i.asks.length, runner: i.runner, wakes: i.wakes, ...(i.deleted && { deleted: i.deleted }) })),
+  // --mine: the open instances you run, alone.
+  const me = flags.mine && await get('/me'), rows = (await get('/api')).flatMap(w => w.series.flatMap(s => [
+    ...me ? [] : [{ path: `${w.name}/${s.name}`, id: s.id, requests: s.requests.length, wakes: s.wakes }],
+    ...s.instances.filter(i => !me || (i.status === 'open' && i.runner === me.email)).map(i => ({ path: `${w.name}/${s.name}/${i.label}`, id: i.id, status: i.status, running: i.running, asks: i.asks.length, runner: i.runner, wakes: i.wakes, ...(i.deleted && { deleted: i.deleted }) })),
   ]));
   if (flags.json) console.log(JSON.stringify(rows, null, 1));
   else for (const r of rows) {
@@ -443,7 +452,8 @@ if (cmd === 'login' && url) {
   const series = all.flatMap(w => w.series.map(x => ({ ...x, path: `${w.name}/${x.name}` })));
   const rows = [
     ...s.asks.filter(a => a.who === me.email).map(a => ({ kind: a.note ? 'note' : 'ask', path: a.path, since: a.since, text: a.text })),
-    ...series.flatMap(x => x.requests.filter(r => mine(r.who)).map(r => ({ kind: 'request', path: x.path, since: r.at, id: r.id, text: `${r.from} asks to start ${r.label}${r.text ? `: ${r.text}` : ''}` }))),
+    ...s.assigned.filter(a => a.who === me.email).map(a => ({ kind: 'assigned', path: a.path, since: a.at, text: `${a.by} assigned you ${a.path}` })),
+    ...series.flatMap(x => x.requests.filter(r => mine(r.who)).map(r => ({ kind: 'request', path: x.path, since: r.at, id: r.id, text: `${r.from} asks to ${r.target ? 'wake' : 'start'} ${r.label}${r.text ? `: ${r.text}` : ''}` }))),
     ...all.filter(w => w.manage && w.proposal?.into === w.id).map(({ proposal: p }) => ({ kind: 'proposal', path: p.to, since: p.at, text: `${p.by} proposes to ${p.kind === 'merge' ? `merge ${p.from} into it` : `move ${p.from}/${p.series} to it`}` })),
     ...s.expired.filter(e => e.who === me.email).map(e => ({ kind: 'expired', login: e.login, holding: e.holding, text: `your ${e.login} login expired` })),
     ...series.flatMap(x => x.instances.flatMap(i => i.refused.map(r => ({ kind: 'refused', path: `${x.path}/${i.label}`, since: r.at, site: r.site, hosts: r.hosts, person: r.login, why: r.why, text: `run ${r.run}'s browser on ${r.login}'s ${r.site} was refused ${r.hosts.map((h: string) => r.why[h] ? `${h} (${r.why[h]})` : h).join(', ')}` })))),
@@ -523,8 +533,11 @@ else if (cmd === 'comment' && args.length === 2) {
   await post(`${at}/delete`, {});
   console.log(`deleted ${args[0]}`);
 } else if (cmd === 'takeover' && args.length === 1) {
-  await post(`${(await instanceAt(args[0])).at}/takeover`, { logins: ticks() });
+  await post(`${(await instanceAt(args[0])).at}/assign`, { logins: ticks() });
   console.log(`you run ${args[0]} now${consent(ticks())}`);
+} else if (cmd === 'assign' && args.length === 2) {
+  await post(`${(await instanceAt(args[0])).at}/assign`, { to: args[1] });
+  console.log(`${args[1]} runs ${args[0]} now, with no logins ticked until they tick theirs`);
 } else if (cmd === 'creds' && args.length === 1) {
   const { at } = await instanceAt(args[0]);
   if (flags.set !== undefined || flags.clear) {
@@ -712,9 +725,9 @@ else if (cmd === 'comment' && args.length === 2) {
       [`Running`, s.running.map(r => `${r.path}  run ${r.run}  for ${took((Date.now() - Date.parse(r.at)) / 1000)}  ${usd(r.cost)}${Date.now() - Date.parse(r.at) > long * 60e3 ? `  LONG, past ${long}m` : ''}`)],
       [`Queued`, s.queued.map(q => `${q.path}  since ${when(q.since)}: ${q.why}`)],
       [`Waiting`, [
-        ...[...s.asks, ...s.requests.map(r => ({ ...r, who: r.who ?? 'anyone', since: r.at, text: `${r.from} asks to start ${r.label}`, request: true })),
+        ...[...s.asks, ...s.assigned.map(a => ({ ...a, since: a.at, text: `${a.by} assigned it to them`, assigned: true })), ...s.requests.map(r => ({ ...r, who: r.who ?? 'anyone', since: r.at, text: `${r.from} asks to ${r.target ? 'wake' : 'start'} ${r.label}`, request: true })),
           ...s.proposals.map(p => ({ who: `${p.to}'s owners`, path: p.to, since: p.at, text: `${p.by} proposes to ${p.kind === 'merge' ? `merge ${p.from} into it` : `move ${p.from}/${p.series} to it`}`, proposal: true }))]
-          .sort((a, b) => a.who.localeCompare(b.who) || a.since.localeCompare(b.since)).map(a => `${a.who}  ${a.proposal ? 'a proposal' : a.request ? 'a request' : a.note ? 'a note' : 'an ask'} in ${a.path} since ${when(a.since)}: ${a.text.split('\n')[0].slice(0, 80)}`),
+          .sort((a, b) => a.who.localeCompare(b.who) || a.since.localeCompare(b.since)).map(a => `${a.who}  ${a.proposal ? 'a proposal' : a.request ? 'a request' : a.assigned ? 'an assignment' : a.note ? 'a note' : 'an ask'} in ${a.path} since ${when(a.since)}: ${a.text.split('\n')[0].slice(0, 80)}`),
         ...s.expired.map(e => `${e.who}  their ${e.login} login expired${e.holding.length ? `, holding ${e.holding.join(', ')}` : ''}`),
       ]],
       [`Last run failed`, s.failed.map(f => `${f.path}  run ${f.run} at ${when(f.at)}: ${f.error}`)],

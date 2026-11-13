@@ -13,7 +13,7 @@ import { agentRoot, id as agentId } from './agent.ts';
 import { checkTheme, stylesheet, themeLogo } from './theme.ts';
 import { asPerson, authenticate, CAPS, can, capabilities, checkConfig, cli, connect, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
 import { act, canManage, canSee, changes, everyone, initSystem, isPeople, readJson, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
-import { checkTicks, logins, runnerOf, saveLogin, signOut, unoffer } from './logins.ts';
+import { checkTicks, logins, runnerAt, runnerOf, saveLogin, signOut, unoffer } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { answered, byLogin, call, connections, intercepts, letIn, loginOf, removeConnection, setConnection, setLetIn, upstreams } from './connections.ts';
@@ -25,7 +25,7 @@ import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, prune, startIndexing, track } from './indexes.ts';
 import { addNote, notes, seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, archived, byToken, cancelWake, cancelWakes, closed, correct, dropRequest, isNote, kick, named, noted, pending, queued, remove, resolveFor, setWake, startWaking, starts, startWith, stop, wakes, wakesOf, weekly, reads, CUT, type Active, type Request } from './waker.ts';
+import { active, archived, assigned, byToken, cancelWake, cancelWakes, closed, correct, dropRequest, kick, named, noted, pending, queued, remove, resolveFor, setWake, standing, startWaking, startWith, stop, wakes, wakesOf, wakeWith, weekly, reads, CUT, type Active, type Request } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -153,17 +153,27 @@ function watched(me: Me, id: string, site: string): { browsers: Browsers; id: st
   return { browsers: a!.browsers!, id: b };
 }
 
-// Whom an open instance waits on, and with what: each ask no one answered on the person it names, else the runner, and each such
-// note on the runner but their own, from before they took it over; a copy's since it was copied.
+// Whom an open instance waits on, and with what: each ask no one answered on the person it names, else the runner, as one from before
+// its last assign does, and each such note on the runner but their own; a copy's since it was copied.
 function waits(inst: Instance): { who: string; e: Entry }[] {
   if (inst.doc.status !== 'open') return [];
-  const runner = runnerOf(inst).by, from = inst.copied;
-  return inst.log.filter(e => e.seq > from && e.op === 'comment' && ((e.by === 'agent' && e.ask) || (isNote(inst, e) && e.by !== runner)) && !inst.answered(e)).map(e => ({ who: (e.to as string | undefined) ?? runner, e }));
+  const runner = runnerOf(inst).by, line = inst.log.findLast(e => ['takeover', 'assign'].includes(e.op))?.seq ?? 0;
+  return inst.log.filter(e => e.seq > inst.copied && e.op === 'comment' && ((e.by === 'agent' && e.ask) || (standing(inst, e)?.word === 'note' && e.by !== runner)) && !inst.answered(e))
+    .map(e => ({ who: e.seq > line && e.to ? e.to as string : runner, e }));
+}
+
+// Whom an assign tells, until they open the instance or act in it: whoever someone else assigned it to.
+function assignment(i: Instance): { who: string; by: string; at: string } | undefined {
+  const a = i.log.findLast(e => ['takeover', 'assign'].includes(e.op));
+  if (i.doc.status !== 'open' || a?.op !== 'assign' || a.to === a.by) return undefined;
+  const who = a.to as string;
+  return (seen(who).at[i.id] ?? 0) < a.seq && !i.log.some(e => e.seq > a.seq && e.by === who) ? { who, by: a.by, at: a.at } : undefined;
 }
 
 // Whom a request to start an instance of a series waits on: whoever shares it, else the runner of its newest instance, else the
 // person who asked, if a person did; no one in particular, who anyone in its workspace may answer, else.
 function asked(r: Request): string | null {
+  if (r.target) return runnerOf(instance(r.target)).by;
   const newest = instances(r.series).filter(i => !i.hole).at(-1);
   return seriesSettings(seriesDir(r.series)).shared?.by ?? (newest ? runnerOf(newest).by : r.from.includes('@') ? r.from : null);
 }
@@ -206,8 +216,8 @@ function names(me: Me) {
 }
 
 // What makes an instance new to a person, when someone else or the agent did it: a run's end, a comment, an approval, a rejection, a
-// withdrawal, an upload, a takeover, a close, a deletion, or a move to another workspace that someone else accepted.
-const NEWS = ['done', 'comment', 'signoff', 'reject', 'withdraw', 'upload', 'takeover', 'close', 'abandon', 'delete', 'move'];
+// withdrawal, an upload, an assign, a close, a deletion, or a move to another workspace that someone else accepted.
+const NEWS = ['done', 'comment', 'signoff', 'reject', 'withdraw', 'upload', 'takeover', 'assign', 'close', 'abandon', 'delete', 'move'];
 
 // What an instance's runs cost, since its latest duplication, a deleted one's as its deletion kept it.
 const costOf = (i: Instance) => +i.log.slice(i.log.findLastIndex(e => e.op === 'duplicate') + 1).reduce((t, e) => t + (['done', 'delete'].includes(e.op) ? e.cost as number : 0), 0).toFixed(4);
@@ -215,7 +225,7 @@ const costOf = (i: Instance) => +i.log.slice(i.log.findLastIndex(e => e.op === '
 function summary(i: Instance, me: Me, w8 = wakes()) {
   const email = me.email;
   const key = `${i.log.length}:${i.doc.rev}:${seriesSettings(i.series()).shared?.by ?? ''}`;
-  const news = i.log.findLast(e => e.by !== email && e.accepted_by !== email && NEWS.includes(e.op)), s = seen(email);
+  const news = i.log.findLast(e => e.by !== email && e.accepted_by !== email && NEWS.includes(e.op)), s = seen(email), told = assignment(i);
   let k = kept.get(i);
   if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i).map(({ who, e }) => ({ who, kind: e.ask === true ? 'ask' : (e.ask as string | undefined) ?? 'note' })), runner: runnerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: costOf(i), corrections: i.log.filter(e => e.op === 'correction').length,
     wrong: i.log.filter(e => e.op === 'correction' && e.kind === 'wrong').map(e => e.at),
@@ -224,6 +234,8 @@ function summary(i: Instance, me: Me, w8 = wakes()) {
     id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(i.seriesId)?.inst === i, queued: !!queued(i),
     asks: k.asks, wakes: wakesOf(i.id, w8), fired: w8.fired[i.id] ?? null, runner: k.runner, cost: k.cost, active: k.active,
     unread: !!news && news.at > s.since && news.seq > (s.at[i.id] ?? 0), corrections: k.corrections,
+    // Whoever assigned it to you, until you open it or act in it.
+    assigned: told?.who === email ? { by: told.by, at: told.at } : null,
     // A deleted instance's hole: who deleted it, and when.
     deleted: i.hole ? { by: i.log[0].by, at: i.log[0].at } : null,
     // What says it was wrong, for its runner under Waiting on you, for a week, as a correction is never withdrawn.
@@ -260,8 +272,8 @@ function listing(me: Me) {
         instances: instances(sid).map(i => summary(i, me, w8)),
       };
     });
-    // Mine: a workspace you own, or one where you ran an instance, commented or uploaded; membership alone isn't.
-    const mine = w.owners.includes(me.email) || series.some(s => instances(s.id).some(i => kept.get(i)!.acted.includes(me.email)));
+    // Mine: a workspace you own, or one where you run an instance or acted in one; membership alone isn't.
+    const mine = w.owners.includes(me.email) || series.some(s => instances(s.id).some(i => kept.get(i)!.runner === me.email || kept.get(i)!.acted.includes(me.email)));
     return {
       id, name: w.name, archived: !!w.archived, owners: w.owners, members: w.members, manage: canManage(me, w), agents: text(agentsFile(id)), mine,
       proposal: open.find(p => p.id === id || p.into === id) ?? null, moved: (w.moved ?? []).filter(m => fresh(m.at)),
@@ -282,14 +294,14 @@ function runsOf(i: Instance, since = ''): RunRow[] {
   const a = active.get(i.seriesId);
   return i.log.slice(i.log.findLastIndex(e => e.op === 'duplicate') + 1).filter(r => r.op === 'run' && r.at >= since).map(r => {
     const d = i.log.find(e => e.op === 'done' && e.run === r.run), seen = (i.log.findLast(e => e.op === 'done' && e.seq < r.seq)?.seen as number | undefined) ?? 0;
-    const cause = pending(i, seen).find(e => e.seq <= (r.upto as number));
+    const cause = pending(i, seen, r.seq).find(e => e.seq <= (r.upto as number));
     const error = d?.error as string | undefined, outcome = !d ? 'running' : !error ? (d.aborted ? 'interrupted' : 'done') : Object.values(CUT).includes(error) ? 'cut' : 'failed';
     return {
       run: r.run as number, at: r.at, outcome,
       // Why a failed run failed: out of OpenRouter credits, a provider's policy refusing it, the time limit, or anything else.
       failure: outcome !== 'failed' ? null : /\b402\b|credits/i.test(error!) ? 'credits' : /\b403\b|terms of service|usage polic|flagged/i.test(error!) ? 'policy' : error === 'time limit' ? 'time limit' : 'other',
       seconds: Math.round(((d ? Date.parse(d.at) : Date.now()) - Date.parse(r.at)) / 1000), cost: d ? d.cost as number : a?.inst === i ? +a.cost.toFixed(4) : 0,
-      runner: i.log.findLast(e => e.seq < r.seq && ['create', 'duplicate', 'takeover'].includes(e.op))!.by,
+      runner: runnerAt(i.log, r.seq),
       started: cause ? { op: cause.op, by: cause.op === 'wake' ? cause.from as string : cause.by } : null,
       error: error ?? null,
     };
@@ -324,7 +336,8 @@ function status(me: Me) {
   return {
     running: seen.flatMap(([sid]) => active.get(sid) ?? []).map(a => ({ path: path(a.inst), run: a.n, at: a.inst.log.findLast(e => e.op === 'run')!.at, cost: +a.cost.toFixed(4) })),
     queued: open.flatMap(i => { const q = queued(i); return q ? [{ path: path(i), ...q }] : []; }),
-    asks: open.flatMap(i => waits(i).map(({ who, e }) => ({ who, path: path(i), since: e.at, text: e.text as string, note: isNote(i, e) }))),
+    asks: open.flatMap(i => waits(i).map(({ who, e }) => ({ who, path: path(i), since: e.at, text: e.text as string, note: e.by !== 'agent' || !e.ask }))),
+    assigned: open.flatMap(i => { const a = assignment(i); return a ? [{ ...a, path: path(i) }] : []; }),
     expired: (me.role === 'admin' ? Object.keys(users()) : [me.email]).flatMap(who => logins(who).filter(l => l.expired).map(l => ({
       who, login: l.name,
       holding: open.filter(i => {
@@ -332,7 +345,7 @@ function status(me: Me) {
         return hit && !i.log.some(e => e.seq > hit.seq && e.op === 'wake' && e.login === l.id);
       }).map(path),
     }))),
-    requests: Object.values(w8.requests).filter(r => seen.some(([sid]) => sid === r.series)).map(r => ({ who: asked(r), path: named(t, r.series), label: r.label, from: r.from, at: r.at })),
+    requests: Object.values(w8.requests).filter(r => seen.some(([sid]) => sid === r.series)).map(r => ({ who: asked(r), path: named(t, r.series), label: r.label, from: r.from, at: r.at, ...(r.target && { target: r.target }) })),
     proposals: proposals(t).filter(p => [p.id, p.into].some(x => canSee(me, t.workspaces[x]))),
     failed: open.filter(i => active.get(i.seriesId)?.inst !== i).flatMap(i => {
       const d = i.log.findLast(e => e.op === 'done');
@@ -503,6 +516,17 @@ const people = (w: { owners?: unknown; members?: unknown }) => [w.owners, w.memb
 
 // Workspaces, series and instances, by id. Renaming a workspace or a series edits .rf/tree.json, so it may happen mid-run; a run sees
 // the new names from its next start.
+// A person stops an instance's run, as Interrupt does and as assigning does first: its runner, the workspace's owners and admins alone
+// may. Its entry says who, and why if it's for something else; the next run waits for the next act.
+async function interrupt(inst: Instance, a: Active | undefined, me: Me, why?: string) {
+  const t = tree();
+  if (runnerOf(inst).by !== me.email && !canManage(me, t.workspaces[t.series[inst.seriesId].workspace]))
+    throw new HttpError(403, `only its runner, ${runnerOf(inst).by}, the workspace's owners and admins stop its run`);
+  if (!a?.run) throw new HttpError(409, a ? 'its run is starting: try again in a moment' : 'no run going');
+  inst.append(me.email, 'interrupt', { ...(why && { why }) });
+  await a.run.interrupt();
+}
+
 async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: URL) {
   const [kind, id = '', action, other = ''] = url.pathname.split('/').slice(2).map(decodeURIComponent);
   // A run reads and writes its own instance's screen and threads, commits its folder, sets wakes, corrects closed instances and leaves
@@ -783,6 +807,12 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const r = wakes().requests[id];
     if (!r) throw new HttpError(404, `no request ${id}`);
     mustSee(me, t.workspaces[t.series[r.series].workspace]);
+    if (req.method === 'POST' && r.target) {
+      // One to wake an instance, from before it was assigned: its wake stays a note, beside the starter's own.
+      wakeWith(instance(r.target), payload.quiet ? [] : [{ from: r.from, text: r.text, inst: r.inst, assigned: true }, { from: by }]);
+      dropRequest(id);
+      return send(res, 200, { id: r.target });
+    }
     if (req.method === 'POST') {
       const inst = startWith(r.series, r.label, by, checkTicks(by, payload.logins ?? []), payload.quiet ? [] : [{ from: r.from, text: r.text, inst: r.inst }, { from: by }]);
       dropRequest(id);
@@ -798,8 +828,10 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   const a = active.get(inst.seriesId);
   const mine = a?.inst === inst ? a : undefined;
   if (!action) see(by, inst.id, inst.log.at(-1)!.seq);
-  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4), browsers: [...(mine.browsers?.watchable().keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), runner: runner(inst), previous: await previous(inst), sums: Object.fromEntries(await Promise.all(inst.doc.items.filter(i => i.file).map(async i => [i.id, await sha256(inst.dir, i.file!)]))), waiting: waits(inst).map(({ who, e }) => ({ who, seq: e.seq })) });
+  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => { const s = standing(inst, e); return s ? { ...e, standing: s.word, ...(s.word === 'note' && { note: true }) } : e; }), starts: !!standing(inst, { seq: inst.log.length + 1, at: '', by, op: 'comment' })?.starts, run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4), browsers: [...(mine.browsers?.watchable().keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), runner: runner(inst), previous: await previous(inst), sums: Object.fromEntries(await Promise.all(inst.doc.items.filter(i => i.file).map(async i => [i.id, await sha256(inst.dir, i.file!)]))), waiting: waits(inst).map(({ who, e }) => ({ who, seq: e.seq })) });
   if (action === 'trace') return send(res, 200, trace(inst));
+  // Whom it may be assigned to: whoever sees its workspace and may sign in, but its runner.
+  if (action === 'assignees') return send(res, 200, Object.keys(users()).filter(e => { const p = asPerson(e); return p && e !== runnerOf(inst).by && canSee(p, t.workspaces[t.series[inst.seriesId].workspace]); }));
   if (action === 'summary') return send(res, 200, summary(inst, me));
   // The screen: anyone who sees the instance reads it; only its own run writes it.
   if (action === 'screen' && req.method === 'GET') return send(res, 200, inst.doc);
@@ -881,7 +913,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       mustSee(who, now.workspaces[now.series[inst.seriesId].workspace]);
       const up = inst.upload(by, url.searchParams.get('name') ?? 'file', tmp, hash.digest('hex'), pane, url.searchParams.get('onto'), quiet);
       // What starts no run, quiet or a note, is committed at once in its person's name; a run going commits it as it ends.
-      if (!starts(inst, up) && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, me, `Upload ${up.file}`).catch(err => inst.append('server', 'commit', { cause: up.seq, error: err.message }));
+      if (!standing(inst, up)!.starts && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, me, `Upload ${up.file}`).catch(err => inst.append('server', 'commit', { cause: up.seq, error: err.message }));
     } finally {
       rmSync(tmp, { force: true });
     }
@@ -910,7 +942,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     });
     if (away) {
       run.inst.append('agent', 'said', { run: run.n, inst: inst.id, label: inst.label, seq: said.seq, thread: said.thread });
-      if (!starts(inst, said) && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, AGENT, `Note in ${said.thread}`).catch(err => inst.append('server', 'commit', { cause: said.seq, error: err.message }));
+      if (!standing(inst, said)!.starts && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, AGENT, `Note in ${said.thread}`).catch(err => inst.append('server', 'commit', { cause: said.seq, error: err.message }));
       kick(inst);
       return send(res, 200, `said c${said.seq} in ${named(t, inst.seriesId)}/${inst.label}${under ? `, under ${thread}` : ''}, a note for its runner`);
     }
@@ -925,7 +957,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       renameInstance(inst, s.name);
       inst.append('server', 'rename', { from, cause: said.seq });
     }
-    if (!starts(inst, said) && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, me, `Comment in ${said.thread}`).catch(err => inst.append('server', 'commit', { cause: said.seq, error: err.message }));
+    if (!standing(inst, said)!.starts && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, me, `Comment in ${said.thread}`).catch(err => inst.append('server', 'commit', { cause: said.seq, error: err.message }));
   } else if (action === 'signoff' || action === 'reject') {
     // Anyone who sees the instance approves a proposal of the agent's, which `thread` names as cN, or rejects it, with a note, as an
     // ask from before questions and proposals, `ask: true`, which may have been either. Approving is a sign-off, the route's and the
@@ -965,12 +997,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     inst.append('agent', 'withdraw', { thread: ask.thread, on: ask.seq, text: text.trim(), ...(at && { see: at.seq }), run: run.n });
     return send(res, 200, `withdrew ${thread}`);
   } else if (action === 'interrupt') {
-    // Whoever sees the instance watches its run; its runner, the workspace's owners and admins alone stop it.
-    if (!run && runnerOf(inst).by !== by && !canManage(me, t.workspaces[t.series[inst.seriesId].workspace]))
-      throw new HttpError(403, `only its runner, ${runnerOf(inst).by}, the workspace's owners and admins stop its run`);
-    if (!mine?.run) throw new HttpError(409, 'no run going');
-    inst.append(by, 'interrupt');
-    await mine.run.interrupt();
+    await interrupt(inst, mine, me);
     return send(res, 200, 'ok');
   } else if (action === 'logins') {
     // The runner ticks the instance's logins anew, as before its first prompt.
@@ -978,10 +1005,22 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     inst.append(by, 'logins', { logins: checkTicks(by, payload.logins ?? []) });
     await closeUnlent();
     return send(res, 200, 'ok');
-  } else if (action === 'takeover') {
-    // Taking over makes you the runner from now on, with your own logins ticked; whoever closes answers for the whole instance.
-    if (mine) throw new HttpError(409, 'wait for the run to end');
-    inst.append(by, 'takeover', { from: runnerOf(inst).by, logins: checkTicks(by, payload.logins ?? []) });
+  } else if (action === 'assign' || action === 'takeover') {
+    // Assigning makes someone the runner from now on: its workspace's owners and admins assign it to anyone who sees the workspace, as
+    // its runner hands it over, and anyone else who sees it takes it over, assigning it to themselves, while no run goes. A run going
+    // stops first, as Interrupt stops it. Logins are never assigned: taking over ticks your own, and someone else ticks theirs. What
+    // came before is history (waker.ts standing()), its pending wakes no one's word, and it starts no run. rf 0.16's takeover is an
+    // assign to oneself.
+    const ws = t.workspaces[t.series[inst.seriesId].workspace], runner = runnerOf(inst).by, to = typeof payload.to === 'string' ? payload.to.toLowerCase() : by, p = asPerson(to);
+    if (to === runner) throw new HttpError(409, `${to} runs it already`);
+    if (to !== by && runner !== by && !canManage(me, ws)) throw new HttpError(403, `only its runner, ${runner}, the workspace's owners and admins assign it to someone else; you may take it over`);
+    if (!p || !canSee(p, ws)) throw new HttpError(400, `${to} can't see this instance`);
+    if (to !== by && payload.logins?.length) throw new HttpError(400, `logins are each person's own: ${to} ticks theirs`);
+    const ticks = to === by ? checkTicks(by, payload.logins ?? []) : [];
+    if (mine && runner !== by && !canManage(me, ws)) throw new HttpError(409, `run ${mine.n} is going: take it over once it ends, or ask its runner, ${runner}, the workspace's owners or admins, who may stop it`);
+    if (mine) await interrupt(inst, mine, me, `to assign it to ${to}`);
+    inst.append(by, 'assign', { to, from: runner, logins: ticks });
+    assigned(inst);
     return send(res, 200, 'ok');
   } else if (action === 'close' || action === 'abandon') {
     if (mine) throw new HttpError(409, 'wait for the run to end');

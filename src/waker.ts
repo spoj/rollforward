@@ -12,7 +12,7 @@ import { websitesOf, type Browsers } from './browsers.ts';
 import { notes, seriesSettings, type Note } from './series.ts';
 import { pushed, skills } from './skills.ts';
 import { AGENT, commit, committed, forget } from './git.ts';
-import { logins, runnerOf } from './logins.ts';
+import { logins, runnerAt, runnerOf } from './logins.ts';
 import { confirm } from './entra.ts';
 import { reachable, types } from './connections.ts';
 
@@ -39,7 +39,7 @@ const retiring = new Set<Active>();
 
 // A run's Pi, idle once the run ends cleanly, which its instance's next run within RF_IDLE_MIN carries on, as a new turn of the same
 // session whose message is the new log entries; at most RF_MAX_IDLE are idle, the longest ended first, and none holds its series'
-// slot. Anything the run would start from otherwise ends it: a takeover, new ticks, a view of the data changed, as by a rename, its
+// slot. Anything the run would start from otherwise ends it: an assign, new ticks, a view of the data changed, as by a rename, its
 // instance closed or abandoned, its runner no longer seeing it. So does a run that failed or was cut short, as by a refusal, whose
 // session is no place to carry on, and one that left a job running in its sandbox, which no run would watch.
 const IDLE_MS = Number(process.env.RF_IDLE_MIN ?? 60) * 60_000, MAX_IDLE = Number(process.env.RF_MAX_IDLE ?? 8);
@@ -59,7 +59,7 @@ function sees(i: Instance, t = tree()) {
 }
 function stale(i: Idle): boolean {
   return Date.now() - i.since > IDLE_MS || i.inst.doc.status !== 'open' || !sees(i.inst)
-    || i.inst.log.some(e => e.seq > i.seq && ['takeover', 'logins'].includes(e.op)) || startsFrom(i.inst) !== i.shape;
+    || i.inst.log.some(e => e.seq > i.seq && ['takeover', 'assign', 'logins'].includes(e.op)) || startsFrom(i.inst) !== i.shape;
 }
 // A run's Pi stopped, and its copies of indexes gone.
 const ending = new Set<{ view: View; done: Promise<void> }>();
@@ -79,28 +79,32 @@ function seenBefore(inst: Instance): number {
   return Math.max((inst.log.findLast(e => e.op === 'done')?.seen as number | undefined) ?? 0, inst.copied);
 }
 
-// Who starts an instance's runs: its runner, and anyone, people or agents, where the runner shares the series.
-export const starter = (inst: Instance, who: string) => {
-  const runner = runnerOf(inst).by;
-  return who === runner || seriesSettings(inst.series()).shared?.by === runner;
-};
-// A wake is the runner's word if they set it, or a run of an instance of theirs in the series did, this one's own among them.
-const runnersWake = (inst: Instance, wake: { from: string; inst?: string }) => {
-  const runner = runnerOf(inst).by;
-  return wake.from === runner || (!!wake.inst && instance(wake.inst).seriesId === inst.seriesId && runnerOf(instance(wake.inst)).by === runner);
-};
-// What a person but the runner, as it was then, adds is a note, shared series or not: the agent reads it as context for its runner to
-// take up, never as the runner's word, though it runs on it where it may. A wake that neither the runner nor a run of theirs in the
-// series set is one too, and so is another instance's agent's comment. A reply, an approval or a rejection from whom the agent's ask it
-// answers named is no note: from before replies named what they answer, the thread's last ask.
-export const isNote = (inst: Instance, e: Entry) => !!e.note || (isPerson(e) && ['upload', 'comment', 'signoff', 'reject'].includes(e.op)
-  && e.by !== inst.log.findLast(x => x.seq < e.seq && ['create', 'duplicate', 'takeover'].includes(x.op))?.by
-  && !(e.op !== 'upload' && (e.parent ?? e.on ? inst.log[(e.parent ?? e.on) as number - 1] : inst.log.findLast(x => x.seq < e.seq && x.op === 'comment' && x.thread === e.thread && x.by === 'agent'))?.to === e.by));
-// A quiet entry, such as rf's without --wake, starts nothing, and its act kicks nothing that waits: the next run reads it with the rest.
-export const starts = (inst: Instance, e: Entry) => !e.quiet && (!isNote(inst, e) || starter(inst, e.by));
+// An entry's standing, the one place it's decided (docs/system.md, Runner): the runner's word, an answer from whom the agent's ask
+// named, or a note, which the agent reads as context for its runner to take up; and whether it starts a run. People's comments,
+// uploads, approvals and rejections have one, as do wakes and another instance's agent's comments; nothing else directs a run.
+// - The last assign draws a line, a takeover being an assign to oneself: what came before it is a note, whoever said it, and starts nothing.
+// - After it, a person's act is the runner's word if they ran it as it was said, an answer if it answers an ask from after the line
+//   that named them (from before replies named what they answer, the thread's last ask), and else a note.
+// - A wake is judged as it fires and logged so, a note unless the runner set it, or a run of an instance of theirs in the series did,
+//   this one's own among them; one pending as its instance was assigned is no one's word. Another instance's agent's comment is a note.
+// - A note starts a run only where the runner shares the series; a quiet entry, such as rf's without --wake, none, and its act kicks
+//   nothing that waits: the next run reads it with the rest. Nothing from before an earlier version's copy starts one.
+// `upto` judges it as the log stood then, as history shows what started a run.
+export type Standing = { word: 'runner' | 'answer' | 'note'; starts: boolean };
+export function standing(inst: Instance, e: Entry, upto = inst.log.length): Standing | undefined {
+  if (e.op !== 'wake' && !(['upload', 'comment', 'signoff', 'reject'].includes(e.op) && (isPerson(e) || e.note))) return undefined;
+  const line = inst.log.findLast(x => x.seq <= upto && ['takeover', 'assign'].includes(x.op))?.seq ?? 0, runner = runnerAt(inst.log, e.seq);
+  const ask = e.op === 'upload' ? undefined : e.parent ?? e.on ? inst.log[(e.parent ?? e.on) as number - 1] : inst.log.findLast(x => x.seq < e.seq && x.op === 'comment' && x.thread === e.thread && x.by === 'agent');
+  const word = e.seq < line || e.note ? 'note'
+    : e.op !== 'wake' ? (e.by === runner ? 'runner' : ask && ask.seq > line && ask.to === e.by ? 'answer' : 'note')
+    : e.seq <= inst.log.length || (!e.assigned && (e.from === runner || (!!e.inst && instance(e.inst as string).seriesId === inst.seriesId && runnerOf(instance(e.inst as string)).by === runner))) ? 'runner' : 'note';
+  return { word, starts: !e.quiet && e.seq > Math.max(line, inst.copied) && (word !== 'note' || seriesSettings(inst.series()).shared?.by === runnerAt(inst.log, upto + 1)) };
+}
+// A wake as it fires: its standing, which its entry keeps.
+const woken = (inst: Instance, wake: { from: string; inst?: string; assigned?: boolean }) => standing(inst, { seq: inst.log.length + 1, at: '', by: 'server', op: 'wake', ...wake })!;
 
-export function pending(inst: Instance, seen: number): Entry[] {
-  return inst.log.filter(e => e.seq > seen && starts(inst, e) && (e.op === 'wake' || ((isPerson(e) || e.note) && ['upload', 'comment', 'signoff', 'reject'].includes(e.op))));
+export function pending(inst: Instance, seen: number, upto = inst.log.length): Entry[] {
+  return inst.log.filter(e => e.seq > seen && e.seq <= upto && standing(inst, e, upto)?.starts);
 }
 
 // Whether an instance has something for a run: what came since its last run, or since an Interrupt, which waits for the next act;
@@ -113,10 +117,10 @@ const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math
 const told = (e: Entry) => isPerson(e) || !!e.note || ['wake', 'expired', 'point', 'rename'].includes(e.op) || (e.op === 'done' && (!!e.aborted || !!e.error));
 
 // A run's first message names the runner, on whose behalf the agent acts, and what they lend it, each tick as logged with what it
-// is, a website's at its address, as does a later one whose entries change those: a takeover and a runner's new ticks. It lists
+// is, a website's at its address, as does a later one whose entries change those: an assign and a runner's new ticks. It lists
 // the series' open notes, and a later one those left since.
 export function message(inst: Instance, n: number, entries: Entry[], first = false, open: Note[] = []): string {
-  const made = entries.findLast(e => ['takeover', 'logins'].includes(e.op)), us = users(), who = (by: string) => `${us[by]?.name || by} <${by}>`;
+  const made = entries.findLast(e => ['takeover', 'assign', 'logins'].includes(e.op)), to = (made?.to ?? made?.by) as string, us = users(), who = (by: string) => `${us[by]?.name || by} <${by}>`;
   const { by, logins: ticked } = runnerOf(inst), set = [...wakesOf(inst.id), ...wakesOf(inst.seriesId)], sites = websitesOf(by);
   const offers = new Map(logins(by).flatMap(l => l.offers.map(o => [o.id, o.name])));
   const lent = (l: string) => l.startsWith('web:') && sites[l.slice(4)] ? `${l} at ${sites[l.slice(4)].url}` : offers.has(l) ? `${l} (${offers.get(l)})` : l;
@@ -127,12 +131,12 @@ export function message(inst: Instance, n: number, entries: Entry[], first = fal
   }));
   const from = (e: Note) => e.by !== 'agent' ? who(e.by) : `the agent of ${named(tree(), instance((e.see as { inst: string }).inst).seriesId)}/${instance((e.see as { inst: string }).inst).label}, run ${e.run}, for ${who(e.runner as string)}`;
   return `Instance ${inst.label}, run ${n}.`
-    + (first || made ? ` Its runner is ${made?.op === 'takeover' ? `now ${who(made.by)}, taking over from ${who(made.from as string)}` : who(by)}, who lends you ${ticked.map(lent).join(', ') || 'no login'}.` : '')
-    + (first && set.length ? ` Pending wakes: ${set.map(k => `${k.id}, ${k.target === inst.id ? 'waking this instance' : `starting ${k.label}`} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''}, from ${k.from}${runnersWake(inst, k) ? '' : ', a note'}${k.text ? `, saying ${JSON.stringify(k.text)}` : ''}`).join('; ')}.` : '')
+    + (first || made ? ` Its runner is ${made && made.op !== 'logins' ? `now ${who(to)}, ${to === made.by ? 'taking over' : `assigned by ${who(made.by)}`} from ${who(made.from as string)}` : who(by)}, who lends you ${ticked.map(lent).join(', ') || 'no login'}.` : '')
+    + (first && set.length ? ` Pending wakes: ${set.map(k => `${k.id}, ${k.target === inst.id ? 'waking this instance' : `starting ${k.label}`} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''}, from ${k.from}${woken(inst, k).word === 'runner' ? '' : ', a note'}${k.text ? `, saying ${JSON.stringify(k.text)}` : ''}`).join('; ')}.` : '')
     + (fixed.length ? ` Corrections on earlier instances: ${fixed.join('; ')}.` : '')
     + (open.length ? ` Open notes on the series: ${open.map(e => `n${e.seq}, from ${from(e)} at ${e.at}, ${JSON.stringify(e.text)}${(e.files as string[] | undefined)?.map(f => `, ../.notes/${f}`).join('') ?? ''}`).join('; ')}.` : '')
     + ' New log entries:\n'
-    + entries.filter(told).map(e => JSON.stringify(isNote(inst, e) ? { ...e, note: true } : e)).join('\n');
+    + entries.filter(told).map(e => JSON.stringify(standing(inst, e)?.word === 'note' ? { ...e, note: true } : e)).join('\n');
 }
 
 // What a series' agent may read: the other series of its workspace, and those of each workspace whose managers let its workspace's
@@ -384,7 +388,7 @@ export async function remove(inst: Instance, by: string, fields: () => Record<st
   }
   const w = wakes();
   for (const [id, k] of Object.entries(w.pending)) if (k.target === inst.id || (k.target === inst.seriesId && (task || (k.label === inst.label && !k.days)))) delete w.pending[id];
-  for (const [id, r] of Object.entries(w.requests)) if (r.series === inst.seriesId && (task || r.label === inst.label)) delete w.requests[id];
+  for (const [id, r] of Object.entries(w.requests)) if (r.target === inst.id || (r.series === inst.seriesId && (task || r.label === inst.label))) delete w.requests[id];
   delete w.fired[inst.id];
   saveWakes(w);
   const commits = forget(inst.dir), deleted = inst.markDeleted(by, fields());
@@ -427,7 +431,7 @@ export function queued(inst: Instance): { why: string; since: string } | undefin
 // <label>-r3 does <label>-r2.
 export function closed(inst: Instance, by: string, quiet?: boolean) {
   for (const later of instances(inst.seriesId).filter(i => i.doc.status === 'open' && i.label.localeCompare(inst.label, 'en', { numeric: true }) > 0)) {
-    later.append('server', 'wake', { reason: `${inst.label} closed: its final figures may differ from the draft you read`, from: `${named(tree(), inst.seriesId)}/${inst.label}`, ...(by !== runnerOf(later).by && { note: true }), ...(quiet && { quiet: true }) });
+    later.append('server', 'wake', { reason: `${inst.label} closed: its final figures may differ from the draft you read`, from: `${named(tree(), inst.seriesId)}/${inst.label}`, ...(woken(later, { from: by }).word === 'note' && { note: true }), ...(quiet && { quiet: true }) });
     if (!quiet) kick(later);
   }
   const [, base, r] = /^(.+)-r(\d+)$/.exec(inst.label) ?? [], was = base && instances(inst.seriesId).find(i => i.label === (r === '2' ? base : `${base}-r${Number(r) - 1}`) && i.doc.status === 'closed');
@@ -448,12 +452,13 @@ export function correct(inst: Instance, by: string, c: { kind: string; item?: st
 }
 
 // Wakes (.rf/wakes.json): the pending ones by id, each for a target, an instance or a series by id, and the requests to start an
-// instance that a series no one shares, or with 3 open, got instead. A target fires at most once in 15 minutes: a wake due sooner
+// instance that a series no one shares, or with 3 open, got instead, or to wake an instance, `target`, that one pending as it was
+// assigned, `assigned`, got where its runner doesn't share the series. A target fires at most once in 15 minutes: a wake due sooner
 // waits. A run's wake notes its instance, `inst`, as its name in `from` may change before it fires, and any wake its `text`, which
 // the run it starts reads in its wake entry. One with `days` recurs each week on them at its time of day, in the server's time zone;
 // a series' moves the date in its label on with it, keeping it the day it fires or the one before that it fires on, as it was set.
-export type Wake = { target: string; at: string; from: string; label?: string; inst?: string; days?: string[]; text?: string };
-export type Request = { series: string; label: string; from: string; at: string; inst?: string; text?: string };
+export type Wake = { target: string; at: string; from: string; label?: string; inst?: string; days?: string[]; text?: string; assigned?: boolean };
+export type Request = { series: string; label: string; from: string; at: string; inst?: string; text?: string; target?: string };
 type Wakes = { pending: Record<string, Wake>; fired: Record<string, string>; requests: Record<string, Request> };
 export const wakes = () => readJson<Wakes>('wakes.json', { pending: {}, fired: {}, requests: {} });
 const saveWakes = (w: Wakes) => writeJson('wakes.json', w);
@@ -510,7 +515,15 @@ export function cancelWake(id: string) {
 export function cancelWakes(targets: string[]) {
   const w = wakes();
   for (const [id, k] of Object.entries(w.pending)) if (targets.includes(k.target)) delete w.pending[id];
-  for (const [id, r] of Object.entries(w.requests)) if (targets.includes(r.series)) delete w.requests[id];
+  for (const [id, r] of Object.entries(w.requests)) if ([r.series, r.target].some(x => targets.includes(x!))) delete w.requests[id];
+  saveWakes(w);
+}
+
+// An assign makes its instance's pending wakes no one's word: each fires as a note, a request to its runner where they don't share
+// the series (fire()).
+export function assigned(inst: Instance) {
+  const w = wakes();
+  for (const k of Object.values(w.pending)) if (k.target === inst.id) k.assigned = true;
   saveWakes(w);
 }
 
@@ -523,12 +536,16 @@ export function dropRequest(id: string): Request {
 }
 
 // Makes an instance of a series, run by `by` with the logins they ticked, and starts it with wakes after its create: a wake's, a
-// person's, or a request's and the person who starts it; without one, as a person makes it quietly, it waits for its first act. A wake
-// is the runner's word if they set it, or a run of an instance of theirs in the series did; anyone else's is a note.
-export function startWith(seriesId: string, label: string, by: string, logins: string[], wakes: { from: string; text?: string; inst?: string }[]): Instance {
+// person's, or a request's and the person who starts it; without one, as a person makes it quietly, it waits for its first act.
+export function startWith(seriesId: string, label: string, by: string, logins: string[], wakes: Woken[]): Instance {
   if (instances(seriesId).filter(i => i.doc.status === 'open').length >= MAX_OPEN) throw new HttpError(409, `${MAX_OPEN} instances of ${tree().series[seriesId].name} are open: a new one waits until one closes`);
-  const inst = createInstance(seriesId, label, by, logins);
-  for (const wake of wakes) inst.append('server', 'wake', { from: wake.from, ...(wake.text && { text: wake.text }), ...(!runnersWake(inst, wake) && { note: true }) });
+  return wakeWith(createInstance(seriesId, label, by, logins), wakes);
+}
+
+// Wakes an instance, each wake logged with who set it and its text, a note unless it's the runner's word (standing()).
+type Woken = { from: string; text?: string; inst?: string; assigned?: boolean };
+export function wakeWith(inst: Instance, wakes: Woken[]): Instance {
+  for (const wake of wakes) inst.append('server', 'wake', { from: wake.from, ...(wake.text && { text: wake.text }), ...(woken(inst, wake).word === 'note' && { note: true }) });
   if (wakes.length) kick(inst);
   return inst;
 }
@@ -565,8 +582,9 @@ function fire() {
         console.log(`a wake found ${named(t, inst.seriesId)}/${inst.label} ${inst.doc.status}, so it woke nothing`);
         continue;
       }
-      inst.append('server', 'wake', { from, ...(wake.text && { text: wake.text }), ...(!runnersWake(inst, wake) && { note: true }) });
-      kick(inst);
+      const was = { from, text: wake.text, inst: wake.inst, assigned: wake.assigned };
+      if (wake.assigned && !woken(inst, was).starts) w.requests[newId()] = { series: inst.seriesId, label: inst.label, target: inst.id, from, at: now, ...(wake.inst && { inst: wake.inst }), ...(wake.text && { text: wake.text }) };
+      else wakeWith(inst, [was]);
       continue;
     }
     const shared = seriesSettings(seriesDir(target)).shared, sharer = shared && asPerson(shared.by);

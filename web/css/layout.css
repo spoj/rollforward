@@ -73,6 +73,8 @@ label:has(> input.tick:not(:checked)) + .nogrant { display: none; }
    not as it starts; and + for a workspace. */
 .find { display: flex; align-items: center; gap: 2px; padding: 0 0 8px; }
 .find input { flex: 1; min-width: 0; font: inherit; font-size: 13px; padding: 4px 8px; border: 1px solid var(--rule-2); border-radius: var(--r1); background: var(--sheet); color: var(--ink); }
+.find .mine { width: auto; padding: 0 6px; font-size: 12px; }
+.find .mine.on { color: var(--ink); background: var(--rule); }
 .sorter { position: relative; }
 .sorter > summary::-webkit-details-marker { display: none; }
 .sorter.on > summary { color: var(--ink); background: var(--rule); }

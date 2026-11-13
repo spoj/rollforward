@@ -340,7 +340,7 @@ test("a run starts only for a runner Microsoft still signs in: one it no longer 
   assert.deepEqual([runs(), inst.log.at(-1)!.left, users()[lee].disabled], [2, true, true], 'Microsoft says the account is disabled: so is its person here');
 });
 
-for (const stale of [false, true]) test(`a takeover while Microsoft ${stale ? 'refuses' : 'confirms'} the runner starts over, confirming the new runner before any run`, async t => {
+for (const stale of [false, true]) test(`taking an instance over while Microsoft ${stale ? 'refuses' : 'confirms'} the runner starts over, confirming the new runner before the run their act starts`, async t => {
   const before = `before-${stale}@demo.test`, next = `next-${stale}@demo.test`;
   writeJson('users.json', { ...readJson('users.json', {}), [before]: { role: 'user' }, [next]: { role: 'user' } });
   saveTree({ ...tree(), workspaces: { ...tree().workspaces, w: { ...tree().workspaces.w, members: [before, next] } } });
@@ -364,7 +364,8 @@ for (const stale of [false, true]) test(`a takeover while Microsoft ${stale ? 'r
   });
   kick(inst);
   await waiting;
-  inst.append(next, 'takeover', { from: before, logins: [] });
+  inst.append(next, 'assign', { to: next, from: before, logins: [] });
+  inst.append(next, 'comment', { thread: 'c9', text: 'Mine now: go on.' });
   kick(inst);
   release();
   for (let i = 0; i < 100 && !inst.log.some(e => ['run', 'expired'].includes(e.op)); i++) await new Promise(ok => setTimeout(ok, 50));
