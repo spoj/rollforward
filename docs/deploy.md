@@ -24,7 +24,7 @@ rollforward runs on one host and the browser service ([spoj/rollforward-browser]
 
 ## The browser host
 
-1. Give the service a user of its own, with lingering on (`loginctl enable-linger USER`), and install Node 26 and rootless podman. Then follow its README's Run, as a systemd user service.
+1. Give the service a user of its own, with lingering on (`loginctl enable-linger USER`), and install Node 26 and rootless podman. Then follow its README's Run, as a systemd user service. Website sign-ins and checks need a release with open sign-in sessions, `except` and `GET /blocked`: update the browser service before rollforward.
 2. Follow its README's "On a host of its own":
    - `BROWSER_HOST` is the host's private address;
    - a firewall lets only the rollforward host reach `BROWSER_PORT`;
