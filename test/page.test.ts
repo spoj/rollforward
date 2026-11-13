@@ -1258,6 +1258,24 @@ test("conversation drafts and picked files stay with their instance, including a
   } finally { await tab.close(); }
 });
 
+test("a link opened signed out lands where it points once signed in, and a session lapsing as a comment is sent keeps the comment and reply being written through signing in again", async () => {
+  const context = await browser.newContext(), tab = await context.newPage();
+  try {
+    await tab.goto(new URL('/#/a5c0ff5e1f07/c3', page.url()).href);
+    await tab.click('a.ms');
+    await tab.waitForSelector('#bar h1 .t:text-is("January")');
+    await tab.waitForSelector('#conv .post.flash[data-seq="3"]');
+    await tab.fill('#newcomment', 'A long careful comment');
+    await tab.click('#conv .post[data-seq="3"] > .pa [data-act=reply]');
+    await tab.fill('#conv .post[data-seq="3"] > .reply[data-mode=reply] textarea', 'A careful reply');
+    await context.clearCookies();
+    await tab.click('#log [data-act=comment]');
+    await tab.click('a.ms');
+    await tab.waitForSelector('#bar h1 .t:text-is("January")');
+    assert.deepEqual(await Promise.all(['#newcomment', '#conv .post[data-seq="3"] > .reply[data-mode=reply] textarea'].map(s => tab.inputValue(s))), ['A long careful comment', 'A careful reply']);
+  } finally { await context.close(); }
+});
+
 test("a comment or reply uploading attachments posts to its original instance after navigation", async () => {
   const tab = await browser.newPage({ storageState: await page.context().storageState() });
   try {
