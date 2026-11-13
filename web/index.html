@@ -1526,10 +1526,9 @@ async function onAct(act, el) {
     const [, label, inside] = act === 'wadd' && /^(.*?)\s*<(.+)>$/.exec($('#wperson').value.trim()) || [];
     const s = pv.settings, p = act === 'wadd' ? (inside ?? $('#wperson').value).trim().toLowerCase() : el.dataset.p;
     if (!p) return;
-    const owners = s.owners.filter(x => x !== p), members = s.members.filter(x => x !== p);
-    if (act === 'wadd') (s.owners.includes(p) ? owners : members).push(p);
-    if (act === 'wrole') (s.owners.includes(p) ? members : owners).push(p);
-    await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ owners, members, ...(label && !p.includes('@') && { groups: { [p]: label } }) }) });
+    // The one change, which the server makes to the people as they are now, not as this dialog last saw them.
+    const change = act === 'wremove' ? { remove: p } : { add: p, as: s.owners.includes(p) === (act === 'wadd') ? 'owner' : 'member' };
+    await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ ...change, ...(label && !p.includes('@') && { groups: { [p]: label } }) }) });
     me = await api('/me');
     await refresh();
     openWorkspaceSettings();

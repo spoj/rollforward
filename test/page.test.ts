@@ -912,6 +912,31 @@ test("a workspace's settings: five people shown until Show all, each row's two b
   await page.evaluate(() => refresh());
 });
 
+test("adding or removing someone in a workspace's settings changes that one alone, undoing no other owner's change made since the dialog opened", async () => {
+  const ws = '1b3031035ff6', put = (body: object) => page.evaluate(([id, b]) => fetch(`/api/workspaces/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.status), [ws, body] as const);
+  const people = () => page.evaluate(id => fetch(`/api/workspaces/${id}/people`).then(r => r.json()).then(ps => ps.map((p: { who: string; as: string }) => `${p.as} ${p.who}`)), ws);
+  const before = await page.evaluate(id => tree.find(w => w.id === id), ws);
+  await page.evaluate(id => { location.hash = `#/${id}`; }, ws);
+  await page.waitForSelector('#tree .row.ws.on');
+  await page.evaluate(async () => { await refresh(); openWorkspaceSettings(); });
+  await page.waitForSelector('#pv[open] #wperson');
+  assert.equal(await put({ owners: before.owners, members: [...before.members, 'carol@demo.test'] }), 200, 'another owner adds Carol');
+  await page.fill('#wperson', 'dave@demo.test');
+  await page.click('[data-act=wadd]');
+  await page.waitForSelector('#pv [data-act=wremove][data-p="dave@demo.test"]');
+  assert.ok((await people()).includes('member carol@demo.test'));
+  assert.equal(await put({ owners: before.owners, members: [...before.members, 'dave@demo.test'] }), 200, 'and another takes Carol off');
+  await page.click('#pv [data-act=wrole][data-p="dave@demo.test"]');
+  await page.waitForSelector('#pv [data-act=wrole][data-p="dave@demo.test"]:text-is("Make member")');
+  assert.deepEqual((await people()).filter((p: string) => /carol|dave/.test(p)), ['owner dave@demo.test']);
+  await page.click('#pv [data-act=wremove][data-p="dave@demo.test"]');
+  await page.waitForSelector('#pv [data-act=wremove][data-p="dave@demo.test"]', { state: 'detached' });
+  assert.deepEqual((await people()).filter((p: string) => /carol|dave/.test(p)), []);
+  await page.keyboard.press('Escape');
+  await page.waitForSelector('#pv:not([open])', { state: 'attached' });
+  assert.equal(await put({ owners: before.owners, members: before.members }), 200);
+});
+
 test("Logins shows what needs you first, then a line for each kind, Microsoft 365's sources and the websites opening in place; ticks go by kind, Microsoft 365's sources under a tick of their own, an expired login's flagged and off", async () => {
   const rf = join(root, '.rf'), mine = join(rf, 'people', createHash('sha256').update('admin@demo.test').digest('hex').slice(0, 16));
   writeFileSync(join(rf, 'connections.json'), JSON.stringify({ graph: { type: 'graph' }, adb: { type: 'databricks' } }));

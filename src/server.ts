@@ -550,9 +550,13 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       if (name !== w.name && Object.values(t.workspaces).some(x => x.name === name)) throw new HttpError(409, `the name ${name} is taken; choose another`);
       w.name = name;
     }
-    if (change.owners !== undefined || change.members !== undefined) {
-      const before = hidden(t, users());
-      [w.owners, w.members] = people({ owners: w.owners, members: w.members, ...change });
+    // One person or Entra group added, as an owner or a member, or removed, changes the people as they are now, so it undoes no one
+    // else's change; owners and members replace either list whole, as rf people --set does.
+    const one = change.add ?? change.remove;
+    if (one !== undefined || change.owners !== undefined || change.members !== undefined) {
+      const before = hidden(t, users()), p = String(one).toLowerCase(), now = { owners: w.owners.filter(x => x !== p), members: w.members.filter(x => x !== p) };
+      if (change.add !== undefined) now[change.as === 'owner' ? 'owners' : 'members'].push(p);
+      [w.owners, w.members] = people({ ...(one === undefined ? w : now), ...change });
       guard(before, hidden(t, users()), change.force);
     }
     // Whoever manages a workspace labels its Entra groups, for everyone who sees one of them.
