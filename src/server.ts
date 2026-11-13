@@ -428,9 +428,10 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
         '--ro-bind', join(app, 'src', 'preview.py'), '/preview.py', '--setenv', 'HOME', '/tmp', '--setenv', 'LANG', 'C.UTF-8', '--', '/opt/venv/bin/python', '/preview.py', basename(rel), part,
       ], { timeout: 30_000, maxBuffer: 64e6 });
       const content = createHash('sha256').update(`${basename(rel)}\n${part}\n`);
+      // A file preview.py can't read, as a broken or password-protected one, is a plain message.
       const [{ stdout }] = await Promise.all([run, pipeline(createReadStream('', { fd, start: 0 }), async function* (chunks: AsyncIterable<Buffer>) {
         for await (const c of chunks) { content.update(c); yield c; }
-      }, run.child.stdin!)]);
+      }, run.child.stdin!)]).catch(() => { throw new HttpError(422, `can't preview ${basename(rel)}: download it`); });
       if (inst.doc.status === 'deleted') throw new HttpError(404, 'the instance was deleted');
       const tmp = join(tmpDir, randomUUID());
       writeFileSync(tmp, stdout);

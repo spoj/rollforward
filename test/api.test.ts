@@ -1279,7 +1279,8 @@ test('the second audit: a bad request line, a bad workbook and a slow body hurt 
   const bad = join(await dir(series, '2026-08-30'), 'working', 'bad.xlsx');
   writeFileSync(bad, 'not a workbook');
   const preview = async (name: string) => call('GET', `/preview/${await iid(series, '2026-08-30')}/working/${name}`);
-  assert.equal((await preview('bad.xlsx')).status, 500);
+  const broken = await preview('bad.xlsx');
+  assert.deepEqual([broken.status, await broken.text()], [422, "can't preview bad.xlsx: download it"], 'a plain message, not the sandbox command and a traceback');
   writeFileSync(bad.replace('bad.xlsx', 'fine.csv'), 'month,total\n2026-08,5\n');
   assert.deepEqual((await (await preview('fine.csv')).json()).sheets[0].rows, [['month', 'total'], ['2026-08', '5']]);
   const kept = readdirSync(join(root, '.previews'));
