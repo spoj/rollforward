@@ -787,6 +787,23 @@ test("a quiet act starts no run, which the next run reads: an instance made quie
   assert.equal(after.find(e => e.op === 'run')!.upto, after.findLast(e => e.op === 'comment')!.seq, 'the next act starts a run, which reads all before it');
 });
 
+test("a comment's attachment is its person's act: recorded in the system's log and committed at once in their name, never in the next commit's", async () => {
+  const b = sessionOf(await login(bob))!;
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Attributed' }))).json();
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ members: [bob] }))).status, 200);
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'Rec' }))).json();
+  const { id } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: '2026-12', quiet: true }))).json(), path = `/api/instances/${id}`;
+  const attached = await call('POST', `${path}/attach?name=${encodeURIComponent('bank details.txt')}`, 'IBAN GB00 EVIL 0000 0000', b);
+  assert.equal(attached.status, 200);
+  const { file } = await attached.json();
+  const acts = readFileSync(join(root, '.rf', 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+  assert.deepEqual(acts.filter(a => a.op === 'attach' && a.instance === id).map(a => [a.by, a.file]), [[bob, file]]);
+  assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ text: 'Inputs come tomorrow.', quiet: true }))).status, 200);
+  await new Promise(r => setTimeout(r, 2500));
+  const git = (...a: string[]) => execFileSync('git', ['-C', join(root, 'instances', id), ...a], { encoding: 'utf8' }).trim();
+  assert.deepEqual(git('log', '--format=%ae %s', '--', file).split('\n'), [`${bob} Attach ${file}`]);
+});
+
 test('skills are pushed by admins and those granted publish, each push a version live at once, and rolled back by pushing an earlier one', async () => {
   const b = sessionOf(await login(bob))!, push = (files: object, cookie = admin) => call('POST', '/skills/tool/versions', JSON.stringify(files), cookie);
   assert.equal((await push({ files: filesOf(join(standIns, 'tool')) }, b)).status, 403, 'a user may not push');

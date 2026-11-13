@@ -838,7 +838,12 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       const now = tree(), who = asPerson(by);
       if (!who) throw new HttpError(401, 'sign in');
       mustSee(who, now.workspaces[now.series[inst.seriesId].workspace]);
-      return send(res, 200, { file: inst.keep(url.searchParams.get('name') ?? 'file', tmp, 'upload/attachments') });
+      const file = inst.keep(url.searchParams.get('name') ?? 'file', tmp, 'upload/attachments');
+      // No entry of the instance's names it until a comment does: the system's log records it, and it's committed at once in its
+      // person's name, unless a run of the instance is going, whose end commits it.
+      act(by, { op: 'attach', instance: inst.id, file });
+      if (active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, me, `Attach ${file}`).catch(err => inst.append('server', 'commit', { error: err.message }));
+      return send(res, 200, { file });
     } finally {
       rmSync(tmp, { force: true });
     }
