@@ -447,3 +447,18 @@ test("a run's first message lists its series' open notes, each with who left it 
   const read = view(oct).ro.filter(([, at]) => at.endsWith('/.notes'));
   assert.deepEqual(read.filter(([, at]) => /Bank rec|Close|Lunch/.test(at)), [[join(book, 'notes'), '/work/Acme/Bank rec/.notes'], [join(tmp, 'series', 's5', 'notes'), '/work/Main/Close/.notes']], "its own series', and those in reach, but a task's");
 });
+
+test("a note reaches a run going at once, though it starts none: another person's comment, and a note left on its series", async () => {
+  const { addNote } = await import('../src/series.ts'), going = make('s8', 'going'), steered: string[] = [];
+  const a = { inst: going, n: 1, sent: going.log.at(-1)!.seq, noted: 0, texts: new Map(), run: { steer: async (t: string) => void steered.push(t) } } as unknown as Active;
+  active.set('s8', a);
+  going.append('bob@demo.test', 'comment', { thread: 'c9', text: 'the rate moved' });
+  kick(going);
+  addNote(join(tmp, 'series', 's8'), alice, 'note', { text: 'from now on, weekly' });
+  const { noted } = await import('../src/waker.ts');
+  noted('s8');
+  active.delete('s8');
+  assert.equal(steered.length, 2);
+  assert.match(steered[0], /"by":"bob@demo\.test","op":"comment".*"note":true/);
+  assert.match(steered[1], /Open notes on the series: n\d+, from .+ "from now on, weekly"\. New log entries:\n$/);
+});
