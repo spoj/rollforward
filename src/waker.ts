@@ -35,6 +35,7 @@ export const active = new Map<string, Active>();
 export const byToken = new Map<string, Active>();
 const debounce = new Map<string, NodeJS.Timeout>();
 const waiting = new Set<Instance>();
+const retiring = new Set<Active>();
 
 // A run's Pi, idle once the run ends cleanly, which its instance's next run within RF_IDLE_MIN carries on, as a new turn of the same
 // session whose message is the new log entries; at most RF_MAX_IDLE are idle, the longest ended first, and none holds its series'
@@ -302,7 +303,8 @@ function finish(a: Active, aborted: boolean, error?: string): Entry | undefined 
   // commits wait for: once its sandbox has stopped, or, idle, as it is, nothing running in it.
   if (!a.run && !a.ready) rmSync(join(rfDir(), 'runs', a.token), { recursive: true, force: true });
   const stopped = keep || (!a.run && !a.ready) ? undefined : end(a.token, a.run ?? a.ready!, a.view);
-  a.ended = Promise.all([closing, stopped]);
+  retiring.add(a);
+  a.ended = Promise.all([closing, stopped]).finally(() => retiring.delete(a));
   commit(a.inst.dir, AGENT, [`Run ${a.n}`, error].filter(Boolean).join(': '), stopped).catch(e => a.inst.append('server', 'commit', { run: a.n, error: e.message }));
   if (a.run) { // one that never started, as with a missing API key, waits for the next act or a restart rather than retrying at once
     const next = due(a.inst) ? a.inst : instances(series).find(i => i !== a.inst && due(i));
@@ -355,7 +357,7 @@ export async function remove(inst: Instance, by: string, fields: () => Record<st
   saveWakes(w);
   const commits = forget(inst.dir), deleted = inst.markDeleted(by, fields());
   act(by, { method: 'POST', path: `/api/instances/${inst.id}/delete`, deleted: `${named(t, inst.seriesId)}/${inst.label}` });
-  await Promise.all([...runs.map(a => a.ended), ...[...ending].filter(e => e.view.dir === inst.dir || Object.values(e.view.names).includes(inst.id)).map(e => e.done), commits]);
+  await Promise.all([...[...retiring].filter(a => a.inst === inst || Object.values(a.view.names).includes(inst.id)).map(a => a.ended), ...[...ending].filter(e => e.view.dir === inst.dir || Object.values(e.view.names).includes(inst.id)).map(e => e.done), commits]);
   inst.clear();
   return deleted;
 }

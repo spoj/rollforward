@@ -373,8 +373,9 @@ test("a run starts only for a runner who still sees its workspace: one removed f
 });
 
 test('deletion records its tombstone before waiting for a starting sandbox, and another deletion waits for that retiring reader too', async () => {
-  const own = make('s1', 'deleting-start'), read = make('s2', 'deleting-read'), ready = Promise.withResolvers<Run>(), stopped = Promise.withResolvers<void>();
-  const a = { inst: own, n: 1, token: 'deleting-start', view: view(own), ready: ready.promise, process: '', cost: 0, seen: 0, done: false } as Active;
+  const own = make('s1', 'deleting-start'), read = make('s2', 'deleting-read'), late = make('s2', 'deleting-late');
+  const ready = Promise.withResolvers<Run>(), stopped = Promise.withResolvers<void>(), browsers = Promise.withResolvers<void>();
+  const a = { inst: own, n: 1, token: 'deleting-start', view: view(own), ready: ready.promise, process: '', cost: 0, seen: 0, done: false, browsers: { end: () => browsers.promise } } as Active;
   own.append('server', 'run', { run: 1 });
   active.set(own.seriesId, a);
   byToken.set(a.token, a);
@@ -389,8 +390,14 @@ test('deletion records its tombstone before waiting for a starting sandbox, and 
   await new Promise(ok => setImmediate(ok));
   assert.deepEqual([done, readDone], [false, false], 'starting is not stopping');
   stopped.resolve();
-  await Promise.all([removing, removingRead]);
-  for (const inst of [own, read]) assert.deepEqual(readdirSync(inst.dir).sort(), ['instance.json', 'log.jsonl', 'screen.json']);
+  await new Promise(ok => setImmediate(ok));
+  let lateDone = false;
+  const removingLate = remove(late, alice, () => ({ cost: 0, runs: [] })).then(() => { lateDone = true; });
+  await new Promise(ok => setImmediate(ok));
+  assert.deepEqual([done, readDone, lateDone], [false, false, false], 'a retired sandbox can still have browsers closing');
+  browsers.resolve();
+  await Promise.all([removing, removingRead, removingLate]);
+  for (const inst of [own, read, late]) assert.deepEqual(readdirSync(inst.dir).sort(), ['instance.json', 'log.jsonl', 'screen.json']);
 });
 
 test('recovery clears a deletion interrupted before its files and a task\'s locked packages were removed', async () => {

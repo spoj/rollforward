@@ -255,10 +255,10 @@ export class Instance {
       hash = await commit(this.dir, by, `Close ${this.label}`);
       await pack(this.dir);
     } catch (e) {
-      if (this.doc.status !== 'deleted') this.doc.status = 'open';
+      if (!this.hole) this.doc.status = 'open';
       throw e;
     }
-    if (this.doc.status === 'deleted') throw new HttpError(409, `${this.label} was deleted during the close`);
+    if (this.hole) throw new HttpError(409, `${this.label} was deleted during the close`);
     this.save();
     this.append(by.email, 'close', { ...(accepted.length && { accepted }), commit: hash });
   }

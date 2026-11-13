@@ -77,8 +77,8 @@ export function checkTicks(email: string, ticks: unknown): string[] {
 // the seq of the act that ticked them, their consent.
 export function runnerOf(inst: Instance): { by: string; logins: string[]; consent: number } {
   // A deleted instance keeps no runner (store.ts wipe()).
-  const e = inst.log.findLast(e => ['create', 'duplicate', 'takeover', 'logins'].includes(e.op));
-  if (!e) return { by: '', logins: [], consent: 0 };
+  if (inst.hole) return { by: '', logins: [], consent: 0 };
+  const e = inst.log.findLast(e => ['create', 'duplicate', 'takeover', 'logins'].includes(e.op))!;
   return { by: e.by, logins: (e.logins as string[] | undefined) ?? [], consent: e.seq };
 }
 
