@@ -321,6 +321,13 @@ test("owners and admins assign an instance to whoever sees its workspace, as its
   assert.equal((await assign({}, c)).status, 200, 'anyone else takes it over');
   assert.deepEqual((await json(path, c)).log.slice(-4).map((e: { op: string; by: string; to?: string }) => [e.op, e.by, e.to]), [['assign', bob, carol], ['logins', carol, undefined], ['assign', adminEmail, bob], ['assign', carol, carol]]);
   assert.ok(!(await json(path, c)).log.some((e: { op: string }) => e.op === 'run'), 'an assign starts no run');
+  // A wake pending as it was assigned came, in a series no one shares, as a request to wake it, which waits on its runner.
+  const wakes = join(root, '.rf', 'wakes.json'), w = JSON.parse(readFileSync(wakes, 'utf8'));
+  writeFileSync(wakes, JSON.stringify({ ...w, requests: { ...w.requests, handed: { series: sid, label: 'A', target: id, from: bob, at: new Date().toISOString(), text: 'the statement is due' } } }));
+  assert.deepEqual((await workspaces(c)).find((x: { id: string }) => x.id === ws).series[0].requests.map((r: { who: string; target: string }) => [r.who, r.target]), [[carol, id]]);
+  assert.deepEqual((await call('POST', '/api/requests/handed', '{}', c).then(r => r.json())), { id });
+  assert.deepEqual((await ran(path)).filter(e => e.op === 'wake').map(e => [e.from, e.text, e.note]), [[bob, 'the statement is due', true], [carol, undefined, undefined]], 'its wake a note, its runner starting it their word');
+  await quiet();
   assert.equal((await call('POST', `${path}/abandon`, undefined, c)).status, 200);
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ members: [] }))).status, 200);
 });
