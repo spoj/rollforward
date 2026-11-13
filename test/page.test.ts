@@ -726,6 +726,17 @@ test("text left in a closed Reply box holds nothing still: once approved, the co
   await post.locator(':scope > .pa [data-act=reply]:text-is("Reply")').click();
 });
 
+test("a file link's path may hold an &, spaces and one level of parentheses, and an image's spaces and parentheses, as everyday Windows names do", async () => {
+  await page.evaluate(() => { location.hash = '#/a5c0ff5e1f07'; });
+  await page.waitForSelector('#bar h1 .t:text-is("January")');
+  const files = await page.evaluate(() => {
+    const d = document.createElement('div');
+    d.innerHTML = inline(esc('[the P&L](upload/P&L.csv), [the TB](upload/TB (final).csv) (see note), ![chart](working/AR chart (1).png) and [plain](upload/plain.csv)'));
+    return [...d.querySelectorAll('[data-file]')].map(e => [e.tagName, (e as HTMLElement).dataset.file, e.nextSibling?.textContent ?? null]);
+  });
+  assert.deepEqual(files, [['A', 'upload/P&L.csv', ', '], ['A', 'upload/TB (final).csv', ' (see note), '], ['IMG', 'working/AR chart (1).png', ' and '], ['A', 'upload/plain.csv', null]]);
+});
+
 test("[text](#cN) to a comment whose first line links a file is a link by that text alone, its title the comment's first words", async () => {
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f0a'; });
   await page.waitForSelector('#bar h1 .t:text-is("February")');

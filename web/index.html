@@ -641,10 +641,11 @@ const cref = (seq, text, inst = cur.i.id) => {
 // code's text stays as it is.
 const crefs = h => h.replace(/(<a\b[^]*?<\/a>|<code>[^]*?<\/code>|<[^>]*>)|(?<![\w/.#=&;!:?-])c(\d+)\b(?![\w-]|\.\w)/g, (m, skip, n) => skip || data.log[n - 1]?.op !== 'comment' ? m : cref(+n, m));
 // A file in the agent's markdown, by its path in the instance, or ../<label>/… in another of its series: [name](working/x.csv) links it,
-// opening the preview, and an image, ![name](working/x.png), shows as a thread's file does. [name](#cN) links a comment, and
+// opening the preview, and an image, ![name](working/x.png), shows as a thread's file does; a path may hold spaces and one level of
+// parentheses, as in TB (final).csv, and a link's an &, which the text holds escaped and data-file decodes. [name](#cN) links a comment, and
 // [name](../<label>#cN) one of another instance, last, so what its title quotes of the comment is left as it is.
-const inline = s => s.replace(/!\[([^\]]*)\]\(([^)\s&]+\.(?:png|jpe?g|gif|webp|svg))\)/gi, (_, alt, f) => `<img class="md" src="${fileUrl(f)}" loading="lazy" alt="${alt}" title="${alt}" data-act="preview" data-file="${f}">`)
-  .replace(/\[([^\]]+)\]\(((?:\.\.\/[^/)]+\/)?(?:upload|working)\/[^)&]+)\)/g, (_, name, f) => `<a data-act="preview" data-file="${f}">${name}</a>`)
+const inline = s => s.replace(/!\[([^\]]*)\]\(((?:[^()&]|\([^()&]*\))+\.(?:png|jpe?g|gif|webp|svg))\)/gi, (_, alt, f) => `<img class="md" src="${fileUrl(f)}" loading="lazy" alt="${alt}" title="${alt}" data-act="preview" data-file="${f}">`)
+  .replace(/\[([^\]]+)\]\(((?:\.\.\/[^/)]+\/)?(?:upload|working)\/(?:[^()]|\([^()]*\))+)\)/g, (_, name, f) => `<a data-act="preview" data-file="${f}">${name}</a>`)
   .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>')
   .replace(/\[([^\]]+)\]\((?:\.\.\/([^/)#]+))?#c(\d+)\)/g, (_, name, label, n) => {
     const id = label ? cur.s.instances.find(i => esc(i.label) === label)?.id : cur.i.id;
