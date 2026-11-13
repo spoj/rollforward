@@ -1,5 +1,6 @@
 import { RpcClient, type JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import type { ChildProcess } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, posix, relative } from 'node:path';
@@ -41,7 +42,8 @@ export type View = { instance: string; dir: string; pylib: string; ro: [string, 
 // Pi for one run, in its sandbox (sandbox.ts): its view read-only but for the instance's working/ and session/ and the series'
 // .pylib, the live skills and nothing else of the host's. prompt.md is its system prompt, to which Pi adds the AGENTS.md
 // files from / down to the instance. A run that starts Pi, `n`, starts a session, which later runs may continue (waker.ts), its
-// transcript in the instance's session/ beside the earlier sessions'. The skills are the versions live as it starts, read-only at
+// transcript in the instance's session/ beside the earlier sessions'. Pi starts from a transcript there with its session's id, so
+// the id is one no earlier run, which could write there, knew. The skills are the versions live as it starts, read-only at
 // /skills/<id>, so a push applies from the next run.
 export function pi(o: { token: string; id: string; n: number; view: View; skills: { id: string; dir: string }[] }): RpcClient {
   const run = join(scratch, 'runs', o.token), home = join(run, 'home'), agentDir = join(home, '.pi', 'agent'), tmp = join(run, 'tmp');
@@ -91,7 +93,7 @@ export function pi(o: { token: string; id: string; n: number; view: View; skills
     args: ['--no-extensions', '--no-skills', '--no-mcp', '--no-prompt-templates', ...o.skills.flatMap(s => ['--skill', `/skills/${s.id}`]),
       '--tools', 'read,bash,edit,write', '--system-prompt', '/app/prompt.md',
       '--thinking', process.env.RF_THINKING ?? 'high',
-      '--session-dir', `${instance}/session`, '--session-id', `run-${o.n}`,
+      '--session-dir', `${instance}/session`, '--session-id', `run-${o.n}-${randomBytes(8).toString('hex')}`,
       ...JSON.parse(process.env.RF_PI_ARGS ?? '[]')],
   });
 }

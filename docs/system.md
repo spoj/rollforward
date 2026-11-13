@@ -163,7 +163,7 @@ Stored data is files on the host's disk, in folders named by random ids, with no
       working/                the agent's: scripts, process.md, drafts, outputs, and inputs it fetched or made
       screen.json             the screen, read-only
       log.jsonl               every event, written by the server
-      session/                each Pi session, <time>_run-<n>.jsonl by the run that started it, which the audit shows
+      session/                each Pi session, <time>_run-<n>-<random>.jsonl by the run that started it, which the audit shows
       names.tsv               the latest run's names: each instance in its reach, id<TAB>/work/<workspace>/<series>/<label>
       browser/                each run's browser requests, one line per request, and its screenshots
       .git/                   the folder's history: a commit at each run's end, approval, close, rf commit, and upload or comment
@@ -209,10 +209,11 @@ The runner, [src/runner.ts](../src/runner.ts), drives Pi through Pi's `RpcClient
     pi --mode rpc --provider openrouter --model anthropic/claude-opus-5.5 --thinking high \
       --no-extensions --no-skills --no-mcp --no-prompt-templates --skill /skills/<id> … \
       --tools read,bash,edit,write --system-prompt <app>/prompt.md \
-      --session-dir "/work/<workspace>/<series>/<label>/session" --session-id run-<n>
+      --session-dir "/work/<workspace>/<series>/<label>/session" --session-id run-<n>-<random>
 
 - **prompt.md replaces Pi's own system prompt,** and Pi adds the context files it finds from `/` down to its working folder, the instance's: the run's AGENTS.md files. The run's Pi home holds none, so nothing of whoever runs the server reaches it.
 - **Pi's own commands drive a run:** `prompt` starts it, and `steer` delivers mid-run entries, with steering mode `all`, so what queued by the end of a turn arrives together. Interrupt is `clear_queue`, then `abort`.
+- **A session's id is `run-<n>-` and 16 random hex digits,** as Pi starts from the transcript in `session/` with its id, and runs write `session/`: no earlier run knows a later one's id to write the conversation it starts from. A run can still change any transcript there, an earlier session's too, which Audit shows and later runs read as they read `working/`; each commit keeps them as they were.
 - **Each run has its own Pi home,** in its sandbox's scratch, with `settings.json`. Pi reaches OpenRouter at its own address, through the sandbox's proxy as any of the run's calls do, with a stand-in key (see Connections). `PI_OFFLINE` keeps Pi from checking for updates.
 - **Pi's `agent_settled` ends a turn;** Pi exiting mid-turn fails the run at once, with its exit code or signal and stderr, and its next run starts a new session.
 - **The model key,** `OPENROUTER_API_KEY`, stays with the server, whose proxy puts it in each request a run sends OpenRouter, Pi's own among them. A server without one ends each run at once with that error.
