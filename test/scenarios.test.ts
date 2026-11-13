@@ -289,7 +289,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.deepEqual(pi.map(e => [e.run, e.method, e.status, e.model, e.cost]), [[1, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01], ...Array(walls.bash.length + 1).fill([2, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01]), ...Array(2).fill([3, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01])], "Pi's own calls, a step's each and the report's, through the same connection");
   assert.ok(providers.length && providers.every(p => JSON.stringify(p) === '{"data_collection":"deny"}'), 'every call asked only for providers that collect no data');
   assert.deepEqual(log.filter(e => e.op === 'comment' && e.by === 'agent').map(e => [e.text, !!e.ask]), [['Walls checked.', false], ['Is the bank file coming today?', true], ['It came, never mind.', false], ['Cited [x](working/x.csv), as [last time](../2026-11/working/x.csv).', false]], "the agent's words are comments of its own, and an ask is marked");
-  assert.match(woken.prompt!, /"op":"wake","from":"[^"]*\/2026-11"/, 'the wake started the next run, saying only who set it');
+  assert.match(woken.prompt!, /"op":"wake","from":"[^"]*\/2026-11"/, 'the wake started the next run, saying who set it');
   assert.match(made.prompt!, /^Instance 2026-11, run 1\. Its runner is Demo Admin <admin@demo\.test>, who lends you /, 'a new Pi hears who the runner is');
   assert.deepEqual([made.first, walls.first], [1, 1], 'a new conversation, of its own prompt alone, as a series made in reach since changed what run 2 sees');
   assert.ok(woken.first! > 1, 'a run within the hour of the last carries its conversation on, as a new turn');
