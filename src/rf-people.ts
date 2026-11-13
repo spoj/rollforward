@@ -190,6 +190,8 @@ What rf pull copies, the folders as the agent sees them
                              change, so where a path in a file doesn't match, look its id up in the names.tsv of the commit
                              that last changed the file (git log -1 -- FILE, then git show H:names.tsv), and its name now in
                              rf ls
+    pylib.tsv                the series' .pylib, the Python packages its runs installed, which later runs run, as the latest
+                             run started: path<TAB>size<TAB>change time, one file a line
 The copy is read-only: only rf's commands change what's on the server.
 
 Usual work

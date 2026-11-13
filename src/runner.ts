@@ -1,7 +1,7 @@
 import { RpcClient, type JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import type { ChildProcess } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, posix, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -96,6 +96,33 @@ export function pi(o: { token: string; id: string; n: number; view: View; skills
       '--session-dir', `${instance}/session`, '--session-id', `run-${o.n}-${randomBytes(8).toString('hex')}`,
       ...JSON.parse(process.env.RF_PI_ARGS ?? '[]')],
   });
+}
+
+// A series' .pylib, which every later run of the series runs, whoever its runner, as a run starts: what Python runs there unasked
+// goes, sitecustomize and usercustomize in any form, and .pth files, which Python reads only in site-packages, so nothing pip put
+// there needs them; and its listing, each file's path, size and change time, which a run can't set, is the instance's pylib.tsv,
+// which the run's commit keeps, and its sha256 the run entry's. Its folders are made the server's to read first, never through a
+// link, and names are bytes, as a run may leave them.
+export function pylib(dir: string, instance: string): string {
+  mkdirSync(dir, { recursive: true });
+  const lines: Buffer[] = [], slash = Buffer.from('/');
+  const walk = (d: Buffer, rel: Buffer, listed: boolean) => {
+    chmodSync(d, 0o700);
+    for (const e of readdirSync(d, { withFileTypes: true, encoding: 'buffer' })) {
+      const name = e.name as unknown as Buffer, path = Buffer.concat([d, slash, name]), at = rel.length ? Buffer.concat([rel, slash, name]) : name;
+      const hook = !rel.length && /^(site|user)customize(\.|$)|\.pth$/.test(name.toString('latin1'));
+      if (e.isDirectory()) walk(path, at, listed && !hook);
+      else if (listed && !hook) {
+        const st = lstatSync(path);
+        lines.push(Buffer.concat([at, Buffer.from(`\t${st.size}\t${st.ctime.toISOString()}\n`)]));
+      }
+      if (hook) rmSync(path, { recursive: true });
+    }
+  };
+  walk(Buffer.from(dir), Buffer.alloc(0), true);
+  const list = Buffer.concat(lines.sort(Buffer.compare));
+  writeFileSync(join(instance, 'pylib.tsv'), list);
+  return createHash('sha256').update(list).digest('hex');
 }
 
 // Pi answers commands only once it has loaded, and RpcClient waits 30 s for an answer. A cold or busy machine, such as one starting

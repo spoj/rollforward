@@ -1,6 +1,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -193,6 +194,25 @@ test('a Pi killed mid-turn fails its run at once, frees its series, and starts a
   assert.equal(log.findLast(e => e.op === 'run')!.continues, undefined);
   assert.equal(fresh.first, 1, 'a conversation of its own prompt alone, never one run 1 left for it');
   assert.equal(log.findLast(e => e.op === 'done')!.aborted, false);
+});
+
+test("a series' .pylib runs nothing unasked in a later run, and each run entry hashes its listing, which the instance's pylib.tsv holds and its commit keeps", async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Pylib' })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec' })).json();
+  const hooks = 'cd ../.pylib && mkdir -p pkg usercustomize/deep && echo X=1 > pkg/__init__.py && echo "print(\'HOOK\')" | tee sitecustomize.py usercustomize/__init__.py > evil.pth && chmod 0 usercustomize/deep && echo ok';
+  scripts.push({ bash: [hooks], report: 'Installed.', saw: [] });
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
+  await runs(id, 1);
+  const next: Script = { bash: ['python -c "import pkg; print(pkg.X)"; ls -A ../.pylib; cat pylib.tsv'], report: 'Ran.', saw: [] };
+  scripts.push(next);
+  assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Again.' })).status, 200);
+  const log = await runs(id, 2), [one, two] = log.filter(e => e.op === 'run');
+  assert.match(next.saw[0], /^1\npkg\npkg\/__init__\.py\t4\t\d{4}-\d\d-\d\dT[\d:.]+Z\n?$/, 'what pip would install runs; sitecustomize, usercustomize and .pth files are gone before it, and pylib.tsv lists the rest');
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: join(root, 'instances', id), encoding: 'utf8' });
+  await until("run 2's commit", () => git('log', '-1', '--format=%s') === 'Run 2\n');
+  const sha = (text: string) => createHash('sha256').update(text).digest('hex'), listed = git('show', 'HEAD:pylib.tsv');
+  assert.ok(next.saw[0].endsWith(`\n${listed}`), "run 2's commit keeps the listing it started with");
+  assert.deepEqual([one.pylib, two.pylib], [sha(''), sha(listed)], 'each run entry hashes it');
 });
 
 test('the time limit fails a run with its reason, rather than recording an ordinary interrupt', async () => {

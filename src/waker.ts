@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync 
 import { createHash, randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
 import { agentsFile, closedBefore, createInstance, HttpError, instance, instanceDir, instances, isPerson, labels, newId, readFile, seriesDir, type Entry, type Instance } from './store.ts';
-import { startRun, type Run, type TurnEnd, type View } from './runner.ts';
+import { pylib, startRun, type Run, type TurnEnd, type View } from './runner.ts';
 import type { JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { prepare, sources } from './indexes.ts';
 import { act, canSee, changes, readJson, rfDir, tree, type Tree, writeJson } from './system.ts';
@@ -239,9 +239,9 @@ async function start(inst: Instance) {
   // Whose OpenRouter key it starts with, its runner's own or the server's (connections.ts), never the key.
   const key = logins(runnerOf(inst).by).some(l => l.id === 'openrouter' && l.enabled) ? 'own' : 'shared';
   // A run is a lease: one runner for the whole of it, the act whose ticks it may use (logins.ts lender()), and the AGENTS.md
-  // files it reads, by their sha256.
+  // files it reads, by their sha256, as its series' .pylib's listing is (runner.ts pylib()).
   const lease = runnerOf(inst), agents = Object.fromEntries(a.view.ro.filter(([p, at]) => at.endsWith('/AGENTS.md') && existsSync(p)).map(([p, at]) => [at, createHash('sha256').update(readFileSync(p)).digest('hex')]));
-  inst.append('server', 'run', { run: n, runner: lease.by, consent: lease.consent, agents, upto: a.sent, skills: a.skills, key, ...(kept && { continues: kept.session }) });
+  inst.append('server', 'run', { run: n, runner: lease.by, consent: lease.consent, agents, pylib: pylib(a.view.pylib, inst.dir), upto: a.sent, skills: a.skills, key, ...(kept && { continues: kept.session }) });
   let settled: Promise<TurnEnd>;
   try {
     // A continued run's index copies are made again, in the folder its Pi reads them from, so it reads what's indexed since, and
