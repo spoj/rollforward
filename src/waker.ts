@@ -404,11 +404,11 @@ export function queued(inst: Instance): { why: string; since: string } | undefin
   return { why, since: pending(inst, seenBefore(inst))[0]?.at ?? new Date().toISOString() };
 }
 
-// Closing an instance wakes its series' later open instances, which may have used its draft; a note for those the closer doesn't start,
-// and a quiet close's wake is quiet. A <label>-r2 closing supersedes <label>, as a <label>-r3 does <label>-r2.
+// Closing an instance wakes its series' later open instances, which may have used its draft; a note for those the closer doesn't run,
+// which starts them only where the series is shared, and a quiet close's wake is quiet. A <label>-r2 closing supersedes <label>, as a <label>-r3 does <label>-r2.
 export function closed(inst: Instance, by: string, quiet?: boolean) {
   for (const later of instances(inst.seriesId).filter(i => i.doc.status === 'open' && i.label.localeCompare(inst.label, 'en', { numeric: true }) > 0)) {
-    later.append('server', 'wake', { reason: `${inst.label} closed: its final figures may differ from the draft you read`, from: `${named(tree(), inst.seriesId)}/${inst.label}`, ...(!starter(later, by) && { note: true }), ...(quiet && { quiet: true }) });
+    later.append('server', 'wake', { reason: `${inst.label} closed: its final figures may differ from the draft you read`, from: `${named(tree(), inst.seriesId)}/${inst.label}`, ...(by !== runnerOf(later).by && { note: true }), ...(quiet && { quiet: true }) });
     if (!quiet) kick(later);
   }
   const [, base, r] = /^(.+)-r(\d+)$/.exec(inst.label) ?? [], was = base && instances(inst.seriesId).find(i => i.label === (r === '2' ? base : `${base}-r${Number(r) - 1}`) && i.doc.status === 'closed');
@@ -550,7 +550,7 @@ function fire() {
         console.log(`a wake found ${named(t, inst.seriesId)}/${inst.label} ${inst.doc.status}, so it woke nothing`);
         continue;
       }
-      inst.append('server', 'wake', { from, ...(wake.text && { text: wake.text }), ...(wake.inst !== inst.id && !starter(inst, wake.from) && { note: true }) });
+      inst.append('server', 'wake', { from, ...(wake.text && { text: wake.text }), ...(wake.inst !== inst.id && wake.from !== runnerOf(inst).by && { note: true }) });
       kick(inst);
       continue;
     }

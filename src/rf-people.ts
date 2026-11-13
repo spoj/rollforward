@@ -158,8 +158,9 @@ What there is
 - An instance's screen is its items: inputs, outputs and steps, each pointing at a file, with what it's made from. People upload
   files, and review the work in threads with the agent. The runner is the person whose logins the runs use, and who closes the
   instance, making it the period's record and an example for the next, which approves nothing. Their comments and uploads start a run of the agent, which reads them and carries on, as do everyone's where the
-  runner shares the series, and a reply from whom an ask names; anyone else's is a note, which the agent takes up once the runner
-  does.
+  runner shares the series, and a reply from whom an ask names; anyone else's is a note, as are a wake someone else sets, another
+  instance's agent's comment and rf note's notes on a series: the agent's next run reads it, using what it brings and putting what
+  it asks for to the runner.
 - rf is quiet: a comment, upload, sign-off, close, new instance or request it starts begins no run unless --wake, and the agent
   reads it at its next run; rf wake PATH now starts one. A quiet upload or comment is committed to the instance's history at once.
 - A comment starts a thread, on the instance or on an item, at a cell such as Base!C25 or a line of a markdown file by its

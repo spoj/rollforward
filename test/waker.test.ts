@@ -261,6 +261,9 @@ test("others' comments and wakes are notes for an instance's runner, unless the 
   await settle();
   assert.equal(runs(shared), 1, 'in a series its runner shares, anyone starts runs');
   assert.match(message(shared, 1, shared.log), /"by":"bob@demo\.test","op":"comment".*"note":true/, "and bob's comment still reaches the agent as a note");
+  setWake(shared.id, { at: new Date().toISOString(), from: bob, text: 'the rate moved' });
+  await settle();
+  assert.deepEqual([runs(shared), shared.log.findLast(e => e.op === 'wake')!.note], [2, true], "bob's wake starts a run there, and stays a note");
 });
 
 test("a run starts only for a runner Microsoft still signs in: one it no longer does waits for them to sign in again, which wakes it, and one disabled or gone is disabled here too; while Microsoft can't be reached, nothing starts", async () => {
