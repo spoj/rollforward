@@ -568,13 +568,9 @@ test("people see, set, move and cancel wakes, one-off or weekly, share a series 
   assert.equal((await shown(series)).wakes.length, 2);
   const ws = `/api/workspaces/${(await named('larkfield')).id}`, b = sessionOf(await login(bob))!;
   assert.equal((await call('PUT', ws, JSON.stringify({ owners: [adminEmail], members: [bob] }))).status, 200);
-  assert.equal((await call('POST', `${await at(series, '2026-08-30 rework', 'comment')}`, JSON.stringify({ text: 'fyi' }), b)).status, 200);
-  assert.equal(JSON.parse(readFileSync(wakes, 'utf8')).pending.k2?.at, due, "bob's note for the runner starts nothing, so the wake stays");
-  const asks = async () => (await shown(series)).instances.find((i: { id: string }) => i.id === sep).asks;
-  assert.deepEqual(await asks(), [adminEmail], "bob's note waits on the runner");
-  assert.equal((await call('PUT', await at(series), JSON.stringify({ share: true }))).status, 200);
-  assert.deepEqual(await asks(), [adminEmail], 'where the runner shares the series it is still a note for them');
-  assert.equal((await call('PUT', await at(series), JSON.stringify({ share: false }))).status, 200);
+  const fyi = await call('POST', `${await at(series, '2026-08-30 rework', 'comment')}`, JSON.stringify({ text: 'fyi' }), b);
+  assert.deepEqual([fyi.status, await fyi.text()], [403, `${adminEmail} runs it, and alone comments: take it over to comment`], 'bob sees it but does not run it');
+  assert.equal(JSON.parse(readFileSync(wakes, 'utf8')).pending.k2?.at, due, 'so the wake stays');
   assert.equal((await call('POST', `${await at(series, '2026-08-30 rework', 'comment')}`, JSON.stringify({ text: 'go' }))).status, 200);
   assert.equal(JSON.parse(readFileSync(wakes, 'utf8')).pending.k2?.at, due, "the runner's act starts a run now, and the wake still comes when it's due");
 
@@ -898,7 +894,7 @@ test("rf alone lists its commands and rf help COMMAND gives one's usage; every r
   assert.deepEqual(JSON.parse(await rf('skill', 'versions', 'tool', '--json')).map((v: { version: number }) => v.version), [1, 2, 3, 4]);
 });
 
-test('rf comment reports its own seq and note when the first comment renames a task, and --wait on a note returns without a run', async () => {
+test("rf comment reports its own seq when the first comment renames a task, and is refused in a task someone else runs", async () => {
   const { id: workspace } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Commenting' }))).json();
   await call('PUT', `/api/workspaces/${workspace}`, JSON.stringify({ members: [bob] }));
   const { instance } = await (await call('POST', '/api/series', JSON.stringify({ workspace, single: true }))).json();
@@ -906,9 +902,8 @@ test('rf comment reports its own seq and note when the first comment renames a t
   const { log } = await json(`/api/instances/${instance}`);
   assert.deepEqual(log.map((e: { op: string }) => e.op), ['create', 'comment', 'rename']);
   const { instance: his } = await (await call('POST', '/api/series', JSON.stringify({ workspace, single: true }), sessionOf(await login(bob))!)).json();
-  assert.equal(await rf('comment', 'Commenting/Untitled/Untitled', 'A note for Bob', '--wait'), `a note for the runner, ${bob}, seq 2: it starts no run until they act\n`);
-  const note = (await json(`/api/instances/${his}`)).log;
-  assert.deepEqual(note.map((e: { op: string; note?: true }) => [e.op, e.note]), [['create', undefined], ['comment', true], ['rename', undefined]]);
+  await assert.rejects(rf('comment', 'Commenting/Untitled/Untitled', 'A note for Bob', '--wait'), fails(1, new RegExp(`: 403 ${bob.replace(/\./g, '\\.')} runs it, and alone comments: take it over to comment`)));
+  assert.deepEqual((await json(`/api/instances/${his}`)).log.map((e: { op: string }) => e.op), ['create']);
 });
 
 test('rf reads without a pull: waiting, what waits on you; show, an instance, the threads that wait by id and its last run; log, its entries, or those after a seq; and cat, one file', async () => {
@@ -918,7 +913,11 @@ test('rf reads without a pull: waiting, what waits on you; show, an instance, th
   const { id } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'a1' }))).json(), path = 'Reads/Notes/a1';
   await ran(`/api/instances/${id}`);
   await quiet();
-  assert.equal((await call('POST', `/api/instances/${id}/comment`, JSON.stringify({ text: 'Bob notes the rate moved.\nMore below.' }), sessionOf(await login(bob))!)).status, 200);
+  // Only its runner comments: what bob says while he runs it is a note for the admin once they take it back.
+  const b = sessionOf(await login(bob))!, takeover = (as?: string) => call('POST', `/api/instances/${id}/takeover`, JSON.stringify({ logins: [] }), as);
+  assert.equal((await takeover(b)).status, 200);
+  assert.equal((await call('POST', `/api/instances/${id}/comment`, JSON.stringify({ text: 'Bob notes the rate moved.\nMore below.', quiet: true }), b)).status, 200);
+  assert.equal((await takeover()).status, 200);
   await quiet();
   const { log } = await json(`/api/instances/${id}`), note = log.findLast((e: { op: string }) => e.op === 'comment');
   assert.match(await rf('waiting'), new RegExp(`^note  ${path} since [\\d-]+ [\\d:]+: Bob notes the rate moved\\.$`, 'm'));

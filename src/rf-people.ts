@@ -149,9 +149,9 @@ What there is
   2026-08-23. A task is a one-off: a series of one instance, named by its label, until someone makes it a series. PATH is workspace/series/label, as rf ls prints it; for rf pull it may go deeper, into an instance's files.
 - An instance's screen is its items: inputs, outputs and steps, each pointing at a file, with what it's made from. People upload
   files, and review the work in threads with the agent. The runner is the person whose logins the runs use, and who closes the
-  instance, making it the period's record and an example for the next, which approves nothing. Their comments and uploads start a run of the agent, which reads them and carries on, as do everyone's where the
-  runner shares the series, and a reply from whom an ask names; anyone else's is a note, which the agent takes up once the runner
-  does.
+  instance, making it the period's record and an example for the next, which approves nothing. Only the runner comments, but for a reply from whom an ask names: anyone else takes it over
+  first. The runner's comments and uploads start a run of the agent, which reads them and carries on, as do everyone's uploads
+  where the runner shares the series, and that reply; anyone else's is a note, which the agent takes up once the runner does.
 - rf is quiet: a comment, upload, sign-off, close, new instance or request it starts begins no run unless --wake, and the agent
   reads it at its next run; rf wake PATH now starts one. A quiet upload or comment is committed to the instance's history at once.
 - A comment starts a thread, on the instance or on an item, at a cell such as Base!C25 or a line of a markdown file by its

@@ -642,16 +642,18 @@ function threadHtml(t) {
 // thread of its own. A long one folds until More. Its twisty collapses it, with what hangs under it, to its first line, as this
 // browser keeps it until someone adds to it.
 function postHtml(t, p, depth) {
-  const kids = t.posts.filter(k => k.under === p.seq), open = editable(), off = data.run ? ' disabled title="Available when the run ends"' : '';
-  const signs = open && p.ask && !t.posts.some(k => k.op === 'signoff' && k.on === p.seq && k.by === me.email), since = signs && data.log.filter(e => e.op === 'run' && e.seq > p.seq).length;
+  const kids = t.posts.filter(k => k.under === p.seq), off = data.run ? ' disabled title="Available when the run ends"' : '';
+  // Its runner replies, and whom the agent asks in the thread; anyone may still sign an ask off.
+  const replies = editable() && (data.runner.by === me.email || t.posts.some(k => k.by === 'agent' && k.ask && k.to === me.email));
+  const signs = editable() && p.ask && !t.posts.some(k => k.op === 'signoff' && k.on === p.seq && k.by === me.email), open = replies || signs, since = signs && data.log.filter(e => e.op === 'run' && e.seq > p.seq).length;
   const long = !ui.full.has(p.seq) && (p.text.length > 900 || p.text.split('\n').length > 12), all = n => t.posts.filter(k => k.under === n).reduce((c, k) => c + 1 + all(k.seq), 0);
   const end = q => Math.max(q.seq, ...t.posts.filter(k => k.under === q.seq).map(end)), head = `<b class="${p.by === 'agent' ? '' : 'p'}">${who(p.by)}</b> <span class="tm">`;
   if (JSON.parse(localStorage[`folds:${cur.i.id}`] ?? '{}')[p.seq] === end(p)) return `<div class="post folded ${p.ask ? 'ask' : ''} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}"><button class="fold" data-act="fold" data-seq="${p.seq}" title="Expand">\u25B8</button>${head}${hhmm(p.at)}</span> ${esc(firstLine(p.text))}${kids.length ? `<span class="tm"> \u00b7 ${all(p.seq)} more</span>` : ''}</div>`;
   let h = `<div class="post ${p.ask ? 'ask' : ''} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}"><button class="fold" data-act="fold" data-seq="${p.seq}" data-end="${end(p)}" title="Collapse">\u25BE</button>${head}${hhmm(p.at)}${p.to ? ` \u00b7 to ${who(p.to)}` : ''}${p.note ? ` \u00b7 a note for ${who(data.runner.by)}` : ''}${p.waits ? ` \u00b7 waits on ${who(p.waits)}` : ''}${since ? ` \u00b7 <span title="What it links may have changed since: check it before signing off">${since} run${since > 1 ? 's' : ''} since</span>` : ''}${p.commit ? ` \u00b7 commit <code>${p.commit.slice(0, 7)}</code>` : ''}</span>`
     + `<div class="pb ${long ? 'long' : ''}">${p.by === 'agent' && p.op === 'comment' ? md(p.text) : esc(p.text)}</div>${long ? `<a class="more" data-act="more" data-seq="${p.seq}">More</a>` : ''}`
     + (p.files ?? []).map(f => `<div class="f">${/\.(png|jpe?g|gif|webp|svg)$/i.test(f) ? `<img src="${fileUrl(f)}" loading="lazy" alt="${esc(fname(f))}" title="${esc(fname(f))}" data-act="preview" data-file="${esc(f)}">` : `<a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a>`}</div>`).join('');
-  if (p.op === 'comment') h += `<div class="pa">${reactHtml(p.seq)}${open ? `<button class="quiet reply-to" data-act="reply" data-seq="${p.seq}">Reply</button>` : ''}${signs ? `<button class="quiet" data-act="reply" data-seq="${p.seq}">Sign off\u2026</button>` : ''}</div>`;
-  if (open && p.op === 'comment') h += `<div class="reply" ${draft.replying.has(p.seq) ? '' : 'hidden'}><textarea rows="2" placeholder="${signs ? 'Reply, or a note to sign off with' : 'Reply'}"></textarea><input type="file" multiple><div class="row2"><button class="btn" data-act="reply-post" data-seq="${p.seq}">Reply</button>${signs ? `<button class="btn commit" data-act="signoff" data-seq="${p.seq}"${off} title="Commits the instance as it is now in your name, with the files the ask pins as it pinned them">Sign off</button>` : ''}<button class="quiet" data-act="reply" data-seq="${p.seq}">Cancel</button></div></div>`;
+  if (p.op === 'comment') h += `<div class="pa">${reactHtml(p.seq)}${replies ? `<button class="quiet reply-to" data-act="reply" data-seq="${p.seq}">Reply</button>` : ''}${signs ? `<button class="quiet" data-act="reply" data-seq="${p.seq}">Sign off\u2026</button>` : ''}</div>`;
+  if (open && p.op === 'comment') h += `<div class="reply" ${draft.replying.has(p.seq) ? '' : 'hidden'}><textarea rows="2" placeholder="${!replies ? 'A note to sign off with' : signs ? 'Reply, or a note to sign off with' : 'Reply'}"></textarea>${replies ? `<input type="file" multiple>` : ''}<div class="row2">${replies ? `<button class="btn" data-act="reply-post" data-seq="${p.seq}">Reply</button>` : ''}${signs ? `<button class="btn commit" data-act="signoff" data-seq="${p.seq}"${off} title="Commits the instance as it is now in your name, with the files the ask pins as it pinned them">Sign off</button>` : ''}<button class="quiet" data-act="reply" data-seq="${p.seq}">Cancel</button></div></div>`;
   if (kids.length) h += depth < 3 ? `<div class="kids">${kids.map(k => postHtml(t, k, depth + 1)).join('')}</div>` : `<a class="more" data-act="alone" data-seq="${p.seq}">Continue this thread \u2192 ${all(p.seq)} more</a>`;
   return h + '</div>';
 }
@@ -695,7 +697,7 @@ function conversationHtml() {
   const first = mine && !runs.length, lends = first && myLogins.some(l => l.offers.length);
   if (open) h += `<div class="compose"><h3>${draft.on ? `Comment on ${name(draft.on)}${draft.ref ? ` at ${esc(draft.ref)}` : ''}` : 'Comment on the instance'}</h3>`
     + (lends ? `<div class="ticks2">Credentials:${ticksHtml(myLogins, data.runner.logins)}</div>` : '')
-    + `<textarea id="newcomment" rows="3" placeholder="${first ? 'What should the agent do? Drop files here too' : mine || cur.s.shared_by === data.runner.by ? 'The agent replies in the thread' : `A note for ${esc(nameOf(data.runner.by))}: the agent takes it up once they do`}"></textarea><input type="file" id="newfiles" multiple>${lends ? '<div class="consent">By clicking Comment, you agree that agents carry these credentials while acting as you.</div>' : ''}<div><button class="btn primary" data-act="comment">Comment</button></div></div>`;
+    + `<textarea id="newcomment" rows="3" ${mine ? '' : 'disabled '}placeholder="${first ? 'What should the agent do? Drop files here too' : mine ? 'The agent replies in the thread' : `${esc(nameOf(data.runner.by))} runs it, and alone comments: take it over to comment`}"></textarea>${mine ? '<input type="file" id="newfiles" multiple>' : ''}${lends ? '<div class="consent">By clicking Comment, you agree that agents carry these credentials while acting as you.</div>' : ''}<div><button class="btn primary" data-act="comment"${mine ? '' : ' disabled'}>Comment</button></div></div>`;
   if (data.doc.status === 'closed' && !archived()) h += '<div class="compose"><div><button class="btn" data-act="correct">Add a correction</button></div></div>';
   return h;
 }
@@ -1715,7 +1717,7 @@ for (const type of ['dragover', 'dragleave', 'drop']) {
 // A comment's box takes dropped files as its attachments.
 for (const type of ['dragover', 'drop']) {
   $('#log').addEventListener(type, e => {
-    if (!e.target.closest('#newcomment, #newfiles') || !e.dataTransfer.types.includes('Files')) return;
+    if (!e.target.closest('#newcomment, #newfiles') || !$('#newfiles') || !e.dataTransfer.types.includes('Files')) return;
     e.preventDefault();
     if (type === 'drop') thumbs($('#newfiles'), e.dataTransfer.files);
   });
