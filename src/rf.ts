@@ -31,10 +31,9 @@ const HELP: Record<string, string> = {
   Starts a run later, which sees who woke it and TEXT, a short message, such as what to look at. TARGET is a folder as you see
   it, by the names your run started with: an open instance, such as . for your own, ../<label> or ../../<series>/<label>, which
   the wake continues; or a series, such as .. or ../../<series>, which it starts a new instance of, labelled LABEL, or continues
-  the one it has by that label. AT is now,
-  +<n>m, +<n>h, +<n>d, or a date and time with its offset, such as 2026-09-14T07:00+08:00. --days, such as mon-fri or
-  mon,wed,fri, repeats it each week on those days at AT's time; a series' LABEL then holds the date AT falls on, or that of
-  the day before it that it fires on, and moves on with it. A target has as many wakes as are set, firing at least 15 minutes
+  the one it has by that label. AT is now, +<n>m, +<n>h, +<n>d, or a date and time with its offset, such as
+  2026-09-14T07:00+08:00. --days, such as mon-fri or mon,wed,fri, repeats it each week on those days at AT's time; a series'
+  LABEL then holds the date AT falls on, or that of the day before it that it fires on, and moves on with it. A target has as many wakes as are set, firing at least 15 minutes
   apart; setting a series' wake for a LABEL already pending moves it. Each run's first message lists the wakes pending for
   its instance and series, by ID, which --cancel cancels. A closed instance can't be woken: to correct one, wake its series
   with --label <its label>-r2.`,

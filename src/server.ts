@@ -722,8 +722,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   }
   if (kind === 'wakes') {
     // People and runs set wakes, one-off or weekly, each with a short text if they like, and cancel them: PUT names the target, an
-    // open instance, which the wake continues, or a series, which it starts LABEL of; DELETE names the wake. A run wakes only in its own workspace: it reads others that let it,
-    // never acts there.
+    // open instance, which the wake continues, or a series, which it starts LABEL of; DELETE names the wake. A run wakes only in its
+    // own workspace: it reads others that let it, never acts there.
     const wake = req.method === 'DELETE' ? wakes().pending[id] : undefined, to = wake?.target ?? id, sid = t.series[to] ? to : instance(to).seriesId;
     if (req.method === 'DELETE' && !wake) throw new HttpError(404, 'no such wake pending');
     if (t.series[to]?.single) throw new HttpError(400, `${t.series[to].name} is a task, with one instance: wake that`);

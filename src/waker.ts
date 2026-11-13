@@ -79,15 +79,14 @@ function seenBefore(inst: Instance): number {
   return (inst.log.findLast(e => e.op === 'done')?.seen as number | undefined) ?? 0;
 }
 
-// Who starts an instance's runs: its runner, and anyone, people or agents, where the runner shares the series, and its own run's wakes
-// (fire).
+// Who starts an instance's runs: its runner, and anyone, people or agents, where the runner shares the series.
 export const starter = (inst: Instance, who: string) => {
   const runner = runnerOf(inst).by;
   return who === runner || seriesSettings(inst.series()).shared?.by === runner;
 };
 // What a person but the runner adds is a note, shared series or not: the agent reads it as context for its runner to take up, never as
-// the runner's word, though it runs on it where it may. A wake that starts nothing is one too, and so is another instance's agent's
-// comment. A reply or a sign-off from whom the agent's ask it answers named is no note: from before replies named what they answer,
+// the runner's word, though it runs on it where it may. A wake that neither the runner nor the instance's own run set is one too,
+// and so is another instance's agent's comment. A reply or a sign-off from whom the agent's ask it answers named is no note: from before replies named what they answer,
 // the thread's last ask.
 export const isNote = (inst: Instance, e: Entry) => !!e.note || (isPerson(e) && ['upload', 'comment', 'signoff'].includes(e.op) && e.by !== runnerOf(inst).by
   && !(e.op !== 'upload' && (e.parent ?? e.on ? inst.log[(e.parent ?? e.on) as number - 1] : inst.log.findLast(x => x.seq < e.seq && x.op === 'comment' && x.thread === e.thread && x.by === 'agent'))?.to === e.by));
@@ -144,8 +143,8 @@ export const archived = (t: Tree, seriesId: string) => !!(t.series[seriesId].arc
 
 // The run's view of the data, by name, built when it starts: /work/<workspace>/<series>/<label>/ for every instance in its reach but
 // an abandoned one, neither an example nor a starting point, and a deleted one, of which nothing is left, and each series' notes at
-// /work/<workspace>/<series>/.notes/; the company's AGENTS.md at
-// /work/AGENTS.md and each workspace's at /work/<workspace>/AGENTS.md; and the environment its runner's connections set.
+// /work/<workspace>/<series>/.notes/; the company's AGENTS.md at /work/AGENTS.md and each workspace's at
+// /work/<workspace>/AGENTS.md; and the environment its runner's connections set.
 export function view(inst: Instance): View {
   const t = tree(), at = (id: string) => `/work/${named(t, id)}`, series = [inst.seriesId, ...reach(t, inst.seriesId)];
   const names = Object.fromEntries(series.flatMap(id => labels(id).filter(l => !['abandoned', 'deleted'].includes(instance(l.id).doc.status)).map(l => [`${at(id)}/${l.label}`, l.id])));
@@ -405,7 +404,8 @@ export function queued(inst: Instance): { why: string; since: string } | undefin
 }
 
 // Closing an instance wakes its series' later open instances, which may have used its draft; a note for those the closer doesn't run,
-// which starts them only where the series is shared, and a quiet close's wake is quiet. A <label>-r2 closing supersedes <label>, as a <label>-r3 does <label>-r2.
+// which starts them only where the series is shared, and a quiet close's wake is quiet. A <label>-r2 closing supersedes <label>, as a
+// <label>-r3 does <label>-r2.
 export function closed(inst: Instance, by: string, quiet?: boolean) {
   for (const later of instances(inst.seriesId).filter(i => i.doc.status === 'open' && i.label.localeCompare(inst.label, 'en', { numeric: true }) > 0)) {
     later.append('server', 'wake', { reason: `${inst.label} closed: its final figures may differ from the draft you read`, from: `${named(tree(), inst.seriesId)}/${inst.label}`, ...(by !== runnerOf(later).by && { note: true }), ...(quiet && { quiet: true }) });
@@ -431,9 +431,8 @@ export function correct(inst: Instance, by: string, c: { kind: string; item?: st
 // Wakes (.rf/wakes.json): the pending ones by id, each for a target, an instance or a series by id, and the requests to start an
 // instance that a series no one shares, or with 3 open, got instead. A target fires at most once in 15 minutes: a wake due sooner
 // waits. A run's wake notes its instance, `inst`, as its name in `from` may change before it fires, and any wake its `text`, which
-// the run it starts reads in its wake entry. One with `days` recurs each week
-// on them at its time of day, in the server's time zone; a series' moves the date in its label on with it, keeping it the day it
-// fires or the one before that it fires on, as it was set.
+// the run it starts reads in its wake entry. One with `days` recurs each week on them at its time of day, in the server's time zone;
+// a series' moves the date in its label on with it, keeping it the day it fires or the one before that it fires on, as it was set.
 export type Wake = { target: string; at: string; from: string; label?: string; inst?: string; days?: string[]; text?: string };
 export type Request = { series: string; label: string; from: string; at: string; inst?: string; text?: string };
 type Wakes = { pending: Record<string, Wake>; fired: Record<string, string>; requests: Record<string, Request> };
