@@ -18,7 +18,7 @@ A Linux host with Node 26, git, GNU tar and bubblewrap, and about 2 GB of memory
 
 ## How
 
-- **Accountable actions.** A run acts as one person, through their own logins, and only those ticked for it. Every act is logged, each run's changes are a git commit, and an action outside the series waits for a person's sign-off unless the instructions say it needs none.
+- **Accountable actions.** A run acts as one person, through their own logins, and only those ticked for it. Every act is logged, each run's changes are a git commit, and an action outside the series waits for a person to approve the agent's proposal unless the instructions say it needs none.
 - **Learning from examples,** not compiled skills or a knowledge base. Each period rolls forward from the closed periods before it: their files, scripts, threads, and what was actually sent.
 
 ## Limitations

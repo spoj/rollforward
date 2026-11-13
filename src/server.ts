@@ -187,8 +187,7 @@ function names(me: Me) {
 }
 
 // What makes an instance new to a person, when someone else or the agent did it: a run's end, a comment, an approval, a rejection, a
-// withdrawal, an upload, a
-// takeover, a close, a deletion, or a move to another workspace that someone else accepted.
+// withdrawal, an upload, a takeover, a close, a deletion, or a move to another workspace that someone else accepted.
 const NEWS = ['done', 'comment', 'signoff', 'reject', 'withdraw', 'upload', 'takeover', 'close', 'abandon', 'delete', 'move'];
 
 // What an instance's runs cost, since its latest duplication, a deleted one's as its deletion kept it.
@@ -842,8 +841,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (!starts(inst, said) && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, me, `Comment in ${said.thread}`).catch(err => inst.append('server', 'commit', { cause: said.seq, error: err.message }));
   } else if (action === 'signoff' || action === 'reject') {
     // Anyone who sees the instance approves a proposal of the agent's, which `thread` names as cN, or rejects it, with a note, as an
-    // ask from before questions and proposals, `ask: true`, which may have been either. Approving is a sign-off, by the route's name
-    // since rf 0.13: it commits the folder in their name, as they say yes to it, the proposal and the note its message, with their
+    // ask from before questions and proposals, `ask: true`, which may have been either. Approving is a sign-off, the route's and the
+    // entry's name: it commits the folder in their name, as they say yes to it, the proposal and the note its message, with their
     // Signed-off-by. Either starts a run, as a reply does, unless quiet. rf 0.12's reject, a sign-off with approved false, is refused.
     const { thread, text, approved } = payload, ask = inst.log.find(e => `c${e.seq}` === thread && e.op === 'comment' && e.by === 'agent' && (e.ask === true || e.ask === 'proposal'));
     if (approved === false) throw new HttpError(400, 'a sign-off approves; to say no, reject it, on the page or with rf reject');
