@@ -12,7 +12,7 @@ import { websitesOf, type Browsers } from './browsers.ts';
 import { notes, seriesSettings, type Note } from './series.ts';
 import { pushed, skills } from './skills.ts';
 import { AGENT, commit, committed, forget } from './git.ts';
-import { logins, runnerAt, runnerOf } from './logins.ts';
+import { lastAssign, logins, runnerAt, runnerOf } from './logins.ts';
 import { confirm } from './entra.ts';
 import { reachable, types } from './connections.ts';
 
@@ -93,7 +93,7 @@ function seenBefore(inst: Instance): number {
 export type Standing = { word: 'runner' | 'answer' | 'note'; starts: boolean };
 export function standing(inst: Instance, e: Entry, upto = inst.log.length): Standing | undefined {
   if (e.op !== 'wake' && !(['upload', 'comment', 'signoff', 'reject'].includes(e.op) && (isPerson(e) || e.note))) return undefined;
-  const line = inst.log.findLast(x => x.seq <= upto && ['takeover', 'assign'].includes(x.op))?.seq ?? 0, runner = runnerAt(inst.log, e.seq);
+  const line = lastAssign(inst.log, upto)?.seq ?? 0, runner = runnerAt(inst.log, e.seq);
   const ask = e.op === 'upload' ? undefined : e.parent ?? e.on ? inst.log[(e.parent ?? e.on) as number - 1] : inst.log.findLast(x => x.seq < e.seq && x.op === 'comment' && x.thread === e.thread && x.by === 'agent');
   const word = e.seq < line || e.note ? 'note'
     : e.op !== 'wake' ? (e.by === runner ? 'runner' : ask && ask.seq > line && ask.to === e.by ? 'answer' : 'note')

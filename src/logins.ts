@@ -82,6 +82,9 @@ export function checkTicks(email: string, ticks: unknown): string[] {
 const MADE = ['create', 'duplicate', 'takeover', 'assign'];
 const ranBy = (e: Entry) => e.op === 'assign' ? e.to as string : e.by;
 
+// The last assign of an instance, as of an entry, by its seq, or of its log, a takeover being an assign to oneself.
+export const lastAssign = (log: Entry[], upto = Infinity) => log.findLast(e => e.seq <= upto && ['takeover', 'assign'].includes(e.op));
+
 // Who ran an instance as an entry, by its seq, was made, as the page shows history and costs count runs.
 export const runnerAt = (log: Entry[], seq: number) => ranBy(log.findLast(e => e.seq < seq && MADE.includes(e.op))!);
 

@@ -13,7 +13,7 @@ import { agentRoot, id as agentId } from './agent.ts';
 import { checkTheme, stylesheet, themeLogo } from './theme.ts';
 import { asPerson, authenticate, CAPS, can, capabilities, checkConfig, cli, connect, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
 import { act, canManage, canSee, changes, everyone, initSystem, isPeople, readJson, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
-import { checkTicks, logins, runnerAt, runnerOf, saveLogin, signOut, unoffer } from './logins.ts';
+import { checkTicks, lastAssign, logins, runnerAt, runnerOf, saveLogin, signOut, unoffer } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { answered, byLogin, call, connections, intercepts, letIn, loginOf, removeConnection, setConnection, setLetIn, upstreams } from './connections.ts';
@@ -157,14 +157,14 @@ function watched(me: Me, id: string, site: string): { browsers: Browsers; id: st
 // its last assign does, and each such note on the runner but their own; a copy's since it was copied.
 function waits(inst: Instance): { who: string; e: Entry }[] {
   if (inst.doc.status !== 'open') return [];
-  const runner = runnerOf(inst).by, line = inst.log.findLast(e => ['takeover', 'assign'].includes(e.op))?.seq ?? 0;
+  const runner = runnerOf(inst).by, line = lastAssign(inst.log)?.seq ?? 0;
   return inst.log.filter(e => e.seq > inst.copied && e.op === 'comment' && ((e.by === 'agent' && e.ask) || (standing(inst, e)?.word === 'note' && e.by !== runner)) && !inst.answered(e))
     .map(e => ({ who: e.seq > line && e.to ? e.to as string : runner, e }));
 }
 
 // Whom an assign tells, until they open the instance or act in it: whoever someone else assigned it to.
 function assignment(i: Instance): { who: string; by: string; at: string } | undefined {
-  const a = i.log.findLast(e => ['takeover', 'assign'].includes(e.op));
+  const a = lastAssign(i.log);
   if (i.doc.status !== 'open' || a?.op !== 'assign' || a.to === a.by) return undefined;
   const who = a.to as string;
   return (seen(who).at[i.id] ?? 0) < a.seq && !i.log.some(e => e.seq > a.seq && e.by === who) ? { who, by: a.by, at: a.at } : undefined;
