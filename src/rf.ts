@@ -10,12 +10,14 @@ const HELP: Record<string, string> = {
   uploaded): run rf show and merge. It fails, with the reasons, unless every item has a unique id, a name and a kind (input,
   step or output); from names items, never in a circle; file is null or an existing file under upload/ or working/; and status
   is left out or as it is.`,
-  say: `rf say [--in cN | --on ITEM[@REF]] TEXT|-
+  say: `rf say [--at PATH] [--in cN | --on ITEM[@REF]] TEXT|-
   Tells people something that needs no reply. --in cN replies under comment cN, N its seq; a thread's id is its first
   comment's, and a reply under your own ask withdraws it. --on starts a thread on an item, or on a place in its file, such as
   ar-aging@Sheet1!C22 or a markdown file's line by its opening words. With neither, the thread is on the instance. In TEXT,
   [name](PATH) links a file and ![name](PATH) shows an image, PATH under upload/ or working/ of this instance, or as
-  ../<label>/working/x.csv of another of its series. - reads TEXT from stdin.`,
+  ../<label>/working/x.csv of another of its series. - reads TEXT from stdin. --at PATH says it in another open instance of
+  your workspace, such as ../<label> or ../../<series>/<label>, --in and --on then its threads and items: a note for its
+  runner, naming you, your run, your runner and this instance, which starts a run there only where its series is shared.`,
   ask: `rf ask [--in cN | --on ITEM[@REF]] [--to EMAIL] TEXT|-
   Asks for a reply: it waits on EMAIL, else the instance's runner, until someone replies under it, which starts a run. Anyone
   who sees the instance can sign it off instead, saying yes: that commits its folder in their name (rf help commit), as it is
@@ -62,19 +64,22 @@ const usage = (c?: string) => ({ ok: false, text: c && HELP[c] ? HELP[c] : USAGE
 
 const own = `api/instances/${process.env.RF_INSTANCE}`;
 
-// rf say and rf ask: a comment in a thread, or starting one on an item or the instance.
-function comment() {
-  const o: { in?: string; on?: string; to?: string; words: string[] } = { words: [] };
+// rf say and rf ask: a comment in a thread, or starting one on an item or the instance; rf say --at, in another instance.
+async function comment() {
+  const o: { in?: string; on?: string; to?: string; at?: string; words: string[] } = { words: [] };
   for (let i = 0; i < args.length; i++) {
-    const flag = /^--(in|on|to)$/.exec(args[i])?.[1] as 'in' | 'on' | 'to' | undefined;
+    const flag = /^--(in|on|to|at)$/.exec(args[i])?.[1] as 'in' | 'on' | 'to' | 'at' | undefined;
     if (!flag && /^--\w/.test(args[i])) return { ok: false, text: `rf ${cmd} has no ${args[i]}\n${HELP[cmd]}` };
     if (!flag || args[i + 1] === undefined) o.words.push(args[i]);
     else o[flag] = args[++i];
   }
   const text = o.words.join(' ') === '-' ? readFileSync(0, 'utf8') : o.words.join(' ');
   if (!text.trim() || (o.in && o.on) || (o.to && cmd === 'say')) return usage(cmd);
+  const found = o.at === undefined ? undefined : await send('GET', `api/resolve?path=${encodeURIComponent(o.at)}`);
+  if (found && !found.ok) return found;
+  if (found && JSON.parse(found.text).kind === 'series') return { ok: false, text: `${o.at} is a series: say it in one of its open instances` };
   const at = o.on?.indexOf('@') ?? -1, item = at >= 0 ? o.on!.slice(0, at) : o.on, ref = at >= 0 ? o.on!.slice(at + 1) : undefined;
-  return send('POST', `${own}/comment`, JSON.stringify({ thread: o.in, item, ref, text, ask: cmd === 'ask', to: o.to }));
+  return send('POST', found ? `api/instances/${JSON.parse(found.text).id}/comment` : `${own}/comment`, JSON.stringify({ thread: o.in, item, ref, text, ask: cmd === 'ask', to: o.to }));
 }
 
 // rf wake TARGET AT [--label LABEL] [--days DAYS] [TEXT]: the folder becomes an id, then the wake is set as a person sets one.

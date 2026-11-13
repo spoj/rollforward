@@ -483,10 +483,10 @@ const people = (w: { owners?: unknown; members?: unknown }) => [w.owners, w.memb
 // the new names from its next start.
 async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: URL) {
   const [kind, id = '', action, other = ''] = url.pathname.split('/').slice(2).map(decodeURIComponent);
-  // A run reads and writes its own instance's screen and threads, commits its folder, sets wakes and corrects closed instances in its
-  // own workspace, and finds what a folder it can read names; nothing else here.
+  // A run reads and writes its own instance's screen and threads, commits its folder, sets wakes, corrects closed instances and leaves
+  // notes in other open ones in its own workspace, and finds what a folder it can read names; nothing else here.
   const run = me.run;
-  if (run && !(kind === 'instances' && id === run.inst.id && ['screen', 'comment', 'commit'].includes(action)) && !(kind === 'instances' && action === 'correct') && !(kind === 'wakes' && ['PUT', 'DELETE'].includes(req.method!)) && kind !== 'resolve')
+  if (run && !(kind === 'instances' && id === run.inst.id && ['screen', 'commit'].includes(action)) && !(kind === 'instances' && ['comment', 'correct'].includes(action)) && !(kind === 'wakes' && ['PUT', 'DELETE'].includes(req.method!)) && kind !== 'resolve')
     throw new HttpError(404, 'not found');
   // The body before the tree: a request held open must not save a tree from before others' changes, such as an owner's removal.
   const payload = ['upload', 'attach', 'screen'].includes(action) ? {} : await json(req);
@@ -823,10 +823,22 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const who = typeof to === 'string' ? to.toLowerCase() : undefined, p = who && asPerson(who);
     if (who && !(p && canSee(p, t.workspaces[t.series[inst.seriesId].workspace])))
       throw new HttpError(400, `${to} can't see this instance; ask its runner, ${runnerOf(inst).by}, or someone in its workspace`);
+    // A run's comment in another instance of its workspace is a note there, which names the run, its runner and its own instance and
+    // thread, and starts a run only where that series' runner shares it; its own instance logs where it went.
+    const away = run && run.inst !== inst;
+    if (away && t.series[inst.seriesId].workspace !== t.series[run.inst.seriesId].workspace) throw new HttpError(403, `${named(t, inst.seriesId)} is in another workspace: you can read it, not comment there`);
+    if (away && (ask || to)) throw new HttpError(400, 'you ask only your own runner: rf ask in your own instance');
     const said = inst.append(by, 'comment', {
       ...(under ? { thread: under.thread, parent: under.seq } : { thread: `c${inst.log.length + 1}`, item: item ?? null, ref: ref ?? null }), text: text.trim(), ...(files.length && { files }),
       ...(run && { run: run.n, ...(ask && { ask: true, ...(who && { to: who }) }) }), ...(quiet && { quiet: true }),
+      ...(away && { runner: runnerOf(run.inst).by, see: { inst: run.inst.id, label: run.inst.label, ...(run.thread && { thread: run.thread }) }, note: true }),
     });
+    if (away) {
+      run.inst.append('agent', 'said', { run: run.n, inst: inst.id, label: inst.label, seq: said.seq, thread: said.thread });
+      if (!starts(inst, said) && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, AGENT, `Note in ${said.thread}`).catch(err => inst.append('server', 'commit', { cause: said.seq, error: err.message }));
+      kick(inst);
+      return send(res, 200, `said c${said.seq} in ${named(t, inst.seriesId)}/${inst.label}${under ? `, under ${thread}` : ''}, a note for its runner`);
+    }
     if (run) return send(res, 200, `${ask ? 'asked' : 'said'} c${said.seq}${under ? `, under ${thread}` : ''}`);
     res.setHeader('X-RF-Comment-Seq', said.seq);
     // Until a task is renamed, its first prompt's opening words name it.

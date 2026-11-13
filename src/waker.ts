@@ -86,15 +86,16 @@ export const starter = (inst: Instance, who: string) => {
   return who === runner || seriesSettings(inst.series()).shared?.by === runner;
 };
 // What a person but the runner adds is a note, shared series or not: the agent reads it as context for its runner to take up, never as
-// the runner's word, though it runs on it where it may. A wake that starts nothing is one too. A reply or a sign-off from whom the
-// agent's ask it answers named is no note: from before replies named what they answer, the thread's last ask.
+// the runner's word, though it runs on it where it may. A wake that starts nothing is one too, and so is another instance's agent's
+// comment. A reply or a sign-off from whom the agent's ask it answers named is no note: from before replies named what they answer,
+// the thread's last ask.
 export const isNote = (inst: Instance, e: Entry) => !!e.note || (isPerson(e) && ['upload', 'comment', 'signoff'].includes(e.op) && e.by !== runnerOf(inst).by
   && !(e.op !== 'upload' && (e.parent ?? e.on ? inst.log[(e.parent ?? e.on) as number - 1] : inst.log.findLast(x => x.seq < e.seq && x.op === 'comment' && x.thread === e.thread && x.by === 'agent'))?.to === e.by));
 // A quiet entry, such as rf's without --wake, starts nothing, and its act kicks nothing that waits: the next run reads it with the rest.
 export const starts = (inst: Instance, e: Entry) => !e.quiet && (!isNote(inst, e) || starter(inst, e.by));
 
 export function pending(inst: Instance, seen: number): Entry[] {
-  return inst.log.filter(e => e.seq > seen && starts(inst, e) && (e.op === 'wake' || (isPerson(e) && ['upload', 'comment', 'signoff'].includes(e.op))));
+  return inst.log.filter(e => e.seq > seen && starts(inst, e) && (e.op === 'wake' || ((isPerson(e) || e.note) && ['upload', 'comment', 'signoff'].includes(e.op))));
 }
 
 // Whether an instance has something for a run: what came since its last run, or since an Interrupt, which waits for the next act;
@@ -102,9 +103,9 @@ export function pending(inst: Instance, seen: number): Entry[] {
 const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math.max(seenBefore(inst), inst.log.findLast(e => e.op === 'interrupt')?.seq ?? 0)).length > 0
   && !archived(tree(), inst.seriesId);
 
-// What a run is told of: people's acts, and the server's wakes, expired logins, uploads made items, renames and a run cut or failed;
-// not the server's bookkeeping, such as a run's start, its hosts and screenshots, which the log keeps.
-const told = (e: Entry) => isPerson(e) || ['wake', 'expired', 'point', 'rename'].includes(e.op) || (e.op === 'done' && (!!e.aborted || !!e.error));
+// What a run is told of: people's acts, other instances' agents' notes, and the server's wakes, expired logins, uploads made items,
+// renames and a run cut or failed; not the server's bookkeeping, such as a run's start, its hosts and screenshots, which the log keeps.
+const told = (e: Entry) => isPerson(e) || !!e.note || ['wake', 'expired', 'point', 'rename'].includes(e.op) || (e.op === 'done' && (!!e.aborted || !!e.error));
 
 // A run's first message names the runner, on whose behalf the agent acts, and what they lend it, each tick as logged with what it
 // is, a website's at its address, as does a later one whose entries change those: a takeover and a runner's new ticks.
@@ -160,8 +161,9 @@ export function kick(inst: Instance) {
 }
 
 function flush(a: Active) {
-  const entries = a.inst.log.filter(e => e.seq > a.sent && e.by !== 'agent');
-  if (!pending(a.inst, a.sent).length) return;
+  const entries = a.inst.log.filter(e => e.seq > a.sent && (e.by !== 'agent' || e.note));
+  // What it is told of reaches it at once, notes too: the next act's run would read them anyway.
+  if (!entries.some(told)) return;
   const text = message(a.inst, a.n, entries);
   a.sent = entries.at(-1)!.seq;
   a.texts.set(text, a.sent);
@@ -207,7 +209,7 @@ async function start(inst: Instance) {
     started.splice(0, started.length - MAX_RUNS);
   }
   const n = inst.log.filter(e => e.op === 'run').length + 1;
-  const entries = inst.log.filter(e => e.seq > seen && e.by !== 'agent');
+  const entries = inst.log.filter(e => e.seq > seen && (e.by !== 'agent' || e.note));
   const text = message(inst, n, entries, !kept);
   // The versions live as its Pi starts, which it uses to its end.
   const live = kept ? [] : skills().map(s => ({ ...s, dir: realpathSync(s.dir) }));

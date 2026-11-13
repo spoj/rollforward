@@ -465,7 +465,7 @@ else if (cmd === 'comment' && args.length === 2) {
     const log = (await get(at)).log, done = log.find(e => e.op === 'done' && e.seen >= seq);
     if (!done) continue;
     const from = Math.max(seq, log.find(e => e.op === 'run' && e.run === done.run).seq);
-    for (const e of log.filter(e => e.seq > from && e.seq < done.seq && e.op === 'comment' && e.by === 'agent')) console.log(`${e.ask ? 'Asks' : 'Says'} in ${e.thread}:\n${e.text}\n`);
+    for (const e of log.filter(e => e.seq > from && e.seq < done.seq && e.op === 'comment' && e.by === 'agent' && !e.see)) console.log(`${e.ask ? 'Asks' : 'Says'} in ${e.thread}:\n${e.text}\n`);
     if (done.error) console.log(`The run failed: ${done.error}`);
     break;
   }
