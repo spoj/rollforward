@@ -363,15 +363,20 @@ function pullable(me: Me, path: string) {
   // A name that isn't UTF-8, as unzipping an old archive leaves, reads back as another name, which no file has: it is left out.
   const add = (at: string, file: string, more: { url?: string; text?: string }) => {
     const st = statSync(file, { throwIfNoEntry: false });
-    if (st) out.push({ path: at, size: st.size, mtime: st.mtime.toISOString(), ...more });
+    if (st) out.push({ path: at, size: more.text === undefined ? st.size : Buffer.byteLength(more.text), mtime: st.mtime.toISOString(), ...more });
   };
   const near = (at: string) => !path || at === path || at.startsWith(path + '/') || path.startsWith(at + '/');
   if (existsSync(agentsFile())) add('AGENTS.md', agentsFile(), { text: text(agentsFile()) });
   for (const [wid, w] of Object.entries(t.workspaces).filter(([, w]) => canSee(me, w))) {
     if (existsSync(agentsFile(wid))) add(`${w.name}/AGENTS.md`, agentsFile(wid), { text: text(agentsFile(wid)) });
     for (const [sid, s] of Object.entries(t.series).filter(([, s]) => s.workspace === wid)) for (const l of labels(sid)) {
-      const at = `${w.name}/${s.name}/${l.label}`, dir = instanceDir(l.id);
-      if (!instance(l.id).hole && near(at)) for (const f of walk(dir)) add(`${at}/${relative(dir, f).split(sep).join('/')}`, f, { url: `/files/${l.id}/${relative(dir, f).split(sep).map(encodeURIComponent).join('/')}` });
+      const at = `${w.name}/${s.name}/${l.label}`, dir = instanceDir(l.id), inst = instance(l.id);
+      if (!near(at)) continue;
+      if (inst.hole) {
+        add(`${at}/instance.json`, join(dir, 'instance.json'), { text: text(join(dir, 'instance.json')) });
+        add(`${at}/screen.json`, join(dir, 'screen.json'), { text: JSON.stringify(inst.doc) });
+        add(`${at}/log.jsonl`, join(dir, 'log.jsonl'), { text: JSON.stringify(inst.log[0]) + '\n' });
+      } else for (const f of walk(dir)) add(`${at}/${relative(dir, f).split(sep).join('/')}`, f, { url: `/files/${l.id}/${relative(dir, f).split(sep).map(encodeURIComponent).join('/')}` });
     }
   }
   return out.filter(f => !path || f.path === path || f.path.startsWith(path + '/'));

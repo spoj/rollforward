@@ -236,6 +236,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
       'curl -s -m 5 -X POST -H "authorization: Bearer $RF_TOKEN" "$RF_URL/api/instances/$RF_INSTANCE/close"; echo',
       'curl -s -m 5 -H "authorization: Bearer $RF_TOKEN" "$RF_URL/api/workspaces"; echo',
       'rf ask --sign-off Sure. 2>&1',
+      'curl -s -m 5 -w "\\n%{http_code}" -X POST -H "authorization: Bearer $RF_TOKEN" "$RF_URL/api/instances/$RF_INSTANCE/delete"',
     ],
     report: 'Checked the walls, and woke myself for the bank file.', saw: [],
   };
@@ -271,6 +272,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.match(walls.saw[17], /^said c\d+\s*$/, 'a post links files in its text');
   assert.deepEqual([walls.saw[18].trim(), walls.saw[19].trim()], ['not found', 'not found'], "a run's token does only what a run may: not close its instance, nor read what people do"); 
   assert.match(walls.saw[20], /^rf ask has no --sign-off\nrf ask \[--in cN/, 'an option it has not is no part of the text');
+  assert.equal(walls.saw[21].trim(), 'not found\n404', 'even a workspace manager\'s run cannot delete');
   const asked = log.filter(e => e.op === 'call' && e.name === 'openrouter'), pi = asked.filter(e => (e.path as string).startsWith('/api/v1/messages'));
   assert.deepEqual(asked.filter(e => !pi.includes(e)).map(e => [e.run, e.method, e.path, e.status, e.model, e.cost]), [[2, 'POST', '/api/v1/chat/completions', 200, 'openai/gpt-5-mini', 0.002], [2, 'GET', '/api/v1/credits', 404, undefined, 0]]);
   assert.deepEqual(pi.map(e => [e.run, e.method, e.status, e.model, e.cost]), [[1, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01], ...Array(walls.bash.length + 1).fill([2, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01]), ...Array(2).fill([3, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01])], "Pi's own calls, a step's each and the report's, through the same connection");
@@ -941,6 +943,13 @@ test("deleting an instance cuts a run whose view holds it, which carries on with
   assert.deepEqual(hole[0].runs.map((r: { outcome: string }) => r.outcome), ['cut'], 'its run, cut, still counts');
   await new Promise(ok => setTimeout(ok, 1500));
   assert.deepEqual(readdirSync(join(root, 'instances', going)).sort(), ['instance.json', 'log.jsonl', 'screen.json'], 'nothing commits or writes there after');
+  const path = 'Purge/Report/2026-11', before = (await (await call('GET', '/api/runs')).json()).filter(r => r.path === path);
+  assert.ok(before.reduce((n, r) => n + r.cost, 0) > 0);
+  const cost = (await (await call('GET', `/api/instances/${id}/summary`)).json()).cost;
+  assert.equal((await call('POST', `/api/instances/${id}/delete`)).status, 200);
+  const retained = (await (await call('GET', '/api/runs')).json()).filter(r => r.path === path);
+  assert.deepEqual(retained, before.map(r => ({ ...r, started: null, error: null })));
+  assert.equal((await (await call('GET', `/api/instances/${id}/summary`)).json()).cost, cost);
 });
 
 test("every entry names its source: a person, a run whose entry names its runner and the act whose ticks it uses, or what caused it", () => {

@@ -419,7 +419,7 @@ if (cmd === 'login' && url) {
     return { comment: `c${seq}`, thread: e.thread, kind: e.ask ? 'ask' : 'note', for: who, by: e.by, item: first.item, ref: first.ref, text: e.text };
   });
   const done = log.findLast(e => e.op === 'done'), last = done ? { run: done.run, cost: done.cost, error: done.error ?? null } : null;
-  if (flags.json) console.log(JSON.stringify({ path: args[0], id: inst.id, status: doc.status, runner: runner.by, running: run, queued, items: doc.items, waiting, last_run: last }, null, 1));
+  if (flags.json) console.log(JSON.stringify({ path: args[0], id: inst.id, status: doc.status, runner: runner.by, running: run, queued, items: doc.items, waiting, last_run: last, ...(doc.status === 'deleted' && { deleted: { by: log[0].by, at: log[0].at } }) }, null, 1));
   else {
     console.log(doc.status === 'deleted' ? `${args[0]}  deleted by ${log[0].by} ${when(log[0].at)}` : `${args[0]}  ${doc.status}, runner ${runner.by}${run ? `, run ${run.n} going, ${usd(run.cost)}` : queued ? ', queued' : ''}`);
     for (const i of doc.items) console.log(`  ${i.kind.padEnd(6)} ${i.id}  ${i.name}  ${i.file ?? 'no file yet'}${i.from?.length ? `  from ${i.from.join(', ')}` : ''}${i.headline ? `  ${i.headline}` : ''}`);
