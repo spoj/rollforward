@@ -120,7 +120,7 @@ export function message(inst: Instance, n: number, entries: Entry[], first = fal
   }));
   return `Instance ${inst.label}, run ${n}.`
     + (first || made ? ` Its runner is ${made?.op === 'takeover' ? `now ${who(made.by)}, taking over from ${who(made.from as string)}` : who(by)}, who lends you ${ticked.map(lent).join(', ') || 'no login'}.` : '')
-    + (first && set.length ? ` Pending wakes: ${set.map(k => `${k.id}, ${k.target === inst.id ? 'waking this instance' : `starting ${k.label}`} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''}`).join('; ')}.` : '')
+    + (first && set.length ? ` Pending wakes: ${set.map(k => `${k.id}, ${k.target === inst.id ? 'waking this instance' : `starting ${k.label}`} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''}${k.text ? `, saying ${JSON.stringify(k.text)}` : ''}`).join('; ')}.` : '')
     + (fixed.length ? ` Corrections on earlier instances: ${fixed.join('; ')}.` : '')
     + ' New log entries:\n'
     + entries.filter(told).map(e => JSON.stringify(isNote(inst, e) ? { ...e, note: true } : e)).join('\n');
@@ -416,11 +416,12 @@ export function correct(inst: Instance, by: string, c: { kind: string; item?: st
 
 // Wakes (.rf/wakes.json): the pending ones by id, each for a target, an instance or a series by id, and the requests to start an
 // instance that a series no one shares, or with 3 open, got instead. A target fires at most once in 15 minutes: a wake due sooner
-// waits. A run's wake notes its instance, `inst`, as its name in `from` may change before it fires. One with `days` recurs each week
+// waits. A run's wake notes its instance, `inst`, as its name in `from` may change before it fires, and any wake its `text`, which
+// the run it starts reads in its wake entry. One with `days` recurs each week
 // on them at its time of day, in the server's time zone; a series' moves the date in its label on with it, keeping it the day it
 // fires or the one before that it fires on, as it was set.
-export type Wake = { target: string; at: string; from: string; label?: string; inst?: string; days?: string[] };
-export type Request = { series: string; label: string; from: string; at: string };
+export type Wake = { target: string; at: string; from: string; label?: string; inst?: string; days?: string[]; text?: string };
+export type Request = { series: string; label: string; from: string; at: string; inst?: string; text?: string };
 type Wakes = { pending: Record<string, Wake>; fired: Record<string, string>; requests: Record<string, Request> };
 export const wakes = () => readJson<Wakes>('wakes.json', { pending: {}, fired: {}, requests: {} });
 const saveWakes = (w: Wakes) => writeJson('wakes.json', w);
@@ -490,12 +491,14 @@ export function dropRequest(id: string): Request {
 }
 
 // Makes an instance of a series, run by `by` with the logins they ticked, and starts it with a wake after its create, for a wake, a
-// request or a person; without one, as a person makes it quietly, it waits for its first act.
-export function startWith(seriesId: string, label: string, by: string, logins: string[], wake?: { from: string }): Instance {
+// request or a person; without one, as a person makes it quietly, it waits for its first act. The wake is the runner's word if they
+// set it, or a run of an instance of theirs in the series did; anyone else's is a note.
+export function startWith(seriesId: string, label: string, by: string, logins: string[], wake?: { from: string; text?: string; inst?: string }): Instance {
   if (instances(seriesId).filter(i => i.doc.status === 'open').length >= MAX_OPEN) throw new HttpError(409, `${MAX_OPEN} instances of ${tree().series[seriesId].name} are open: a new one waits until one closes`);
   const inst = createInstance(seriesId, label, by, logins);
   if (wake) {
-    inst.append('server', 'wake', wake);
+    const own = wake.from === by || (!!wake.inst && instance(wake.inst).seriesId === seriesId && runnerOf(instance(wake.inst)).by === by);
+    inst.append('server', 'wake', { from: wake.from, ...(wake.text && { text: wake.text }), ...(!own && { note: true }) });
     kick(inst);
   }
   return inst;
@@ -533,7 +536,7 @@ function fire() {
         console.log(`a wake found ${named(t, inst.seriesId)}/${inst.label} ${inst.doc.status}, so it woke nothing`);
         continue;
       }
-      inst.append('server', 'wake', { from, ...(wake.inst !== inst.id && !starter(inst, wake.from) && { note: true }) });
+      inst.append('server', 'wake', { from, ...(wake.text && { text: wake.text }), ...(wake.inst !== inst.id && !starter(inst, wake.from) && { note: true }) });
       kick(inst);
       continue;
     }
@@ -541,9 +544,9 @@ function fire() {
     const runs = sharer && canSee(sharer, t.workspaces[t.series[target].workspace]);
     try {
       if (!runs) throw new Error('not shared');
-      startWith(target, label!, shared.by, shared.logins, { from });
+      startWith(target, label!, shared.by, shared.logins, { from, text: wake.text, inst: wake.inst });
     } catch {
-      w.requests[newId()] = { series: target, label: label!, from, at: now };
+      w.requests[newId()] = { series: target, label: label!, from, at: now, ...(wake.inst && { inst: wake.inst }), ...(wake.text && { text: wake.text }) };
     }
   }
   saveWakes(w);

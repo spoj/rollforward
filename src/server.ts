@@ -678,8 +678,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     return send(res, 200, 'ok');
   }
   if (kind === 'wakes') {
-    // People and runs set wakes, one-off or weekly, and cancel them: PUT names the target, an open instance, which the wake continues,
-    // or a series, which it starts LABEL of; DELETE names the wake. A run wakes only in its own workspace: it reads others that let it,
+    // People and runs set wakes, one-off or weekly, each with a short text if they like, and cancel them: PUT names the target, an
+    // open instance, which the wake continues, or a series, which it starts LABEL of; DELETE names the wake. A run wakes only in its own workspace: it reads others that let it,
     // never acts there.
     const wake = req.method === 'DELETE' ? wakes().pending[id] : undefined, to = wake?.target ?? id, sid = t.series[to] ? to : instance(to).seriesId;
     if (req.method === 'DELETE' && !wake) throw new HttpError(404, 'no such wake pending');
@@ -687,9 +687,10 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (!run) mustSee(me, t.workspaces[t.series[sid].workspace]);
     else if (t.series[sid].workspace !== t.series[run.inst.seriesId].workspace) throw new HttpError(403, `${named(t, sid)} is in another workspace: you can read it, not wake it`);
     if (req.method === 'DELETE') return void (cancelWake(id), send(res, 200, 'ok'));
-    const { at: when = '', label, days } = payload, w = String(when);
+    const { at: when = '', label, days, text } = payload, w = String(when);
     const at = w === 'now' ? Date.now() : /^\+\d+[mhd]$/.test(w) ? Date.now() + Number(w.slice(1, -1)) * { m: 60e3, h: 3600e3, d: 86400e3 }[w.at(-1) as 'm'] : Date.parse(w);
-    if (req.method !== 'PUT' || Number.isNaN(at)) throw new HttpError(400, 'PUT {"at", "label" for a series, "days"}, or DELETE; at is now, +<n>m|h|d, or a date and time such as 2026-09-14T07:00+08:00');
+    if (req.method !== 'PUT' || Number.isNaN(at)) throw new HttpError(400, 'PUT {"at", "label" for a series, "days", "text"}, or DELETE; at is now, +<n>m|h|d, or a date and time such as 2026-09-14T07:00+08:00');
+    if (text != null && (typeof text !== 'string' || text.length > 500)) throw new HttpError(400, "a wake's text is a short message, 500 characters at most");
     if (archived(t, sid)) throw new HttpError(409, `${named(t, sid)} is archived`);
     if (t.series[to] && !label) throw new HttpError(400, `waking a series starts a new instance: name it with a label${run ? '; to wake your own instance, name its folder: .' : ''}`);
     if (!t.series[to] && instance(to).doc.status !== 'open') throw new HttpError(409, `${instance(to).label} is ${instance(to).doc.status}: to correct it, wake its series with the label ${instance(to).label}-r2`);
@@ -697,7 +698,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (starts && labels(to).some(l => l.label === starts && instance(l.id).hole)) throw new HttpError(409, `${starts} was deleted, and its label stays with it: choose another`);
     return send(res, 200, setWake(to, {
       at: first.toISOString(), from: run ? `${named(t, run.inst.seriesId)}/${run.inst.label}` : by, ...(run && { inst: run.inst.id }),
-      ...(starts && { label: starts }), ...(days !== undefined && { days: weekly(String(days), first, starts) }),
+      ...(starts && { label: starts }), ...(days !== undefined && { days: weekly(String(days), first, starts) }), ...(text?.trim() && { text: text.trim() }),
     }));
   }
   // A request to start an instance, which people start or dismiss.
@@ -706,7 +707,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (!r) throw new HttpError(404, `no request ${id}`);
     mustSee(me, t.workspaces[t.series[r.series].workspace]);
     if (req.method === 'POST') {
-      const inst = startWith(r.series, r.label, by, checkTicks(by, payload.logins ?? []), payload.quiet ? undefined : { from: r.from });
+      const inst = startWith(r.series, r.label, by, checkTicks(by, payload.logins ?? []), payload.quiet ? undefined : { from: r.from, text: r.text, inst: r.inst });
       dropRequest(id);
       return send(res, 200, { id: inst.id });
     }

@@ -285,8 +285,8 @@ function renderSide() {
       }
       const closed = s.instances.length - open.length;
       h += '<div class="tree">';
-      for (const k of s.wakes) h += `<div class="row wake"><span class="nm" title="Starts ${esc(k.label)} ${when(k.at)}"><span class="l">Starts ${esc(k.label)} ${soon(k.at)}</span></span><span class="n">${k.days ? 'weekly' : 'wake'}</span></div>`;
-      for (const r of s.requests) h += `<div class="row req"><span class="nm" title="${esc(`${r.from} asks to start ${r.label}`)}"><span class="l">${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)}</span></span>`
+      for (const k of s.wakes) h += `<div class="row wake"><span class="nm" title="Starts ${esc(k.label)} ${when(k.at)}${k.text ? `: ${esc(k.text)}` : ''}"><span class="l">Starts ${esc(k.label)} ${soon(k.at)}</span></span><span class="n">${k.days ? 'weekly' : 'wake'}</span></div>`;
+      for (const r of s.requests) h += `<div class="row req"><span class="nm" title="${esc(`${r.from} asks to start ${r.label}${r.text ? `: ${r.text}` : ''}`)}"><span class="l">${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)}</span></span>`
         + (archived(w, s) ? '' : `<button class="add" data-act="req-start" data-id="${r.id}" title="Start it">\u25B6</button><button class="add" data-act="req-drop" data-id="${r.id}" title="Dismiss">\u00D7</button>`) + '</div>';
       h += s.instances.filter(i => i.status === 'open' || showClosed.has(s.id) || i.id === cur?.i?.id).map(row).join('');
       if (closed) h += closedToggle(s.id, closed);
@@ -486,7 +486,7 @@ function logText(e) {
     comment: () => `${w} ${e.note ? `left a note for ${who(data.runner.by)}` : e.by !== 'agent' ? 'commented' : e.ask ? `asked${e.to ? ' ' + who(e.to) : ''}` : 'said'}${e.item ? ` on ${item(e.item)}${e.ref ? ` at ${esc(e.ref)}` : ''}` : ''}<div class="d">${esc(e.text)}</div>`,
     resolve: () => `${w} resolved a thread${e.text ? `<div class="d">${esc(e.text)}</div>` : ''}`,
     react: () => `${w} ${e.up === null ? 'took back a reaction' : e.up ? 'gave a thumbs up' : 'gave a thumbs down'} on ${e.on ? `comment c${e.on}` : 'the instance'}`,
-    wake: () => `${e.note ? `${person(e.from)} would wake it: a note for ${who(data.runner.by)}` : `Woken${e.from ? ` by ${who(e.from)}` : ''}`}${e.reason ? `<div class="d">${esc(e.reason)}</div>` : ''}`,
+    wake: () => `${e.note ? `${person(e.from)} would wake it: a note for ${who(data.runner.by)}` : `Woken${e.from ? ` by ${who(e.from)}` : ''}`}${[e.reason, e.text].filter(Boolean).map(t => `<div class="d">${esc(t)}</div>`).join('')}`,
     expired: () => e.left ? `${who(e.runner)} has left: Microsoft no longer signs them in, so someone takes the instance over` : `Waiting for ${who(e.runner)} ${e.login === 'openrouter' ? 'to save another OpenRouter key, or stop using their own, out of credits' : `to sign in to ${esc(e.name ?? (e.login === 'm365' ? 'Microsoft 365' : e.login))} again`}${e.runner === me.email && !data.log.some(x => x.seq > e.seq && x.op === 'wake' && x.login === e.login) ? `<div>${signInHtml(e.login, e.name ?? e.login)}</div>` : ''}`,
     takeover: () => `${w} took over from ${who(e.from)}${e.logins?.length ? `<div class="d">Logins: ${esc(e.logins.join(', '))}</div>` : ''}`,
     promote: () => `${w} made it a series, ${esc(e.series)}`,
@@ -891,6 +891,7 @@ const WEEK = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 function wakesHtml(target, list, series) {
   const row = (k = {}) => `<div class="wakerow" data-id="${k.id ?? ''}" data-target="${target}"><input type="datetime-local" class="wat" value="${k.at ? localInput(k.at) : ''}">`
     + (series ? `<input type="text" class="wlabel" placeholder="Label it starts" value="${esc(k.label ?? '')}">` : '')
+    + `<input type="text" class="wtext" maxlength="500" placeholder="Message for the run (optional)" value="${esc(k.text ?? '')}">`
     + '<div class="row2">' + WEEK.map(d => `<label class="sub"><input type="checkbox" value="${d}" ${k.days?.includes(d) ? 'checked' : ''}>${d[0].toUpperCase() + d.slice(1)}</label>`).join('')
     + `<button class="btn" data-act="wake-save">${k.id ? 'Save' : 'Add'}</button>${k.id ? '<button class="quiet" data-act="wake-delete">Delete</button>' : ''}</div></div>`;
   return `<div class="sub">${series ? 'Each starts the instance it names, or continues it if the series has it.' : 'Each continues this instance.'} Tick days to repeat it weekly at its time.</div>${list.map(row).join('')}${row()}`;
@@ -1423,7 +1424,7 @@ async function onAct(act, el) {
   // A wake edited is set anew, then the one it was cancelled, unless setting it moved that one.
   if (act === 'wake-save' || act === 'wake-delete') {
     const r = el.closest('.wakerow'), id = r.dataset.id, days = [...r.querySelectorAll('input:checked')].map(c => c.value).join(',');
-    const made = act === 'wake-save' && await api(`/api/wakes/${r.dataset.target}`, { method: 'PUT', body: JSON.stringify({ at: new Date(r.querySelector('.wat').value).toISOString(), label: r.querySelector('.wlabel')?.value, days }) });
+    const made = act === 'wake-save' && await api(`/api/wakes/${r.dataset.target}`, { method: 'PUT', body: JSON.stringify({ at: new Date(r.querySelector('.wat').value).toISOString(), label: r.querySelector('.wlabel')?.value, days, text: r.querySelector('.wtext').value }) });
     if (id && made.id !== id) await api(`/api/wakes/${id}`, { method: 'DELETE' });
     await refresh();
     if (pv.settings.kind === 'series') await openSeriesSettings();

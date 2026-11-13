@@ -594,7 +594,8 @@ test("people see, set, move and cancel wakes, one-off or weekly, share a series 
   assert.deepEqual(listed.instances.find((i: { id: string }) => i.id === sep).wakes.map((k: { at: string }) => k.at), [due]);
   assert.equal(listed.requests[0].who, listed.instances.at(-1).runner, "a request waits on the runner of the series' newest instance");
   const later = new Date(Date.now() + 2 * 86_400_000).toISOString(), set = (target: string, body: object) => call('PUT', `/api/wakes/${target}`, JSON.stringify(body));
-  assert.deepEqual(await (await set(s.id, { at: later, label: '2026-09-20' })).json(), { id: 'k1', target: s.id, at: later, from: adminEmail, label: '2026-09-20' }, 'the same label moves it');
+  assert.deepEqual(await (await set(s.id, { at: later, label: '2026-09-20', text: '  the bank file is in  ' })).json(), { id: 'k1', target: s.id, at: later, from: adminEmail, label: '2026-09-20', text: 'the bank file is in' }, 'the same label moves it, with what it says');
+  assert.equal((await set(s.id, { at: later, label: '2026-09-20', text: 'x'.repeat(501) })).status, 400, "a wake's text is short");
   assert.equal((await set(s.id, { at: '2030-01-07T08:00', label: '2030-01-05', days: 'mon-fri' })).status, 400, "a weekly wake's label holds the day it fires or the one before that it fires on");
   assert.equal((await set(s.id, { at: '2030-01-07T08:00', label: '2030-01-04', days: 'sat' })).status, 400, 'it fires on one of its days');
   const weekly = await (await set(s.id, { at: '2030-01-07T08:00', label: '2030-01-04', days: 'mon-fri' })).json();
@@ -824,8 +825,8 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   assert.deepEqual(JSON.parse(await rf('costs', scratch, '--by', 'outcome', '--json')), [{ outcome: 'cut', runs: 0, cost: 0.05, per_run: null }, { outcome: 'failed, credits', runs: 1, cost: 0.01, per_run: 0.01 }]);
   assert.match(await rf('costs', scratch, '--by', 'outcome'), /^ +\$0\.05 +0 runs +- a run  cut\n.*\n +\$0\.06 +1 runs  in all$/m, 'a run a restart cut is carried on by the next, so it counts no run');
   const stamp = '[\\d-]+ [\\d:]+';
-  const woken = (await rf('wake', `larkfield/${series}`, '+1d', '--label', 'next')).match(/^wake (\w+) /)![1];
-  assert.match(await rf('wakes', `larkfield/${series}`), new RegExp(`^larkfield/${series}  last woken (never|${stamp})\n  wake ${woken} ${stamp} starts next, set by ${adminEmail}\n`));
+  const woken = (await rf('wake', `larkfield/${series}`, '+1d', 'the rates moved', '--label', 'next')).match(/^wake (\w+) /)![1];
+  assert.match(await rf('wakes', `larkfield/${series}`), new RegExp(`^larkfield/${series}  last woken (never|${stamp})\n  wake ${woken} ${stamp} starts next, set by ${adminEmail}: the rates moved\n`));
   assert.equal((await rf('wake', '--cancel', woken)).trim(), 'cancelled');
   assert.match(await rf('wakes', `larkfield/${series}`), /, none pending\n/);
   assert.match(await rf('activity', `larkfield/${series}/2026-08-23`), new RegExp(`^larkfield/${series}/2026-08-23\n  ${stamp}  alex  uploads upload/Larkfield AR aging 082326\\.csv\n  ${stamp}  alex  closes it\n$`));
@@ -918,7 +919,7 @@ test("rf pull refuses a link where a folder goes, dangling ones too, but follows
 test("rf alone lists its commands and rf help COMMAND gives one's usage; every read takes --json; a failure is one line, with exit code 1, and a command used wrongly prints its usage, with exit code 2", async () => {
   assert.match(await rf(), /^rf login URL \[TOKEN\] .*\nrf ls \[--json\] /);
   assert.equal(await rf('--version'), `${JSON.parse(readFileSync(join(app, 'cli', 'package.json'), 'utf8')).version}\n`);
-  assert.match(await rf('help', 'wake'), /^rf wake PATH AT \[--label LABEL\] \[--days DAYS\] \| rf wake --cancel ID\n +AT now, [^\n]+\n +mon-fri, [^\n]+\n$/);
+  assert.match(await rf('help', 'wake'), /^rf wake PATH AT \[TEXT\] \[--label LABEL\] \[--days DAYS\] \| rf wake --cancel ID\n +AT now, [^\n]+\n +message [^\n]+\n +shows [^\n]+\n$/);
   await assert.rejects(rf('wake'), fails(2, /^rf wake PATH AT [^\n]+\n +AT now/));
   await assert.rejects(rf('comment', 'nowhere/at/all', 'Hello'), fails(1, /^rf: nothing you can see at nowhere\/at\/all\n$/));
   await assert.rejects(rf('wake', '--cancel', 'nosuch'), fails(1, /^rf: DELETE \/api\/wakes\/nosuch: 404 [^\n]+\n$/));

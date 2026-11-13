@@ -91,10 +91,13 @@ test('a run names folders by the names it started with, though people renamed th
   saveTree(t);
 });
 
-test('a due wake its own run set continues an open instance, as a reply does, though it was renamed since, and names where that run is now; one more than 15 minutes after its last is moved', async () => {
-  setWake(oct.id, { at: new Date().toISOString(), from: 'Acme/Bank rec/October', inst: oct.id });
+test('a due wake its own run set continues an open instance, as a reply does, though it was renamed since, and names where that run is now, with what it says; one more than 15 minutes after its last is moved', async () => {
+  setWake(oct.id, { at: new Date(Date.now() + 3600e3).toISOString(), from: 'Acme/Bank rec/October', inst: oct.id, text: 'the statement is due by noon' });
+  assert.match(message(oct, 1, [], true), /Pending wakes: \w+, waking this instance at [^,]+, saying "the statement is due by noon"\./);
+  cancelWakes([oct.id]);
+  setWake(oct.id, { at: new Date().toISOString(), from: 'Acme/Bank rec/October', inst: oct.id, text: 'check the statement' });
   await settle();
-  assert.deepEqual(oct.log.filter(e => e.op === 'wake').map(e => [e.from, e.note]), [['Acme/Bank rec/2026-10', undefined]]);
+  assert.deepEqual(oct.log.filter(e => e.op === 'wake').map(e => [e.from, e.text, e.note]), [['Acme/Bank rec/2026-10', 'check the statement', undefined]]);
   assert.ok(ops(oct).includes('run'), 'it started a run');
   assert.deepEqual(wakesOf(oct.id), []);
   const next = setWake(oct.id, { at: new Date().toISOString(), from: 'x' });
@@ -123,19 +126,24 @@ test('a process.md a run made unreadable is none to the server, so the next run 
   assert.equal(statSync(md).mode & 0o777, 0o400);
 });
 
-test("a series' wake starts an instance as whoever shares the series; unshared, or with 3 open, it's a request", async () => {
-  setWake('s2', { at: new Date().toISOString(), from: 'Acme/Bank rec/2026-09', label: '2026-10' });
+test("a series' wake starts an instance as whoever shares the series, its text a note unless its runner, or a run of theirs in the series, set it; unshared, or with 3 open, it's a request, which keeps the text", async () => {
+  setWake('s2', { at: new Date().toISOString(), from: 'Acme/Bank rec/2026-09', label: '2026-10', inst: sep.id, text: 'rates moved' });
   await settle();
-  assert.deepEqual(Object.values(wakes().requests).map(r => [r.series, r.label, r.from]), [['s2', '2026-10', 'Acme/Bank rec/2026-09']]);
+  assert.deepEqual(Object.values(wakes().requests).map(r => [r.series, r.label, r.from, r.text]), [['s2', '2026-10', 'Acme/Bank rec/2026-09', 'rates moved']]);
   assert.equal(labels('s2').length, 0);
 
   writeFileSync(join(tmp, 'series', 's2', 'series.json'), JSON.stringify({ shared: { by: alice, since: new Date().toISOString(), logins: ['web:bank', 'web:portal'] } }));
   writeJson('wakes.json', { ...readJson('wakes.json', {}), fired: {} });
-  setWake('s2', { at: new Date().toISOString(), from: 'Acme/Bank rec/2026-09', label: '2026-11' });
+  setWake('s2', { at: new Date().toISOString(), from: 'Acme/Bank rec/2026-09', label: '2026-11', inst: sep.id, text: 'rates moved' });
   await settle();
   const made = instance(labels('s2').find(l => l.label === '2026-11')!.id);
-  assert.deepEqual([made.log[0].op, made.log[0].by, made.log[1].op, made.log[1].from], ['create', alice, 'wake', 'Acme/Bank rec/2026-09']);
+  assert.deepEqual([made.log[0].op, made.log[0].by, made.log[1].op, made.log[1].from, made.log[1].text, made.log[1].note], ['create', alice, 'wake', 'Acme/Bank rec/2026-09', 'rates moved', true], "another series' run's word");
   assert.deepEqual(made.log[0].logins, ['web:bank', 'web:portal'], "the sharer's ticks");
+  writeJson('wakes.json', { ...readJson('wakes.json', {}), fired: {} });
+  setWake('s2', { at: new Date().toISOString(), from: 'Acme/Borrowing base/2026-11', label: '2026-11b', inst: made.id, text: 'next period' });
+  await settle();
+  const next = instance(labels('s2').find(l => l.label === '2026-11b')!.id);
+  assert.deepEqual([next.log[1].text, next.log[1].note], ['next period', undefined], "a run of the runner's own in the series speaks for them");
 
   make('s2', '2026-12');
   make('s2', '2027-01');

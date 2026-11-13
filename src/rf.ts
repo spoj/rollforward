@@ -25,10 +25,11 @@ const HELP: Record<string, string> = {
   Commits your instance's whole folder as it is now, in your name, to its history: the folder is a repository, which only the
   server commits; read it with git log, show or diff, such as git diff HEAD -- working. Each run's end commits it too, in your
   name, and a sign-off and closing, in the name of whoever signed.`,
-  wake: `rf wake TARGET AT [--label LABEL] [--days DAYS] | rf wake --cancel ID
-  Starts a run later, which sees who woke it. TARGET is a folder as you see it, by the names your run started with: an open
-  instance, such as . for your own, ../<label> or ../../<series>/<label>, which the wake continues; or a series, such as .. or
-  ../../<series>, which it starts a new instance of, labelled LABEL, or continues the one it has by that label. AT is now,
+  wake: `rf wake TARGET AT [--label LABEL] [--days DAYS] [TEXT] | rf wake --cancel ID
+  Starts a run later, which sees who woke it and TEXT, a short message, such as what to look at. TARGET is a folder as you see
+  it, by the names your run started with: an open instance, such as . for your own, ../<label> or ../../<series>/<label>, which
+  the wake continues; or a series, such as .. or ../../<series>, which it starts a new instance of, labelled LABEL, or continues
+  the one it has by that label. AT is now,
   +<n>m, +<n>h, +<n>d, or a date and time with its offset, such as 2026-09-14T07:00+08:00. --days, such as mon-fri or
   mon,wed,fri, repeats it each week on those days at AT's time; a series' LABEL then holds the date AT falls on, or that of
   the day before it that it fires on, and moves on with it. A target has as many wakes as are set, firing at least 15 minutes
@@ -76,7 +77,7 @@ function comment() {
   return send('POST', `${own}/comment`, JSON.stringify({ thread: o.in, item, ref, text, ask: cmd === 'ask', to: o.to }));
 }
 
-// rf wake TARGET AT [--label LABEL] [--days DAYS]: the folder becomes an id, then the wake is set as a person sets one.
+// rf wake TARGET AT [--label LABEL] [--days DAYS] [TEXT]: the folder becomes an id, then the wake is set as a person sets one.
 const wake = async () => {
   const o: Record<string, string> = {}, rest: string[] = [];
   for (let i = 0; i < args.length; i++) {
@@ -85,11 +86,11 @@ const wake = async () => {
     else rest.push(args[i]);
   }
   if (o.cancel !== undefined && !rest.length) return send('DELETE', `api/wakes/${o.cancel}`);
-  const [target, at, ...more] = rest;
-  if (!target || !at || more.length) return usage('wake');
+  const [target, at, ...words] = rest;
+  if (!target || !at) return usage('wake');
   const found = await send('GET', `api/resolve?path=${encodeURIComponent(target)}`);
   if (!found.ok) return found;
-  const { id, kind } = JSON.parse(found.text), set = await send('PUT', `api/wakes/${id}`, JSON.stringify({ at, label: o.label, days: o.days }));
+  const { id, kind } = JSON.parse(found.text), set = await send('PUT', `api/wakes/${id}`, JSON.stringify({ at, label: o.label, days: o.days, text: words.join(' ') || undefined }));
   if (!set.ok) return set;
   const k = JSON.parse(set.text);
   return { ok: true, text: `set: ${target} ${kind === 'series' ? `starts ${k.label}` : 'wakes'} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''} (wake ${k.id})` };

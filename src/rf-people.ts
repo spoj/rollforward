@@ -87,9 +87,10 @@ rf grant approve|deny ID [TEXT]   a request to use a website in a workspace you 
 rf grant revoke ID                a grant pending or approved, yours or in a workspace you own; its runs' browsers close
 rf correct PATH TEXT [--item ID] [--ref REF] [--superseded] [--see LABEL]   a closed instance, or its item ID at REF, is
                                   wrong, or superseded, as LABEL, another instance of its series, shows; it can't be withdrawn
-rf wake PATH AT [--label LABEL] [--days DAYS] | rf wake --cancel ID
-                                  AT now, +<n>m|h|d or a date; PATH an open instance, or a series with LABEL; DAYS, such as
-                                  mon-fri, repeats it weekly at AT's time; rf ls shows each wake's ID
+rf wake PATH AT [TEXT] [--label LABEL] [--days DAYS] | rf wake --cancel ID
+                                  AT now, +<n>m|h|d or a date; PATH an open instance, or a series with LABEL; TEXT a short
+                                  message for the run it starts; DAYS, such as mon-fri, repeats it weekly at AT's time; rf ls
+                                  shows each wake's ID
 rf agents [WORKSPACE] [--set FILE|-]     the company's AGENTS.md, or a workspace's; setting the company's is for admins
 rf readers WORKSPACE [add|remove OTHER]   the workspaces whose agents read WORKSPACE and those its own read, as each one's
                                   owners let them; its owners let OTHER's agents read it, one they see, and its owners or
@@ -407,14 +408,14 @@ if (cmd === 'login' && url) {
   if (flags.json) console.log(JSON.stringify(rows, null, 1));
   else for (const r of rows) {
     console.log(r.deleted ? `${r.path}  deleted by ${r.deleted.by} ${when(r.deleted.at)}` : r.status ? `${r.path}  ${r.status}${r.running ? ', running' : ''}${r.asks ? `, ${r.asks} asks waiting` : ''}, runner ${r.runner}` : `${r.path}${r.requests ? `  ${r.requests} asking to start` : ''}`);
-    for (const k of r.wakes) console.log(`  wake ${k.id} ${k.at}${k.label ? ` starts ${k.label}` : ''}${k.days ? `, then each ${k.days.join(', ')}` : ''}`);
+    for (const k of r.wakes) console.log(`  wake ${k.id} ${k.at}${k.label ? ` starts ${k.label}` : ''}${k.days ? `, then each ${k.days.join(', ')}` : ''}${k.text ? `: ${k.text}` : ''}`);
   }
 } else if (cmd === 'waiting' && !args.length) {
   const [me, s, all] = await Promise.all([get('/me'), get('/api/status'), get('/api')]), mine = (who: string | null) => (who ?? me.email) === me.email;
   const series = all.flatMap(w => w.series.map(x => ({ ...x, path: `${w.name}/${x.name}` })));
   const rows = [
     ...s.asks.filter(a => a.who === me.email).map(a => ({ kind: a.note ? 'note' : 'ask', path: a.path, since: a.since, text: a.text })),
-    ...series.flatMap(x => x.requests.filter(r => mine(r.who)).map(r => ({ kind: 'request', path: x.path, since: r.at, id: r.id, text: `${r.from} asks to start ${r.label}` }))),
+    ...series.flatMap(x => x.requests.filter(r => mine(r.who)).map(r => ({ kind: 'request', path: x.path, since: r.at, id: r.id, text: `${r.from} asks to start ${r.label}${r.text ? `: ${r.text}` : ''}` }))),
     ...all.filter(w => w.manage && w.proposal?.into === w.id).map(({ proposal: p }) => ({ kind: 'proposal', path: p.to, since: p.at, text: `${p.by} proposes to ${p.kind === 'merge' ? `merge ${p.from} into it` : `move ${p.from}/${p.series} to it`}` })),
     ...s.expired.filter(e => e.who === me.email).map(e => ({ kind: 'expired', login: e.login, holding: e.holding, text: `your ${e.login} login expired` })),
     ...series.flatMap(x => x.instances.flatMap(i => i.refused.map(r => ({ kind: 'refused', path: `${x.path}/${i.label}`, since: r.at, site: r.site, hosts: r.hosts, person: r.login, why: r.why, text: `run ${r.run}'s browser on ${r.login}'s ${r.site} was refused ${r.hosts.map((h: string) => r.why[h] ? `${h} (${r.why[h]})` : h).join(', ')}` })))),
@@ -612,10 +613,10 @@ else if (cmd === 'comment' && args.length === 2) {
 } else if (cmd === 'wake' && typeof flags.cancel === 'string' && !args.length) {
   await api(`/api/wakes/${flags.cancel}`, { method: 'DELETE' });
   console.log('cancelled');
-} else if (cmd === 'wake' && args.length === 2) {
+} else if (cmd === 'wake' && [2, 3].includes(args.length)) {
   const { series, inst } = await find(args[0]);
   const at = args[1] === 'now' ? Date.now() : args[1].startsWith('+') ? Date.now() + Number(args[1].slice(1, -1)) * { m: 60e3, h: 3600e3, d: 86400e3 }[args[1].at(-1)!]! : Date.parse(args[1]);
-  const w = await (await post(`/api/wakes/${inst?.id ?? series.id}`, { at: new Date(at).toISOString(), label: flags.label, days: flags.days }, 'PUT')).json();
+  const w = await (await post(`/api/wakes/${inst?.id ?? series.id}`, { at: new Date(at).toISOString(), label: flags.label, days: flags.days, text: args[2] }, 'PUT')).json();
   console.log(`wake ${w.id} at ${w.at}${w.days ? `, then each ${w.days.join(', ')}` : ''}`);
 } else if (cmd === 'agents' && args.length <= 1) {
   const ws = args[0] === undefined ? undefined : await workspaceNamed(args[0]);
@@ -722,8 +723,8 @@ else if (cmd === 'comment' && args.length === 2) {
   if (flags.json) console.log(JSON.stringify(rows, null, 1));
   else for (const r of rows) {
     console.log(`${r.path}  last woken ${r.fired ? when(r.fired) : 'never'}${r.wakes.length || r.requests.length ? '' : ', none pending'}`);
-    for (const k of r.wakes) console.log(`  wake ${k.id} ${when(k.at)}${k.label ? ` starts ${k.label}` : ''}${k.days ? `, then each ${k.days.join(', ')}` : ''}, set by ${k.from}`);
-    for (const q of r.requests) console.log(`  request ${q.id} to start ${q.label}, from ${q.from} since ${when(q.at)}, waits on ${q.who ?? 'anyone'}`);
+    for (const k of r.wakes) console.log(`  wake ${k.id} ${when(k.at)}${k.label ? ` starts ${k.label}` : ''}${k.days ? `, then each ${k.days.join(', ')}` : ''}, set by ${k.from}${k.text ? `: ${k.text}` : ''}`);
+    for (const q of r.requests) console.log(`  request ${q.id} to start ${q.label}, from ${q.from} since ${when(q.at)}, waits on ${q.who ?? 'anyone'}${q.text ? `: ${q.text}` : ''}`);
   }
 } else if (cmd === 'activity' && args.length <= 1) {
   const at = (args[0] ?? '').replace(/\/+$/, ''), blocks = (await get(`/api/activity?since=${encodeURIComponent(String(flags.since ?? ''))}`))
