@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createInstance, openFile, openStore, safeName } from '../src/store.ts';
+import { createInstance, duplicateInstance, labels, openFile, openStore, safeName } from '../src/store.ts';
 import { commit, forget } from '../src/git.ts';
 
 const alex = { email: 'alex', name: 'Alex' };
@@ -21,6 +21,21 @@ test('deleting during a close never restores the instance or writes a close over
   await Promise.all([last, forgotten, refused]);
   assert.equal(inst.doc.status, 'deleted');
   assert.deepEqual(inst.log.map(e => e.op), ['delete']);
+  rmSync(tmp, { recursive: true, force: true });
+});
+
+test('a duplicate that fails part way, as on a full disk, leaves nothing in instances/ for the next start to trip over or read as a second instance of its label', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
+  openStore(tmp);
+  const src = createInstance('s', 'oct', 'alex', []);
+  src.abandon('alex');
+  for (let i = 0; i < 20; i++) writeFileSync(join(src.dir, `z${i}`), 'x');
+  writeFileSync(join(src.dir, 'working', 'locked'), 'x');
+  chmodSync(join(src.dir, 'working', 'locked'), 0);
+  assert.throws(() => duplicateInstance(src, 'oct copy', 'alex', []), /EACCES/);
+  assert.deepEqual(readdirSync(join(tmp, 'instances')), [src.id]);
+  openStore(tmp);
+  assert.deepEqual(labels('s').map(l => l.label), ['oct']);
   rmSync(tmp, { recursive: true, force: true });
 });
 

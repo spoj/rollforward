@@ -169,7 +169,9 @@ Stored data is files on the host's disk, in folders named by random ids, with no
       .git/                   the folder's history: a commit at each run's end, approval, close, rf commit, and upload or comment
                               that starts no run
 
-    A deleted instance keeps instance.json, a screen.json with no items, and a log.jsonl of its delete entry alone.
+    A deleted instance keeps instance.json, a screen.json with no items, and a log.jsonl of its delete entry alone. A duplicate is
+    copied into .tmp/ in the data root with its own instance.json, then moved into instances/, so one that fails part way leaves
+    nothing there.
 
 - **Who writes what:** people upload, comment, approve, reject, interrupt and close, through the server; a run's runner, the workspace's owners and admins alone interrupt it, and its runner alone closes or abandons it. The server adds each upload as an item at once, creates and closes instances, and alone writes the log and the history. The agent decides the items, through `rf`, and reads `log.jsonl` directly.
 - **`upload/` is people's:** nobody moves, renames or changes its files. Each streams to `.tmp/` in the data root as it arrives, then moves into place, read-only; it may take up to an hour, and is refused if its instance closed or its person lost access to its workspace meanwhile. A repeated name, or `attachments`, whose folder holds comments' files, becomes `<stem>_<n><ext>`.

@@ -164,14 +164,21 @@ export function renameInstance(inst: Instance, label: string) {
 }
 
 export function duplicateInstance(src: Instance, label: string, by: string, logins: string[]): Instance {
-  const name = freeLabel(src.seriesId, label), id = newId(), dir = instanceDir(id);
+  const name = freeLabel(src.seriesId, label), id = newId(), meta = { label: name, series: src.seriesId }, tmp = join(root, '.tmp', id);
   // Files and folders only, sharing blocks where the disk can: a run may have left links or FIFOs in working/, or a name that isn't
-  // UTF-8, which reads back as another name, which no file has. The copy starts afresh, with no session and no history.
-  cpSync(src.dir, dir, { recursive: true, mode: constants.COPYFILE_FICLONE, filter: p => {
-    const st = lstatSync(p, { throwIfNoEntry: false });
-    return p !== join(src.dir, 'session') && p !== join(src.dir, '.git') && !!st && (st.isFile() || st.isDirectory());
-  } });
-  setMeta(id, { label: name, series: src.seriesId });
+  // UTF-8, which reads back as another name, which no file has. The copy starts afresh, with no session and no history. It is made
+  // in .tmp/ with its own instance.json, then moved into instances/, so one that fails part way leaves nothing a start reads.
+  try {
+    cpSync(src.dir, tmp, { recursive: true, mode: constants.COPYFILE_FICLONE, filter: p => {
+      const st = lstatSync(p, { throwIfNoEntry: false });
+      return p !== join(src.dir, 'session') && p !== join(src.dir, '.git') && !!st && (st.isFile() || st.isDirectory());
+    } });
+    replaceReadOnly(join(tmp, 'instance.json'), JSON.stringify(meta));
+    renameSync(tmp, instanceDir(id));
+  } finally {
+    wipe(Buffer.from(tmp));
+  }
+  setMeta(id, meta);
   const inst = instance(id);
   inst.doc.status = 'open';
   inst.save();
