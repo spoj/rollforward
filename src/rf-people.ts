@@ -311,10 +311,12 @@ function write(path: string, data: string | Uint8Array, mtime: string) {
 
 // A path the server named, under `base`, or undefined where a name in it can't be one here: on Windows a name may hold \ or :, which
 // would put the file elsewhere, even in another workspace's folder, or another file's stream; or name a device, such as CON; or end
-// in a dot or a space, which Windows drops. A link where one of its folders goes, or `base`, would take the file elsewhere too, and is refused.
+// in a dot or a space, which Windows drops. Nor may a name be what git takes for a .git, such as .GIT on a disk that ignores case,
+// whose config would run a command as git runs there. A link where one of its folders goes, or `base`, would take the file
+// elsewhere too, and is refused.
 const under = (base: string, rel: string) => {
   const names = rel.split('/');
-  if (names.some(n => !n || n === '.' || n === '..' || basename(n) !== n
+  if (names.some(n => !n || n === '.' || n === '..' || basename(n) !== n || /^(\.git|git~1)[. ]*([:\\]|$)/i.test(n)
     || (process.platform === 'win32' && (/[<>:"|?*\x00-\x1f]|[. ]$/.test(n) || /^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/i.test(n))))) return undefined;
   let folder = base;
   for (const name of ['', ...names.slice(0, -1)]) {

@@ -52,7 +52,7 @@ export function forget(dir: string): Promise<unknown> {
 // short name of it.
 const DOTGIT = /^(\.git|git~1)[. ]*([:\\]|$)/i;
 const MODULES = /^(\.gitmodules|gitmod~[1-4]|gi7eba~[1-9]|gi7eb~[1-9]\d|gi7e~[1-9]\d{2}|gi7~[1-9]\d{3}|gi~[1-9]\d{4}|g~[1-9]\d{5}|~[1-9]\d{6})[. ]*(:|$)/i;
-const refused = (name: string, link: boolean) => [name, ...Array.from(name.slice(1).matchAll(/\\/g), m => name.slice(m.index + 2))]
+export const refused = (name: string, link: boolean) => [name, ...Array.from(name.slice(1).matchAll(/\\/g), m => name.slice(m.index + 2))]
   .some(t => DOTGIT.test(t) || (link && MODULES.test(t)));
 
 const ident = (w: Who) => `${w.name.replace(/[<>\n]/g, '')} <${w.email.replace(/[<>\n]/g, '')}>`;

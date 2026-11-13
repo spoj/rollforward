@@ -356,6 +356,11 @@ test("a run's links, FIFOs and folders in working/ and session/ are never follow
   symlinkSync('../..', join(d, 'working', 'up'));
   symlinkSync('../..', join(d, 'working', 'up2'));
   execFileSync('mkfifo', [join(d, 'working', 'pipe.txt'), join(d, 'session', 'zz.jsonl')]);
+  // What git takes for a .git, which a pull would make one on a disk that ignores case, or on Windows.
+  for (const f of ['.GIT/config', 'deep/.Git/config', 'deep/git~1/config', '.git. /config', 'deep/.gIt']) {
+    mkdirSync(dirname(join(d, 'working', f)), { recursive: true });
+    writeFileSync(join(d, 'working', f), '[core]\n\tfsmonitor = "touch /tmp/pwned"\n');
+  }
   const latin1 = Buffer.concat([Buffer.from(join(d, 'working', 'r')), Buffer.from([0xe9]), Buffer.from('sum\u00e9.txt')]);
   writeFileSync(latin1, 'not UTF-8');
   for (const rel of ['working/env.txt', 'working/inside.txt', 'working/pipe.txt', `working/up/instances/${id}/working/real.txt`])
@@ -363,12 +368,13 @@ test("a run's links, FIFOs and folders in working/ and session/ are never follow
   assert.equal(await (await call('GET', file('working/real.txt'))).text(), 'mine');
   const listed = (await json(`/api/files?path=${encodeURIComponent(`larkfield/${series}/2026-08-30/working`)}`)).map((f: { path: string }) => f.path);
   assert.deepEqual(listed.filter((p: string) => /\/working\/(env|inside|pipe|up|real)/.test(p)), [`larkfield/${series}/2026-08-30/working/real.txt`], 'only regular files, and never into a link');
+  assert.deepEqual(listed.filter((p: string) => /git/i.test(p)), [], 'nor what git takes for a .git');
   assert.equal((await call('GET', await at(series, '2026-08-30', 'trace'))).status, 200, 'a FIFO among the session files is skipped');
   writeFileSync(join(d, 'session', 'zy.jsonl'), '{"type":"message","message":{"role":"user","content":"cut"}}\n{"type":"message","mess\n');
   assert.equal((await json(await at(series, '2026-08-30', 'trace'))).filter((l: { text: string }) => l.text === 'cut').length, 1, 'a line a restart cut half written is skipped');
   assert.equal((await call('POST', `${await at(series, '2026-08-30', 'duplicate')}?as=links`)).status, 200);
   assert.deepEqual(readdirSync(join(await dir(series, 'links'), 'working')).filter(f => /env|inside|pipe|up|real/.test(f)), ['real.txt'], 'a copy leaves them out');
-  for (const f of ['real.txt', 'env.txt', 'inside.txt', 'up', 'up2', 'pipe.txt']) rmSync(join(d, 'working', f));
+  for (const f of ['real.txt', 'env.txt', 'inside.txt', 'up', 'up2', 'pipe.txt', '.GIT', 'deep', '.git. ']) rmSync(join(d, 'working', f), { recursive: true });
   rmSync(latin1);
   rmSync(join(d, 'session', 'zz.jsonl'));
   rmSync(join(d, 'session', 'zy.jsonl'));
@@ -952,6 +958,23 @@ test("rf pull refuses a link where a folder goes, dangling ones too, but follows
   assert.equal(readFileSync(join(outside, 'victim.txt'), 'utf8'), 'local');
   symlinkSync(dest, join(tmp, 'pull-linked'));
   assert.match(await rf('pull', path, join(tmp, 'pull-linked')), /fetched 0, \d+ up to date/);
+});
+
+test("rf pull writes no name git takes for a .git, as a server might list one", async () => {
+  const mtime = new Date().toISOString(), names = ['.GIT/config', 'a/.Git/config', 'a/git~1/config', 'ok.txt'];
+  const server = (await import('node:http')).createServer((req, res) => res.end(req.url!.startsWith('/api/files') ? JSON.stringify(names.map(n => ({ path: `X/${n}`, size: 1, mtime, text: 'x' }))) : ''));
+  await new Promise<void>(ok => server.listen(0, '127.0.0.1', ok));
+  const home = join(tmp, 'git-pull-home'), dest = join(tmp, 'git-pull');
+  mkdirSync(join(home, '.config'), { recursive: true });
+  writeFileSync(join(home, '.config', 'rollforward.json'), JSON.stringify({ url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, token: 't' }));
+  const p = spawn(process.execPath, [join(app, 'src', 'rf-people.ts'), 'pull', 'X/', dest], { env: { ...process.env, HOME: home } });
+  let out = '';
+  p.stdout.on('data', d => (out += d));
+  p.stderr.on('data', d => (out += d));
+  await once(p, 'exit');
+  server.close();
+  assert.deepEqual(readdirSync(dest, { recursive: true }), ['ok.txt'], out);
+  assert.equal(out.match(/^skipped X\/.+: it can't be a file's name here$/gm)?.length, 3, out);
 });
 
 test("rf alone lists its commands and rf help COMMAND gives one's usage; every read takes --json; a failure is one line, with exit code 1, and a command used wrongly prints its usage, with exit code 2", async () => {

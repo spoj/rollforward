@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { agentsFile, closedBefore, createInstance, duplicateInstance, keep, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, safeName, seriesDir, type Entry, type Instance } from './store.ts';
-import { AGENT, commit } from './git.ts';
+import { AGENT, commit, refused } from './git.ts';
 import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
 import { checkTheme, stylesheet, themeLogo } from './theme.ts';
@@ -351,9 +351,9 @@ function trace(inst: Instance) {
   return out;
 }
 
-// Files by hand, never into a link: a run may have made links anywhere in working/. A .git, such as the instance's history, isn't
-// copied.
-const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(d => d.isDirectory() ? (d.name === '.git' ? [] : walk(join(dir, d.name))) : d.isFile() ? [join(dir, d.name)] : []);
+// Files by hand, never into a link: a run may have made links anywhere in working/. Nothing named as git takes a .git, such as the
+// instance's history or a run's .GIT/, which is one on a disk that ignores case, is copied.
+const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(d => refused(d.name, false) ? [] : d.isDirectory() ? walk(join(dir, d.name)) : d.isFile() ? [join(dir, d.name)] : []);
 
 // What rf pull copies: every file under `path` that `me` sees, in the layout runs see (workspace/series/label/ and the instance's own
 // files), with its size and time; the AGENTS.md files whole, and each instance file at its /files address.
