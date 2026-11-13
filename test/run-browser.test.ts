@@ -21,10 +21,13 @@ import { changes, initSystem, rfDir, saveTree, tree, writeJson } from '../src/sy
 // A run's browsers, from a stand-in browser service whose page changes only when the test says, and which keeps the states and
 // headers it was given and the sessions it closed, lists those in `listed`, and answers a browser's state as `back` says and its
 // tab as `shown` does, and its request log as `requested`.
-let page = Buffer.from('page 1'), back: unknown = { cookies: [] }, listed: string[] = [], shown = { url: '', password: false };
+const state = (value: string, domain = '.example.com') => ({ cookies: [{ name: 'sid', value, domain, path: '/', expires: -1, httpOnly: true, secure: true, sameSite: 'Lax' }], origins: [] });
+let page = Buffer.from('page 1'), back: unknown = { cookies: [], origins: [] }, listed: string[] = [], shown = { url: '', password: false };
 const plain = [{ method: 'GET', url: 'https://crm.example.com/', status: 200 }];
 let requested: object[] = plain;
 const states: unknown[] = [], headers: unknown[] = [], deleted: string[] = [], starts: string[] = [], publics: boolean[] = [];
+const opened: { site: { hosts: string[]; start_url?: string; public?: boolean; open?: boolean; except?: string[] }; ttl_s: number; state?: unknown }[] = [];
+let blocked: Record<string, boolean> = {};
 const toldHosts: { path: string; hosts: string[] }[] = [];
 let nextId = 'b9', refuseClose = false, dropClose = false, openGate: Promise<void> | undefined;
 const service = createServer(async (req, res) => {
@@ -42,15 +45,21 @@ const service = createServer(async (req, res) => {
     deleted.push(req.url!.split('/')[2]);
     return res.writeHead(200).end(JSON.stringify({ state: back, log: requested }));
   }
+  if (req.method === 'POST' && req.url!.endsWith('/reload')) return res.writeHead(200).end('{}');
   if (req.method === 'POST') {
-    const { state, site } = JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString());
+    const body = JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString()), { state, site } = body;
+    opened.push(body);
     states.push(state);
     headers.push(site.headers);
     starts.push(`${site.start_url} ${site.hosts.join(',')}`);
     publics.push(!!site.public);
-    if (state?.cookies?.[0] === 'refused') return res.writeHead(500).end('{"error":"refused"}');
+    if (state?.cookies?.[0]?.value === 'refused') return res.writeHead(500).end('{"error":"refused"}');
     await openGate;
     return res.writeHead(201).end(JSON.stringify({ id: nextId }));
+  }
+  if (req.url!.startsWith('/blocked?')) {
+    const hosts = new URL(req.url!, 'http://browser.test').searchParams.getAll('host');
+    return res.writeHead(200).end(JSON.stringify(Object.fromEntries(hosts.map(h => [h, blocked[h] ?? false]))));
   }
   if (req.url === '/sessions') return res.writeHead(200).end(JSON.stringify(listed.map(id => ({ id }))));
   if (req.url === '/sessions/b9/page') return res.writeHead(200).end(JSON.stringify(shown));
@@ -168,15 +177,15 @@ test("a run's open browser and connections close as soon as its login is no long
 test("closing a run's browser hands its login back refreshed, unless its person signed in to it anew since it opened", async () => {
   const alice = 'alice@demo.test', crm = (since: string) => ({ id: 'web:crm', kind: 'website' as const, name: 'CRM', since, offers: [{ id: 'web:crm', name: 'CRM' }] });
   sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });
-  saveLogin(alice, crm('t1'), '{"cookies":["old"]}');
+  saveLogin(alice, crm('t1'), JSON.stringify(state('old')));
   const browsers = new Browsers(running('2027-02', ['web:crm']), 1);
   await browsers.browser('crm');
   await browsers.close();
-  assert.deepEqual(JSON.parse(secret(alice, 'web:crm')), { cookies: [] }, 'refreshed from the browser');
+  assert.deepEqual(JSON.parse(secret(alice, 'web:crm')), { cookies: [], origins: [] }, 'refreshed from the browser');
   await browsers.browser('crm');
-  saveLogin(alice, crm('t2'), '{"cookies":["fresh"]}');
+  saveLogin(alice, crm('t2'), JSON.stringify(state('fresh')));
   await browsers.close();
-  assert.deepEqual(JSON.parse(secret(alice, 'web:crm')), { cookies: ['fresh'] }, 'the sign-in since the browser opened stays');
+  assert.deepEqual(JSON.parse(secret(alice, 'web:crm')), state('fresh'), 'the sign-in since the browser opened stays');
 });
 
 const sleep = (ms: number) => new Promise(ok => setTimeout(ok, ms));
@@ -206,6 +215,58 @@ test('starting a sign-in ends the one before, even if the service has ended it, 
   }
 });
 
+test('a sign-in past its local deadline returns 410 on Save without replacing the saved login', async t => {
+  const before = process.env.RF_SIGNIN_S;
+  process.env.RF_SIGNIN_S = '3';
+  t.after(() => { if (before === undefined) delete process.env.RF_SIGNIN_S; else process.env.RF_SIGNIN_S = before; });
+  sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });
+  saveLogin(alice, website('crm', 'CRM'), JSON.stringify(state('before expiry')));
+  const now = Date.now(), id = await startSignIn(alice, 'crm', '');
+  assert.equal(opened.at(-1)!.ttl_s, 3, 'RF_SIGNIN_S configures the browser service deadline too');
+  const clock = t.mock.method(Date, 'now', () => now + 4000);
+  await assert.rejects(endSignIn(alice, id, true), (e: { status: number; message: string }) => e.status === 410 && /expired/i.test(e.message));
+  assert.deepEqual(JSON.parse(secret(alice, 'web:crm')), state('before expiry'));
+  assert.equal(isSignIn(alice, id), false);
+  clock.mock.restore();
+});
+
+test('a sign-in is short and open, with protected hosts excepted and only approved exact internal hosts, while run browsers remain allowlisted', async t => {
+  const { setLetIn } = await import('../src/connections.ts');
+  const oldPublic = process.env.RF_PUBLIC_URL;
+  process.env.RF_PUBLIC_URL = 'https://rollforward.example.net';
+  writeJson('connections.json', { graph: { type: 'graph' } });
+  setLetIn(['10.7.8.9'], alice, true);
+  t.after(() => {
+    if (oldPublic === undefined) delete process.env.RF_PUBLIC_URL; else process.env.RF_PUBLIC_URL = oldPublic;
+    writeJson('connections.json', {});
+    setLetIn(['10.7.8.9'], alice, false);
+  });
+  sites({ crm: { url: 'https://crm.example.com/login', hosts: ['*.example.com', 'sso.other.test', '10.7.8.9', '10.7.8.10'], writeback: false } });
+  const id = await startSignIn(alice, 'crm', '');
+  try {
+    const { site, ttl_s, state: saved } = opened.at(-1)!;
+    assert.equal(site.open, true);
+    assert.equal(ttl_s, Number(process.env.RF_SIGNIN_S ?? 600));
+    assert.equal(saved, undefined, 'sign-in does not open with the previous login');
+    assert.deepEqual(site.hosts, ['10.7.8.9'], 'only approved exact internal hosts need an exception in an open sign-in');
+    assert.ok(!site.hosts.includes('10.7.8.10'));
+    assert.ok(!site.hosts.some(h => h.startsWith('*.')), 'internal reach is never granted by a wildcard');
+    assert.ok(site.except!.includes('rollforward.example.net'));
+    assert.ok(site.except!.includes('127.0.0.1'));
+    assert.ok(site.except!.includes('graph.microsoft.com'));
+  } finally {
+    await endSignIn(alice, id, false);
+  }
+  saveLogin(alice, website('crm', 'CRM'), JSON.stringify(state('run')));
+  const browsers = new Browsers(running('closed-run-hosts', ['web:crm']), 1);
+  try {
+    await browsers.browser('crm');
+    assert.ok(!opened.at(-1)!.site.open, 'open sign-in is not an open run browser');
+  } finally {
+    await browsers.end();
+  }
+});
+
 test("a website's header goes, with its person's value, to their sign-in's browser alone: sealed as they save the login, used again when they sign in again with none, replaced by a new one, and gone as they sign out", async () => {
   sites({ rl: { url: 'https://rl.example.com/login', hosts: [], writeback: true, header: 'x-bot-token' } });
   headers.length = 0;
@@ -225,6 +286,56 @@ test("a website's header goes, with its person's value, to their sign-in's brows
   assert.ok(!existsSync(join(personDir(alice), 'web:rl.header.sealed')));
 });
 
+test('saving a sign-in profiles and checks hosts once, keeps reduced evidence and only allowed cookies and origins, including when an old trace has no kinds', async t => {
+  const profile = { what: 'The company CRM.', category: 'company', risk: 'low', flags: ['Can submit records.'] }, evidence: any[] = [];
+  const stand = createServer(async (req, res) => {
+    evidence.push(JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString()));
+    res.end(JSON.stringify({ choices: [{ message: { content: '```json\n' + JSON.stringify({ profile, hosts: {
+      'sso.idp.test': { verdict: 'pass', why: 'Its sign-on.' }, 'tracker.third.test': { verdict: 'refused', why: 'Analytics.' },
+      'blocked.example.com': { verdict: 'pass', why: 'The model cannot override the blocklist.' },
+    } }) + '\n```' } }] }));
+  });
+  await new Promise<void>(ok => stand.listen(0, '127.0.0.1', ok));
+  upstreams['openrouter.ai'] = `http://127.0.0.1:${(stand.address() as { port: number }).port}`;
+  process.env.OPENROUTER_API_KEY = 'key';
+  blocked = { 'blocked.example.com': true };
+  t.after(() => {
+    delete process.env.OPENROUTER_API_KEY;
+    delete upstreams['openrouter.ai'];
+    stand.close();
+    blocked = {};
+    requested = plain;
+    back = { cookies: [], origins: [] };
+  });
+  sites({ crm: { url: 'https://crm.example.com/private-login?token=secret', hosts: [], writeback: false } });
+  requested = [
+    { method: 'GET', url: 'https://crm.example.com/private-start?code=secret', status: 302, dest: 'document' },
+    { method: 'GET', url: 'https://cdn.example.com/private.js?key=secret', status: 200, dest: 'script', from: 'https://crm.example.com/private-page' },
+    { method: 'GET', url: 'https://sso.idp.test/private-signin?code=secret', status: 200, dest: 'document', from: 'https://crm.example.com/private-page' },
+    { method: 'GET', url: 'https://tracker.third.test/private-pixel', status: 200, dest: 'image', from: 'https://crm.example.com/private-page' },
+    { method: 'GET', url: 'https://blocked.example.com/private-malware', status: 403, blocked: 'on a blocklist' },
+    { method: 'GET', url: 'https://10.77.88.99/private-api', status: 403, blocked: 'host not on the list' },
+  ];
+  const hosts = ['crm.example.com', 'cdn.example.com', 'sso.idp.test', 'tracker.third.test', 'blocked.example.com', '10.77.88.99'];
+  back = { cookies: hosts.map(h => state('secret-cookie', h).cookies[0]), origins: hosts.map(h => ({ origin: `https://${h}`, localStorage: [{ name: 'token', value: 'secret-storage' }] })) };
+  await endSignIn(alice, await startSignIn(alice, 'crm', ''), true);
+  const w = websitesOf(alice).crm, kept = JSON.parse(secret(alice, 'web:crm')), trace = logins(alice).find(l => l.id === 'web:crm')!.trace!;
+  assert.deepEqual(w.profile, profile);
+  assert.equal(w.writeback, false);
+  assert.equal(w.checks!['cdn.example.com'].verdict, 'pass');
+  assert.equal(w.checks!['blocked.example.com'].verdict, 'refused', 'a blocklist beats the own-domain rule and a model pass');
+  assert.equal(w.checks!['10.77.88.99'].verdict, 'internal');
+  assert.deepEqual(kept.cookies.map((c: { domain: string }) => c.domain).sort(), ['cdn.example.com', 'crm.example.com', 'sso.idp.test']);
+  assert.deepEqual(kept.origins.map((o: { origin: string }) => o.origin).sort(), ['https://cdn.example.com', 'https://crm.example.com', 'https://sso.idp.test']);
+  assert.deepEqual(trace.kinds!['sso.idp.test'], { dest: ['document'], from: ['crm.example.com'] });
+  assert.doesNotMatch(JSON.stringify(trace), /private-|secret|https:\/\//);
+  assert.doesNotMatch(JSON.stringify(evidence), /private-|secret-cookie|secret-storage|token=|code=/);
+  assert.equal(evidence.length, 1, 'one shared check describes the website and decides its non-rule hosts');
+  sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });
+  const { checkWebsite } = await import('../src/browsers.ts');
+  assert.deepEqual(await checkWebsite(alice, 'crm', { requests: { 'crm.example.com': { 200: 1 } }, blocked: [], seconds: 3 }), profile, 'production traces without kinds still check');
+});
+
 test("a sign-in that ends, saved or not, leaves a line in the server's output of what its browser did, its addresses as their hosts alone", async t => {
   sites({ pa: { url: 'https://pa.example.com/', hosts: ['sso.example.com'], writeback: true } });
   const said = t.mock.method(console, 'log', () => {});
@@ -242,7 +353,7 @@ test("a sign-in that ends, saved or not, leaves a line in the server's output of
   await endSignIn(alice, await startSignIn(alice, 'pa', ''), true);
   const lines = said.mock.calls.map(c => String(c.arguments[0]));
   assert.equal(lines[0], `sign-in ended ${JSON.stringify({
-    id: 'b9', site: 'pa', email: alice, saved: false, seconds: 0, requests: { 'pa.example.com': { 302: 1, 502: 1 }, 'sso.example.com': { 200: 1, 401: 1, 404: 1 } },
+    id: 'b9', site: 'pa', email: alice, saved: false, seconds: 0, requests: { 'pa.example.com': { 302: 1, 502: 1 }, 'sso.example.com': { 200: 1, 401: 1, 404: 1 }, 'cdn.example.com': { 403: 2 } },
     blocked: { count: 2, hosts: ['cdn.example.com'] }, failed: ['POST sso.example.com 401', 'GET pa.example.com 502 socket hang up', 'GET sso.example.com 404'],
   })}`);
   assert.match(lines[1], /^sign-in ended \{"id":"b9","site":"pa","email":"alice@demo.test","saved":true,/);
@@ -254,11 +365,11 @@ test("a person has one browser at a time on a website that writes its state back
     crm: { url: 'https://crm.example.com', hosts: [], writeback: true },
     ledger: { url: 'https://ledger.example.com', hosts: [], writeback: false },
   });
-  saveLogin(alice, website('crm', 'CRM'), '{"cookies":["seed"]}');
-  saveLogin(alice, website('ledger', 'Ledger'), '{"cookies":["seed"]}');
+  saveLogin(alice, website('crm', 'CRM'), JSON.stringify(state('seed')));
+  saveLogin(alice, website('ledger', 'Ledger'), JSON.stringify(state('seed')));
   const one = new Browsers(running('2027-03', ['web:crm', 'web:ledger']), 1), two = new Browsers(running('2027-04', ['web:crm', 'web:ledger']), 1);
   states.length = 0;
-  back = { cookies: ['handed back'] };
+  back = state('handed back');
   await one.browser('crm');
   let opened = false;
   const waiting = two.browser('crm').then(() => (opened = true));
@@ -267,15 +378,15 @@ test("a person has one browser at a time on a website that writes its state back
   assert.deepEqual(two.inst.log.filter(e => e.action === 'wait').map(e => [e.site, e.login, e.held]), [['crm', alice, 'Portal pull/2027-03']]);
   await one.close();
   await waiting;
-  assert.deepEqual(states, [{ cookies: ['seed'] }, { cookies: ['handed back'] }], 'and opens from the state the first handed back');
+  assert.deepEqual(states, [state('seed'), state('handed back')], 'and opens from the state the first handed back');
   await two.close();
 
   states.length = 0;
-  back = { cookies: ['never kept'] };
+  back = state('never kept');
   await Promise.all([one.browser('ledger'), two.browser('ledger')]);
   await Promise.all([one.close(), two.close()]);
-  assert.deepEqual(states, [{ cookies: ['seed'] }, { cookies: ['seed'] }]);
-  assert.deepEqual(JSON.parse(secret(alice, 'web:ledger')), { cookies: ['seed'] }, 'nothing comes back');
+  assert.deepEqual(states, [state('seed'), state('seed')]);
+  assert.deepEqual(JSON.parse(secret(alice, 'web:ledger')), state('seed'), 'nothing comes back');
 });
 
 test('a sealed state that cannot be read does not hold the person\'s browser', async () => {
@@ -330,7 +441,7 @@ test('a browser that finishes opening after its run ends or its grant is revoked
 
 test("a browser that writes its state back is released once no connection has been open for a while, handing its login back, and a waiting connection that goes away stops waiting", async () => {
   const one = new Browsers(running('2027-05', ['web:crm']), 1), two = new Browsers(running('2027-06', ['web:crm']), 1);
-  back = { cookies: ['after a while'] };
+  back = state('after a while');
   await one.browser('crm');
   const conn = new PassThrough();
   one.connected('crm', conn);
@@ -343,7 +454,7 @@ test("a browser that writes its state back is released once no connection has be
   await sleep(500);
   assert.equal(one.bySite.size, 0);
   assert.deepEqual(one.inst.log.filter(e => e.op === 'browser').map(e => e.file), ['browser/run 1 crm.jsonl']);
-  assert.deepEqual(JSON.parse(secret(alice, 'web:crm')), { cookies: ['after a while'] });
+  assert.deepEqual(JSON.parse(secret(alice, 'web:crm')), state('after a while'));
   await one.browser('crm');
   await one.close();
   assert.deepEqual(one.inst.log.filter(e => e.op === 'browser').map(e => e.file), ['browser/run 1 crm.jsonl', 'browser/run 1 crm 2.jsonl'], 'a browser opened again keeps its own log');
@@ -411,34 +522,34 @@ test("a person granted keepalive who keeps their login to a website alive, as th
   writeJson('users.json', { [alice]: { role: 'admin' }, [bob]: { role: 'user' }, [carol]: { role: 'user' } });
   writeJson('capabilities.json', { keepalive: [carol] });
   sites({ pa: { url: 'https://pa.example.com/PatriArchMVC/Account/Login', hosts: ['sso.example.com'], writeback: true, keepalive: '/PatriArchMVC/', every: 8 } });
-  saveLogin(alice, { ...website('pa', 'PatriArch'), keepalive: until }, '{"cookies":["signed in"]}');
-  saveLogin(bob, { ...website('pa', 'PatriArch'), keepalive: until }, '{"cookies":["bob, not granted keepalive"]}');
-  saveLogin(carol, website('pa', 'PatriArch'), '{"cookies":["carol, not keeping it alive"]}');
+  saveLogin(alice, { ...website('pa', 'PatriArch'), keepalive: until }, JSON.stringify(state('signed in')));
+  saveLogin(bob, { ...website('pa', 'PatriArch'), keepalive: until }, JSON.stringify(state('bob, not granted keepalive')));
+  saveLogin(carol, website('pa', 'PatriArch'), JSON.stringify(state('carol, not keeping it alive')));
   const turns = () => starts.filter(s => s.startsWith('https://pa.example.com/PatriArchMVC/ ')).length;
-  [starts.length, states.length, back, shown] = [0, 0, { cookies: ['kept alive'] }, { url: 'https://pa.example.com/PatriArchMVC/Home', password: false }];
+  [starts.length, states.length, back, shown] = [0, 0, state('kept alive'), { url: 'https://pa.example.com/PatriArchMVC/Home', password: false }];
   await keepAlive(at(7, 3));
-  assert.deepEqual([starts, states], [['https://pa.example.com/PatriArchMVC/ pa.example.com'], [{ cookies: ['signed in'] }]], "the page's host alone, in alice's browser alone, on a Saturday at 3:00");
-  assert.deepEqual(JSON.parse(secret(alice, 'web:pa')), { cookies: ['kept alive'] });
+  assert.deepEqual([starts, states], [['https://pa.example.com/PatriArchMVC/ pa.example.com'], [state('signed in')]], "the page's host alone, in alice's browser alone, on a Saturday at 3:00");
+  assert.deepEqual(JSON.parse(secret(alice, 'web:pa')), state('kept alive'));
   await keepAlive(at(7, 3, 7));
   assert.equal(turns(), 1, 'every 8 minutes, as the website says');
   writeJson('capabilities.json', { keepalive: [carol, bob] });
   await keepAlive(at(7, 3, 8));
-  assert.deepEqual(states.slice(1), [{ cookies: ['kept alive'] }, { cookies: ['bob, not granted keepalive'] }], 'bob too, once granted keepalive');
+  assert.deepEqual(states.slice(1), [state('kept alive'), state('bob, not granted keepalive')], 'bob too, once granted keepalive');
   const run = new Browsers(running('k2', ['web:pa']), 1);
   await run.browser('pa');
   await keepAlive(at(7, 3, 16));
   assert.equal(turns(), 4, "bob's alone: a run holds alice's browser there");
   await run.close();
-  [shown, back] = [{ url: 'https://pa.example.com/PatriArchMVC/Account/Login', password: true }, { cookies: ['signed out'] }];
+  [shown, back] = [{ url: 'https://pa.example.com/PatriArchMVC/Account/Login', password: true }, state('signed out')];
   await keepAlive(at(7, 3, 24));
   assert.equal(turns(), 6);
   assert.equal(logins(alice).find(l => l.id === 'web:pa')!.expired, true, 'a sign-in page: the login expired');
-  assert.deepEqual(JSON.parse(secret(alice, 'web:pa')), { cookies: ['kept alive'] }, 'and its state stays');
-  saveLogin(bob, { ...website('pa', 'PatriArch'), keepalive: until }, '{"cookies":["bob"]}');
+  assert.deepEqual(JSON.parse(secret(alice, 'web:pa')), state('kept alive'), 'and its state stays');
+  saveLogin(bob, { ...website('pa', 'PatriArch'), keepalive: until }, JSON.stringify(state('bob')));
   await keepAlive(at(9, 0));
   assert.equal(turns(), 6, 'nothing for an expired login, nor once the time its person set has come');
   sites({ crm: { url: 'https://crm.example.com/#/home', hosts: ['cdn.example.com'], writeback: false } });
-  saveLogin(bob, { ...website('crm', 'CRM'), keepalive: new Date(2026, 10, 12).toISOString() }, '{"cookies":["crm"]}');
+  saveLogin(bob, { ...website('crm', 'CRM'), keepalive: new Date(2026, 10, 12).toISOString() }, JSON.stringify(state('crm')));
   [starts.length, shown] = [0, { url: 'https://crm.example.com/#/home', password: false }];
   for (const m of [0, 9, 10]) await keepAlive(at(10, 12, m));
   assert.deepEqual(starts, ['https://crm.example.com/#/home crm.example.com', 'https://crm.example.com/#/home crm.example.com'], 'its address, every 10 minutes, where the website gives no page or how often');
@@ -455,11 +566,13 @@ test("saving a sign-in keeps its login alive until a time within the next 7 days
   assert.equal(logins(alice).find(l => l.id === 'web:crm')!.keepalive, undefined);
 });
 
-test("a sign-in whose website its person removed meanwhile, as from another tab, saves nothing", async () => {
+test("a sign-in whose website its person removed meanwhile, as from another tab, saves nothing", async t => {
   sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });
   const id = await startSignIn(alice, 'crm', '');
+  t.after(async () => { if (isSignIn(alice, id)) await endSignIn(alice, id, false); });
   removeSite(alice, 'crm');
-  await assert.rejects(endSignIn(alice, id, true), /alice@demo\.test has no website crm/);
+  await assert.rejects(endSignIn(alice, id, true), (e: { status: number; message: string }) => e.status === 409 && /superseded/.test(e.message));
+  assert.equal(isSignIn(alice, id), false);
   assert.ok(!logins(alice).some(l => l.id === 'web:crm'));
 });
 
@@ -468,16 +581,16 @@ test("a person's keepalive turn that fails leaves the others' to go on, and a pe
   sites({ pa: { url: 'https://pa.example.com/PatriArchMVC/Account/Login', hosts: ['sso.example.com'], writeback: true, keepalive: '/PatriArchMVC/', every: 8 } });
   writeJson('users.json', { [carol]: { role: 'user' }, [alice]: { role: 'admin' } });
   writeJson('capabilities.json', { keepalive: [carol] });
-  saveLogin(carol, { ...website('pa', 'PatriArch'), keepalive: until }, '{"cookies":["refused"]}');
-  saveLogin(alice, { ...website('pa', 'PatriArch'), keepalive: until }, '{"cookies":["signed in again"]}');
-  [states.length, back, shown] = [0, { cookies: ['kept alive again'] }, { url: 'https://pa.example.com/PatriArchMVC/Home', password: false }];
+  saveLogin(carol, { ...website('pa', 'PatriArch'), keepalive: until }, JSON.stringify(state('refused')));
+  saveLogin(alice, { ...website('pa', 'PatriArch'), keepalive: until }, JSON.stringify(state('signed in again')));
+  [states.length, back, shown] = [0, state('kept alive again'), { url: 'https://pa.example.com/PatriArchMVC/Home', password: false }];
   await keepAlive(new Date(2026, 10, 10, 9));
-  assert.deepEqual(states, [{ cookies: ['refused'] }, { cookies: ['signed in again'] }], "carol's first, refused");
-  assert.deepEqual(JSON.parse(secret(alice, 'web:pa')), { cookies: ['kept alive again'] });
+  assert.deepEqual(states, [state('refused'), state('signed in again')], "carol's first, refused");
+  assert.deepEqual(JSON.parse(secret(alice, 'web:pa')), state('kept alive again'));
   writeJson('users.json', { [carol]: { role: 'user', disabled: true }, [alice]: { role: 'admin' } });
   states.length = 0;
   await keepAlive(new Date(2026, 10, 10, 9, 10));
-  assert.deepEqual(states, [{ cookies: ['kept alive again'] }], 'nor for carol, disabled');
+  assert.deepEqual(states, [state('kept alive again')], 'nor for carol, disabled');
   writeJson('users.json', { [alice]: { role: 'admin' } });
 });
 
@@ -488,8 +601,8 @@ test("a run gets its browser on a website only where its runner's grant to it in
   sites({ bank: { url: 'https://bank.example.com', hosts: [], writeback: false, keepalive: '/home', every: 10 } });
   writeJson('capabilities.json', { keepalive: [bob] });
   writeJson('grants.json', {});
-  saveLogin(alice, { ...website('bank', 'Bank'), keepalive: until }, '{"cookies":["alice"]}');
-  saveLogin(bob, { ...website('bank', 'Bank'), keepalive: until }, '{"cookies":["bob"]}');
+  saveLogin(alice, { ...website('bank', 'Bank'), keepalive: until }, JSON.stringify(state('alice')));
+  saveLogin(bob, { ...website('bank', 'Bank'), keepalive: until }, JSON.stringify(state('bob')));
   const his = running('b2', ['web:bank'], 1, bob);
   for (const run of [2, 3, 4]) his.append('server', 'run', { run, runner: bob, consent: 1 });
   const first = new Browsers(his, 1);
@@ -506,7 +619,7 @@ test("a run gets its browser on a website only where its runner's grant to it in
   await run.close();
   [states.length, shown] = [0, { url: 'https://bank.example.com/home', password: false }];
   await keepAlive(new Date(2026, 10, 2, 9));
-  assert.deepEqual(states, [{ cookies: ['bob'] }], 'kept alive for bob, whose grant is approved, not for alice, who has none');
+  assert.deepEqual(states, [state('bob')], 'kept alive for bob, whose grant is approved, not for alice, who has none');
   revoke(asPerson(alice)!, id);
   assert.ok(!logins(bob).some(l => l.id === 'web:bank'), 'revoked, with nothing left pending or approved, bob is signed out of it');
   await assert.rejects(new Browsers(his, 4).browser('bank'), /bob@demo\.test no longer has a login offering web:bank/);
@@ -583,20 +696,20 @@ test('the server reaps leftover browsers before it takes requests', async t => {
 
 test("as the server starts, the browsers a restart left open on the service close: a run's keeps its request log and hands its login back, as its run would have, and a sign-in's just goes", async t => {
   sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });
-  saveLogin(alice, website('crm', 'CRM'), '{"cookies":["before"]}');
+  saveLogin(alice, website('crm', 'CRM'), JSON.stringify(state('before')));
   const inst = running('2027-12b', ['web:crm'], 4), cut = new Browsers(inst, 4);
   await cut.browser('crm');
   clearTimeout(cut.bySite.get('crm')!.idle);
   // One whose instance is gone closes all the same, and the rest after it.
   writeJson('browsers.json', { ...JSON.parse(readFileSync(join(tmp, '.rf', 'browsers.json'), 'utf8')), lost: { inst: 'gone', run: 1, site: 'crm', email: alice, since: '', writeback: false, file: 'browser/run 1 crm.jsonl' } });
-  [listed, back] = [['lost', 'b9', 'signin'], { cookies: ['as it was cut'] }];
+  [listed, back] = [['lost', 'b9', 'signin'], state('as it was cut')];
   deleted.length = 0;
   t.mock.method(console, 'error', () => {});
   await reap();
   assert.deepEqual(deleted, ['lost', 'b9', 'signin']);
   assert.deepEqual(inst.log.filter(e => e.op === 'browser').map(e => [e.run, e.site, e.requests, e.writes, e.file]), [[4, 'crm', 1, 0, 'browser/run 4 crm.jsonl']]);
   assert.equal(readFileSync(join(inst.dir, 'browser/run 4 crm.jsonl'), 'utf8'), `${JSON.stringify(plain[0])}\n`);
-  assert.deepEqual(JSON.parse(secret(alice, 'web:crm')), { cookies: ['as it was cut'] });
+  assert.deepEqual(JSON.parse(secret(alice, 'web:crm')), state('as it was cut'));
   assert.deepEqual(JSON.parse(readFileSync(join(tmp, '.rf', 'browsers.json'), 'utf8')), {}, 'nothing left to reap');
 });
 
@@ -611,7 +724,7 @@ const checked = async (site: string, hosts: string[]) => {
   return websitesOf(alice)[site];
 };
 
-test("the hosts a run's browser was refused: one within the domains its website reaches it reaches at once, logged in the instance and the system's log, but one at an internal address waits on admins, even there; without the server's key the rest are left for its person", async () => {
+test('a refused run uses the shared rules: own-domain hosts pass and are logged, internal hosts wait on admins, and without a model key the rest stay unchecked for retry', async () => {
   sites({ crm: { url: 'https://crm.example.com/', hosts: ['erp.acme.localhost'], writeback: false } });
   saveLogin(alice, website('crm', 'CRM'), '{}');
   requested = refusing('https://cdn.example.com/app.js', 'https://intra.acme.localhost/api', 'https://sso.other.test/login');
@@ -620,32 +733,41 @@ test("the hosts a run's browser was refused: one within the domains its website 
   await browsers.close();
   requested = plain;
   const w = await checked('crm', ['cdn.example.com', 'intra.acme.localhost']);
-  assert.deepEqual([w.hosts, w.checks], [['erp.acme.localhost', 'cdn.example.com'], { 'cdn.example.com': { verdict: 'pass', why: own }, 'intra.acme.localhost': { verdict: 'internal', why: 'It is at an internal address.' } }]);
+  assert.deepEqual([w.hosts, w.checks], [['cdn.example.com'], {
+    'crm.example.com': { verdict: 'pass', why: own }, 'cdn.example.com': { verdict: 'pass', why: own },
+    'erp.acme.localhost': { verdict: 'internal', why: 'It is at an internal address.' }, 'intra.acme.localhost': { verdict: 'internal', why: 'It is at an internal address.' },
+  }]);
+  assert.ok(w.profile && 'error' in w.profile);
+  assert.match(w.profile.error, /OPENROUTER_API_KEY/);
+  assert.equal(w.checks!['sso.other.test'], undefined, 'a failed check is not a human decision or a permanent verdict');
   assert.deepEqual(inst.log.filter(e => e.action === 'allowed').map(e => [e.by, e.run, e.site, e.login, e.allowed, e.why]), [['server', 1, 'crm', alice, ['cdn.example.com'], { 'cdn.example.com': own }]]);
   const act = readFileSync(join(tmp, '.rf', 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)).findLast(a => a.op === 'hosts');
   assert.deepEqual([act.by, act.person, act.site, act.inst, act.run, act.allowed], ['server', alice, 'crm', inst.id, 1, { 'cdn.example.com': own }]);
   const { allowHost } = await import('../src/browsers.ts');
-  await assert.rejects(allowHost({ email: alice, role: 'user' } as never, 'crm', 'intra.acme.localhost'), /^Error: intra\.acme\.localhost is at an internal address: an admin allows it$/, 'nor does its person allow it');
+  await assert.rejects(allowHost({ email: alice, role: 'user' } as never, 'crm', 'intra.acme.localhost'), (e: { status: number }) => e.status === 403, 'only admins allow any host');
 });
 
-test('hosts the check rates high or internal wait on admins even within a website\'s domains', async () => {
+test('only admins allow hosts, even for their own website within its existing domain or before any grant is approved', async t => {
   const { allowHost } = await import('../src/browsers.ts');
-  for (const verdict of ['high', 'internal']) {
+  t.after(() => writeJson('grants.json', everyone));
+  for (const verdict of ['pass', 'refused', 'high', 'internal']) {
     sites({ crm: { url: 'https://crm.example.com/', hosts: [], writeback: false, checks: { 'upload.example.com': { verdict, why: 'Wait for an admin.' } } } });
     await assert.rejects(allowHost({ email: alice, role: 'user' } as never, 'crm', 'upload.example.com'), (e: { status: number }) => e.status === 403);
     assert.deepEqual(websitesOf(alice).crm.hosts, []);
     await allowHost(asPerson(alice)!, 'crm', 'upload.example.com');
     assert.deepEqual(websitesOf(alice).crm.hosts, ['upload.example.com']);
   }
+  writeJson('grants.json', {});
+  await assert.rejects(allowHost({ email: alice, role: 'user' } as never, 'crm', 'no-grant.example.com'), (e: { status: number }) => e.status === 403, 'not even before any workspace has approved the login');
 });
 
-test('removing a host takes it out of the open sign-in browser too', async () => {
+test('removing a host keeps open sign-in restricted to approved exact internal exceptions', async () => {
   const { removeHost } = await import('../src/browsers.ts');
   sites({ crm: { url: 'https://crm.example.com/', hosts: ['cdn.example.com'], writeback: false } });
   const id = await startSignIn(alice, 'crm', ''), before = toldHosts.length;
   try {
     await removeHost(alice, 'crm', 'cdn.example.com');
-    assert.deepEqual(toldHosts.slice(before), [{ path: `/sessions/${id}/hosts`, hosts: ['crm.example.com'] }]);
+    assert.deepEqual(toldHosts.slice(before), [{ path: `/sessions/${id}/hosts`, hosts: [] }], 'open sign-in retains no public allowlist or implicit internal exception');
   } finally {
     await endSignIn(alice, id, false);
   }
@@ -658,13 +780,13 @@ test('two hosts allowed at once both stay on the website', async () => {
   assert.deepEqual(websitesOf(alice).crm.hosts.sort(), ['one.example.com', 'two.example.com']);
 });
 
-test("an admin lets websites reach a host at an internal address once, for everyone's: then anyone signs in to theirs there, its browser reaching internal addresses, and allows it as any other host, until an admin lets it no more", async () => {
+test("an admin's internal exception is exact and shared: anyone signs in there, but still only admins allow another host", async () => {
   const { addSite, allowHost, setSite } = await import('../src/browsers.ts'), { letIn } = await import('../src/connections.ts');
   const alice = 'alice@demo.test', bob = 'bob@demo.test', carol = 'carol@demo.test', admin = { email: alice, role: 'admin' } as never, user = (email: string) => ({ email, role: 'user' }) as never;
   sites({});
   for (const p of [alice, bob, carol]) await addSite(p, 'intra', 'https://10.1.2.3/');
   await assert.rejects(startSignIn(bob, 'intra', ''), /^Error: 10\.1\.2\.3 is at an internal address: a website reaches one only where an admin lets it$/);
-  await assert.rejects(allowHost(user(bob), 'intra', '10.9.8.7'), /^Error: 10\.9\.8\.7 is at an internal address: an admin allows it$/);
+  await assert.rejects(allowHost(user(bob), 'intra', '10.9.8.7'), (e: { status: number }) => e.status === 403);
   await assert.rejects(setSite(user(bob), 'intra', { internal: 'true' }), /^Error: internal: admins set it$/);
 
   // The admin lets their own website at it reach internal addresses: everyone's at it does too.
@@ -672,15 +794,17 @@ test("an admin lets websites reach a host at an internal address once, for every
   assert.deepEqual(Object.keys(letIn()), ['10.1.2.3']);
   for (const p of [bob, carol]) {
     await endSignIn(p, await startSignIn(p, 'intra', ''), false);
-    assert.equal(publics.at(-1), false, `${p}'s browser reaches internal addresses`);
+    assert.equal(opened.at(-1)!.site.open, true);
+    assert.ok(opened.at(-1)!.site.hosts.includes('10.1.2.3'), `${p}'s sign-in reaches the approved exact internal host`);
+    assert.ok(!opened.at(-1)!.site.hosts.includes('10.9.8.7'), 'not an unapproved internal host');
     assert.ok(!('internal' in websitesOf(p).intra), 'nothing set on their website itself');
   }
 
   await setSite(admin, 'intra', { internal: 'true' }, bob);
 
-  // A host its sign-on needs at an internal address: once an admin allowed it on a website, anyone allows it on theirs.
   await allowHost(admin, 'intra', '10.9.8.7');
-  await allowHost(user(bob), 'intra', '10.9.8.7');
+  await assert.rejects(allowHost(user(bob), 'intra', '10.9.8.7'), (e: { status: number }) => e.status === 403, 'shared internal reach is not permission for a person to allow hosts');
+  await allowHost(admin, 'intra', '10.9.8.7', bob);
   assert.deepEqual(websitesOf(bob).intra.hosts, ['10.9.8.7']);
   const acts = readFileSync(join(tmp, '.rf', 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(a => a.op === 'internal');
   assert.deepEqual(acts.map(a => [a.by, a.person, a.site, a.hosts, a.let]), [[alice, alice, 'intra', ['10.1.2.3'], true], [alice, bob, 'intra', ['10.1.2.3'], true], [alice, alice, 'intra', ['10.9.8.7'], true]]);
@@ -733,7 +857,7 @@ test('a host that gets a verdict while the model answers keeps it, including one
     await Array.fromAsync(req);
     asked();
     await gate;
-    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ hosts: Object.fromEntries(['cdn.other.test', 'upload.other.test', 'done.other.test'].map(h => [h, { verdict: 'pass', why: 'Its CDN.' }])) }) } }] }));
+    res.end(JSON.stringify({ choices: [{ message: { content: '```json\n' + JSON.stringify({ hosts: Object.fromEntries(['cdn.other.test', 'upload.other.test', 'done.other.test'].map(h => [h, { verdict: 'pass', why: 'Its CDN.' }])), profile: { what: 'A company CRM.', category: 'company', risk: 'low', flags: [] } }) + '\n```' } }] }));
   });
   await new Promise<void>(ok => stand.listen(0, '127.0.0.1', ok));
   upstreams['openrouter.ai'] = `http://127.0.0.1:${(stand.address() as { port: number }).port}`;
@@ -764,13 +888,23 @@ test('a host that gets a verdict while the model answers keeps it, including one
   assert.deepEqual(w.checks?.['upload.other.test'], high);
 });
 
-test("with the server's key its model decides the rest, from what the browser's log, the runs and a web search say of each, never a path or a query: what the pages need the website reaches at once, what they work without stays refused, and anything else waits on admins", async t => {
-  const asked: { url: string; body: any }[] = [];
+test("the shared website check profiles the site, accepts fenced answers, uses at most five model-chosen Exa searches, and never sends paths or queries", async t => {
+  const asked: { url: string; body: any }[] = [], profile = { what: 'A company CRM.', category: 'company', risk: 'low', flags: ['Can submit records.'] };
+  let searched = false, count = 5;
   const stand = createServer(async (req, res) => {
     const body = JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString());
     asked.push({ url: req.url!, body });
-    res.end(JSON.stringify(req.url === '/search' ? { results: [{ title: `About ${body.query}`, url: `https://about.test/${body.query}`, highlights: ['One.', 'Two.'] }] }
-      : { choices: [{ message: { content: JSON.stringify({ hosts: { 'static.cdnhost.test': { verdict: 'pass', why: 'Its CDN.' }, 'www.tracker.test': { verdict: 'refused', why: 'Analytics.' } } }) } }] }));
+    if (req.url === '/search') return res.end(JSON.stringify({ results: [{ title: 'CRM provider', url: 'https://about.test/', highlights: ['Company portal.'] }] }));
+    if (!searched) {
+      searched = true;
+      assert.ok(body.tools.length, 'the model chooses its searches through a tool');
+      return res.end(JSON.stringify({ choices: [{ message: { content: null, tool_calls: Array.from({ length: count }, (_, i) => ({
+        id: `search-${i}`, type: 'function', function: { name: body.tools[0].function.name, arguments: JSON.stringify({ query: `CRM provider ${i}` }) },
+      })) } }] }));
+    }
+    res.end(JSON.stringify({ choices: [{ message: { content: '```json\n' + JSON.stringify({
+      hosts: { 'static.cdnhost.test': { verdict: 'pass', why: 'Its CDN.' }, 'www.tracker.test': { verdict: 'refused', why: 'Analytics.' }, 'upload.elsewhere.test': { verdict: 'high', why: 'Data upload destination.' } }, profile,
+    }) + '\n```' } }] }));
   });
   await new Promise<void>(ok => stand.listen(0, '127.0.0.1', ok));
   const base = `http://127.0.0.1:${(stand.address() as { port: number }).port}`;
@@ -780,31 +914,44 @@ test("with the server's key its model decides the rest, from what the browser's 
     for (const k of ['OPENROUTER_API_KEY', 'EXA_API_KEY']) delete process.env[k];
     for (const h of ['openrouter.ai', 'api.exa.ai']) delete upstreams[h];
     stand.close();
+    requested = plain;
   });
-  sites({ crm: { url: 'https://crm.example.com/', hosts: [], writeback: false } });
-  saveLogin(alice, website('crm', 'CRM'), '{}');
+  sites({ crm: { url: 'https://crm.example.com/private-login?token=secret', hosts: [], writeback: false } });
+  saveLogin(alice, website('crm', 'CRM'), JSON.stringify(state('secret-cookie')));
   const inst = running('2028-02', ['web:crm'], 2);
-  // An earlier run's browser was refused the upload host too, before the server checked hosts.
   inst.append('server', 'browser', { run: 1, site: 'crm', login: alice, requests: 3, writes: 0, blocked: 3, file: 'browser/run 1 crm.jsonl', hosts: { 'upload.elsewhere.test': 3 } });
-  requested = refusing({ url: 'https://static.cdnhost.test/a.js?v=1', dest: 'script', from: 'https://crm.example.com/report?id=7' }, { url: 'https://static.cdnhost.test/b.css', dest: 'style', from: 'https://crm.example.com/report?id=7' },
-    'https://www.tracker.test/c', { url: 'https://upload.elsewhere.test/x', dest: 'empty', from: 'https://crm.example.com/' });
+  requested = refusing({ url: 'https://static.cdnhost.test/private-script.js?v=secret', dest: 'script', from: 'https://crm.example.com/private-report?id=secret' },
+    { url: 'https://static.cdnhost.test/private-style.css', dest: 'style', from: 'https://crm.example.com/private-report?id=secret' },
+    'https://www.tracker.test/private-pixel?key=secret', { url: 'https://upload.elsewhere.test/private-upload', dest: 'empty', from: 'https://crm.example.com/' });
   const browsers = new Browsers(inst, 2);
   await browsers.browser('crm');
   await browsers.close();
   requested = plain;
   const w = await checked('crm', ['static.cdnhost.test', 'www.tracker.test', 'upload.elsewhere.test']);
-  const search = (h: string) => ({ title: `About ${h}`, url: `https://about.test/${h}`, text: 'One. Two.' }), model = asked.find(a => a.url === '/api/v1/chat/completions')!.body;
-  assert.deepEqual(asked.filter(a => a.url === '/search').map(a => [a.body.query, a.body.numResults]).sort(), [['static.cdnhost.test', 1], ['upload.elsewhere.test', 1], ['www.tracker.test', 1]], 'one result about each');
-  assert.deepEqual([model.provider, JSON.parse(model.messages[1].content)], [{ data_collection: 'deny' }, {
-    website: { name: 'crm', address: 'crm.example.com', hosts: [] },
-    refused: {
-      'static.cdnhost.test': { as: ['script', 'style'], from: ['crm.example.com'], requests: 2, runs: 1, domain: 'cdnhost.test', search: search('static.cdnhost.test') },
-      'www.tracker.test': { as: [], from: [], requests: 1, runs: 1, domain: 'tracker.test', search: search('www.tracker.test') },
-      'upload.elsewhere.test': { as: ['empty'], from: ['crm.example.com'], requests: 4, runs: 2, domain: 'elsewhere.test', search: search('upload.elsewhere.test') },
-    },
-  }], 'hosts alone, from providers that keep no data');
+  const models = asked.filter(a => a.url === '/api/v1/chat/completions'), searches = asked.filter(a => a.url === '/search');
+  assert.equal(searches.length, 5, 'five model-chosen searches share one conversation');
+  assert.ok(searches.every(a => /^CRM provider \d$/.test(a.body.query)), 'queries came from the model, not one fixed search per host');
+  assert.ok(models.every(a => a.body.provider.data_collection === 'deny'));
+  const evidence = JSON.parse(models[0].body.messages[1].content), serialized = JSON.stringify(evidence);
+  for (const host of ['crm.example.com', 'static.cdnhost.test', 'www.tracker.test', 'upload.elsewhere.test']) assert.ok(serialized.includes(host), host);
+  for (const kind of ['script', 'style', 'empty']) assert.ok(serialized.includes(kind), kind);
+  assert.doesNotMatch(serialized, /private-|secret|token=|id=|secret-cookie/);
+  assert.deepEqual(w.profile, profile, 'the same check stores the website profile');
   assert.deepEqual([w.hosts, w.checks], [['static.cdnhost.test'], {
-    'static.cdnhost.test': { verdict: 'pass', why: 'Its CDN.' }, 'www.tracker.test': { verdict: 'refused', why: 'Analytics.' }, 'upload.elsewhere.test': { verdict: 'high', why: 'The check gave no verdict for it.' },
-  }], 'one the model leaves out waits on admins');
+    'crm.example.com': { verdict: 'pass', why: "It is within example.com, the website's own domain." },
+    'static.cdnhost.test': { verdict: 'pass', why: 'Its CDN.' }, 'www.tracker.test': { verdict: 'refused', why: 'Analytics.' }, 'upload.elsewhere.test': { verdict: 'high', why: 'Data upload destination.' },
+  }], 'the model passes required assets, refuses analytics and leaves upload exceptions for admins');
   assert.deepEqual(inst.log.filter(e => e.action === 'allowed').map(e => [e.allowed, e.why]), [[['static.cdnhost.test'], { 'static.cdnhost.test': 'Its CDN.' }]]);
+  const { checkWebsite } = await import('../src/browsers.ts'), before = asked.length;
+  [searched, count] = [false, 7];
+  sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: false } });
+  const result = await checkWebsite(alice, 'crm', { requests: { 'needs-check.other.test': { 403: 1 } }, blocked: ['needs-check.other.test'], seconds: 1 });
+  assert.ok('error' in result);
+  assert.match(result.error, /exceeded|limit|budget/i, 'a model requesting too many searches fails the check, not the login');
+  assert.equal(asked.slice(before).filter(a => a.url === '/search').length, 5, 'seven requested searches never exceed the five-search cap');
+  assert.equal(websitesOf(alice).crm.checks!['needs-check.other.test'], undefined, 'failed model work remains retryable');
+  assert.equal(websitesOf(alice).crm.checks!['crm.example.com'].verdict, 'pass', 'the rules survive a failed search/model check');
+  const acts = readFileSync(join(rfDir(), 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)), last = acts.findLast(a => a.op === 'website-check');
+  assert.equal(last.queries.length, 5);
+  assert.doesNotMatch(JSON.stringify(last), /private-|secret-cookie|token=/);
 });

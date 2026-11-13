@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
+import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import { connect, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -55,6 +55,10 @@ async function quiet() {
 
 before(async () => {
   cpSync(join(app, 'test', 'fixture'), root, { recursive: true });
+  const scratch = readdirSync(join(root, 'instances')).find(id => JSON.parse(readFileSync(join(root, 'instances', id, 'instance.json'), 'utf8')).label === 'scratch')!;
+  const refusedLog = join(root, 'instances', scratch, 'log.jsonl'), entries = readFileSync(refusedLog, 'utf8').trim().split('\n');
+  appendFileSync(refusedLog, JSON.stringify({ seq: entries.length + 1, at: new Date().toISOString(), by: 'server', op: 'browser', run: 1, site: 'waiting-hosts', login: bob, requests: 5, writes: 0, blocked: 5,
+    hosts: Object.fromEntries(['files.example.net', 'intra.acme.localhost', 'cdn.example.net', 'tracker.example.net', 'unchecked.example.net'].map(h => [h, 1])) }) + '\n');
   // What the tests save themselves, such as logins, goes to the server's data root, whichever tests run.
   (await import('../src/system.ts')).initSystem(root);
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch') };
@@ -69,6 +73,7 @@ exec "${bwrap}" "$@"
 `, { mode: 0o755 });
   env.PATH = `${bin}:${env.PATH}`;
   delete env.OPENROUTER_API_KEY;
+  delete env.RF_BROWSER_URL;
   const probe = createServer();
   await new Promise(ok => probe.listen(0, '127.0.0.1', ok));
   const port = (probe.address() as { port: number }).port;
@@ -539,12 +544,42 @@ test("everyone sees the skills, which every run loads; admins keep the connectio
   assert.equal((await call('PATCH', `/logins/sites/portal?person=${bob}`, JSON.stringify({ internal: true }))).status, 200, 'but let it reach internal addresses');
   const { added, ...site } = (await json('/logins/sites', b)).portal;
   assert.deepEqual(site, { url: 'https://portal.test/#/login', hosts: [], writeback: true, header: 'x-bot-token', every: 5 });
+  for (const host of ['cdn.portal.test', 'sso.other.test', '10.1.2.3']) {
+    assert.equal((await call('POST', '/logins/web/portal/hosts', JSON.stringify({ host }), b)).status, 403, `persons never allow ${host}, even before a grant exists`);
+  }
+  assert.equal((await call('POST', `/logins/web/portal/hosts?person=${adminEmail}`, JSON.stringify({ host: 'cdn.portal.test' }), b)).status, 403, "nor on another person's website");
+  assert.equal((await call('POST', `/logins/web/portal/hosts?person=${bob}`, JSON.stringify({ host: 'cdn.portal.test' }))).status, 200, "admins can allow a host on another person's website");
+  assert.deepEqual((await json('/logins/sites', b)).portal.hosts, ['cdn.portal.test']);
+  assert.equal((await call('DELETE', '/logins/web/portal/hosts/cdn.portal.test', undefined, b)).status, 200, 'its person retains Remove');
+  assert.deepEqual((await json('/logins/sites', b)).portal.checks['cdn.portal.test'], { verdict: 'refused', why: 'Its person removed it.' });
+  assert.equal((await call('POST', '/logins/web/portal/hosts', JSON.stringify({ host: 'cdn.portal.test' }), b)).status, 403, 'removal cannot be undone by a person');
+  assert.equal((await call('GET', '/logins/web/portal/refused', undefined, b)).status, 404, 'there is no refused-host route');
+  assert.equal('refusedHosts' in await import('../src/browsers.ts'), false, 'nor a refusedHosts function');
   assert.equal((await call('GET', `/logins/sites?person=${adminEmail}`, undefined, b)).status, 403, 'a person sees their own');
   assert.deepEqual(Object.keys(await json(`/logins/sites?person=${bob}`)), ['portal'], "admins see anyone's");
   assert.equal((await call('DELETE', '/logins/sites/portal')).status, 200, 'admins remove their own');
   assert.deepEqual([Object.keys(await json('/logins/sites')), Object.keys(await json('/logins/sites', b))], [[], ['portal']], "and no one else's");
   assert.equal((await call('DELETE', '/logins/sites/portal', undefined, b)).status, 200);
   assert.deepEqual((await json('/connections', b)).map((c: { name: string }) => c.name), ['graph']);
+});
+
+test('only admins receive high or internal refused hosts in Waiting; unchecked, passed and refused hosts are never handed to their person', async () => {
+  const b = sessionOf(await login(bob))!, site = 'waiting-hosts';
+  assert.equal((await call('POST', '/logins/sites', JSON.stringify({ name: site, url: 'https://portal.test/' }), b)).status, 200);
+  const { changeWebsite } = await import('../src/browsers.ts');
+  changeWebsite(bob, site, { checks: {
+    'files.example.net': { verdict: 'high', why: 'Can receive company files.' },
+    'intra.acme.localhost': { verdict: 'internal', why: 'It is at an internal address.' },
+    'cdn.example.net': { verdict: 'pass', why: 'Its CDN.' },
+    'tracker.example.net': { verdict: 'refused', why: 'Analytics.' },
+  } });
+  const refused = async (cookie: string) => (await workspaces(cookie)).flatMap((w: any) => w.series.flatMap((s: any) => s.instances.flatMap((i: any) => i.refused))).filter((r: any) => r.site === site);
+  const adminHosts = await refused(admin);
+  assert.equal(adminHosts.length, 1);
+  assert.deepEqual(adminHosts[0].hosts, ['files.example.net', 'intra.acme.localhost']);
+  assert.deepEqual(adminHosts[0].why, { 'files.example.net': 'Can receive company files.', 'intra.acme.localhost': 'It is at an internal address.' });
+  assert.deepEqual(await refused(b), [], 'even their own unapproved/unchecked hosts give a person no decision to make');
+  assert.equal((await call('DELETE', `/logins/sites/${site}`, undefined, b)).status, 200);
 });
 
 test("people see, set, move and cancel wakes, one-off or weekly, share a series as themselves, and start or dismiss requests; a wake stays pending whatever runs before it", async () => {
@@ -1073,11 +1108,19 @@ test('rf shares and archives series and workspaces, starts or drops a request, l
   assert.equal(await rf('logins', 'allow', 'gg', 'cdn.gg-assets.example.net'), 'gg reaches cdn.gg-assets.example.net\n');
   await assert.rejects(rf('site', 'ask', 'gg', 'Making', 'month-end pulls'), fails(1, /: 409 sign in to gg first/));
   saveLogin(adminEmail, { id: 'web:gg', kind: 'website', name: 'GG', since, offers: [{ id: 'web:gg', name: 'GG' }] }, 'state');
-  const asked = /^asked, as grant (\w+): one of Making's owners approves or denies it\nnot checked: the server has no OPENROUTER_API_KEY\n$/.exec(await rf('site', 'ask', 'gg', 'Making', 'month-end pulls'))![1];
+  const request = await rf('site', 'ask', 'gg', 'Making', 'month-end pulls'), asked = /^asked, as grant (\w+): /m.exec(request)![1];
+  assert.match(request, /Demo Admin asks that runs in Making use their login to gg — https:\/\/gg\.example\.com\/\. Runs there can do whatever Demo Admin can, including submitting and approving\. Their reason: month-end pulls\. The reason is not an enforced limit\./);
+  assert.match(request, /OPENROUTER_API_KEY[\s\S]*[Aa]n admin decides/);
   await assert.rejects(rf('site', 'ask', 'gg', 'Making', 'again'), fails(1, /: 409 you've asked for gg in Making already/));
-  assert.match(await rf('waiting'), new RegExp(`^grant  Making since .+, grant ${asked}: ${adminEmail} asks to use gg, at https://gg\\.example\\.com/, here: month-end pulls \\(not checked\\)$`, 'm'));
-  assert.equal(await rf('grant', 'approve', asked, 'fine'), 'approved\n');
-  assert.match(await rf('grants', 'Making'), new RegExp(`^${asked}  approved  gg at https://gg\\.example\\.com/ in Making for ${adminEmail}, since .+: month-end pulls; approved by ${adminEmail}: fine \\(not checked\\)$`, 'm'));
+  const waiting = await rf('waiting');
+  assert.match(waiting, new RegExp(`^grant  Making since .+, grant ${asked}: Demo Admin asks that runs in Making`, 'm'));
+  assert.match(waiting, /including submitting and approving/);
+  const approval = await rf('grant', 'approve', asked, 'fine');
+  assert.match(approval, /runs in Making[\s\S]*including submitting and approving[\s\S]*approved/);
+  const granted = await rf('grants', 'Making');
+  assert.match(granted, new RegExp(`^${asked}  approved  since .+: Demo Admin asks that runs in Making`, 'm'));
+  assert.match(granted, /approved by admin@demo\.test: fine[\s\S]*Used by 0 runs, 0 wrote; last use never\./);
+  assert.doesNotMatch(granted, /Approving lets|allows hosts/);
   assert.equal(await rf('grant', 'revoke', asked), 'revoked\n');
   assert.ok(!JSON.parse(await rf('logins', '--json')).some((l: { id: string }) => l.id === 'web:gg'), 'with no grant left, the login is signed out');
   assert.equal(await rf('site', 'remove', 'gg'), 'removed gg\n');

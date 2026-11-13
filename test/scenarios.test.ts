@@ -15,8 +15,9 @@ import { idp } from './idp.ts';
 // wake and a takeover are checked as a run meets them, at no model cost.
 type Script = { bash: (string | (() => string | Promise<string>))[]; report: string; prompt?: string; system?: string; first?: number; saw: string[]; fail?: string; hold?: () => void };
 const scripts: Script[] = [], byPrompt = new Map<string, Script>(), providers: unknown[] = [], keys: string[] = [];
-// The server's own checks of websites (grants.ts, browsers.ts): what they asked, and the verdicts the stand-in model answers, in turn.
+// The shared website check, on Save or for new run hosts, consumes queued verdicts; ordinary lifecycle sign-ins get a profile.
 const checks: { provider: unknown; messages: { content: string }[] }[] = [], verdicts: (object | string)[] = [];
+const profile = { what: 'Example Company operates this business portal.', category: 'company', risk: 'low', flags: [] };
 const app = join(import.meta.dirname, '..'), tmp = mkdtempSync(join(tmpdir(), 'rf-scenario-')), root = join(tmp, 'data');
 const ADMIN = 'admin@demo.test', BOB = 'bob@demo.test';
 let model: ReturnType<typeof createServer>, proc: ChildProcess, base = '', admin = '', bob = '', sessions = 0;
@@ -24,13 +25,19 @@ let model: ReturnType<typeof createServer>, proc: ChildProcess, base = '', admin
 // to one answers with the path it reached. Their pages asked for the addresses in `refused`, which they don't reach; what else they
 // were told, as hosts allowed, is in `told`.
 let refused: string[] = [], holdCdp = false, cdpOpened = 0, cdpClosed = 0;
-const told: string[] = [];
+let browserLog: { method: string; url: string; status: number; dest?: string; from?: string }[] = [];
+let browserState: { cookies: { domain: string; name: string; value: string }[]; origins: { origin: string; localStorage: { name: string; value: string }[] }[] } = { cookies: [], origins: [] };
+const told: string[] = [], openings: { site: { hosts: string[]; open?: boolean; public?: boolean; except?: string[]; start_url?: string }; state?: unknown; ttl_s: number }[] = [];
 const service = createServer(async (req, res) => {
-  const blocked = refused.map(url => ({ method: 'GET', url, status: 403, blocked: 'host not on the list' }));
-  if (req.method === 'POST' && req.url === '/sessions') return void res.writeHead(201).end(JSON.stringify({ id: `b${++sessions}` }));
+  const blocked = refused.map(url => ({ method: 'GET', url, status: 403, blocked: 'host not on the list' })), log = [...browserLog, ...blocked];
+  if (req.method === 'GET' && new URL(req.url!, 'http://browser').pathname === '/blocked') return void res.end('{}');
+  if (req.method === 'POST' && req.url === '/sessions') {
+    openings.push(JSON.parse(Buffer.concat(await Array.fromAsync(req)).toString()));
+    return void res.writeHead(201).end(JSON.stringify({ id: `b${++sessions}` }));
+  }
   if (req.method === 'PUT' || req.method === 'POST') return void res.end((told.push(`${req.method} ${req.url} ${Buffer.concat(await Array.fromAsync(req)).toString()}`), '{}'));
-  if (req.method === 'DELETE') return void res.end(JSON.stringify({ state: { cookies: [] }, log: blocked }));
-  res.end(req.url === '/sessions' ? '[]' : req.url!.endsWith('/log') ? JSON.stringify([{ live: true }, ...blocked]) : req.url!.endsWith('/view') ? 'the live view' : '');
+  if (req.method === 'DELETE') return void res.end(JSON.stringify({ state: browserState, log }));
+  res.end(req.url === '/sessions' ? '[]' : req.url!.endsWith('/log') ? JSON.stringify([{ live: true }, ...log]) : req.url!.endsWith('/view') ? 'the live view' : '');
 }).on('upgrade', (req, socket) => {
   if (holdCdp && req.url!.endsWith('/cdp')) {
     cdpOpened++;
@@ -47,7 +54,11 @@ const isResult = (m: { role: string; content: unknown }) => Array.isArray(m.cont
 // costing a cent, unless the key is out of credits; and a chat completion, for a script's own call.
 async function answer(req: IncomingMessage, res: ServerResponse) {
   const body = JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString());
-  if (body.response_format) return void (checks.push(body), res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: (v => typeof v === 'string' ? v : JSON.stringify(v))(verdicts.shift()) } }] })));
+  if (body.response_format) {
+    checks.push(body);
+    const verdict = verdicts.length ? verdicts.shift()! : { profile, hosts: {} };
+    return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: typeof verdict === 'string' ? verdict : JSON.stringify(verdict) } }] }));
+  }
   keys.push(String(req.headers['x-api-key']));
   if (keys.at(-1) === 'sk-or-broke') return void res.writeHead(402, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: 'Insufficient credits', code: 402 } }));
   providers.push(body.provider);
@@ -751,7 +762,8 @@ test('unticking, removing, signing out or revoking a website closes a going run\
   });
 });
 
-test("anyone adds websites of their own, theirs to set: they allow the hosts its pages need as they sign in, a run uses one where its workspace's owners approved its runner's grant, seeing the server's check, the hosts a run's browser was refused are checked, those it rates high or finds at an internal address waiting on admins, and its person removes one", async () => {
+test("personal websites are checked on Save, grants reuse the profile without widening hosts, run hosts wait only on admins for high/internal verdicts, and people remove their own hosts and sites", async t => {
+  t.after(() => { refused = []; browserLog = []; browserState = { cookies: [], origins: [] }; });
   const carol = await login('carol@demo.test'), add = (body: object, cookie = bob) => call('POST', '/logins/sites', { name: 'bobs', url: 'https://bobs.example.com/', ...body }, cookie);
   const said = async (res: Response) => [res.status, await res.text()];
   const allow = (host: string, cookie = bob, whose = '') => call('POST', `/logins/web/bobs/hosts${whose}`, { host }, cookie);
@@ -761,93 +773,148 @@ test("anyone adds websites of their own, theirs to set: they allow the hosts its
   assert.deepEqual(await said(await add({ url: 'https://bobs.example.com/other' })), [409, 'you have a website bobs already: name this one otherwise']);
   assert.equal((await add({ url: 'https://carols.example.com/' }, carol)).status, 200, 'a name is each person\'s own');
   assert.deepEqual([(await listed(bob)).url, (await listed(carol)).url], ['https://bobs.example.com/', 'https://carols.example.com/']);
-  // One at an internal address waits for an admin to let it reach internal addresses.
   assert.equal((await add({ name: 'intranet', url: 'https://10.1.2.3/' })).status, 200);
   assert.deepEqual(await said(await call('POST', '/logins/web/intranet', {}, bob)), [400, '10.1.2.3 is at an internal address: a website reaches one only where an admin lets it']);
   assert.equal((await call('DELETE', '/logins/sites/intranet', undefined, bob)).status, 200);
 
-  // Signing in, its pages ask for hosts it doesn't reach: its person allows those its sign-in needs, and the open browser reaches them.
   refused = ['https://sso.idp.test/a', 'https://cdn.idp.test/x.js', 'https://sso.idp.test/b'];
-  const { id: signIn } = await (await call('POST', '/logins/web/bobs', {}, bob)).json();
-  assert.deepEqual(await (await call('GET', '/logins/web/bobs/refused', undefined, bob)).json(),
-    { hosts: [{ host: '*.idp.test', count: 3 }, { host: 'sso.idp.test', count: 2 }, { host: 'cdn.idp.test', count: 1 }] });
-  assert.deepEqual(await said(await allow('*.co.uk')), [400, '*.co.uk: a wildcard stays within one registrable domain, such as *.example.com']);
-  assert.deepEqual(await said(await allow('graph.microsoft.com')), [400, "graph.microsoft.com is graph's: no website reaches it"]);
-  assert.deepEqual(await said(await allow('sso.idp.test', carol, `?person=${BOB}`)), [403, "bob@demo.test's websites are theirs"]);
-  assert.equal((await allow('sso.idp.test')).status, 200);
-  assert.deepEqual(told.slice(-2), [`PUT /sessions/${signIn}/hosts {"hosts":["bobs.example.com","sso.idp.test"]}`, `POST /sessions/${signIn}/reload `]);
-  assert.deepEqual((await (await call('GET', '/logins/web/bobs/refused', undefined, bob)).json()).hosts, [{ host: 'cdn.idp.test', count: 1 }], 'what it reaches now is no longer refused');
-  assert.equal((await call('POST', `/signins/${signIn}`, undefined, bob)).status, 200);
+  browserLog = [
+    { method: 'GET', url: 'https://bobs.example.com/private?code=secret', status: 302, dest: 'document' },
+    { method: 'POST', url: 'https://sso.idp.test/login?token=secret', status: 200, dest: 'document', from: 'https://bobs.example.com/private?code=secret' },
+  ];
+  browserState = {
+    cookies: ['bobs.example.com', '.example.com', 'sso.idp.test', 'cdn.idp.test', 'unused.bobs.example.com'].map(domain => ({ domain, name: 'session', value: 'secret-cookie' })),
+    origins: ['bobs.example.com', 'sso.idp.test', 'cdn.idp.test', 'unused.bobs.example.com'].map(host => ({ origin: `https://${host}`, localStorage: [{ name: 'access', value: 'secret-storage' }] })),
+  };
+  const keptState = { cookies: browserState.cookies.slice(0, 3), origins: browserState.origins.slice(0, 2) }, since = Date.now();
+  const { id: signIn, expires } = await (await call('POST', '/logins/web/bobs', {}, bob)).json();
+  assert.ok(Date.parse(expires) >= since + 600_000 && Date.parse(expires) <= Date.now() + 600_000);
+  assert.equal(expires, new Date(expires).toISOString());
+  assert.deepEqual([openings.at(-1)!.site.open, openings.at(-1)!.site.hosts, openings.at(-1)!.site.public, openings.at(-1)!.ttl_s], [true, [], undefined, 600]);
+  for (const host of ['127.0.0.1', 'graph.microsoft.com', '*.azuredatabricks.net']) assert.ok(openings.at(-1)!.site.except!.includes(host), host);
+  assert.equal((await call('GET', '/logins/web/bobs/refused', undefined, bob)).status, 404, 'there is no sign-in host polling route');
+  for (const host of ['*.co.uk', 'graph.microsoft.com', 'sso.idp.test', 'assets.bobs.example.com'])
+    assert.deepEqual(await said(await allow(host)), [403, 'admins allow website hosts']);
+  assert.deepEqual(await said(await allow('sso.idp.test', carol, `?person=${BOB}`)), [403, 'admins allow website hosts']);
+  assert.deepEqual(await said(await allow('*.co.uk', admin, `?person=${BOB}`)), [400, '*.co.uk: a wildcard stays within one registrable domain, such as *.example.com']);
+  assert.deepEqual(await said(await allow('graph.microsoft.com', admin, `?person=${BOB}`)), [400, "graph.microsoft.com is graph's: no website reaches it"]);
+  assert.equal((await allow('assets.bobs.example.com', admin, `?person=${BOB}`)).status, 200);
+  assert.deepEqual(told.slice(-2), [`PUT /sessions/${signIn}/hosts {"hosts":[]}`, `POST /sessions/${signIn}/reload `], 'public allowances never enter the open sign-in internal list');
 
-  // Bob asks to use it in a workspace; the server's model checks the website from his sign-in's hosts, and its owner approves.
+  const portalProfile = { what: 'Bobco operates a business portal for its suppliers.', category: 'company', risk: 'low', flags: [] };
+  const beforeSave = checks.length;
+  verdicts.push({ profile: portalProfile, hosts: { 'sso.idp.test': { verdict: 'pass', why: 'Its sign-on provider.' }, 'cdn.idp.test': { verdict: 'refused', why: 'Optional telemetry.' } } });
+  assert.equal((await call('POST', `/signins/${signIn}`, undefined, bob)).status, 200);
+  assert.equal(checks.length, beforeSave + 1, 'Save checks before there is any grant request');
+  assert.deepEqual([(await listed(bob)).profile, (await listed(bob)).hosts], [portalProfile, ['assets.bobs.example.com', 'sso.idp.test']]);
+  const asked = JSON.parse(checks.at(-1)!.messages[1].content), trace = (await (await call('GET', '/logins', undefined, bob)).json()).find((l: { id: string }) => l.id === 'web:bobs').trace;
+  assert.deepEqual([checks.at(-1)!.provider, asked.website.address, asked.evidence, asked.unchecked], [{ data_collection: 'deny' }, 'bobs.example.com', trace, ['sso.idp.test', 'cdn.idp.test']]);
+  assert.deepEqual(trace.requests, { 'bobs.example.com': { 302: 1 }, 'sso.idp.test': { 200: 1, 403: 2 }, 'cdn.idp.test': { 403: 1 } });
+  assert.deepEqual([trace.blocked, trace.kinds], [['sso.idp.test', 'cdn.idp.test'], { 'bobs.example.com': { dest: ['document'], from: [] }, 'sso.idp.test': { dest: ['document'], from: ['bobs.example.com'] }, 'cdn.idp.test': { dest: [], from: [] } }]);
+  assert.equal(typeof trace.seconds, 'number');
+  assert.equal(asked.reason, undefined, 'the check is of the website, not a requester\'s intended use');
+  assert.doesNotMatch(JSON.stringify(asked), /https:\/\/|private|secret/);
+  browserLog = []; browserState = { cookies: [], origins: [] }; refused = [];
+
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Own sites' })).json();
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB] })).status, 200);
   assert.deepEqual(await said(await call('POST', '/grants', { site: 'bobs', workspace: ws, reason: '' }, bob)), [400, "a reason: what you'll use it for, for the workspace's owners"]);
-  verdicts.push({ risk: 'low', flags: [], summary: "Bob's portal, signing in through idp.test.", hosts: ['*.bobs.example.com', 'sso.idp.test', 'graph.microsoft.com'] });
-  const { id: grant, check } = await (await call('POST', '/grants', { site: 'bobs', workspace: ws, reason: 'own pulls' }, bob)).json();
-  assert.deepEqual(check, { risk: 'low', flags: [], summary: "Bob's portal, signing in through idp.test.", hosts: ['*.bobs.example.com', 'sso.idp.test'] }, "graph's host never");
-  const asked = JSON.parse(checks.at(-1)!.messages[1].content);
-  assert.deepEqual([checks.at(-1)!.provider, asked.website.address, asked.signIn.blocked, asked.reason], [{ data_collection: 'deny' }, 'https://bobs.example.com/', ['sso.idp.test', 'cdn.idp.test'], 'own pulls'], 'hosts alone, from providers that keep no data');
-  const pending = async () => (await (await call('GET', '/api')).json()).find((w: { id: string }) => w.id === ws).grants.map((g: { person: string; site: string; url: string; state: string; check: { risk: string } }) => [g.person, g.site, g.url, g.state, g.check.risk]);
-  assert.deepEqual(await pending(), [[BOB, 'bobs', 'https://bobs.example.com/', 'pending', 'low']], "under its owners' Waiting on you, with its address and the check");
+  const requested = await (await call('POST', '/grants', { site: 'bobs', workspace: ws, reason: 'own pulls' }, bob)).json(), grant = requested.id;
+  assert.deepEqual(requested, { id: grant, profile: portalProfile });
+  assert.equal(checks.length, beforeSave + 1, 'asking reuses the successful saved profile');
+  const stored = JSON.parse(readFileSync(join(root, '.rf', 'grants.json'), 'utf8'))[grant];
+  assert.deepEqual(['check', 'hosts'].filter(k => k in stored), []);
+  const pending = async () => (await (await call('GET', '/api')).json()).find((w: { id: string }) => w.id === ws).grants;
+  const [card] = await pending();
+  assert.deepEqual([card.person, card.site, card.url, card.state, card.profile, card.adminOnly, card.use], [BOB, 'bobs', 'https://bobs.example.com/', 'pending', portalProfile, false, null]);
+  assert.deepEqual(['check', 'hosts'].filter(k => k in card), []);
+  assert.match(card.description, /Bob.*Own sites.*Bobco.*company system, bobs\.example\.com/);
+  assert.match(card.description, /including submitting and approving.*own pulls.*reason is not an enforced limit/);
   assert.equal((await call('POST', `/grants/${grant}`, { approve: true }, bob)).status, 403, "a member doesn't approve");
+  const hostsBefore = (await listed(bob)).hosts;
   assert.equal((await call('POST', `/grants/${grant}`, { approve: true })).status, 200);
-  assert.deepEqual((await listed(bob)).hosts, ['sso.idp.test', '*.bobs.example.com'], 'approving lets it reach what the check found');
-  assert.deepEqual(await said(await allow('cdn.other.test')), [403, 'cdn.other.test is outside the domains bobs reaches, which its approved grants cover: an admin allows it']);
+  assert.deepEqual((await listed(bob)).hosts, hostsBefore, 'approving grants no new host');
+  for (const host of ['cdn.other.test', 'cdn.bobs.example.com', 'sso.idp.test']) assert.deepEqual(await said(await allow(host)), [403, 'admins allow website hosts']);
 
-  // In a workspace bob owns, a check that rates the website high risk leaves it for an admin to approve.
   const { id: his } = await (await call('POST', '/api/workspaces', { name: "Bob's own" })).json();
   assert.equal((await call('PUT', `/api/workspaces/${his}`, { owners: [BOB] })).status, 200);
-  // A model that fences its JSON in ```json is still read.
-  verdicts.push('```json\n' + JSON.stringify({ risk: 'high', flags: ['looks like a lookalike'], summary: 'Not what it says.', hosts: [] }) + '\n```');
-  const { id: risky } = await (await call('POST', '/grants', { site: 'bobs', workspace: his, reason: 'more pulls' }, bob)).json();
-  assert.deepEqual(await said(await call('POST', `/grants/${risky}`, { approve: true }, bob)), [403, 'the check rates bobs high risk: an admin decides']);
+  const { id: ownGrant } = await (await call('POST', '/grants', { site: 'bobs', workspace: his, reason: 'more pulls' }, bob)).json();
+  assert.equal((await call('POST', `/grants/${ownGrant}`, { approve: true }, bob)).status, 200, 'an owner can approve a company profile');
+  assert.equal(checks.length, beforeSave + 1, 'a second workspace still reuses the profile');
+  assert.equal((await add({ name: 'risky', url: 'https://lookalike.vendor.test/' })).status, 200);
+  const { id: riskySignIn } = await (await call('POST', '/logins/web/risky', {}, bob)).json();
+  const riskyProfile = { what: 'Imposter Ltd operates a portal imitating Bobco.', category: 'company', risk: 'high', flags: ['looks like a lookalike'] };
+  verdicts.push('```json\n' + JSON.stringify({ profile: riskyProfile, hosts: {} }) + '\n```');
+  assert.equal((await call('POST', `/signins/${riskySignIn}`, undefined, bob)).status, 200);
+  const { id: risky, profile: checkedRisk } = await (await call('POST', '/grants', { site: 'risky', workspace: his, reason: 'risky pulls' }, bob)).json();
+  assert.deepEqual(checkedRisk, riskyProfile, 'a fenced model answer saved a usable profile');
+  assert.deepEqual(await said(await call('POST', `/grants/${risky}`, { approve: true }, bob)), [403, 'the website profile rates risky high risk: an admin decides']);
   assert.equal((await call('POST', `/grants/${risky}`, { approve: true })).status, 200);
+  assert.equal((await call('DELETE', '/logins/sites/risky', undefined, bob)).status, 200);
 
-  // A run's browser was refused hosts: its own it reaches at once, but one at an internal address waits on admins; the server's model
-  // checks the rest, from evidence alone: one its pages need it reaches at once too, a tracker stays refused and waits on no one, and
-  // one it rates high waits on admins, who allow it, as the internal one, which lets the website reach internal addresses. Each it
-  // reaches is logged in the instance and the system's log. Its person removes one, which stays refused.
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Own pull' }, bob)).json();
-  refused = ['https://cdn.idp.test/x.js', 'https://www.tracker.test/c', 'https://static.cdnhost.test/a.js', 'https://upload.elsewhere.test/x', 'https://10.9.8.7/app'];
-  verdicts.push({ hosts: { 'www.tracker.test': { verdict: 'refused', why: 'Analytics.' }, 'static.cdnhost.test': { verdict: 'pass', why: 'Its CDN.' }, 'upload.elsewhere.test': { verdict: 'high', why: 'File sharing.' } } });
+  refused = ['https://cdn.idp.test/x.js', 'https://cdn.bobs.example.com/a.js', 'https://www.tracker.test/c', 'https://static.cdnhost.test/a.js', 'https://upload.elsewhere.test/x', 'https://10.9.8.7/app'];
+  verdicts.push({ profile: portalProfile, hosts: { 'www.tracker.test': { verdict: 'refused', why: 'Analytics.' }, 'static.cdnhost.test': { verdict: 'pass', why: 'Its CDN.' }, 'upload.elsewhere.test': { verdict: 'high', why: 'File sharing.' } } });
   scripts.push({ bash: ['curl -s -m 5 -H "connection: upgrade" -H "upgrade: websocket" "$RF_BROWSERS/bobs"'], report: 'Pulled.', saw: [] });
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-12', logins: ['web:bobs'] }, bob)).json();
   await runs(id, 1);
-  await until('the hosts checked', () => readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').split('"action":"allowed"').length === 3);
-  const sent = JSON.parse(checks.at(-1)!.messages[1].content);
-  assert.deepEqual(sent.refused, Object.fromEntries(['www.tracker.test', 'static.cdnhost.test', 'upload.elsewhere.test'].map(h => [h, { as: [], from: [], requests: 1, runs: 1, domain: h.split('.').slice(-2).join('.') }])),
-    "its own and the internal one go unasked; a browser service that logs no request's kind or page gives none");
+  await until('the hosts checked', () => readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').includes('"action":"allowed"'));
+  assert.deepEqual(openings.at(-1)!.state, keptState, 'the run receives only requested allowed cookies and origins, including a parent-domain cookie');
+  const sent = JSON.parse(checks.at(-1)!.messages[1].content), hosts = refused.map(url => new URL(url).hostname);
+  assert.deepEqual([sent.website.address, sent.website.profile, sent.unchecked], ['bobs.example.com', portalProfile, ['www.tracker.test', 'static.cdnhost.test', 'upload.elsewhere.test']]);
+  assert.deepEqual(sent.evidence, { requests: Object.fromEntries(hosts.map(h => [h, { 403: 1 }])), kinds: Object.fromEntries(hosts.map(h => [h, { dest: [], from: [] }])), blocked: hosts, seconds: 0 });
+  assert.doesNotMatch(JSON.stringify(sent), /https:\/\/|secret/);
   const log = readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
-  assert.deepEqual(log.filter(e => e.action === 'allowed').map(e => [e.by, e.login, e.allowed, e.why]), [
-    ['server', BOB, ['cdn.idp.test'], { 'cdn.idp.test': "It is within idp.test, the website's own domain." }], ['server', BOB, ['static.cdnhost.test'], { 'static.cdnhost.test': 'Its CDN.' }]]);
+  const allowed = ['cdn.bobs.example.com', 'static.cdnhost.test'], why = { 'cdn.bobs.example.com': "It is within example.com, the website's own domain.", 'static.cdnhost.test': 'Its CDN.' };
+  assert.deepEqual(log.filter(e => e.action === 'allowed').map(e => [e.by, e.login, e.allowed, e.why]), [['server', BOB, allowed, why]]);
   const acts = () => readFileSync(join(root, '.rf', 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
-  assert.deepEqual(acts().filter(a => a.op === 'hosts').map(a => [a.by, a.person, a.site, a.inst, a.run, Object.keys(a.allowed)]), [['server', BOB, 'bobs', id, 1, ['cdn.idp.test']], ['server', BOB, 'bobs', id, 1, ['static.cdnhost.test']]]);
-  assert.deepEqual([(await listed(bob)).hosts.slice(2), Object.fromEntries(Object.entries((await listed(bob)).checks).map(([h, c]: [string, any]) => [h, c.verdict]))],
-    [['cdn.idp.test', 'static.cdnhost.test'], { 'cdn.idp.test': 'pass', '10.9.8.7': 'internal', 'www.tracker.test': 'refused', 'static.cdnhost.test': 'pass', 'upload.elsewhere.test': 'high' }]);
+  assert.deepEqual(acts().filter(a => a.op === 'hosts').map(a => [a.by, a.person, a.site, a.inst, a.run, a.allowed]), [['server', BOB, 'bobs', id, 1, why]]);
+  const checked = acts().findLast(a => a.op === 'website-check' && a.site === 'bobs');
+  assert.deepEqual([checked.by, checked.person, checked.evidence, checked.queries, checked.profile], ['server', BOB, sent.evidence, [], portalProfile]);
+  assert.deepEqual([(await listed(bob)).hosts, Object.fromEntries(Object.entries((await listed(bob)).checks).map(([h, c]: [string, any]) => [h, c.verdict]))],
+    [[...hostsBefore, ...allowed], { 'assets.bobs.example.com': 'pass', 'bobs.example.com': 'pass', 'sso.idp.test': 'pass', 'cdn.idp.test': 'refused', 'cdn.bobs.example.com': 'pass', '10.9.8.7': 'internal', 'www.tracker.test': 'refused', 'static.cdnhost.test': 'pass', 'upload.elsewhere.test': 'high' }]);
   const waits = async (cookie = bob) => (await (await call('GET', '/api', undefined, cookie)).json()).flatMap((w: any) => w.series.flatMap((s: any) => s.instances)).find((i: { id: string }) => i.id === id).refused.map((r: { login: string; hosts: string[]; why: object }) => [r.login, r.hosts, r.why]);
-  assert.deepEqual([await waits(), await waits(admin)], [[], [[BOB, ['upload.elsewhere.test', '10.9.8.7'], { 'upload.elsewhere.test': 'File sharing.', '10.9.8.7': 'It is at an internal address.' }]]], 'they wait on admins alone');
-  assert.equal((await allow('upload.elsewhere.test')).status, 403, 'outside its domains, now its grants are approved');
+  assert.deepEqual([await waits(), await waits(admin)], [[], [[BOB, ['upload.elsewhere.test', '10.9.8.7'], { 'upload.elsewhere.test': 'File sharing.', '10.9.8.7': 'It is at an internal address.' }]]], 'only high and internal hosts wait, on admins alone');
+  assert.deepEqual(await said(await allow('upload.elsewhere.test')), [403, 'admins allow website hosts']);
   for (const host of ['upload.elsewhere.test', '10.9.8.7']) assert.equal((await allow(host, admin, `?person=${BOB}`)).status, 200);
   assert.deepEqual([await waits(admin), Object.keys(JSON.parse(readFileSync(join(root, '.rf', 'internal.json'), 'utf8')))], [[], ['10.9.8.7']], 'an internal host allowed is kept for every website');
   const remove = (host: string) => call('DELETE', `/logins/web/bobs/hosts/${host}`, undefined, bob);
   assert.equal((await remove('static.cdnhost.test')).status, 200);
-  assert.deepEqual(await said(await remove('static.cdnhost.test')), [404, "bobs doesn't reach static.cdnhost.test: beyond its address it reaches sso.idp.test, *.bobs.example.com, cdn.idp.test, upload.elsewhere.test, 10.9.8.7"]);
+  assert.deepEqual(await said(await remove('static.cdnhost.test')), [404, "bobs doesn't reach static.cdnhost.test: beyond its address it reaches assets.bobs.example.com, sso.idp.test, cdn.bobs.example.com, upload.elsewhere.test, 10.9.8.7"]);
   assert.deepEqual([(await listed(bob)).hosts.includes('static.cdnhost.test'), (await listed(bob)).checks['static.cdnhost.test']], [false, { verdict: 'refused', why: 'Its person removed it.' }], 'it stays refused');
   assert.deepEqual(acts().filter(a => a.method === 'DELETE' && a.path.includes('/hosts/')).map(a => [a.by, a.path]), [[BOB, '/logins/web/bobs/hosts/static.cdnhost.test']]);
+  refused = [];
+  const { id: again } = await (await call('POST', '/logins/web/bobs', {}, bob)).json();
+  assert.deepEqual([openings.at(-1)!.site.open, openings.at(-1)!.site.hosts], [true, ['10.9.8.7']], 'only an admin-approved exact internal host enters the open sign-in');
+  assert.equal((await call('DELETE', `/signins/${again}`, undefined, bob)).status, 200);
 
-  // Though the website reaches internal addresses, a grant's check never has an owner's approval reach an internal host: an admin alone allows one.
+  refused = ['https://unreviewed.host.test/private?code=secret', 'https://static.cdnhost.test/a.js'];
+  verdicts.push('not JSON');
+  scripts.push({ bash: ['curl -s -m 5 -H "connection: upgrade" -H "upgrade: websocket" "$RF_BROWSERS/bobs"'], report: 'Unchecked host refused.', saw: [] });
+  assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Try the new page.' }, bob)).status, 200);
+  const retried = await runs(id, 2);
+  await until('the failed host check', () => acts().some(a => a.op === 'website-check' && a.site === 'bobs' && a.profile.error));
+  const failed = await listed(bob);
+  assert.ok('error' in failed.profile);
+  assert.deepEqual([failed.checks['unreviewed.host.test'], failed.checks['static.cdnhost.test']], [undefined, { verdict: 'refused', why: 'Its person removed it.' }]);
+  assert.deepEqual([await waits(), await waits(admin)], [[], []], 'unchecked and personally removed hosts never wait on anyone');
+  assert.deepEqual((await pending())[0].use, { runs: 2, wrote: 0, last: retried.findLast(e => e.op === 'browser' && !e.action)!.at });
+
   const { id: third } = await (await call('POST', '/api/workspaces', { name: 'Intranet pulls' })).json();
   assert.equal((await call('PUT', `/api/workspaces/${third}`, { owners: [BOB] })).status, 200);
-  verdicts.push({ risk: 'low', flags: [], summary: 'The same portal.', hosts: ['10.9.8.6', 'cdn2.idp.test'] });
-  assert.deepEqual((await (await call('POST', '/grants', { site: 'bobs', workspace: third, reason: 'intranet pulls' }, bob)).json()).check.hosts, ['cdn2.idp.test']);
+  const beforeAsk = checks.length, beforeApproval = (await listed(bob)).hosts;
+  verdicts.push({ profile: portalProfile, hosts: {} });
+  const { id: thirdGrant, profile: thirdProfile } = await (await call('POST', '/grants', { site: 'bobs', workspace: third, reason: 'intranet pulls' }, bob)).json();
+  assert.deepEqual(thirdProfile, portalProfile);
+  const retryInput = JSON.parse(checks.at(-1)!.messages[1].content);
+  assert.deepEqual([retryInput.website.profile, retryInput.evidence, retryInput.unchecked], [null, trace, []], 'asking retries an errored profile from the saved sign-in trace');
+  assert.equal((await call('POST', `/grants/${thirdGrant}`, { approve: true }, bob)).status, 200);
+  assert.deepEqual([(await listed(bob)).hosts, checks.length], [beforeApproval, beforeAsk + 1], 'even a website allowed internal access gains no hosts from a grant');
 
-  // Bob removes his, with his login to it and his grants for it; Carol's stays.
   assert.equal((await call('DELETE', '/logins/sites/bobs', undefined, bob)).status, 200);
   assert.deepEqual([await listed(bob), (await (await call('GET', '/logins', undefined, bob)).json()).some((l: { id: string }) => l.id === 'web:bobs'), await pending(), (await listed(carol)).url],
     [undefined, false, [], 'https://carols.example.com/'], 'his grants and login go with it');
   assert.equal((await call('DELETE', '/logins/sites/bobs', undefined, carol)).status, 200);
-  refused = [];
 });
 
 test('saving a sign-in keeps its login alive until the time given, for those admins grant keepalive', async () => {

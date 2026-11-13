@@ -503,7 +503,7 @@ test('admins keep connections, each a name, a type and its settings', async () =
   assert.throws(() => removeConnection('adb2'), /no connection adb2/);
 });
 
-test("a website is its person's own, by a name of theirs and an https address, several at one host if they like, what it reaches checked, and only its internal addresses an admin's", async () => {
+test("a website is its person's own, by a name of theirs and an https address, several at one host if they like, its settings theirs and all host allowances an admin's", async () => {
   const { addSite, allowHost, removeSite, setSite, websitesOf } = await import('../src/browsers.ts');
   const alice = { email: ALICE, role: 'user' } as never, admin = { email: 'admin@demo.test', role: 'admin' } as never, mine = () => {
     const { added, ...w } = websitesOf(ALICE).erp;
@@ -532,14 +532,18 @@ test("a website is its person's own, by a name of theirs and an https address, s
   assert.ok(!('internal' in mine()));
   // What a website may reach: not what a connection serves, and a wildcard within one registrable domain, the Public Suffix List's
   // private suffixes counting as public; another website's address it may, as one sign-on serves many.
+  for (const host of ['graph.microsoft.com', '*.co.uk', '*.github.io', '*.eu.sso.test', 'erp.test', 'cdn.erp.test'])
+    await assert.rejects(allowHost(alice, 'erp', host), /admins allow website hosts/, host);
+  await assert.rejects(allowHost(alice, 'erp', 'cdn.erp.test', AP), /admins allow website hosts/);
+  assert.deepEqual(mine().hosts, [], 'even its own domain needs an admin allowance');
   for (const [host, why] of [['graph.microsoft.com', /graph\.microsoft\.com is graph's/], ['*.co.uk', /\*\.co\.uk: a wildcard stays within one registrable domain/], ['*.github.io', /\*\.github\.io: a wildcard stays/]])
-    await assert.rejects(allowHost(alice, 'erp', host), why, host);
-  await allowHost(alice, 'erp', '*.eu.sso.test');
-  await allowHost(alice, 'erp', 'erp.test');
-  await assert.rejects(allowHost(alice, 'erp', 'cdn.erp.test', AP), /ap@demo\.test's websites are theirs/);
+    await assert.rejects(allowHost(admin, 'erp', host, ALICE), why, host);
+  await allowHost(admin, 'erp', '*.eu.sso.test', ALICE);
+  await allowHost(admin, 'erp', 'erp.test', ALICE);
   await allowHost(admin, 'erp-sso', 'cdn.erp.test', ALICE);
   assert.deepEqual(websitesOf(ALICE)['erp-sso'].hosts, ['cdn.erp.test'], "an admin allows a host on anyone's");
   assert.deepEqual(mine().hosts, ['*.eu.sso.test', 'erp.test']);
+  assert.deepEqual(mine().checks, Object.fromEntries(['*.eu.sso.test', 'erp.test'].map(h => [h, { verdict: 'pass', why: 'An admin allowed it.' }])));
   removeSite(ALICE, 'erp');
   assert.deepEqual([Object.keys(websitesOf(ALICE)), Object.keys(websitesOf(AP))], [['erp-sso'], ['erp']], "AP's stays");
   assert.throws(() => removeSite(ALICE, 'erp'), /has no website erp/);

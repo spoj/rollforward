@@ -86,6 +86,7 @@ before(async () => {
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch') };
   mkdirSync(env.HOME!);
   delete env.OPENROUTER_API_KEY;
+  delete env.RF_BROWSER_URL;
   const probe = createServer();
   await new Promise(ok => probe.listen(0, '127.0.0.1', ok));
   const port = (probe.address() as { port: number }).port;
@@ -760,11 +761,10 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   await page.click('#pv [data-act=logins-show][data-id=web]');
   assert.match((await page.$$eval('#pv .lsub', rs => rs.map(r => (r as HTMLElement).innerText.replace(/\s+/g, ' ').trim()))).slice(2).join('\n'), /^portal https:\/\/portal\.test\/ · since .+, kept alive until .+ Sign in again Sign out Remove\nReaches cdn\.portal\.test: Its CDN\. Remove\nReaches sso\.idp\.test Remove\nwiki https:\/\/wiki\.test\/start Sign in Remove$/);
   // Signing in, those granted keepalive may tick it, a week ahead unless they set less, and Save login sends it.
-  const saved: unknown[] = [], routes = ['**/logins/web/portal', '**/logins/web/portal/refused', '**/signins/s1/view?drive', '**/signins/s1'];
-  await page.route(routes[0], r => r.fulfill({ json: { id: 's1' } }));
-  await page.route(routes[1], r => r.fulfill({ json: { hosts: [] } }));
-  await page.route(routes[2], r => r.fulfill({ contentType: 'text/html', body: 'live' }));
-  await page.route(routes[3], r => (r.request().method() === 'POST' && saved.push(r.request().postDataJSON()), r.fulfill({ body: 'ok' })));
+  const saved: unknown[] = [], routes = ['**/logins/web/portal', '**/signins/s1/view?drive', '**/signins/s1'];
+  await page.route(routes[0], r => r.fulfill({ json: { id: 's1', expires: new Date(Date.now() + 600_000).toISOString() } }));
+  await page.route(routes[1], r => r.fulfill({ contentType: 'text/html', body: 'live' }));
+  await page.route(routes[2], r => (r.request().method() === 'POST' && saved.push(r.request().postDataJSON()), r.fulfill({ body: 'ok' })));
   await page.click('#pv [data-act=web-signin][data-id=portal]');
   assert.equal(await page.isChecked('#pv #keep'), false, 'off unless ticked');
   await page.check('#pv #keep');
@@ -791,7 +791,7 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   await page.waitForSelector('#pv [data-act=site-remove][data-id=wiki]', { state: 'detached' });
   // Each of its other hosts, with what the server's check said of one it let it reach, its person removes, and it stays refused.
   await page.click('#pv [data-act=host-remove][data-host="cdn.portal.test"]');
-  assert.equal(await page.textContent('#ask p'), "portal's browsers no longer reach it, and the server's check won't let them again; you may allow it again as you sign in.");
+  assert.equal(await page.textContent('#ask p'), "portal's runs no longer reach it, and the server's check won't let them again. Only an admin can allow it again.");
   await page.click('#ask button:text-is("Remove")');
   await page.waitForSelector('#pv [data-act=host-remove][data-host="cdn.portal.test"]', { state: 'detached' });
   const portal = JSON.parse(readFileSync(join(mine, 'websites.json'), 'utf8')).portal;
@@ -815,7 +815,33 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   rmSync(join(mine, 'websites.json'));
 });
 
-test("a request to use a website shows its address, in Waiting on you and the workspace's settings, and no longer which website here it looks like", async () => {
+test('the sign-in countdown expires locally, removes the live browser, disables Save login and never polls refused hosts', async t => {
+  let polls = 0, saves = 0;
+  const routes = ['**/logins/web/expiring', '**/logins/web/expiring/refused', '**/signins/short/view?drive', '**/signins/short'];
+  t.after(async () => {
+    for (const url of routes) await page.unroute(url);
+    await page.mouse.click(5, 5);
+  });
+  await page.route(routes[0], r => r.fulfill({ json: { id: 'short', expires: new Date(Date.now() + 2000).toISOString() } }));
+  await page.route(routes[1], r => (polls++, r.fulfill({ json: { hosts: [] } })));
+  await page.route(routes[2], r => r.fulfill({ contentType: 'text/html', body: 'live' }));
+  await page.route(routes[3], r => (r.request().method() === 'POST' && saves++, r.fulfill({ body: 'ok' })));
+  await page.evaluate(() => {
+    document.querySelector('#pv').innerHTML = '<button data-act="web-signin" data-id="expiring" data-name="expiring">Sign in</button>';
+    document.querySelector('#pv').showModal();
+  });
+  await page.click('#pv [data-act=web-signin]');
+  await page.waitForSelector('#pv iframe');
+  assert.match(await page.textContent('#signin-clock'), /^0:0[12]$/);
+  assert.equal(await page.isDisabled('#pv [data-act=signin-save]'), false);
+  assert.equal(await page.locator('#pv [data-act=allow-host]').count(), 0);
+  await page.locator('#pv').getByText('Sign-in expired. Close this and sign in again.', { exact: true }).waitFor();
+  assert.equal(await page.locator('#pv iframe').count(), 0);
+  assert.equal(await page.isDisabled('#pv [data-act=signin-save]'), true);
+  assert.deepEqual([polls, saves], [0, 0]);
+});
+
+test('a legacy grant check stays readable without inventing a profile or usage, and approval no longer promises any hosts', async () => {
   const rf = join(root, '.rf'), bob = 'bob@demo.test', his = join(rf, 'people', createHash('sha256').update(bob).digest('hex').slice(0, 16));
   mkdirSync(his, { recursive: true });
   writeFileSync(join(his, 'websites.json'), JSON.stringify({ gg: { url: 'https://gg.test/start', hosts: ['sso.gg.test'], writeback: true, added: '2026-11-01T00:00:00Z' } }));
@@ -823,19 +849,60 @@ test("a request to use a website shows its address, in Waiting on you and the wo
     check: { risk: 'low', flags: [], summary: 'A ledger.', title: 'GG', hosts: ['sso.gg.test'], same: 'portal' } } }));
   await page.reload();
   await page.click('[data-act=waiting]');
-  const asks = await page.locator('#pv .wt', { hasText: 'asks to use their gg login' }).innerText();
-  assert.match(asks, /asks to use their gg login, at https:\/\/gg\.test\/start, in larkfield: For the weekly pull\s+Check: low risk\. A ledger\. Approving lets it reach sso\.gg\.test\.\s/);
-  assert.doesNotMatch(asks, /looks like/, "an old check's lookalike");
+  const asks = await page.locator('#pv [data-grant=g1]').innerText();
+  assert.match(asks, /gg[\s\S]*https:\/\/gg\.test\/start[\s\S]*For the weekly pull/);
+  assert.match(asks, /low risk[\s\S]*A ledger\.|A ledger\.[\s\S]*low risk/);
+  assert.doesNotMatch(asks, /looks like|Approving lets it reach|0 runs/, 'legacy checks are evidence, not a new host approval or invented usage');
   await page.mouse.click(5, 5);
   await page.hover('.row.ws');
   await page.click('.row.ws [data-act=workspace-settings]');
-  assert.match(await page.locator('#pv .lsub', { hasText: 'For the weekly pull' }).innerText(), / · gg https:\/\/gg\.test\/start, also sso\.gg\.test · asked: For the weekly pull · low risk/, 'with the other hosts it reaches');
+  const detail = await page.locator('#pv .lsub', { hasText: 'For the weekly pull' }).innerText();
+  assert.match(detail, /gg[\s\S]*https:\/\/gg\.test\/start[\s\S]*For the weekly pull/);
+  assert.match(detail, /A ledger\./, 'the old production check still shows');
+  assert.doesNotMatch(detail, /Approving lets it reach|, also sso\.gg\.test/, 'hosts are no longer part of the grant decision');
   await page.mouse.click(5, 5);
   rmSync(join(rf, 'grants.json'));
   rmSync(join(his, 'websites.json'));
 });
 
-test("Waiting on you has the hosts a run's browser was refused: on your own website, those the server's check left, and for admins anyone's it rated high or found at an internal address, with why; each with Allow", async () => {
+test('grant decisions say who can do what, why an admin is needed, owner concerns and approved usage, without making hosts part of approval', async t => {
+  const workspace = '1b3031035ff6', person = 'bob@demo.test';
+  const base = { workspace, workspaceName: 'larkfield', person, personName: 'Bob', site: 'ledger', url: 'https://ledger.example.test/', at: new Date().toISOString(),
+    reason: 'For the weekly pull', description: 'Runs may do whatever Bob can there, including submitting and approving. The reason is not an enforced limit.', check: undefined };
+  const rows = [
+    { ...base, id: 'general', state: 'pending', profile: { what: 'A shared upload service.', category: 'general', risk: 'medium', flags: ['Files can leave the company.'] }, flags: ['Files can leave the company.'], adminOnly: true, adminWhy: 'This is a general-purpose website.', use: null },
+    { ...base, id: 'high', state: 'pending', profile: { what: 'A company payment system.', category: 'company', risk: 'high', flags: ['Can approve payments.'] }, flags: ['Can approve payments.'], adminOnly: true, adminWhy: 'The website is high risk.', use: null },
+    { ...base, id: 'used', state: 'approved', profile: { what: 'A vendor ledger.', category: 'vendor', risk: 'low', flags: [] }, flags: [], adminOnly: false, adminWhy: '', by: 'admin@demo.test', text: 'For month end.', use: { runs: 4, wrote: 2, last: '2026-11-02T12:00:00Z' } },
+  ];
+  await page.route('**/api', async r => {
+    const res = await r.fetch(), all = await res.json();
+    all.find((w: any) => w.id === workspace).grants = rows;
+    await r.fulfill({ response: res, json: all });
+  });
+  t.after(async () => { await page.unroute('**/api'); await page.reload(); });
+  await page.reload();
+  await page.click('[data-act=waiting]');
+  const general = page.locator('#pv [data-grant=general]'), high = page.locator('#pv [data-grant=high]');
+  assert.match(await general.innerText(), /Bob[\s\S]*larkfield[\s\S]*ledger[\s\S]*ledger\.example\.test/);
+  assert.match(await general.innerText(), /General-purpose website[\s\S]*A shared upload service\.[\s\S]*submitting and approving[\s\S]*Reason: For the weekly pull[\s\S]*Files can leave the company\.[\s\S]*Only an admin can approve/);
+  assert.equal(await general.locator('[data-act=grant-approve]').count(), 1, 'an admin can decide a general-purpose request');
+  await page.evaluate(() => { me.role = 'user'; renderPv(); });
+  for (const row of [general, high]) {
+    assert.equal(await row.locator('[data-act=grant-approve]').count(), 0, 'workspace ownership does not authorize general-purpose or high-risk approval');
+    assert.equal(await row.locator('[data-act=grant-deny]').count(), 1, 'an owner may still deny it');
+  }
+  await page.evaluate(() => { me.role = 'admin'; renderPv(); });
+  await page.mouse.click(5, 5);
+  await page.evaluate(id => { location.hash = `#/${id}`; }, workspace);
+  await page.evaluate(async () => { await refresh(); openWorkspaceSettings(); });
+  const used = page.locator('#pv [data-grant=used]');
+  assert.match(await used.innerText(), /Vendor system[\s\S]*A vendor ledger\.[\s\S]*For month end\.[\s\S]*Opened in 4 runs · 2 runs wrote · last used/);
+  assert.equal(await used.locator('[data-act=grant-revoke]').count(), 1);
+  assert.doesNotMatch(await used.innerText(), /Approving lets|also |undefined|NaN/);
+  await page.mouse.click(5, 5);
+});
+
+test('only admins see Allow hosts in Waiting, for high and internal hosts, never in a sign-in', async () => {
   const at = new Date().toISOString(), allowed: [string, { host: string }][] = [];
   const refused = [{ at, run: 1, site: 'gg', login: 'bob@demo.test', hosts: ['files.example.net'], why: { 'files.example.net': 'A file-sharing site.' } },
     { at, run: 2, site: 'portal', login: 'admin@demo.test', hosts: ['sso.other.test'], why: {} }];
@@ -850,6 +917,9 @@ test("Waiting on you has the hosts a run's browser was refused: on your own webs
   await page.reload();
   await page.click('[data-act=waiting]');
   const lines = page.locator('#pv .wt', { hasText: 'was refused' });
+  await page.evaluate(() => { me.role = 'user'; renderPv(); });
+  assert.equal(await page.locator('#pv [data-act=allow-host]').count(), 0, 'a person never gets an Allow action, even if a cached response contains refused hosts');
+  await page.evaluate(() => { me.role = 'admin'; renderPv(); });
   assert.match(await lines.nth(0).innerText(), /: run 1's browser on Bob( <bob@demo\.test>)?'s gg was refused files\.example\.net A file-sharing site\. Allow$/);
   assert.match(await lines.nth(1).innerText(), /: run 2's browser on portal was refused sso\.other\.test Allow$/);
   await lines.nth(0).locator('[data-act=allow-host]').click();

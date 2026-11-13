@@ -13,6 +13,10 @@ const root = mkdtempSync(join(tmpdir(), 'rf-browser-end-'));
 let Browsers: typeof RunBrowsers, opening = Promise.resolve(), closing = Promise.resolve(), screenshot = Promise.resolve();
 let opened = Promise.withResolvers<void>(), closed = Promise.withResolvers<void>(), shot = Promise.withResolvers<void>();
 const service = createServer(async (req, res) => {
+  if (req.url!.startsWith('/blocked?')) {
+    const hosts = new URL(req.url!, 'http://browser.test').searchParams.getAll('host');
+    return void res.end(JSON.stringify(Object.fromEntries(hosts.map(h => [h, false]))));
+  }
   if (req.method === 'POST') {
     opened.resolve();
     await opening;
