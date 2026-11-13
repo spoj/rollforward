@@ -1,15 +1,16 @@
-import { appendFileSync, chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { basename, extname, join, posix, sep } from 'node:path';
-import { changes, tree } from './system.ts';
+import { appendLine, changes, readLines, tree } from './system.ts';
 import { commit, pack, type Who } from './git.ts';
 
 // Paths in the screen are /-separated on every system.
 const normalize = posix.normalize;
 
-// Writes a read-only file whole, by renaming a temporary file into place. Windows refuses to rename over a read-only file, so there
-// the old one is made writable first.
+// Writes a read-only file whole, by renaming a temporary file into place, the one a write cut short left removed first. Windows
+// refuses to rename over a read-only file, so there the old one is made writable first.
 export function replaceReadOnly(path: string, data: string | Buffer) {
+  rmSync(path + '.tmp', { force: true });
   writeFileSync(path + '.tmp', data, { mode: 0o444 });
   if (process.platform === 'win32' && existsSync(path)) chmodSync(path, 0o644);
   renameSync(path + '.tmp', path);
@@ -42,7 +43,7 @@ const HOLE = ['instance.json', 'screen.json', 'log.jsonl'];
 
 // Removes what a run may have left anything in, by its name's bytes, as a name needn't be UTF-8, and never through a link: a folder
 // it made unreadable or unwritable is the server's own, so is opened up first.
-function wipe(path: Buffer) {
+export function wipe(path: Buffer) {
   const st = lstatSync(path, { throwIfNoEntry: false });
   if (!st) return;
   if (!st.isDirectory()) return rmSync(path, { force: true });
@@ -119,12 +120,18 @@ export function safeName(s: string): string {
   return name;
 }
 
-// Keeps a person's file in folder/ under dir, read-only, under its own name made unique; answers its path there.
+// Keeps a person's file in folder/ under dir, read-only, under its own name made unique, its stem cut short where the name would
+// pass the 255 bytes a file's name holds; answers its path there.
 export function keep(dir: string, folder: string, name: string, tmp: string): string {
   const clean = safeName(name), ext = extname(clean), stem = clean.slice(0, clean.length - ext.length);
+  const fit = (suffix: string) => {
+    let s = '';
+    for (const c of stem) if (Buffer.byteLength(s + c + suffix + ext) <= 255) s += c; else break;
+    return `${folder}/${s}${suffix}${ext}`;
+  };
   mkdirSync(join(dir, folder), { recursive: true });
-  let file = `${folder}/${clean}`;
-  for (let n = 2; file === 'upload/attachments' || existsSync(join(dir, file)); n++) file = `${folder}/${stem}_${n}${ext}`;
+  let file = fit('');
+  for (let n = 2; file === 'upload/attachments' || existsSync(join(dir, file)); n++) file = fit(`_${n}`);
   renameSync(tmp, join(dir, file));
   chmodSync(join(dir, file), 0o444);
   return file;
@@ -190,7 +197,7 @@ export class Instance {
     this.id = basename(dir);
     const ws = join(dir, 'screen.json'), log = join(dir, 'log.jsonl');
     this.doc = existsSync(ws) ? JSON.parse(readFileSync(ws, 'utf8')) : { rev: 0, status: 'open', items: [] };
-    this.log = existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : [];
+    this.log = readLines(log);
     // Its log is written first as it's deleted, so a restart that cut a deletion finds it deleted (waker.ts recover()).
     if (this.hole) this.doc = { rev: this.doc.rev, status: 'deleted', items: [] };
   }
@@ -204,8 +211,8 @@ export class Instance {
     // Nothing more is said of a deleted instance, such as by a run its deletion cut, as it ends.
     if (this.hole) return { seq: 0, at: new Date().toISOString(), by, op, ...fields };
     const e = { seq: this.log.length + 1, at: new Date().toISOString(), by, op, ...fields };
+    appendLine(join(this.dir, 'log.jsonl'), JSON.stringify(e));
     this.log.push(e);
-    appendFileSync(join(this.dir, 'log.jsonl'), JSON.stringify(e) + '\n');
     changes.emit('change', this.id);
     return e;
   }
@@ -240,12 +247,12 @@ export class Instance {
   }
 
   // Whether a comment waits no more: the agent withdrew it; a proposal was approved (signoff) or rejected; a question has a person's
-  // reply under it, and any other comment anyone's. An ask from before questions and proposals, `ask: true`, takes any of these, its
-  // agent's reply withdrawing it; and from before replies named what they answer, any later word in its thread.
+  // reply under it, and any other comment anyone's; a close accepted it. An ask from before questions and proposals, `ask: true`,
+  // takes any of these, its agent's reply withdrawing it; and from before replies named what they answer, any later word in its thread.
   answered(c: Entry): boolean {
-    return this.log.some(e => e.seq > c.seq && e.thread === c.thread && (e.on === c.seq ? ['signoff', 'reject', 'withdraw'].includes(e.op)
+    return this.log.some(e => e.seq > c.seq && (e.op === 'close' && (e.accepted as string[] | undefined)?.includes(`c${c.seq}`) || e.thread === c.thread && (e.on === c.seq ? ['signoff', 'reject', 'withdraw'].includes(e.op)
       : e.parent === c.seq ? e.op === 'comment' && c.ask !== 'proposal' && !(c.ask === 'question' && e.by === 'agent')
-      : e.parent === undefined && e.on === undefined && ['comment', 'signoff', 'resolve'].includes(e.op)));
+      : e.parent === undefined && e.on === undefined && ['comment', 'signoff', 'resolve'].includes(e.op))));
   }
 
   // The agent's asks still waiting on people: those no one answered.

@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fstatSync, ftruncateSync, mkdirSync, openSync, readFileSync, renameSync, truncateSync, writeFileSync } from 'node:fs';
 import { BlockList } from 'node:net';
 import { join } from 'node:path';
 
@@ -35,11 +35,39 @@ export function readJson<T>(name: string, fallback: T): T {
   return JSON.parse(existsSync(p) ? readFileSync(p, 'utf8') : JSON.stringify(fallback), (_, v) => v?.constructor === Object ? Object.setPrototypeOf(v, null) : v);
 }
 
+// Writes a file whole, by renaming a temporary file into place, so a write cut short leaves the old one.
+export function replaceFile(path: string, data: string | Buffer) {
+  writeFileSync(path + '.tmp', data, { mode: 0o600 });
+  renameSync(path + '.tmp', path);
+}
+
 export function writeJson(name: string, data: unknown) {
-  const p = join(dir, name);
-  writeFileSync(p + '.tmp', JSON.stringify(data, null, 1), { mode: 0o600 });
-  renameSync(p + '.tmp', p);
+  replaceFile(join(dir, name), JSON.stringify(data, null, 1));
   changes.emit('change', 'tree');
+}
+
+// The append-only logs of JSON lines: an instance's, a series' notes and the system's. An append a write error cut short, as on a
+// full disk, is taken back; a last line a kill or a power cut left unended is dropped as the log is next read, and the server says so.
+export function readLines<T>(path: string): T[] {
+  if (!existsSync(path)) return [];
+  const all = readFileSync(path), end = all.lastIndexOf(10) + 1;
+  if (end < all.length) {
+    console.error(`${path}: dropped a torn last line, ${all.length - end} bytes: ${all.subarray(end, end + 200).toString()}`);
+    truncateSync(path, end);
+  }
+  return all.subarray(0, end).toString().split('\n').filter(Boolean).map(l => JSON.parse(l));
+}
+
+export function appendLine(path: string, line: string, mode?: number) {
+  const fd = openSync(path, 'a', mode), size = fstatSync(fd).size;
+  try {
+    appendFileSync(fd, line + '\n');
+  } catch (e) {
+    ftruncateSync(fd, size);
+    throw e;
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export const rfDir = () => dir;
@@ -50,8 +78,9 @@ const UNLOGGED = ['key', 'header', 'token', 'secret', 'password', 'data', 'files
 let acts = 0;
 export function act(by: string, fields: Record<string, unknown>) {
   const p = join(dir, 'log.jsonl');
-  acts ||= existsSync(p) ? readFileSync(p, 'utf8').split('\n').length - 1 : 0;
-  appendFileSync(p, JSON.stringify({ ...fields, seq: ++acts, at: new Date().toISOString(), by }, (k, v) => UNLOGGED.includes(k) ? undefined : v) + '\n', { mode: 0o600 });
+  acts ||= readLines(p).length;
+  appendLine(p, JSON.stringify({ ...fields, seq: acts + 1, at: new Date().toISOString(), by }, (k, v) => UNLOGGED.includes(k) ? undefined : v), 0o600);
+  acts++;
 }
 
 // What each person has seen of each instance, the last seq of its log they viewed, and since when, before which nothing is new to
@@ -69,7 +98,7 @@ export function see(email: string, id: string, seq: number) {
   if (s.at[id] === seq) return;
   s.at[id] = seq;
   mkdirSync(join(dir, 'seen'), { recursive: true });
-  writeFileSync(join(dir, 'seen', `${email}.json`), JSON.stringify(s));
+  replaceFile(join(dir, 'seen', `${email}.json`), JSON.stringify(s));
 }
 
 // A 32-byte key. Where systemd runs the server, it's the credential of that name (LoadCredentialEncrypted=, sealed to the machine's

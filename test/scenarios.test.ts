@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -25,7 +25,7 @@ let model: ReturnType<typeof createServer>, proc: ChildProcess, base = '', admin
 // The browser service, a stand-in: the browsers it opens are b1, b2…, each with a person in control and a live view, and a websocket
 // to one answers with the path it reached. Their pages asked for the addresses in `refused`, which they don't reach; what else they
 // were told, as hosts allowed, is in `told`.
-let refused: string[] = [], holdCdp = false, cdpOpened = 0, cdpClosed = 0;
+let refused: string[] = [], holdCdp = false, holdView = false, cdpOpened = 0, cdpClosed = 0;
 let browserLog: { method: string; url: string; status: number; dest?: string; from?: string }[] = [];
 let browserState: { cookies: { domain: string; name: string; value: string }[]; origins: { origin: string; localStorage: { name: string; value: string }[] }[] } = { cookies: [], origins: [] };
 const told: string[] = [], openings: { site: { hosts: string[]; open?: boolean; public?: boolean; except?: string[]; start_url?: string }; state?: unknown; ttl_s: number }[] = [];
@@ -45,7 +45,8 @@ const service = createServer(async (req, res) => {
     socket.on('end', () => { cdpClosed++; socket.destroy(); });
     socket.resume();
     socket.write('HTTP/1.1 101 Switching Protocols\r\nconnection: upgrade\r\nupgrade: websocket\r\n\r\n');
-  } else socket.end(`HTTP/1.1 101 Switching Protocols\r\n\r\nservice got ${req.url}`);
+  } else if (holdView && req.url!.includes('/view/')) socket.on('error', () => {}).write('HTTP/1.1 101 Switching Protocols\r\nconnection: upgrade\r\nupgrade: websocket\r\n\r\n');
+  else socket.end(`HTTP/1.1 101 Switching Protocols\r\n\r\nservice got ${req.url}`);
 });
 
 const text = (c: unknown): string => typeof c === 'string' ? c : (c as { type: string; text?: string; content?: unknown }[]).map(b => b.text ?? (b.content === undefined ? '' : text(b.content))).join('');
@@ -550,6 +551,10 @@ test("a start removes its data root's abandoned scratch, for active and idle Pis
   mkdirSync(locked);
   writeFileSync(join(locked, 'file'), 'unreadable');
   chmodSync(locked, 0);
+  // A folder an unzip named in GBK, which reads back as another name.
+  const gbk = Buffer.concat([Buffer.from(join(scratch, tokens[1], 'tmp') + '/'), Buffer.from([0xb7, 0xa2])]);
+  mkdirSync(Buffer.concat([gbk, Buffer.from('/x')]), { recursive: true });
+  chmodSync(gbk, 0o500);
   scripts.push({ bash: [], report: 'Carried on.', saw: [] });
   await cut();
   for (const token of tokens) assert.ok(!existsSync(join(scratch, token)), `old scratch ${token} remains`);
@@ -558,6 +563,78 @@ test("a start removes its data root's abandoned scratch, for active and idle Pis
   await runs(running, 2);
   const records = readdirSync(join(root, '.rf', 'runs'));
   assert.ok(records.length, 'a run without index sources still has an ownership folder');
+});
+
+test("a run learns nothing of an instance in another workspace by acting on it, its runner, threads, items or label: each act is refused first", async () => {
+  const carol = await login('carol@demo.test');
+  const { id: secret } = await (await call('POST', '/api/workspaces', { name: 'Secret' })).json();
+  assert.equal((await call('PUT', `/api/workspaces/${secret}`, { members: ['carol@demo.test'] })).status, 200);
+  const { id: payroll } = await (await call('POST', '/api/series', { workspace: secret, name: 'Payroll' })).json();
+  const { id: open } = await (await call('POST', `/api/series/${payroll}`, { label: '2026-11 layoffs', quiet: true }, carol)).json();
+  assert.equal((await call('POST', `/api/instances/${open}/comment`, { text: 'List of names', quiet: true }, carol)).status, 200);
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Probing' })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Probe' })).json();
+  const probe = (action: string, body: object) => `curl -s -m 5 -X POST -H "authorization: Bearer $RF_TOKEN" "$RF_URL/api/instances/${open}/${action}" -d '${JSON.stringify(body)}'; echo`;
+  const s: Script = { bash: [probe('comment', { text: 'x', to: 'nobody@demo.test' }), probe('comment', { text: 'x', thread: 'c99' }), probe('comment', { text: 'x', item: 'zzz' }), probe('correct', {})], report: 'Probed.', saw: [] };
+  scripts.push(s);
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
+  await runs(id, 1);
+  assert.deepEqual(s.saw.map(x => x.trim()), Array(4).fill('that instance is in another workspace: you can read it if it lets you, not act there'));
+});
+
+test("a run's cancelling a person's wake is recorded in the system's log, with the wake, the run's instance and its number", async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Cancelling' })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Payroll' })).json();
+  const text = 'Payroll cut-off: collect the timesheets', at = new Date(Date.now() + 30 * 86400e3).toISOString();
+  assert.equal((await call('PUT', `/api/wakes/${series}`, { at, label: '2026-12', text })).status, 200);
+  const s: Script = { bash: [() => `rf wake --cancel ${/Pending wakes: (\w+)/.exec(s.prompt!)![1]} 2>&1`], report: 'Cancelled.', saw: [] };
+  scripts.push(s);
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
+  await runs(id, 1);
+  const wake = /Pending wakes: (\w+)/.exec(s.prompt!)![1];
+  const acts = readFileSync(join(root, '.rf', 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+  assert.deepEqual(acts.filter(a => a.path === `/api/wakes/${wake}`).map(a => [a.by, a.method, a.wake.text, a.wake.from, a.inst, a.run]), [['agent', 'DELETE', text, ADMIN, id, 1]]);
+});
+
+test("a proposal still waiting as its instance closes is accepted, so a duplicate neither waits on it nor takes its approval", async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Accepted' })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Pack' })).json();
+  scripts.push({ bash: ['rf propose "Send the pack to the bank." 2>&1'], report: 'Proposed.', saw: [] });
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
+  const thread = (await runs(id, 1)).find(e => e.ask === 'proposal')!.thread;
+  assert.equal((await call('POST', `/api/instances/${id}/close`)).status, 200);
+  const { id: copy } = await (await call('POST', `/api/instances/${id}/duplicate?as=2026-12`, { logins: [] })).json();
+  const { waiting, log } = await (await call('GET', `/api/instances/${copy}`)).json();
+  assert.deepEqual([waiting, log.find((e: { op: string }) => e.op === 'close').accepted], [[], [thread]]);
+  assert.ok(!(await (await call('GET', '/api/status')).json()).asks.some((a: { path: string }) => a.path.startsWith('Accepted/')));
+  const refused = await call('POST', `/api/instances/${copy}/signoff`, { thread });
+  assert.deepEqual([refused.status, await refused.text()], [409, `${thread} was accepted as done at the close, by ${ADMIN}`]);
+});
+
+test("a run's end removes its scratch, though it left a folder there named in bytes that aren't UTF-8 and can't be written", async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Unzipped' })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Archive' })).json();
+  const scratch = join(tmp, 'scratch', 'runs');
+  mkdirSync(scratch, { recursive: true });
+  const before = readdirSync(scratch), s: Script = { bash: [() => { s.fail = 'The model refused.'; return "mkdir -p \"/tmp/$(printf '\\267\\242')/x\" && chmod 500 \"/tmp/$(printf '\\267\\242')\" && ls /tmp"; }], report: 'Never said.', saw: [] };
+  scripts.push(s);
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
+  await runs(id, 1);
+  assert.match(s.saw[0], /\?\?|\ufffd/, 'the folder was made');
+  await until('the scratch removed', () => readdirSync(scratch).every(t => before.includes(t)));
+});
+
+test("a start drops the torn last line a kill left in an instance's log or the system's, saying so, and starts", async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Torn' })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Logs' })).json();
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [], quiet: true })).json();
+  const log = join(root, 'instances', id, 'log.jsonl'), system = join(root, '.rf', 'log.jsonl'), was = readFileSync(log, 'utf8');
+  appendFileSync(log, '{"seq":99,"by":"ser');
+  appendFileSync(system, '{"seq":99,"by":"ser');
+  await cut();
+  assert.equal(readFileSync(log, 'utf8'), was);
+  assert.equal((await call('GET', `/api/instances/${id}`)).status, 200);
+  assert.ok(readFileSync(system, 'utf8').split('\n').filter(Boolean).every(l => JSON.parse(l)));
 });
 
 test('a cut anywhere leaves the instance right, its log whole, and the next run carries on: mid model call, mid tool call, mid commit and mid upload', async () => {
@@ -823,6 +900,34 @@ test("whoever sees an instance watches its run's browser live from the page, the
   const { log, run } = await (await call('GET', `/api/instances/${id}`, undefined, bob)).json();
   assert.deepEqual([log.find((e: { op: string }) => e.op === 'interrupt').by, log.filter((e: { op: string }) => e.op === 'browser').map((e: { by: string; site: string; action?: string }) => [e.by, e.site, e.action]), run],
     [ADMIN, [[ADMIN, 'portal', 'drive'], ['server', 'portal', undefined]], null], "the admin's control and interrupt logged as theirs, and the browser gone");
+});
+
+test("someone watching a run's browser live is cut off once they may no longer see its instance", async t => {
+  holdView = true;
+  t.after(() => { holdView = false; });
+  assert.equal((await call('POST', '/logins/sites', { name: 'watched', url: 'https://portal.example.com/' })).status, 200);
+  const { id: signIn } = await (await call('POST', '/logins/web/watched', {})).json();
+  assert.equal((await call('POST', `/signins/${signIn}`)).status, 200);
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Watched' })).json();
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB] })).status, 200);
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Portal' })).json();
+  assert.equal((await (await call('POST', '/grants', { site: 'watched', workspace: ws, reason: 'watching' })).json()).state, 'approved');
+  scripts.push({ bash: ['curl -s -m 5 -H "connection: upgrade" -H "upgrade: websocket" "$RF_BROWSERS/watched"; touch working/opened; sleep 120'], report: 'Never said.', saw: [] });
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: ['web:watched'] })).json();
+  try {
+    await until('the browser', () => existsSync(join(root, 'instances', id, 'working', 'opened')));
+    let got = '', closed = false;
+    connect(Number(new URL(base).port), '127.0.0.1').on('data', d => { got += d; }).on('close', () => { closed = true; })
+      .write(`GET /runs/${id}/watched/view/watch HTTP/1.1\r\nhost: x\r\nconnection: upgrade\r\nupgrade: websocket\r\ncookie: ${bob}\r\norigin: ${base}\r\n\r\n`);
+    await until('the live view', () => got.startsWith('HTTP/1.1 101'));
+    await new Promise(r => setTimeout(r, 500));
+    assert.equal(closed, false, 'it lasts while bob may watch');
+    assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [] })).status, 200);
+    await until('the live view cut', () => closed);
+  } finally {
+    await call('POST', `/api/instances/${id}/interrupt`);
+    await runs(id, 1);
+  }
 });
 
 test('unticking, removing, signing out or revoking a website closes a going run\'s browser and its open CDP pipe', async t => {

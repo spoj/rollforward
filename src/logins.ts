@@ -1,8 +1,8 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { HttpError, type Instance } from './store.ts';
-import { canSee, changes, key, readJson, rfDir, tree } from './system.ts';
+import { canSee, changes, key, readJson, replaceFile, rfDir, tree } from './system.ts';
 import { asPerson } from './auth.ts';
 import service from './connections/service.ts';
 
@@ -34,7 +34,7 @@ export function saveLogin(email: string, login: Login, secret?: string) {
   const was = logins(email).find(l => l.id === login.id);
   mkdirSync(personDir(email), { recursive: true, mode: 0o700 });
   if (secret !== undefined) seal(email, login.id, secret);
-  writeFileSync(list(email), JSON.stringify([...logins(email).filter(l => l.id !== login.id), login], null, 1), { mode: 0o600 });
+  replaceFile(list(email), JSON.stringify([...logins(email).filter(l => l.id !== login.id), login], null, 1));
   if ((!was || was.expired) && !login.expired) changes.emit('login', email, login.id, login.name);
 }
 
@@ -42,7 +42,7 @@ export function saveLogin(email: string, login: Login, secret?: string) {
 export function seal(email: string, id: string, secret: string) {
   const iv = randomBytes(12), c = createCipheriv('aes-256-gcm', key('seal.key'), iv).setAAD(Buffer.from(`${email}\n${id}`));
   const body = Buffer.concat([c.update(secret, 'utf8'), c.final()]);
-  writeFileSync(join(personDir(email), `${id}.sealed`), Buffer.concat([iv, c.getAuthTag(), body]), { mode: 0o600 });
+  replaceFile(join(personDir(email), `${id}.sealed`), Buffer.concat([iv, c.getAuthTag(), body]));
 }
 
 export function secret(email: string, id: string): string {
@@ -56,7 +56,7 @@ export function secret(email: string, id: string): string {
 export function signOut(email: string, id: string) {
   if (!logins(email).some(l => l.id === id)) throw new HttpError(404, `you have no login ${id}`);
   for (const s of [id, `${id}.header`]) rmSync(join(personDir(email), `${s}.sealed`), { force: true });
-  writeFileSync(list(email), JSON.stringify(logins(email).filter(l => l.id !== id), null, 1), { mode: 0o600 });
+  replaceFile(list(email), JSON.stringify(logins(email).filter(l => l.id !== id), null, 1));
 }
 
 export function forgetLogins(email: string) {

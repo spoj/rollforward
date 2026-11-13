@@ -81,7 +81,7 @@ exec "${bwrap}" "$@"
   await new Promise(ok => probe.close(ok));
   base = `http://127.0.0.1:${port}`;
   entra = await idp();
-  Object.assign(env, entra.env(base), { RF_ADMINS: adminEmail });
+  Object.assign(env, entra.env(base), { RF_ADMINS: adminEmail, RF_MAX_UPLOAD_MB: '5' });
   proc = spawn(process.execPath, [join(app, 'src', 'server.ts'), root, String(port)], { env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'inherit'] });
   await new Promise((ok, fail) => {
     proc.stdout!.on('data', d => String(d).includes('rollforward on') && ok(null));
@@ -185,6 +185,26 @@ test('uploads and comment attachments are refused if their person loses workspac
     assert.deepEqual(readdirSync(join(root, 'instances', id, 'upload')), []);
     assert.deepEqual((await json(`/api/instances/${id}`)).log.map((e: { op: string }) => e.op), ['create']);
   });
+});
+
+test('a JSON body holds 10 MB at most, and an upload, attachment or note file RF_MAX_UPLOAD_MB, each refused with 413 as it comes, before it ends', async () => {
+  const held = (size: number) => {
+    let sent = false;
+    return new ReadableStream({ async pull(c) { if (!sent) { sent = true; c.enqueue(new Uint8Array(size).fill(0x20)); } else await new Promise(() => {}); } });
+  };
+  const send = async (path: string, size: number) => {
+    const r = await fetch(base + path, { method: 'POST', body: held(size), duplex: 'half', headers: { cookie: admin } } as RequestInit);
+    return [r.status, await r.text()];
+  };
+  assert.deepEqual(await send('/api/workspaces', 10 * 2 ** 20 + 1), [413, 'a request body holds 10 MB at most']);
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Capped' }))).json();
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'Files' }))).json();
+  const { id } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'big', quiet: true }))).json();
+  for (const path of [`/api/instances/${id}/upload?name=big.bin&quiet`, `/api/instances/${id}/attach?name=big.bin`, `/api/series/${sid}/attach?name=big.bin`])
+    assert.deepEqual(await send(path, 5 * 2 ** 20 + 1), [413, 'an upload holds 5 MB at most'], path);
+  assert.deepEqual(readdirSync(join(root, '.tmp')), []);
+  assert.deepEqual(readdirSync(join(root, 'instances', id, 'upload')), []);
+  assert.equal((await call('POST', `/api/instances/${id}/upload?name=fits.bin&quiet`, new Uint8Array(5 * 2 ** 20))).status, 200);
 });
 
 test('duplicate copies a closed instance into an open one, once', async () => {
@@ -320,6 +340,8 @@ test('a workspace can be made; a workspace or a series is archived and restored,
   const shut = (name: string) => [409, `${name} is archived: nothing in it changes until it's restored`];
   assert.deepEqual(await refused('POST', '/api/series', JSON.stringify({ workspace: id, name: 'Payroll' })), shut('Acme'));
   assert.deepEqual(await refused('PUT', `/api/workspaces/${id}`, JSON.stringify({ name: 'Acme 2', members: [bob] })), shut('Acme'));
+  assert.deepEqual(await refused('POST', '/api/series', JSON.stringify({ workspace: id, name: 'Payroll', archived: false })), shut('Acme'), 'restoring is archived: false alone');
+  assert.deepEqual(await refused('PUT', `/api/workspaces/${id}`, JSON.stringify({ name: 'Acme 2', archived: false })), shut('Acme'));
   assert.equal((await call('PUT', `/api/workspaces/${id}`, JSON.stringify({ archived: false }))).status, 200);
   assert.equal((await acme()).archived, false);
 
@@ -331,7 +353,10 @@ test('a workspace can be made; a workspace or a series is archived and restored,
   assert.deepEqual(await refused('POST', `${await at(renamed, '2026-09-06', 'rename')}?as=x`), shut(renamed));
   assert.deepEqual(await refused('POST', await at(renamed), '{"label":"2026-09-13"}'), shut(renamed));
   assert.deepEqual(await refused('PUT', await at(renamed), '{"name":"x"}'), shut(renamed));
+  for (const [method, path, body] of [['POST', await at(renamed), '{"label":"2026-09-13","archived":false}'], ['PUT', await at(renamed), '{"name":"x","share":true,"archived":false}'], ['POST', `${await at(renamed, '2026-09-06', 'comment')}`, '{"text":"x","archived":false}']])
+    assert.deepEqual(await refused(method, path, body), shut(renamed), `${method} ${body}`);
   assert.equal((await call('GET', await at(renamed, '2026-09-06'))).status, 200);
+  assert.equal((await call('PUT', await at(renamed), JSON.stringify({ archived: false }))).status, 200);
   assert.equal((await put(renamed, series, false)).status, 200);
   assert.equal((await shown(series)).archived, false);
 });
@@ -346,6 +371,20 @@ test("files: an instance's own download as attachments, as rf pull fetches them;
   assert.equal((await call('GET', file('log.jsonl'))).status, 200);
   for (const rel of ['upload/../../screen.json', '../x/log.jsonl', './log.jsonl'])
     assert.equal((await call('GET', file(rel))).status, 400, rel);
+});
+
+test("rf pull's listing leaves out a folder whose name isn't UTF-8, as unzipping an old archive leaves, and lists the rest", async () => {
+  const d = await dir(series, '2026-08-30'), gbk = Buffer.concat([Buffer.from(join(d, 'working') + '/'), Buffer.from([0xb7, 0xa2, 0xc6, 0xb1])]);
+  mkdirSync(gbk);
+  writeFileSync(Buffer.concat([gbk, Buffer.from('/invoice.csv')]), 'x');
+  try {
+    const r = await call('GET', `/api/files?path=${encodeURIComponent(`larkfield/${series}/2026-08-30`)}`);
+    assert.equal(r.status, 200);
+    const paths = (await r.json()).map((f: { path: string }) => f.path);
+    assert.ok(paths.includes(`larkfield/${series}/2026-08-30/upload/Larkfield AR aging 083026.csv`) && !paths.some((p: string) => p.includes('invoice.csv')));
+  } finally {
+    rmSync(gbk, { recursive: true });
+  }
 });
 
 test("a run's links, FIFOs and folders in working/ and session/ are never followed or read", async () => {
@@ -775,6 +814,23 @@ test("a quiet act starts no run, which the next run reads: an instance made quie
   assert.equal(after.find(e => e.op === 'run')!.upto, after.findLast(e => e.op === 'comment')!.seq, 'the next act starts a run, which reads all before it');
 });
 
+test("a comment's attachment is its person's act: recorded in the system's log and committed at once in their name, never in the next commit's", async () => {
+  const b = sessionOf(await login(bob))!;
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Attributed' }))).json();
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ members: [bob] }))).status, 200);
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'Rec' }))).json();
+  const { id } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: '2026-12', quiet: true }))).json(), path = `/api/instances/${id}`;
+  const attached = await call('POST', `${path}/attach?name=${encodeURIComponent('bank details.txt')}`, 'IBAN GB00 EVIL 0000 0000', b);
+  assert.equal(attached.status, 200);
+  const { file } = await attached.json();
+  const acts = readFileSync(join(root, '.rf', 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+  assert.deepEqual(acts.filter(a => a.op === 'attach' && a.instance === id).map(a => [a.by, a.file]), [[bob, file]]);
+  assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ text: 'Inputs come tomorrow.', quiet: true }))).status, 200);
+  await new Promise(r => setTimeout(r, 2500));
+  const git = (...a: string[]) => execFileSync('git', ['-C', join(root, 'instances', id), ...a], { encoding: 'utf8' }).trim();
+  assert.deepEqual(git('log', '--format=%ae %s', '--', file).split('\n'), [`${bob} Attach ${file}`]);
+});
+
 test('skills are pushed by admins and those granted publish, each push a version live at once, and rolled back by pushing an earlier one', async () => {
   const b = sessionOf(await login(bob))!, push = (files: object, cookie = admin) => call('POST', '/skills/tool/versions', JSON.stringify(files), cookie);
   assert.equal((await push({ files: filesOf(join(standIns, 'tool')) }, b)).status, 403, 'a user may not push');
@@ -975,6 +1031,21 @@ test("rf pull writes no name git takes for a .git, as a server might list one", 
   server.close();
   assert.deepEqual(readdirSync(dest, { recursive: true }), ['ok.txt'], out);
   assert.equal(out.match(/^skipped X\/.+: it can't be a file's name here$/gm)?.length, 3, out);
+});
+
+test("rf pull --delete on Windows or macOS, whose disks ignore case, keeps a file renamed only in case, as it fetched it into the old name", async () => {
+  const { id: workspace } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Cased' }))).json();
+  const { id: s } = await (await call('POST', '/api/series', JSON.stringify({ workspace, name: 'Rec' }))).json();
+  const { id } = await (await call('POST', `/api/series/${s}`, JSON.stringify({ label: 'jan', quiet: true }))).json();
+  const pullOn = (platform: string, dest: string) => execFileSync(process.execPath, ['--import', `data:text/javascript,Object.defineProperty(process, 'platform', { value: '${platform}' })`,
+    join(app, 'src', 'rf-people.ts'), 'pull', '--delete', 'Cased/Rec/', dest], { env: { ...process.env, HOME: home }, encoding: 'utf8' });
+  const [mac, linux] = [join(tmp, 'pull-mac'), join(tmp, 'pull-linux')];
+  for (const dest of [mac, linux]) pullOn('linux', dest);
+  assert.equal((await call('POST', `/api/instances/${id}/rename?as=Jan`)).status, 200);
+  pullOn('darwin', mac);
+  pullOn('linux', linux);
+  assert.ok(existsSync(join(mac, 'jan', 'log.jsonl')), 'kept where the disk ignores case');
+  assert.ok(!existsSync(join(linux, 'jan')), 'deleted where it does not');
 });
 
 test("rf alone lists its commands and rf help COMMAND gives one's usage; every read takes --json; a failure is one line, with exit code 1, and a command used wrongly prints its usage, with exit code 2", async () => {

@@ -91,10 +91,25 @@ for (const dir of [tmpDir, previews]) {
   mkdirSync(dir);
 }
 
+// A request's body, JSON or a screen, of 10 MB at most, refused as it comes past that.
 async function body(req: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(c as Buffer);
+  let size = 0;
+  for await (const c of req as AsyncIterable<Buffer>) {
+    if ((size += c.length) > 10 * 2 ** 20) throw new HttpError(413, 'a request body holds 10 MB at most');
+    chunks.push(c);
+  }
   return Buffer.concat(chunks);
+}
+
+// An upload, an attachment or a note's file, as it streams to disk, refused as it comes past RF_MAX_UPLOAD_MB.
+const maxUpload = Number(process.env.RF_MAX_UPLOAD_MB ?? 2048);
+async function* capped(chunks: AsyncIterable<Buffer>) {
+  let size = 0;
+  for await (const c of chunks) {
+    if ((size += c.length) > maxUpload * 2 ** 20) throw new HttpError(413, `an upload holds ${maxUpload} MB at most`);
+    yield c;
+  }
 }
 
 function send(res: ServerResponse, status: number, data: unknown) {
@@ -353,7 +368,7 @@ function trace(inst: Instance) {
 
 // Files by hand, never into a link: a run may have made links anywhere in working/. Nothing named as git takes a .git, such as the
 // instance's history or a run's .GIT/, which is one on a disk that ignores case, is copied.
-const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(d => refused(d.name, false) ? [] : d.isDirectory() ? walk(join(dir, d.name)) : d.isFile() ? [join(dir, d.name)] : []);
+const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).filter(d => existsSync(join(dir, d.name))).flatMap(d => refused(d.name, false) ? [] : d.isDirectory() ? walk(join(dir, d.name)) : d.isFile() ? [join(dir, d.name)] : []);
 
 // What rf pull copies: every file under `path` that `me` sees, in the layout runs see (workspace/series/label/ and the instance's own
 // files), with its size and time; the AGENTS.md files whole, and each instance file at its /files address.
@@ -470,8 +485,9 @@ const brand = () => readJson<{ text?: string; logo?: string; type?: string }>('b
 // Each request's JSON body, as read, for the system's log.
 const bodies = new WeakMap<IncomingMessage, object>();
 const json = async (req: IncomingMessage) => {
+  const text = (await body(req)).toString();
   let parsed;
-  try { parsed = JSON.parse((await body(req)).toString() || '{}'); } catch { throw new HttpError(400, 'the body is JSON'); }
+  try { parsed = JSON.parse(text || '{}'); } catch { throw new HttpError(400, 'the body is JSON'); }
   bodies.set(req, parsed);
   return parsed;
 };
@@ -492,12 +508,16 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   // The body before the tree: a request held open must not save a tree from before others' changes, such as an owner's removal.
   const payload = ['upload', 'attach', 'screen'].includes(action) ? {} : await json(req);
   const t = tree(), by = me.email;
-  // Archived, a workspace or a series takes nothing but being restored, and an instance's deletion, as what shouldn't be kept may be
-  // in one: nothing else in it changes, and none of its instances runs.
   const about = t.series[kind === 'instances' ? instance(id).seriesId : kind === 'series' ? id : ''];
+  // A run acts on an instance or a series in its own workspace alone, and learns nothing of one elsewhere by trying.
+  if (run && (kind === 'instances' || kind === 'series') && about?.workspace !== t.series[run.inst.seriesId].workspace)
+    throw new HttpError(403, `that ${kind === 'series' ? 'series' : 'instance'} is in another workspace: you can read it if it lets you, not act there`);
+  // Archived, a workspace or a series takes nothing but being restored, a PUT of {"archived": false} alone, and an instance's deletion,
+  // as what shouldn't be kept may be in one: nothing else in it changes, and none of its instances runs.
   const within = t.workspaces[kind === 'workspaces' ? id : about ? about.workspace : kind === 'series' ? payload.workspace : ''];
   const shut = [within, about].find(x => x?.archived);
-  if (shut && req.method !== 'GET' && !(payload.archived === false && !action && kind !== 'instances') && !(kind === 'instances' && action === 'delete')) {
+  const restore = req.method === 'PUT' && !action && kind !== 'instances' && Object.keys(payload).join() === 'archived' && payload.archived === false;
+  if (shut && req.method !== 'GET' && !restore && !(kind === 'instances' && action === 'delete')) {
     if (!run) mustSee(me, within);
     throw new HttpError(409, `${shut.name} is archived: nothing in it changes until it's restored`);
   }
@@ -644,7 +664,6 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   if (kind === 'series') {
     const s = t.series[id];
     if (!run) mustSee(me, s && t.workspaces[s.workspace]);
-    else if (s?.workspace !== t.series[run.inst.seriesId].workspace) throw new HttpError(403, 'that series is in another workspace: you can read it, not leave it notes');
     if (action === 'promote') {
       // A task made a series, as it is, under a name of its own, its one instance the series' first.
       if (!s.single) throw new HttpError(400, `${s.name} is a series already`);
@@ -671,7 +690,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (action === 'attach' && req.method === 'POST') {
       const tmp = join(tmpDir, randomUUID());
       try {
-        await pipeline(req, createWriteStream(tmp));
+        await pipeline(req, capped, createWriteStream(tmp));
         const now = tree(), who = asPerson(by);
         if (!who) throw new HttpError(401, 'sign in');
         mustSee(who, now.workspaces[now.series[id].workspace]);
@@ -727,10 +746,14 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // own workspace: it reads others that let it, never acts there.
     const wake = req.method === 'DELETE' ? wakes().pending[id] : undefined, to = wake?.target ?? id, sid = t.series[to] ? to : instance(to).seriesId;
     if (req.method === 'DELETE' && !wake) throw new HttpError(404, 'no such wake pending');
-    if (t.series[to]?.single) throw new HttpError(400, `${t.series[to].name} is a task, with one instance: wake that`);
     if (!run) mustSee(me, t.workspaces[t.series[sid].workspace]);
     else if (t.series[sid].workspace !== t.series[run.inst.seriesId].workspace) throw new HttpError(403, `${named(t, sid)} is in another workspace: you can read it, not wake it`);
-    if (req.method === 'DELETE') return void (cancelWake(id), send(res, 200, 'ok'));
+    if (t.series[to]?.single) throw new HttpError(400, `${t.series[to].name} is a task, with one instance: wake that`);
+    if (req.method === 'DELETE') {
+      // A person's cancellation is theirs in the system's log; a run's is recorded there too, with the wake, its instance and run.
+      if (run) act('agent', { method: 'DELETE', path: url.pathname, wake, inst: run.inst.id, run: run.n });
+      return void (cancelWake(id), send(res, 200, 'ok'));
+    }
     const { at: when = '', label, days, text } = payload, w = String(when);
     const at = w === 'now' ? Date.now() : /^\+\d+[mhd]$/.test(w) ? Date.now() + Number(w.slice(1, -1)) * { m: 60e3, h: 3600e3, d: 86400e3 }[w.at(-1) as 'm'] : Date.parse(w);
     if (req.method !== 'PUT' || Number.isNaN(at)) throw new HttpError(400, 'PUT {"at", "label" for a series, "days", "text"}, or DELETE; at is now, +<n>m|h|d, or a date and time such as 2026-09-14T07:00+08:00');
@@ -808,7 +831,6 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // On an item, at a ref if given, or on the instance; a run's links its own instance, a person's the instance and thread they name.
     const { kind: k, item, ref, text, thread } = payload, see = run ? run.inst : payload.see ? instance(String(payload.see)) : undefined;
     if (inst.doc.status !== 'closed') throw new HttpError(409, `${inst.label} is ${inst.doc.status}: only a closed instance takes corrections, as nothing else changes it`);
-    if (run && t.series[inst.seriesId].workspace !== t.series[run.inst.seriesId].workspace) throw new HttpError(403, `${named(t, inst.seriesId)} is in another workspace: you can read it, not correct it`);
     if (see && !run) mustSee(me, t.workspaces[t.series[see.seriesId].workspace]);
     if (see?.hole) throw new HttpError(409, `${see.label} was deleted`);
     if (!['wrong', 'superseded'].includes(k) || typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a correction is {"kind": "wrong" or "superseded", "text", "item", "ref", "see", "thread"}');
@@ -833,11 +855,16 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // A comment's attachment, kept in upload/attachments/ and named in the comment that follows; it starts nothing by itself.
     const tmp = join(tmpDir, randomUUID());
     try {
-      await pipeline(req, createWriteStream(tmp));
+      await pipeline(req, capped, createWriteStream(tmp));
       const now = tree(), who = asPerson(by);
       if (!who) throw new HttpError(401, 'sign in');
       mustSee(who, now.workspaces[now.series[inst.seriesId].workspace]);
-      return send(res, 200, { file: inst.keep(url.searchParams.get('name') ?? 'file', tmp, 'upload/attachments') });
+      const file = inst.keep(url.searchParams.get('name') ?? 'file', tmp, 'upload/attachments');
+      // No entry of the instance's names it until a comment does: the system's log records it, and it's committed at once in its
+      // person's name, unless a run of the instance is going, whose end commits it.
+      act(by, { op: 'attach', instance: inst.id, file });
+      if (active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, me, `Attach ${file}`).catch(err => inst.append('server', 'commit', { error: err.message }));
+      return send(res, 200, { file });
     } finally {
       rmSync(tmp, { force: true });
     }
@@ -845,7 +872,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   if (action === 'upload') {
     const pane = url.searchParams.get('pane') === 'out' ? 'out' : 'in', tmp = join(tmpDir, randomUUID()), hash = createHash('sha256');
     try {
-      await pipeline(req, async function* (chunks: AsyncIterable<Buffer>) { for await (const c of chunks) { hash.update(c); yield c; } }, createWriteStream(tmp));
+      await pipeline(req, capped, async function* (chunks: AsyncIterable<Buffer>) { for await (const c of chunks) { hash.update(c); yield c; } }, createWriteStream(tmp));
       const now = tree(), who = asPerson(by);
       if (!who) throw new HttpError(401, 'sign in');
       mustSee(who, now.workspaces[now.series[inst.seriesId].workspace]);
@@ -872,7 +899,6 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // A run's comment in another instance of its workspace is a note there, which names the run, its runner and its own instance and
     // thread, and starts a run only where that series' runner shares it; its own instance logs where it went.
     const away = run && run.inst !== inst;
-    if (away && t.series[inst.seriesId].workspace !== t.series[run.inst.seriesId].workspace) throw new HttpError(403, `${named(t, inst.seriesId)} is in another workspace: you can read it, not comment there`);
     if (away && (ask || to)) throw new HttpError(400, 'you ask and propose only to your own runner: rf ask and rf propose in your own instance');
     const said = inst.append(by, 'comment', {
       ...(under ? { thread: under.thread, parent: under.seq } : { thread: `c${inst.log.length + 1}`, item: item ?? null, ref: ref ?? null }), text: text.trim(), ...(files.length && { files }),
@@ -909,6 +935,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (inst.log.some(e => e.op === 'withdraw' && e.on === ask.seq)) throw new HttpError(409, `the agent withdrew ${thread}`);
     const decided = ask.ask === 'proposal' && inst.log.find(e => e.on === ask.seq && (e.op === 'signoff' || e.op === 'reject'));
     if (decided) throw new HttpError(409, `${thread} was ${decided.op === 'signoff' ? 'approved' : 'rejected'} already, by ${decided.by}`);
+    const closed = inst.log.find(e => e.op === 'close' && (e.accepted as string[] | undefined)?.includes(thread));
+    if (closed) throw new HttpError(409, `${thread} was accepted as done at the close, by ${closed.by}`);
     const note = typeof text === 'string' ? text.trim() : '';
     if (action === 'reject') inst.append(by, 'reject', { thread: ask.thread, on: ask.seq, ...(note && { text: note }), ...(quiet && { quiet: true }) });
     else {
@@ -1303,6 +1331,11 @@ server.on('upgrade', (req, socket, head) => {
   if (me && run) try {
     const w = watched(me, run[1], run[2]);
     to = `/sessions/${run[3] === 'drive' ? w.browsers.drive(run[2], me.email, socket) : w.id}/view/${run[3]}`;
+    // It lasts while they may watch: a change to the workspaces or people, such as their removal or disabling, cuts it once they may not.
+    const may = () => { const now = session(req); try { return !!now && !!watched(now, run[1], run[2]); } catch { return false; } };
+    const cut = (id: string) => id === 'tree' && !may() && socket.destroy();
+    changes.on('change', cut);
+    socket.on('close', () => changes.off('change', cut));
   } catch {}
   if (!to) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
   passUpgrade(req, socket, head, to);
