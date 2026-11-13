@@ -52,7 +52,7 @@ Run the image under podman, as a systemd service. The image is the agent image, 
 1. Give the service a user of its own, with lingering on, and install rootless podman. Check out a tagged commit of this repo, and build the agent image, then the server's on it: `podman build -t rollforward-agent agent && podman build -t rollforward .`.
 2. Make an empty data folder, `~/rollforward-data`.
 3. Write `~/.config/rollforward.env` with:
-   - `OPENROUTER_API_KEY`, and `EXA_API_KEY` for runs' and website checks' web search;
+   - `OPENROUTER_API_KEY`, and, optionally, `EXA_API_KEY` for runs' and website checks' web search: without it, website checks run without search;
    - the `RF_OIDC_*` lines and `RF_PUBLIC_URL` ([system.md](system.md), Access);
    - `RF_ADMINS`, the first admins;
    - `RF_BROWSER_URL` and this server's `RF_BROWSER_KEY`, matching the browser service's `BROWSER_KEY` or one entry in its `BROWSER_KEYS`;
@@ -99,9 +99,9 @@ Run the image under podman, as a systemd service. The image is the agent image, 
 ## Keys, backups and updates
 
 - **Keys:** `.rf/session.key` signs sessions, and `.rf/seal.key` encrypts everyone's logins. Back up the data folder nightly without them, and keep a copy of both elsewhere. Without seal.key, people sign in to their logins again.
-- **Production deploys by itself:** an updater runs about every 15 minutes, as a per-user systemd timer on its server.
+- **Production deploys by itself:** its updater, `scripts/update.ts`, runs every 15 minutes, as a per-user systemd timer on its server (below).
 - **Updates:** check out the next tag, rebuild, and `systemctl --user restart rollforward`, whatever runs are going: the restart cuts them, and they carry on by themselves, their cost so far recorded.
-- **Updates without the image** come by themselves: `scripts/update.ts` moves the checkout to the newest GitHub Release once every check on its commit has passed. It first fetches what the release installs, its packages into npm's cache and its agent image, unpacked beside the one running if its id is new, while the server runs on, so a failure there, as without the network, changes nothing and the next tick tries again; then it stops the server, whatever runs are going, moves the checkout, installs what changed from that cache (`npm ci`), starts the server, keeping only the agent image it runs and the one before, and goes back if it doesn't answer, never trying that release again; if going back fails too, it starts the server as the checkout is, so it never stays stopped. The runs the stop cut carry on after the start. A checkout on no release tag, as after a person's fix by hand, stops updates until one is checked out again. CI makes a Release from each tag whose tests pass; a tag with a `Manual:` line in its message makes a prerelease, which the updater stops before, for a person to deploy by hand. It asks GitHub without a token, so every 15 minutes, as a timer of the same user:
+- **Updates without the image** come by themselves: `scripts/update.ts` moves the checkout to the newest GitHub Release `vX.Y.Z`, which CI makes from a tag, once every check on its commit has passed, and only while the checkout sits exactly on a release tag: a push to main alone deploys nothing. It first fetches what the release installs, its packages into npm's cache and its agent image, unpacked beside the one running if its id is new, while the server runs on, so a failure there, as without the network, changes nothing and the next tick tries again; then it stops the server without draining it, cutting whatever runs are going, moves the checkout, installs what changed from that cache (`npm ci`), starts the server, keeping only the agent image it runs and the one before, and goes back by itself if the server doesn't answer within 5 minutes, never trying that release again; if going back fails too, it starts the server as the checkout is, so it never stays stopped. The runs the stop cut are woken and carry on after the start. A checkout on no release tag, as after a person's fix by hand, stops updates until one is checked out again. A tag whose message has a line starting `Manual:` makes a prerelease, which the updater stops at, for a person to deploy by hand. It asks GitHub without a token, so every 15 minutes, as a timer of the same user:
 
        # ~/.config/systemd/user/rollforward-update.service
        [Service]
@@ -120,6 +120,11 @@ Run the image under podman, as a systemd service. The image is the agent image, 
        WantedBy=timers.target
 
   then `systemctl --user enable --now rollforward-update.timer`; `journalctl --user -u rollforward-update` shows what it did. It restarts the server as above; `OnCalendar=*-*-* 02:00` in place of the two lines above updates at night only.
+
+## After updating past v0.3.19
+
+- **Rotate** `OPENROUTER_API_KEY`, `RF_BROWSER_KEY`, with the browser service's matching `BROWSER_KEY` or `BROWSER_KEYS` entry, and `RF_OIDC_CLIENT_SECRET`: before it, a run could read them in the server's environment, at `/proc/1/environ` in its sandbox.
+- **`EXA_API_KEY` is optional:** without it, website checks run without search.
 
 ## Rolling back
 
