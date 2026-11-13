@@ -539,6 +539,23 @@ test("a start removes its data root's abandoned scratch, for active and idle Pis
   assert.ok(records.length, 'a run without index sources still has an ownership folder');
 });
 
+test("a run learns nothing of an instance in another workspace by acting on it, its runner, threads, items or label: each act is refused first", async () => {
+  const carol = await login('carol@demo.test');
+  const { id: secret } = await (await call('POST', '/api/workspaces', { name: 'Secret' })).json();
+  assert.equal((await call('PUT', `/api/workspaces/${secret}`, { members: ['carol@demo.test'] })).status, 200);
+  const { id: payroll } = await (await call('POST', '/api/series', { workspace: secret, name: 'Payroll' })).json();
+  const { id: open } = await (await call('POST', `/api/series/${payroll}`, { label: '2026-11 layoffs', quiet: true }, carol)).json();
+  assert.equal((await call('POST', `/api/instances/${open}/comment`, { text: 'List of names', quiet: true }, carol)).status, 200);
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Probing' })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Probe' })).json();
+  const probe = (action: string, body: object) => `curl -s -m 5 -X POST -H "authorization: Bearer $RF_TOKEN" "$RF_URL/api/instances/${open}/${action}" -d '${JSON.stringify(body)}'; echo`;
+  const s: Script = { bash: [probe('comment', { text: 'x', to: 'nobody@demo.test' }), probe('comment', { text: 'x', thread: 'c99' }), probe('comment', { text: 'x', item: 'zzz' }), probe('correct', {})], report: 'Probed.', saw: [] };
+  scripts.push(s);
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
+  await runs(id, 1);
+  assert.deepEqual(s.saw.map(x => x.trim()), Array(4).fill('that instance is in another workspace: you can read it if it lets you, not act there'));
+});
+
 test("a proposal still waiting as its instance closes is accepted, so a duplicate neither waits on it nor takes its approval", async () => {
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Accepted' })).json();
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Pack' })).json();

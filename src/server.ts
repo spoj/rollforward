@@ -491,9 +491,12 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   // The body before the tree: a request held open must not save a tree from before others' changes, such as an owner's removal.
   const payload = ['upload', 'attach', 'screen'].includes(action) ? {} : await json(req);
   const t = tree(), by = me.email;
+  const about = t.series[kind === 'instances' ? instance(id).seriesId : kind === 'series' ? id : ''];
+  // A run acts on an instance or a series in its own workspace alone, and learns nothing of one elsewhere by trying.
+  if (run && (kind === 'instances' || kind === 'series') && about?.workspace !== t.series[run.inst.seriesId].workspace)
+    throw new HttpError(403, `that ${kind === 'series' ? 'series' : 'instance'} is in another workspace: you can read it if it lets you, not act there`);
   // Archived, a workspace or a series takes nothing but being restored, a PUT of {"archived": false} alone, and an instance's deletion,
   // as what shouldn't be kept may be in one: nothing else in it changes, and none of its instances runs.
-  const about = t.series[kind === 'instances' ? instance(id).seriesId : kind === 'series' ? id : ''];
   const within = t.workspaces[kind === 'workspaces' ? id : about ? about.workspace : kind === 'series' ? payload.workspace : ''];
   const shut = [within, about].find(x => x?.archived);
   const restore = req.method === 'PUT' && !action && kind !== 'instances' && Object.keys(payload).join() === 'archived' && payload.archived === false;
@@ -644,7 +647,6 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   if (kind === 'series') {
     const s = t.series[id];
     if (!run) mustSee(me, s && t.workspaces[s.workspace]);
-    else if (s?.workspace !== t.series[run.inst.seriesId].workspace) throw new HttpError(403, 'that series is in another workspace: you can read it, not leave it notes');
     if (action === 'promote') {
       // A task made a series, as it is, under a name of its own, its one instance the series' first.
       if (!s.single) throw new HttpError(400, `${s.name} is a series already`);
@@ -727,9 +729,9 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // own workspace: it reads others that let it, never acts there.
     const wake = req.method === 'DELETE' ? wakes().pending[id] : undefined, to = wake?.target ?? id, sid = t.series[to] ? to : instance(to).seriesId;
     if (req.method === 'DELETE' && !wake) throw new HttpError(404, 'no such wake pending');
-    if (t.series[to]?.single) throw new HttpError(400, `${t.series[to].name} is a task, with one instance: wake that`);
     if (!run) mustSee(me, t.workspaces[t.series[sid].workspace]);
     else if (t.series[sid].workspace !== t.series[run.inst.seriesId].workspace) throw new HttpError(403, `${named(t, sid)} is in another workspace: you can read it, not wake it`);
+    if (t.series[to]?.single) throw new HttpError(400, `${t.series[to].name} is a task, with one instance: wake that`);
     if (req.method === 'DELETE') return void (cancelWake(id), send(res, 200, 'ok'));
     const { at: when = '', label, days, text } = payload, w = String(when);
     const at = w === 'now' ? Date.now() : /^\+\d+[mhd]$/.test(w) ? Date.now() + Number(w.slice(1, -1)) * { m: 60e3, h: 3600e3, d: 86400e3 }[w.at(-1) as 'm'] : Date.parse(w);
@@ -808,7 +810,6 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // On an item, at a ref if given, or on the instance; a run's links its own instance, a person's the instance and thread they name.
     const { kind: k, item, ref, text, thread } = payload, see = run ? run.inst : payload.see ? instance(String(payload.see)) : undefined;
     if (inst.doc.status !== 'closed') throw new HttpError(409, `${inst.label} is ${inst.doc.status}: only a closed instance takes corrections, as nothing else changes it`);
-    if (run && t.series[inst.seriesId].workspace !== t.series[run.inst.seriesId].workspace) throw new HttpError(403, `${named(t, inst.seriesId)} is in another workspace: you can read it, not correct it`);
     if (see && !run) mustSee(me, t.workspaces[t.series[see.seriesId].workspace]);
     if (see?.hole) throw new HttpError(409, `${see.label} was deleted`);
     if (!['wrong', 'superseded'].includes(k) || typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a correction is {"kind": "wrong" or "superseded", "text", "item", "ref", "see", "thread"}');
@@ -872,7 +873,6 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // A run's comment in another instance of its workspace is a note there, which names the run, its runner and its own instance and
     // thread, and starts a run only where that series' runner shares it; its own instance logs where it went.
     const away = run && run.inst !== inst;
-    if (away && t.series[inst.seriesId].workspace !== t.series[run.inst.seriesId].workspace) throw new HttpError(403, `${named(t, inst.seriesId)} is in another workspace: you can read it, not comment there`);
     if (away && (ask || to)) throw new HttpError(400, 'you ask and propose only to your own runner: rf ask and rf propose in your own instance');
     const said = inst.append(by, 'comment', {
       ...(under ? { thread: under.thread, parent: under.seq } : { thread: `c${inst.log.length + 1}`, item: item ?? null, ref: ref ?? null }), text: text.trim(), ...(files.length && { files }),
