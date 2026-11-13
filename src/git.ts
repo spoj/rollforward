@@ -11,9 +11,11 @@ import { promisify } from 'node:util';
 // and streams them to git fast-import, so nothing a run leaves in the folder, such as a .gitignore, a repository of its own or a file
 // swapped for a link, changes what a commit holds: every regular file, whatever its size or type, and links as links. Only what git
 // can't hold is left out: a name it refuses, such as a .git, and what is neither a file nor a link, such as a FIFO. One instance's
-// commits go one at a time.
+// commits go one at a time. A commit is refused where the files it would read have over HOLES bytes of holes, which sparse files
+// read as zeros but don't hold, so a run can't have one read terabytes it never wrote.
 export type Who = { name: string; email: string };
 export const AGENT: Who = { name: 'rollforward agent', email: 'agent@rollforward' };
+const HOLES = 4n << 30n;
 
 // The server's git, with none of the settings of whoever runs it.
 const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' };
@@ -85,14 +87,14 @@ type Seen = Map<string, [string, string]>;
 // The folder's files and links as fast-import's file commands. Each name is reached through its folder's open descriptor, and
 // opened without following a link, so a folder swapped for a link meanwhile leads nowhere outside. Names are bytes, as git keeps
 // them, which needn't be UTF-8.
-async function* files(dfd: number, rel: Buffer, seen: Seen, now: Seen): AsyncGenerator<Buffer> {
+async function* files(dfd: number, rel: Buffer, seen: Seen, now: Seen, holes: { left: bigint }): AsyncGenerator<Buffer> {
   const at = (name: Buffer) => Buffer.concat([Buffer.from(`/proc/self/fd/${dfd}/`), name]);
   for (const d of readdirSync(`/proc/self/fd/${dfd}`, { withFileTypes: true, encoding: 'buffer' })) {
     const name = d.name as unknown as Buffer, path = rel.length ? Buffer.concat([rel, SLASH, name]) : name;
     if (refused(name.toString('latin1'), d.isSymbolicLink())) continue;
     if (d.isDirectory()) {
       const sub = open(path, at(name), constants.O_RDONLY | constants.O_DIRECTORY, 0o500);
-      try { yield* files(sub, path, seen, now); } finally { closeSync(sub); }
+      try { yield* files(sub, path, seen, now, holes); } finally { closeSync(sub); }
     } else if (d.isSymbolicLink()) {
       const to = read(path, () => readlinkSync(at(name), { encoding: 'buffer' }));
       yield Buffer.concat([Buffer.from('M 120000 inline '), quote(path), Buffer.from(`\ndata ${to.length}\n`), to, Buffer.from('\n')]);
@@ -106,6 +108,10 @@ async function* files(dfd: number, rel: Buffer, seen: Seen, now: Seen): AsyncGen
         now.set(key, was);
         yield Buffer.concat([Buffer.from(`M ${mode} ${was[1]} `), quote(path), Buffer.from('\n')]);
         continue;
+      }
+      if ((holes.left -= st.size > st.blocks * 512n ? st.size - st.blocks * 512n : 0n) < 0n) {
+        closeSync(fd);
+        throw new Error(`${path} has holes, as a sparse file does, and the folder's files have over ${HOLES >> 30n} GB of them in all, which a commit would read in full: remove it`);
       }
       yield Buffer.concat([Buffer.from(`M ${mode} inline `), quote(path), Buffer.from(`\ndata ${size}\n`)]);
       const blob = createHash('sha1').update(`blob ${size}\0`);
@@ -124,7 +130,7 @@ async function* stream(dir: string, who: Who, message: string, parent: string, s
   yield text;
   yield Buffer.from(`${parent ? `from ${parent}\n` : ''}deleteall\n`);
   const top = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY);
-  try { yield* files(top, Buffer.alloc(0), seen, now); } finally { closeSync(top); }
+  try { yield* files(top, Buffer.alloc(0), seen, now, { left: HOLES }); } finally { closeSync(top); }
   yield Buffer.from('done\n');
 }
 
