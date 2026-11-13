@@ -118,6 +118,14 @@ Run the image under podman, as a systemd service. The image is the agent image, 
 
   then `systemctl --user enable --now rollforward-update.timer`; `journalctl --user -u rollforward-update` shows what it did. It restarts the server as above; `OnCalendar=*-*-* 02:00` in place of the two lines above updates at night only.
 
+## Rolling back
+
+Going back to a version from before this release, which brought service connections, deleting instances, and rejecting and withdrawing asks:
+
+- **Remove every `service` connection first,** with `rf connection remove NAME`. An older server doesn't know the type, exits as it starts, and restarts into the same exit.
+- **Don't delete an instance, or add a service connection, until this release has settled.** An older server answers `GET /api` with 500 once one instance is deleted, as its tombstone has no `create` entry, so the page, `rf ls`, `rf waiting`, `rf show` and `rf wakes` fail for admins and that workspace's people.
+- **Expect on an older version:** proposals rejected, and questions and proposals withdrawn, show as waiting again, and Close lists them as asks to accept; its `rf site set` drops a website's profile and its VPN, `via`.
+
 ## Check
 
 1. `podman logs rollforward` says `rollforward on`. Without the `RF_OIDC_*` lines and `RF_PUBLIC_URL` it doesn't start, and says which are missing.
