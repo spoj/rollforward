@@ -169,9 +169,11 @@ export async function addSite(email: string, name: string, url: string, header =
 export async function setSite(by: Me, name: string, change: Record<string, unknown>, person = by.email) {
   const keys = ['header', 'keepalive', 'every', 'writeback', 'internal', 'via'], other = Object.keys(change).filter(k => !keys.includes(k));
   if (other.length) throw new HttpError(400, `${other.join(', ')}: a website's settings are ${keys.join(', ')}; its hosts are allowed one by one`);
-  if (person !== by.email && (by.role !== 'admin' || Object.keys(change).some(k => k !== 'internal'))) throw new HttpError(403, `${person}'s website is theirs to change; admins only let it reach internal addresses`);
+  // Taking a VPN off a website, as one left with it once the VPN is gone, needs no capability, and an admin may on anyone's.
+  if (person !== by.email && (by.role !== 'admin' || Object.entries(change).some(([k, v]) => k !== 'internal' && !(k === 'via' && v === ''))))
+    throw new HttpError(403, `${person}'s website is theirs to change; admins only let it reach internal addresses or take its VPN off`);
   if (change.internal !== undefined && by.role !== 'admin') throw new HttpError(403, 'internal: admins set it');
-  if (change.via !== undefined && !can(by, 'vpn')) throw new HttpError(403, 'via: requires the explicit vpn capability');
+  if (change.via && !can(by, 'vpn')) throw new HttpError(403, 'via: requires the explicit vpn capability');
   if (change.via !== undefined && typeof change.via !== 'string') throw new HttpError(400, 'via: a VPN name, or empty to clear');
   if (change.via && !vpnDefinitions()[String(change.via)]) throw new HttpError(404, `no VPN ${change.via}`);
   const w = website(person, name), x = { ...w, every: w.every && `${w.every}m`, ...change }, every = /^(\d+)([mh])$/.exec(String(x.every ?? ''));

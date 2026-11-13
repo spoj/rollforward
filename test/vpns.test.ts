@@ -347,11 +347,11 @@ test('removing a definition deletes every person\'s tunnel for it, leaving other
   assert.equal(Object.hasOwn(readJson('vpns.json', {}), 'client'), false);
 });
 
-test('website via is explicitly gated, validated, preserved by other settings, and cleared with an empty value', async () => {
+test('website via is explicitly gated to set, validated, preserved by other settings, and cleared with an empty value', async () => {
   await site();
   writeJson('capabilities.json', { vpn: [alice.email] });
-  await assert.rejects(setSite(admin, 'portal', { via: '' }, alice.email), { status: 403 });
-  await assert.rejects(setSite(bob, 'missing', { via: '' }), /explicit vpn capability/);
+  await assert.rejects(setSite(admin, 'portal', { via: 'client' }, alice.email), { status: 403 });
+  await assert.rejects(setSite(bob, 'missing', { via: 'client' }), /explicit vpn capability/);
   await assert.rejects(setSite(alice, 'portal', { via: 'unknown' }), { status: 404 });
   await assert.rejects(setSite(alice, 'portal', { via: false }), /a VPN name/);
   await setSite(alice, 'portal', { every: '9m', writeback: false });
