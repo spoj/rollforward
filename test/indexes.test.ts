@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
@@ -455,4 +455,20 @@ test('removing an offer deletes its cache', async () => {
   await until(() => !existsSync(`${at(CAROL, SITE)}.json`));
   assert.equal(existsSync(f), false);
   assert.ok(existsSync(`${at(CAROL, MAIL)}.json`));
+});
+
+test("a going run's copy of a source goes as soon as it's no longer lent: unticked, or its login signed out of", async () => {
+  offer(ALICE, [{ id: FOLDER, name: 'Folder' }, { id: PUB, name: 'Shared' }]);
+  await work(settled(ALICE, FOLDER, PUB));
+  const inst = { seriesId: 'weekly', log: [{ seq: 1, at: '', by: ALICE, op: 'create', logins: [FOLDER, PUB] }, { seq: 2, at: '', by: 'server', op: 'run', run: 1, consent: 1 }] } as unknown as Instance;
+  const to = join(tmp, '.rf', 'runs', 'going'), copies = () => readdirSync(to).sort();
+  ix.prepare(inst, to);
+  const before = copies();
+  assert.ok(before.includes('Folder.json') && before.includes('Shared.ndjson.zst'));
+  inst.log.push({ seq: 3, at: '', by: ALICE, op: 'logins', logins: [PUB] });
+  ix.prune(inst, 1, 'going');
+  assert.deepEqual(copies(), before.filter(f => !f.startsWith('Folder.')));
+  logins.signOut(ALICE, 'm365');
+  ix.prune(inst, 1, 'going');
+  assert.deepEqual(copies(), ['README.md']);
 });
