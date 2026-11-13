@@ -77,6 +77,30 @@ before(async () => {
   writeFileSync(join(sampled, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [{ id: 'bb', name: 'Borrowing base', kind: 'output', file: 'working/bb.csv' },
     { id: 'invoices', name: 'Invoices', kind: 'step', file: 'working/invoices.csv' }] }));
   writeFileSync(join(sampled, 'log.jsonl'), JSON.stringify({ seq: 1, at: '2026-07-01T09:00:00.000Z', by: 'admin@demo.test', op: 'create', from: null, logins: [] }) + '\n');
+  // A series of its own whose open instance's agent asks a question, proposes to send the pack, citing the closed one's comment, and
+  // withdrew a question.
+  tree.series.a5c0ff5e1ff0 = { name: 'Bank pack', workspace: '1b3031035ff6' };
+  writeFileSync(join(root, '.rf', 'tree.json'), JSON.stringify(tree));
+  mkdirSync(join(root, 'series', 'a5c0ff5e1ff0'));
+  for (const [id, label, status, items, log] of [
+    ['a5c0ff5e1f08', 'December', 'closed', [], [{ by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'Sent the pack on the 3rd.' }, { by: 'admin@demo.test', op: 'close' }]],
+    ['a5c0ff5e1f07', 'January', 'open', [{ id: 'notes', name: 'Notes', kind: 'step', file: 'working/notes.md' }], [
+      { by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'The pack is built.' },
+      { by: 'agent', op: 'comment', thread: 'c3', item: null, ref: null, text: 'Which account does it go to? See c2.', ask: 'question' },
+      { by: 'agent', op: 'comment', thread: 'c4', item: null, ref: null, text: 'I will send [the pack](working/pack.csv) to the bank, as [last month](../December#c2).', ask: 'proposal' },
+      { by: 'agent', op: 'comment', thread: 'c5', item: null, ref: null, text: 'Is the rate final?', ask: 'question' },
+      { by: 'agent', op: 'withdraw', thread: 'c5', on: 5, text: 'The file says so.', see: 2 },
+    ]],
+  ] as const) {
+    const dir = join(root, 'instances', id);
+    mkdirSync(join(dir, 'working'), { recursive: true });
+    writeFileSync(join(dir, 'instance.json'), JSON.stringify({ label, series: 'a5c0ff5e1ff0' }));
+    writeFileSync(join(dir, 'screen.json'), JSON.stringify({ rev: 1, status, items }));
+    writeFileSync(join(dir, 'working', 'pack.csv'), 'pack\n');
+    writeFileSync(join(dir, 'working', 'notes.md'), 'As [the summary](#c2) says.\n');
+    writeFileSync(join(dir, 'log.jsonl'), [{ by: 'admin@demo.test', op: 'create', from: null, logins: [] }, ...log]
+      .map((e, i) => JSON.stringify({ seq: i + 1, at: `2026-07-02T09:0${i}:00.000Z`, ...e }) + '\n').join(''));
+  }
   // A step between the fixture's 2026-08-30 input and output.
   const stepped = join(root, 'instances', '3d70f7ca6f20'), doc = JSON.parse(readFileSync(join(stepped, 'screen.json'), 'utf8'));
   writeFileSync(join(stepped, 'working', 'eligible.csv'), 'customer,amount\n');
@@ -226,7 +250,7 @@ for (const kind of ['series', 'workspace']) test(`an archived ${kind} is read-on
     assert.equal(await tab.inputValue('#newcomment'), 'A draft before archiving');
     assert.equal(await tab.inputValue('#conv .reply:not([hidden]) textarea'), 'A reply before archiving');
     assert.equal(await tab.locator('#bar .creds, #bar [data-act=close]').count(), 2);
-    assert.equal(await tab.locator('#conv .pa [data-act=reply]:text-is("Sign off…")').count(), 1);
+    assert.equal(await tab.locator('#conv .pa [data-act=reply]:text-is("Approve…")').count(), 1);
   } finally {
     await tab.request.put(new URL(target, tab.url()).href, { data: { archived: false } });
     await tab.close();
@@ -250,7 +274,7 @@ test("the workspace's + starts a task at once, which its first prompt names, new
   await page.fill('#ask input', 'Zebra surveys');
   await page.click('#ask button:text-is("Start series and close")');
   await page.waitForSelector('.row.ser .l:text-is("Zebra surveys")');
-  assert.deepEqual(await page.locator('.row.ser .l').allTextContents(), ['Zebra surveys', 'Weekly borrowing base', 'Year-end pack', 'Invoice checks'], 'series too come newest activity first');
+  assert.deepEqual(await page.locator('.row.ser .l').allTextContents(), ['Zebra surveys', 'Weekly borrowing base', 'Year-end pack', 'Bank pack', 'Invoice checks'], 'series too come newest activity first');
   assert.deepEqual(await page.locator('.row.grp ~ a.row.inst .l').allTextContents(), ['Apple orchard audit for 2026']);
 });
 
@@ -528,7 +552,7 @@ test("what the session names, such as a tool call's name, shows as text in the a
   await page.click('#log .seg [data-act=audit]');
 });
 
-test("an ask shows the files it links and the runs since it, and anyone who sees the instance signs it off from under it, which commits the folder, as the thread and the audit say", async () => {
+test("an ask from before questions and proposals shows the files it links and the runs since it, and anyone who sees the instance approves it from under it, which commits the folder, as the thread and the audit say", async () => {
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
   await page.waitForSelector('#log.open');
   await page.locator('#needs', { hasText: 'The pack is ready to send to the bank.' }).waitFor();
@@ -549,15 +573,15 @@ test("an ask shows the files it links and the runs since it, and anyone who sees
   }
   assert.ok(runs >= 1, 'the fixture has a run since the ask');
   assert.match(since, new RegExp(`waits on you · ${runs} runs? since`), 'what it links may have changed since');
-  assert.deepEqual(await thread.locator('.post > .pa button').allInnerTexts(), ['\u{1F44D}', '\u{1F44E}', 'Reply', 'Sign off\u2026']);
-  await thread.locator('.pa button', { hasText: 'Sign off' }).click();
+  assert.deepEqual(await thread.locator('.post > .pa button').allInnerTexts(), ['\u{1F44D}', '\u{1F44E}', 'Reply', 'Approve\u2026', 'Reject\u2026'], 'it may have been either');
+  await thread.locator('.pa button', { hasText: 'Approve' }).click();
   await thread.locator('.reply:not([hidden]) textarea').fill('Looks right.');
-  await thread.locator('[data-act=signoff]').click();
-  const post = page.locator('#log .thread .post .post', { hasText: 'Signed off: Looks right.' });
+  await thread.locator('[data-act=approve]').click();
+  const post = page.locator('#log .thread .post .post', { hasText: 'Approved: Looks right.' });
   await post.waitFor();
   assert.match(await post.locator('.tm').innerText(), /commit [0-9a-f]{7}/);
   await page.waitForSelector('#needs', { state: 'hidden' });
-  assert.equal(await thread.locator('button', { hasText: 'Sign off' }).count(), 0, 'signed off by you, it asks you no more');
+  assert.equal(await thread.locator('button', { hasText: 'Approve' }).count(), 0, 'approved by you, it asks you no more');
   await thread.locator('.post[data-seq="2"] > .pa [data-act=react][data-up=true]').click();
   await page.waitForSelector('#log .post[data-seq="2"] > .pa .react.on:text-is("\u{1F44D} 1")');
   await page.click('#bar .reacts [data-act=react][data-up=false]');
@@ -565,8 +589,77 @@ test("an ask shows the files it links and the runs since it, and anyone who sees
   await page.click('#bar .reacts [data-act=react][data-up=false]');
   await page.waitForSelector('#bar .reacts .react:not(.on):text-is("\u{1F44E}")');
   await page.click('#log [data-act=audit]');
-  await page.locator('#audit .e', { hasText: 'You signed off' }).waitFor();
+  await page.locator('#audit .e', { hasText: 'You approved c2' }).waitFor();
   await page.click('#log .seg [data-act=audit]');
+});
+
+test("a question asks, with Reply alone; a proposal proposes, apart, with Approve and Reject, and a reply under it approves nothing; a withdrawn ask is a line until opened; cN links a comment, here or in another instance, and each comment's cN copies an address that opens the page at it", async () => {
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.evaluate(() => { location.hash = '#/a5c0ff5e1f07'; });
+  await page.waitForSelector('#log.open');
+  await page.locator('#needs', { hasText: 'Which account' }).waitFor();
+  assert.equal(await page.locator('#needs').innerText(), 'Question\nWhich account does it go to? See c2.\nReply\nProposal\nI will send [the pack](working/pack.csv) to the bank, as [last month](../December#c2).\nApprove\u2026\nReject\u2026');
+  const question = page.locator('#conv .post[data-seq="3"]'), proposal = page.locator('#conv .post[data-seq="4"]'), label = (post: typeof question) => post.evaluate(e => {
+    const s = getComputedStyle(e.querySelector(':scope > b')!, '::after');
+    return [s.content, s.color, getComputedStyle(e).backgroundColor];
+  });
+  const [asks, proposes] = [await label(question), await label(proposal)];
+  assert.deepEqual([asks[0], proposes[0]], ['" asks"', '" proposes"']);
+  assert.ok(asks[1] !== proposes[1] && asks[2] !== proposes[2], `a proposal looks apart from a question: ${asks} ${proposes}`);
+  assert.deepEqual(await question.locator(':scope > .pa button').allInnerTexts(), ['\u{1F44D}', '\u{1F44E}', 'Reply'], 'a question is answered, never approved');
+  assert.deepEqual(await proposal.locator(':scope > .pa button').allInnerTexts(), ['\u{1F44D}', '\u{1F44E}', 'Reply', 'Approve\u2026', 'Reject\u2026']);
+  const open = proposal.locator(':scope > .reply:not([hidden])');
+  await proposal.locator(':scope > .pa [data-mode=approve]').click();
+  assert.deepEqual([await open.count(), await open.locator('.hint').innerText(), await open.locator('.btn').innerText()],
+    [1, 'The agent will go ahead with this. Approving commits the instance as it is now, in your name.', 'Approve: go ahead']);
+  await proposal.locator(':scope > .pa [data-act=reply]:text-is("Reply")').click();
+  assert.deepEqual([await open.count(), await open.locator('.hint').innerText()], [1, 'A reply approves nothing: for the agent to go ahead, approve it.'], 'one box at a time');
+  await open.locator('textarea').fill('Go ahead.');
+  await open.locator('[data-act=reply-post]').click();
+  const reply = proposal.locator('.kids .post', { hasText: 'Go ahead.' });
+  await reply.waitFor();
+  assert.match(await page.locator('#needs').innerText(), /Proposal/, 'a reply, however worded, approves nothing');
+  await proposal.locator(':scope > .pa [data-mode=reject]').click();
+  assert.equal(await open.locator('.hint').innerText(), "The agent won't do this, and carries on as your note says.");
+  await open.locator('textarea').fill('Wait for the new rate.');
+  await open.locator('[data-act=reject]').click();
+  await proposal.locator('.kids .post', { hasText: 'Rejected: Wait for the new rate.' }).waitFor();
+  await page.waitForFunction(() => !document.querySelector('#needs')!.textContent!.includes('Proposal'));
+  assert.equal(await proposal.locator(':scope > .pa button', { hasText: 'Approve' }).count(), 0, 'rejected by you, it asks you no more');
+
+  const gone = page.locator('#conv .post[data-seq="5"]');
+  assert.deepEqual([await gone.innerText(), await gone.locator('.pb').count()], ['\u25B8withdrawn: The file says so. \u00b7 see c2', 0], 'withdrawn, a line');
+  await gone.click({ position: { x: 4, y: 4 } });
+  await gone.locator('.pb:text-is("Is the rate final?")').waitFor();
+  await gone.locator('.gone').click({ position: { x: 4, y: 4 } });
+  await page.waitForSelector('#conv .post.withdrawn.folded[data-seq="5"]');
+
+  const ref = question.locator('.pb a.cref');
+  assert.deepEqual([await ref.innerText(), await ref.getAttribute('title')], ['c2', 'Agent: The pack is built.'], 'a bare cN links its comment');
+  await ref.click();
+  await page.waitForSelector('#conv .post.flash[data-seq="2"]');
+  await question.locator(':scope > .tm .cn:text-is("c3")').click();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), new URL('/#/a5c0ff5e1f07/c3', page.url()).href);
+  const seq = await reply.getAttribute('data-seq');
+  await proposal.locator(':scope > .fold').click();
+  await page.waitForSelector('#conv .post.folded[data-seq="4"]');
+  await page.evaluate(() => { location.hash = '#/a5c0ff5e1f08'; });
+  await page.waitForSelector('#bar h1 .t:text-is("December")');
+  await page.evaluate(seq => { location.hash = `#/a5c0ff5e1f07/c${seq}`; }, seq);
+  await page.waitForSelector(`#conv .post.flash[data-seq="${seq}"]`);
+  assert.equal(await page.evaluate(() => location.hash), '#/a5c0ff5e1f07', 'opened at it, its thread unfolded');
+
+  await page.click('.tile[data-item=notes]');
+  await page.click('#card [data-act=preview]');
+  await page.click('#pv a.cref:text-is("the summary")');
+  await page.waitForSelector('#pv:not([open])', { state: 'attached' });
+  await page.waitForSelector('#conv .post.flash[data-seq="2"]');
+  const last = proposal.locator('.pb a.cref', { hasText: 'last month' });
+  await last.hover();
+  await page.waitForFunction(() => document.querySelector<HTMLElement>('#conv .post[data-seq="4"] .pb a.cref[data-inst="a5c0ff5e1f08"]')?.title === 'Agent: Sent the pack on the 3rd.');
+  await last.click();
+  await page.waitForSelector('#bar h1 .t:text-is("December")');
+  await page.waitForSelector('#conv .post.flash[data-seq="2"]');
 });
 
 test("people show by name, with their email on hover, and Entra groups by label; adding to a workspace suggests people by name and takes a group's label", async () => {
