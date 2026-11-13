@@ -7,9 +7,10 @@ import { commit, pack, type Who } from './git.ts';
 // Paths in the screen are /-separated on every system.
 const normalize = posix.normalize;
 
-// Writes a read-only file whole, by renaming a temporary file into place. Windows refuses to rename over a read-only file, so there
-// the old one is made writable first.
+// Writes a read-only file whole, by renaming a temporary file into place, the one a write cut short left removed first. Windows
+// refuses to rename over a read-only file, so there the old one is made writable first.
 export function replaceReadOnly(path: string, data: string | Buffer) {
+  rmSync(path + '.tmp', { force: true });
   writeFileSync(path + '.tmp', data, { mode: 0o444 });
   if (process.platform === 'win32' && existsSync(path)) chmodSync(path, 0o644);
   renameSync(path + '.tmp', path);

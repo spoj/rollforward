@@ -220,3 +220,13 @@ test("a series' notes and the system's log drop a torn last line as they're read
   assert.deepEqual(readFileSync(system, 'utf8').trim().split('\n').map(l => JSON.parse(l).seq), [1, 2]);
   rmSync(tmp, { recursive: true, force: true });
 });
+
+test('a read-only temporary file a write cut short left stops no later save', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
+  openStore(tmp);
+  const inst = createInstance('monthly', 'left', 'alex', []);
+  writeFileSync(join(inst.dir, 'screen.json.tmp'), '{"rev"', { mode: 0o444 });
+  inst.save();
+  assert.equal(JSON.parse(readFileSync(join(inst.dir, 'screen.json'), 'utf8')).rev, inst.doc.rev);
+  rmSync(tmp, { recursive: true, force: true });
+});
