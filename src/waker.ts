@@ -1,8 +1,8 @@
 import { freemem } from 'node:os';
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, readdirSync, readFileSync, readSync, realpathSync, rmSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
-import { agentsFile, closedBefore, createInstance, HttpError, instance, instanceDir, instances, isPerson, labels, newId, readFile, seriesDir, type Entry, type Instance } from './store.ts';
+import { agentsFile, closedBefore, createInstance, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, seriesDir, type Entry, type Instance } from './store.ts';
 import { pylib, startRun, type Run, type TurnEnd, type View } from './runner.ts';
 import type { JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { prepare, sources } from './indexes.ts';
@@ -76,7 +76,7 @@ function drop(id: string) {
 }
 
 function seenBefore(inst: Instance): number {
-  return (inst.log.findLast(e => e.op === 'done')?.seen as number | undefined) ?? 0;
+  return Math.max((inst.log.findLast(e => e.op === 'done')?.seen as number | undefined) ?? 0, inst.copied);
 }
 
 // Who starts an instance's runs: its runner, and anyone, people or agents, where the runner shares the series.
@@ -89,11 +89,12 @@ const runnersWake = (inst: Instance, wake: { from: string; inst?: string }) => {
   const runner = runnerOf(inst).by;
   return wake.from === runner || (!!wake.inst && instance(wake.inst).seriesId === inst.seriesId && runnerOf(instance(wake.inst)).by === runner);
 };
-// What a person but the runner adds is a note, shared series or not: the agent reads it as context for its runner to take up, never as
-// the runner's word, though it runs on it where it may. A wake that neither the runner nor a run of theirs in the series set is one too,
-// and so is another instance's agent's comment. A reply, an approval or a rejection from whom the agent's ask it answers named is no note:
-// from before replies named what they answer, the thread's last ask.
-export const isNote = (inst: Instance, e: Entry) => !!e.note || (isPerson(e) && ['upload', 'comment', 'signoff', 'reject'].includes(e.op) && e.by !== runnerOf(inst).by
+// What a person but the runner, as it was then, adds is a note, shared series or not: the agent reads it as context for its runner to
+// take up, never as the runner's word, though it runs on it where it may. A wake that neither the runner nor a run of theirs in the
+// series set is one too, and so is another instance's agent's comment. A reply, an approval or a rejection from whom the agent's ask it
+// answers named is no note: from before replies named what they answer, the thread's last ask.
+export const isNote = (inst: Instance, e: Entry) => !!e.note || (isPerson(e) && ['upload', 'comment', 'signoff', 'reject'].includes(e.op)
+  && e.by !== inst.log.findLast(x => x.seq < e.seq && ['create', 'duplicate', 'takeover'].includes(x.op))?.by
   && !(e.op !== 'upload' && (e.parent ?? e.on ? inst.log[(e.parent ?? e.on) as number - 1] : inst.log.findLast(x => x.seq < e.seq && x.op === 'comment' && x.thread === e.thread && x.by === 'agent'))?.to === e.by));
 // A quiet entry, such as rf's without --wake, starts nothing, and its act kicks nothing that waits: the next run reads it with the rest.
 export const starts = (inst: Instance, e: Entry) => !e.quiet && (!isNote(inst, e) || starter(inst, e.by));
@@ -186,7 +187,10 @@ function flush(a: Active) {
   a.run!.steer(text).catch(err => finish(a, true, String(err)));
 }
 
-async function start(inst: Instance) {
+// What a timer starts, as a kick's, logs what fails rather than ending the server.
+const start = (inst: Instance) => begin(inst).catch(e => console.error(`a run of ${inst.id} failed to start`, e));
+
+async function begin(inst: Instance) {
   // A run starts from its instance's folder as the last run's commit left it.
   await committed(inst.dir);
   const series = inst.seriesId;
@@ -273,7 +277,7 @@ async function start(inst: Instance) {
   }
   flush(a);
   a.timer = setTimeout(() => finish(a, true, 'time limit'), LIMIT_MS);
-  settled.then(({ aborted, error }) => finish(a, aborted, error ?? a.failed));
+  settled.then(({ aborted, error }) => finish(a, aborted, error ?? a.failed)).catch(e => console.error(`run ${n} of ${inst.id} failed to end`, e));
 }
 
 // What its Pi says as a run goes, the run now its token's.
@@ -290,10 +294,20 @@ function heard(a: Active, e: JsonAgentSessionEvent) {
 }
 
 // The process a run starts from: its instance's working/process.md, or, until it has one, that of the series' latest closed instance
-// before it by label. A rule is one of its list items.
+// before it by label. A rule is one of its list items. One over 1 MB is none, as a run may leave a file of any size.
 function processOf(inst: Instance): string {
   const prev = closedBefore(inst).at(-1);
-  return readFile(inst.dir, 'working/process.md') ?? (prev && readFile(prev.dir, 'working/process.md')) ?? '';
+  return processMd(inst.dir) ?? (prev && processMd(prev.dir)) ?? '';
+}
+function processMd(dir: string): string | undefined {
+  const fd = openFile(dir, 'working/process.md');
+  if (fd === undefined) return undefined;
+  try {
+    const b = Buffer.alloc(2 ** 20 + 1), n = readSync(fd, b, 0, b.length, 0);
+    return n < b.length ? b.toString('utf8', 0, n) : undefined;
+  } finally {
+    closeSync(fd);
+  }
 }
 const rules = (was: string, now: string) => {
   const old = new Set(was.split('\n').map(l => l.trim()));
@@ -309,7 +323,7 @@ function finish(a: Active, aborted: boolean, error?: string): Entry | undefined 
   active.delete(series);
   const closing = a.browsers?.end().catch(e => a.inst.append('server', 'browsers', { run: a.n, error: e.message }));
   // The rules it added to the process, or reworded, for the thread whose entry started it, where they were likely agreed.
-  const added = rules(a.process, readFile(a.inst.dir, 'working/process.md') ?? a.process);
+  const added = rules(a.process, processMd(a.inst.dir) ?? a.process);
   const done = a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(4), ...(error && { error }), ...(added && { rules: added, thread: a.thread }) });
   // Its Pi idles for the instance's next run, or stops, the longest idle too past RF_MAX_IDLE.
   const keep = !aborted && !error && !!a.run && a.inst.doc.status === 'open' && a.run.alone();

@@ -101,6 +101,13 @@ function put(el, html) {
   drawn.set(el, html);
 }
 
+// A reload, as a lapsed session's, keeps the comments and replies being written in this tab, by instance, which come back as it opens
+// each again.
+addEventListener('pagehide', () => {
+  for (const [path, d] of drafts) sessionStorage[`drafts:${path}`] = JSON.stringify({ ...d.kept, ...Object.fromEntries([...d.el.querySelectorAll('textarea')].filter(t => t.value.trim())
+    .map(t => [t.id || `${t.closest('.post').dataset.seq}:${t.closest('.reply').dataset.mode}`, t.value])) });
+});
+
 // A call that fails throws the server's words; a toast shows them, unless the caller shows them itself.
 async function api(path, opts) {
   const r = await fetch(path, opts);
@@ -205,7 +212,10 @@ function land(next, path, d, st) {
   if (next?.w && next.w.id !== cur?.w.id) expandRow(next.w.id, true);
   if (next?.s && next.s.id !== cur?.s?.id) expandRow(next.s.id, true);
   if (d && (path !== shown || wasArchived !== archived(next.w, next.s))) {
-    if (!drafts.has(path)) drafts.set(path, { el: $('#conv').cloneNode(false), on: null, ref: null, replying: new Map() });
+    if (!drafts.has(path)) {
+      const kept = JSON.parse(sessionStorage[`drafts:${path}`] ?? '{}');
+      drafts.set(path, { el: $('#conv').cloneNode(false), on: null, ref: null, replying: new Map(Object.keys(kept).filter(k => k.includes(':')).map(k => [+k.split(':')[0], k.split(':')[1]])), kept });
+    }
     draft = drafts.get(path);
     $('#conv').replaceWith(archived(next.w, next.s) ? draft.el.cloneNode(false) : draft.el);
   }
@@ -405,6 +415,9 @@ function provenance(file) {
   return { person: false, by: 'Agent', at: e?.at };
 }
 
+// A copy's own history starts at its latest duplicate entry: what came before is the copied instance's, settled.
+const copied = () => data.log.findLast(e => e.op === 'duplicate')?.seq ?? 0;
+
 function tile(item) {
   const on = talkOn(item.id), open = on.filter(t => t.waits).length, fixed = data.log.some(e => e.op === 'correction' && e.item === item.id);
   const count = (fixed ? '<span class="corr">Corrected</span> ' : '') + (open ? `${open} to answer` : on.length ? `${on.length} comment${on.length > 1 ? 's' : ''}` : '');
@@ -413,7 +426,7 @@ function tile(item) {
   if (!item.file) {
     return `<div class="tile ghost ${mark}" data-item="${esc(item.id)}">${corner}<div class="ext"><span>${esc(item.kind.toUpperCase())}</span><span class="nc ${open ? 'q' : ''}">${count}</span></div><div class="fn">${esc(item.name)}</div><div class="meta">${item.kind === 'input' ? 'Missing' : 'Not built yet'}</div></div>`;
   }
-  const p = provenance(item.file), sent = data.log.findLast(e => e.op === 'delivered' && e.item === item.id);
+  const p = provenance(item.file), sent = data.log.findLast(e => e.op === 'delivered' && e.item === item.id && e.seq > copied());
   const v = data.log.filter(e => e.op === 'point' && e.item === item.id && e.file).length;
   return `<div class="tile ${p.person ? 'person' : 'agent'} ${openItem === item.id ? 'on' : ''} ${mark}" data-item="${esc(item.id)}">${corner}<div class="ext"><span>${esc(ext(item.file))}${v > 1 ? ' · v' + v : ''}</span><span class="nc ${open ? 'q' : ''}">${count}</span></div><div class="fn">${esc(item.name)}</div><div class="file">${esc(fname(item.file))}</div>${item.headline ? `<div class="hl">${esc(item.headline)}</div>` : ''}${item.source ? `<div class="src">${esc(item.source)}</div>` : ''}${item.destination ? `<div class="dst" title="${esc(item.destination)}">\u2192 ${esc(item.destination)}</div>` : ''}${sent ? `<div class="sent" title="${esc(sent.receipt)}">Sent ${hhmm(sent.at)} to ${esc(sent.to)}</div>` : ''}<div class="meta"><b>${person(p.by)}</b> · ${hhmm(p.at)}</div></div>`;
 }
@@ -577,6 +590,11 @@ function renderLog() {
     + '<button class="x" data-act="panel" title="Close">\u00D7</button>');
   $('#conv').hidden = ui.audit;
   if (!drafting) put($('#conv'), conversationHtml());
+  for (const [k, v] of Object.entries(draft.kept)) {
+    const [seq, mode] = k.split(':'), box = mode ? $(`#conv .post[data-seq="${seq}"] > .reply[data-mode="${mode}"] textarea`) : $(`#${k}`);
+    if (box) box.value = v;
+  }
+  draft.kept = {};
   if (!ui.audit && $('#log').dataset.end !== 'no') $('#log').scrollTop = $('#log').scrollHeight;
   // Only on the instance it's for: a render for the one before, as the page catches up, leaves it. The box keeps the focus it had.
   if (focused) $('#newcomment')?.focus();
@@ -638,10 +656,11 @@ const cref = (seq, text, inst = cur.i.id) => {
 // code's text stays as it is.
 const crefs = h => h.replace(/(<a\b[^]*?<\/a>|<code>[^]*?<\/code>|<[^>]*>)|(?<![\w/.#=&;!:?-])c(\d+)\b(?![\w-]|\.\w)/g, (m, skip, n) => skip || data.log[n - 1]?.op !== 'comment' ? m : cref(+n, m));
 // A file in the agent's markdown, by its path in the instance, or ../<label>/… in another of its series: [name](working/x.csv) links it,
-// opening the preview, and an image, ![name](working/x.png), shows as a thread's file does. [name](#cN) links a comment, and
+// opening the preview, and an image, ![name](working/x.png), shows as a thread's file does; a path may hold spaces and one level of
+// parentheses, as in TB (final).csv, and a link's an &, which the text holds escaped and data-file decodes. [name](#cN) links a comment, and
 // [name](../<label>#cN) one of another instance, last, so what its title quotes of the comment is left as it is.
-const inline = s => s.replace(/!\[([^\]]*)\]\(([^)\s&]+\.(?:png|jpe?g|gif|webp|svg))\)/gi, (_, alt, f) => `<img class="md" src="${fileUrl(f)}" loading="lazy" alt="${alt}" title="${alt}" data-act="preview" data-file="${f}">`)
-  .replace(/\[([^\]]+)\]\(((?:\.\.\/[^/)]+\/)?(?:upload|working)\/[^)&]+)\)/g, (_, name, f) => `<a data-act="preview" data-file="${f}">${name}</a>`)
+const inline = s => s.replace(/!\[([^\]]*)\]\(((?:[^()&]|\([^()&]*\))+\.(?:png|jpe?g|gif|webp|svg))\)/gi, (_, alt, f) => `<img class="md" src="${fileUrl(f)}" loading="lazy" alt="${alt}" title="${alt}" data-act="preview" data-file="${f}">`)
+  .replace(/\[([^\]]+)\]\(((?:\.\.\/[^/)]+\/)?(?:upload|working)\/(?:[^()]|\([^()]*\))+)\)/g, (_, name, f) => `<a data-act="preview" data-file="${f}">${name}</a>`)
   .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>')
   .replace(/\[([^\]]+)\]\((?:\.\.\/([^/)#]+))?#c(\d+)\)/g, (_, name, label, n) => {
     const id = label ? cur.s.instances.find(i => esc(i.label) === label)?.id : cur.i.id;
@@ -708,7 +727,7 @@ function postHtml(t, p, depth) {
   const kids = t.posts.filter(k => k.under === p.seq), open = editable(), off = data.run ? ' disabled title="Available when the run ends"' : '';
   // An ask from before questions and proposals, ask true, may have been either.
   const proposal = p.ask === 'proposal' || p.ask === true, kind = p.ask === 'proposal' ? 'propose' : p.ask ? 'ask' : '';
-  const decides = open && proposal && !p.withdrawn && !t.posts.some(k => k.on === p.seq && k.by === me.email), since = decides && data.log.filter(e => e.op === 'run' && e.seq > p.seq).length;
+  const decides = open && proposal && p.seq > copied() && !p.withdrawn && !t.posts.some(k => k.on === p.seq && k.by === me.email), since = decides && data.log.filter(e => e.op === 'run' && e.seq > p.seq).length;
   const long = !ui.full.has(p.seq) && (p.text.length > 900 || p.text.split('\n').length > 12), all = n => t.posts.filter(k => k.under === n).reduce((c, k) => c + 1 + all(k.seq), 0);
   const end = q => Math.max(q.seq, ...t.posts.filter(k => k.under === q.seq).map(end)), head = `<b class="${p.by === 'agent' ? '' : 'p'}">${p.see ? agentOf(p) : who(p.by)}</b> <span class="tm">`;
   const gone = p.withdrawn && `withdrawn: ${esc(p.withdrawn.text)}${p.withdrawn.see ? ` \u00b7 see ${cref(p.withdrawn.see, `c${p.withdrawn.see}`)}` : ''}`;
@@ -791,7 +810,7 @@ function renderCard() {
     const p = provenance(item.file);
     h += `<div class="cp"><b class="${p.person ? 'p' : ''}">${person(p.by)}</b> ${p.person ? 'uploaded' : 'made'} it at ${hhmm(p.at)} · ${esc(item.name)}${item.source ? `<br>${esc(item.source)}` : ''}`
       + (item.kind === 'output' ? `<br>Destination: ${item.destination ? esc(item.destination) : 'stays here'}` : '')
-      + data.log.filter(e => e.op === 'delivered' && e.item === item.id).map(e => `<br><span class="sent">Sent to ${esc(e.to)} ${when(e.at)} · ${esc(e.receipt)}</span>`).join('') + '</div>';
+      + data.log.filter(e => e.op === 'delivered' && e.item === item.id && e.seq > copied()).map(e => `<br><span class="sent">Sent to ${esc(e.to)} ${when(e.at)} · ${esc(e.receipt)}</span>`).join('') + '</div>';
   } else h += `<div class="cp">${item.kind === 'input' ? 'Expected input, not there yet' : `${item.kind === 'step' ? 'Step' : 'Output'} not built yet`}</div>`;
   const from = (item.from ?? []).map(f => data.doc.items.find(i => i.id === f)).filter(Boolean);
   if (from.length) h += `<div class="cp">Made from ${from.map(f => `<a data-act="opencard" data-item="${esc(f.id)}">${esc(f.name)}</a>`).join(', ')}</div>`;
@@ -1523,10 +1542,9 @@ async function onAct(act, el) {
     const [, label, inside] = act === 'wadd' && /^(.*?)\s*<(.+)>$/.exec($('#wperson').value.trim()) || [];
     const s = pv.settings, p = act === 'wadd' ? (inside ?? $('#wperson').value).trim().toLowerCase() : el.dataset.p;
     if (!p) return;
-    const owners = s.owners.filter(x => x !== p), members = s.members.filter(x => x !== p);
-    if (act === 'wadd') (s.owners.includes(p) ? owners : members).push(p);
-    if (act === 'wrole') (s.owners.includes(p) ? members : owners).push(p);
-    await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ owners, members, ...(label && !p.includes('@') && { groups: { [p]: label } }) }) });
+    // The one change, which the server makes to the people as they are now, not as this dialog last saw them.
+    const change = act === 'wremove' ? { remove: p } : { add: p, as: s.owners.includes(p) === (act === 'wadd') ? 'owner' : 'member' };
+    await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ ...change, ...(label && !p.includes('@') && { groups: { [p]: label } }) }) });
     me = await api('/me');
     await refresh();
     openWorkspaceSettings();
@@ -1535,7 +1553,7 @@ async function onAct(act, el) {
   if (act === 'archive-series' || act === 'archive-workspace') {
     const x = act === 'archive-series' ? cur.s : cur.w, flip = () => api(act === 'archive-series' ? seriesPath(cur) : `/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ archived: !x.archived }) });
     if (x.archived) await flip();
-    else if (!await ask({ title: `Archive ${x.name}?`, text: "It leaves the sidebar, except under Show archived. Nothing in it changes or runs until it's restored.", ok: 'Archive', kind: 'danger', act: flip })) return;
+    else if (!await ask({ title: `Archive ${x.name}?`, text: "It leaves the sidebar, except under Show archived. Nothing in it changes or runs until it's restored, and its wakes, weekly ones too, and requests to start an instance are cancelled for good: restoring brings none back.", ok: 'Archive', kind: 'danger', act: flip })) return;
     closePv();
     await refresh();
   }
@@ -2004,10 +2022,11 @@ function navigate(e) {
 }
 
 addEventListener('keydown', e => {
-  // Ctrl+Enter, or Cmd+Enter on a Mac, sends from the panel's comment and reply boxes.
+  // Ctrl+Enter, or Cmd+Enter on a Mac, sends from the panel's comment and reply boxes, unless what it presses is still sending.
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.target.matches('#log textarea')) {
     e.preventDefault();
-    return (e.target.id === 'newcomment' ? $('#log [data-act=comment]') : e.target.closest('.reply').querySelector('.row2 .btn'))?.click();
+    const send = e.target.id === 'newcomment' ? $('#log [data-act=comment]') : e.target.closest('.reply').querySelector('.row2 .btn');
+    return send?.hasAttribute('aria-busy') || send?.click();
   }
   if (e.key === 'Escape' && e.target.matches('textarea, input:not(.inline)') && !document.querySelector('dialog[open]')) return e.target.blur();
   if (!e.target.matches('input, textarea, select') && !e.ctrlKey && !e.metaKey && !e.altKey && !document.querySelector('dialog[open]')) navigate(e);
@@ -2040,11 +2059,24 @@ async function drain() {
   busy = false;
   drain();
 }
-const events = new EventSource('/api/events');
-events.onmessage = e => { pend.add(e.data); drain(); };
-events.onopen = () => { pend.add('tree'); drain(); };
-// The browser gives up on a stream that comes back with an error, as during a deploy or once the session has ended.
-events.onerror = () => events.readyState === EventSource.CLOSED && setTimeout(() => location.reload(), 5000);
+// The browser gives up on a stream that comes back with an error, as during a deploy behind a proxy or once the session has ended: the
+// page asks who it is every 5 s until the server answers, reloading only to sign in again, and else listens again, catching up as it
+// opens, so a restart keeps what is being written.
+function listen() {
+  const events = new EventSource('/api/events');
+  events.onmessage = e => { pend.add(e.data); drain(); };
+  events.onopen = () => { pend.add('tree'); drain(); };
+  events.onerror = async () => {
+    if (events.readyState !== EventSource.CLOSED) return;
+    for (;;) {
+      await new Promise(ok => setTimeout(ok, 5000));
+      const r = await fetch('/me').catch(() => null);
+      if (r?.status === 401) return location.reload();
+      if (r?.ok) return listen();
+    }
+  };
+}
+listen();
 addEventListener('visibilitychange', drain);
 // The rows' ages move on as the minutes pass.
 setInterval(renderSide, 60_000);

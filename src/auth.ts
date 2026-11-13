@@ -177,9 +177,11 @@ function page(res: ServerResponse, status: number, text: string) {
   res.end(shell('rollforward', `<h1>${APP}</h1><p class="bad">${esc(text)}</p>${button('/auth/login')}`) + "\n<script>history.replaceState(null, '', '/')</script>");
 }
 
+// The address's #/ID or #/ID/cN, which the server never sees, goes along in next.
 function signInPage(res: ServerResponse, next: string) {
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-  res.end(shell('Sign in · rollforward', `<h1>Welcome to ${APP}</h1><p>Recurring tasks, files in and files out.</p>${button(`/auth/login?next=${encodeURIComponent(next)}`)}`));
+  res.end(shell('Sign in · rollforward', `<h1>Welcome to ${APP}</h1><p>Recurring tasks, files in and files out.</p>${button(`/auth/login?next=${encodeURIComponent(next)}`)}`)
+    + "\n<script>document.querySelector('a.ms').href += encodeURIComponent(location.hash)</script>");
 }
 
 // rf login URL, without a token, signs in through the browser, as gh auth login --web does: rf asks for a request, whose code the

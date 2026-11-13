@@ -24,7 +24,8 @@ rf cat PATH/FILE                  one file, to stdout
 rf pull PATH DIR [--delete] [-n|--dry-run] [--exclude PATTERN]... [--max-size SIZE]
                                   PATH's files into DIR as rsync copies them, whole, if their size or time differ: PATH/ fills DIR,
                                   PATH makes DIR/<its name>, / is all you see; --delete removes what the server no longer has;
-                                  --max-size skips files bigger than SIZE, such as 50M
+                                  --max-size skips files bigger than SIZE, such as 50M; on Windows and macOS, of two names
+                                  that differ only in case, the second is skipped
 rf help [COMMAND]                 how rollforward works and how to use rf, for an agent, or COMMAND's usage
 rf --version                      rf's own version, to tell whether it's older than what the guide names
 rf comment PATH TEXT [--item ID] [--ref REF] [--thread cN] [--wake|--wait]   a new thread, or a reply under comment cN, as to
@@ -55,7 +56,8 @@ rf new workspace NAME             yours to own, for admins and those they grant 
 rf copy PATH LABEL [--creds OFFER,...]   a closed or abandoned instance, copied into a new open one without its agent session
 rf share PATH on|off [--creds OFFER,...]   the series' people, and their agents, wake it as you, with those offers ticked;
                                   off stops it, for its sharer or its workspace's owners
-rf archive PATH [--undo]          a workspace or a series leaves the sidebar, and nothing in it changes or runs, until --undo brings it back
+rf archive PATH [--undo]          a workspace or a series leaves the sidebar, and nothing in it changes or runs, until --undo brings it back;
+                                  its wakes and requests are cancelled for good
 rf request start|drop ID [--creds OFFER,...] [--wake]   a request to start an instance, by the ID rf waiting and rf wakes
                                   print; --wake runs the instance it starts
 rf logins [--json]                your logins, each with its state, keepalive and offers; you sign in to them on the page
@@ -219,7 +221,8 @@ Watching over it, for admins and power users; each sees what the caller sees
   person whether it is crawling or following changes, pages read, when last caught up, and an error, if any, with its next try.
 - History: rf runs [PATH] [--since DATE] [--failed] [--running] [--long MIN] prints a line per run: its start, path, run number,
   outcome, time taken, cost, what started it and by whom, and any error. rf costs [PATH] [--since DATE] [--by
-  workspace|series|person|day] totals them, by the runner for person.
+  workspace|series|person|day] totals them, by the runner for person. A DATE such as 2026-11-01 starts at its midnight on
+  this machine's clock, the days --by day groups by.
 - People: rf people (admins) prints everyone as ROLE EMAIL lines, and rf people WORKSPACE (its owners and admins) its owners and
   members as owner|member lines; a comment after each says when they last signed in and which open instances they run, and for
   everyone those they run in workspaces they aren't in. Edit the lines, see the changes with --set FILE -n (FILE may be - for
@@ -300,7 +303,9 @@ const when = (iso: string) => new Date(iso).toLocaleString('sv-SE', { dateStyle:
 const grantText = (g: any) => `${g.description}${g.flags.length ? ` Flags: ${g.flags.join('; ')}.` : ''}${g.adminOnly ? ` ${g.adminWhy}.` : ''}`;
 const took = (s: number) => s < 60 ? `${Math.round(s)}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${Math.floor(s / 3600)}h${String(Math.round((s % 3600) / 60)).padStart(2, '0')}`;
 const usd = (n: number) => `$${n.toFixed(2)}`;
-const runsIn = async (path = '') => (await get(`/api/runs?since=${encodeURIComponent(String(flags.since ?? ''))}`))
+// --since DATE from its midnight on this machine's clock, as --by day groups by.
+const since = encodeURIComponent(/^\d{4}-\d{2}-\d{2}$/.test(String(flags.since)) ? new Date(`${flags.since}T00:00`).toISOString() : String(flags.since ?? ''));
+const runsIn = async (path = '') => (await get(`/api/runs?since=${since}`))
   .filter(r => !path || r.path === path.replace(/\/+$/, '') || r.path.startsWith(path.replace(/\/+$/, '') + '/'));
 
 function write(path: string, data: string | Uint8Array, mtime: string) {
@@ -347,12 +352,20 @@ async function pull(path: string, dir: string) {
   const into = !from || at.endsWith('/') ? to : under(to, from.slice(from.lastIndexOf('/') + 1)), rel = (f: { path: string }) => f.path.slice(from ? from.length + 1 : 0);
   if (!into) throw new Error(`${from} can't be a name here: pull ${from}/ into a folder of your choosing`);
   let fetched = 0, same = 0, deleted = 0, failed = 0, big = 0;
-  const fetches: (() => Promise<void>)[] = [];
+  const fetches: (() => Promise<void>)[] = [], cased = new Map<string, string>();
   for (const f of list.filter(f => !excluded(rel(f)))) {
     const local = rel(f) ? under(into, rel(f)) : into, st = local && existsSync(local) ? statSync(local) : undefined;
     if (!local) {
       console.error(`skipped ${f.path}: it can't be a file's name here`);
       continue;
+    }
+    // Windows' and macOS's disks take two names that differ only in case for one file: the second is skipped.
+    if (['win32', 'darwin'].includes(process.platform)) {
+      if (cased.has(f.path.toLowerCase())) {
+        console.error(`skipped ${f.path}: this disk takes it for ${cased.get(f.path.toLowerCase())}, which differs only in case`);
+        continue;
+      }
+      cased.set(f.path.toLowerCase(), f.path);
     }
     if (st && st.size === f.size && Math.floor(st.mtimeMs / 1000) === Math.floor(Date.parse(f.mtime) / 1000)) {
       same++;
@@ -555,7 +568,7 @@ else if (cmd === 'comment' && args.length === 2) {
 } else if (cmd === 'archive' && args.length === 1) {
   const [w, s] = args[0].replace(/\/+$/, '').split('/');
   await post(s === undefined ? `/api/workspaces/${(await workspaceNamed(w)).id}` : `/api/series/${(await seriesAt(args[0])).id}`, { archived: !flags.undo }, 'PUT');
-  console.log(`${flags.undo ? 'brought back' : 'archived'} ${args[0]}`);
+  console.log(flags.undo ? `brought back ${args[0]}` : `archived ${args[0]}, its wakes and requests cancelled for good`);
 } else if (cmd === 'request' && ['start', 'drop'].includes(args[0]) && args.length === 2) {
   if (args[0] === 'drop') await api(`/api/requests/${args[1]}`, { method: 'DELETE' });
   console.log(args[0] === 'drop' ? `dropped request ${args[1]}` : `made ${await pathOf((await (await post(`/api/requests/${args[1]}`, { logins: ticks(), quiet: !flags.wake })).json()).id)}${consent(ticks())}`);
@@ -751,7 +764,7 @@ else if (cmd === 'comment' && args.length === 2) {
     for (const q of r.requests) console.log(`  request ${q.id} to start ${q.label}, from ${q.from} since ${when(q.at)}, waits on ${q.who ?? 'anyone'}${q.text ? `: ${q.text}` : ''}`);
   }
 } else if (cmd === 'activity' && args.length <= 1) {
-  const at = (args[0] ?? '').replace(/\/+$/, ''), blocks = (await get(`/api/activity?since=${encodeURIComponent(String(flags.since ?? ''))}`))
+  const at = (args[0] ?? '').replace(/\/+$/, ''), blocks = (await get(`/api/activity?since=${since}`))
     .filter(b => !at || b.path === at || b.path.startsWith(at + '/'));
   if (flags.json) console.log(JSON.stringify(blocks, null, 1));
   else for (const b of blocks) {

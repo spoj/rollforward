@@ -1,9 +1,9 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createInstance, instance, labels, openStore, renameInstance, Instance } from '../src/store.ts';
+import { createInstance, duplicateInstance, instance, labels, openStore, renameInstance, Instance } from '../src/store.ts';
 import type { Run } from '../src/runner.ts';
 import { initSystem, readJson, saveTree, tree, writeJson } from '../src/system.ts';
 import type { Active } from '../src/waker.ts';
@@ -124,6 +124,17 @@ test('a process.md a run made unreadable is none to the server, so the next run 
   while (!locked.log.some(e => e.op === 'done')) await new Promise(r => setTimeout(r, 5));
   await committed(locked.dir);
   assert.equal(statSync(md).mode & 0o777, 0o400);
+});
+
+test('a process.md over 1 MB is none to the server, which would fail to read one over 512 MB as text, at every start', async () => {
+  const huge = make('s8', 'huge'), md = join(huge.dir, 'working', 'process.md');
+  writeFileSync(md, '');
+  truncateSync(md, 600 * 2 ** 20);
+  huge.append(alice, 'comment', { thread: 'n1', text: 'go' });
+  kick(huge);
+  while (!huge.log.some(e => e.op === 'done')) await new Promise(r => setTimeout(r, 5));
+  rmSync(md);
+  await committed(huge.dir);
 });
 
 test("a series' wake starts an instance as whoever shares the series, its text a note unless its runner, or a run of theirs in the series, set it; unshared, or with 3 open, it's a request, which keeps the text", async () => {
@@ -251,6 +262,16 @@ test('after a restart every open instance with something for a run starts; an In
   kick(hushed);
   await settle();
   assert.equal(hushed.log.find(e => e.op === 'run')?.upto, go.seq, 'the next act starts a run, which reads all before it');
+});
+
+test("a copy of an instance closed with an act its run never read starts nothing after a restart: what came before the copy is history", async () => {
+  const src = make('s6', 'copied');
+  src.append(alice, 'comment', { thread: 'c2', text: 'Also send the pack to the bank.' });
+  await src.close({ email: alice, name: 'Alice' });
+  const copy = duplicateInstance(src, 'copied again', alice, []);
+  recover();
+  await settle();
+  assert.ok(!ops(copy).includes('run'));
 });
 
 test("a task's run sees its own instance alone in its series' folder, and the series in reach, not their packages", () => {

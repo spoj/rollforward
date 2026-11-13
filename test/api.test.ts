@@ -1,6 +1,6 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
@@ -245,6 +245,13 @@ test("an instance says which of its files are new since the series' latest close
   writeFileSync(join(await dir(series, '2026-08-30 copy'), 'working', 'Borrowing base 08.30.2026.csv'), 'revised\n');
   assert.equal((await json(path)).previous.changed['borrowing-base'], 'changed');
   assert.equal((await json(await at(series, '2026-08-23'))).previous, null);
+  // One over 2 GiB, which no Buffer holds, is summed as it streams.
+  const big = join(await dir(series, '2026-08-30 copy'), 'working', 'Borrowing base 08.30.2026.csv');
+  truncateSync(big, 2 ** 31 + 1);
+  const r = await call('GET', path);
+  assert.equal(r.status, 200);
+  assert.match((await r.json()).sums['borrowing-base'], /^[0-9a-f]{64}$/);
+  writeFileSync(big, 'revised\n');
 });
 
 test('rename relabels an instance in any status in its instance.json and logs it; an existing label is refused, a former one free', async () => {
@@ -277,6 +284,21 @@ test("only the runner closes or abandons; taking over makes you the runner with 
   assert.equal((await json(`/api/instances/${id}`)).log.at(-1).from, 'alex');
   assert.equal((await call('DELETE', '/logins/web')).status, 200);
   assert.deepEqual(await json('/logins'), [], 'signing out deletes the record');
+});
+
+test("after a takeover, what the previous runner said stays their word, never notes waiting on the new runner, and the new runner's own notes from before wait on no one", async () => {
+  const b = sessionOf(await login(bob))!, ws = (await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Takeovers' }))).json()).id;
+  const sid = (await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'Bank' }))).json()).id;
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ members: [bob] }))).status, 200);
+  const id = (await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'TO', quiet: true }))).json()).id;
+  for (const [text, cookie] of [['Use the HSBC statement this time.', admin], ['And cut off at the 25th.', admin], ['The rate moved.', b]])
+    assert.equal((await call('POST', `/api/instances/${id}/comment`, JSON.stringify({ text, quiet: true }), cookie)).status, 200);
+  assert.deepEqual((await json(`/api/instances/${id}`)).waiting.map((w: { who: string }) => w.who), [adminEmail], "bob's note waits on the runner");
+  assert.equal((await call('POST', `/api/instances/${id}/takeover`, JSON.stringify({ logins: [] }), b)).status, 200);
+  const { log, waiting } = await json(`/api/instances/${id}`, b);
+  assert.deepEqual([waiting, log.filter((e: { op: string }) => e.op === 'comment').map((e: { note?: boolean }) => !!e.note)], [[], [false, false, true]]);
+  assert.equal((await call('POST', `/api/instances/${id}/abandon`, undefined, b)).status, 200);
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ members: [] }))).status, 200);
 });
 
 test('close and abandon end an open instance; a closed one takes no actions', async () => {
@@ -323,6 +345,9 @@ test("series settings write series.json; a rename edits .rf/tree.json", async ()
   assert.equal((await shown(renamed)).id, id);
 
   assert.equal((await put(renamed, { name: monthly })).status, 409);
+  // A name is a folder's in every run's view, which holds 255 bytes, about 85 Chinese characters.
+  const long = await put(renamed, { name: '供应商对账单'.repeat(15) });
+  assert.deepEqual([long.status, await long.text()], [400, 'a name is 200 bytes at most, about 66 Chinese characters, not 270']);
   assert.equal((await put(renamed, { name: series })).status, 200);
 });
 
@@ -919,6 +944,12 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   const runs = JSON.parse(await rf('runs', `larkfield/${series}`, '--json'));
   assert.ok(runs.every((r: { path: string }) => r.path.startsWith(`larkfield/${series}/`)));
   assert.deepEqual(runs[0], { path: `larkfield/${series}/2026-08-23`, run: 1, at: '2026-08-23T23:01:00.000Z', outcome: 'done', seconds: 240, cost: 0.21, runner: 'alex', started: { op: 'upload', by: 'alex' }, error: null, failure: null });
+  // A --since date starts at its midnight on rf's clock, as --by day groups: 23:01 UTC on the 23rd is the 24th in Hong Kong.
+  const tz = process.env.TZ;
+  process.env.TZ = 'Asia/Hong_Kong';
+  assert.deepEqual(JSON.parse(await rf('runs', `larkfield/${series}/2026-08-23`, '--since', '2026-08-24', '--json')).map((r: { at: string }) => r.at), ['2026-08-23T23:01:00.000Z']);
+  if (tz === undefined) delete process.env.TZ;
+  else process.env.TZ = tz;
   assert.match(await rf('runs', '--failed'), /  run \d+  failed \(other\)  \d+[sm]  \$0\.00  (upload|comment|create|wake) by \S+  /, 'without a model key, the runs the tests start fail');
   const scratch = `larkfield/${series}/scratch`;
   assert.deepEqual(JSON.parse(await rf('runs', scratch, '--json')).map((r: { outcome: string; failure: string }) => [r.outcome, r.failure]), [['cut', null], ['failed', 'credits']]);
@@ -981,6 +1012,18 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   writeFileSync(file, `user ${bob}\n`);
   await assert.rejects(rf('people', '--set', file), /Guarded\/Weekly\/one, run by Bob <bob@demo\.test>/);
   assert.match(await rf('people', '--set', file, '--force'), /^bob@demo\.test: admin -> user\nsaved$/m);
+});
+
+test("rf pull on Windows or macOS, whose disks ignore case, skips the second of two files whose names differ only in case, saying so, rather than writing both to one file", async () => {
+  const { id: workspace } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Cases' }))).json();
+  const { id: s } = await (await call('POST', '/api/series', JSON.stringify({ workspace, name: 'Rec' }))).json();
+  const { id } = await (await call('POST', `/api/series/${s}`, JSON.stringify({ label: 'jan', quiet: true }))).json();
+  for (const name of ['AR.csv', 'ar.csv']) assert.equal((await call('POST', `/api/instances/${id}/upload?pane=in&quiet&name=${name}`, name)).status, 200);
+  const dest = join(tmp, 'pull-cases'), { stdout, stderr } = spawnSync(process.execPath, ['--import', "data:text/javascript,Object.defineProperty(process, 'platform', { value: 'darwin' })",
+    join(app, 'src', 'rf-people.ts'), 'pull', 'Cases/Rec/jan/upload/', dest], { env: { ...process.env, HOME: home }, encoding: 'utf8' });
+  assert.equal(stderr, 'skipped Cases/Rec/jan/upload/ar.csv: this disk takes it for Cases/Rec/jan/upload/AR.csv, which differs only in case\n');
+  assert.match(stdout, /fetched 1, /);
+  assert.deepEqual(readdirSync(dest), ['AR.csv']);
 });
 
 test("rf pull refuses a link where a folder goes, dangling ones too, but follows its destination's and replaces a file's own", async () => {
@@ -1220,10 +1263,10 @@ test('rf shares and archives series and workspaces, starts or drops a request, l
   assert.deepEqual([(await lunches()).shared_by, (await lunches()).shared_logins], [adminEmail, ['web:crm']]);
   assert.equal(await rf('share', 'Making/Lunches', 'off'), 'stopped sharing Making/Lunches\n');
   await assert.rejects(rf('share', 'Making/Lunches/again', 'on'), fails(1, /^rf: Making\/Lunches\/again is an instance: name its series\n$/));
-  assert.equal(await rf('archive', 'Making/Lunches'), 'archived Making/Lunches\n');
+  assert.equal(await rf('archive', 'Making/Lunches'), 'archived Making/Lunches, its wakes and requests cancelled for good\n');
   assert.equal((await lunches()).archived, true);
   assert.equal(await rf('archive', 'Making/Lunches', '--undo'), 'brought back Making/Lunches\n');
-  assert.equal(await rf('archive', 'Making'), 'archived Making\n');
+  assert.equal(await rf('archive', 'Making'), 'archived Making, its wakes and requests cancelled for good\n');
   assert.equal((await named('Making')).archived, true);
   await rf('archive', 'Making', '--undo');
   await assert.rejects(rf('request', 'drop', 'nosuch'), fails(1, /: 404 no request nosuch\n$/));
@@ -1343,7 +1386,8 @@ test('the second audit: a bad request line, a bad workbook and a slow body hurt 
   const bad = join(await dir(series, '2026-08-30'), 'working', 'bad.xlsx');
   writeFileSync(bad, 'not a workbook');
   const preview = async (name: string) => call('GET', `/preview/${await iid(series, '2026-08-30')}/working/${name}`);
-  assert.equal((await preview('bad.xlsx')).status, 500);
+  const broken = await preview('bad.xlsx');
+  assert.deepEqual([broken.status, await broken.text()], [422, "can't preview bad.xlsx: download it"], 'a plain message, not the sandbox command and a traceback');
   writeFileSync(bad.replace('bad.xlsx', 'fine.csv'), 'month,total\n2026-08,5\n');
   assert.deepEqual((await (await preview('fine.csv')).json()).sheets[0].rows, [['month', 'total'], ['2026-08', '5']]);
   const kept = readdirSync(join(root, '.previews'));

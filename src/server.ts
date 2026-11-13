@@ -6,7 +6,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { agentsFile, closedBefore, createInstance, duplicateInstance, keep, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, safeName, seriesDir, type Entry, type Instance } from './store.ts';
+import { agentsFile, closedBefore, createInstance, duplicateInstance, keep, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, folderName, seriesDir, type Entry, type Instance } from './store.ts';
 import { AGENT, commit, refused } from './git.ts';
 import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
@@ -49,31 +49,33 @@ openStore(root);
 // A new data root starts with one connection, Microsoft 365's, graph.
 if (!existsSync(join(root, '.rf', 'connections.json'))) writeJson('connections.json', { graph: { type: 'graph', updated_by: 'server', updated_at: new Date().toISOString() } });
 
-// A file's sha256, kept by its path, size and change time, as each view of an instance compares its files again.
+// A file's sha256, kept by its path, size and change time, as each view of an instance compares its files again; streamed, as a run
+// may leave a file of any size.
 const sums = new Map<string, [string, string]>();
-function sha256(dir: string, file: string): string | undefined {
+async function sha256(dir: string, file: string): Promise<string | undefined> {
   const fd = openFile(dir, file);
   if (fd === undefined) return undefined;
-  try {
-    const st = fstatSync(fd), key = `${st.size}:${st.mtimeMs}`, hit = sums.get(join(dir, file));
-    if (hit?.[0] === key) return hit[1];
-    const sum = createHash('sha256').update(readFileSync(fd)).digest('hex');
-    sums.set(join(dir, file), [key, sum]);
-    return sum;
-  } finally {
+  const st = fstatSync(fd), key = `${st.size}:${st.mtimeMs}`, hit = sums.get(join(dir, file));
+  if (hit?.[0] === key) {
     closeSync(fd);
+    return hit[1];
   }
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream('', { fd })) hash.update(chunk);
+  const sum = hash.digest('hex');
+  sums.set(join(dir, file), [key, sum]);
+  return sum;
 }
 
 // The series' latest closed instance before this one, by label, and whether each of this one's files is new since it, changed or
 // the same, by content, as its item of the same id had it.
-function previous(inst: Instance) {
+async function previous(inst: Instance) {
   const prev = closedBefore(inst).at(-1);
   if (!prev) return null;
-  return { label: prev.label, changed: Object.fromEntries(inst.doc.items.filter(i => i.file).map(i => {
-    const was = prev.doc.items.find(p => p.id === i.id)?.file, now = was && sha256(inst.dir, i.file!);
-    return [i.id, !was ? 'new' : now && now === sha256(prev.dir, was) ? 'same' : 'changed'];
-  })) };
+  return { label: prev.label, changed: Object.fromEntries(await Promise.all(inst.doc.items.filter(i => i.file).map(async i => {
+    const was = prev.doc.items.find(p => p.id === i.id)?.file, now = was && await sha256(inst.dir, i.file!);
+    return [i.id, !was ? 'new' : now && now === await sha256(prev.dir, was) ? 'same' : 'changed'];
+  }))) };
 }
 
 // A free name among a workspace's series: the name, else the name 2, 3 and on.
@@ -152,11 +154,11 @@ function watched(me: Me, id: string, site: string): { browsers: Browsers; id: st
 }
 
 // Whom an open instance waits on, and with what: each ask no one answered on the person it names, else the runner, and each such
-// note on the runner.
+// note on the runner but their own, from before they took it over; a copy's since it was copied.
 function waits(inst: Instance): { who: string; e: Entry }[] {
   if (inst.doc.status !== 'open') return [];
-  const runner = runnerOf(inst).by;
-  return inst.log.filter(e => e.op === 'comment' && ((e.by === 'agent' && e.ask) || isNote(inst, e)) && !inst.answered(e)).map(e => ({ who: (e.to as string | undefined) ?? runner, e }));
+  const runner = runnerOf(inst).by, from = inst.copied;
+  return inst.log.filter(e => e.seq > from && e.op === 'comment' && ((e.by === 'agent' && e.ask) || (isNote(inst, e) && e.by !== runner)) && !inst.answered(e)).map(e => ({ who: (e.to as string | undefined) ?? runner, e }));
 }
 
 // Whom a request to start an instance of a series waits on: whoever shares it, else the runner of its newest instance, else the
@@ -444,9 +446,10 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
         '--ro-bind', join(app, 'src', 'preview.py'), '/preview.py', '--setenv', 'HOME', '/tmp', '--setenv', 'LANG', 'C.UTF-8', '--', '/opt/venv/bin/python', '/preview.py', basename(rel), part,
       ], { timeout: 30_000, maxBuffer: 64e6, env: { PATH: process.env.PATH } });
       const content = createHash('sha256').update(`${basename(rel)}\n${part}\n`);
+      // A file preview.py can't read, as a broken or password-protected one, is a plain message.
       const [{ stdout }] = await Promise.all([run, pipeline(createReadStream('', { fd, start: 0 }), async function* (chunks: AsyncIterable<Buffer>) {
         for await (const c of chunks) { content.update(c); yield c; }
-      }, run.child.stdin!)]);
+      }, run.child.stdin!)]).catch(() => { throw new HttpError(422, `can't preview ${basename(rel)}: download it`); });
       if (inst.doc.status === 'deleted') throw new HttpError(404, 'the instance was deleted');
       const tmp = join(tmpDir, randomUUID());
       writeFileSync(tmp, stdout);
@@ -530,7 +533,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   }
   if (kind === 'workspaces' && !id && req.method === 'POST') {
     if (!can(me, 'create')) throw new HttpError(403, 'making a workspace is for admins and those they grant create: ask an admin');
-    const name = safeName(String(payload.name ?? ''));
+    const name = folderName(String(payload.name ?? ''));
     if (Object.values(t.workspaces).some(w => w.name === name)) throw new HttpError(409, `the name ${name} is taken; choose another`);
     const wid = newId();
     t.workspaces[wid] = { name, owners: [me.email], members: [] };
@@ -566,13 +569,17 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (!canManage(me, w)) throw new HttpError(403, "only the workspace's owners and admins change it");
     const change = payload;
     if (change.name !== undefined) {
-      const name = safeName(String(change.name));
+      const name = folderName(String(change.name));
       if (name !== w.name && Object.values(t.workspaces).some(x => x.name === name)) throw new HttpError(409, `the name ${name} is taken; choose another`);
       w.name = name;
     }
-    if (change.owners !== undefined || change.members !== undefined) {
-      const before = hidden(t, users());
-      [w.owners, w.members] = people({ owners: w.owners, members: w.members, ...change });
+    // One person or Entra group added, as an owner or a member, or removed, changes the people as they are now, so it undoes no one
+    // else's change; owners and members replace either list whole, as rf people --set does.
+    const one = change.add ?? change.remove;
+    if (one !== undefined || change.owners !== undefined || change.members !== undefined) {
+      const before = hidden(t, users()), p = String(one).toLowerCase(), now = { owners: w.owners.filter(x => x !== p), members: w.members.filter(x => x !== p) };
+      if (change.add !== undefined) now[change.as === 'owner' ? 'owners' : 'members'].push(p);
+      [w.owners, w.members] = people({ ...(one === undefined ? w : now), ...change });
       guard(before, hidden(t, users()), change.force);
     }
     // Whoever manages a workspace labels its Entra groups, for everyone who sees one of them.
@@ -655,7 +662,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // A series, or a task: a single series named Untitled, until its first prompt or a rename names it, and its one instance.
     const { workspace, name: asked, single, logins } = payload;
     mustSee(me, t.workspaces[workspace]);
-    const name = single ? freeName(t, workspace, 'Untitled') : safeName(String(asked ?? ''));
+    const name = single ? freeName(t, workspace, 'Untitled') : folderName(String(asked ?? ''));
     if (Object.values(t.series).some(s => s.workspace === workspace && s.name === name)) throw new HttpError(409, `${name} exists`);
     const ticks = checkTicks(by, logins ?? []), sid = newId();
     t.series[sid] = { name, workspace, ...(single && { single: true }) };
@@ -670,7 +677,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       // A task made a series, as it is, under a name of its own, its one instance the series' first.
       if (!s.single) throw new HttpError(400, `${s.name} is a series already`);
       if (instances(id)[0].hole) throw new HttpError(409, `${s.name} was deleted`);
-      const name = safeName(String(payload.name ?? ''));
+      const name = folderName(String(payload.name ?? ''));
       if (name !== s.name && Object.values(t.series).some(x => x.workspace === s.workspace && x.name === name)) throw new HttpError(409, `${name} exists`);
       s.name = name;
       delete s.single;
@@ -725,7 +732,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (req.method !== 'PUT') throw new HttpError(405, 'PUT, or POST a new instance');
     const change = payload;
     if (change.name !== undefined && change.name !== s.name) {
-      const name = safeName(String(change.name));
+      const name = folderName(String(change.name));
       if (Object.values(t.series).some(x => x.workspace === s.workspace && x.name === name)) throw new HttpError(409, `${name} exists`);
       s.name = name;
     }
@@ -763,7 +770,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (archived(t, sid)) throw new HttpError(409, `${named(t, sid)} is archived`);
     if (t.series[to] && !label) throw new HttpError(400, `waking a series starts a new instance: name it with a label${run ? '; to wake your own instance, name its folder: .' : ''}`);
     if (!t.series[to] && instance(to).doc.status !== 'open') throw new HttpError(409, `${instance(to).label} is ${instance(to).doc.status}: to correct it, wake its series with the label ${instance(to).label}-r2`);
-    const first = new Date(at), starts = t.series[to] ? safeName(String(label)) : undefined;
+    const first = new Date(at), starts = t.series[to] ? folderName(String(label)) : undefined;
     if (starts && labels(to).some(l => l.label === starts && instance(l.id).hole)) throw new HttpError(409, `${starts} was deleted, and its label stays with it: choose another`);
     return send(res, 200, setWake(to, {
       at: first.toISOString(), from: run ? `${named(t, run.inst.seriesId)}/${run.inst.label}` : by, ...(run && { inst: run.inst.id }),
@@ -791,7 +798,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   const a = active.get(inst.seriesId);
   const mine = a?.inst === inst ? a : undefined;
   if (!action) see(by, inst.id, inst.log.at(-1)!.seq);
-  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4), browsers: [...(mine.browsers?.watchable().keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), runner: runner(inst), previous: previous(inst), sums: Object.fromEntries(inst.doc.items.filter(i => i.file).map(i => [i.id, sha256(inst.dir, i.file!)])), waiting: waits(inst).map(({ who, e }) => ({ who, seq: e.seq })) });
+  if (!action) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => isNote(inst, e) ? { ...e, note: true } : e), run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4), browsers: [...(mine.browsers?.watchable().keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), runner: runner(inst), previous: await previous(inst), sums: Object.fromEntries(await Promise.all(inst.doc.items.filter(i => i.file).map(async i => [i.id, await sha256(inst.dir, i.file!)]))), waiting: waits(inst).map(({ who, e }) => ({ who, seq: e.seq })) });
   if (action === 'trace') return send(res, 200, trace(inst));
   if (action === 'summary') return send(res, 200, summary(inst, me));
   // The screen: anyone who sees the instance reads it; only its own run writes it.
@@ -818,7 +825,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   }
   if (action === 'rename') {
     // In any status, and mid-run: a run keeps the names it started with (view()).
-    const from = inst.label, s = t.series[inst.seriesId], to = safeName(url.searchParams.get('as') ?? '');
+    const from = inst.label, s = t.series[inst.seriesId], to = folderName(url.searchParams.get('as') ?? '');
     // A task's name is its label.
     if (s.single && to !== s.name && Object.values(t.series).some(x => x.workspace === s.workspace && x.name === to)) throw new HttpError(409, `${to} exists`);
     renameInstance(inst, to);
@@ -919,7 +926,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const s = t.series[inst.seriesId], words = text.trim().split(/\s+/).slice(0, 6).join(' ').replace(/^\.+/, '').slice(0, 60);
     if (s.single && words && !inst.log.some(e => e.op === 'rename' || (e.op === 'comment' && e !== said && isPerson(e)))) {
       const from = inst.label;
-      s.name = freeName(t, s.workspace, safeName(words));
+      s.name = freeName(t, s.workspace, folderName(words));
       saveTree(t);
       renameInstance(inst, s.name);
       inst.append('server', 'rename', { from, cause: said.seq });
@@ -931,7 +938,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // entry's name: it commits the folder in their name, as they say yes to it, the proposal and the note its message, with their
     // Signed-off-by. Either starts a run, as a reply does, unless quiet, and a proposal takes one of them. rf 0.12's reject, a sign-off
     // with approved false, is refused.
-    const { thread, text, approved } = payload, ask = inst.log.find(e => `c${e.seq}` === thread && e.op === 'comment' && e.by === 'agent' && (e.ask === true || e.ask === 'proposal'));
+    const { thread, text, approved } = payload, ask = inst.log.find(e => `c${e.seq}` === thread && e.seq > inst.copied && e.op === 'comment' && e.by === 'agent' && (e.ask === true || e.ask === 'proposal'));
     if (approved === false) throw new HttpError(400, 'a sign-off approves; to say no, reject it, on the page or with rf reject');
     if (!ask) throw new HttpError(409, `${thread} is no proposal of the agent's`);
     if (inst.log.some(e => e.op === 'withdraw' && e.on === ask.seq)) throw new HttpError(409, `the agent withdrew ${thread}`);

@@ -93,6 +93,13 @@ before(async () => {
       { by: 'agent', op: 'comment', thread: 'c5', item: null, ref: null, text: 'Is the rate final?', ask: 'question' },
       { by: 'agent', op: 'withdraw', thread: 'c5', on: 5, text: 'The file says so.', see: 2 },
     ]],
+    // Closed with an accepted proposal, a note for its runner and a delivery, which a copy of it takes as history.
+    ['a5c0ff5e1f0b', 'October', 'closed', [{ id: 'pack', name: 'Pack', kind: 'output', file: 'working/pack.csv' }], [
+      { by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'I will email the pack to the bank.', ask: 'proposal' },
+      { by: 'bob@demo.test', op: 'comment', thread: 'c3', item: null, ref: null, text: 'Use the HSBC statement.' },
+      { by: 'agent', op: 'delivered', item: 'pack', to: 'bank@demo.test', receipt: 'sent' },
+      { by: 'admin@demo.test', op: 'close', accepted: ['c2'] },
+    ]],
     ['a5c0ff5e1f09', 'November', 'closed', [], [{ by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'Sent it late.' }, { by: 'admin@demo.test', op: 'close' }]],
     ['a5c0ff5e1f0a', 'February', 'open', [], [
       { by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'I will send [the pack](working/pack.csv) to the bank, as [last month](../December#c2).', ask: 'proposal' },
@@ -199,7 +206,7 @@ for (const kind of ['series', 'workspace']) test(`an archived ${kind} is read-on
     assert.equal((await tab.request.put(new URL(target, tab.url()).href, { data: { archived: true } })).ok(), true);
     await tab.waitForSelector(`${row}.archived`);
     assert.equal(await tab.textContent('#bar .state'), 'Archived · read-only');
-    assert.match(confirmation!, /Nothing in it changes or runs until it's restored\./);
+    assert.match(confirmation!, /Nothing in it changes or runs until it's restored, and its wakes, weekly ones too, and requests to start an instance are cancelled for good: restoring brings none back\./);
     assert.deepEqual(await tab.locator('#pv .pvb button').allTextContents(), [`Restore ${kind}`], 'settings already open become read-only too');
     assert.equal(await tab.locator('#pv .pvb input:enabled, #pv .pvb textarea:enabled, #pv .pvb select:enabled').count(), 0);
     await tab.click('#pv [data-act=unpv]');
@@ -453,6 +460,22 @@ test('keys: c goes to the comment box, Ctrl+Enter sends it, Esc leaves it, and j
   assert.ok(await page.evaluate(() => !!document.activeElement?.closest('#tree')), 'a row has the focus');
 });
 
+test("Ctrl+Enter pressed again while a comment is still sending sends it once", async () => {
+  const tab = await browser.newPage({ storageState: await page.context().storageState() });
+  try {
+    await tab.goto(new URL('/#/a5c0ff5e1f00', page.url()).href);
+    await tab.waitForSelector('#newcomment');
+    await tab.route('**/comment', async r => { await new Promise(ok => setTimeout(ok, 1500)); await r.continue(); });
+    await tab.fill('#newcomment', 'Sent once with keys');
+    await tab.press('#newcomment', 'Control+Enter');
+    await tab.waitForSelector('#log [data-act=comment][aria-busy]', { state: 'attached' });
+    await tab.press('#newcomment', 'Control+Enter');
+    await tab.waitForSelector('#log [data-act=comment]:not([aria-busy])', { state: 'attached' });
+    await tab.waitForTimeout(1600);
+    assert.equal(await tab.evaluate(() => api('/api/instances/a5c0ff5e1f00').then(d => d.log.filter((e: { text?: string }) => e.text === 'Sent once with keys').length)), 1);
+  } finally { await tab.close(); }
+});
+
 test("Ctrl+Enter and Cmd+Enter send from the reply box being edited, including a reply under a reply", async () => {
   const tab = await browser.newPage({ storageState: await page.context().storageState() });
   try {
@@ -673,6 +696,20 @@ test("a question asks, with Reply alone; a proposal proposes, apart, with Approv
   await page.waitForSelector('#conv .post.flash[data-seq="2"]');
 });
 
+test("a copy's history is the copied instance's: its asks and notes wait on no one, its proposals take no approval, and its outputs show no sends", async () => {
+  const { id } = await (await page.request.post(new URL('/api/instances/a5c0ff5e1f0b/duplicate?as=October%20copy', page.url()).href, { data: { logins: [] } })).json();
+  assert.deepEqual((await (await page.request.get(new URL(`/api/instances/${id}`, page.url()).href)).json()).waiting, []);
+  assert.equal((await page.request.post(new URL(`/api/instances/${id}/signoff`, page.url()).href, { data: { thread: 'c2' } })).status(), 409);
+  await page.evaluate(id => { location.hash = `#/${id}`; }, id);
+  await page.waitForSelector('#bar h1 .t:text-is("October copy")');
+  if (!await page.locator('#log.open').count()) await page.click('#bar [data-act=panel]');
+  await page.locator('#conv .post[data-seq="2"]').waitFor();
+  await page.click('.tile[data-item=pack]');
+  await page.locator('#card .cp').first().waitFor();
+  assert.deepEqual(await Promise.all(['#conv .post[data-seq="2"] [data-mode=approve]', '.tile[data-item=pack] .sent', '#card .sent', '#needs .propose'].map(s => page.locator(s).count())), [0, 0, 0, 0]);
+  assert.equal((await page.request.post(new URL(`/api/instances/${id}/abandon`, page.url()).href, { data: {} })).status(), 200);
+});
+
 test("text left in a closed Reply box holds nothing still: once approved, the conversation shows it and offers Approve no more", async () => {
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f0a'; });
   await page.waitForSelector('#bar h1 .t:text-is("February")');
@@ -687,6 +724,17 @@ test("text left in a closed Reply box holds nothing still: once approved, the co
   await post.locator(':scope > .pa [data-act=reply]:text-is("Reply")').click();
   assert.equal(await post.locator(':scope > .reply[data-mode=reply] textarea').inputValue(), '', 'approving clears what its boxes held');
   await post.locator(':scope > .pa [data-act=reply]:text-is("Reply")').click();
+});
+
+test("a file link's path may hold an &, spaces and one level of parentheses, and an image's spaces and parentheses, as everyday Windows names do", async () => {
+  await page.evaluate(() => { location.hash = '#/a5c0ff5e1f07'; });
+  await page.waitForSelector('#bar h1 .t:text-is("January")');
+  const files = await page.evaluate(() => {
+    const d = document.createElement('div');
+    d.innerHTML = inline(esc('[the P&L](upload/P&L.csv), [the TB](upload/TB (final).csv) (see note), ![chart](working/AR chart (1).png) and [plain](upload/plain.csv)'));
+    return [...d.querySelectorAll('[data-file]')].map(e => [e.tagName, (e as HTMLElement).dataset.file, e.nextSibling?.textContent ?? null]);
+  });
+  assert.deepEqual(files, [['A', 'upload/P&L.csv', ', '], ['A', 'upload/TB (final).csv', ' (see note), '], ['IMG', 'working/AR chart (1).png', ' and '], ['A', 'upload/plain.csv', null]]);
 });
 
 test("[text](#cN) to a comment whose first line links a file is a link by that text alone, its title the comment's first words", async () => {
@@ -889,6 +937,31 @@ test("a workspace's settings: five people shown until Show all, each row's two b
   await page.waitForSelector('#pv:not([open])', { state: 'attached' });
   assert.equal(await put({ owners: before.owners, members: before.members }), 200);
   await page.evaluate(() => refresh());
+});
+
+test("adding or removing someone in a workspace's settings changes that one alone, undoing no other owner's change made since the dialog opened", async () => {
+  const ws = '1b3031035ff6', put = (body: object) => page.evaluate(([id, b]) => fetch(`/api/workspaces/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.status), [ws, body] as const);
+  const people = () => page.evaluate(id => fetch(`/api/workspaces/${id}/people`).then(r => r.json()).then(ps => ps.map((p: { who: string; as: string }) => `${p.as} ${p.who}`)), ws);
+  const before = await page.evaluate(id => tree.find(w => w.id === id), ws);
+  await page.evaluate(id => { location.hash = `#/${id}`; }, ws);
+  await page.waitForSelector('#tree .row.ws.on');
+  await page.evaluate(async () => { await refresh(); openWorkspaceSettings(); });
+  await page.waitForSelector('#pv[open] #wperson');
+  assert.equal(await put({ owners: before.owners, members: [...before.members, 'carol@demo.test'] }), 200, 'another owner adds Carol');
+  await page.fill('#wperson', 'dave@demo.test');
+  await page.click('[data-act=wadd]');
+  await page.waitForSelector('#pv [data-act=wremove][data-p="dave@demo.test"]');
+  assert.ok((await people()).includes('member carol@demo.test'));
+  assert.equal(await put({ owners: before.owners, members: [...before.members, 'dave@demo.test'] }), 200, 'and another takes Carol off');
+  await page.click('#pv [data-act=wrole][data-p="dave@demo.test"]');
+  await page.waitForSelector('#pv [data-act=wrole][data-p="dave@demo.test"]:text-is("Make member")');
+  assert.deepEqual((await people()).filter((p: string) => /carol|dave/.test(p)), ['owner dave@demo.test']);
+  await page.click('#pv [data-act=wremove][data-p="dave@demo.test"]');
+  await page.waitForSelector('#pv [data-act=wremove][data-p="dave@demo.test"]', { state: 'detached' });
+  assert.deepEqual((await people()).filter((p: string) => /carol|dave/.test(p)), []);
+  await page.keyboard.press('Escape');
+  await page.waitForSelector('#pv:not([open])', { state: 'attached' });
+  assert.equal(await put({ owners: before.owners, members: before.members }), 200);
 });
 
 test("Logins shows what needs you first, then a line for each kind, Microsoft 365's sources and the websites opening in place; ticks go by kind, Microsoft 365's sources under a tick of their own, an expired login's flagged and off", async () => {
@@ -1182,6 +1255,40 @@ test("conversation drafts and picked files stay with their instance, including a
     await tab.evaluate(() => { location.hash = '#/a5c0ff5e1f02'; });
     await tab.waitForSelector('#bar h1 .t:text-is("2026-10")');
     assert.equal(await tab.inputValue('#newcomment'), 'A draft for October');
+  } finally { await tab.close(); }
+});
+
+test("a link opened signed out lands where it points once signed in, and a session lapsing as a comment is sent keeps the comment and reply being written through signing in again", async () => {
+  const context = await browser.newContext(), tab = await context.newPage();
+  try {
+    await tab.goto(new URL('/#/a5c0ff5e1f07/c3', page.url()).href);
+    await tab.click('a.ms');
+    await tab.waitForSelector('#bar h1 .t:text-is("January")');
+    await tab.waitForSelector('#conv .post.flash[data-seq="3"]');
+    await tab.fill('#newcomment', 'A long careful comment');
+    await tab.click('#conv .post[data-seq="3"] > .pa [data-act=reply]');
+    await tab.fill('#conv .post[data-seq="3"] > .reply[data-mode=reply] textarea', 'A careful reply');
+    await context.clearCookies();
+    await tab.click('#log [data-act=comment]');
+    await tab.click('a.ms');
+    await tab.waitForSelector('#bar h1 .t:text-is("January")');
+    assert.deepEqual(await Promise.all(['#newcomment', '#conv .post[data-seq="3"] > .reply[data-mode=reply] textarea'].map(s => tab.inputValue(s))), ['A long careful comment', 'A careful reply']);
+  } finally { await context.close(); }
+});
+
+test("a page whose event stream fails, as behind a proxy while the server restarts, waits for the server rather than reloading, then listens again and catches up", async () => {
+  const tab = await browser.newPage({ storageState: await page.context().storageState() }), down = (r: { fulfill: (o: object) => Promise<void> }) => r.fulfill({ status: 502, body: '' });
+  try {
+    await tab.route('**/api/events', down);
+    await tab.goto(new URL('/#/a5c0ff5e1f07', page.url()).href);
+    await tab.waitForSelector('#bar h1 .t:text-is("January")');
+    await tab.route('**/me', down);
+    await tab.evaluate(() => { (window as unknown as { kept: boolean }).kept = true; });
+    await tab.waitForTimeout(7000);
+    await tab.unrouteAll();
+    await page.evaluate(() => api('/api/instances/a5c0ff5e1f07/comment', { method: 'POST', body: JSON.stringify({ text: 'Said while it was away.', quiet: true }) }));
+    await tab.waitForFunction(() => data.log.some((e: { text?: string }) => e.text === 'Said while it was away.'), null, { timeout: 15_000 });
+    assert.equal(await tab.evaluate(() => (window as unknown as { kept?: boolean }).kept), true, 'never reloaded');
   } finally { await tab.close(); }
 });
 

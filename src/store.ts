@@ -110,6 +110,14 @@ export function instances(seriesId: string): Instance[] {
 // The closed instances of its series before it, by label: the examples it rolls forward from.
 export const closedBefore = (inst: Instance) => instances(inst.seriesId).filter(i => i.doc.status === 'closed' && i.label.localeCompare(inst.label, 'en', { numeric: true }) < 0);
 
+// A workspace's, a series' or an instance's name is a folder's in a run's view, which holds 255 bytes: one over 200 is refused, leaving
+// room for a number freeName() adds.
+export function folderName(s: string): string {
+  const name = safeName(s);
+  if (Buffer.byteLength(name) > 200) throw new HttpError(400, `a name is 200 bytes at most, about 66 Chinese characters, not ${Buffer.byteLength(name)}`);
+  return name;
+}
+
 // A name is a folder's in a run's view, a line of names.tsv: no slash, control character or line break, which a reader such as
 // Python's splitlines() would split it at; and not AGENTS.md, where the instructions the view binds go.
 export function safeName(s: string): string {
@@ -148,7 +156,7 @@ function setMeta(id: string, meta: Meta) {
 }
 
 function freeLabel(seriesId: string, label: string): string {
-  const name = safeName(label);
+  const name = folderName(label);
   if (labels(seriesId).some(l => l.label === name)) throw new HttpError(409, `${name} exists`);
   return name;
 }
@@ -171,14 +179,21 @@ export function renameInstance(inst: Instance, label: string) {
 }
 
 export function duplicateInstance(src: Instance, label: string, by: string, logins: string[]): Instance {
-  const name = freeLabel(src.seriesId, label), id = newId(), dir = instanceDir(id);
+  const name = freeLabel(src.seriesId, label), id = newId(), meta = { label: name, series: src.seriesId }, tmp = join(root, '.tmp', id);
   // Files and folders only, sharing blocks where the disk can: a run may have left links or FIFOs in working/, or a name that isn't
-  // UTF-8, which reads back as another name, which no file has. The copy starts afresh, with no session and no history.
-  cpSync(src.dir, dir, { recursive: true, mode: constants.COPYFILE_FICLONE, filter: p => {
-    const st = lstatSync(p, { throwIfNoEntry: false });
-    return p !== join(src.dir, 'session') && p !== join(src.dir, '.git') && !!st && (st.isFile() || st.isDirectory());
-  } });
-  setMeta(id, { label: name, series: src.seriesId });
+  // UTF-8, which reads back as another name, which no file has. The copy starts afresh, with no session and no history. It is made
+  // in .tmp/ with its own instance.json, then moved into instances/, so one that fails part way leaves nothing a start reads.
+  try {
+    cpSync(src.dir, tmp, { recursive: true, mode: constants.COPYFILE_FICLONE, filter: p => {
+      const st = lstatSync(p, { throwIfNoEntry: false });
+      return p !== join(src.dir, 'session') && p !== join(src.dir, '.git') && !!st && (st.isFile() || st.isDirectory());
+    } });
+    replaceReadOnly(join(tmp, 'instance.json'), JSON.stringify(meta));
+    renameSync(tmp, instanceDir(id));
+  } finally {
+    wipe(Buffer.from(tmp));
+  }
+  setMeta(id, meta);
   const inst = instance(id);
   inst.doc.status = 'open';
   inst.save();
@@ -257,7 +272,8 @@ export class Instance {
 
   // The agent's asks still waiting on people: those no one answered.
   asking(): Entry[] {
-    return this.log.filter(e => e.op === 'comment' && e.by === 'agent' && e.ask && !this.answered(e));
+    const from = this.copied;
+    return this.log.filter(e => e.seq > from && e.op === 'comment' && e.by === 'agent' && e.ask && !this.answered(e));
   }
 
   // Closing makes the instance the period's record and an example for the next, approving nothing: the asks still waiting are
@@ -351,6 +367,11 @@ export class Instance {
     this.doc = { rev: this.doc.rev, status: this.doc.status, items: doc.items };
     this.save();
     return this.doc.rev;
+  }
+
+  // A copy's own history starts at its latest duplicate entry: what came before is the copied instance's, settled, pending nothing.
+  get copied(): number {
+    return this.log.findLast(e => e.op === 'duplicate')?.seq ?? 0;
   }
 
   get meta(): Meta {
