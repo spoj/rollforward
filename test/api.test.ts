@@ -59,6 +59,12 @@ before(async () => {
   const refusedLog = join(root, 'instances', scratch, 'log.jsonl'), entries = readFileSync(refusedLog, 'utf8').trim().split('\n');
   appendFileSync(refusedLog, JSON.stringify({ seq: entries.length + 1, at: new Date().toISOString(), by: 'server', op: 'browser', run: 1, site: 'waiting-hosts', login: bob, requests: 5, writes: 0, blocked: 5,
     hosts: Object.fromEntries(['files.example.net', 'intra.acme.localhost', 'cdn.example.net', 'tracker.example.net', 'unchecked.example.net'].map(h => [h, 1])) }) + '\n');
+  // A copy of 2026-08-30 as earlier versions made one: its files but its session, open, and its log, then a duplicate entry.
+  const august = join(root, 'instances', '3d70f7ca6f20'), copy = join(root, 'instances', 'c0b1ed000001');
+  cpSync(august, copy, { recursive: true, filter: p => p !== join(august, 'session') });
+  writeFileSync(join(copy, 'instance.json'), JSON.stringify({ label: '2026-08-30 copy', series: 'd83e3e5c41da' }));
+  writeFileSync(join(copy, 'screen.json'), JSON.stringify({ ...JSON.parse(readFileSync(join(august, 'screen.json'), 'utf8')), status: 'open' }));
+  appendFileSync(join(copy, 'log.jsonl'), JSON.stringify({ seq: 15, at: new Date().toISOString(), by: adminEmail, op: 'duplicate', from: '2026-08-30', logins: [] }) + '\n');
   // What the tests save themselves, such as logins, goes to the server's data root, whichever tests run.
   (await import('../src/system.ts')).initSystem(root);
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch') };
@@ -102,7 +108,7 @@ after(async () => {
 test('GET /api lists the series and its instances with statuses', async () => {
   const s = await shown(series);
   assert.deepEqual(s.instances.map((i: { label: string; status: string }) => [i.label, i.status]), [
-    ['2026-08-23', 'closed'], ['2026-08-30', 'closed'], ['2026-09-06', 'open'], ['scratch', 'abandoned'],
+    ['2026-08-23', 'closed'], ['2026-08-30', 'closed'], ['2026-08-30 copy', 'open'], ['2026-09-06', 'open'], ['scratch', 'abandoned'],
   ]);
 });
 
@@ -207,22 +213,7 @@ test('a JSON body holds 10 MB at most, and an upload, attachment or note file RF
   assert.equal((await call('POST', `/api/instances/${id}/upload?name=fits.bin&quiet`, new Uint8Array(5 * 2 ** 20))).status, 200);
 });
 
-test('duplicate copies a closed instance into an open one, once', async () => {
-  assert.equal((await call('POST', `${await at(series, '2026-09-06', 'duplicate')}?as=x`)).status, 409);
-  const dup = `${await at(series, '2026-08-30', 'duplicate')}?as=${encodeURIComponent('2026-08-30 copy')}`;
-  const made = await call('POST', dup);
-  assert.equal(made.status, 200);
-  assert.equal((await made.json()).id, await iid(series, '2026-08-30 copy'));
-  const { doc, log } = await json(await at(series, '2026-08-30 copy'));
-  assert.equal(doc.status, 'open');
-  assert.deepEqual(doc.items, (await json(await at(series, '2026-08-30'))).doc.items);
-  assert.equal(existsSync(join(await dir(series, '2026-08-30 copy'), 'session')), false);
-  assert.equal(log.at(-1).op, 'duplicate');
-  assert.equal(log.at(-1).from, '2026-08-30');
-  assert.equal((await call('POST', dup)).status, 409);
-});
-
-test("a duplicate keeps its conversation but counts only runs and cost since its latest duplication", async () => {
+test("a copy an earlier version made keeps its conversation but counts only runs and cost since its latest duplicate entry", async () => {
   const source = await at(series, '2026-08-30');
   const before = (await json('/api/runs')).filter((r: { path: string }) => !r.path.endsWith('/2026-08-30 copy'));
   assert.ok((await json(`${source}/summary`)).cost > 0);
@@ -436,13 +427,10 @@ test("a run's links, FIFOs and folders in working/ and session/ are never follow
   assert.equal((await call('GET', await at(series, '2026-08-30', 'trace'))).status, 200, 'a FIFO among the session files is skipped');
   writeFileSync(join(d, 'session', 'zy.jsonl'), '{"type":"message","message":{"role":"user","content":"cut"}}\n{"type":"message","mess\n');
   assert.equal((await json(await at(series, '2026-08-30', 'trace'))).filter((l: { text: string }) => l.text === 'cut').length, 1, 'a line a restart cut half written is skipped');
-  assert.equal((await call('POST', `${await at(series, '2026-08-30', 'duplicate')}?as=links`)).status, 200);
-  assert.deepEqual(readdirSync(join(await dir(series, 'links'), 'working')).filter(f => /env|inside|pipe|up|real/.test(f)), ['real.txt'], 'a copy leaves them out');
   for (const f of ['real.txt', 'env.txt', 'inside.txt', 'up', 'up2', 'pipe.txt', '.GIT', 'deep', '.git. ']) rmSync(join(d, 'working', f), { recursive: true });
   rmSync(latin1);
   rmSync(join(d, 'session', 'zz.jsonl'));
   rmSync(join(d, 'session', 'zy.jsonl'));
-  assert.equal((await call('POST', `${await at(series, 'links', 'abandon')}`)).status, 200);
 });
 
 test('a cross-site POST is refused, so another web page cannot talk to the agent', async () => {
@@ -802,8 +790,9 @@ test('an admin can disable someone, which ends their sessions and stops their si
 });
 
 test('talking is in threads: a comment starts one on an item or the instance, and a reply goes under one of its comments, by its seq; resolving is gone', async () => {
-  assert.equal((await call('POST', `${await at(series, '2026-08-30', 'duplicate')}?as=talk`)).status, 200);
+  assert.equal((await call('POST', await at(series), JSON.stringify({ label: 'talk', quiet: true }))).status, 200);
   const path = await at(series, 'talk');
+  assert.equal((await call('POST', `${path}/upload?name=aging.csv&quiet`, 'customer,amount\n')).status, 200);
   const inst = await json(path), item = inst.doc.items[0].id;
   assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ item, ref: 'B4', text: 'Why is this up?' }))).status, 200);
   const started = (await json(path)).log.at(-1);
@@ -1216,7 +1205,7 @@ test('rf new task refuses an existing task or series name before making anything
   assert.equal(await rf('new', 'task', 'Naming'), 'made Naming/Untitled/Untitled, with no logins ticked\n');
 });
 
-test('rf makes what the page makes: a workspace, a task, named or by its first comment, a series from a task, its next instance, and a copy of a closed one', async () => {
+test('rf makes what the page makes: a workspace, a task, named or by its first comment, a series from a task, and its next instance', async () => {
   const status = async (path: string) => JSON.parse(await rf('ls', '--json')).find((r: { path: string }) => r.path === path)?.status;
   assert.equal(await rf('new', 'workspace', 'Making'), 'made Making\n');
   await assert.rejects(rf('new', 'workspace', 'Making'), fails(1, /: 409 the name Making is taken; choose another\n$/));
@@ -1227,11 +1216,6 @@ test('rf makes what the page makes: a workspace, a task, named or by its first c
   await assert.rejects(rf('new', 'instance', 'Making/Lunches/Lunch', '2026-11'), fails(1, /^rf: Making\/Lunches\/Lunch is an instance: name its series\n$/));
   await assert.rejects(rf('new', 'instance', 'Making/Lunches', '2026-11', '--creds', 'web:nosuch'), fails(1, /: 400 logins must be offers of your own logins: \["web:nosuch"\]\n$/));
   assert.equal(await rf('new', 'instance', 'Making/Lunches', '2026-11'), 'made Making/Lunches/2026-11, with no logins ticked\n');
-  await assert.rejects(rf('copy', 'Making/Lunches/Lunch', 'again'), fails(1, /: 409 only a closed or abandoned instance can be duplicated\n$/));
-  await quiet();
-  await rf('close', 'Making/Lunches/Lunch');
-  assert.equal(await rf('copy', 'Making/Lunches/Lunch', 'again'), 'made Making/Lunches/again, with no logins ticked\n');
-  assert.deepEqual([await status('Making/Lunches/Lunch'), await status('Making/Lunches/again')], ['closed', 'open']);
 });
 
 test("rf's acts start no run unless --wake: a new instance waits for its first act, and a task's first comment, a comment and an upload are quiet", async () => {
@@ -1262,7 +1246,7 @@ test('rf shares and archives series and workspaces, starts or drops a request, l
   assert.equal(await rf('share', 'Making/Lunches', 'on', '--creds', 'web:crm'), 'shared Making/Lunches, ticking web:crm: you agree that agents carry these credentials while acting as you\n');
   assert.deepEqual([(await lunches()).shared_by, (await lunches()).shared_logins], [adminEmail, ['web:crm']]);
   assert.equal(await rf('share', 'Making/Lunches', 'off'), 'stopped sharing Making/Lunches\n');
-  await assert.rejects(rf('share', 'Making/Lunches/again', 'on'), fails(1, /^rf: Making\/Lunches\/again is an instance: name its series\n$/));
+  await assert.rejects(rf('share', 'Making/Lunches/2026-11', 'on'), fails(1, /^rf: Making\/Lunches\/2026-11 is an instance: name its series\n$/));
   assert.equal(await rf('archive', 'Making/Lunches'), 'archived Making/Lunches, its wakes and requests cancelled for good\n');
   assert.equal((await lunches()).archived, true);
   assert.equal(await rf('archive', 'Making/Lunches', '--undo'), 'brought back Making/Lunches\n');
@@ -1681,7 +1665,7 @@ test("whoever manages a workspace deletes an instance, in any status, once: all 
   const act = JSON.parse(readFileSync(join(root, '.rf', 'log.jsonl'), 'utf8').trim().split('\n')[before]);
   assert.deepEqual([act.by, act.path, act.deleted], [adminEmail, `${path}/delete`, 'Purge/Payroll/2026-11-07'], "the system's log records it");
 
-  for (const action of ['delete', 'duplicate', 'rename?as=x', 'react', 'comment', 'upload?name=y.csv'])
+  for (const action of ['delete', 'rename?as=x', 'react', 'comment', 'upload?name=y.csv'])
     assert.equal((await call('POST', `${path}/${action}`, action === 'react' ? JSON.stringify({ up: true }) : '{}')).status, 409, action);
   assert.equal((await call('POST', `/api/series/${sid}`, JSON.stringify({ label: '2026-11-07', quiet: true }))).status, 409, 'its label stays taken');
   assert.equal((await call('PUT', `/api/wakes/${sid}`, JSON.stringify({ at: '+1d', label: '2026-11-07' }))).status, 409, 'nothing wakes it');

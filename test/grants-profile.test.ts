@@ -7,7 +7,7 @@ import { initSystem, saveTree, tree, writeJson } from '../src/system.ts';
 import { upsertUser, type Me } from '../src/auth.ts';
 import { changeWebsite, websitesOf, type Profile } from '../src/browsers.ts';
 import { logins, personDir, saveLogin } from '../src/logins.ts';
-import { createInstance, duplicateInstance, openStore } from '../src/store.ts';
+import { createInstance, openStore } from '../src/store.ts';
 import { approved, ask, decide, forgetGrants, forgetWorkspace, grants, lapse, revoke, unapproved, visible, type Grant } from '../src/grants.ts';
 
 const person: Me = { email: 'bob@demo.test', name: 'Bob Baker', role: 'user', groups: [] };
@@ -210,9 +210,10 @@ test('approved usage counts distinct runs with browser summaries and writes, sco
   second.append('server', 'browser', { run: 2, site: 'portal', login: owner.email, requests: 5, writes: 1, at: '2026-12-01T00:00:00Z' });
   second.append('server', 'browser', { run: 3, site: 'another', login: person.email, requests: 5, writes: 1, at: '2026-12-01T00:00:00Z' });
   elsewhere.append('server', 'browser', { run: 1, site: 'portal', login: person.email, requests: 5, writes: 1, at: '2026-12-01T00:00:00Z' });
-  first.doc.status = 'closed';
-  first.save();
-  const copy = duplicateInstance(first, 'Copy', person.email, ['web:portal']);
+  // A copy as earlier versions made one: the source's entries, then a duplicate entry.
+  const copy = createInstance('s', 'Copy', person.email, ['web:portal']);
+  for (const { seq, at, by, op, ...e } of first.log) copy.append(by, op, e);
+  copy.append(person.email, 'duplicate', { from: 'First', logins: ['web:portal'] });
   copy.append('server', 'browser', { run: 3, site: 'portal', login: person.email, requests: 0, writes: 0, at: '2026-11-08T10:00:00Z' });
   assert.deepEqual(visible(owner).find(g => g.id === 'g')!.use, { runs: 4, wrote: 2, last: '2026-11-08T10:00:00Z' });
   assert.equal(visible(owner).find(g => g.id === 'pending')!.use, null);

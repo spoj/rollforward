@@ -379,7 +379,7 @@ function renderBar() {
     const off = data.run ? 'disabled title="Available when the run ends"' : '';
     if (open) h += data.runner.by === me.email ? `<button class="btn commit top" data-act="close" ${off}>Close</button>`
       : `<button class="btn top" data-act="takeover" ${off || `title="${esc(nameOf(data.runner.by))} runs it, with their logins. Taking over makes it yours."`}>${ICON.hand}Take over</button>`;
-    else if (!archived() && !gone()) h += cur.s.single ? '<button class="btn top" data-act="start-series">Start series</button>' : '<button class="btn top" data-act="duplicate">Duplicate</button>';
+    else if (cur.s.single && !archived() && !gone()) h += '<button class="btn top" data-act="start-series">Start series</button>';
     // One control opens and closes the side panel, where it stays, with what waits there as its badge.
     h += `<button class="ptog ${ui.open ? 'on' : ''}" data-act="panel" title="${ui.open ? 'Close' : 'Open'} the conversation"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M10 2.5v11"/>${ui.open ? '<rect x="10" y="2.5" width="4.5" height="11" fill="currentColor" stroke="none" opacity=".35"/>' : ''}</svg>${talk ? `<span class="badge">${talk}</span>` : ''}</button>`;
   }
@@ -415,7 +415,7 @@ function provenance(file) {
   return { person: false, by: 'Agent', at: e?.at };
 }
 
-// A copy's own history starts at its latest duplicate entry: what came before is the copied instance's, settled.
+// A copy, which earlier versions made, starts its own history at its latest duplicate entry: what came before is the copied instance's, settled.
 const copied = () => data.log.findLast(e => e.op === 'duplicate')?.seq ?? 0;
 
 function tile(item) {
@@ -1158,7 +1158,7 @@ function loginsHtml(s) {
   return h;
 }
 
-// Ticks: which of your logins an instance may use, asked whenever you start, copy or take over one, or share a series, by kind:
+// Ticks: which of your logins an instance may use, asked whenever you start or take over one, or share a series, by kind:
 // Microsoft 365's sources fold under a tick of its own, unless some are ticked and some not, and an expired login is flagged, its
 // ticks off. For an instance in workspace w, a website ticked there without your approved grant says so, with the ask or whom it
 // waits on.
@@ -1629,7 +1629,6 @@ async function onAct(act, el) {
     await loadSheets(p);
     if (pv === p) renderPv();
   }
-  if (act === 'duplicate') await openStart(`Copy ${cur.i.label}`, 'Copy', ({ label, logins }) => api(`${instPath()}/duplicate?as=${enc(label)}`, { method: 'POST', body: JSON.stringify({ logins }) }), `${cur.i.label} copy`);
   if (act === 'sheet') {
     const [top, render] = holder(el), p = Object.assign(top.att ?? top, { sheet: Number(el.dataset.k) });
     await loadSheets(p);
@@ -1697,7 +1696,7 @@ async function onAct(act, el) {
   if (act === 'delete') {
     const html = '<p>Everything the server holds of it goes, and can\u2019t be brought back: its uploads, the agent\u2019s files, its items, threads and log, its runs\u2019 transcripts and browser logs, and its history.'
       + `${data.run || data.queued ? ' Its run is stopped first.' : ''} Its label stays in its place, shown as deleted by you; what it cost still counts.</p>`
-      + '<p>Copies outside the server stay:</p><ul class="gone"><li>its duplicates</li><li>files other runs copied</li><li>copies made with rf pull</li><li>mail and anything else already sent</li></ul>';
+      + '<p>Copies outside the server stay:</p><ul class="gone"><li>instances copied from it</li><li>files other runs copied</li><li>copies made with rf pull</li><li>mail and anything else already sent</li></ul>';
     if (await ask({ title: `Delete ${cur.i.label}?`, html, ok: 'Delete', kind: 'danger', act: () => api(`${instPath()}/delete`, { method: 'POST' }) })) await refresh();
   }
   // A task closes as a one-off, or as the first instance of a series it becomes; either may be abandoned instead.

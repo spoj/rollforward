@@ -6,7 +6,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { agentsFile, closedBefore, createInstance, duplicateInstance, keep, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, folderName, seriesDir, type Entry, type Instance } from './store.ts';
+import { agentsFile, closedBefore, createInstance, keep, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, folderName, seriesDir, type Entry, type Instance } from './store.ts';
 import { AGENT, commit, refused } from './git.ts';
 import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
@@ -25,7 +25,7 @@ import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, prune, startIndexing, track } from './indexes.ts';
 import { addNote, notes, seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, archived, byToken, cancelWake, cancelWakes, closed, correct, dropRequest, isNote, kick, MAX_OPEN, named, noted, pending, queued, remove, resolveFor, setWake, startWaking, starts, startWith, stop, wakes, wakesOf, weekly, reads, CUT, type Active, type Request } from './waker.ts';
+import { active, archived, byToken, cancelWake, cancelWakes, closed, correct, dropRequest, isNote, kick, named, noted, pending, queued, remove, resolveFor, setWake, startWaking, starts, startWith, stop, wakes, wakesOf, weekly, reads, CUT, type Active, type Request } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -816,12 +816,6 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     for (const p of readdirSync(previews)) if (p.startsWith(inst.id + '-')) rmSync(join(previews, p));
     for (const k of sums.keys()) if (k.startsWith(inst.dir + sep)) sums.delete(k);
     return send(res, 200, 'ok');
-  }
-  if (action === 'duplicate') {
-    if (t.series[inst.seriesId].single) throw new HttpError(400, 'a task has one instance: Start another based on this makes it a series');
-    if (inst.doc.status === 'open') throw new HttpError(409, 'only a closed or abandoned instance can be duplicated');
-    if (instances(inst.seriesId).filter(i => i.doc.status === 'open').length >= MAX_OPEN) throw new HttpError(409, `${MAX_OPEN} instances of ${t.series[inst.seriesId].name} are open: a new one waits until one closes`);
-    return send(res, 200, { id: duplicateInstance(inst, url.searchParams.get('as') ?? '', by, checkTicks(by, payload.logins ?? [])).id });
   }
   if (action === 'rename') {
     // In any status, and mid-run: a run keeps the names it started with (view()).

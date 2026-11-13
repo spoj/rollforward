@@ -84,6 +84,12 @@ before(async () => {
   tree.series.a5c0ff5e1ff0 = { name: 'Bank pack', workspace: '1b3031035ff6' };
   writeFileSync(join(root, '.rf', 'tree.json'), JSON.stringify(tree));
   mkdirSync(join(root, 'series', 'a5c0ff5e1ff0'));
+  const october = [
+    { by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'I will email the pack to the bank.', ask: 'proposal' },
+    { by: 'bob@demo.test', op: 'comment', thread: 'c3', item: null, ref: null, text: 'Use the HSBC statement.' },
+    { by: 'agent', op: 'delivered', item: 'pack', to: 'bank@demo.test', receipt: 'sent' },
+    { by: 'admin@demo.test', op: 'close', accepted: ['c2'] },
+  ];
   for (const [id, label, status, items, log] of [
     ['a5c0ff5e1f08', 'December', 'closed', [], [{ by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'Sent the pack on the 3rd.' }, { by: 'admin@demo.test', op: 'close' }]],
     ['a5c0ff5e1f07', 'January', 'open', [{ id: 'notes', name: 'Notes', kind: 'step', file: 'working/notes.md' }], [
@@ -94,12 +100,9 @@ before(async () => {
       { by: 'agent', op: 'withdraw', thread: 'c5', on: 5, text: 'The file says so.', see: 2 },
     ]],
     // Closed with an accepted proposal, a note for its runner and a delivery, which a copy of it takes as history.
-    ['a5c0ff5e1f0b', 'October', 'closed', [{ id: 'pack', name: 'Pack', kind: 'output', file: 'working/pack.csv' }], [
-      { by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'I will email the pack to the bank.', ask: 'proposal' },
-      { by: 'bob@demo.test', op: 'comment', thread: 'c3', item: null, ref: null, text: 'Use the HSBC statement.' },
-      { by: 'agent', op: 'delivered', item: 'pack', to: 'bank@demo.test', receipt: 'sent' },
-      { by: 'admin@demo.test', op: 'close', accepted: ['c2'] },
-    ]],
+    ['a5c0ff5e1f0b', 'October', 'closed', [{ id: 'pack', name: 'Pack', kind: 'output', file: 'working/pack.csv' }], october],
+    // Its copy, as earlier versions made one: its log, then a duplicate entry.
+    ['a5c0ff5e1f0c', 'October copy', 'open', [{ id: 'pack', name: 'Pack', kind: 'output', file: 'working/pack.csv' }], [...october, { by: 'admin@demo.test', op: 'duplicate', from: 'October', logins: [] }]],
     ['a5c0ff5e1f09', 'November', 'closed', [], [{ by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'Sent it late.' }, { by: 'admin@demo.test', op: 'close' }]],
     ['a5c0ff5e1f0a', 'February', 'open', [], [
       { by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'I will send [the pack](working/pack.csv) to the bank, as [last month](../December#c2).', ask: 'proposal' },
@@ -246,7 +249,7 @@ for (const kind of ['series', 'workspace']) test(`an archived ${kind} is read-on
       await tab.evaluate(id => { location.hash = '#/' + id; }, id);
       await tab.waitForSelector(`#bar h1 .t:text-is("${label}")`);
       assert.equal(await tab.textContent('#bar .state'), 'Archived · read-only');
-      assert.equal(await tab.locator('#bar .btn, #conv [data-act=correct]').count(), 0, 'closed instances cannot be copied or corrected either');
+      assert.equal(await tab.locator('#bar .btn, #conv [data-act=correct]').count(), 0, 'closed instances cannot be corrected either');
       if (id === 'a5c0ff5e1f02') {
         await tab.click('.tile[data-item=notes]');
         await tab.waitForSelector('#card .say');
@@ -262,7 +265,6 @@ for (const kind of ['series', 'workspace']) test(`an archived ${kind} is read-on
     await tab.click(`${row} [data-act=${kind === 'series' ? 'settings' : 'workspace-settings'}]`);
     await tab.click(`#pv [data-act=archive-${kind}]`);
     await tab.waitForSelector('#bar .state:text-is("Closed · read-only")');
-    assert.equal(await tab.locator('#bar [data-act=duplicate]').count(), 1);
     await tab.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
     await tab.waitForSelector('#newcomment');
     assert.equal(await tab.inputValue('#newcomment'), 'A draft before archiving');
@@ -697,9 +699,10 @@ test("a question asks, with Reply alone; a proposal proposes, apart, with Approv
 });
 
 test("a copy's history is the copied instance's: its asks and notes wait on no one, its proposals take no approval, and its outputs show no sends", async () => {
-  const { id } = await (await page.request.post(new URL('/api/instances/a5c0ff5e1f0b/duplicate?as=October%20copy', page.url()).href, { data: { logins: [] } })).json();
+  const id = 'a5c0ff5e1f0c';
   assert.deepEqual((await (await page.request.get(new URL(`/api/instances/${id}`, page.url()).href)).json()).waiting, []);
-  assert.equal((await page.request.post(new URL(`/api/instances/${id}/signoff`, page.url()).href, { data: { thread: 'c2' } })).status(), 409);
+  const refused = await page.request.post(new URL(`/api/instances/${id}/signoff`, page.url()).href, { data: { thread: 'c2' } });
+  assert.deepEqual([refused.status(), await refused.text()], [409, 'c2 was accepted as done at the close, by admin@demo.test']);
   await page.evaluate(id => { location.hash = `#/${id}`; }, id);
   await page.waitForSelector('#bar h1 .t:text-is("October copy")');
   if (!await page.locator('#log.open').count()) await page.click('#bar [data-act=panel]');
@@ -1366,7 +1369,6 @@ test('a task closed as a one-off starts a series later, by its name alone, as it
   await page.fill('#ask input', 'Stock counts');
   await page.click('#ask button:text-is("Start series")');
   await page.waitForSelector('.row.ser .l:text-is("Stock counts")');
-  await page.waitForSelector('#bar [data-act=duplicate]');
   assert.deepEqual(await page.evaluate(() => tree.flatMap(w => w.series).filter(s => s.name === 'Stock counts').map(s => [s.single, s.instances.map(i => i.status)])), [[false, ['closed']]], 'no instance starts');
 });
 
@@ -1635,7 +1637,7 @@ test('only managers see Delete in an archive, its confirmation warns what stays,
   assert.match(await page.textContent('#ask') ?? '', /Copies outside the server stay/);
   await page.click('#ask button[value=ok]');
   await page.waitForSelector('#bar .state:text("Deleted by")');
-  assert.equal(await page.locator('#bar [data-act=delete], #bar [data-act=rename], #bar [data-act=duplicate], #bar [data-act=takeover], #bar [data-act=start-series]').count(), 0);
+  assert.equal(await page.locator('#bar [data-act=delete], #bar [data-act=rename], #bar [data-act=takeover], #bar [data-act=start-series]').count(), 0);
   assert.match(await page.textContent('#ins') ?? '', /Nothing is left of it here/);
   if (!await page.locator(`a.row.inst.deleted[href="#/${id}"]`).count()) await page.click(`[data-act=toggle-closed][data-id="${sid}"]`);
   assert.equal(await page.locator(`a.row.inst.deleted[href="#/${id}"] .nm`).evaluate(el => getComputedStyle(el).textDecorationLine), 'line-through');

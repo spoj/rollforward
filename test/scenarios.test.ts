@@ -524,8 +524,6 @@ test("approvals are git commits: the agent commits a moment worth keeping and pr
   ], "each run's end, the agent's commit, the two approvals, the quiet reply and the close");
   const pulled = await (await call('GET', '/api/files?path=Signed/Pack/2026-12')).json();
   assert.ok(pulled.length && !pulled.some((f: { path: string }) => f.path.includes('/.git/')), 'rf pull leaves the history out');
-  const { id: copy } = await (await call('POST', `/api/instances/${id}/duplicate?as=copy`, { logins: [] })).json();
-  assert.ok(!existsSync(join(root, 'instances', copy, '.git')), 'a duplicate starts afresh');
 });
 
 test("a start removes its data root's abandoned scratch, for active and idle Pis without indexes, and leaves another root's scratch alone", async () => {
@@ -596,19 +594,16 @@ test("a run's cancelling a person's wake is recorded in the system's log, with t
   assert.deepEqual(acts.filter(a => a.path === `/api/wakes/${wake}`).map(a => [a.by, a.method, a.wake.text, a.wake.from, a.inst, a.run]), [['agent', 'DELETE', text, ADMIN, id, 1]]);
 });
 
-test("a proposal still waiting as its instance closes is accepted, so a duplicate neither waits on it nor takes its approval", async () => {
+test("a proposal still waiting as its instance closes is accepted, so it waits on no one", async () => {
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Accepted' })).json();
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Pack' })).json();
   scripts.push({ bash: ['rf propose "Send the pack to the bank." 2>&1'], report: 'Proposed.', saw: [] });
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
   const thread = (await runs(id, 1)).find(e => e.ask === 'proposal')!.thread;
   assert.equal((await call('POST', `/api/instances/${id}/close`)).status, 200);
-  const { id: copy } = await (await call('POST', `/api/instances/${id}/duplicate?as=2026-12`, { logins: [] })).json();
-  const { waiting, log } = await (await call('GET', `/api/instances/${copy}`)).json();
+  const { waiting, log } = await (await call('GET', `/api/instances/${id}`)).json();
   assert.deepEqual([waiting, log.find((e: { op: string }) => e.op === 'close').accepted], [[], [thread]]);
   assert.ok(!(await (await call('GET', '/api/status')).json()).asks.some((a: { path: string }) => a.path.startsWith('Accepted/')));
-  const refused = await call('POST', `/api/instances/${copy}/signoff`, { thread });
-  assert.deepEqual([refused.status, await refused.text()], [409, `${thread} was accepted as done at the close, by ${ADMIN}`]);
 });
 
 test("a run's end removes its scratch, though it left a folder there named in bytes that aren't UTF-8 and can't be written", async () => {

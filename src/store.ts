@@ -1,4 +1,4 @@
-import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { basename, extname, join, posix, sep } from 'node:path';
 import { appendLine, changes, readLines, tree } from './system.ts';
@@ -178,29 +178,6 @@ export function renameInstance(inst: Instance, label: string) {
   setMeta(inst.id, { ...inst.meta, label: freeLabel(inst.seriesId, label) });
 }
 
-export function duplicateInstance(src: Instance, label: string, by: string, logins: string[]): Instance {
-  const name = freeLabel(src.seriesId, label), id = newId(), meta = { label: name, series: src.seriesId }, tmp = join(root, '.tmp', id);
-  // Files and folders only, sharing blocks where the disk can: a run may have left links or FIFOs in working/, or a name that isn't
-  // UTF-8, which reads back as another name, which no file has. The copy starts afresh, with no session and no history. It is made
-  // in .tmp/ with its own instance.json, then moved into instances/, so one that fails part way leaves nothing a start reads.
-  try {
-    cpSync(src.dir, tmp, { recursive: true, mode: constants.COPYFILE_FICLONE, filter: p => {
-      const st = lstatSync(p, { throwIfNoEntry: false });
-      return p !== join(src.dir, 'session') && p !== join(src.dir, '.git') && !!st && (st.isFile() || st.isDirectory());
-    } });
-    replaceReadOnly(join(tmp, 'instance.json'), JSON.stringify(meta));
-    renameSync(tmp, instanceDir(id));
-  } finally {
-    wipe(Buffer.from(tmp));
-  }
-  setMeta(id, meta);
-  const inst = instance(id);
-  inst.doc.status = 'open';
-  inst.save();
-  inst.append(by, 'duplicate', { from: src.label, logins });
-  return inst;
-}
-
 export class Instance {
   dir: string;
   id: string;
@@ -369,7 +346,8 @@ export class Instance {
     return this.doc.rev;
   }
 
-  // A copy's own history starts at its latest duplicate entry: what came before is the copied instance's, settled, pending nothing.
+  // A copy, which earlier versions made, starts its own history at its latest duplicate entry: what came before is the copied
+  // instance's, settled, pending nothing.
   get copied(): number {
     return this.log.findLast(e => e.op === 'duplicate')?.seq ?? 0;
   }

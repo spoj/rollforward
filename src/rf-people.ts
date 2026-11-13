@@ -53,7 +53,6 @@ rf new task WORKSPACE [LABEL] [--creds OFFER,...] [--comment TEXT [--wake]]   a 
 rf new instance SERIES LABEL [--creds OFFER,...] [--wake]   the series' next instance, which --wake runs at once
 rf new series PATH NAME           the task at PATH becomes the series NAME, itself its first instance
 rf new workspace NAME             yours to own, for admins and those they grant create
-rf copy PATH LABEL [--creds OFFER,...]   a closed or abandoned instance, copied into a new open one without its agent session
 rf share PATH on|off [--creds OFFER,...]   the series' people, and their agents, wake it as you, with those offers ticked;
                                   off stops it, for its sharer or its workspace's owners
 rf archive PATH [--undo]          a workspace or a series leaves the sidebar, and nothing in it changes or runs, until --undo brings it back;
@@ -514,7 +513,7 @@ else if (cmd === 'comment' && args.length === 2) {
   // One confirm, which says it can't be undone and what stays outside the server.
   const { at } = await instanceAt(args[0]);
   if (!flags.yes) {
-    const warning = `Deleting ${args[0]} can't be undone. A run for it is cut, and everything the server holds of it goes: its uploads, the agent's files, its items, threads and log, its runs' transcripts and browser logs, and its history; its label stays in its place, shown as deleted by you. Copies outside the server stay: its duplicates, files other runs copied, rf pull copies, mail sent.`;
+    const warning = `Deleting ${args[0]} can't be undone. A run for it is cut, and everything the server holds of it goes: its uploads, the agent's files, its items, threads and log, its runs' transcripts and browser logs, and its history; its label stays in its place, shown as deleted by you. Copies outside the server stay: instances copied from it, files other runs copied, rf pull copies, mail sent.`;
     if (!process.stdin.isTTY) throw new Error(`${warning} Confirm with --yes`);
     const { createInterface } = await import('node:readline/promises'), rl = createInterface({ input: process.stdin, output: process.stdout });
     const answer = await rl.question(`${warning}\nType delete to delete it: `);
@@ -559,9 +558,6 @@ else if (cmd === 'comment' && args.length === 2) {
 } else if (cmd === 'new' && args[0] === 'workspace' && args.length === 2) {
   await post('/api/workspaces', { name: args[1] });
   console.log(`made ${args[1]}`);
-} else if (cmd === 'copy' && args.length === 2) {
-  const { id } = await (await post(`${(await instanceAt(args[0])).at}/duplicate?as=${encodeURIComponent(args[1])}`, { logins: ticks() })).json();
-  console.log(`made ${await pathOf(id)}${consent(ticks())}`);
 } else if (cmd === 'share' && ['on', 'off'].includes(args[1]) && args.length === 2) {
   await post(`/api/series/${(await seriesAt(args[0])).id}`, { share: args[1] === 'on', logins: ticks() }, 'PUT');
   console.log(args[1] === 'on' ? `shared ${args[0]}${consent(ticks())}` : `stopped sharing ${args[0]}`);

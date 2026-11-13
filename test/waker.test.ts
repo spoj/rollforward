@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createInstance, duplicateInstance, instance, labels, openStore, renameInstance, Instance } from '../src/store.ts';
+import { createInstance, instance, labels, openStore, renameInstance, Instance } from '../src/store.ts';
 import type { Run } from '../src/runner.ts';
 import { initSystem, readJson, saveTree, tree, writeJson } from '../src/system.ts';
 import type { Active } from '../src/waker.ts';
@@ -268,7 +268,10 @@ test("a copy of an instance closed with an act its run never read starts nothing
   const src = make('s6', 'copied');
   src.append(alice, 'comment', { thread: 'c2', text: 'Also send the pack to the bank.' });
   await src.close({ email: alice, name: 'Alice' });
-  const copy = duplicateInstance(src, 'copied again', alice, []);
+  // As earlier versions copied it: the source's entries, then a duplicate entry.
+  const copy = make('s6', 'copied again');
+  for (const { seq, at, by, op, ...e } of src.log) copy.append(by, op, e);
+  copy.append(alice, 'duplicate', { from: src.label, logins: [] });
   recover();
   await settle();
   assert.ok(!ops(copy).includes('run'));
