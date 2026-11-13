@@ -1,4 +1,4 @@
-import { HttpError, instances, newId } from './store.ts';
+import { HttpError, instances, newId, type Entry, type Instance } from './store.ts';
 import { act, canManage, canSee, readJson, tree, writeJson } from './system.ts';
 import { users, type Me } from './auth.ts';
 import { logins, signOut } from './logins.ts';
@@ -21,9 +21,24 @@ const live = (g: Grant) => g.state === 'pending' || g.state === 'approved';
 export const approved = (site: string, person?: string, workspace?: string) => Object.values(grants())
   .some(g => g.state === 'approved' && g.site === site && (!person || g.person === person) && (!workspace || g.workspace === workspace));
 
+// Each instance's browser closes since its latest duplication, read again only once its log grows.
+const closes = new WeakMap<Instance, { n: number; rows: Entry[] }>();
+
 export function visible(me: Me) {
-  const t = tree(), people = users();
-  return Object.entries(grants()).filter(([, g]) => g.person === me.email || canManage(me, t.workspaces[g.workspace])).map(([id, g]) => {
+  const t = tree(), people = users(), shown = Object.entries(grants()).filter(([, g]) => g.person === me.email || canManage(me, t.workspaces[g.workspace]));
+  const counted = new Set(shown.filter(([, g]) => g.state === 'approved').map(([, g]) => g.workspace)), used = new Map<string, { runs: Set<string>; wrote: Set<string>; last: string | null }>();
+  for (const [sid, s] of Object.entries(t.series)) if (counted.has(s.workspace)) for (const inst of instances(sid)) {
+    let c = closes.get(inst);
+    if (c?.n !== inst.log.length) closes.set(inst, c = { n: inst.log.length, rows: inst.log.slice(inst.log.findLastIndex(e => e.op === 'duplicate') + 1).filter(e => e.op === 'browser' && !e.action) });
+    for (const e of c.rows) {
+      const key = `${s.workspace} ${e.login} ${e.site}`, u = used.get(key) ?? { runs: new Set(), wrote: new Set(), last: null }, run = `${inst.id}:${e.run}`;
+      used.set(key, u);
+      u.runs.add(run);
+      if ((e.writes as number) > 0) u.wrote.add(run);
+      if (u.last === null || Date.parse(e.at) > Date.parse(u.last)) u.last = e.at;
+    }
+  }
+  return shown.map(([id, g]) => {
     const website = websitesOf(g.person)[g.site], profile = website.profile ?? null;
     const personName = people[g.person]?.name ?? g.person, workspaceName = t.workspaces[g.workspace].name;
     const why: string[] = [], flags: string[] = [];
@@ -39,21 +54,7 @@ export function visible(me: Me) {
       flags.push(...g.check.flags);
       if (g.check.risk === 'high') why.push(`the old check rates ${g.site} high risk`);
     } else if (g.check) flags.push(`The old check failed: ${g.check.error}`);
-    const use = g.state === 'approved' ? { runs: 0, wrote: 0, last: null as string | null } : null;
-    if (use) {
-      const runs = new Set<string>(), wrote = new Set<string>();
-      for (const [sid] of Object.entries(t.series).filter(([, s]) => s.workspace === g.workspace)) {
-        for (const inst of instances(sid)) for (const e of inst.log.slice(inst.log.findLastIndex(e => e.op === 'duplicate') + 1)) {
-          if (e.op !== 'browser' || e.action || e.site !== g.site || e.login !== g.person) continue;
-          const run = `${inst.id}:${e.run}`;
-          runs.add(run);
-          if ((e.writes as number) > 0) wrote.add(run);
-          if (use.last === null || Date.parse(e.at) > Date.parse(use.last)) use.last = e.at;
-        }
-      }
-      use.runs = runs.size;
-      use.wrote = wrote.size;
-    }
+    const u = used.get(`${g.workspace} ${g.person} ${g.site}`), use = g.state === 'approved' ? { runs: u?.runs.size ?? 0, wrote: u?.wrote.size ?? 0, last: u?.last ?? null } : null;
     const host = new URL(website.url).hostname;
     const what = profile && 'what' in profile ? `${profile.what} (${profile.category} system, ${host})`
       : g.check && 'summary' in g.check ? `${g.check.summary} (${g.check.risk} risk, ${host})` : website.url;

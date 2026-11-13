@@ -180,6 +180,8 @@ test('approved usage counts distinct runs with browser summaries and writes, sco
   copy.append('server', 'browser', { run: 3, site: 'portal', login: person.email, requests: 0, writes: 0, at: '2026-11-08T10:00:00Z' });
   assert.deepEqual(visible(owner).find(g => g.id === 'g')!.use, { runs: 4, wrote: 2, last: '2026-11-08T10:00:00Z' });
   assert.equal(visible(owner).find(g => g.id === 'pending')!.use, null);
+  second.append('server', 'browser', { run: 4, site: 'portal', login: person.email, requests: 1, writes: 1, at: '2026-11-09T10:00:00Z' });
+  assert.deepEqual(visible(owner).find(g => g.id === 'g')!.use, { runs: 5, wrote: 3, last: '2026-11-09T10:00:00Z' }, 'a grown log is read again');
 });
 
 test('owners may deny restricted requests, and lapse, withdrawal and removal keep their existing login cleanup', async () => {
