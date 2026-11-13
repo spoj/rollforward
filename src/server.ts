@@ -325,6 +325,7 @@ function status(me: Me) {
 
 function trace(inst: Instance) {
   const dir = join(inst.dir, 'session');
+  if (inst.doc.status === 'deleted') return [];
   type Line = { kind: string; text: string; at?: string; result?: string; lines?: number; error?: boolean };
   const out: Line[] = [], calls = new Map<string, Line>();
   for (const f of existsSync(dir) ? readdirSync(dir).filter(f => f.endsWith('.jsonl')).sort() : []) {
@@ -370,14 +371,12 @@ function pullable(me: Me, path: string) {
     if (existsSync(agentsFile(wid))) add(`${w.name}/AGENTS.md`, agentsFile(wid), { text: text(agentsFile(wid)) });
     for (const [sid, s] of Object.entries(t.series).filter(([, s]) => s.workspace === wid)) for (const l of labels(sid)) {
       const at = `${w.name}/${s.name}/${l.label}`, dir = instanceDir(l.id);
-      if (near(at)) for (const f of walk(dir)) add(`${at}/${relative(dir, f).split(sep).join('/')}`, f, { url: `/files/${l.id}/${relative(dir, f).split(sep).map(encodeURIComponent).join('/')}` });
+      if (!instance(l.id).hole && near(at)) for (const f of walk(dir)) add(`${at}/${relative(dir, f).split(sep).join('/')}`, f, { url: `/files/${l.id}/${relative(dir, f).split(sep).map(encodeURIComponent).join('/')}` });
     }
   }
   return out.filter(f => !path || f.path === path || f.path.startsWith(path + '/'));
 }
 
-// The previews kept of each instance's files, which go as it's deleted.
-const previewed = new Map<string, Set<string>>();
 let previewing = 0;
 const turns: (() => void)[] = [];
 
@@ -387,6 +386,7 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
   if (posix.normalize(rel) !== rel || rel.split('/').includes('..')) throw new HttpError(400, 'bad path');
   const inst = instance(id);
   mustSee(me, tree().workspaces[tree().series[inst.seriesId].workspace]);
+  if (inst.doc.status === 'deleted') throw new HttpError(404, 'the instance was deleted');
   const fd = openFile(inst.dir, rel);
   if (fd === undefined) throw new HttpError(404, 'no such file');
   if (preview) {
@@ -400,9 +400,11 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
     // A part of the file, as its query asks, such as a workbook's sheet or an email's attachment, is a preview of its own.
     const part = url.search.slice(1), sum = createHash('sha256').update(`${basename(rel)}\n${part}\n`);
     for await (const c of createReadStream('', { fd, start: 0, autoClose: false })) sum.update(c);
-    const kept = join(previews, sum.digest('hex'));
-    if (!previewed.has(inst.id)) previewed.set(inst.id, new Set());
-    previewed.get(inst.id)!.add(kept);
+    const kept = join(previews, `${inst.id}-${sum.digest('hex')}`);
+    if (inst.doc.status === 'deleted') {
+      closeSync(fd);
+      throw new HttpError(404, 'the instance was deleted');
+    }
     if (existsSync(kept)) {
       closeSync(fd);
       res.writeHead(200, { 'content-type': 'application/json' });
@@ -411,6 +413,10 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
     if (previewing < 2) previewing++;
     else await new Promise<void>(go => turns.push(go));
     try {
+      if (inst.doc.status === 'deleted') {
+        closeSync(fd);
+        throw new HttpError(404, 'the instance was deleted');
+      }
       const run = exec('bwrap', [
         '--unshare-all', '--die-with-parent', '--new-session', '--clearenv', ...userland(), '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
         '--ro-bind', join(app, 'src', 'preview.py'), '/preview.py', '--setenv', 'HOME', '/tmp', '--setenv', 'LANG', 'C.UTF-8', '--', '/opt/venv/bin/python', '/preview.py', basename(rel), part,
@@ -419,9 +425,10 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
       const [{ stdout }] = await Promise.all([run, pipeline(createReadStream('', { fd, start: 0 }), async function* (chunks: AsyncIterable<Buffer>) {
         for await (const c of chunks) { content.update(c); yield c; }
       }, run.child.stdin!)]);
+      if (inst.doc.status === 'deleted') throw new HttpError(404, 'the instance was deleted');
       const tmp = join(tmpDir, randomUUID());
       writeFileSync(tmp, stdout);
-      renameSync(tmp, join(previews, content.digest('hex')));
+      renameSync(tmp, join(previews, `${inst.id}-${content.digest('hex')}`));
       res.writeHead(200, { 'content-type': 'application/json' });
       return void res.end(stdout);
     } finally {
@@ -724,8 +731,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // totals (waker.ts remove()); the system's log records it.
     if (!canManage(me, t.workspaces[t.series[inst.seriesId].workspace])) throw new HttpError(403, "only the workspace's owners and admins delete an instance");
     await remove(inst, by, () => ({ cost: costOf(inst), runs: runsOf(inst).map(({ started, error, ...r }) => r) }));
-    for (const p of previewed.get(inst.id) ?? []) rmSync(p, { force: true });
-    previewed.delete(inst.id);
+    for (const p of readdirSync(previews)) if (p.startsWith(inst.id + '-')) rmSync(join(previews, p));
     for (const k of sums.keys()) if (k.startsWith(inst.dir + sep)) sums.delete(k);
     return send(res, 200, 'ok');
   }

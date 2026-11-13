@@ -1418,7 +1418,7 @@ test("whoever manages a workspace deletes an instance, in any status, once: all 
   await ran(path);
   await quiet();
   assert.equal((await call('GET', `/preview/${id}/upload/salaries.csv`)).status, 200);
-  const kept = join(root, '.previews', createHash('sha256').update(`salaries.csv\n\n${bytes}`).digest('hex'));
+  const kept = join(root, '.previews', `${id}-${createHash('sha256').update(`salaries.csv\n\n${bytes}`).digest('hex')}`);
   assert.ok(existsSync(kept), 'a preview kept of its file');
   assert.equal((await call('PUT', `/api/wakes/${id}`, JSON.stringify({ at: '+1d' }))).status, 200);
   assert.equal((await call('PUT', `/api/wakes/${sid}`, JSON.stringify({ at: '+1d', label: '2026-11-07' }))).status, 200);
@@ -1448,4 +1448,36 @@ test("whoever manages a workspace deletes an instance, in any status, once: all 
   assert.equal((await call('PUT', `/api/wakes/${sid}`, JSON.stringify({ at: '+1d', label: '2026-11-07' }))).status, 409, 'nothing wakes it');
   assert.equal((await call('GET', `/files/${id}/upload/salaries.csv`)).status, 404);
   assert.match(await rf('ls'), /^Purge\/Payroll\/2026-11-07  deleted by admin@demo\.test /m);
+  assert.match(await rf('show', 'Purge/Payroll/2026-11-07'), /^Purge\/Payroll\/2026-11-07  deleted by admin@demo\.test /);
+  assert.match(await rf('activity', 'Purge/Payroll'), /admin@demo\.test  deletes it/);
+});
+
+test('deleting during a preview discards its answer and cached bytes, without removing another instance\'s copy', async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Preview deletion' }))).json();
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'Files' }))).json();
+  const { id } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'gone', quiet: true }))).json();
+  const { id: other } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'kept', quiet: true }))).json();
+  for (const i of [id, other]) assert.equal((await call('POST', `/api/instances/${i}/upload?name=same.csv&quiet`, 'secret\n1\n')).status, 200);
+  for (const i of [id, other]) assert.equal((await call('GET', `/preview/${i}/upload/same.csv`)).status, 200);
+  rmSync(join(tmp, 'release-previews'));
+  for (const f of readdirSync(tmp).filter(f => f.startsWith('holding-'))) rmSync(join(tmp, f));
+  assert.equal((await call('POST', `/api/instances/${id}/upload?name=race-hold-delete.csv&quiet`, 'secret\n2\n')).status, 200);
+  const preview = call('GET', `/preview/${id}/upload/race-hold-delete.csv`);
+  try {
+    for (let n = 0; !readdirSync(tmp).some(f => f.startsWith('holding-')) && n < 200; n++) await new Promise(r => setTimeout(r, 25));
+    assert.ok(readdirSync(tmp).some(f => f.startsWith('holding-')));
+    assert.equal((await call('POST', `/api/instances/${id}/delete`, '{}')).status, 200);
+  } finally {
+    writeFileSync(join(tmp, 'release-previews'), '');
+  }
+  assert.equal((await preview).status, 404);
+  const cache = readdirSync(join(root, '.previews'));
+  assert.ok(!cache.some(f => f.startsWith(id + '-')));
+  assert.ok(cache.some(f => f.startsWith(other + '-')));
+  assert.equal((await call('GET', `/preview/${other}/upload/same.csv`)).status, 200);
+  const pulled = join(tmp, 'deleted-pull');
+  mkdirSync(join(pulled, 'gone'), { recursive: true });
+  writeFileSync(join(pulled, 'gone', 'secret'), 'local copy');
+  await rf('pull', 'Preview deletion/Files', pulled, '--delete');
+  assert.ok(!existsSync(join(pulled, 'gone', 'secret')));
 });
