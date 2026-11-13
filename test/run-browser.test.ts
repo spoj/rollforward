@@ -309,10 +309,11 @@ test('a browser that finishes opening after its run ends or its grant is revoked
     const outcomes = Promise.allSettled([first, second]);
     try {
       while (states.length === before) await sleep(5);
-      if (stop === 'end') await browsers.end();
-      else revoke(asPerson(alice)!, 'alice@demo.test crm');
+      const ending = stop === 'end' ? browsers.end() : undefined;
+      if (stop === 'revoke') revoke(asPerson(alice)!, 'alice@demo.test crm');
       const closed = deleted.length;
       release();
+      await ending;
       const results = await outcomes;
       assert.equal(deleted.length, closed + 1);
       assert.equal(browsers.bySite.size, 0);
