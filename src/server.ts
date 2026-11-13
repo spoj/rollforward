@@ -1330,6 +1330,11 @@ server.on('upgrade', (req, socket, head) => {
   if (me && run) try {
     const w = watched(me, run[1], run[2]);
     to = `/sessions/${run[3] === 'drive' ? w.browsers.drive(run[2], me.email, socket) : w.id}/view/${run[3]}`;
+    // It lasts while they may watch: a change to the workspaces or people, such as their removal or disabling, cuts it once they may not.
+    const may = () => { const now = session(req); try { return !!now && !!watched(now, run[1], run[2]); } catch { return false; } };
+    const cut = (id: string) => id === 'tree' && !may() && socket.destroy();
+    changes.on('change', cut);
+    socket.on('close', () => changes.off('change', cut));
   } catch {}
   if (!to) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
   passUpgrade(req, socket, head, to);

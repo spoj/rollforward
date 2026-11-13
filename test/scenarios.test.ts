@@ -24,7 +24,7 @@ let model: ReturnType<typeof createServer>, proc: ChildProcess, base = '', admin
 // The browser service, a stand-in: the browsers it opens are b1, b2…, each with a person in control and a live view, and a websocket
 // to one answers with the path it reached. Their pages asked for the addresses in `refused`, which they don't reach; what else they
 // were told, as hosts allowed, is in `told`.
-let refused: string[] = [], holdCdp = false, cdpOpened = 0, cdpClosed = 0;
+let refused: string[] = [], holdCdp = false, holdView = false, cdpOpened = 0, cdpClosed = 0;
 let browserLog: { method: string; url: string; status: number; dest?: string; from?: string }[] = [];
 let browserState: { cookies: { domain: string; name: string; value: string }[]; origins: { origin: string; localStorage: { name: string; value: string }[] }[] } = { cookies: [], origins: [] };
 const told: string[] = [], openings: { site: { hosts: string[]; open?: boolean; public?: boolean; except?: string[]; start_url?: string }; state?: unknown; ttl_s: number }[] = [];
@@ -44,7 +44,8 @@ const service = createServer(async (req, res) => {
     socket.on('end', () => { cdpClosed++; socket.destroy(); });
     socket.resume();
     socket.write('HTTP/1.1 101 Switching Protocols\r\nconnection: upgrade\r\nupgrade: websocket\r\n\r\n');
-  } else socket.end(`HTTP/1.1 101 Switching Protocols\r\n\r\nservice got ${req.url}`);
+  } else if (holdView && req.url!.includes('/view/')) socket.on('error', () => {}).write('HTTP/1.1 101 Switching Protocols\r\nconnection: upgrade\r\nupgrade: websocket\r\n\r\n');
+  else socket.end(`HTTP/1.1 101 Switching Protocols\r\n\r\nservice got ${req.url}`);
 });
 
 const text = (c: unknown): string => typeof c === 'string' ? c : (c as { type: string; text?: string; content?: unknown }[]).map(b => b.text ?? (b.content === undefined ? '' : text(b.content))).join('');
@@ -874,6 +875,34 @@ test("whoever sees an instance watches its run's browser live from the page, the
   const { log, run } = await (await call('GET', `/api/instances/${id}`, undefined, bob)).json();
   assert.deepEqual([log.find((e: { op: string }) => e.op === 'interrupt').by, log.filter((e: { op: string }) => e.op === 'browser').map((e: { by: string; site: string; action?: string }) => [e.by, e.site, e.action]), run],
     [ADMIN, [[ADMIN, 'portal', 'drive'], ['server', 'portal', undefined]], null], "the admin's control and interrupt logged as theirs, and the browser gone");
+});
+
+test("someone watching a run's browser live is cut off once they may no longer see its instance", async t => {
+  holdView = true;
+  t.after(() => { holdView = false; });
+  assert.equal((await call('POST', '/logins/sites', { name: 'watched', url: 'https://portal.example.com/' })).status, 200);
+  const { id: signIn } = await (await call('POST', '/logins/web/watched', {})).json();
+  assert.equal((await call('POST', `/signins/${signIn}`)).status, 200);
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Watched' })).json();
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB] })).status, 200);
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Portal' })).json();
+  assert.equal((await (await call('POST', '/grants', { site: 'watched', workspace: ws, reason: 'watching' })).json()).state, 'approved');
+  scripts.push({ bash: ['curl -s -m 5 -H "connection: upgrade" -H "upgrade: websocket" "$RF_BROWSERS/watched"; touch working/opened; sleep 120'], report: 'Never said.', saw: [] });
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: ['web:watched'] })).json();
+  try {
+    await until('the browser', () => existsSync(join(root, 'instances', id, 'working', 'opened')));
+    let got = '', closed = false;
+    connect(Number(new URL(base).port), '127.0.0.1').on('data', d => { got += d; }).on('close', () => { closed = true; })
+      .write(`GET /runs/${id}/watched/view/watch HTTP/1.1\r\nhost: x\r\nconnection: upgrade\r\nupgrade: websocket\r\ncookie: ${bob}\r\norigin: ${base}\r\n\r\n`);
+    await until('the live view', () => got.startsWith('HTTP/1.1 101'));
+    await new Promise(r => setTimeout(r, 500));
+    assert.equal(closed, false, 'it lasts while bob may watch');
+    assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [] })).status, 200);
+    await until('the live view cut', () => closed);
+  } finally {
+    await call('POST', `/api/instances/${id}/interrupt`);
+    await runs(id, 1);
+  }
 });
 
 test('unticking, removing, signing out or revoking a website closes a going run\'s browser and its open CDP pipe', async t => {
