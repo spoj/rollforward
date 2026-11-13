@@ -634,8 +634,9 @@ const cref = (seq, text, inst = cur.i.id) => {
   const e = inst === cur.i.id && data.log[seq - 1];
   return `<a class="cref" data-act="cref" data-inst="${inst}" data-seq="${seq}"${e?.op === 'comment' ? ` title="${esc(`${nameOf(e.by)}: ${firstLine(e.text).slice(0, 80)}`)}"` : ''}>${text}</a>`;
 };
-// A bare cN in a post, a comment of this instance, links it; a link's or code's text stays as it is.
-const crefs = h => h.replace(/(<a\b[^]*?<\/a>|<code>[^]*?<\/code>|<[^>]*>)|(?<![\w/.#-])c(\d+)\b(?![\w-]|\.\w)/g, (m, skip, n) => skip || data.log[n - 1]?.op !== 'comment' ? m : cref(+n, m));
+// A bare cN in a post, a comment of this instance, links it, but not as part of an address, a query, an entity or a cell's; a link's or
+// code's text stays as it is.
+const crefs = h => h.replace(/(<a\b[^]*?<\/a>|<code>[^]*?<\/code>|<[^>]*>)|(?<![\w/.#=&;!:?-])c(\d+)\b(?![\w-]|\.\w)/g, (m, skip, n) => skip || data.log[n - 1]?.op !== 'comment' ? m : cref(+n, m));
 // A file in the agent's markdown, by its path in the instance, or ../<label>/… in another of its series: [name](working/x.csv) links it,
 // opening the preview, and an image, ![name](working/x.png), shows as a thread's file does. [name](#cN) links a comment, and
 // [name](../<label>#cN) one of another instance, last, so what its title quotes of the comment is left as it is.

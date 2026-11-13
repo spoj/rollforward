@@ -719,6 +719,13 @@ test("hovering a link to a deleted instance's comment says nothing of it, and no
   assert.deepEqual([await page.locator('#toasts .toast').count(), await page.locator('#conv a.cref[data-inst="a5c0ff5e1f09"]').getAttribute('title')], [toasts, null]);
 });
 
+test("a bare cN after =, &, ;, !, : or ? is no reference, as in an address, a query or a cell's, and links nothing", async () => {
+  await page.evaluate(() => { location.hash = '#/a5c0ff5e1f0a'; });
+  await page.waitForSelector('#bar h1 .t:text-is("February")');
+  const linked = await page.locator('#conv .post[data-seq="7"] .pb').evaluate(p => [...p.childNodes].map(n => n.nodeName === 'A' ? `[${n.textContent}]` : n.textContent).join(''));
+  assert.equal(linked, 'Part 零件编号[c2], R&c2, doc=c2, Sheet1!c3:c4, why?c2, a;c2 and https://portal/view?doc=c2, but see [c2].', 'Chinese right before it may be a reference, as 见c3 is');
+});
+
 test("people show by name, with their email on hover, and Entra groups by label; adding to a workspace suggests people by name and takes a group's label", async () => {
   const bob = 'bob@demo.test', group = '6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b', url = (path: string) => new URL(path, page.url()).href;
   const signin = await entra.signIn(new URL(page.url()).origin, bob);
