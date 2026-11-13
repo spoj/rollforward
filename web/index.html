@@ -564,8 +564,10 @@ function renderLog() {
   if (ui.open && data && !$('#log').classList.contains('open')) $('#log').dataset.end = 'yes';
   $('#log').className = 'log' + (ui.open && data ? ' open' : '');
   if (!data || !ui.open) return;
-  // This instance's half-written comment or reply, or files picked for one, holds its conversation still until sent or cleared.
-  const drafting = [...$('#conv').querySelectorAll('textarea, input[type=text]')].some(t => t.value.trim()) || [...$('#conv').querySelectorAll('input[type=file]')].some(f => f.files.length);
+  // This instance's half-written comment or reply, or files picked for one, holds its conversation still until sent or cleared; a
+  // closed box's, hidden, doesn't.
+  const shown = s => [...$('#conv').querySelectorAll(s)].filter(f => !f.closest('.reply[hidden]'));
+  const drafting = shown('textarea, input[type=text]').some(t => t.value.trim()) || shown('input[type=file]').some(f => f.files.length);
   const focused = document.activeElement?.id === 'newcomment';
   // Its two sides, the conversation and the audit, one shown at a time: a half-written comment waits on the other's.
   put($('#lh'), `<span class="seg">${[['Conversation', !ui.audit], ['Audit', ui.audit]].map(([side, on]) => `<button class="${on ? 'sel' : ''}" ${on ? '' : 'data-act="audit"'}>${ICON[side === 'Audit' ? 'person' : 'chat']}${side}</button>`).join('')}</span>`
@@ -1447,9 +1449,10 @@ async function onAct(act, el) {
   }
   // Approving a proposal is a sign-off, by the route's name.
   if (act === 'approve' || act === 'reject') {
-    const box = el.closest('.reply').querySelector('textarea'), own = draft;
-    await api(`${instPath()}/${act === 'approve' ? 'signoff' : 'reject'}`, { method: 'POST', body: JSON.stringify({ thread: `c${el.dataset.seq}`, text: box.value.trim() }) });
-    box.value = '';
+    const box = el.closest('.reply'), own = draft;
+    await api(`${instPath()}/${act === 'approve' ? 'signoff' : 'reject'}`, { method: 'POST', body: JSON.stringify({ thread: `c${el.dataset.seq}`, text: box.querySelector('textarea').value.trim() }) });
+    for (const t of box.parentElement.querySelectorAll(':scope > .reply textarea')) t.value = '';
+    thumbs(box.parentElement.querySelector(':scope > .reply input[type=file]'), new DataTransfer().files);
     own.replying.delete(+el.dataset.seq);
     await refresh();
   }

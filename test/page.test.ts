@@ -93,6 +93,15 @@ before(async () => {
       { by: 'agent', op: 'comment', thread: 'c5', item: null, ref: null, text: 'Is the rate final?', ask: 'question' },
       { by: 'agent', op: 'withdraw', thread: 'c5', on: 5, text: 'The file says so.', see: 2 },
     ]],
+    ['a5c0ff5e1f09', 'November', 'closed', [], [{ by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'Sent it late.' }, { by: 'admin@demo.test', op: 'close' }]],
+    ['a5c0ff5e1f0a', 'February', 'open', [], [
+      { by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'I will send [the pack](working/pack.csv) to the bank, as [last month](../December#c2).', ask: 'proposal' },
+      { by: 'agent', op: 'comment', thread: 'c3', item: null, ref: null, text: 'Is the rate final?', ask: 'question' },
+      { by: 'agent', op: 'comment', thread: 'c3', parent: 3, text: 'Found it in the file: final.' },
+      { by: 'agent', op: 'withdraw', thread: 'c3', on: 3, text: 'The file says so.', see: 4 },
+      { by: 'agent', op: 'comment', thread: 'c6', item: null, ref: null, text: 'As [my proposal](#c2) says, and as [in November](../November#c2).' },
+      { by: 'agent', op: 'comment', thread: 'c7', item: null, ref: null, text: 'Part 零件编号c2, R&c2, doc=c2, Sheet1!c3:c4, why?c2, a;c2 and https://portal/view?doc=c2, but see c2.' },
+    ]],
   ] as const) {
     const dir = join(root, 'instances', id);
     mkdirSync(join(dir, 'working'), { recursive: true });
@@ -662,6 +671,22 @@ test("a question asks, with Reply alone; a proposal proposes, apart, with Approv
   await last.click();
   await page.waitForSelector('#bar h1 .t:text-is("December")');
   await page.waitForSelector('#conv .post.flash[data-seq="2"]');
+});
+
+test("text left in a closed Reply box holds nothing still: once approved, the conversation shows it and offers Approve no more", async () => {
+  await page.evaluate(() => { location.hash = '#/a5c0ff5e1f0a'; });
+  await page.waitForSelector('#bar h1 .t:text-is("February")');
+  if (!await page.locator('#log.open').count()) await page.click('#bar [data-act=panel]');
+  const post = page.locator('#conv .post[data-seq="2"]');
+  await post.locator(':scope > .pa [data-act=reply]:text-is("Reply")').click();
+  await post.locator(':scope > .reply[data-mode=reply] textarea').fill('Go ahead.');
+  await post.locator(':scope > .pa [data-mode=approve]').click();
+  await post.locator('[data-act=approve]').click();
+  await post.locator('.kids .post', { hasText: 'Approved' }).waitFor();
+  assert.equal(await post.locator(':scope > .pa [data-mode=approve]').count(), 0);
+  await post.locator(':scope > .pa [data-act=reply]:text-is("Reply")').click();
+  assert.equal(await post.locator(':scope > .reply[data-mode=reply] textarea').inputValue(), '', 'approving clears what its boxes held');
+  await post.locator(':scope > .pa [data-act=reply]:text-is("Reply")').click();
 });
 
 test("people show by name, with their email on hover, and Entra groups by label; adding to a workspace suggests people by name and takes a group's label", async () => {
