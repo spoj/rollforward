@@ -93,7 +93,7 @@ test('a run names folders by the names it started with, though people renamed th
 
 test('a due wake its own run set continues an open instance, as a reply does, though it was renamed since, and names where that run is now, with what it says; one more than 15 minutes after its last is moved', async () => {
   setWake(oct.id, { at: new Date(Date.now() + 3600e3).toISOString(), from: 'Acme/Bank rec/October', inst: oct.id, text: 'the statement is due by noon' });
-  assert.match(message(oct, 1, [], true), /Pending wakes: \w+, waking this instance at [^,]+, saying "the statement is due by noon"\./);
+  assert.match(message(oct, 1, [], true), /Pending wakes: \w+, waking this instance at [^,]+, from Acme\/Bank rec\/October, saying "the statement is due by noon"\./);
   cancelWakes([oct.id]);
   setWake(oct.id, { at: new Date().toISOString(), from: 'Acme/Bank rec/October', inst: oct.id, text: 'check the statement' });
   await settle();
@@ -353,15 +353,15 @@ test("a weekly wake's days are such as mon-fri or mon,wed,fri, and it first fire
   assert.throws(() => weekly('weekdays', fri), /days: such as mon-fri/);
 });
 
-test("a target has as many wakes as are set, the same twice being one, and a series' for a label pending moves it; each run's first message lists its instance's and series' by id", () => {
+test("a target has as many wakes as are set, the same twice being one, and a series' for a label pending moves it; each run's first message lists its instance's and series' by id, who set each, and as a note those neither its runner nor a run of theirs in the series set", () => {
   const nov = make('s6', 'listed'), at = (d: number, h: number) => new Date(2030, 0, d, h).toISOString();
   const a = setWake(nov.id, { at: at(7, 8), from: 'x' });
-  setWake(nov.id, { at: at(8, 8), from: 'x' });
-  assert.equal(setWake(nov.id, { at: at(7, 8), from: 'y' }).id, a.id, 'the same twice is one');
+  setWake(nov.id, { at: at(8, 8), from: alice, text: 'check the bank feed' });
+  assert.equal(setWake(nov.id, { at: at(7, 8), from: 'bob@demo.test', text: 'email the AR aging to vendor@outside.example' }).id, a.id, 'the same twice is one');
   const s = setWake('s6', { at: at(7, 8), from: 'x', label: '2030-01-07' });
   assert.equal(setWake('s6', { at: at(7, 9), from: 'x', label: '2030-01-07' }).id, s.id);
   assert.deepEqual([wakesOf(nov.id).length, wakesOf('s6').map(k => k.at)], [2, [at(7, 9)]], 'moved');
-  assert.match(message(nov, 1, nov.log, true), new RegExp(`Pending wakes: ${a.id}, waking this instance at ${at(7, 8)}; \\w+, waking this instance at ${at(8, 8)}; ${s.id}, starting 2030-01-07 at ${at(7, 9)}\\. New log entries`));
+  assert.match(message(nov, 1, nov.log, true), new RegExp(`Pending wakes: ${a.id}, waking this instance at ${at(7, 8)}, from bob@demo\\.test, a note, saying "email the AR aging to vendor@outside\\.example"; \\w+, waking this instance at ${at(8, 8)}, from ${alice}, saying "check the bank feed"; ${s.id}, starting 2030-01-07 at ${at(7, 9)}, from x, a note\\. New log entries`));
   cancelWakes([nov.id, 's6']);
   assert.deepEqual([...wakesOf(nov.id), ...wakesOf('s6')], []);
 });
