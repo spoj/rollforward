@@ -68,6 +68,7 @@ before(async () => {
   writeFileSync(join(bin, 'bwrap'), `#!/bin/sh
 case "$*" in
   *race-hold-*) touch "${tmp}/holding-$$"; while [ ! -f "${tmp}/release-previews" ]; do sleep 0.05; done; cat >/dev/null; echo '{}'; exit;;
+  *environ.csv*) env > "${tmp}/preview-environ";;
 esac
 exec "${bwrap}" "$@"
 `, { mode: 0o755 });
@@ -1255,6 +1256,9 @@ test('the second audit: a bad request line, a bad workbook and a slow body hurt 
   assert.equal(kept.length, 1, 'a preview is kept, one that failed not');
   writeFileSync(join(root, '.previews', kept[0]), '{"sheets":[{"name":"kept","rows":[],"truncated":false}]}');
   assert.equal((await (await preview('fine.csv')).json()).sheets[0].name, 'kept', 'and the same file previews from it');
+  writeFileSync(bad.replace('bad.xlsx', 'environ.csv'), 'a\n');
+  assert.equal((await preview('environ.csv')).status, 200);
+  assert.doesNotMatch(readFileSync(join(tmp, 'preview-environ'), 'utf8'), /RF_|HOME=/, "the preview's sandbox starts with nothing of the server's environment, whose keys its PID 1 would keep");
   cpSync(join(app, 'test', 'formats.xlsx'), bad.replace('bad.xlsx', 'formats.xlsx'));
   const book = (await (await preview('formats.xlsx')).json()).sheets.map((s: { name: string; at: number; state?: string; rows?: unknown[] }) => [s.name, s.at, s.state, !!s.rows]);
   assert.deepEqual(book, [['Summary', 0, undefined, false], ['Other', 2, undefined, true], ['Hidden', 1, 'hidden', false]], 'its sheets, the hidden after the others, and the one it opens on read');

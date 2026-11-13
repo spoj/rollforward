@@ -1,4 +1,5 @@
 #!/bin/sh
 # Pi's RPC client starts `node`, and on the PATH runner.ts gives it this is what it finds: Pi in the run's sandbox (src/sandbox.ts),
-# in a cgroup of its own where RF_SANDBOX_SCOPE says how, with socat offering the server's socket at 127.0.0.1:7000 inside.
-exec $RF_SANDBOX_SCOPE bwrap --args 3 -- /bin/sh -c 'socat TCP-LISTEN:7000,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:/run/rf/rf.sock 2>/dev/null & exec node "$@"' sh "$@" 3< "$RF_SANDBOX_ARGS"
+# in a cgroup of its own where RF_SANDBOX_SCOPE says how, with socat offering the server's socket at 127.0.0.1:7000 inside. bwrap
+# starts with no environment but PATH, as its PID 1 inside keeps what bwrap started with for any run to read.
+exec $RF_SANDBOX_SCOPE env -i PATH="$PATH" bwrap --args 3 -- /bin/sh -c 'socat TCP-LISTEN:7000,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:/run/rf/rf.sock 2>/dev/null & exec node "$@"' sh "$@" 3< "$RF_SANDBOX_ARGS"

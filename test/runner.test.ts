@@ -109,6 +109,7 @@ test("writes land only in the instance's working/ and session/ and the series' .
 
 test("no key or server setting is inside: OpenRouter and Exa are at their own addresses, through the proxy, with stand-in keys, which their SDKs take", async () => {
   assert.doesNotMatch(await sh('env'), /the-real-key|server-only/);
+  assert.doesNotMatch(await sh("for p in /proc/[0-9]*; do tr '\\0' '\\n' < $p/environ; done 2>/dev/null"), /the-real-key|server-only|the-browser-key|RF_TEST_SECRET|RF_BROWSER_KEY|RF_SANDBOX/, "nor in any process's environment there, bwrap's own among them");
   assert.equal(await sh(`python -c "import os, openai; print(openai.OpenAI(base_url='https://openrouter.ai/api/v1', api_key=os.environ['OPENROUTER_API_KEY']).models.with_raw_response.list().text)"`), 'openrouter.ai GET /api/v1/models Bearer rf');
   assert.equal(await sh(`python -c "import exa_py; print(exa_py.Exa().headers['x-api-key'])" && curl -s -m 10 -X POST https://api.exa.ai/search`), 'rf\napi.exa.ai POST /search -');
   assert.equal(await sh('rf show 2>&1 | head -1'), `agent API, as Bearer ${TOKEN}`);
