@@ -491,12 +491,13 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   // The body before the tree: a request held open must not save a tree from before others' changes, such as an owner's removal.
   const payload = ['upload', 'attach', 'screen'].includes(action) ? {} : await json(req);
   const t = tree(), by = me.email;
-  // Archived, a workspace or a series takes nothing but being restored, and an instance's deletion, as what shouldn't be kept may be
-  // in one: nothing else in it changes, and none of its instances runs.
+  // Archived, a workspace or a series takes nothing but being restored, a PUT of {"archived": false} alone, and an instance's deletion,
+  // as what shouldn't be kept may be in one: nothing else in it changes, and none of its instances runs.
   const about = t.series[kind === 'instances' ? instance(id).seriesId : kind === 'series' ? id : ''];
   const within = t.workspaces[kind === 'workspaces' ? id : about ? about.workspace : kind === 'series' ? payload.workspace : ''];
   const shut = [within, about].find(x => x?.archived);
-  if (shut && req.method !== 'GET' && !(payload.archived === false && !action && kind !== 'instances') && !(kind === 'instances' && action === 'delete')) {
+  const restore = req.method === 'PUT' && !action && kind !== 'instances' && Object.keys(payload).join() === 'archived' && payload.archived === false;
+  if (shut && req.method !== 'GET' && !restore && !(kind === 'instances' && action === 'delete')) {
     if (!run) mustSee(me, within);
     throw new HttpError(409, `${shut.name} is archived: nothing in it changes until it's restored`);
   }

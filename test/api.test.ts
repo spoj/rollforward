@@ -319,6 +319,8 @@ test('a workspace can be made; a workspace or a series is archived and restored,
   const shut = (name: string) => [409, `${name} is archived: nothing in it changes until it's restored`];
   assert.deepEqual(await refused('POST', '/api/series', JSON.stringify({ workspace: id, name: 'Payroll' })), shut('Acme'));
   assert.deepEqual(await refused('PUT', `/api/workspaces/${id}`, JSON.stringify({ name: 'Acme 2', members: [bob] })), shut('Acme'));
+  assert.deepEqual(await refused('POST', '/api/series', JSON.stringify({ workspace: id, name: 'Payroll', archived: false })), shut('Acme'), 'restoring is archived: false alone');
+  assert.deepEqual(await refused('PUT', `/api/workspaces/${id}`, JSON.stringify({ name: 'Acme 2', archived: false })), shut('Acme'));
   assert.equal((await call('PUT', `/api/workspaces/${id}`, JSON.stringify({ archived: false }))).status, 200);
   assert.equal((await acme()).archived, false);
 
@@ -330,7 +332,10 @@ test('a workspace can be made; a workspace or a series is archived and restored,
   assert.deepEqual(await refused('POST', `${await at(renamed, '2026-09-06', 'rename')}?as=x`), shut(renamed));
   assert.deepEqual(await refused('POST', await at(renamed), '{"label":"2026-09-13"}'), shut(renamed));
   assert.deepEqual(await refused('PUT', await at(renamed), '{"name":"x"}'), shut(renamed));
+  for (const [method, path, body] of [['POST', await at(renamed), '{"label":"2026-09-13","archived":false}'], ['PUT', await at(renamed), '{"name":"x","share":true,"archived":false}'], ['POST', `${await at(renamed, '2026-09-06', 'comment')}`, '{"text":"x","archived":false}']])
+    assert.deepEqual(await refused(method, path, body), shut(renamed), `${method} ${body}`);
   assert.equal((await call('GET', await at(renamed, '2026-09-06'))).status, 200);
+  assert.equal((await call('PUT', await at(renamed), JSON.stringify({ archived: false }))).status, 200);
   assert.equal((await put(renamed, series, false)).status, 200);
   assert.equal((await shown(series)).archived, false);
 });
