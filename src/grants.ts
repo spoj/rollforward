@@ -6,10 +6,11 @@ import { checkWebsite, websitesOf, type Profile } from './browsers.ts';
 
 // Grants, in .rf/grants.json: a person's use of their login to their website in one workspace, (workspace, person, site). The person
 // asks, with a reason, once they've signed in to it; one of the workspace's owners, or an admin, approves or denies it, and may
-// revoke it at any time, as the person may withdraw it. Whoever may approve their own ask has it approved as they ask. A run's browser on a website opens only from its runner's login, and only
-// where their grant in the instance's workspace is approved (browsers.ts). A request lapses a week after it was asked; a login to a
-// website no approved grant uses is signed out a week after its sign-in; and once a person has nothing pending or approved for a
-// website, as after a denial or a revocation, they're signed out of it. Owners see the website's profile; old grants keep their check.
+// revoke it at any time, as the person may withdraw it; whoever may approve their own ask has it approved as they ask. A run's
+// browser on a website opens only from its runner's login, and only where their grant in the instance's workspace is approved
+// (browsers.ts). A request lapses a week after it was asked; a login to a website no approved grant uses is signed out a week after
+// its sign-in; and once a person has nothing pending or approved for a website, as after a denial or a revocation, they're signed
+// out of it. Owners see the website's profile; old grants keep their check.
 export type Check = { risk: 'low' | 'medium' | 'high'; flags: string[]; summary: string; hosts: string[] } | { error: string };
 export type Grant = { workspace: string; person: string; site: string; reason: string; at: string; state: 'pending' | 'approved' | 'denied' | 'revoked' | 'lapsed'; by?: string; decided?: string; text?: string; check?: Check };
 export const grants = () => readJson<Record<string, Grant>>('grants.json', {});
