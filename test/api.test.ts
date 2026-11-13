@@ -1110,7 +1110,7 @@ test('rf shares and archives series and workspaces, starts or drops a request, l
   saveLogin(adminEmail, { id: 'web:gg', kind: 'website', name: 'GG', since, offers: [{ id: 'web:gg', name: 'GG' }] }, 'state');
   const request = await rf('site', 'ask', 'gg', 'Making', 'month-end pulls'), asked = /^asked, as grant (\w+): /m.exec(request)![1];
   assert.match(request, /Demo Admin asks that runs in Making use their login to gg — https:\/\/gg\.example\.com\/\. Runs there can do whatever Demo Admin can, including submitting and approving\. Their reason: month-end pulls\. The reason is not an enforced limit\./);
-  assert.match(request, /OPENROUTER_API_KEY[\s\S]*[Aa]n admin decides/);
+  assert.match(request, /website profile could not be checked[\s\S]*[Aa]n admin decides/);
   await assert.rejects(rf('site', 'ask', 'gg', 'Making', 'again'), fails(1, /: 409 you've asked for gg in Making already/));
   const waiting = await rf('waiting');
   assert.match(waiting, new RegExp(`^grant  Making since .+, grant ${asked}: Demo Admin asks that runs in Making`, 'm'));
