@@ -14,9 +14,8 @@ process.on('uncaughtException', e => {
 const USAGE = `rf login URL [TOKEN]                without a TOKEN, through the browser: type rf's code on the page, and allow it
 rf ls [--json]                    every workspace, series and instance you see, with its status, runner, asks waiting and wakes
 rf waiting [--json]               what waits on you: asks and notes, requests to start an instance or to use a
-                                  website in a workspace you own, proposals, expired logins, and hosts a run's browser on a
-                                  website of yours was refused that the server's check left, or for admins anyone's it rates
-                                  high risk or finds at an internal address
+                                  website in a workspace you own, proposals and expired logins; only admins see hosts a run's
+                                  browser was refused that the server rates high or finds at an internal address
 rf show PATH [--json]             an instance: its items, the threads that wait on someone, by id, and its last run
 rf log PATH [--since SEQ] [--follow] [--json]   its log, a line an entry, after SEQ; --follow prints more as they come;
                                   --json prints the entries as they are, a line each
@@ -60,9 +59,8 @@ rf logins [--json]                your logins, each with its state, keepalive an
 rf logins offer|unoffer LOGIN SOURCE|OFFER   what a login offers runs: Microsoft 365's (m365) mailboxes, sites, folders and
                                   files, by address or link, a Databricks login's SQL warehouses, by link; unoffer takes the
                                   OFFER rf logins lists
-rf logins allow SITE HOST [--person EMAIL]   a host the pages of your website SITE need; once a grant to it is approved,
-                                  only within the domains it reaches, beyond which admins allow them, with --person; one at
-                                  an internal address an admin allows once, for everyone's websites
+rf logins allow SITE HOST --person EMAIL   admins alone allow a host the server left refused; one at an internal address
+                                  is allowed once for everyone's websites
 rf logins disallow SITE HOST      a host your website SITE reaches no more, which stays refused, the server's check letting
                                   it no more
 rf logins signout LOGIN
@@ -80,8 +78,8 @@ rf site set NAME [--header NAME] [--keepalive PAGE] [--every 10m] [--writeback f
                                   everyone's websites, with no admin again, until one sets it false
 rf site remove NAME               your website NAME, with your login to it and your grants for it
 rf site ask NAME WORKSPACE REASON to use your login to NAME in WORKSPACE's runs, for REASON, which one of its owners approves
-                                  or denies, seeing the server's check of the website, or an admin, where it rates it high
-                                  risk; a login no approved grant uses is signed out a week after you signed in, and once
+                                  or denies, seeing what the system is and what runs may do; an admin decides general platforms,
+                                  high risk and failed checks; a login no approved grant uses is signed out a week after sign-in, and once
                                   you have no grant to it pending or approved
 rf grants [WORKSPACE] [--json]    the grants to use websites, yours and those of the workspaces you own, with their states
 rf grant approve|deny ID [TEXT]   a request to use a website in a workspace you own, with TEXT for its asker
@@ -275,6 +273,7 @@ const consent = (offers: string[]) => offers.length ? `, ticking ${offers.join('
 
 // Times as this machine's clock reads them, and lengths of time and costs, for the views.
 const when = (iso: string) => new Date(iso).toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' });
+const grantText = (g: any) => `${g.description}${g.flags.length ? ` Flags: ${g.flags.join('; ')}.` : ''}${g.adminOnly ? ` ${g.adminWhy}.` : ''}`;
 const took = (s: number) => s < 60 ? `${Math.round(s)}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${Math.floor(s / 3600)}h${String(Math.round((s % 3600) / 60)).padStart(2, '0')}`;
 const usd = (n: number) => `$${n.toFixed(2)}`;
 const runsIn = async (path = '') => (await get(`/api/runs?since=${encodeURIComponent(String(flags.since ?? ''))}`))
@@ -408,7 +407,7 @@ if (cmd === 'login' && url) {
     ...all.filter(w => w.manage && w.proposal?.into === w.id).map(({ proposal: p }) => ({ kind: 'proposal', path: p.to, since: p.at, text: `${p.by} proposes to ${p.kind === 'merge' ? `merge ${p.from} into it` : `move ${p.from}/${p.series} to it`}` })),
     ...s.expired.filter(e => e.who === me.email).map(e => ({ kind: 'expired', login: e.login, holding: e.holding, text: `your ${e.login} login expired` })),
     ...series.flatMap(x => x.instances.flatMap(i => i.refused.map(r => ({ kind: 'refused', path: `${x.path}/${i.label}`, since: r.at, site: r.site, hosts: r.hosts, person: r.login, why: r.why, text: `run ${r.run}'s browser on ${r.login}'s ${r.site} was refused ${r.hosts.map((h: string) => r.why[h] ? `${h} (${r.why[h]})` : h).join(', ')}` })))),
-    ...all.filter(w => w.manage).flatMap(w => w.grants.filter(g => g.state === 'pending').map(g => ({ kind: 'grant', path: w.name, since: g.at, id: g.id, text: `${g.person} asks to use ${g.site}, at ${g.url}, here: ${g.reason} (${g.check?.risk ? `${g.check.risk} risk` : 'not checked'})` }))),
+    ...all.filter(w => w.manage).flatMap(w => w.grants.filter(g => g.state === 'pending').map(g => ({ kind: 'grant', path: w.name, since: g.at, id: g.id, text: grantText(g) }))),
   ];
   if (flags.json) console.log(JSON.stringify(rows, null, 1));
   else console.log(rows.map(r => `${r.kind}  ${r.path ?? r.login}${r.since ? ` since ${when(r.since)}` : ''}${r.id ? `, ${r.kind === 'grant' ? 'grant' : 'request'} ${r.id}` : ''}: ${r.text.split('\n')[0].slice(0, 120)}`).join('\n') || 'Nothing waits on you.');
@@ -561,15 +560,17 @@ else if (cmd === 'comment' && args.length === 2) {
   await api(`/logins/sites/${encodeURIComponent(args[1])}`, { method: 'DELETE' });
   console.log(`removed ${args[1]}`);
 } else if (cmd === 'site' && args[0] === 'ask' && args.length === 4) {
-  const { id, check: c } = await (await post('/grants', { site: args[1], workspace: (await workspaceNamed(args[2])).id, reason: args[3] })).json();
-  console.log(`asked, as grant ${id}: ${c.risk === 'high' ? 'an admin approves or denies it, as the check rates it high risk' : `one of ${args[2]}'s owners approves or denies it`}\n${!c.risk ? `not checked: ${c.error}`
-    : `check: ${c.risk} risk${c.flags.length ? ` (${c.flags.join('; ')})` : ''}. ${c.summary}${c.hosts.length ? ` Approving lets it reach ${c.hosts.join(', ')}.` : ''}`}`);
+  const { id } = await (await post('/grants', { site: args[1], workspace: (await workspaceNamed(args[2])).id, reason: args[3] })).json();
+  console.log(`asked, as grant ${id}: ${grantText((await get('/grants')).find(g => g.id === id))}`);
 } else if (cmd === 'grants' && args.length <= 1) {
   const [all, ws] = await Promise.all([get('/grants'), get('/api')]), name = (id: string) => ws.find(w => w.id === id)?.name ?? id;
   const shown = all.filter(g => !args[0] || name(g.workspace) === args[0]);
   if (flags.json) console.log(JSON.stringify(shown.map(g => ({ ...g, workspace: name(g.workspace) })), null, 1));
-  else for (const g of shown) console.log(`${g.id}  ${g.state}  ${g.site} at ${g.url} in ${name(g.workspace)} for ${g.person}, since ${when(g.at)}: ${g.reason}${g.by ? `; ${g.state} by ${g.by}${g.text ? `: ${g.text}` : ''}` : ''} (${g.check?.risk ? `${g.check.risk} risk` : 'not checked'})`);
+  else for (const g of shown) console.log(`${g.id}  ${g.state}  since ${when(g.at)}: ${grantText(g)}${g.by ? `; ${g.state} by ${g.by}${g.text ? `: ${g.text}` : ''}` : ''}${g.use ? ` Used by ${g.use.runs} runs, ${g.use.wrote} wrote; last use ${g.use.last ? when(g.use.last) : 'never'}.` : ''}`);
 } else if (cmd === 'grant' && ['approve', 'deny'].includes(args[0]) && [2, 3].includes(args.length)) {
+  const g = (await get('/grants')).find(g => g.id === args[1]);
+  if (!g) throw new Error(`no request ${args[1]} waits`);
+  console.log(grantText(g));
   await post(`/grants/${args[1]}`, { approve: args[0] === 'approve', text: args[2] });
   console.log(args[0] === 'approve' ? 'approved' : 'denied');
 } else if (cmd === 'grant' && args[0] === 'revoke' && args.length === 2) {

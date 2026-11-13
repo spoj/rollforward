@@ -12,10 +12,8 @@ import { asPerson } from './auth.ts';
 // so a record copied into another person's folder won't open. A run uses only its runner's logins, and only the offers ticked for
 // its instance.
 export type Offer = { id: string; name: string };
-// A Microsoft 365 login's scopes are the Graph permissions Microsoft last granted it; a website login's keepalive, when keeping it
-// alive ends, and its sign-in's trace, its requests by host and status and the hosts it was refused, which its grants' checks read
-// (browsers.ts, grants.ts).
-export type Trace = { requests: Record<string, Record<number, number>>; blocked: string[]; seconds: number };
+// Sign-in evidence contains hosts, never URLs. Older saved traces have no request kinds.
+export type Trace = { requests: Record<string, Record<number, number>>; blocked: string[]; seconds: number; kinds?: Record<string, { dest: string[]; from: string[] }> };
 export type Login = { id: string; kind: string; name: string; account?: string; since: string; offers: Offer[]; expired?: boolean; scopes?: string[]; enabled?: boolean; keepalive?: string; trace?: Trace };
 
 export const personDir = (email: string) => join(rfDir(), 'people', createHash('sha256').update(email).digest('hex').slice(0, 16));

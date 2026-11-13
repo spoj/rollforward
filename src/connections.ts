@@ -71,7 +71,7 @@ export async function checkHost(h: string, internal: boolean) {
   if (!/^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(h)) throw new HttpError(400, `${h}: a host, such as sso.example.com, or *.example.com for any name under it`);
   const base = h.replace(/^\*\./, '');
   if (h !== base && !getDomain(base, { allowPrivateDomains: true })) throw new HttpError(400, `${h}: a wildcard stays within one registrable domain, such as *.example.com`);
-  if ([process.env.RF_PUBLIC_URL, process.env.RF_BROWSER_URL].some(u => u && covers(h, new URL(u).hostname))) throw new HttpError(400, `${h} is rollforward's own: no website reaches it`);
+  if ([process.env.RF_PUBLIC_URL, process.env.RF_BROWSER_URL ?? 'http://127.0.0.1:8797'].some(u => u && covers(h, new URL(u).hostname))) throw new HttpError(400, `${h} is rollforward's own: no website reaches it`);
   const other = connections().find(c => types[c.type].hosts?.some(host => covers(h, host) || covers(host, h)));
   if (other) throw new HttpError(400, `${h} is ${other.name}'s: no website reaches it`);
   if (!internal && h === base && !letIn()[h] && await resolvesInternal(h)) throw new HttpError(400, `${h} is at an internal address: a website reaches one only where an admin lets it`);

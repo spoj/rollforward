@@ -17,7 +17,7 @@ import { checkTicks, logins, runnerOf, saveLogin, signOut, unoffer } from './log
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { answered, byLogin, call, connections, intercepts, letIn, loginOf, removeConnection, setConnection, setLetIn, upstreams } from './connections.ts';
-import { addSite, allowHost, Browsers, endSignIn, enrolFlagged, isSignIn, keepAlive, passUpgrade, reap, refusedHosts, removeHost, removeSite, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
+import { addSite, allowHost, Browsers, endSignIn, enrolFlagged, isSignIn, keepAlive, passUpgrade, reap, removeHost, removeSite, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
 import { ask, decide, forgetGrants, forgetWorkspace, lapse, revoke, visible } from './grants.ts';
 import { offer } from './connections/graph.ts';
 import { addWarehouse } from './connections/databricks.ts';
@@ -208,11 +208,9 @@ function summary(i: Instance, me: Me, w8 = wakes()) {
     deleted: i.hole ? { by: i.log[0].by, at: i.log[0].at } : null,
     // What says it was wrong, for its runner under Waiting on you, for a week, as a correction is never withdrawn.
     wrong: k.wrong.filter(fresh).length,
-    // The hosts a run's browser on a person's website was refused that it still doesn't reach, under Waiting on you for a week: for
-    // that person, those the server's check left (browsers.ts), as it does without its key; for admins, those it rated high risk or
-    // found at an internal address, each with why.
+    // Only admins decide hosts: those rated high or internal, with why, for a week.
     refused: k.refused.filter(e => fresh(e.at) && e.login && websitesOf(e.login)[e.site]).map(e => {
-      const checks = websitesOf(e.login)[e.site].checks ?? {}, hosts = unreached(e.login, e.site, e.hosts).filter(h => checks[h] ? me.role === 'admin' && ['high', 'internal'].includes(checks[h].verdict) : e.login === email);
+      const checks = websitesOf(e.login)[e.site].checks ?? {}, hosts = unreached(e.login, e.site, e.hosts).filter(h => me.role === 'admin' && checks[h] && ['high', 'internal'].includes(checks[h].verdict));
       return { ...e, hosts, why: Object.fromEntries(hosts.filter(h => checks[h]).map(h => [h, checks[h].why])) };
     }).filter(e => e.hosts.length),
   };
@@ -1085,8 +1083,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       if (!login?.scope) throw new HttpError(404, 'no connection signs in to Microsoft with that login');
       await connect(res, me.email, login);
     }
-    // Websites, each person's own, by a name of theirs and the https address where its sign-in starts, the hosts its pages need
-    // allowed as they sign in; admins see anyone's, and only let one reach internal addresses.
+    // Websites are personal; admins alone allow hosts the server leaves for them.
     else if (url.pathname === '/logins/sites' && req.method === 'GET') {
       const person = url.searchParams.get('person') ?? me.email;
       if (person !== me.email && me.role !== 'admin') throw new HttpError(403, `${person}'s websites are theirs`);
@@ -1114,10 +1111,13 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       await closeUnlent();
       send(res, 200, 'ok');
     }
-    else if (/^\/logins\/web\/[^/]+\/refused$/.test(url.pathname) && req.method === 'GET') send(res, 200, await refusedHosts(me.email, decodeURIComponent(url.pathname.split('/')[3])));
     else if (/^\/logins\/web\/[^/]+\/hosts$/.test(url.pathname) && req.method === 'POST') send(res, 200, (await allowHost(me, decodeURIComponent(url.pathname.split('/')[3]), String((await json(req)).host ?? ''), url.searchParams.get('person') ?? me.email), 'ok'));
     else if (/^\/logins\/web\/[^/]+\/hosts\/[^/]+$/.test(url.pathname) && req.method === 'DELETE') send(res, 200, (await removeHost(me.email, decodeURIComponent(url.pathname.split('/')[3]), decodeURIComponent(url.pathname.split('/')[5])), 'ok'));
-    else if (url.pathname.startsWith('/logins/web/') && req.method === 'POST') send(res, 200, { id: await startSignIn(me.email, decodeURIComponent(url.pathname.slice(12)), String((await json(req)).header ?? '')) });
+    else if (/^\/logins\/web\/[^/]+$/.test(url.pathname) && req.method === 'POST') {
+      const header = String((await json(req)).header ?? ''), since = Date.now();
+      const id = await startSignIn(me.email, decodeURIComponent(url.pathname.slice(12)), header);
+      send(res, 200, { id, expires: new Date(since + Number(process.env.RF_SIGNIN_S ?? 600) * 1000).toISOString() });
+    }
     // What a person's login offers that they add themselves: Microsoft 365's sources and Databricks' warehouses.
     else if (/^\/logins\/[^/]+\/offers$/.test(url.pathname) && req.method === 'POST') {
       const id = decodeURIComponent(url.pathname.split('/')[2]), add = String((await json(req)).add ?? '');

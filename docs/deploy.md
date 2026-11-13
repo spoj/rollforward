@@ -9,15 +9,17 @@ rollforward runs on one host and the browser service ([spoj/rollforward-browser]
   - **browser:** 4 vCPUs, 8 GB and 50 GB: a browser is capped at 2 GB, and idles at about 0.2 GB.
 - **A DNS name and a TLS certificate** for rollforward, or a place behind the company's reverse proxy.
 - **Routes out of the rollforward host:**
-  - the model's API (`openrouter.ai`), and Exa's (`api.exa.ai`) for runs' web search;
+  - the model's API (`openrouter.ai`), for runs and website checks, and Exa's (`api.exa.ai`), for runs' web search and the website check's web-search tool;
   - Microsoft (`login.microsoftonline.com` and `graph.microsoft.com`);
   - the package registries and GitHub that runs install from (`rf egress add HOST` adds hosts);
   - the browser host's port.
 
   If traffic out must go through a proxy, say so before you start: runs' own connections don't use one yet.
-- **Routes out of the browser host** to the websites people sign in to, such as the ERP and the portals.
+- **Routes out of the browser host:**
+  - the websites people sign in to, such as the ERP and the portals, and their sign-on and page dependencies;
+  - `raw.githubusercontent.com` over HTTPS for the default threat blocklist, or the hosts of the URLs set in `BROWSER_BLOCKLISTS`. This blocklist fetch is browser host → GitHub raw; it does not use rollforward's run egress permissions.
 - **An app registered in Entra ID** ([system.md](system.md), Access), with an admin's consent to its delegated Graph permissions.
-- **A model API key** for OpenRouter, and one for Exa if runs are to search the web.
+- **A model API key** for OpenRouter, also used to profile websites and check their hosts, and one for Exa if runs and the website check are to search the web.
 
 ## The browser host
 
@@ -26,6 +28,7 @@ rollforward runs on one host and the browser service ([spoj/rollforward-browser]
    - `BROWSER_HOST` is the host's private address;
    - a firewall lets only the rollforward host reach `BROWSER_PORT`;
    - TLS, or a private link such as WireGuard.
+3. Leave `BROWSER_BLOCKLISTS` at its default, `https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/tif.medium-onlydomains.txt`, or set it in the browser service's environment to a whitespace-separated list of reachable text-file URLs, one domain per line. The service loads them at startup and every 24 hours; a domain covers its subdomains. With no successful load yet, open sign-ins and `GET /blocked?host=HOST` answer 503; a failed refresh keeps the previous list. Ordinary, host-bounded browsers are unaffected. Check `/blocked` from the rollforward host with its client key before trying a sign-in.
 
 ## The rollforward host
 
@@ -34,10 +37,11 @@ Run the image under podman, as a systemd service. The image is the agent image, 
 1. Give the service a user of its own, with lingering on, and install rootless podman. Check out a tagged commit of this repo, and build the agent image, then the server's on it: `podman build -t rollforward-agent agent && podman build -t rollforward .`.
 2. Make an empty data folder, `~/rollforward-data`.
 3. Write `~/.config/rollforward.env` with:
-   - `OPENROUTER_API_KEY`, and `EXA_API_KEY` for web search;
+   - `OPENROUTER_API_KEY`, and `EXA_API_KEY` for runs' and website checks' web search;
    - the `RF_OIDC_*` lines and `RF_PUBLIC_URL` ([system.md](system.md), Access);
    - `RF_ADMINS`, the first admins;
-   - `RF_BROWSER_URL` and `RF_BROWSER_KEY`;
+   - `RF_BROWSER_URL` and this server's `RF_BROWSER_KEY`, matching the browser service's `BROWSER_KEY` or one entry in its `BROWSER_KEYS`;
+   - `RF_SIGNIN_S` only to change the 600-second sign-in window; the page shows its countdown;
    - `RF_SANDBOX_RO`, only if runs should read folders besides their data, such as a read-only mount of a file share.
 
 4. Install the unit, then run `systemctl --user daemon-reload && systemctl --user start rollforward`:
@@ -101,7 +105,8 @@ Run the image under podman, as a systemd service. The image is the agent image, 
 ## Check
 
 1. `podman logs rollforward` says `rollforward on`. Without the `RF_OIDC_*` lines and `RF_PUBLIC_URL` it doesn't start, and says which are missing.
-2. From the rollforward host, `curl -fsS -H "authorization: Bearer $RF_BROWSER_KEY" $RF_BROWSER_URL/sessions` answers `[]`.
+2. From the rollforward host, `curl -fsS -H "authorization: Bearer $RF_BROWSER_KEY" "$RF_BROWSER_URL/sessions"` answers `[]`, and `curl -fsS -H "authorization: Bearer $RF_BROWSER_KEY" "$RF_BROWSER_URL/blocked?host=example.com"` answers a host-to-boolean map, not 503.
 3. Sign in at `RF_PUBLIC_URL` as one of `RF_ADMINS` and make a workspace. With its +, start a task and comment "Reply OK". The run ends within a few minutes, for about $0.05.
 4. Under Logins, Connect Microsoft 365.
-5. Under Logins, Websites, add a website by its name and address, sign in to it, save the login, and ask to use it in the workspace, which you approve under Waiting on you.
+5. Under Logins, Websites, add a website by its name and address, sign in before the countdown ends, and save the login. The server checks the website and its hosts; no one is asked to approve hosts during sign-in. An internal primary host must first be allowed by an admin ([system.md](system.md), Hosts).
+6. Ask to use that account in the workspace. Under Waiting on you, check whose account it is, its purpose and flags, then approve its use, not its hosts. General-purpose or high-risk websites need an admin. A failed website check is shown as an error and retried when the person asks to use it or a run encounters hosts to check; it never opens unchecked hosts.

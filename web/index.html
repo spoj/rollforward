@@ -816,12 +816,13 @@ function renderPv() {
   if (!pv) return void (d.open && d.close());
   // Your account's dialog: Logins and Tokens, as tabs.
   const account = [['logins', 'Logins'], ['tokens', 'Tokens']], mine = account.some(([k]) => k === pv.settings?.kind);
-  d.className = 'pv' + (pv.settings ? ' small' : '') + (mine || pv.settings?.kind === 'workspace' ? ' wide' : '');
-  let h = `<div class="pvh"><b>${esc(pv.title)}</b><span class="saved"></span>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${(pv.att ?? pv).doc ? '<button class="btn" data-act="layout">Exact layout</button>' : ''}${pv.path ? `<a class="btn" href="${fileUrl(pv.path)}">Download</a>` : ''}${pv.signin ? '<button class="btn primary" data-act="signin-save">Save login</button>' : ''}<button class="btn${pv.signin ? '' : ' primary'}" data-act="unpv">${pv.signin ? 'Cancel' : 'Close'}</button></div>`;
+  d.className = 'pv' + (pv.settings ? ' small' : '') + (mine || ['workspace', 'waiting'].includes(pv.settings?.kind) ? ' wide' : '');
+  let h = `<div class="pvh"><b>${esc(pv.title)}</b><span class="saved"></span>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${(pv.att ?? pv).doc ? '<button class="btn" data-act="layout">Exact layout</button>' : ''}${pv.path ? `<a class="btn" href="${fileUrl(pv.path)}">Download</a>` : ''}${pv.signin ? `<button class="btn primary" data-act="signin-save"${pv.signinExpired ? ' disabled' : ''}>Save login</button>` : ''}<button class="btn${pv.signin && !pv.signinExpired ? '' : ' primary'}" data-act="unpv">${pv.signin && !pv.signinExpired ? 'Cancel' : 'Close'}</button></div>`;
   if (mine) h += `<div class="pvtabs">${account.map(([k, name]) => `<button class="tab ${pv.settings.kind === k ? 'sel' : ''}" data-act="${k}">${name}</button>`).join('')}</div>`;
   if (pv.att) h += `<div class="sub" style="padding:8px 14px"><a data-act="attachment-back">\u2190 ${esc(pv.title)}</a> \u00b7 ${esc(pv.att.title)}</div>` + previewBody(pv.att);
   else if (pv.path) h += previewBody(pv);
-  else if (pv.signin) h += `<div class="sub" style="padding:8px 14px">Sign in as you always do, then Save login. Only you see this browser.${me.can.includes('keepalive') ? `<label style="display:block;margin-top:6px"><input type="checkbox" id="keep"> Keep the login alive until <input type="datetime-local" id="keep-until" value="${localInput(Date.now() + 7 * 864e5)}" max="${localInput(Date.now() + 7 * 864e5)}">, a week at most: the server opens the site every few minutes, so runs while you're away find you signed in.</label>` : ''}</div><div id="refused"></div><div class="pvb"><iframe src="/signins/${pv.signin}/view?drive" style="width:100%;height:100%;border:0"></iframe></div>`;
+  else if (pv.signin) h += pv.signinExpired ? '<div class="pvb"><div class="empty" role="status">Sign-in expired. Close this and sign in again.</div></div>'
+    : `<div class="sub" style="padding:8px 14px">Sign in as you always do, then Save login. Only you see this browser. It closes in <b id="signin-clock"></b>.${me.can.includes('keepalive') ? `<label style="display:block;margin-top:6px"><input type="checkbox" id="keep"> Keep the login alive until <input type="datetime-local" id="keep-until" value="${localInput(Date.now() + 7 * 864e5)}" max="${localInput(Date.now() + 7 * 864e5)}">, a week at most: the server opens the site every few minutes, so runs while you're away find you signed in.</label>` : ''}</div><div class="pvb"><iframe src="/signins/${pv.signin}/view?drive" title="${esc(pv.title)}" style="width:100%;height:100%;border:0"></iframe></div>`;
   else if (pv.settings?.kind === 'tokens') h += `<div class="pvb vl">${tokensHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'logins') h += `<div class="pvb vl">${loginsHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'wakes') h += `<div class="pvb vl">${wakesHtml(cur.i.id, cur.i.wakes, false)}</div>`;
@@ -831,8 +832,8 @@ function renderPv() {
     const s = pv.settings;
     h += '<div class="pvb vl">';
     if (s.kind === 'workspace') h += (s.manage ? `<h3>Name</h3><input type="text" id="wname" value="${esc(s.name)}">` : '') + peopleHtml(s)
-      + (s.grants.length ? `<h3>Websites</h3><div class="sub">Whose logins to which websites runs here use, as its owners approved them, or are asked to.</div>`
-        + s.grants.map(g => `<div class="lsub"><span>${person(g.person)} · ${esc(g.site)} <span class="sub">${esc(g.url)}${g.hosts.length ? `, also ${esc(g.hosts.join(', '))}` : ''} · ${g.state === 'approved' ? `approved by ${esc(nameOf(g.by))}` : 'asked'}: ${esc(g.reason)}${g.check?.risk ? ` · ${esc(g.check.risk)} risk` : ''}</span></span>${s.manage || g.person === me.email ? `<button class="quiet" data-act="grant-revoke" data-id="${esc(g.id)}">Revoke</button>` : ''}</div>`).join('') : '')
+      + (s.grants.length ? `<h3>Websites</h3><div class="sub">The logins people ask for runs here to use, and those its owners approved.</div>`
+        + s.grants.map(g => grantHtml(g)).join('') : '')
       + readingHtml(s)
       + agentsHtml(s, 'Every agent in this workspace reads it at the start of each run: its conventions, and changes that cut across its series, such as a renamed entity.', s.manage)
       + (s.manage && !s.archived ? moveHtml(s) : '')
@@ -852,6 +853,26 @@ function renderPv() {
   mvSay();
   if (!d.open) d.showModal();
   if ((pv.att ?? pv).pdf) watchPages(d, pv.att ?? pv);
+}
+
+function grantHtml(g, cls = 'lsub') {
+  const w = tree.find(w => w.id === g.workspace), ws = g.workspaceName ?? w?.name ?? g.workspace, pending = g.state === 'pending', mine = g.person === me.email, manage = me.role === 'admin' || w?.manage;
+  const c = g.profile ?? g.check, flags = g.flags ?? c?.flags ?? [], what = c?.what ?? c?.summary;
+  const why = g.adminWhy || (c?.category === 'general' ? 'This is a general-purpose website.' : c?.risk === 'high' ? 'The website is high risk.' : ''), adminOnly = g.adminOnly ?? !!why;
+  const category = { company: 'Company system', vendor: 'Vendor system', bank: 'Bank system', government: 'Government system', general: 'General-purpose website' }[c?.category];
+  return `<div class="${cls} grant" data-grant="${esc(g.id)}"><div>${person(g.person)} ${pending ? 'asks for' : 'lets'} runs in <a href="#/${esc(g.workspace)}">${esc(ws)}</a> ${pending ? 'to ' : ''}use their <b>${esc(g.site)}</b> login to ${esc(new URL(g.url).hostname)}.</div>`
+    + `<div class="sub">${esc(g.url)}${category ? ` · ${category}` : ''}${!g.profile && c?.risk ? ` · ${esc(c.risk)} risk` : ''}</div>`
+    + (what ? `<div class="sub">${esc(what)}</div>` : '')
+    + (!c || c.error ? `<div class="sub">Not checked${c?.error ? `: ${esc(c.error)}` : ''}.</div>` : '')
+    + `<div>Runs may do whatever ${esc(nameOf(g.person))} can there, including submitting and approving.</div>`
+    + `<div>Reason: ${esc(g.reason)}</div>`
+    + (flags.length ? `<div class="sub">Flags: ${esc(flags.join('; '))}</div>` : '')
+    + (!g.profile && g.check?.hosts?.length ? `<div class="sub">Other hosts in the earlier check: ${esc(g.check.hosts.join(', '))}.</div>` : '')
+    + (pending && adminOnly ? `<div class="sub">Only an admin can approve. ${esc(why)}</div>` : '')
+    + (!pending && g.by ? `<div class="sub">Approved by ${person(g.by)}${g.decided ? ` ${esc(when(g.decided))}` : ''}.${g.text ? ` ${esc(g.text)}` : ''}</div>` : '')
+    + (g.use ? `<div class="sub">Opened in ${plural(g.use.runs, 'run')} · ${plural(g.use.wrote, 'run')} wrote · last used ${g.use.last ? esc(when(g.use.last)) : 'never'}.</div>` : '')
+    + `<div class="row2">${pending && manage ? `${!adminOnly || me.role === 'admin' ? `<button class="btn" data-act="grant-approve" data-id="${esc(g.id)}">Approve</button>` : ''}<button class="btn" data-act="grant-deny" data-id="${esc(g.id)}">Deny</button>` : ''}`
+    + `${pending && mine || !pending && (manage || mine) ? `<button class="quiet" data-act="grant-revoke" data-id="${esc(g.id)}">${pending ? 'Withdraw' : mine ? 'Stop using' : 'Revoke'}</button>` : ''}</div></div>`;
 }
 
 // Sharing a series lends your logins to whoever starts its runs, so it takes two clicks, the second saying what you take on. Once it's
@@ -997,7 +1018,7 @@ function loginsHtml(s) {
   const ids = new Set([...s.connections.map(c => c.login.id), ...sites.map(([n]) => `web:${n}`), 'openrouter']), signed = sites.filter(([n]) => mine(`web:${n}`) && !mine(`web:${n}`).expired).length;
   for (const l of s.logins.filter(l => !ids.has(l.id))) h += line(l.name, 'no longer a connection on this server, so no run uses it', signOut(l.id));
   h += line('Websites', sites.length ? `${signed} of ${sites.length} signed in` : me.browsers ? 'none yet: add one' : 'not set up on this server: website logins need the browser service (docs/system.md, Websites)', sites.length || me.browsers ? show('web') : '');
-  if (sites.length && shown('web')) h += `<div class="sub">Sign in yourself, in a browser shown here. Your login is what that browser keeps, its cookies, never your password; a run's browser starts from it and brings it back refreshed. It reaches only its address's host and the others you allowed, but there it can do whatever you can: the agent is told only to read, and each run's log counts its writes.${sites.some(([, w]) => w.header) ? " Where a site's sign-in needs a token, give it in the box under its name: it goes only to that sign-in, never to a run's browser, and is kept, sealed, for the next." : ''}</div>`
+  if (sites.length && shown('web')) h += `<div class="sub">Sign in yourself, in a browser shown here. Your login is what that browser keeps, its cookies, never your password; a run's browser starts from it and brings it back refreshed. Runs reach only its address's host and the others the server allows, but there they can do whatever you can, including submitting and approving. Each run's log counts its writes.${sites.some(([, w]) => w.header) ? " Where a site's sign-in needs a token, give it in the box under its name: it goes only to that sign-in, never to a run's browser, and is kept, sealed, for the next." : ''}</div>`
     + `<div class="sub">A run uses your login only in a workspace whose owners approved it: once signed in, ask to use it there, saying what for. Until one approves it, your login is signed out a week after you signed in.</div>`
     + sites.map(([n, w]) => {
       const l = mine(`web:${n}`), gs = s.grants.filter(g => g.person === me.email && g.site === n && ['pending', 'approved'].includes(g.state));
@@ -1007,11 +1028,11 @@ function loginsHtml(s) {
         + `<button class="btn" data-act="web-signin" data-id="${esc(n)}" data-name="${esc(n)}">${l ? 'Sign in again' : 'Sign in'}</button>${l ? signOut(l.id) : ''}`
         + `<button class="quiet" data-act="site-remove" data-id="${esc(n)}">Remove</button></div>`
         + w.hosts.map(x => `<div class="lsub"><span class="sub">Reaches ${esc(x)}${w.checks?.[x]?.verdict === 'pass' ? `: ${esc(w.checks[x].why)}` : ''}</span><button class="quiet" data-act="host-remove" data-site="${esc(n)}" data-host="${esc(x)}">Remove</button></div>`).join('')
-        + gs.map(g => `<div class="lsub"><span class="sub">${g.state === 'approved' ? 'Approved' : 'Asked'} in ${esc(tree.find(x => x.id === g.workspace)?.name ?? g.workspace)}: ${esc(g.reason)}</span><button class="quiet" data-act="grant-revoke" data-id="${esc(g.id)}">${g.state === 'approved' ? 'Stop using' : 'Withdraw'}</button></div>`).join('')
+        + gs.map(g => grantHtml(g)).join('')
         + (l && !l.expired && free.length ? `<div class="row2"><select id="ask-ws-${esc(n)}">${free.map(x => `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join('')}</select>`
           + `<input type="text" id="ask-why-${esc(n)}" placeholder="What runs there use it for" style="flex:1"><button class="btn" data-act="grant-ask" data-id="${esc(n)}">Ask to use</button></div>` : '');
     }).join('');
-  if (me.browsers && shown('web')) h += `<div class="sub">A new website: a name for it, the https address where you sign in and, if its sign-in needs a header its pages never send, such as x-bot-token, that header's name, whose value you give as you sign in. The other hosts its pages need, such as single sign-on's, you allow as you sign in.</div>`
+  if (me.browsers && shown('web')) h += `<div class="sub">A new website: a name for it, the https address where you sign in and, if its sign-in needs a header its pages never send, such as x-bot-token, that header's name, whose value you give as you sign in. Sign-in opens a browser briefly; the server checks which other hosts its pages need for runs.</div>`
     + '<div class="row2"><input type="text" id="site-name" placeholder="Name" style="width:30%"><input type="text" id="site-url" placeholder="https://… where you sign in" style="flex:1"><input type="text" id="site-header" placeholder="Header, if any" style="width:20%"><button class="btn" data-act="site-add">Add</button></div>';
   h += line('Model key', !k ? "the server's" : k.enabled ? `yours${k.expired ? ', out of credits' : ''}` : "the server's · yours saved",
     (k ? `<label><input type="checkbox" id="oruse" ${k.enabled ? 'checked' : ''}> use mine</label>` : '') + `<button class="quiet" data-act="logins-show" data-id="key">${k ? 'Change' : 'Add mine'}</button>`);
@@ -1054,19 +1075,13 @@ function waiting() {
     for (const i of s.instances) {
       const n = i.asks.filter(e => e === me.email).length;
       if (n) out.push(`<div class="wt">${at(w, s, i)}: ${n} ask${n > 1 ? 's' : ''} for you</div>`);
-      for (const r of i.refused) out.push(`<div class="wt">${at(w, s, i)}: run ${r.run}'s browser on ${r.login === me.email ? '' : `${person(r.login)}'s `}${esc(r.site)} was refused`
+      if (me.role === 'admin') for (const r of i.refused) out.push(`<div class="wt">${at(w, s, i)}: run ${r.run}'s browser on ${r.login === me.email ? '' : `${person(r.login)}'s `}${esc(r.site)} was refused`
         + r.hosts.map(x => ` <span class="creds">${esc(x)}${r.why[x] ? ` <span class="sub">${esc(r.why[x])}</span>` : ''} <a data-act="allow-host" data-site="${esc(r.site)}" data-host="${esc(x)}" data-person="${esc(r.login)}">Allow</a></span>`).join('') + '</div>');
       if (i.wrong && i.runner === me.email) out.push(`<div class="wt">${at(w, s, i)}: ${plural(i.wrong, 'correction')} say${i.wrong > 1 ? '' : 's'} it's wrong</div>`);
     }
     for (const r of s.requests.filter(r => (r.who ?? me.email) === me.email)) out.push(`<div class="wt">${at(w, s)}: ${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)} <button class="btn" data-act="req-start" data-id="${esc(r.id)}">Start</button></div>`);
   }
-  // Each with the server's check of the website: one it rates high only an admin approves.
-  for (const w of tree.filter(w => !w.archived && w.manage)) for (const g of w.grants.filter(g => g.state === 'pending')) {
-    const c = g.check, high = c?.risk === 'high' && me.role !== 'admin';
-    out.push(`<div class="wt">${person(g.person)} asks to use their ${esc(g.site)} login, at ${esc(g.url)}, in <a href="#/${w.id}">${esc(w.name)}</a>: ${esc(g.reason)}`
-      + `<div class="sub">${!c || c.error ? `Not checked${c ? `: ${esc(c.error)}` : ''}.` : `Check: ${esc(c.risk)} risk${c.flags.length ? ` (${esc(c.flags.join('; '))})` : ''}. ${esc(c.summary)}${c.hosts.length ? ` Approving lets it reach ${esc(c.hosts.join(', '))}.` : ''}`}</div>`
-      + `${high ? '<span class="sub">An admin decides.</span>' : `<button class="btn" data-act="grant-approve" data-id="${esc(g.id)}">Approve</button>`}<button class="btn" data-act="grant-deny" data-id="${esc(g.id)}">Deny</button></div>`);
-  }
+  for (const w of tree.filter(w => !w.archived && w.manage)) for (const g of w.grants.filter(g => g.state === 'pending')) out.push(grantHtml(g, 'wt'));
   return [...out, ...expired.map(l => `<div class="wt">Your ${l.kind === 'key' ? 'OpenRouter key is out of credits' : `${esc(l.name)} login has expired`}. ${signInHtml(l.id, l.name)}</div>`)];
 }
 
@@ -1618,21 +1633,24 @@ async function onAct(act, el) {
   }
   if (act === 'web-signin') {
     const header = document.getElementById(`hdr-${el.dataset.id}`)?.value ?? '';
-    const p = pv = { title: `Sign in to ${el.dataset.name}`, signin: (await api(`/logins/web/${enc(el.dataset.id)}`, { method: 'POST', body: JSON.stringify({ header }) })).id };
+    const r = await api(`/logins/web/${enc(el.dataset.id)}`, { method: 'POST', body: JSON.stringify({ header }) });
+    const p = pv = { title: `Sign in to ${el.dataset.name}`, signin: r.id, expires: r.expires };
     renderPv();
-    // The hosts its pages asked for and were refused, every few seconds, each with Allow for whoever may allow it.
     while (pv === p) {
-      const r = await api(`/logins/web/${enc(el.dataset.id)}/refused`).catch(e => { if (pv === p) throw e; });
-      if (pv !== p) break;
-      put($('#refused'), !r.hosts.length ? '' : `<div class="sub" style="padding:0 14px 8px">Its pages asked for hosts it doesn't reach: allow those its sign-in needs, such as single sign-on\u2019s.`
-        + r.hosts.map(x => ` <span class="creds">${esc(x.host)} \u00b7 ${x.count} <a data-act="allow-host" data-site="${esc(el.dataset.id)}" data-host="${esc(x.host)}">Allow</a></span>`).join('') + '</div>');
-      await new Promise(ok => setTimeout(ok, 3000));
+      const seconds = Math.max(0, Math.ceil((Date.parse(p.expires) - Date.now()) / 1000));
+      if (!seconds) {
+        p.signinExpired = true;
+        renderPv();
+        break;
+      }
+      $('#signin-clock').textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+      await new Promise(ok => setTimeout(ok, 1000));
     }
   }
   if (act === 'allow-host') {
-    await api(`/logins/web/${enc(el.dataset.site)}/hosts${el.dataset.person ? `?person=${enc(el.dataset.person)}` : ''}`, { method: 'POST', body: JSON.stringify({ host: el.dataset.host }) });
-    el.closest('.creds').remove();
-    if (!pv?.signin) await refresh();
+    await api(`/logins/web/${enc(el.dataset.site)}/hosts?person=${enc(el.dataset.person)}`, { method: 'POST', body: JSON.stringify({ host: el.dataset.host }) });
+    await refresh();
+    renderPv();
   }
   if (act === 'site-add') {
     await api('/logins/sites', { method: 'POST', body: JSON.stringify({ name: $('#site-name').value.trim(), url: $('#site-url').value.trim(), header: $('#site-header').value.trim() || undefined }) });
@@ -1648,19 +1666,23 @@ async function onAct(act, el) {
   if (act === 'grant-approve' || act === 'grant-deny') {
     await api(`/grants/${el.dataset.id}`, { method: 'POST', body: JSON.stringify({ approve: act === 'grant-approve' }) });
     await refresh();
-    renderPv();
+    if (pv.settings.kind === 'workspace') openWorkspaceSettings();
+    else if (pv.settings.kind === 'logins') await openLogins();
+    else renderPv();
   }
   if (act === 'grant-revoke') {
     await api(`/grants/${el.dataset.id}`, { method: 'DELETE' });
     await refresh();
-    if (pv.settings.kind === 'logins') await openLogins(); else openWorkspaceSettings();
+    if (pv.settings.kind === 'workspace') openWorkspaceSettings();
+    else if (pv.settings.kind === 'logins') await openLogins();
+    else renderPv();
   }
   if (act === 'site-remove' && await ask({ title: `Remove ${el.dataset.id}?`, text: 'Your login to it and your grants for it go too.', ok: 'Remove', kind: 'danger',
     act: () => api(`/logins/sites/${enc(el.dataset.id)}`, { method: 'DELETE' }) })) {
     [pv.settings.logins, pv.settings.sites, pv.settings.grants] = await Promise.all([api('/logins'), api('/logins/sites'), api('/grants')]);
     renderPv();
   }
-  if (act === 'host-remove' && await ask({ title: `Remove ${el.dataset.host}?`, text: `${el.dataset.site}'s browsers no longer reach it, and the server's check won't let them again; you may allow it again as you sign in.`, ok: 'Remove', kind: 'danger',
+  if (act === 'host-remove' && await ask({ title: `Remove ${el.dataset.host}?`, text: `${el.dataset.site}'s runs no longer reach it, and the server's check won't let them again. Only an admin can allow it again.`, ok: 'Remove', kind: 'danger',
     act: () => api(`/logins/web/${enc(el.dataset.site)}/hosts/${enc(el.dataset.host)}`, { method: 'DELETE' }) })) {
     pv.settings.sites = await api('/logins/sites');
     renderPv();
