@@ -73,7 +73,7 @@ test("an output's destination is free text, logged as it changes", async () => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-test("an ask waits on people until someone replies under it or signs it off, as one from before replies named their parent did until any later word in its thread; closing accepts the ones still waiting", async () => {
+test("an ask from before questions and proposals waits on people until someone replies under it, the agent too, or approves or rejects it, as one from before replies named their parent did until any later word in its thread; closing accepts the ones still waiting", async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-')), sam = 'sam@example.com';
   openStore(tmp);
   const inst = createInstance('weekly', 'w1', 'alex', []);
@@ -91,9 +91,27 @@ test("an ask waits on people until someone replies under it or signs it off, as 
   inst.append(sam, 'comment', { thread: 'c11', text: 'From now on.' });
   inst.append('agent', 'comment', { thread: 'c13', item: null, ref: null, text: 'Which file?', ask: true });
   inst.append(sam, 'resolve', { thread: 'c13' });
-  assert.deepEqual(inst.asking().map(e => e.seq), [2, deeper.seq], "a reply elsewhere in its thread answers no ask, a reply under it, a sign-off of it, the agent's own word under it and, from before, any later word do");
+  ask('c15', { item: null, ref: null });
+  inst.append(sam, 'reject', { thread: 'c15', on: 15 });
+  assert.deepEqual(inst.asking().map(e => e.seq), [2, deeper.seq], "a reply elsewhere in its thread answers no ask, a reply under it, an approval or a rejection of it, the agent's own word under it and, from before, any later word do");
   await inst.close(alex);
   assert.deepEqual(inst.log.at(-1)!.accepted, ['c2', `c${deeper.seq}`]);
+  rmSync(tmp, { recursive: true, force: true });
+});
+test("a question waits until a person replies under it, a proposal until someone approves or rejects it, and either until the agent withdraws it", () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-')), sam = 'sam@example.com';
+  openStore(tmp);
+  const inst = createInstance('weekly', 'w1', 'alex', []);
+  const ask = (kind: string) => inst.append('agent', 'comment', { thread: `c${inst.log.length + 1}`, item: null, ref: null, text: 'Which?', ask: kind });
+  const q1 = ask('question'), q2 = ask('question'), q3 = ask('question'), p1 = ask('proposal'), p2 = ask('proposal'), p3 = ask('proposal'), p4 = ask('proposal');
+  inst.append('agent', 'comment', { thread: q1.thread, parent: q1.seq, text: 'Never mind.' });
+  inst.append(sam, 'comment', { thread: q2.thread, parent: q2.seq, text: 'This one.' });
+  inst.append('agent', 'withdraw', { thread: q3.thread, on: q3.seq, text: 'Found it.' });
+  inst.append(sam, 'comment', { thread: p1.thread, parent: p1.seq, text: 'Go ahead.' });
+  inst.append(sam, 'signoff', { thread: p2.thread, on: p2.seq, commit: 'x' });
+  inst.append(sam, 'reject', { thread: p3.thread, on: p3.seq, text: 'Not yet.' });
+  inst.append('agent', 'withdraw', { thread: p4.thread, on: p4.seq, text: 'Sent by hand.', see: p1.seq });
+  assert.deepEqual(inst.asking().map(e => e.seq), [q1.seq, p1.seq], "the agent's own word under a question, and a reply under a proposal, however worded, answer neither");
   rmSync(tmp, { recursive: true, force: true });
 });
 test("a file the screen shows stays the agent's to change, and closing takes it as it is", async () => {

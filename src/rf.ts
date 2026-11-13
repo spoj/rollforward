@@ -12,15 +12,22 @@ const HELP: Record<string, string> = {
   is left out or as it is.`,
   say: `rf say [--in cN | --on ITEM[@REF]] TEXT|-
   Tells people something that needs no reply. --in cN replies under comment cN, N its seq; a thread's id is its first
-  comment's, and a reply under your own ask withdraws it. --on starts a thread on an item, or on a place in its file, such as
-  ar-aging@Sheet1!C22 or a markdown file's line by its opening words. With neither, the thread is on the instance. In TEXT,
-  [name](PATH) links a file and ![name](PATH) shows an image, PATH under upload/ or working/ of this instance, or as
-  ../<label>/working/x.csv of another of its series. - reads TEXT from stdin.`,
+  comment's. --on starts a thread on an item, or on a place in its file, such as ar-aging@Sheet1!C22 or a markdown file's line
+  by its opening words. With neither, the thread is on the instance. In TEXT, [name](PATH) links a file and ![name](PATH)
+  shows an image, PATH under upload/ or working/ of this instance, or as ../<label>/working/x.csv of another of its series;
+  cN, or [name](#cN), links a comment, and [name](../<label>#cN) one of another instance. - reads TEXT from stdin.`,
   ask: `rf ask [--in cN | --on ITEM[@REF]] [--to EMAIL] TEXT|-
-  Asks for a reply: it waits on EMAIL, else the instance's runner, until someone replies under it, which starts a run. Anyone
-  who sees the instance can sign it off instead, saying yes: that commits its folder in their name (rf help commit), as it is
-  then, and starts a run, and the log's signoff entry names the ask, as on, with the commit. Whose sign-off counts, and for
-  what, is the series' instructions' call. The rest as rf say.`,
+  Asks a question, for information: it waits on EMAIL, else the instance's runner, until a person replies under it, which
+  starts a run. It authorises nothing. The rest as rf say.`,
+  propose: `rf propose [--in cN | --on ITEM[@REF]] [--to EMAIL] TEXT|-
+  Proposes what you will do on your runner's behalf, linking what it uses: it waits on EMAIL, else the instance's runner,
+  until someone approves or rejects it, each with an optional note, and starts a run. Approving commits the instance's folder
+  in their name (rf help commit), as it is then, and the log's signoff entry names the proposal, as on, with the commit; a
+  reject entry says no. A reply under it approves nothing. Whose approval counts, and for what, is the series' instructions'
+  call. The rest as rf say.`,
+  withdraw: `rf withdraw cN [--see cM] REASON|-
+  Withdraws your question or proposal cN still waiting, saying why: it waits no more, and shows as withdrawn. --see names the
+  comment where it was answered.`,
   commit: `rf commit MESSAGE|-
   Commits your instance's whole folder as it is now, in your name, to its history: the folder is a repository, which only the
   server commits; read it with git log, show or diff, such as git diff HEAD -- working. Each run's end commits it too, in your
@@ -61,7 +68,7 @@ const usage = (c?: string) => ({ ok: false, text: c && HELP[c] ? HELP[c] : USAGE
 
 const own = `api/instances/${process.env.RF_INSTANCE}`;
 
-// rf say and rf ask: a comment in a thread, or starting one on an item or the instance.
+// rf say, rf ask and rf propose: a comment in a thread, or starting one on an item or the instance.
 function comment() {
   const o: { in?: string; on?: string; to?: string; words: string[] } = { words: [] };
   for (let i = 0; i < args.length; i++) {
@@ -73,7 +80,7 @@ function comment() {
   const text = o.words.join(' ') === '-' ? readFileSync(0, 'utf8') : o.words.join(' ');
   if (!text.trim() || (o.in && o.on) || (o.to && cmd === 'say')) return usage(cmd);
   const at = o.on?.indexOf('@') ?? -1, item = at >= 0 ? o.on!.slice(0, at) : o.on, ref = at >= 0 ? o.on!.slice(at + 1) : undefined;
-  return send('POST', `${own}/comment`, JSON.stringify({ thread: o.in, item, ref, text, ask: cmd === 'ask', to: o.to }));
+  return send('POST', `${own}/comment`, JSON.stringify({ thread: o.in, item, ref, text, ask: { ask: 'question', propose: 'proposal' }[cmd], to: o.to }));
 }
 
 // rf wake TARGET AT [--label LABEL] [--days DAYS]: the folder becomes an id, then the wake is set as a person sets one.
@@ -115,7 +122,11 @@ const correct = async () => {
 let res;
 if (cmd === 'show') res = await send('GET', `${own}/screen`);
 else if (cmd === 'put' && args[0]) res = await send('PUT', `${own}/screen`, readFileSync(args[0] === '-' ? 0 : args[0]));
-else if (cmd === 'say' || cmd === 'ask') res = await comment();
+else if (['say', 'ask', 'propose'].includes(cmd)) res = await comment();
+else if (cmd === 'withdraw') {
+  const flagged = args[1] === '--see', words = args.slice(flagged ? 3 : 1).join(' ');
+  res = !/^c\d+$/.test(args[0] ?? '') || !words ? usage(cmd) : await send('POST', `${own}/withdraw`, JSON.stringify({ thread: args[0], text: words === '-' ? readFileSync(0, 'utf8') : words, see: flagged ? args[2] : undefined }));
+}
 else if (cmd === 'wake') res = await wake();
 else if (cmd === 'correct') res = await correct();
 else if (cmd === 'commit' && args.length) res = await send('POST', `${own}/commit`, JSON.stringify({ message: args.join(' ') === '-' ? readFileSync(0, 'utf8') : args.join(' ') }));

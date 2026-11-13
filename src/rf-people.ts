@@ -28,10 +28,12 @@ rf pull PATH DIR [--delete] [-n|--dry-run] [--exclude PATTERN]... [--max-size SI
 rf help [COMMAND]                 how rollforward works and how to use rf, for an agent, or COMMAND's usage
 rf --version                      rf's own version, to tell whether it's older than what the guide names
 rf comment PATH TEXT [--item ID] [--ref REF] [--thread cN] [--wake|--wait]   a new thread, or a reply under comment cN, as to
-                                  an agent's ask; --wake starts a run on it, as --wait does, which prints what the agent says back
+                                  an agent's question; --wake starts a run on it, as --wait does, which prints what the agent
+                                  says back
 rf upload PATH FILE [--onto ITEM] [--output] [--wake]
-rf signoff PATH cN [TEXT] [--wake]   signs off the agent's ask cN, saying yes to it, which commits the folder
-                                  in your name; to say no, reply
+rf approve PATH cN [TEXT] [--wake]   approves the agent's proposal cN: it goes ahead with it, and the folder is
+                                  committed as it is now, in your name; a reply approves nothing
+rf reject PATH cN [TEXT] [--wake]   rejects the agent's proposal cN: it won't do it, and carries on as TEXT says
 rf react PATH [cN] up|down|none   your thumbs up or down on comment cN, or on the instance, or none; quiet, open or closed
 rf close PATH [--as-series NAME] [--wake]   the runner makes it the record and an example,
                                   approving nothing; a task closes as a one-off, or as the first instance of the series NAME it
@@ -157,21 +159,23 @@ What there is
   instance, making it the period's record and an example for the next, which approves nothing. Their comments and uploads start a run of the agent, which reads them and carries on, as do everyone's where the
   runner shares the series, and a reply from whom an ask names; anyone else's is a note, which the agent takes up once the runner
   does.
-- rf is quiet: a comment, upload, sign-off, close, new instance or request it starts begins no run unless --wake, and the agent
+- rf is quiet: a comment, upload, approval, rejection, close, new instance or request it starts begins no run unless --wake, and the agent
   reads it at its next run; rf wake PATH now starts one. A quiet upload or comment is committed to the instance's history at once.
 - A comment starts a thread, on the instance or on an item, at a cell such as Base!C25 or a line of a markdown file by its
-  opening words, and replies go under any comment in it, cN by its seq, a thread's id its first comment's. An ask is the agent's
-  comment that waits on someone, the one it names or else the runner, until someone replies under it. rf ls says how many asks
-  wait in each instance. Reactions, thumbs up or down, are quiet signals kept for later. Anyone
-  who sees the instance may sign an ask off, saying yes, which commits the instance's folder to its history, .git in it, as it
-  is then, as closing does. Whose sign-off counts, and for what, is the series' call.
+  opening words, and replies go under any comment in it, cN by its seq, a thread's id its first comment's. The agent asks
+  questions, which wait on someone, the one it names or else the runner, until a person replies under it, and proposes what it
+  will do for its runner, such as sending mail, which waits until someone approves or rejects it, or the agent withdraws it; a
+  reply under a proposal approves nothing. rf ls says how many asks wait in each instance. Reactions, thumbs up or down, are
+  quiet signals kept for later. Anyone who sees the instance may approve a proposal, which commits the instance's folder to its
+  history, .git in it, as it is then, as closing does. Whose approval counts, and for what, is the series' call.
 
 What rf pull copies, the folders as the agent sees them
   AGENTS.md                  the company's conventions; <workspace>/AGENTS.md the workspace's
   <workspace>/<series>/<label>/
     screen.json              the screen: {rev, status, items: [{id, name, kind, file, from, headline, source, destination}]}
     log.jsonl                every event, by seq: by is a person's email, "server" or "agent"; op is upload, comment (thread, item,
-                             ref, parent, text, files, ask, to), signoff (someone's, on the ask it names, with its commit), react,
+                             ref, parent, text, files, ask, question or proposal, to), signoff (an approval of the proposal it names, on,
+                             with its commit), reject, withdraw (the agent's, of its question or proposal on), react,
                              commit, point and item (the screen changing), run, done (its cost, or error), close, and the rest
     upload/                  what people uploaded, their comments' attachments in upload/attachments/
     working/                 what the agent made, its scripts, and process.md, how it does this series
@@ -185,8 +189,8 @@ The copy is read-only: only rf's commands change what's on the server.
 
 Usual work
 - What waits on me: rf waiting, then rf show PATH, which names each comment that waits by its id.
-- Answer an ask: rf comment PATH TEXT --thread cN --wait, which prints what the agent says back; or sign it off:
-  rf signoff PATH cN [TEXT] --wake, for the agent to carry on. Close an
+- Answer a question: rf comment PATH TEXT --thread cN --wait, which prints what the agent says back. Decide a proposal:
+  rf approve PATH cN [TEXT] --wake, for the agent to go ahead, or rf reject PATH cN [TEXT] --wake. Close an
   instance once it's the record: rf close PATH.
 - Take an instance over: rf creds PATH lists the offers of your logins, and rf takeover PATH --creds OFFER,... ticks them.
 - Your logins: rf logins lists them, with what each offers, and an expired one's link to sign in again on the page.
@@ -426,7 +430,7 @@ if (cmd === 'login' && url) {
   const { inst, at } = await instanceAt(args[0]), { doc, log, run, queued, runner, waiting: w } = await get(at);
   const waiting = w.map(({ who, seq }) => {
     const e = log[seq - 1], first = log.find(x => `c${x.seq}` === e.thread);
-    return { comment: `c${seq}`, thread: e.thread, kind: e.ask ? 'ask' : 'note', for: who, by: e.by, item: first.item, ref: first.ref, text: e.text };
+    return { comment: `c${seq}`, thread: e.thread, kind: e.ask === true ? 'ask' : e.ask ?? 'note', for: who, by: e.by, item: first.item, ref: first.ref, text: e.text };
   });
   const done = log.findLast(e => e.op === 'done'), last = done ? { run: done.run, cost: done.cost, error: done.error ?? null } : null;
   if (flags.json) console.log(JSON.stringify({ path: args[0], id: inst.id, status: doc.status, runner: runner.by, running: run, queued, items: doc.items, waiting, last_run: last, ...(doc.status === 'deleted' && { deleted: { by: log[0].by, at: log[0].at } }) }, null, 1));
@@ -464,7 +468,7 @@ else if (cmd === 'comment' && args.length === 2) {
     const log = (await get(at)).log, done = log.find(e => e.op === 'done' && e.seen >= seq);
     if (!done) continue;
     const from = Math.max(seq, log.find(e => e.op === 'run' && e.run === done.run).seq);
-    for (const e of log.filter(e => e.seq > from && e.seq < done.seq && e.op === 'comment' && e.by === 'agent')) console.log(`${e.ask ? 'Asks' : 'Says'} in ${e.thread}:\n${e.text}\n`);
+    for (const e of log.filter(e => e.seq > from && e.seq < done.seq && e.op === 'comment' && e.by === 'agent')) console.log(`${e.ask === 'proposal' ? 'Proposes' : e.ask ? 'Asks' : 'Says'} in ${e.thread}:\n${e.text}\n`);
     if (done.error) console.log(`The run failed: ${done.error}`);
     break;
   }
@@ -472,9 +476,9 @@ else if (cmd === 'comment' && args.length === 2) {
   const on = args.length === 3 ? Number(args[1].replace(/^c/, '')) : undefined, up = { up: true, down: false, none: null }[args.at(-1)!];
   await post(`${(await instanceAt(args[0])).at}/react`, { ...(on !== undefined && { on }), up });
   console.log(`${args.at(-1)} on ${args.length === 3 ? args[1] : args[0]}`);
-} else if (cmd === 'signoff' && [2, 3].includes(args.length)) {
-  await post(`${(await instanceAt(args[0])).at}/signoff`, { thread: args[1], text: args[2], quiet: !flags.wake });
-  console.log(`signed off ${args[1]}`);
+} else if (['approve', 'reject'].includes(cmd) && [2, 3].includes(args.length)) {
+  await post(`${(await instanceAt(args[0])).at}/${cmd === 'approve' ? 'signoff' : 'reject'}`, { thread: args[1], text: args[2], quiet: !flags.wake });
+  console.log(`${cmd === 'approve' ? 'approved' : 'rejected'} ${args[1]}`);
 } else if (['close', 'abandon', 'interrupt'].includes(cmd) && args.length === 1) {
   const { series, at } = await instanceAt(args[0]);
   await post(`${at}/${cmd}`, { quiet: !flags.wake });

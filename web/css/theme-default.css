@@ -20,8 +20,9 @@
   /* The top bar's app name and avatar, the sidebar's foot and counts, and the sign-in pages' ground. */
   --app-ink: var(--ink); --avatar-bg: var(--rule); --avatar-ink: var(--ink); --foot-ink: var(--ink-2); --version-bg: var(--sheet);
   --num-bg: var(--ink-3); --open-bg: var(--ink-2); --signin-bg: var(--paper);
-  /* States: a danger's hover, an ask's band, a correction's amber, a delivery's green, what a file is made from, a changed cell. */
-  --red-bg: #fdf1f0; --ask-bg: #fff8f6; --amber: #b45309; --amber-bg: #fff7ed; --corr-bg: #fffbeb; --green: #1f6f43;
+  /* States: a danger's hover, an ask's band, a proposal's violet and its band, a correction's amber, a delivery's green, what a file
+     is made from, a changed cell. */
+  --red-bg: #fdf1f0; --ask-bg: #fff8f6; --propose: #6a3fc1; --propose-bg: #f7f4fd; --amber: #b45309; --amber-bg: #fff7ed; --corr-bg: #fffbeb; --green: #1f6f43;
   --made: #eef0f3; --made-far: #f5f6f8; --tile-made: #f1f3f5; --tile-made-far: #f6f7f8; --changed: #fdf0c4; --chip: #eceff3;
   /* A document's pages and a browser's screen keep grounds of their own. */
   --doc: #fff; --screen: #222;

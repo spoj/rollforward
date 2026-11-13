@@ -186,9 +186,10 @@ function names(me: Me) {
   };
 }
 
-// What makes an instance new to a person, when someone else or the agent did it: a run's end, a comment, a sign-off, an upload, a
+// What makes an instance new to a person, when someone else or the agent did it: a run's end, a comment, an approval, a rejection, a
+// withdrawal, an upload, a
 // takeover, a close, a deletion, or a move to another workspace that someone else accepted.
-const NEWS = ['done', 'comment', 'signoff', 'upload', 'takeover', 'close', 'abandon', 'delete', 'move'];
+const NEWS = ['done', 'comment', 'signoff', 'reject', 'withdraw', 'upload', 'takeover', 'close', 'abandon', 'delete', 'move'];
 
 // What an instance's runs cost, since its latest duplication, a deleted one's as its deletion kept it.
 const costOf = (i: Instance) => +i.log.slice(i.log.findLastIndex(e => e.op === 'duplicate') + 1).reduce((t, e) => t + (['done', 'delete'].includes(e.op) ? e.cost as number : 0), 0).toFixed(4);
@@ -486,7 +487,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   // A run reads and writes its own instance's screen and threads, commits its folder, sets wakes and corrects closed instances in its
   // own workspace, and finds what a folder it can read names; nothing else here.
   const run = me.run;
-  if (run && !(kind === 'instances' && id === run.inst.id && ['screen', 'comment', 'commit'].includes(action)) && !(kind === 'instances' && action === 'correct') && !(kind === 'wakes' && ['PUT', 'DELETE'].includes(req.method!)) && kind !== 'resolve')
+  if (run && !(kind === 'instances' && id === run.inst.id && ['screen', 'comment', 'commit', 'withdraw'].includes(action)) && !(kind === 'instances' && action === 'correct') && !(kind === 'wakes' && ['PUT', 'DELETE'].includes(req.method!)) && kind !== 'resolve')
     throw new HttpError(404, 'not found');
   // The body before the tree: a request held open must not save a tree from before others' changes, such as an owner's removal.
   const payload = ['upload', 'attach', 'screen'].includes(action) ? {} : await json(req);
@@ -812,10 +813,11 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   } else if (action === 'comment') {
     // A comment starts a thread, on an item (at a ref, such as a cell, if given) or on the instance, or replies under one of its
     // comments, which `thread` names by its seq, as cN, a thread's own id its first comment's. A person's starts a run, unless quiet.
-    // The agent's starts nothing: it says something, or asks, and then the ask waits on a reply under it, from the one it names or else
-    // the runner. A person's may attach files, uploaded to upload/attachments/ first.
+    // The agent's starts nothing: it says something, or asks a question or makes a proposal, which then waits on the one it names or
+    // else the runner (store.ts answered()). A person's may attach files, uploaded to upload/attachments/ first.
     const { thread, item, ref, text, files = [], ask, to } = payload, under = thread === undefined ? undefined : inst.log.find(e => e.op === 'comment' && `c${e.seq}` === thread);
     if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a comment has text');
+    if (ask !== undefined && !['question', 'proposal'].includes(ask)) throw new HttpError(400, 'ask is "question" or "proposal"');
     if (thread !== undefined && !under) throw new HttpError(400, `no comment ${thread} to reply under; this instance's threads: ${inst.threads().join(', ') || 'none yet'}`);
     if (thread === undefined && item != null && !inst.doc.items.some(i => i.id === item)) throw new HttpError(400, `no item ${item}; the screen's items: ${inst.doc.items.map(i => i.id).join(', ')}`);
     for (const f of files) if (!(typeof f === 'string' && f.startsWith('upload/attachments/') && !f.includes('..') && existsSync(join(inst.dir, f)))) throw new HttpError(400, `no attachment ${f}`);
@@ -824,9 +826,9 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       throw new HttpError(400, `${to} can't see this instance; ask its runner, ${runnerOf(inst).by}, or someone in its workspace`);
     const said = inst.append(by, 'comment', {
       ...(under ? { thread: under.thread, parent: under.seq } : { thread: `c${inst.log.length + 1}`, item: item ?? null, ref: ref ?? null }), text: text.trim(), ...(files.length && { files }),
-      ...(run && { run: run.n, ...(ask && { ask: true, ...(who && { to: who }) }) }), ...(quiet && { quiet: true }),
+      ...(run && { run: run.n, ...(ask && { ask, ...(who && { to: who }) }) }), ...(quiet && { quiet: true }),
     });
-    if (run) return send(res, 200, `${ask ? 'asked' : 'said'} c${said.seq}${under ? `, under ${thread}` : ''}`);
+    if (run) return send(res, 200, `${{ question: 'asked', proposal: 'proposed' }[ask as string] ?? 'said'} c${said.seq}${under ? `, under ${thread}` : ''}`);
     res.setHeader('X-RF-Comment-Seq', said.seq);
     // Until a task is renamed, its first prompt's opening words name it.
     const s = t.series[inst.seriesId], words = text.trim().split(/\s+/).slice(0, 6).join(' ').replace(/^\.+/, '').slice(0, 60);
@@ -838,17 +840,22 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       inst.append('server', 'rename', { from, cause: said.seq });
     }
     if (!starts(inst, said) && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, me, `Comment in ${said.thread}`).catch(err => inst.append('server', 'commit', { cause: said.seq, error: err.message }));
-  } else if (action === 'signoff') {
-    // Anyone who sees the instance signs off an ask of the agent's, which `thread` names as cN, with a note: it commits the folder in
-    // their name, as they say yes to it, the ask and the note its message, with their Signed-off-by, and starts a run, as a reply
-    // does, unless quiet. To say no is to reply, as rf 0.12's reject, still in use, is told.
-    const { thread, text, approved } = payload, ask = inst.log.find(e => `c${e.seq}` === thread && e.op === 'comment' && e.by === 'agent' && e.ask);
-    if (approved === false) throw new HttpError(400, 'a sign-off approves; to say no, reply in the thread');
-    if (!ask) throw new HttpError(409, `${thread} is no ask of the agent's`);
-    if (mine) throw new HttpError(409, 'wait for the run to end');
+  } else if (action === 'signoff' || action === 'reject') {
+    // Anyone who sees the instance approves a proposal of the agent's, which `thread` names as cN, or rejects it, with a note, as an
+    // ask from before questions and proposals, `ask: true`, which may have been either. Approving is a sign-off, by the route's name
+    // since rf 0.13: it commits the folder in their name, as they say yes to it, the proposal and the note its message, with their
+    // Signed-off-by. Either starts a run, as a reply does, unless quiet. rf 0.12's reject, a sign-off with approved false, is refused.
+    const { thread, text, approved } = payload, ask = inst.log.find(e => `c${e.seq}` === thread && e.op === 'comment' && e.by === 'agent' && (e.ask === true || e.ask === 'proposal'));
+    if (approved === false) throw new HttpError(400, 'a sign-off approves; to say no, reject it, on the page or with rf reject');
+    if (!ask) throw new HttpError(409, `${thread} is no proposal of the agent's`);
+    if (inst.log.some(e => e.op === 'withdraw' && e.on === ask.seq)) throw new HttpError(409, `the agent withdrew ${thread}`);
     const note = typeof text === 'string' ? text.trim() : '';
-    const hash = await commit(inst.dir, me, [ask.text, note, `Signed-off-by: ${me.name} <${me.email}>`].filter(Boolean).join('\n\n'));
-    inst.append(by, 'signoff', { thread: ask.thread, on: ask.seq, ...(note && { text: note }), commit: hash, ...(quiet && { quiet: true }) });
+    if (action === 'reject') inst.append(by, 'reject', { thread: ask.thread, on: ask.seq, ...(note && { text: note }), ...(quiet && { quiet: true }) });
+    else {
+      if (mine) throw new HttpError(409, 'wait for the run to end');
+      const hash = await commit(inst.dir, me, [ask.text, note, `Signed-off-by: ${me.name} <${me.email}>`].filter(Boolean).join('\n\n'));
+      inst.append(by, 'signoff', { thread: ask.thread, on: ask.seq, ...(note && { text: note }), commit: hash, ...(quiet && { quiet: true }) });
+    }
   } else if (action === 'commit' && run) {
     // The agent commits the folder at a moment worth keeping, in its own name.
     const message = typeof payload.message === 'string' ? payload.message.trim() : '';
@@ -856,6 +863,15 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const hash = await commit(inst.dir, AGENT, message);
     inst.append('agent', 'commit', { run: run.n, message, commit: hash });
     return send(res, 200, `committed ${hash}`);
+  } else if (action === 'withdraw' && run) {
+    // The agent withdraws a question or proposal of its own still waiting, saying why, and where it was answered, if it was: see, a
+    // comment's seq.
+    const { thread, text, see } = payload, ask = inst.asking().find(e => `c${e.seq}` === thread), at = see === undefined ? undefined : inst.log.find(e => `c${e.seq}` === see && e.op === 'comment');
+    if (!ask) throw new HttpError(409, `${thread} is no question or proposal of yours still waiting; those that are: ${inst.asking().map(e => `c${e.seq}`).join(', ') || 'none'}`);
+    if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a withdrawal says why');
+    if (see !== undefined && !at) throw new HttpError(400, `no comment ${see}`);
+    inst.append('agent', 'withdraw', { thread: ask.thread, on: ask.seq, text: text.trim(), ...(at && { see: at.seq }), run: run.n });
+    return send(res, 200, `withdrew ${thread}`);
   } else if (action === 'interrupt') {
     // Whoever sees the instance watches its run; its runner, the workspace's owners and admins alone stop it.
     if (!run && runnerOf(inst).by !== by && !canManage(me, t.workspaces[t.series[inst.seriesId].workspace]))
