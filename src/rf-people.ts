@@ -55,7 +55,8 @@ rf new workspace NAME             yours to own, for admins and those they grant 
 rf copy PATH LABEL [--creds OFFER,...]   a closed or abandoned instance, copied into a new open one without its agent session
 rf share PATH on|off [--creds OFFER,...]   the series' people, and their agents, wake it as you, with those offers ticked;
                                   off stops it, for its sharer or its workspace's owners
-rf archive PATH [--undo]          a workspace or a series leaves the sidebar, and nothing in it changes or runs, until --undo brings it back
+rf archive PATH [--undo]          a workspace or a series leaves the sidebar, and nothing in it changes or runs, until --undo brings it back;
+                                  its wakes and requests are cancelled for good
 rf request start|drop ID [--creds OFFER,...] [--wake]   a request to start an instance, by the ID rf waiting and rf wakes
                                   print; --wake runs the instance it starts
 rf logins [--json]                your logins, each with its state, keepalive and offers; you sign in to them on the page
@@ -552,7 +553,7 @@ else if (cmd === 'comment' && args.length === 2) {
 } else if (cmd === 'archive' && args.length === 1) {
   const [w, s] = args[0].replace(/\/+$/, '').split('/');
   await post(s === undefined ? `/api/workspaces/${(await workspaceNamed(w)).id}` : `/api/series/${(await seriesAt(args[0])).id}`, { archived: !flags.undo }, 'PUT');
-  console.log(`${flags.undo ? 'brought back' : 'archived'} ${args[0]}`);
+  console.log(flags.undo ? `brought back ${args[0]}` : `archived ${args[0]}, its wakes and requests cancelled for good`);
 } else if (cmd === 'request' && ['start', 'drop'].includes(args[0]) && args.length === 2) {
   if (args[0] === 'drop') await api(`/api/requests/${args[1]}`, { method: 'DELETE' });
   console.log(args[0] === 'drop' ? `dropped request ${args[1]}` : `made ${await pathOf((await (await post(`/api/requests/${args[1]}`, { logins: ticks(), quiet: !flags.wake })).json()).id)}${consent(ticks())}`);

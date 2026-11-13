@@ -206,7 +206,7 @@ for (const kind of ['series', 'workspace']) test(`an archived ${kind} is read-on
     assert.equal((await tab.request.put(new URL(target, tab.url()).href, { data: { archived: true } })).ok(), true);
     await tab.waitForSelector(`${row}.archived`);
     assert.equal(await tab.textContent('#bar .state'), 'Archived · read-only');
-    assert.match(confirmation!, /Nothing in it changes or runs until it's restored\./);
+    assert.match(confirmation!, /Nothing in it changes or runs until it's restored, and its wakes, weekly ones too, and requests to start an instance are cancelled for good: restoring brings none back\./);
     assert.deepEqual(await tab.locator('#pv .pvb button').allTextContents(), [`Restore ${kind}`], 'settings already open become read-only too');
     assert.equal(await tab.locator('#pv .pvb input:enabled, #pv .pvb textarea:enabled, #pv .pvb select:enabled').count(), 0);
     await tab.click('#pv [data-act=unpv]');

@@ -1538,7 +1538,7 @@ async function onAct(act, el) {
   if (act === 'archive-series' || act === 'archive-workspace') {
     const x = act === 'archive-series' ? cur.s : cur.w, flip = () => api(act === 'archive-series' ? seriesPath(cur) : `/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ archived: !x.archived }) });
     if (x.archived) await flip();
-    else if (!await ask({ title: `Archive ${x.name}?`, text: "It leaves the sidebar, except under Show archived. Nothing in it changes or runs until it's restored.", ok: 'Archive', kind: 'danger', act: flip })) return;
+    else if (!await ask({ title: `Archive ${x.name}?`, text: "It leaves the sidebar, except under Show archived. Nothing in it changes or runs until it's restored, and its wakes, weekly ones too, and requests to start an instance are cancelled for good: restoring brings none back.", ok: 'Archive', kind: 'danger', act: flip })) return;
     closePv();
     await refresh();
   }

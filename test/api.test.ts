@@ -1156,10 +1156,10 @@ test('rf shares and archives series and workspaces, starts or drops a request, l
   assert.deepEqual([(await lunches()).shared_by, (await lunches()).shared_logins], [adminEmail, ['web:crm']]);
   assert.equal(await rf('share', 'Making/Lunches', 'off'), 'stopped sharing Making/Lunches\n');
   await assert.rejects(rf('share', 'Making/Lunches/again', 'on'), fails(1, /^rf: Making\/Lunches\/again is an instance: name its series\n$/));
-  assert.equal(await rf('archive', 'Making/Lunches'), 'archived Making/Lunches\n');
+  assert.equal(await rf('archive', 'Making/Lunches'), 'archived Making/Lunches, its wakes and requests cancelled for good\n');
   assert.equal((await lunches()).archived, true);
   assert.equal(await rf('archive', 'Making/Lunches', '--undo'), 'brought back Making/Lunches\n');
-  assert.equal(await rf('archive', 'Making'), 'archived Making\n');
+  assert.equal(await rf('archive', 'Making'), 'archived Making, its wakes and requests cancelled for good\n');
   assert.equal((await named('Making')).archived, true);
   await rf('archive', 'Making', '--undo');
   await assert.rejects(rf('request', 'drop', 'nosuch'), fails(1, /: 404 no request nosuch\n$/));
