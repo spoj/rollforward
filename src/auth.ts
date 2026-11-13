@@ -328,7 +328,7 @@ async function finishLogin(req: IncomingMessage, res: ServerResponse, claims: an
 }
 
 // Fresh access and ID tokens for a person's login, and the refresh token that replaces theirs. Microsoft refusing the login answers 401,
-// as for one expired, revoked or made through another app, for its person to sign in again. A refusal that names this server's own
+// as for one expired, revoked, made through another app or wanting multi-factor sign-in again, for its person to sign in again. A refusal that names this server's own
 // app, as when its secret expired, is the server's to mend, and answers 502, as other failures do; one that wants the person's
 // consent to permissions the server asks for anew carries `consent`.
 export async function renew(refreshToken: string, scope: string[]): Promise<{ access: string; idToken: string; refresh: string; expires: number; scopes?: string[] }> {
@@ -338,7 +338,7 @@ export async function renew(refreshToken: string, scope: string[]): Promise<{ ac
     body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: oidc.clientId, scope: entraScope(scope), ...(oidc.clientSecret && { client_secret: oidc.clientSecret }) }),
   });
   const t = await r.json().catch(() => ({}));
-  const refused = ['invalid_grant', 'invalid_client', 'unauthorized_client'].includes(t.error) && !String(t.error_description).includes(`'${oidc.clientId}'`);
+  const refused = ['invalid_grant', 'invalid_client', 'unauthorized_client', 'interaction_required'].includes(t.error) && !String(t.error_description).includes(`'${oidc.clientId}'`);
   if (!r.ok || !t.access_token) throw Object.assign(new HttpError(refused ? 401 : 502, `Microsoft did not renew the login: ${(t.error_description ?? t.error ?? r.status).toString().split('\r\n')[0]}`), { consent: t.suberror === 'consent_required' });
   return { access: t.access_token, idToken: t.id_token, refresh: t.refresh_token ?? refreshToken, expires: Date.now() + (Number(t.expires_in ?? 3600) - 120) * 1000, scopes: granted(t.scope) };
 }

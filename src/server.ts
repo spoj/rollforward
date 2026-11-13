@@ -22,7 +22,7 @@ import { addVpn, cancelVpnSignIn, disconnectVpn, isVpnSignIn, reapVpns, removeVp
 import { ask, decide, forgetGrants, forgetWorkspace, lapse, revoke, visible } from './grants.ts';
 import { offer } from './connections/graph.ts';
 import { addWarehouse } from './connections/databricks.ts';
-import { forget, indexes, startIndexing, track } from './indexes.ts';
+import { forget, indexes, prune, startIndexing, track } from './indexes.ts';
 import { addNote, notes, seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
 import { active, archived, byToken, cancelWake, cancelWakes, closed, correct, dropRequest, isNote, kick, MAX_OPEN, named, noted, pending, queued, remove, resolveFor, setWake, startWaking, starts, startWith, stop, wakes, wakesOf, weekly, reads, CUT, type Active, type Request } from './waker.ts';
@@ -135,7 +135,9 @@ function mustSee(me: Me, w: Workspace | undefined): Workspace {
   return w;
 }
 
+// What going runs are no longer lent goes: their browsers, and their copies of indexes.
 async function closeUnlent() {
+  for (const a of active.values()) prune(a.inst, a.n, a.token);
   await Promise.all([...active.values()].map(a => a.browsers?.closeUnlent()));
 }
 
@@ -1268,7 +1270,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     }
     else if (/^\/logins\/[^/]+\/offers\/[^/]+$/.test(url.pathname) && req.method === 'DELETE') {
       const [, , id, , o] = url.pathname.split('/').map(decodeURIComponent);
-      send(res, 200, (unoffer(me.email, id, o), forget(me.email, o), 'ok'));
+      send(res, 200, (unoffer(me.email, id, o), forget(me.email, o), await closeUnlent(), 'ok'));
     }
     else if (/^\/signins\/\w+\/view$/.test(url.pathname) && req.method === 'GET') {
       const id = url.pathname.split('/')[2];

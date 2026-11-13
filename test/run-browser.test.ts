@@ -2,7 +2,7 @@ import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { createServer } from 'node:http';
+import { createServer, type RequestListener } from 'node:http';
 import { connect } from 'node:net';
 import { PassThrough } from 'node:stream';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -29,13 +29,14 @@ const states: unknown[] = [], headers: unknown[] = [], deleted: string[] = [], s
 const opened: { site: { hosts: string[]; start_url?: string; public?: boolean; open?: boolean; except?: string[] }; ttl_s: number; state?: unknown }[] = [];
 let blocked: Record<string, boolean> = {};
 const toldHosts: { path: string; hosts: string[] }[] = [];
-let nextId = 'b9', refuseClose = false, dropClose = false, openGate: Promise<void> | undefined;
+let nextId = 'b9', refuseClose = false, dropClose = false, hangClose = false, openGate: Promise<void> | undefined;
 const service = createServer(async (req, res) => {
   if (req.method === 'PUT') {
     toldHosts.push({ path: req.url!, ...JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString()) });
     return res.end('{}');
   }
   if (req.method === 'DELETE') {
+    if (hangClose) return;
     if (dropClose) {
       res.writeHead(500, { 'content-length': 100 });
       res.write('{"error":');
@@ -68,7 +69,7 @@ const service = createServer(async (req, res) => {
   res.writeHead(req.url === '/sessions/b1/screenshot' ? 200 : 404).end(page);
 }).on('upgrade', (req, socket) => socket.end(`HTTP/1.1 101 Switching Protocols\r\n\r\nservice got ${req.url}`));
 await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
-Object.assign(process.env, { RF_BROWSER_URL: `http://127.0.0.1:${(service.address() as { port: number }).port}`, RF_BROWSER_IDLE_MS: '300' });
+Object.assign(process.env, { RF_BROWSER_URL: `http://127.0.0.1:${(service.address() as { port: number }).port}`, RF_BROWSER_IDLE_MS: '300', RF_BROWSER_CLOSE_MS: '500' });
 const { Browsers, endSignIn, isSignIn, keepAlive, reap, removeSite, startSignIn, websitesOf } = await import('../src/browsers.ts');
 const { upstreams } = await import('../src/connections.ts');
 const { ask, decide, grants, lapse, revoke } = await import('../src/grants.ts');
@@ -389,6 +390,33 @@ test("a person has one browser at a time on a website that writes its state back
   assert.deepEqual(JSON.parse(secret(alice, 'web:ledger')), state('seed'), 'nothing comes back');
 });
 
+test("a close the browser service never answers fails after RF_BROWSER_CLOSE_MS and releases its person's browser for the next run; one a restart left holds it until then, without holding up the start", async t => {
+  sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });
+  saveLogin(alice, website('crm', 'CRM'), '{}');
+  const first = new Browsers(running('hung-close', ['web:crm']), 1), next = new Browsers(running('after-hung-close', ['web:crm']), 1);
+  await first.browser('crm');
+  hangClose = true;
+  t.after(() => { hangClose = false; });
+  t.mock.method(console, 'error', () => {});
+  const waiting = next.browser('crm');
+  await assert.rejects(first.close(), (e: { status: number; message: string }) => e.status === 502 && /nothing in 0.5 s/.test(e.message));
+  await waiting;
+  hangClose = false;
+  await next.close();
+  writeJson('browsers.json', { [nextId]: { inst: first.inst.id, run: 1, site: 'crm', email: alice, since: 't1', writeback: true, file: 'browser/run 1 crm.jsonl' } });
+  listed = [nextId];
+  hangClose = true;
+  const { closed } = await reap();
+  const after = new Browsers(running('after-hung-reap', ['web:crm']), 1), opening = after.browser('crm');
+  await sleep(50);
+  assert.equal(after.inst.log.find(e => e.action === 'wait')?.held, 'restart', 'waits for the leftover');
+  await closed;
+  hangClose = false;
+  await opening;
+  await after.close();
+  listed = [];
+});
+
 test('a sealed state that cannot be read does not hold the person\'s browser', async () => {
   sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });
   saveLogin(alice, website('crm', 'CRM'), 'not JSON');
@@ -649,49 +677,47 @@ test('a request lapses a week after it was asked, and a login no approved grant 
   writeJson('grants.json', everyone);
 });
 
-test('the server reaps leftover browsers before it takes requests', async t => {
-  let list!: () => void, close!: () => void, sawList!: () => void, sawClose!: () => void;
-  const listing = new Promise<void>(ok => { list = ok; }), closing = new Promise<void>(ok => { close = ok; });
-  const listed = new Promise<void>(ok => { sawList = ok; }), closed = new Promise<void>(ok => { sawClose = ok; });
-  const reaper = createServer(async (req, res) => {
-    if (req.method === 'GET') {
-      sawList();
-      await listing;
-      return res.end('[{"id":"leftover"}]');
-    }
-    sawClose();
-    await closing;
-    res.end('{"state":{},"log":[]}');
-  });
-  await new Promise<void>(ok => reaper.listen(0, '127.0.0.1', ok));
-  const probe = createServer();
-  await new Promise<void>(ok => probe.listen(0, '127.0.0.1', ok));
-  const port = (probe.address() as { port: number }).port, base = `http://127.0.0.1:${port}`;
-  await new Promise<void>(ok => probe.close(() => ok()));
-  const proc = spawn(process.execPath, [join(import.meta.dirname, '../src/server.ts'), join(tmp, 'startup'), String(port)], {
-    env: { ...process.env, RF_BROWSER_URL: `http://127.0.0.1:${(reaper.address() as { port: number }).port}`, RF_PUBLIC_URL: base, RF_OIDC_ISSUER: 'https://login.test', RF_OIDC_CLIENT_ID: 'client' },
-    stdio: ['ignore', 'pipe', 'inherit'],
-  });
-  const ready = new Promise<void>((ok, fail) => {
-    proc.stdout!.on('data', d => String(d).includes('rollforward on') && ok());
-    proc.on('exit', code => fail(new Error(`server exited with ${code}`)));
-  });
-  t.after(async () => {
-    list();
-    close();
-    await ready;
-    proc.kill();
-    await once(proc, 'exit');
-    reaper.close();
+test('the server takes requests once the browser service lists the browsers a restart left, while they close, even if a close never answers, and 10 s after a list that never comes', async t => {
+  let list!: () => void, sawList!: () => void, sawClose!: () => void;
+  const listing = new Promise<void>(ok => { list = ok; }), listed = new Promise<void>(ok => { sawList = ok; }), closing = new Promise<void>(ok => { sawClose = ok; });
+  const start = async (service: RequestListener) => {
+    const reaper = createServer(service), probe = createServer();
+    await new Promise<void>(ok => reaper.listen(0, '127.0.0.1', ok));
+    await new Promise<void>(ok => probe.listen(0, '127.0.0.1', ok));
+    const port = (probe.address() as { port: number }).port, base = `http://127.0.0.1:${port}`;
+    await new Promise<void>(ok => probe.close(() => ok()));
+    const proc = spawn(process.execPath, [join(import.meta.dirname, '../src/server.ts'), join(tmp, `startup-${port}`), String(port)], {
+      env: { ...process.env, RF_BROWSER_CLOSE_MS: undefined, RF_BROWSER_URL: `http://127.0.0.1:${(reaper.address() as { port: number }).port}`, RF_PUBLIC_URL: base, RF_OIDC_ISSUER: 'https://login.test', RF_OIDC_CLIENT_ID: 'client' },
+      stdio: ['ignore', 'pipe', 'inherit'],
+    });
+    const ready = new Promise<void>((ok, fail) => {
+      proc.stdout!.on('data', d => String(d).includes('rollforward on') && ok());
+      proc.on('exit', code => fail(new Error(`server exited with ${code}`)));
+    });
+    t.after(async () => {
+      proc.kill();
+      await once(proc, 'exit');
+      reaper.closeAllConnections();
+      reaper.close();
+    });
+    return { base, ready };
+  };
+  const { base, ready } = await start(async (req, res) => {
+    if (req.method !== 'GET') return sawClose();
+    sawList();
+    await listing;
+    res.end('[{"id":"leftover"}]');
   });
   await listed;
   await assert.rejects(fetch(base), /fetch failed/);
   list();
-  await closed;
-  await assert.rejects(fetch(base), /fetch failed/);
-  close();
+  await closing;
   await ready;
-  assert.equal((await fetch(base)).status, 200);
+  assert.equal((await fetch(base)).status, 200, 'takes requests while the close hangs');
+  const silent = await start(() => {}), since = Date.now();
+  await silent.ready;
+  assert.ok(Date.now() - since < 15_000);
+  assert.equal((await fetch(silent.base)).status, 200);
 });
 
 test("as the server starts, the browsers a restart left open on the service close: a run's keeps its request log and hands its login back, as its run would have, and a sign-in's just goes", async t => {
@@ -705,7 +731,7 @@ test("as the server starts, the browsers a restart left open on the service clos
   [listed, back] = [['lost', 'b9', 'signin'], state('as it was cut')];
   deleted.length = 0;
   t.mock.method(console, 'error', () => {});
-  await reap();
+  await (await reap()).closed;
   assert.deepEqual(deleted, ['lost', 'b9', 'signin']);
   assert.deepEqual(inst.log.filter(e => e.op === 'browser').map(e => [e.run, e.site, e.requests, e.writes, e.file]), [[4, 'crm', 1, 0, 'browser/run 4 crm.jsonl']]);
   assert.equal(readFileSync(join(inst.dir, 'browser/run 4 crm.jsonl'), 'utf8'), `${JSON.stringify(plain[0])}\n`);

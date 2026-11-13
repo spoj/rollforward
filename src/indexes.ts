@@ -8,7 +8,7 @@ import { wipe, type Instance } from './store.ts';
 import { changes, rfDir } from './system.ts';
 import { users } from './auth.ts';
 import { token } from './entra.ts';
-import { lender, logins, personDir, type Offer } from './logins.ts';
+import { lender, logins, personDir, use, type Offer } from './logins.ts';
 import { endpoints, scope } from './connections/graph.ts';
 import { scratch } from './runner.ts';
 
@@ -289,6 +289,19 @@ export function prepare(inst: Instance, to: string): boolean {
   }
   if (names.size) writeFileSync(join(to, 'README.md'), README);
   return names.size > 0;
+}
+
+// A going run's copies, by its token, of sources no longer lent it, as its runner unticked one, took its offer off or signed out,
+// go at once.
+export function prune(inst: Instance, run: number, token: string) {
+  const dir = join(rfDir(), 'runs', token);
+  for (const f of readdirSync(dir).filter(f => f.endsWith('.json'))) {
+    try {
+      use(inst, run, JSON.parse(readFileSync(join(dir, f), 'utf8')).source);
+    } catch {
+      for (const g of [f, f.replace(/json$/, 'ndjson.zst')]) rmSync(join(dir, g), { force: true });
+    }
+  }
 }
 
 // In the background, the most overdue cache gets a slice, again and again, one at a time: each crawl goes on to its end, and each

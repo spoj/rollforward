@@ -25,10 +25,12 @@ import { vpnDefinitions, vpnHosts, vpnVia, type Via } from './vpns.ts';
 const base = process.env.RF_BROWSER_URL ?? 'http://127.0.0.1:8797', u = new URL(base), tls = u.protocol === 'https:';
 const key = () => ({ authorization: `Bearer ${process.env.RF_BROWSER_KEY}` });
 
-// The service's answer, as it streams; a refusal is a 502.
-function request(method: string, path: string, body?: unknown): Promise<IncomingMessage> {
+// The service's answer, as it streams; a refusal is a 502, as is `ms` without a byte from it: a close, which hands back a browser's
+// state, may take long, so it waits RF_BROWSER_CLOSE_MS.
+const CLOSE_MS = Number(process.env.RF_BROWSER_CLOSE_MS ?? 300_000);
+function request(method: string, path: string, body?: unknown, ms = method === 'DELETE' ? CLOSE_MS : 120_000): Promise<IncomingMessage> {
   return new Promise((ok, fail) => {
-    const req = (tls ? httpsRequest : httpRequest)(base + path, { method, headers: key() }, res => {
+    const req = (tls ? httpsRequest : httpRequest)(base + path, { method, headers: key(), timeout: ms }, res => {
       if (res.statusCode! < 300) return ok(res);
       const chunks: Buffer[] = [];
       res.on('error', e => fail(new HttpError(502, `browser service: ${e.message}`)));
@@ -42,11 +44,12 @@ function request(method: string, path: string, body?: unknown): Promise<Incoming
       });
     });
     req.on('error', e => fail(new HttpError(502, `the browser service at ${base} does not answer: ${e.message}`)));
+    req.on('timeout', () => req.destroy(new Error(`nothing in ${ms / 1000} s`)));
     req.end(body === undefined || Buffer.isBuffer(body) ? body : JSON.stringify(body));
   });
 }
-const call = async (method: string, path: string, body?: unknown) => Buffer.concat(await Array.fromAsync(await request(method, path, body)));
-export const browserJson = async (method: string, path: string, body?: unknown) => JSON.parse((await call(method, path, body)).toString());
+const call = async (method: string, path: string, body?: unknown, ms?: number) => Buffer.concat(await Array.fromAsync(await request(method, path, body, ms)));
+export const browserJson = async (method: string, path: string, body?: unknown, ms?: number) => JSON.parse((await call(method, path, body, ms)).toString());
 // A file in a session's browser, its parts encoded and none . or .., which would lead out of the session to the service's other calls.
 export function files(id: string, path: string) {
   const parts = path.replace(/\\/g, '/').replace(/^\//, '').split('/');
@@ -332,8 +335,8 @@ export async function endSignIn(email: string, id: string, save: boolean, keepal
 // as its person saved it, and nothing comes back.
 
 // The run holding each person's browser on a website that writes its state back, by person and website, or none for a keepalive's
-// turn, and its release.
-const held = new Map<string, { run?: Browsers; released: Promise<void>; release(): void }>();
+// turn or a browser a restart left, and its release.
+const held = new Map<string, { run?: Browsers; by?: string; released: Promise<void>; release(): void }>();
 const IDLE_MS = Number(process.env.RF_BROWSER_IDLE_MS ?? 5 * 60_000);
 
 // The runs' browsers open on the service, by id, in .rf/browsers.json, so those a restart cut from their runs still leave what
@@ -476,20 +479,31 @@ async function checkRefused(inst: Instance, run: number, email: string, site: st
 }
 
 // As the server starts, before any browser of its own opens: the browsers left open on the service, which this server alone uses,
-// close, a run's kept as its run would have kept it, and any other, such as a sign-in's, gone.
+// close, a run's kept as its run would have kept it, and any other, such as a sign-in's, gone. It returns once the service lists
+// them, within 10 s, and they close after, each run's holding its person's browser on its website, as its run did, until it's back.
 export async function reap() {
-  const left = journal();
-  for (const { id } of await browserJson('GET', '/sessions')) {
+  const left = journal(), sessions: { id: string }[] = await browserJson('GET', '/sessions', undefined, 10_000), all = journal();
+  for (const id in left) if (!sessions.some(o => o.id === id)) delete all[id];
+  setJournal(all);
+  return { closed: Promise.all(sessions.map(async ({ id }) => {
+    const b = left[id], key = b?.writeback ? `${b.email} ${b.site}` : '';
+    let release!: () => void;
+    if (key) held.set(key, { by: 'restart', released: new Promise<void>(ok => { release = ok; }), release: () => release() });
     try {
       const closed = await close(id);
-      if (left[id]) keep(instance(left[id].inst), left[id], closed);
+      if (b) keep(instance(b.inst), b, closed);
     } catch (e) {
       console.error(`the browser service: browser ${id}, left open by a restart, did not close cleanly`, e);
+    } finally {
+      const all = journal();
+      delete all[id];
+      setJournal(all);
+      if (key) {
+        held.delete(key);
+        release();
+      }
     }
-  }
-  const all = journal();
-  for (const id in left) delete all[id];
-  setJournal(all);
+  })) };
 }
 
 export class Browsers {
@@ -544,7 +558,7 @@ export class Browsers {
       if (this.opening.has(site)) return this.opening.get(site);
       const w = site === PRINT ? undefined : website(email, site), writeback = !!w?.writeback, key = `${email} ${site}`, other = writeback ? held.get(key) : undefined;
       if (other) {
-        if (!waited) this.inst.append('server', 'browser', { run: this.run, site, login: email, action: 'wait', held: other.run ? `${tree().series[other.run.inst.seriesId]?.name}/${other.run.inst.label}` : 'keepalive' });
+        if (!waited) this.inst.append('server', 'browser', { run: this.run, site, login: email, action: 'wait', held: other.run ? `${tree().series[other.run.inst.seriesId]?.name}/${other.run.inst.label}` : other.by ?? 'keepalive' });
         await Promise.race([other.released, new Promise(ok => conn?.once('close', ok))]);
         if (conn?.destroyed) return undefined;
         continue;
