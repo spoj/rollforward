@@ -97,6 +97,7 @@ Run the image under podman, as a systemd service. The image is the agent image, 
 ## Keys, backups and updates
 
 - **Keys:** `.rf/session.key` signs sessions, and `.rf/seal.key` encrypts everyone's logins. Back up the data folder nightly without them, and keep a copy of both elsewhere. Without seal.key, people sign in to their logins again.
+- **Production deploys by itself:** an updater runs about every 15 minutes, as a per-user systemd timer on its server.
 - **Updates:** check out the next tag, rebuild, and `systemctl --user restart rollforward`, whatever runs are going: the restart cuts them, and they carry on by themselves, their cost so far recorded.
 - **Updates without the image** come by themselves: `scripts/update.ts` moves the checkout to the newest GitHub Release once every check on its commit has passed. It first fetches what the release installs, its packages into npm's cache and its agent image, unpacked beside the one running if its id is new, while the server runs on, so a failure there, as without the network, changes nothing and the next tick tries again; then it stops the server, whatever runs are going, moves the checkout, installs what changed from that cache (`npm ci`), starts the server, keeping only the agent image it runs and the one before, and goes back if it doesn't answer, never trying that release again; if going back fails too, it starts the server as the checkout is, so it never stays stopped. The runs the stop cut carry on after the start. A checkout on no release tag, as after a person's fix by hand, stops updates until one is checked out again. CI makes a Release from each tag whose tests pass; a tag with a `Manual:` line in its message makes a prerelease, which the updater stops before, for a person to deploy by hand. It asks GitHub without a token, so every 15 minutes, as a timer of the same user:
 
@@ -122,6 +123,7 @@ Run the image under podman, as a systemd service. The image is the agent image, 
 
 Going back to a version from before this release, which brought service connections, deleting instances, and rejecting and withdrawing asks:
 
+- **Stop the updater's timer** while you go back, so it doesn't bring the release back meanwhile.
 - **Remove every `service` connection first,** with `rf connection remove NAME`. An older server doesn't know the type, exits as it starts, and restarts into the same exit.
 - **Don't delete an instance, or add a service connection, until this release has settled.** An older server answers `GET /api` with 500 once one instance is deleted, as its tombstone has no `create` entry, so the page, `rf ls`, `rf waiting`, `rf show` and `rf wakes` fail for admins and that workspace's people.
 - **Expect on an older version:** proposals rejected, and questions and proposals withdrawn, show as waiting again, and Close lists them as asks to accept; its `rf site set` drops a website's profile and its VPN, `via`.
