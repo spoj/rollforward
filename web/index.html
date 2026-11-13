@@ -307,11 +307,12 @@ function renderSide() {
       }
       const closed = s.instances.length - open.length;
       h += '<div class="tree">';
-      for (const k of s.wakes) h += `<div class="row wake"><span class="nm" title="Starts ${esc(k.label)} ${when(k.at)}"><span class="l">Starts ${esc(k.label)} ${soon(k.at)}</span></span><span class="n">${k.days ? 'weekly' : 'wake'}</span></div>`;
-      for (const r of s.requests) h += `<div class="row req"><span class="nm" title="${esc(`${r.from} asks to start ${r.label}`)}"><span class="l">${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)}</span></span>`
+      for (const k of s.wakes) h += `<div class="row wake"><span class="nm" title="Starts ${esc(k.label)} ${when(k.at)}${k.text ? `: ${esc(k.text)}` : ''}"><span class="l">Starts ${esc(k.label)} ${soon(k.at)}</span></span><span class="n">${k.days ? 'weekly' : 'wake'}</span></div>`;
+      for (const r of s.requests) h += `<div class="row req"><span class="nm" title="${esc(`${r.from} asks to start ${r.label}${r.text ? `: ${r.text}` : ''}`)}"><span class="l">${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to start ${esc(r.label)}</span></span>`
         + (archived(w, s) ? '' : `<button class="add" data-act="req-start" data-id="${r.id}" title="Start it">\u25B6</button><button class="add" data-act="req-drop" data-id="${r.id}" title="Dismiss">\u00D7</button>`) + '</div>';
       h += s.instances.filter(i => i.status === 'open' || showClosed.has(s.id) || i.id === cur?.i?.id).map(row).join('');
       if (closed) h += closedToggle(s.id, closed);
+      h += `<div class="row wake notes"><a class="nm" data-act="notes" data-id="${s.id}" title="Tell this series something for its runs"><span class="l">Notes</span></a><span class="n">${s.notes ? `${s.notes} open` : ''}</span></div>`;
       h += '</div>';
     }
     // A series moved to another workspace, for a week, where people who aren't in that one see it go.
@@ -350,7 +351,7 @@ function renderBar() {
   if (editing) return;
   const open = editable();
   let h = `<button class="menu" data-act="menu">☰</button>`;
-  h += `<div class="ttl"><div class="crumb">${esc(cur?.w.name ?? '')}${cur?.s ? ' · ' + esc(cur.s.single ? 'Ungrouped' : cur.s.name) : ''}</div><h1>${data && !gone() ? `<span class="t"${archived() ? '' : ' data-act="rename" title="Rename"'}>${esc(cur.i.label)}</span>${archived() ? '' : '<button class="ren" data-act="rename" title="Rename">' + ICON.edit + '</button>'}` : esc(cur?.i?.label ?? 'No instance')}${data && !gone() ? owner() + `<span class="reacts">${reactHtml()}</span>` : ''}</h1></div>`;
+  h += `<div class="ttl"><div class="crumb">${esc(cur?.w.name ?? '')}${cur?.s ? ' · ' + esc(cur.s.single ? 'Ungrouped' : cur.s.name) : ''}${open && cur.s.notes ? ` · <a data-act="notes" data-id="${cur.s.id}">${plural(cur.s.notes, 'open note')}</a>` : ''}</div><h1>${data && !gone() ? `<span class="t"${archived() ? '' : ' data-act="rename" title="Rename"'}>${esc(cur.i.label)}</span>${archived() ? '' : '<button class="ren" data-act="rename" title="Rename">' + ICON.edit + '</button>'}` : esc(cur?.i?.label ?? 'No instance')}${data && !gone() ? owner() + `<span class="reacts">${reactHtml()}</span>` : ''}</h1></div>`;
   if (data) {
     const d = lastDone(), talk = data.waiting.length;
     const state = gone() ? `Deleted by ${esc(nameOf(gone().by))} · ${when(gone().at)}`
@@ -483,10 +484,14 @@ const actor = (by, at) => {
   const r = by === 'agent' && data.log.findLast(x => x.at <= at && ['create', 'duplicate', 'takeover'].includes(x.op)).by;
   return by === 'server' ? '<span class="w">Server</span>' : `<span class="w p" title="${esc(r ? `Acting for ${r}` : by)}">${esc(r ? (r === me.email ? 'Your agent' : `${nameOf(r)}'s agent`) : by === me.email ? 'You' : nameOf(by))}</span>`;
 };
+// An instance by its label now, with its series' name where it's a series', else as an entry named it then.
+const labelOf = (id, then) => tree.flatMap(w => w.series.flatMap(s => s.instances.filter(i => i.id === id).map(i => s.single ? i.label : `${s.name} \u00b7 ${i.label}`)))[0] ?? then;
+// Another instance's agent, which left a note here or on the series, and whom it acted for.
+const agentOf = e => `Agent of <a href="#/${esc(e.see.inst)}">${esc(labelOf(e.see.inst, e.see.label))}</a>, for ${person(e.runner)}`;
 const shotsHtml = es => `<div class="shots">${es.map(e => `<img src="${fileUrl(e.file)}" loading="lazy" alt="" title="${esc(e.site)} \u00b7 ${hhmm(e.at)}" data-act="preview" data-file="${esc(e.file)}">`).join('')}</div>`;
 
 function logText(e) {
-  const w = actor(e.by, e.at);
+  const w = e.see && e.op === 'comment' ? agentOf(e) : actor(e.by, e.at);
   const item = id => esc(data.doc.items.find(i => i.id === id)?.name ?? id);
   const f = e.file ? `<div class="f"><a data-act="preview" data-file="${esc(e.file)}">${esc(e.file)}</a></div>` : '';
   return {
@@ -506,11 +511,12 @@ function logText(e) {
     abandon: () => `${w} abandoned the instance`,
     delete: () => `${w} deleted the instance, and all the server held of it`,
     correction: () => `${w} marked ${e.item ? item(e.item) : 'the instance'}${e.ref ? ` at ${esc(e.ref)}` : ''} ${e.kind}<div class="d">${esc(e.text)}${seeHtml(e.see)}</div>`,
+    said: () => `${w} left a note in <a href="#/${esc(e.inst)}">${esc(labelOf(e.inst, e.label))}</a>, ${esc(e.thread)}`,
     corrected: () => `${w} marked <a href="#/${esc(e.inst)}">${esc(e.label)}</a>${e.item ? ` ${esc(e.item)}` : ''} ${e.kind}`,
     comment: () => `${w} ${e.note ? `left a note for ${who(data.runner.by)}` : e.by !== 'agent' ? 'commented' : e.ask ? `${e.ask === 'proposal' ? 'proposed' : 'asked'}${e.to ? ' ' + who(e.to) : ''}` : 'said'}${e.item ? ` on ${item(e.item)}${e.ref ? ` at ${esc(e.ref)}` : ''}` : ''}<div class="d">${esc(e.text)}</div>`,
     resolve: () => `${w} resolved a thread${e.text ? `<div class="d">${esc(e.text)}</div>` : ''}`,
     react: () => `${w} ${e.up === null ? 'took back a reaction' : e.up ? 'gave a thumbs up' : 'gave a thumbs down'} on ${e.on ? `comment c${e.on}` : 'the instance'}`,
-    wake: () => `${e.note ? `${person(e.from)} would wake it: a note for ${who(data.runner.by)}` : `Woken${e.from ? ` by ${who(e.from)}` : ''}`}${e.reason ? `<div class="d">${esc(e.reason)}</div>` : ''}`,
+    wake: () => `${e.note ? `${person(e.from)} would wake it: a note for ${who(data.runner.by)}` : `Woken${e.from ? ` by ${who(e.from)}` : ''}`}${[e.reason, e.text].filter(Boolean).map(t => `<div class="d">${esc(t)}</div>`).join('')}`,
     expired: () => e.left ? `${who(e.runner)} has left: Microsoft no longer signs them in, so someone takes the instance over` : `Waiting for ${who(e.runner)} ${e.login === 'openrouter' ? 'to save another OpenRouter key, or stop using their own, out of credits' : `to sign in to ${esc(e.name ?? (e.login === 'm365' ? 'Microsoft 365' : e.login))} again`}${e.runner === me.email && !data.log.some(x => x.seq > e.seq && x.op === 'wake' && x.login === e.login) ? `<div>${signInHtml(e.login, e.name ?? e.login)}</div>` : ''}`,
     takeover: () => `${w} took over from ${who(e.from)}${e.logins?.length ? `<div class="d">Logins: ${esc(e.logins.join(', '))}</div>` : ''}`,
     promote: () => `${w} made it a series, ${esc(e.series)}`,
@@ -698,13 +704,13 @@ function postHtml(t, p, depth) {
   const proposal = p.ask === 'proposal' || p.ask === true, kind = p.ask === 'proposal' ? 'propose' : p.ask ? 'ask' : '';
   const decides = open && proposal && !p.withdrawn && !t.posts.some(k => k.on === p.seq && k.by === me.email), since = decides && data.log.filter(e => e.op === 'run' && e.seq > p.seq).length;
   const long = !ui.full.has(p.seq) && (p.text.length > 900 || p.text.split('\n').length > 12), all = n => t.posts.filter(k => k.under === n).reduce((c, k) => c + 1 + all(k.seq), 0);
-  const end = q => Math.max(q.seq, ...t.posts.filter(k => k.under === q.seq).map(end)), head = `<b class="${p.by === 'agent' ? '' : 'p'}">${who(p.by)}</b> <span class="tm">`;
+  const end = q => Math.max(q.seq, ...t.posts.filter(k => k.under === q.seq).map(end)), head = `<b class="${p.by === 'agent' ? '' : 'p'}">${p.see ? agentOf(p) : who(p.by)}</b> <span class="tm">`;
   const gone = p.withdrawn && `withdrawn: ${esc(p.withdrawn.text)}${p.withdrawn.see ? ` \u00b7 see ${cref(p.withdrawn.see, `c${p.withdrawn.see}`)}` : ''}`;
   if (gone && !ui.withdrawn.has(p.seq)) return `<div class="post withdrawn folded" data-seq="${p.seq}" data-act="withdrawn" title="Show what it said"><span class="fold">\u25B8</span>${gone}${kids.length ? ` \u00b7 ${all(p.seq)} more` : ''}</div>`;
   if (JSON.parse(localStorage[`folds:${cur.i.id}`] ?? '{}')[p.seq] === end(p)) return `<div class="post folded ${kind} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}"><button class="fold" data-act="fold" data-seq="${p.seq}" title="Expand">\u25B8</button>${head}${hhmm(p.at)}</span> ${esc(firstLine(p.text))}${kids.length ? `<span class="tm"> \u00b7 ${all(p.seq)} more</span>` : ''}</div>`;
   const box = (mode, hint, placeholder, button) => `<div class="reply" data-mode="${mode}" ${draft.replying.get(p.seq) === mode ? '' : 'hidden'}>${hint ? `<div class="hint">${hint}</div>` : ''}<textarea rows="2" placeholder="${placeholder}"></textarea>${mode === 'reply' ? '<input type="file" multiple>' : ''}<div class="row2">${button}<button class="quiet" data-act="reply" data-mode="${mode}" data-seq="${p.seq}">Cancel</button></div></div>`;
   let h = `<div class="post ${kind} ${gone ? 'withdrawn' : ''} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}">${gone ? `<div class="gone" data-act="withdrawn" data-seq="${p.seq}" title="Fold it again"><span class="fold">\u25BE</span>${gone}</div>` : ''}<button class="fold" data-act="fold" data-seq="${p.seq}" data-end="${end(p)}" title="Collapse">\u25BE</button>${head}${hhmm(p.at)}${p.op === 'comment' ? ` <a class="cn" data-act="copylink" data-seq="${p.seq}" title="Copy a link to this comment">c${p.seq}</a>` : ''}${p.to ? ` \u00b7 to ${who(p.to)}` : ''}${p.note ? ` \u00b7 a note for ${who(data.runner.by)}` : ''}${p.waits ? ` \u00b7 waits on ${who(p.waits)}` : ''}${since ? ` \u00b7 <span title="What it links may have changed since: check it before approving">${since} run${since > 1 ? 's' : ''} since</span>` : ''}${p.commit ? ` \u00b7 commit <code>${p.commit.slice(0, 7)}</code>` : ''}</span>`
-    + `<div class="pb ${long ? 'long' : ''}">${crefs(p.by === 'agent' && p.op === 'comment' ? md(p.text) : esc(p.text))}</div>${long ? `<a class="more" data-act="more" data-seq="${p.seq}">More</a>` : ''}`
+    + `<div class="pb ${long ? 'long' : ''}">${p.see ? esc(p.text) : crefs(p.by === 'agent' && p.op === 'comment' ? md(p.text) : esc(p.text))}</div>${long ? `<a class="more" data-act="more" data-seq="${p.seq}">More</a>` : ''}`
     + (p.files ?? []).map(f => `<div class="f">${/\.(png|jpe?g|gif|webp|svg)$/i.test(f) ? `<img src="${fileUrl(f)}" loading="lazy" alt="${esc(fname(f))}" title="${esc(fname(f))}" data-act="preview" data-file="${esc(f)}">` : `<a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a>`}</div>`).join('');
   if (p.op === 'comment') h += `<div class="pa">${reactHtml(p.seq)}${open ? `<button class="quiet reply-to" data-act="reply" data-seq="${p.seq}">Reply</button>` : ''}`
     + `${decides ? `<button class="quiet" data-act="reply" data-mode="approve" data-seq="${p.seq}">Approve\u2026</button><button class="quiet" data-act="reply" data-mode="reject" data-seq="${p.seq}">Reject\u2026</button>` : ''}</div>`;
@@ -875,6 +881,7 @@ function renderPv() {
   else if (pv.settings?.kind === 'tokens') h += `<div class="pvb vl">${tokensHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'logins') h += `<div class="pvb vl">${loginsHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'wakes') h += `<div class="pvb vl">${wakesHtml(cur.i.id, cur.i.wakes, false)}</div>`;
+  else if (pv.settings?.kind === 'notes') h += `<div class="pvb vl">${notesHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'waiting') h += `<div class="pvb vl">${waiting().join('') || '<div class="sub">Nothing waits on you.</div>'}</div>`;
   else if (pv.settings?.kind === 'start') h += `<div class="pvb vl">${startHtml(pv.settings)}</div>`;
   else if (pv.settings) {
@@ -934,12 +941,35 @@ function startsHtml(s) {
     + (pv.arming ? `<div class="warn"><h3>Credentials</h3>${ticksHtml(s.logins)}<div class="consent">By allowing, people in ${ws} and their agents can wake this series: start or continue its instances, with a short reason, and add notes and files. Those runs act as you, using the selected credentials, and do the series' usual work.</div><div><button class="btn danger" data-act="share-on">Allow ${ws} to wake this series</button></div></div>` : '');
 }
 
+// A series' notes, for its runs: the open ones, then those settled, folded, with who settled them, how and why; and a box to tell it
+// something. The runners of its open instances, the workspace's owners and admins settle one by hand.
+async function openNotes(id) {
+  const [w, s] = tree.flatMap(w => w.series.filter(s => s.id === id).map(s => [w, s]))[0];
+  pv = { title: `Notes on ${s.name}`, settings: { kind: 'notes', id, w, s, list: await api(`/api/series/${id}/notes`) } };
+  renderPv();
+}
+
+function notesHtml({ id, w, s, list }) {
+  const shut = archived(w, s), settles = !shut && (w.manage || s.instances.some(i => i.status === 'open' && i.runner === me.email));
+  const by = e => e.by === 'agent' ? agentOf(e) : person(e.by), how = e => e.op === 'taken' ? 'Acted on' : 'Set aside';
+  const body = n => `<div class="pb">${esc(n.text)}</div>` + (n.files ?? []).map(f => `<div class="f"><a href="/api/series/${id}/${f.split('/').map(enc).join('/')}">${esc(fname(f))}</a></div>`).join('');
+  const open = list.filter(n => !n.settled), done = list.filter(n => n.settled);
+  return `<div class="sub">Something for this series' agent to know: about the series as a whole, or while no period is open. A note doesn't start the agent. Each time it next works on ${esc(s.name)}, it reads the open notes, acts on them, and marks each one done or set aside, saying why.</div>`
+    + (open.length ? '' : '<div class="sub">No open notes.</div>')
+    + open.map(n => `<div class="note"><div class="sub"><b>${by(n)}</b> \u00b7 ${when(n.at)}</div>${body(n)}`
+      + (settles ? `<div class="row2"><input type="text" placeholder="What was done, or why not"><button class="btn" data-act="note-taken" data-seq="${n.seq}">Mark done</button><button class="quiet" data-act="note-aside" data-seq="${n.seq}">Set aside</button></div>` : '') + '</div>').join('')
+    + done.map(n => `<details class="note"><summary>${esc(firstLine(n.text))} \u00b7 ${how(n.settled)} by ${by(n.settled)}</summary><div class="sub"><b>${by(n)}</b> \u00b7 ${when(n.at)}</div>${body(n)}`
+      + `<div class="sub">${how(n.settled)} by ${by(n.settled)} \u00b7 ${when(n.settled.at)}: ${esc(n.settled.text)}${seeHtml(n.settled.see)}</div></details>`).join('')
+    + (shut ? '' : '<h3>Tell this series</h3><textarea id="notetext" rows="3" placeholder="Such as: from October, the bank file comes from the new portal"></textarea><input type="file" id="notefiles" multiple><div class="row2"><button class="btn primary" data-act="note-post">Tell</button></div>');
+}
+
 // Wakes for an instance or a series, each one-off or weekly on the days ticked at its time, editable in place, and a row to add one.
 // A series' starts the instance it names, a weekly one's label holding the date it first fires or the one before it fires on.
 const WEEK = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 function wakesHtml(target, list, series) {
   const row = (k = {}) => `<div class="wakerow" data-id="${k.id ?? ''}" data-target="${target}"><input type="datetime-local" class="wat" value="${k.at ? localInput(k.at) : ''}">`
     + (series ? `<input type="text" class="wlabel" placeholder="Label it starts" value="${esc(k.label ?? '')}">` : '')
+    + `<input type="text" class="wtext" maxlength="500" placeholder="Message for the run (optional)" value="${esc(k.text ?? '')}">`
     + '<div class="row2">' + WEEK.map(d => `<label class="sub"><input type="checkbox" value="${d}" ${k.days?.includes(d) ? 'checked' : ''}>${d[0].toUpperCase() + d.slice(1)}</label>`).join('')
     + `<button class="btn" data-act="wake-save">${k.id ? 'Save' : 'Add'}</button>${k.id ? '<button class="quiet" data-act="wake-delete">Delete</button>' : ''}</div></div>`;
   return `<div class="sub">${series ? 'Each starts the instance it names, or continues it if the series has it.' : 'Each continues this instance.'} Tick days to repeat it weekly at its time.</div>${list.map(row).join('')}${row()}`;
@@ -1388,6 +1418,20 @@ async function onAct(act, el) {
   }
   if (act === 'interrupt') { await api(`${instPath()}/interrupt`, { method: 'POST' }); await refresh(); }
   if (act === 'comment-on') { Object.assign(ui, { open: true, audit: false }); Object.assign(draft, { on: el.dataset.item, ref: null }); renderLog(); renderBar(); renderAudit(); $('#newcomment')?.focus(); }
+  if (act === 'notes') await openNotes(el.dataset.id);
+  if (act === 'note-post') {
+    const { id } = pv.settings, text = $('#notetext').value.trim(), files = [];
+    if (!text) return;
+    for (const f of $('#notefiles').files) files.push((await api(`/api/series/${id}/attach?name=${enc(f.name)}`, { method: 'POST', body: f })).file);
+    await api(`/api/series/${id}/notes`, { method: 'POST', body: JSON.stringify({ text, files }) });
+    await openNotes(id);
+  }
+  if (act === 'note-taken' || act === 'note-aside') {
+    const box = el.closest('.row2').querySelector('input');
+    if (!box.value.trim()) return box.focus();
+    await api(`/api/series/${pv.settings.id}/notes/n${el.dataset.seq}`, { method: 'POST', body: JSON.stringify({ how: act === 'note-taken' ? 'taken' : 'aside', text: box.value.trim() }) });
+    await openNotes(pv.settings.id);
+  }
   if (act === 'comment' || act === 'reply-post') {
     const at = act === 'comment' ? null : el.closest('.reply'), box = at ? at.querySelector('textarea') : $('#newcomment'), text = box.value.trim();
     const picked = at ? at.querySelector('input[type=file]') : $('#newfiles');
@@ -1499,7 +1543,7 @@ async function onAct(act, el) {
   // A wake edited is set anew, then the one it was cancelled, unless setting it moved that one.
   if (act === 'wake-save' || act === 'wake-delete') {
     const r = el.closest('.wakerow'), id = r.dataset.id, days = [...r.querySelectorAll('input:checked')].map(c => c.value).join(',');
-    const made = act === 'wake-save' && await api(`/api/wakes/${r.dataset.target}`, { method: 'PUT', body: JSON.stringify({ at: new Date(r.querySelector('.wat').value).toISOString(), label: r.querySelector('.wlabel')?.value, days }) });
+    const made = act === 'wake-save' && await api(`/api/wakes/${r.dataset.target}`, { method: 'PUT', body: JSON.stringify({ at: new Date(r.querySelector('.wat').value).toISOString(), label: r.querySelector('.wlabel')?.value, days, text: r.querySelector('.wtext').value }) });
     if (id && made.id !== id) await api(`/api/wakes/${id}`, { method: 'DELETE' });
     await refresh();
     if (pv.settings.kind === 'series') await openSeriesSettings();

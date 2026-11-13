@@ -91,10 +91,13 @@ test('a run names folders by the names it started with, though people renamed th
   saveTree(t);
 });
 
-test('a due wake its own run set continues an open instance, as a reply does, though it was renamed since, and names where that run is now; one more than 15 minutes after its last is moved', async () => {
-  setWake(oct.id, { at: new Date().toISOString(), from: 'Acme/Bank rec/October', inst: oct.id });
+test('a due wake its own run set continues an open instance, as a reply does, though it was renamed since, and names where that run is now, with what it says; one more than 15 minutes after its last is moved', async () => {
+  setWake(oct.id, { at: new Date(Date.now() + 3600e3).toISOString(), from: 'Acme/Bank rec/October', inst: oct.id, text: 'the statement is due by noon' });
+  assert.match(message(oct, 1, [], true), /Pending wakes: \w+, waking this instance at [^,]+, saying "the statement is due by noon"\./);
+  cancelWakes([oct.id]);
+  setWake(oct.id, { at: new Date().toISOString(), from: 'Acme/Bank rec/October', inst: oct.id, text: 'check the statement' });
   await settle();
-  assert.deepEqual(oct.log.filter(e => e.op === 'wake').map(e => [e.from, e.note]), [['Acme/Bank rec/2026-10', undefined]]);
+  assert.deepEqual(oct.log.filter(e => e.op === 'wake').map(e => [e.from, e.text, e.note]), [['Acme/Bank rec/2026-10', 'check the statement', undefined]]);
   assert.ok(ops(oct).includes('run'), 'it started a run');
   assert.deepEqual(wakesOf(oct.id), []);
   const next = setWake(oct.id, { at: new Date().toISOString(), from: 'x' });
@@ -123,19 +126,24 @@ test('a process.md a run made unreadable is none to the server, so the next run 
   assert.equal(statSync(md).mode & 0o777, 0o400);
 });
 
-test("a series' wake starts an instance as whoever shares the series; unshared, or with 3 open, it's a request", async () => {
-  setWake('s2', { at: new Date().toISOString(), from: 'Acme/Bank rec/2026-09', label: '2026-10' });
+test("a series' wake starts an instance as whoever shares the series, its text a note unless its runner, or a run of theirs in the series, set it; unshared, or with 3 open, it's a request, which keeps the text", async () => {
+  setWake('s2', { at: new Date().toISOString(), from: 'Acme/Bank rec/2026-09', label: '2026-10', inst: sep.id, text: 'rates moved' });
   await settle();
-  assert.deepEqual(Object.values(wakes().requests).map(r => [r.series, r.label, r.from]), [['s2', '2026-10', 'Acme/Bank rec/2026-09']]);
+  assert.deepEqual(Object.values(wakes().requests).map(r => [r.series, r.label, r.from, r.text]), [['s2', '2026-10', 'Acme/Bank rec/2026-09', 'rates moved']]);
   assert.equal(labels('s2').length, 0);
 
   writeFileSync(join(tmp, 'series', 's2', 'series.json'), JSON.stringify({ shared: { by: alice, since: new Date().toISOString(), logins: ['web:bank', 'web:portal'] } }));
   writeJson('wakes.json', { ...readJson('wakes.json', {}), fired: {} });
-  setWake('s2', { at: new Date().toISOString(), from: 'Acme/Bank rec/2026-09', label: '2026-11' });
+  setWake('s2', { at: new Date().toISOString(), from: 'Acme/Bank rec/2026-09', label: '2026-11', inst: sep.id, text: 'rates moved' });
   await settle();
   const made = instance(labels('s2').find(l => l.label === '2026-11')!.id);
-  assert.deepEqual([made.log[0].op, made.log[0].by, made.log[1].op, made.log[1].from], ['create', alice, 'wake', 'Acme/Bank rec/2026-09']);
+  assert.deepEqual([made.log[0].op, made.log[0].by, made.log[1].op, made.log[1].from, made.log[1].text, made.log[1].note], ['create', alice, 'wake', 'Acme/Bank rec/2026-09', 'rates moved', true], "another series' run's word");
   assert.deepEqual(made.log[0].logins, ['web:bank', 'web:portal'], "the sharer's ticks");
+  writeJson('wakes.json', { ...readJson('wakes.json', {}), fired: {} });
+  setWake('s2', { at: new Date().toISOString(), from: 'Acme/Borrowing base/2026-11', label: '2026-11b', inst: made.id, text: 'next period' });
+  await settle();
+  const next = instance(labels('s2').find(l => l.label === '2026-11b')!.id);
+  assert.deepEqual([next.log[1].text, next.log[1].note], ['next period', undefined], "a run of the runner's own in the series speaks for them");
 
   make('s2', '2026-12');
   make('s2', '2027-01');
@@ -253,6 +261,9 @@ test("others' comments and wakes are notes for an instance's runner, unless the 
   await settle();
   assert.equal(runs(shared), 1, 'in a series its runner shares, anyone starts runs');
   assert.match(message(shared, 1, shared.log), /"by":"bob@demo\.test","op":"comment".*"note":true/, "and bob's comment still reaches the agent as a note");
+  setWake(shared.id, { at: new Date().toISOString(), from: bob, text: 'the rate moved' });
+  await settle();
+  assert.deepEqual([runs(shared), shared.log.findLast(e => e.op === 'wake')!.note], [2, true], "bob's wake starts a run there, and stays a note");
 });
 
 test("a run starts only for a runner Microsoft still signs in: one it no longer does waits for them to sign in again, which wakes it, and one disabled or gone is disabled here too; while Microsoft can't be reached, nothing starts", async () => {
@@ -423,4 +434,31 @@ test('recovery clears a deletion interrupted before its files and a task\'s lock
   assert.equal(existsSync(lib), false);
   assert.deepEqual(readdirSync(task.dir).sort(), ['instance.json', 'log.jsonl', 'screen.json']);
   await settle();
+});
+
+test("a run's first message lists its series' open notes, each with who left it and its files, which its runs read at <series>/.notes/", async () => {
+  const { addNote, notes } = await import('../src/series.ts'), book = join(tmp, 'series', 's1');
+  addNote(book, alice, 'note', { text: 'use the new rate', files: ['files/rates.csv'] });
+  addNote(book, 'agent', 'note', { text: 'the bank moved', run: 3, runner: alice, see: { inst: oct.id, label: oct.label } });
+  const old = addNote(book, 'bob@demo.test', 'note', { text: 'old news' });
+  addNote(book, alice, 'aside', { on: old.seq, text: 'not so' });
+  assert.deepEqual(notes(book).map(n => [n.seq, n.settled?.op]), [[1, undefined], [2, undefined], [3, 'aside']]);
+  assert.match(message(oct, 9, [], true, notes(book).filter(n => !n.settled)), new RegExp(`Open notes on the series: n1, from .+ <${alice}> at [^,]+, "use the new rate", \\.\\./\\.notes/files/rates\\.csv; n2, from the agent of Acme/Bank rec/2026-10, run 3, for .+ <${alice}> at [^,]+, "the bank moved"\\. New log entries:`));
+  const read = view(oct).ro.filter(([, at]) => at.endsWith('/.notes'));
+  assert.deepEqual(read.filter(([, at]) => /Bank rec|Close|Lunch/.test(at)), [[join(book, 'notes'), '/work/Acme/Bank rec/.notes'], [join(tmp, 'series', 's5', 'notes'), '/work/Main/Close/.notes']], "its own series', and those in reach, but a task's");
+});
+
+test("a note reaches a run going at once, though it starts none: another person's comment, and a note left on its series", async () => {
+  const { addNote } = await import('../src/series.ts'), going = make('s8', 'going'), steered: string[] = [];
+  const a = { inst: going, n: 1, sent: going.log.at(-1)!.seq, noted: 0, texts: new Map(), run: { steer: async (t: string) => void steered.push(t) } } as unknown as Active;
+  active.set('s8', a);
+  going.append('bob@demo.test', 'comment', { thread: 'c9', text: 'the rate moved' });
+  kick(going);
+  addNote(join(tmp, 'series', 's8'), alice, 'note', { text: 'from now on, weekly' });
+  const { noted } = await import('../src/waker.ts');
+  noted('s8');
+  active.delete('s8');
+  assert.equal(steered.length, 2);
+  assert.match(steered[0], /"by":"bob@demo\.test","op":"comment".*"note":true/);
+  assert.match(steered[1], /Open notes on the series: n\d+, from .+ "from now on, weekly"\. New log entries:\n$/);
 });

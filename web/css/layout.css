@@ -56,6 +56,9 @@ a { color: inherit; }
 .nogrant input[type=text] { font: inherit; padding: 6px 8px; border: 1px solid var(--rule-2); border-radius: var(--r1); min-width: 0; }
 label:has(> input.tick:not(:checked)) + .nogrant { display: none; }
 .row.wake, .row.req { font-size: 12px; color: var(--ink-2); }
+.row.notes .nm { cursor: pointer; }
+.note { display: grid; gap: 4px; padding: 8px 0; border-bottom: 1px solid var(--rule); }
+.note summary { cursor: pointer; color: var(--ink-2); }
 /* A row keeps to one line: its name gives way, cut short with the whole of it on hover; what follows it never does. */
 .row .nm { flex: 1 1 0; min-width: 0; display: flex; align-items: center; padding: 5px 0; text-decoration: none; }
 .row .l { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

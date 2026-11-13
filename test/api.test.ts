@@ -594,7 +594,8 @@ test("people see, set, move and cancel wakes, one-off or weekly, share a series 
   assert.deepEqual(listed.instances.find((i: { id: string }) => i.id === sep).wakes.map((k: { at: string }) => k.at), [due]);
   assert.equal(listed.requests[0].who, listed.instances.at(-1).runner, "a request waits on the runner of the series' newest instance");
   const later = new Date(Date.now() + 2 * 86_400_000).toISOString(), set = (target: string, body: object) => call('PUT', `/api/wakes/${target}`, JSON.stringify(body));
-  assert.deepEqual(await (await set(s.id, { at: later, label: '2026-09-20' })).json(), { id: 'k1', target: s.id, at: later, from: adminEmail, label: '2026-09-20' }, 'the same label moves it');
+  assert.deepEqual(await (await set(s.id, { at: later, label: '2026-09-20', text: '  the bank file is in  ' })).json(), { id: 'k1', target: s.id, at: later, from: adminEmail, label: '2026-09-20', text: 'the bank file is in' }, 'the same label moves it, with what it says');
+  assert.equal((await set(s.id, { at: later, label: '2026-09-20', text: 'x'.repeat(501) })).status, 400, "a wake's text is short");
   assert.equal((await set(s.id, { at: '2030-01-07T08:00', label: '2030-01-05', days: 'mon-fri' })).status, 400, "a weekly wake's label holds the day it fires or the one before that it fires on");
   assert.equal((await set(s.id, { at: '2030-01-07T08:00', label: '2030-01-04', days: 'sat' })).status, 400, 'it fires on one of its days');
   const weekly = await (await set(s.id, { at: '2030-01-07T08:00', label: '2030-01-04', days: 'mon-fri' })).json();
@@ -642,6 +643,32 @@ test("people see, set, move and cancel wakes, one-off or weekly, share a series 
   assert.deepEqual(Object.values(JSON.parse(readFileSync(wakes, 'utf8')).pending), [], "archiving a series cancels its wakes and its instances'");
   assert.equal((await set(sep, { at: later })).status, 409, 'and none is set while it is archived');
   assert.equal((await call('PUT', await at(series), JSON.stringify({ archived: false }))).status, 200);
+});
+
+test("a series' notes: whoever sees it leaves one, with files, which starts no run; the runners of its open instances, its workspace's owners and admins settle one, acted on or set aside, and nothing is deleted", async () => {
+  const s = await at(series), ws = `/api/workspaces/${(await named('larkfield')).id}`, b = sessionOf(await login(bob))!;
+  assert.equal((await call('PUT', ws, JSON.stringify({ owners: [adminEmail], members: [bob] }))).status, 200);
+  const before = (await json('/api/runs')).length;
+  const { file } = await (await call('POST', `${s}/attach?name=rates.csv`, 'month,rate\n10,5%', b)).json();
+  assert.equal(file, 'files/rates.csv');
+  assert.equal((await call('POST', `${s}/notes`, JSON.stringify({ text: ' ' }), b)).status, 400, 'a note has text');
+  assert.equal((await call('POST', `${s}/notes`, JSON.stringify({ text: 'x', files: ['../log.jsonl'] }), b)).status, 400);
+  const told = await (await call('POST', `${s}/notes`, JSON.stringify({ text: 'From October the rate is 5%', files: [file] }), b)).json();
+  assert.match(told.id, /^n\d+$/);
+  assert.equal((await shown(series)).notes, 1, 'the listing counts its open notes');
+  const got = await call('GET', `${s}/files/rates.csv`, undefined, b);
+  assert.deepEqual([got.status, got.headers.get('content-disposition'), await got.text()], [200, "attachment; filename*=UTF-8''rates.csv", 'month,rate\n10,5%']);
+  const settle = (how: string, text: string, cookie = admin) => call('POST', `${s}/notes/${told.id}`, JSON.stringify({ how, text }), cookie);
+  assert.equal((await settle('taken', 'mine now', b)).status, 403, 'a member who runs none of its open instances settles nothing');
+  assert.equal((await settle('done', 'x')).status, 400);
+  assert.equal((await settle('aside', 'October is not ours')).status, 200);
+  assert.equal((await settle('taken', 'again')).status, 409, 'settled once');
+  const [n] = (await json(`${s}/notes`, b)).filter((n: { by: string }) => n.by === bob);
+  assert.deepEqual([n.text, n.files, n.settled.op, n.settled.by, n.settled.text], ['From October the rate is 5%', ['files/rates.csv'], 'aside', adminEmail, 'October is not ours']);
+  assert.equal((await shown(series)).notes, 0);
+  assert.equal(readFileSync(join(root, 'series', (await shown(series)).id, 'notes', 'log.jsonl'), 'utf8').trim().split('\n').length, 2, 'the thread is an append-only log beside the series');
+  assert.equal((await json('/api/runs')).length, before, 'a note starts no run');
+  assert.equal((await call('PUT', ws, JSON.stringify({ owners: [], members: [] }))).status, 200);
 });
 
 test("AGENTS.md: the company's is the admins', a workspace's its owners', and both are files every agent in scope reads", async () => {
@@ -824,8 +851,8 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   assert.deepEqual(JSON.parse(await rf('costs', scratch, '--by', 'outcome', '--json')), [{ outcome: 'cut', runs: 0, cost: 0.05, per_run: null }, { outcome: 'failed, credits', runs: 1, cost: 0.01, per_run: 0.01 }]);
   assert.match(await rf('costs', scratch, '--by', 'outcome'), /^ +\$0\.05 +0 runs +- a run  cut\n.*\n +\$0\.06 +1 runs  in all$/m, 'a run a restart cut is carried on by the next, so it counts no run');
   const stamp = '[\\d-]+ [\\d:]+';
-  const woken = (await rf('wake', `larkfield/${series}`, '+1d', '--label', 'next')).match(/^wake (\w+) /)![1];
-  assert.match(await rf('wakes', `larkfield/${series}`), new RegExp(`^larkfield/${series}  last woken (never|${stamp})\n  wake ${woken} ${stamp} starts next, set by ${adminEmail}\n`));
+  const woken = (await rf('wake', `larkfield/${series}`, '+1d', 'the rates moved', '--label', 'next')).match(/^wake (\w+) /)![1];
+  assert.match(await rf('wakes', `larkfield/${series}`), new RegExp(`^larkfield/${series}  last woken (never|${stamp})\n  wake ${woken} ${stamp} starts next, set by ${adminEmail}: the rates moved\n`));
   assert.equal((await rf('wake', '--cancel', woken)).trim(), 'cancelled');
   assert.match(await rf('wakes', `larkfield/${series}`), /, none pending\n/);
   assert.match(await rf('activity', `larkfield/${series}/2026-08-23`), new RegExp(`^larkfield/${series}/2026-08-23\n  ${stamp}  alex  uploads upload/Larkfield AR aging 082326\\.csv\n  ${stamp}  alex  closes it\n$`));
@@ -918,7 +945,7 @@ test("rf pull refuses a link where a folder goes, dangling ones too, but follows
 test("rf alone lists its commands and rf help COMMAND gives one's usage; every read takes --json; a failure is one line, with exit code 1, and a command used wrongly prints its usage, with exit code 2", async () => {
   assert.match(await rf(), /^rf login URL \[TOKEN\] .*\nrf ls \[--json\] /);
   assert.equal(await rf('--version'), `${JSON.parse(readFileSync(join(app, 'cli', 'package.json'), 'utf8')).version}\n`);
-  assert.match(await rf('help', 'wake'), /^rf wake PATH AT \[--label LABEL\] \[--days DAYS\] \| rf wake --cancel ID\n +AT now, [^\n]+\n +mon-fri, [^\n]+\n$/);
+  assert.match(await rf('help', 'wake'), /^rf wake PATH AT \[TEXT\] \[--label LABEL\] \[--days DAYS\] \| rf wake --cancel ID\n +AT now, [^\n]+\n +message [^\n]+\n +shows [^\n]+\n$/);
   await assert.rejects(rf('wake'), fails(2, /^rf wake PATH AT [^\n]+\n +AT now/));
   await assert.rejects(rf('comment', 'nowhere/at/all', 'Hello'), fails(1, /^rf: nothing you can see at nowhere\/at\/all\n$/));
   await assert.rejects(rf('wake', '--cancel', 'nosuch'), fails(1, /^rf: DELETE \/api\/wakes\/nosuch: 404 [^\n]+\n$/));

@@ -230,7 +230,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
       `curl -s -m 5 ${base}/api 2>&1; echo "curl exit $?"`,
       'curl -s -m 5 https://10.1.2.3/ 2>&1; echo "curl exit $?"',
       'curl -s -m 10 https://graph.microsoft.com/v1.0/users/ceo@demo.test/messages 2>&1',
-      () => `rf wake . ${new Date(Date.now() + 8000).toISOString()} 2>&1`,
+      () => `rf wake . ${new Date(Date.now() + 8000).toISOString()} the bank file is due 2>&1`,
       'rf wake ../../../Wide/Close now --label 2026-11 2>&1',
       'rf wake . soon 2>&1',
       'rf wake .. +1d 2>&1',
@@ -289,7 +289,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.deepEqual(pi.map(e => [e.run, e.method, e.status, e.model, e.cost]), [[1, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01], ...Array(walls.bash.length + 1).fill([2, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01]), ...Array(2).fill([3, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01])], "Pi's own calls, a step's each and the report's, through the same connection");
   assert.ok(providers.length && providers.every(p => JSON.stringify(p) === '{"data_collection":"deny"}'), 'every call asked only for providers that collect no data');
   assert.deepEqual(log.filter(e => e.op === 'comment' && e.by === 'agent').map(e => [e.text, !!e.ask]), [['Walls checked.', false], ['Is the bank file coming today?', true], ['It came, never mind.', false], ['Cited [x](working/x.csv), as [last time](../2026-11/working/x.csv).', false]], "the agent's words are comments of its own, and an ask is marked");
-  assert.match(woken.prompt!, /"op":"wake","from":"[^"]*\/2026-11"/, 'the wake started the next run, saying only who set it');
+  assert.match(woken.prompt!, /"op":"wake","from":"[^"]*\/2026-11","text":"the bank file is due"/, 'the wake started the next run, saying who set it and what it said');
   assert.match(made.prompt!, /^Instance 2026-11, run 1\. Its runner is Demo Admin <admin@demo\.test>, who lends you /, 'a new Pi hears who the runner is');
   assert.deepEqual([made.first, walls.first], [1, 1], 'a new conversation, of its own prompt alone, as a series made in reach since changed what run 2 sees');
   assert.ok(woken.first! > 1, 'a run within the hour of the last carries its conversation on, as a new turn');
@@ -711,6 +711,45 @@ test("a later run corrects a closed instance, never changing it, linking the thr
   const { id: third } = await (await call('POST', `/api/series/${series}`, { label: 'm3', logins: [] })).json();
   await runs(third, 1);
   assert.match(next.prompt!, new RegExp(`Corrections on earlier instances: m1 is wrong, "The rate was a day stale\\.", see m2 ${said.thread}\\.`));
+});
+
+test("a run leaves notes elsewhere in its workspace, in another instance and on a series, which start nothing unshared, and settles its own series' open notes, which its first message lists; it asks only in its own instance", async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Notes' })).json();
+  const { id: rec } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec' })).json();
+  const { id: feed } = await (await call('POST', '/api/series', { workspace: ws, name: 'Feed' })).json();
+  const { id: fed } = await (await call('POST', `/api/series/${feed}`, { label: 'f1', logins: [], quiet: true })).json();
+  const { id: n } = await (await call('POST', `/api/series/${rec}/notes`, { text: 'Use the new bank from now on.' })).json();
+  const noting: Script = {
+    bash: [
+      'rf say --at ../../Feed/f1 The rec is done: 1,200 matched. 2>&1',
+      'rf ask --at ../../Feed/f1 Shall I? 2>&1',
+      'rf say --at ../../Feed Rates. 2>&1',
+      'rf note ../../Feed The feed should carry the rates. 2>&1',
+      `rf note --taken ${n} Using the new bank, in the process. 2>&1`,
+      `rf note --aside ${n} again 2>&1`,
+      'wc -l < ../.notes/log.jsonl',
+    ],
+    report: 'Noted.', saw: [],
+  };
+  scripts.push(noting);
+  const { id } = await (await call('POST', `/api/series/${rec}`, { label: 'r1', logins: [] })).json();
+  const log = await runs(id, 1);
+  assert.match(noting.prompt!, new RegExp(`Open notes on the series: ${n}, from Demo Admin <admin@demo\\.test> at [^,]+, "Use the new bank from now on\\."\\. New log entries:`));
+  assert.match(noting.saw[0], /^said c\d+ in Notes\/Feed\/f1, a note for its runner\s*$/);
+  assert.match(noting.saw[1], /you ask and propose only to your own runner/);
+  assert.match(noting.saw[2], /Feed is a series: say it in one of its open instances, or rf note it/);
+  assert.match(noting.saw[3], /^noted n1 on Notes\/Feed, which its runs read\s*$/);
+  assert.match(noting.saw[4], new RegExp(`^${n} taken\\s*$`));
+  assert.match(noting.saw[5], new RegExp(`${n} is settled already, taken by agent`));
+  assert.equal(noting.saw[6].trim(), '2', "its series' notes, as the run started, read where it reads its series");
+  const there = (await (await call('GET', `/api/instances/${fed}`)).json()).log, note = there.find((e: { op: string }) => e.op === 'comment');
+  assert.deepEqual([note.by, note.note, note.run, note.runner, note.see.inst, note.see.label], ['agent', true, 1, ADMIN, id, 'r1']);
+  assert.ok(!there.some((e: { op: string }) => e.op === 'run'), 'unshared, it starts nothing there');
+  assert.deepEqual(log.filter(e => e.op === 'said').map(e => [e.inst, e.seq]), [[fed, note.seq]], 'its own log points to it');
+  const [taken] = await (await call('GET', `/api/series/${rec}/notes`)).json();
+  assert.deepEqual([taken.settled.op, taken.settled.by, taken.settled.runner, taken.settled.see.inst], ['taken', 'agent', ADMIN, id]);
+  const [left] = await (await call('GET', `/api/series/${feed}/notes`)).json();
+  assert.deepEqual([left.by, left.text, left.run, left.see.inst], ['agent', 'The feed should carry the rates.', 1, id]);
 });
 
 // A websocket's opening, as a page at `origin` asks for it, and all that came back.

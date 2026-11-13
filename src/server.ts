@@ -6,7 +6,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { agentsFile, closedBefore, createInstance, duplicateInstance, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, safeName, seriesDir, type Entry, type Instance } from './store.ts';
+import { agentsFile, closedBefore, createInstance, duplicateInstance, keep, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, safeName, seriesDir, type Entry, type Instance } from './store.ts';
 import { AGENT, commit } from './git.ts';
 import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
@@ -23,9 +23,9 @@ import { ask, decide, forgetGrants, forgetWorkspace, lapse, revoke, visible } fr
 import { offer } from './connections/graph.ts';
 import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, startIndexing, track } from './indexes.ts';
-import { seriesSettings } from './series.ts';
+import { addNote, notes, seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, archived, byToken, cancelWake, cancelWakes, closed, correct, dropRequest, isNote, kick, MAX_OPEN, named, pending, queued, remove, resolveFor, setWake, startWaking, starts, startWith, stop, wakes, wakesOf, weekly, reads, CUT, type Active, type Request } from './waker.ts';
+import { active, archived, byToken, cancelWake, cancelWakes, closed, correct, dropRequest, isNote, kick, MAX_OPEN, named, noted, pending, queued, remove, resolveFor, setWake, startWaking, starts, startWith, stop, wakes, wakesOf, weekly, reads, CUT, type Active, type Request } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -236,7 +236,7 @@ function listing(me: Me) {
       const { shared } = seriesSettings(seriesDir(sid));
       return {
         id: sid, name: s.name, archived: !!s.archived, single: !!s.single, shared_by: shared?.by ?? null, shared_logins: shared?.by === me.email ? shared.logins : [],
-        wakes: wakesOf(sid, w8), fired: w8.fired[sid] ?? null,
+        wakes: wakesOf(sid, w8), fired: w8.fired[sid] ?? null, notes: notes(seriesDir(sid)).filter(n => !n.settled).length,
         requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r, who: asked(r) })),
         instances: instances(sid).map(i => summary(i, me, w8)),
       };
@@ -483,10 +483,10 @@ const people = (w: { owners?: unknown; members?: unknown }) => [w.owners, w.memb
 // the new names from its next start.
 async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: URL) {
   const [kind, id = '', action, other = ''] = url.pathname.split('/').slice(2).map(decodeURIComponent);
-  // A run reads and writes its own instance's screen and threads, commits its folder, sets wakes and corrects closed instances in its
-  // own workspace, and finds what a folder it can read names; nothing else here.
+  // A run reads and writes its own instance's screen and threads, commits its folder, sets wakes, corrects closed instances and leaves
+  // notes in other open ones and on series in its own workspace, and finds what a folder it can read names; nothing else here.
   const run = me.run;
-  if (run && !(kind === 'instances' && id === run.inst.id && ['screen', 'comment', 'commit', 'withdraw'].includes(action)) && !(kind === 'instances' && action === 'correct') && !(kind === 'wakes' && ['PUT', 'DELETE'].includes(req.method!)) && kind !== 'resolve')
+  if (run && !(kind === 'instances' && id === run.inst.id && ['screen', 'commit', 'withdraw'].includes(action)) && !(kind === 'instances' && ['comment', 'correct'].includes(action)) && !(kind === 'wakes' && ['PUT', 'DELETE'].includes(req.method!)) && !(kind === 'series' && action === 'notes' && req.method === 'POST') && kind !== 'resolve')
     throw new HttpError(404, 'not found');
   // The body before the tree: a request held open must not save a tree from before others' changes, such as an owner's removal.
   const payload = ['upload', 'attach', 'screen'].includes(action) ? {} : await json(req);
@@ -642,7 +642,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   }
   if (kind === 'series') {
     const s = t.series[id];
-    mustSee(me, s && t.workspaces[s.workspace]);
+    if (!run) mustSee(me, s && t.workspaces[s.workspace]);
+    else if (s?.workspace !== t.series[run.inst.seriesId].workspace) throw new HttpError(403, 'that series is in another workspace: you can read it, not leave it notes');
     if (action === 'promote') {
       // A task made a series, as it is, under a name of its own, its one instance the series' first.
       if (!s.single) throw new HttpError(400, `${s.name} is a series already`);
@@ -656,6 +657,48 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       return send(res, 200, 'ok');
     }
     if (s.single) throw new HttpError(400, `${s.name} is a task, with one instance and no settings: Start another based on this makes it a series`);
+    // Its notes: whoever sees it, and its workspace's runs, leave one, with files a person attaches first, which starts no run but
+    // reaches one going in the series; a run of the series settles one, taken, with where, or set aside, with why, as the runners of
+    // its open instances, its workspace's owners and admins do by hand. Nothing is deleted.
+    const book = seriesDir(id);
+    if (action === 'files' && req.method === 'GET') {
+      const fd = openFile(join(book, 'notes', 'files'), other);
+      if (fd === undefined) throw new HttpError(404, 'no such file');
+      res.writeHead(200, { 'content-type': 'application/octet-stream', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; sandbox", 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(other)}` });
+      return void createReadStream('', { fd }).pipe(res);
+    }
+    if (action === 'attach' && req.method === 'POST') {
+      const tmp = join(tmpDir, randomUUID());
+      try {
+        await pipeline(req, createWriteStream(tmp));
+        const now = tree(), who = asPerson(by);
+        if (!who) throw new HttpError(401, 'sign in');
+        mustSee(who, now.workspaces[now.series[id].workspace]);
+        return send(res, 200, { file: keep(join(book, 'notes'), 'files', url.searchParams.get('name') ?? 'file', tmp) });
+      } finally {
+        rmSync(tmp, { force: true });
+      }
+    }
+    if (action === 'notes' && req.method === 'GET') return send(res, 200, notes(book));
+    if (action === 'notes' && req.method === 'POST') {
+      const { text, files = [], how, thread } = payload, from = run && { run: run.n, runner: runnerOf(run.inst).by };
+      if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a note has text');
+      if (!other) {
+        for (const f of files) if (!(typeof f === 'string' && /^files\/[^/]+$/.test(f) && existsSync(join(book, 'notes', f)))) throw new HttpError(400, `no attachment ${f}`);
+        const e = addNote(book, by, 'note', { text: text.trim(), ...(files.length && { files }), ...(run && { ...from, see: { inst: run.inst.id, label: run.inst.label, ...(run.thread && { thread: run.thread }) } }) });
+        noted(id);
+        return send(res, 200, run ? `noted n${e.seq} on ${named(t, id)}, which its runs read` : { id: `n${e.seq}` });
+      }
+      const n = notes(book).find(x => `n${x.seq}` === other);
+      if (!n) throw new HttpError(404, `no note ${other} on ${s.name}`);
+      if (n.settled) throw new HttpError(409, `${other} is settled already, ${n.settled.op === 'taken' ? 'taken' : 'set aside'} by ${n.settled.by}`);
+      if (!['taken', 'aside'].includes(how)) throw new HttpError(400, 'how is "taken", acted on, or "aside", set aside');
+      if (run ? run.inst.seriesId !== id : !(canManage(me, t.workspaces[s.workspace]) || instances(id).some(i => i.doc.status === 'open' && runnerOf(i).by === by)))
+        throw new HttpError(403, run ? "you settle your own series' notes" : "the runners of its open instances, the workspace's owners and admins settle its notes");
+      if (thread != null && !run?.inst.threads().includes(thread)) throw new HttpError(400, `no thread ${thread} in ${run?.inst.label ?? 'your instance'}`);
+      addNote(book, by, how, { on: n.seq, text: text.trim(), ...(run && { ...from, see: { inst: run.inst.id, label: run.inst.label, ...(thread != null && { thread }) } }) });
+      return send(res, 200, run ? `${other} ${how === 'taken' ? 'taken' : 'set aside'}` : 'ok');
+    }
     if (req.method === 'POST') return send(res, 200, { id: startWith(id, String(payload.label ?? ''), by, checkTicks(by, payload.logins ?? []), payload.quiet ? undefined : { from: by }).id });
     if (req.method !== 'PUT') throw new HttpError(405, 'PUT, or POST a new instance');
     const change = payload;
@@ -678,18 +721,19 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     return send(res, 200, 'ok');
   }
   if (kind === 'wakes') {
-    // People and runs set wakes, one-off or weekly, and cancel them: PUT names the target, an open instance, which the wake continues,
-    // or a series, which it starts LABEL of; DELETE names the wake. A run wakes only in its own workspace: it reads others that let it,
-    // never acts there.
+    // People and runs set wakes, one-off or weekly, each with a short text if they like, and cancel them: PUT names the target, an
+    // open instance, which the wake continues, or a series, which it starts LABEL of; DELETE names the wake. A run wakes only in its
+    // own workspace: it reads others that let it, never acts there.
     const wake = req.method === 'DELETE' ? wakes().pending[id] : undefined, to = wake?.target ?? id, sid = t.series[to] ? to : instance(to).seriesId;
     if (req.method === 'DELETE' && !wake) throw new HttpError(404, 'no such wake pending');
     if (t.series[to]?.single) throw new HttpError(400, `${t.series[to].name} is a task, with one instance: wake that`);
     if (!run) mustSee(me, t.workspaces[t.series[sid].workspace]);
     else if (t.series[sid].workspace !== t.series[run.inst.seriesId].workspace) throw new HttpError(403, `${named(t, sid)} is in another workspace: you can read it, not wake it`);
     if (req.method === 'DELETE') return void (cancelWake(id), send(res, 200, 'ok'));
-    const { at: when = '', label, days } = payload, w = String(when);
+    const { at: when = '', label, days, text } = payload, w = String(when);
     const at = w === 'now' ? Date.now() : /^\+\d+[mhd]$/.test(w) ? Date.now() + Number(w.slice(1, -1)) * { m: 60e3, h: 3600e3, d: 86400e3 }[w.at(-1) as 'm'] : Date.parse(w);
-    if (req.method !== 'PUT' || Number.isNaN(at)) throw new HttpError(400, 'PUT {"at", "label" for a series, "days"}, or DELETE; at is now, +<n>m|h|d, or a date and time such as 2026-09-14T07:00+08:00');
+    if (req.method !== 'PUT' || Number.isNaN(at)) throw new HttpError(400, 'PUT {"at", "label" for a series, "days", "text"}, or DELETE; at is now, +<n>m|h|d, or a date and time such as 2026-09-14T07:00+08:00');
+    if (text != null && (typeof text !== 'string' || text.length > 500)) throw new HttpError(400, "a wake's text is a short message, 500 characters at most");
     if (archived(t, sid)) throw new HttpError(409, `${named(t, sid)} is archived`);
     if (t.series[to] && !label) throw new HttpError(400, `waking a series starts a new instance: name it with a label${run ? '; to wake your own instance, name its folder: .' : ''}`);
     if (!t.series[to] && instance(to).doc.status !== 'open') throw new HttpError(409, `${instance(to).label} is ${instance(to).doc.status}: to correct it, wake its series with the label ${instance(to).label}-r2`);
@@ -697,7 +741,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (starts && labels(to).some(l => l.label === starts && instance(l.id).hole)) throw new HttpError(409, `${starts} was deleted, and its label stays with it: choose another`);
     return send(res, 200, setWake(to, {
       at: first.toISOString(), from: run ? `${named(t, run.inst.seriesId)}/${run.inst.label}` : by, ...(run && { inst: run.inst.id }),
-      ...(starts && { label: starts }), ...(days !== undefined && { days: weekly(String(days), first, starts) }),
+      ...(starts && { label: starts }), ...(days !== undefined && { days: weekly(String(days), first, starts) }), ...(text?.trim() && { text: text.trim() }),
     }));
   }
   // A request to start an instance, which people start or dismiss.
@@ -706,7 +750,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (!r) throw new HttpError(404, `no request ${id}`);
     mustSee(me, t.workspaces[t.series[r.series].workspace]);
     if (req.method === 'POST') {
-      const inst = startWith(r.series, r.label, by, checkTicks(by, payload.logins ?? []), payload.quiet ? undefined : { from: r.from });
+      const inst = startWith(r.series, r.label, by, checkTicks(by, payload.logins ?? []), payload.quiet ? undefined : { from: r.from, text: r.text, inst: r.inst });
       dropRequest(id);
       return send(res, 200, { id: inst.id });
     }
@@ -823,10 +867,22 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const who = typeof to === 'string' ? to.toLowerCase() : undefined, p = who && asPerson(who);
     if (who && !(p && canSee(p, t.workspaces[t.series[inst.seriesId].workspace])))
       throw new HttpError(400, `${to} can't see this instance; ask its runner, ${runnerOf(inst).by}, or someone in its workspace`);
+    // A run's comment in another instance of its workspace is a note there, which names the run, its runner and its own instance and
+    // thread, and starts a run only where that series' runner shares it; its own instance logs where it went.
+    const away = run && run.inst !== inst;
+    if (away && t.series[inst.seriesId].workspace !== t.series[run.inst.seriesId].workspace) throw new HttpError(403, `${named(t, inst.seriesId)} is in another workspace: you can read it, not comment there`);
+    if (away && (ask || to)) throw new HttpError(400, 'you ask and propose only to your own runner: rf ask and rf propose in your own instance');
     const said = inst.append(by, 'comment', {
       ...(under ? { thread: under.thread, parent: under.seq } : { thread: `c${inst.log.length + 1}`, item: item ?? null, ref: ref ?? null }), text: text.trim(), ...(files.length && { files }),
       ...(run && { run: run.n, ...(ask && { ask, ...(who && { to: who }) }) }), ...(quiet && { quiet: true }),
+      ...(away && { runner: runnerOf(run.inst).by, see: { inst: run.inst.id, label: run.inst.label, ...(run.thread && { thread: run.thread }) }, note: true }),
     });
+    if (away) {
+      run.inst.append('agent', 'said', { run: run.n, inst: inst.id, label: inst.label, seq: said.seq, thread: said.thread });
+      if (!starts(inst, said) && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, AGENT, `Note in ${said.thread}`).catch(err => inst.append('server', 'commit', { cause: said.seq, error: err.message }));
+      kick(inst);
+      return send(res, 200, `said c${said.seq} in ${named(t, inst.seriesId)}/${inst.label}${under ? `, under ${thread}` : ''}, a note for its runner`);
+    }
     if (run) return send(res, 200, `${{ question: 'asked', proposal: 'proposed' }[ask as string] ?? 'said'} c${said.seq}${under ? `, under ${thread}` : ''}`);
     res.setHeader('X-RF-Comment-Seq', said.seq);
     // Until a task is renamed, its first prompt's opening words name it.
