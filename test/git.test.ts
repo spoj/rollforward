@@ -70,3 +70,16 @@ test('a commit holds the whole folder, every file whatever its size or name, and
   assert.equal(git(dir, 'show', `${fourth}:upload/AR aging.csv`).toString(), 'a,c\n', 'a file changed in place, its time put back, is read again');
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("a commit refuses a folder whose files' holes, what sparse files read as zeros but never hold, are over 4 GB in all, rather than read them", async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rf-git-')), who = { name: 'Agent', email: 'agent@x' };
+  writeFileSync(join(dir, 'kept.txt'), 'kept');
+  execFileSync('truncate', ['-s', '5G', join(dir, 'sparse.bin')]);
+  const started = Date.now();
+  await assert.rejects(commit(dir, who, 'Run 1'), /^Error: sparse\.bin has holes, as a sparse file does, and the folder's files have over 4 GB of them in all, which a commit would read in full: remove it$/);
+  assert.ok(Date.now() - started < 5000, 'unread');
+  rmSync(join(dir, 'sparse.bin'));
+  await commit(dir, who, 'Run 1');
+  assert.equal(git(dir, 'show', 'HEAD:kept.txt').toString(), 'kept');
+  rmSync(dir, { recursive: true, force: true });
+});

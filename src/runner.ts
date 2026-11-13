@@ -1,6 +1,7 @@
 import { RpcClient, type JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import type { ChildProcess } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, posix, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +19,8 @@ mkdirSync(scratch, { recursive: true });
 chmodSync(scratch, 0o700);
 // Each run's own cgroup, where systemd runs the server; the container image sets this empty.
 const SCOPE = 'systemd-run --user --scope --quiet --collect --slice=rollforward-runs -p MemoryHigh=4G -p MemoryMax=8G --';
+// A run's processes and threads at most, a fork bomb's end, and its biggest file, which bounds a runaway write and a sparse file.
+const TASKS = process.env.RF_RUN_TASKS ?? '2048', FILE_GB = Number(process.env.RF_RUN_FILE_GB ?? 16);
 
 // A run's Pi, which takes turns: each a prompt the agent takes, and steers it may get, until it settles, aborted or not.
 export type TurnEnd = { aborted: boolean; error?: string };
@@ -41,7 +44,8 @@ export type View = { instance: string; dir: string; pylib: string; ro: [string, 
 // Pi for one run, in its sandbox (sandbox.ts): its view read-only but for the instance's working/ and session/ and the series'
 // .pylib, the live skills and nothing else of the host's. prompt.md is its system prompt, to which Pi adds the AGENTS.md
 // files from / down to the instance. A run that starts Pi, `n`, starts a session, which later runs may continue (waker.ts), its
-// transcript in the instance's session/ beside the earlier sessions'. The skills are the versions live as it starts, read-only at
+// transcript in the instance's session/ beside the earlier sessions'. Pi starts from a transcript there with its session's id, so
+// the id is one no earlier run, which could write there, knew. The skills are the versions live as it starts, read-only at
 // /skills/<id>, so a push applies from the next run.
 export function pi(o: { token: string; id: string; n: number; view: View; skills: { id: string; dir: string }[] }): RpcClient {
   const run = join(scratch, 'runs', o.token), home = join(run, 'home'), agentDir = join(home, '.pi', 'agent'), tmp = join(run, 'tmp');
@@ -87,13 +91,40 @@ export function pi(o: { token: string; id: string; n: number; view: View; skills
   writeFileSync(join(run, 'bwrap.args'), `${args.join('\0')}\0`);
   return new RpcClient({
     cliPath, cwd: dir, provider, model,
-    env: { PATH: [join(app, 'bin', 'sandbox'), process.env.PATH].join(delimiter), RF_SANDBOX_ARGS: join(run, 'bwrap.args'), RF_SANDBOX_SCOPE: process.env.RF_SANDBOX_SCOPE ?? SCOPE },
+    env: { PATH: [join(app, 'bin', 'sandbox'), process.env.PATH].join(delimiter), RF_SANDBOX_ARGS: join(run, 'bwrap.args'), RF_SANDBOX_SCOPE: process.env.RF_SANDBOX_SCOPE ?? SCOPE, RF_RUN_TASKS: TASKS, RF_RUN_FILE_BYTES: String(FILE_GB * 2 ** 30) },
     args: ['--no-extensions', '--no-skills', '--no-mcp', '--no-prompt-templates', ...o.skills.flatMap(s => ['--skill', `/skills/${s.id}`]),
       '--tools', 'read,bash,edit,write', '--system-prompt', '/app/prompt.md',
       '--thinking', process.env.RF_THINKING ?? 'high',
-      '--session-dir', `${instance}/session`, '--session-id', `run-${o.n}`,
+      '--session-dir', `${instance}/session`, '--session-id', `run-${o.n}-${randomBytes(8).toString('hex')}`,
       ...JSON.parse(process.env.RF_PI_ARGS ?? '[]')],
   });
+}
+
+// A series' .pylib, which every later run of the series runs, whoever its runner, as a run starts: what Python runs there unasked
+// goes, sitecustomize and usercustomize in any form, and .pth files, which Python reads only in site-packages, so nothing pip put
+// there needs them; and its listing, each file's path, size and change time, which a run can't set, is the instance's pylib.tsv,
+// which the run's commit keeps, and its sha256 the run entry's. Its folders are made the server's to read first, never through a
+// link, and names are bytes, as a run may leave them.
+export function pylib(dir: string, instance: string): string {
+  mkdirSync(dir, { recursive: true });
+  const lines: Buffer[] = [], slash = Buffer.from('/');
+  const walk = (d: Buffer, rel: Buffer, listed: boolean) => {
+    chmodSync(d, 0o700);
+    for (const e of readdirSync(d, { withFileTypes: true, encoding: 'buffer' })) {
+      const name = e.name as unknown as Buffer, path = Buffer.concat([d, slash, name]), at = rel.length ? Buffer.concat([rel, slash, name]) : name;
+      const hook = !rel.length && /^(site|user)customize(\.|$)|\.pth$/.test(name.toString('latin1'));
+      if (e.isDirectory()) walk(path, at, listed && !hook);
+      else if (listed && !hook) {
+        const st = lstatSync(path);
+        lines.push(Buffer.concat([at, Buffer.from(`\t${st.size}\t${st.ctime.toISOString()}\n`)]));
+      }
+      if (hook) rmSync(path, { recursive: true });
+    }
+  };
+  walk(Buffer.from(dir), Buffer.alloc(0), true);
+  const list = Buffer.concat(lines.sort(Buffer.compare));
+  writeFileSync(join(instance, 'pylib.tsv'), list);
+  return createHash('sha256').update(list).digest('hex');
 }
 
 // Pi answers commands only once it has loaded, and RpcClient waits 30 s for an answer. A cold or busy machine, such as one starting
@@ -137,12 +168,12 @@ export async function startRun(o: Parameters<typeof pi>[0] & { onEvent: (e: Json
 }
 
 // Whether a sandbox, by its outer bwrap, still runs and runs nothing but its PID namespace's init, Pi, which is the second process
-// there, and the socat offering the server's socket, with a process of its own per connection; one that has exited counts for nothing.
+// there, and the socat offering the server's socket, the third, which bin/sandbox/node starts before Pi, with a process of its own
+// per connection: by their PIDs, never their names, which a job may take; one that has exited counts for nothing.
 function alone(bwrap: number): boolean {
   const read = (p: string, f: (p: string) => string) => { try { return f(p); } catch { return ''; } }; // a process of another user's, or gone
   const ns = read(`/proc/${read(`/proc/${bwrap}/task/${bwrap}/children`, p => readFileSync(p, 'utf8')).split(' ')[0]}/ns/pid`, readlinkSync);
-  return !!ns && readdirSync('/proc').filter(p => /^\d+$/.test(p) && read(`/proc/${p}/ns/pid`, readlinkSync) === ns).every(p => {
-    const status = read(`/proc/${p}/status`, p => readFileSync(p, 'utf8'));
-    return !status || Number(/^NSpid:.*\s(\d+)$/m.exec(status)![1]) <= 2 || /^Name:\tsocat$/m.test(status) || /^State:\tZ/m.test(status);
-  });
+  const procs = readdirSync('/proc').filter(p => /^\d+$/.test(p) && read(`/proc/${p}/ns/pid`, readlinkSync) === ns).map(p => read(`/proc/${p}/status`, p => readFileSync(p, 'utf8'))).filter(Boolean);
+  const inside = (status: string) => Number(/^NSpid:.*\s(\d+)$/m.exec(status)![1]), socat = procs.find(s => inside(s) === 3);
+  return !!ns && procs.every(s => inside(s) <= 3 || /^PPid:\t(\d+)$/m.exec(s)![1] === /^Pid:\t(\d+)$/m.exec(socat ?? '')?.[1] || /^State:\tZ/m.test(s));
 }

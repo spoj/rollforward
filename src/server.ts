@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { agentsFile, closedBefore, createInstance, duplicateInstance, keep, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, safeName, seriesDir, type Entry, type Instance } from './store.ts';
-import { AGENT, commit } from './git.ts';
+import { AGENT, commit, refused } from './git.ts';
 import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
 import { checkTheme, stylesheet, themeLogo } from './theme.ts';
@@ -351,9 +351,9 @@ function trace(inst: Instance) {
   return out;
 }
 
-// Files by hand, never into a link: a run may have made links anywhere in working/. A .git, such as the instance's history, isn't
-// copied.
-const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(d => d.isDirectory() ? (d.name === '.git' ? [] : walk(join(dir, d.name))) : d.isFile() ? [join(dir, d.name)] : []);
+// Files by hand, never into a link: a run may have made links anywhere in working/. Nothing named as git takes a .git, such as the
+// instance's history or a run's .GIT/, which is one on a disk that ignores case, is copied.
+const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(d => refused(d.name, false) ? [] : d.isDirectory() ? walk(join(dir, d.name)) : d.isFile() ? [join(dir, d.name)] : []);
 
 // What rf pull copies: every file under `path` that `me` sees, in the layout runs see (workspace/series/label/ and the instance's own
 // files), with its size and time; the AGENTS.md files whole, and each instance file at its /files address.
@@ -394,9 +394,10 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
   const fd = openFile(inst.dir, rel);
   if (fd === undefined) throw new HttpError(404, 'no such file');
   if (preview) {
-    // preview.py runs in the agent's userland, with no network and nothing of the host's: the file, up to 100 MB, streams to its
-    // stdin. What it makes is kept, until the server restarts, by the file's name and the content it was given; at most 2 run at
-    // once, the rest waiting their turn, so previews never crowd out runs.
+    // preview.py runs in the agent's userland, with no network and nothing of the host's, the server's environment included, which
+    // bwrap's PID 1 inside would keep: the file, up to 100 MB, streams to its stdin. What it makes is kept, until the server
+    // restarts, by the file's name and the content it was given; at most 2 run at once, the rest waiting their turn, so previews
+    // never crowd out runs.
     if (fstatSync(fd).size > 100e6) {
       closeSync(fd);
       throw new HttpError(413, `${basename(rel)} is over 100 MB, too big to preview: download it`);
@@ -424,7 +425,7 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
       const run = exec('bwrap', [
         '--unshare-all', '--die-with-parent', '--new-session', '--clearenv', ...userland(), '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
         '--ro-bind', join(app, 'src', 'preview.py'), '/preview.py', '--setenv', 'HOME', '/tmp', '--setenv', 'LANG', 'C.UTF-8', '--', '/opt/venv/bin/python', '/preview.py', basename(rel), part,
-      ], { timeout: 30_000, maxBuffer: 64e6 });
+      ], { timeout: 30_000, maxBuffer: 64e6, env: { PATH: process.env.PATH } });
       const content = createHash('sha256').update(`${basename(rel)}\n${part}\n`);
       const [{ stdout }] = await Promise.all([run, pipeline(createReadStream('', { fd, start: 0 }), async function* (chunks: AsyncIterable<Buffer>) {
         for await (const c of chunks) { content.update(c); yield c; }

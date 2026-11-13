@@ -190,6 +190,8 @@ What rf pull copies, the folders as the agent sees them
                              change, so where a path in a file doesn't match, look its id up in the names.tsv of the commit
                              that last changed the file (git log -1 -- FILE, then git show H:names.tsv), and its name now in
                              rf ls
+    pylib.tsv                the series' .pylib, the Python packages its runs installed, which later runs run, as the latest
+                             run started: path<TAB>size<TAB>change time, one file a line
 The copy is read-only: only rf's commands change what's on the server.
 
 Usual work
@@ -311,10 +313,12 @@ function write(path: string, data: string | Uint8Array, mtime: string) {
 
 // A path the server named, under `base`, or undefined where a name in it can't be one here: on Windows a name may hold \ or :, which
 // would put the file elsewhere, even in another workspace's folder, or another file's stream; or name a device, such as CON; or end
-// in a dot or a space, which Windows drops. A link where one of its folders goes, or `base`, would take the file elsewhere too, and is refused.
+// in a dot or a space, which Windows drops. Nor may a name be what git takes for a .git, such as .GIT on a disk that ignores case,
+// whose config would run a command as git runs there. A link where one of its folders goes, or `base`, would take the file
+// elsewhere too, and is refused.
 const under = (base: string, rel: string) => {
   const names = rel.split('/');
-  if (names.some(n => !n || n === '.' || n === '..' || basename(n) !== n
+  if (names.some(n => !n || n === '.' || n === '..' || basename(n) !== n || /^(\.git|git~1)[. ]*([:\\]|$)/i.test(n)
     || (process.platform === 'win32' && (/[<>:"|?*\x00-\x1f]|[. ]$/.test(n) || /^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/i.test(n))))) return undefined;
   let folder = base;
   for (const name of ['', ...names.slice(0, -1)]) {

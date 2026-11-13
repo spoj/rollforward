@@ -59,6 +59,7 @@ Run the image under podman, as a systemd service. The image is the agent image, 
    - `RF_TUNNEL_URL`, `RF_TUNNEL_KEY` and `RF_TUNNEL_PROXY`, only for the optional tunnel service above;
    - `RF_SIGNIN_S` only to change the 600-second website and VPN sign-in window; the page shows its countdown;
    - `RF_SANDBOX_RO`, only if runs should read folders besides their data, such as a read-only mount of a file share.
+   - `RF_RUN_TASKS` (2048) and `RF_RUN_FILE_GB` (16), only to change each run's cap on processes and threads, and on one file's size in GB; the host needs Linux 5.14 or later, which counts a run's processes apart from the server's.
 
 4. Install the unit, then run `systemctl --user daemon-reload && systemctl --user start rollforward`:
 
@@ -69,7 +70,7 @@ Run the image under podman, as a systemd service. The image is the agent image, 
        PublishPort=127.0.0.1:8780:8780
        Volume=%h/rollforward-data:/data
        EnvironmentFile=%h/.config/rollforward.env
-       PodmanArgs=--init --memory=48g --security-opt=unmask=/proc/*
+       PodmanArgs=--init --memory=48g --pids-limit=65536 --security-opt=unmask=/proc/*
        StopTimeout=20
 
        [Service]
@@ -78,7 +79,7 @@ Run the image under podman, as a systemd service. The image is the agent image, 
        [Install]
        WantedBy=default.target
 
-   `--memory` caps all runs together, below the host's memory; `unmask=/proc/*` lets bubblewrap sandbox each run; `StopTimeout=20` lets a stop wait the 10 s it gives what runs had sent to be answered, where podman would kill it at 10 s.
+   `--memory` caps all runs together, below the host's memory; `--pids-limit` is above `RF_MAX_RUNS` (20) runs of `RF_RUN_TASKS` (2048) each, so a run that forks all it may leaves the server room; `unmask=/proc/*` lets bubblewrap sandbox each run; `StopTimeout=20` lets a stop wait the 10 s it gives what runs had sent to be answered, where podman would kill it at 10 s.
 5. Put HTTPS in front, such as Caddy:
 
        rollforward.example.com {

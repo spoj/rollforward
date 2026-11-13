@@ -1,6 +1,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -174,20 +175,44 @@ after(async () => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-test('a Pi killed mid-turn fails its run at once, frees its series, and starts a new session on the next act', async () => {
+test('a Pi killed mid-turn fails its run at once, frees its series, and starts a new session on the next act, which no earlier run could have written', async () => {
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Crash' })).json();
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec' })).json();
-  scripts.push({ bash: ['kill -9 2'], report: 'unreached', saw: [] });
+  // The session the next run would start as its own, were its id run-2.
+  const plant = `printf '%s\\n' '{"type":"session","version":3,"id":"run-2","timestamp":"2020-01-01T00:00:00.000Z","cwd":"'"$PWD"'"}' \\
+    '{"type":"message","id":"a1","parentId":null,"timestamp":"2020-01-01T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"PLANTED"}],"timestamp":1577836801000}}' > session/2020-01-01T00-00-00-000Z_run-2.jsonl`;
+  scripts.push({ bash: [plant, 'kill -9 2'], report: 'unreached', saw: [] });
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
   const done = (await runs(id, 1)).find(e => e.op === 'done')!;
   assert.equal(done.aborted, true);
   assert.match(done.error as string, /Pi exited.*(code|signal)/);
   assert.equal((await call('POST', `/api/instances/${id}/interrupt`)).status, 409, 'no run remains to interrupt');
-  scripts.push({ bash: [], report: 'A new session.', saw: [] });
+  const fresh: Script = { bash: [], report: 'A new session.', saw: [] };
+  scripts.push(fresh);
   assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Carry on.' })).status, 200);
   const log = await runs(id, 2);
   assert.equal(log.findLast(e => e.op === 'run')!.continues, undefined);
+  assert.equal(fresh.first, 1, 'a conversation of its own prompt alone, never one run 1 left for it');
   assert.equal(log.findLast(e => e.op === 'done')!.aborted, false);
+});
+
+test("a series' .pylib runs nothing unasked in a later run, and each run entry hashes its listing, which the instance's pylib.tsv holds and its commit keeps", async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Pylib' })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec' })).json();
+  const hooks = 'cd ../.pylib && mkdir -p pkg usercustomize/deep && echo X=1 > pkg/__init__.py && echo "print(\'HOOK\')" | tee sitecustomize.py usercustomize/__init__.py > evil.pth && chmod 0 usercustomize/deep && echo ok';
+  scripts.push({ bash: [hooks], report: 'Installed.', saw: [] });
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
+  await runs(id, 1);
+  const next: Script = { bash: ['python -c "import pkg; print(pkg.X)"; ls -A ../.pylib; cat pylib.tsv'], report: 'Ran.', saw: [] };
+  scripts.push(next);
+  assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Again.' })).status, 200);
+  const log = await runs(id, 2), [one, two] = log.filter(e => e.op === 'run');
+  assert.match(next.saw[0], /^1\npkg\npkg\/__init__\.py\t4\t\d{4}-\d\d-\d\dT[\d:.]+Z\n?$/, 'what pip would install runs; sitecustomize, usercustomize and .pth files are gone before it, and pylib.tsv lists the rest');
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: join(root, 'instances', id), encoding: 'utf8' });
+  await until("run 2's commit", () => git('log', '-1', '--format=%s') === 'Run 2\n');
+  const sha = (text: string) => createHash('sha256').update(text).digest('hex'), listed = git('show', 'HEAD:pylib.tsv');
+  assert.ok(next.saw[0].endsWith(`\n${listed}`), "run 2's commit keeps the listing it started with");
+  assert.deepEqual([one.pylib, two.pylib], [sha(''), sha(listed)], 'each run entry hashes it');
 });
 
 test('the time limit fails a run with its reason, rather than recording an ordinary interrupt', async () => {
@@ -295,7 +320,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.ok(woken.first! > 1, 'a run within the hour of the last carries its conversation on, as a new turn');
   assert.match(woken.prompt!, /^Instance 2026-11, run 3\. New log entries:/, 'whose message is the new log entries');
   const transcripts = readdirSync(join(root, 'instances', id, 'session'));
-  assert.ok(['run-1', 'run-2'].every(r => transcripts.some(f => f.endsWith(`_${r}.jsonl`))) && !transcripts.some(f => f.endsWith('_run-3.jsonl')), `a transcript per session: ${transcripts}`);
+  assert.ok(['run-1', 'run-2'].every(r => transcripts.some(f => new RegExp(`_${r}-[0-9a-f]{16}\\.jsonl$`).test(f))) && !transcripts.some(f => f.includes('_run-3-')), `a transcript per session: ${transcripts}`);
   assert.match(woken.saw[0], /m365:mail:admin@demo.test is not ticked/);
   assert.deepEqual(log.filter(e => e.op === 'done').map(e => [e.run, e.aborted, e.cost]), [[1, false, 0.01], [2, false, +(walls.bash.length * 0.01 + 0.01 + 0.002).toFixed(4)], [3, false, 0.02]], "what its calls cost, Pi's and the script's");
   assert.ok(!JSON.stringify(log).includes(walls.report), "a run's closing message reaches no one: it stays in its session");
@@ -1030,6 +1055,8 @@ test("a run's Pi idles only with nothing but Pi running in its sandbox, and ends
   const job = await start('job', ['nohup sleep 120 >/dev/null 2>&1 &']);
   await gone(job, 'a run that left a job running stops its Pi, the job with it');
   assert.equal(await again(job, 2), undefined);
+  const named = await start('named', ['cp /usr/bin/sleep /tmp/socat && (setsid /tmp/socat 120 </dev/null >/dev/null 2>&1 &)']);
+  await gone(named, "a job named as the sandbox's socat is a job all the same");
   const a = await start('a'), b = await start('b');
   await gone(a, 'the longest idle ends as another idles past RF_MAX_IDLE');
   assert.equal(await again(b, 2), 1, 'the idle one carries its session on');
