@@ -139,12 +139,12 @@ export async function startRun(o: Parameters<typeof pi>[0] & { onEvent: (e: Json
 }
 
 // Whether a sandbox, by its outer bwrap, still runs and runs nothing but its PID namespace's init, Pi, which is the second process
-// there, and the socat offering the server's socket, with a process of its own per connection; one that has exited counts for nothing.
+// there, and the socat offering the server's socket, the third, which bin/sandbox/node starts before Pi, with a process of its own
+// per connection: by their PIDs, never their names, which a job may take; one that has exited counts for nothing.
 function alone(bwrap: number): boolean {
   const read = (p: string, f: (p: string) => string) => { try { return f(p); } catch { return ''; } }; // a process of another user's, or gone
   const ns = read(`/proc/${read(`/proc/${bwrap}/task/${bwrap}/children`, p => readFileSync(p, 'utf8')).split(' ')[0]}/ns/pid`, readlinkSync);
-  return !!ns && readdirSync('/proc').filter(p => /^\d+$/.test(p) && read(`/proc/${p}/ns/pid`, readlinkSync) === ns).every(p => {
-    const status = read(`/proc/${p}/status`, p => readFileSync(p, 'utf8'));
-    return !status || Number(/^NSpid:.*\s(\d+)$/m.exec(status)![1]) <= 2 || /^Name:\tsocat$/m.test(status) || /^State:\tZ/m.test(status);
-  });
+  const procs = readdirSync('/proc').filter(p => /^\d+$/.test(p) && read(`/proc/${p}/ns/pid`, readlinkSync) === ns).map(p => read(`/proc/${p}/status`, p => readFileSync(p, 'utf8'))).filter(Boolean);
+  const inside = (status: string) => Number(/^NSpid:.*\s(\d+)$/m.exec(status)![1]), socat = procs.find(s => inside(s) === 3);
+  return !!ns && procs.every(s => inside(s) <= 3 || /^PPid:\t(\d+)$/m.exec(s)![1] === /^Pid:\t(\d+)$/m.exec(socat ?? '')?.[1] || /^State:\tZ/m.test(s));
 }

@@ -1031,6 +1031,8 @@ test("a run's Pi idles only with nothing but Pi running in its sandbox, and ends
   const job = await start('job', ['nohup sleep 120 >/dev/null 2>&1 &']);
   await gone(job, 'a run that left a job running stops its Pi, the job with it');
   assert.equal(await again(job, 2), undefined);
+  const named = await start('named', ['cp /usr/bin/sleep /tmp/socat && (setsid /tmp/socat 120 </dev/null >/dev/null 2>&1 &)']);
+  await gone(named, "a job named as the sandbox's socat is a job all the same");
   const a = await start('a'), b = await start('b');
   await gone(a, 'the longest idle ends as another idles past RF_MAX_IDLE');
   assert.equal(await again(b, 2), 1, 'the idle one carries its session on');
