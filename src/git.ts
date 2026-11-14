@@ -87,14 +87,14 @@ type Seen = Map<string, [string, string]>;
 // The folder's files and links as fast-import's file commands. Each name is reached through its folder's open descriptor, and
 // opened without following a link, so a folder swapped for a link meanwhile leads nowhere outside. Names are bytes, as git keeps
 // them, which needn't be UTF-8.
-async function* files(dfd: number, rel: Buffer, seen: Seen, now: Seen, holes: { left: bigint }): AsyncGenerator<Buffer> {
+async function* files(dfd: number, rel: Buffer, seen: Seen, now: Seen, holes: { left: bigint }, inModules = false): AsyncGenerator<Buffer> {
   const at = (name: Buffer) => Buffer.concat([Buffer.from(`/proc/self/fd/${dfd}/`), name]);
   for (const d of readdirSync(`/proc/self/fd/${dfd}`, { withFileTypes: true, encoding: 'buffer' })) {
-    const name = d.name as unknown as Buffer, path = rel.length ? Buffer.concat([rel, SLASH, name]) : name;
-    if (refused(name.toString('latin1'), d.isSymbolicLink())) continue;
+    const name = d.name as unknown as Buffer, path = rel.length ? Buffer.concat([rel, SLASH, name]) : name, raw = name.toString('latin1');
+    if (refused(raw, d.isSymbolicLink()) || (inModules && d.isSymbolicLink())) continue;
     if (d.isDirectory()) {
       const sub = open(path, at(name), constants.O_RDONLY | constants.O_DIRECTORY, 0o500);
-      try { yield* files(sub, path, seen, now, holes); } finally { closeSync(sub); }
+      try { yield* files(sub, path, seen, now, holes, inModules || refused(raw, true)); } finally { closeSync(sub); }
     } else if (d.isSymbolicLink()) {
       const to = read(path, () => readlinkSync(at(name), { encoding: 'buffer' }));
       yield Buffer.concat([Buffer.from('M 120000 inline '), quote(path), Buffer.from(`\ndata ${to.length}\n`), to, Buffer.from('\n')]);

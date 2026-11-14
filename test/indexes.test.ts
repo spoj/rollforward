@@ -472,3 +472,15 @@ test("a going run's copy of a source goes as soon as it's no longer lent: untick
   ix.prune(inst, 1, 'going');
   assert.deepEqual(copies(), ['README.md']);
 });
+
+test('prepare shortens long offer names so index copies fit within 255-byte filenames, including duplicates', async () => {
+  const long = `Folder ${'二零二六年度华南区供应商对账单核对归档'.repeat(3)}, ${'集团财务共享服务中心文档库'.repeat(3)}`;
+  offer(DAN, [{ id: BIG, name: `${long} A` }, { id: ONEDRIVE, name: `${long} B` }]);
+  await work(settled(DAN, BIG, ONEDRIVE));
+  const inst = { seriesId: 'weekly', log: [{ seq: 1, at: '', by: DAN, op: 'create', logins: [BIG, ONEDRIVE] }] } as unknown as Instance;
+  const to = join(tmp, '.rf', 'runs', 'long');
+  assert.equal(ix.prepare(inst, to), true);
+  const files = readdirSync(to).filter(f => f !== 'README.md');
+  assert.equal(files.length, 4);
+  assert.ok(files.every(f => Buffer.byteLength(f) <= 255));
+});

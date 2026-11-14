@@ -176,7 +176,7 @@ async function covering(email: string, ticks: string[], driveId: string, id: str
 // Graph answers. A parent the person can't read ends the climb, as does a drive whose site they can't see.
 const parents = new Map<string, { parent?: string; at: number }>(), sites = new Map<string, string>(), own = new Map<string, string>();
 async function parentOf(email: string, driveId: string, id: string): Promise<string | undefined> {
-  const k = `${driveId}/${id}`, known = parents.get(k);
+  const k = `${email}:${driveId}/${id}`, known = parents.get(k);
   if (known && known.at > Date.now() - 300_000) return known.parent;
   const parent = await graph(email, `/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(id)}?$select=parentReference`).then(j => j.parentReference?.id, e => {
     if (e instanceof HttpError && (e.status === 403 || e.status === 404)) return undefined;

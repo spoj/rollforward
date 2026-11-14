@@ -107,8 +107,12 @@ function put(el, html) {
 // A reload, as a lapsed session's, keeps the comments and replies being written in this tab, by instance, which come back as it opens
 // each again.
 addEventListener('pagehide', () => {
-  for (const [path, d] of drafts) sessionStorage[`drafts:${path}`] = JSON.stringify({ ...d.kept, ...Object.fromEntries([...d.el.querySelectorAll('textarea')].filter(t => t.value.trim())
-    .map(t => [t.id || `${t.closest('.post').dataset.seq}:${t.closest('.reply').dataset.mode}`, t.value])) });
+  if (!me) return;
+  for (const [path, d] of drafts) sessionStorage[`drafts:${me.email}:${path}`] = JSON.stringify({
+    on: d.on, ref: d.ref,
+    boxes: { ...d.kept, ...Object.fromEntries([...d.el.querySelectorAll('textarea')].filter(t => !t.closest('.reply[hidden]') && t.value.trim())
+      .map(t => [t.id || `${t.closest('.post').dataset.seq}:${t.closest('.reply').dataset.mode}`, t.value])) },
+  });
 });
 
 // A call that fails throws the server's words; a toast shows them, unless the caller shows them itself.
@@ -215,8 +219,8 @@ function land(next, path, d, st) {
   if (next?.s && next.s.id !== cur?.s?.id) expandRow(next.s.id, true);
   if (d && (path !== shown || wasArchived !== archived(next.w, next.s))) {
     if (!drafts.has(path)) {
-      const kept = JSON.parse(sessionStorage[`drafts:${path}`] ?? '{}');
-      drafts.set(path, { el: $('#conv').cloneNode(false), on: null, ref: null, replying: new Map(Object.keys(kept).filter(k => k.includes(':')).map(k => [+k.split(':')[0], k.split(':')[1]])), kept });
+      const raw = JSON.parse(sessionStorage[`drafts:${me.email}:${path}`] ?? '{}'), kept = raw.boxes ?? raw;
+      drafts.set(path, { el: $('#conv').cloneNode(false), on: raw.on ?? null, ref: raw.ref ?? null, replying: new Map(Object.keys(kept).filter(k => k.includes(':')).map(k => [+k.split(':')[0], k.split(':')[1]])), kept });
     }
     draft = drafts.get(path);
     $('#conv').replaceWith(archived(next.w, next.s) ? draft.el.cloneNode(false) : draft.el);
@@ -278,7 +282,7 @@ function expandRow(id, open = !expanded.has(id)) {
 }
 
 function renderSide() {
-  if (editing) return;
+  if (!me || editing) return;
   // Mine, as this browser keeps it for you: only the open instances you run, and the one shown, with the rows that hold them, their
   // marks and counts theirs alone, and the series and workspace shown, though they hold none.
   const only = localStorage[`mine:${me.email}`] === 'on', ours = i => (i.status === 'open' && i.runner === me.email) || i.id === cur?.i?.id;
@@ -447,6 +451,7 @@ function tile(item) {
 // The instance in three slices: Inputs, Steps and Outputs. On a desktop a toggle, kept in this browser, shows them as lists, each sorting by
 // the column its heading names; a phone shows tiles, Outputs first.
 function renderPanes() {
+  if (!me) return;
   $('#outs').hidden = $('#steps').hidden = $('#view').hidden = !data;
   if (!data) return put($('#ins'), `<div class="empty">${archived() ? 'Archived · read-only' : cur?.s ? 'No instance yet. Make one with + by the series.' : cur ? 'No series yet. Make one with + by the workspace.' : me.can.includes('create') ? 'No workspace yet. Make one with + by the filter.' : 'No workspace yet: an admin makes one or adds you to one.'}</div>`);
   if (gone()) {
@@ -544,7 +549,7 @@ function logText(e) {
     delete: () => `${w} deleted the instance, and all the server held of it`,
     correction: () => `${w} marked ${e.item ? item(e.item) : 'the instance'}${e.ref ? ` at ${esc(e.ref)}` : ''} ${e.kind}<div class="d">${esc(e.text)}${seeHtml(e.see)}</div>`,
     said: () => `${w} left a note in <a href="#/${esc(e.inst)}">${esc(labelOf(e.inst, e.label))}</a>, ${esc(e.thread)}`,
-    corrected: () => `${w} marked <a href="#/${esc(e.inst)}">${esc(e.label)}</a>${e.item ? ` ${esc(e.item)}` : ''} ${e.kind}`,
+    corrected: () => `${w} marked <a href="#/${esc(e.inst)}">${esc(cur.s?.instances.find(i => i.id === e.inst)?.label ?? labelOf(e.inst, e.label))}</a>${e.item ? ` ${esc(e.item)}` : ''} ${e.kind}`,
     comment: () => `${w} ${data.standing[e.seq] === 'note' ? `left a note for ${who(data.runner.by)}` : e.by !== 'agent' ? 'commented' : e.ask ? `${e.ask === 'proposal' ? 'proposed' : 'asked'}${e.to ? ' ' + who(e.to) : ''}` : 'said'}${e.item ? ` on ${item(e.item)}${e.ref ? ` at ${esc(e.ref)}` : ''}` : ''}<div class="d">${esc(e.text)}</div>`,
     resolve: () => `${w} resolved a thread${e.text ? `<div class="d">${esc(e.text)}</div>` : ''}`,
     react: () => `${w} ${e.up === null ? 'took back a reaction' : e.up ? 'gave a thumbs up' : 'gave a thumbs down'} on ${e.on ? `comment c${e.on}` : 'the instance'}`,
@@ -591,8 +596,8 @@ function renderNeeds() {
     + `${e.ref ? ` at ${esc(e.ref)}` : ''} is ${e.kind}: ${esc(e.text)}${seeHtml(e.see)}</span><span class="by">${who(e.by)} \u00b7 ${when(e.at)}</span></div>`).join(''));
 }
 
-// Where a correction says the change is: a later instance, by its label then, and its thread.
-const seeHtml = see => see ? ` \u00b7 see <a href="#/${esc(see.inst)}">${esc(see.label)}</a>${see.thread ? ` ${esc(see.thread)}` : ''}` : '';
+// Where a correction says the change is: a later instance, by its label now, and its thread.
+const seeHtml = see => see ? ` \u00b7 see <a href="#/${esc(see.inst)}">${esc(cur.s?.instances.find(i => i.id === see.inst)?.label ?? labelOf(see.inst, see.label))}</a>${see.thread ? ` ${esc(see.thread)}` : ''}` : '';
 
 function renderLog() {
   // Either side opens at its latest, as the panel does, and keeps there as posts come, unless the reader has scrolled up.
@@ -611,9 +616,8 @@ function renderLog() {
   if (!drafting) put($('#conv'), conversationHtml());
   for (const [k, v] of Object.entries(draft.kept)) {
     const [seq, mode] = k.split(':'), box = mode ? $(`#conv .post[data-seq="${seq}"] > .reply[data-mode="${mode}"] textarea`) : $(`#${k}`);
-    if (box) box.value = v;
+    if (box) { box.value = v; delete draft.kept[k]; }
   }
-  draft.kept = {};
   if (!ui.audit && $('#log').dataset.end !== 'no') $('#log').scrollTop = $('#log').scrollHeight;
   // Only on the instance it's for: a render for the one before, as the page catches up, leaves it. The box keeps the focus it had.
   if (focused) $('#newcomment')?.focus();
@@ -872,9 +876,12 @@ const cellText = v => v == null ? '' : typeof v === 'object' ? v.f : typeof v ==
 function sheetTable(p, s, first) {
   const noted = new Map(), asks = new Set(), at = new Map();
   for (const t of p.threads ?? []) {
-    const r = (t.ref ?? '').match(/^(?:'?([^'!]+)'?!)?\$?([A-Z]{1,3})\$?(\d+)/);
-    if (!r || (r[1] ? r[1] !== s.name : !first)) continue;
-    const key = `${+r[3] - 1},${[...r[2]].reduce((t, ch) => t * 26 + ch.charCodeAt(0) - 64, 0) - 1}`;
+    const raw = String(t.ref ?? ''), bang = raw.lastIndexOf('!');
+    const rawSheet = bang < 0 ? undefined : raw.slice(0, bang);
+    const sheet = rawSheet?.startsWith("'") && rawSheet.endsWith("'") ? rawSheet.slice(1, -1).replaceAll("''", "'") : rawSheet;
+    const r = (bang < 0 ? raw : raw.slice(bang + 1)).match(/^\$?([A-Z]{1,3})\$?(\d+)(?:$|:)/);
+    if (!r || (sheet !== undefined ? sheet !== s.name : !first)) continue;
+    const key = `${+r[2] - 1},${[...r[1]].reduce((t, ch) => t * 26 + ch.charCodeAt(0) - 64, 0) - 1}`;
     noted.set(key, (noted.has(key) ? noted.get(key) + '\n\n' : '') + t.posts.map(p => `${nameOf(p.by)}: ${p.text}`).join('\n'));
     at.set(key, t.id);
     if (t.waits) asks.add(key);
@@ -1298,6 +1305,7 @@ function ask({ title, text = '', html = '', value, placeholder = '', ok, kind = 
     d.querySelector('form').onsubmit = async e => {
       if (!e.submitter.value) return;
       e.preventDefault();
+      if (e.submitter.hasAttribute('aria-busy')) return;
       e.submitter.setAttribute('aria-busy', 'true');
       try {
         done(await act(input?.value.trim(), e.submitter.value));
@@ -1401,7 +1409,12 @@ function previewOf(path, item) {
 // What a preview shows: a text file as it is, a file of a kind the server reads, or any attachment, as the server reads it.
 async function load(p) {
   try {
-    if (/\.(md|txt|json|py|sql|log)$/i.test(p.path)) p.text = await (await fetch(fileUrl(p.path))).text();
+    if (/\.(md|txt|json|py|sql|log)$/i.test(p.path)) {
+      const r = await fetch(fileUrl(p.path)), t = await r.text();
+      if (r.status === 401) location.reload();
+      if (!r.ok) throw new Error(t);
+      p.text = t;
+    }
     else if (!p.path || /\.(xlsx|xlsm|xls|csv|eml|msg|pdf|docx)$/i.test(p.path)) Object.assign(p, await api(p.src));
     if (p.sheets) p.sheet = p.sheets.findIndex(s => s.rows);
   } catch (e) {
@@ -1461,6 +1474,7 @@ document.addEventListener('click', async ev => {
     return renderCard();
   }
   // What a click starts holds its button until it's done, so a second click can't repeat it.
+  if (el.hasAttribute('aria-busy')) return;
   el.setAttribute('aria-busy', 'true');
   try { await onAct(el.dataset.act, el); } finally { el.removeAttribute('aria-busy'); }
 });
@@ -1480,8 +1494,11 @@ async function onAct(act, el) {
   // A row's settings and + act on that row, which they open first: after the hash change's own refresh starts, which this one
   // supersedes, so it lands before they act.
   if (['workspace-settings', 'new-task', 'settings', 'new-instance'].includes(act) && el.dataset.id && ![cur?.w.id, cur?.s?.id].includes(el.dataset.id)) {
-    location.hash = `#/${el.dataset.id}`;
-    await new Promise(ok => addEventListener('hashchange', ok, { once: true }));
+    const next = `#/${el.dataset.id}`;
+    if (location.hash !== next) {
+      location.hash = next;
+      await new Promise(ok => addEventListener('hashchange', ok, { once: true }));
+    }
     await refresh();
   }
   if (act === 'audit') await toggleAudit();
@@ -1589,7 +1606,7 @@ async function onAct(act, el) {
   if (act === 'unpv') closePv();
   if (act === 'settings') await openSeriesSettings();
   if (act === 'workspace-settings') openWorkspaceSettings();
-  if (act === 'signout') location.href = (await api('/auth/logout', { method: 'POST' })).next;
+  if (act === 'signout') { const { next } = await api('/auth/logout', { method: 'POST' }); drafts.clear(); sessionStorage.clear(); location.href = next; }
   if (act === 'wadd' || act === 'wremove' || act === 'wrole') {
     // An addition is an email or an Entra group's id, alone or as a suggestion shows it, NAME <ID>, where NAME labels a group.
     const [, label, inside] = act === 'wadd' && /^(.*?)\s*<(.+)>$/.exec($('#wperson').value.trim()) || [];
@@ -1610,7 +1627,7 @@ async function onAct(act, el) {
     closePv();
     await refresh();
   }
-  if (act === 'rename') editName($('#bar h1 .t'), cur.i.label, label => api(`${instPath()}/rename?as=${enc(label)}`, { method: 'POST' }));
+  if (act === 'rename') { const path = instPath(); $('#bar .ren').disabled = true; editName($('#bar h1 .t'), cur.i.label, label => api(`${path}/rename?as=${enc(label)}`, { method: 'POST' })); }
   if (act === 'share-arm') { pv.arming = !pv.arming; renderPv(); }
   if (act === 'share-on' || act === 'share-off') {
     await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify(act === 'share-on' ? { share: true, logins: ticked() } : { share: false }) });
@@ -1621,6 +1638,7 @@ async function onAct(act, el) {
   // A wake edited is set anew, then the one it was cancelled, unless setting it moved that one.
   if (act === 'wake-save' || act === 'wake-delete') {
     const r = el.closest('.wakerow'), id = r.dataset.id, days = [...r.querySelectorAll('input:checked')].map(c => c.value).join(',');
+    if (act === 'wake-save' && Number.isNaN(Date.parse(r.querySelector('.wat').value))) return toast('Pick a date and time');
     const made = act === 'wake-save' && await api(`/api/wakes/${r.dataset.target}`, { method: 'PUT', body: JSON.stringify({ at: new Date(r.querySelector('.wat').value).toISOString(), label: r.querySelector('.wlabel')?.value, days, text: r.querySelector('.wtext').value }) });
     if (id && made.id !== id) await api(`/api/wakes/${id}`, { method: 'DELETE' });
     await refresh();
@@ -1803,6 +1821,7 @@ async function onAct(act, el) {
   }
   if (act === 'assign') {
     const people = (await api(`${instPath()}/assignees`)).filter(p => p !== me.email).sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
+    if (!people.length) return ask({ title: `Assign ${cur.i.label}`, text: 'No one else who sees this workspace has signed in yet.' });
     const stops = data.run?.n ?? null;
     if (await ask({
       title: `Assign ${cur.i.label}`, text: `They run it from now on, ticking their own logins, none until they do; to its agent, what came before is history.${stops !== null ? ` Run ${stops} is going: assigning stops it.` : ''}`,
@@ -1979,7 +1998,7 @@ async function onAct(act, el) {
 $('#picker').addEventListener('change', e => upload([...e.target.files], e.target.dataset.pane, e.target.dataset.onto));
 // Settings save as they change: a name once it's left or Enter is pressed, a tick at once.
 document.addEventListener('change', async ev => {
-  const el = ev.target, group = el.closest('details.tgroup');
+  const el = ev.target, group = el.closest('details.tgroup'), own = pv;
   // A group's tick ticks all under it, as one change of theirs; its own follows theirs.
   if (el.matches('input.tickall')) {
     const kids = [...group.querySelectorAll('input.tick')];
@@ -1988,9 +2007,9 @@ document.addEventListener('change', async ev => {
   }
   if (group) group.querySelector('.tickall').checked = [...group.querySelectorAll('input.tick')].every(k => k.checked);
   if (el.matches('#mvwhat, #mvto')) return mvSay();
-  if (el.id === 'sname') await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) });
+  if (el.id === 'sname') { await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) }); own.settings.name = el.value.trim(); own.title = `${own.settings.name} \u00b7 Settings`; }
   else if (el.matches('#pv input.tick') && pv.settings.kind === 'series' && pv.settings.shared_by === me.email) await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ share: true, logins: ticked() }) });
-  else if (el.id === 'wname') await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) });
+  else if (el.id === 'wname') { await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) }); own.settings.name = el.value.trim(); own.title = `${own.settings.name} \u00b7 Settings`; }
   else if (el.id === 'oruse') await saveKey();
   else if (el.matches('#log input.tick')) {
     const logins = [...document.querySelectorAll('#log input.tick:checked')].map(i => i.value);
@@ -1999,7 +2018,7 @@ document.addEventListener('change', async ev => {
     return refresh();
   }
   else return;
-  saved();
+  if (pv === own) saved();
   await refresh();
 });
 // The dialog closes on Escape and on a click beside it, but a sign-in's only on Escape or its buttons. Its close event comes after,
@@ -2062,6 +2081,7 @@ matchMedia('(max-width: 800px)').addEventListener('change', renderPanes);
 
 addEventListener('hashchange', () => {
   $('#ask').close();
+  if (editing) { editing = null; drawn.delete($('#bar')); drawn.delete($('#side')); }
   openItem = null; ui.sect = {}; prevSigs = {}; ui.alone = null;
   ui.full.clear();
   ui.withdrawn.clear();

@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import parse_qsl
 
 resource.setrlimit(resource.RLIMIT_AS, (2 << 30, 2 << 30))
+csv.field_size_limit(sys.maxsize)
 
 ROWS, COLS = 2000, 100
 
@@ -159,7 +160,8 @@ def workbook(data, part):
         if sid not in styles:
             st = wb._cell_styles[sid]
             font, fill = wb._fonts[st.fontId], wb._fills[st.fillId]
-            styles[sid] = (BUILTIN_FORMATS.get(st.numFmtId, 'General') if st.numFmtId < 164 else wb._number_formats[st.numFmtId - 164],
+            idx = st.numFmtId - 164
+            styles[sid] = (wb._number_formats[idx] if 0 <= idx < len(wb._number_formats) else BUILTIN_FORMATS.get(st.numFmtId, 'General'),
                            font.b, font.color is not None and colour(font.color) not in (None, '#000000') and colour(font.color),
                            getattr(fill, 'patternType', None) == 'solid' and colour(fill.fgColor))
         return styles[sid]

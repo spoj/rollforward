@@ -1921,3 +1921,397 @@ test("while an update drains the server, the page shows a quiet line above the i
   await page.click('#sidefoot [data-act=fold-side]');
   await page.waitForSelector('#draining', { state: 'hidden', timeout: 10_000 });
 });
+
+test('previewing a missing text file shows the error rather than rendering the 404 body as file contents', async () => {
+  await page.evaluate(() => preview('working/missing.md'));
+  await page.waitForSelector('#pv .empty');
+  assert.equal(await page.locator('#pv .say').count(), 0);
+  assert.equal(await page.textContent('#pv .empty'), 'no such file');
+  await page.click('#pv [data-act=unpv]');
+});
+
+test('browser Back during inline instance rename cancels the edit instead of freezing the header or renaming the previous instance', async () => {
+  const origin = new URL(page.url()).origin;
+  const { id: ws } = await page.evaluate(async () => (await fetch('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: 'NavRename' }) })).json());
+  const { id: sid } = await page.evaluate(async ws => (await fetch('/api/series', { method: 'POST', body: JSON.stringify({ workspace: ws, name: 'S' }) })).json(), ws);
+  const { id: i1 } = await page.evaluate(async sid => (await fetch(`/api/series/${sid}`, { method: 'POST', body: JSON.stringify({ label: 'Period-A', quiet: true }) })).json(), sid);
+  const { id: i2 } = await page.evaluate(async sid => (await fetch(`/api/series/${sid}`, { method: 'POST', body: JSON.stringify({ label: 'Period-B', quiet: true }) })).json(), sid);
+  await page.goto(`${origin}/#/${i1}`);
+  await page.waitForSelector('#bar h1 .t:text-is("Period-A")');
+  await page.goto(`${origin}/#/${i2}`);
+  await page.waitForSelector('#bar h1 .t:text-is("Period-B")');
+  await page.click('#bar h1 .ren');
+  await page.fill('#bar h1 input.inline', 'Period-B-Edited');
+  await page.goBack();
+  await page.waitForSelector('#bar h1 .t:text-is("Period-A")', { timeout: 2000 });
+  assert.equal(await page.locator('#bar h1 input.inline').count(), 0);
+  const labels = await page.evaluate(async ws => (await (await fetch('/api')).json()).find((w: any) => w.id === ws).series[0].instances.map((i: any) => i.label), ws);
+  assert.deepEqual(labels.sort(), ['Period-A', 'Period-B']);
+});
+
+test('clicking Rename again while an inline rename saves does not start a second editor', async () => {
+  const ctx = await browser.newContext({ storageState: await page.context().storageState() }), tab = await ctx.newPage();
+  let release!: () => void;
+  const pending = new Promise<void>(ok => { release = ok; });
+  try {
+    const { id } = await page.evaluate(async () => {
+      const { id: ws } = await (await fetch('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: 'Rename race' }) })).json();
+      const { id: sid } = await (await fetch('/api/series', { method: 'POST', body: JSON.stringify({ workspace: ws, name: 'S' }) })).json();
+      return (await fetch(`/api/series/${sid}`, { method: 'POST', body: JSON.stringify({ label: 'Before', quiet: true }) })).json();
+    });
+    await tab.goto(`${new URL(page.url()).origin}/#/${id}`);
+    await tab.click('#bar h1 .ren');
+    await tab.fill('#bar h1 input.inline', 'After');
+    await tab.route('**/rename?*', async route => { await pending; await route.continue(); });
+    const sending = tab.waitForRequest('**/rename?*');
+    await tab.press('#bar h1 input.inline', 'Enter');
+    await sending;
+    const button = await tab.locator('#bar h1 .ren').boundingBox();
+    await tab.mouse.click(button!.x + button!.width / 2, button!.y + button!.height / 2);
+    release();
+    await tab.waitForSelector('#bar h1 .t:text-is("After")');
+    assert.equal(await tab.locator('#bar h1 input.inline').count(), 0);
+    assert.deepEqual(await tab.locator('#toasts .toast').allTextContents(), []);
+  } finally {
+    release();
+    await ctx.close();
+  }
+});
+
+test('drafts in sessionStorage preserve item/cell pins and deep replies, skip cancelled reply boxes, and never leak across sign-out to another user', async () => {
+  const origin = new URL(page.url()).origin;
+  const { inst, inst2 } = await page.evaluate(async () => {
+    const { id: ws } = await (await fetch('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: 'DraftSafe' }) })).json();
+    await fetch(`/api/workspaces/${ws}`, { method: 'PUT', body: JSON.stringify({ add: 'bob@demo.test', as: 'member' }) });
+    const { id: sid } = await (await fetch('/api/series', { method: 'POST', body: JSON.stringify({ workspace: ws, name: 'S' }) })).json();
+    const { id: inst } = await (await fetch(`/api/series/${sid}`, { method: 'POST', body: JSON.stringify({ label: 'D1', quiet: true }) })).json();
+    const { id: inst2 } = await (await fetch(`/api/series/${sid}`, { method: 'POST', body: JSON.stringify({ label: 'D2', quiet: true }) })).json();
+    await fetch(`/api/instances/${inst}/upload?name=ar.csv&pane=in&quiet=1`, { method: 'POST', body: 'a,b\n1,2\n' });
+    await fetch(`/api/instances/${inst}/comment`, { method: 'POST', body: JSON.stringify({ text: 'Shallow root', quiet: true }) });
+    let parent: number | undefined;
+    for (let depth = 0; depth < 6; depth++) {
+      const r = await fetch(`/api/instances/${inst2}/comment`, { method: 'POST', body: JSON.stringify({ text: `Depth ${depth}`, ...(parent && { thread: `c${parent}` }), quiet: true }) });
+      parent = Number(r.headers.get('X-RF-Comment-Seq'));
+    }
+    return { inst, inst2 };
+  });
+
+  const ctx = await browser.newContext(), tab = await ctx.newPage();
+  try {
+    entra.who.as = 'admin@demo.test';
+    await tab.goto(`${origin}/#/${inst}`);
+    await tab.click('a.ms');
+    await tab.waitForSelector('#bar h1 .t:text-is("D1")');
+
+    // On D1: open and cancel a shallow reply, and pin a cell comment.
+    const shallow = tab.locator('#conv .post').first();
+    await shallow.locator(':scope > .pa [data-act=reply]').click();
+    await shallow.locator(':scope > .reply textarea').fill('Cancelled shallow reply');
+    await shallow.locator(':scope > .pa [data-act=reply]').click();
+
+    await tab.click('.tile');
+    await tab.click('#card .acts [data-act=preview]');
+    await tab.click('#pv table.sh [data-act=cell] >> nth=0');
+    const expectedRef = await tab.locator('#pv table.sh [data-act=cell] >> nth=0').getAttribute('data-ref');
+    await tab.click('#pvn [data-act=comment-cell]');
+    await tab.fill('#newcomment', 'Pinned cell draft');
+
+    // On D2: open a deep reply via Continue this thread, then lapse session on reply-post.
+    await tab.goto(`${origin}/#/${inst2}`);
+    await tab.waitForSelector('#bar h1 .t:text-is("D2")');
+    await tab.click('a[data-act=alone]');
+    const deep = tab.locator('#conv .post').last();
+    const deepSeq = await deep.getAttribute('data-seq');
+    await deep.locator(':scope > .pa [data-act=reply]').click();
+    await deep.locator(':scope > .reply textarea').fill('Kept deep reply');
+
+    await ctx.clearCookies();
+    await deep.locator('[data-act=reply-post]').click();
+    await tab.click('a.ms');
+    await tab.waitForSelector('#bar h1 .t:text-is("D2")');
+
+    await tab.click('a[data-act=alone]');
+    assert.equal(await tab.inputValue(`#conv .post[data-seq="${deepSeq}"] > .reply textarea`), 'Kept deep reply');
+
+    await tab.goto(`${origin}/#/${inst}`);
+    await tab.waitForSelector('#bar h1 .t:text-is("D1")');
+    assert.equal(await tab.inputValue('#newcomment'), 'Pinned cell draft');
+    assert.deepEqual(await tab.evaluate(() => [draft.on, draft.ref]), ['u2', expectedRef]);
+    assert.equal(await tab.locator('#conv .post').first().locator(':scope > .reply').isHidden(), true, 'cancelled reply stays closed');
+
+    // Sign out and sign in as Bob in the same tab: admin's draft must not appear for Bob.
+    await tab.click('#user summary');
+    await tab.click('[data-act=signout]');
+    await tab.waitForSelector('a.ms');
+    entra.who.as = 'bob@demo.test';
+    await tab.click('a.ms');
+    await tab.waitForSelector('#bar h1 .t');
+    await tab.goto(`${origin}/#/${inst}`);
+    await tab.waitForSelector('#bar h1 .t:text-is("D1")');
+    assert.equal(await tab.inputValue('#newcomment'), '');
+  } finally {
+    entra.who.as = 'admin@demo.test';
+    await ctx.close();
+  }
+});
+
+test('saving a wake without a date and time shows a clear prompt instead of Invalid time value', async () => {
+  const origin = new URL(page.url()).origin;
+  await page.goto(`${origin}/#/a5c0ff5e1f00`);
+  await page.waitForSelector('#bar [data-act=wakes]');
+  await page.click('#bar [data-act=wakes]');
+  await page.waitForSelector('#pv .wakerow [data-act=wake-save]');
+  await page.fill('#pv .wakerow .wat', '');
+  await page.click('#pv .wakerow [data-act=wake-save]');
+  await page.waitForSelector('#toasts .toast');
+  const msg = await page.textContent('#toasts .toast') ?? '';
+  assert.doesNotMatch(msg, /Invalid time value/i);
+  assert.match(msg, /date and time/i);
+  await page.click('#pv [data-act=unpv]');
+});
+
+test('cell comments on sheets whose names contain apostrophes mark the right sheet and cell instead of matching a column prefix on sheet 1', async () => {
+  const origin = new URL(page.url()).origin;
+  const { inst } = await page.evaluate(async () => {
+    const { id: ws } = await (await fetch('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: 'SheetQuotes' }) })).json();
+    const { id: sid } = await (await fetch('/api/series', { method: 'POST', body: JSON.stringify({ workspace: ws, name: 'S' }) })).json();
+    const { id: inst } = await (await fetch(`/api/series/${sid}`, { method: 'POST', body: JSON.stringify({ label: 'L1', quiet: true }) })).json();
+    const cols = Array.from({ length: 20 }, (_, i) => String.fromCharCode(65 + i)).join(',');
+    await fetch(`/api/instances/${inst}/upload?name=${encodeURIComponent("Q3 '26.csv")}&pane=in&quiet=1`, { method: 'POST', body: `${cols}\n${cols}\n${cols}\n` });
+    await fetch(`/api/instances/${inst}/comment`, { method: 'POST', body: JSON.stringify({ item: 'u2', ref: "Q3 '26.csv!B2", text: 'Unquoted sheet ref', quiet: true }) });
+    await fetch(`/api/instances/${inst}/comment`, { method: 'POST', body: JSON.stringify({ item: 'u2', ref: "'Q3 ''26.csv'!$B$3", text: 'Excel-quoted sheet ref', quiet: true }) });
+    return { inst };
+  });
+
+  await page.goto(`${origin}/#/${inst}`);
+  await page.waitForSelector('.tile');
+  await page.click('.tile');
+  await page.click('#card .acts [data-act=preview]');
+  await page.waitForSelector('#pv table.sh');
+  const notedRefs = await page.locator('#pv table.sh td.noted').evaluateAll(tds => tds.map(td => (td as HTMLElement).dataset.ref));
+  assert.deepEqual(notedRefs, ["Q3 '26.csv!B2", "Q3 '26.csv!B3"]);
+  await page.click('#pv [data-act=unpv]');
+});
+
+test('apostrophes and markup in sheet names, cells and notes stay text through comment pinning and reload', async () => {
+  const ctx = await browser.newContext({ storageState: await page.context().storageState() }), tab = await ctx.newPage();
+  const name = `O'Brien"><img src=x onerror="document.documentElement.dataset.sheetXss='yes'">`;
+  try {
+    await tab.goto(`${new URL(page.url()).origin}/#/a5c0ff5e1f02`);
+    await tab.waitForSelector('#bar h1 .t');
+    await tab.route('**/preview/**', route => route.fulfill({ json: {
+      sheets: [{ name, rows: [[name, 'Marked']], truncated: false }],
+      threads: [{ id: 'c2', ref: `'${name.replaceAll("'", "''")}'!$B$1`, posts: [{ by: 'admin@demo.test', text: name }] }],
+    } }));
+    await tab.click('.tile[data-item=tie]');
+    await tab.click('#card .acts [data-act=preview]');
+    await tab.waitForSelector('#pv table.sh');
+    assert.equal(await tab.locator('#pv td[data-act=cell]').first().textContent(), name);
+    assert.deepEqual(await tab.locator('#pv td.noted').evaluateAll(tds => tds.map(td => [(td as HTMLElement).dataset.ref, (td as HTMLElement).dataset.note])), [[`${name}!B1`, `you: ${name}`]]);
+    await tab.locator('#pv td[data-act=cell]').first().click();
+    assert.equal(await tab.textContent('#pvn button'), `Comment on ${name}!A1`);
+    await tab.click('#pvn [data-act=comment-cell]');
+    await tab.fill('#newcomment', 'A safe pinned draft');
+    await tab.reload();
+    await tab.waitForSelector('#newcomment');
+    assert.equal(await tab.inputValue('#newcomment'), 'A safe pinned draft');
+    assert.deepEqual(await tab.evaluate(() => [draft.on, draft.ref]), ['tie', `${name}!A1`]);
+    assert.equal(await tab.locator('#pv img, #conv img, [onerror]').count(), 0);
+    assert.equal(await tab.getAttribute('html', 'data-sheet-xss'), null);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('sidebar navigation and reload keep each draft but do not restore a cancelled reply', async () => {
+  const ctx = await browser.newContext({ storageState: await page.context().storageState() }), tab = await ctx.newPage();
+  try {
+    await tab.goto(`${new URL(page.url()).origin}/#/a5c0ff5e1f02`);
+    await tab.fill('#newcomment', 'October draft');
+    const reply = tab.locator('#conv .post[data-seq="2"] > .reply[data-mode=reply]');
+    await tab.click('#conv .post[data-seq="2"] > .pa [data-act=reply]');
+    await reply.locator('textarea').fill('Cancelled reply');
+    await reply.locator('[data-act=reply]').click();
+    await tab.click('#tree a[href="#/a5c0ff5e1f00"]');
+    await tab.waitForSelector('#bar h1 .t:text-is("2026-12")');
+    await tab.fill('#newcomment', 'December draft');
+    await tab.click('#tree a[href="#/a5c0ff5e1f02"]');
+    await tab.waitForSelector('#bar h1 .t:text-is("2026-10")');
+    assert.equal(await tab.inputValue('#newcomment'), 'October draft');
+    assert.equal(await reply.isHidden(), true);
+    await tab.reload();
+    await tab.waitForSelector('#newcomment');
+    assert.equal(await tab.inputValue('#newcomment'), 'October draft');
+    assert.equal(await reply.isHidden(), true);
+    await tab.click('#conv .post[data-seq="2"] > .pa [data-act=reply]');
+    assert.equal(await reply.locator('textarea').inputValue(), '');
+    await tab.click('#tree a[href="#/a5c0ff5e1f00"]');
+    await tab.waitForSelector('#bar h1 .t:text-is("2026-12")');
+    assert.equal(await tab.inputValue('#newcomment'), 'December draft');
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('Assign dialog when no other signed-in person sees the workspace explains that instead of showing an empty select', async () => {
+  const origin = new URL(page.url()).origin;
+  const { inst } = await page.evaluate(async () => {
+    const { id: ws } = await (await fetch('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: 'SoloAssign' }) })).json();
+    const { id: sid } = await (await fetch('/api/series', { method: 'POST', body: JSON.stringify({ workspace: ws, name: 'S' }) })).json();
+    const { id: inst } = await (await fetch(`/api/series/${sid}`, { method: 'POST', body: JSON.stringify({ label: 'Solo-1', quiet: true }) })).json();
+    return { inst };
+  });
+  await page.goto(`${origin}/#/${inst}`);
+  await page.waitForSelector('#bar [data-act=assign]');
+  await page.click('#bar [data-act=assign]');
+  await page.waitForSelector('#ask[open]');
+  assert.equal(await page.locator('#ask #assignto').count(), 0);
+  assert.equal(await page.locator('#ask button[value=ok]').count(), 0);
+  assert.match(await page.textContent('#ask p') ?? '', /signed in/i);
+  await page.keyboard.press('Escape');
+});
+
+test('clicking, resizing or sidebar keys before the initial identity loads cause no page error', async () => {
+  const ctx = await browser.newContext({ storageState: await page.context().storageState() }), tab = await ctx.newPage();
+  const errors: string[] = [], gate = Promise.withResolvers<void>();
+  tab.on('pageerror', e => errors.push(e.message));
+  await tab.addInitScript(() => { localStorage.side = 'folded'; });
+  await tab.route('**/me', async route => { await gate.promise; await route.continue(); });
+  try {
+    await tab.goto(`${new URL(page.url()).origin}/#/a5c0ff5e1f00`, { waitUntil: 'domcontentloaded' });
+    await tab.mouse.click(5, 5);
+    await tab.setViewportSize({ width: 600, height: 800 });
+    await tab.keyboard.press('j');
+    await tab.evaluate(() => new Promise(requestAnimationFrame));
+    assert.deepEqual(errors, []);
+  } finally {
+    gate.resolve();
+    await tab.unrouteAll({ behavior: 'wait' });
+    await ctx.close();
+  }
+});
+
+test('Enter does not submit a busy confirmation dialog twice', async () => {
+  const ctx = await browser.newContext({ storageState: await page.context().storageState() }), tab = await ctx.newPage();
+  let posts = 0;
+  let release!: () => void;
+  const pending = new Promise<void>(ok => { release = ok; });
+  try {
+    await tab.goto(page.url());
+    await tab.click('[data-act=new-workspace]');
+    await tab.fill('#ask input', 'Only once');
+    await tab.route('**/api/workspaces', async route => {
+      posts++;
+      await pending;
+      await route.fulfill({ status: 500, body: 'Test submission held' });
+    });
+    await tab.press('#ask input', 'Enter');
+    await tab.waitForSelector('#ask button[aria-busy]');
+    await tab.press('#ask input', 'Enter');
+    release();
+    await tab.waitForSelector('#ask .err:text-is("Test submission held")');
+    assert.equal(posts, 1);
+  } finally {
+    release();
+    await ctx.close();
+  }
+});
+
+test('a failed sign-out keeps unsent drafts through reload', async () => {
+  const ctx = await browser.newContext({ storageState: await page.context().storageState() }), tab = await ctx.newPage();
+  try {
+    await tab.goto(`${new URL(page.url()).origin}/#/a5c0ff5e1f00`);
+    await tab.fill('#newcomment', 'Keep this if sign-out fails');
+    await tab.route('**/auth/logout', route => route.fulfill({ status: 500, body: 'Sign-out failed' }));
+    await tab.click('#user summary');
+    await tab.click('[data-act=signout]');
+    await tab.waitForSelector('#toasts .toast:text-is("Sign-out failed")');
+    await tab.reload();
+    await tab.waitForSelector('#newcomment');
+    assert.equal(await tab.inputValue('#newcomment'), 'Keep this if sign-out fails');
+  } finally {
+    await ctx.close();
+  }
+});
+
+for (const kind of ['workspace', 'series']) test(`a delayed ${kind} rename does not overwrite the next settings dialog`, async () => {
+  const ctx = await browser.newContext({ storageState: await page.context().storageState() }), tab = await ctx.newPage();
+  let release!: () => void;
+  const pending = new Promise<void>(ok => { release = ok; });
+  try {
+    const ids = await page.evaluate(async kind => {
+      const ids = [];
+      for (const label of ['First settings', 'Second settings']) {
+        const name = `${kind} ${label}`;
+        const { id: ws } = await (await fetch('/api/workspaces', { method: 'POST', body: JSON.stringify({ name }) })).json();
+        const { id: sid } = await (await fetch('/api/series', { method: 'POST', body: JSON.stringify({ workspace: ws, name }) })).json();
+        ids.push(kind === 'workspace' ? ws : sid);
+      }
+      return ids;
+    }, kind);
+    const act = kind === 'workspace' ? 'workspace-settings' : 'settings', input = kind === 'workspace' ? '#wname' : '#sname';
+    await tab.goto(`${new URL(page.url()).origin}/#/${ids[0]}`);
+    await tab.locator(`[data-act=${act}][data-id="${ids[0]}"]`).evaluate((el: HTMLElement) => el.click());
+    await tab.fill(input, 'Renamed first settings');
+    const url = `**/api/${kind === 'workspace' ? 'workspaces' : 'series'}/${ids[0]}`;
+    await tab.route(url, async route => {
+      if (route.request().method() !== 'PUT') return route.continue();
+      await pending;
+      await route.fulfill({ status: 200, body: '{}' });
+    });
+    const sending = tab.waitForRequest(r => r.method() === 'PUT' && r.url().endsWith(ids[0]));
+    await tab.dispatchEvent(input, 'change');
+    await sending;
+    await tab.click('#pv [data-act=unpv]');
+    await tab.goto(`${new URL(page.url()).origin}/#/${ids[1]}`);
+    await tab.locator(`[data-act=${act}][data-id="${ids[1]}"]`).evaluate((el: HTMLElement) => el.click());
+    await tab.waitForSelector(input);
+    const refreshed = tab.waitForResponse(r => r.url().endsWith('/api'));
+    release();
+    await refreshed;
+    await tab.evaluate(() => renderPv());
+    assert.equal(await tab.inputValue(input), `${kind} Second settings`);
+    assert.equal(await tab.textContent('#pv .saved'), '');
+  } finally {
+    release();
+    await ctx.close();
+  }
+});
+
+test('Enter respects aria-busy, row settings do not hang when location.hash already matches, and #wname stays synced in settings', async () => {
+  // 1. Enter twice in #tname while POST /tokens is in flight submits only once.
+  let tokenPosts = 0;
+  await page.route('**/tokens', async route => {
+    if (route.request().method() === 'POST') {
+      tokenPosts++;
+      await new Promise(r => setTimeout(r, 250));
+    }
+    await route.continue();
+  });
+  await page.click('#sidefoot [data-act=logins]');
+  await page.click('#pv [data-act=tokens]');
+  await page.waitForSelector('#tname');
+  await page.fill('#tname', 'once-only');
+  await page.press('#tname', 'Enter');
+  await page.press('#tname', 'Enter');
+  await page.waitForSelector('#pv input[readonly]');
+  await page.unroute('**/tokens');
+  assert.equal(tokenPosts, 1, 'second Enter ignored while button is aria-busy');
+  await page.click('#pv [data-act=unpv]');
+
+  // 2. Clicking workspace-settings when location.hash already equals #/<ws> before cur catches up does not hang.
+  const { id: ws } = await page.evaluate(async () => (await fetch('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: 'FastGear' }) })).json());
+  await page.evaluate(async () => refresh());
+  await page.evaluate(ws => { history.replaceState(null, '', `#/${ws}`); }, ws);
+  await page.hover(`.row.ws:has(a[href="#/${ws}"])`);
+  await page.click(`.row.ws [data-act=workspace-settings][data-id="${ws}"]`);
+  await page.waitForSelector('#pv #wname', { timeout: 2000 });
+
+  // 3. Changing #wname updates pv.settings.name so re-rendering #pv keeps the new name.
+  await page.fill('#wname', 'FastGearRenamed');
+  await page.dispatchEvent('#wname', 'change');
+  await page.waitForFunction(() => tree.some((w: any) => w.name === 'FastGearRenamed'));
+  await page.evaluate(() => renderPv());
+  assert.equal(await page.inputValue('#wname'), 'FastGearRenamed');
+  await page.click('#pv [data-act=unpv]');
+});

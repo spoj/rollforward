@@ -83,3 +83,17 @@ test("a commit refuses a folder whose files' holes, what sparse files read as ze
   assert.equal(git(dir, 'show', 'HEAD:kept.txt').toString(), 'kept');
   rmSync(dir, { recursive: true, force: true });
 });
+
+test('a commit skips symlinks inside a .gitmodules directory while keeping regular files there', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rf-git-')), who = { name: 'Agent', email: 'agent@x' };
+  mkdirSync(join(dir, 'working', '.gitmodules', 'nested'), { recursive: true });
+  mkdirSync(join(dir, 'working', 'gitmod~1'), { recursive: true });
+  writeFileSync(join(dir, 'working', '.gitmodules', 'kept.txt'), 'plain\n');
+  symlinkSync('target', join(dir, 'working', '.gitmodules', 'sub'));
+  symlinkSync('target', join(dir, 'working', '.gitmodules', 'nested', 'deep'));
+  symlinkSync('target', join(dir, 'working', 'gitmod~1', 'short'));
+  const hash = await commit(dir, who, 'Run 1');
+  const paths = git(dir, 'ls-tree', '-r', '--name-only', hash).toString().trim().split('\n');
+  assert.deepEqual(paths, ['working/.gitmodules/kept.txt']);
+  rmSync(dir, { recursive: true, force: true });
+});

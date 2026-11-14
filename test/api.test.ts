@@ -1912,4 +1912,294 @@ test('rf request start on a request to wake an assigned instance logs quiet wake
   await quiet();
 });
 
+test('preview handles CSV cells larger than 128 KB and workbooks with missing custom numFmtId entries', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'PreviewLarge' }))).json();
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'S' }))).json();
+  const { id: inst } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'L1', quiet: true }))).json();
+  const wdir = join(root, 'instances', inst, 'working');
+  writeFileSync(join(wdir, 'wide.csv'), `id,notes\n1,"${'x'.repeat(150_000)}"\n`);
+  execFileSync('python3', ['-c', `
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], 'r') as zin, zipfile.ZipFile('out.xlsx', 'w') as zout:
+    for item in zin.infolist():
+        data = zin.read(item.filename)
+        if item.filename == 'xl/styles.xml':
+            txt = data.decode('utf-8')
+            s, e = txt.find('<numFmts'), txt.find('</numFmts>') + len('</numFmts>')
+            if s != -1: txt = txt[:s] + txt[e:]
+            data = txt.encode('utf-8')
+        zout.writestr(item, data)
+`, join(app, 'test', 'formats.xlsx')], { cwd: wdir });
+  const csvRes = await call('GET', `/preview/${inst}/working/wide.csv`);
+  assert.equal(csvRes.status, 200);
+  assert.equal((await csvRes.json()).sheets[0].rows[1][1].length, 150_000);
+  const xlsxRes = await call('GET', `/preview/${inst}/working/out.xlsx?sheet=0`);
+  assert.equal(xlsxRes.status, 200);
+  assert.equal((await xlsxRes.json()).rows[1][1], 1234567.891);
+});
+
+test('GET /api/files and rf pull skip unreadable folders and files in working/', async () => {
+  const { chmodSync } = await import('node:fs');
+  if (!existsSync(home)) { mkdirSync(home); await rf('login', base, (await (await call('POST', '/tokens', JSON.stringify({ name: 'cli-unr', days: 1 }))).json()).token); }
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'UnreadablePull' }))).json();
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'S' }))).json();
+  const { id: inst } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'L1', quiet: true }))).json();
+  const wdir = join(root, 'instances', inst, 'working'), dest = join(tmp, 'pulled-unreadable');
+  mkdirSync(join(wdir, 'locked'), { recursive: true });
+  writeFileSync(join(wdir, 'locked', 'inside.txt'), 'hidden');
+  writeFileSync(join(wdir, 'secret.txt'), 'mode0');
+  writeFileSync(join(wdir, 'ok.txt'), 'visible');
+  chmodSync(join(wdir, 'locked'), 0o000);
+  chmodSync(join(wdir, 'secret.txt'), 0o000);
+  try {
+    const res = await call('GET', '/api/files?path=UnreadablePull');
+    assert.equal(res.status, 200);
+    await rf('pull', 'UnreadablePull/', dest);
+    assert.equal(readFileSync(join(dest, 'S', 'L1', 'working', 'ok.txt'), 'utf8'), 'visible');
+    assert.equal(existsSync(join(dest, 'S', 'L1', 'working', 'secret.txt')), false);
+  } finally {
+    chmodSync(join(wdir, 'locked'), 0o700);
+    chmodSync(join(wdir, 'secret.txt'), 0o600);
+  }
+});
+
+test('rf pull --delete preserves excluded git directories and handles file-to-folder and folder-to-file replacements', async () => {
+  const { execFileSync } = await import('node:child_process');
+  if (!existsSync(home)) { mkdirSync(home); await rf('login', base, (await (await call('POST', '/tokens', JSON.stringify({ name: 'cli-del', days: 1 }))).json()).token); }
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'PullDelete' }))).json();
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'S' }))).json();
+  const { id: inst } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'L1', quiet: true }))).json();
+  const wdir = join(root, 'instances', inst, 'working'), dest = join(tmp, 'pulled-git');
+  mkdirSync(dest, { recursive: true });
+  execFileSync('git', ['init', '-q'], { cwd: dest });
+  writeFileSync(join(wdir, 'report'), 'flat file');
+  await rf('pull', 'PullDelete/S/L1/', dest, '--delete', '--exclude', '.git');
+  execFileSync('git', ['status'], { cwd: dest });
+  assert.equal(readFileSync(join(dest, 'working', 'report'), 'utf8'), 'flat file');
+
+  rmSync(join(wdir, 'report'));
+  mkdirSync(join(wdir, 'report', 'sub'), { recursive: true });
+  writeFileSync(join(wdir, 'report', 'sub', 'part.txt'), 'nested file');
+  const r1 = await rf('pull', 'PullDelete/S/L1/', dest, '--delete', '--exclude', '.git');
+  assert.doesNotMatch(r1, /failed/);
+  assert.equal(readFileSync(join(dest, 'working', 'report', 'sub', 'part.txt'), 'utf8'), 'nested file');
+
+  rmSync(join(wdir, 'report'), { recursive: true, force: true });
+  writeFileSync(join(wdir, 'report'), 'flat again');
+  const r2 = await rf('pull', 'PullDelete/S/L1/', dest, '--delete', '--exclude', '.git');
+  assert.doesNotMatch(r2, /failed/);
+  assert.equal(readFileSync(join(dest, 'working', 'report'), 'utf8'), 'flat again');
+  execFileSync('git', ['status'], { cwd: dest });
+});
+
+test('rf pull --delete replaces a file or folder at the pull root', async () => {
+  if (!existsSync(home)) { mkdirSync(home); await rf('login', base, (await (await call('POST', '/tokens', JSON.stringify({ name: 'cli-root', days: 1 }))).json()).token); }
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'PullRoot' }))).json();
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'S' }))).json();
+  const { id: inst } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'L1', quiet: true }))).json();
+  const report = join(root, 'instances', inst, 'working', 'report'), dest = join(tmp, 'pulled-root');
+  writeFileSync(report, 'flat file');
+  await rf('pull', 'PullRoot/S/L1/working/report', dest, '--delete');
+  assert.equal(readFileSync(join(dest, 'report'), 'utf8'), 'flat file');
+
+  rmSync(report);
+  mkdirSync(report);
+  writeFileSync(join(report, 'part.txt'), 'nested file');
+  await rf('pull', 'PullRoot/S/L1/working/report', dest, '--delete');
+  assert.equal(readFileSync(join(dest, 'report', 'part.txt'), 'utf8'), 'nested file');
+
+  rmSync(report, { recursive: true });
+  writeFileSync(report, 'flat again');
+  await rf('pull', 'PullRoot/S/L1/working/report', dest, '--delete');
+  assert.equal(readFileSync(join(dest, 'report'), 'utf8'), 'flat again');
+});
+
+test('previous detects in-place same-size edits even when mtime is restored', async () => {
+  const { chmodSync, utimesSync } = await import('node:fs');
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'PrevHash' }))).json();
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'S' }))).json();
+  const { id: p1 } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: '2026-02', quiet: true }))).json();
+  await call('POST', `/api/instances/${p1}/upload?name=out.txt&pane=out&quiet=1`, 'aaa');
+  await call('POST', `/api/instances/${p1}/close`, JSON.stringify({ quiet: true }));
+
+  const { id: p2 } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: '2026-03', quiet: true }))).json();
+  await call('POST', `/api/instances/${p2}/upload?name=out.txt&pane=out&quiet=1`, 'aaa');
+  const d0 = await json(`/api/instances/${p2}`);
+  const p2File = join(root, 'instances', p2, d0.doc.items[0].file);
+  utimesSync(p2File, 1.7e9, 1.7e9);
+  await new Promise(r => setTimeout(r, 1100));
+  assert.equal((await json(`/api/instances/${p2}`)).previous.changed[d0.doc.items[0].id], 'same');
+
+  chmodSync(p2File, 0o644);
+  writeFileSync(p2File, 'bbb');
+  utimesSync(p2File, 1.7e9, 1.7e9);
+  assert.equal((await json(`/api/instances/${p2}`)).previous.changed[d0.doc.items[0].id], 'changed');
+});
+
+test('GET /trace handles oversized and malformed session JSONL files and /comment rejects non-string ref', async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'TraceSafe' }))).json();
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'S' }))).json();
+  const { id: inst } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'L1', quiet: true }))).json();
+  const sdir = join(root, 'instances', inst, 'session');
+  mkdirSync(sdir, { recursive: true });
+  const s1 = join(sdir, '001.jsonl');
+  writeFileSync(s1, `${JSON.stringify({ type: 'message', timestamp: '2026-01-01T00:00:00Z', message: { role: 'assistant', content: [{ type: 'text', text: 'Hello trace' }] } })}\n`);
+  truncateSync(s1, 600 * 1024 * 1024);
+  writeFileSync(join(sdir, '002.jsonl'), [
+    JSON.stringify({ type: 'message', message: { role: 'toolResult', toolCallId: 'orphan-id', content: [{ type: 'text', text: 'orphan' }], isError: false } }),
+    JSON.stringify({ type: 'message', message: null }),
+    JSON.stringify({ type: 'message', message: { role: 'assistant', content: 'not-an-array' } }),
+  ].join('\n') + '\n');
+
+  const tr = await call('GET', `/api/instances/${inst}/trace`);
+  rmSync(s1);
+  assert.equal(tr.status, 200);
+  assert.deepEqual(await tr.json(), [{ kind: 'say', at: '2026-01-01T00:00:00Z', text: 'Hello trace' }]);
+
+  const badRef = await call('POST', `/api/instances/${inst}/comment`, JSON.stringify({ text: 'Check cell', ref: { sheet: 1 }, quiet: true }));
+  assert.equal(badRef.status, 400);
+});
+
+test('GET /trace preserves multi-MB sessions and complete records at the sampled tail boundary', async () => {
+  const { closeSync, openSync, writeSync } = await import('node:fs');
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'TraceBoundaries' }))).json();
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'S' }))).json();
+  const { id: inst } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'L1', quiet: true }))).json();
+  const sdir = join(root, 'instances', inst, 'session'), path = join(sdir, '001.jsonl');
+  mkdirSync(sdir);
+  const record = (text: string) => JSON.stringify({ type: 'message', message: { role: 'user', content: text } }) + '\n';
+  const normal = Array.from({ length: 50_000 }, (_, i) => `row-${i}`);
+  writeFileSync(path, normal.map(record).join(''));
+  assert.deepEqual((await json(`/api/instances/${inst}/trace`)).map(l => l.text), normal);
+  for (const aligned of [true, false]) {
+    writeFileSync(path, record('head'));
+    truncateSync(path, 65 << 20);
+    const fd = openSync(path, 'r+'), offset = 5 << 20;
+    try {
+      if (aligned) writeSync(fd, '\n', offset - 1);
+      writeSync(fd, record('tail-first') + record('tail-second'), aligned ? offset : offset - 10);
+    } finally { closeSync(fd); }
+    assert.deepEqual((await json(`/api/instances/${inst}/trace`)).map(l => l.text), aligned ? ['head', 'tail-first', 'tail-second'] : ['head', 'tail-second']);
+  }
+});
+
+test('updating company or workspace AGENTS.md replaces the file atomically without mutating an open descriptor', async () => {
+  const { closeSync, openSync } = await import('node:fs');
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'AtomicAgents' }))).json();
+  await call('PUT', '/agents', 'company v1');
+  await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ agents: 'workspace v1' }));
+  const fdCompany = openSync(join(root, 'agents', 'company.md'), 'r');
+  const fdWs = openSync(join(root, 'agents', `${ws}.md`), 'r');
+  try {
+    await call('PUT', '/agents', 'company v2');
+    await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ agents: 'workspace v2' }));
+    assert.equal(readFileSync(fdCompany, 'utf8'), 'company v1');
+    assert.equal(readFileSync(fdWs, 'utf8'), 'workspace v1');
+    assert.equal((await json('/agents')).text, 'company v2');
+    assert.equal(readFileSync(join(root, 'agents', `${ws}.md`), 'utf8'), 'workspace v2');
+  } finally {
+    closeSync(fdCompany);
+    closeSync(fdWs);
+  }
+});
+
+test('a task whose first comment is AGENTS.md posts cleanly without failing auto-rename', async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'TaskAgentsWord' }))).json();
+  const { instance: inst } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, single: true }))).json();
+  const res = await call('POST', `/api/instances/${inst}/comment`, JSON.stringify({ text: '...AGENTS.md', quiet: true }));
+  assert.equal(res.status, 200);
+  const d = await json(`/api/instances/${inst}`);
+  assert.equal(d.log.some((e: any) => e.op === 'rename'), false);
+  assert.equal(d.log.findLast((e: any) => e.op === 'comment').text, '...AGENTS.md');
+});
+
+test('rf comment --wake and --wait on a shared series start and wait for the runner’s shared run', async () => {
+  if (!existsSync(home)) { mkdirSync(home); await rf('login', base, (await (await call('POST', '/tokens', JSON.stringify({ name: 'cli-sh', days: 1 }))).json()).token); }
+  const b = sessionOf(await login(bob))!;
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'SharedComment' }))).json();
+  await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ add: bob, as: 'member' }));
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'S' }), b)).json();
+  await call('PUT', `/api/series/${sid}`, JSON.stringify({ share: true, logins: [] }), b);
+  await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'L1', quiet: true }), b);
+
+  const wakeOut = await rf('comment', 'SharedComment/S/L1', 'Check this', '--wake');
+  assert.doesNotMatch(wakeOut, /starts no run/);
+  assert.equal(wakeOut, `a note for the runner, ${bob}, seq 2\n`);
+  await quiet();
+
+  const waitOut = await rf('comment', 'SharedComment/S/L1', 'And wait', '--wait');
+  assert.doesNotMatch(waitOut, /starts no run/);
+  await quiet();
+});
+
+test('run-start group renewal revokes workspace grants only after the last visible group is lost', async () => {
+  const { personDir, saveLogin } = await import('../src/logins.ts');
+  const email = 'grant-groups@demo.test', first = '8d7e332d-b4c7-4ff5-aac3-10a87909a40b', second = '0e3dcbbb-bb2e-4fb3-b21d-a87f9b5aa624';
+  entra.who.groups[email] = [first, second];
+  const cookie = sessionOf(await login(email))!;
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'RenewedGrants' }))).json();
+  await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ members: [first, second] }));
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'S' }))).json();
+  const { id: inst } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'L1', quiet: true }), cookie)).json();
+  saveLogin(email, { id: 'web:renewed-grant', kind: 'website', name: 'Renewed grant', since: new Date().toISOString(), offers: [{ id: 'web:renewed-grant', name: 'Renewed grant' }] });
+  writeFileSync(join(personDir(email), 'websites.json'), JSON.stringify({
+    'renewed-grant': { url: 'https://portal.example.com/', hosts: ['portal.example.com'], writeback: true, added: new Date().toISOString(),
+      profile: { what: 'Supplier portal', category: 'vendor', risk: 'medium', flags: [] } },
+  }));
+  const { id } = await (await call('POST', '/grants', JSON.stringify({ site: 'renewed-grant', workspace: ws, reason: 'Review invoices' }), cookie)).json();
+  assert.equal((await call('POST', `/grants/${id}`, JSON.stringify({ approve: true }))).status, 200);
+  entra.who.groups[email] = [second];
+  await call('POST', `/api/instances/${inst}/comment`, JSON.stringify({ text: 'Still in one group' }), cookie);
+  await ran(`/api/instances/${inst}`);
+  assert.equal((await json('/grants')).find(g => g.id === id).state, 'approved');
+  delete entra.who.groups[email];
+  await call('POST', `/api/instances/${inst}/comment`, JSON.stringify({ text: 'Refresh my groups' }), cookie);
+  for (let i = 0; i < 100 && (await json('/me', cookie)).groups.length; i++) await new Promise(r => setTimeout(r, 50));
+  assert.deepEqual((await json('/me', cookie)).groups, []);
+  assert.equal((await json('/grants')).find(g => g.id === id).state, 'revoked');
+  assert.equal((await json('/logins', cookie)).some(l => l.id === 'web:renewed-grant'), false);
+});
+
+test('an RF_ADMINS admin keeps workspace grants when another admin changes their stored role to user', async () => {
+  const { personDir, saveLogin } = await import('../src/logins.ts');
+  const b = sessionOf(await login(bob))!;
+  assert.equal((await call('PUT', '/users', JSON.stringify({ roles: { [bob]: 'admin' } }))).status, 200);
+  try {
+    const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'AdminGrant' }), b)).json();
+    saveLogin(adminEmail, { id: 'web:admin-grant', kind: 'website', name: 'Admin grant', since: new Date().toISOString(), offers: [{ id: 'web:admin-grant', name: 'Admin grant' }] });
+    const sites = join(personDir(adminEmail), 'websites.json');
+    writeFileSync(sites, JSON.stringify({ ...(existsSync(sites) ? JSON.parse(readFileSync(sites, 'utf8')) : {}),
+      'admin-grant': { url: 'https://portal.example.com/', hosts: ['portal.example.com'], writeback: true, added: new Date().toISOString(),
+        profile: { what: 'Supplier portal', category: 'vendor', risk: 'medium', flags: [] } } }));
+    const asked = await call('POST', '/grants', JSON.stringify({ site: 'admin-grant', workspace: ws, reason: 'Review invoices' }));
+    assert.equal(asked.status, 200);
+    const { id } = await asked.json();
+    assert.equal((await json('/grants')).find(g => g.id === id).state, 'approved');
+    assert.equal((await call('PUT', '/users', JSON.stringify({ roles: { [adminEmail]: 'user' }, force: true }), b)).status, 200);
+    assert.ok((await workspaces()).some(w => w.id === ws), 'RF_ADMINS still grants visibility');
+    assert.equal((await json('/grants')).find(g => g.id === id).state, 'approved');
+    assert.ok((await json('/logins')).some(l => l.id === 'web:admin-grant'));
+  } finally {
+    await call('PUT', '/users', JSON.stringify({ roles: { [adminEmail]: 'admin', [bob]: 'user' }, force: true }));
+  }
+});
+
+test('/correct restricts a person’s see target to another non-deleted instance of the same series', async () => {
+  const { id: ws1 } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'CorrWs1' }))).json();
+  const { id: ws2 } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'CorrWs2' }))).json();
+  const { id: s1 } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws1, name: 'S1' }))).json();
+  const { id: s2 } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws2, name: 'S2' }))).json();
+  const { id: i1 } = await (await call('POST', `/api/series/${s1}`, JSON.stringify({ label: '2026-01', quiet: true }))).json();
+  const { id: i2 } = await (await call('POST', `/api/series/${s1}`, JSON.stringify({ label: '2026-02', quiet: true }))).json();
+  const { id: other } = await (await call('POST', `/api/series/${s2}`, JSON.stringify({ label: '2026-02', quiet: true }))).json();
+  await call('POST', `/api/instances/${i1}/close`, JSON.stringify({ quiet: true }));
+
+  assert.equal((await call('POST', `/api/instances/${i1}/correct`, JSON.stringify({ kind: 'wrong', text: 'bad cross-series', see: other }))).status, 400);
+  assert.equal((await json(`/api/instances/${other}`)).log.some((e: any) => e.op === 'corrected'), false);
+  assert.equal((await call('POST', `/api/instances/${i1}/correct`, JSON.stringify({ kind: 'wrong', text: 'self', see: i1 }))).status, 400);
+  assert.equal((await call('POST', `/api/instances/${i1}/correct`, JSON.stringify({ kind: 'wrong', text: 'valid same-series', see: i2 }))).status, 200);
+  assert.equal((await json(`/api/instances/${i2}`)).log.some((e: any) => e.op === 'corrected'), true);
+});
+
 

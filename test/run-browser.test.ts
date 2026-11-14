@@ -24,19 +24,26 @@ import { changes, initSystem, rfDir, saveTree, tree, writeJson } from '../src/sy
 const state = (value: string, domain = '.example.com') => ({ cookies: [{ name: 'sid', value, domain, path: '/', expires: -1, httpOnly: true, secure: true, sameSite: 'Lax' }], origins: [] });
 let page = Buffer.from('page 1'), back: unknown = { cookies: [], origins: [] }, listed: string[] = [], shown = { url: '', password: false };
 const plain = [{ method: 'GET', url: 'https://crm.example.com/', status: 200 }];
-let requested: object[] = plain;
+let requested: object[] = plain, closeGate: Promise<void> | undefined;
 const states: unknown[] = [], headers: unknown[] = [], deleted: string[] = [], starts: string[] = [], publics: boolean[] = [];
 const opened: { site: { hosts: string[]; start_url?: string; public?: boolean; open?: boolean; except?: string[] }; ttl_s: number; state?: unknown }[] = [];
 let blocked: Record<string, boolean> = {};
 const toldHosts: { path: string; hosts: string[] }[] = [];
-let nextId = 'b9', refuseClose = false, dropClose = false, hangClose = false, openGate: Promise<void> | undefined;
+let nextId = 'b9', refuseClose = false, dropClose = false, hangClose = false, oversizeClose = false, oversizeStatus = 200, openGate: Promise<void> | undefined;
 const service = createServer(async (req, res) => {
   if (req.method === 'PUT') {
     toldHosts.push({ path: req.url!, ...JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString()) });
     return res.end('{}');
   }
   if (req.method === 'DELETE') {
+    if (req.url === '/sessions/malformed-state') return res.end('{"state":{"cookies":[{"name":"session","value":"private-cookie-never-logged"}]');
     if (hangClose) return;
+    if (oversizeClose) {
+      res.writeHead(oversizeStatus);
+      const chunk = Buffer.alloc(1 << 20, 0x61);
+      for (let i = 0; i < 66 && !res.destroyed; i++) if (!res.write(chunk)) await new Promise<void>(ok => res.once('drain', ok) && res.once('close', ok));
+      return res.end();
+    }
     if (dropClose) {
       res.writeHead(500, { 'content-length': 100 });
       res.write('{"error":');
@@ -44,6 +51,7 @@ const service = createServer(async (req, res) => {
     }
     if (refuseClose) return res.writeHead(404).end('{"error":"session gone"}');
     deleted.push(req.url!.split('/')[2]);
+    await closeGate;
     return res.writeHead(200).end(JSON.stringify({ state: back, log: requested }));
   }
   if (req.method === 'POST' && req.url!.endsWith('/reload')) return res.writeHead(200).end('{}');
@@ -980,4 +988,209 @@ test("the shared website check profiles the site, accepts fenced answers, uses a
   const acts = readFileSync(join(rfDir(), 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)), last = acts.findLast(a => a.op === 'website-check');
   assert.equal(last.queries.length, 5);
   assert.doesNotMatch(JSON.stringify(last), /private-|secret-cookie|token=/);
+});
+
+test('setSite clears a website sign-in header and its sealed token when header is empty string', async () => {
+  const { personDir, seal } = await import('../src/logins.ts'), { setSite } = await import('../src/browsers.ts');
+  sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: true, header: 'x-bot-token' } });
+  seal(alice, 'web:crm.header', 'secret-token');
+  assert.equal(existsSync(join(personDir(alice), 'web:crm.header.sealed')), true);
+  await setSite(asPerson(alice)!, 'crm', { header: '' });
+  assert.equal(websitesOf(alice).crm.header, undefined);
+  assert.equal(existsSync(join(personDir(alice), 'web:crm.header.sealed')), false);
+});
+
+test('closeUnlent closes an idle browser on login expiry or grant revocation without logging expired or refused until the run asks again', async () => {
+  sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: false } });
+  writeJson('grants.json', everyone);
+  saveLogin(alice, website('crm', 'CRM'), JSON.stringify(state('s1')));
+  const inst = running('2028-03', ['web:crm'], 1);
+  const run = new Browsers(inst, 1);
+  await run.browser('crm');
+  saveLogin(alice, { ...website('crm', 'CRM'), expired: true }, JSON.stringify(state('s1')));
+  await run.closeUnlent();
+  assert.equal(run.bySite.size, 0);
+  assert.equal(inst.log.some(e => e.op === 'expired' || e.action === 'refused'), false);
+  await assert.rejects(() => run.browser('crm'), /expired/);
+  assert.equal(inst.log.some(e => e.op === 'expired'), true);
+});
+
+test('keepAlive preserves existing sealed login state when browser close returns null state', async () => {
+  const until = new Date(2026, 11, 20).toISOString();
+  sites({ crm: { url: 'https://crm.example.com/home', hosts: [], writeback: true, keepalive: '/home', every: 10 } });
+  writeJson('grants.json', everyone);
+  saveLogin(alice, { ...website('crm', 'CRM'), keepalive: until }, JSON.stringify(state('good-session')));
+  const wasBack = back;
+  [back, shown] = [null as any, { url: 'https://crm.example.com/home', password: false }];
+  try {
+    await keepAlive(new Date(2026, 11, 10, 9, 0));
+  } finally {
+    back = wasBack;
+  }
+  assert.deepEqual(JSON.parse(secret(alice, 'web:crm')), state('good-session'));
+});
+
+test('run writeback trims cookies and origins to allowed hosts and rejects oversized browser-service responses cleanly', async () => {
+  const { createServer } = await import('node:http');
+  sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });
+  writeJson('grants.json', everyone);
+  saveLogin(alice, website('crm', 'CRM'), JSON.stringify(state('initial')));
+  const wasBack = back;
+  back = {
+    cookies: [
+      ...state('refreshed').cookies,
+      { name: 'poison', value: 'x', domain: 'evil.test', path: '/', expires: -1, httpOnly: false, secure: true, sameSite: 'Lax' },
+      { name: 'super', value: 'y', domain: '.com', path: '/', expires: -1, httpOnly: false, secure: true, sameSite: 'Lax' },
+    ],
+    origins: [
+      { origin: 'https://crm.example.com', localStorage: [{ name: 'ok', value: '1' }] },
+      { origin: 'https://evil.test', localStorage: [{ name: 'bad', value: '2' }] },
+    ],
+  };
+  try {
+    const inst = running('2028-04', ['web:crm'], 1);
+    const run = new Browsers(inst, 1);
+    await run.browser('crm');
+    await run.close();
+  } finally {
+    back = wasBack;
+  }
+  const saved = JSON.parse(secret(alice, 'web:crm'));
+  assert.deepEqual(saved.cookies.map((c: any) => [c.domain, c.value]), [['.example.com', 'refreshed']]);
+  assert.deepEqual(saved.origins.map((o: any) => o.origin), ['https://crm.example.com']);
+
+  oversizeClose = true;
+  try {
+    const run2 = new Browsers(running('2028-05', ['web:crm'], 1), 1);
+    await run2.browser('crm');
+    await assert.rejects(() => run2.close(), { status: 502 });
+  } finally {
+    oversizeClose = false;
+  }
+  assert.deepEqual(JSON.parse(secret(alice, 'web:crm')).cookies.map((c: any) => c.value), ['refreshed']);
+});
+
+test('ending a person\'s sign-ins invalidates an opening browser and a save already closing its browser', { timeout: 5000 }, async () => {
+  const { endSignIns } = await import('../src/browsers.ts');
+  for (const mode of ['saving', 'opening']) {
+    sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });
+    saveLogin(alice, website('crm', 'CRM'), JSON.stringify(state('initial')));
+    const id = mode === 'saving' ? await startSignIn(alice, 'crm', '') : undefined;
+    let release!: () => void;
+    const gate = new Promise<void>(ok => { release = ok; });
+    if (mode === 'opening') openGate = gate;
+    else closeGate = gate;
+    const before = mode === 'opening' ? states.length : deleted.length;
+    const outcome = Promise.allSettled([mode === 'opening' ? startSignIn(alice, 'crm', '') : endSignIn(alice, id!, true)]);
+    try {
+      while ((mode === 'opening' ? states.length : deleted.length) === before) await sleep(5);
+      await endSignIns(alice);
+      release();
+      const [result] = await outcome;
+      assert.equal(result.status, 'rejected', mode);
+      if (result.status === 'rejected') assert.equal(result.reason.status, 409);
+      assert.equal(isSignIn(alice, 'b9'), false);
+      assert.deepEqual(JSON.parse(secret(alice, 'web:crm')), state('initial'));
+    } finally {
+      release();
+      openGate = closeGate = undefined;
+      await outcome;
+      await endSignIns(alice);
+    }
+  }
+});
+
+test('saved browser state excludes refused exact hosts while preserving wildcard subdomains and their parent-domain cookies', async () => {
+  const { changeWebsite } = await import('../src/browsers.ts');
+  const wasBack = back, wasRequested = requested;
+  const domains = ['crm.example.com', 'denied.external.test', 'sub.assets.example.net', '.assets.example.net', '.example.net', 'assets.example.net'];
+  back = { cookies: domains.map(d => state(d, d).cookies[0]), origins: domains.filter(d => !d.startsWith('.')).map(d => ({ origin: `https://${d}`, localStorage: [] })) };
+  requested = domains.filter(d => !d.startsWith('.')).map(d => ({ method: 'GET', url: `https://${d}/`, status: 200, live: true }));
+  try {
+    for (const mode of ['writeback', 'sign-in']) {
+      sites({ crm: { url: 'https://crm.example.com', hosts: ['denied.external.test', '*.assets.example.net'], writeback: true } });
+      writeJson('grants.json', everyone);
+      saveLogin(alice, website('crm', 'CRM'), JSON.stringify(state('initial')));
+      const run = new Browsers(running(`trim-refused-${mode}`, ['web:crm']), 1);
+      const id = mode === 'writeback' ? await run.browser('crm') : await startSignIn(alice, 'crm', '');
+      changeWebsite(alice, 'crm', { checks: {
+        'crm.example.com': { verdict: 'refused', why: 'Refused.' },
+        'denied.external.test': { verdict: 'high', why: 'Not approved.' },
+        'sub.assets.example.net': { verdict: 'refused', why: 'A wildcard still allows it.' },
+      } });
+      if (mode === 'writeback') await run.close();
+      else await endSignIn(alice, id!, true);
+      const saved = JSON.parse(secret(alice, 'web:crm'));
+      assert.deepEqual(saved.cookies.map((c: { domain: string }) => c.domain), ['sub.assets.example.net', '.assets.example.net', '.example.net'], mode);
+      assert.deepEqual(saved.origins.map((o: { origin: string }) => o.origin), ['https://sub.assets.example.net'], mode);
+    }
+  } finally {
+    back = wasBack;
+    requested = wasRequested;
+  }
+});
+
+test('malformed browser-service JSON does not expose saved cookies in its error', async () => {
+  const { browserJson } = await import('../src/browsers.ts');
+  await assert.rejects(browserJson('DELETE', '/sessions/malformed-state'), { status: 502, message: 'browser service: invalid JSON' });
+});
+
+test('browser-service error responses obey the same 64 MB bound as successful responses', async () => {
+  const { browserJson } = await import('../src/browsers.ts');
+  oversizeClose = true;
+  oversizeStatus = 503;
+  try {
+    await assert.rejects(browserJson('DELETE', '/sessions/oversized-error'), { status: 502, message: 'browser service: response exceeded 64 MB' });
+  } finally {
+    oversizeClose = false;
+    oversizeStatus = 200;
+  }
+});
+
+test('revoking a shared internal exception updates sign-ins whose starting host has no saved check', async () => {
+  const { revokeInternalHosts } = await import('../src/browsers.ts'), { setLetIn } = await import('../src/connections.ts');
+  sites({ intra: { url: 'https://10.42.43.44/', hosts: [], writeback: false } });
+  setLetIn(['10.42.43.44'], alice, true);
+  const id = await startSignIn(alice, 'intra', '');
+  assert.deepEqual(opened.at(-1)!.site.hosts, ['10.42.43.44']);
+  const before = toldHosts.length;
+  try {
+    setLetIn(['10.42.43.44'], alice, false);
+    await revokeInternalHosts(['10.42.43.44']);
+    assert.deepEqual(toldHosts.slice(before), [{ path: `/sessions/${id}/hosts`, hosts: [] }]);
+    assert.equal(websitesOf(alice).intra.checks?.['10.42.43.44']?.verdict, 'internal');
+  } finally {
+    await endSignIn(alice, id, false);
+  }
+});
+
+test('removing an internal host resets passing checks, drops it from website hosts, and closes open run browsers', async () => {
+  const { allowHost, revokeInternalHosts, setSite } = await import('../src/browsers.ts'), { setLetIn } = await import('../src/connections.ts');
+  const admin = asPerson(alice)!;
+  sites({ intra: { url: 'https://10.1.2.3/', hosts: [], writeback: false, checks: { '10.1.2.3': { verdict: 'pass', why: 'Allowed.' } } } });
+  await setSite(admin, 'intra', { internal: true });
+  await allowHost(admin, 'intra', '10.9.8.7');
+  writeJson('grants.json', { ...everyone, gi: { person: alice, site: 'intra', workspace: 'w', reason: '', at: '', state: 'approved' } });
+  saveLogin(alice, website('intra', 'Intra'), JSON.stringify(state('intra-cookie')));
+
+  const inst = running('2028-06', ['web:intra'], 1);
+  const run = new Browsers(inst, 1);
+  await run.browser('intra');
+  assert.deepEqual(opened.at(-1)!.site.hosts.sort(), ['10.1.2.3', '10.9.8.7']);
+  assert.equal(publics.at(-1), false);
+
+  setLetIn(['10.9.8.7'], alice, false);
+  await revokeInternalHosts(['10.9.8.7']);
+  await run.closeUnlent();
+  assert.equal(run.bySite.size, 0, 'open browser closed when an allowed internal host was revoked');
+  assert.deepEqual(websitesOf(alice).intra.hosts, []);
+  assert.equal(websitesOf(alice).intra.checks?.['10.9.8.7']?.verdict, 'internal');
+
+  await setSite(admin, 'intra', { internal: false });
+  await run.closeUnlent();
+  assert.equal(websitesOf(alice).intra.checks?.['10.1.2.3']?.verdict, 'internal');
+  await run.browser('intra');
+  assert.deepEqual(opened.at(-1)!.site.hosts, []);
+  assert.equal(publics.at(-1), true);
+  await run.close();
 });

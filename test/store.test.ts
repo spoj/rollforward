@@ -5,7 +5,7 @@ import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createInstance, instance, openFile, openStore, safeName } from '../src/store.ts';
+import { createInstance, instance, keep, openFile, openStore, safeName } from '../src/store.ts';
 import { commit, forget } from '../src/git.ts';
 import { addNote, notes } from '../src/series.ts';
 import { act, initSystem } from '../src/system.ts';
@@ -27,6 +27,25 @@ test('deleting during a close never restores the instance or writes a close over
   rmSync(tmp, { recursive: true, force: true });
 });
 
+test('Close checks item files after the preceding run finishes stopping', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'rf-close-files-'));
+  openStore(root);
+  const inst = createInstance('monthly', 'closing', 'alex', []), gate = Promise.withResolvers<void>();
+  const file = join(inst.dir, 'working', 'pack.csv');
+  writeFileSync(file, 'approved output');
+  inst.put(JSON.stringify({ ...inst.doc, items: [{ id: 'pack', name: 'Pack', kind: 'output', file: 'working/pack.csv' }] }), 1);
+  const last = commit(inst.dir, alex, 'Last run', gate.promise), closing = inst.close(alex);
+  const refused = assert.rejects(closing, { status: 409, message: 'pack: no file working/pack.csv' });
+  rmSync(file);
+  gate.resolve();
+  try {
+    await Promise.all([last, refused]);
+    assert.equal(inst.doc.status, 'open');
+    assert.equal(inst.log.some(e => e.op === 'close'), false);
+    assert.equal(instance(inst.id).doc.status, 'open');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("a name is a folder's and a line's: slashes, control characters and line breaks become _, and AGENTS.md, where the view binds instructions, is refused, as is a folder's name over 200 bytes", () => {
   assert.equal(safeName('Bank/rec\\Q1\nlines\u2028\u2029\x85\x7f'), 'Bank_rec_Q1_lines____');
   assert.throws(() => safeName('AGENTS.md'), /AGENTS\.md is the name of the agents' instructions/);
@@ -41,7 +60,7 @@ test('openFile opens only what is under its base: a path that climbs with .., or
   mkdirSync(base, { recursive: true });
   writeFileSync(join(tmp, 'secret'), 'x');
   writeFileSync(join(base, 'mine'), 'y');
-  for (const rel of ['../../secret', 'mine/../../../secret', './mine', 'c//../mine']) assert.equal(openFile(base, rel), undefined, rel);
+  for (const rel of ['../../secret', 'mine/../../../secret', './mine', 'c//../mine', 'a'.repeat(260)]) assert.equal(openFile(base, rel), undefined, rel);
   assert.equal(typeof openFile(base, 'mine'), 'number');
   rmSync(tmp, { recursive: true, force: true });
 });
@@ -138,6 +157,10 @@ test("a file the screen shows stays the agent's to change, and closing takes it 
   writeFileSync(page, 'a1 is right\n');
   inst.put(JSON.stringify({ rev: inst.doc.rev, status: 'open', items: [{ id: 'a1', name: 'A1', kind: 'step', file: 'working/a1.md' }] }), 1);
   assert.deepEqual(inst.log.filter(e => e.op === 'point').map(e => [e.item, e.file, e.was]), [['a1', 'working/a1.md', null]]);
+  writeFileSync(page, 'changed\n');
+  rmSync(page);
+  await assert.rejects(inst.close(alex), { status: 409, message: 'a1: no file working/a1.md' });
+  assert.equal(inst.doc.status, 'open');
   writeFileSync(page, 'changed\n');
   await inst.close(alex);
   assert.equal(inst.doc.status, 'closed');
@@ -246,6 +269,13 @@ test("a file whose name passes the 255 bytes a name holds, as an Outlook mail sa
     assert.equal(readFileSync(join(inst.dir, file as string), 'utf8'), `copy ${n}`);
   }
   assert.equal(inst.doc.items[0].name, name.slice(0, -5), 'the item keeps the whole name');
+  for (const odd of [`2026.11 ${'供应商月末应收账款及银行余额调节核对明细表'.repeat(5)}`, `年.${'中'.repeat(84)}`]) {
+    for (const n of [1, 2]) {
+      writeFileSync(incoming, `odd ${n}`);
+      const saved = keep(tmp, 'files', odd, incoming), base = saved.slice('files/'.length);
+      assert.ok(Buffer.byteLength(base) <= 255 && !base.startsWith('.'), saved);
+    }
+  }
   rmSync(tmp, { recursive: true, force: true });
 });
 

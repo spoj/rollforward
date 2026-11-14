@@ -1,6 +1,6 @@
 import { connect, isIP } from 'node:net';
 import { connect as tlsConnect } from 'node:tls';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { request as httpRequest, STATUS_CODES, type IncomingMessage, type ServerResponse } from 'node:http';
 import { request as httpsRequest } from 'node:https';
@@ -33,8 +33,12 @@ function request(method: string, path: string, body?: unknown, ms = method === '
     const req = (tls ? httpsRequest : httpRequest)(base + path, { method, headers: key(), timeout: ms }, res => {
       if (res.statusCode! < 300) return ok(res);
       const chunks: Buffer[] = [];
+      let size = 0;
       res.on('error', e => fail(new HttpError(502, `browser service: ${e.message}`)));
-      res.on('data', c => chunks.push(c)).on('end', () => {
+      res.on('data', c => {
+        if ((size += c.length) > 64 << 20) { res.destroy(); fail(new HttpError(502, 'browser service: response exceeded 64 MB')); return; }
+        chunks.push(c);
+      }).on('end', () => {
         const data = Buffer.concat(chunks);
         // The service answers {error}; a proxy in front of it, such as one that ends TLS, may answer anything, and a throw here would
         // be outside the promise, ending the server.
@@ -48,8 +52,19 @@ function request(method: string, path: string, body?: unknown, ms = method === '
     req.end(body === undefined || Buffer.isBuffer(body) ? body : JSON.stringify(body));
   });
 }
-const call = async (method: string, path: string, body?: unknown, ms?: number) => Buffer.concat(await Array.fromAsync(await request(method, path, body, ms)));
-export const browserJson = async (method: string, path: string, body?: unknown, ms?: number) => JSON.parse((await call(method, path, body, ms)).toString());
+async function call(method: string, path: string, body?: unknown, ms?: number) {
+  const res = await request(method, path, body, ms), chunks: Buffer[] = [];
+  let size = 0;
+  for await (const c of res as AsyncIterable<Buffer>) {
+    if ((size += c.length) > 64 << 20) { res.destroy(); throw new HttpError(502, 'browser service: response exceeded 64 MB'); }
+    chunks.push(c);
+  }
+  return Buffer.concat(chunks);
+}
+export async function browserJson(method: string, path: string, body?: unknown, ms?: number) {
+  const raw = (await call(method, path, body, ms)).toString();
+  try { return JSON.parse(raw); } catch { throw new HttpError(502, 'browser service: invalid JSON'); }
+}
 // A file in a session's browser, its parts encoded and none . or .., which would lead out of the session to the service's other calls.
 export function files(id: string, path: string) {
   const parts = path.replace(/\\/g, '/').replace(/^\//, '').split('/');
@@ -156,6 +171,18 @@ export async function startSignIn(email: string, site: string, given: string): P
 
 export const isSignIn = (email: string, id: string) => signIns.get(id)?.email === email;
 
+export async function endSignIns(email: string, site?: string) {
+  for (const [key, generation] of signInGenerations) if (key.startsWith(`${email} `) && (!site || key === `${email} ${site}`)) signInGenerations.set(key, generation + 1);
+  for (const [id, s] of [...signIns]) if (s.email === email && (!site || s.site === site)) await endSignIn(email, id, false).catch(() => {});
+}
+
+export async function endUnpermittedSignIns() {
+  for (const key of signInGenerations.keys()) {
+    const [email, site] = key.split(' '), me = asPerson(email);
+    if (!me || (websitesOf(email)[site]?.via && !can(me, 'vpn'))) await endSignIns(email, site);
+  }
+}
+
 // A website's hosts are checked from its sign-in evidence. An internal address still needs an admin's permission.
 export async function addSite(email: string, name: string, url: string, header = '') {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(name) || name === PRINT) throw new HttpError(400, `a website's name is lowercase letters, digits and dashes, and not ${PRINT}, the runs' own print browser`);
@@ -183,11 +210,12 @@ export async function setSite(by: Me, name: string, change: Record<string, unkno
   const w = website(person, name), x = { ...w, every: w.every && `${w.every}m`, ...change }, every = /^(\d+)([mh])$/.exec(String(x.every ?? ''));
   const viaChanged = change.via !== undefined && change.via !== (w.via ?? '');
   if (![undefined, true, false, 'true', 'false'].includes(x.writeback as never)) throw new HttpError(400, 'writeback: true or false');
-  if (x.header !== undefined && !/^[a-z0-9-]+$/i.test(String(x.header))) throw new HttpError(400, 'header: the name of a header its sign-in needs, such as x-bot-token');
+  if (x.header !== undefined && x.header !== '' && !/^[a-z0-9-]+$/i.test(String(x.header))) throw new HttpError(400, 'header: the name of a header its sign-in needs, such as x-bot-token');
   if (x.keepalive !== undefined && URL.parse(String(x.keepalive), w.url)?.host !== new URL(w.url).host) throw new HttpError(400, 'keepalive: a page of the website, by its address or path, such as https://patriarch.patrina.net/PatriArchMVC/');
   if (x.every !== undefined && !(every && Number(every[1]) > 0)) throw new HttpError(400, 'every: minutes or hours, such as 10m or 1h');
+  if (change.header === '') rmSync(join(personDir(person), `web:${name}.header.sealed`), { force: true });
   saveWebsites(person, { ...websitesOf(person), [name]: { url: w.url, hosts: w.hosts, writeback: x.writeback !== false && x.writeback !== 'false', added: w.added,
-    ...(x.header !== undefined && { header: String(x.header) }), ...(x.via && { via: String(x.via) }),
+    ...(x.header && { header: String(x.header) }), ...(x.via && { via: String(x.via) }),
     ...(x.keepalive !== undefined && { keepalive: String(x.keepalive) }), ...(every && { every: Number(every[1]) * (every[2] === 'h' ? 60 : 1) }),
     ...(w.profile && { profile: w.profile }), ...(w.checks && { checks: viaChanged ? Object.fromEntries(Object.entries(w.checks).filter(([h, c]) => c.verdict === 'refused' || !vpnHosts(w.url).some(p => covers(p, h)))) : w.checks }) } });
   if (viaChanged) {
@@ -195,10 +223,34 @@ export async function setSite(by: Me, name: string, change: Record<string, unkno
     websiteGenerations.set(key, (websiteGenerations.get(key) ?? 0) + 1);
   }
   if (change.internal === undefined) return;
-  const next = website(person, name), let_ = change.internal === true || change.internal === 'true', exact = reached(next).filter(h => !throughVpn(next, h) && !h.startsWith('*.'));
-  const hosts = let_ ? (await Promise.all(exact.map(async h => await resolvesInternal(h) && h))).filter(h => h) as string[] : exact.filter(h => letIn()[h]);
+  const next = website(person, name), let_ = change.internal === true || change.internal === 'true';
+  const candidates = [...new Set([...reached(next), ...Object.keys(next.checks ?? {})])].filter(h => !throughVpn(next, h) && !h.startsWith('*.'));
+  const hosts = let_ ? (await Promise.all(candidates.map(async h => await resolvesInternal(h) && h))).filter(h => h) as string[] : candidates.filter(h => letIn()[h]);
   setLetIn(hosts, by.email, let_);
+  if (!let_) await revokeInternalHosts(hosts);
+  else if (hosts.some(h => next.checks?.[h]?.verdict === 'internal')) {
+    const passed = hosts.filter(h => next.checks?.[h]?.verdict === 'internal');
+    changeWebsite(person, name, {
+      hosts: [...new Set([...next.hosts, ...passed.filter(h => h !== new URL(next.url).hostname)])],
+      checks: { ...next.checks, ...Object.fromEntries(passed.map(h => [h, { verdict: 'pass' as const, why: 'An admin allowed this internal host.' }])) },
+    });
+  }
   act(by.email, { op: 'internal', person, site: name, hosts, let: let_ });
+}
+
+export async function revokeInternalHosts(hosts: string[]) {
+  if (!hosts.length) return;
+  const dir = join(rfDir(), 'people'), people = new Set([...Object.keys(users()), ...(existsSync(dir) ? readdirSync(dir) : [])]);
+  for (const email of people) for (const [site, w] of Object.entries(websitesOf(email))) {
+    const hit = hosts.filter(h => !throughVpn(w, h) && (reached(w).includes(h) || w.checks?.[h]?.verdict === 'pass'));
+    if (!hit.length) continue;
+    changeWebsite(email, site, {
+      hosts: w.hosts.filter(h => !hit.includes(h)),
+      checks: { ...w.checks, ...Object.fromEntries(hit.map(h => [h, { verdict: 'internal' as const, why: 'It is at an internal address.' }])) },
+    });
+    const id = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
+    if (id) await browserJson('PUT', `/sessions/${id}/hosts`, { hosts: internalHosts(website(email, site)) }).catch(() => {});
+  }
 }
 
 // A website set --internal true before 0.3.12 carries that as a flag of its own, which grants nothing now. At the server's start
@@ -299,6 +351,7 @@ export async function endSignIn(email: string, id: string, save: boolean, keepal
   }
   if (!save && signInGenerations.get(key) === generation) signInGenerations.set(key, generation + 1);
   signIns.delete(id);
+  changes.emit('change', 'tree');
   const { state, log } = await close(id);
   expired ||= Date.now() >= expires || state === null;
   const requests: Trace['requests'] = {}, kinds: NonNullable<Trace['kinds']> = {}, blocked = { count: 0, hosts: [] as string[] }, failed: string[] = [];
@@ -320,7 +373,7 @@ export async function endSignIn(email: string, id: string, save: boolean, keepal
     if (!save) return;
     currentSignIn(signing);
     await checkWebsite(email, site, trace);
-    const w = currentSignIn(signing), hosts = Object.keys(requests).filter(h => reached(w).some(p => covers(p, h))), s = state as { cookies: { domain: string }[]; origins: { origin: string }[] };
+    const w = currentSignIn(signing), allowed = reached(w).filter(h => !w.checks?.[h] || w.checks[h].verdict === 'pass'), hosts = Object.keys(requests).filter(h => allowed.some(p => covers(p, h))), s = state as { cookies: { domain: string }[]; origins: { origin: string }[] };
     const trimmed = s && { ...s, cookies: s.cookies.filter(c => hosts.some(h => c.domain === h || (c.domain.startsWith('.') && (h === c.domain.slice(1) || h.endsWith(c.domain))))),
       origins: s.origins.filter(o => hosts.includes(new URL(o.origin).hostname)) };
     saveLogin(email, { id: `web:${site}`, kind: 'website', name, since: new Date().toISOString(), offers: [{ id: `web:${site}`, name }], ...(until && { keepalive: new Date(until).toISOString() }), trace }, JSON.stringify(trimmed));
@@ -353,8 +406,26 @@ const setJournal = (all: Record<string, Opened>) => replaceReadOnly(join(rfDir()
 // A run's browser closed: its request log kept in its instance's browser/, logged as browser with the hosts its pages were refused, and,
 // where its website writes it back, its state its person's login again, unless they signed out or in anew since it opened.
 function keep(inst: Instance, b: Opened, { state, log }: { state: unknown; log: Entry[] }) {
-  const login = b.writeback && logins(b.email).find(l => l.id === `web:${b.site}`);
-  if (login && state && !login.expired && login.since === b.since) saveLogin(b.email, login, JSON.stringify(state));
+  const login = b.writeback && logins(b.email).find(l => l.id === `web:${b.site}`), w = websitesOf(b.email)[b.site];
+  if (login && state && w && !login.expired && login.since === b.since) {
+    const ps = reached(w).filter(h => !w.checks?.[h] || w.checks[h].verdict === 'pass'), s = state as { cookies?: { domain?: string }[]; origins?: { origin?: string }[] };
+    const trimmed = {
+      ...s,
+      ...(Array.isArray(s.cookies) && {
+        cookies: s.cookies.filter(c => {
+          const d = String(c?.domain ?? '').toLowerCase(), dom = d.replace(/^\./, '');
+          return Boolean(dom) && ps.some(p => covers(p, dom) || (d.startsWith('.') && Boolean(getDomain(dom)) && (p.replace(/^\*\./, '') === dom || p.replace(/^\*\./, '').endsWith(d))));
+        }),
+      }),
+      ...(Array.isArray(s.origins) && {
+        origins: s.origins.filter(o => {
+          const h = URL.parse(String(o?.origin ?? ''))?.hostname;
+          return Boolean(h) && ps.some(p => covers(p, h!));
+        }),
+      }),
+    };
+    saveLogin(b.email, login, JSON.stringify(trimmed));
+  }
   if (inst.hole || inst.log?.some(e => e.op === 'close' || e.op === 'abandon')) return;
   mkdirSync(join(inst.dir, 'browser'), { recursive: true });
   replaceReadOnly(join(inst.dir, b.file), log.map(e => JSON.stringify(e) + '\n').join(''));
@@ -519,7 +590,7 @@ export async function reap() {
 export class Browsers {
   inst: Instance;
   run: number;
-  bySite = new Map<string, { id: string; email: string; since: string; writeback: boolean; file: string; conns: number; via?: Via; idle?: NodeJS.Timeout; shot?: Buffer }>();
+  bySite = new Map<string, { id: string; email: string; since: string; writeback: boolean; file: string; conns: number; via?: Via; internal: string[]; idle?: NodeJS.Timeout; shot?: Buffer }>();
   private opening = new Map<string, Promise<string | undefined>>();
   private closing = new Set<Promise<unknown>>();
   private opens = new Map<string, number>();
@@ -534,26 +605,28 @@ export class Browsers {
 
   // The login a browser on a website may use now, and the run's browser there if open: checked at every call and new connection,
   // and as its lending changes. One its runner must sign in to again is logged, so the instance carries on once they do.
-  async lent(site: string) {
+  async lent(site: string, quiet = false) {
     try {
       // A try's stand-in instance (cli.ts) is in no workspace: any approved grant of its runner's does.
       const { email, login } = use(this.inst, this.run, `web:${site}`), had = this.bySite.get(site), ws = tree().series[this.inst.seriesId]?.workspace;
       if (!approved(site, email, ws)) throw Object.assign(new HttpError(403, unapproved(email, site, ws)), { refused: true });
       if (login.expired) throw Object.assign(new HttpError(409, `${email}'s login to ${site} has expired: they sign in to it again on the Logins page, and the instance carries on`), { login: login.id });
-      if (had && had.email !== email) throw new HttpError(409, `this run's browser on ${site} is in ${had.email}'s login, and ${email} has taken the instance over: the next run opens one in theirs`);
+      if (had && had.email !== email) throw Object.assign(new HttpError(409, `this run's browser on ${site} is in ${had.email}'s login, and ${email} has taken the instance over: the next run opens one in theirs`));
       const w = website(email, site), via = await vpnVia(email, w), current = use(this.inst, this.run, `web:${site}`);
-      if (current.email !== email || current.login.since !== login.since || current.login.expired || website(email, site).via !== w.via || this.bySite.get(site) !== had) return this.lent(site);
+      if (current.email !== email || current.login.since !== login.since || current.login.expired || website(email, site).via !== w.via || this.bySite.get(site) !== had) return this.lent(site, quiet);
       if (!approved(site, email, tree().series[this.inst.seriesId]?.workspace)) throw Object.assign(new HttpError(403, `${email}'s grant to use ${site} was revoked; this run goes on without it`), { refused: true });
-      if (had && (had.via?.token !== via?.token || had.via?.url !== via?.url)) {
+      if (had && (had.via?.token !== via?.token || had.via?.url !== via?.url || had.internal.join(',') !== internalHosts(w).join(','))) {
         await this.close(site);
-        return this.lent(site);
+        return this.lent(site, quiet);
       }
       return { email, login, had, via };
     } catch (e) {
-      const { login, refused } = e as { login?: string; refused?: true };
-      if (login) this.inst.append('server', 'expired', { run: this.run, login, name: site, runner: runnerOf(this.inst).by });
-      if (refused && !this.refused.has(site)) this.inst.append('server', 'browser', { run: this.run, site, action: 'refused', why: (e as Error).message });
-      if (refused) this.refused.add(site);
+      if (!quiet) {
+        const { login, refused } = e as { login?: string; refused?: true };
+        if (login) this.inst.append('server', 'expired', { run: this.run, login, name: site, runner: runnerOf(this.inst).by });
+        if (refused && !this.refused.has(site)) this.inst.append('server', 'browser', { run: this.run, site, action: 'refused', why: (e as Error).message });
+        if (refused) this.refused.add(site);
+      }
       throw e;
     }
   }
@@ -578,10 +651,10 @@ export class Browsers {
         let release!: () => void;
         held.set(key, { run: this, released: new Promise<void>(ok => { release = ok; }), release: () => release() });
       }
-      const opening = w ? open(w, 7200, state, via) : printer();
+      const internal = w ? internalHosts(w) : [], opening = w ? open(w, 7200, state, via) : printer();
       const ready = opening.then(async id => {
         const n = (this.opens.get(site) ?? 0) + 1, file = `browser/run ${this.run} ${site}${n > 1 ? ` ${n}` : ''}.jsonl`;
-        const b = { id, email, since: login?.since ?? '', writeback, file, conns: 0, via };
+        const b = { id, email, since: login?.since ?? '', writeback, file, conns: 0, via, internal };
         this.opens.set(site, n);
         this.bySite.set(site, b);
         changes.emit('change', this.inst.id); // for its instance's page to show it
@@ -637,7 +710,7 @@ export class Browsers {
 
   async closeUnlent() {
     await Promise.all([...this.bySite.keys()].filter(site => site !== PRINT).map(async site => {
-      try { await this.lent(site); } catch { await this.close(site); }
+      try { await this.lent(site, true); } catch { await this.close(site); }
     }));
   }
 
@@ -765,6 +838,7 @@ export async function keepAlive(now = new Date()) {
       const after = logins(email).find(l => l.id === login.id);
       if (after?.since !== login.since || after.expired) continue;
       const over = shown.password || new URL(shown.url).origin !== page.origin;
+      if (!over && !state) continue;
       saveLogin(email, over ? { ...after, expired: true } : after, over ? undefined : JSON.stringify(state));
     } catch (e) {
       console.error(`keeping ${email}'s login to ${site} alive:`, e);

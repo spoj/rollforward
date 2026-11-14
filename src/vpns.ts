@@ -143,6 +143,7 @@ export async function saveVpnSignIn(me: Me, id: string) {
     });
   } finally {
     signIns.delete(id);
+    changes.emit('change', 'tree');
   }
 }
 
@@ -151,9 +152,37 @@ export async function cancelVpnSignIn(me: Me, id: string) {
   const signing = signIns.get(id);
   if (!signing || signing.person !== me.email) throw new HttpError(404, 'no such VPN sign-in');
   signIns.delete(id);
+  changes.emit('change', 'tree');
   const key = `${me.email} ${signing.vpn}`;
   if (generations.get(key) === signing.generation) generations.set(key, signing.generation + 1);
   if (!signing.saving) await browserJson('DELETE', `/sessions/${id}`);
+}
+
+export async function dropUnpermittedVpns(only?: string) {
+  if (!process.env.RF_TUNNEL_URL) return;
+  for (const [key, generation] of generations) {
+    const person = key.split(' ')[0], me = asPerson(person);
+    if ((only && person === only) || !me || !can(me, 'vpn')) generations.set(key, generation + 1);
+  }
+  for (const [id, s] of [...signIns]) {
+    const me = asPerson(s.person);
+    if ((only && s.person === only) || !me || !can(me, 'vpn')) {
+      signIns.delete(id);
+      changes.emit('change', 'tree');
+      if (!s.saving) await browserJson('DELETE', `/sessions/${id}`).catch(() => {});
+    }
+  }
+  await changeTunnel(async () => {
+    for (const [key, t] of [...tunnels]) {
+      const me = asPerson(t.person);
+      if ((only && t.person === only) || !me || !can(me, 'vpn')) {
+        await tunnelJson('DELETE', `/tunnels/${t.id}`).catch(e => console.error('disconnecting VPN tunnel:', e));
+        tunnels.delete(key);
+        act('server', { op: 'vpn-disconnect', person: t.person, name: t.vpn });
+        changes.emit('change', 'tree');
+      }
+    }
+  });
 }
 
 export async function disconnectVpn(me: Me, name: string) {

@@ -26,7 +26,11 @@ export const approved = (site: string, person?: string, workspace?: string) => O
 const closes = new WeakMap<Instance, { n: number; rows: Entry[] }>();
 
 export function visible(me: Me) {
-  const t = tree(), people = users(), shown = Object.entries(grants()).filter(([, g]) => g.person === me.email || canManage(me, t.workspaces[g.workspace]));
+  const t = tree(), people = users();
+  const shown = Object.entries(grants()).filter(([, g]) => {
+    const w = t.workspaces[g.workspace];
+    return Boolean(w) && ((g.person === me.email && canSee(me, w)) || canManage(me, w));
+  });
   const counted = new Set(shown.filter(([, g]) => g.state === 'approved').map(([, g]) => g.workspace)), used = new Map<string, { runs: Set<string>; wrote: Set<string>; last: string | null }>();
   for (const [sid, s] of Object.entries(t.series)) if (counted.has(s.workspace)) for (const inst of instances(sid)) {
     let c = closes.get(inst);
@@ -103,19 +107,22 @@ export async function ask(me: Me, site: string, workspace: string, reason: strin
   if (again) throw asked(again);
   // Removing the website meanwhile signed them out of it, and took their grants for it.
   if (!logins(me.email).some(l => l.id === login.id)) throw new HttpError(409, `you removed ${site} or signed out of it while it was checked`);
-  if (!tree().workspaces[workspace]) throw new HttpError(409, `${w.name} was merged into another while it was checked: ask there`);
+  const now = asPerson(me.email), wNow = tree().workspaces[workspace];
+  if (!now) throw new HttpError(401, 'sign in');
+  if (!wNow) throw new HttpError(409, `${w.name} was merged into another while it was checked: ask there`);
+  if (!canSee(now, wNow)) throw new HttpError(404, `no workspace ${workspace} of yours`);
   const all = grants(), id = newId();
-  all[id] = { workspace, person: me.email, site, reason: reason.trim().slice(0, 500), at: new Date().toISOString(), state: 'pending' };
+  all[id] = { workspace, person: now.email, site, reason: reason.trim().slice(0, 500), at: new Date().toISOString(), state: 'pending' };
   save(all);
-  const a = approver(me, site, workspace);
-  if (a.self) decide(me, id, true, '');
+  const a = approver(now, site, workspace);
+  if (a.self) decide(now, id, true, '');
   return { id, profile, state: a.self ? 'approved' : 'pending', said: a.self ? `Approved at once, as you're ${a.who}.` : `Asked: it waits on ${a.who}.` };
 }
 
 export function decide(me: Me, id: string, approve: boolean, text: string) {
-  const all = grants(), g = all[id];
-  if (g?.state !== 'pending') throw new HttpError(404, `no request ${id} waits`);
-  if (!canManage(me, tree().workspaces[g.workspace])) throw new HttpError(403, `${tree().workspaces[g.workspace].name}'s owners decide it`);
+  const all = grants(), g = all[id], w = g && tree().workspaces[g.workspace];
+  if (g?.state !== 'pending' || !w || !canSee(me, w)) throw new HttpError(404, `no request ${id} waits`);
+  if (!canManage(me, w)) throw new HttpError(403, `${w.name}'s owners decide it`);
   if (approve && me.role !== 'admin') {
     const card = visible(me).find(row => row.id === id)!;
     if (card.adminOnly) throw new HttpError(403, card.adminWhy);
@@ -127,13 +134,28 @@ export function decide(me: Me, id: string, approve: boolean, text: string) {
 
 // Revoked by the workspace's owners or an admin, or withdrawn by its person, pending or approved.
 export function revoke(me: Me, id: string): Grant {
-  const all = grants(), g = all[id];
-  if (!g || !live(g)) throw new HttpError(404, `no grant ${id} pending or approved`);
-  if (g.person !== me.email && !canManage(me, tree().workspaces[g.workspace])) throw new HttpError(403, `${tree().workspaces[g.workspace].name}'s owners revoke it, or ${g.person}`);
+  const all = grants(), g = all[id], w = g && tree().workspaces[g.workspace];
+  if (!g || !live(g) || (!w && g.person !== me.email) || (w && g.person !== me.email && !canSee(me, w))) throw new HttpError(404, `no grant ${id} pending or approved`);
+  if (g.person !== me.email && !canManage(me, w)) throw new HttpError(403, `${w.name}'s owners revoke it, or ${g.person}`);
   all[id] = { ...g, state: 'revoked', by: me.email, decided: new Date().toISOString() };
   save(all);
   unused(g.person, g.site);
   return g;
+}
+
+// Live grants in workspaces a person can no longer see are revoked, and unused logins signed out.
+export function pruneGrants() {
+  const all = grants(), t = tree(), us = users(), dropped: Grant[] = [];
+  for (const [id, g] of Object.entries(all)) {
+    if (!live(g)) continue;
+    const w = t.workspaces[g.workspace], u = us[g.person];
+    // Disabling suspends lending, not approval; RF_ADMINS still determines the person's effective role.
+    if (w && (!u || canSee(asPerson(g.person, { ...u, disabled: false })!, w))) continue;
+    all[id] = { ...g, state: 'revoked', by: 'server', decided: new Date().toISOString() };
+    dropped.push(g);
+  }
+  if (dropped.length) save(all);
+  for (const g of dropped) unused(g.person, g.site);
 }
 
 // A workspace merged into another takes its grants with it: its series' runs are the other's now, whose owners approve anew.

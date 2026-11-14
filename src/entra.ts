@@ -48,13 +48,19 @@ export function keepSignIn(email: string, refresh: string) {
 export async function confirm(email: string) {
   if (users()[email]?.disabled) throw Object.assign(new HttpError(401, `${email} is disabled here`), { left: true });
   if (!existsSync(join(personDir(email), 'entra.sealed'))) throw new HttpError(401, `${email} hasn't signed in to rollforward since sign-ins are kept`);
+  const { dropUnpermittedVpns } = await import('./vpns.ts');
+  const { endSignIns, endUnpermittedSignIns } = await import('./browsers.ts');
   try {
     const r = await renew(secret(email, 'entra'), []), claims = JSON.parse(Buffer.from(r.idToken.split('.')[1], 'base64url').toString());
     seal(email, 'entra', r.refresh);
     upsertUser(email, { groups: Array.isArray(claims.groups) ? claims.groups.map(String) : [] });
+    await endUnpermittedSignIns();
+    await dropUnpermittedVpns();
   } catch (e) {
     if (!/AADSTS(50057|50034)\b/.test((e as Error).message)) throw e;
     upsertUser(email, { disabled: true });
+    await endSignIns(email);
+    await dropUnpermittedVpns(email);
     throw Object.assign(e as Error, { left: true });
   }
 }

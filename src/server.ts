@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { closeSync, cpSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { accessSync, closeSync, constants, cpSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync, type Dirent } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { execFile, execFileSync } from 'node:child_process';
@@ -11,16 +11,16 @@ import { AGENT, commit, refused } from './git.ts';
 import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
 import { checkTheme, stylesheet, themeLogo } from './theme.ts';
-import { asPerson, authenticate, CAPS, can, capabilities, checkConfig, cli, connect, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
-import { act, canManage, canSee, changes, everyone, initSystem, isPeople, readJson, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
+import { asPerson, authenticate, CAPS, can, capabilities, checkConfig, cli, connect, myTokens, newToken, redirectPath, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
+import { act, canManage, canSee, changes, everyone, initSystem, isPeople, readJson, replaceFile, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
 import { checkTicks, lastAssign, logins, runnerAt, runnerOf, saveLogin, signOut, unoffer } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { answered, byLogin, call, connections, intercepts, keyStatus, letIn, loginOf, removeConnection, setConnection, setLetIn, upstreams } from './connections.ts';
 import { syncCosts } from './costs.ts';
-import { addSite, allowHost, Browsers, endSignIn, enrolFlagged, isSignIn, keepAlive, passAllowed, passUpgrade, reap, removeHost, removeSite, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
-import { addVpn, cancelVpnSignIn, disconnectVpn, isVpnSignIn, reapVpns, removeVpn, saveVpnSignIn, startVpnSignIn, vpns } from './vpns.ts';
-import { ask, decide, forgetGrants, forgetWorkspace, lapse, revoke, visible } from './grants.ts';
+import { addSite, allowHost, Browsers, endSignIn, endSignIns, endUnpermittedSignIns, enrolFlagged, isSignIn, keepAlive, passAllowed, passUpgrade, reap, removeHost, removeSite, revokeInternalHosts, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
+import { addVpn, cancelVpnSignIn, disconnectVpn, dropUnpermittedVpns, isVpnSignIn, reapVpns, removeVpn, saveVpnSignIn, startVpnSignIn, vpns } from './vpns.ts';
+import { ask, decide, forgetGrants, forgetWorkspace, lapse, pruneGrants, revoke, visible } from './grants.ts';
 import { offer } from './connections/graph.ts';
 import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, prune, startIndexing, track } from './indexes.ts';
@@ -50,13 +50,14 @@ openStore(root);
 // A new data root starts with one connection, Microsoft 365's, graph.
 if (!existsSync(join(root, '.rf', 'connections.json'))) writeJson('connections.json', { graph: { type: 'graph', updated_by: 'server', updated_at: new Date().toISOString() } });
 
-// A file's sha256, kept by its path, size and change time, as each view of an instance compares its files again; streamed, as a run
-// may leave a file of any size.
+// A file's sha256, kept by its inode, size and nanosecond change times once a second old, as each view of an instance compares its
+// files again; streamed, as a run may leave a file of any size.
 const sums = new Map<string, [string, string]>();
 async function sha256(dir: string, file: string): Promise<string | undefined> {
   const fd = openFile(dir, file);
   if (fd === undefined) return undefined;
-  const st = fstatSync(fd), key = `${st.size}:${st.mtimeMs}`, hit = sums.get(join(dir, file));
+  const st = fstatSync(fd, { bigint: true }), key = `${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}`;
+  const fresh = st.ctimeNs > BigInt(Date.now() - 1000) * 1_000_000n, hit = sums.get(join(dir, file));
   if (hit?.[0] === key) {
     closeSync(fd);
     return hit[1];
@@ -64,7 +65,7 @@ async function sha256(dir: string, file: string): Promise<string | undefined> {
   const hash = createHash('sha256');
   for await (const chunk of createReadStream('', { fd })) hash.update(chunk);
   const sum = hash.digest('hex');
-  sums.set(join(dir, file), [key, sum]);
+  if (!fresh) sums.set(join(dir, file), [key, sum]);
   return sum;
 }
 
@@ -488,6 +489,40 @@ async function status(me: Me) {
   };
 }
 
+function* jsonlLines(dir: string, name: string): Generator<string> {
+  const fd = openFile(dir, name);
+  if (fd === undefined) return;
+  try {
+    const size = fstatSync(fd).size, buf = Buffer.allocUnsafe(65536), head = 4 << 20, tail = 60 << 20, maxLine = 8 << 20;
+    let pos = 0, carry: Buffer<ArrayBufferLike> = Buffer.alloc(0), drop = false;
+    while (pos < size) {
+      if (size > head + tail && pos >= head && pos < size - tail) {
+        pos = size - tail;
+        carry = Buffer.alloc(0);
+        readSync(fd, buf, 0, 1, pos - 1);
+        drop = buf[0] !== 10;
+      }
+      const n = readSync(fd, buf, 0, Math.min(buf.length, size > head + tail && pos < head ? head - pos : size - pos), pos);
+      if (!n) break;
+      pos += n;
+      let from = 0;
+      for (let nl; (nl = buf.indexOf(10, from)) !== -1 && nl < n; from = nl + 1) {
+        if (!drop && carry.length + (nl - from) <= maxLine) {
+          const line = carry.length ? Buffer.concat([carry, buf.subarray(from, nl)]).toString('utf8') : buf.subarray(from, nl).toString('utf8');
+          if (line) yield line;
+        }
+        carry = Buffer.alloc(0);
+        drop = false;
+      }
+      if (from < n && !drop) {
+        if (carry.length + (n - from) > maxLine) { carry = Buffer.alloc(0); drop = true; }
+        else carry = carry.length ? Buffer.concat([carry, buf.subarray(from, n)]) : Buffer.from(buf.subarray(from, n));
+      }
+    }
+    if (!drop && carry.length && !carry.includes(0)) yield carry.toString('utf8');
+  } finally { closeSync(fd); }
+}
+
 function trace(inst: Instance) {
   const dir = join(inst.dir, 'session');
   if (inst.doc.status === 'deleted') return [];
@@ -495,22 +530,26 @@ function trace(inst: Instance) {
   const out: Line[] = [], calls = new Map<string, Line>();
   for (const f of existsSync(dir) ? readdirSync(dir).filter(f => f.endsWith('.jsonl')).sort() : []) {
     // A line a restart cut left half written is skipped, as Pi skips it.
-    for (const line of (readFile(dir, f) ?? '').split('\n').filter(Boolean)) {
+    for (const line of jsonlLines(dir, f)) {
       let e;
       try { e = JSON.parse(line); } catch { continue; }
-      if (e.type !== 'message') continue;
+      if (e?.type !== 'message' || !e.message || typeof e.message !== 'object') continue;
       const m = e.message;
-      if (m.role === 'user') out.push({ kind: 'user', at: e.timestamp, text: typeof m.content === 'string' ? m.content : m.content.map((b: { text?: string }) => b.text ?? '').join('') });
-      if (m.role === 'assistant') for (const b of m.content) {
-        if (b.type === 'text' && b.text.trim()) out.push({ kind: 'say', at: e.timestamp, text: b.text });
-        if (b.type === 'toolCall') {
-          out.push({ kind: b.name, at: e.timestamp, text: b.arguments.command ?? b.arguments.path ?? JSON.stringify(b.arguments) });
-          calls.set(b.id, out.at(-1)!);
+      if (m.role === 'user') out.push({ kind: 'user', at: e.timestamp, text: typeof m.content === 'string' ? m.content : Array.isArray(m.content) ? m.content.map((b: { text?: unknown }) => typeof b?.text === 'string' ? b.text : '').join('') : '' });
+      if (m.role === 'assistant' && Array.isArray(m.content)) for (const b of m.content) {
+        if (!b || typeof b !== 'object') continue;
+        if (b.type === 'text' && typeof b.text === 'string' && b.text.trim()) out.push({ kind: 'say', at: e.timestamp, text: b.text });
+        if (b.type === 'toolCall' && typeof b.name === 'string') {
+          const args = b.arguments && typeof b.arguments === 'object' ? b.arguments : {};
+          out.push({ kind: b.name, at: e.timestamp, text: typeof args.command === 'string' ? args.command : typeof args.path === 'string' ? args.path : JSON.stringify(args) });
+          if (typeof b.id === 'string') calls.set(b.id, out.at(-1)!);
         }
       }
       if (m.role === 'toolResult') {
-        const text = m.content.map((b: { text?: string }) => b.text ?? '').join('');
-        Object.assign(calls.get(m.toolCallId)!, { result: text.slice(0, 4000), lines: text.trimEnd().split('\n').length, error: m.isError });
+        const hit = typeof m.toolCallId === 'string' ? calls.get(m.toolCallId) : undefined;
+        if (!hit) continue;
+        const text = Array.isArray(m.content) ? m.content.map((b: { text?: unknown }) => typeof b?.text === 'string' ? b.text : '').join('') : '';
+        Object.assign(hit, { result: text.slice(0, 4000), lines: text.trimEnd().split('\n').length, error: !!m.isError });
       }
     }
   }
@@ -519,7 +558,12 @@ function trace(inst: Instance) {
 
 // Files by hand, never into a link: a run may have made links anywhere in working/. Nothing named as git takes a .git, such as the
 // instance's history or a run's .GIT/, which is one on a disk that ignores case, is copied.
-const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).filter(d => existsSync(join(dir, d.name))).flatMap(d => refused(d.name, false) ? [] : d.isDirectory() ? walk(join(dir, d.name)) : d.isFile() ? [join(dir, d.name)] : []);
+function walk(dir: string): string[] {
+  let entries: Dirent[];
+  try { entries = readdirSync(dir, { withFileTypes: true }); }
+  catch (e) { if (['EACCES', 'ENOENT'].includes((e as NodeJS.ErrnoException).code!)) return []; throw e; }
+  return entries.filter(d => existsSync(join(dir, d.name))).flatMap(d => refused(d.name, false) ? [] : d.isDirectory() ? walk(join(dir, d.name)) : d.isFile() ? [join(dir, d.name)] : []);
+}
 
 // What rf pull copies: every file under `path` that `me` sees, in the layout runs see (workspace/series/label/ and the instance's own
 // files), with its size and time; the AGENTS.md files whole, and each instance file at its /files address.
@@ -528,7 +572,9 @@ function pullable(me: Me, path: string) {
   // A name that isn't UTF-8, as unzipping an old archive leaves, reads back as another name, which no file has: it is left out.
   const add = (at: string, file: string, more: { url?: string; text?: string }) => {
     const st = statSync(file, { throwIfNoEntry: false });
-    if (st) out.push({ path: at, size: more.text === undefined ? st.size : Buffer.byteLength(more.text), mtime: st.mtime.toISOString(), ...more });
+    if (!st) return;
+    if (more.url) try { accessSync(file, constants.R_OK); } catch { return; }
+    out.push({ path: at, size: more.text === undefined ? st.size : Buffer.byteLength(more.text), mtime: st.mtime.toISOString(), ...more });
   };
   const near = (at: string) => !path || at === path || at.startsWith(path + '/') || path.startsWith(at + '/');
   if (existsSync(agentsFile())) add('AGENTS.md', agentsFile(), { text: text(agentsFile()) });
@@ -760,8 +806,10 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (going) throw new HttpError(409, `${named(t, going.inst.seriesId)}/${going.inst.label} is running: archive ${w.name} once its run ends, or interrupt it first`);
     if (change.archived !== undefined) w.archived = !!change.archived;
     if (change.archived) cancelWakes(its.flatMap(sid => [sid, ...labels(sid).map(l => l.id)]));
-    if (change.agents !== undefined) writeFileSync(agentsFile(id), String(change.agents));
+    if (change.agents !== undefined) replaceFile(agentsFile(id), String(change.agents));
     saveTree(t);
+    pruneGrants();
+    await closeUnlent();
     if (change.archived === false) for (const i of its.flatMap(instances)) kick(i);
     return send(res, 200, 'ok');
   }
@@ -810,7 +858,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     for (const sid of moving) replaceReadOnly(join(seriesDir(sid), 'series.json'), '{}');
     if (p.kind === 'merge') {
       const add = text(agentsFile(id)), keep = text(agentsFile(p.into)).trimEnd();
-      if (add) writeFileSync(agentsFile(p.into), `${keep && `${keep}\n\n`}## ${a.name}\n\n${add}`);
+      if (add) replaceFile(agentsFile(p.into), `${keep && `${keep}\n\n`}## ${a.name}\n\n${add}`);
       rmSync(agentsFile(id), { force: true });
       delete t.workspaces[id];
       forgetWorkspace(id);
@@ -931,7 +979,11 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const wake = req.method === 'DELETE' ? wakes().pending[id] : undefined, to = wake?.target ?? id, sid = t.series[to] ? to : instance(to).seriesId;
     if (req.method === 'DELETE' && !wake) throw new HttpError(404, 'no such wake pending');
     if (!run) mustSee(me, t.workspaces[t.series[sid].workspace]);
-    else if (t.series[sid].workspace !== t.series[run.inst.seriesId].workspace) throw new HttpError(403, `${named(t, sid)} is in another workspace: you can read it, not wake it`);
+    else if (t.series[sid].workspace !== t.series[run.inst.seriesId].workspace) {
+      const canRead = reads(t, t.series[run.inst.seriesId].workspace).includes(t.series[sid].workspace);
+      if (req.method === 'DELETE' && !canRead) throw new HttpError(404, 'no such wake pending');
+      throw new HttpError(403, canRead ? `${named(t, sid)} is in another workspace: you can read it, not wake it` : 'that is in another workspace: you can read it if it lets you, not wake it');
+    }
     if (t.series[to]?.single) throw new HttpError(400, `${t.series[to].name} is a task, with one instance: wake that`);
     if (req.method === 'DELETE') {
       // A person's cancellation is theirs in the system's log; a run's is recorded there too, with the wake, its instance and run.
@@ -947,10 +999,12 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (!t.series[to] && instance(to).doc.status !== 'open') throw new HttpError(409, `${instance(to).label} is ${instance(to).doc.status}: to correct it, wake its series with the label ${instance(to).label}-r2`);
     const first = new Date(at), starts = t.series[to] ? folderName(String(label)) : undefined;
     if (starts && labels(to).some(l => l.label === starts && instance(l.id).hole)) throw new HttpError(409, `${starts} was deleted, and its label stays with it: choose another`);
-    return send(res, 200, setWake(to, {
+    const created = setWake(to, {
       at: first.toISOString(), from: run ? `${named(t, run.inst.seriesId)}/${run.inst.label}` : by, ...(run && { inst: run.inst.id }),
       ...(starts && { label: starts }), ...(days !== undefined && { days: weekly(String(days), first, starts) }), ...(text?.trim() && { text: text.trim() }),
-    }));
+    });
+    if (run) act('agent', { method: 'PUT', path: url.pathname, wake: wakes().pending[created.id], inst: run.inst.id, run: run.n });
+    return send(res, 200, created);
   }
   // A request to start an instance, which people start or dismiss: whoever starts it acts, so its wake is logged, a note unless its
   // runner's, beside their own.
@@ -1037,6 +1091,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (inst.doc.status !== 'closed') throw new HttpError(409, `${inst.label} is ${inst.doc.status}: only a closed instance takes corrections, as nothing else changes it`);
     if (see && !run) mustSee(me, t.workspaces[t.series[see.seriesId].workspace]);
     if (see?.hole) throw new HttpError(409, `${see.label} was deleted`);
+    if (see && !run && (see.seriesId !== inst.seriesId || see === inst)) throw new HttpError(400, `${see.label} is not another instance in ${t.series[inst.seriesId].name}`);
     if (!['wrong', 'superseded'].includes(k) || typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a correction is {"kind": "wrong" or "superseded", "text", "item", "ref", "see", "thread"}');
     if (item != null && !inst.doc.items.some(i => i.id === item)) throw new HttpError(400, `no item ${item}; ${inst.label}'s items: ${inst.doc.items.map(i => i.id).join(', ')}`);
     if (thread != null && !see?.threads().includes(thread)) throw new HttpError(400, `no thread ${thread} in ${see?.label ?? 'the instance it names'}`);
@@ -1095,6 +1150,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a comment has text');
     if (ask !== undefined && !['question', 'proposal'].includes(ask)) throw new HttpError(400, 'ask is "question" or "proposal"');
     if (thread !== undefined && !under) throw new HttpError(400, `no comment ${thread} to reply under; this instance's threads: ${inst.threads().join(', ') || 'none yet'}`);
+    if (thread === undefined && ref != null && typeof ref !== 'string') throw new HttpError(400, 'ref must be a string');
     if (thread === undefined && item != null && !inst.doc.items.some(i => i.id === item)) throw new HttpError(400, `no item ${item}; the screen's items: ${inst.doc.items.map(i => i.id).join(', ')}`);
     for (const f of files) if (!(typeof f === 'string' && f.startsWith('upload/attachments/') && !f.includes('..') && existsSync(join(inst.dir, f)))) throw new HttpError(400, `no attachment ${f}`);
     const who = typeof to === 'string' ? to.toLowerCase() : undefined, p = who && asPerson(who);
@@ -1119,7 +1175,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     res.setHeader('X-RF-Comment-Seq', said.seq);
     // Until a task is renamed, its first prompt's opening words name it.
     const s = t.series[inst.seriesId], words = text.trim().split(/\s+/).slice(0, 6).join(' ').replace(/^\.+/, '').slice(0, 60);
-    if (s.single && words && !inst.log.some(e => e.op === 'rename' || (e.op === 'comment' && e !== said && isPerson(e)))) {
+    if (s.single && words && words !== 'AGENTS.md' && !inst.log.some(e => e.op === 'rename' || (e.op === 'comment' && e !== said && isPerson(e)))) {
       const from = inst.label;
       s.name = freeName(t, s.workspace, folderName(words));
       saveTree(t);
@@ -1253,6 +1309,8 @@ async function admin(me: Me, req: IncomingMessage, res: ServerResponse, url: URL
       }
       guard(hidden(t, us), hidden(t, after), force);
       for (const [e, role] of Object.entries(roles as Record<string, Role>)) upsertUser(e, { role });
+      pruneGrants();
+      await closeUnlent();
       return send(res, 200, 'ok');
     }
     // Besides where each person is: the open instances they run in workspaces they aren't in, which they'd lose sight of as users.
@@ -1265,13 +1323,22 @@ async function admin(me: Me, req: IncomingMessage, res: ServerResponse, url: URL
   if (!users()[email]) throw new HttpError(404, `no user ${email}`);
   if (req.method === 'DELETE') {
     if (email === me.email) throw new HttpError(409, 'you cannot remove yourself');
+    forget(email);
     forgetGrants(email);
     removeUser(email);
+    await endSignIns(email);
+    await dropUnpermittedVpns(email);
+    await closeUnlent();
   } else if (req.method === 'PUT') {
     const { disabled, signout } = await json(req);
     if (email === me.email && disabled) throw new HttpError(409, 'you cannot lock yourself out');
     if (disabled !== undefined) upsertUser(email, { disabled: !!disabled });
     if (signout) signOutEverywhere(email);
+    if (disabled || signout) {
+      await endSignIns(email);
+      await dropUnpermittedVpns(email);
+      await closeUnlent();
+    }
   } else throw new HttpError(405, 'PUT or DELETE');
   send(res, 200, 'ok');
 }
@@ -1352,7 +1419,10 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     // Whether an update may stop the server (scripts/update.ts), its answer alone, to anyone: 200 drained, else 503.
     if (req.method === 'GET' && url.pathname === '/drained') return void res.writeHead(drained() ? 200 : 503).end();
     const me = await authenticate(req, res, url);
-    if (!me) return;
+    if (!me) {
+      if (url.pathname === redirectPath) { pruneGrants(); await endUnpermittedSignIns(); await dropUnpermittedVpns(); await closeUnlent(); }
+      return;
+    }
     // What a person changes beyond an instance is an act of theirs in the system's log, once it's done.
     if (!['GET', 'HEAD'].includes(req.method!) && !url.pathname.startsWith('/api/instances/'))
       res.on('finish', () => res.statusCode < 400 && act(me.email, { method: req.method, path: url.pathname + url.search, body: bodies.get(req) }));
@@ -1372,7 +1442,11 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
         if (!CAPS.includes(cap)) throw new HttpError(400, `a capability is one of ${CAPS.filter(c => c !== 'vpn' || can(me, c)).join(', ')}`);
         if (!isPeople(people)) throw new HttpError(400, `${cap}: a list of emails and Entra group ids: ${JSON.stringify(people)}`);
         writeJson('capabilities.json', { ...capabilities(), [cap]: people.map(p => p.toLowerCase()) });
-        if (cap === 'vpn') await closeUnlent();
+        if (cap === 'vpn') {
+          await endUnpermittedSignIns();
+          await dropUnpermittedVpns();
+          await closeUnlent();
+        }
       }
       send(res, 200, Object.fromEntries(CAPS.filter(c => c !== 'vpn' || can(me, c)).map(c => [c, capabilities()[c] ?? []])));
     } else if (url.pathname === '/egress') {
@@ -1392,7 +1466,9 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
         const host = decodeURIComponent(url.pathname.split('/')[2]).toLowerCase();
         if (!letIn()[host]) throw new HttpError(404, `${host} isn't one admins let websites reach: they are ${Object.keys(letIn()).join(', ') || 'none'}`);
         setLetIn([host], me.email, false);
+        await revokeInternalHosts([host]);
         act(me.email, { op: 'internal', hosts: [host], let: false });
+        await closeUnlent();
       } else if (req.method !== 'GET') throw new HttpError(405, 'GET lists them, DELETE /internal/HOST takes one out');
       send(res, 200, letIn());
     } else if (url.pathname === '/brand' && req.method === 'PUT') {
@@ -1422,7 +1498,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     else if (url.pathname === '/agents' && req.method === 'GET') send(res, 200, { text: text(agentsFile()) });
     else if (url.pathname === '/agents' && req.method === 'PUT') {
       if (me.role !== 'admin') throw new HttpError(403, "the company's AGENTS.md is the admins'");
-      writeFileSync(agentsFile(), (await body(req)).toString());
+      replaceFile(agentsFile(), (await body(req)).toString());
       send(res, 200, 'ok');
     } else if (url.pathname === '/cli') await cli(req, res, url);
     else if (url.pathname === '/tokens' && req.method === 'GET') send(res, 200, myTokens(me.email));
@@ -1485,7 +1561,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     else if (/^\/logins\/sites\/[^/]+$/.test(url.pathname) && req.method === 'PATCH') {
       const change = await json(req);
       await setSite(me, decodeURIComponent(url.pathname.split('/')[3]), change, url.searchParams.get('person') ?? me.email);
-      if (change.via !== undefined) await closeUnlent();
+      if (change.via !== undefined || change.internal !== undefined) await closeUnlent();
       send(res, 200, 'ok');
     }
     else if (/^\/logins\/sites\/[^/]+$/.test(url.pathname) && req.method === 'DELETE') send(res, 200, (removeSite(me.email, decodeURIComponent(url.pathname.split('/')[3])), await closeUnlent(), 'ok'));
@@ -1579,7 +1655,13 @@ server.on('upgrade', (req, socket, head) => {
   const me = req.headers.origin === new URL(process.env.RF_PUBLIC_URL!).origin ? session(req) : null, path = URL.parse(req.url!, 'http://x')?.pathname ?? '';
   const signIn = /^\/signins\/(\w+)\/(view\/(?:watch|drive))$/.exec(path), run = /^\/runs\/(\w+)\/([a-z0-9-]+)\/view\/(watch|drive)$/.exec(path);
   let to;
-  if (me && signIn && (isSignIn(me.email, signIn[1]) || can(me, 'vpn') && isVpnSignIn(me.email, signIn[1]))) to = `/sessions/${signIn[1]}/${signIn[2]}`;
+  if (me && signIn && (isSignIn(me.email, signIn[1]) || can(me, 'vpn') && isVpnSignIn(me.email, signIn[1]))) {
+    to = `/sessions/${signIn[1]}/${signIn[2]}`;
+    const may = () => { const now = session(req); return !!now && (isSignIn(now.email, signIn[1]) || can(now, 'vpn') && isVpnSignIn(now.email, signIn[1])); };
+    const cut = (id: string) => id === 'tree' && !may() && socket.destroy();
+    changes.on('change', cut);
+    socket.on('close', () => changes.off('change', cut));
+  }
   if (me && run) try {
     const w = watched(me, run[1], run[2]);
     to = `/sessions/${run[3] === 'drive' ? w.browsers.drive(run[2], me.email, socket) : w.id}/view/${run[3]}`;

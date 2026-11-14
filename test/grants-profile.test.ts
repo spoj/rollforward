@@ -8,7 +8,7 @@ import { upsertUser, type Me } from '../src/auth.ts';
 import { changeWebsite, websitesOf, type Profile } from '../src/browsers.ts';
 import { logins, personDir, saveLogin } from '../src/logins.ts';
 import { createInstance, openStore } from '../src/store.ts';
-import { approved, ask, decide, forgetGrants, forgetWorkspace, grants, lapse, revoke, unapproved, visible, type Grant } from '../src/grants.ts';
+import { approved, ask, decide, forgetGrants, forgetWorkspace, grants, lapse, pruneGrants, revoke, unapproved, visible, type Grant } from '../src/grants.ts';
 
 const person: Me = { email: 'bob@demo.test', name: 'Bob Baker', role: 'user', groups: [] };
 const owner: Me = { email: 'alice@demo.test', name: 'Alice Owner', role: 'user', groups: [] };
@@ -240,4 +240,59 @@ test('owners may deny restricted requests, and lapse, withdrawal and removal kee
   assert.deepEqual(Object.keys(grants()), ['c']);
   forgetGrants(owner.email);
   assert.deepEqual(Object.keys(grants()), []);
+});
+
+test('grants survive owner/member moves, alternate group or direct membership, and admin visibility', async () => {
+  const group = '6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b', other = '7f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b';
+  const { id } = await ask(person, 'portal', 'w', grant.reason);
+  decide(owner, id, true, '');
+  upsertUser(person.email, { groups: [group, other] });
+  for (const people of [
+    { owners: [person.email], members: [] },
+    { owners: [owner.email], members: [person.email] },
+    { owners: [group], members: [other] },
+    { owners: [owner.email], members: [group, other] },
+    { owners: [owner.email], members: [other] },
+    { owners: [group], members: [person.email] },
+    { owners: [owner.email], members: [person.email] },
+  ]) {
+    saveTree({ ...tree(), workspaces: { ...tree().workspaces, w: { name: 'Acme', ...people } } });
+    pruneGrants();
+    assert.equal(grants()[id].state, 'approved', JSON.stringify(people));
+    assert.equal(logins(person.email).length, 1);
+  }
+  upsertUser(person.email, { role: 'admin', groups: [] });
+  saveTree({ ...tree(), workspaces: { ...tree().workspaces, w: { name: 'Acme', owners: [], members: [] } } });
+  pruneGrants();
+  assert.equal(grants()[id].state, 'approved');
+  upsertUser(person.email, { role: 'user' });
+  pruneGrants();
+  assert.equal(grants()[id].state, 'revoked');
+  assert.deepEqual(logins(person.email), []);
+});
+
+test('losing workspace visibility revokes live grants, hides the workspace from grants endpoints, and aborts an in-flight ask', async () => {
+  const { id } = await ask(person, 'portal', 'w', grant.reason);
+  decide(owner, id, true, '');
+  assert.throws(() => decide(outsider, id, true, ''), { status: 404, message: `no request ${id} waits` });
+  assert.throws(() => revoke(outsider, id), (e: any) => e.status === 404 && !String(e.message).includes('Acme'));
+
+  // Removing Bob from Acme revokes his grant there, hides Acme from visible(person), and signs him out when unused elsewhere.
+  saveTree({ ...tree(), workspaces: { ...tree().workspaces, w: { ...tree().workspaces.w, members: [] } } });
+  pruneGrants();
+  assert.equal(grants()[id].state, 'revoked');
+  assert.equal(approved('portal', person.email, 'w'), false);
+  assert.deepEqual(visible(person), []);
+  assert.deepEqual(logins(person.email), []);
+
+  // An admin demoted during checkWebsite cannot self-approve or create a grant in a workspace they no longer see.
+  saveLogin(admin.email, { id: 'web:portal', kind: 'website', name: 'portal', since: grant.at, offers: [{ id: 'web:portal', name: 'portal' }],
+    trace: { requests: { 'portal.example.com': { 200: 1 } }, blocked: [], seconds: 5 } });
+  writeFileSync(join(personDir(admin.email), 'websites.json'), JSON.stringify({
+    portal: { url: 'https://portal.example.com/', hosts: ['portal.example.com'], writeback: true, added: grant.at,
+      checks: { 'portal.example.com': { verdict: 'pass', why: 'Known' } } },
+  }));
+  upsertUser(admin.email, { role: 'user' });
+  await assert.rejects(() => ask(admin, 'portal', 'w', 'Audit check'), { status: 404 });
+  assert.equal(Object.values(grants()).some(g => g.person === admin.email), false);
 });

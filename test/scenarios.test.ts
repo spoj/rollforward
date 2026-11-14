@@ -1452,6 +1452,81 @@ test('closing a run browser writes its log before the run commits, and closing t
   }
 });
 
+test('a run waking its own workspace is logged in .rf/log.jsonl, and cross-workspace /api/wakes calls never leak unreadable workspace or series names', async () => {
+  const { id: secretWs } = await (await call('POST', '/api/workspaces', { name: 'TopSecretMna' })).json();
+  const { id: secretSeries } = await (await call('POST', '/api/series', { workspace: secretWs, name: 'DealAlpha' })).json();
+  const { id: secretWake } = await (await call('PUT', `/api/wakes/${secretSeries}`, { at: '+4h', label: '2026-12' })).json();
+
+  const { id: ownWs } = await (await call('POST', '/api/workspaces', { name: 'WakeAuditOwn' })).json();
+  const { id: ownSeries } = await (await call('POST', '/api/series', { workspace: ownWs, name: 'Ops' })).json();
+  const probe: Script = {
+    bash: [
+      `node -e "const http=require('http'),u=new URL(process.env.RF_URL+'/api/wakes/${secretSeries}');const r=http.request({hostname:u.hostname,port:u.port,path:u.pathname,method:'PUT',headers:{authorization:'Bearer '+process.env.RF_TOKEN,'content-type':'application/json'}},s=>{let d='';s.on('data',c=>d+=c);s.on('end',()=>console.log(s.statusCode+' '+d))});r.end(JSON.stringify({at:'+2h',label:'x'}));"`,
+      `node -e "const http=require('http'),u=new URL(process.env.RF_URL+'/api/wakes/${secretWake}');const r=http.request({hostname:u.hostname,port:u.port,path:u.pathname,method:'DELETE',headers:{authorization:'Bearer '+process.env.RF_TOKEN}},s=>{let d='';s.on('data',c=>d+=c);s.on('end',()=>console.log(s.statusCode+' '+d))});r.end();"`,
+      'rf wake . +2h --text "Follow up"',
+    ],
+    report: 'Checked wakes.', saw: [],
+  };
+  scripts.push(probe);
+  const { id: ownInst } = await (await call('POST', `/api/series/${ownSeries}`, { label: '2026-11', logins: [] })).json();
+  await runs(ownInst, 1);
+
+  assert.doesNotMatch(probe.saw[0], /TopSecretMna|DealAlpha/);
+  assert.match(probe.saw[0], /^403 /);
+  assert.doesNotMatch(probe.saw[1], /TopSecretMna|DealAlpha/);
+  assert.match(probe.saw[1], /^404 /);
+
+  const rfActs = readFileSync(join(root, '.rf', 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+  const putAct = rfActs.findLast((a: any) => a.by === 'agent' && a.method === 'PUT' && a.inst === ownInst);
+  assert.ok(putAct, 'agent PUT /api/wakes recorded in .rf/log.jsonl');
+  assert.equal(putAct.run, 1);
+  assert.equal(putAct.wake.target, ownInst);
+});
+
+test('unticking logins during a run ends its Pi session instead of carrying the revoked session into the next run', async () => {
+  assert.equal((await call('POST', '/logins/sites', { name: 'midcred', url: 'https://midcred.example.com/' })).status, 200);
+  const { id: sIn } = await (await call('POST', '/logins/web/midcred', {})).json();
+  assert.equal((await call('POST', `/signins/${sIn}`)).status, 200);
+
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'MidRunUntick' })).json();
+  const { id: sid } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec' })).json();
+  scripts.push({
+    bash: ['touch working/in-run; for i in $(seq 1 50); do [ -f working/release ] && break; sleep 0.05; done'],
+    report: 'Run 1 done.', saw: [],
+  });
+  const { id: inst } = await (await call('POST', `/api/series/${sid}`, { label: '2026-11', logins: ['web:midcred'] })).json();
+  await until('run 1 in progress', () => existsSync(join(root, 'instances', inst, 'working', 'in-run')));
+  assert.equal((await call('POST', `/api/instances/${inst}/logins`, { logins: [], quiet: true })).status, 200);
+  writeFileSync(join(root, 'instances', inst, 'working', 'release'), 'go');
+  await runs(inst, 1);
+
+  scripts.push({ bash: ['true'], report: 'Run 2 done.', saw: [] });
+  assert.equal((await call('POST', `/api/instances/${inst}/comment`, { text: 'Continue without login' })).status, 200);
+  await runs(inst, 2);
+
+  const sessions = readdirSync(join(root, 'instances', inst, 'session')).filter(f => f.endsWith('.jsonl'));
+  assert.equal(sessions.length, 2, 'run 2 started a fresh Pi session after mid-run login untick');
+});
+
+test('the first series note added while Pi is idle starts a fresh sandbox with ../.notes mounted', async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'IdleNotesMount' })).json();
+  const { id: sid } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec' })).json();
+  scripts.push({ bash: ['true'], report: 'Run 1 done.', saw: [] });
+  const { id: inst } = await (await call('POST', `/api/series/${sid}`, { label: '2026-11', logins: [] })).json();
+  await runs(inst, 1);
+
+  const up = await fetch(`${base}/api/series/${sid}/attach?name=rule.txt`, { method: 'POST', headers: { cookie: admin }, body: 'FX=7.82' });
+  assert.equal(up.status, 200);
+  const { file } = await up.json();
+  assert.equal((await call('POST', `/api/series/${sid}/notes`, { text: 'Use FX rate', files: [file] })).status, 200);
+
+  const reader: Script = { bash: [`cat ../.notes/${file}`], report: 'Read note attachment.', saw: [] };
+  scripts.push(reader);
+  assert.equal((await call('POST', `/api/instances/${inst}/comment`, { text: 'Apply the new FX note' })).status, 200);
+  await runs(inst, 2);
+  assert.equal(reader.saw[0].trim(), 'FX=7.82');
+});
+
 test("every entry names its source: a person, a run whose entry names its runner and the act whose ticks it uses, or what caused it", () => {
   const logs = new Map(readdirSync(join(root, 'instances')).map(id => [id, readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l) as Record<string, any>)]));
   for (const [id, log] of logs) for (const e of log) {

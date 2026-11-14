@@ -14,6 +14,7 @@ import { pushed, skills } from './skills.ts';
 import { AGENT, commit, committed, forget } from './git.ts';
 import { lastAssign, logins, runnerAt, runnerOf } from './logins.ts';
 import { confirm } from './entra.ts';
+import { pruneGrants } from './grants.ts';
 import { abortCalls, drainCalls, hasCalls, reachable, types } from './connections.ts';
 
 // What runs when: one run at a time per series, at most RF_MAX_RUNS at once, started by people's acts and by wakes.
@@ -56,7 +57,8 @@ const idle = new Map<string, Idle>();
 // live skills' versions, and the caches it has copies of at $RF_INDEX, a first one for a source so starting a session that has them.
 function startsFrom(inst: Instance): string {
   const v = view(inst);
-  return JSON.stringify([v.instance, v.names, v.series, v.env, v.ro.filter(([, at]) => at.endsWith('/AGENTS.md')).map(([p]) => existsSync(p) && readFileSync(p, 'utf8')),
+  return JSON.stringify([v.instance, v.names, v.series, v.env, runnerOf(inst).consent,
+    v.ro.map(([p, at]) => at.endsWith('/AGENTS.md') ? existsSync(p) && readFileSync(p, 'utf8') : [at, existsSync(p)]),
     skills().map(s => [s.id, pushed(s).version]), sources(inst).map(({ o }) => o.id)]);
 }
 // Whether an instance's runner can still see its workspace, as each run of theirs needs.
@@ -142,8 +144,15 @@ export function message(inst: Instance, n: number, entries: Entry[], first = fal
   const lent = (l: string) => l.startsWith('web:') && sites[l.slice(4)] ? `${l} at ${sites[l.slice(4)].url}` : offers.has(l) ? `${l} (${offers.get(l)})` : l;
   // The corrections on the instances before it, so an error isn't rolled forward.
   const fixed = !first ? [] : closedBefore(inst).flatMap(i => i.log.filter(e => e.op === 'correction').map(e => {
-    const see = e.see as { label: string; thread?: string } | undefined;
-    return `${i.label}${e.item ? ` ${e.item}${e.ref ? `@${e.ref}` : ''}` : ''} is ${e.kind}, ${JSON.stringify(e.text)}${see ? `, see ${see.label}${see.thread ? ` ${see.thread}` : ''}` : ''}`;
+    const see = e.see as { inst: string; label: string; thread?: string } | undefined;
+    const seeLabel = see && (() => {
+      try {
+        const s = instance(see.inst);
+        if (s.hole) return see.label;
+        return s.seriesId === inst.seriesId ? s.label : `${tree().series[s.seriesId]?.name ?? ''}/${s.label}`.replace(/^\//, '');
+      } catch { return see.label; }
+    })();
+    return `${i.label}${e.item ? ` ${e.item}${e.ref ? `@${e.ref}` : ''}` : ''} is ${e.kind}, ${JSON.stringify(e.text)}${see ? `, see ${seeLabel}${see.thread ? ` ${see.thread}` : ''}` : ''}`;
   }));
   const from = (e: Note) => e.by !== 'agent' ? who(e.by) : `the agent of ${named(tree(), instance((e.see as { inst: string }).inst).seriesId)}/${instance((e.see as { inst: string }).inst).label}, run ${e.run}, for ${who(e.runner as string)}`;
   return `Instance ${inst.label}, run ${n}.`
@@ -233,7 +242,9 @@ async function begin(inst: Instance, tried: Set<Instance>) {
   if (held(inst, 'entra', runner)) return bail(inst, tried);
   try {
     await confirm(runner);
+    pruneGrants();
   } catch (e) {
+    if (stopping || !due(inst)) return bail(inst, tried);
     if (runnerOf(inst).by !== runner) return void kick(inst);
     if ((e as HttpError).status !== 401) {
       console.error(`a run of ${inst.id} waits a minute: Microsoft didn't confirm ${runner}'s sign-in`, e);
@@ -374,7 +385,7 @@ function finish(a: Active, aborted: boolean, error?: string): Entry | undefined 
   const added = rules(a.process, processMd(a.inst.dir) ?? a.process);
   const done = a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(6), estimated: a.estimated, ...(error && { error }), ...(added && { rules: added, thread: a.thread }) });
   // Its Pi idles for the instance's next run, or stops, the longest idle too past RF_MAX_IDLE.
-  const keep = !draining && !aborted && !error && !!a.run && !a.texts.size && a.inst.doc.status === 'open' && a.run.alone();
+  const keep = !draining && !aborted && !error && !!a.run && !a.texts.size && a.inst.doc.status === 'open' && a.run.alone() && startsFrom(a.inst) === a.shape;
   if (keep) {
     idle.set(a.inst.id, { inst: a.inst, run: a.run!, token: a.token, view: a.view, skills: a.skills, session: a.session, shape: a.shape, seq: a.inst.log.at(-1)!.seq, since: Date.now() });
     if (idle.size > MAX_IDLE) drop(idle.keys().next().value!);
@@ -705,8 +716,9 @@ export const CUT = { restart: 'a restart cut the run', moved: 'its series moved'
 export function recover() {
   // A deletion a restart cut is done: what's left of its folder goes.
   for (const id of Object.keys(tree().series)) for (const inst of instances(id).filter(i => i.hole)) inst.clear();
-  for (const id of Object.keys(tree().series)) for (const inst of instances(id).filter(i => i.doc.status === 'open')) {
-    for (const f of ['index.lock', 'HEAD.lock', 'config.lock', 'packed-refs.lock', 'refs/heads/main.lock']) rmSync(join(inst.dir, '.git', f), { force: true });
+  for (const id of Object.keys(tree().series)) for (const inst of instances(id).filter(i => !i.hole)) {
+    for (const f of ['index.lock', 'HEAD.lock', 'config.lock', 'packed-refs.lock', 'packed-refs.new', 'gc.pid', 'refs/heads/main.lock']) rmSync(join(inst.dir, '.git', f), { force: true });
+    if (inst.doc.status !== 'open') continue;
     const run = inst.log.findLast(e => e.op === 'run' || e.op === 'done');
     if (run?.op === 'run') {
       const calls = inst.log.filter(e => e.op === 'call' && e.run === run.run);

@@ -271,14 +271,19 @@ export function prepare(inst: Instance, to: string): boolean {
   const names = new Set<string>();
   for (const { o, c } of sources(inst)) {
     const base = o.name.replace(/[/\0]/g, '-'), ps = Object.values(c.parts);
+    const fit = (suffix: string) => {
+      let s = '';
+      for (const ch of base) if (Buffer.byteLength(s + ch + suffix + '.ndjson.zst') <= 255) s += ch; else break;
+      return s + suffix;
+    };
     if (ps.some(p => p.due === null && p.tries >= TRIES)) queue(at(c.person, c.source), async () => {
       const now = load(c.person, c.source);
       if (!now) return;
       for (const p of Object.values(now.parts)) if (p.due === null && p.tries >= TRIES) Object.assign(p, { due: Date.now(), tries: 0 });
       save(now);
     }).then(() => poke());
-    let name = base;
-    for (let k = 2; names.has(name); k++) name = `${base} ${k}`;
+    let name = fit('');
+    for (let k = 2; names.has(name); k++) name = fit(` ${k}`);
     names.add(name);
     mkdirSync(to, { recursive: true });
     if (c.length) {
