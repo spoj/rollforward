@@ -2013,9 +2013,11 @@ test('drafts in sessionStorage preserve item/cell pins and deep replies, skip ca
     // Sign out and sign in as Bob in the same tab: admin's draft must not appear for Bob.
     await tab.click('#user summary');
     await tab.click('[data-act=signout]');
+    await tab.waitForSelector('a.ms');
     entra.who.as = 'bob@demo.test';
-    await tab.goto(`${origin}/#/${inst}`);
     await tab.click('a.ms');
+    await tab.waitForSelector('#bar h1 .t');
+    await tab.goto(`${origin}/#/${inst}`);
     await tab.waitForSelector('#bar h1 .t:text-is("D1")');
     assert.equal(await tab.inputValue('#newcomment'), '');
   } finally {
