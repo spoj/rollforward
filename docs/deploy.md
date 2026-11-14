@@ -108,7 +108,7 @@ Run the image under podman, as a systemd service. The image is the agent image, 
        Type=oneshot
        WorkingDirectory=%h/rollforward
        Environment=PATH=/opt/node-v26/bin:/usr/local/bin:/usr/bin
-       ExecStart=/opt/node-v26/bin/node scripts/update.ts http://127.0.0.1:8780/
+       ExecStart=/opt/node-v26/bin/node --env-file=%h/.config/rollforward.env scripts/update.ts http://127.0.0.1:8780/
        TimeoutStartSec=3h
 
        # ~/.config/systemd/user/rollforward-update.timer
@@ -119,7 +119,9 @@ Run the image under podman, as a systemd service. The image is the agent image, 
        [Install]
        WantedBy=timers.target
 
-  then `systemctl --user enable --now rollforward-update.timer`; `journalctl --user -u rollforward-update` shows what it did. It restarts the server as above; `OnCalendar=*-*-* 02:00` in place of the two lines above updates at night only.
+  The updater loads the same `rollforward.env` as the server so `RF_DRAIN_MIN` agrees. Existing updater units, including production's, need the `--env-file` argument above and `systemctl --user daemon-reload` before changing that limit; a checkout update alone does not change a unit. With neither configured, both default to 15 minutes.
+
+  Then `systemctl --user enable --now rollforward-update.timer`; `journalctl --user -u rollforward-update` shows what it did. It restarts the server as above; `OnCalendar=*-*-* 02:00` in place of the two lines above updates at night only.
 
 ## After updating past v0.3.19
 
