@@ -1615,7 +1615,7 @@ async function onAct(act, el) {
     closePv();
     await refresh();
   }
-  if (act === 'rename') editName($('#bar h1 .t'), cur.i.label, label => api(`${instPath()}/rename?as=${enc(label)}`, { method: 'POST' }));
+  if (act === 'rename') { const path = instPath(); editName($('#bar h1 .t'), cur.i.label, label => api(`${path}/rename?as=${enc(label)}`, { method: 'POST' })); }
   if (act === 'share-arm') { pv.arming = !pv.arming; renderPv(); }
   if (act === 'share-on' || act === 'share-off') {
     await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify(act === 'share-on' ? { share: true, logins: ticked() } : { share: false }) });
@@ -2067,6 +2067,7 @@ matchMedia('(max-width: 800px)').addEventListener('change', renderPanes);
 
 addEventListener('hashchange', () => {
   $('#ask').close();
+  if (editing) { editing = null; drawn.delete($('#bar')); drawn.delete($('#side')); }
   openItem = null; ui.sect = {}; prevSigs = {}; ui.alone = null;
   ui.full.clear();
   ui.withdrawn.clear();

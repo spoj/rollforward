@@ -1929,3 +1929,22 @@ test('previewing a missing text file shows the error rather than rendering the 4
   assert.equal(await page.textContent('#pv .empty'), 'no such file');
   await page.click('#pv [data-act=unpv]');
 });
+
+test('browser Back during inline instance rename cancels the edit instead of freezing the header or renaming the previous instance', async () => {
+  const origin = new URL(page.url()).origin;
+  const { id: ws } = await page.evaluate(async () => (await fetch('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: 'NavRename' }) })).json());
+  const { id: sid } = await page.evaluate(async ws => (await fetch('/api/series', { method: 'POST', body: JSON.stringify({ workspace: ws, name: 'S' }) })).json(), ws);
+  const { id: i1 } = await page.evaluate(async sid => (await fetch(`/api/series/${sid}`, { method: 'POST', body: JSON.stringify({ label: 'Period-A', quiet: true }) })).json(), sid);
+  const { id: i2 } = await page.evaluate(async sid => (await fetch(`/api/series/${sid}`, { method: 'POST', body: JSON.stringify({ label: 'Period-B', quiet: true }) })).json(), sid);
+  await page.goto(`${origin}/#/${i1}`);
+  await page.waitForSelector('#bar h1 .t:text-is("Period-A")');
+  await page.goto(`${origin}/#/${i2}`);
+  await page.waitForSelector('#bar h1 .t:text-is("Period-B")');
+  await page.click('#bar h1 .ren');
+  await page.fill('#bar h1 input.inline', 'Period-B-Edited');
+  await page.goBack();
+  await page.waitForSelector('#bar h1 .t:text-is("Period-A")', { timeout: 2000 });
+  assert.equal(await page.locator('#bar h1 input.inline').count(), 0);
+  const labels = await page.evaluate(async ws => (await (await fetch('/api')).json()).find((w: any) => w.id === ws).series[0].instances.map((i: any) => i.label), ws);
+  assert.deepEqual(labels.sort(), ['Period-A', 'Period-B']);
+});
