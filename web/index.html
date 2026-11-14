@@ -1472,6 +1472,7 @@ document.addEventListener('click', async ev => {
     return renderCard();
   }
   // What a click starts holds its button until it's done, so a second click can't repeat it.
+  if (el.hasAttribute('aria-busy')) return;
   el.setAttribute('aria-busy', 'true');
   try { await onAct(el.dataset.act, el); } finally { el.removeAttribute('aria-busy'); }
 });
@@ -1491,8 +1492,11 @@ async function onAct(act, el) {
   // A row's settings and + act on that row, which they open first: after the hash change's own refresh starts, which this one
   // supersedes, so it lands before they act.
   if (['workspace-settings', 'new-task', 'settings', 'new-instance'].includes(act) && el.dataset.id && ![cur?.w.id, cur?.s?.id].includes(el.dataset.id)) {
-    location.hash = `#/${el.dataset.id}`;
-    await new Promise(ok => addEventListener('hashchange', ok, { once: true }));
+    const next = `#/${el.dataset.id}`;
+    if (location.hash !== next) {
+      location.hash = next;
+      await new Promise(ok => addEventListener('hashchange', ok, { once: true }));
+    }
     await refresh();
   }
   if (act === 'audit') await toggleAudit();
@@ -2001,9 +2005,9 @@ document.addEventListener('change', async ev => {
   }
   if (group) group.querySelector('.tickall').checked = [...group.querySelectorAll('input.tick')].every(k => k.checked);
   if (el.matches('#mvwhat, #mvto')) return mvSay();
-  if (el.id === 'sname') await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) });
+  if (el.id === 'sname') { await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) }); pv.settings.name = el.value.trim(); pv.title = `${pv.settings.name} \u00b7 Settings`; }
   else if (el.matches('#pv input.tick') && pv.settings.kind === 'series' && pv.settings.shared_by === me.email) await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ share: true, logins: ticked() }) });
-  else if (el.id === 'wname') await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) });
+  else if (el.id === 'wname') { await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) }); pv.settings.name = el.value.trim(); pv.title = `${pv.settings.name} \u00b7 Settings`; }
   else if (el.id === 'oruse') await saveKey();
   else if (el.matches('#log input.tick')) {
     const logins = [...document.querySelectorAll('#log input.tick:checked')].map(i => i.value);

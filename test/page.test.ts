@@ -2079,3 +2079,41 @@ test('Assign dialog when no other signed-in person sees the workspace explains t
   assert.match(await page.textContent('#ask p') ?? '', /signed in/i);
   await page.keyboard.press('Escape');
 });
+
+test('Enter respects aria-busy, row settings do not hang when location.hash already matches, and #wname stays synced in settings', async () => {
+  // 1. Enter twice in #tname while POST /tokens is in flight submits only once.
+  let tokenPosts = 0;
+  await page.route('**/tokens', async route => {
+    if (route.request().method() === 'POST') {
+      tokenPosts++;
+      await new Promise(r => setTimeout(r, 250));
+    }
+    await route.continue();
+  });
+  await page.click('#sidefoot [data-act=logins]');
+  await page.click('#pv [data-act=tokens]');
+  await page.waitForSelector('#tname');
+  await page.fill('#tname', 'once-only');
+  await page.press('#tname', 'Enter');
+  await page.press('#tname', 'Enter');
+  await page.waitForSelector('#pv input[readonly]');
+  await page.unroute('**/tokens');
+  assert.equal(tokenPosts, 1, 'second Enter ignored while button is aria-busy');
+  await page.click('#pv [data-act=unpv]');
+
+  // 2. Clicking workspace-settings when location.hash already equals #/<ws> before cur catches up does not hang.
+  const { id: ws } = await page.evaluate(async () => (await fetch('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: 'FastGear' }) })).json());
+  await page.evaluate(async () => refresh());
+  await page.evaluate(ws => { history.replaceState(null, '', `#/${ws}`); }, ws);
+  await page.hover(`.row.ws:has(a[href="#/${ws}"])`);
+  await page.click(`.row.ws [data-act=workspace-settings][data-id="${ws}"]`);
+  await page.waitForSelector('#pv #wname', { timeout: 2000 });
+
+  // 3. Changing #wname updates pv.settings.name so re-rendering #pv keeps the new name.
+  await page.fill('#wname', 'FastGearRenamed');
+  await page.dispatchEvent('#wname', 'change');
+  await page.waitForFunction(() => tree.some((w: any) => w.name === 'FastGearRenamed'));
+  await page.evaluate(() => renderPv());
+  assert.equal(await page.inputValue('#wname'), 'FastGearRenamed');
+  await page.click('#pv [data-act=unpv]');
+});
