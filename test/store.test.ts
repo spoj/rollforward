@@ -5,7 +5,7 @@ import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createInstance, instance, openFile, openStore, safeName } from '../src/store.ts';
+import { createInstance, instance, keep, openFile, openStore, safeName } from '../src/store.ts';
 import { commit, forget } from '../src/git.ts';
 import { addNote, notes } from '../src/series.ts';
 import { act, initSystem } from '../src/system.ts';
@@ -41,7 +41,7 @@ test('openFile opens only what is under its base: a path that climbs with .., or
   mkdirSync(base, { recursive: true });
   writeFileSync(join(tmp, 'secret'), 'x');
   writeFileSync(join(base, 'mine'), 'y');
-  for (const rel of ['../../secret', 'mine/../../../secret', './mine', 'c//../mine']) assert.equal(openFile(base, rel), undefined, rel);
+  for (const rel of ['../../secret', 'mine/../../../secret', './mine', 'c//../mine', 'a'.repeat(260)]) assert.equal(openFile(base, rel), undefined, rel);
   assert.equal(typeof openFile(base, 'mine'), 'number');
   rmSync(tmp, { recursive: true, force: true });
 });
@@ -246,6 +246,13 @@ test("a file whose name passes the 255 bytes a name holds, as an Outlook mail sa
     assert.equal(readFileSync(join(inst.dir, file as string), 'utf8'), `copy ${n}`);
   }
   assert.equal(inst.doc.items[0].name, name.slice(0, -5), 'the item keeps the whole name');
+  for (const odd of [`2026.11 ${'供应商月末应收账款及银行余额调节核对明细表'.repeat(5)}`, `年.${'中'.repeat(84)}`]) {
+    for (const n of [1, 2]) {
+      writeFileSync(incoming, `odd ${n}`);
+      const saved = keep(tmp, 'files', odd, incoming), base = saved.slice('files/'.length);
+      assert.ok(Buffer.byteLength(base) <= 255 && !base.startsWith('.'), saved);
+    }
+  }
   rmSync(tmp, { recursive: true, force: true });
 });
 

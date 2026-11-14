@@ -28,7 +28,7 @@ export function openFile(base: string, rel: string): number | undefined {
     if (fstatSync(fd).isFile() && readlinkSync(`/proc/self/fd/${fd}`) === join(realpathSync(base), rel)) return fd;
     closeSync(fd);
   } catch (e) {
-    if (!['EACCES', 'ELOOP', 'ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code!)) throw e;
+    if (!['EACCES', 'ELOOP', 'ENAMETOOLONG', 'ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code!)) throw e;
   }
 }
 
@@ -193,7 +193,7 @@ export function safeName(s: string): string {
 // Keeps a person's file in folder/ under dir, read-only, under its own name made unique, its stem cut short where the name would
 // pass the 255 bytes a file's name holds; answers its path there.
 export function keep(dir: string, folder: string, name: string, tmp: string): string {
-  const clean = safeName(name), ext = extname(clean), stem = clean.slice(0, clean.length - ext.length);
+  const clean = safeName(name), raw = extname(clean), ext = Buffer.byteLength(raw) <= 20 && raw.length < clean.length ? raw : '', stem = clean.slice(0, clean.length - ext.length);
   const fit = (suffix: string) => {
     let s = '';
     for (const c of stem) if (Buffer.byteLength(s + c + suffix + ext) <= 255) s += c; else break;
@@ -293,7 +293,7 @@ export class Instance {
   }
 
   upload(by: string, name: string, tmp: string, sha256: string, pane: 'in' | 'out', onto: string | null, quiet: boolean): Entry {
-    const file = this.keep(name, tmp), clean = safeName(name), stem = clean.slice(0, clean.length - extname(clean).length);
+    const file = this.keep(name, tmp), clean = safeName(name), raw = extname(clean), stem = clean.slice(0, clean.length - (Buffer.byteLength(raw) <= 20 && raw.length < clean.length ? raw.length : 0));
     const up = this.append(by, 'upload', { file, pane, onto, sha256, ...(quiet && { quiet: true }) });
     let id = `u${up.seq}`;
     for (let n = 2; this.doc.items.some(i => i.id === id); n++) id = `u${up.seq}_${n}`;
