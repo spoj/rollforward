@@ -36,6 +36,7 @@ const service = createServer(async (req, res) => {
     return res.end('{}');
   }
   if (req.method === 'DELETE') {
+    if (req.url === '/sessions/malformed-state') return res.end('{"state":{"cookies":[{"name":"session","value":"private-cookie-never-logged"}]');
     if (hangClose) return;
     if (oversizeClose) {
       res.writeHead(oversizeStatus);
@@ -1127,6 +1128,11 @@ test('saved browser state excludes refused exact hosts while preserving wildcard
     back = wasBack;
     requested = wasRequested;
   }
+});
+
+test('malformed browser-service JSON does not expose saved cookies in its error', async () => {
+  const { browserJson } = await import('../src/browsers.ts');
+  await assert.rejects(browserJson('DELETE', '/sessions/malformed-state'), { status: 502, message: 'browser service: invalid JSON' });
 });
 
 test('browser-service error responses obey the same 64 MB bound as successful responses', async () => {

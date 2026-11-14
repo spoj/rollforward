@@ -63,7 +63,7 @@ async function call(method: string, path: string, body?: unknown, ms?: number) {
 }
 export async function browserJson(method: string, path: string, body?: unknown, ms?: number) {
   const raw = (await call(method, path, body, ms)).toString();
-  try { return JSON.parse(raw); } catch { throw new HttpError(502, `browser service: invalid JSON (${raw.slice(0, 200)})`); }
+  try { return JSON.parse(raw); } catch { throw new HttpError(502, 'browser service: invalid JSON'); }
 }
 // A file in a session's browser, its parts encoded and none . or .., which would lead out of the session to the service's other calls.
 export function files(id: string, path: string) {
