@@ -53,6 +53,10 @@ const browser = createServer(async (req, res) => {
   send({});
 }).on('upgrade', (req, socket) => {
   const session = sessions.get(req.url!.split('/')[2]);
+  if (session && Date.now() < session.expires && req.headers['x-hold'] === '1') {
+    socket.on('end', () => socket.destroy());
+    return void socket.write(`HTTP/1.1 101 Switching Protocols\r\n\r\nservice got ${req.url}`);
+  }
   socket.end(session && Date.now() < session.expires ? `HTTP/1.1 101 Switching Protocols\r\n\r\nservice got ${req.url}` : 'HTTP/1.1 404 Not Found\r\n\r\n');
 });
 const tunnel = createServer(async (req, res) => {
@@ -380,4 +384,44 @@ test('without a tunnel service, explicit stored grants expose no VPN API, capabi
   assert.equal((await call('PATCH', '/logins/sites/portal', { via: '' }, bob)).status, 200, 'a website left with a VPN is taken off it');
   assert.equal((await call('PATCH', '/logins/sites/portal', { every: '15m' }, bob)).status, 200);
   assert.equal((await call('PUT', '/capabilities', { cap: 'vpn', people: [ADMIN] })).status, 200, 'admins can still bootstrap a grant before deployment');
+});
+
+test('disabling a user or revoking vpn closes open sign-in browsers, disconnects live VPN tunnels, and cuts open sign-in websockets', async () => {
+  await stopServer();
+  await startServer(true);
+  await grant([ADMIN, BOB]);
+  assert.equal((await call('POST', '/vpns', { name: 'corp', type: 'fortinet', gateway })).status, 200);
+
+  // 1. Revoking vpn capability disconnects Bob's live tunnel and cuts his open VPN sign-in websocket.
+  const bTun = await connectVpn('corp', bob);
+  const { id: bVpnSign } = await openVpn('corp', bob);
+  const vpnWs = connect(Number(new URL(base).port), '127.0.0.1');
+  vpnWs.write(`GET /signins/${bVpnSign}/view/drive HTTP/1.1\r\nHost: ${new URL(base).host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nX-Hold: 1\r\nCookie: ${bob}\r\nOrigin: ${base}\r\n\r\n`);
+  await once(vpnWs, 'data');
+  const closedVpnWs = once(vpnWs, 'close');
+  assert.equal(tunnels.has(bTun.id), true);
+  await grant([ADMIN]);
+  await Promise.race([closedVpnWs, new Promise((_, rej) => setTimeout(() => rej(new Error('VPN sign-in websocket stayed open')), 2000))]);
+  vpnWs.destroy();
+  assert.equal(tunnels.has(bTun.id), false, 'revoking vpn capability deleted live tunnel on tunnel service');
+
+  // 2. Disabling Bob closes his open website and VPN sign-in browsers, disconnects his live VPN tunnel, and cuts his open sign-in websocket.
+  await grant([ADMIN, BOB]);
+  const bTun2 = await connectVpn('corp', bob);
+  const webSignRes = await call('POST', '/logins/web/portal', {}, bob);
+  assert.equal(webSignRes.status, 200);
+  const { id: bWebSign } = await webSignRes.json();
+
+  const ws = connect(Number(new URL(base).port), '127.0.0.1');
+  ws.write(`GET /signins/${bWebSign}/view/drive HTTP/1.1\r\nHost: ${new URL(base).host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nX-Hold: 1\r\nCookie: ${bob}\r\nOrigin: ${base}\r\n\r\n`);
+  await once(ws, 'data');
+  const closedWs = once(ws, 'close');
+
+  assert.equal((await call('PUT', `/users/${encodeURIComponent(BOB)}`, { disabled: true })).status, 200);
+  await Promise.race([closedWs, new Promise((_, rej) => setTimeout(() => rej(new Error('sign-in websocket stayed open')), 2000))]);
+  ws.destroy();
+  assert.equal(sessions.has(bWebSign), false, 'disabling user deleted open website sign-in browser');
+  assert.equal(sessions.has(bVpnSign), false, 'disabling user deleted open VPN sign-in browser');
+  assert.equal(tunnels.has(bTun2.id), false, 'disabling user deleted live VPN tunnel');
+  assert.equal((await call('PUT', `/users/${encodeURIComponent(BOB)}`, { disabled: false })).status, 200);
 });

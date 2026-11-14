@@ -18,8 +18,8 @@ import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { answered, byLogin, call, connections, intercepts, keyStatus, letIn, loginOf, removeConnection, setConnection, setLetIn, upstreams } from './connections.ts';
 import { syncCosts } from './costs.ts';
-import { addSite, allowHost, Browsers, endSignIn, enrolFlagged, isSignIn, keepAlive, passAllowed, passUpgrade, reap, removeHost, removeSite, revokeInternalHosts, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
-import { addVpn, cancelVpnSignIn, disconnectVpn, isVpnSignIn, reapVpns, removeVpn, saveVpnSignIn, startVpnSignIn, vpns } from './vpns.ts';
+import { addSite, allowHost, Browsers, endSignIn, endSignIns, enrolFlagged, isSignIn, keepAlive, passAllowed, passUpgrade, reap, removeHost, removeSite, revokeInternalHosts, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
+import { addVpn, cancelVpnSignIn, disconnectVpn, dropUnpermittedVpns, isVpnSignIn, reapVpns, removeVpn, saveVpnSignIn, startVpnSignIn, vpns } from './vpns.ts';
 import { ask, decide, forgetGrants, forgetWorkspace, lapse, revoke, visible } from './grants.ts';
 import { offer } from './connections/graph.ts';
 import { addWarehouse } from './connections/databricks.ts';
@@ -1307,13 +1307,22 @@ async function admin(me: Me, req: IncomingMessage, res: ServerResponse, url: URL
   if (!users()[email]) throw new HttpError(404, `no user ${email}`);
   if (req.method === 'DELETE') {
     if (email === me.email) throw new HttpError(409, 'you cannot remove yourself');
+    forget(email);
     forgetGrants(email);
     removeUser(email);
+    await endSignIns(email);
+    await dropUnpermittedVpns(email);
+    await closeUnlent();
   } else if (req.method === 'PUT') {
     const { disabled, signout } = await json(req);
     if (email === me.email && disabled) throw new HttpError(409, 'you cannot lock yourself out');
     if (disabled !== undefined) upsertUser(email, { disabled: !!disabled });
     if (signout) signOutEverywhere(email);
+    if (disabled || signout) {
+      await endSignIns(email);
+      await dropUnpermittedVpns(email);
+      await closeUnlent();
+    }
   } else throw new HttpError(405, 'PUT or DELETE');
   send(res, 200, 'ok');
 }
@@ -1414,7 +1423,10 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
         if (!CAPS.includes(cap)) throw new HttpError(400, `a capability is one of ${CAPS.filter(c => c !== 'vpn' || can(me, c)).join(', ')}`);
         if (!isPeople(people)) throw new HttpError(400, `${cap}: a list of emails and Entra group ids: ${JSON.stringify(people)}`);
         writeJson('capabilities.json', { ...capabilities(), [cap]: people.map(p => p.toLowerCase()) });
-        if (cap === 'vpn') await closeUnlent();
+        if (cap === 'vpn') {
+          await dropUnpermittedVpns();
+          await closeUnlent();
+        }
       }
       send(res, 200, Object.fromEntries(CAPS.filter(c => c !== 'vpn' || can(me, c)).map(c => [c, capabilities()[c] ?? []])));
     } else if (url.pathname === '/egress') {
@@ -1623,7 +1635,13 @@ server.on('upgrade', (req, socket, head) => {
   const me = req.headers.origin === new URL(process.env.RF_PUBLIC_URL!).origin ? session(req) : null, path = URL.parse(req.url!, 'http://x')?.pathname ?? '';
   const signIn = /^\/signins\/(\w+)\/(view\/(?:watch|drive))$/.exec(path), run = /^\/runs\/(\w+)\/([a-z0-9-]+)\/view\/(watch|drive)$/.exec(path);
   let to;
-  if (me && signIn && (isSignIn(me.email, signIn[1]) || can(me, 'vpn') && isVpnSignIn(me.email, signIn[1]))) to = `/sessions/${signIn[1]}/${signIn[2]}`;
+  if (me && signIn && (isSignIn(me.email, signIn[1]) || can(me, 'vpn') && isVpnSignIn(me.email, signIn[1]))) {
+    to = `/sessions/${signIn[1]}/${signIn[2]}`;
+    const may = () => { const now = session(req); return !!now && (isSignIn(now.email, signIn[1]) || can(now, 'vpn') && isVpnSignIn(now.email, signIn[1])); };
+    const cut = (id: string) => id === 'tree' && !may() && socket.destroy();
+    changes.on('change', cut);
+    socket.on('close', () => changes.off('change', cut));
+  }
   if (me && run) try {
     const w = watched(me, run[1], run[2]);
     to = `/sessions/${run[3] === 'drive' ? w.browsers.drive(run[2], me.email, socket) : w.id}/view/${run[3]}`;

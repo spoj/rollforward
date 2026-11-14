@@ -167,6 +167,10 @@ export async function startSignIn(email: string, site: string, given: string): P
 
 export const isSignIn = (email: string, id: string) => signIns.get(id)?.email === email;
 
+export async function endSignIns(email: string) {
+  for (const [id, s] of [...signIns]) if (s.email === email) await endSignIn(email, id, false).catch(() => {});
+}
+
 // A website's hosts are checked from its sign-in evidence. An internal address still needs an admin's permission.
 export async function addSite(email: string, name: string, url: string, header = '') {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(name) || name === PRINT) throw new HttpError(400, `a website's name is lowercase letters, digits and dashes, and not ${PRINT}, the runs' own print browser`);
@@ -335,6 +339,7 @@ export async function endSignIn(email: string, id: string, save: boolean, keepal
   }
   if (!save && signInGenerations.get(key) === generation) signInGenerations.set(key, generation + 1);
   signIns.delete(id);
+  changes.emit('change', 'tree');
   const { state, log } = await close(id);
   expired ||= Date.now() >= expires || state === null;
   const requests: Trace['requests'] = {}, kinds: NonNullable<Trace['kinds']> = {}, blocked = { count: 0, hosts: [] as string[] }, failed: string[] = [];
