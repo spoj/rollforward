@@ -179,9 +179,20 @@ export async function startRun(o: Parameters<typeof pi>[0] & { onEvent: (e: Json
 // there, and the socat offering the server's socket, the third, which bin/sandbox/node starts before Pi, with a process of its own
 // per connection: by their PIDs, never their names, which a job may take; one that has exited counts for nothing.
 function alone(bwrap: number): boolean {
-  const read = (p: string, f: (p: string) => string) => { try { return f(p); } catch { return ''; } }; // a process of another user's, or gone
-  const ns = read(`/proc/${read(`/proc/${bwrap}/task/${bwrap}/children`, p => readFileSync(p, 'utf8')).split(' ')[0]}/ns/pid`, readlinkSync);
-  const procs = readdirSync('/proc').filter(p => /^\d+$/.test(p) && read(`/proc/${p}/ns/pid`, readlinkSync) === ns).map(p => read(`/proc/${p}/status`, p => readFileSync(p, 'utf8'))).filter(Boolean);
-  const inside = (status: string) => Number(/^NSpid:.*\s(\d+)$/m.exec(status)![1]), socat = procs.find(s => inside(s) === 3);
-  return !!ns && procs.every(s => inside(s) <= 3 || /^PPid:\t(\d+)$/m.exec(s)![1] === /^Pid:\t(\d+)$/m.exec(socat ?? '')?.[1] || /^State:\tZ/m.test(s));
+  const read = (p: string, f: (p: string) => string) => { try { return f(p); } catch { return ''; } };
+  const kids = (pid: number, seen = new Set<number>()): number[] => {
+    for (const t of (() => { try { return readdirSync(`/proc/${pid}/task`); } catch { return []; } })())
+      for (const c of read(`/proc/${pid}/task/${t}/children`, p => readFileSync(p, 'utf8')).trim().split(/\s+/).filter(Boolean).map(Number))
+        if (!seen.has(c)) { seen.add(c); kids(c, seen); }
+    return [...seen];
+  };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const all = kids(bwrap), ns = all[0] ? read(`/proc/${all[0]}/ns/pid`, readlinkSync) : '';
+    if (!ns) return false;
+    const statuses = all.map(p => ({ ns: read(`/proc/${p}/ns/pid`, readlinkSync), status: read(`/proc/${p}/status`, s => readFileSync(s, 'utf8')) })).filter(x => x.status);
+    if (statuses.length < all.length) continue;
+    const inside = (status: string) => Number(/^NSpid:.*\s(\d+)$/m.exec(status)![1]), socat = statuses.find(x => x.ns === ns && inside(x.status) === 3)?.status;
+    return statuses.every(x => x.ns === ns && (inside(x.status) <= 3 || /^PPid:\t(\d+)$/m.exec(x.status)![1] === /^Pid:\t(\d+)$/m.exec(socat ?? '')?.[1] || /^State:\tZ/m.test(x.status)));
+  }
+  return false;
 }

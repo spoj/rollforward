@@ -1242,6 +1242,22 @@ test("a run's Pi idles only with nothing but Pi running in its sandbox, and ends
   assert.equal(await again(job, 2), undefined);
   const named = await start('named', ['cp /usr/bin/sleep /tmp/socat && (setsid /tmp/socat 120 </dev/null >/dev/null 2>&1 &)']);
   await gone(named, "a job named as the sandbox's socat is a job all the same");
+  const nested = await start('nested', [`python3 -c 'import os, time
+r, w = os.pipe()
+if os.fork() == 0:
+  os.close(r); os.setsid(); os.unshare(0x10000000 | 0x20000000)
+  if os.fork() == 0:
+    os.write(w, b"1"); os.close(w); time.sleep(120)
+  os._exit(0)
+os.close(w); os.read(r, 1)' </dev/null >/dev/null 2>&1`]);
+  await gone(nested, 'a job hidden in a nested PID namespace stops its Pi all the same');
+  assert.equal(await again(nested, 2), undefined);
+  const noInspector: Script = { bash: ['kill -USR1 2 && sleep 0.2 && (curl -s -m 1 -x "" http://127.0.0.1:9229/json/version || echo closed)'], report: 'Checked.', saw: [] };
+  scripts.push(noInspector);
+  const { id: inspSeries } = await (await call('POST', '/api/series', { workspace: ws, name: 'insp' })).json();
+  const { id: insp } = await (await call('POST', `/api/series/${inspSeries}`, { label: '2026-11', logins: [] })).json();
+  await runs(insp, 1);
+  assert.equal(noInspector.saw[0].trim(), 'closed', 'SIGUSR1 opens no V8 inspector on PID 2');
   const a = await start('a'), b = await start('b');
   await gone(a, 'the longest idle ends as another idles past RF_MAX_IDLE');
   assert.equal(await again(b, 2), 1, 'the idle one carries its session on');
