@@ -126,7 +126,7 @@ export function pylib(dir: string, instance: string): string {
       if (e) {
         const name = e.name as unknown as Buffer, path = Buffer.concat([Buffer.from(`/proc/self/fd/${dfd}/`), name]);
         const at = rel.length ? Buffer.concat([rel, slash, name]) : name;
-        if (!rel.length && /^(site|user)customize(\\.|$)|\\.pth$/.test(name.toString('latin1'))) { wipe(path); continue; }
+        if (!rel.length && /^(site|user)customize(\.|$)|\.pth$/.test(name.toString('latin1'))) { wipe(path); continue; }
         if (e.isDirectory()) {
           const sub = openDir(path);
           try {

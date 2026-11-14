@@ -1,9 +1,24 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { pylib } from '../src/runner.ts';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+test('pylib removes every top-level Python startup hook while keeping ordinary modules', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rf-pylib-hooks-')), dir = join(root, '.pylib');
+  try {
+    mkdirSync(dir);
+    for (const file of ['sitecustomize.py', 'sitecustomize.pyc', 'usercustomize.py', 'evil.pth', 'useful.py']) writeFileSync(join(dir, file), 'pass');
+    mkdirSync(join(dir, 'sitecustomize'));
+    writeFileSync(join(dir, 'sitecustomize', '__init__.py'), 'pass');
+    pylib(dir, root);
+    assert.deepEqual(readdirSync(dir), ['useful.py']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 for (const operation of ['pylib', 'wipe']) test(`${operation} walks deep and wide trees with a bounded number of directory descriptors`, () => {
   const root = mkdtempSync(join(tmpdir(), 'rf-fds-'));
