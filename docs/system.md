@@ -180,6 +180,7 @@ Stored data is files on the host's disk, in folders named by random ids, with no
       screen.json             the screen, read-only
       log.jsonl               every event, written by the server
       session/                each Pi session, <time>_run-<n>-<random>.jsonl by the run that started it, which the audit shows
+                              (first 4 MiB and last 60 MiB of a file over 64 MiB, skipping partial or malformed records and lines over 8 MiB)
       names.tsv               the latest run's names: each instance in its reach, id<TAB>/work/<workspace>/<series>/<label>
       pylib.tsv               the series' .pylib as the latest run started: each file, path<TAB>size<TAB>change time, sorted
       browser/                each run's browser requests, one line per request, and its screenshots

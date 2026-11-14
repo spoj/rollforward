@@ -496,7 +496,12 @@ function* jsonlLines(dir: string, name: string): Generator<string> {
     const size = fstatSync(fd).size, buf = Buffer.allocUnsafe(65536), head = 4 << 20, tail = 60 << 20, maxLine = 8 << 20;
     let pos = 0, carry: Buffer<ArrayBufferLike> = Buffer.alloc(0), drop = false;
     while (pos < size) {
-      if (size > head + tail && pos >= head && pos < size - tail) { pos = size - tail; carry = Buffer.alloc(0); drop = true; }
+      if (size > head + tail && pos >= head && pos < size - tail) {
+        pos = size - tail;
+        carry = Buffer.alloc(0);
+        readSync(fd, buf, 0, 1, pos - 1);
+        drop = buf[0] !== 10;
+      }
       const n = readSync(fd, buf, 0, Math.min(buf.length, size > head + tail && pos < head ? head - pos : size - pos), pos);
       if (!n) break;
       pos += n;

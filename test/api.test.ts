@@ -2061,6 +2061,29 @@ test('GET /trace handles oversized and malformed session JSONL files and /commen
   assert.equal(badRef.status, 400);
 });
 
+test('GET /trace preserves multi-MB sessions and complete records at the sampled tail boundary', async () => {
+  const { closeSync, openSync, writeSync } = await import('node:fs');
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'TraceBoundaries' }))).json();
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'S' }))).json();
+  const { id: inst } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'L1', quiet: true }))).json();
+  const sdir = join(root, 'instances', inst, 'session'), path = join(sdir, '001.jsonl');
+  mkdirSync(sdir);
+  const record = (text: string) => JSON.stringify({ type: 'message', message: { role: 'user', content: text } }) + '\n';
+  const normal = Array.from({ length: 50_000 }, (_, i) => `row-${i}`);
+  writeFileSync(path, normal.map(record).join(''));
+  assert.deepEqual((await json(`/api/instances/${inst}/trace`)).map(l => l.text), normal);
+  for (const aligned of [true, false]) {
+    writeFileSync(path, record('head'));
+    truncateSync(path, 65 << 20);
+    const fd = openSync(path, 'r+'), offset = 5 << 20;
+    try {
+      if (aligned) writeSync(fd, '\n', offset - 1);
+      writeSync(fd, record('tail-first') + record('tail-second'), aligned ? offset : offset - 10);
+    } finally { closeSync(fd); }
+    assert.deepEqual((await json(`/api/instances/${inst}/trace`)).map(l => l.text), aligned ? ['head', 'tail-first', 'tail-second'] : ['head', 'tail-second']);
+  }
+});
+
 test('updating company or workspace AGENTS.md replaces the file atomically without mutating an open descriptor', async () => {
   const { closeSync, openSync } = await import('node:fs');
   const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'AtomicAgents' }))).json();
