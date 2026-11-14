@@ -242,6 +242,7 @@ async function begin(inst: Instance, tried: Set<Instance>) {
   try {
     await confirm(runner);
   } catch (e) {
+    if (stopping || !due(inst)) return bail(inst, tried);
     if (runnerOf(inst).by !== runner) return void kick(inst);
     if ((e as HttpError).status !== 401) {
       console.error(`a run of ${inst.id} waits a minute: Microsoft didn't confirm ${runner}'s sign-in`, e);
@@ -713,8 +714,9 @@ export const CUT = { restart: 'a restart cut the run', moved: 'its series moved'
 export function recover() {
   // A deletion a restart cut is done: what's left of its folder goes.
   for (const id of Object.keys(tree().series)) for (const inst of instances(id).filter(i => i.hole)) inst.clear();
-  for (const id of Object.keys(tree().series)) for (const inst of instances(id).filter(i => i.doc.status === 'open')) {
-    for (const f of ['index.lock', 'HEAD.lock', 'config.lock', 'packed-refs.lock', 'refs/heads/main.lock']) rmSync(join(inst.dir, '.git', f), { force: true });
+  for (const id of Object.keys(tree().series)) for (const inst of instances(id).filter(i => !i.hole)) {
+    for (const f of ['index.lock', 'HEAD.lock', 'config.lock', 'packed-refs.lock', 'packed-refs.new', 'gc.pid', 'refs/heads/main.lock']) rmSync(join(inst.dir, '.git', f), { force: true });
+    if (inst.doc.status !== 'open') continue;
     const run = inst.log.findLast(e => e.op === 'run' || e.op === 'done');
     if (run?.op === 'run') {
       const calls = inst.log.filter(e => e.op === 'call' && e.run === run.run);

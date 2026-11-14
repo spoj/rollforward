@@ -735,3 +735,43 @@ test('message resolves the live label of a correction see target after that inst
   const c3 = createInstance('scorr', '2026-03', alice, []);
   assert.match(message(c3, 1, c3.log, true), /see 2026-02-rev2/);
 });
+
+test('recover cleans git locks on closed instances too, and a confirm 401 after abandon appends no expired entry', async () => {
+  mkdirSync(join(tmp, 'series', 'srec'), { recursive: true });
+  saveTree({ ...tree(), series: { ...tree().series, srec: { name: 'RecLocks', workspace: 'w' } } });
+  const closedInst = createInstance('srec', '2026-01', alice, []);
+  await closedInst.close({ name: 'Alice', email: alice });
+  writeFileSync(join(closedInst.dir, '.git', 'index.lock'), '');
+  writeFileSync(join(closedInst.dir, '.git', 'gc.pid'), '12345 host');
+  recover();
+  assert.equal(existsSync(join(closedInst.dir, '.git', 'index.lock')), false);
+  assert.equal(existsSync(join(closedInst.dir, '.git', 'gc.pid')), false);
+
+  const racer = 'race-runner@demo.test';
+  saveTree({ ...tree(), workspaces: { ...tree().workspaces, w: { ...tree().workspaces.w, members: [...tree().workspaces.w.members, racer] } } });
+  writeJson('users.json', { ...readJson('users.json', {}), [racer]: { role: 'user' } });
+  keepSignIn(racer, entra.refresh(racer));
+  const race = createInstance('srec', '2026-02', racer, []);
+  race.append(racer, 'comment', { thread: 'c2', text: 'Go' });
+  const fetchWas = globalThis.fetch;
+  const gate = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>();
+  globalThis.fetch = async (input, init) => {
+    if (String(input).endsWith('/token')) {
+      entered.resolve();
+      await gate.promise;
+      return Response.json({ error: 'invalid_grant', error_description: 'AADSTS700082: expired' }, { status: 400 });
+    }
+    return fetchWas(input, init);
+  };
+  try {
+    kick(race);
+    await entered.promise;
+    race.doc.status = 'abandoned';
+    race.append(racer, 'abandon');
+    gate.resolve();
+    await new Promise(r => setTimeout(r, 150));
+    assert.equal(race.log.at(-1)!.op, 'abandon');
+  } finally {
+    globalThis.fetch = fetchWas;
+  }
+});
