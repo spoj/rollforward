@@ -349,6 +349,29 @@ test('website via settings require explicit capability to set, not to clear, whi
   assert.equal('via' in (await json('/logins/sites', bob)).portal, false);
 });
 
+test('revoking VPN capability ends VPN-routed website sign-ins but leaves public sign-ins open', async () => {
+  await grant();
+  assert.equal((await call('POST', '/vpns', { name: 'website-revoke', type: 'fortinet', gateway })).status, 200);
+  await connectVpn('website-revoke', bob);
+  for (const name of ['vpn-revoke', 'public-stays']) assert.equal((await call('POST', '/logins/sites', { name, url: 'https://portal.customer.test/' }, bob)).status, 200);
+  assert.equal((await call('PATCH', '/logins/sites/vpn-revoke', { via: 'website-revoke' }, bob)).status, 200);
+  const { id } = await (await call('POST', '/logins/web/vpn-revoke', {}, bob)).json();
+  const { id: publicId } = await (await call('POST', '/logins/web/public-stays', {}, bob)).json();
+  try {
+    await grant([ADMIN, GROUP]);
+    assert.equal(sessions.has(id), false);
+    assert.equal((await call('GET', `/signins/${id}/view`, undefined, bob)).status, 404);
+    assert.equal(sessions.has(publicId), true);
+    assert.equal((await call('GET', `/signins/${publicId}/view`, undefined, bob)).status, 200);
+    await grant();
+    assert.equal((await call('GET', `/signins/${id}/view`, undefined, bob)).status, 404);
+  } finally {
+    await grant();
+    for (const name of ['vpn-revoke', 'public-stays']) await call('DELETE', `/logins/sites/${name}`, undefined, bob);
+    await call('DELETE', '/vpns/website-revoke');
+  }
+});
+
 test('VPN definition removal disconnects its people without removing another named VPN', async () => {
   const other = await connectVpn('other'), a = await connectVpn(), b = await connectVpn('client', bob);
   assert.equal((await call('DELETE', '/vpns/client')).status, 200);

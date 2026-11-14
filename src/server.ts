@@ -18,7 +18,7 @@ import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { answered, byLogin, call, connections, intercepts, keyStatus, letIn, loginOf, removeConnection, setConnection, setLetIn, upstreams } from './connections.ts';
 import { syncCosts } from './costs.ts';
-import { addSite, allowHost, Browsers, endSignIn, endSignIns, enrolFlagged, isSignIn, keepAlive, passAllowed, passUpgrade, reap, removeHost, removeSite, revokeInternalHosts, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
+import { addSite, allowHost, Browsers, endSignIn, endSignIns, endUnpermittedSignIns, enrolFlagged, isSignIn, keepAlive, passAllowed, passUpgrade, reap, removeHost, removeSite, revokeInternalHosts, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
 import { addVpn, cancelVpnSignIn, disconnectVpn, dropUnpermittedVpns, isVpnSignIn, reapVpns, removeVpn, saveVpnSignIn, startVpnSignIn, vpns } from './vpns.ts';
 import { ask, decide, forgetGrants, forgetWorkspace, lapse, pruneGrants, revoke, visible } from './grants.ts';
 import { offer } from './connections/graph.ts';
@@ -1420,7 +1420,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     if (req.method === 'GET' && url.pathname === '/drained') return void res.writeHead(drained() ? 200 : 503).end();
     const me = await authenticate(req, res, url);
     if (!me) {
-      if (url.pathname === redirectPath) { pruneGrants(); await dropUnpermittedVpns(); await closeUnlent(); }
+      if (url.pathname === redirectPath) { pruneGrants(); await endUnpermittedSignIns(); await dropUnpermittedVpns(); await closeUnlent(); }
       return;
     }
     // What a person changes beyond an instance is an act of theirs in the system's log, once it's done.
@@ -1443,6 +1443,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
         if (!isPeople(people)) throw new HttpError(400, `${cap}: a list of emails and Entra group ids: ${JSON.stringify(people)}`);
         writeJson('capabilities.json', { ...capabilities(), [cap]: people.map(p => p.toLowerCase()) });
         if (cap === 'vpn') {
+          await endUnpermittedSignIns();
           await dropUnpermittedVpns();
           await closeUnlent();
         }
