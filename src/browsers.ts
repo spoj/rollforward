@@ -768,6 +768,7 @@ export async function keepAlive(now = new Date()) {
       const after = logins(email).find(l => l.id === login.id);
       if (after?.since !== login.since || after.expired) continue;
       const over = shown.password || new URL(shown.url).origin !== page.origin;
+      if (!over && !state) continue;
       saveLogin(email, over ? { ...after, expired: true } : after, over ? undefined : JSON.stringify(state));
     } catch (e) {
       console.error(`keeping ${email}'s login to ${site} alive:`, e);

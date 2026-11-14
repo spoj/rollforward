@@ -1006,3 +1006,18 @@ test('closeUnlent closes an idle browser on login expiry or grant revocation wit
   await assert.rejects(() => run.browser('crm'), /expired/);
   assert.equal(inst.log.some(e => e.op === 'expired'), true);
 });
+
+test('keepAlive preserves existing sealed login state when browser close returns null state', async () => {
+  const until = new Date(2026, 11, 20).toISOString();
+  sites({ crm: { url: 'https://crm.example.com/home', hosts: [], writeback: true, keepalive: '/home', every: 10 } });
+  writeJson('grants.json', everyone);
+  saveLogin(alice, { ...website('crm', 'CRM'), keepalive: until }, JSON.stringify(state('good-session')));
+  const wasBack = back;
+  [back, shown] = [null as any, { url: 'https://crm.example.com/home', password: false }];
+  try {
+    await keepAlive(new Date(2026, 11, 10, 9, 0));
+  } finally {
+    back = wasBack;
+  }
+  assert.deepEqual(JSON.parse(secret(alice, 'web:crm')), state('good-session'));
+});
