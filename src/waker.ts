@@ -572,10 +572,10 @@ export function startWith(seriesId: string, label: string, by: string, logins: s
 }
 
 // Wakes an instance, each wake logged with who set it and its text, a note unless it's the runner's word (standing()).
-type Woken = { from: string; text?: string; inst?: string; assigned?: boolean };
+type Woken = { from: string; text?: string; inst?: string; assigned?: boolean; quiet?: boolean };
 export function wakeWith(inst: Instance, wakes: Woken[]): Instance {
-  for (const wake of wakes) inst.append('server', 'wake', { from: wake.from, ...(wake.text && { text: wake.text }), ...(woken(inst, wake).word === 'note' && { note: true }) });
-  if (wakes.length) kick(inst);
+  for (const wake of wakes) inst.append('server', 'wake', { from: wake.from, ...(wake.text && { text: wake.text }), ...(woken(inst, wake).word === 'note' && { note: true }), ...(wake.quiet && { quiet: true }) });
+  if (wakes.some(w => !w.quiet)) kick(inst);
   return inst;
 }
 

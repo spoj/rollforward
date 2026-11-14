@@ -824,10 +824,16 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     mustSee(me, t.workspaces[t.series[r.series].workspace]);
     if (req.method === 'POST' && r.target) {
       // One to wake an instance, from before it was assigned: its runner's alone, as anyone else's wake is a note that starts nothing;
-      // its wake stays a note, beside the runner's own.
+      // its wake stays a note, beside the runner's own; quiet, both wakes are logged quiet so the next run reads them.
       if (asked(r) !== by) throw new HttpError(403, `only its runner, ${asked(r)}, wakes it`);
-      wakeWith(instance(r.target), payload.quiet ? [] : [{ from: r.from, text: r.text, inst: r.inst, assigned: true }, { from: by }]);
+      const inst = instance(r.target), quiet = !!payload.quiet;
+      if (payload.logins !== undefined) {
+        inst.append(by, 'logins', { logins: checkTicks(by, payload.logins) });
+        await closeUnlent();
+      }
+      wakeWith(inst, [{ from: r.from, text: r.text, inst: r.inst, assigned: true, quiet }, { from: by, quiet }]);
       dropRequest(id);
+      res.setHeader('X-RF-Woke', '1');
       return send(res, 200, { id: r.target });
     }
     if (req.method === 'POST') {

@@ -579,8 +579,15 @@ else if (cmd === 'comment' && args.length === 2) {
   await post(s === undefined ? `/api/workspaces/${(await workspaceNamed(w)).id}` : `/api/series/${(await seriesAt(args[0])).id}`, { archived: !flags.undo }, 'PUT');
   console.log(flags.undo ? `brought back ${args[0]}` : `archived ${args[0]}, its wakes and requests cancelled for good`);
 } else if (cmd === 'request' && ['start', 'drop'].includes(args[0]) && args.length === 2) {
-  if (args[0] === 'drop') await api(`/api/requests/${args[1]}`, { method: 'DELETE' });
-  console.log(args[0] === 'drop' ? `dropped request ${args[1]}` : `made ${await pathOf((await (await post(`/api/requests/${args[1]}`, { logins: ticks(), quiet: !flags.wake })).json()).id)}${consent(ticks())}`);
+  if (args[0] === 'drop') {
+    await api(`/api/requests/${args[1]}`, { method: 'DELETE' });
+    console.log(`dropped request ${args[1]}`);
+  } else {
+    const setCreds = flags.creds !== undefined || !!flags.clear;
+    const r = await post(`/api/requests/${args[1]}`, { ...(setCreds && { logins: ticks() }), quiet: !flags.wake });
+    const woke = r.headers.get('X-RF-Woke') === '1', { id } = await r.json();
+    console.log(`${woke ? 'woke' : 'made'} ${await pathOf(id)}${!woke || setCreds ? consent(ticks()) : ''}`);
+  }
 } else if (cmd === 'logins' && !args.length) {
   const all = await get('/logins');
   if (flags.json) console.log(JSON.stringify(all, null, 1));

@@ -1872,3 +1872,44 @@ test('concurrent signoff, reject and close on an instance decide each proposal a
   if (closeIdx >= 0) assert.deepEqual(log.slice(closeIdx + 1), []);
 });
 
+test('rf request start on a request to wake an assigned instance logs quiet wakes without --wake and ticks --creds when given', async () => {
+  if (!existsSync(home)) { mkdirSync(home); await rf('login', base, (await (await call('POST', '/tokens', JSON.stringify({ name: 'cli-w', days: 1 }))).json()).token); }
+  const { saveLogin } = await import('../src/logins.ts');
+  saveLogin(adminEmail, { id: 'web:reqcrm', kind: 'website', name: 'ReqCRM', since: new Date().toISOString(), offers: [{ id: 'web:reqcrm', name: 'ReqCRM' }] }, 'state');
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'WakeReqs' }))).json();
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'Rec' }))).json();
+  const { id: i1 } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: '2026-10', quiet: true }))).json();
+  const { id: i2 } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: '2026-11', quiet: true }))).json();
+  const wakesPath = join(root, '.rf', 'wakes.json'), w = existsSync(wakesPath) ? JSON.parse(readFileSync(wakesPath, 'utf8')) : { pending: {}, fired: {}, requests: {} };
+  writeFileSync(wakesPath, JSON.stringify({
+    ...w,
+    requests: {
+      ...w.requests,
+      wr1: { series: sid, label: '2026-10', target: i1, from: bob, at: new Date().toISOString(), text: 'Statement arrived' },
+      wr2: { series: sid, label: '2026-11', target: i2, from: bob, at: new Date().toISOString(), text: 'Second wake' },
+    },
+  }));
+
+  const out1 = await rf('request', 'start', 'wr1');
+  assert.equal(out1, 'woke WakeReqs/Rec/2026-10\n');
+  const after1 = await json(`/api/instances/${i1}`);
+  assert.deepEqual(after1.log.filter((e: any) => e.op === 'wake').map((e: any) => [e.from, e.text, e.note, e.quiet]), [
+    [bob, 'Statement arrived', true, true],
+    [adminEmail, undefined, undefined, true],
+  ]);
+  await new Promise(r => setTimeout(r, 1750));
+  assert.equal((await json(`/api/instances/${i1}`)).log.some((e: any) => e.op === 'run'), false);
+
+  const out2 = await rf('request', 'start', 'wr2', '--creds', 'web:reqcrm', '--wake');
+  assert.equal(out2, 'woke WakeReqs/Rec/2026-11, ticking web:reqcrm: you agree that agents carry these credentials while acting as you\n');
+  const log2 = await ran(`/api/instances/${i2}`);
+  const after2 = await json(`/api/instances/${i2}`);
+  assert.deepEqual(after2.runner.logins, ['web:reqcrm']);
+  assert.deepEqual(log2.filter((e: any) => e.op === 'wake').map((e: any) => [e.from, e.text, e.note, e.quiet]), [
+    [bob, 'Second wake', true, undefined],
+    [adminEmail, undefined, undefined, undefined],
+  ]);
+  await quiet();
+});
+
+
