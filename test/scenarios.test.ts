@@ -25,7 +25,7 @@ let model: ReturnType<typeof createServer>, proc: ChildProcess, base = '', admin
 // The browser service, a stand-in: the browsers it opens are b1, b2…, each with a person in control and a live view, and a websocket
 // to one answers with the path it reached. Their pages asked for the addresses in `refused`, which they don't reach; what else they
 // were told, as hosts allowed, is in `told`.
-let refused: string[] = [], holdCdp = false, holdView = false, cdpOpened = 0, cdpClosed = 0;
+let refused: string[] = [], holdCdp = false, holdView = false, cdpOpened = 0, cdpClosed = 0, closeDelayMs = 0;
 let browserLog: { method: string; url: string; status: number; dest?: string; from?: string }[] = [];
 let browserState: { cookies: { domain: string; name: string; value: string }[]; origins: { origin: string; localStorage: { name: string; value: string }[] }[] } = { cookies: [], origins: [] };
 const told: string[] = [], openings: { site: { hosts: string[]; open?: boolean; public?: boolean; except?: string[]; start_url?: string }; state?: unknown; ttl_s: number }[] = [];
@@ -37,7 +37,10 @@ const service = createServer(async (req, res) => {
     return void res.writeHead(201).end(JSON.stringify({ id: `b${++sessions}` }));
   }
   if (req.method === 'PUT' || req.method === 'POST') return void res.end((told.push(`${req.method} ${req.url} ${Buffer.concat(await Array.fromAsync(req)).toString()}`), '{}'));
-  if (req.method === 'DELETE') return void res.end(JSON.stringify({ state: browserState, log }));
+  if (req.method === 'DELETE') {
+    if (closeDelayMs) await new Promise(r => setTimeout(r, closeDelayMs));
+    return void res.end(JSON.stringify({ state: browserState, log }));
+  }
   res.end(req.url === '/sessions' ? '[]' : req.url!.endsWith('/log') ? JSON.stringify([{ live: true }, ...log]) : req.url!.endsWith('/view') ? 'the live view' : '');
 }).on('upgrade', (req, socket) => {
   if (holdCdp && req.url!.endsWith('/cdp')) {
@@ -1315,6 +1318,30 @@ test("deleting an instance cuts a run whose view holds it, which carries on with
   const retained = (await (await call('GET', '/api/runs')).json()).filter(r => r.path === path);
   assert.deepEqual(retained, before.map(r => ({ ...r, started: null, error: null })));
   assert.equal((await (await call('GET', `/api/instances/${id}/summary`)).json()).cost, cost);
+});
+
+test('closing a run browser writes its log before the run commits, and closing the instance leaves nothing uncommitted or logged after close', async () => {
+  closeDelayMs = 800;
+  try {
+    const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'BrowserClose' })).json();
+    const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec' })).json();
+    const openPrint = `node -e "const http=require('http');const u=new URL(process.env.RF_BROWSERS+'/print');const r=http.request({hostname:u.hostname,port:u.port,path:u.pathname,headers:{Connection:'Upgrade',Upgrade:'websocket','Sec-WebSocket-Key':'dGhlIHNhbXBsZSBub25jZQ==','Sec-WebSocket-Version':'13'}});r.on('upgrade',(res,s)=>{s.destroy();process.exit(0)});r.end();"`;
+    scripts.push({ bash: [openPrint], report: 'Used print browser.', saw: [] });
+    const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
+    await runs(id, 1);
+
+    assert.equal((await call('POST', `/api/instances/${id}/close`, {})).status, 200);
+    await new Promise(r => setTimeout(r, 1100));
+
+    const { log } = await (await call('GET', `/api/instances/${id}`)).json();
+    const closeIdx = log.findIndex((e: { op: string }) => e.op === 'close');
+    assert.ok(log.slice(0, closeIdx).some((e: { op: string; file?: string }) => e.op === 'browser' && e.file === 'browser/run 1 print.jsonl'));
+    assert.deepEqual(log.slice(closeIdx + 1), []);
+    assert.ok(execFileSync('git', ['ls-tree', '-r', 'HEAD~1', '--name-only'], { cwd: join(root, 'instances', id), encoding: 'utf8' }).split('\n').includes('browser/run 1 print.jsonl'));
+    assert.equal(execFileSync('git', ['status', '--porcelain', 'browser'], { cwd: join(root, 'instances', id), encoding: 'utf8' }), '');
+  } finally {
+    closeDelayMs = 0;
+  }
 });
 
 test("every entry names its source: a person, a run whose entry names its runner and the act whose ticks it uses, or what caused it", () => {

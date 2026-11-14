@@ -357,12 +357,12 @@ function finish(a: Active, aborted: boolean, error?: string): Entry | undefined 
     if (idle.size > MAX_IDLE) drop(idle.keys().next().value!);
   }
   // The run's changes are one commit, with the names.tsv they were written under, which the instance's next run and its other
-  // commits wait for: once its sandbox has stopped, or, idle, as it is, nothing running in it.
+  // commits wait for: once its browsers and sandbox have stopped, or, idle, once its browsers have, nothing running in it.
   if (!a.run && !a.ready) rmSync(join(rfDir(), 'runs', a.token), { recursive: true, force: true });
   const stopped = keep || (!a.run && !a.ready) ? undefined : end(a.token, a.run ?? a.ready!, a.view);
   retiring.add(a);
   a.ended = Promise.all([closing, stopped]).finally(() => retiring.delete(a));
-  commit(a.inst.dir, AGENT, [`Run ${a.n}`, error].filter(Boolean).join(': '), stopped).catch(e => a.inst.append('server', 'commit', { run: a.n, error: e.message }));
+  commit(a.inst.dir, AGENT, [`Run ${a.n}`, error].filter(Boolean).join(': '), a.ended).catch(e => a.inst.append('server', 'commit', { run: a.n, error: e.message }));
   // One that never started, as with a missing API key, waits for the next act rather than retrying itself at once; another open
   // instance of the series that waited for the slot still starts.
   const next = a.run && due(a.inst) ? a.inst : instances(series).find(i => i !== a.inst && runnable(i));

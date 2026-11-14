@@ -355,7 +355,7 @@ const setJournal = (all: Record<string, Opened>) => replaceReadOnly(join(rfDir()
 function keep(inst: Instance, b: Opened, { state, log }: { state: unknown; log: Entry[] }) {
   const login = b.writeback && logins(b.email).find(l => l.id === `web:${b.site}`);
   if (login && state && !login.expired && login.since === b.since) saveLogin(b.email, login, JSON.stringify(state));
-  if (inst.hole) return;
+  if (inst.hole || inst.log.some(e => e.op === 'close' || e.op === 'abandon')) return;
   mkdirSync(join(inst.dir, 'browser'), { recursive: true });
   replaceReadOnly(join(inst.dir, b.file), log.map(e => JSON.stringify(e) + '\n').join(''));
   const writes = log.filter(e => !e.blocked && !['GET', 'HEAD', 'OPTIONS'].includes(e.method)).length, hosts: Record<string, number> = {};
@@ -478,8 +478,8 @@ async function checkRefused(inst: Instance, run: number, email: string, site: st
   }
   await checkWebsite(email, site, trace);
   const w = website(email, site), allowed = w.hosts.filter(h => !before.includes(h)), why = Object.fromEntries(allowed.map(h => [h, w.checks![h].why]));
-  if (!allowed.length || inst.hole) return;
-  inst.append('server', 'browser', { run, site, login: email, action: 'allowed', allowed, why });
+  if (!allowed.length) return;
+  if (!inst.hole && !inst.log.some(e => e.op === 'close' || e.op === 'abandon')) inst.append('server', 'browser', { run, site, login: email, action: 'allowed', allowed, why });
   act('server', { op: 'hosts', person: email, site, inst: inst.id, run, allowed: why });
 }
 

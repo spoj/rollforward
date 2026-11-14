@@ -2,7 +2,7 @@ import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdi
 import { randomBytes } from 'node:crypto';
 import { basename, extname, join, posix, sep } from 'node:path';
 import { appendLine, changes, readLines, tree } from './system.ts';
-import { commit, pack, type Who } from './git.ts';
+import { commit, committed, pack, type Who } from './git.ts';
 
 // Paths in the screen are /-separated on every system.
 const normalize = posix.normalize;
@@ -313,7 +313,9 @@ export class Instance {
     this.append(by.email, 'close', { ...(accepted.length && { accepted }), commit: hash });
   }
 
-  abandon(by: string) {
+  async abandon(by: string) {
+    await committed(this.dir);
+    if (this.hole) throw new HttpError(409, `${this.label} was deleted`);
     this.doc.status = 'abandoned';
     this.save();
     this.append(by, 'abandon');
