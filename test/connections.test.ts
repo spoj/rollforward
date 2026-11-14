@@ -159,6 +159,8 @@ before(async () => {
     if (req.headers.authorization !== 'Bearer tok') return void res.writeHead(401).end();
     let m;
     if (path === '/me/drive') return send({ id: 'b!own' });
+    if (path === '/drives/b!d1/root:/LFM/items(1).xlsx:') return send(item('a', 'items(1).xlsx', '2026-10-20T12:00:00Z', false, 'y2026'));
+    if (path === '/drives/b!d1/root:/LFM/items(1).xlsx:/content') return void res.end('parenthesized filename');
     if ((m = /^\/shares\/u!([\w-]+)\/driveItem$/i.exec(path))) return send(shares[Buffer.from(m[1], 'base64url').toString()] ?? { error: { code: 'itemNotFound' } }, shares[Buffer.from(m[1], 'base64url').toString()] ? 200 : 404);
     if ((m = /^\/shares\/u!([\w-]+)\/items\/(\w+)\/children$/i.exec(path))) return send({ value: folders[m[2]] ?? [] });
     if ((m = /^\/shares\/u!([\w-]+)\/items\/(\w+)$/i.exec(path))) return send([item('top', 'LFM', '2026-01-01T00:00:00Z', true, 'root1'), ...Object.values(folders).flat()].find(i => i.id === m![2]) ?? { error: { code: 'itemNotFound' } }, 200);
@@ -487,6 +489,8 @@ test("a ticked folder reaches what's under it, at any depth, and a search within
   for (const out of ['/drives/b!d1/items/top/children', '/drives/b!d1/items/y2025/children', "/drives/b!d1/root/search(q='AGING')", '/drives/b!d1/root:/LFM:/children'])
     assert.match((await get(out)).text, /is in no folder, file or SharePoint site ticked/, out);
   assert.equal(JSON.parse((await get(`${share('https://share.test/reports')}/driveItem`)).text).id, 'y2026', 'the ticked folder, shared');
+  assert.equal(JSON.parse((await get(`${share('https://share.test/reports').replace('/shares/', '/Shares/')}/DriveItem`)).text).id, 'y2026', 'resource case is normalized without changing the base64url share token');
+  assert.equal((await get('/drives/b!d1/root:/LFM/items(1).xlsx:/content')).text, 'parenthesized filename', 'a filename is not an OData resource key');
   for (const out of [`${share('https://share.test/reports')}/items/y2025/children`, `${share('https://share.test/reports')}/Items/y2025/children`, `${share('https://share.test/reports').replace('/shares/', '/Shares/')}/Items/y2025/children`])
     assert.match((await get(out)).text, /is in no folder, file or SharePoint site ticked/, out);
   for (const out of [`${share('https://share.test/reports')}/site/drive/root/children`, `${share('https://share.test/reports')}/list/items`]) assert.match((await get(out)).text, /reaches past what is ticked/, out);

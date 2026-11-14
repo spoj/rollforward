@@ -60,7 +60,8 @@ async function check(runner: string, ticks: string[], { method, url, headers, js
   // /me is the runner, and mailFolders('inbox') is mailFolders.
   const segs = segments[0].toLowerCase() === 'me' ? ['users', runner, ...segments.slice(1)] : segments;
   const [rawTop, id = '', rawPart = ''] = segs.map(s => s.replace(/\(.*$/, '')), top = rawTop.toLowerCase(), part = rawPart.toLowerCase();
-  if (segs.some(s => /(^|\.)(me|users|sites|drives|shares|items)\(/i.test(s))) throw new HttpError(403, `${bare}: name resources as /drives/ID or /items/ID, not with (...)`);
+  const resources = segs.join('/').split(':', 1)[0].split('/');
+  if (resources.some(s => /(^|\.)(me|users|sites|drives|shares|items)\(/i.test(s))) throw new HttpError(403, `${bare}: name resources as /drives/ID or /items/ID, not with (...)`);
   // An action by its last dotted part, as Graph takes it qualified or not: send, graph.send and microsoft.graph.send alike.
   const write = method !== 'GET', actions = segs.map(s => s.replace(/\(.*$/, '').split('.').pop()!.toLowerCase()), action = actions.at(-1);
   // A link, an invitation, a permission, a mailbox's rule, a subscription's webhook or a label's change shares what is ticked, now or
