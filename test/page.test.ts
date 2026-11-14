@@ -1784,7 +1784,7 @@ test("a wake carries a message; a series' notes thread takes notes from the side
   }
 });
 
-test("Assign… on the bar hands an instance to whoever sees its workspace, who sees it under Waiting on you until they open it, and wakes it from a request to wake it as it is; Mine shows only the open instances you run, as this browser keeps it for you", async () => {
+test("Assign… on the bar hands an instance to whoever sees its workspace, who sees it under Waiting on you until they open it, and wakes it from a request to wake it as it is; Mine shows only the open instances you run, and the series and workspace shown, as this browser keeps it for you", async () => {
   const origin = new URL(page.url()).origin;
   entra.who.as = 'handed@demo.test';
   const handed = await browser.newPage(), chan = 'chan.taiman.finance-and-accounting@demo.test';
@@ -1792,12 +1792,13 @@ test("Assign… on the bar hands an instance to whoever sees its workspace, who 
   entra.who.as = chan;
   await (await browser.newPage()).goto(`${origin}/auth/login`);
   entra.who.as = 'admin@demo.test';
-  const { mine, theirs, sid } = await page.evaluate(async () => {
+  const { mine, theirs, sid, unrun, empty } = await page.evaluate(async () => {
     const post = (path, body) => fetch(path, { method: 'POST', body: JSON.stringify(body) }).then(r => r.json());
     const { id: ws } = await post('/api/workspaces', { name: 'Handing' });
     await fetch(`/api/workspaces/${ws}`, { method: 'PUT', body: JSON.stringify({ owners: ['admin@demo.test'], members: ['handed@demo.test', 'chan.taiman.finance-and-accounting@demo.test'] }) });
     const { id: sid } = await post('/api/series', { workspace: ws, name: 'Rec' });
-    return { sid, theirs: (await post(`/api/series/${sid}`, { label: 'H1', quiet: true })).id, mine: (await post(`/api/series/${sid}`, { label: 'H2', quiet: true })).id };
+    const { id: unrun } = await post('/api/workspaces', { name: 'Unrun' }), { id: empty } = await post('/api/series', { workspace: unrun, name: 'Empty' });
+    return { sid, unrun, empty, theirs: (await post(`/api/series/${sid}`, { label: 'H1', quiet: true })).id, mine: (await post(`/api/series/${sid}`, { label: 'H2', quiet: true })).id };
   });
   await page.goto(`${origin}/#/${theirs}`);
   await page.reload();
@@ -1845,6 +1846,14 @@ test("Assign… on the bar hands an instance to whoever sees its workspace, who 
   assert.equal(await page.locator(`a.row.inst[href="#/${mine}"]`).count(), 1);
   assert.ok(await page.locator('a.row.inst').evaluateAll(rows => rows.length > 0));
   assert.equal(await page.evaluate(() => localStorage['mine:admin@demo.test']), 'on');
+  for (const at of [empty, unrun]) {
+    await page.goto(`${origin}/#/${at}`);
+    await page.waitForSelector(`.row.ser.on a[href="#/${empty}"]`);
+    assert.equal(await page.locator(`.row.ws.on a[href="#/${unrun}"]`).count(), 1, 'the series and workspace shown stay, though you run nothing there');
+  }
+  await page.goto(`${origin}/#/${mine}`);
+  await page.waitForSelector(`a[href="#/${unrun}"]`, { state: 'detached' });
+  assert.equal(await page.locator(`a[href="#/${empty}"]`).count(), 0);
   await page.click('.find .mine');
   await page.waitForSelector(`a.row.inst[href="#/${theirs}"]`);
 });

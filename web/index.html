@@ -277,9 +277,9 @@ function expandRow(id, open = !expanded.has(id)) {
 function renderSide() {
   if (editing) return;
   // Mine, as this browser keeps it for you: only the open instances you run, and the one shown, with the rows that hold them, their
-  // marks and counts theirs alone.
+  // marks and counts theirs alone, and the series and workspace shown, though they hold none.
   const only = localStorage[`mine:${me.email}`] === 'on', ours = i => (i.status === 'open' && i.runner === me.email) || i.id === cur?.i?.id;
-  const side = only ? tree.map(w => ({ ...w, series: w.series.map(s => ({ ...s, instances: s.instances.filter(ours) })).filter(s => s.instances.length) })).filter(w => w.series.length) : tree;
+  const side = only ? tree.map(w => ({ ...w, series: w.series.map(s => ({ ...s, instances: s.instances.filter(ours) })).filter(s => s.instances.length || s.id === cur?.s?.id) })).filter(w => w.series.length || w.id === cur?.w.id) : tree;
   $('.find .mine').classList.toggle('on', only);
   const listed = (x, on) => !x.archived || showArchived || on, mine = localStorage.workspaces !== 'all' && side.some(w => w.mine), byName = localStorage.order === 'name';
   const q = $('#find').value.trim().toLowerCase(), hit = name => name.toLowerCase().includes(q), opened = new Set(), shut = id => !expanded.has(id) && !opened.has(id);
