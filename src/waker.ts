@@ -37,7 +37,7 @@ const SPACING_MS = 15 * 60_000, MAX_WAKES = 20;
 export type Active = { inst: Instance; n: number; runner: string; session: number; token: string; view: View; workspace: string; skills: Record<string, number>; shape: string; run?: Run; sent: number; noted: number; seen: number; delivered: number; texts: Map<string, number>; done: boolean; cost: number; estimated: boolean; failed?: string; hosts: Set<string>; links: Map<string, { name: string; offer: string }>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string;
   // Its Pi as it starts, and once its Pi, sandbox and browsers have stopped, after it ends; whether its stop was asked for, from when
   // its token opens nothing (server.ts running()).
-  ready?: Promise<Run>; ended?: Promise<unknown>; stopped?: boolean };
+  ready?: Promise<Run>; ended?: Promise<unknown>; stopped?: boolean; interrupted?: boolean };
 export const active = new Map<string, Active>();
 export const byToken = new Map<string, Active>();
 const debounce = new Map<string, NodeJS.Timeout>();
@@ -358,6 +358,7 @@ async function finishRun(a: Active, aborted: boolean, error?: string) {
 
 function finish(a: Active, aborted: boolean, error?: string): Entry | undefined {
   if (a.done || stopping) return;
+  aborted ||= !!a.interrupted;
   a.done = true;
   clearTimeout(a.timer);
   byToken.delete(a.token);
@@ -408,6 +409,7 @@ function leases() {
 
 // A run cut, its token first, so nothing more goes out, then its browsers and its sandbox; its instance carries on in a new run.
 export async function interruptRun(a: Active) {
+  a.interrupted = true;
   a.stopped = true;
   byToken.delete(a.token);
   abortCalls(a);
