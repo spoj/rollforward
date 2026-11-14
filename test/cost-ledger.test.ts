@@ -47,6 +47,29 @@ test('a separate process appending between sync and the local append cannot corr
   assert.deepEqual(syncCosts(), [entry, external, entry]);
 });
 
+test('an append after the tail snapshot is not mistaken for a torn line and truncated', () => {
+  initSystem(join(tmp, 'tail-snapshot'));
+  recordCost(entry);
+  syncCosts();
+  const external = { ...entry, person: 'snapshot-process@test' };
+  const stat = fs.statSync;
+  let injected = false;
+  fs.statSync = ((path, options) => {
+    const result = stat(path, options);
+    if (!injected && path === join(rfDir(), 'costs.jsonl')) {
+      injected = true;
+      appendFileSync(path, JSON.stringify(external) + '\n');
+    }
+    return result;
+  }) as typeof fs.statSync;
+  syncBuiltinESMExports();
+  try { recordCost(entry); } finally {
+    fs.statSync = stat;
+    syncBuiltinESMExports();
+  }
+  assert.deepEqual(syncCosts(), [entry, external, entry]);
+});
+
 test('ledger invalidates its cursor after rotation, truncation, and removal', () => {
   initSystem(join(tmp, 'rotate'));
   const path = join(rfDir(), 'costs.jsonl');

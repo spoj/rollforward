@@ -6,7 +6,7 @@ export type CostRecord =
   | { at: string; service: 'openrouter' | 'exa'; inst: string; run: number; person: string; cost: number; estimated?: true; own?: true }
   | { at: string; by: 'server'; service: 'openrouter' | 'exa'; kind: 'website-check' | 'try'; site?: string; person: string; cost: number; estimated?: true; own?: true };
 
-let cachedRoot = '', cachedOffset = 0, cachedInode = 0, cached: CostRecord[] = [];
+let cachedRoot = '', cachedOffset = 0, cachedInode = 0, cachedSize = 0, cached: CostRecord[] = [];
 
 const file = () => join(rfDir(), 'costs.jsonl');
 
@@ -14,7 +14,7 @@ export function recordCost(entry: CostRecord) {
   const root = rfDir();
   if (!root) return;
   syncCosts();
-  if (existsSync(file()) && statSync(file()).size > cachedOffset) truncateSync(file(), cachedOffset);
+  if (cachedSize > cachedOffset) truncateSync(file(), cachedOffset);
   const line = JSON.stringify(entry);
   appendLine(file(), line, 0o600);
   syncCosts();
@@ -32,11 +32,13 @@ export function syncCosts(): CostRecord[] {
   }
   const p = file();
   if (!existsSync(p)) {
+    cachedSize = 0;
     cachedOffset = 0;
     cached = [];
     return cached;
   }
   const { size, ino } = statSync(p);
+  cachedSize = size;
   if (ino !== cachedInode || size < cachedOffset) {
     cachedOffset = 0;
     cached = [];
