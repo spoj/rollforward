@@ -981,3 +981,13 @@ test("the shared website check profiles the site, accepts fenced answers, uses a
   assert.equal(last.queries.length, 5);
   assert.doesNotMatch(JSON.stringify(last), /private-|secret-cookie|token=/);
 });
+
+test('setSite clears a website sign-in header and its sealed token when header is empty string', async () => {
+  const { personDir, seal } = await import('../src/logins.ts'), { setSite } = await import('../src/browsers.ts');
+  sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: true, header: 'x-bot-token' } });
+  seal(alice, 'web:crm.header', 'secret-token');
+  assert.equal(existsSync(join(personDir(alice), 'web:crm.header.sealed')), true);
+  await setSite(asPerson(alice)!, 'crm', { header: '' });
+  assert.equal(websitesOf(alice).crm.header, undefined);
+  assert.equal(existsSync(join(personDir(alice), 'web:crm.header.sealed')), false);
+});

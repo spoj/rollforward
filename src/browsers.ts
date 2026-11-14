@@ -1,6 +1,6 @@
 import { connect, isIP } from 'node:net';
 import { connect as tlsConnect } from 'node:tls';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { request as httpRequest, STATUS_CODES, type IncomingMessage, type ServerResponse } from 'node:http';
 import { request as httpsRequest } from 'node:https';
@@ -183,11 +183,12 @@ export async function setSite(by: Me, name: string, change: Record<string, unkno
   const w = website(person, name), x = { ...w, every: w.every && `${w.every}m`, ...change }, every = /^(\d+)([mh])$/.exec(String(x.every ?? ''));
   const viaChanged = change.via !== undefined && change.via !== (w.via ?? '');
   if (![undefined, true, false, 'true', 'false'].includes(x.writeback as never)) throw new HttpError(400, 'writeback: true or false');
-  if (x.header !== undefined && !/^[a-z0-9-]+$/i.test(String(x.header))) throw new HttpError(400, 'header: the name of a header its sign-in needs, such as x-bot-token');
+  if (x.header !== undefined && x.header !== '' && !/^[a-z0-9-]+$/i.test(String(x.header))) throw new HttpError(400, 'header: the name of a header its sign-in needs, such as x-bot-token');
   if (x.keepalive !== undefined && URL.parse(String(x.keepalive), w.url)?.host !== new URL(w.url).host) throw new HttpError(400, 'keepalive: a page of the website, by its address or path, such as https://patriarch.patrina.net/PatriArchMVC/');
   if (x.every !== undefined && !(every && Number(every[1]) > 0)) throw new HttpError(400, 'every: minutes or hours, such as 10m or 1h');
+  if (change.header === '') rmSync(join(personDir(person), `web:${name}.header.sealed`), { force: true });
   saveWebsites(person, { ...websitesOf(person), [name]: { url: w.url, hosts: w.hosts, writeback: x.writeback !== false && x.writeback !== 'false', added: w.added,
-    ...(x.header !== undefined && { header: String(x.header) }), ...(x.via && { via: String(x.via) }),
+    ...(x.header && { header: String(x.header) }), ...(x.via && { via: String(x.via) }),
     ...(x.keepalive !== undefined && { keepalive: String(x.keepalive) }), ...(every && { every: Number(every[1]) * (every[2] === 'h' ? 60 : 1) }),
     ...(w.profile && { profile: w.profile }), ...(w.checks && { checks: viaChanged ? Object.fromEntries(Object.entries(w.checks).filter(([h, c]) => c.verdict === 'refused' || !vpnHosts(w.url).some(p => covers(p, h)))) : w.checks }) } });
   if (viaChanged) {

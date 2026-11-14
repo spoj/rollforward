@@ -80,7 +80,7 @@ rf site add NAME URL [--header NAME]   a website of your own, by a NAME you choo
                                   send, such as x-bot-token, whose value you give as you sign in
 rf site set NAME [--header NAME] [--keepalive PAGE] [--every 10m] [--writeback false]${vpn ? ' [--via VPN]' : ''}
                                   your website NAME: a header its sign-in needs that its pages never send, such as
-                                  x-bot-token, whose value you give as you sign in, the page a login kept alive loads, by
+                                  x-bot-token, or '' to clear, whose value you give as you sign in, the page a login kept alive loads, by
                                   address or path, else its address, and how often, 10m unless given, and whether a run's
                                   browser writes its state back; admins set --internal true|false, with --person EMAIL for
                                   someone's, for its browsers to reach internal hosts, and its hosts at internal addresses
