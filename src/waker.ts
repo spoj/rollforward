@@ -82,7 +82,8 @@ function seenBefore(inst: Instance): number {
 // An entry's standing, the one place it's decided (docs/system.md, Runner): the runner's word, an answer from whom the agent's ask
 // named, or a note, which the agent reads as context for its runner to take up; and whether it starts a run. People's comments,
 // uploads, approvals and rejections have one, as do wakes and another instance's agent's comments; nothing else directs a run.
-// - The last assign draws a line, a takeover being an assign to oneself: what came before it is a note, whoever said it, and starts nothing.
+// - The last assign draws a line, a takeover being an assign to oneself: before it, what a run had read by then is history, with no
+//   standing, and what none had is a note, whoever said it; neither starts anything.
 // - After it, a person's act is the runner's word if they ran it as it was said, an answer if it answers an ask from after the line
 //   that named them (from before replies named what they answer, the thread's last ask), and else a note.
 // - A wake is judged as it fires and logged so, a note unless the runner set it, or a run of an instance of theirs in the series did,
@@ -94,11 +95,17 @@ export type Standing = { word: 'runner' | 'answer' | 'note'; starts: boolean };
 export function standing(inst: Instance, e: Entry, upto = inst.log.length): Standing | undefined {
   if (e.op !== 'wake' && !(['upload', 'comment', 'signoff', 'reject'].includes(e.op) && (isPerson(e) || e.note))) return undefined;
   const line = lastAssign(inst.log, upto)?.seq ?? 0, runner = runnerAt(inst.log, e.seq);
+  if (e.seq < line && e.seq <= readAt(inst, line)) return undefined;
   const ask = e.op === 'upload' ? undefined : e.parent ?? e.on ? inst.log[(e.parent ?? e.on) as number - 1] : inst.log.findLast(x => x.seq < e.seq && x.op === 'comment' && x.thread === e.thread && x.by === 'agent');
   const word = e.seq < line || e.note ? 'note'
     : e.op !== 'wake' ? (e.by === runner ? 'runner' : ask && ask.seq > line && ask.to === e.by ? 'answer' : 'note')
     : e.seq <= inst.log.length || (!e.assigned && (e.from === runner || (!!e.inst && instance(e.inst as string).seriesId === inst.seriesId && runnerOf(instance(e.inst as string)).by === runner))) ? 'runner' : 'note';
   return { word, starts: !e.quiet && e.seq > Math.max(line, inst.copied) && (word !== 'note' || seriesSettings(inst.series()).shared?.by === runnerAt(inst.log, upto + 1)) };
+}
+// What the runs started before an assign, at seq `line`, had read, the run it stopped included, though its end is logged after it.
+function readAt(inst: Instance, line: number): number {
+  const runs = inst.log.filter(e => e.seq < line && e.op === 'run').length;
+  return Math.max(inst.copied, ...inst.log.filter(e => e.op === 'done' && (e.run as number) <= runs).map(e => (e.seen as number | undefined) ?? 0));
 }
 // A wake as it fires: its standing, which its entry keeps.
 const woken = (inst: Instance, wake: { from: string; inst?: string; assigned?: boolean }) => standing(inst, { seq: inst.log.length + 1, at: '', by: 'server', op: 'wake', ...wake })!;

@@ -17,7 +17,7 @@ const series = 'Weekly borrowing base', monthly = 'Monthly rec', renamed = 'Week
 
 const tmp = mkdtempSync(join(tmpdir(), 'rf-')), root = join(tmp, 'data');
 let proc: ChildProcess, base: string, admin = '', entra: Awaited<ReturnType<typeof idp>>;
-const adminEmail = 'admin@demo.test', bob = 'bob@demo.test';
+const adminEmail = 'admin@demo.test', bob = 'bob@demo.test', CAROL = 'cleo@demo.test', DANA = 'dora@demo.test', ERIN = 'enzo@demo.test';
 
 const json = async (path: string, cookie = admin) => (await fetch(base + path, { headers: { cookie } })).json();
 const call = (method: string, path: string, body?: BodyInit, cookie = admin) => fetch(base + path, { method, body, headers: { cookie } });
@@ -65,6 +65,28 @@ before(async () => {
   writeFileSync(join(copy, 'instance.json'), JSON.stringify({ label: '2026-08-30 copy', series: 'd83e3e5c41da' }));
   writeFileSync(join(copy, 'screen.json'), JSON.stringify({ ...JSON.parse(readFileSync(join(august, 'screen.json'), 'utf8')), status: 'open' }));
   appendFileSync(join(copy, 'log.jsonl'), JSON.stringify({ seq: 15, at: new Date().toISOString(), by: adminEmail, op: 'duplicate', from: '2026-08-30', logins: [] }) + '\n');
+  // An instance as v0.4.0 left it: bob ran it, its run read his comment and dana's, the agent asked erin, bob's last word went
+  // unread, and carol took it over.
+  const trees = join(root, '.rf', 'tree.json'), t = JSON.parse(readFileSync(trees, 'utf8')), taken = join(root, 'instances', '01d7a4e00003');
+  t.workspaces['01d7a4e00001'] = { name: 'Old takeover', owners: [], members: [bob, CAROL, DANA, ERIN] };
+  t.series['01d7a4e00002'] = { name: 'Rec', workspace: '01d7a4e00001' };
+  writeFileSync(trees, JSON.stringify(t));
+  mkdirSync(join(root, 'series', '01d7a4e00002'), { recursive: true });
+  writeFileSync(join(root, 'series', '01d7a4e00002', 'series.json'), '{}');
+  mkdirSync(taken);
+  writeFileSync(join(taken, 'instance.json'), JSON.stringify({ label: '2026-10', series: '01d7a4e00002' }));
+  writeFileSync(join(taken, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [] }));
+  writeFileSync(join(taken, 'log.jsonl'), [
+    { by: bob, op: 'create', logins: [] },
+    { by: bob, op: 'comment', thread: 'c2', item: null, ref: null, text: 'Use the HSBC statement.' },
+    { by: DANA, op: 'comment', thread: 'c3', item: null, ref: null, text: 'The rate moved.' },
+    { by: 'server', op: 'run', run: 1, runner: bob, consent: 1, upto: 3 },
+    { by: 'agent', op: 'comment', thread: 'c5', item: null, ref: null, text: 'Which account?', ask: 'question', to: ERIN, run: 1 },
+    { by: 'agent', op: 'comment', thread: 'c6', item: null, ref: null, text: 'Send the pack?', ask: 'proposal', run: 1 },
+    { by: 'server', op: 'done', run: 1, aborted: false, seen: 3, cost: 0.1 },
+    { by: bob, op: 'comment', thread: 'c8', item: null, ref: null, text: 'Cut off at the 25th.', quiet: true },
+    { by: CAROL, op: 'takeover', from: bob, logins: [] },
+  ].map((e, i) => JSON.stringify({ seq: i + 1, at: `2026-10-01T0${i}:00:00.000Z`, ...e }) + '\n').join(''));
   // What the tests save themselves, such as logins, goes to the server's data root, whichever tests run.
   (await import('../src/system.ts')).initSystem(root);
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch') };
@@ -278,7 +300,7 @@ test("only the runner closes or abandons; taking over, by rf 0.16's takeover too
   assert.deepEqual(await json('/logins'), [], 'signing out deletes the record');
 });
 
-test("after an assign, what came before is a note whoever said it, the previous runner's too, its comments waiting on the new runner but their own", async () => {
+test("after an assign, what no run had read before it is a note whoever said it, the previous runner's too, its comments waiting on the new runner but their own", async () => {
   const b = sessionOf(await login(bob))!, ws = (await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Takeovers' }))).json()).id;
   const sid = (await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'Bank' }))).json()).id;
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ members: [bob] }))).status, 200);
@@ -294,6 +316,16 @@ test("after an assign, what came before is a note whoever said it, the previous 
   assert.equal(starts, true, "the new runner's comment would");
   assert.equal((await call('POST', `/api/instances/${id}/abandon`, undefined, b)).status, 200);
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ members: [] }))).status, 200);
+});
+
+test("in an instance taken over under v0.4.0, what its runs had read is history, waiting on no one and no note; what none had read waits on the new runner as a note; the agent's asks still wait", async () => {
+  const c = sessionOf(await login(CAROL))!, path = '/api/instances/01d7a4e00003';
+  const { waiting, standing, log } = await json(path, c);
+  assert.deepEqual(waiting.map((w: { who: string; seq: number }) => [w.who, w.seq]), [[CAROL, 5], [CAROL, 6], [CAROL, 8]], "the agent's asks, and bob's unread comment");
+  assert.deepEqual([standing, log.filter((e: { op: string; by: string }) => e.op === 'comment' && e.by !== 'agent').map((e: { note?: boolean }) => !!e.note)], [{ 8: 'note' }, [false, false, true]]);
+  const asks = (await workspaces(c)).find((w: { id: string }) => w.id === '01d7a4e00001').series[0].instances[0].asks;
+  assert.deepEqual(asks, [{ who: CAROL, kind: 'question' }, { who: CAROL, kind: 'proposal' }, { who: CAROL, kind: 'note' }], 'nothing of the read history waits on her');
+  assert.equal((await call('POST', `${path}/abandon`, undefined, c)).status, 200);
 });
 
 test("owners and admins assign an instance to whoever sees its workspace, as its runner hands it on, and anyone else takes it over; the one assigned it ticks their own logins, and sees it under what waits on them until they open it or act in it", async () => {

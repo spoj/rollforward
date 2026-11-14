@@ -340,13 +340,13 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.deepEqual(log.filter(e => e.op === 'run').map(e => e.continues), [undefined, undefined, 2, undefined, 4], 'which ends its Pi, as a refusal would');
 });
 
-test("assigning mid-run stops the run first, as Interrupt does, saying why; the next run, a new session, waits for the new runner's act and brings what came before as notes, and an ask from before waits on the new runner though it named another", async () => {
+test("assigning mid-run stops the run first, as Interrupt does, saying why; the next run, a new session, waits for the new runner's act and brings what came before as notes, and an ask from before that named no one waits on the new runner", async () => {
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Handover' })).json();
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB] })).status, 200);
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec' })).json();
   let going!: () => void;
   const sleeping = new Promise<void>(ok => { going = ok; });
-  scripts.push({ bash: [`rf ask --to ${ADMIN} 'Which account?'`, () => (going(), 'sleep 60')], report: 'unreached', saw: [] });
+  scripts.push({ bash: [`rf ask 'Which account?'`, () => (going(), 'sleep 60')], report: 'unreached', saw: [] });
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json(), path = `/api/instances/${id}`;
   await sleeping;
   assert.equal((await call('POST', `${path}/comment`, { text: 'Cut off at the 25th.', quiet: true })).status, 200);
@@ -360,7 +360,7 @@ test("assigning mid-run stops the run first, as Interrupt does, saying why; the 
   await new Promise(ok => setTimeout(ok, 2500));
   const { log: still, waiting } = await (await call('GET', path, undefined, bob)).json();
   assert.equal(still.filter((e: { op: string }) => e.op === 'run').length, 1, 'the assign starts no run');
-  assert.deepEqual(waiting.map((w: { who: string; seq: number }) => [w.who, still[w.seq - 1].by]), [[BOB, 'agent'], [BOB, ADMIN]], "the agent's ask, which named its runner then, and the previous runner's comment, a note now, wait on the new one");
+  assert.deepEqual(waiting.map((w: { who: string; seq: number }) => [w.who, still[w.seq - 1].by]), [[BOB, 'agent'], [BOB, ADMIN]], "the agent's ask, which named no one, and the previous runner's comment, which no run read, a note now, wait on the new one");
   const next: Script = { bash: [], report: 'Taken up.', saw: [] };
   scripts.push(next);
   assert.equal((await call('POST', `${path}/comment`, { text: 'Mine now.' }, bob)).status, 200);

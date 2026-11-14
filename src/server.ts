@@ -154,7 +154,7 @@ function watched(me: Me, id: string, site: string): { browsers: Browsers; id: st
 }
 
 // Whom an open instance waits on, and with what: each ask no one answered on the person it names, else the runner, as one from before
-// its last assign does, and each such note on the runner but their own; a copy's since it was copied.
+// its last assign does, and each such note on the runner but their own, history being none; a copy's since it was copied.
 function waits(inst: Instance): { who: string; e: Entry }[] {
   if (inst.doc.status !== 'open') return [];
   const runner = runnerOf(inst).by, line = lastAssign(inst.log)?.seq ?? 0;

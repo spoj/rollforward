@@ -39,9 +39,10 @@ const make = (shared: boolean, by = alice) => createInstance(seriesOf(shared), `
 const runs = (i: Instance) => i.log.filter(e => e.op === 'run').length;
 // Whether a run started on what was kicked, or a wake fired.
 async function started(i: Instance, kicked = true) {
+  const was = runs(i);
   if (kicked) kick(i);
-  for (let k = 0; k < 60 && !runs(i); k++) await new Promise(r => setTimeout(r, 50));
-  return runs(i) > 0;
+  for (let k = 0; k < 60 && runs(i) === was; k++) await new Promise(r => setTimeout(r, 50));
+  return runs(i) > was;
 }
 const word = (i: Instance, e: Entry) => standing(i, e)!.word;
 const fired = async (i: Instance) => {
@@ -118,14 +119,18 @@ describe('standing', { concurrency: true }, () => {
       assert.ok(await started(i, false));
     });
 
-    test(`anything from before the last assign, ${column}: a note, whoever said it, the previous runner too, which starts nothing; a wake pending from before it fires as a note, a request to the new runner where the series isn't shared`, async () => {
-      const i = make(shared, bob), before = i.append(bob, 'comment', { thread: 'c2', text: 'Cut off at the 25th.', quiet: true }), colleague = i.append(carol, 'comment', { thread: 'c3', text: 'The rate moved.', quiet: true });
-      const asked = i.append('agent', 'comment', { thread: 'c4', text: 'Which statement?', ask: 'question', to: carol });
+    test(`anything from before the last assign, ${column}: what a run had read history, with no standing, and what none had a note, whoever said it, the previous runner too, neither starting anything; a wake pending from before it fires as a note, a request to the new runner where the series isn't shared`, async () => {
+      const i = make(shared, bob), read = i.append(bob, 'comment', { thread: 'c2', text: 'Use the HSBC statement.', quiet: true });
+      i.append('server', 'run', { run: 1, runner: bob, consent: 1 });
+      i.append('server', 'done', { run: 1, seen: read.seq, cost: 0 });
+      const before = i.append(bob, 'comment', { thread: 'c5', text: 'Cut off at the 25th.', quiet: true }), colleague = i.append(carol, 'comment', { thread: 'c6', text: 'The rate moved.', quiet: true });
+      const asked = i.append('agent', 'comment', { thread: 'c7', text: 'Which statement?', ask: 'question', to: carol });
       setWake(i.id, { at: new Date(Date.now() + 1500).toISOString(), from: bob });
       i.append(bob, 'assign', { to: alice, from: bob, logins: [] });
       assigned(i);
+      assert.equal(standing(i, { ...read, quiet: undefined }), undefined, 'read, it is history');
       for (const e of [before, colleague]) assert.deepEqual(standing(i, { ...e, quiet: undefined }), { word: 'note', starts: false });
-      assert.equal(word(i, i.append(carol, 'comment', { thread: 'c4', parent: asked.seq, text: 'HSBC.', quiet: true })), 'note', 'an answer to an ask from before it is a note');
+      assert.equal(word(i, i.append(carol, 'comment', { thread: 'c7', parent: asked.seq, text: 'HSBC.', quiet: true })), 'note', 'an answer to an ask from before it is a note');
       assert.match(message(i, 1, i.log, true), new RegExp(`Its runner is now ${alice} <${alice}>, assigned by ${bob} <${bob}> from ${bob} <${bob}>, who lends you no login\\.[^]*"text":"Cut off at the 25th\\.","quiet":true,"note":true`));
       for (let k = 0; k < 80 && (shared ? !i.log.some(e => e.op === 'wake') : !Object.values(wakes().requests).some(r => r.target === i.id)); k++) await new Promise(r => setTimeout(r, 50));
       if (shared) assert.equal(word(i, i.log.findLast(e => e.op === 'wake')!), 'note');

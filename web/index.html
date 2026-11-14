@@ -717,7 +717,7 @@ function threadsOf() {
   }
   for (const t of out.values()) Object.assign(t, {
     waits: t.posts.find(p => p.waits)?.waits ?? null,
-    pending: open && t.last.op !== 'resolve' && t.last.by !== 'agent' && data.standing[t.last.seq] !== 'note',
+    pending: open && t.last.op !== 'resolve' && ['runner', 'answer'].includes(data.standing[t.last.seq]),
   });
   return [...out.values()];
 }
