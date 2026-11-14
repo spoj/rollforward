@@ -190,6 +190,11 @@ before(async () => {
       if (g.stall) return void res.writeHead(200, { 'content-type': 'application/json' }).write('{"data":');
       return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ data: { id, total_cost: g.cost, usage: g.cost } }));
     }
+    if (req.url === '/api/v1/edge-head') return void res.writeHead(200, { 'content-type': 'application/json', 'content-encoding': 'gzip' }).end(gzipSync('{"usage":{"cost":1}}'));
+    if (body?.user === 'malformed-json') return void res.writeHead(200, { 'content-type': 'application/json' }).end('{"usage":');
+    if (body?.user === 'compressed-error') return void res.writeHead(429, { 'content-type': 'application/json', 'content-encoding': 'gzip' }).end(gzipSync('{"error":'));
+    if (body?.user === 'malformed-sse') return void res.writeHead(200, { 'content-type': 'text/event-stream' }).end('data: {broken\n\ndata: {"usage":{"cost":0.222}}\n\n');
+    if (body?.user === 'broken-gzip') return void res.writeHead(200, { 'content-type': 'text/event-stream', 'content-encoding': 'gzip' }).end('not gzip');
     if (body?.user === 'held-json') {
       res.writeHead(200, { 'content-type': 'application/json' }).write('{"choices":[');
       await held;
@@ -1032,6 +1037,23 @@ test('a deployment service gets streamed requests only under the runner\'s ticke
   }
 });
 
+
+test('malformed JSON, malformed SSE, compressed errors, broken compression and HEAD responses do not crash accounting', async () => {
+  const { drainCalls } = await import('../src/connections.ts');
+  assert.equal((await via('HEAD', `${O}/edge-head`)).status, 200);
+  await drainCalls(callRuns.get('run')!);
+  assert.deepEqual([calls().at(-1)!.cost, calls().at(-1)!.estimated], [0, undefined]);
+  for (const user of ['malformed-json', 'compressed-error', 'malformed-sse', 'broken-gzip']) {
+    const r = await via('POST', `${O}/chat/completions`, json({ user }));
+    await drainCalls(callRuns.get('run')!);
+    const e = calls().at(-1)!;
+    assert.equal(e.status, r.status);
+    assert.equal(e.failed, undefined);
+    if (user === 'compressed-error') assert.deepEqual([e.cost, e.estimated], [0, undefined]);
+    else if (user === 'malformed-sse') assert.deepEqual([e.cost, e.estimated], [0.222, undefined]);
+    else assert.ok(e.cost > 0 && e.estimated === true);
+  }
+});
 
 test('generation lookups use exactly the key that created each call, including cut personal-key streams', async () => {
   const { drainCalls } = await import('../src/connections.ts');
