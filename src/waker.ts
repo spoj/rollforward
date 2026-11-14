@@ -24,7 +24,13 @@ const MAX_RUNS = Number(process.env.RF_MAX_RUNS ?? 20);
 // memory, as for tests on a small machine.
 const MIN_FREE = Number(process.env.RF_MIN_FREE_GB ?? 6) * 2 ** 30;
 const started: number[] = [];
-const full = () => active.size >= MAX_RUNS || (MIN_FREE > 0 && freemem() < MIN_FREE + started.filter(t => t > Date.now() - 60_000).length * 2 ** 30);
+// An update's drain (scripts/update.ts): from SIGUSR2 until RF_DRAIN_MIN after the latest, no run starts, as though every slot
+// were taken, and no Pi idles. What would start waits, as for a slot, and starts if the drain lapses or, as an update means, after
+// the restart (recover()).
+const DRAIN_MS = Number(process.env.RF_DRAIN_MIN ?? 15) * 60_000;
+if (!Number.isFinite(DRAIN_MS) || DRAIN_MS < 0 || DRAIN_MS > 2_147_483_647) throw new Error('RF_DRAIN_MIN must be between 0 and 35791 minutes');
+let draining: NodeJS.Timeout | undefined;
+const full = () => !!draining || active.size >= MAX_RUNS || (MIN_FREE > 0 && freemem() < MIN_FREE + started.filter(t => t > Date.now() - 60_000).length * 2 ** 30);
 export const MAX_OPEN = 3;
 const SPACING_MS = 15 * 60_000, MAX_WAKES = 20;
 
@@ -66,7 +72,7 @@ function stale(i: Idle): boolean {
 const ending = new Set<{ view: View; done: Promise<void> }>();
 function end(token: string, run: Run | Promise<Run>, view: View) {
   const e = { view, done: Promise.resolve(run).then(r => r.stop().catch(e => console.error('a run left its scratch folder', e)), () => {})
-    .finally(() => { rmSync(join(rfDir(), 'runs', token), { recursive: true, force: true }); ending.delete(e); }) };
+    .finally(() => { ending.delete(e); rmSync(join(rfDir(), 'runs', token), { recursive: true, force: true }); }) };
   ending.add(e);
   return e.done;
 }
@@ -352,7 +358,7 @@ function finish(a: Active, aborted: boolean, error?: string): Entry | undefined 
   const added = rules(a.process, processMd(a.inst.dir) ?? a.process);
   const done = a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(4), ...(error && { error }), ...(added && { rules: added, thread: a.thread }) });
   // Its Pi idles for the instance's next run, or stops, the longest idle too past RF_MAX_IDLE.
-  const keep = !aborted && !error && !!a.run && a.inst.doc.status === 'open' && a.run.alone();
+  const keep = !draining && !aborted && !error && !!a.run && a.inst.doc.status === 'open' && a.run.alone();
   if (keep) {
     idle.set(a.inst.id, { inst: a.inst, run: a.run!, token: a.token, view: a.view, skills: a.skills, session: a.session, shape: a.shape, seq: a.inst.log.at(-1)!.seq, since: Date.now() });
     if (idle.size > MAX_IDLE) drop(idle.keys().next().value!);
@@ -361,9 +367,13 @@ function finish(a: Active, aborted: boolean, error?: string): Entry | undefined 
   // commits wait for: once its browsers and sandbox have stopped, or, idle, once its browsers have, nothing running in it.
   if (!a.run && !a.ready) rmSync(join(rfDir(), 'runs', a.token), { recursive: true, force: true });
   const stopped = keep || (!a.run && !a.ready) ? undefined : end(a.token, a.run ?? a.ready!, a.view);
+  const closed = Promise.all([closing, stopped]);
+  const committed = commit(a.inst.dir, AGENT, [`Run ${a.n}`, error].filter(Boolean).join(': '), closed).catch(e => a.inst.append('server', 'commit', { run: a.n, error: e.message }));
   retiring.add(a);
-  a.ended = Promise.all([closing, stopped]).finally(() => retiring.delete(a));
-  commit(a.inst.dir, AGENT, [`Run ${a.n}`, error].filter(Boolean).join(': '), a.ended).catch(e => a.inst.append('server', 'commit', { run: a.n, error: e.message }));
+  a.ended = Promise.all([closed, committed]).finally(() => {
+    retiring.delete(a);
+    if (draining) changes.emit('change', 'tree'); // the page counts the runs an update waits for
+  });
   // One that never started, as with a missing API key, waits for the next act rather than retrying itself at once; another open
   // instance of the series that waited for the slot still starts.
   const next = a.run && due(a.inst) ? a.inst : instances(series).find(i => i !== a.inst && runnable(i));
@@ -434,10 +444,25 @@ changes.on('change', (id: string) => id === 'tree' && setImmediate(leases));
 let stopping = false;
 export function stop() {
   stopping = true;
+  clearTimeout(draining);
   byToken.clear();
   for (const a of active.values()) a.browsers?.cut();
   active.clear();
 }
+
+// A drain stops the idle Pis; a second signal only renews its deadline. Drained, no run goes, nor does any Pi stop.
+export function drain() {
+  if (!DRAIN_MS) return;
+  const was = draining;
+  clearTimeout(draining);
+  draining = setTimeout(() => { draining = undefined; changes.emit('change', 'tree'); startWaiting(); }, DRAIN_MS).unref();
+  if (was) return;
+  for (const id of idle.keys()) drop(id);
+  changes.emit('change', 'tree');
+}
+export const drained = () => !!draining && !active.size && !retiring.size && !ending.size;
+// The runs a drain waits for, or null with none.
+export const updating = () => (draining ? active.size + retiring.size : null);
 
 function startWaiting() {
   for (const i of waiting) {
@@ -451,7 +476,7 @@ function startWaiting() {
 export function queued(inst: Instance): { why: string; since: string } | undefined {
   const a = active.get(inst.seriesId);
   if (a?.inst === inst || inst.doc.status !== 'open' || !(debounce.has(inst.id) || waiting.has(inst) || (a && due(inst)))) return;
-  const why = debounce.has(inst.id) ? 'starting' : a ? `its series is running ${a.inst.label}` : active.size >= MAX_RUNS ? `${MAX_RUNS} runs are going, the most RF_MAX_RUNS allows` : 'too little memory is free (RF_MIN_FREE_GB)';
+  const why = debounce.has(inst.id) ? 'starting' : a ? `its series is running ${a.inst.label}` : draining ? 'an update waits for the runs going to finish' : active.size >= MAX_RUNS ? `${MAX_RUNS} runs are going, the most RF_MAX_RUNS allows` : 'too little memory is free (RF_MIN_FREE_GB)';
   return { why, since: pending(inst, seenBefore(inst))[0]?.at ?? new Date().toISOString() };
 }
 

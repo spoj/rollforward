@@ -9,6 +9,7 @@ import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { chromium } from 'playwright';
 import { idp } from './idp.ts';
 
 // Real runs, from a person's act down to Pi in its sandbox, with a scripted stand-in for OpenRouter: each run's prompt takes the
@@ -820,6 +821,111 @@ test('a stop, as an update makes, lets nothing more go out, and exits once what 
   scripts.push({ bash: [], report: 'Carried on after the stop.', saw: [] });
   await serve();
   assert.deepEqual((await runs(id, 2)).filter(e => e.op === 'done').map(e => [e.aborted, e.error]), [[true, 'a restart cut the run'], [false, undefined]]);
+});
+
+// An update's drain (waker.ts drain()): what /drained answers, and a series with its first run done, waiting on an ask, or held mid-turn until `go`.
+const drainedNow = async () => (await fetch(`${base}/drained`)).status;
+const draining = async () => (await (await call('GET', '/me')).json()).draining;
+async function drainSeries(name: string, mode: boolean | 'ask' = false) {
+  let reached = false, go!: () => void;
+  const gate = new Promise<void>(ok => (go = ok));
+  scripts.push({ bash: mode === true ? [async () => { reached = true; await gate; return 'echo ok'; }] : mode === 'ask' ? ["rf ask 'Which rate?'"] : [], report: 'Done.', saw: [] });
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: `Drain-${name}` })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name })).json();
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
+  if (mode === true) await until(`${name}'s run`, () => reached);
+  else await runs(id, 1);
+  return { id: id as string, go };
+}
+const entries = (id: string) => readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+const started = (id: string) => entries(id).filter(e => e.op === 'run').length;
+
+test("an update's drain starts no run, though acts and due wakes are logged, counts runs going and not an ask waiting on a person, stops the idle Pis and idles none, shows the count on the page, and answers drained once no run goes; what waited starts after the restart", async t => {
+  const runsDir = join(tmp, 'scratch', 'runs'), pi = (id: string) => readdirSync(runsDir).some(t => readFileSync(join(runsDir, t, 'bwrap.args'), 'utf8').includes(`RF_INSTANCE\0${id}\0`));
+  const asked = await drainSeries('Asked', 'ask'), woken = await drainSeries('Woken'), busy1 = await drainSeries('Busy1', true), busy2 = await drainSeries('Busy2', true);
+  t.after(() => { busy1.go(); busy2.go(); });
+  assert.ok(pi(asked.id) && pi(woken.id));
+  assert.ok((await (await call('GET', '/api/status')).json()).asks.some((a: { path: string }) => a.path === 'Drain-Asked/Asked/2026-11'));
+  assert.deepEqual([await drainedNow(), await draining()], [503, null], 'no drain asked');
+  const browser = await chromium.launch(), ctx = await browser.newContext();
+  const [name, value] = admin.split('=');
+  await ctx.addCookies([{ name, value, url: base }]);
+  const page = await ctx.newPage();
+  try {
+    await page.goto(`${base}/#/${asked.id}`);
+    await page.waitForSelector('#bar h1 .t');
+    assert.equal(await page.locator('#draining').isVisible(), false);
+    proc.kill('SIGUSR2');
+    await until('the idle Pis stopped', () => !pi(asked.id) && !pi(woken.id));
+    assert.deepEqual([await drainedNow(), await draining()], [503, 2], 'the two mid-turn runs go; the ask waiting on a person does not');
+    await page.locator('#draining', { hasText: 'An update is waiting for 2 runs to finish; new runs start after it.' }).waitFor();
+    assert.equal((await call('POST', `/api/instances/${asked.id}/comment`, { text: 'Use 5%.' })).status, 200);
+    assert.equal((await call('PUT', `/api/wakes/${woken.id}`, { at: 'now', text: 'due in drain' })).status, 200);
+    await until('the due wake fired into the log', () => entries(woken.id).some(e => e.op === 'wake' && e.text === 'due in drain'));
+    await new Promise(ok => setTimeout(ok, 2200));
+    assert.deepEqual([started(asked.id), started(woken.id)], [1, 1], 'neither the comment nor the wake starts a run');
+    const queued = (await (await call('GET', '/api/status')).json()).queued;
+    for (const path of ['Drain-Asked/Asked/2026-11', 'Drain-Woken/Woken/2026-11'])
+      assert.equal(queued.find((q: { path: string }) => q.path === path)?.why, 'an update waits for the runs going to finish', path);
+    busy1.go();
+    await runs(busy1.id, 1);
+    await page.locator('#draining', { hasText: 'An update is waiting for 1 run to finish; new runs start after it.' }).waitFor();
+    assert.equal(await drainedNow(), 503);
+    busy2.go();
+    await runs(busy2.id, 1);
+    for (let i = 0; await drainedNow() !== 200; i++) {
+      assert.ok(i < 100, 'never drained');
+      await new Promise(ok => setTimeout(ok, 200));
+    }
+    assert.equal(await draining(), 0);
+    await page.locator('#draining', { hasText: 'An update is waiting for 0 runs to finish; new runs start after it.' }).waitFor();
+    assert.ok(!pi(busy1.id) && !pi(busy2.id), 'runs ending in a drain idle no Pi');
+    assert.equal(execFileSync('git', ['log', '-1', '--format=%s'], { cwd: join(root, 'instances', busy2.id), encoding: 'utf8' }).trim(), 'Run 1', 'settled commit finished before /drained answered 200');
+    proc.kill('SIGTERM');
+    await once(proc, 'exit');
+    scripts.push({ bash: [], report: 'After the update.', saw: [] }, { bash: [], report: 'Woken after the update.', saw: [] });
+    await serve();
+    await Promise.all([runs(asked.id, 2), runs(woken.id, 2)]);
+    assert.deepEqual([await drainedNow(), await draining()], [503, null], 'the new server drains only when signalled');
+    await page.waitForSelector('#draining', { state: 'hidden', timeout: 10_000 });
+  } finally {
+    await browser.close();
+  }
+});
+
+test('a drain lasts RF_DRAIN_MIN from its latest signal, a second only renewing its deadline, and then lapses by itself if nothing stops the server: what waited starts', async () => {
+  proc.kill('SIGKILL');
+  await once(proc, 'exit');
+  await serve({ RF_DRAIN_MIN: '0.05' });
+  try {
+    const { id } = await drainSeries('LapseRec');
+    proc.kill('SIGUSR2');
+    assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Again.' })).status, 200);
+    await new Promise(ok => setTimeout(ok, 1800));
+    proc.kill('SIGUSR2');
+    await new Promise(ok => setTimeout(ok, 1800));
+    assert.equal(started(id), 1, "no run starts past the first signal's deadline");
+    assert.deepEqual([await drainedNow(), await draining()], [200, 0]);
+    scripts.push({ bash: [], report: 'After the drain.', saw: [] });
+    await runs(id, 2);
+    assert.deepEqual([await drainedNow(), await draining()], [503, null]);
+  } finally {
+    await cut();
+  }
+});
+
+test('a restart during a drain ends it: the run it cut carries on, and what waited starts', async () => {
+  const waited = await drainSeries('RestartWaited'), busy = await drainSeries('RestartBusy', true);
+  proc.kill('SIGUSR2');
+  assert.equal((await call('POST', `/api/instances/${waited.id}/comment`, { text: 'Again.' })).status, 200);
+  await new Promise(ok => setTimeout(ok, 2500));
+  assert.equal(started(waited.id), 1);
+  scripts.push({ bash: [], report: 'Carried on.', saw: [] }, { bash: [], report: 'Carried on.', saw: [] });
+  await cut();
+  assert.deepEqual([await drainedNow(), await draining()], [503, null]);
+  assert.deepEqual((await runs(busy.id, 2)).filter(e => e.op === 'done').map(e => e.error), ['a restart cut the run', undefined]);
+  await runs(waited.id, 2);
+  busy.go();
 });
 
 test("a person's own OpenRouter key, checked as it's saved, goes in for the runs they run instead of the server's, each run logging whose; out of credits, the run fails as credits and the instance waits for them until they stop using it, which wakes it", async () => {

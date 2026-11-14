@@ -137,7 +137,7 @@ before(async () => {
   const port = (probe.address() as { port: number }).port;
   await new Promise(ok => probe.close(ok));
   entra = await idp();
-  Object.assign(env, entra.env(`http://127.0.0.1:${port}`), { RF_ADMINS: 'admin@demo.test' });
+  Object.assign(env, entra.env(`http://127.0.0.1:${port}`), { RF_ADMINS: 'admin@demo.test', RF_DRAIN_MIN: '0.05' });
   proc = spawn(process.execPath, [join(app, 'src', 'server.ts'), root, String(port)], { env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'inherit'] });
   await new Promise((ok, fail) => {
     proc.stdout!.on('data', d => String(d).includes('rollforward on') && ok(null));
@@ -1909,4 +1909,15 @@ test("an expired login's banner on an instance agrees with held(): gone once clo
   await page.goto(`${origin}/#/${i2}`);
   await page.waitForSelector('#bar h1 .t:text-is("2026-09")');
   assert.equal(await page.locator('#needs').isHidden(), true, 'gone on closed instance');
+});
+
+test("while an update drains the server, the page shows a quiet line above the instance, with the sidebar folded too, until the drain ends", async () => {
+  assert.equal(await page.locator('#draining').isVisible(), false);
+  proc.kill('SIGUSR2');
+  await page.locator('#draining', { hasText: 'An update is waiting for 0 runs to finish; new runs start after it.' }).waitFor();
+  assert.match(await page.textContent('#sidefoot .release') ?? '', /^rollforward (v\d+\.\d+\.\d+|[0-9a-f]{7,})/);
+  await page.click('#sidefoot [data-act=fold-side]');
+  assert.equal(await page.locator('#draining').isVisible(), true, 'still shown when the sidebar is folded');
+  await page.click('#sidefoot [data-act=fold-side]');
+  await page.waitForSelector('#draining', { state: 'hidden', timeout: 10_000 });
 });
