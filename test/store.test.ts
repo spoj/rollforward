@@ -27,6 +27,25 @@ test('deleting during a close never restores the instance or writes a close over
   rmSync(tmp, { recursive: true, force: true });
 });
 
+test('Close checks item files after the preceding run finishes stopping', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'rf-close-files-'));
+  openStore(root);
+  const inst = createInstance('monthly', 'closing', 'alex', []), gate = Promise.withResolvers<void>();
+  const file = join(inst.dir, 'working', 'pack.csv');
+  writeFileSync(file, 'approved output');
+  inst.put(JSON.stringify({ ...inst.doc, items: [{ id: 'pack', name: 'Pack', kind: 'output', file: 'working/pack.csv' }] }), 1);
+  const last = commit(inst.dir, alex, 'Last run', gate.promise), closing = inst.close(alex);
+  const refused = assert.rejects(closing, { status: 409, message: 'pack: no file working/pack.csv' });
+  rmSync(file);
+  gate.resolve();
+  try {
+    await Promise.all([last, refused]);
+    assert.equal(inst.doc.status, 'open');
+    assert.equal(inst.log.some(e => e.op === 'close'), false);
+    assert.equal(instance(inst.id).doc.status, 'open');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("a name is a folder's and a line's: slashes, control characters and line breaks become _, and AGENTS.md, where the view binds instructions, is refused, as is a folder's name over 200 bytes", () => {
   assert.equal(safeName('Bank/rec\\Q1\nlines\u2028\u2029\x85\x7f'), 'Bank_rec_Q1_lines____');
   assert.throws(() => safeName('AGENTS.md'), /AGENTS\.md is the name of the agents' instructions/);
