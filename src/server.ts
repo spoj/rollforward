@@ -974,7 +974,11 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const wake = req.method === 'DELETE' ? wakes().pending[id] : undefined, to = wake?.target ?? id, sid = t.series[to] ? to : instance(to).seriesId;
     if (req.method === 'DELETE' && !wake) throw new HttpError(404, 'no such wake pending');
     if (!run) mustSee(me, t.workspaces[t.series[sid].workspace]);
-    else if (t.series[sid].workspace !== t.series[run.inst.seriesId].workspace) throw new HttpError(403, `${named(t, sid)} is in another workspace: you can read it, not wake it`);
+    else if (t.series[sid].workspace !== t.series[run.inst.seriesId].workspace) {
+      const canRead = reads(t, t.series[run.inst.seriesId].workspace).includes(t.series[sid].workspace);
+      if (req.method === 'DELETE' && !canRead) throw new HttpError(404, 'no such wake pending');
+      throw new HttpError(403, canRead ? `${named(t, sid)} is in another workspace: you can read it, not wake it` : 'that is in another workspace: you can read it if it lets you, not wake it');
+    }
     if (t.series[to]?.single) throw new HttpError(400, `${t.series[to].name} is a task, with one instance: wake that`);
     if (req.method === 'DELETE') {
       // A person's cancellation is theirs in the system's log; a run's is recorded there too, with the wake, its instance and run.
@@ -990,10 +994,12 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (!t.series[to] && instance(to).doc.status !== 'open') throw new HttpError(409, `${instance(to).label} is ${instance(to).doc.status}: to correct it, wake its series with the label ${instance(to).label}-r2`);
     const first = new Date(at), starts = t.series[to] ? folderName(String(label)) : undefined;
     if (starts && labels(to).some(l => l.label === starts && instance(l.id).hole)) throw new HttpError(409, `${starts} was deleted, and its label stays with it: choose another`);
-    return send(res, 200, setWake(to, {
+    const created = setWake(to, {
       at: first.toISOString(), from: run ? `${named(t, run.inst.seriesId)}/${run.inst.label}` : by, ...(run && { inst: run.inst.id }),
       ...(starts && { label: starts }), ...(days !== undefined && { days: weekly(String(days), first, starts) }), ...(text?.trim() && { text: text.trim() }),
-    }));
+    });
+    if (run) act('agent', { method: 'PUT', path: url.pathname, wake: wakes().pending[created.id], inst: run.inst.id, run: run.n });
+    return send(res, 200, created);
   }
   // A request to start an instance, which people start or dismiss: whoever starts it acts, so its wake is logged, a note unless its
   // runner's, beside their own.

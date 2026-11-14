@@ -1452,6 +1452,37 @@ test('closing a run browser writes its log before the run commits, and closing t
   }
 });
 
+test('a run waking its own workspace is logged in .rf/log.jsonl, and cross-workspace /api/wakes calls never leak unreadable workspace or series names', async () => {
+  const { id: secretWs } = await (await call('POST', '/api/workspaces', { name: 'TopSecretMna' })).json();
+  const { id: secretSeries } = await (await call('POST', '/api/series', { workspace: secretWs, name: 'DealAlpha' })).json();
+  const { id: secretWake } = await (await call('PUT', `/api/wakes/${secretSeries}`, { at: '+4h', label: '2026-12' })).json();
+
+  const { id: ownWs } = await (await call('POST', '/api/workspaces', { name: 'WakeAuditOwn' })).json();
+  const { id: ownSeries } = await (await call('POST', '/api/series', { workspace: ownWs, name: 'Ops' })).json();
+  const probe: Script = {
+    bash: [
+      `node -e "const http=require('http'),u=new URL(process.env.RF_URL+'/api/wakes/${secretSeries}');const r=http.request({hostname:u.hostname,port:u.port,path:u.pathname,method:'PUT',headers:{authorization:'Bearer '+process.env.RF_TOKEN,'content-type':'application/json'}},s=>{let d='';s.on('data',c=>d+=c);s.on('end',()=>console.log(s.statusCode+' '+d))});r.end(JSON.stringify({at:'+2h',label:'x'}));"`,
+      `node -e "const http=require('http'),u=new URL(process.env.RF_URL+'/api/wakes/${secretWake}');const r=http.request({hostname:u.hostname,port:u.port,path:u.pathname,method:'DELETE',headers:{authorization:'Bearer '+process.env.RF_TOKEN}},s=>{let d='';s.on('data',c=>d+=c);s.on('end',()=>console.log(s.statusCode+' '+d))});r.end();"`,
+      'rf wake . +2h --text "Follow up"',
+    ],
+    report: 'Checked wakes.', saw: [],
+  };
+  scripts.push(probe);
+  const { id: ownInst } = await (await call('POST', `/api/series/${ownSeries}`, { label: '2026-11', logins: [] })).json();
+  await runs(ownInst, 1);
+
+  assert.doesNotMatch(probe.saw[0], /TopSecretMna|DealAlpha/);
+  assert.match(probe.saw[0], /^403 /);
+  assert.doesNotMatch(probe.saw[1], /TopSecretMna|DealAlpha/);
+  assert.match(probe.saw[1], /^404 /);
+
+  const rfActs = readFileSync(join(root, '.rf', 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+  const putAct = rfActs.findLast((a: any) => a.by === 'agent' && a.method === 'PUT' && a.inst === ownInst);
+  assert.ok(putAct, 'agent PUT /api/wakes recorded in .rf/log.jsonl');
+  assert.equal(putAct.run, 1);
+  assert.equal(putAct.wake.target, ownInst);
+});
+
 test("every entry names its source: a person, a run whose entry names its runner and the act whose ticks it uses, or what caused it", () => {
   const logs = new Map(readdirSync(join(root, 'instances')).map(id => [id, readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l) as Record<string, any>)]));
   for (const [id, log] of logs) for (const e of log) {
