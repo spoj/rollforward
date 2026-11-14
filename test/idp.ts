@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 // server does it, signing in whoever the login hint names, else `as`, as a browser that picked that account would, by the names the
 // tests know them by; and the refresh tokens that keeps, which renew until `who.gone` says the account is disabled or `who.stale` that its sign-in expired, and answer 503
 // while `who.down`.
-const NAMES: Record<string, string> = { 'admin@demo.test': 'Demo Admin', 'bob@demo.test': 'Bob' };
+const NAMES: Record<string, string> = { 'admin@demo.test': 'Demo Admin', 'bob@demo.test': 'Bob', 'chan.taiman.finance-and-accounting@demo.test': '陳大文（財務及會計部，香港辦事處）' };
 
 export async function idp() {
   const b64 = (s: string) => Buffer.from(s).toString('base64url'), who = { as: '', groups: {} as Record<string, string[]>, gone: new Set<string>(), stale: new Set<string>(), down: false, renewed: [] as string[] };

@@ -350,7 +350,7 @@ dialog::backdrop { background: var(--backdrop); }
 .dlg .opts label { display: grid; gap: 4px; font-size: 12.5px; color: var(--ink-2); }
 .dlg .opt label { display: flex; align-items: center; gap: 6px; }
 .dlg input[type=radio] { width: auto; margin: 0; }
-.dlg :is(textarea, select) { font: inherit; font-size: 13px; color: var(--ink); padding: 7px 9px; border: 1px solid var(--rule-2); border-radius: var(--r1); background: var(--sheet); }
+.dlg :is(textarea, select) { font: inherit; font-size: 13px; color: var(--ink); padding: 7px 9px; border: 1px solid var(--rule-2); border-radius: var(--r1); background: var(--sheet); max-width: 100%; }
 .dlg .abandon { margin-top: 14px; font-size: 12px; color: var(--ink-3); }
 .dlg .abandon .quiet { display: inline; padding: 0; text-decoration: underline; }
 .dlg pre.agents { max-height: 200px; overflow: auto; white-space: pre-wrap; font: 12px/1.45 var(--mono); background: var(--paper); border: 1px solid var(--rule); border-radius: var(--r1); padding: 8px 10px; }

@@ -1787,24 +1787,33 @@ test("a wake carries a message; a series' notes thread takes notes from the side
 test("Assign… on the bar hands an instance to whoever sees its workspace, who sees it under Waiting on you until they open it, and wakes it from a request to wake it as it is; Mine shows only the open instances you run, as this browser keeps it for you", async () => {
   const origin = new URL(page.url()).origin;
   entra.who.as = 'handed@demo.test';
-  const handed = await browser.newPage();
+  const handed = await browser.newPage(), chan = 'chan.taiman.finance-and-accounting@demo.test';
   await handed.goto(`${origin}/auth/login`);
+  entra.who.as = chan;
+  await (await browser.newPage()).goto(`${origin}/auth/login`);
   entra.who.as = 'admin@demo.test';
   const { mine, theirs, sid } = await page.evaluate(async () => {
     const post = (path, body) => fetch(path, { method: 'POST', body: JSON.stringify(body) }).then(r => r.json());
     const { id: ws } = await post('/api/workspaces', { name: 'Handing' });
-    await fetch(`/api/workspaces/${ws}`, { method: 'PUT', body: JSON.stringify({ owners: ['admin@demo.test'], members: ['handed@demo.test'] }) });
+    await fetch(`/api/workspaces/${ws}`, { method: 'PUT', body: JSON.stringify({ owners: ['admin@demo.test'], members: ['handed@demo.test', 'chan.taiman.finance-and-accounting@demo.test'] }) });
     const { id: sid } = await post('/api/series', { workspace: ws, name: 'Rec' });
     return { sid, theirs: (await post(`/api/series/${sid}`, { label: 'H1', quiet: true })).id, mine: (await post(`/api/series/${sid}`, { label: 'H2', quiet: true })).id };
   });
   await page.goto(`${origin}/#/${theirs}`);
+  await page.reload();
   await page.waitForSelector('#bar [data-act=assign]');
   assert.deepEqual(await page.locator('#bar .btn').allTextContents(), ['No wake', 'Close', 'Assign\u2026'], 'its runner closes it or hands it on');
   await page.click('#bar [data-act=assign]');
   await page.waitForSelector('#assignto option', { state: 'attached' });
-  assert.deepEqual(await page.locator('#assignto option').evaluateAll(os => os.map(o => (o as HTMLOptionElement).value)), ['handed@demo.test'], 'whoever sees its workspace but its runner and you');
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.deepEqual(await page.locator('#assignto option').evaluateAll(os => os.map(o => (o as HTMLOptionElement).value).sort()), [chan, 'handed@demo.test'], 'whoever sees its workspace but its runner and you');
+  assert.match(await page.locator(`#assignto option[value="${chan}"]`).textContent() ?? '', /^陳大文（財務及會計部，香港辦事處） </);
+  const [select, dialog] = await Promise.all(['#assignto', '#ask'].map(s => page.locator(s).boundingBox()));
+  assert.ok(select!.x + select!.width <= dialog!.x + dialog!.width - 16, 'the picker keeps within the dialog on a phone, a long name and address too');
   assert.doesNotMatch(await page.textContent('#ask') ?? '', /stops it/);
+  await page.selectOption('#assignto', 'handed@demo.test');
   await page.click('#ask button[value=ok]');
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.waitForSelector('#bar [data-act=takeover]');
   assert.match(await page.textContent('#bar .owner .about') ?? '', /Assigned by you, from you,/);
   // A wake pending as it was assigned, come as a request to wake it.
