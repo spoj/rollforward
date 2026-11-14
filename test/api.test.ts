@@ -1993,6 +1993,28 @@ test('rf pull --delete preserves excluded git directories and handles file-to-fo
   execFileSync('git', ['status'], { cwd: dest });
 });
 
+test('rf pull --delete replaces a file or folder at the pull root', async () => {
+  if (!existsSync(home)) { mkdirSync(home); await rf('login', base, (await (await call('POST', '/tokens', JSON.stringify({ name: 'cli-root', days: 1 }))).json()).token); }
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'PullRoot' }))).json();
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'S' }))).json();
+  const { id: inst } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'L1', quiet: true }))).json();
+  const report = join(root, 'instances', inst, 'working', 'report'), dest = join(tmp, 'pulled-root');
+  writeFileSync(report, 'flat file');
+  await rf('pull', 'PullRoot/S/L1/working/report', dest, '--delete');
+  assert.equal(readFileSync(join(dest, 'report'), 'utf8'), 'flat file');
+
+  rmSync(report);
+  mkdirSync(report);
+  writeFileSync(join(report, 'part.txt'), 'nested file');
+  await rf('pull', 'PullRoot/S/L1/working/report', dest, '--delete');
+  assert.equal(readFileSync(join(dest, 'report', 'part.txt'), 'utf8'), 'nested file');
+
+  rmSync(report, { recursive: true });
+  writeFileSync(report, 'flat again');
+  await rf('pull', 'PullRoot/S/L1/working/report', dest, '--delete');
+  assert.equal(readFileSync(join(dest, 'report'), 'utf8'), 'flat again');
+});
+
 test('previous detects in-place same-size edits even when mtime is restored', async () => {
   const { chmodSync, utimesSync } = await import('node:fs');
   const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'PrevHash' }))).json();

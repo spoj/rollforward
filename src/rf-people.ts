@@ -404,7 +404,12 @@ async function pull(path: string, dir: string) {
       }
     });
   }
-  if (flags.delete && list.some(rel) && existsSync(into)) {
+  if (flags.delete && list.some(f => rel(f) && !excluded(rel(f))) && existsSync(into) && !lstatSync(into).isDirectory()) {
+    console.log(`deleted  ${basename(into)}`);
+    deleted++;
+    if (!dry) rmSync(into);
+  }
+  if (flags.delete && existsSync(into) && lstatSync(into).isDirectory()) {
     // Windows' and macOS's disks ignore case, as the fetches above did: a file renamed only in case is kept, as fetched.
     const fold = (r: string) => ['win32', 'darwin'].includes(process.platform) ? r.toLowerCase() : r;
     const keep = new Set(list.map(f => fold(rel(f))));
@@ -426,7 +431,10 @@ async function pull(path: string, dir: string) {
       }
       if (d !== into && !excluded(relative(into, d).split(sep).join('/')) && !readdirSync(d).length) rmdirSync(d);
     };
-    if (!dry) prune(into);
+    if (!dry) {
+      prune(into);
+      if (list.some(f => !rel(f) && !excluded('')) && !readdirSync(into).length) rmdirSync(into);
+    }
   }
   // Up to 8 files are fetched at once, each started in the list's order.
   await Promise.all(Array.from({ length: 8 }, async () => {
