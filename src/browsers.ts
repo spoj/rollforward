@@ -48,8 +48,19 @@ function request(method: string, path: string, body?: unknown, ms = method === '
     req.end(body === undefined || Buffer.isBuffer(body) ? body : JSON.stringify(body));
   });
 }
-const call = async (method: string, path: string, body?: unknown, ms?: number) => Buffer.concat(await Array.fromAsync(await request(method, path, body, ms)));
-export const browserJson = async (method: string, path: string, body?: unknown, ms?: number) => JSON.parse((await call(method, path, body, ms)).toString());
+async function call(method: string, path: string, body?: unknown, ms?: number) {
+  const res = await request(method, path, body, ms), chunks: Buffer[] = [];
+  let size = 0;
+  for await (const c of res as AsyncIterable<Buffer>) {
+    if ((size += c.length) > 64 << 20) { res.destroy(); throw new HttpError(502, 'browser service: response exceeded 64 MB'); }
+    chunks.push(c);
+  }
+  return Buffer.concat(chunks);
+}
+export async function browserJson(method: string, path: string, body?: unknown, ms?: number) {
+  const raw = (await call(method, path, body, ms)).toString();
+  try { return JSON.parse(raw); } catch { throw new HttpError(502, `browser service: invalid JSON (${raw.slice(0, 200)})`); }
+}
 // A file in a session's browser, its parts encoded and none . or .., which would lead out of the session to the service's other calls.
 export function files(id: string, path: string) {
   const parts = path.replace(/\\/g, '/').replace(/^\//, '').split('/');
@@ -354,8 +365,26 @@ const setJournal = (all: Record<string, Opened>) => replaceReadOnly(join(rfDir()
 // A run's browser closed: its request log kept in its instance's browser/, logged as browser with the hosts its pages were refused, and,
 // where its website writes it back, its state its person's login again, unless they signed out or in anew since it opened.
 function keep(inst: Instance, b: Opened, { state, log }: { state: unknown; log: Entry[] }) {
-  const login = b.writeback && logins(b.email).find(l => l.id === `web:${b.site}`);
-  if (login && state && !login.expired && login.since === b.since) saveLogin(b.email, login, JSON.stringify(state));
+  const login = b.writeback && logins(b.email).find(l => l.id === `web:${b.site}`), w = websitesOf(b.email)[b.site];
+  if (login && state && w && !login.expired && login.since === b.since) {
+    const ps = reached(w), s = state as { cookies?: { domain?: string }[]; origins?: { origin?: string }[] };
+    const trimmed = {
+      ...s,
+      ...(Array.isArray(s.cookies) && {
+        cookies: s.cookies.filter(c => {
+          const d = String(c?.domain ?? '').toLowerCase(), dom = d.replace(/^\./, '');
+          return Boolean(dom) && ps.some(p => covers(p, dom) || (d.startsWith('.') && Boolean(getDomain(dom)) && (p.replace(/^\*\./, '') === dom || p.replace(/^\*\./, '').endsWith(d))));
+        }),
+      }),
+      ...(Array.isArray(s.origins) && {
+        origins: s.origins.filter(o => {
+          const h = URL.parse(String(o?.origin ?? ''))?.hostname;
+          return Boolean(h) && ps.some(p => covers(p, h!));
+        }),
+      }),
+    };
+    saveLogin(b.email, login, JSON.stringify(trimmed));
+  }
   if (inst.hole || inst.log?.some(e => e.op === 'close' || e.op === 'abandon')) return;
   mkdirSync(join(inst.dir, 'browser'), { recursive: true });
   replaceReadOnly(join(inst.dir, b.file), log.map(e => JSON.stringify(e) + '\n').join(''));

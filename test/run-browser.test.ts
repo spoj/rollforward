@@ -29,7 +29,7 @@ const states: unknown[] = [], headers: unknown[] = [], deleted: string[] = [], s
 const opened: { site: { hosts: string[]; start_url?: string; public?: boolean; open?: boolean; except?: string[] }; ttl_s: number; state?: unknown }[] = [];
 let blocked: Record<string, boolean> = {};
 const toldHosts: { path: string; hosts: string[] }[] = [];
-let nextId = 'b9', refuseClose = false, dropClose = false, hangClose = false, openGate: Promise<void> | undefined;
+let nextId = 'b9', refuseClose = false, dropClose = false, hangClose = false, oversizeClose = false, openGate: Promise<void> | undefined;
 const service = createServer(async (req, res) => {
   if (req.method === 'PUT') {
     toldHosts.push({ path: req.url!, ...JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString()) });
@@ -37,6 +37,12 @@ const service = createServer(async (req, res) => {
   }
   if (req.method === 'DELETE') {
     if (hangClose) return;
+    if (oversizeClose) {
+      res.writeHead(200);
+      const chunk = Buffer.alloc(1 << 20, 0x61);
+      for (let i = 0; i < 66 && !res.destroyed; i++) if (!res.write(chunk)) await new Promise<void>(ok => res.once('drain', ok) && res.once('close', ok));
+      return res.end();
+    }
     if (dropClose) {
       res.writeHead(500, { 'content-length': 100 });
       res.write('{"error":');
@@ -1020,4 +1026,44 @@ test('keepAlive preserves existing sealed login state when browser close returns
     back = wasBack;
   }
   assert.deepEqual(JSON.parse(secret(alice, 'web:crm')), state('good-session'));
+});
+
+test('run writeback trims cookies and origins to allowed hosts and rejects oversized browser-service responses cleanly', async () => {
+  const { createServer } = await import('node:http');
+  sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });
+  writeJson('grants.json', everyone);
+  saveLogin(alice, website('crm', 'CRM'), JSON.stringify(state('initial')));
+  const wasBack = back;
+  back = {
+    cookies: [
+      ...state('refreshed').cookies,
+      { name: 'poison', value: 'x', domain: 'evil.test', path: '/', expires: -1, httpOnly: false, secure: true, sameSite: 'Lax' },
+      { name: 'super', value: 'y', domain: '.com', path: '/', expires: -1, httpOnly: false, secure: true, sameSite: 'Lax' },
+    ],
+    origins: [
+      { origin: 'https://crm.example.com', localStorage: [{ name: 'ok', value: '1' }] },
+      { origin: 'https://evil.test', localStorage: [{ name: 'bad', value: '2' }] },
+    ],
+  };
+  try {
+    const inst = running('2028-04', ['web:crm'], 1);
+    const run = new Browsers(inst, 1);
+    await run.browser('crm');
+    await run.close();
+  } finally {
+    back = wasBack;
+  }
+  const saved = JSON.parse(secret(alice, 'web:crm'));
+  assert.deepEqual(saved.cookies.map((c: any) => [c.domain, c.value]), [['.example.com', 'refreshed']]);
+  assert.deepEqual(saved.origins.map((o: any) => o.origin), ['https://crm.example.com']);
+
+  oversizeClose = true;
+  try {
+    const run2 = new Browsers(running('2028-05', ['web:crm'], 1), 1);
+    await run2.browser('crm');
+    await assert.rejects(() => run2.close(), { status: 502 });
+  } finally {
+    oversizeClose = false;
+  }
+  assert.deepEqual(JSON.parse(secret(alice, 'web:crm')).cookies.map((c: any) => c.value), ['refreshed']);
 });
