@@ -1784,18 +1784,18 @@ test("a wake carries a message; a series' notes thread takes notes from the side
   }
 });
 
-test("Assign… on the bar hands an instance to whoever sees its workspace, who sees it under Waiting on you until they open it; Mine shows only the open instances you run, as this browser keeps it for you", async () => {
+test("Assign… on the bar hands an instance to whoever sees its workspace, who sees it under Waiting on you until they open it, and wakes it from a request to wake it as it is; Mine shows only the open instances you run, as this browser keeps it for you", async () => {
   const origin = new URL(page.url()).origin;
   entra.who.as = 'handed@demo.test';
   const handed = await browser.newPage();
   await handed.goto(`${origin}/auth/login`);
   entra.who.as = 'admin@demo.test';
-  const { mine, theirs } = await page.evaluate(async () => {
+  const { mine, theirs, sid } = await page.evaluate(async () => {
     const post = (path, body) => fetch(path, { method: 'POST', body: JSON.stringify(body) }).then(r => r.json());
     const { id: ws } = await post('/api/workspaces', { name: 'Handing' });
     await fetch(`/api/workspaces/${ws}`, { method: 'PUT', body: JSON.stringify({ owners: ['admin@demo.test'], members: ['handed@demo.test'] }) });
     const { id: sid } = await post('/api/series', { workspace: ws, name: 'Rec' });
-    return { theirs: (await post(`/api/series/${sid}`, { label: 'H1', quiet: true })).id, mine: (await post(`/api/series/${sid}`, { label: 'H2', quiet: true })).id };
+    return { sid, theirs: (await post(`/api/series/${sid}`, { label: 'H1', quiet: true })).id, mine: (await post(`/api/series/${sid}`, { label: 'H2', quiet: true })).id };
   });
   await page.goto(`${origin}/#/${theirs}`);
   await page.waitForSelector('#bar [data-act=assign]');
@@ -1807,11 +1807,16 @@ test("Assign… on the bar hands an instance to whoever sees its workspace, who 
   await page.click('#ask button[value=ok]');
   await page.waitForSelector('#bar [data-act=takeover]');
   assert.match(await page.textContent('#bar .owner .about') ?? '', /Assigned by you, from you,/);
+  // A wake pending as it was assigned, come as a request to wake it.
+  const wakes = join(root, '.rf', 'wakes.json'), w = JSON.parse(readFileSync(wakes, 'utf8'));
+  writeFileSync(wakes, JSON.stringify({ ...w, requests: { ...w.requests, handing: { series: sid, label: 'H1', target: theirs, from: 'admin@demo.test', at: new Date().toISOString(), text: 'the statement is due' } } }));
   await handed.goto(`${origin}/`);
   await handed.click('[data-act=waiting]');
-  assert.match(await handed.textContent('#pv') ?? '', /Demo Admin assigned you Handing · Rec · H1/);
-  await handed.click(`#pv a[href="#/${theirs}"]`);
+  assert.match(await handed.textContent('#pv') ?? '', /Demo Admin assigned you Handing · Rec · H1.*asks to wake H1 Wake/s);
+  await handed.click('#pv [data-act=req-start]');
   await handed.waitForSelector('#bar .owner:text-is("Yours")');
+  assert.equal(await handed.locator('#pv .slabel, #slabel').count(), 0, 'no credentials to tick: its runner\'s are');
+  assert.deepEqual(await handed.evaluate(async id => (await (await fetch(`/api/instances/${id}`)).json()).log.filter(e => e.op === 'wake').map(e => [e.from, e.note ?? false]), theirs), [['admin@demo.test', true], ['handed@demo.test', false]]);
   await handed.reload();
   await handed.waitForSelector('#bar h1 .t');
   assert.equal(await handed.locator('.row.waits').count(), 0, 'opening it, they were told');

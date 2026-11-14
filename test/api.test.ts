@@ -360,6 +360,7 @@ test("owners and admins assign an instance to whoever sees its workspace, as its
   const wakes = join(root, '.rf', 'wakes.json'), w = JSON.parse(readFileSync(wakes, 'utf8'));
   writeFileSync(wakes, JSON.stringify({ ...w, requests: { ...w.requests, handed: { series: sid, label: 'A', target: id, from: bob, at: new Date().toISOString(), text: 'the statement is due' } } }));
   assert.deepEqual((await workspaces(c)).find((x: { id: string }) => x.id === ws).series[0].requests.map((r: { who: string; target: string }) => [r.who, r.target]), [[carol, id]]);
+  assert.equal((await call('POST', '/api/requests/handed', '{}', b)).status, 403, 'its runner alone wakes it, where anyone else would leave only notes');
   assert.deepEqual((await call('POST', '/api/requests/handed', '{}', c).then(r => r.json())), { id });
   assert.deepEqual((await ran(path)).filter(e => e.op === 'wake').map(e => [e.from, e.text, e.note]), [[bob, 'the statement is due', true], [carol, undefined, undefined]], 'its wake a note, its runner starting it their word');
   await quiet();

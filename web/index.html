@@ -327,7 +327,7 @@ function renderSide() {
       h += '<div class="tree">';
       for (const k of s.wakes) h += `<div class="row wake"><span class="nm" title="Starts ${esc(k.label)} ${when(k.at)}${k.text ? `: ${esc(k.text)}` : ''}"><span class="l">Starts ${esc(k.label)} ${soon(k.at)}</span></span><span class="n">${k.days ? 'weekly' : 'wake'}</span></div>`;
       for (const r of s.requests) h += `<div class="row req"><span class="nm" title="${esc(`${r.from} asks to ${r.target ? 'wake' : 'start'} ${r.label}${r.text ? `: ${r.text}` : ''}`)}"><span class="l">${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to ${r.target ? 'wake' : 'start'} ${esc(r.label)}</span></span>`
-        + (archived(w, s) ? '' : `<button class="add" data-act="req-start" data-id="${r.id}" title="Start it">\u25B6</button><button class="add" data-act="req-drop" data-id="${r.id}" title="Dismiss">\u00D7</button>`) + '</div>';
+        + (archived(w, s) ? '' : `${r.target && r.who !== me.email ? '' : `<button class="add" data-act="req-start" data-id="${r.id}"${r.target ? ` data-target="${r.target}"` : ''} title="${r.target ? 'Wake' : 'Start'} it">\u25B6</button>`}<button class="add" data-act="req-drop" data-id="${r.id}" title="Dismiss">\u00D7</button>`) + '</div>';
       h += s.instances.filter(i => i.status === 'open' || showClosed.has(s.id) || i.id === cur?.i?.id).map(row).join('');
       if (closed) h += closedToggle(s.id, closed);
       h += `<div class="row wake notes"><a class="nm" data-act="notes" data-id="${s.id}" title="Tell this series something for its runs"><span class="l">Notes</span></a><span class="n">${s.notes ? `${s.notes} open` : ''}</span></div>`;
@@ -1220,7 +1220,7 @@ function waiting() {
         + r.hosts.map(x => ` <span class="creds">${esc(x)}${r.why[x] ? ` <span class="sub">${esc(r.why[x])}</span>` : ''} <a data-act="allow-host" data-site="${esc(r.site)}" data-host="${esc(x)}" data-person="${esc(r.login)}">Allow</a></span>`).join('') + '</div>');
       if (i.wrong && i.runner === me.email) out.push(`<div class="wt">${at(w, s, i)}: ${plural(i.wrong, 'correction')} say${i.wrong > 1 ? '' : 's'} it's wrong</div>`);
     }
-    for (const r of s.requests.filter(r => (r.who ?? me.email) === me.email)) out.push(`<div class="wt">${at(w, s)}: ${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to ${r.target ? 'wake' : 'start'} ${esc(r.label)} <button class="btn" data-act="req-start" data-id="${esc(r.id)}">Start</button></div>`);
+    for (const r of s.requests.filter(r => (r.who ?? me.email) === me.email)) out.push(`<div class="wt">${at(w, s)}: ${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to ${r.target ? 'wake' : 'start'} ${esc(r.label)} <button class="btn" data-act="req-start" data-id="${esc(r.id)}"${r.target ? ` data-target="${esc(r.target)}"` : ''}>${r.target ? 'Wake' : 'Start'}</button></div>`);
   }
   for (const w of tree.filter(w => !w.archived && w.manage)) for (const g of w.grants.filter(g => g.state === 'pending')) out.push(grantHtml(g, 'wt'));
   return [...out, ...expired.map(l => `<div class="wt">Your ${l.kind === 'key' ? 'OpenRouter key is out of credits' : `${esc(l.name)} login has expired`}. ${signInHtml(l.id, l.name)}</div>`)];
@@ -1593,7 +1593,9 @@ async function onAct(act, el) {
     pv = { title: `Wakes of ${cur.i.label}`, settings: { kind: 'wakes' } };
     renderPv();
   }
-  if (act === 'req-start') await openStart('Start the instance asked for', 'Start', ({ logins }) => api(`/api/requests/${el.dataset.id}`, { method: 'POST', body: JSON.stringify({ logins }) }));
+  // A request to wake an instance wakes it as it is, with its runner's logins; one to start an instance asks theirs first.
+  if (act === 'req-start' && el.dataset.target) go((await api(`/api/requests/${el.dataset.id}`, { method: 'POST', body: '{}' })).id);
+  else if (act === 'req-start') await openStart('Start the instance asked for', 'Start', ({ logins }) => api(`/api/requests/${el.dataset.id}`, { method: 'POST', body: JSON.stringify({ logins }) }));
   if (act === 'propose') {
     const series = $('#mvwhat').value;
     await api(`/api/proposals/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ kind: series ? 'move' : 'merge', series, to: $('#mvto').value }) });
