@@ -20,7 +20,7 @@ import { answered, byLogin, call, connections, intercepts, keyStatus, letIn, log
 import { syncCosts } from './costs.ts';
 import { addSite, allowHost, Browsers, endSignIn, endSignIns, enrolFlagged, isSignIn, keepAlive, passAllowed, passUpgrade, reap, removeHost, removeSite, revokeInternalHosts, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
 import { addVpn, cancelVpnSignIn, disconnectVpn, dropUnpermittedVpns, isVpnSignIn, reapVpns, removeVpn, saveVpnSignIn, startVpnSignIn, vpns } from './vpns.ts';
-import { ask, decide, forgetGrants, forgetWorkspace, lapse, revoke, visible } from './grants.ts';
+import { ask, decide, forgetGrants, forgetWorkspace, lapse, pruneGrants, revoke, visible } from './grants.ts';
 import { offer } from './connections/graph.ts';
 import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, prune, startIndexing, track } from './indexes.ts';
@@ -803,6 +803,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (change.archived) cancelWakes(its.flatMap(sid => [sid, ...labels(sid).map(l => l.id)]));
     if (change.agents !== undefined) replaceFile(agentsFile(id), String(change.agents));
     saveTree(t);
+    pruneGrants();
+    await closeUnlent();
     if (change.archived === false) for (const i of its.flatMap(instances)) kick(i);
     return send(res, 200, 'ok');
   }
@@ -1295,6 +1297,8 @@ async function admin(me: Me, req: IncomingMessage, res: ServerResponse, url: URL
       }
       guard(hidden(t, us), hidden(t, after), force);
       for (const [e, role] of Object.entries(roles as Record<string, Role>)) upsertUser(e, { role });
+      pruneGrants();
+      await closeUnlent();
       return send(res, 200, 'ok');
     }
     // Besides where each person is: the open instances they run in workspaces they aren't in, which they'd lose sight of as users.
@@ -1403,7 +1407,10 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     // Whether an update may stop the server (scripts/update.ts), its answer alone, to anyone: 200 drained, else 503.
     if (req.method === 'GET' && url.pathname === '/drained') return void res.writeHead(drained() ? 200 : 503).end();
     const me = await authenticate(req, res, url);
-    if (!me) return;
+    if (!me) {
+      if (url.pathname === '/auth/callback') { pruneGrants(); await closeUnlent(); }
+      return;
+    }
     // What a person changes beyond an instance is an act of theirs in the system's log, once it's done.
     if (!['GET', 'HEAD'].includes(req.method!) && !url.pathname.startsWith('/api/instances/'))
       res.on('finish', () => res.statusCode < 400 && act(me.email, { method: req.method, path: url.pathname + url.search, body: bodies.get(req) }));
