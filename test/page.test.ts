@@ -2038,3 +2038,26 @@ test('saving a wake without a date and time shows a clear prompt instead of Inva
   assert.match(msg, /date and time/i);
   await page.click('#pv [data-act=unpv]');
 });
+
+test('cell comments on sheets whose names contain apostrophes mark the right sheet and cell instead of matching a column prefix on sheet 1', async () => {
+  const origin = new URL(page.url()).origin;
+  const { inst } = await page.evaluate(async () => {
+    const { id: ws } = await (await fetch('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: 'SheetQuotes' }) })).json();
+    const { id: sid } = await (await fetch('/api/series', { method: 'POST', body: JSON.stringify({ workspace: ws, name: 'S' }) })).json();
+    const { id: inst } = await (await fetch(`/api/series/${sid}`, { method: 'POST', body: JSON.stringify({ label: 'L1', quiet: true }) })).json();
+    const cols = Array.from({ length: 20 }, (_, i) => String.fromCharCode(65 + i)).join(',');
+    await fetch(`/api/instances/${inst}/upload?name=${encodeURIComponent("Q3 '26.csv")}&pane=in&quiet=1`, { method: 'POST', body: `${cols}\n${cols}\n${cols}\n` });
+    await fetch(`/api/instances/${inst}/comment`, { method: 'POST', body: JSON.stringify({ item: 'u2', ref: "Q3 '26.csv!B2", text: 'Unquoted sheet ref', quiet: true }) });
+    await fetch(`/api/instances/${inst}/comment`, { method: 'POST', body: JSON.stringify({ item: 'u2', ref: "'Q3 ''26.csv'!$B$3", text: 'Excel-quoted sheet ref', quiet: true }) });
+    return { inst };
+  });
+
+  await page.goto(`${origin}/#/${inst}`);
+  await page.waitForSelector('.tile');
+  await page.click('.tile');
+  await page.click('#card .acts [data-act=preview]');
+  await page.waitForSelector('#pv table.sh');
+  const notedRefs = await page.locator('#pv table.sh td.noted').evaluateAll(tds => tds.map(td => (td as HTMLElement).dataset.ref));
+  assert.deepEqual(notedRefs, ["Q3 '26.csv!B2", "Q3 '26.csv!B3"]);
+  await page.click('#pv [data-act=unpv]');
+});

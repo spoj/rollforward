@@ -875,9 +875,12 @@ const cellText = v => v == null ? '' : typeof v === 'object' ? v.f : typeof v ==
 function sheetTable(p, s, first) {
   const noted = new Map(), asks = new Set(), at = new Map();
   for (const t of p.threads ?? []) {
-    const r = (t.ref ?? '').match(/^(?:'?([^'!]+)'?!)?\$?([A-Z]{1,3})\$?(\d+)/);
-    if (!r || (r[1] ? r[1] !== s.name : !first)) continue;
-    const key = `${+r[3] - 1},${[...r[2]].reduce((t, ch) => t * 26 + ch.charCodeAt(0) - 64, 0) - 1}`;
+    const raw = String(t.ref ?? ''), bang = raw.lastIndexOf('!');
+    const rawSheet = bang < 0 ? undefined : raw.slice(0, bang);
+    const sheet = rawSheet?.startsWith("'") && rawSheet.endsWith("'") ? rawSheet.slice(1, -1).replaceAll("''", "'") : rawSheet;
+    const r = (bang < 0 ? raw : raw.slice(bang + 1)).match(/^\$?([A-Z]{1,3})\$?(\d+)(?:$|:)/);
+    if (!r || (sheet !== undefined ? sheet !== s.name : !first)) continue;
+    const key = `${+r[2] - 1},${[...r[1]].reduce((t, ch) => t * 26 + ch.charCodeAt(0) - 64, 0) - 1}`;
     noted.set(key, (noted.has(key) ? noted.get(key) + '\n\n' : '') + t.posts.map(p => `${nameOf(p.by)}: ${p.text}`).join('\n'));
     at.set(key, t.id);
     if (t.waits) asks.add(key);
