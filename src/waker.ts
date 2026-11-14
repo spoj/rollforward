@@ -712,7 +712,8 @@ export function recover() {
       const cost = calls.reduce((t, e) => t + ((e.cost as number | undefined) ?? 0), 0);
       const estimated = calls.some(e => e.estimated === true);
       const done = inst.append('server', 'done', { run: run.run, aborted: true, seen: seenBefore(inst), cost: +cost.toFixed(6), estimated, error: CUT.restart });
-      if ((lastAssign(inst.log)?.seq ?? 0) < run.seq) inst.append('server', 'wake', { reason: `A restart cut run ${run.run}; carry on`, from: 'server', cause: done.seq });
+      const held = Math.max(lastAssign(inst.log)?.seq ?? 0, inst.log.findLast(e => e.op === 'interrupt')?.seq ?? 0);
+      if (held < run.seq || pending(inst, held).length) inst.append('server', 'wake', { reason: `A restart cut run ${run.run}; carry on`, from: 'server', cause: done.seq });
       commit(inst.dir, AGENT, `Run ${run.run}: ${CUT.restart}`).catch(e => inst.append('server', 'commit', { run: run.run, error: e.message }));
     }
     kick(inst);
