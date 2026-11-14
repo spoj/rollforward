@@ -84,8 +84,8 @@ function seenBefore(inst: Instance): number {
 // uploads, approvals and rejections have one, as do wakes and another instance's agent's comments; nothing else directs a run.
 // - The last assign draws a line, a takeover being an assign to oneself: before it, what a run had read by then is history, with no
 //   standing, and what none had is a note, whoever said it; neither starts anything.
-// - After it, a person's act is the runner's word if they ran it as it was said, an answer if it answers an ask from after the line
-//   that named them (from before replies named what they answer, the thread's last ask), and else a note.
+// - After it, a person's act is the runner's word if they ran it as it was said, an answer if it answers an ask that named them,
+//   from before the line too (from before replies named what they answer, the thread's last ask), and else a note.
 // - A wake is judged as it fires and logged so, a note unless the runner set it, or a run of an instance of theirs in the series did,
 //   this one's own among them; one pending as its instance was assigned is no one's word. Another instance's agent's comment is a note.
 // - A note starts a run only where the runner shares the series; a quiet entry, such as rf's without --wake, none, and its act kicks
@@ -98,7 +98,7 @@ export function standing(inst: Instance, e: Entry, upto = inst.log.length): Stan
   if (e.seq < line && e.seq <= readAt(inst, line)) return undefined;
   const ask = e.op === 'upload' ? undefined : e.parent ?? e.on ? inst.log[(e.parent ?? e.on) as number - 1] : inst.log.findLast(x => x.seq < e.seq && x.op === 'comment' && x.thread === e.thread && x.by === 'agent');
   const word = e.seq < line || e.note ? 'note'
-    : e.op !== 'wake' ? (e.by === runner ? 'runner' : ask && ask.seq > line && ask.to === e.by ? 'answer' : 'note')
+    : e.op !== 'wake' ? (e.by === runner ? 'runner' : ask?.to === e.by ? 'answer' : 'note')
     : e.seq <= inst.log.length || (!e.assigned && (e.from === runner || (!!e.inst && instance(e.inst as string).seriesId === inst.seriesId && runnerOf(instance(e.inst as string)).by === runner))) ? 'runner' : 'note';
   return { word, starts: !e.quiet && e.seq > Math.max(line, inst.copied) && (word !== 'note' || seriesSettings(inst.series()).shared?.by === runnerAt(inst.log, upto + 1)) };
 }

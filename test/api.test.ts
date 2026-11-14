@@ -318,13 +318,16 @@ test("after an assign, what no run had read before it is a note whoever said it,
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ members: [] }))).status, 200);
 });
 
-test("in an instance taken over under v0.4.0, what its runs had read is history, waiting on no one and no note; what none had read waits on the new runner as a note; the agent's asks still wait", async () => {
-  const c = sessionOf(await login(CAROL))!, path = '/api/instances/01d7a4e00003';
+test("in an instance taken over under v0.4.0, what its runs had read is history, waiting on no one and no note; what none had read waits on the new runner as a note; the agent's asks still wait, on whom they named, whose answer is theirs", async () => {
+  const c = sessionOf(await login(CAROL))!, e = sessionOf(await login(ERIN))!, path = '/api/instances/01d7a4e00003';
   const { waiting, standing, log } = await json(path, c);
-  assert.deepEqual(waiting.map((w: { who: string; seq: number }) => [w.who, w.seq]), [[CAROL, 5], [CAROL, 6], [CAROL, 8]], "the agent's asks, and bob's unread comment");
+  assert.deepEqual(waiting.map((w: { who: string; seq: number }) => [w.who, w.seq]), [[ERIN, 5], [CAROL, 6], [CAROL, 8]], "erin's question, the proposal that named no one, and bob's unread comment");
   assert.deepEqual([standing, log.filter((e: { op: string; by: string }) => e.op === 'comment' && e.by !== 'agent').map((e: { note?: boolean }) => !!e.note)], [{ 8: 'note' }, [false, false, true]]);
   const asks = (await workspaces(c)).find((w: { id: string }) => w.id === '01d7a4e00001').series[0].instances[0].asks;
-  assert.deepEqual(asks, [{ who: CAROL, kind: 'question' }, { who: CAROL, kind: 'proposal' }, { who: CAROL, kind: 'note' }], 'nothing of the read history waits on her');
+  assert.deepEqual(asks, [{ who: ERIN, kind: 'question' }, { who: CAROL, kind: 'proposal' }, { who: CAROL, kind: 'note' }], 'nothing of the read history waits on her');
+  assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ thread: 'c5', text: 'The HSBC one.', quiet: true }), e)).status, 200);
+  const answered = await json(path, c);
+  assert.deepEqual([answered.standing[answered.log.at(-1).seq], answered.waiting.map((w: { who: string }) => w.who)], ['answer', [CAROL, CAROL]], 'her answer, as erin was asked');
   assert.equal((await call('POST', `${path}/abandon`, undefined, c)).status, 200);
 });
 

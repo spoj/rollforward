@@ -153,13 +153,13 @@ function watched(me: Me, id: string, site: string): { browsers: Browsers; id: st
   return { browsers: a!.browsers!, id: b };
 }
 
-// Whom an open instance waits on, and with what: each ask no one answered on the person it names, else the runner, as one from before
-// its last assign does, and each such note on the runner but their own, history being none; a copy's since it was copied.
+// Whom an open instance waits on, and with what: each ask no one answered on the person it names, else the runner, from before its
+// last assign too, and each such note on the runner but their own, history being none; a copy's since it was copied.
 function waits(inst: Instance): { who: string; e: Entry }[] {
   if (inst.doc.status !== 'open') return [];
-  const runner = runnerOf(inst).by, line = lastAssign(inst.log)?.seq ?? 0;
+  const runner = runnerOf(inst).by;
   return inst.log.filter(e => e.seq > inst.copied && e.op === 'comment' && ((e.by === 'agent' && e.ask) || (standing(inst, e)?.word === 'note' && e.by !== runner)) && !inst.answered(e))
-    .map(e => ({ who: e.seq > line && e.to ? e.to as string : runner, e }));
+    .map(e => ({ who: (e.to as string | undefined) ?? runner, e }));
 }
 
 // Whom an assign tells, until they open the instance or act in it: whoever someone else assigned it to.

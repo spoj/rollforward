@@ -119,7 +119,7 @@ describe('standing', { concurrency: true }, () => {
       assert.ok(await started(i, false));
     });
 
-    test(`anything from before the last assign, ${column}: what a run had read history, with no standing, and what none had a note, whoever said it, the previous runner too, neither starting anything; a wake pending from before it fires as a note, a request to the new runner where the series isn't shared`, async () => {
+    test(`anything from before the last assign, ${column}: what a run had read history, with no standing, and what none had a note, whoever said it, the previous runner too, neither starting anything; an answer to an ask from before it that named someone still theirs; a wake pending from before it fires as a note, a request to the new runner where the series isn't shared`, async () => {
       const i = make(shared, bob), read = i.append(bob, 'comment', { thread: 'c2', text: 'Use the HSBC statement.', quiet: true });
       i.append('server', 'run', { run: 1, runner: bob, consent: 1 });
       i.append('server', 'done', { run: 1, seen: read.seq, cost: 0 });
@@ -130,7 +130,7 @@ describe('standing', { concurrency: true }, () => {
       assigned(i);
       assert.equal(standing(i, { ...read, quiet: undefined }), undefined, 'read, it is history');
       for (const e of [before, colleague]) assert.deepEqual(standing(i, { ...e, quiet: undefined }), { word: 'note', starts: false });
-      assert.equal(word(i, i.append(carol, 'comment', { thread: 'c7', parent: asked.seq, text: 'HSBC.', quiet: true })), 'note', 'an answer to an ask from before it is a note');
+      assert.equal(word(i, i.append(carol, 'comment', { thread: 'c7', parent: asked.seq, text: 'HSBC.', quiet: true })), 'answer', 'an answer to an ask from before it is theirs');
       assert.match(message(i, 1, i.log, true), new RegExp(`Its runner is now ${alice} <${alice}>, assigned by ${bob} <${bob}> from ${bob} <${bob}>, who lends you no login\\.[^]*"text":"Cut off at the 25th\\.","quiet":true,"note":true`));
       for (let k = 0; k < 80 && (shared ? !i.log.some(e => e.op === 'wake') : !Object.values(wakes().requests).some(r => r.target === i.id)); k++) await new Promise(r => setTimeout(r, 50));
       if (shared) assert.equal(word(i, i.log.findLast(e => e.op === 'wake')!), 'note');
