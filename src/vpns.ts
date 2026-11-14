@@ -160,12 +160,15 @@ export async function cancelVpnSignIn(me: Me, id: string) {
 
 export async function dropUnpermittedVpns(only?: string) {
   if (!process.env.RF_TUNNEL_URL) return;
-  if (only) for (const [id, s] of [...signIns]) if (s.person === only) {
-    signIns.delete(id);
-    const key = `${s.person} ${s.vpn}`;
-    if (generations.get(key) === s.generation) generations.set(key, s.generation + 1);
-    changes.emit('change', 'tree');
-    if (!s.saving) await browserJson('DELETE', `/sessions/${id}`).catch(() => {});
+  for (const [id, s] of [...signIns]) {
+    const me = asPerson(s.person);
+    if ((only && s.person === only) || !me || !can(me, 'vpn')) {
+      signIns.delete(id);
+      const key = `${s.person} ${s.vpn}`;
+      if (generations.get(key) === s.generation) generations.set(key, s.generation + 1);
+      changes.emit('change', 'tree');
+      if (!s.saving) await browserJson('DELETE', `/sessions/${id}`).catch(() => {});
+    }
   }
   await changeTunnel(async () => {
     for (const [key, t] of [...tunnels]) {

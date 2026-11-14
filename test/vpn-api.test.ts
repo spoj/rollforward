@@ -203,16 +203,19 @@ test('VPN sign-ins are short, personal browser sessions, protected on HTTP and w
   assert.match(await upgrade(`/signins/${id}/view/drive`, bob), /404/);
   assert.match(await upgrade(`/signins/${id}/view/drive`, admin, 'https://unrelated.test'), /404/);
   await grant([BOB, GROUP]);
+  assert.equal(sessions.has(id), false, 'revocation deletes the browser, not just its live-view permission');
   assert.equal((await call('GET', `/signins/${id}/view`)).status, 404);
   assert.match(await upgrade(`/signins/${id}/view/drive`, admin), /404/);
   assert.equal((await call('POST', `/signins/${id}`, {})).status, 404);
   await grant();
   const count = created.length;
-  assert.equal((await call('DELETE', `/signins/${id}`)).status, 200);
-  assert.ok(browserDeleted.includes(id));
+  assert.equal((await call('POST', `/signins/${id}`, {})).status, 404, 'restoring access cannot resurrect the revoked sign-in');
+  const { id: cancel } = await openVpn();
+  assert.equal((await call('DELETE', `/signins/${cancel}`)).status, 200);
+  assert.ok(browserDeleted.includes(cancel));
   assert.equal(created.length, count, 'cancel never connects');
-  assert.equal((await call('GET', `/signins/${id}/view`)).status, 404);
-  assert.equal((await call('POST', `/signins/${id}`, {})).status, 404);
+  assert.equal((await call('GET', `/signins/${cancel}/view`)).status, 404);
+  assert.equal((await call('POST', `/signins/${cancel}`, {})).status, 404);
 });
 
 test('save extracts only the gateway cookie server-side and reconnect replaces only that person and named VPN', async () => {
