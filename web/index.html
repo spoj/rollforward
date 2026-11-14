@@ -107,8 +107,12 @@ function put(el, html) {
 // A reload, as a lapsed session's, keeps the comments and replies being written in this tab, by instance, which come back as it opens
 // each again.
 addEventListener('pagehide', () => {
-  for (const [path, d] of drafts) sessionStorage[`drafts:${path}`] = JSON.stringify({ ...d.kept, ...Object.fromEntries([...d.el.querySelectorAll('textarea')].filter(t => t.value.trim())
-    .map(t => [t.id || `${t.closest('.post').dataset.seq}:${t.closest('.reply').dataset.mode}`, t.value])) });
+  if (!me) return;
+  for (const [path, d] of drafts) sessionStorage[`drafts:${me.email}:${path}`] = JSON.stringify({
+    on: d.on, ref: d.ref,
+    boxes: { ...d.kept, ...Object.fromEntries([...d.el.querySelectorAll('textarea')].filter(t => !t.closest('.reply[hidden]') && t.value.trim())
+      .map(t => [t.id || `${t.closest('.post').dataset.seq}:${t.closest('.reply').dataset.mode}`, t.value])) },
+  });
 });
 
 // A call that fails throws the server's words; a toast shows them, unless the caller shows them itself.
@@ -215,8 +219,8 @@ function land(next, path, d, st) {
   if (next?.s && next.s.id !== cur?.s?.id) expandRow(next.s.id, true);
   if (d && (path !== shown || wasArchived !== archived(next.w, next.s))) {
     if (!drafts.has(path)) {
-      const kept = JSON.parse(sessionStorage[`drafts:${path}`] ?? '{}');
-      drafts.set(path, { el: $('#conv').cloneNode(false), on: null, ref: null, replying: new Map(Object.keys(kept).filter(k => k.includes(':')).map(k => [+k.split(':')[0], k.split(':')[1]])), kept });
+      const raw = JSON.parse(sessionStorage[`drafts:${me.email}:${path}`] ?? '{}'), kept = raw.boxes ?? raw;
+      drafts.set(path, { el: $('#conv').cloneNode(false), on: raw.on ?? null, ref: raw.ref ?? null, replying: new Map(Object.keys(kept).filter(k => k.includes(':')).map(k => [+k.split(':')[0], k.split(':')[1]])), kept });
     }
     draft = drafts.get(path);
     $('#conv').replaceWith(archived(next.w, next.s) ? draft.el.cloneNode(false) : draft.el);
@@ -611,9 +615,8 @@ function renderLog() {
   if (!drafting) put($('#conv'), conversationHtml());
   for (const [k, v] of Object.entries(draft.kept)) {
     const [seq, mode] = k.split(':'), box = mode ? $(`#conv .post[data-seq="${seq}"] > .reply[data-mode="${mode}"] textarea`) : $(`#${k}`);
-    if (box) box.value = v;
+    if (box) { box.value = v; delete draft.kept[k]; }
   }
-  draft.kept = {};
   if (!ui.audit && $('#log').dataset.end !== 'no') $('#log').scrollTop = $('#log').scrollHeight;
   // Only on the instance it's for: a render for the one before, as the page catches up, leaves it. The box keeps the focus it had.
   if (focused) $('#newcomment')?.focus();
@@ -1594,7 +1597,7 @@ async function onAct(act, el) {
   if (act === 'unpv') closePv();
   if (act === 'settings') await openSeriesSettings();
   if (act === 'workspace-settings') openWorkspaceSettings();
-  if (act === 'signout') location.href = (await api('/auth/logout', { method: 'POST' })).next;
+  if (act === 'signout') { drafts.clear(); sessionStorage.clear(); location.href = (await api('/auth/logout', { method: 'POST' })).next; }
   if (act === 'wadd' || act === 'wremove' || act === 'wrole') {
     // An addition is an email or an Entra group's id, alone or as a suggestion shows it, NAME <ID>, where NAME labels a group.
     const [, label, inside] = act === 'wadd' && /^(.*?)\s*<(.+)>$/.exec($('#wperson').value.trim()) || [];

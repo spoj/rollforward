@@ -1948,3 +1948,78 @@ test('browser Back during inline instance rename cancels the edit instead of fre
   const labels = await page.evaluate(async ws => (await (await fetch('/api')).json()).find((w: any) => w.id === ws).series[0].instances.map((i: any) => i.label), ws);
   assert.deepEqual(labels.sort(), ['Period-A', 'Period-B']);
 });
+
+test('drafts in sessionStorage preserve item/cell pins and deep replies, skip cancelled reply boxes, and never leak across sign-out to another user', async () => {
+  const origin = new URL(page.url()).origin;
+  const { inst, inst2 } = await page.evaluate(async () => {
+    const { id: ws } = await (await fetch('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: 'DraftSafe' }) })).json();
+    await fetch(`/api/workspaces/${ws}`, { method: 'PUT', body: JSON.stringify({ add: 'bob@demo.test', as: 'member' }) });
+    const { id: sid } = await (await fetch('/api/series', { method: 'POST', body: JSON.stringify({ workspace: ws, name: 'S' }) })).json();
+    const { id: inst } = await (await fetch(`/api/series/${sid}`, { method: 'POST', body: JSON.stringify({ label: 'D1', quiet: true }) })).json();
+    const { id: inst2 } = await (await fetch(`/api/series/${sid}`, { method: 'POST', body: JSON.stringify({ label: 'D2', quiet: true }) })).json();
+    await fetch(`/api/instances/${inst}/upload?name=ar.csv&pane=in&quiet=1`, { method: 'POST', body: 'a,b\n1,2\n' });
+    await fetch(`/api/instances/${inst}/comment`, { method: 'POST', body: JSON.stringify({ text: 'Shallow root', quiet: true }) });
+    let parent: number | undefined;
+    for (let depth = 0; depth < 6; depth++) {
+      const r = await fetch(`/api/instances/${inst2}/comment`, { method: 'POST', body: JSON.stringify({ text: `Depth ${depth}`, ...(parent && { thread: `c${parent}` }), quiet: true }) });
+      parent = Number(r.headers.get('X-RF-Comment-Seq'));
+    }
+    return { inst, inst2 };
+  });
+
+  const ctx = await browser.newContext(), tab = await ctx.newPage();
+  try {
+    entra.who.as = 'admin@demo.test';
+    await tab.goto(`${origin}/#/${inst}`);
+    await tab.click('a.ms');
+    await tab.waitForSelector('#bar h1 .t:text-is("D1")');
+
+    // On D1: open and cancel a shallow reply, and pin a cell comment.
+    const shallow = tab.locator('#conv .post').first();
+    await shallow.locator(':scope > .pa [data-act=reply]').click();
+    await shallow.locator(':scope > .reply textarea').fill('Cancelled shallow reply');
+    await shallow.locator(':scope > .pa [data-act=reply]').click();
+
+    await tab.click('.tile');
+    await tab.click('#card .acts [data-act=preview]');
+    await tab.click('#pv table.sh [data-act=cell] >> nth=0');
+    const expectedRef = await tab.locator('#pv table.sh [data-act=cell] >> nth=0').getAttribute('data-ref');
+    await tab.click('#pvn [data-act=comment-cell]');
+    await tab.fill('#newcomment', 'Pinned cell draft');
+
+    // On D2: open a deep reply via Continue this thread, then lapse session on reply-post.
+    await tab.goto(`${origin}/#/${inst2}`);
+    await tab.waitForSelector('#bar h1 .t:text-is("D2")');
+    await tab.click('a[data-act=alone]');
+    const deep = tab.locator('#conv .post').last();
+    const deepSeq = await deep.getAttribute('data-seq');
+    await deep.locator(':scope > .pa [data-act=reply]').click();
+    await deep.locator(':scope > .reply textarea').fill('Kept deep reply');
+
+    await ctx.clearCookies();
+    await deep.locator('[data-act=reply-post]').click();
+    await tab.click('a.ms');
+    await tab.waitForSelector('#bar h1 .t:text-is("D2")');
+
+    await tab.click('a[data-act=alone]');
+    assert.equal(await tab.inputValue(`#conv .post[data-seq="${deepSeq}"] > .reply textarea`), 'Kept deep reply');
+
+    await tab.goto(`${origin}/#/${inst}`);
+    await tab.waitForSelector('#bar h1 .t:text-is("D1")');
+    assert.equal(await tab.inputValue('#newcomment'), 'Pinned cell draft');
+    assert.deepEqual(await tab.evaluate(() => [draft.on, draft.ref]), ['u2', expectedRef]);
+    assert.equal(await tab.locator('#conv .post').first().locator(':scope > .reply').isHidden(), true, 'cancelled reply stays closed');
+
+    // Sign out and sign in as Bob in the same tab: admin's draft must not appear for Bob.
+    await tab.click('#user summary');
+    await tab.click('[data-act=signout]');
+    entra.who.as = 'bob@demo.test';
+    await tab.goto(`${origin}/#/${inst}`);
+    await tab.click('a.ms');
+    await tab.waitForSelector('#bar h1 .t:text-is("D1")');
+    assert.equal(await tab.inputValue('#newcomment'), '');
+  } finally {
+    entra.who.as = 'admin@demo.test';
+    await ctx.close();
+  }
+});
