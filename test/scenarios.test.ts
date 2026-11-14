@@ -352,7 +352,9 @@ test("assigning mid-run stops the run first, as Interrupt does, saying why; the 
   assert.equal((await call('POST', `${path}/comment`, { text: 'Cut off at the 25th.', quiet: true })).status, 200);
   const refused = await call('POST', `${path}/assign`, {}, bob);
   assert.deepEqual([refused.status, await refused.text()], [409, `run 1 is going: take it over once it ends, or ask its runner, ${ADMIN}, the workspace's owners or admins, who may stop it`]);
-  assert.equal((await call('POST', `${path}/assign`, { to: BOB })).status, 200);
+  const unwarned = await call('POST', `${path}/assign`, { to: BOB, stops: null });
+  assert.deepEqual([unwarned.status, await unwarned.text()], [409, 'run 1 started since you looked: assigning it now stops it'], "the page, which said no run would be stopped, stops none");
+  assert.equal((await call('POST', `${path}/assign`, { to: BOB })).status, 200, 'rf stops it, as its help says');
   let log = await runs(id, 1);
   const stopped = log.find(e => e.op === 'interrupt')!, made = log.find(e => e.op === 'assign')!;
   assert.deepEqual([stopped.by, stopped.why, made.to, made.seq > stopped.seq], [ADMIN, `to assign it to ${BOB}`, BOB, true], 'stopped, saying who and why, then assigned');

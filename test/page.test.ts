@@ -1812,7 +1812,9 @@ test("Assign… on the bar hands an instance to whoever sees its workspace, who 
   assert.ok(select!.x + select!.width <= dialog!.x + dialog!.width - 16, 'the picker keeps within the dialog on a phone, a long name and address too');
   assert.doesNotMatch(await page.textContent('#ask') ?? '', /stops it/);
   await page.selectOption('#assignto', 'handed@demo.test');
+  const sent = page.waitForRequest(r => r.url().endsWith(`/api/instances/${theirs}/assign`));
   await page.click('#ask button[value=ok]');
+  assert.deepEqual((await sent).postDataJSON(), { to: 'handed@demo.test', stops: null }, 'saying it stops no run, as it said: one started since is refused');
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.waitForSelector('#bar [data-act=takeover]');
   assert.match(await page.textContent('#bar .owner .about') ?? '', /Assigned by you, from you,/);

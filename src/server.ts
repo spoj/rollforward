@@ -1023,6 +1023,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (to !== by && payload.logins?.length) throw new HttpError(400, `logins are each person's own: ${to} ticks theirs`);
     const ticks = to === by ? checkTicks(by, payload.logins ?? []) : [];
     if (mine && runner !== by && !canManage(me, ws)) throw new HttpError(409, `run ${mine.n} is going: take it over once it ends, or ask its runner, ${runner}, the workspace's owners or admins, who may stop it`);
+    // The page says which run, if any, assigning stops, `stops`, and stops none it didn't say.
+    if (mine && 'stops' in payload && payload.stops !== mine.n) throw new HttpError(409, `run ${mine.n} started since you looked: assigning it now stops it`);
     if (mine) await interrupt(inst, mine, me, `to assign it to ${to}`);
     inst.append(by, 'assign', { to, from: runner, logins: ticks });
     assigned(inst);

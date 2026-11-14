@@ -1758,13 +1758,13 @@ async function onAct(act, el) {
     title: `Start a series from ${cur.i.label}`, text: 'This task becomes its first instance, an example for later ones.', value: cur.i.label, placeholder: 'Series name', ok: 'Start series',
     act: name => api(`${seriesPath(cur)}/promote`, { method: 'POST', body: JSON.stringify({ name }) }),
   })) await refresh();
-  if (act === 'takeover') await openStart(`Take over ${cur.i.label}`, 'Take over', ({ logins }) => api(`${instPath()}/assign`, { method: 'POST', body: JSON.stringify({ logins }) }), undefined, undefined, undefined, data.run && `Run ${data.run.n} is going: taking over stops it.`);
+  if (act === 'takeover') await openStart(`Take over ${cur.i.label}`, 'Take over', ({ logins }) => api(`${instPath()}/assign`, { method: 'POST', body: JSON.stringify({ logins, stops: data.run?.n ?? null }) }), undefined, undefined, undefined, data.run && `Run ${data.run.n} is going: taking over stops it.`);
   if (act === 'assign') {
     const people = (await api(`${instPath()}/assignees`)).filter(p => p !== me.email).sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
     if (await ask({
       title: `Assign ${cur.i.label}`, text: `They run it from now on, ticking their own logins, none until they do; to its agent, what came before is history.${data.run ? ` Run ${data.run.n} is going: assigning stops it.` : ''}`,
       html: `<select id="assignto">${people.map(p => `<option value="${esc(p)}">${esc(me.names[p] ? `${called(p)} <${p}>` : p)}</option>`).join('')}</select>`, ok: 'Assign',
-      act: () => api(`${instPath()}/assign`, { method: 'POST', body: JSON.stringify({ to: $('#assignto').value }) }),
+      act: () => api(`${instPath()}/assign`, { method: 'POST', body: JSON.stringify({ to: $('#assignto').value, stops: data.run?.n ?? null }) }),
     })) await refresh();
   }
   if (act === 'start-go') {
