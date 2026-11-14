@@ -59,9 +59,34 @@ export function wipe(path: Buffer) {
     }
   } finally { closeSync(p); }
   if (dfd < 0) return unlinkSync(path);
+  const todo: { parts: Buffer[]; remove: boolean }[] = [{ parts: [], remove: false }];
   try {
-    for (const name of readdirSync(`/proc/self/fd/${dfd}`, { encoding: 'buffer' }))
-      wipe(Buffer.concat([Buffer.from(`/proc/self/fd/${dfd}/`), name]));
+    while (todo.length) {
+      const { parts, remove } = todo.pop()!;
+      let cur = openSync(`/proc/self/fd/${dfd}`, constants.O_RDONLY | constants.O_DIRECTORY);
+      try {
+        for (const name of remove ? parts.slice(0, -1) : parts) {
+          const p = openSync(Buffer.concat([Buffer.from(`/proc/self/fd/${cur}/`), name]), O_PATH | constants.O_NOFOLLOW);
+          let next: number;
+          try {
+            const st = fstatSync(p), self = `/proc/self/fd/${p}`;
+            if (st.isDirectory() && (st.mode & 0o700) !== 0o700) chmodSync(self, (st.mode | 0o700) & 0o7777);
+            next = openSync(self, constants.O_RDONLY | constants.O_DIRECTORY);
+          } finally { closeSync(p); }
+          closeSync(cur);
+          cur = next;
+        }
+        if (remove) rmdirSync(Buffer.concat([Buffer.from(`/proc/self/fd/${cur}/`), parts.at(-1)!]));
+        else {
+          if (parts.length) todo.push({ parts, remove: true });
+          for (const e of readdirSync(`/proc/self/fd/${cur}`, { encoding: 'buffer', withFileTypes: true })) {
+            const name = e.name as unknown as Buffer;
+            if (e.isDirectory()) todo.push({ parts: [...parts, name], remove: false });
+            else unlinkSync(Buffer.concat([Buffer.from(`/proc/self/fd/${cur}/`), name]));
+          }
+        }
+      } finally { closeSync(cur); }
+    }
   } finally { closeSync(dfd); }
   rmdirSync(path);
 }
