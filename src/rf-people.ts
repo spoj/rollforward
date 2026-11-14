@@ -1,6 +1,6 @@
 // rf for people: what the page does, from a shell or a desktop agent, as you, with a personal token made on the page (Tokens).
 // Published to npm as @rfany/rf, from cli/. PATH is workspace/series/label, as `rf ls` prints it.
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync, type Stats } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { homedir, hostname } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
@@ -339,7 +339,10 @@ const under = (base: string, rel: string) => {
   let folder = base;
   for (const name of ['', ...names.slice(0, -1)]) {
     folder = join(folder, name);
-    if (lstatSync(folder, { throwIfNoEntry: false })?.isSymbolicLink()) throw new Error(`${folder} is a symlink: remove it or pull into another directory`);
+    let st: Stats | undefined;
+    try { st = lstatSync(folder, { throwIfNoEntry: false }); }
+    catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOTDIR') break; throw e; }
+    if (st?.isSymbolicLink()) throw new Error(`${folder} is a symlink: remove it or pull into another directory`);
   }
   return join(base, ...names);
 };
@@ -365,7 +368,10 @@ async function pull(path: string, dir: string) {
   let fetched = 0, same = 0, deleted = 0, failed = 0, big = 0;
   const fetches: (() => Promise<void>)[] = [], cased = new Map<string, string>();
   for (const f of list.filter(f => !excluded(rel(f)))) {
-    const local = rel(f) ? under(into, rel(f)) : into, st = local && existsSync(local) ? statSync(local) : undefined;
+    const local = rel(f) ? under(into, rel(f)) : into;
+    let st: Stats | undefined;
+    try { st = local ? statSync(local, { throwIfNoEntry: false }) : undefined; }
+    catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOTDIR') throw e; }
     if (!local) {
       console.error(`skipped ${f.path}: it can't be a file's name here`);
       continue;
@@ -378,7 +384,7 @@ async function pull(path: string, dir: string) {
       }
       cased.set(f.path.toLowerCase(), f.path);
     }
-    if (st && st.size === f.size && Math.floor(st.mtimeMs / 1000) === Math.floor(Date.parse(f.mtime) / 1000)) {
+    if (st?.isFile() && st.size === f.size && Math.floor(st.mtimeMs / 1000) === Math.floor(Date.parse(f.mtime) / 1000)) {
       same++;
       continue;
     }
@@ -388,7 +394,7 @@ async function pull(path: string, dir: string) {
       continue;
     }
     fetches.push(async () => {
-      console.log(`${st ? 'changed' : 'new'}  ${f.path}`);
+      console.log(`${st?.isFile() ? 'changed' : 'new'}  ${f.path}`);
       try {
         if (!dry) write(local, f.text ?? new Uint8Array(await (await api(f.url!)).arrayBuffer()), f.mtime);
         fetched++;
@@ -398,24 +404,34 @@ async function pull(path: string, dir: string) {
       }
     });
   }
-  // Up to 8 files are fetched at once, each started in the list's order.
-  await Promise.all(Array.from({ length: 8 }, async () => {
-    for (let next; (next = fetches.shift());) await next();
-  }));
   if (flags.delete && list.some(rel) && existsSync(into)) {
     // Windows' and macOS's disks ignore case, as the fetches above did: a file renamed only in case is kept, as fetched.
     const fold = (r: string) => ['win32', 'darwin'].includes(process.platform) ? r.toLowerCase() : r;
-    const keep = new Set(list.map(f => fold(rel(f)))), mine = (d: string): string[] => readdirSync(d, { withFileTypes: true }).flatMap(e => e.isDirectory() ? mine(join(d, e.name)) : [join(d, e.name)]);
+    const keep = new Set(list.map(f => fold(rel(f))));
+    const mine = (d: string): string[] => readdirSync(d, { withFileTypes: true }).flatMap(e => {
+      const full = join(d, e.name), r = relative(into, full).split(sep).join('/');
+      return excluded(r) ? [] : e.isDirectory() ? mine(full) : [full];
+    });
     for (const p of mine(into)) {
       const r = relative(into, p).split(sep).join('/');
-      if (keep.has(fold(r)) || excluded(r)) continue;
+      if (keep.has(fold(r))) continue;
       console.log(`deleted  ${r}`);
       deleted++;
       if (!dry) rmSync(p, { force: true });
     }
-    const prune = (d: string) => { for (const e of readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) prune(join(d, e.name)); if (d !== into && !readdirSync(d).length) rmdirSync(d); };
+    const prune = (d: string) => {
+      for (const e of readdirSync(d, { withFileTypes: true })) {
+        const full = join(d, e.name), r = relative(into, full).split(sep).join('/');
+        if (e.isDirectory() && !excluded(r)) prune(full);
+      }
+      if (d !== into && !excluded(relative(into, d).split(sep).join('/')) && !readdirSync(d).length) rmdirSync(d);
+    };
     if (!dry) prune(into);
   }
+  // Up to 8 files are fetched at once, each started in the list's order.
+  await Promise.all(Array.from({ length: 8 }, async () => {
+    for (let next; (next = fetches.shift());) await next();
+  }));
   console.log(`${dry ? 'would fetch' : 'fetched'} ${fetched}, ${same} up to date${big ? `, ${big} over ${flags['max-size']}` : ''}${flags.delete ? `, ${dry ? 'would delete' : 'deleted'} ${deleted}` : ''}${failed ? `, ${failed} failed` : ''}, in ${into}`);
   if (failed) process.exitCode = 1;
 }

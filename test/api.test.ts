@@ -1964,4 +1964,33 @@ test('GET /api/files and rf pull skip unreadable folders and files in working/',
   }
 });
 
+test('rf pull --delete preserves excluded git directories and handles file-to-folder and folder-to-file replacements', async () => {
+  const { execFileSync } = await import('node:child_process');
+  if (!existsSync(home)) { mkdirSync(home); await rf('login', base, (await (await call('POST', '/tokens', JSON.stringify({ name: 'cli-del', days: 1 }))).json()).token); }
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'PullDelete' }))).json();
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'S' }))).json();
+  const { id: inst } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'L1', quiet: true }))).json();
+  const wdir = join(root, 'instances', inst, 'working'), dest = join(tmp, 'pulled-git');
+  mkdirSync(dest, { recursive: true });
+  execFileSync('git', ['init', '-q'], { cwd: dest });
+  writeFileSync(join(wdir, 'report'), 'flat file');
+  await rf('pull', 'PullDelete/S/L1/', dest, '--delete', '--exclude', '.git');
+  execFileSync('git', ['status'], { cwd: dest });
+  assert.equal(readFileSync(join(dest, 'working', 'report'), 'utf8'), 'flat file');
+
+  rmSync(join(wdir, 'report'));
+  mkdirSync(join(wdir, 'report', 'sub'), { recursive: true });
+  writeFileSync(join(wdir, 'report', 'sub', 'part.txt'), 'nested file');
+  const r1 = await rf('pull', 'PullDelete/S/L1/', dest, '--delete', '--exclude', '.git');
+  assert.doesNotMatch(r1, /failed/);
+  assert.equal(readFileSync(join(dest, 'working', 'report', 'sub', 'part.txt'), 'utf8'), 'nested file');
+
+  rmSync(join(wdir, 'report'), { recursive: true, force: true });
+  writeFileSync(join(wdir, 'report'), 'flat again');
+  const r2 = await rf('pull', 'PullDelete/S/L1/', dest, '--delete', '--exclude', '.git');
+  assert.doesNotMatch(r2, /failed/);
+  assert.equal(readFileSync(join(dest, 'working', 'report'), 'utf8'), 'flat again');
+  execFileSync('git', ['status'], { cwd: dest });
+});
+
 
