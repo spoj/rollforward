@@ -133,6 +133,7 @@ Going back to a version from before this release, which brought service connecti
 - **Stop the updater's timer** while you go back, so it doesn't bring the release back meanwhile.
 - **Remove every `service` connection first,** with `rf connection remove NAME`. An older server doesn't know the type, exits as it starts, and restarts into the same exit.
 - **Don't delete an instance, or add a service connection, until this release has settled.** An older server answers `GET /api` with 500 once one instance is deleted, as its tombstone has no `create` entry, so the page, `rf ls`, `rf waiting`, `rf show` and `rf wakes` fail for admins and that workspace's people.
+- **Going back past assign, list first what it changed,** from `~/rollforward-data`: the instances with an `assign` entry, `grep -l '"op":"assign"' instances/*/log.jsonl`, and the requests to wake an instance, `jq '.requests | map_values(select(.target))' .rf/wakes.json`. An older server ignores `assign` entries, so each such instance's runner reverts to whoever had it before, whose logins its runs then use, and misreads a request with a `target` as one to start an instance of that label, whose Start fails as the instance exists: drop those with `rf request drop ID` first, and after going back have each assigned person take their instance over again.
 - **Expect on an older version:** proposals rejected, and questions and proposals withdrawn, show as waiting again, and Close lists them as asks to accept; its `rf site set` drops a website's profile and its VPN, `via`.
 
 ## Check
