@@ -35,3 +35,19 @@ test('a failed scratch cleanup cannot leave a stopped run in ending and hold dra
     chmodSync(locked, 0o700);
   }
 });
+
+test('failed sandbox startup, stop and browser close leave neither retiring nor ending entries behind', async t => {
+  t.mock.method(console, 'error', () => {});
+  for (const fails of ['startup', 'stop']) {
+    const inst = createInstance('s', fails, alice, []), token = fails;
+    const ready = fails === 'startup' ? Promise.reject(new Error('startup failed')) : Promise.resolve({ stop: async () => { throw new Error('stop failed'); } } as Run);
+    const a = { inst, n: 1, token, view: view(inst), ready, browsers: { end: async () => { throw new Error('browser close failed'); } }, process: '', cost: 0, seen: 0, done: false } as Active;
+    inst.append('server', 'run', { run: 1 });
+    active.set(inst.seriesId, a);
+    byToken.set(token, a);
+    drain();
+    await remove(inst, alice, () => ({ cost: 0, runs: [] }));
+    assert.equal(updating(), 0);
+    assert.equal(drained(), true, fails);
+  }
+});

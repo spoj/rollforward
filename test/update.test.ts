@@ -21,7 +21,8 @@ const remote = join(tmp, 'remote.git'), work = join(tmp, 'work'), oldApp = join(
 const ADMIN = 'admin@demo.test';
 const releases: Release[] = [], scripts: Script[] = [], byPrompt = new Map<string, Script>();
 const exits: { code: number | null; signal: NodeJS.Signals | null }[] = [];
-let drainedProbes = 0, hangingProbes = 0;
+let drainedProbes = 0, hangingProbes = 0, pidProbes = 0, failPidAt = 0, failStarts = 0, zeroPid = false;
+let startup: (() => Promise<void>) | undefined;
 let entra: Awaited<ReturnType<typeof idp>>, hub: ReturnType<typeof createServer>, proc: ChildProcess | null = null;
 let base = '', hubBase = '', cookie = '', serveDir = work;
 
@@ -48,11 +49,11 @@ async function model(req: IncomingMessage, res: ServerResponse) {
   res.end();
 }
 
-async function startServer(dir = serveDir) {
+async function startServer(dir = serveDir, env: NodeJS.ProcessEnv = {}) {
   serveDir = dir;
   const upstream = `import { upstreams } from ${JSON.stringify(pathToFileURL(join(dir, 'src', 'connections.ts')).href)}; upstreams['openrouter.ai'] = ${JSON.stringify(hubBase)};`;
   const child = spawn(process.execPath, ['--preserve-symlinks', '--import', `data:text/javascript,${encodeURIComponent(upstream)}`, join(dir, 'src', 'server.ts'), root, new URL(base).port], {
-    env: { ...process.env, HOME: home, RF_SCRATCH: join(tmp, 'scratch'), OPENROUTER_API_KEY: 'stand-in-key', RF_WAKE_TICK_MS: '300', ...entra.env(base), RF_ADMINS: ADMIN },
+    env: { ...process.env, HOME: home, RF_SCRATCH: join(tmp, 'scratch'), OPENROUTER_API_KEY: 'stand-in-key', RF_WAKE_TICK_MS: '300', ...entra.env(base), RF_ADMINS: ADMIN, ...env },
     stdio: ['ignore', 'pipe', 'inherit'],
   });
   proc = child;
@@ -128,9 +129,16 @@ before(async () => {
     if (req.method === 'POST' && url.pathname.endsWith('/messages')) return model(req, res);
     if (url.pathname === '/probe') { drainedProbes++; return void res.end('ok'); }
     if (url.pathname === '/hang') { hangingProbes++; return; }
-    if (url.pathname === '/ctl/pid') return void res.end(String(proc?.pid ?? 0));
+    if (url.pathname === '/sessions') { await startup?.(); return void res.end('[]'); }
+    if (url.pathname === '/ctl/pid') {
+      if (++pidProbes === failPidAt) return void res.writeHead(500).end('cannot read MainPID');
+      return void res.end(String(zeroPid ? 0 : proc?.pid ?? 0));
+    }
     if (url.pathname === '/ctl/stop') { await stopServer(); return void res.end('ok'); }
-    if (url.pathname === '/ctl/start') { serveDir = work; await startServer(work); return void res.end('ok'); }
+    if (url.pathname === '/ctl/start') {
+      if (failStarts > 0) { failStarts--; return void res.writeHead(500).end('cannot start target'); }
+      serveDir = work; await startServer(work); return void res.end('ok');
+    }
     if (url.pathname === '/ctl/restart') { await stopServer(); serveDir = work; await startServer(work); return void res.end('ok'); }
     if (url.pathname === '/repos/spoj/rollforward/releases') return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(releases));
     if (url.pathname.startsWith('/repos/spoj/rollforward/commits/'))
@@ -303,7 +311,7 @@ test('a release on the way with an Urgent: line skips the drain, and a server re
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'UrgentAndRestart' })).json();
   const urgentRun = await makeSeries(ws, 'Urgent', true);
   // v0.5.7 carries Urgent: in its notes, and v0.5.8 follows it without: moving v0.5.6 -> v0.5.8 crosses v0.5.7 so skips the drain.
-  publish('v0.5.7', { body: 'Plug leak\n\nUrgent: cut going runs at once' });
+  publish('v0.5.7', { body: 'Plug leak\r\n\r\nUrgent: cut going runs at once\r\n' });
   publish('v0.5.8', { body: 'Follow-up note' });
   scripts.push({ bash: [], report: 'Carried on after urgent.' });
   const probesBefore = drainedProbes, t0 = Date.now();
@@ -353,6 +361,89 @@ test('a drain probe that never answers cannot keep the updater waiting past RF_D
   } finally {
     clearTimeout(timer!);
     if (updater.child.exitCode === null) { updater.child.kill('SIGKILL'); await updater.done; }
+    await stopServer();
+    await startServer(work);
+  }
+});
+
+test('a MainPID read failing after repeated drain signals leaves only a bounded lease and loses no waiting act', async () => {
+  scripts.length = 0;
+  await stopServer();
+  await startServer(work, { RF_DRAIN_MIN: '0.05' });
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'FailedPoll' })).json();
+  const busy = await makeSeries(ws, 'Held', true), waited = await makeSeries(ws, 'Waited');
+  publish('v0.5.12');
+  pidProbes = 0;
+  failPidAt = 5;
+  try {
+    const updater = spawnUpdater(work, { RF_DRAIN_MIN: '0.2' });
+    await until('draining before failed poll', async () => (await (await call('GET', '/me')).json()).draining === 1);
+    await call('POST', `/api/instances/${waited.id}/comment`, { text: 'Queued before the updater failed.' });
+    const result = await updater.done;
+    assert.equal(result.code, 1, result.out);
+    assert.equal((await (await call('GET', '/me')).json()).draining, 1, 'the last signal still holds its server-side lease');
+    assert.equal(entries(waited.id).filter(e => e.op === 'run').length, 1, 'the act waited while the last signal held the lease');
+    await until('drain lapsing after updater exit', async () => (await (await call('GET', '/me')).json()).draining === null);
+    await doneRuns(waited.id, 2);
+  } finally {
+    failPidAt = 0;
+    busy.go();
+    await doneRuns(busy.id, 1);
+    await stopServer();
+    await startServer(work);
+  }
+});
+
+test('a failed target start rolls back, ending the old process drain and recovering its queued acts', async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'RollbackDrain' })).json();
+  const busy = await makeSeries(ws, 'Held', true), waited = await makeSeries(ws, 'Waited');
+  const current = git(work, 'describe', '--tags', '--exact-match', 'HEAD');
+  publish('v0.5.13');
+  failStarts = 1;
+  const updater = spawnUpdater(work);
+  try {
+    await until('draining before failed start', async () => (await (await call('GET', '/me')).json()).draining === 1);
+    await call('POST', `/api/instances/${waited.id}/comment`, { text: 'After rollback.' });
+    busy.go();
+    const result = await updater.done;
+    assert.equal(result.code, 1, result.out);
+    assert.match(result.out, new RegExp(`back on ${current}`));
+    assert.equal(git(work, 'describe', '--tags', '--exact-match', 'HEAD'), current);
+    assert.equal((await (await call('GET', '/me')).json()).draining, null);
+    await doneRuns(waited.id, 2);
+  } finally { failStarts = 0; busy.go(); }
+});
+
+test('MainPID=0 skips all drain probes and signals', async () => {
+  publish('v0.5.14');
+  zeroPid = true;
+  const before = drainedProbes;
+  try {
+    const result = await spawnUpdater(work).done;
+    assert.equal(result.code, 0, result.out);
+    assert.equal(drainedProbes, before);
+  } finally { zeroPid = false; }
+});
+
+test('SIGUSR2 during startup, before recover, is handled and can lapse before the server listens', async () => {
+  await stopServer();
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  startup = () => { entered.resolve(); return release.promise; };
+  const starting = startServer(work, { RF_BROWSER_URL: hubBase, RF_DRAIN_MIN: '0.001' });
+  try {
+    await entered.promise;
+    assert.equal(proc!.kill('SIGUSR2'), true);
+    await new Promise(ok => setTimeout(ok, 200));
+    assert.equal(proc!.exitCode, null, 'SIGUSR2 before recover did not kill Node');
+    release.resolve();
+    await starting;
+    assert.equal((await (await call('GET', '/me')).json()).draining, null);
+    const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'AfterEarlyDrain' })).json();
+    await makeSeries(ws, 'Working');
+  } finally {
+    release.resolve();
+    await starting;
+    startup = undefined;
     await stopServer();
     await startServer(work);
   }
