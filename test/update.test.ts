@@ -448,3 +448,12 @@ test('SIGUSR2 during startup, before recover, is handled and can lapse before th
     await startServer(work);
   }
 });
+
+test('fractional millisecond drain budgets still use valid HTTP timeout delays', async () => {
+  publish('v0.5.15');
+  git(work, 'fetch', '-q', '--tags', 'origin');
+  git(work, 'checkout', '-q', '--detach', 'v0.5.15');
+  publish('v0.5.16');
+  const result = await spawnUpdater(work, { RF_DRAIN_MIN: '0.000123' }).done;
+  assert.equal(result.code, 0, result.out);
+});

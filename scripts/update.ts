@@ -54,7 +54,7 @@ async function drain() {
   if (!limit) return;
   const pid = () => sh('systemctl', '--user', 'show', '--property=MainPID', '--value', 'rollforward'), was = pid();
   const end = Date.now() + limit;
-  const drained = () => fetch(new URL('/drained', health), { signal: AbortSignal.timeout(Math.max(1, Math.min(2000, end - Date.now()))) }).then(r => r.status, () => 0);
+  const drained = () => fetch(new URL('/drained', health), { signal: AbortSignal.timeout(Math.max(1, Math.min(2000, Math.ceil(end - Date.now())))) }).then(r => r.status, () => 0);
   if (!Number(was) || ![200, 503].includes(await drained()) || pid() !== was) return;
   for (; pid() === was; ) {
     try { process.kill(Number(was), 'SIGUSR2'); } catch { return; }
