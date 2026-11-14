@@ -156,13 +156,16 @@ before(async () => {
     if (req.headers.authorization !== 'Bearer tok') return void res.writeHead(401).end();
     let m;
     if (path === '/me/drive') return send({ id: 'b!own' });
-    if ((m = /^\/shares\/u!([\w-]+)\/driveItem$/.exec(path))) return send(shares[Buffer.from(m[1], 'base64url').toString()] ?? { error: { code: 'itemNotFound' } }, shares[Buffer.from(m[1], 'base64url').toString()] ? 200 : 404);
-    if ((m = /^\/drives\/b!d1\/(?:items\/(\w+)|root)\/(?:children|search\(q='\w+'\))$/.exec(path))) return send({ value: folders[m[1] ?? 'root1'] ?? [] });
+    if ((m = /^\/shares\/u!([\w-]+)\/driveItem$/i.exec(path))) return send(shares[Buffer.from(m[1], 'base64url').toString()] ?? { error: { code: 'itemNotFound' } }, shares[Buffer.from(m[1], 'base64url').toString()] ? 200 : 404);
+    if ((m = /^\/shares\/u!([\w-]+)\/items\/(\w+)\/children$/i.exec(path))) return send({ value: folders[m[2]] ?? [] });
+    if ((m = /^\/shares\/u!([\w-]+)\/items\/(\w+)$/i.exec(path))) return send([item('top', 'LFM', '2026-01-01T00:00:00Z', true, 'root1'), ...Object.values(folders).flat()].find(i => i.id === m![2]) ?? { error: { code: 'itemNotFound' } }, 200);
+    if ((m = /^\/sites\/[^/]+\/drives\/(b!\w+)\/items\/(\w+)$/i.exec(path))) return send(m[1] === 'b!own' ? { id: m[2], parentReference: { driveId: 'b!own', id: 'root2' } } : { error: { code: 'itemNotFound' } }, m[1] === 'b!own' ? 200 : 404);
+    if ((m = /^\/drives\/b!d1\/(?:items\/(\w+)|root)\/(?:children|search\(q='\w+'\))$/i.exec(path))) return send({ value: folders[m[1] ?? 'root1'] ?? [] });
     // A file's content as Graph gives OneDrive's and SharePoint's: a redirect to its download address, at its drive's own site.
     if (path === '/drives/b!d1/items/b/content') return void res.writeHead(302, { location: 'https://host/download/a?tempauth=r' }).end();
     if ((m = /^\/drives\/b!d1\/items\/(\w+)\/content$/.exec(path))) return void res.writeHead(200, m[1] === 'c' ? { 'content-type': 'application/json' } : {}).end(content[m[1]]);
     if ((m = /^\/drives\/b!d1\/items\/(\w+)$/.exec(path))) return send(m[1] === 'root1' ? roots['b!d1'] : { ...[...Object.values(folders).flat()].find(i => i.id === m![1]), ...(m[1] === 'a' && { '@microsoft.graph.downloadUrl': 'https://host/download/a?tempauth=t' }) });
-    if ((m = /^\/(?:drives\/(b!\w+)|users\/alice@demo\.test\/drive)\/root$/.exec(path))) return send(roots[m[1] ?? 'b!own']);
+    if ((m = /^\/(?:drives\/(b!\w+)|sites\/[^/]+\/drives\/(b!\w+)|users\/alice@demo\.test\/drive)\/root$/i.exec(path))) return send(roots[m[1] ?? m[2] ?? 'b!own']);
     if ((m = /^\/drives\/(b!\w+)$/.exec(path)) && drives[m[1]]) return send({ id: m[1], ...drives[m[1]] });
     if (path === '/sites/host,site1,web1') return send({ id: 'host,site1,web1', displayName: 'Reports' });
     if (path === '/drives/b!d1/root:/LFM:') return send(item('top', 'LFM', '2026-01-01T00:00:00Z', true, 'root1'));
@@ -315,7 +318,12 @@ test("the proxy refuses, with a plain 403 and why, what isn't ticked: the runner
   await refused('/users', /the graph connection reaches mailboxes, and folders, files and SharePoint sites ticked for this instance, not \/users/);
   await refused('https://graph.microsoft.com/v2.0/me/messages', /Microsoft Graph, under \/v1.0\/ or \/beta\//);
   for (const out of ["/sites/host,site1,web1/getByPath(path='/sites/HR')/drive/root/children", "/sites/host,site1,web1/microsoft.graph.getByPath(path='/sites/HR')"]) await refused(out, /getByPath reaches any site by its path/);
-  for (const out of ['/drives/b!d1/recent()', "/drives/b!d1/search(q='pay')", '/me/drive/sharedWithMe()', '/drives/b!d1/following', '/sites/host,site1,web1/drive/recent()', "/sites/host,site1,web1/drives/b!d1/search(q='pay')"]) await refused(out, /lists other drives' items too/);
+  for (const out of ['/drives/b!d1/recent()', "/drives/b!d1/search(q='pay')", '/me/drive/sharedWithMe()', '/drives/b!d1/following', '/sites/host,site1,web1/drive/recent()', "/sites/host,site1,web1/drives/b!d1/search(q='pay')", '/sites/host,site1,web1/Drive/recent()', "/sites/host,site1,web1/Drives/b!d1/search(q='pay')"]) await refused(out, /lists other drives' items too/);
+  for (const out of ['/sites/host,site1,web1/lists/l1/drive/sharedWithMe()', '/sites/host,site1,web1/lists/l1/Drive/recent()']) await refused(out, /read a library's files through \/drives\/ID/);
+  for (const out of ['/sites/host,site1,web1/Drives/b!own/items/secret/content', '/sites/host,site1,web1/drives/b!own']) await refused(out, /is in no folder, file or SharePoint site ticked/);
+  assert.equal((await via('PUT', `${G}/sites/host,site1,web1/Drives/b!own/items/secret/content`, { body: 'x' })).status, 403);
+  for (const out of ["/sites/host,site1,web1/drives('b!own')", `${share('https://share.test/reports')}/items('y2025')/children`]) await refused(out, /name resources as \/drives\/ID/);
+  await refused(`/Users/${AP}/Messages`, /m365:mail:ap@demo.test is not ticked/);
   await refused('/sites/host,site1,web1/sites/other', /subsites are ticked by themselves/);
   await via('GET', `${G}/sites/host,site1,web1/drives`);
   assert.deepEqual([calls().at(-1)!.path, calls().at(-1)!.refused], ['/v1.0/sites/host,site1,web1/drives', undefined], "a ticked site's libraries, listed");
@@ -416,6 +424,8 @@ test("a ticked folder reaches what's under it, at any depth, and a search within
   for (const out of ['/drives/b!d1/items/top/children', '/drives/b!d1/items/y2025/children', "/drives/b!d1/root/search(q='AGING')", '/drives/b!d1/root:/LFM:/children'])
     assert.match((await get(out)).text, /is in no folder, file or SharePoint site ticked/, out);
   assert.equal(JSON.parse((await get(`${share('https://share.test/reports')}/driveItem`)).text).id, 'y2026', 'the ticked folder, shared');
+  for (const out of [`${share('https://share.test/reports')}/items/y2025/children`, `${share('https://share.test/reports')}/Items/y2025/children`, `${share('https://share.test/reports').replace('/shares/', '/Shares/')}/Items/y2025/children`])
+    assert.match((await get(out)).text, /is in no folder, file or SharePoint site ticked/, out);
   for (const out of [`${share('https://share.test/reports')}/site/drive/root/children`, `${share('https://share.test/reports')}/list/items`]) assert.match((await get(out)).text, /reaches past what is ticked/, out);
 });
 

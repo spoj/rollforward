@@ -58,14 +58,16 @@ async function check(runner: string, ticks: string[], { method, url, headers, js
   // %5C and %2E%2E decode to, which Graph may read as more parts.
   if (segments.some(s => !s || /[/\\]/.test(s) || s === '.' || s === '..')) throw new HttpError(403, `${bare}: each part of the path is a name, none empty, with no / or \\ in it, nor . or ..`);
   // /me is the runner, and mailFolders('inbox') is mailFolders.
-  const segs = segments[0] === 'me' ? ['users', runner, ...segments.slice(1)] : segments, [top, id = '', part = ''] = segs.map(s => s.replace(/\(.*$/, ''));
+  const segs = segments[0].toLowerCase() === 'me' ? ['users', runner, ...segments.slice(1)] : segments;
+  const [rawTop, id = '', rawPart = ''] = segs.map(s => s.replace(/\(.*$/, '')), top = rawTop.toLowerCase(), part = rawPart.toLowerCase();
+  if (segs.some(s => /(^|\.)(me|users|sites|drives|shares|items)\(/i.test(s))) throw new HttpError(403, `${bare}: name resources as /drives/ID or /items/ID, not with (...)`);
   // An action by its last dotted part, as Graph takes it qualified or not: send, graph.send and microsoft.graph.send alike.
   const write = method !== 'GET', actions = segs.map(s => s.replace(/\(.*$/, '').split('.').pop()!.toLowerCase()), action = actions.at(-1);
   // A link, an invitation, a permission, a mailbox's rule, a subscription's webhook or a label's change shares what is ticked, now or
   // as it comes; a OneNote copy puts it where its body says, which no tick covers.
   if (write && actions.some(a => ['createlink', 'invite', 'grant', 'permissions', 'messagerules', 'subscriptions', 'assignsensitivitylabel'].includes(a))) throw new HttpError(403, `${bare} would share it: nothing is shared, past the ticks or within them`);
   if (write && actions.some(a => ['copynotebook', 'copytonotebook', 'copytosection', 'copytosectiongroup'].includes(a))) throw new HttpError(403, `${bare} would copy it where no tick reaches`);
-  const mailbox = top === 'users' && (part === 'messages' || part === 'mailFolders' || (write && actions[2] === 'sendmail'));
+  const mailbox = top === 'users' && (part === 'messages' || part === 'mailfolders' || (write && actions[2] === 'sendmail'));
   const body = headers['transfer-encoding'] !== undefined || Number(headers['content-length'] ?? 0) > 0, object = typeof json === 'object' && json !== null;
   if (write && body && !object && !mailbox && !(method === 'PUT' && action === 'content')) throw new HttpError(403, `${bare}: a write's body is a JSON object, but a file's content, with PUT …/content, or mail as MIME`);
   let offer: string | undefined, mail = false, site: string | undefined;
@@ -76,26 +78,28 @@ async function check(runner: string, ticks: string[], { method, url, headers, js
     if (id.toLowerCase() !== runner) needs(`${scope}.Shared`, what[1]);
     offer = `m365:mail:${id.toLowerCase()}`;
     mail = true;
-    if (write && body && !object) mime(String(headers['content-type']).startsWith('text/plain') ? raw : undefined, id.toLowerCase(), bare);
+    if (write && body && !object) mime(String(headers['content-type']).toLowerCase().startsWith('text/plain') ? raw : undefined, id.toLowerCase(), bare);
     const said = [json, ...keyed(json, 'message')].flatMap(m => [...keyed(m, 'from'), ...keyed(m, 'sender')]), at = (x: unknown) => keyed(x, 'emailaddress').flatMap(e => keyed(e, 'address'));
     if (said.some(x => !at(x).length || at(x).some(a => String(a).toLowerCase() !== id.toLowerCase()))) throw new HttpError(403, `${bare}: mail from ${id} goes out as ${id}`);
   } else if (top === 'drives' || top === 'shares' || (['users', 'sites'].includes(top) && part === 'drive') || (top === 'sites' && part === 'drives' && segs[3])) {
     needs(write ? 'Files.ReadWrite.All' : 'Files.Read.All', `${write ? 'save' : 'read'} OneDrive or SharePoint files`);
     // A share's site and list are the whole site and library its item is in, past what is ticked.
     // A drive's own search, recent, sharedWithMe and following list other drives' items too; a search under its root stays in it.
-    const of = segs[top === 'sites' && part === 'drives' ? 4 : part === 'drive' ? 3 : 2] ?? '';
+    const idx = top === 'sites' && part === 'drives' ? 4 : part === 'drive' ? 3 : 2, of = segs[idx] ?? '';
     if (top !== 'shares' && /(^|\.)(search|recent|sharedwithme|following)(\(|$)/i.test(of)) throw new HttpError(403, `${bare}: a drive's ${of.replace(/\(.*$/, '')} lists other drives' items too; search under its root, as /drives/ID/root/search(q='...')`);
     // An item by its own id, not as a child of a ticked one.
     if (actions.some((a, k) => a === 'children' && k < actions.length - 1) || segs.some(s => /(^|\.)children\(./i.test(s))) throw new HttpError(403, `${bare}: name an item by its own id, as /drives/ID/items/ITEM, not under another's children`);
-    if (top === 'shares' && !['', 'driveitem', 'root', 'items', 'listitem'].includes(part.toLowerCase())) throw new HttpError(403, `${bare}: a share is read through its driveItem, root or items, not its ${part}, which reaches past what is ticked`);
-    const item = await located(runner, addressed(bare.replace(/^\/me\//, `/users/${runner}/`)));
+    if (actions[idx] === 'items' && !segs[idx + 1]) throw new HttpError(403, `${bare}: name an item by its own id, as /drives/ID/items/ITEM`);
+    if (top === 'shares' && !['', 'driveitem', 'root', 'items', 'listitem'].includes(part)) throw new HttpError(403, `${bare}: a share is read through its driveItem, root or items, not its ${rawPart}, which reaches past what is ticked`);
+    const item = await located(runner, addressed(bare.replace(/^\/me(?=\/|$)/i, `/users/${runner}`)));
     offer = await covering(runner, ticks, item.parentReference.driveId, item.id, item.parentReference.id);
     if (!offer) throw new HttpError(403, `${bare} is in no folder, file or SharePoint site ticked for this instance`);
     site = (await siteOf(runner, item.parentReference.driveId)).split(',')[0];
   } else if (top === 'sites') {
-    needs(!write ? 'Sites.Read.All' : segs.some(s => /^drives?$/i.test(s)) ? 'Files.ReadWrite.All' : 'Sites.ReadWrite.All', `${write ? 'write' : 'read'} SharePoint sites`);
+    needs(!write ? 'Sites.Read.All' : part === 'drives' ? 'Files.ReadWrite.All' : 'Sites.ReadWrite.All', `${write ? 'write' : 'read'} SharePoint sites`);
     if (segments.some(s => /(^|\.)getbypath\(/i.test(s))) throw new HttpError(403, `${bare}: getByPath reaches any site by its path; read the ticked one by its id`);
     if (actions[2] === 'sites') throw new HttpError(403, `${bare}: a site's subsites are ticked by themselves`);
+    if (actions.slice(3).some(a => a === 'drive' || a === 'drives')) throw new HttpError(403, `${bare}: read a library's files through /drives/ID or /sites/ID/drives/ID`);
     offer = `m365:site:${id}`;
   } else throw new HttpError(403, `the graph connection reaches mailboxes, and folders, files and SharePoint sites ticked for this instance, not ${path}`);
   // A link, an invitation, a permission or a mailbox's rule shares what is ticked, now or as it comes.
@@ -151,8 +155,8 @@ async function located(email: string, at: string): Promise<any> {
 // The item a files path is about: one in a drive, by id or by path, the item a share names, or the root of a drive, for anything
 // else about the drive, such as a search across it.
 function addressed(path: string): string {
-  const m = /^(\/(?:drives|shares)\/[^/]+|\/sites\/[^/]+\/drives\/[^/]+|\/(?:users|sites)\/[^/]+\/drive(?=\/|$))(\/(?:root|driveItem|items\/[^/:]+)(?::[^:]*:?)?)?/.exec(path)!;
-  return m[1] + (m[2]?.replace(/(:[^:]*[^:])$/, '$1:') ?? (m[1].startsWith('/shares') ? '/driveItem' : '/root'));
+  const m = /^(\/(?:drives|shares)\/[^/]+|\/sites\/[^/]+\/drives\/[^/]+|\/(?:users|sites)\/[^/]+\/drive(?=\/|$))(\/(?:root|driveItem|items\/[^/:]+)(?::[^:]*:?)?)?/i.exec(path)!;
+  return m[1] + (m[2]?.replace(/(:[^:]*[^:])$/, '$1:') ?? (/^\/shares\//i.test(m[1]) ? '/driveItem' : '/root'));
 }
 
 // The tick that covers a drive's item: a ticked folder above it, read up through its parents, or the ticked file itself; a ticked
