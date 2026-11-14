@@ -1912,4 +1912,31 @@ test('rf request start on a request to wake an assigned instance logs quiet wake
   await quiet();
 });
 
+test('preview handles CSV cells larger than 128 KB and workbooks with missing custom numFmtId entries', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'PreviewLarge' }))).json();
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'S' }))).json();
+  const { id: inst } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'L1', quiet: true }))).json();
+  const wdir = join(root, 'instances', inst, 'working');
+  writeFileSync(join(wdir, 'wide.csv'), `id,notes\n1,"${'x'.repeat(150_000)}"\n`);
+  execFileSync('python3', ['-c', `
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], 'r') as zin, zipfile.ZipFile('out.xlsx', 'w') as zout:
+    for item in zin.infolist():
+        data = zin.read(item.filename)
+        if item.filename == 'xl/styles.xml':
+            txt = data.decode('utf-8')
+            s, e = txt.find('<numFmts'), txt.find('</numFmts>') + len('</numFmts>')
+            if s != -1: txt = txt[:s] + txt[e:]
+            data = txt.encode('utf-8')
+        zout.writestr(item, data)
+`, join(app, 'test', 'formats.xlsx')], { cwd: wdir });
+  const csvRes = await call('GET', `/preview/${inst}/working/wide.csv`);
+  assert.equal(csvRes.status, 200);
+  assert.equal((await csvRes.json()).sheets[0].rows[1][1].length, 150_000);
+  const xlsxRes = await call('GET', `/preview/${inst}/working/out.xlsx?sheet=0`);
+  assert.equal(xlsxRes.status, 200);
+  assert.equal((await xlsxRes.json()).rows[1][1], 1234567.891);
+});
+
 
