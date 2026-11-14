@@ -340,7 +340,7 @@ export async function renew(refreshToken: string, scope: string[]): Promise<{ ac
     body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: oidc.clientId, scope: entraScope(scope), ...(oidc.clientSecret && { client_secret: oidc.clientSecret }) }),
   });
   const t = await r.json().catch(() => ({}));
-  const refused = ['invalid_grant', 'invalid_client', 'unauthorized_client', 'interaction_required'].includes(t.error) && !String(t.error_description).includes(`'${oidc.clientId}'`);
+  const refused = ['invalid_grant', 'unauthorized_client', 'interaction_required'].includes(t.error) || (t.error === 'invalid_client' && !String(t.error_description).includes(`'${oidc.clientId}'`));
   if (!r.ok || !t.access_token) throw Object.assign(new HttpError(refused ? 401 : 502, `Microsoft did not renew the login: ${(t.error_description ?? t.error ?? r.status).toString().split('\r\n')[0]}`), { consent: t.suberror === 'consent_required' });
   return { access: t.access_token, idToken: t.id_token, refresh: t.refresh_token ?? refreshToken, expires: Date.now() + (Number(t.expires_in ?? 3600) - 120) * 1000, scopes: granted(t.scope) };
 }

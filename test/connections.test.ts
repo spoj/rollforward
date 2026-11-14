@@ -112,7 +112,8 @@ before(async () => {
         if (f.get('refresh_token') === 'unconsented') return f.get('scope')!.includes('Mail.Send')
           ? send({ error: 'invalid_grant', suberror: 'consent_required', error_description: "AADSTS65001: The user or administrator has not consented to use the application with ID 'app'." }, 400)
           : (refreshes++, send({ access_token: 'tok', refresh_token: 'unconsented', expires_in: 3600, scope: 'https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/Files.Read.All Sites.Read.All openid email' }));
-        if (f.get('refresh_token') === 'mfa') return send({ error: 'interaction_required', suberror: 'basic_action', error_description: "AADSTS50076: Due to a configuration change made by your administrator, or because you moved to a new location, you must use multi-factor authentication to access '00000003-0000-0000-c000-000000000000'." }, 400);
+        if (f.get('refresh_token') === 'mfa') return send({ error: 'interaction_required', suberror: 'basic_action', error_description: `AADSTS50076: Due to a configuration change made by your administrator, or because you moved to a new location, you must use multi-factor authentication to access '${f.get('scope')!.includes('graph.microsoft.com') ? '00000003-0000-0000-c000-000000000000' : 'app'}'.` }, 400);
+        if (f.get('refresh_token') === 'unassigned') return send({ error: 'invalid_grant', error_description: "AADSTS50105: Your administrator has configured the application ('app') to block users unless they are specifically granted ('assigned') access to the application." }, 400);
         if (f.get('refresh_token') === 'old-app') return send({ error: 'invalid_client', error_description: "AADSTS7000215: Invalid client secret provided for a secret added to app 'old'." }, 401);
         if (f.get('refresh_token') === 'our-secret') return send({ error: 'invalid_client', error_description: "AADSTS7000222: The provided client secret keys for app 'app' are expired." }, 401);
         if (f.get('grant_type') !== 'refresh_token' || f.get('refresh_token') !== `r${refreshes}`) return send({ error: 'invalid_grant', error_description: 'AADSTS700082: The refresh token has expired.' }, 400);
@@ -493,6 +494,10 @@ test('a login Microsoft wants signed in to again, as for multi-factor authentica
   assert.equal(m365().expired, true);
   fresh.keepSignIn(ALICE, 'mfa');
   await assert.rejects(fresh.confirm(ALICE), (e: any) => e.status === 401 && /AADSTS50076/.test(e.message));
+  fresh.keepSignIn(ALICE, 'unassigned');
+  await assert.rejects(fresh.confirm(ALICE), (e: any) => e.status === 401 && /AADSTS50105/.test(e.message));
+  const { renew } = await import('../src/auth.ts');
+  await assert.rejects(renew('unconsented', ['https://graph.microsoft.com/Mail.Send']), (e: any) => e.status === 401 && e.consent === true);
 });
 
 test("a login made through another app shows as expired from the server's start", async () => {
