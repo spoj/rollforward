@@ -409,6 +409,8 @@ function leases() {
 // A run cut, its token first, so nothing more goes out, then its browsers and its sandbox; its instance carries on in a new run.
 export async function interruptRun(a: Active) {
   a.stopped = true;
+  byToken.delete(a.token);
+  abortCalls(a);
   await Promise.race([a.run!.interrupt(), new Promise(r => setTimeout(r, 1500))]);
   await finishRun(a, true);
   await a.ended;
