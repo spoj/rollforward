@@ -1949,6 +1949,35 @@ test('browser Back during inline instance rename cancels the edit instead of fre
   assert.deepEqual(labels.sort(), ['Period-A', 'Period-B']);
 });
 
+test('clicking Rename again while an inline rename saves does not start a second editor', async () => {
+  const ctx = await browser.newContext({ storageState: await page.context().storageState() }), tab = await ctx.newPage();
+  let release!: () => void;
+  const pending = new Promise<void>(ok => { release = ok; });
+  try {
+    const { id } = await page.evaluate(async () => {
+      const { id: ws } = await (await fetch('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: 'Rename race' }) })).json();
+      const { id: sid } = await (await fetch('/api/series', { method: 'POST', body: JSON.stringify({ workspace: ws, name: 'S' }) })).json();
+      return (await fetch(`/api/series/${sid}`, { method: 'POST', body: JSON.stringify({ label: 'Before', quiet: true }) })).json();
+    });
+    await tab.goto(`${new URL(page.url()).origin}/#/${id}`);
+    await tab.click('#bar h1 .ren');
+    await tab.fill('#bar h1 input.inline', 'After');
+    await tab.route('**/rename?*', async route => { await pending; await route.continue(); });
+    const sending = tab.waitForRequest('**/rename?*');
+    await tab.press('#bar h1 input.inline', 'Enter');
+    await sending;
+    const button = await tab.locator('#bar h1 .ren').boundingBox();
+    await tab.mouse.click(button!.x + button!.width / 2, button!.y + button!.height / 2);
+    release();
+    await tab.waitForSelector('#bar h1 .t:text-is("After")');
+    assert.equal(await tab.locator('#bar h1 input.inline').count(), 0);
+    assert.deepEqual(await tab.locator('#toasts .toast').allTextContents(), []);
+  } finally {
+    release();
+    await ctx.close();
+  }
+});
+
 test('drafts in sessionStorage preserve item/cell pins and deep replies, skip cancelled reply boxes, and never leak across sign-out to another user', async () => {
   const origin = new URL(page.url()).origin;
   const { inst, inst2 } = await page.evaluate(async () => {
