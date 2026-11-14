@@ -1,0 +1,28 @@
+import { after, test } from 'node:test';
+import assert from 'node:assert/strict';
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { initSystem, rfDir } from '../src/system.ts';
+import { recordCost, syncCosts, type CostRecord } from '../src/costs.ts';
+
+const tmp = mkdtempSync(join(tmpdir(), 'rf-ledger-'));
+after(() => rmSync(tmp, { recursive: true, force: true }));
+const entry: CostRecord = { at: '2026-10-20T12:00:00Z', service: 'openrouter', inst: 'i', run: 1, person: 'a@test', cost: 0.01 };
+
+test('ledger starts absent, tails complete UTF-8 lines, and recovers a torn tail before recording', () => {
+  initSystem(join(tmp, 'torn'));
+  const path = join(rfDir(), 'costs.jsonl');
+  assert.deepEqual(syncCosts(), []);
+  const line = JSON.stringify({ ...entry, person: 'é@test' }) + '\n';
+  const bytes = Buffer.from(line), split = bytes.indexOf(Buffer.from('é')) + 1;
+  writeFileSync(path, bytes.subarray(0, split));
+  assert.deepEqual(syncCosts(), []);
+  appendFileSync(path, bytes.subarray(split));
+  assert.deepEqual(syncCosts(), [{ ...entry, person: 'é@test' }]);
+  appendFileSync(path, '{"at":"torn');
+  assert.equal(syncCosts().length, 1);
+  recordCost(entry);
+  assert.deepEqual(readFileSync(path, 'utf8').trim().split('\n').map(l => JSON.parse(l)), [{ ...entry, person: 'é@test' }, entry]);
+  assert.equal(syncCosts().length, 2);
+});

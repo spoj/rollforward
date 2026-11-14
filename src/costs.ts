@@ -1,4 +1,4 @@
-import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readSync, statSync, truncateSync } from 'node:fs';
 import { join } from 'node:path';
 import { appendLine, rfDir } from './system.ts';
 
@@ -14,6 +14,7 @@ export function recordCost(entry: CostRecord) {
   const root = rfDir();
   if (!root) return;
   syncCosts();
+  if (existsSync(file()) && statSync(file()).size > cachedOffset) truncateSync(file(), cachedOffset);
   const line = JSON.stringify(entry);
   appendLine(file(), line, 0o600);
   cached.push(entry);
