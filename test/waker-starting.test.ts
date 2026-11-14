@@ -29,7 +29,7 @@ for (const action of ['remove', 'remove-view', 'lease', 'lease-calls']) for (con
       mock.module('./src/runner.ts', { namedExports: { ...runner, startRun: async () => { starting.resolve(); return startup.promise; } } });
       mock.module('./src/entra.ts', { namedExports: { ...entra, confirm: async () => {} } });
       mock.module('./src/connections.ts', { namedExports: { ...connections, hasCalls: () => calls, abortCalls: () => {}, drainCalls: () => charged.promise } });
-      const { active, byToken, drain, drained, kick, remove } = await import('./src/waker.ts');
+      const { active, byToken, drain, drained, kick, remove, updating } = await import('./src/waker.ts');
       const inst = createInstance('s', 'Starting', alice, []), target = action === 'remove-view' ? createInstance('other', 'Viewed', alice, []) : inst;
       mkdirSync(target.dir + '/working', { recursive: true });
       const marker = target.dir + '/working/kept';
@@ -51,6 +51,7 @@ for (const action of ['remove', 'remove-view', 'lease', 'lease-calls']) for (con
       }
       await new Promise(ok => setImmediate(ok));
       assert.equal(byToken.has(a.token), false, 'a cut revokes its token even before Pi is ready');
+      assert.equal(updating(), 1, 'one run is counted once even while it is both active and retiring');
       assert.equal(drained(), false);
       assert.equal(deleted, false);
       const ending = a.ended;

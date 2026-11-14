@@ -447,7 +447,7 @@ export function drain() {
 }
 export const drained = () => !!draining && !active.size && !retiring.size;
 // The runs a drain waits for, or null with none.
-export const updating = () => (draining ? active.size + retiring.size : null);
+export const updating = () => (draining ? new Set([...active.values(), ...retiring]).size : null);
 
 function startWaiting() {
   for (const i of waiting) {
