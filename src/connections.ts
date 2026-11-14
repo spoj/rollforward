@@ -164,6 +164,16 @@ function parseEvents(text: string): any[] {
   return out;
 }
 
+async function providerText(r: Response): Promise<string> {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const b of r.body ?? []) {
+    if ((bytes += b.length) > 8 * 1024 * 1024) throw new Error('provider response exceeds 8 MiB');
+    chunks.push(Buffer.from(b));
+  }
+  return Buffer.concat(chunks).toString();
+}
+
 const GEN_RETRIES_MS = [150, 400];
 async function generationCost(genId: string, apiKey: string): Promise<number | undefined> {
   if (!apiKey) return undefined;
@@ -174,7 +184,7 @@ async function generationCost(genId: string, apiKey: string): Promise<number | u
         headers: { authorization: `Bearer ${apiKey}` }, signal,
       });
       if (r.ok) {
-        const d = ((await r.json()) as any)?.data;
+        const d = JSON.parse(await providerText(r))?.data;
         const c = d?.total_cost ?? d?.usage;
         return typeof c === 'number' && Number.isFinite(c) ? c : undefined;
       }
@@ -228,7 +238,7 @@ export async function serverCall(
       headers: { authorization: `Bearer ${apiKey}`, 'x-api-key': apiKey, 'content-type': 'application/json' },
       body: JSON.stringify(out),
     });
-    text = await r.text();
+    text = await providerText(r);
   } catch (e) {
     throw new Error(redact((e as Error).message));
   }
@@ -291,7 +301,7 @@ export async function keyStatus(): Promise<KeyInfo | null> {
         headers: { authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(5000),
       });
       if (r.ok) {
-        const d = ((await r.json()) as any)?.data;
+        const d = JSON.parse(await providerText(r))?.data;
         if (d && typeof d.usage === 'number' && Number.isFinite(d.usage)) {
           const limit = typeof d.limit === 'number' && Number.isFinite(d.limit) ? d.limit : null;
           const remaining = typeof d.limit_remaining === 'number' && Number.isFinite(d.limit_remaining) ? d.limit_remaining : null;
