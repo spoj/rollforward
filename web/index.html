@@ -224,7 +224,8 @@ function land(next, path, d, st) {
     Object.assign(pv.settings, pv.settings.kind === 'workspace' ? cur.w : cur.s);
     renderPv();
   }
-  if (cur?.i) cur.i.unread = false;
+  // Seeing it sees what's new and an assignment to you, as the server now knows.
+  if (cur?.i) Object.assign(cur.i, { unread: false, assigned: null });
   threads = threadsOf();
   if (st) [lines, linesKey] = st;
   const done = data && lastDone();

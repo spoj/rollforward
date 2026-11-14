@@ -1818,19 +1818,25 @@ test("Assign… on the bar hands an instance to whoever sees its workspace, who 
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.waitForSelector('#bar [data-act=takeover]');
   assert.match(await page.textContent('#bar .owner .about') ?? '', /Assigned by you, from you,/);
+  await handed.goto(`${origin}/#/${mine}`);
+  await handed.click('[data-act=waiting]');
+  assert.match(await handed.textContent('#pv') ?? '', /Demo Admin assigned you Handing · Rec · H1/);
+  await handed.click(`#pv a[href="#/${theirs}"]`);
+  await handed.waitForSelector('#bar .owner:text-is("Yours")');
+  assert.equal(await handed.locator('.row.waits').count(), 0, 'opening it, they were told, as it shows');
   // A wake pending as it was assigned, come as a request to wake it.
   const wakes = join(root, '.rf', 'wakes.json'), w = JSON.parse(readFileSync(wakes, 'utf8'));
   writeFileSync(wakes, JSON.stringify({ ...w, requests: { ...w.requests, handing: { series: sid, label: 'H1', target: theirs, from: 'admin@demo.test', at: new Date().toISOString(), text: 'the statement is due' } } }));
-  await handed.goto(`${origin}/`);
+  await handed.reload();
   await handed.click('[data-act=waiting]');
-  assert.match(await handed.textContent('#pv') ?? '', /Demo Admin assigned you Handing · Rec · H1.*asks to wake H1 Wake/s);
+  assert.match(await handed.textContent('#pv') ?? '', /^(?!.*assigned you).*asks to wake H1 Wake/s, 'opening it, they were told');
   await handed.click('#pv [data-act=req-start]');
   await handed.waitForSelector('#bar .owner:text-is("Yours")');
   assert.equal(await handed.locator('#pv .slabel, #slabel').count(), 0, 'no credentials to tick: its runner\'s are');
   assert.deepEqual(await handed.evaluate(async id => (await (await fetch(`/api/instances/${id}`)).json()).log.filter(e => e.op === 'wake').map(e => [e.from, e.note ?? false]), theirs), [['admin@demo.test', true], ['handed@demo.test', false]]);
   await handed.reload();
   await handed.waitForSelector('#bar h1 .t');
-  assert.equal(await handed.locator('.row.waits').count(), 0, 'opening it, they were told');
+  assert.equal(await handed.locator('.row.waits').count(), 0, 'waking it, the request went');
   await handed.close();
   await page.goto(`${origin}/#/${mine}`);
   await page.waitForSelector(`a.row.inst[href="#/${theirs}"]`);
