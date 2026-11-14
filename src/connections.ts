@@ -470,15 +470,45 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
       res.writeHead(r.statusCode!, Object.fromEntries(Object.entries(r.headers).filter(([k]) => !HOP.includes(k))));
       const type = String(r.headers['content-type']), isSse = type.includes('event-stream'), isJson = /json/i.test(type);
       const kept: Buffer[] = [], events: any[] = [], enc = r.headers['content-encoding'];
-      let bytes = 0, cut = false, carry = '';
+      let bytes = 0, cut = false, carry = '', oversized = false;
       const pushLine = (line: string) => {
         if (!/^data:\s*\{/.test(line)) return;
-        try { events.push(JSON.parse(line.replace(/^data:\s*/, ''))); } catch {}
+        let e: any;
+        try { e = JSON.parse(line.replace(/^data:\s*/, '')); } catch { return; }
+        const summary = events[0] ??= { usage: {}, output_chars: 0 };
+        summary.id ??= openrouter.generationId({}, [e]);
+        const u = e?.usage ?? e?.response?.usage ?? e?.message?.usage;
+        for (const field of ['prompt_tokens', 'input_tokens', 'output_tokens', 'completion_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens']) {
+          if (typeof u?.[field] === 'number') summary.usage[field] = Math.max(summary.usage[field] ?? 0, u[field]);
+        }
+        for (const field of ['prompt_tokens_details', 'input_tokens_details', 'cache_creation']) {
+          for (const token of ['cached_tokens', 'cache_write_tokens', 'ephemeral_1h_input_tokens']) {
+            if (typeof u?.[field]?.[token] === 'number') {
+              const details = summary.usage[field] ??= {};
+              details[token] = Math.max(details[token] ?? 0, u[field][token]);
+            }
+          }
+        }
+        const charged = openrouter.cost(e);
+        if (charged !== undefined) summary.usage.cost = charged;
+        const exaCost = exa.cost(e);
+        if (exaCost !== undefined) summary.costDollars = { total: exaCost };
+        const delta = e?.delta?.text ?? e?.delta?.partial_json ?? e?.choices?.[0]?.delta?.content ?? e?.delta;
+        if (typeof delta === 'string') summary.output_chars += delta.length;
       };
       const feedText = (chunk: string) => {
-        const parts = (carry + chunk).split(/\r?\n/);
-        carry = parts.pop()!;
-        for (const l of parts) pushLine(l);
+        const parts = chunk.split('\n');
+        for (let i = 0; i < parts.length; i++) {
+          if (!oversized) {
+            if (carry.length + parts[i].length > 1024 * 1024) { carry = ''; oversized = true; }
+            else carry += parts[i];
+          }
+          if (i < parts.length - 1) {
+            if (!oversized) pushLine(carry);
+            carry = '';
+            oversized = false;
+          }
+        }
       };
       const decoder = o.keep && isSse ? new StringDecoder('utf8') : undefined;
       const unzip = decoder && (enc === 'gzip' ? createGunzip() : enc === 'deflate' ? createInflate() : enc === 'br' ? createBrotliDecompress() : undefined);

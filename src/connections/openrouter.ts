@@ -70,7 +70,7 @@ export function estimate(path: string, reqJson: any, events: any[], bytes: numbe
       if (typeof out === 'number') output = Math.max(output, out);
     }
     const delta = e?.delta?.text ?? e?.delta?.partial_json ?? e?.choices?.[0]?.delta?.content ?? e?.delta;
-    if (typeof delta === 'string') outChars += delta.length;
+    outChars += e?.output_chars ?? (typeof delta === 'string' ? delta.length : 0);
   }
   const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
   if (path.endsWith('/images')) {
