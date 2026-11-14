@@ -1760,7 +1760,7 @@ async function onAct(act, el) {
   if (act === 'assign') {
     const people = (await api(`${instPath()}/assignees`)).filter(p => p !== me.email).sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
     if (await ask({
-      title: `Assign ${cur.i.label}`, text: `They run it from now on, with their own logins, none ticked until they tick them; what came before is history to its agent, and its next run waits for them.${data.run ? ` Run ${data.run.n} is going: assigning stops it.` : ''}`,
+      title: `Assign ${cur.i.label}`, text: `They run it from now on, ticking their own logins, none until they do; to its agent, what came before is history.${data.run ? ` Run ${data.run.n} is going: assigning stops it.` : ''}`,
       html: `<select id="assignto">${people.map(p => `<option value="${esc(p)}">${esc(me.names[p] ? `${called(p)} <${p}>` : p)}</option>`).join('')}</select>`, ok: 'Assign',
       act: () => api(`${instPath()}/assign`, { method: 'POST', body: JSON.stringify({ to: $('#assignto').value }) }),
     })) await refresh();
