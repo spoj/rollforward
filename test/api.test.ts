@@ -2069,4 +2069,23 @@ test('a task whose first comment is AGENTS.md posts cleanly without failing auto
   assert.equal(d.log.findLast((e: any) => e.op === 'comment').text, '...AGENTS.md');
 });
 
+test('rf comment --wake and --wait on a shared series start and wait for the runner’s shared run', async () => {
+  if (!existsSync(home)) { mkdirSync(home); await rf('login', base, (await (await call('POST', '/tokens', JSON.stringify({ name: 'cli-sh', days: 1 }))).json()).token); }
+  const b = sessionOf(await login(bob))!;
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'SharedComment' }))).json();
+  await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ add: bob, as: 'member' }));
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'S' }), b)).json();
+  await call('PUT', `/api/series/${sid}`, JSON.stringify({ share: true, logins: [] }), b);
+  await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'L1', quiet: true }), b);
+
+  const wakeOut = await rf('comment', 'SharedComment/S/L1', 'Check this', '--wake');
+  assert.doesNotMatch(wakeOut, /starts no run/);
+  assert.equal(wakeOut, `a note for the runner, ${bob}, seq 2\n`);
+  await quiet();
+
+  const waitOut = await rf('comment', 'SharedComment/S/L1', 'And wait', '--wait');
+  assert.doesNotMatch(waitOut, /starts no run/);
+  await quiet();
+});
+
 

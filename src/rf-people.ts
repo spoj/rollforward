@@ -514,9 +514,9 @@ if (cmd === 'login' && url) {
 else if (cmd === 'comment' && args.length === 2) {
   const { at } = await instanceAt(args[0]);
   const posted = await post(`${at}/comment`, { text: args[1], item: flags.item, ref: flags.ref, thread: flags.thread, quiet: !flags.wake && !flags.wait });
-  const seq = Number(posted.headers.get('X-RF-Comment-Seq')), { log, runner } = await get(at), { note } = log.find(e => e.seq === seq);
-  if (note) console.log(`a note for the runner, ${runner.by}, seq ${seq}: it starts no run until they act`);
-  else if (!flags.wait) console.log(`commented, seq ${seq}`);
+  const seq = Number(posted.headers.get('X-RF-Comment-Seq')), { log, runner, starts } = await get(at), { note } = log.find(e => e.seq === seq);
+  if (note && !starts) console.log(`a note for the runner, ${runner.by}, seq ${seq}: it starts no run until they act`);
+  else if (!flags.wait) console.log(`${note ? `a note for the runner, ${runner.by}` : 'commented'}, seq ${seq}`);
   else for (;;) {
     // The run that saw the comment, and what it said from then on: a run ending as it came may not have.
     await new Promise(r => setTimeout(r, 5000));
