@@ -770,7 +770,7 @@ else if (cmd === 'comment' && args.length === 2) {
   else for (const r of rows) {
     console.log(`${r.path}  last woken ${r.fired ? when(r.fired) : 'never'}${r.wakes.length || r.requests.length ? '' : ', none pending'}`);
     for (const k of r.wakes) console.log(`  wake ${k.id} ${when(k.at)}${k.label ? ` starts ${k.label}` : ''}${k.days ? `, then each ${k.days.join(', ')}` : ''}, set by ${k.from}${k.text ? `: ${k.text}` : ''}`);
-    for (const q of r.requests) console.log(`  request ${q.id} to start ${q.label}, from ${q.from} since ${when(q.at)}, waits on ${q.who ?? 'anyone'}${q.text ? `: ${q.text}` : ''}`);
+    for (const q of r.requests) console.log(`  request ${q.id} to ${q.target ? 'wake' : 'start'} ${q.label}, from ${q.from} since ${when(q.at)}, waits on ${q.who ?? 'anyone'}${q.text ? `: ${q.text}` : ''}`);
   }
 } else if (cmd === 'activity' && args.length <= 1) {
   const at = (args[0] ?? '').replace(/\/+$/, ''), blocks = (await get(`/api/activity?since=${since}`))
