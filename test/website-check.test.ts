@@ -1,7 +1,7 @@
 import { after, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initSystem, rfDir, writeJson } from '../src/system.ts';
@@ -316,4 +316,20 @@ test('refused run checks share the checker and retry unchecked hosts on the foll
   const input = JSON.parse(models.at(-1).messages[1].content);
   assert.deepEqual(input.evidence.kinds['auth.vendor.test'], { dest: ['document'], from: ['erp.company.test'] });
   assert.equal(JSON.stringify(input).includes('do-not-log'), false);
+});
+
+test("a website named as an object's own property, such as constructor, is none until its person adds it; and one malformed record at the start is left as it is, logged, not the server's end", async () => {
+  const { enrolFlagged } = await import('../src/browsers.ts'), { personDir } = await import('../src/logins.ts');
+  await assert.rejects(setSite({ email, role: 'user' } as never, 'constructor', {}), (e: any) => e.status === 404);
+  assert.equal(websitesOf(email).constructor, undefined);
+  await addSite(email, 'constructor', 'https://erp.company.test/');
+  assert.equal(websitesOf(email).constructor.url, 'https://erp.company.test/');
+  writeJson('users.json', { [email]: { role: 'user', name: 'Alice' } });
+  const file = join(personDir(email), 'websites.json'), all = JSON.parse(readFileSync(file, 'utf8'));
+  writeFileSync(file, JSON.stringify({ broken: { writeback: true, internal: true }, ...all, older: { url: 'https://old.company.test/', hosts: ['sso.old.test'], writeback: true, added: '' } }));
+  passAllowed();
+  await enrolFlagged();
+  assert.equal(websitesOf(email).older.checks!['sso.old.test'].verdict, 'pass', 'the next record goes on');
+  assert.deepEqual(websitesOf(email).broken, { writeback: true, internal: true });
+  writeJson('users.json', {});
 });

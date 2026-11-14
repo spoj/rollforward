@@ -100,7 +100,8 @@ export type Profile = { what: string; category: 'company' | 'vendor' | 'bank' | 
 export type Website = { url: string; hosts: string[]; writeback: boolean; via?: string; header?: string; keepalive?: string; every?: number; profile?: Profile; checks?: Record<string, { verdict: 'pass' | 'refused' | 'high' | 'internal'; why: string }>; added: string };
 const websiteGenerations = new Map<string, number>();
 const sitesFile = (email: string) => join(personDir(email), 'websites.json');
-export const websitesOf = (email: string): Record<string, Website> => existsSync(sitesFile(email)) ? JSON.parse(readFileSync(sitesFile(email), 'utf8')) : {};
+// By name, a person's: none is Object's, such as constructor.
+export const websitesOf = (email: string): Record<string, Website> => Object.assign(Object.create(null), existsSync(sitesFile(email)) ? JSON.parse(readFileSync(sitesFile(email), 'utf8')) : {});
 function saveWebsites(email: string, all: Record<string, Website>) {
   mkdirSync(personDir(email), { recursive: true, mode: 0o700 });
   replaceFile(sitesFile(email), JSON.stringify(all, null, 1));
@@ -206,13 +207,15 @@ export async function setSite(by: Me, name: string, change: Record<string, unkno
 export async function enrolFlagged() {
   const log = join(rfDir(), 'log.jsonl');
   const out = new Set(readLines<{ op: string; let?: boolean; hosts: string[] }>(log).filter(a => a.op === 'internal' && a.let === false).flatMap(a => a.hosts));
-  for (const email of Object.keys(users())) for (const [name, { internal, ...w }] of Object.entries(websitesOf(email) as Record<string, Website & { internal?: true }>)) {
+  for (const email of Object.keys(users())) for (const [name, { internal, ...w }] of Object.entries(websitesOf(email) as Record<string, Website & { internal?: true }>)) try {
     if (!internal) continue;
     const hosts = (await Promise.all(reached(w).filter(h => !throughVpn(w, h) && !h.startsWith('*.') && !out.has(h)).map(async h => await resolvesInternal(h) && h))).filter(h => h) as string[];
     if (!hosts.length) continue;
     setLetIn(hosts, 'server', true);
     act('server', { op: 'internal', person: email, site: name, hosts, let: true });
     saveWebsites(email, { ...websitesOf(email), [name]: w });
+  } catch (e) {
+    console.error(`${email}'s website ${name} is malformed, left as it is:`, e);
   }
 }
 
@@ -220,9 +223,11 @@ export async function enrolFlagged() {
 // verdict, pass, at the server's start, as they were allowed: only on a website with no profile, which every one from before checks
 // is, and none once checked, so a host a later check or an admin refuses stays refused.
 export function passAllowed() {
-  for (const email of Object.keys(users())) for (const [name, w] of Object.entries(websitesOf(email))) {
+  for (const email of Object.keys(users())) for (const [name, w] of Object.entries(websitesOf(email))) try {
     const allowed = w.profile ? [] : w.hosts.filter(h => !h.startsWith('*.') && w.checks?.[h]?.verdict !== 'pass');
     if (allowed.length) changeWebsite(email, name, { checks: { ...w.checks, ...Object.fromEntries(allowed.map(h => [h, { verdict: 'pass' as const, why: 'Allowed before checks.' }])) } });
+  } catch (e) {
+    console.error(`${email}'s website ${name} is malformed, left as it is:`, e);
   }
 }
 
