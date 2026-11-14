@@ -2039,4 +2039,24 @@ test('GET /trace handles oversized and malformed session JSONL files and /commen
   assert.equal(badRef.status, 400);
 });
 
+test('updating company or workspace AGENTS.md replaces the file atomically without mutating an open descriptor', async () => {
+  const { closeSync, openSync } = await import('node:fs');
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'AtomicAgents' }))).json();
+  await call('PUT', '/agents', 'company v1');
+  await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ agents: 'workspace v1' }));
+  const fdCompany = openSync(join(root, 'agents', 'company.md'), 'r');
+  const fdWs = openSync(join(root, 'agents', `${ws}.md`), 'r');
+  try {
+    await call('PUT', '/agents', 'company v2');
+    await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ agents: 'workspace v2' }));
+    assert.equal(readFileSync(fdCompany, 'utf8'), 'company v1');
+    assert.equal(readFileSync(fdWs, 'utf8'), 'workspace v1');
+    assert.equal((await json('/agents')).text, 'company v2');
+    assert.equal(readFileSync(join(root, 'agents', `${ws}.md`), 'utf8'), 'workspace v2');
+  } finally {
+    closeSync(fdCompany);
+    closeSync(fdWs);
+  }
+});
+
 

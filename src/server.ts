@@ -12,7 +12,7 @@ import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
 import { checkTheme, stylesheet, themeLogo } from './theme.ts';
 import { asPerson, authenticate, CAPS, can, capabilities, checkConfig, cli, connect, myTokens, newToken, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
-import { act, canManage, canSee, changes, everyone, initSystem, isPeople, readJson, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
+import { act, canManage, canSee, changes, everyone, initSystem, isPeople, readJson, replaceFile, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
 import { checkTicks, lastAssign, logins, runnerAt, runnerOf, saveLogin, signOut, unoffer } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
@@ -801,7 +801,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (going) throw new HttpError(409, `${named(t, going.inst.seriesId)}/${going.inst.label} is running: archive ${w.name} once its run ends, or interrupt it first`);
     if (change.archived !== undefined) w.archived = !!change.archived;
     if (change.archived) cancelWakes(its.flatMap(sid => [sid, ...labels(sid).map(l => l.id)]));
-    if (change.agents !== undefined) writeFileSync(agentsFile(id), String(change.agents));
+    if (change.agents !== undefined) replaceFile(agentsFile(id), String(change.agents));
     saveTree(t);
     if (change.archived === false) for (const i of its.flatMap(instances)) kick(i);
     return send(res, 200, 'ok');
@@ -851,7 +851,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     for (const sid of moving) replaceReadOnly(join(seriesDir(sid), 'series.json'), '{}');
     if (p.kind === 'merge') {
       const add = text(agentsFile(id)), keep = text(agentsFile(p.into)).trimEnd();
-      if (add) writeFileSync(agentsFile(p.into), `${keep && `${keep}\n\n`}## ${a.name}\n\n${add}`);
+      if (add) replaceFile(agentsFile(p.into), `${keep && `${keep}\n\n`}## ${a.name}\n\n${add}`);
       rmSync(agentsFile(id), { force: true });
       delete t.workspaces[id];
       forgetWorkspace(id);
@@ -1464,7 +1464,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     else if (url.pathname === '/agents' && req.method === 'GET') send(res, 200, { text: text(agentsFile()) });
     else if (url.pathname === '/agents' && req.method === 'PUT') {
       if (me.role !== 'admin') throw new HttpError(403, "the company's AGENTS.md is the admins'");
-      writeFileSync(agentsFile(), (await body(req)).toString());
+      replaceFile(agentsFile(), (await body(req)).toString());
       send(res, 200, 'ok');
     } else if (url.pathname === '/cli') await cli(req, res, url);
     else if (url.pathname === '/tokens' && req.method === 'GET') send(res, 200, myTokens(me.email));
