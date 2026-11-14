@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { closeSync, cpSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { accessSync, closeSync, constants, cpSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, type Dirent } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { execFile, execFileSync } from 'node:child_process';
@@ -519,7 +519,12 @@ function trace(inst: Instance) {
 
 // Files by hand, never into a link: a run may have made links anywhere in working/. Nothing named as git takes a .git, such as the
 // instance's history or a run's .GIT/, which is one on a disk that ignores case, is copied.
-const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).filter(d => existsSync(join(dir, d.name))).flatMap(d => refused(d.name, false) ? [] : d.isDirectory() ? walk(join(dir, d.name)) : d.isFile() ? [join(dir, d.name)] : []);
+function walk(dir: string): string[] {
+  let entries: Dirent[];
+  try { entries = readdirSync(dir, { withFileTypes: true }); }
+  catch (e) { if (['EACCES', 'ENOENT'].includes((e as NodeJS.ErrnoException).code!)) return []; throw e; }
+  return entries.filter(d => existsSync(join(dir, d.name))).flatMap(d => refused(d.name, false) ? [] : d.isDirectory() ? walk(join(dir, d.name)) : d.isFile() ? [join(dir, d.name)] : []);
+}
 
 // What rf pull copies: every file under `path` that `me` sees, in the layout runs see (workspace/series/label/ and the instance's own
 // files), with its size and time; the AGENTS.md files whole, and each instance file at its /files address.
@@ -528,7 +533,9 @@ function pullable(me: Me, path: string) {
   // A name that isn't UTF-8, as unzipping an old archive leaves, reads back as another name, which no file has: it is left out.
   const add = (at: string, file: string, more: { url?: string; text?: string }) => {
     const st = statSync(file, { throwIfNoEntry: false });
-    if (st) out.push({ path: at, size: more.text === undefined ? st.size : Buffer.byteLength(more.text), mtime: st.mtime.toISOString(), ...more });
+    if (!st) return;
+    if (more.url) try { accessSync(file, constants.R_OK); } catch { return; }
+    out.push({ path: at, size: more.text === undefined ? st.size : Buffer.byteLength(more.text), mtime: st.mtime.toISOString(), ...more });
   };
   const near = (at: string) => !path || at === path || at.startsWith(path + '/') || path.startsWith(at + '/');
   if (existsSync(agentsFile())) add('AGENTS.md', agentsFile(), { text: text(agentsFile()) });

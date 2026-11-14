@@ -1939,4 +1939,29 @@ with zipfile.ZipFile(sys.argv[1], 'r') as zin, zipfile.ZipFile('out.xlsx', 'w') 
   assert.equal((await xlsxRes.json()).rows[1][1], 1234567.891);
 });
 
+test('GET /api/files and rf pull skip unreadable folders and files in working/', async () => {
+  const { chmodSync } = await import('node:fs');
+  if (!existsSync(home)) { mkdirSync(home); await rf('login', base, (await (await call('POST', '/tokens', JSON.stringify({ name: 'cli-unr', days: 1 }))).json()).token); }
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'UnreadablePull' }))).json();
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'S' }))).json();
+  const { id: inst } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'L1', quiet: true }))).json();
+  const wdir = join(root, 'instances', inst, 'working'), dest = join(tmp, 'pulled-unreadable');
+  mkdirSync(join(wdir, 'locked'), { recursive: true });
+  writeFileSync(join(wdir, 'locked', 'inside.txt'), 'hidden');
+  writeFileSync(join(wdir, 'secret.txt'), 'mode0');
+  writeFileSync(join(wdir, 'ok.txt'), 'visible');
+  chmodSync(join(wdir, 'locked'), 0o000);
+  chmodSync(join(wdir, 'secret.txt'), 0o000);
+  try {
+    const res = await call('GET', '/api/files?path=UnreadablePull');
+    assert.equal(res.status, 200);
+    await rf('pull', 'UnreadablePull/', dest);
+    assert.equal(readFileSync(join(dest, 'S', 'L1', 'working', 'ok.txt'), 'utf8'), 'visible');
+    assert.equal(existsSync(join(dest, 'S', 'L1', 'working', 'secret.txt')), false);
+  } finally {
+    chmodSync(join(wdir, 'locked'), 0o700);
+    chmodSync(join(wdir, 'secret.txt'), 0o600);
+  }
+});
+
 
