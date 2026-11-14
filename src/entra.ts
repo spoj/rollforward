@@ -4,6 +4,7 @@ import { HttpError } from './store.ts';
 import { changes } from './system.ts';
 import { renew, upsertUser, users } from './auth.ts';
 import { logins, personDir, saveLogin, seal, secret } from './logins.ts';
+import { dropUnpermittedVpns } from './vpns.ts';
 
 // A person's Entra logins, each a connection's (connections.ts), such as Microsoft 365's: each access token comes from the login's
 // sealed refresh token, which turns over as it's used and is sealed again. A login Microsoft no longer renews is marked expired,
@@ -52,6 +53,7 @@ export async function confirm(email: string) {
     const r = await renew(secret(email, 'entra'), []), claims = JSON.parse(Buffer.from(r.idToken.split('.')[1], 'base64url').toString());
     seal(email, 'entra', r.refresh);
     upsertUser(email, { groups: Array.isArray(claims.groups) ? claims.groups.map(String) : [] });
+    await dropUnpermittedVpns();
   } catch (e) {
     if (!/AADSTS(50057|50034)\b/.test((e as Error).message)) throw e;
     upsertUser(email, { disabled: true });
