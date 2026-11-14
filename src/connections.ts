@@ -552,7 +552,7 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
         done(finishAnswer());
       };
       unregister?.();
-      if (o.service && isSse) unregister = o.registerAbort?.(abortStream);
+      if (o.service) unregister = o.registerAbort?.(abortStream);
       if (res.closed) {
         if (o.service && isSse) return abortStream();
         r.resume();

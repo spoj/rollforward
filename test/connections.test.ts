@@ -187,6 +187,12 @@ before(async () => {
       if (g.wait404 && g.wait404-- > 0) return void res.writeHead(404, { 'content-type': 'application/json' }).end('{"error":{"code":404}}');
       return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ data: { id, total_cost: g.cost, usage: g.cost } }));
     }
+    if (body?.user === 'held-json') {
+      res.writeHead(200, { 'content-type': 'application/json' }).write('{"choices":[');
+      await held;
+      if (!res.destroyed) res.end(']}');
+      return;
+    }
     if (body?.user === 'gzip-sse') {
       return void res.writeHead(200, { 'content-type': 'text/event-stream', 'content-encoding': 'gzip' }).end(gzipSync('data: {"usage":{"cost":0.123456}}\n\ndata: [DONE]\n\n'));
     }
@@ -1023,6 +1029,19 @@ test('a deployment service gets streamed requests only under the runner\'s ticke
   }
 });
 
+
+test('stopping a run aborts a stalled non-streaming provider response', async t => {
+  const { abortCalls, drainCalls, hasCalls } = await import('../src/connections.ts');
+  let release!: () => void;
+  held = new Promise(ok => release = ok);
+  t.after(async () => { release(); held = Promise.resolve(); await drainCalls(callRuns.get('run')!); });
+  await via('POST', `${O}/chat/completions`, { cut: true, ...json({ user: 'held-json' }) });
+  const a = callRuns.get('run')!;
+  abortCalls(a);
+  await drainCalls(a, 100);
+  assert.equal(hasCalls(a), false, 'the provider connection was actually closed, not left behind after the drain timeout');
+  assert.ok(calls().at(-1)!.cost > 0 && calls().at(-1)!.estimated);
+});
 
 test('compressed SSE is fully decoded before its cost is recorded', async () => {
   const { drainCalls } = await import('../src/connections.ts');
