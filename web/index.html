@@ -544,7 +544,7 @@ function logText(e) {
     delete: () => `${w} deleted the instance, and all the server held of it`,
     correction: () => `${w} marked ${e.item ? item(e.item) : 'the instance'}${e.ref ? ` at ${esc(e.ref)}` : ''} ${e.kind}<div class="d">${esc(e.text)}${seeHtml(e.see)}</div>`,
     said: () => `${w} left a note in <a href="#/${esc(e.inst)}">${esc(labelOf(e.inst, e.label))}</a>, ${esc(e.thread)}`,
-    corrected: () => `${w} marked <a href="#/${esc(e.inst)}">${esc(e.label)}</a>${e.item ? ` ${esc(e.item)}` : ''} ${e.kind}`,
+    corrected: () => `${w} marked <a href="#/${esc(e.inst)}">${esc(cur.s?.instances.find(i => i.id === e.inst)?.label ?? labelOf(e.inst, e.label))}</a>${e.item ? ` ${esc(e.item)}` : ''} ${e.kind}`,
     comment: () => `${w} ${data.standing[e.seq] === 'note' ? `left a note for ${who(data.runner.by)}` : e.by !== 'agent' ? 'commented' : e.ask ? `${e.ask === 'proposal' ? 'proposed' : 'asked'}${e.to ? ' ' + who(e.to) : ''}` : 'said'}${e.item ? ` on ${item(e.item)}${e.ref ? ` at ${esc(e.ref)}` : ''}` : ''}<div class="d">${esc(e.text)}</div>`,
     resolve: () => `${w} resolved a thread${e.text ? `<div class="d">${esc(e.text)}</div>` : ''}`,
     react: () => `${w} ${e.up === null ? 'took back a reaction' : e.up ? 'gave a thumbs up' : 'gave a thumbs down'} on ${e.on ? `comment c${e.on}` : 'the instance'}`,
@@ -591,8 +591,8 @@ function renderNeeds() {
     + `${e.ref ? ` at ${esc(e.ref)}` : ''} is ${e.kind}: ${esc(e.text)}${seeHtml(e.see)}</span><span class="by">${who(e.by)} \u00b7 ${when(e.at)}</span></div>`).join(''));
 }
 
-// Where a correction says the change is: a later instance, by its label then, and its thread.
-const seeHtml = see => see ? ` \u00b7 see <a href="#/${esc(see.inst)}">${esc(see.label)}</a>${see.thread ? ` ${esc(see.thread)}` : ''}` : '';
+// Where a correction says the change is: a later instance, by its label now, and its thread.
+const seeHtml = see => see ? ` \u00b7 see <a href="#/${esc(see.inst)}">${esc(cur.s?.instances.find(i => i.id === see.inst)?.label ?? labelOf(see.inst, see.label))}</a>${see.thread ? ` ${esc(see.thread)}` : ''}` : '';
 
 function renderLog() {
   // Either side opens at its latest, as the panel does, and keeps there as posts come, unless the reader has scrolled up.

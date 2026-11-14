@@ -15,7 +15,7 @@ delete process.env.OPENROUTER_API_KEY;
 process.env.RF_WAKE_TICK_MS = '50';
 const entra = await idp();
 Object.assign(process.env, entra.env('http://127.0.0.1:1'));
-const { active, byToken, cancelWakes, closed, held, kick, message, recover, remove, resolveFor, setWake, startWaking, view, wakes, wakesOf, weekly } = await import('../src/waker.ts');
+const { active, byToken, cancelWakes, closed, correct, held, kick, message, recover, remove, resolveFor, setWake, startWaking, view, wakes, wakesOf, weekly } = await import('../src/waker.ts');
 const { personDir, saveLogin, signOut } = await import('../src/logins.ts');
 const { keepSignIn } = await import('../src/entra.ts');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-wake-')), alice = 'alice@demo.test';
@@ -721,4 +721,17 @@ test('a cut run aborts and drains in-flight proxy calls before done, and done.es
     if (prevUp === undefined) delete upstreams['openrouter.ai']; else upstreams['openrouter.ai'] = prevUp;
     server.close();
   }
+});
+
+test('message resolves the live label of a correction see target after that instance is renamed', async () => {
+  mkdirSync(join(tmp, 'series', 'scorr'), { recursive: true });
+  saveTree({ ...tree(), series: { ...tree().series, scorr: { name: 'CorrSeries', workspace: 'w' } } });
+  const c1 = createInstance('scorr', '2026-01', alice, []);
+  await c1.close({ name: 'Alice', email: alice });
+  const c2 = createInstance('scorr', '2026-02', alice, []);
+  correct(c1, alice, { kind: 'wrong', text: 'Fixed in Feb', see: c2 });
+  await committed(c1.dir);
+  renameInstance(c2, '2026-02-rev2');
+  const c3 = createInstance('scorr', '2026-03', alice, []);
+  assert.match(message(c3, 1, c3.log, true), /see 2026-02-rev2/);
 });

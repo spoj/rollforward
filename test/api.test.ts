@@ -2088,4 +2088,21 @@ test('rf comment --wake and --wait on a shared series start and wait for the run
   await quiet();
 });
 
+test('/correct restricts a person’s see target to another non-deleted instance of the same series', async () => {
+  const { id: ws1 } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'CorrWs1' }))).json();
+  const { id: ws2 } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'CorrWs2' }))).json();
+  const { id: s1 } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws1, name: 'S1' }))).json();
+  const { id: s2 } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws2, name: 'S2' }))).json();
+  const { id: i1 } = await (await call('POST', `/api/series/${s1}`, JSON.stringify({ label: '2026-01', quiet: true }))).json();
+  const { id: i2 } = await (await call('POST', `/api/series/${s1}`, JSON.stringify({ label: '2026-02', quiet: true }))).json();
+  const { id: other } = await (await call('POST', `/api/series/${s2}`, JSON.stringify({ label: '2026-02', quiet: true }))).json();
+  await call('POST', `/api/instances/${i1}/close`, JSON.stringify({ quiet: true }));
+
+  assert.equal((await call('POST', `/api/instances/${i1}/correct`, JSON.stringify({ kind: 'wrong', text: 'bad cross-series', see: other }))).status, 400);
+  assert.equal((await json(`/api/instances/${other}`)).log.some((e: any) => e.op === 'corrected'), false);
+  assert.equal((await call('POST', `/api/instances/${i1}/correct`, JSON.stringify({ kind: 'wrong', text: 'self', see: i1 }))).status, 400);
+  assert.equal((await call('POST', `/api/instances/${i1}/correct`, JSON.stringify({ kind: 'wrong', text: 'valid same-series', see: i2 }))).status, 200);
+  assert.equal((await json(`/api/instances/${i2}`)).log.some((e: any) => e.op === 'corrected'), true);
+});
+
 

@@ -142,8 +142,15 @@ export function message(inst: Instance, n: number, entries: Entry[], first = fal
   const lent = (l: string) => l.startsWith('web:') && sites[l.slice(4)] ? `${l} at ${sites[l.slice(4)].url}` : offers.has(l) ? `${l} (${offers.get(l)})` : l;
   // The corrections on the instances before it, so an error isn't rolled forward.
   const fixed = !first ? [] : closedBefore(inst).flatMap(i => i.log.filter(e => e.op === 'correction').map(e => {
-    const see = e.see as { label: string; thread?: string } | undefined;
-    return `${i.label}${e.item ? ` ${e.item}${e.ref ? `@${e.ref}` : ''}` : ''} is ${e.kind}, ${JSON.stringify(e.text)}${see ? `, see ${see.label}${see.thread ? ` ${see.thread}` : ''}` : ''}`;
+    const see = e.see as { inst: string; label: string; thread?: string } | undefined;
+    const seeLabel = see && (() => {
+      try {
+        const s = instance(see.inst);
+        if (s.hole) return see.label;
+        return s.seriesId === inst.seriesId ? s.label : `${tree().series[s.seriesId]?.name ?? ''}/${s.label}`.replace(/^\//, '');
+      } catch { return see.label; }
+    })();
+    return `${i.label}${e.item ? ` ${e.item}${e.ref ? `@${e.ref}` : ''}` : ''} is ${e.kind}, ${JSON.stringify(e.text)}${see ? `, see ${seeLabel}${see.thread ? ` ${see.thread}` : ''}` : ''}`;
   }));
   const from = (e: Note) => e.by !== 'agent' ? who(e.by) : `the agent of ${named(tree(), instance((e.see as { inst: string }).inst).seriesId)}/${instance((e.see as { inst: string }).inst).label}, run ${e.run}, for ${who(e.runner as string)}`;
   return `Instance ${inst.label}, run ${n}.`

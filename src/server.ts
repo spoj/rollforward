@@ -1080,6 +1080,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (inst.doc.status !== 'closed') throw new HttpError(409, `${inst.label} is ${inst.doc.status}: only a closed instance takes corrections, as nothing else changes it`);
     if (see && !run) mustSee(me, t.workspaces[t.series[see.seriesId].workspace]);
     if (see?.hole) throw new HttpError(409, `${see.label} was deleted`);
+    if (see && !run && (see.seriesId !== inst.seriesId || see === inst)) throw new HttpError(400, `${see.label} is not another instance in ${t.series[inst.seriesId].name}`);
     if (!['wrong', 'superseded'].includes(k) || typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a correction is {"kind": "wrong" or "superseded", "text", "item", "ref", "see", "thread"}');
     if (item != null && !inst.doc.items.some(i => i.id === item)) throw new HttpError(400, `no item ${item}; ${inst.label}'s items: ${inst.doc.items.map(i => i.id).join(', ')}`);
     if (thread != null && !see?.threads().includes(thread)) throw new HttpError(400, `no thread ${thread} in ${see?.label ?? 'the instance it names'}`);
