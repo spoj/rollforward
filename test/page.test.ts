@@ -2082,6 +2082,32 @@ test('Assign dialog when no other signed-in person sees the workspace explains t
   await page.keyboard.press('Escape');
 });
 
+test('Enter does not submit a busy confirmation dialog twice', async () => {
+  const ctx = await browser.newContext({ storageState: await page.context().storageState() }), tab = await ctx.newPage();
+  let posts = 0;
+  let release!: () => void;
+  const pending = new Promise<void>(ok => { release = ok; });
+  try {
+    await tab.goto(page.url());
+    await tab.click('[data-act=new-workspace]');
+    await tab.fill('#ask input', 'Only once');
+    await tab.route('**/api/workspaces', async route => {
+      posts++;
+      await pending;
+      await route.fulfill({ status: 500, body: 'Test submission held' });
+    });
+    await tab.press('#ask input', 'Enter');
+    await tab.waitForSelector('#ask button[aria-busy]');
+    await tab.press('#ask input', 'Enter');
+    release();
+    await tab.waitForSelector('#ask .err:text-is("Test submission held")');
+    assert.equal(posts, 1);
+  } finally {
+    release();
+    await ctx.close();
+  }
+});
+
 test('Enter respects aria-busy, row settings do not hang when location.hash already matches, and #wname stays synced in settings', async () => {
   // 1. Enter twice in #tname while POST /tokens is in flight submits only once.
   let tokenPosts = 0;

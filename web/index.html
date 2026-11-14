@@ -1304,6 +1304,7 @@ function ask({ title, text = '', html = '', value, placeholder = '', ok, kind = 
     d.querySelector('form').onsubmit = async e => {
       if (!e.submitter.value) return;
       e.preventDefault();
+      if (e.submitter.hasAttribute('aria-busy')) return;
       e.submitter.setAttribute('aria-busy', 'true');
       try {
         done(await act(input?.value.trim(), e.submitter.value));
