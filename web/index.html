@@ -37,7 +37,9 @@
 const $ = s => document.querySelector(s);
 const enc = encodeURIComponent;
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
-const usd = n => '$' + n.toFixed(2);
+const usd = (n, est) => `${est ? '~' : ''}${n < 0 ? '-$' + (-n).toFixed(2) : '$' + n.toFixed(2)}${est ? ' (est.)' : ''}`;
+const signedUsd = n => `${n >= 0 ? '+$' : '-$'}${Math.abs(n).toFixed(2)}`;
+const lowCreditText = lc => `Low OpenRouter credit: ${usd(lc.remaining)} remaining${lc.limit !== null ? ` of ${usd(lc.limit)} limit` : ''}${lc.reset ? ` (resets ${lc.reset})` : ''}`;
 const APP = 'RollForward';
 // The buttons' icons, line drawings in the colour of their text.
 const icon = d => `<svg class="ico" viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
@@ -147,8 +149,8 @@ const ago = iso => {
 };
 
 async function refresh() {
-  me ??= await api('/me');
-  const n = ++refreshes, [t, mine] = await Promise.all([api('/api'), api('/logins')]);
+  const n = ++refreshes, [who, t, mine] = await Promise.all([api('/me'), api('/api'), api('/logins')]);
+  me = who;
   const [id, at] = location.hash.slice(2).split('/'), all = t.flatMap(w => [[w], ...w.series.flatMap(s => [[w, s], ...s.instances.map(i => [w, s, i])])]), found = all.find(e => e.at(-1).id === id);
   // An address that names nothing here opens the sidebar's first workspace, and then names what it shows.
   const ws = t.filter(w => !w.archived && (w.mine || localStorage.workspaces === 'all' || !t.some(w => w.mine)));
@@ -259,7 +261,8 @@ function renderBrand() {
 // The top bar: the app and what the page shows, and your account, whose menu has your role and Sign out.
 function renderTop() {
   const view = cur?.i ? 'Instance workspace' : cur?.s ? 'Series' : cur?.w ? 'Workspace' : '';
-  put($('#masthead'), `<div class="app-name"><b>${APP}</b>${view ? `<span class="pagename">${view}</span>` : ''}</div>`
+  const low = me.role === 'admin' && me.low_credit ? `<button class="lowcredit" id="low-credit" data-act="costs">${esc(lowCreditText(me.low_credit))}</button>` : '';
+  put($('#masthead'), `<div class="app-name"><b>${APP}</b>${view ? `<span class="pagename">${view}</span>` : ''}</div>` + low
     + `<details class="user" id="user"><summary title="${esc(me.name)}"><span class="avatar">${esc(initials(me.name || me.email))}</span><span class="mail">${esc(me.email)}</span></summary>`
     + `<div class="upop"><b>${esc(me.name)}${me.role === 'user' ? '' : ' · ' + me.role}</b><span class="sub">${esc(me.email)}</span><button class="quiet" data-act="signout">Sign out</button></div></details>`);
 }
@@ -356,6 +359,7 @@ function renderSide() {
   // The foot: Settings, the version the server runs, and « to fold the sidebar to a rail, as this browser keeps it.
   const folded = $('.app').classList.contains('folded');
   put($('#sidefoot'), `<button class="setting" data-act="logins" title="Logins and tokens"><span class="cog">\u2699</span>Settings<span class="go-on">\u203A</span></button>`
+    + (me.role === 'admin' ? '<button class="setting" data-act="costs" title="Daily costs and model key">Costs<span class="go-on">\u203A</span></button>' : '')
     + (me.version ? `<div class="release">rollforward ${esc(me.version)}</div>` : '')
     + `<button class="sidefold" data-act="fold-side" title="${folded ? 'Open' : 'Fold'} the sidebar">${folded ? '\u00BB' : '\u00AB'}${folded && waits ? '<span class="dot"></span>' : ''}</button>`);
 }
@@ -528,8 +532,8 @@ function logText(e) {
     point: () => `${w} ${e.file ? 'showed' : 'cleared'} ${item(e.item)}${e.was ? `<div class="d">Replacing ${esc(fname(e.was))}</div>` : ''}${f}`,
     item: () => `${w} set up ${esc(e.name)}${e.from?.length ? `<div class="d">From ${e.from.map(item).join(', ')}</div>` : ''}${e.headline ? `<div class="d">${esc(e.headline)}</div>` : ''}${e.source ? `<div class="d">Source: ${esc(e.source)}</div>` : ''}${e.destination ? `<div class="d">Destination: ${esc(e.destination)}</div>` : ''}`,
     remove: () => `${w} removed ${esc(e.item)} from the screen`,
-    run: () => `Run ${e.run} started${data.run?.n === e.run ? ` \u00b7 ${usd(data.run.cost)} so far` : ''}`,
-    done: () => `Run ${e.run} finished${e.aborted ? ' (stopped)' : ''} · ${took(e)} · ${usd(e.cost)}${e.error ? `<div class="d">${esc(e.error)}</div>` : ''}`,
+    run: () => `Run ${e.run} started${data.run?.n === e.run ? ` \u00b7 ${usd(data.run.cost, data.run.estimated)} so far` : ''}`,
+    done: () => `Run ${e.run} finished${e.aborted ? ' (stopped)' : ''} · ${took(e)} · ${usd(e.cost, e.estimated)}${e.error ? `<div class="d">${esc(e.error)}</div>` : ''}`,
     interrupt: () => `${w} interrupted the run${e.why ? `<div class="d">${esc(e.why)}</div>` : ''}`,
     close: () => `${w} closed the instance${e.accepted ? `<div class="d">Accepting what the agent did for ${e.accepted.length} ask${e.accepted.length > 1 ? 's' : ''} still waiting</div>` : ''}${e.commit ? `<div class="d">Commit <code>${e.commit.slice(0, 7)}</code></div>` : ''}`,
     signoff: () => `${w} ${e.approved === false ? 'rejected' : 'approved'}${e.on ? ` c${e.on}` : ''}<div class="d">${e.text ? `${esc(e.text)} · ` : ''}Commit <code>${e.commit.slice(0, 7)}</code></div>`,
@@ -553,7 +557,7 @@ function logText(e) {
     egress: () => `Run ${e.run} ${e.allowed ? 'reached' : 'was refused'} ${esc(e.host)}`,
     delivered: () => `${w} delivered ${item(e.item)} to ${esc(e.to)}<div class="d">${{ graph: 'Through Microsoft 365 · ', website: 'Through a website · ' }[e.via] ?? ''}${esc(e.receipt)}</div>`,
     send: () => `${w} sent ${esc(e.method)} ${esc(e.path)} to ${esc(e.name)}, with no answer logged`,
-    call: () => `${w} ${e.model ? `asked ${esc(e.model)}` : `called ${esc(e.name)}: ${esc(e.method)} ${esc(e.path)}`}${e.cost ? ` \u00b7 $${e.cost.toFixed(4)}` : ''}${e.refused || e.failed ? `, ${e.refused ? 'refused' : 'failed'}<div class="d">${esc(e.refused ?? e.failed)}</div>` : e.status >= 300 ? `, which answered ${e.status}` : ''}`,
+    call: () => `${w} ${e.model ? `asked ${esc(e.model)}` : `called ${esc(e.name)}: ${esc(e.method)} ${esc(e.path)}`}${e.cost ? ` \u00b7 ${e.estimated ? '~' : ''}$${e.cost.toFixed(4)}${e.estimated ? ' (est.)' : ''}` : ''}${e.refused || e.failed ? `, ${e.refused ? 'refused' : 'failed'}<div class="d">${esc(e.refused ?? e.failed)}</div>` : e.status >= 300 ? `, which answered ${e.status}` : ''}`,
     graph: () => `${w} ${e.method ? `sent ${esc(e.method)} ${esc(e.path)} to` : `read ${esc(e.path)} from`} Microsoft 365${e.status >= 300 ? `, which answered ${e.status}` : ''}${e.to && e.to !== e.path ? `<div class="d">${esc(e.to)}</div>` : ''}${[e.body, e.file].filter(Boolean).map(f => `<div class="f"><a data-act="preview" data-file="${esc(f)}">${esc(f)}</a></div>`).join('')}`,
     move: () => `Moved from ${esc(e.from)} to ${esc(e.to)}, ${who(e.accepted_by ?? e.by)} accepting`,
     rename: () => e.by === 'server' ? `Named by its first prompt, from ${esc(e.from)}` : `${w} renamed the instance from ${esc(e.from)}`,
@@ -626,7 +630,8 @@ function renderAudit() {
     : `<b>${VERB[s.kind] ?? esc(s.kind)}</b> <code>${esc(firstLine(s.kind === 'bash' ? s.text : s.text.split(`/${cur.s.name}/`).pop()))}</code> \u23BF ${res(s)}` }));
   const rows = [...data.log.map(e => ({ at: e.at, html: logText(e) })), ...steps].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
   const runs = data.log.filter(e => e.op === 'run').length, cost = data.log.reduce((t, e) => t + (e.op === 'done' ? e.cost : 0), 0) + (data.run?.cost ?? 0);
-  put($('#audit'), `<div class="sub">${plural(runs, 'run')}, ${usd(cost)}</div>` + rows.map(r => `<div class="e"><span class="tm">${hhmm(r.at)}</span><div>${r.html}</div></div>`).join(''));
+  const est = data.log.some(e => e.op === 'done' && e.estimated) || data.run?.estimated;
+  put($('#audit'), `<div class="sub">${plural(runs, 'run')}, ${usd(cost, est)}</div>` + rows.map(r => `<div class="e"><span class="tm">${hhmm(r.at)}</span><div>${r.html}</div></div>`).join(''));
   if ($('#log').dataset.end !== 'no') $('#log').scrollTop = $('#log').scrollHeight;
 }
 
@@ -773,7 +778,7 @@ const processNote = d => `<div class="pnote"><a data-act="preview" data-file="wo
 // A run, as one line among the threads: how it ended, how long it took and what it cost, opening to why it failed.
 function runHtml(r, latest) {
   const d = data.log.find(e => e.op === 'done' && e.run === r.run);
-  const line = `Run ${r.run} \u00b7 ${!d ? `<span class="spin"></span> going \u00b7 ${usd(data.run?.cost ?? 0)}` : `${d.error ? '<span class="bad">failed</span>' : d.aborted ? 'stopped' : 'done'} \u00b7 ${took(d)} \u00b7 ${usd(d.cost)}`}`;
+  const line = `Run ${r.run} \u00b7 ${!d ? `<span class="spin"></span> going \u00b7 ${usd(data.run?.cost ?? 0, data.run?.estimated)}` : `${d.error ? '<span class="bad">failed</span>' : d.aborted ? 'stopped' : 'done'} \u00b7 ${took(d)} \u00b7 ${usd(d.cost, d.estimated)}`}`;
   const body = (d?.error ? `<div class="post bad">${esc(d.error)}</div>` : '') + (d?.rules && !d.thread ? processNote(d) : '');
   return body ? `<details class="runl" data-key="run${r.run}" ${ui.sect[`run${r.run}`] ?? latest ? 'open' : ''}><summary>${line}</summary>${body}</details>` : `<div class="runl">${line}</div>`;
 }
@@ -909,7 +914,7 @@ function renderPv() {
   if (!pv) return void (d.open && d.close());
   // Your account's dialog: Logins and Tokens, as tabs.
   const account = [['logins', 'Logins'], ['tokens', 'Tokens']], mine = account.some(([k]) => k === pv.settings?.kind);
-  d.className = 'pv' + (pv.settings ? ' small' : '') + (mine || ['workspace', 'waiting'].includes(pv.settings?.kind) ? ' wide' : '');
+  d.className = 'pv' + (pv.settings ? ' small' : '') + (mine || ['workspace', 'waiting', 'costs'].includes(pv.settings?.kind) ? ' wide' : '');
   let h = `<div class="pvh"><b>${esc(pv.title)}</b><span class="saved"></span>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${(pv.att ?? pv).doc ? '<button class="btn" data-act="layout">Exact layout</button>' : ''}${pv.path ? `<a class="btn" href="${fileUrl(pv.path)}">Download</a>` : ''}${pv.signin ? `<button class="btn primary" data-act="signin-save"${pv.signinExpired ? ' disabled' : ''}>${pv.vpn ? 'Connect' : 'Save login'}</button>` : ''}<button class="btn${pv.signin && !pv.signinExpired ? '' : ' primary'}" data-act="unpv">${pv.signin && !pv.signinExpired ? 'Cancel' : 'Close'}</button></div>`;
   if (mine) h += `<div class="pvtabs">${account.map(([k, name]) => `<button class="tab ${pv.settings.kind === k ? 'sel' : ''}" data-act="${k}">${name}</button>`).join('')}</div>`;
   if (pv.att) h += `<div class="sub" style="padding:8px 14px"><a data-act="attachment-back">\u2190 ${esc(pv.title)}</a> \u00b7 ${esc(pv.att.title)}</div>` + previewBody(pv.att);
@@ -921,6 +926,7 @@ function renderPv() {
   else if (pv.settings?.kind === 'wakes') h += `<div class="pvb vl">${wakesHtml(cur.i.id, cur.i.wakes, false)}</div>`;
   else if (pv.settings?.kind === 'notes') h += `<div class="pvb vl">${notesHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'waiting') h += `<div class="pvb vl">${waiting().join('') || '<div class="sub">Nothing waits on you.</div>'}</div>`;
+  else if (pv.settings?.kind === 'costs') h += `<div class="pvb vl">${costsHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'start') h += `<div class="pvb vl">${startHtml(pv.settings)}</div>`;
   else if (pv.settings) {
     const s = pv.settings;
@@ -934,7 +940,7 @@ function renderPv() {
       + (s.manage ? `<div class="row2"><button class="btn${s.archived ? '' : ' danger'}" data-act="archive-workspace">${s.archived ? 'Restore workspace' : 'Archive workspace'}</button></div>` : '');
     if (s.kind === 'series') h += `<h3>Name</h3><input type="text" id="sname" value="${esc(s.name)}">`
       + `<h3>Who starts runs</h3>${startsHtml(s)}<h3>Wakes</h3>${wakesHtml(s.id, s.wakes, true)}`
-      + `<h3>Cost</h3><div class="sub">This series' runs have cost ${usd(s.cost)} so far, ${usd(s.cost / Math.max(1, s.closed))} per closed instance.</div>`
+      + `<h3>Cost</h3><div class="sub">This series' runs have cost ${usd(s.cost, s.estimated)} so far, ${usd(s.cost / Math.max(1, s.closed), s.estimated)} per closed instance.</div>`
       + (cur.w.archived ? (cur.w.manage ? '<div class="row2"><button class="btn" data-act="archive-workspace">Restore workspace</button></div>' : '') : `<div class="row2"><button class="btn${s.archived ? '' : ' danger'}" data-act="archive-series">${s.archived ? 'Restore series' : 'Archive series'}</button></div>`);
     h += '</div>';
   }
@@ -1077,10 +1083,39 @@ function openWorkspaceSettings() {
 
 async function openSeriesSettings() {
   const s = cur.s, logins = await api('/logins');
-  pv = { title: 'Series settings', settings: { ...s, kind: 'series', logins, cost: s.instances.reduce((t, i) => t + i.cost, 0), closed: s.instances.filter(i => i.status === 'closed').length } };
+  pv = { title: 'Series settings', settings: { ...s, kind: 'series', logins, cost: s.instances.reduce((t, i) => t + i.cost, 0), estimated: s.instances.some(i => i.estimated), closed: s.instances.filter(i => i.status === 'closed').length } };
   renderPv();
 }
 
+
+function costsHtml(c) {
+  const k = c.key;
+  let h = '';
+  if (k) {
+    h += `<h3>OpenRouter key</h3>${k.low_credit ? `<div class="bad">${esc(lowCreditText(k))}</div>` : ''}`
+      + `<div class="lline"><b>Key usage</b><span class="sub">${usd(k.usage)} used${k.limit !== null ? ` · ${usd(k.remaining)} remaining of ${usd(k.limit)} limit${k.reset ? ` (resets ${esc(k.reset)})` : ''}` : ' · no spending limit'}</span></div>`
+      + (k.usage_daily !== null ? `<div class="lline"><b>Today (${esc(k.day)} UTC)</b><span class="sub">OpenRouter key: ${usd(k.usage_daily)} · Server recorded on key: ${usd(k.server_total, k.server_estimated)} · Unattributed: ${signedUsd(k.unattributed)}</span></div>` : '');
+  } else h += '<h3>OpenRouter key</h3><div class="sub">Unavailable or no server key set.</div>';
+  h += '<h3>Daily totals</h3>';
+  if (!c.days.length) return h + '<div class="sub">No costs recorded yet.</div>';
+  for (const d of c.days.slice().reverse()) {
+    h += `<details class="tgroup" ${d === c.days.at(-1) ? 'open' : ''}><summary><b>${esc(d.day)}</b> · ${usd(d.cost, d.estimated)}<span class="sub">${plural(d.runs_count, 'run')}${d.server?.cost ? ` · server ${usd(d.server.cost, d.server.estimated)}` : ''}</span></summary>`;
+    const ws = Object.entries(d.by_workspace);
+    if (ws.length) h += '<div class="sub">Workspaces: ' + ws.map(([w, v]) => `${esc(w)} ${usd(v.cost, v.estimated)} (${v.runs})`).join(' · ') + '</div>';
+    const ps = Object.entries(d.by_person);
+    if (ps.length) h += '<div class="sub">People: ' + ps.map(([p, v]) => `${person(p)} ${usd(v.cost, v.estimated)} (${v.runs})`).join(' · ') + '</div>';
+    for (const s of d.server?.items ?? []) h += `<div class="lsub"><span>Server · ${esc(s.kind)}${s.site ? `: <b>${esc(s.site)}</b>` : ''} (${person(s.person)}) · ${plural(s.calls, 'call')}</span><span>${usd(s.cost, s.estimated)}</span></div>`;
+    for (const r of d.runs) h += `<div class="lsub"><span>${esc(r.path)} · run ${r.run} · ${person(r.person)} · ${esc(r.failure ? `${r.outcome} (${r.failure})` : r.outcome)}${r.key === 'own' ? ' · own key' : ''}</span><span>${usd(r.cost, r.estimated)}</span></div>`;
+    h += '</details>';
+  }
+  return h;
+}
+
+async function openCosts() {
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone ?? '';
+  pv = { title: 'Costs', settings: { kind: 'costs', ...await api(`/api/costs?tz=${enc(tz)}`) } };
+  renderPv();
+}
 // "Saved" in the dialog's header for a moment, after a change it saved as it was made.
 let savedFor;
 function saved() {
@@ -1780,6 +1815,7 @@ async function onAct(act, el) {
   }
   if (act === 'logins') await openLogins();
   if (act === 'tokens') await openTokens();
+  if (act === 'costs') await openCosts();
   if (act === 'new-token') {
     const name = $('#tname').value.trim();
     if (!name) return toast('Name the token, such as laptop');

@@ -16,7 +16,8 @@ import { act, canManage, canSee, changes, everyone, initSystem, isPeople, readJs
 import { checkTicks, lastAssign, logins, runnerAt, runnerOf, saveLogin, signOut, unoffer } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
-import { answered, byLogin, call, connections, intercepts, letIn, loginOf, removeConnection, setConnection, setLetIn, upstreams } from './connections.ts';
+import { answered, byLogin, call, connections, intercepts, keyStatus, letIn, loginOf, removeConnection, setConnection, setLetIn, upstreams } from './connections.ts';
+import { syncCosts } from './costs.ts';
 import { addSite, allowHost, Browsers, endSignIn, enrolFlagged, isSignIn, keepAlive, passAllowed, passUpgrade, reap, removeHost, removeSite, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
 import { addVpn, cancelVpnSignIn, disconnectVpn, isVpnSignIn, reapVpns, removeVpn, saveVpnSignIn, startVpnSignIn, vpns } from './vpns.ts';
 import { ask, decide, forgetGrants, forgetWorkspace, lapse, revoke, visible } from './grants.ts';
@@ -199,7 +200,7 @@ function guard(before: string[], after: string[], force: unknown) {
 
 // An instance as the sidebar shows it. What comes from its log and screen is kept until either moves on, or its series' sharing,
 // which says whose entries are notes, changes, so a listing reads each instance's log once, not on every refresh.
-const kept = new WeakMap<Instance, { key: string; active: string; asks: { who: string; kind: string }[]; runner: string; acted: string[]; cost: number; corrections: number; wrong: string[];
+const kept = new WeakMap<Instance, { key: string; active: string; asks: { who: string; kind: string }[]; runner: string; acted: string[]; cost: number; estimated: boolean; corrections: number; wrong: string[];
   refused: { at: string; run: number; site: string; login: string; hosts: string[] }[] }>();
 // Who runs an instance, and the logins they ticked for it, by name while they still offer them.
 function runner(inst: Instance) {
@@ -222,19 +223,20 @@ function names(me: Me) {
 const NEWS = ['done', 'comment', 'signoff', 'reject', 'withdraw', 'upload', 'takeover', 'assign', 'close', 'abandon', 'delete', 'move'];
 
 // What an instance's runs cost, since its latest duplication, a deleted one's as its deletion kept it.
-const costOf = (i: Instance) => +i.log.slice(i.log.findLastIndex(e => e.op === 'duplicate') + 1).reduce((t, e) => t + (['done', 'delete'].includes(e.op) ? e.cost as number : 0), 0).toFixed(4);
+const costOf = (i: Instance) => +i.log.slice(i.log.findLastIndex(e => e.op === 'duplicate') + 1).reduce((t, e) => t + (['done', 'delete'].includes(e.op) ? e.cost as number : 0), 0).toFixed(6);
+const estimatedOf = (i: Instance) => i.log.slice(i.log.findLastIndex(e => e.op === 'duplicate') + 1).some(e => ['done', 'delete'].includes(e.op) && e.estimated === true);
 
 function summary(i: Instance, me: Me, w8 = wakes()) {
   const email = me.email;
   const key = `${i.log.length}:${i.doc.rev}:${seriesSettings(i.series()).shared?.by ?? ''}`;
   const news = i.log.findLast(e => e.by !== email && e.accepted_by !== email && NEWS.includes(e.op)), s = seen(email), told = assignment(i);
   let k = kept.get(i);
-  if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i).map(({ who, e }) => ({ who, kind: e.ask === true ? 'ask' : (e.ask as string | undefined) ?? 'note' })), runner: runnerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: costOf(i), corrections: i.log.filter(e => e.op === 'correction').length,
+  if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i).map(({ who, e }) => ({ who, kind: e.ask === true ? 'ask' : (e.ask as string | undefined) ?? 'note' })), runner: runnerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: costOf(i), estimated: estimatedOf(i), corrections: i.log.filter(e => e.op === 'correction').length,
     wrong: i.log.filter(e => e.op === 'correction' && e.kind === 'wrong').map(e => e.at),
     refused: i.log.filter(e => e.op === 'browser' && e.hosts).map(e => ({ at: e.at, run: e.run as number, site: e.site as string, login: e.login as string, hosts: Object.keys(e.hosts as object) })) });
   return {
     id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(i.seriesId)?.inst === i, queued: !!queued(i),
-    asks: k.asks, wakes: wakesOf(i.id, w8), fired: w8.fired[i.id] ?? null, runner: k.runner, cost: k.cost, active: k.active,
+    asks: k.asks, wakes: wakesOf(i.id, w8), fired: w8.fired[i.id] ?? null, runner: k.runner, cost: k.cost, ...(k.estimated && { estimated: true }), active: k.active,
     unread: !!news && news.at > s.since && news.seq > (s.at[i.id] ?? 0), corrections: k.corrections,
     // Whoever assigned it to you, until you open it or act in it.
     assigned: told?.who === email ? { by: told.by, at: told.at } : null,
@@ -290,24 +292,45 @@ function listing(me: Me) {
 
 // An instance's runs started since `since`, and since its latest duplication: when, how each ended, its cost, whose it was and what started it. A deleted instance's are
 // as its deletion kept them, for the totals: when, how each ended, its cost and whose it was.
-type RunRow = { run: number; at: string; outcome: string; failure: string | null; seconds: number; cost: number; runner: string; started: { op: string; by: string } | null; error: string | null };
+type RunRow = { run: number; at: string; outcome: string; failure: string | null; seconds: number; cost: number; estimated?: true; runner: string; started: { op: string; by: string } | null; error: string | null };
+type CachedRun = RunRow & { key?: 'own' | 'shared'; exaCost?: number };
+const runsKept = new WeakMap<Instance, { len: number; rows: CachedRun[] }>();
+
+function cachedRunsOf(i: Instance): CachedRun[] {
+  const a = active.get(i.seriesId), runningHere = a?.inst === i;
+  const hit = !runningHere && runsKept.get(i);
+  if (hit && hit.len === i.log.length) return hit.rows;
+  let rows: CachedRun[];
+  if (i.hole) {
+    rows = ((i.log[0].runs ?? []) as CachedRun[]).map(r => ({ ...r, started: null, error: null }));
+  } else {
+    const slice = i.log.slice(i.log.findLastIndex(e => e.op === 'duplicate') + 1);
+    rows = slice.filter(r => r.op === 'run').map(r => {
+      const d = slice.find(e => e.op === 'done' && e.run === r.run), seen = (slice.findLast(e => e.op === 'done' && e.seq < r.seq)?.seen as number | undefined) ?? 0;
+      const cause = pending(i, seen, r.seq).find(e => e.seq <= (r.upto as number));
+      const error = d?.error as string | undefined, outcome = !d ? 'running' : !error ? (d.aborted ? 'interrupted' : 'done') : Object.values(CUT).includes(error) ? 'cut' : 'failed';
+      const estimated = d ? d.estimated === true : runningHere && !!a.estimated;
+      const exaCost = slice.reduce((t, e) => t + (e.op === 'call' && e.run === r.run && e.name === 'exa' ? (e.cost as number | undefined) ?? 0 : 0), 0);
+      return {
+        run: r.run as number, at: r.at, outcome,
+        failure: outcome !== 'failed' ? null : /\b402\b|credits/i.test(error!) ? 'credits' : /\b403\b|terms of service|usage polic|flagged/i.test(error!) ? 'policy' : error === 'time limit' ? 'time limit' : 'other',
+        seconds: Math.round(((d ? Date.parse(d.at) : Date.now()) - Date.parse(r.at)) / 1000),
+        cost: d ? d.cost as number : runningHere ? +a.cost.toFixed(6) : 0,
+        ...(estimated && { estimated: true as const }),
+        runner: runnerAt(i.log, r.seq),
+        started: cause ? { op: cause.op, by: cause.op === 'wake' ? cause.from as string : cause.by } : null,
+        error: error ?? null,
+        ...(r.key && { key: r.key as 'own' | 'shared' }),
+        ...(exaCost && { exaCost }),
+      };
+    });
+  }
+  if (!runningHere) runsKept.set(i, { len: i.log.length, rows });
+  return rows;
+}
+
 function runsOf(i: Instance, since = ''): RunRow[] {
-  if (i.hole) return ((i.log[0].runs ?? []) as RunRow[]).filter(r => r.at >= since).map(r => ({ ...r, started: null, error: null }));
-  const a = active.get(i.seriesId);
-  return i.log.slice(i.log.findLastIndex(e => e.op === 'duplicate') + 1).filter(r => r.op === 'run' && r.at >= since).map(r => {
-    const d = i.log.find(e => e.op === 'done' && e.run === r.run), seen = (i.log.findLast(e => e.op === 'done' && e.seq < r.seq)?.seen as number | undefined) ?? 0;
-    const cause = pending(i, seen, r.seq).find(e => e.seq <= (r.upto as number));
-    const error = d?.error as string | undefined, outcome = !d ? 'running' : !error ? (d.aborted ? 'interrupted' : 'done') : Object.values(CUT).includes(error) ? 'cut' : 'failed';
-    return {
-      run: r.run as number, at: r.at, outcome,
-      // Why a failed run failed: out of OpenRouter credits, a provider's policy refusing it, the time limit, or anything else.
-      failure: outcome !== 'failed' ? null : /\b402\b|credits/i.test(error!) ? 'credits' : /\b403\b|terms of service|usage polic|flagged/i.test(error!) ? 'policy' : error === 'time limit' ? 'time limit' : 'other',
-      seconds: Math.round(((d ? Date.parse(d.at) : Date.now()) - Date.parse(r.at)) / 1000), cost: d ? d.cost as number : a?.inst === i ? +a.cost.toFixed(4) : 0,
-      runner: runnerAt(i.log, r.seq),
-      started: cause ? { op: cause.op, by: cause.op === 'wake' ? cause.from as string : cause.by } : null,
-      error: error ?? null,
-    };
-  });
+  return cachedRunsOf(i).filter(r => r.at >= since).map(({ key: _k, exaCost: _e, ...r }) => r);
 }
 
 // Every run in what `me` sees, started since `since`, by where it ran.
@@ -331,12 +354,117 @@ function activity(me: Me, since: string) {
 
 // What goes on and what is stuck in what `me` sees: runs going and queued, what waits on whom, and open instances whose last run
 // failed. Admins see everyone's expired logins, others their own.
-function status(me: Me) {
+async function costs(me: Me, since: string, tz: string) {
+  let fmt: Intl.DateTimeFormat;
+  try {
+    fmt = new Intl.DateTimeFormat('sv-SE', { ...(tz && { timeZone: tz }), year: 'numeric', month: '2-digit', day: '2-digit' });
+  } catch {
+    throw new HttpError(400, `invalid timezone: ${tz}`);
+  }
+  const dayOf = (iso: string) => fmt.format(new Date(iso));
+  const t = tree(), records = syncCosts(), isAdmin = me.role === 'admin';
+  type DayRun = { at: string; path: string; workspace: string; series: string; run: number; person: string; outcome: string; failure: string | null; cost: number; estimated?: true; key?: 'own' | 'shared' };
+  type ServerItem = { kind: 'website-check' | 'try'; site?: string; person: string; calls: number; cost: number; estimated?: true };
+  type DayEntry = {
+    day: string; cost: number; runs_count: number; estimated?: true;
+    by_workspace: Record<string, { runs: number; cost: number; estimated?: true }>;
+    by_person: Record<string, { runs: number; cost: number; estimated?: true }>;
+    runs: DayRun[];
+    server?: { cost: number; estimated?: true; items: ServerItem[] };
+  };
+  const byDay = new Map<string, { runs: DayRun[]; server: Map<string, ServerItem> }>();
+  const bucket = (d: string) => {
+    let b = byDay.get(d);
+    if (!b) byDay.set(d, b = { runs: [], server: new Map() });
+    return b;
+  };
+  for (const [sid, s] of Object.entries(t.series)) {
+    const w = t.workspaces[s.workspace];
+    if (!canSee(me, w)) continue;
+    const seriesName = `${w.name}/${s.name}`;
+    for (const i of instances(sid)) for (const r of cachedRunsOf(i)) {
+      if (r.at < since) continue;
+      bucket(dayOf(r.at)).runs.push({
+        at: r.at, path: `${seriesName}/${i.label}`, workspace: w.name, series: seriesName,
+        run: r.run, person: r.runner, outcome: r.outcome, failure: r.failure, cost: r.cost,
+        ...(r.estimated && { estimated: true }), ...(r.key && { key: r.key }),
+      });
+    }
+  }
+  if (isAdmin) for (const e of records) {
+    if (!('by' in e) || e.at < since) continue;
+    const b = bucket(dayOf(e.at)), k = `${e.kind}\0${e.site ?? ''}\0${e.person}`;
+    const prev = b.server.get(k) ?? { kind: e.kind, ...(e.site && { site: e.site }), person: e.person, calls: 0, cost: 0 };
+    prev.calls++;
+    prev.cost = +(prev.cost + e.cost).toFixed(6);
+    if (e.estimated) prev.estimated = true;
+    b.server.set(k, prev);
+  }
+  const counted = (r: { outcome: string }) => r.outcome === 'cut' ? 0 : 1;
+  const days: DayEntry[] = [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([day, b]) => {
+    b.runs.sort((x, y) => x.at.localeCompare(y.at));
+    const byWs: DayEntry['by_workspace'] = {}, byPerson: DayEntry['by_person'] = {};
+    let runCost = 0, runCount = 0, est = false;
+    for (const r of b.runs) {
+      const c = counted(r);
+      runCost += r.cost;
+      runCount += c;
+      if (r.estimated) est = true;
+      const w = byWs[r.workspace] ??= { runs: 0, cost: 0 };
+      w.runs += c; w.cost = +(w.cost + r.cost).toFixed(6);
+      if (r.estimated) w.estimated = true;
+      const p = byPerson[r.person] ??= { runs: 0, cost: 0 };
+      p.runs += c; p.cost = +(p.cost + r.cost).toFixed(6);
+      if (r.estimated) p.estimated = true;
+    }
+    const items = [...b.server.values()].sort((x, y) => y.cost - x.cost);
+    const srvCost = items.reduce((s, x) => s + x.cost, 0), srvEst = items.some(x => x.estimated);
+    if (srvEst) est = true;
+    return {
+      day, cost: +(runCost + (isAdmin ? srvCost : 0)).toFixed(6), runs_count: runCount, ...(est && { estimated: true }),
+      by_workspace: byWs, by_person: byPerson, runs: b.runs,
+      ...(isAdmin && { server: { cost: +srvCost.toFixed(6), ...(srvEst && { estimated: true }), items } }),
+    };
+  });
+  if (!isAdmin) return { days };
+  const k = await keyStatus();
+  if (!k) return { days };
+  const utcDay = new Date().toISOString().slice(0, 10);
+  const trackedRuns = new Set<string>();
+  let serverTotal = 0, serverEst = false;
+  for (const e of records) {
+    if (!('by' in e)) trackedRuns.add(`${e.inst}:${e.run}`);
+    if (e.at.slice(0, 10) === utcDay && e.service === 'openrouter' && !e.own) {
+      serverTotal += e.cost;
+      if (e.estimated) serverEst = true;
+    }
+  }
+  // Include any run on today's UTC day that predates costs.jsonl (e.g. from earlier on deploy day).
+  for (const sid of Object.keys(t.series)) for (const i of instances(sid)) for (const r of cachedRunsOf(i)) {
+    if (r.at.slice(0, 10) === utcDay && r.key !== 'own' && !trackedRuns.has(`${i.id}:${r.run}`)) {
+      serverTotal += Math.max(0, r.cost - (r.exaCost ?? 0));
+      if (r.estimated) serverEst = true;
+    }
+  }
+  return {
+    days,
+    key: {
+      usage: k.usage, usage_daily: k.usage_daily, limit: k.limit, remaining: k.remaining, reset: k.reset,
+      fetched_at: k.fetched_at, low_credit: k.low_credit, day: utcDay,
+      server_total: +serverTotal.toFixed(6), ...(serverEst && { server_estimated: true }),
+      unattributed: k.usage_daily !== null ? +(k.usage_daily - serverTotal).toFixed(6) : null,
+    },
+  };
+}
+
+async function status(me: Me) {
   const t = tree(), w8 = wakes(), path = (i: Instance) => `${named(t, i.seriesId)}/${i.label}`;
   const seen = Object.entries(t.series).filter(([, s]) => canSee(me, t.workspaces[s.workspace]));
   const open = seen.flatMap(([sid]) => instances(sid).filter(i => i.doc.status === 'open'));
+  const k = me.role === 'admin' ? await keyStatus() : null;
   return {
-    running: seen.flatMap(([sid]) => active.get(sid) ?? []).map(a => ({ path: path(a.inst), run: a.n, at: a.inst.log.findLast(e => e.op === 'run')!.at, cost: +a.cost.toFixed(4) })),
+    ...(k?.low_credit && { low_credit: { remaining: k.remaining!, limit: k.limit, usage: k.usage, reset: k.reset } }),
+    running: seen.flatMap(([sid]) => active.get(sid) ?? []).map(a => ({ path: path(a.inst), run: a.n, at: a.inst.log.findLast(e => e.op === 'run')!.at, cost: +a.cost.toFixed(6), ...(a.estimated && { estimated: true }) })),
     queued: open.flatMap(i => { const q = queued(i); return q ? [{ path: path(i), ...q }] : []; }),
     asks: open.flatMap(i => waits(i).map(({ who, e }) => ({ who, path: path(i), since: e.at, text: e.text as string, note: e.by !== 'agent' || !e.ask }))),
     assigned: open.flatMap(i => { const a = assignment(i); return a ? [{ ...a, path: path(i) }] : []; }),
@@ -832,7 +960,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   if (!action) see(by, inst.id, inst.log.at(-1)!.seq);
   // Each entry's standing, by its seq, a note's entry saying note too; and whether a comment of yours would start a run now.
   const said = !action && new Map(inst.log.flatMap(e => { const s = standing(inst, e); return s ? [[e.seq, s.word]] : []; }));
-  if (said) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => said.get(e.seq) === 'note' ? { ...e, note: true } : e), standing: Object.fromEntries(said), starts: inst.doc.status === 'open' && standing(inst, { seq: inst.log.length + 1, at: '', by, op: 'comment' })!.starts, run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4), browsers: [...(mine.browsers?.watchable().keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), runner: runner(inst), previous: await previous(inst), sums: Object.fromEntries(await Promise.all(inst.doc.items.filter(i => i.file).map(async i => [i.id, await sha256(inst.dir, i.file!)]))), waiting: waits(inst).map(({ who, e }) => ({ who, seq: e.seq })) });
+  if (said) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => said.get(e.seq) === 'note' ? { ...e, note: true } : e), standing: Object.fromEntries(said), starts: inst.doc.status === 'open' && standing(inst, { seq: inst.log.length + 1, at: '', by, op: 'comment' })!.starts, run: mine ? { n: mine.n, cost: +mine.cost.toFixed(6), ...(mine.estimated && { estimated: true }), browsers: [...(mine.browsers?.watchable().keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), runner: runner(inst), previous: await previous(inst), sums: Object.fromEntries(await Promise.all(inst.doc.items.filter(i => i.file).map(async i => [i.id, await sha256(inst.dir, i.file!)]))), waiting: waits(inst).map(({ who, e }) => ({ who, seq: e.seq })) });
   if (action === 'trace') return send(res, 200, trace(inst));
   // Whom it may be assigned to, for those who may assign it to someone else: whoever sees its workspace and may sign in, but its runner.
   if (action === 'assignees') {
@@ -852,7 +980,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // holds of it goes, but its id, label and place in its series, and who deleted it and when, with what its runs cost, for the
     // totals (waker.ts remove()); the system's log records it.
     if (!canManage(me, t.workspaces[t.series[inst.seriesId].workspace])) throw new HttpError(403, "only the workspace's owners and admins delete an instance");
-    await remove(inst, by, () => ({ cost: costOf(inst), runs: runsOf(inst).map(({ started, error, ...r }) => r) }));
+    await remove(inst, by, () => ({ cost: costOf(inst), ...(estimatedOf(inst) && { estimated: true }), runs: runsOf(inst).map(({ started, error, ...r }) => r) }));
     for (const p of readdirSync(previews)) if (p.startsWith(inst.id + '-')) rmSync(join(previews, p));
     for (const k of sums.keys()) if (k.startsWith(inst.dir + sep)) sums.delete(k);
     return send(res, 200, 'ok');
@@ -1165,8 +1293,11 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(readFileSync(page));
     } else if (url.pathname === '/me') {
-      const { text, logo } = brand();
-      send(res, 200, { ...me, names: names(me), browsers: !!process.env.RF_BROWSER_URL, brand: { text: text || null, logo: !!logo }, themeLogo: !!themeLogo, can: CAPS.filter(c => can(me, c)), version });
+      const { text, logo } = brand(), k = me.role === 'admin' ? await keyStatus() : null;
+      send(res, 200, {
+        ...me, names: names(me), browsers: !!process.env.RF_BROWSER_URL, brand: { text: text || null, logo: !!logo }, themeLogo: !!themeLogo, can: CAPS.filter(c => can(me, c)), version,
+        ...(k?.low_credit && { low_credit: { remaining: k.remaining!, limit: k.limit, usage: k.usage, reset: k.reset } }),
+      });
     } else if (url.pathname === '/capabilities') {
       if (me.role !== 'admin') throw new HttpError(403, 'admins grant capabilities');
       if (req.method === 'PUT') {
@@ -1213,8 +1344,9 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     else if (url.pathname === '/api') send(res, 200, listing(me));
     else if (url.pathname === '/api/files') send(res, 200, pullable(me, url.searchParams.get('path') ?? ''));
     else if (url.pathname === '/api/runs') send(res, 200, runs(me, url.searchParams.get('since') ?? ''));
+    else if (url.pathname === '/api/costs') send(res, 200, await costs(me, url.searchParams.get('since') ?? '', url.searchParams.get('tz') ?? ''));
     else if (url.pathname === '/api/activity') send(res, 200, activity(me, url.searchParams.get('since') ?? ''));
-    else if (url.pathname === '/api/status') send(res, 200, status(me));
+    else if (url.pathname === '/api/status') send(res, 200, await status(me));
     // Each index the person can see, admins all, others those they are indexing.
     else if (url.pathname === '/api/indexes') send(res, 200, indexes().filter(x => me.role === 'admin' || x.people.some(p => p.who === me.email)));
     else if (url.pathname.startsWith('/files/')) await file(me, res, url, false);
@@ -1410,6 +1542,7 @@ server.listen(port, host, () => {
     lapse();
     keepAlive().catch(e => console.error('keeping logins alive:', e));
   }, 60_000).unref();
+  setInterval(() => { if (process.env.OPENROUTER_API_KEY) keyStatus(); }, Number(process.env.RF_KEY_TTL_MS ?? 180_000)).unref();
   checkLogins(connections().map(loginOf).flatMap(l => l.scope ? [l] : []));
   console.log(`rollforward on http://${host}:${port}, data in ${root}${process.env.RF_TODAY ? `, skills take today as ${process.env.RF_TODAY} (RF_TODAY)` : ''}`);
 });

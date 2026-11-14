@@ -110,16 +110,17 @@ rf skills
 rf skill pull ID [DIR] [--version N]   the newest version, or N, into DIR, ./ID by default, new or empty, as push reads it
 rf skill versions ID
 rf connections
-rf status [--long MIN] [--json]   what goes on and what's stuck: runs going, flagged past MIN minutes (30), and queued, with why;
-                                  what waits on whom since when; open instances whose last run failed
+rf status [--long MIN] [--json]   what goes on and what's stuck: low OpenRouter credit (for admins), runs going, flagged past
+                                  MIN minutes (30), and queued, with why; what waits on whom since when; open instances whose last run failed
 rf indexes [--json]               each index of a source you index, all for admins: its kind, items and size, and per person
                                   its phase, crawl or follow, pages read, when last caught up, and its error and next try
 rf runs [PATH] [--since DATE] [--failed] [--running] [--long MIN] [--json]
                                   a line per run: start, path, run, outcome, time, cost, what started it, and any error;
                                   the outcome is done, interrupted by a person, cut, by a restart or a change that broke its
                                   lease, running, or failed, for credits, policy, time limit or other
-rf costs [PATH] [--since DATE] [--by workspace|series|person|day|outcome] [--json]   totals, runs and cost per run; person
-                                  is the runner; runs leave out those that were cut, as the next run carries each on
+rf costs [PATH] [--since DATE] [--by workspace|series|person|day|outcome] [--daily] [--json]   totals, runs and cost per run,
+                                  plus server calls and OpenRouter key usage for admins; --daily lists each day by workspace,
+                                  person, run and server; runs leave out those that were cut, as the next run carries each on
 rf activity [PATH] [--since DATE] [--json]   per instance, what people and the agent said, what people uploaded, closed and
                                   deleted, and each run that failed
 rf wakes [PATH] [--json]          each series' pending wakes and requests to start an instance, and when a wake of it last
@@ -221,15 +222,15 @@ Usual work
   for a file; rf pull PATH/ DIR copies the folder, with session/ for every step.
 
 Watching over it, for admins and power users; each sees what the caller sees
-- What's stuck: rf status lists runs going, flagging those past --long MIN (30); queued runs, since when and why: their series is
+- What's stuck: rf status lists low OpenRouter credit (for admins), runs going, flagging those past --long MIN (30); queued runs, since when and why: their series is
   running, the RF_MAX_RUNS cap, or memory; what waits on whom since when: asks, notes for runners, expired logins and the instances
   they hold, and requests to start; open instances whose last run failed; and indexes crawling or failing.
 - Indexes: rf indexes shows each index of a big library or mailbox you index, every one for admins: its items and size, and per
   person whether it is crawling or following changes, pages read, when last caught up, and an error, if any, with its next try.
 - History: rf runs [PATH] [--since DATE] [--failed] [--running] [--long MIN] prints a line per run: its start, path, run number,
   outcome, time taken, cost, what started it and by whom, and any error. rf costs [PATH] [--since DATE] [--by
-  workspace|series|person|day] totals them, by the runner for person. A DATE such as 2026-11-01 starts at its midnight on
-  this machine's clock, the days --by day groups by.
+  workspace|series|person|day|outcome] [--daily] totals them (by the runner for person, plus server calls and OpenRouter key usage
+  for admins). A DATE such as 2026-11-01 starts at its midnight on this machine's clock, the days --by day groups by.
 - People: rf people (admins) prints everyone as ROLE EMAIL lines, and rf people WORKSPACE (its owners and admins) its owners and
   members as owner|member lines; a comment after each says when they last signed in and which open instances they run, and for
   everyone those they run in workspaces they aren't in. Edit the lines, see the changes with --set FILE -n (FILE may be - for
@@ -243,7 +244,7 @@ const flags: Record<string, string | true> = {}, excludes: string[] = [], args: 
 for (let i = 0; i < argv.length; i++) {
   const flag = argv[i] === '-n' ? 'dry-run' : argv[i].match(/^--(.+)$/)?.[1];
   if (!flag) args.push(argv[i]);
-  else if (['wait', 'wake', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear', 'follow', 'superseded', 'undo', 'by-amount', 'yes', 'mine'].includes(flag)) flags[flag] = true;
+  else if (['wait', 'wake', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear', 'follow', 'superseded', 'undo', 'by-amount', 'yes', 'mine', 'daily'].includes(flag)) flags[flag] = true;
   else if (argv[i + 1] === undefined) throw new Error(`--${flag} takes a value`);
   else if (flag === 'exclude') excludes.push(argv[++i]);
   else flags[flag] = argv[++i];
@@ -309,7 +310,10 @@ const consent = (offers: string[]) => offers.length ? `, ticking ${offers.join('
 const when = (iso: string) => new Date(iso).toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' });
 const grantText = (g: any) => `${g.description}${g.flags.length ? ` Flags: ${g.flags.join('; ')}.` : ''}${g.adminOnly ? ` ${g.adminWhy}.` : ''}`;
 const took = (s: number) => s < 60 ? `${Math.round(s)}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${Math.floor(s / 3600)}h${String(Math.round((s % 3600) / 60)).padStart(2, '0')}`;
-const usd = (n: number) => `$${n.toFixed(2)}`;
+const usd = (n: number, est?: boolean) => `${est ? '~' : ''}${n < 0 ? '-$' + (-n).toFixed(2) : '$' + n.toFixed(2)}`;
+const usdNote = (n: number, est?: boolean) => `${usd(n, est)}${est ? ' (est.)' : ''}`;
+const signedUsd = (n: number) => `${n >= 0 ? '+$' : '-$'}${Math.abs(n).toFixed(2)}`;
+const localTz = Intl.DateTimeFormat().resolvedOptions().timeZone ?? '';
 // --since DATE from its midnight on this machine's clock, as --by day groups by.
 const since = encodeURIComponent(/^\d{4}-\d{2}-\d{2}$/.test(String(flags.since)) ? new Date(`${flags.since}T00:00`).toISOString() : String(flags.since ?? ''));
 const runsIn = async (path = '') => (await get(`/api/runs?since=${since}`))
@@ -467,13 +471,13 @@ if (cmd === 'login' && url) {
     const e = log[seq - 1], first = log.find(x => `c${x.seq}` === e.thread);
     return { comment: `c${seq}`, thread: e.thread, kind: e.ask === true ? 'ask' : e.ask ?? 'note', for: who, by: e.by, item: first.item, ref: first.ref, text: e.text };
   });
-  const done = log.findLast(e => e.op === 'done'), last = done ? { run: done.run, cost: done.cost, error: done.error ?? null } : null;
+  const done = log.findLast(e => e.op === 'done'), last = done ? { run: done.run, cost: done.cost, ...(done.estimated && { estimated: true }), error: done.error ?? null } : null;
   if (flags.json) console.log(JSON.stringify({ path: args[0], id: inst.id, status: doc.status, runner: runner.by, running: run, queued, items: doc.items, waiting, last_run: last, ...(doc.status === 'deleted' && { deleted: { by: log[0].by, at: log[0].at } }) }, null, 1));
   else {
-    console.log(doc.status === 'deleted' ? `${args[0]}  deleted by ${log[0].by} ${when(log[0].at)}` : `${args[0]}  ${doc.status}, runner ${runner.by}${run ? `, run ${run.n} going, ${usd(run.cost)}` : queued ? ', queued' : ''}`);
+    console.log(doc.status === 'deleted' ? `${args[0]}  deleted by ${log[0].by} ${when(log[0].at)}` : `${args[0]}  ${doc.status}, runner ${runner.by}${run ? `, run ${run.n} going, ${usdNote(run.cost, run.estimated)}` : queued ? ', queued' : ''}`);
     for (const i of doc.items) console.log(`  ${i.kind.padEnd(6)} ${i.id}  ${i.name}  ${i.file ?? 'no file yet'}${i.from?.length ? `  from ${i.from.join(', ')}` : ''}${i.headline ? `  ${i.headline}` : ''}`);
     for (const w of waiting) console.log(`${w.comment}  ${w.kind} for ${w.for}${w.comment === w.thread ? '' : ` in ${w.thread}`}${w.item ? `, on ${w.item}${w.ref ? ` at ${w.ref}` : ''}` : ''}: ${w.text.split('\n')[0].slice(0, 160)}`);
-    if (last) console.log(`last run ${last.run}  ${usd(last.cost ?? 0)}${last.error ? `  ${last.error}` : ''}`);
+    if (last) console.log(`last run ${last.run}  ${usdNote(last.cost ?? 0, last.estimated)}${last.error ? `  ${last.error}` : ''}`);
   }
 } else if (cmd === 'log' && args.length === 1) {
   const { at } = await instanceAt(args[0]);
@@ -721,8 +725,9 @@ else if (cmd === 'comment' && args.length === 2) {
   const [s, ix] = await Promise.all([get('/api/status'), get('/api/indexes')]), long = Number(flags.long ?? 30);
   if (flags.json) console.log(JSON.stringify({ ...s, indexes: ix }, null, 1));
   else {
+    const lowLine = s.low_credit ? `Low OpenRouter credit: ${usd(s.low_credit.remaining)} remaining${s.low_credit.limit !== null ? ` of ${usd(s.low_credit.limit)} limit` : ''}${s.low_credit.reset ? ` (resets ${s.low_credit.reset})` : ''}` : '';
     const sections = [
-      [`Running`, s.running.map(r => `${r.path}  run ${r.run}  for ${took((Date.now() - Date.parse(r.at)) / 1000)}  ${usd(r.cost)}${Date.now() - Date.parse(r.at) > long * 60e3 ? `  LONG, past ${long}m` : ''}`)],
+      [`Running`, s.running.map(r => `${r.path}  run ${r.run}  for ${took((Date.now() - Date.parse(r.at)) / 1000)}  ${usdNote(r.cost, r.estimated)}${Date.now() - Date.parse(r.at) > long * 60e3 ? `  LONG, past ${long}m` : ''}`)],
       [`Queued`, s.queued.map(q => `${q.path}  since ${when(q.since)}: ${q.why}`)],
       [`Waiting`, [
         ...[...s.asks, ...s.assigned.map(a => ({ ...a, since: a.at, text: `${a.by} assigned it to them`, assigned: true })), ...s.requests.map(r => ({ ...r, who: r.who ?? 'anyone', since: r.at, text: `${r.from} asks to ${r.target ? 'wake' : 'start'} ${r.label}`, request: true })),
@@ -734,7 +739,8 @@ else if (cmd === 'comment' && args.length === 2) {
       [`Indexes crawling or failing`, ix.filter(x => x.people.some(p => p.phase === 'crawl' || p.error)).map(x => `${x.name}  ${x.people.filter(p => p.phase === 'crawl' || p.error)
         .map(p => `${p.who} ${p.error ? `failing${p.retry_at ? `, again ${when(p.retry_at)}` : ''}: ${p.error.split('\n')[0].slice(0, 80)}` : `crawling, ${p.pages} pages`}`).join('; ')}`)],
     ].filter(([, rows]) => rows.length);
-    console.log(sections.map(([title, rows]) => `${title} (${rows.length})\n${rows.map(r => `  ${r}`).join('\n')}`).join('\n\n') || 'Nothing is running, queued, waiting or failed.');
+    const body = sections.map(([title, rows]) => `${title} (${rows.length})\n${rows.map(r => `  ${r}`).join('\n')}`).join('\n\n');
+    console.log([lowLine, body].filter(Boolean).join('\n\n') || 'Nothing is running, queued, waiting or failed.');
   }
 } else if (cmd === 'indexes' && !args.length) {
   const ix = await get('/api/indexes');
@@ -744,22 +750,58 @@ else if (cmd === 'comment' && args.length === 2) {
 } else if (cmd === 'runs' && args.length <= 1) {
   const rows = (await runsIn(args[0])).filter(r => (!flags.failed || r.outcome === 'failed') && (!flags.running || r.outcome === 'running') && (!flags.long || r.seconds >= Number(flags.long) * 60));
   if (flags.json) console.log(JSON.stringify(rows, null, 1));
-  else for (const r of rows) console.log(`${when(r.at)}  ${r.path}  run ${r.run}  ${r.outcome}${r.failure ? ` (${r.failure})` : ''}  ${took(r.seconds)}  ${usd(r.cost)}  ${r.started ? `${r.started.op} by ${r.started.by}` : '-'}  ${r.error ?? ''}`);
+  else for (const r of rows) console.log(`${when(r.at)}  ${r.path}  run ${r.run}  ${r.outcome}${r.failure ? ` (${r.failure})` : ''}  ${took(r.seconds)}  ${usdNote(r.cost, r.estimated)}  ${r.started ? `${r.started.op} by ${r.started.by}` : '-'}  ${r.error ?? ''}`);
 } else if (cmd === 'costs' && args.length <= 1) {
-  const by = String(flags.by ?? 'series'), key = {
-    workspace: r => r.path.split('/')[0], series: r => r.path.split('/').slice(0, 2).join('/'), person: r => r.runner, day: r => when(r.at).slice(0, 10),
-    outcome: r => r.failure ? `failed, ${r.failure}` : r.outcome,
-  }[by];
-  if (!key) throw new Error('--by: workspace, series, person, day or outcome');
-  // A run that was cut is carried on by the next, so it adds its cost, not a run.
-  const sums = new Map<string, { runs: number; cost: number }>(), rows = await runsIn(args[0]), counted = (r: { outcome: string }) => r.outcome === 'cut' ? 0 : 1;
-  for (const r of rows) sums.set(key(r), { runs: (sums.get(key(r))?.runs ?? 0) + counted(r), cost: (sums.get(key(r))?.cost ?? 0) + r.cost });
-  const out = [...sums].map(([k, v]) => ({ [by]: k, runs: v.runs, cost: +v.cost.toFixed(4), per_run: v.runs ? +(v.cost / v.runs).toFixed(4) : null }))
-    .sort((a, b) => by === 'day' ? a.day.localeCompare(b.day) : b.cost - a.cost);
-  if (flags.json) console.log(JSON.stringify(out, null, 1));
-  else {
-    for (const o of out) console.log(`${usd(o.cost).padStart(10)}  ${String(o.runs).padStart(5)} runs  ${(o.per_run === null ? '-' : usd(o.per_run)).padStart(8)} a run  ${o[by]}`);
-    console.log(`${usd(rows.reduce((t, r) => t + r.cost, 0)).padStart(10)}  ${String(rows.reduce((n, r) => n + counted(r), 0)).padStart(5)} runs  in all`);
+  const keyText = (k: any) => `OpenRouter key (${k.day} UTC): ${k.usage_daily !== null ? `${usd(k.usage_daily)} today vs ${usdNote(k.server_total, k.server_estimated)} recorded (${signedUsd(k.unattributed)} unattributed) · ` : ''}${usd(k.usage)} used${k.limit !== null ? ` · ${usd(k.remaining)} of ${usd(k.limit)} remaining${k.reset ? ` (${k.reset})` : ''}` : ', no limit'}`;
+  const report = await get(`/api/costs?since=${since}&tz=${encodeURIComponent(localTz)}`);
+  if (flags.daily) {
+    if (flags.json) console.log(JSON.stringify(report, null, 1));
+    else {
+      if (report.key) console.log(keyText(report.key));
+      for (const d of report.days) {
+        console.log(`${d.day}  ${usdNote(d.cost, d.estimated)}  ${d.runs_count} runs${d.server?.cost ? `  server ${usdNote(d.server.cost, d.server.estimated)}` : ''}`);
+        for (const [w, v] of Object.entries<any>(d.by_workspace)) console.log(`  workspace  ${usdNote(v.cost, v.estimated).padStart(10)}  ${v.runs} runs  ${w}`);
+        for (const [p, v] of Object.entries<any>(d.by_person)) console.log(`  person     ${usdNote(v.cost, v.estimated).padStart(10)}  ${v.runs} runs  ${p}`);
+        for (const r of d.runs) console.log(`  run        ${usdNote(r.cost, r.estimated).padStart(10)}  ${r.path}  run ${r.run}  ${r.person}  ${r.outcome}`);
+        for (const s of d.server?.items ?? []) console.log(`  server     ${usdNote(s.cost, s.estimated).padStart(10)}  ${s.kind}${s.site ? `: ${s.site}` : ''} (${s.person})  ${s.calls} calls`);
+      }
+      if (!report.days.length && !report.key) console.log('No costs recorded.');
+    }
+  } else {
+    const by = String(flags.by ?? 'series'), key = {
+      workspace: (r: any) => r.workspace, series: (r: any) => r.series, person: (r: any) => r.person, day: (r: any) => r.day,
+      outcome: (r: any) => r.failure ? `failed, ${r.failure}` : r.outcome,
+    }[by];
+    if (!key) throw new Error('--by: workspace, series, person, day or outcome');
+    const at = (args[0] ?? '').replace(/\/+$/, '');
+    // A run that was cut is carried on by the next, so it adds its cost, not a run.
+    const sums = new Map<string, { runs: number; cost: number; estimated: boolean }>(), counted = (r: { outcome: string }) => r.outcome === 'cut' ? 0 : 1;
+    const add = (k: string, runs: number, cost: number, est: boolean) => {
+      const prev = sums.get(k) ?? { runs: 0, cost: 0, estimated: false };
+      sums.set(k, { runs: prev.runs + runs, cost: prev.cost + cost, estimated: prev.estimated || est });
+    };
+    let totalCost = 0, totalRuns = 0, totalEst = false;
+    for (const d of report.days) {
+      if (at !== 'server') for (const r of d.runs) {
+        if (at && r.path !== at && !r.path.startsWith(at + '/')) continue;
+        const c = counted(r);
+        add(key({ ...r, day: d.day }), c, r.cost, !!r.estimated);
+        totalCost += r.cost; totalRuns += c; totalEst ||= !!r.estimated;
+      }
+      if ((!at || at === 'server') && d.server) for (const s of d.server.items) {
+        const sk = by === 'day' ? d.day : by === 'series' ? (s.site ? `server/${s.kind}/${s.site}` : `server/${s.kind}`) : by === 'person' ? `server (${s.person})` : 'server';
+        add(sk, 0, s.cost, !!s.estimated);
+        totalCost += s.cost; totalEst ||= !!s.estimated;
+      }
+    }
+    const out = [...sums].map(([k, v]) => ({ [by]: k, runs: v.runs, cost: +v.cost.toFixed(4), per_run: v.runs ? +(v.cost / v.runs).toFixed(4) : null, ...(v.estimated && { estimated: true }) }))
+      .sort((a, b) => by === 'day' ? (a as any).day.localeCompare((b as any).day) : b.cost - a.cost);
+    if (flags.json) console.log(JSON.stringify(out, null, 1));
+    else {
+      for (const o of out) console.log(`${usd(o.cost, o.estimated).padStart(10)}  ${String(o.runs).padStart(5)} runs  ${(o.per_run === null ? '-' : usd(o.per_run, o.estimated)).padStart(8)} a run  ${o[by]}${o.estimated ? ' (est.)' : ''}`);
+      console.log(`${usd(totalCost, totalEst).padStart(10)}  ${String(totalRuns).padStart(5)} runs  in all${totalEst ? ' (partly estimated)' : ''}`);
+      if (!at && report.key) console.log(keyText(report.key));
+    }
   }
 } else if (cmd === 'wakes' && args.length <= 1) {
   const at = (args[0] ?? '').replace(/\/+$/, ''), rows = (await get('/api')).flatMap(w => w.series.filter(s => !s.archived).flatMap(s => [

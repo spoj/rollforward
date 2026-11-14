@@ -6,7 +6,7 @@ import { brotliDecompressSync, createBrotliDecompress, createGunzip, createInfla
 import { HttpError, type Instance } from './store.ts';
 import { lookup } from 'node:dns/promises';
 import { getDomain } from 'tldts';
-import { isPrivate, key, readJson, tree, writeJson } from './system.ts';
+import { changes, isPrivate, key, readJson, tree, writeJson } from './system.ts';
 import { recordCost } from './costs.ts';
 import type { EntraLogin } from './auth.ts';
 import { token } from './entra.ts';
@@ -242,6 +242,79 @@ export async function serverCall(
     });
   }
   return { ok: r.ok, status: r.status, data: events.at(-1), cost, estimated };
+}
+
+export type KeyInfo = {
+  usage: number;
+  usage_daily: number | null;
+  limit: number | null;
+  remaining: number | null;
+  reset: string | null;
+  fetched_at: string;
+  low_credit: boolean;
+};
+
+let cachedKey: KeyInfo | null = null, keyFetchedAt = 0, keyUsed = '', keyInFlight: Promise<KeyInfo | null> | null = null;
+export function resetKeyCache() {
+  cachedKey = null;
+  keyFetchedAt = 0;
+  keyUsed = '';
+  keyInFlight = null;
+}
+
+export function isLowCredit(remaining: number | null, limit: number | null): boolean {
+  if (remaining === null) return false;
+  const lowUsd = Number(process.env.RF_LOW_CREDIT_USD ?? 50);
+  return remaining < lowUsd || (limit !== null && limit > 0 && remaining < limit * 0.1);
+}
+
+// OpenRouter's view of the server's key, fetched at most every few minutes (RF_KEY_TTL_MS, default 3m), with label/key omitted.
+export async function keyStatus(): Promise<KeyInfo | null> {
+  const apiKey = process.env.OPENROUTER_API_KEY ?? '';
+  if (!apiKey) {
+    resetKeyCache();
+    return null;
+  }
+  if (keyInFlight) return keyInFlight;
+  const ttl = Number(process.env.RF_KEY_TTL_MS ?? 180_000);
+  if (keyUsed === apiKey && keyFetchedAt && Date.now() - keyFetchedAt < ttl) {
+    return cachedKey ? { ...cachedKey, low_credit: isLowCredit(cachedKey.remaining, cachedKey.limit) } : null;
+  }
+  keyInFlight = (async () => {
+    const prevLow = cachedKey?.low_credit ?? false;
+    if (keyUsed !== apiKey) cachedKey = null;
+    keyUsed = apiKey;
+    try {
+      const base = upstreams['openrouter.ai'] ?? 'https://openrouter.ai';
+      const r = await fetch(`${base}/api/v1/key`, {
+        headers: { authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(5000),
+      });
+      if (r.ok) {
+        const d = ((await r.json()) as any)?.data;
+        if (d && typeof d.usage === 'number' && Number.isFinite(d.usage)) {
+          const limit = typeof d.limit === 'number' && Number.isFinite(d.limit) ? d.limit : null;
+          const remaining = typeof d.limit_remaining === 'number' && Number.isFinite(d.limit_remaining) ? d.limit_remaining : null;
+          cachedKey = {
+            usage: d.usage,
+            usage_daily: typeof d.usage_daily === 'number' && Number.isFinite(d.usage_daily) ? d.usage_daily : null,
+            limit,
+            remaining,
+            reset: typeof d.limit_reset === 'string' ? d.limit_reset : null,
+            fetched_at: new Date().toISOString(),
+            low_credit: isLowCredit(remaining, limit),
+          };
+          if (cachedKey.low_credit !== prevLow) changes.emit('change', 'tree');
+        }
+      }
+    } catch {
+      // Keep last cached value until next TTL window; never expose the key or upstream error.
+    } finally {
+      keyFetchedAt = Date.now();
+      keyInFlight = null;
+    }
+    return cachedKey ? { ...cachedKey, low_credit: isLowCredit(cachedKey.remaining, cachedKey.limit) } : null;
+  })();
+  return keyInFlight;
 }
 
 export async function call(a: CallRun, host: string, req: IncomingMessage, res: ServerResponse) {

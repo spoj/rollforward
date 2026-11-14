@@ -199,6 +199,8 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .app-name .pagename { font-size: 13px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; }
 .app-name .pagename::before { content: '/'; margin-right: 10px; color: var(--ink-3); }
 .user { position: relative; }
+.lowcredit { background: none; border: 0; padding: 4px 8px; border-radius: var(--r1); color: var(--red); font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap; }
+.lowcredit:hover { background: var(--hover); }
 .user > summary { display: flex; align-items: center; gap: 10px; padding: 3px 6px; border-radius: var(--r1); list-style: none; cursor: pointer; }
 .user > summary::-webkit-details-marker { display: none; }
 .user > summary:hover { background: var(--hover); }

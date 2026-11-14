@@ -112,7 +112,9 @@ async function runs(id: string, n: number) {
 before(async () => {
   // OpenRouter's GET /api/v1/key answers for a key it knows, as it checks one being saved.
   model = createServer((req, res) => (req.url!.startsWith('/api/2.0/sql/') ? warehouse(req, res) : req.method === 'POST' && /\/(messages|chat\/completions)$/.test(new URL(req.url!, 'http://x').pathname) ? answer(req, res)
-    : res.writeHead(req.url === '/api/v1/key' && String(req.headers.authorization).startsWith('Bearer sk-or-') ? 200 : 404).end('{}')));
+    : req.url === '/api/v1/key' && /^Bearer (sk-or-|stand-in-key$)/.test(String(req.headers.authorization))
+      ? res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ data: { label: 'sk-or-v1-stand...in', usage: 10, usage_daily: 0.5, limit: 500, limit_remaining: 490, limit_reset: 'monthly' } }))
+      : res.writeHead(404).end('{}')));
   await new Promise<void>(ok => model.listen(0, '127.0.0.1', ok));
   await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
   const probe = createServer();
