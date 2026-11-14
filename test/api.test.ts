@@ -68,7 +68,7 @@ before(async () => {
   // An instance as v0.4.0 left it: bob ran it, its run read his comment and dana's, the agent asked erin, bob's last word went
   // unread, and carol took it over.
   const trees = join(root, '.rf', 'tree.json'), t = JSON.parse(readFileSync(trees, 'utf8')), taken = join(root, 'instances', '01d7a4e00003');
-  t.workspaces['01d7a4e00001'] = { name: 'Old takeover', owners: [], members: [bob, CAROL, DANA, ERIN] };
+  t.workspaces['01d7a4e00001'] = { name: 'Old takeover', owners: [], members: [CAROL, DANA, ERIN] };
   t.series['01d7a4e00002'] = { name: 'Rec', workspace: '01d7a4e00001' };
   writeFileSync(trees, JSON.stringify(t));
   mkdirSync(join(root, 'series', '01d7a4e00002'), { recursive: true });
