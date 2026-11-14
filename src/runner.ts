@@ -2,7 +2,7 @@ import { RpcClient, type JsonAgentSessionEvent } from '@earendil-works/pi-coding
 import type { ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { createHash, randomBytes } from 'node:crypto';
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, posix, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -109,21 +109,31 @@ export function pi(o: { token: string; id: string; n: number; view: View; skills
 // link, and names are bytes, as a run may leave them.
 export function pylib(dir: string, instance: string): string {
   mkdirSync(dir, { recursive: true });
-  const lines: Buffer[] = [], slash = Buffer.from('/');
-  const walk = (d: Buffer, rel: Buffer, listed: boolean) => {
-    chmodSync(d, 0o700);
-    for (const e of readdirSync(d, { withFileTypes: true, encoding: 'buffer' })) {
-      const name = e.name as unknown as Buffer, path = Buffer.concat([d, slash, name]), at = rel.length ? Buffer.concat([rel, slash, name]) : name;
-      const hook = !rel.length && /^(site|user)customize(\.|$)|\.pth$/.test(name.toString('latin1'));
-      if (e.isDirectory()) walk(path, at, listed && !hook);
-      else if (listed && !hook) {
+  const lines: Buffer[] = [], slash = Buffer.from('/'), O_PATH = 0o10000000;
+  const openDir = (at: Buffer) => {
+    const p = openSync(at, O_PATH | constants.O_NOFOLLOW), self = `/proc/self/fd/${p}`;
+    try {
+      const st = fstatSync(p);
+      if ((st.mode & 0o700) !== 0o700) chmodSync(self, (st.mode | 0o700) & 0o7777);
+      return openSync(self, constants.O_RDONLY | constants.O_DIRECTORY);
+    } finally { closeSync(p); }
+  };
+  const walk = (dfd: number, rel: Buffer) => {
+    for (const e of readdirSync(`/proc/self/fd/${dfd}`, { withFileTypes: true, encoding: 'buffer' })) {
+      const name = e.name as unknown as Buffer, path = Buffer.concat([Buffer.from(`/proc/self/fd/${dfd}/`), name]);
+      const at = rel.length ? Buffer.concat([rel, slash, name]) : name;
+      if (!rel.length && /^(site|user)customize(\.|$)|\.pth$/.test(name.toString('latin1'))) { wipe(path); continue; }
+      if (e.isDirectory()) {
+        const sub = openDir(path);
+        try { walk(sub, at); } finally { closeSync(sub); }
+      } else {
         const st = lstatSync(path);
         lines.push(Buffer.concat([at, Buffer.from(`\t${st.size}\t${st.ctime.toISOString()}\n`)]));
       }
-      if (hook) rmSync(path, { recursive: true });
     }
   };
-  walk(Buffer.from(dir), Buffer.alloc(0), true);
+  const top = openDir(Buffer.from(dir));
+  try { walk(top, Buffer.alloc(0)); } finally { closeSync(top); }
   const list = Buffer.concat(lines.sort(Buffer.compare));
   writeFileSync(join(instance, 'pylib.tsv'), list);
   return createHash('sha256').update(list).digest('hex');

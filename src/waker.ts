@@ -255,12 +255,13 @@ async function begin(inst: Instance) {
   };
   active.set(series, a);
   byToken.set(a.token, a);
-  // Whose OpenRouter key it starts with, its runner's own or the server's (connections.ts), never the key.
-  const key = logins(lease.by).some(l => l.id === 'openrouter' && l.enabled) ? 'own' : 'shared';
-  const agents = Object.fromEntries(a.view.ro.filter(([p, at]) => at.endsWith('/AGENTS.md') && existsSync(p)).map(([p, at]) => [at, createHash('sha256').update(readFileSync(p)).digest('hex')]));
-  inst.append('server', 'run', { run: n, runner: lease.by, consent: lease.consent, agents, pylib: pylib(a.view.pylib, inst.dir), upto: a.sent, skills: a.skills, key, ...(kept && { continues: kept.session }) });
-  let settled: Promise<TurnEnd>;
+  let settled: Promise<TurnEnd>, loggedRun = false;
   try {
+    // Whose OpenRouter key it starts with, its runner's own or the server's (connections.ts), never the key.
+    const key = logins(lease.by).some(l => l.id === 'openrouter' && l.enabled) ? 'own' : 'shared';
+    const agents = Object.fromEntries(a.view.ro.filter(([p, at]) => at.endsWith('/AGENTS.md') && existsSync(p)).map(([p, at]) => [at, createHash('sha256').update(readFileSync(p)).digest('hex')]));
+    inst.append('server', 'run', { run: n, runner: lease.by, consent: lease.consent, agents, pylib: pylib(a.view.pylib, inst.dir), upto: a.sent, skills: a.skills, key, ...(kept && { continues: kept.session }) });
+    loggedRun = true;
     // A continued run's index copies are made again, in the folder its Pi reads them from, so it reads what's indexed since, and
     // nothing of a source no longer ticked.
     if (kept) {
@@ -285,7 +286,8 @@ async function begin(inst: Instance) {
     }
     ({ settled } = await a.run.turn(text));
   } catch (err) {
-    finish(a, true, String(err));
+    if (loggedRun) finish(a, true, String(err));
+    else { active.delete(series); byToken.delete(a.token); throw err; }
     return;
   }
   flush(a);

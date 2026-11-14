@@ -1,9 +1,9 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createInstance, instance, labels, openStore, renameInstance, Instance } from '../src/store.ts';
+import { createInstance, instance, labels, openStore, renameInstance, wipe, Instance } from '../src/store.ts';
 import type { Run } from '../src/runner.ts';
 import { initSystem, readJson, saveTree, tree, writeJson } from '../src/system.ts';
 import type { Active } from '../src/waker.ts';
@@ -560,3 +560,41 @@ test("a note reaches a run going at once, though it starts none: another person'
   assert.match(steered[0], /"by":"bob@demo\.test","op":"comment".*"note":true/);
   assert.match(steered[1], /Open notes on the series: n\d+, from .+ "from now on, weekly"\. New log entries:\n$/);
 });
+
+test('folders deeper than PATH_MAX in .pylib and working/ neither wedge active nor stop deletion and recovery', async () => {
+  const deep = (base: string) => {
+    mkdirSync(base, { recursive: true });
+    let cur = openSync(base, constants.O_RDONLY | constants.O_DIRECTORY);
+    const seg = 'd'.repeat(200);
+    for (let i = 0; i < 25; i++) {
+      mkdirSync(`/proc/self/fd/${cur}/${seg}`);
+      const next = openSync(`/proc/self/fd/${cur}/${seg}`, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      closeSync(cur);
+      cur = next;
+    }
+    writeFileSync(`/proc/self/fd/${cur}/leaf.py`, 'X = 1\n');
+    chmodSync(`/proc/self/fd/${cur}`, 0);
+    closeSync(cur);
+  };
+  const lib = join(tmp, 'series', 's2', '.pylib');
+  try {
+    deep(lib);
+    deep(join(lib, 'usercustomize'));
+    const inst = make('s2', 'deep-paths');
+    deep(join(inst.dir, 'working'));
+    inst.append(alice, 'comment', { thread: 'c2', text: 'Run' });
+    kick(inst);
+    await settle();
+    assert.equal(active.has('s2'), false);
+    assert.ok(inst.log.some(e => e.op === 'run'));
+    assert.equal(existsSync(join(lib, 'usercustomize')), false);
+    await remove(inst, alice, () => ({ cost: 0, runs: [] }));
+    assert.deepEqual(readdirSync(inst.dir).sort(), ['instance.json', 'log.jsonl', 'screen.json']);
+    deep(join(inst.dir, 'working'));
+    recover();
+    assert.deepEqual(readdirSync(inst.dir).sort(), ['instance.json', 'log.jsonl', 'screen.json']);
+  } finally {
+    wipe(Buffer.from(lib));
+  }
+});
+

@@ -1,4 +1,4 @@
-import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { basename, extname, join, posix, sep } from 'node:path';
 import { appendLine, changes, readLines, tree } from './system.ts';
@@ -43,12 +43,26 @@ const HOLE = ['instance.json', 'screen.json', 'log.jsonl'];
 
 // Removes what a run may have left anything in, by its name's bytes, as a name needn't be UTF-8, and never through a link: a folder
 // it made unreadable or unwritable is the server's own, so is opened up first.
+const O_PATH = 0o10000000;
 export function wipe(path: Buffer) {
-  const st = lstatSync(path, { throwIfNoEntry: false });
-  if (!st) return;
-  if (!st.isDirectory()) return rmSync(path, { force: true });
-  chmodSync(path, 0o700);
-  for (const name of readdirSync(path, { encoding: 'buffer' })) wipe(Buffer.concat([path, Buffer.from(sep), name]));
+  let p: number;
+  try { p = openSync(path, O_PATH | constants.O_NOFOLLOW); } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw e;
+  }
+  let dfd = -1;
+  try {
+    const st = fstatSync(p), self = `/proc/self/fd/${p}`;
+    if (st.isDirectory()) {
+      if ((st.mode & 0o700) !== 0o700) chmodSync(self, (st.mode | 0o700) & 0o7777);
+      dfd = openSync(self, constants.O_RDONLY | constants.O_DIRECTORY);
+    }
+  } finally { closeSync(p); }
+  if (dfd < 0) return unlinkSync(path);
+  try {
+    for (const name of readdirSync(`/proc/self/fd/${dfd}`, { encoding: 'buffer' }))
+      wipe(Buffer.concat([Buffer.from(`/proc/self/fd/${dfd}/`), name]));
+  } finally { closeSync(dfd); }
   rmdirSync(path);
 }
 
