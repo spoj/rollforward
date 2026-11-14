@@ -208,28 +208,29 @@ function flush(a: Active) {
 }
 
 // What a timer starts, as a kick's, logs what fails rather than ending the server.
-const start = (inst: Instance) => begin(inst).catch(e => console.error(`a run of ${inst.id} failed to start`, e));
+const start = (inst: Instance, tried = new Set<Instance>()) => begin(inst, tried).catch(e => console.error(`a run of ${inst.id} failed to start`, e));
 
 const runnable = (i: Instance) => due(i) && sees(i) && !held(i, 'entra', runnerOf(i).by);
-function bail(inst: Instance) {
+function bail(inst: Instance, tried: Set<Instance>) {
   changes.emit('change', inst.id);
   if (stopping || active.has(inst.seriesId)) return;
-  const next = instances(inst.seriesId).find(i => i !== inst && runnable(i));
-  if (next) start(next);
+  const next = instances(inst.seriesId).find(i => !tried.has(i) && runnable(i));
+  if (next) start(next, tried);
 }
 
-async function begin(inst: Instance) {
+async function begin(inst: Instance, tried: Set<Instance>) {
+  tried.add(inst);
   // A run starts from its instance's folder as the last run's commit left it.
   await committed(inst.dir);
   const series = inst.seriesId;
   const seen = seenBefore(inst);
   // A kick that starts nothing ends the instance's queued state all the same: pages that showed it should hear.
-  if (active.has(series) || !due(inst)) return bail(inst);
+  if (active.has(series) || !due(inst)) return bail(inst, tried);
   if (full()) return void waiting.add(inst);
   // A run starts only for a runner Microsoft still signs in (entra.ts): one it no longer does waits for them to sign in again, and
   // one who has left, for someone to take the instance over. Microsoft unreachable, it tries again in a minute.
   const runner = runnerOf(inst).by;
-  if (held(inst, 'entra', runner)) return bail(inst);
+  if (held(inst, 'entra', runner)) return bail(inst, tried);
   try {
     await confirm(runner);
   } catch (e) {
@@ -239,13 +240,13 @@ async function begin(inst: Instance) {
       return void setTimeout(() => kick(inst), 60_000).unref();
     }
     inst.append('server', 'expired', { cause: pending(inst, seen)[0].seq, login: 'entra', name: 'rollforward', runner, error: (e as Error).message, ...((e as { left?: boolean }).left && { left: true }) });
-    return bail(inst);
+    return bail(inst, tried);
   }
-  if (stopping || active.has(series) || !due(inst)) return bail(inst);
+  if (stopping || active.has(series) || !due(inst)) return bail(inst, tried);
   if (runnerOf(inst).by !== runner) return void kick(inst);
   if (full()) return void waiting.add(inst);
   // One who can no longer see its workspace, as after being removed from it, waits for someone to take the instance over.
-  if (!sees(inst)) return bail(inst);
+  if (!sees(inst)) return bail(inst, tried);
   let kept = idle.get(inst.id);
   idle.delete(inst.id);
   if (kept && stale(kept)) {
@@ -303,7 +304,7 @@ async function begin(inst: Instance) {
     ({ settled } = await a.run.turn(text));
   } catch (err) {
     if (loggedRun) await finishRun(a, true, String(err));
-    else { active.delete(series); byToken.delete(a.token); bail(inst); throw err; }
+    else { active.delete(series); byToken.delete(a.token); bail(inst, tried); throw err; }
     return;
   }
   flush(a);

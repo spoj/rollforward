@@ -59,3 +59,43 @@ test('an interrupt during natural turn cost draining stops the sandbox rather th
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('pre-run failures try each due sibling once rather than bouncing between them forever', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rf-start-cycle-'));
+  try {
+    execFileSync(process.execPath, ['--experimental-test-module-mocks', '--input-type=module', '-e', `
+      import assert from 'node:assert/strict';
+      import { mock } from 'node:test';
+      import { mkdirSync } from 'node:fs';
+      import * as runner from './src/runner.ts';
+      import * as entra from './src/entra.ts';
+      import { initSystem, saveTree, writeJson } from './src/system.ts';
+      import { createInstance, openStore } from './src/store.ts';
+      const root = ${JSON.stringify(root)}, alice = 'alice@demo.test';
+      initSystem(root);
+      openStore(root);
+      saveTree({ workspaces: { w: { name: 'Work', owners: [alice], members: [] } }, series: { s: { name: 'Series', workspace: 'w' } } });
+      writeJson('users.json', { [alice]: { role: 'user' } });
+      mkdirSync(root + '/series/s', { recursive: true });
+      let confirms = 0, attempts = 0;
+      mock.method(console, 'error', () => {});
+      mock.module('./src/runner.ts', { namedExports: { ...runner, pylib: () => { attempts++; throw new Error('ENOSPC'); } } });
+      mock.module('./src/entra.ts', { namedExports: { ...entra, confirm: async () => {
+        if (++confirms > 2) throw Object.assign(new Error('repeated confirmation'), { status: 401 });
+      } } });
+      const { active, byToken, kick } = await import('./src/waker.ts');
+      const first = createInstance('s', 'First', alice, []), second = createInstance('s', 'Second', alice, []);
+      for (const inst of [first, second]) inst.append(alice, 'comment', { text: 'Work.' });
+      kick(first);
+      await new Promise(ok => setTimeout(ok, 2000));
+      assert.equal(confirms, 2, 'a persistent startup failure must not renew Entra sign-ins in a loop');
+      assert.equal(attempts, 2);
+      assert.equal(active.size, 0);
+      assert.equal(byToken.size, 0);
+    `], { cwd: join(import.meta.dirname, '..'), timeout: 10_000, stdio: 'pipe' });
+  } catch (e) {
+    assert.fail((e as { stderr: Buffer }).stderr.toString());
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
