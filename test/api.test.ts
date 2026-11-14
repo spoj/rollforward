@@ -2059,4 +2059,14 @@ test('updating company or workspace AGENTS.md replaces the file atomically witho
   }
 });
 
+test('a task whose first comment is AGENTS.md posts cleanly without failing auto-rename', async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'TaskAgentsWord' }))).json();
+  const { instance: inst } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, single: true }))).json();
+  const res = await call('POST', `/api/instances/${inst}/comment`, JSON.stringify({ text: '...AGENTS.md', quiet: true }));
+  assert.equal(res.status, 200);
+  const d = await json(`/api/instances/${inst}`);
+  assert.equal(d.log.some((e: any) => e.op === 'rename'), false);
+  assert.equal(d.log.findLast((e: any) => e.op === 'comment').text, '...AGENTS.md');
+});
+
 
