@@ -322,7 +322,9 @@ function heard(a: Active, e: JsonAgentSessionEvent) {
   }
   if (e.type !== 'message_start' || e.message.role !== 'user') return;
   const c = e.message.content;
-  const seq = a.texts.get(typeof c === 'string' ? c : c.map(b => (b.type === 'text' ? b.text : '')).join(''));
+  const text = typeof c === 'string' ? c : c.map(b => (b.type === 'text' ? b.text : '')).join('');
+  const seq = a.texts.get(text);
+  a.texts.delete(text);
   if (seq) a.delivered = Math.max(a.delivered, seq);
 }
 
@@ -371,7 +373,7 @@ function finish(a: Active, aborted: boolean, error?: string): Entry | undefined 
   const added = rules(a.process, processMd(a.inst.dir) ?? a.process);
   const done = a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(6), estimated: a.estimated, ...(error && { error }), ...(added && { rules: added, thread: a.thread }) });
   // Its Pi idles for the instance's next run, or stops, the longest idle too past RF_MAX_IDLE.
-  const keep = !draining && !aborted && !error && !!a.run && a.inst.doc.status === 'open' && a.run.alone();
+  const keep = !draining && !aborted && !error && !!a.run && !a.texts.size && a.inst.doc.status === 'open' && a.run.alone();
   if (keep) {
     idle.set(a.inst.id, { inst: a.inst, run: a.run!, token: a.token, view: a.view, skills: a.skills, session: a.session, shape: a.shape, seq: a.inst.log.at(-1)!.seq, since: Date.now() });
     if (idle.size > MAX_IDLE) drop(idle.keys().next().value!);
