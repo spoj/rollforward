@@ -460,7 +460,7 @@ test('removing an offer deletes its cache', async () => {
 test("a going run's copy of a source goes as soon as it's no longer lent: unticked, or its login signed out of", async () => {
   offer(ALICE, [{ id: FOLDER, name: 'Folder' }, { id: PUB, name: 'Shared' }]);
   await work(settled(ALICE, FOLDER, PUB));
-  const inst = { seriesId: 'weekly', log: [{ seq: 1, at: '', by: ALICE, op: 'create', logins: [FOLDER, PUB] }, { seq: 2, at: '', by: 'server', op: 'run', run: 1, consent: 1 }] } as unknown as Instance;
+  const inst = { seriesId: 'weekly', log: [{ seq: 1, at: '', by: ALICE, op: 'create', logins: [FOLDER, PUB] }, { seq: 2, at: '', by: 'server', op: 'run', run: 1, runner: ALICE, consent: 1 }] } as unknown as Instance;
   const to = join(tmp, '.rf', 'runs', 'going'), copies = () => readdirSync(to).sort();
   ix.prepare(inst, to);
   const before = copies();

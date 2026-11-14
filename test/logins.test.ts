@@ -31,6 +31,9 @@ test("a login's secret is sealed to its person and id, so a copy into another's 
   assert.throws(() => use(inst([]), 1, 'm365:mail:alice@demo.test'), /not ticked for this instance/);
   assert.throws(() => use(inst([], { seq: 3, op: 'logins', by: alice, logins: ['m365:mail:alice@demo.test'] }), 1, 'm365:mail:alice@demo.test'), /not ticked/, 'a tick added during a run waits for the next');
   assert.throws(() => use(inst(['m365:mail:alice@demo.test'], { seq: 3, op: 'logins', by: alice, logins: [] }), 1, 'm365:mail:alice@demo.test'), /not ticked/, 'one taken away stops it at once');
+  upsertUser(bob, { role: 'user' });
+  saveTree({ workspaces: { w: { name: 'W', owners: [alice], members: [bob] } }, series: { s: { name: 'S', workspace: 'w' } } });
+  assert.throws(() => use(inst(['m365:mail:alice@demo.test'], { seq: 3, op: 'assign', by: alice, to: bob, from: alice, logins: [] }), 1, 'm365:mail:alice@demo.test'), /run 1 was alice@demo\.test's, and bob@demo\.test runs the instance now/, "assigned as it stops, a run lends nothing of the new runner's");
   upsertUser(alice, { disabled: true });
   assert.throws(() => use(inst(['m365:mail:alice@demo.test']), 1, 'm365:mail:alice@demo.test'), /alice@demo.test can no longer run this instance/, 'nor once disabled');
   upsertUser(alice, { disabled: false });
