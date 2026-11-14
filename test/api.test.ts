@@ -2015,4 +2015,28 @@ test('previous detects in-place same-size edits even when mtime is restored', as
   assert.equal((await json(`/api/instances/${p2}`)).previous.changed[d0.doc.items[0].id], 'changed');
 });
 
+test('GET /trace handles oversized and malformed session JSONL files and /comment rejects non-string ref', async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'TraceSafe' }))).json();
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'S' }))).json();
+  const { id: inst } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'L1', quiet: true }))).json();
+  const sdir = join(root, 'instances', inst, 'session');
+  mkdirSync(sdir, { recursive: true });
+  const s1 = join(sdir, '001.jsonl');
+  writeFileSync(s1, `${JSON.stringify({ type: 'message', timestamp: '2026-01-01T00:00:00Z', message: { role: 'assistant', content: [{ type: 'text', text: 'Hello trace' }] } })}\n`);
+  truncateSync(s1, 600 * 1024 * 1024);
+  writeFileSync(join(sdir, '002.jsonl'), [
+    JSON.stringify({ type: 'message', message: { role: 'toolResult', toolCallId: 'orphan-id', content: [{ type: 'text', text: 'orphan' }], isError: false } }),
+    JSON.stringify({ type: 'message', message: null }),
+    JSON.stringify({ type: 'message', message: { role: 'assistant', content: 'not-an-array' } }),
+  ].join('\n') + '\n');
+
+  const tr = await call('GET', `/api/instances/${inst}/trace`);
+  rmSync(s1);
+  assert.equal(tr.status, 200);
+  assert.deepEqual(await tr.json(), [{ kind: 'say', at: '2026-01-01T00:00:00Z', text: 'Hello trace' }]);
+
+  const badRef = await call('POST', `/api/instances/${inst}/comment`, JSON.stringify({ text: 'Check cell', ref: { sheet: 1 }, quiet: true }));
+  assert.equal(badRef.status, 400);
+});
+
 

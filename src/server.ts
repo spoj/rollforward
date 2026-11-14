@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { accessSync, closeSync, constants, cpSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, type Dirent } from 'node:fs';
+import { accessSync, closeSync, constants, cpSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync, type Dirent } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { execFile, execFileSync } from 'node:child_process';
@@ -489,6 +489,35 @@ async function status(me: Me) {
   };
 }
 
+function* jsonlLines(dir: string, name: string): Generator<string> {
+  const fd = openFile(dir, name);
+  if (fd === undefined) return;
+  try {
+    const size = fstatSync(fd).size, buf = Buffer.allocUnsafe(65536), head = 4 << 20, tail = 60 << 20, maxLine = 8 << 20;
+    let pos = 0, carry: Buffer<ArrayBufferLike> = Buffer.alloc(0), drop = false;
+    while (pos < size) {
+      if (size > head + tail && pos >= head && pos < size - tail) { pos = size - tail; carry = Buffer.alloc(0); drop = true; }
+      const n = readSync(fd, buf, 0, Math.min(buf.length, size > head + tail && pos < head ? head - pos : size - pos), pos);
+      if (!n) break;
+      pos += n;
+      let from = 0;
+      for (let nl; (nl = buf.indexOf(10, from)) !== -1 && nl < n; from = nl + 1) {
+        if (!drop && carry.length + (nl - from) <= maxLine) {
+          const line = carry.length ? Buffer.concat([carry, buf.subarray(from, nl)]).toString('utf8') : buf.subarray(from, nl).toString('utf8');
+          if (line) yield line;
+        }
+        carry = Buffer.alloc(0);
+        drop = false;
+      }
+      if (from < n && !drop) {
+        if (carry.length + (n - from) > maxLine) { carry = Buffer.alloc(0); drop = true; }
+        else carry = carry.length ? Buffer.concat([carry, buf.subarray(from, n)]) : Buffer.from(buf.subarray(from, n));
+      }
+    }
+    if (!drop && carry.length && !carry.includes(0)) yield carry.toString('utf8');
+  } finally { closeSync(fd); }
+}
+
 function trace(inst: Instance) {
   const dir = join(inst.dir, 'session');
   if (inst.doc.status === 'deleted') return [];
@@ -496,22 +525,26 @@ function trace(inst: Instance) {
   const out: Line[] = [], calls = new Map<string, Line>();
   for (const f of existsSync(dir) ? readdirSync(dir).filter(f => f.endsWith('.jsonl')).sort() : []) {
     // A line a restart cut left half written is skipped, as Pi skips it.
-    for (const line of (readFile(dir, f) ?? '').split('\n').filter(Boolean)) {
+    for (const line of jsonlLines(dir, f)) {
       let e;
       try { e = JSON.parse(line); } catch { continue; }
-      if (e.type !== 'message') continue;
+      if (e?.type !== 'message' || !e.message || typeof e.message !== 'object') continue;
       const m = e.message;
-      if (m.role === 'user') out.push({ kind: 'user', at: e.timestamp, text: typeof m.content === 'string' ? m.content : m.content.map((b: { text?: string }) => b.text ?? '').join('') });
-      if (m.role === 'assistant') for (const b of m.content) {
-        if (b.type === 'text' && b.text.trim()) out.push({ kind: 'say', at: e.timestamp, text: b.text });
-        if (b.type === 'toolCall') {
-          out.push({ kind: b.name, at: e.timestamp, text: b.arguments.command ?? b.arguments.path ?? JSON.stringify(b.arguments) });
-          calls.set(b.id, out.at(-1)!);
+      if (m.role === 'user') out.push({ kind: 'user', at: e.timestamp, text: typeof m.content === 'string' ? m.content : Array.isArray(m.content) ? m.content.map((b: { text?: unknown }) => typeof b?.text === 'string' ? b.text : '').join('') : '' });
+      if (m.role === 'assistant' && Array.isArray(m.content)) for (const b of m.content) {
+        if (!b || typeof b !== 'object') continue;
+        if (b.type === 'text' && typeof b.text === 'string' && b.text.trim()) out.push({ kind: 'say', at: e.timestamp, text: b.text });
+        if (b.type === 'toolCall' && typeof b.name === 'string') {
+          const args = b.arguments && typeof b.arguments === 'object' ? b.arguments : {};
+          out.push({ kind: b.name, at: e.timestamp, text: typeof args.command === 'string' ? args.command : typeof args.path === 'string' ? args.path : JSON.stringify(args) });
+          if (typeof b.id === 'string') calls.set(b.id, out.at(-1)!);
         }
       }
       if (m.role === 'toolResult') {
-        const text = m.content.map((b: { text?: string }) => b.text ?? '').join('');
-        Object.assign(calls.get(m.toolCallId)!, { result: text.slice(0, 4000), lines: text.trimEnd().split('\n').length, error: m.isError });
+        const hit = typeof m.toolCallId === 'string' ? calls.get(m.toolCallId) : undefined;
+        if (!hit) continue;
+        const text = Array.isArray(m.content) ? m.content.map((b: { text?: unknown }) => typeof b?.text === 'string' ? b.text : '').join('') : '';
+        Object.assign(hit, { result: text.slice(0, 4000), lines: text.trimEnd().split('\n').length, error: !!m.isError });
       }
     }
   }
@@ -1103,6 +1136,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a comment has text');
     if (ask !== undefined && !['question', 'proposal'].includes(ask)) throw new HttpError(400, 'ask is "question" or "proposal"');
     if (thread !== undefined && !under) throw new HttpError(400, `no comment ${thread} to reply under; this instance's threads: ${inst.threads().join(', ') || 'none yet'}`);
+    if (thread === undefined && ref != null && typeof ref !== 'string') throw new HttpError(400, 'ref must be a string');
     if (thread === undefined && item != null && !inst.doc.items.some(i => i.id === item)) throw new HttpError(400, `no item ${item}; the screen's items: ${inst.doc.items.map(i => i.id).join(', ')}`);
     for (const f of files) if (!(typeof f === 'string' && f.startsWith('upload/attachments/') && !f.includes('..') && existsSync(join(inst.dir, f)))) throw new HttpError(400, `no attachment ${f}`);
     const who = typeof to === 'string' ? to.toLowerCase() : undefined, p = who && asPerson(who);
