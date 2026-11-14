@@ -1629,6 +1629,7 @@ async function onAct(act, el) {
   // A wake edited is set anew, then the one it was cancelled, unless setting it moved that one.
   if (act === 'wake-save' || act === 'wake-delete') {
     const r = el.closest('.wakerow'), id = r.dataset.id, days = [...r.querySelectorAll('input:checked')].map(c => c.value).join(',');
+    if (act === 'wake-save' && Number.isNaN(Date.parse(r.querySelector('.wat').value))) return toast('Pick a date and time');
     const made = act === 'wake-save' && await api(`/api/wakes/${r.dataset.target}`, { method: 'PUT', body: JSON.stringify({ at: new Date(r.querySelector('.wat').value).toISOString(), label: r.querySelector('.wlabel')?.value, days, text: r.querySelector('.wtext').value }) });
     if (id && made.id !== id) await api(`/api/wakes/${id}`, { method: 'DELETE' });
     await refresh();

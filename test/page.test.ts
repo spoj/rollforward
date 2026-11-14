@@ -2023,3 +2023,18 @@ test('drafts in sessionStorage preserve item/cell pins and deep replies, skip ca
     await ctx.close();
   }
 });
+
+test('saving a wake without a date and time shows a clear prompt instead of Invalid time value', async () => {
+  const origin = new URL(page.url()).origin;
+  await page.goto(`${origin}/#/a5c0ff5e1f00`);
+  await page.waitForSelector('#bar [data-act=wakes]');
+  await page.click('#bar [data-act=wakes]');
+  await page.waitForSelector('#pv .wakerow [data-act=wake-save]');
+  await page.fill('#pv .wakerow .wat', '');
+  await page.click('#pv .wakerow [data-act=wake-save]');
+  await page.waitForSelector('#toasts .toast');
+  const msg = await page.textContent('#toasts .toast') ?? '';
+  assert.doesNotMatch(msg, /Invalid time value/i);
+  assert.match(msg, /date and time/i);
+  await page.click('#pv [data-act=unpv]');
+});
