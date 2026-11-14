@@ -50,13 +50,14 @@ openStore(root);
 // A new data root starts with one connection, Microsoft 365's, graph.
 if (!existsSync(join(root, '.rf', 'connections.json'))) writeJson('connections.json', { graph: { type: 'graph', updated_by: 'server', updated_at: new Date().toISOString() } });
 
-// A file's sha256, kept by its path, size and change time, as each view of an instance compares its files again; streamed, as a run
-// may leave a file of any size.
+// A file's sha256, kept by its inode, size and nanosecond change times once a second old, as each view of an instance compares its
+// files again; streamed, as a run may leave a file of any size.
 const sums = new Map<string, [string, string]>();
 async function sha256(dir: string, file: string): Promise<string | undefined> {
   const fd = openFile(dir, file);
   if (fd === undefined) return undefined;
-  const st = fstatSync(fd), key = `${st.size}:${st.mtimeMs}`, hit = sums.get(join(dir, file));
+  const st = fstatSync(fd, { bigint: true }), key = `${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}`;
+  const fresh = st.ctimeNs > BigInt(Date.now() - 1000) * 1_000_000n, hit = sums.get(join(dir, file));
   if (hit?.[0] === key) {
     closeSync(fd);
     return hit[1];
@@ -64,7 +65,7 @@ async function sha256(dir: string, file: string): Promise<string | undefined> {
   const hash = createHash('sha256');
   for await (const chunk of createReadStream('', { fd })) hash.update(chunk);
   const sum = hash.digest('hex');
-  sums.set(join(dir, file), [key, sum]);
+  if (!fresh) sums.set(join(dir, file), [key, sum]);
   return sum;
 }
 

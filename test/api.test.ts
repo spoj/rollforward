@@ -1993,4 +1993,26 @@ test('rf pull --delete preserves excluded git directories and handles file-to-fo
   execFileSync('git', ['status'], { cwd: dest });
 });
 
+test('previous detects in-place same-size edits even when mtime is restored', async () => {
+  const { chmodSync, utimesSync } = await import('node:fs');
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'PrevHash' }))).json();
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'S' }))).json();
+  const { id: p1 } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: '2026-02', quiet: true }))).json();
+  await call('POST', `/api/instances/${p1}/upload?name=out.txt&pane=out&quiet=1`, 'aaa');
+  await call('POST', `/api/instances/${p1}/close`, JSON.stringify({ quiet: true }));
+
+  const { id: p2 } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: '2026-03', quiet: true }))).json();
+  await call('POST', `/api/instances/${p2}/upload?name=out.txt&pane=out&quiet=1`, 'aaa');
+  const d0 = await json(`/api/instances/${p2}`);
+  const p2File = join(root, 'instances', p2, d0.doc.items[0].file);
+  utimesSync(p2File, 1.7e9, 1.7e9);
+  await new Promise(r => setTimeout(r, 1100));
+  assert.equal((await json(`/api/instances/${p2}`)).previous.changed[d0.doc.items[0].id], 'same');
+
+  chmodSync(p2File, 0o644);
+  writeFileSync(p2File, 'bbb');
+  utimesSync(p2File, 1.7e9, 1.7e9);
+  assert.equal((await json(`/api/instances/${p2}`)).previous.changed[d0.doc.items[0].id], 'changed');
+});
+
 
