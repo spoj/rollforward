@@ -172,6 +172,7 @@ export async function startSignIn(email: string, site: string, given: string): P
 export const isSignIn = (email: string, id: string) => signIns.get(id)?.email === email;
 
 export async function endSignIns(email: string) {
+  for (const [key, generation] of signInGenerations) if (key.startsWith(`${email} `)) signInGenerations.set(key, generation + 1);
   for (const [id, s] of [...signIns]) if (s.email === email) await endSignIn(email, id, false).catch(() => {});
 }
 

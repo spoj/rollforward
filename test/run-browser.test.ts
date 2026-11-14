@@ -24,7 +24,7 @@ import { changes, initSystem, rfDir, saveTree, tree, writeJson } from '../src/sy
 const state = (value: string, domain = '.example.com') => ({ cookies: [{ name: 'sid', value, domain, path: '/', expires: -1, httpOnly: true, secure: true, sameSite: 'Lax' }], origins: [] });
 let page = Buffer.from('page 1'), back: unknown = { cookies: [], origins: [] }, listed: string[] = [], shown = { url: '', password: false };
 const plain = [{ method: 'GET', url: 'https://crm.example.com/', status: 200 }];
-let requested: object[] = plain;
+let requested: object[] = plain, closeGate: Promise<void> | undefined;
 const states: unknown[] = [], headers: unknown[] = [], deleted: string[] = [], starts: string[] = [], publics: boolean[] = [];
 const opened: { site: { hosts: string[]; start_url?: string; public?: boolean; open?: boolean; except?: string[] }; ttl_s: number; state?: unknown }[] = [];
 let blocked: Record<string, boolean> = {};
@@ -50,6 +50,7 @@ const service = createServer(async (req, res) => {
     }
     if (refuseClose) return res.writeHead(404).end('{"error":"session gone"}');
     deleted.push(req.url!.split('/')[2]);
+    await closeGate;
     return res.writeHead(200).end(JSON.stringify({ state: back, log: requested }));
   }
   if (req.method === 'POST' && req.url!.endsWith('/reload')) return res.writeHead(200).end('{}');
@@ -1066,6 +1067,36 @@ test('run writeback trims cookies and origins to allowed hosts and rejects overs
     oversizeClose = false;
   }
   assert.deepEqual(JSON.parse(secret(alice, 'web:crm')).cookies.map((c: any) => c.value), ['refreshed']);
+});
+
+test('ending a person\'s sign-ins invalidates an opening browser and a save already closing its browser', { timeout: 5000 }, async () => {
+  const { endSignIns } = await import('../src/browsers.ts');
+  for (const mode of ['saving', 'opening']) {
+    sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });
+    saveLogin(alice, website('crm', 'CRM'), JSON.stringify(state('initial')));
+    const id = mode === 'saving' ? await startSignIn(alice, 'crm', '') : undefined;
+    let release!: () => void;
+    const gate = new Promise<void>(ok => { release = ok; });
+    if (mode === 'opening') openGate = gate;
+    else closeGate = gate;
+    const before = mode === 'opening' ? states.length : deleted.length;
+    const outcome = Promise.allSettled([mode === 'opening' ? startSignIn(alice, 'crm', '') : endSignIn(alice, id!, true)]);
+    try {
+      while ((mode === 'opening' ? states.length : deleted.length) === before) await sleep(5);
+      await endSignIns(alice);
+      release();
+      const [result] = await outcome;
+      assert.equal(result.status, 'rejected', mode);
+      if (result.status === 'rejected') assert.equal(result.reason.status, 409);
+      assert.equal(isSignIn(alice, 'b9'), false);
+      assert.deepEqual(JSON.parse(secret(alice, 'web:crm')), state('initial'));
+    } finally {
+      release();
+      openGate = closeGate = undefined;
+      await outcome;
+      await endSignIns(alice);
+    }
+  }
 });
 
 test('saved browser state excludes refused exact hosts while preserving wildcard subdomains and their parent-domain cookies', async () => {
