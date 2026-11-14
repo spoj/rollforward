@@ -482,10 +482,12 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
       };
       const decoder = o.keep && isSse ? new StringDecoder('utf8') : undefined;
       const unzip = decoder && (enc === 'gzip' ? createGunzip() : enc === 'deflate' ? createInflate() : enc === 'br' ? createBrotliDecompress() : undefined);
-      if (unzip) {
+      const decoded = unzip && new Promise<void>(resolve => {
         unzip.on('data', (b: Buffer) => feedText(decoder!.write(b)));
-        unzip.on('error', () => {});
-      }
+        unzip.once('end', resolve);
+        unzip.once('close', resolve);
+        unzip.once('error', () => resolve());
+      });
       r.on('data', (b: Buffer) => {
         bytes += b.length;
         if (decoder) {
@@ -495,7 +497,7 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
       });
       const finishAnswer = () => {
         if (decoder) {
-          if (!unzip) feedText(decoder.end());
+          feedText(decoder.end());
           if (carry) { pushLine(carry); carry = ''; }
         }
         let text = '';
@@ -514,6 +516,7 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
       const abortStream = () => {
         if (r.readableEnded || settled) return;
         cut = true;
+        unzip?.destroy();
         up.destroy();
         res.destroy();
         done(finishAnswer());
@@ -529,7 +532,11 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
           else r.resume();
         });
       }
-      r.on('end', () => {
+      r.on('end', async () => {
+        if (unzip) {
+          unzip.end();
+          await decoded;
+        }
         const answer = finishAnswer();
         if (!o.digest || req.readableEnded) return done(answer);
         const finish = () => {
@@ -548,6 +555,7 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
       r.on('error', e => {
         if (o.service) {
           cut = true;
+          unzip?.destroy();
           res.destroy();
           done(finishAnswer());
         } else die(e);

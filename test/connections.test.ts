@@ -1,6 +1,7 @@
 import { after, before, test } from 'node:test';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
+import { gzipSync } from 'node:zlib';
 import assert from 'node:assert/strict';
 import { createServer, request, type IncomingHttpHeaders, type Server } from 'node:http';
 import { request as httpsRequest } from 'node:https';
@@ -185,6 +186,9 @@ before(async () => {
       if (!g) return void res.writeHead(404, { 'content-type': 'application/json' }).end('{"error":{"code":404}}');
       if (g.wait404 && g.wait404-- > 0) return void res.writeHead(404, { 'content-type': 'application/json' }).end('{"error":{"code":404}}');
       return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ data: { id, total_cost: g.cost, usage: g.cost } }));
+    }
+    if (body?.user === 'gzip-sse') {
+      return void res.writeHead(200, { 'content-type': 'text/event-stream', 'content-encoding': 'gzip' }).end(gzipSync('data: {"usage":{"cost":0.123456}}\n\ndata: [DONE]\n\n'));
     }
     const stream = async (genId: string, first: object, ...events: object[]) => {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'x-generation-id': genId }).write(`: OPENROUTER PROCESSING\n\ndata: ${JSON.stringify(first)}\n\n`);
@@ -1019,6 +1023,13 @@ test('a deployment service gets streamed requests only under the runner\'s ticke
   }
 });
 
+
+test('compressed SSE is fully decoded before its cost is recorded', async () => {
+  const { drainCalls } = await import('../src/connections.ts');
+  await via('POST', `${O}/chat/completions`, { ...json({ user: 'gzip-sse' }) });
+  await drainCalls(callRuns.get('run')!);
+  assert.deepEqual([calls().at(-1)!.cost, calls().at(-1)!.estimated], [0.123456, undefined]);
+});
 
 test('cut streams and endpoints without inline usage.cost query /api/v1/generation, or fall back to an estimate marked estimated, without leaking keys', async () => {
   const { drainCalls } = await import('../src/connections.ts');
