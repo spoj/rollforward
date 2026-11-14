@@ -274,6 +274,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
       'curl -s -m 5 -H "authorization: Bearer $RF_TOKEN" "$RF_URL/api/workspaces"; echo',
       'rf ask --sign-off Sure. 2>&1',
       'curl -s -m 5 -w "\\n%{http_code}" -X POST -H "authorization: Bearer $RF_TOKEN" "$RF_URL/api/instances/$RF_INSTANCE/delete"',
+      'for a in assign takeover; do curl -s -m 5 -w " %{http_code};" -X POST -H "authorization: Bearer $RF_TOKEN" -d \'{"to": "bob@demo.test"}\' "$RF_URL/api/instances/$RF_INSTANCE/$a"; done',
     ],
     report: 'Checked the walls, and woke myself for the bank file.', saw: [],
   };
@@ -310,6 +311,7 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.deepEqual([walls.saw[18].trim(), walls.saw[19].trim()], ['not found', 'not found'], "a run's token does only what a run may: not close its instance, nor read what people do"); 
   assert.match(walls.saw[20], /^rf ask has no --sign-off\nrf ask \[--in cN/, 'an option it has not is no part of the text');
   assert.equal(walls.saw[21].trim(), 'not found\n404', 'even a workspace manager\'s run cannot delete');
+  assert.equal(walls.saw[22].trim(), 'not found 404;not found 404;', 'nor assign, nor take over');
   const asked = log.filter(e => e.op === 'call' && e.name === 'openrouter'), pi = asked.filter(e => (e.path as string).startsWith('/api/v1/messages'));
   assert.deepEqual(asked.filter(e => !pi.includes(e)).map(e => [e.run, e.method, e.path, e.status, e.model, e.cost]), [[2, 'POST', '/api/v1/chat/completions', 200, 'openai/gpt-5-mini', 0.002], [2, 'GET', '/api/v1/credits', 404, undefined, 0]]);
   assert.deepEqual(pi.map(e => [e.run, e.method, e.status, e.model, e.cost]), [[1, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01], ...Array(walls.bash.length + 1).fill([2, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01]), ...Array(2).fill([3, 'POST', 200, 'anthropic/claude-opus-5.5', 0.01])], "Pi's own calls, a step's each and the report's, through the same connection");
