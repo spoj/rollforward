@@ -33,8 +33,12 @@ function request(method: string, path: string, body?: unknown, ms = method === '
     const req = (tls ? httpsRequest : httpRequest)(base + path, { method, headers: key(), timeout: ms }, res => {
       if (res.statusCode! < 300) return ok(res);
       const chunks: Buffer[] = [];
+      let size = 0;
       res.on('error', e => fail(new HttpError(502, `browser service: ${e.message}`)));
-      res.on('data', c => chunks.push(c)).on('end', () => {
+      res.on('data', c => {
+        if ((size += c.length) > 64 << 20) { res.destroy(); fail(new HttpError(502, 'browser service: response exceeded 64 MB')); return; }
+        chunks.push(c);
+      }).on('end', () => {
         const data = Buffer.concat(chunks);
         // The service answers {error}; a proxy in front of it, such as one that ends TLS, may answer anything, and a throw here would
         // be outside the promise, ending the server.

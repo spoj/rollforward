@@ -29,7 +29,7 @@ const states: unknown[] = [], headers: unknown[] = [], deleted: string[] = [], s
 const opened: { site: { hosts: string[]; start_url?: string; public?: boolean; open?: boolean; except?: string[] }; ttl_s: number; state?: unknown }[] = [];
 let blocked: Record<string, boolean> = {};
 const toldHosts: { path: string; hosts: string[] }[] = [];
-let nextId = 'b9', refuseClose = false, dropClose = false, hangClose = false, oversizeClose = false, openGate: Promise<void> | undefined;
+let nextId = 'b9', refuseClose = false, dropClose = false, hangClose = false, oversizeClose = false, oversizeStatus = 200, openGate: Promise<void> | undefined;
 const service = createServer(async (req, res) => {
   if (req.method === 'PUT') {
     toldHosts.push({ path: req.url!, ...JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString()) });
@@ -38,7 +38,7 @@ const service = createServer(async (req, res) => {
   if (req.method === 'DELETE') {
     if (hangClose) return;
     if (oversizeClose) {
-      res.writeHead(200);
+      res.writeHead(oversizeStatus);
       const chunk = Buffer.alloc(1 << 20, 0x61);
       for (let i = 0; i < 66 && !res.destroyed; i++) if (!res.write(chunk)) await new Promise<void>(ok => res.once('drain', ok) && res.once('close', ok));
       return res.end();
@@ -1066,6 +1066,18 @@ test('run writeback trims cookies and origins to allowed hosts and rejects overs
     oversizeClose = false;
   }
   assert.deepEqual(JSON.parse(secret(alice, 'web:crm')).cookies.map((c: any) => c.value), ['refreshed']);
+});
+
+test('browser-service error responses obey the same 64 MB bound as successful responses', async () => {
+  const { browserJson } = await import('../src/browsers.ts');
+  oversizeClose = true;
+  oversizeStatus = 503;
+  try {
+    await assert.rejects(browserJson('DELETE', '/sessions/oversized-error'), { status: 502, message: 'browser service: response exceeded 64 MB' });
+  } finally {
+    oversizeClose = false;
+    oversizeStatus = 200;
+  }
 });
 
 test('removing an internal host resets passing checks, drops it from website hosts, and closes open run browsers', async () => {
