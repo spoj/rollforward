@@ -1420,7 +1420,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     if (req.method === 'GET' && url.pathname === '/drained') return void res.writeHead(drained() ? 200 : 503).end();
     const me = await authenticate(req, res, url);
     if (!me) {
-      if (url.pathname === redirectPath) { pruneGrants(); await closeUnlent(); }
+      if (url.pathname === redirectPath) { pruneGrants(); await dropUnpermittedVpns(); await closeUnlent(); }
       return;
     }
     // What a person changes beyond an instance is an act of theirs in the system's log, once it's done.

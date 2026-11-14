@@ -117,3 +117,21 @@ test('run-start renewal collects VPN sign-ins and tunnels only when fresh groups
   assert.ok(sessions.has(unrelated.signin), 'an email grant survives renewal without groups');
   assert.ok(tunnels.has(unrelated.tunnel), 'an email grant retains its tunnel');
 });
+
+test('OIDC callbacks collect VPN resources after group-derived capability loss', { timeout: 10000 }, async () => {
+  const email = 'callback@demo.test';
+  entra.who.groups[email] = [GROUP, OTHER];
+  const own = await access(await login(email));
+  entra.who.groups[email] = [OTHER];
+  await login(email);
+  assert.ok(sessions.has(own.signin), 'another granted group retains the browser');
+  assert.ok(tunnels.has(own.tunnel), 'another granted group retains the tunnel');
+  delete entra.who.groups[email];
+  await login(email);
+  for (let i = 0; i < 50 && (sessions.has(own.signin) || tunnels.has(own.tunnel)); i++) await new Promise(ok => setTimeout(ok, 10));
+  assert.equal(sessions.has(own.signin), false, 'the configured callback deletes the revoked VPN browser');
+  assert.equal(tunnels.has(own.tunnel), false, 'the configured callback deletes the revoked VPN tunnel');
+  const before = [...tunnels.keys()];
+  await login(ADMIN);
+  assert.deepEqual([...tunnels.keys()], before, 'an email grant survives signing in without groups');
+});
