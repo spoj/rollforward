@@ -32,7 +32,7 @@ const oidc = {
   redirect: '',
 };
 oidc.redirect = env.RF_OIDC_REDIRECT_URI ?? `${oidc.publicUrl}/auth/callback`;
-const redirectPath = URL.canParse(oidc.redirect) ? new URL(oidc.redirect).pathname : '/auth/callback';
+export const redirectPath = URL.canParse(oidc.redirect) ? new URL(oidc.redirect).pathname : '/auth/callback';
 // A person's Microsoft 365 login asks the same app for delegated Graph access: RF_M365_SCOPES, by default reading mail, shared
 // mailboxes, files and sites. The server keeps its refresh token.
 export const graphScopes = (env.RF_M365_SCOPES ?? 'Mail.Read Mail.Read.Shared Files.Read.All Sites.Read.All').split(/[\s,]+/).filter(Boolean);
