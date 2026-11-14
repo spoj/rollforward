@@ -1080,6 +1080,23 @@ test('browser-service error responses obey the same 64 MB bound as successful re
   }
 });
 
+test('revoking a shared internal exception updates sign-ins whose starting host has no saved check', async () => {
+  const { revokeInternalHosts } = await import('../src/browsers.ts'), { setLetIn } = await import('../src/connections.ts');
+  sites({ intra: { url: 'https://10.42.43.44/', hosts: [], writeback: false } });
+  setLetIn(['10.42.43.44'], alice, true);
+  const id = await startSignIn(alice, 'intra', '');
+  assert.deepEqual(opened.at(-1)!.site.hosts, ['10.42.43.44']);
+  const before = toldHosts.length;
+  try {
+    setLetIn(['10.42.43.44'], alice, false);
+    await revokeInternalHosts(['10.42.43.44']);
+    assert.deepEqual(toldHosts.slice(before), [{ path: `/sessions/${id}/hosts`, hosts: [] }]);
+    assert.equal(websitesOf(alice).intra.checks?.['10.42.43.44']?.verdict, 'internal');
+  } finally {
+    await endSignIn(alice, id, false);
+  }
+});
+
 test('removing an internal host resets passing checks, drops it from website hosts, and closes open run browsers', async () => {
   const { allowHost, revokeInternalHosts, setSite } = await import('../src/browsers.ts'), { setLetIn } = await import('../src/connections.ts');
   const admin = asPerson(alice)!;

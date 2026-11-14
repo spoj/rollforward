@@ -234,7 +234,7 @@ export async function revokeInternalHosts(hosts: string[]) {
   if (!hosts.length) return;
   const dir = join(rfDir(), 'people'), people = new Set([...Object.keys(users()), ...(existsSync(dir) ? readdirSync(dir) : [])]);
   for (const email of people) for (const [site, w] of Object.entries(websitesOf(email))) {
-    const hit = hosts.filter(h => !throughVpn(w, h) && (w.hosts.includes(h) || w.checks?.[h]?.verdict === 'pass'));
+    const hit = hosts.filter(h => !throughVpn(w, h) && (reached(w).includes(h) || w.checks?.[h]?.verdict === 'pass'));
     if (!hit.length) continue;
     changeWebsite(email, site, {
       hosts: w.hosts.filter(h => !hit.includes(h)),
