@@ -991,3 +991,18 @@ test('setSite clears a website sign-in header and its sealed token when header i
   assert.equal(websitesOf(alice).crm.header, undefined);
   assert.equal(existsSync(join(personDir(alice), 'web:crm.header.sealed')), false);
 });
+
+test('closeUnlent closes an idle browser on login expiry or grant revocation without logging expired or refused until the run asks again', async () => {
+  sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: false } });
+  writeJson('grants.json', everyone);
+  saveLogin(alice, website('crm', 'CRM'), JSON.stringify(state('s1')));
+  const inst = running('2028-03', ['web:crm'], 1);
+  const run = new Browsers(inst, 1);
+  await run.browser('crm');
+  saveLogin(alice, { ...website('crm', 'CRM'), expired: true }, JSON.stringify(state('s1')));
+  await run.closeUnlent();
+  assert.equal(run.bySite.size, 0);
+  assert.equal(inst.log.some(e => e.op === 'expired' || e.action === 'refused'), false);
+  await assert.rejects(() => run.browser('crm'), /expired/);
+  assert.equal(inst.log.some(e => e.op === 'expired'), true);
+});

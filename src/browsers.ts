@@ -535,26 +535,28 @@ export class Browsers {
 
   // The login a browser on a website may use now, and the run's browser there if open: checked at every call and new connection,
   // and as its lending changes. One its runner must sign in to again is logged, so the instance carries on once they do.
-  async lent(site: string) {
+  async lent(site: string, quiet = false) {
     try {
       // A try's stand-in instance (cli.ts) is in no workspace: any approved grant of its runner's does.
       const { email, login } = use(this.inst, this.run, `web:${site}`), had = this.bySite.get(site), ws = tree().series[this.inst.seriesId]?.workspace;
       if (!approved(site, email, ws)) throw Object.assign(new HttpError(403, unapproved(email, site, ws)), { refused: true });
       if (login.expired) throw Object.assign(new HttpError(409, `${email}'s login to ${site} has expired: they sign in to it again on the Logins page, and the instance carries on`), { login: login.id });
-      if (had && had.email !== email) throw new HttpError(409, `this run's browser on ${site} is in ${had.email}'s login, and ${email} has taken the instance over: the next run opens one in theirs`);
+      if (had && had.email !== email) throw Object.assign(new HttpError(409, `this run's browser on ${site} is in ${had.email}'s login, and ${email} has taken the instance over: the next run opens one in theirs`));
       const w = website(email, site), via = await vpnVia(email, w), current = use(this.inst, this.run, `web:${site}`);
-      if (current.email !== email || current.login.since !== login.since || current.login.expired || website(email, site).via !== w.via || this.bySite.get(site) !== had) return this.lent(site);
+      if (current.email !== email || current.login.since !== login.since || current.login.expired || website(email, site).via !== w.via || this.bySite.get(site) !== had) return this.lent(site, quiet);
       if (!approved(site, email, tree().series[this.inst.seriesId]?.workspace)) throw Object.assign(new HttpError(403, `${email}'s grant to use ${site} was revoked; this run goes on without it`), { refused: true });
       if (had && (had.via?.token !== via?.token || had.via?.url !== via?.url)) {
         await this.close(site);
-        return this.lent(site);
+        return this.lent(site, quiet);
       }
       return { email, login, had, via };
     } catch (e) {
-      const { login, refused } = e as { login?: string; refused?: true };
-      if (login) this.inst.append('server', 'expired', { run: this.run, login, name: site, runner: runnerOf(this.inst).by });
-      if (refused && !this.refused.has(site)) this.inst.append('server', 'browser', { run: this.run, site, action: 'refused', why: (e as Error).message });
-      if (refused) this.refused.add(site);
+      if (!quiet) {
+        const { login, refused } = e as { login?: string; refused?: true };
+        if (login) this.inst.append('server', 'expired', { run: this.run, login, name: site, runner: runnerOf(this.inst).by });
+        if (refused && !this.refused.has(site)) this.inst.append('server', 'browser', { run: this.run, site, action: 'refused', why: (e as Error).message });
+        if (refused) this.refused.add(site);
+      }
       throw e;
     }
   }
@@ -638,7 +640,7 @@ export class Browsers {
 
   async closeUnlent() {
     await Promise.all([...this.bySite.keys()].filter(site => site !== PRINT).map(async site => {
-      try { await this.lent(site); } catch { await this.close(site); }
+      try { await this.lent(site, true); } catch { await this.close(site); }
     }));
   }
 
