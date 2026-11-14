@@ -611,7 +611,7 @@ function fire() {
 export const CUT = { restart: 'a restart cut the run', moved: 'its series moved', runner: 'its runner can no longer see it', reach: 'its reach narrowed', deleted: 'its instance was deleted', gone: 'an instance in its reach was deleted' };
 
 // A run a restart cut ends as aborted, with what its calls cost so far, its changes committed as at any run's end, and its instance
-// is woken to carry on, so a deploy needn't wait for quiet. A commit the restart cut leaves git's locks, which would refuse the
+// is woken to carry on, so a deploy needn't wait for quiet, unless it was assigned as the run stopped: what came before is history. A commit the restart cut leaves git's locks, which would refuse the
 // instance's next; no git runs as it starts.
 export function recover() {
   // A deletion a restart cut is done: what's left of its folder goes.
@@ -622,7 +622,7 @@ export function recover() {
     if (run?.op === 'run') {
       const cost = inst.log.reduce((t, e) => t + (e.op === 'call' && e.run === run.run ? (e.cost as number | undefined) ?? 0 : 0), 0);
       const done = inst.append('server', 'done', { run: run.run, aborted: true, seen: seenBefore(inst), cost: +cost.toFixed(4), error: CUT.restart });
-      inst.append('server', 'wake', { reason: `A restart cut run ${run.run}; carry on`, from: 'server', cause: done.seq });
+      if ((lastAssign(inst.log)?.seq ?? 0) < run.seq) inst.append('server', 'wake', { reason: `A restart cut run ${run.run}; carry on`, from: 'server', cause: done.seq });
       commit(inst.dir, AGENT, `Run ${run.run}: ${CUT.restart}`).catch(e => inst.append('server', 'commit', { run: run.run, error: e.message }));
     }
     kick(inst);

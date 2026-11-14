@@ -215,6 +215,17 @@ test('a run a restart cut ends as aborted, with what its calls cost so far, and 
   assert.equal(cut.log.filter(e => e.op === 'run').length, 3, 'started again');
 });
 
+test("a run a restart cut as an assign stopped it, the assign logged and its end not, carries on for no one: what came before the assign starts nothing", async () => {
+  const cut = make('s8', 'assigned as cut');
+  cut.append('server', 'run', { run: 1, runner: alice, consent: 1, upto: 1 });
+  cut.append(alice, 'interrupt', { why: 'to assign it to bob@demo.test' });
+  cut.append(alice, 'assign', { to: 'bob@demo.test', from: alice, logins: [] });
+  recover();
+  assert.deepEqual(cut.log.slice(-1).map(e => [e.op, e.error]), [['done', 'a restart cut the run']], 'ended, with no wake');
+  await settle();
+  assert.equal(cut.log.filter(e => e.op === 'run').length, 1);
+});
+
 test("an act just after a run ends, as its folder is committed, starts the next run, though the last never started", async () => {
   const late = make('s2', 'late');
   late.append(alice, 'comment', { thread: 't1', text: 'go' });
