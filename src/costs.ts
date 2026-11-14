@@ -17,8 +17,7 @@ export function recordCost(entry: CostRecord) {
   if (existsSync(file()) && statSync(file()).size > cachedOffset) truncateSync(file(), cachedOffset);
   const line = JSON.stringify(entry);
   appendLine(file(), line, 0o600);
-  cached.push(entry);
-  cachedOffset += Buffer.byteLength(line) + 1;
+  syncCosts();
 }
 
 // Incremental tail read: costs.jsonl is append-only (including from `cli.ts try` in another process), so after the first read

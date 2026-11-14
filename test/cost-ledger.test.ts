@@ -1,4 +1,6 @@
 import { after, test } from 'node:test';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import assert from 'node:assert/strict';
 import { appendFileSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -25,6 +27,24 @@ test('ledger starts absent, tails complete UTF-8 lines, and recovers a torn tail
   recordCost(entry);
   assert.deepEqual(readFileSync(path, 'utf8').trim().split('\n').map(l => JSON.parse(l)), [{ ...entry, person: 'é@test' }, entry]);
   assert.equal(syncCosts().length, 2);
+});
+
+test('a separate process appending between sync and the local append cannot corrupt the cursor', () => {
+  initSystem(join(tmp, 'concurrent'));
+  recordCost(entry);
+  syncCosts();
+  const external = { ...entry, person: 'another-process@test', cost: 0.02 };
+  const append = fs.appendFileSync;
+  fs.appendFileSync = ((path, data, options) => {
+    append(path, JSON.stringify(external) + '\n');
+    append(path, data, options);
+  }) as typeof fs.appendFileSync;
+  syncBuiltinESMExports();
+  try { recordCost(entry); } finally {
+    fs.appendFileSync = append;
+    syncBuiltinESMExports();
+  }
+  assert.deepEqual(syncCosts(), [entry, external, entry]);
 });
 
 test('ledger invalidates its cursor after rotation, truncation, and removal', () => {
