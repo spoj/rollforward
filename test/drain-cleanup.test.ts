@@ -16,7 +16,7 @@ writeJson('users.json', { [alice]: { role: 'user' } });
 mkdirSync(join(root, 'series', 's'), { recursive: true });
 after(() => rmSync(root, { recursive: true, force: true }));
 
-test('a failed scratch cleanup cannot leave a stopped run in ending and hold drained false', async () => {
+test('a failed scratch cleanup cannot leave a stopped run in retiring and hold drained false', async () => {
   const inst = createInstance('s', 'Cleanup', alice, []), token = 'cleanup';
   const locked = join(root, '.rf', 'runs', token, 'locked');
   mkdirSync(locked, { recursive: true });
@@ -36,7 +36,7 @@ test('a failed scratch cleanup cannot leave a stopped run in ending and hold dra
   }
 });
 
-test('failed sandbox startup, stop and browser close leave neither retiring nor ending entries behind', async t => {
+test('failed sandbox startup, stop and browser close leave no retiring entries behind', async t => {
   t.mock.method(console, 'error', () => {});
   for (const fails of ['startup', 'stop']) {
     const inst = createInstance('s', fails, alice, []), token = fails;

@@ -1310,8 +1310,7 @@ serveSandboxes({
       send(res, err instanceof HttpError ? err.status : 500, (err as Error).message);
     }
   },
-  // The run its token is as each request comes, which a later turn of the same Pi makes another run, over a connection kept open
-  // across them; none while the Pi is idle.
+  // The run its token is, checked again as each request comes over a connection already open.
   run: token => running(token) ? {
     egress(host, allowed) {
       const a = running(token);

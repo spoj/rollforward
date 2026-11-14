@@ -626,8 +626,8 @@ test('deleting a starting run or bailing out of begin() on an expired login neve
   const { interruptRun } = await import('../src/waker.ts');
   const z2 = createInstance('s11', '2026-09', bob, []), oct2 = createInstance('s11', '2026-10', alice, []), nov2 = createInstance('s11', '2026-11', bob, []);
   const a2 = {
-    inst: z2, n: 1, runner: bob, session: 1, token: 'tok-s11', view: view(z2), workspace: 'w', skills: {}, shape: '',
-    run: { turn: async () => ({ settled: new Promise(() => {}) }), steer: async () => {}, interrupt: async () => {}, stop: async () => {}, alone: () => false } as Run,
+    inst: z2, n: 1, runner: bob, token: 'tok-s11', view: view(z2), workspace: 'w',
+    run: { turn: async () => ({ settled: new Promise(() => {}) }), steer: async () => {}, interrupt: async () => {}, stop: async () => {} } as Run,
     sent: 1, noted: 0, seen: 1, delivered: 1, texts: new Map(), done: false, cost: 0, estimated: false, hosts: new Set(), links: new Map(), process: '',
   } as Active;
   z2.append('server', 'run', { run: 1, runner: bob, consent: 1, upto: 1 });
@@ -669,7 +669,7 @@ test('a cut run aborts and drains in-flight proxy calls before done, and done.es
     const inst = make('s2', 'inflight-cut');
     inst.append('server', 'done', { run: 0, aborted: false, seen: 1, cost: 0.09 }); // pre-change entry: estimated is undefined
     const a: Active = {
-      inst, n: 1, runner: alice, session: 1, token: 'inflight-tok', view: view(inst), workspace: 'w', skills: {}, shape: '',
+      inst, n: 1, runner: alice, token: 'inflight-tok', view: view(inst), workspace: 'w',
       sent: 1, noted: 0, seen: 1, delivered: 1, texts: new Map(), done: false, cost: 0, estimated: false, hosts: new Set(), links: new Map(), process: '',
     };
     inst.append('server', 'run', { run: 1, runner: alice, consent: 1 });

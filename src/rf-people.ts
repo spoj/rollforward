@@ -192,7 +192,7 @@ What rf pull copies, the folders as the agent sees them
                              commit, point and item (the screen changing), run, done (its cost, or error), close, and the rest
     upload/                  what people uploaded, their comments' attachments in upload/attachments/
     working/                 what the agent made, its scripts, and process.md, how it does this series
-    session/                 each session's transcript, which may carry several runs: every message and tool call
+    session/                 each run's transcript: every message and tool call
     browser/                 each run's browser requests, and its screenshots
     names.tsv                each instance in the latest run's reach, id<TAB>/work/<workspace>/<series>/<label>: names can
                              change, so where a path in a file doesn't match, look its id up in the names.tsv of the commit

@@ -198,7 +198,7 @@ test('a Pi killed mid-turn fails its run at once, frees its series, and starts a
   scripts.push(fresh);
   assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Carry on.' })).status, 200);
   const log = await runs(id, 2);
-  assert.equal(log.findLast(e => e.op === 'run')!.continues, undefined);
+  assert.equal('continues' in log.findLast(e => e.op === 'run')!, false);
   assert.equal(fresh.first, 1, 'a conversation of its own prompt alone, never one run 1 left for it');
   assert.equal(log.findLast(e => e.op === 'done')!.aborted, false);
 });
@@ -325,11 +325,10 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   assert.deepEqual(log.filter(e => e.op === 'comment' && e.by === 'agent').map(e => [e.text, !!e.ask]), [['Walls checked.', false], ['Is the bank file coming today?', true], ['It came, never mind.', false], ['Cited [x](working/x.csv), as [last time](../2026-11/working/x.csv).', false]], "the agent's words are comments of its own, and an ask is marked");
   assert.match(woken.prompt!, /"op":"wake","from":"[^"]*\/2026-11","text":"the bank file is due"/, 'the wake started the next run, saying who set it and what it said');
   assert.match(made.prompt!, /^Instance 2026-11, run 1\. Its runner is Demo Admin <admin@demo\.test>, who lends you /, 'a new Pi hears who the runner is');
-  assert.deepEqual([made.first, walls.first], [1, 1], 'a new conversation, of its own prompt alone, as a series made in reach since changed what run 2 sees');
-  assert.ok(woken.first! > 1, 'a run within the hour of the last carries its conversation on, as a new turn');
-  assert.match(woken.prompt!, /^Instance 2026-11, run 3\. New log entries:/, 'whose message is the new log entries');
+  assert.deepEqual([made.first, walls.first, woken.first], [1, 1, 1], 'every run starts a fresh conversation of its own prompt alone');
+  assert.match(woken.prompt!, /^Instance 2026-11, run 3\. Its runner is Demo Admin <admin@demo\.test>, who lends you no login\. New log entries:/, 'every run hears its runner, ticks and new log entries');
   const transcripts = readdirSync(join(root, 'instances', id, 'session'));
-  assert.ok(['run-1', 'run-2'].every(r => transcripts.some(f => new RegExp(`_${r}-[0-9a-f]{16}\\.jsonl$`).test(f))) && !transcripts.some(f => f.includes('_run-3-')), `a transcript per session: ${transcripts}`);
+  assert.ok(['run-1', 'run-2', 'run-3'].every(r => transcripts.some(f => new RegExp(`_${r}-[0-9a-f]{16}\\.jsonl$`).test(f))), `a transcript per run: ${transcripts}`);
   assert.match(woken.saw[0], /m365:mail:admin@demo.test is not ticked/);
   assert.deepEqual(log.filter(e => e.op === 'done').map(e => [e.run, e.aborted, e.cost]), [[1, false, 0.01], [2, false, +(walls.bash.length * 0.01 + 0.01 + 0.002).toFixed(4)], [3, false, 0.02]], "what its calls cost, Pi's and the script's");
   assert.ok(!JSON.stringify(log).includes(walls.report), "a run's closing message reaches no one: it stays in its session");
@@ -339,13 +338,13 @@ test("a run meets its walls, wakes itself, and after a takeover runs as its new 
   log = await runs(id, 4);
   assert.match(takenOver.saw[0], /m365:mail:bob@demo.test is not ticked for this instance; its runner, bob@demo.test/);
   assert.equal(log.findLast(e => e.op === 'done')!.aborted, false);
-  assert.equal(takenOver.first, 1, 'a takeover ends the idle Pi: a new runner, a new conversation');
+  assert.equal(takenOver.first, 1, 'a new runner, a new conversation');
 
   scripts.push({ bash: [], report: '', saw: [], fail: 'the model said no' });
   assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Once more.' }, bob)).status, 200);
   log = await runs(id, 5);
   assert.match(String(log.findLast(e => e.op === 'done')!.error), /the model said no/, "a model's failure is the run's error");
-  assert.deepEqual(log.filter(e => e.op === 'run').map(e => e.continues), [undefined, undefined, 2, undefined, 4], 'which ends its Pi, as a refusal would');
+  assert.ok(log.filter(e => e.op === 'run').every(e => !('continues' in e)));
 });
 
 test("assigning mid-run stops the run first, as Interrupt does, saying why; the next run, a new session, waits for the new runner's act and brings what came before as notes, and an ask from before that named no one waits on the new runner", async () => {
@@ -617,20 +616,23 @@ test("approvals are git commits: the agent commits a moment worth keeping and pr
   assert.ok(pulled.length && !pulled.some((f: { path: string }) => f.path.includes('/.git/')), 'rf pull leaves the history out');
 });
 
-test("a start removes its data root's abandoned scratch, for active and idle Pis without indexes, and leaves another root's scratch alone", async () => {
+test("a start removes its data root's abandoned scratch, for runs without indexes too, and leaves another root's scratch alone", async () => {
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Scratch' })).json();
-  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Idle' })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'First' })).json();
   const { id: busy } = await (await call('POST', '/api/series', { workspace: ws, name: 'Busy' })).json();
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [], quiet: true })).json();
   const { id: running } = await (await call('POST', `/api/series/${busy}`, { label: '2026-11', logins: [], quiet: true })).json();
-  scripts.push({ bash: [], report: 'Idle.', saw: [] });
-  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
-  await runs(id, 1);
-  let reached = false;
-  scripts.push({ bash: [], report: 'Never said.', saw: [], hold: () => { reached = true; } });
+  let reached = 0;
+  scripts.push(
+    { bash: [], report: 'Never said.', saw: [], hold: () => { reached++; } },
+    { bash: [], report: 'Never said.', saw: [], hold: () => { reached++; } },
+  );
+  await call('POST', `/api/instances/${id}/comment`, { text: 'Start.' });
   await call('POST', `/api/instances/${running}/comment`, { text: 'Start.' });
-  await until('the held run', () => reached);
+  await until('the held runs', () => reached === 2);
   const scratch = join(tmp, 'scratch', 'runs'), tokens = readdirSync(scratch);
   assert.ok(tokens.length >= 2);
+  assert.ok(readdirSync(join(root, '.rf', 'runs')).length >= 2, 'a run without index sources still has an ownership folder');
   const foreign = 'another-data-root';
   mkdirSync(join(tmp, 'other-data', '.rf', 'runs', foreign), { recursive: true });
   mkdirSync(join(scratch, foreign, 'home'), { recursive: true });
@@ -644,14 +646,12 @@ test("a start removes its data root's abandoned scratch, for active and idle Pis
   const gbk = Buffer.concat([Buffer.from(join(scratch, tokens[1], 'tmp') + '/'), Buffer.from([0xb7, 0xa2])]);
   mkdirSync(Buffer.concat([gbk, Buffer.from('/x')]), { recursive: true });
   chmodSync(gbk, 0o500);
-  scripts.push({ bash: [], report: 'Carried on.', saw: [] });
+  scripts.push({ bash: [], report: 'Carried on.', saw: [] }, { bash: [], report: 'Carried on.', saw: [] });
   await cut();
   for (const token of tokens) assert.ok(!existsSync(join(scratch, token)), `old scratch ${token} remains`);
   assert.equal(readFileSync(join(scratch, foreign, 'home', 'kept'), 'utf8'), 'the other server');
   rmSync(join(scratch, foreign), { recursive: true });
-  await runs(running, 2);
-  const records = readdirSync(join(root, '.rf', 'runs'));
-  assert.ok(records.length, 'a run without index sources still has an ownership folder');
+  await Promise.all([runs(id, 2), runs(running, 2)]);
 });
 
 test("a run learns nothing of an instance in another workspace by acting on it, its runner, threads, items or label: each act is refused first", async () => {
@@ -842,11 +842,11 @@ async function drainSeries(name: string, mode: boolean | 'ask' = false) {
 const entries = (id: string) => readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
 const started = (id: string) => entries(id).filter(e => e.op === 'run').length;
 
-test("an update's drain starts no run, though acts and due wakes are logged, counts runs going and not an ask waiting on a person, stops the idle Pis and idles none, shows the count on the page, and answers drained once no run goes; what waited starts after the restart", async t => {
-  const runsDir = join(tmp, 'scratch', 'runs'), pi = (id: string) => readdirSync(runsDir).some(t => readFileSync(join(runsDir, t, 'bwrap.args'), 'utf8').includes(`RF_INSTANCE\0${id}\0`));
+test("an update's drain starts no run, though acts and due wakes are logged, counts runs going and not an ask waiting on a person, shows the count on the page, and answers drained once no run goes; what waited starts after the restart", async t => {
+  const runsDir = join(tmp, 'scratch', 'runs'), pi = (id: string) => existsSync(runsDir) && readdirSync(runsDir).some(t => existsSync(join(runsDir, t, 'bwrap.args')) && readFileSync(join(runsDir, t, 'bwrap.args'), 'utf8').includes(`RF_INSTANCE\0${id}\0`));
   const asked = await drainSeries('Asked', 'ask'), woken = await drainSeries('Woken'), busy1 = await drainSeries('Busy1', true), busy2 = await drainSeries('Busy2', true);
   t.after(() => { busy1.go(); busy2.go(); });
-  assert.ok(pi(asked.id) && pi(woken.id));
+  await until('finished runs stopped their sandboxes', () => !pi(asked.id) && !pi(woken.id));
   assert.ok((await (await call('GET', '/api/status')).json()).asks.some((a: { path: string }) => a.path === 'Drain-Asked/Asked/2026-11'));
   assert.deepEqual([await drainedNow(), await draining()], [503, null], 'no drain asked');
   const browser = await chromium.launch(), ctx = await browser.newContext();
@@ -858,7 +858,7 @@ test("an update's drain starts no run, though acts and due wakes are logged, cou
     await page.waitForSelector('#bar h1 .t');
     assert.equal(await page.locator('#draining').isVisible(), false);
     proc.kill('SIGUSR2');
-    await until('the idle Pis stopped', () => !pi(asked.id) && !pi(woken.id));
+    await until('draining reported', async () => (await draining()) === 2);
     assert.deepEqual([await drainedNow(), await draining()], [503, 2], 'the two mid-turn runs go; the ask waiting on a person does not');
     await page.locator('#draining', { hasText: 'An update is waiting for 2 runs to finish; new runs start after it.' }).waitFor();
     assert.equal((await call('POST', `/api/instances/${asked.id}/comment`, { text: 'Use 5%.' })).status, 200);
@@ -881,7 +881,7 @@ test("an update's drain starts no run, though acts and due wakes are logged, cou
     }
     assert.equal(await draining(), 0);
     await page.locator('#draining', { hasText: 'An update is waiting for 0 runs to finish; new runs start after it.' }).waitFor();
-    assert.ok(!pi(busy1.id) && !pi(busy2.id), 'runs ending in a drain idle no Pi');
+    assert.ok(!pi(busy1.id) && !pi(busy2.id), 'drained runs have stopped their sandboxes');
     assert.equal(execFileSync('git', ['log', '-1', '--format=%s'], { cwd: join(root, 'instances', busy2.id), encoding: 'utf8' }).trim(), 'Run 1', 'settled commit finished before /drained answered 200');
     proc.kill('SIGTERM');
     await once(proc, 'exit');
@@ -1323,69 +1323,79 @@ test('saving a sign-in keeps its login alive until the time given, for those adm
   assert.ok(!(await (await call('GET', '/logins', undefined, bob)).json()).some((l: { id: string }) => l.id === 'web:kept'), 'removed, it takes its login with it');
 });
 
-test("a run's Pi idles only with nothing but Pi running in its sandbox, and ends as more Pis idle than RF_MAX_IDLE, past RF_IDLE_MIN, or as its instance closes or is abandoned", async () => {
-  proc.kill();
-  await once(proc, 'exit');
-  await serve({ RF_IDLE_MIN: '0.1', RF_MAX_IDLE: '1' });
-  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Idle' })).json();
-  // Whether an instance's Pi is there: its sandbox's scratch folder, named for its token, holds the bwrap arguments setting its id.
-  const runsDir = join(tmp, 'scratch', 'runs'), pi = (id: string) => readdirSync(runsDir).some(t => readFileSync(join(runsDir, t, 'bwrap.args'), 'utf8').includes(`RF_INSTANCE\0${id}\0`));
-  const gone = async (id: string, why: string, tries = 10) => {
-    for (let i = 0; pi(id); i++) {
-      assert.ok(i < tries, why);
-      await new Promise(ok => setTimeout(ok, 200));
+test("each run starts a fresh sandbox and Pi session, and stops its sandbox before its commit and before the next run starts, taking any background job with it", async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'OneRun' })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec' })).json();
+  const runsDir = join(tmp, 'scratch', 'runs');
+  const bwrapOf = (token: string) => {
+    const inside = readdirSync('/proc').filter(p => /^\d+$/.test(p)).find(p => {
+      try { return readFileSync(`/proc/${p}/environ`, 'utf8').includes(`RF_TOKEN=${token}\0`); } catch { return false; }
+    });
+    assert.ok(inside, `no process for token ${token}`);
+    let pid = Number(inside), outer = 0;
+    while (pid > 1) {
+      if (readFileSync(`/proc/${pid}/comm`, 'utf8').trim() === 'bwrap') outer = pid;
+      const ppid = Number(/^PPid:\t(\d+)$/m.exec(readFileSync(`/proc/${pid}/status`, 'utf8'))?.[1] ?? 0);
+      if (!ppid || pid === proc.pid) break;
+      pid = ppid;
     }
+    assert.ok(outer > 1, `no outer bwrap for token ${token}`);
+    return outer;
   };
-  // An instance of a series of its own, as a series holds at most 3 open, its first run done.
-  const start = async (name: string, bash: string[] = []) => {
-    scripts.push({ bash, report: 'Done.', saw: [] });
-    const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name })).json();
-    const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
-    await runs(id, 1);
-    return id as string;
-  };
-  // The session the instance's next run carries on, if any.
-  const again = async (id: string, n: number) => {
-    scripts.push({ bash: [], report: 'Again.', saw: [] });
-    assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: `Once more, run ${n}.` })).status, 200);
-    return (await runs(id, n)).find(e => e.op === 'run' && e.run === n)!.continues;
-  };
-  const job = await start('job', ['nohup sleep 120 >/dev/null 2>&1 &']);
-  await gone(job, 'a run that left a job running stops its Pi, the job with it');
-  assert.equal(await again(job, 2), undefined);
-  const named = await start('named', ['cp /usr/bin/sleep /tmp/socat && (setsid /tmp/socat 120 </dev/null >/dev/null 2>&1 &)']);
-  await gone(named, "a job named as the sandbox's socat is a job all the same");
-  const nested = await start('nested', [`python3 -c 'import os, time
+  let token1 = '', bwrap1 = 0, id = '';
+  const first: Script = {
+    bash: [
+      'kill -USR1 2 && sleep 0.2 && (curl -s -m 1 -x "" http://127.0.0.1:9229/json/version || echo closed)',
+      async () => {
+        token1 = readdirSync(runsDir).find(t => existsSync(join(runsDir, t, 'bwrap.args')) && readFileSync(join(runsDir, t, 'bwrap.args'), 'utf8').includes(`RF_INSTANCE\0${id}\0`))!;
+        bwrap1 = bwrapOf(token1);
+        process.kill(bwrap1, 0);
+        return `echo run1 > working/kept.txt
+          nohup sh -c 'sleep 0.3; echo leaked > working/leaked; sleep 120' >/dev/null 2>&1 &
+          python3 -c 'import os, time
 r, w = os.pipe()
 if os.fork() == 0:
   os.close(r); os.setsid(); os.unshare(0x10000000 | 0x20000000)
   if os.fork() == 0:
-    os.write(w, b"1"); os.close(w); time.sleep(120)
+    os.write(w, b"1"); os.close(w); time.sleep(0.3); open("working/nested", "w").write("leaked"); time.sleep(120)
   os._exit(0)
-os.close(w); os.read(r, 1)' </dev/null >/dev/null 2>&1`]);
-  await gone(nested, 'a job hidden in a nested PID namespace stops its Pi all the same');
-  assert.equal(await again(nested, 2), undefined);
-  const noInspector: Script = { bash: ['kill -USR1 2 && sleep 0.2 && (curl -s -m 1 -x "" http://127.0.0.1:9229/json/version || echo closed)'], report: 'Checked.', saw: [] };
-  scripts.push(noInspector);
-  const { id: inspSeries } = await (await call('POST', '/api/series', { workspace: ws, name: 'insp' })).json();
-  const { id: insp } = await (await call('POST', `/api/series/${inspSeries}`, { label: '2026-11', logins: [] })).json();
-  await runs(insp, 1);
-  assert.equal(noInspector.saw[0].trim(), 'closed', 'SIGUSR1 opens no V8 inspector on PID 2');
-  const a = await start('a'), b = await start('b');
-  await gone(a, 'the longest idle ends as another idles past RF_MAX_IDLE');
-  assert.equal(await again(b, 2), 1, 'the idle one carries its session on');
-  const old = await start('old');
-  await gone(old, 'past RF_IDLE_MIN its Pi ends', 100);
-  assert.equal(await again(old, 2), undefined);
-  for (const act of ['close', 'abandon']) {
-    const id = await start(act);
-    assert.ok(pi(id));
-    assert.equal((await call('POST', `/api/instances/${id}/${act}`, {})).status, 200);
-    await gone(id, `its instance's ${act} ends its idle Pi`);
-  }
-  proc.kill();
-  await once(proc, 'exit');
-  await serve();
+os.close(w); os.read(r, 1)' </dev/null >/dev/null 2>&1`;
+      },
+    ],
+    report: 'Run 1 done.', saw: [],
+  };
+  let bwrap1DeadAtRun2 = false, commitAtRun2 = '';
+  const second: Script = {
+    bash: [
+      async () => {
+        try { process.kill(bwrap1, 0); } catch (e) { bwrap1DeadAtRun2 = (e as NodeJS.ErrnoException).code === 'ESRCH'; }
+        commitAtRun2 = execFileSync('git', ['log', '-1', '--format=%s'], { cwd: join(root, 'instances', id), encoding: 'utf8' }).trim();
+        await new Promise(ok => setTimeout(ok, 500));
+        return 'ls working';
+      },
+    ],
+    report: 'Run 2 done.', saw: [],
+  };
+  scripts.push(first, second);
+  ({ id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json());
+  const dir = join(root, 'instances', id), git = (...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
+  await runs(id, 1);
+  assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Carry on at once.' })).status, 200);
+  await until("run 1's commit", () => existsSync(join(dir, '.git')) && (() => { try { return git('log', '-1', '--format=%s') === 'Run 1'; } catch { return false; } })());
+  assert.throws(() => process.kill(bwrap1, 0), { code: 'ESRCH' }, "Run 1's bwrap exited before Run 1 finished retiring");
+  const log = await runs(id, 2);
+  assert.equal(first.saw[0].trim(), 'closed', 'SIGUSR1 opens no V8 inspector on PID 2');
+  assert.equal(bwrap1DeadAtRun2, true, "Run 1's bwrap exited before Run 2 started");
+  assert.equal(commitAtRun2, 'Run 1', "Run 1's commit landed before Run 2 started");
+  assert.equal(second.saw[0].trim(), 'kept.txt', 'background and nested-namespace jobs died with Run 1 and touched nothing in working/');
+  assert.ok(!existsSync(join(runsDir, token1)) && !existsSync(join(root, '.rf', 'runs', token1)), "Run 1's scratch and index folder are gone");
+  assert.deepEqual([first.first, second.first], [1, 1], 'Run 2 starts a fresh conversation of its own initial prompt');
+  assert.match(second.prompt!, /^Instance 2026-11, run 2\. Its runner is Demo Admin <admin@demo\.test>, who lends you no login\. New log entries:\n.*"text":"Carry on at once\."/s);
+  assert.ok(log.filter(e => e.op === 'run').every(e => !('continues' in e)));
+  const transcripts = readdirSync(join(dir, 'session'));
+  assert.ok(['run-1', 'run-2'].every(r => transcripts.some(f => new RegExp(`_${r}-[0-9a-f]{16}\\.jsonl$`).test(f))), `a transcript per run: ${transcripts}`);
+  await until("run 2's commit", () => git('log', '-1', '--format=%s') === 'Run 2');
+  assert.ok(!existsSync(runsDir) || !readdirSync(runsDir).some(t => existsSync(join(runsDir, t, 'bwrap.args')) && readFileSync(join(runsDir, t, 'bwrap.args'), 'utf8').includes(`RF_INSTANCE\0${id}\0`)), "Run 2's sandbox exited before its commit completed");
 });
 
 test("deleting an instance cuts a run whose view holds it, which carries on without it, and a run going for it, whose sandbox stops before its folder goes", async () => {

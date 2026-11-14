@@ -40,7 +40,7 @@ test('concurrent interrupts revoke and abort before RPC settles, drain charges, 
   const a = {
     inst, n: 1, runner: alice, token: 'interrupt', view: view(inst), workspace: 'w', cost: 0, estimated: false, seen: 1, delivered: 1,
     done: false, process: '', links: new Map(),
-    run: { interrupt: () => rpc.promise, stop: () => { stops++; return stopped.promise; }, alone: () => false } as Run,
+    run: { interrupt: () => rpc.promise, stop: () => { stops++; return stopped.promise; } } as Run,
     browsers: { end: () => { closes++; return closed.promise; } },
   } as Active;
   inst.append('server', 'run', { run: 1 });
@@ -107,7 +107,7 @@ for (const mode of ['interrupt', 'shutdown']) test(`${mode} refuses a proxy requ
   const a = {
     inst, n: 1, runner: alice, token: 'reading', view: view(inst), workspace: 'w', cost: 0, estimated: false,
     seen: 1, delivered: 1, done: false, process: '', links: new Map(),
-    run: { interrupt: async () => {}, stop: async () => {}, alone: () => false } as Run,
+    run: { interrupt: async () => {}, stop: async () => {} } as Run,
   } as Active;
   inst.append('server', 'run', { run: 1 });
   active.set('s', a);

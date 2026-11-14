@@ -311,7 +311,7 @@ let stopping = false, worker: Promise<void> | undefined, poke = () => {};
 const rest = (ms: number) => new Promise<void>(ok => { poke = ok; setTimeout(ok, Math.max(0, Math.min(ms, 60_000))).unref(); });
 export function startIndexing() {
   stopping = false;
-  // Scratch and index copies of this data root's runs cut short, or left idle.
+  // Scratch and index copies of this data root's runs a restart cut short.
   const runs = join(rfDir(), 'runs');
   for (const token of existsSync(runs) ? readdirSync(runs) : []) wipe(Buffer.from(join(scratch, 'runs', token)));
   rmSync(runs, { recursive: true, force: true });

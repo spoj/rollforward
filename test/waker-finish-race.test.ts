@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-test('an interrupt during natural turn cost draining stops the sandbox rather than keeping it idle', () => {
+test('an interrupt during natural turn cost draining stops the sandbox and marks the run aborted', () => {
   const root = mkdtempSync(join(tmpdir(), 'rf-finish-race-'));
   try {
     execFileSync(process.execPath, ['--experimental-test-module-mocks', '--input-type=module', '-e', `
@@ -28,7 +28,7 @@ test('an interrupt during natural turn cost draining stops the sandbox rather th
       const run = {
         turn: async () => { turned.resolve(); return { settled: settled.promise }; },
         steer: async () => {}, interrupt: () => rpc.promise,
-        stop: async () => { stops++; }, alone: () => true,
+        stop: async () => { stops++; },
       };
       mock.module('./src/runner.ts', { namedExports: { ...runner, startRun: async () => run } });
       mock.module('./src/entra.ts', { namedExports: { ...entra, confirm: async () => {} } });
@@ -48,7 +48,7 @@ test('an interrupt during natural turn cost draining stops the sandbox rather th
       await new Promise(ok => setImmediate(ok));
       rpc.resolve();
       await interrupted;
-      assert.equal(stops, 1, 'interrupt must not leave the naturally settled sandbox idle');
+      assert.equal(stops, 1, 'interrupt stops the sandbox once');
       const dones = inst.log.filter(e => e.op === 'done');
       assert.equal(dones.length, 1);
       assert.equal(dones[0].aborted, true);
@@ -124,7 +124,7 @@ test('a run ended while prompt acknowledgement is pending cannot steer or arm a 
       mock.method(globalThis, 'setTimeout', (fn, ms, ...args) => { if (ms === 120 * 60000) limits++; return timeout(fn, ms, ...args); });
       const run = {
         turn: async () => { turning.resolve(); await prompt.promise; return { settled: new Promise(() => {}) }; },
-        steer: async () => { steers++; }, interrupt: async () => {}, stop: async () => {}, alone: () => false,
+        steer: async () => { steers++; }, interrupt: async () => {}, stop: async () => {},
       };
       mock.module('./src/runner.ts', { namedExports: { ...runner, startRun: async () => run } });
       mock.module('./src/entra.ts', { namedExports: { ...entra, confirm: async () => {} } });
