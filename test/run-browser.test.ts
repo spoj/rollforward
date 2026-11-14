@@ -1067,3 +1067,34 @@ test('run writeback trims cookies and origins to allowed hosts and rejects overs
   }
   assert.deepEqual(JSON.parse(secret(alice, 'web:crm')).cookies.map((c: any) => c.value), ['refreshed']);
 });
+
+test('removing an internal host resets passing checks, drops it from website hosts, and closes open run browsers', async () => {
+  const { allowHost, revokeInternalHosts, setSite } = await import('../src/browsers.ts'), { setLetIn } = await import('../src/connections.ts');
+  const admin = asPerson(alice)!;
+  sites({ intra: { url: 'https://10.1.2.3/', hosts: [], writeback: false, checks: { '10.1.2.3': { verdict: 'pass', why: 'Allowed.' } } } });
+  await setSite(admin, 'intra', { internal: true });
+  await allowHost(admin, 'intra', '10.9.8.7');
+  writeJson('grants.json', { ...everyone, gi: { person: alice, site: 'intra', workspace: 'w', reason: '', at: '', state: 'approved' } });
+  saveLogin(alice, website('intra', 'Intra'), JSON.stringify(state('intra-cookie')));
+
+  const inst = running('2028-06', ['web:intra'], 1);
+  const run = new Browsers(inst, 1);
+  await run.browser('intra');
+  assert.deepEqual(opened.at(-1)!.site.hosts.sort(), ['10.1.2.3', '10.9.8.7']);
+  assert.equal(publics.at(-1), false);
+
+  setLetIn(['10.9.8.7'], alice, false);
+  await revokeInternalHosts(['10.9.8.7']);
+  await run.closeUnlent();
+  assert.equal(run.bySite.size, 0, 'open browser closed when an allowed internal host was revoked');
+  assert.deepEqual(websitesOf(alice).intra.hosts, []);
+  assert.equal(websitesOf(alice).intra.checks?.['10.9.8.7']?.verdict, 'internal');
+
+  await setSite(admin, 'intra', { internal: false });
+  await run.closeUnlent();
+  assert.equal(websitesOf(alice).intra.checks?.['10.1.2.3']?.verdict, 'internal');
+  await run.browser('intra');
+  assert.deepEqual(opened.at(-1)!.site.hosts, []);
+  assert.equal(publics.at(-1), true);
+  await run.close();
+});

@@ -1,6 +1,6 @@
 import { connect, isIP } from 'node:net';
 import { connect as tlsConnect } from 'node:tls';
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { request as httpRequest, STATUS_CODES, type IncomingMessage, type ServerResponse } from 'node:http';
 import { request as httpsRequest } from 'node:https';
@@ -207,10 +207,34 @@ export async function setSite(by: Me, name: string, change: Record<string, unkno
     websiteGenerations.set(key, (websiteGenerations.get(key) ?? 0) + 1);
   }
   if (change.internal === undefined) return;
-  const next = website(person, name), let_ = change.internal === true || change.internal === 'true', exact = reached(next).filter(h => !throughVpn(next, h) && !h.startsWith('*.'));
-  const hosts = let_ ? (await Promise.all(exact.map(async h => await resolvesInternal(h) && h))).filter(h => h) as string[] : exact.filter(h => letIn()[h]);
+  const next = website(person, name), let_ = change.internal === true || change.internal === 'true';
+  const candidates = [...new Set([...reached(next), ...Object.keys(next.checks ?? {})])].filter(h => !throughVpn(next, h) && !h.startsWith('*.'));
+  const hosts = let_ ? (await Promise.all(candidates.map(async h => await resolvesInternal(h) && h))).filter(h => h) as string[] : candidates.filter(h => letIn()[h]);
   setLetIn(hosts, by.email, let_);
+  if (!let_) await revokeInternalHosts(hosts);
+  else if (hosts.some(h => next.checks?.[h]?.verdict === 'internal')) {
+    const passed = hosts.filter(h => next.checks?.[h]?.verdict === 'internal');
+    changeWebsite(person, name, {
+      hosts: [...new Set([...next.hosts, ...passed.filter(h => h !== new URL(next.url).hostname)])],
+      checks: { ...next.checks, ...Object.fromEntries(passed.map(h => [h, { verdict: 'pass' as const, why: 'An admin allowed this internal host.' }])) },
+    });
+  }
   act(by.email, { op: 'internal', person, site: name, hosts, let: let_ });
+}
+
+export async function revokeInternalHosts(hosts: string[]) {
+  if (!hosts.length) return;
+  const dir = join(rfDir(), 'people'), people = new Set([...Object.keys(users()), ...(existsSync(dir) ? readdirSync(dir) : [])]);
+  for (const email of people) for (const [site, w] of Object.entries(websitesOf(email))) {
+    const hit = hosts.filter(h => !throughVpn(w, h) && (w.hosts.includes(h) || w.checks?.[h]?.verdict === 'pass'));
+    if (!hit.length) continue;
+    changeWebsite(email, site, {
+      hosts: w.hosts.filter(h => !hit.includes(h)),
+      checks: { ...w.checks, ...Object.fromEntries(hit.map(h => [h, { verdict: 'internal' as const, why: 'It is at an internal address.' }])) },
+    });
+    const id = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
+    if (id) await browserJson('PUT', `/sessions/${id}/hosts`, { hosts: internalHosts(website(email, site)) }).catch(() => {});
+  }
 }
 
 // A website set --internal true before 0.3.12 carries that as a flag of its own, which grants nothing now. At the server's start
@@ -549,7 +573,7 @@ export async function reap() {
 export class Browsers {
   inst: Instance;
   run: number;
-  bySite = new Map<string, { id: string; email: string; since: string; writeback: boolean; file: string; conns: number; via?: Via; idle?: NodeJS.Timeout; shot?: Buffer }>();
+  bySite = new Map<string, { id: string; email: string; since: string; writeback: boolean; file: string; conns: number; via?: Via; internal: string[]; idle?: NodeJS.Timeout; shot?: Buffer }>();
   private opening = new Map<string, Promise<string | undefined>>();
   private closing = new Set<Promise<unknown>>();
   private opens = new Map<string, number>();
@@ -574,7 +598,7 @@ export class Browsers {
       const w = website(email, site), via = await vpnVia(email, w), current = use(this.inst, this.run, `web:${site}`);
       if (current.email !== email || current.login.since !== login.since || current.login.expired || website(email, site).via !== w.via || this.bySite.get(site) !== had) return this.lent(site, quiet);
       if (!approved(site, email, tree().series[this.inst.seriesId]?.workspace)) throw Object.assign(new HttpError(403, `${email}'s grant to use ${site} was revoked; this run goes on without it`), { refused: true });
-      if (had && (had.via?.token !== via?.token || had.via?.url !== via?.url)) {
+      if (had && (had.via?.token !== via?.token || had.via?.url !== via?.url || had.internal.join(',') !== internalHosts(w).join(','))) {
         await this.close(site);
         return this.lent(site, quiet);
       }
@@ -610,10 +634,10 @@ export class Browsers {
         let release!: () => void;
         held.set(key, { run: this, released: new Promise<void>(ok => { release = ok; }), release: () => release() });
       }
-      const opening = w ? open(w, 7200, state, via) : printer();
+      const internal = w ? internalHosts(w) : [], opening = w ? open(w, 7200, state, via) : printer();
       const ready = opening.then(async id => {
         const n = (this.opens.get(site) ?? 0) + 1, file = `browser/run ${this.run} ${site}${n > 1 ? ` ${n}` : ''}.jsonl`;
-        const b = { id, email, since: login?.since ?? '', writeback, file, conns: 0, via };
+        const b = { id, email, since: login?.since ?? '', writeback, file, conns: 0, via, internal };
         this.opens.set(site, n);
         this.bySite.set(site, b);
         changes.emit('change', this.inst.id); // for its instance's page to show it
