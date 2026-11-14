@@ -524,7 +524,10 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
         if (decoder) {
           if (unzip) unzip.write(b);
           else feedText(decoder.write(b));
-        } else if (o.keep && isJson) kept.push(b);
+        } else if (o.keep && isJson) {
+          if (o.service && bytes > 8 * 1024 * 1024) kept.length = 0;
+          else kept.push(b);
+        }
       });
       const finishAnswer = () => {
         if (decoder) {
@@ -535,7 +538,8 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
         if (o.keep && isJson && kept.length) {
           const raw = Buffer.concat(kept);
           try {
-            text = (enc === 'gzip' ? gunzipSync(raw) : enc === 'deflate' ? inflateSync(raw) : enc === 'br' ? brotliDecompressSync(raw) : raw).toString();
+            const options = o.service ? { maxOutputLength: 8 * 1024 * 1024 } : undefined;
+            text = (enc === 'gzip' ? gunzipSync(raw, options) : enc === 'deflate' ? inflateSync(raw, options) : enc === 'br' ? brotliDecompressSync(raw, options) : raw).toString();
           } catch {
             text = raw.toString();
           }
