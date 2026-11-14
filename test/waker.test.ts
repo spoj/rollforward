@@ -496,7 +496,7 @@ test("a run starts only for a runner who still sees its workspace: one removed f
 test('deletion records its tombstone before waiting for a starting sandbox, and another deletion waits for that retiring reader too', async () => {
   const own = make('s1', 'deleting-start'), read = make('s2', 'deleting-read'), late = make('s2', 'deleting-late');
   const ready = Promise.withResolvers<Run>(), stopped = Promise.withResolvers<void>(), browsers = Promise.withResolvers<void>();
-  const a = { inst: own, n: 1, token: 'deleting-start', view: view(own), ready: ready.promise, process: '', cost: 0, seen: 0, done: false, browsers: { end: () => browsers.promise } } as Active;
+  const a = { inst: own, n: 1, token: 'deleting-start', view: view(own), ready: ready.promise, process: '', cost: 0, estimated: false, runner: alice, seen: 0, delivered: 0, done: false, browsers: { end: () => browsers.promise } } as Active;
   own.append('server', 'run', { run: 1 });
   active.set(own.seriesId, a);
   byToken.set(a.token, a);
@@ -610,7 +610,7 @@ test('deleting a starting run or bailing out of begin() on an expired login neve
 
   const oct1 = createInstance('s10', '2026-10', alice, []), nov1 = createInstance('s10', '2026-11', bob, []);
   const ready = Promise.withResolvers<Run>();
-  const a1 = { inst: oct1, n: 1, runner: alice, token: 'tok-s10', view: view(oct1), ready: ready.promise, process: '', cost: 0, seen: 0, delivered: 0, done: false } as Active;
+  const a1 = { inst: oct1, n: 1, runner: alice, token: 'tok-s10', view: view(oct1), ready: ready.promise, process: '', cost: 0, estimated: false, seen: 0, delivered: 0, done: false } as Active;
   oct1.append('server', 'run', { run: 1, runner: alice, consent: 1, upto: 1 });
   active.set('s10', a1);
   byToken.set(a1.token, a1);
@@ -628,7 +628,7 @@ test('deleting a starting run or bailing out of begin() on an expired login neve
   const a2 = {
     inst: z2, n: 1, runner: bob, session: 1, token: 'tok-s11', view: view(z2), workspace: 'w', skills: {}, shape: '',
     run: { turn: async () => ({ settled: new Promise(() => {}) }), steer: async () => {}, interrupt: async () => {}, stop: async () => {}, alone: () => false } as Run,
-    sent: 1, noted: 0, seen: 1, delivered: 1, texts: new Map(), done: false, cost: 0, hosts: new Set(), links: new Map(), process: '',
+    sent: 1, noted: 0, seen: 1, delivered: 1, texts: new Map(), done: false, cost: 0, estimated: false, hosts: new Set(), links: new Map(), process: '',
   } as Active;
   z2.append('server', 'run', { run: 1, runner: bob, consent: 1, upto: 1 });
   active.set('s11', a2);
@@ -652,3 +652,73 @@ test('deleting a starting run or bailing out of begin() on an expired login neve
 });
 
 
+test('a cut run aborts and drains in-flight proxy calls before done, and done.estimated distinguishes exact, estimated and old entries', async () => {
+  const { createServer } = await import('node:http'), { EventEmitter } = await import('node:events');
+  const { call, upstreams } = await import('../src/connections.ts');
+  const server = createServer((req, res) => {
+    if (req.url?.startsWith('/api/v1/generation?')) {
+      return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ data: { id: 'gen-cut-waker', total_cost: 0.017 } }));
+    }
+    res.writeHead(200, { 'content-type': 'text/event-stream', 'x-generation-id': 'gen-cut-waker' });
+    res.write('data: {"type":"message_start","message":{"usage":{"input_tokens":0}}}\n\n');
+  });
+  await new Promise<void>(ok => server.listen(0, '127.0.0.1', ok));
+  const prevUp = upstreams['openrouter.ai'];
+  upstreams['openrouter.ai'] = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  try {
+    const inst = make('s2', 'inflight-cut');
+    inst.append('server', 'done', { run: 0, aborted: false, seen: 1, cost: 0.09 }); // pre-change entry: estimated is undefined
+    const a: Active = {
+      inst, n: 1, runner: alice, session: 1, token: 'inflight-tok', view: view(inst), workspace: 'w', skills: {}, shape: '',
+      sent: 1, noted: 0, seen: 1, delivered: 1, texts: new Map(), done: false, cost: 0, estimated: false, hosts: new Set(), links: new Map(), process: '',
+    };
+    inst.append('server', 'run', { run: 1, runner: alice, consent: 1 });
+    active.set('s2', a);
+    byToken.set(a.token, a);
+
+    let gotFirst!: () => void;
+    const firstChunk = new Promise<void>(ok => { gotFirst = ok; });
+    const req = Object.assign(new EventEmitter(), {
+      method: 'POST', url: '/api/v1/messages', headers: { 'content-type': 'application/json', authorization: 'Bearer rf' },
+      [Symbol.asyncIterator]: async function* () { yield Buffer.from('{"model":"anthropic/claude-opus-5.5","stream":true,"messages":[]}'); },
+    });
+    const res = Object.assign(new EventEmitter(), {
+      closed: false, headersSent: false,
+      writeHead() { this.headersSent = true; return this; },
+      write() { gotFirst(); return true; },
+      end() { this.closed = true; this.emit('close'); },
+      destroy() { this.closed = true; this.emit('close'); },
+      on(ev: string, fn: (...args: any[]) => void) { EventEmitter.prototype.on.call(this, ev, fn); return this; },
+      once(ev: string, fn: (...args: any[]) => void) { EventEmitter.prototype.once.call(this, ev, fn); return this; },
+    });
+    process.env.OPENROUTER_API_KEY = 'waker-key';
+    const inFlightCall = call(a, 'openrouter.ai', req as any, res as any);
+    await firstChunk;
+    delete process.env.OPENROUTER_API_KEY;
+
+    // Move s2 to workspace 'm' to trigger leases() -> cut(a) while the SSE stream is still open!
+    const oldTree = tree();
+    saveTree({ ...oldTree, series: { ...oldTree.series, s2: { ...oldTree.series.s2, workspace: 'm' } } });
+    await new Promise(ok => setImmediate(ok));
+    assert.equal(byToken.has(a.token), false, 'token revoked immediately on cut');
+    await inFlightCall;
+    for (let i = 0; !inst.log.some(e => e.op === 'done' && e.run === 1); i++) { assert.ok(i < 50); await new Promise(ok => setTimeout(ok, 20)); }
+    saveTree(oldTree);
+
+    const dones = inst.log.filter(e => e.op === 'done');
+    assert.deepEqual(dones.map(d => [d.run, d.cost, d.estimated]), [[0, 0.09, undefined], [1, 0.017, false]]);
+
+    // Recovery also marks estimated: true when a pre-crash call was estimated.
+    const crash = make('s2', 'crash-est');
+    crash.append('server', 'run', { run: 1, runner: alice, consent: 1 });
+    crash.append('agent', 'call', { run: 1, name: 'openrouter', cost: 0.012, estimated: true });
+    recover();
+    const crashDone = crash.log.findLast(e => e.op === 'done')!;
+    assert.deepEqual([crashDone.cost, crashDone.estimated], [0.012, true]);
+    await settle();
+  } finally {
+    delete process.env.OPENROUTER_API_KEY;
+    if (prevUp === undefined) delete upstreams['openrouter.ai']; else upstreams['openrouter.ai'] = prevUp;
+    server.close();
+  }
+});

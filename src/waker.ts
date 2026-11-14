@@ -14,7 +14,7 @@ import { pushed, skills } from './skills.ts';
 import { AGENT, commit, committed, forget } from './git.ts';
 import { lastAssign, logins, runnerAt, runnerOf } from './logins.ts';
 import { confirm } from './entra.ts';
-import { reachable, types } from './connections.ts';
+import { abortCalls, drainCalls, hasCalls, reachable, types } from './connections.ts';
 
 // What runs when: one run at a time per series, at most RF_MAX_RUNS at once, started by people's acts and by wakes.
 const LIMIT_MS = Number(process.env.RF_LIMIT_MIN ?? 120) * 60_000;
@@ -34,7 +34,7 @@ const full = () => !!draining || active.size >= MAX_RUNS || (MIN_FREE > 0 && fre
 export const MAX_OPEN = 3;
 const SPACING_MS = 15 * 60_000, MAX_WAKES = 20;
 
-export type Active = { inst: Instance; n: number; runner: string; session: number; token: string; view: View; workspace: string; skills: Record<string, number>; shape: string; run?: Run; sent: number; noted: number; seen: number; delivered: number; texts: Map<string, number>; done: boolean; cost: number; failed?: string; hosts: Set<string>; links: Map<string, { name: string; offer: string }>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string;
+export type Active = { inst: Instance; n: number; runner: string; session: number; token: string; view: View; workspace: string; skills: Record<string, number>; shape: string; run?: Run; sent: number; noted: number; seen: number; delivered: number; texts: Map<string, number>; done: boolean; cost: number; estimated: boolean; failed?: string; hosts: Set<string>; links: Map<string, { name: string; offer: string }>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string;
   // Its Pi as it starts, and once its Pi, sandbox and browsers have stopped, after it ends; whether its stop was asked for, from when
   // its token opens nothing (server.ts running()).
   ready?: Promise<Run>; ended?: Promise<unknown>; stopped?: boolean };
@@ -204,7 +204,7 @@ function flush(a: Active) {
   a.sent = entries.at(-1)?.seq ?? a.sent;
   a.noted = fresh.at(-1)?.seq ?? a.noted;
   a.texts.set(text, a.sent);
-  a.run!.steer(text).catch(err => finish(a, true, String(err)));
+  a.run!.steer(text).catch(err => finishRun(a, true, String(err)));
 }
 
 // What a timer starts, as a kick's, logs what fails rather than ending the server.
@@ -266,7 +266,7 @@ async function begin(inst: Instance) {
   const live = kept ? [] : skills().map(s => ({ ...s, dir: realpathSync(s.dir) }));
   const a: Active = {
     inst, n, runner: lease.by, session: kept?.session ?? n, token: kept?.token ?? randomUUID(), view: kept?.view ?? view(inst), workspace: tree().series[series].workspace, skills: kept?.skills ?? Object.fromEntries(live.map(s => [s.id, pushed(s).version])), shape: kept?.shape ?? startsFrom(inst),
-    sent: entries.at(-1)!.seq, noted: left.at(-1)?.seq ?? 0, seen, delivered: seen, texts: new Map([[text, entries.at(-1)!.seq]]), done: false, cost: 0, hosts: new Set(), links: new Map(),
+    sent: entries.at(-1)!.seq, noted: left.at(-1)?.seq ?? 0, seen, delivered: seen, texts: new Map([[text, entries.at(-1)!.seq]]), done: false, cost: 0, estimated: false, hosts: new Set(), links: new Map(),
     process: processOf(inst), thread: pending(inst, seen)[0]?.thread as string | undefined,
   };
   active.set(series, a);
@@ -302,13 +302,13 @@ async function begin(inst: Instance) {
     }
     ({ settled } = await a.run.turn(text));
   } catch (err) {
-    if (loggedRun) finish(a, true, String(err));
+    if (loggedRun) await finishRun(a, true, String(err));
     else { active.delete(series); byToken.delete(a.token); bail(inst); throw err; }
     return;
   }
   flush(a);
-  a.timer = setTimeout(() => finish(a, true, 'time limit'), LIMIT_MS);
-  settled.then(({ aborted, error }) => finish(a, aborted, error ?? a.failed)).catch(e => console.error(`run ${n} of ${inst.id} failed to end`, e));
+  a.timer = setTimeout(() => { finishRun(a, true, 'time limit').catch(e => console.error(`run ${n} of ${inst.id} failed to end`, e)); }, LIMIT_MS);
+  settled.then(({ aborted, error }) => finishRun(a, aborted, error ?? a.failed)).catch(e => console.error(`run ${n} of ${inst.id} failed to end`, e));
 }
 
 // What its Pi says as a run goes, the run now its token's.
@@ -346,17 +346,28 @@ const rules = (was: string, now: string) => {
   return now.split('\n').filter(l => /^\s*([-*+]|\d+[.)])\s/.test(l) && !old.has(l.trim())).length;
 };
 
+async function finishRun(a: Active, aborted: boolean, error?: string) {
+  if (a.done || stopping) return;
+  a.stopped = true;
+  clearTimeout(a.timer);
+  byToken.delete(a.token);
+  abortCalls(a);
+  if (hasCalls(a)) await drainCalls(a);
+  finish(a, aborted, error);
+}
+
 function finish(a: Active, aborted: boolean, error?: string): Entry | undefined {
   if (a.done || stopping) return;
   a.done = true;
   clearTimeout(a.timer);
   byToken.delete(a.token);
+  abortCalls(a);
   const series = a.inst.seriesId;
   active.delete(series);
   const closing = a.browsers?.end().catch(e => a.inst.append('server', 'browsers', { run: a.n, error: e.message }));
   // The rules it added to the process, or reworded, for the thread whose entry started it, where they were likely agreed.
   const added = rules(a.process, processMd(a.inst.dir) ?? a.process);
-  const done = a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(4), ...(error && { error }), ...(added && { rules: added, thread: a.thread }) });
+  const done = a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(6), estimated: a.estimated, ...(error && { error }), ...(added && { rules: added, thread: a.thread }) });
   // Its Pi idles for the instance's next run, or stops, the longest idle too past RF_MAX_IDLE.
   const keep = !draining && !aborted && !error && !!a.run && a.inst.doc.status === 'open' && a.run.alone();
   if (keep) {
@@ -399,14 +410,26 @@ function leases() {
 export async function interruptRun(a: Active) {
   a.stopped = true;
   await Promise.race([a.run!.interrupt(), new Promise(r => setTimeout(r, 1500))]);
-  finish(a, true);
+  await finishRun(a, true);
   await a.ended;
 }
 
 function cut(a: Active, why: string) {
-  const done = finish(a, true, why)!;
-  a.inst.append('server', 'wake', { reason: `Run ${a.n} was cut: ${why}; carry on`, from: 'server', cause: done.seq });
-  kick(a.inst);
+  if (a.done || stopping) return;
+  a.stopped = true;
+  clearTimeout(a.timer);
+  byToken.delete(a.token);
+  abortCalls(a);
+  const after = () => {
+    const done = finish(a, true, why);
+    if (!done) return;
+    a.inst.append('server', 'wake', { reason: `Run ${a.n} was cut: ${why}; carry on`, from: 'server', cause: done.seq });
+    kick(a.inst);
+  };
+  if (!hasCalls(a)) return after();
+  const draining = drainCalls(a).then(after);
+  retiring.add(a);
+  a.ended = draining.then(() => a.ended).finally(() => retiring.delete(a));
 }
 
 // Deleting an instance (store.ts markDeleted()) cuts a run going for it, as a lease is cut, and one queued or idling for it, and any run,
@@ -420,6 +443,13 @@ export async function remove(inst: Instance, by: string, fields: () => Record<st
   debounce.delete(inst.id);
   waiting.delete(inst);
   const runs = [...active.values()].filter(a => a.inst === inst || Object.values(a.view.names).includes(inst.id));
+  for (const a of runs) {
+    a.stopped = true;
+    clearTimeout(a.timer);
+    byToken.delete(a.token);
+    abortCalls(a);
+  }
+  for (const a of runs) if (a.inst === inst && hasCalls(a)) await drainCalls(a);
   for (const a of runs) a.inst === inst ? finish(a, true, CUT.deleted) : cut(a, CUT.gone);
   for (const [id, i] of idle) if (i.inst === inst || Object.values(i.view.names).includes(inst.id)) {
     idle.delete(id);
@@ -446,7 +476,10 @@ export function stop() {
   stopping = true;
   clearTimeout(draining);
   byToken.clear();
-  for (const a of active.values()) a.browsers?.cut();
+  for (const a of active.values()) {
+    abortCalls(a);
+    a.browsers?.cut();
+  }
   active.clear();
 }
 
@@ -667,8 +700,10 @@ export function recover() {
     for (const f of ['index.lock', 'HEAD.lock', 'config.lock', 'packed-refs.lock', 'refs/heads/main.lock']) rmSync(join(inst.dir, '.git', f), { force: true });
     const run = inst.log.findLast(e => e.op === 'run' || e.op === 'done');
     if (run?.op === 'run') {
-      const cost = inst.log.reduce((t, e) => t + (e.op === 'call' && e.run === run.run ? (e.cost as number | undefined) ?? 0 : 0), 0);
-      const done = inst.append('server', 'done', { run: run.run, aborted: true, seen: seenBefore(inst), cost: +cost.toFixed(4), error: CUT.restart });
+      const calls = inst.log.filter(e => e.op === 'call' && e.run === run.run);
+      const cost = calls.reduce((t, e) => t + ((e.cost as number | undefined) ?? 0), 0);
+      const estimated = calls.some(e => e.estimated === true);
+      const done = inst.append('server', 'done', { run: run.run, aborted: true, seen: seenBefore(inst), cost: +cost.toFixed(6), estimated, error: CUT.restart });
       if ((lastAssign(inst.log)?.seq ?? 0) < run.seq) inst.append('server', 'wake', { reason: `A restart cut run ${run.run}; carry on`, from: 'server', cause: done.seq });
       commit(inst.dir, AGENT, `Run ${run.run}: ${CUT.restart}`).catch(e => inst.append('server', 'commit', { run: run.run, error: e.message }));
     }

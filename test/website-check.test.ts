@@ -25,7 +25,7 @@ const service = createServer(async (req, res) => {
   if (url.pathname === '/search') {
     if (exaDown) return void res.writeHead(402).end('{}');
     searches.push({ body: JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString()), key: req.headers['x-api-key'] });
-    return void res.end(JSON.stringify({ results: [{ title: 'Business sign-on', url: 'https://public.test/info', highlights: ['An identity provider.'] }] }));
+    return void res.end(JSON.stringify({ results: [{ title: 'Business sign-on', url: 'https://public.test/info', highlights: ['An identity provider.'] }], ...(mode !== 'no-cost' && { costDollars: { total: 0.005 } }) }));
   }
   if (url.pathname === '/api/v1/chat/completions') {
     const body = JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString());
@@ -36,11 +36,11 @@ const service = createServer(async (req, res) => {
     const toolCount = body.messages.filter((m: any) => m.role === 'tool').length;
     if ((['search', 'internal'].includes(mode) && !toolCount) || (mode === 'five' && toolCount < 5) || mode === 'limit') {
       const queries = mode === 'internal' ? ['ERP.company.test operator', 'auth.vendor.test identity'] : Array.from({ length: mode === 'limit' ? 6 : 1 }, (_, i) => `auth.vendor.test identity ${i}`);
-      return void res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: null, tool_calls: queries.map((query, i) => ({ id: `search-${i}`, type: 'function', function: { name: 'search', arguments: JSON.stringify({ query }) } })) } }] }));
+      return void res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: null, tool_calls: queries.map((query, i) => ({ id: `search-${i}`, type: 'function', function: { name: 'search', arguments: JSON.stringify({ query }) } })) } }], ...(mode !== 'no-cost' && { usage: { cost: 0.003 } }) }));
     }
     const evidence = JSON.parse(body.messages[1].content);
     const hosts = Object.fromEntries(evidence.unchecked.filter((h: string) => mode !== 'partial' || !h.startsWith('later.')).map((h: string) => [h, { verdict: h.startsWith('metrics.') ? 'refused' : h.startsWith('upload.') ? 'high' : 'pass', why: 'Its role was checked.' }]));
-    return void res.end(JSON.stringify({ choices: [{ message: { content: `\`\`\`json\n${JSON.stringify({ profile, hosts })}\n\`\`\`` } }] }));
+    return void res.end(JSON.stringify({ choices: [{ message: { content: `\`\`\`json\n${JSON.stringify({ profile, hosts })}\n\`\`\`` } }], ...(mode !== 'no-cost' && { usage: { cost: 0.003 } }) }));
   }
   if (req.method === 'POST' && url.pathname === '/sessions') {
     openings.push(JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString()));
@@ -332,4 +332,32 @@ test("a website named as an object's own property, such as constructor, is none 
   assert.equal(websitesOf(email).older.checks!['sso.old.test'].verdict, 'pass', 'the next record goes on');
   assert.deepEqual(websitesOf(email).broken, { writeback: true, internal: true });
   writeJson('users.json', {});
+});
+
+test('website checks record OpenRouter and Exa costs against server naming website and person, or estimate when omitted', async () => {
+  const { syncCosts } = await import('../src/costs.ts');
+  const { readLines } = await import('../src/system.ts');
+  const before = syncCosts().length;
+  mode = 'search';
+  await site('billed');
+  await checkWebsite(email, 'billed', trace('auth.vendor.test'));
+  const exactActs = readLines<any>(join(rfDir(), 'log.jsonl')).filter(e => e.op === 'website-check' && e.site === 'billed');
+  assert.deepEqual([exactActs.at(-1).person, exactActs.at(-1).site, exactActs.at(-1).cost, exactActs.at(-1).estimated], [email, 'billed', 0.011, undefined]);
+  const added = syncCosts().slice(before);
+  assert.deepEqual(added.map(r => 'by' in r && [r.by, r.service, r.kind, r.site, r.person, r.cost, r.estimated]), [
+    ['server', 'openrouter', 'website-check', 'billed', email, 0.003, undefined],
+    ['server', 'exa', 'website-check', 'billed', email, 0.005, undefined],
+    ['server', 'openrouter', 'website-check', 'billed', email, 0.003, undefined],
+  ]);
+
+  mode = 'no-cost';
+  await site('unpriced');
+  await checkWebsite(email, 'unpriced', trace('auth.vendor.test'));
+  const estAct = readLines<any>(join(rfDir(), 'log.jsonl')).findLast(e => e.op === 'website-check' && e.site === 'unpriced')!;
+  assert.ok(estAct.cost > 0 && estAct.estimated === true);
+  const estRecords = syncCosts().filter(r => 'by' in r && r.site === 'unpriced');
+  assert.equal(estRecords.length, 1);
+  assert.ok(estRecords[0].cost > 0 && estRecords[0].estimated === true);
+  const dumped = JSON.stringify({ exactActs, estAct, records: syncCosts() });
+  assert.ok(!dumped.includes('server-key') && !dumped.includes('exa-key'));
 });

@@ -52,7 +52,7 @@ Run the image under podman, as a systemd service. The image is the agent image, 
 1. Give the service a user of its own, with lingering on, and install rootless podman. Check out a tagged commit of this repo, and build the agent image, then the server's on it: `podman build -t rollforward-agent agent && podman build -t rollforward .`.
 2. Make an empty data folder, `~/rollforward-data`.
 3. Write `~/.config/rollforward.env` with:
-   - `OPENROUTER_API_KEY`, and, optionally, `EXA_API_KEY` for runs' and website checks' web search: without it, website checks run without search;
+   - `OPENROUTER_API_KEY`, and, optionally, `EXA_API_KEY` for runs' and website checks' web search (without it, website checks run without search), and `RF_LOW_CREDIT_USD` only to change the $50 low-credit warning threshold (or 10% of the key's limit) shown to admins;
    - the `RF_OIDC_*` lines and `RF_PUBLIC_URL` ([system.md](system.md), Access);
    - `RF_ADMINS`, the first admins;
    - `RF_BROWSER_URL` and this server's `RF_BROWSER_KEY`, matching the browser service's `BROWSER_KEY` or one entry in its `BROWSER_KEYS`;
