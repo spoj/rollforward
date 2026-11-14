@@ -598,3 +598,57 @@ test('folders deeper than PATH_MAX in .pylib and working/ neither wedge active n
   }
 });
 
+test('deleting a starting run or bailing out of begin() on an expired login never strands another due instance of the series', async () => {
+  const bob = 'bob@demo.test';
+  saveTree({
+    workspaces: { ...tree().workspaces, w: { ...tree().workspaces.w, members: [bob] } },
+    series: { ...tree().series, s10: { name: 'SibA', workspace: 'w' }, s11: { name: 'SibB', workspace: 'w' } },
+  });
+  writeJson('users.json', { ...readJson('users.json', {}), [bob]: { role: 'user' } });
+  keepSignIn(bob, entra.refresh(bob));
+  for (const s of ['s10', 's11']) mkdirSync(join(tmp, 'series', s), { recursive: true });
+
+  const oct1 = createInstance('s10', '2026-10', alice, []), nov1 = createInstance('s10', '2026-11', bob, []);
+  const ready = Promise.withResolvers<Run>();
+  const a1 = { inst: oct1, n: 1, runner: alice, token: 'tok-s10', view: view(oct1), ready: ready.promise, process: '', cost: 0, seen: 0, delivered: 0, done: false } as Active;
+  oct1.append('server', 'run', { run: 1, runner: alice, consent: 1, upto: 1 });
+  active.set('s10', a1);
+  byToken.set(a1.token, a1);
+  nov1.append(bob, 'comment', { thread: 'c2', text: 'Run November now.' });
+  kick(nov1);
+  await settle();
+  const deleting = remove(oct1, alice, () => ({ cost: 0, runs: [] }));
+  ready.resolve({ stop: async () => {} } as Run);
+  await deleting;
+  await settle();
+  assert.ok(nov1.log.some(e => e.op === 'run'), 'deleting starting October still starts waiting November');
+
+  const { interruptRun } = await import('../src/waker.ts');
+  const z2 = createInstance('s11', '2026-09', bob, []), oct2 = createInstance('s11', '2026-10', alice, []), nov2 = createInstance('s11', '2026-11', bob, []);
+  const a2 = {
+    inst: z2, n: 1, runner: bob, session: 1, token: 'tok-s11', view: view(z2), workspace: 'w', skills: {}, shape: '',
+    run: { turn: async () => ({ settled: new Promise(() => {}) }), steer: async () => {}, interrupt: async () => {}, stop: async () => {}, alone: () => false } as Run,
+    sent: 1, noted: 0, seen: 1, delivered: 1, texts: new Map(), done: false, cost: 0, hosts: new Set(), links: new Map(), process: '',
+  } as Active;
+  z2.append('server', 'run', { run: 1, runner: bob, consent: 1, upto: 1 });
+  active.set('s11', a2);
+  byToken.set(a2.token, a2);
+  oct2.append(alice, 'comment', { thread: 'c2', text: 'Update October.' });
+  nov2.append(bob, 'comment', { thread: 'c2', text: 'Run November.' });
+  kick(oct2);
+  kick(nov2);
+  await settle();
+  entra.who.stale.add(alice);
+  try {
+    z2.append(bob, 'interrupt');
+    await interruptRun(a2);
+    await settle();
+    assert.equal(oct2.log.findLast(e => e.op === 'expired')?.runner, alice);
+    assert.ok(nov2.log.some(e => e.op === 'run'), 'October bailing out on expired Entra still starts waiting November');
+  } finally {
+    entra.who.stale.delete(alice);
+    keepSignIn(alice, entra.refresh(alice));
+  }
+});
+
+

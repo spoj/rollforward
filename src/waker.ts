@@ -203,18 +203,26 @@ function flush(a: Active) {
 // What a timer starts, as a kick's, logs what fails rather than ending the server.
 const start = (inst: Instance) => begin(inst).catch(e => console.error(`a run of ${inst.id} failed to start`, e));
 
+const runnable = (i: Instance) => due(i) && sees(i) && !held(i, 'entra', runnerOf(i).by);
+function bail(inst: Instance) {
+  changes.emit('change', inst.id);
+  if (stopping || active.has(inst.seriesId)) return;
+  const next = instances(inst.seriesId).find(i => i !== inst && runnable(i));
+  if (next) start(next);
+}
+
 async function begin(inst: Instance) {
   // A run starts from its instance's folder as the last run's commit left it.
   await committed(inst.dir);
   const series = inst.seriesId;
   const seen = seenBefore(inst);
   // A kick that starts nothing ends the instance's queued state all the same: pages that showed it should hear.
-  if (active.has(series) || !due(inst)) return void changes.emit('change', inst.id);
+  if (active.has(series) || !due(inst)) return bail(inst);
   if (full()) return void waiting.add(inst);
   // A run starts only for a runner Microsoft still signs in (entra.ts): one it no longer does waits for them to sign in again, and
   // one who has left, for someone to take the instance over. Microsoft unreachable, it tries again in a minute.
   const runner = runnerOf(inst).by;
-  if (held(inst, 'entra', runner)) return void changes.emit('change', inst.id);
+  if (held(inst, 'entra', runner)) return bail(inst);
   try {
     await confirm(runner);
   } catch (e) {
@@ -224,13 +232,13 @@ async function begin(inst: Instance) {
       return void setTimeout(() => kick(inst), 60_000).unref();
     }
     inst.append('server', 'expired', { cause: pending(inst, seen)[0].seq, login: 'entra', name: 'rollforward', runner, error: (e as Error).message, ...((e as { left?: boolean }).left && { left: true }) });
-    return void changes.emit('change', inst.id);
+    return bail(inst);
   }
-  if (stopping || active.has(series) || !due(inst)) return void changes.emit('change', inst.id);
+  if (stopping || active.has(series) || !due(inst)) return bail(inst);
   if (runnerOf(inst).by !== runner) return void kick(inst);
   if (full()) return void waiting.add(inst);
   // One who can no longer see its workspace, as after being removed from it, waits for someone to take the instance over.
-  if (!sees(inst)) return void changes.emit('change', inst.id);
+  if (!sees(inst)) return bail(inst);
   let kept = idle.get(inst.id);
   idle.delete(inst.id);
   if (kept && stale(kept)) {
@@ -288,7 +296,7 @@ async function begin(inst: Instance) {
     ({ settled } = await a.run.turn(text));
   } catch (err) {
     if (loggedRun) finish(a, true, String(err));
-    else { active.delete(series); byToken.delete(a.token); throw err; }
+    else { active.delete(series); byToken.delete(a.token); bail(inst); throw err; }
     return;
   }
   flush(a);
@@ -355,10 +363,10 @@ function finish(a: Active, aborted: boolean, error?: string): Entry | undefined 
   retiring.add(a);
   a.ended = Promise.all([closing, stopped]).finally(() => retiring.delete(a));
   commit(a.inst.dir, AGENT, [`Run ${a.n}`, error].filter(Boolean).join(': '), stopped).catch(e => a.inst.append('server', 'commit', { run: a.n, error: e.message }));
-  if (a.run) { // one that never started, as with a missing API key, waits for the next act or a restart rather than retrying at once
-    const next = due(a.inst) ? a.inst : instances(series).find(i => i !== a.inst && due(i));
-    if (next) start(next);
-  }
+  // One that never started, as with a missing API key, waits for the next act rather than retrying itself at once; another open
+  // instance of the series that waited for the slot still starts.
+  const next = a.run && due(a.inst) ? a.inst : instances(series).find(i => i !== a.inst && runnable(i));
+  if (next) start(next);
   startWaiting();
   return done;
 }
