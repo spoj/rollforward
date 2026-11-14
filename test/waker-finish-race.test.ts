@@ -99,3 +99,50 @@ test('pre-run failures try each due sibling once rather than bouncing between th
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('a run ended while prompt acknowledgement is pending cannot steer or arm a new limit timer', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rf-ended-prompt-'));
+  try {
+    execFileSync(process.execPath, ['--experimental-test-module-mocks', '--input-type=module', '-e', `
+      import assert from 'node:assert/strict';
+      import { mock } from 'node:test';
+      import { mkdirSync } from 'node:fs';
+      import * as runner from './src/runner.ts';
+      import * as entra from './src/entra.ts';
+      import { initSystem, saveTree, writeJson } from './src/system.ts';
+      import { createInstance, openStore } from './src/store.ts';
+      const root = ${JSON.stringify(root)}, alice = 'alice@demo.test';
+      initSystem(root);
+      openStore(root);
+      saveTree({ workspaces: { w: { name: 'Work', owners: [alice], members: [] } }, series: { s: { name: 'Series', workspace: 'w' } } });
+      writeJson('users.json', { [alice]: { role: 'user' } });
+      mkdirSync(root + '/series/s', { recursive: true });
+      process.env.RF_LIMIT_MIN = '120';
+      const turning = Promise.withResolvers(), prompt = Promise.withResolvers();
+      let steers = 0, limits = 0;
+      const timeout = globalThis.setTimeout;
+      mock.method(globalThis, 'setTimeout', (fn, ms, ...args) => { if (ms === 120 * 60000) limits++; return timeout(fn, ms, ...args); });
+      const run = {
+        turn: async () => { turning.resolve(); await prompt.promise; return { settled: new Promise(() => {}) }; },
+        steer: async () => { steers++; }, interrupt: async () => {}, stop: async () => {}, alone: () => false,
+      };
+      mock.module('./src/runner.ts', { namedExports: { ...runner, startRun: async () => run } });
+      mock.module('./src/entra.ts', { namedExports: { ...entra, confirm: async () => {} } });
+      const { active, interruptRun, kick } = await import('./src/waker.ts');
+      const inst = createInstance('s', 'Prompt', alice, []);
+      inst.append(alice, 'comment', { text: 'Work.' });
+      kick(inst);
+      await turning.promise;
+      await interruptRun(active.get('s'));
+      inst.append(alice, 'comment', { text: 'A later instruction.' });
+      prompt.resolve();
+      await new Promise(ok => setImmediate(ok));
+      assert.equal(steers, 0);
+      assert.equal(limits, 0);
+    `], { cwd: join(import.meta.dirname, '..'), timeout: 10_000, stdio: 'pipe' });
+  } catch (e) {
+    assert.fail((e as { stderr: Buffer }).stderr.toString());
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

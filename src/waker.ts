@@ -302,6 +302,7 @@ async function begin(inst: Instance, tried: Set<Instance>) {
       if (a.done) return;
     }
     ({ settled } = await a.run.turn(text));
+    if (a.done) return;
   } catch (err) {
     if (loggedRun) await finishRun(a, true, String(err));
     else { active.delete(series); byToken.delete(a.token); bail(inst, tried); throw err; }
