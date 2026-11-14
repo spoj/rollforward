@@ -258,6 +258,21 @@ test("signing in again wakes only an instance its signer still runs, not one tak
   assert.ok(!taken.log.some(e => e.op === 'wake'));
 });
 
+test("signing in again wakes nothing whose expired login a run met before the instance's last assign, though it came back to the signer, and holds none of its runs", async () => {
+  const back = make('s2', 'back again');
+  back.append('server', 'expired', { login: 'web:erp', runner: alice });
+  back.append('server', 'expired', { login: 'entra', runner: alice });
+  back.append(alice, 'assign', { to: 'bob@demo.test', from: alice, logins: [] });
+  back.append('bob@demo.test', 'assign', { to: alice, from: 'bob@demo.test', logins: [] });
+  saveLogin(alice, { id: 'web:erp', kind: 'website', name: 'erp', since: '', offers: [], expired: true }, '{}');
+  saveLogin(alice, { id: 'web:erp', kind: 'website', name: 'erp', since: '', offers: [] }, '{}');
+  assert.ok(!back.log.some(e => e.op === 'wake'), 'its run was before the line');
+  back.append(alice, 'comment', { thread: 'c9', text: 'Carry on.' });
+  kick(back);
+  await settle();
+  assert.ok(back.log.some(e => e.op === 'run'), "her act starts a run, Microsoft's old refusal holding nothing");
+});
+
 test('after a restart every open instance with something for a run starts; an Interrupt holds until the next act, and a quiet entry is nothing for a run, which the next reads', async () => {
   const queued = make('s6', 'queued'), held = make('s6', 'held'), hushed = make('s8', 'hushed');
   queued.append(alice, 'comment', { thread: 't1', text: 'please redo' });

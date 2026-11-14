@@ -211,8 +211,8 @@ async function begin(inst: Instance) {
   if (full()) return void waiting.add(inst);
   // A run starts only for a runner Microsoft still signs in (entra.ts): one it no longer does waits for them to sign in again, and
   // one who has left, for someone to take the instance over. Microsoft unreachable, it tries again in a minute.
-  const runner = runnerOf(inst).by, hit = inst.log.findLast(e => e.op === 'expired' && e.login === 'entra' && e.runner === runner);
-  if (hit && !inst.log.some(e => e.seq > hit.seq && e.op === 'wake' && e.login === 'entra')) return void changes.emit('change', inst.id);
+  const runner = runnerOf(inst).by;
+  if (held(inst, 'entra', runner)) return void changes.emit('change', inst.id);
   try {
     await confirm(runner);
   } catch (e) {
@@ -629,11 +629,17 @@ export function recover() {
   }
 }
 
+// Whether a login of `who`'s that expired holds an instance's runs: a run of theirs met it since the instance's last assign, as what
+// came before is history, and no sign-in woke it since.
+export function held(inst: Instance, login: string, who: string): boolean {
+  const hit = inst.log.findLast(e => e.op === 'expired' && e.login === login && e.runner === who);
+  return !!hit && hit.seq > (lastAssign(inst.log)?.seq ?? 0) && !inst.log.some(e => e.seq > hit.seq && e.op === 'wake' && e.login === login);
+}
+
 // An open instance whose run met its runner's expired login carries on when they sign in to it again, while they still run it.
 changes.on('login', (email: string, id: string, name: string) => {
   for (const sid of Object.keys(tree().series)) for (const inst of instances(sid).filter(i => i.doc.status === 'open' && runnerOf(i).by === email)) {
-    const hit = inst.log.findLast(e => e.op === 'expired' && e.login === id && e.runner === email);
-    if (!hit || inst.log.some(e => e.seq > hit.seq && e.op === 'wake' && e.login === id)) continue;
+    if (!held(inst, id, email)) continue;
     inst.append('server', 'wake', { reason: `${email} signed in to ${name} again`, from: email, login: id });
     kick(inst);
   }

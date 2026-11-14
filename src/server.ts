@@ -25,7 +25,7 @@ import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, prune, startIndexing, track } from './indexes.ts';
 import { addNote, notes, seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, archived, assigned, byToken, cancelWake, cancelWakes, closed, correct, dropRequest, kick, named, noted, pending, queued, remove, resolveFor, setWake, standing, startWaking, startWith, stop, wakes, wakesOf, wakeWith, weekly, reads, CUT, type Active, type Request } from './waker.ts';
+import { active, archived, assigned, byToken, cancelWake, cancelWakes, closed, correct, dropRequest, held, kick, named, noted, pending, queued, remove, resolveFor, setWake, standing, startWaking, startWith, stop, wakes, wakesOf, wakeWith, weekly, reads, CUT, type Active, type Request } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -340,10 +340,7 @@ function status(me: Me) {
     assigned: open.flatMap(i => { const a = assignment(i); return a ? [{ ...a, path: path(i) }] : []; }),
     expired: (me.role === 'admin' ? Object.keys(users()) : [me.email]).flatMap(who => logins(who).filter(l => l.expired).map(l => ({
       who, login: l.name,
-      holding: open.filter(i => {
-        const hit = i.log.findLast(e => e.op === 'expired' && e.login === l.id && e.runner === who);
-        return hit && !i.log.some(e => e.seq > hit.seq && e.op === 'wake' && e.login === l.id);
-      }).map(path),
+      holding: open.filter(i => held(i, l.id, who)).map(path),
     }))),
     requests: Object.values(w8.requests).filter(r => seen.some(([sid]) => sid === r.series)).map(r => ({ who: asked(r), path: named(t, r.series), label: r.label, from: r.from, at: r.at, ...(r.target && { target: r.target }) })),
     proposals: proposals(t).filter(p => [p.id, p.into].some(x => canSee(me, t.workspaces[x]))),
