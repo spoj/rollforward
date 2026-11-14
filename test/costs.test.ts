@@ -82,7 +82,7 @@ const providers = createHttpServer(async (req, res) => {
 });
 
 async function rfAs(home: string, ...args: string[]) {
-  const { stdout } = await execFileAsync(process.execPath, [join(app, 'cli', 'rf.mjs'), ...args], {
+  const { stdout } = await execFileAsync(process.execPath, [join(app, 'src', 'rf-people.ts'), ...args], {
     env: { ...process.env, HOME: home, TZ: 'UTC' },
   });
   return stdout;
