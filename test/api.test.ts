@@ -87,6 +87,16 @@ before(async () => {
     { by: bob, op: 'comment', thread: 'c8', item: null, ref: null, text: 'Cut off at the 25th.', quiet: true },
     { by: CAROL, op: 'takeover', from: bob, logins: [] },
   ].map((e, i) => JSON.stringify({ seq: i + 1, at: `2026-10-01T0${i}:00:00.000Z`, ...e }) + '\n').join(''));
+  const race = join(root, 'instances', 'race00000001');
+  mkdirSync(join(race, 'working'), { recursive: true });
+  writeFileSync(join(race, 'instance.json'), JSON.stringify({ label: '2026-11', series: '01d7a4e00002' }));
+  writeFileSync(join(race, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [] }));
+  writeFileSync(join(race, 'log.jsonl'), [
+    { seq: 1, at: '2026-09-20T00:00:00Z', by: adminEmail, op: 'create', logins: [] },
+    { seq: 2, at: '2026-09-20T00:01:00Z', by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'Send wire 1?', ask: 'proposal', run: 1 },
+    { seq: 3, at: '2026-09-20T00:02:00Z', by: 'agent', op: 'comment', thread: 'c3', item: null, ref: null, text: 'Send wire 2?', ask: 'proposal', run: 1 },
+    { seq: 4, at: '2026-09-20T00:03:00Z', by: 'agent', op: 'comment', thread: 'c4', item: null, ref: null, text: 'Send wire 3?', ask: 'proposal', run: 1 },
+  ].map(e => JSON.stringify(e) + '\n').join(''));
   // What the tests save themselves, such as logins, goes to the server's data root, whichever tests run.
   (await import('../src/system.ts')).initSystem(root);
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch') };
@@ -1834,3 +1844,29 @@ test('admins define service connections without exposing their keys, and people 
   assert.deepEqual((await json('/logins', b)).find((l: { id: string }) => l.id === 'drop').offers, [], 'a removed connection offers nothing');
   assert.equal((await call('DELETE', '/logins/drop', undefined, b)).status, 200);
 });
+
+test('concurrent signoff, reject and close on an instance decide each proposal at most once and never sign off onto a closed instance', async () => {
+  const c = sessionOf(await login(CAROL))!;
+  const path = '/api/instances/race00000001';
+  const [s1, s2] = await Promise.all([
+    call('POST', `${path}/signoff`, JSON.stringify({ thread: 'c2', quiet: true })),
+    call('POST', `${path}/signoff`, JSON.stringify({ thread: 'c2', quiet: true }), c),
+  ]);
+  assert.deepEqual([s1.status, s2.status].sort(), [200, 409]);
+  const [s3, r3] = await Promise.all([
+    call('POST', `${path}/signoff`, JSON.stringify({ thread: 'c3', quiet: true }), c),
+    call('POST', `${path}/reject`, JSON.stringify({ thread: 'c3', quiet: true })),
+  ]);
+  assert.deepEqual([s3.status, r3.status].sort(), [200, 409]);
+  const [s4, cl] = await Promise.all([
+    call('POST', `${path}/signoff`, JSON.stringify({ thread: 'c4', quiet: true }), c),
+    call('POST', `${path}/close`, JSON.stringify({ quiet: true })),
+  ]);
+  assert.ok(!(s4.status === 200 && cl.status === 200 && (await json(path)).log.find((e: any) => e.op === 'close')?.accepted?.includes('c4')));
+  const { log } = await json(path);
+  assert.equal(log.filter((e: any) => e.op === 'signoff' && e.on === 2).length, 1);
+  assert.equal(log.filter((e: any) => e.on === 3 && ['signoff', 'reject'].includes(e.op)).length, 1);
+  const closeIdx = log.findIndex((e: any) => e.op === 'close');
+  if (closeIdx >= 0) assert.deepEqual(log.slice(closeIdx + 1), []);
+});
+

@@ -365,6 +365,21 @@ test("assigning mid-run stops the run first, as Interrupt does, saying why; the 
   const { log: still, waiting } = await (await call('GET', path, undefined, bob)).json();
   assert.equal(still.filter((e: { op: string }) => e.op === 'run').length, 1, 'the assign starts no run');
   assert.deepEqual(waiting.map((w: { who: string; seq: number }) => [w.who, still[w.seq - 1].by]), [[BOB, 'agent'], [BOB, ADMIN]], "the agent's ask, which named no one, and the previous runner's comment, which no run read, a note now, wait on the new one");
+
+  const carol = await login('carol@demo.test'), dana = await login('dana@demo.test');
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB, 'carol@demo.test', 'dana@demo.test'] })).status, 200);
+  let going2!: () => void;
+  const sleeping2 = new Promise<void>(ok => { going2 = ok; });
+  scripts.push({ bash: [() => (going2(), 'sleep 60')], report: 'unreached', saw: [] });
+  const { id: id2 } = await (await call('POST', `/api/series/${series}`, { label: '2026-12', logins: [] }, bob)).json();
+  await sleeping2;
+  const [a1, a2] = await Promise.all([
+    call('POST', `/api/instances/${id2}/assign`, { to: 'carol@demo.test' }, bob),
+    call('POST', `/api/instances/${id2}/assign`, { to: 'dana@demo.test' }, bob),
+  ]);
+  assert.deepEqual([a1.status, a2.status].sort(), [200, 403], 'only the first assign by non-owner Bob succeeds while interrupt stops the run');
+  await runs(id2, 1);
+  void [carol, dana];
   const next: Script = { bash: [], report: 'Taken up.', saw: [] };
   scripts.push(next);
   assert.equal((await call('POST', `${path}/comment`, { text: 'Mine now.' }, bob)).status, 200);

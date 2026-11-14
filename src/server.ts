@@ -517,6 +517,14 @@ const people = (w: { owners?: unknown; members?: unknown }) => [w.owners, w.memb
 // the new names from its next start.
 // A person stops an instance's run, as Interrupt does and as assigning does first: its runner, the workspace's owners and admins alone
 // may. Its entry says who, and why if it's for something else; the next run waits for the next act.
+const instQueue = new Map<string, Promise<void>>();
+function inOrder<T>(id: string, fn: () => Promise<T>): Promise<T> {
+  const next = (instQueue.get(id) ?? Promise.resolve()).then(fn, fn);
+  const tail = next.then(() => {}, () => {}).then(() => { if (instQueue.get(id) === tail) instQueue.delete(id); });
+  instQueue.set(id, tail);
+  return next;
+}
+
 async function interrupt(inst: Instance, a: Active | undefined, me: Me, why?: string) {
   const t = tree();
   if (runnerOf(inst).by !== me.email && !canManage(me, t.workspaces[t.series[inst.seriesId].workspace]))
@@ -973,28 +981,6 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       inst.append('server', 'rename', { from, cause: said.seq });
     }
     if (!standing(inst, said)!.starts && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, me, `Comment in ${said.thread}`).catch(err => inst.append('server', 'commit', { cause: said.seq, error: err.message }));
-  } else if (action === 'signoff' || action === 'reject') {
-    // Anyone who sees the instance approves a proposal of the agent's, which `thread` names as cN, or rejects it, with a note, as an
-    // ask from before questions and proposals, `ask: true`, which may have been either. Approving is a sign-off, the route's and the
-    // entry's name: it commits the folder in their name, as they say yes to it, the proposal and the note its message, with their
-    // Signed-off-by. Either starts a run, as a reply does, unless quiet, and a proposal takes one of them. rf 0.12's reject, a sign-off
-    // with approved false, is refused.
-    const { thread, text, approved } = payload, ask = inst.log.find(e => `c${e.seq}` === thread && e.op === 'comment' && e.by === 'agent' && (e.ask === true || e.ask === 'proposal'));
-    if (approved === false) throw new HttpError(400, 'a sign-off approves; to say no, reject it, on the page or with rf reject');
-    if (!ask) throw new HttpError(409, `${thread} is no proposal of the agent's`);
-    if (inst.log.some(e => e.op === 'withdraw' && e.on === ask.seq)) throw new HttpError(409, `the agent withdrew ${thread}`);
-    const decided = ask.ask === 'proposal' && inst.log.find(e => e.on === ask.seq && (e.op === 'signoff' || e.op === 'reject'));
-    if (decided) throw new HttpError(409, `${thread} was ${decided.op === 'signoff' ? 'approved' : 'rejected'} already, by ${decided.by}`);
-    const closed = inst.log.find(e => e.op === 'close' && (e.accepted as string[] | undefined)?.includes(thread));
-    if (closed) throw new HttpError(409, `${thread} was accepted as done at the close, by ${closed.by}`);
-    if (ask.seq < inst.copied) throw new HttpError(409, `${thread} is from before this instance was copied`);
-    const note = typeof text === 'string' ? text.trim() : '';
-    if (action === 'reject') inst.append(by, 'reject', { thread: ask.thread, on: ask.seq, ...(note && { text: note }), ...(quiet && { quiet: true }) });
-    else {
-      if (mine) throw new HttpError(409, 'wait for the run to end');
-      const hash = await commit(inst.dir, me, [ask.text, note, `Signed-off-by: ${me.name} <${me.email}>`].filter(Boolean).join('\n\n'));
-      inst.append(by, 'signoff', { thread: ask.thread, on: ask.seq, ...(note && { text: note }), commit: hash, ...(quiet && { quiet: true }) });
-    }
   } else if (action === 'commit' && run) {
     // The agent commits the folder at a moment worth keeping, in its own name.
     const message = typeof payload.message === 'string' ? payload.message.trim() : '';
@@ -1002,50 +988,103 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const hash = await commit(inst.dir, AGENT, message);
     inst.append('agent', 'commit', { run: run.n, message, commit: hash });
     return send(res, 200, `committed ${hash}`);
-  } else if (action === 'withdraw' && run) {
-    // The agent withdraws a question or proposal of its own still waiting, saying why, and where it was answered, if it was: see, a
-    // comment's seq.
-    const { thread, text, see } = payload, ask = inst.asking().find(e => `c${e.seq}` === thread), at = see === undefined ? undefined : inst.log.find(e => `c${e.seq}` === see && e.op === 'comment');
-    if (!ask) throw new HttpError(409, `${thread} is no question or proposal of yours still waiting; those that are: ${inst.asking().map(e => `c${e.seq}`).join(', ') || 'none'}`);
-    if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a withdrawal says why');
-    if (see !== undefined && !at) throw new HttpError(400, `no comment ${see}`);
-    inst.append('agent', 'withdraw', { thread: ask.thread, on: ask.seq, text: text.trim(), ...(at && { see: at.seq }), run: run.n });
-    return send(res, 200, `withdrew ${thread}`);
-  } else if (action === 'interrupt') {
-    await interrupt(inst, mine, me);
-    return send(res, 200, 'ok');
-  } else if (action === 'logins') {
-    // The runner ticks the instance's logins anew, as before its first prompt.
-    if (runnerOf(inst).by !== by) throw new HttpError(403, `${runnerOf(inst).by} runs it, and ticks its logins`);
-    inst.append(by, 'logins', { logins: checkTicks(by, payload.logins ?? []) });
-    await closeUnlent();
-    return send(res, 200, 'ok');
-  } else if (action === 'assign' || action === 'takeover') {
-    // Assigning makes someone the runner from now on: its workspace's owners and admins assign it to anyone who sees the workspace, as
-    // its runner hands it over, and anyone else who sees it takes it over, assigning it to themselves, while no run goes. A run going
-    // stops first, as Interrupt stops it. Logins are never assigned: taking over ticks your own, and someone else ticks theirs. What
-    // came before is history (waker.ts standing()), its pending wakes no one's word, and it starts no run. rf 0.16's takeover is an
-    // assign to oneself.
-    const ws = t.workspaces[t.series[inst.seriesId].workspace], runner = runnerOf(inst).by, to = typeof payload.to === 'string' ? payload.to.toLowerCase() : by, p = asPerson(to);
-    if (to === runner) throw new HttpError(409, `${to} runs it already`);
-    if (to !== by && runner !== by && !canManage(me, ws)) throw new HttpError(403, `only its runner, ${runner}, the workspace's owners and admins assign it to someone else; you may take it over`);
-    if (!p || !canSee(p, ws)) throw new HttpError(400, `${to} can't see this instance`);
-    if (to !== by && payload.logins?.length) throw new HttpError(400, `logins are each person's own: ${to} ticks theirs`);
-    const ticks = to === by ? checkTicks(by, payload.logins ?? []) : [];
-    if (mine && runner !== by && !canManage(me, ws)) throw new HttpError(409, `run ${mine.n} is going: take it over once it ends, or ask its runner, ${runner}, the workspace's owners or admins, who may stop it`);
-    // The page says which run, if any, assigning stops, `stops`, and stops none it didn't say.
-    if (mine && 'stops' in payload && payload.stops !== mine.n) throw new HttpError(409, `run ${mine.n} started since you looked: assigning it now stops it`);
-    if (mine) await interrupt(inst, mine, me, `to assign it to ${to}`);
-    inst.append(by, 'assign', { to, from: runner, logins: ticks });
-    assigned(inst);
-    return send(res, 200, 'ok');
-  } else if (action === 'close' || action === 'abandon') {
-    if (mine) throw new HttpError(409, 'wait for the run to end');
-    if (runnerOf(inst).by !== by) throw new HttpError(403, `only the runner, ${runnerOf(inst).by}, ${action === 'close' ? 'closes it, making it the record' : 'abandons it'}; take it over first`);
-    await (action === 'close' ? inst.close(me) : inst.abandon(by));
-    cancelWakes([inst.id]);
-    if (action === 'close') closed(inst, by, quiet);
-    return send(res, 200, 'ok');
+  } else if (['signoff', 'reject', 'withdraw', 'interrupt', 'logins', 'assign', 'takeover', 'close', 'abandon'].includes(action)) {
+    const out = await inOrder(inst.id, async () => {
+      const recheck = () => {
+        const now = tree(), s = now.series[inst.seriesId], ws = now.workspaces[s.workspace], shut = [ws, s].find(x => x?.archived);
+        const who: Me | undefined = run ? me : asPerson(by);
+        if (!who) throw new HttpError(401, 'sign in');
+        if (!run) mustSee(who, ws);
+        if (shut) throw new HttpError(409, `${shut.name} is archived: nothing in it changes until it's restored`);
+        if (inst.doc.status !== 'open') throw new HttpError(409, `instance is ${inst.doc.status}`);
+        const cur = active.get(inst.seriesId);
+        return { ws, who, mine: cur?.inst === inst ? cur : undefined };
+      };
+      const { ws, who, mine } = recheck();
+      if (action === 'signoff' || action === 'reject') {
+        // Anyone who sees the instance approves a proposal of the agent's, which `thread` names as cN, or rejects it, with a note, as an
+        // ask from before questions and proposals, `ask: true`, which may have been either. Approving is a sign-off, the route's and the
+        // entry's name: it commits the folder in their name, as they say yes to it, the proposal and the note its message, with their
+        // Signed-off-by. Either starts a run, as a reply does, unless quiet, and a proposal takes one of them. rf 0.12's reject, a sign-off
+        // with approved false, is refused.
+        const { thread, text, approved } = payload, ask = inst.log.find(e => `c${e.seq}` === thread && e.op === 'comment' && e.by === 'agent' && (e.ask === true || e.ask === 'proposal'));
+        if (approved === false) throw new HttpError(400, 'a sign-off approves; to say no, reject it, on the page or with rf reject');
+        if (!ask) throw new HttpError(409, `${thread} is no proposal of the agent's`);
+        if (inst.log.some(e => e.op === 'withdraw' && e.on === ask.seq)) throw new HttpError(409, `the agent withdrew ${thread}`);
+        const decided = ask.ask === 'proposal' && inst.log.find(e => e.on === ask.seq && (e.op === 'signoff' || e.op === 'reject'));
+        if (decided) throw new HttpError(409, `${thread} was ${decided.op === 'signoff' ? 'approved' : 'rejected'} already, by ${decided.by}`);
+        const closed = inst.log.find(e => e.op === 'close' && (e.accepted as string[] | undefined)?.includes(thread));
+        if (closed) throw new HttpError(409, `${thread} was accepted as done at the close, by ${closed.by}`);
+        if (ask.seq < inst.copied) throw new HttpError(409, `${thread} is from before this instance was copied`);
+        const note = typeof text === 'string' ? text.trim() : '';
+        if (action === 'reject') inst.append(by, 'reject', { thread: ask.thread, on: ask.seq, ...(note && { text: note }), ...(quiet && { quiet: true }) });
+        else {
+          if (mine) throw new HttpError(409, 'wait for the run to end');
+          const hash = await commit(inst.dir, who, [ask.text, note, `Signed-off-by: ${who.name} <${who.email}>`].filter(Boolean).join('\n\n'));
+          if (recheck().mine) throw new HttpError(409, 'wait for the run to end');
+          if (inst.log.some(e => e.op === 'withdraw' && e.on === ask.seq)) throw new HttpError(409, `the agent withdrew ${thread}`);
+          inst.append(by, 'signoff', { thread: ask.thread, on: ask.seq, ...(note && { text: note }), commit: hash, ...(quiet && { quiet: true }) });
+        }
+        return undefined;
+      }
+      if (action === 'withdraw' && run) {
+        // The agent withdraws a question or proposal of its own still waiting, saying why, and where it was answered, if it was: see, a
+        // comment's seq.
+        const { thread, text, see } = payload, ask = inst.asking().find(e => `c${e.seq}` === thread), at = see === undefined ? undefined : inst.log.find(e => `c${e.seq}` === see && e.op === 'comment');
+        if (!ask) throw new HttpError(409, `${thread} is no question or proposal of yours still waiting; those that are: ${inst.asking().map(e => `c${e.seq}`).join(', ') || 'none'}`);
+        if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a withdrawal says why');
+        if (see !== undefined && !at) throw new HttpError(400, `no comment ${see}`);
+        inst.append('agent', 'withdraw', { thread: ask.thread, on: ask.seq, text: text.trim(), ...(at && { see: at.seq }), run: run.n });
+        return `withdrew ${thread}`;
+      }
+      if (action === 'interrupt') {
+        await interrupt(inst, mine, who);
+        return 'ok';
+      }
+      if (action === 'logins') {
+        // The runner ticks the instance's logins anew, as before its first prompt.
+        if (runnerOf(inst).by !== by) throw new HttpError(403, `${runnerOf(inst).by} runs it, and ticks its logins`);
+        inst.append(by, 'logins', { logins: checkTicks(by, payload.logins ?? []) });
+        await closeUnlent();
+        return 'ok';
+      }
+      if (action === 'assign' || action === 'takeover') {
+        // Assigning makes someone the runner from now on: its workspace's owners and admins assign it to anyone who sees the workspace, as
+        // its runner hands it over, and anyone else who sees it takes it over, assigning it to themselves, while no run goes. A run going
+        // stops first, as Interrupt stops it. Logins are never assigned: taking over ticks your own, and someone else ticks theirs. What
+        // came before is history (waker.ts standing()), its pending wakes no one's word, and it starts no run. rf 0.16's takeover is an
+        // assign to oneself.
+        const runner = runnerOf(inst).by, to = typeof payload.to === 'string' ? payload.to.toLowerCase() : by, p = asPerson(to);
+        if (to === runner) throw new HttpError(409, `${to} runs it already`);
+        if (to !== by && runner !== by && !canManage(who, ws)) throw new HttpError(403, `only its runner, ${runner}, the workspace's owners and admins assign it to someone else; you may take it over`);
+        if (!p || !canSee(p, ws)) throw new HttpError(400, `${to} can't see this instance`);
+        if (to !== by && payload.logins?.length) throw new HttpError(400, `logins are each person's own: ${to} ticks theirs`);
+        const ticks = to === by ? checkTicks(by, payload.logins ?? []) : [];
+        if (mine && runner !== by && !canManage(who, ws)) throw new HttpError(409, `run ${mine.n} is going: take it over once it ends, or ask its runner, ${runner}, the workspace's owners or admins, who may stop it`);
+        // The page says which run, if any, assigning stops, `stops`, and stops none it didn't say.
+        if (mine && 'stops' in payload && payload.stops !== mine.n) throw new HttpError(409, `run ${mine.n} started since you looked: assigning it now stops it`);
+        if (mine) {
+          await interrupt(inst, mine, who, `to assign it to ${to}`);
+          const after = recheck(), pNow = asPerson(to);
+          if (to !== by && runnerOf(inst).by !== by && !canManage(after.who, after.ws)) throw new HttpError(403, `only its runner, ${runnerOf(inst).by}, the workspace's owners and admins assign it to someone else; you may take it over`);
+          if (!pNow || !canSee(pNow, after.ws)) throw new HttpError(400, `${to} can't see this instance`);
+          if (after.mine) throw new HttpError(409, `run ${after.mine.n} started since you looked: assigning it now stops it`);
+        }
+        inst.append(by, 'assign', { to, from: runnerOf(inst).by, logins: ticks });
+        assigned(inst);
+        return 'ok';
+      }
+      if (action === 'close' || action === 'abandon') {
+        if (mine) throw new HttpError(409, 'wait for the run to end');
+        if (runnerOf(inst).by !== by) throw new HttpError(403, `only the runner, ${runnerOf(inst).by}, ${action === 'close' ? 'closes it, making it the record' : 'abandons it'}; take it over first`);
+        await (action === 'close' ? inst.close(who) : inst.abandon(by));
+        cancelWakes([inst.id]);
+        if (action === 'close') closed(inst, by, quiet);
+        return 'ok';
+      }
+      throw new HttpError(404, `no action ${action}`);
+    });
+    if (out !== undefined) return send(res, 200, out);
   } else throw new HttpError(404, `no action ${action}`);
   if (!quiet) kick(inst);
   send(res, 200, 'ok');
