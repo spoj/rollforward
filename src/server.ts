@@ -1000,7 +1000,11 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   if (action === 'summary') return send(res, 200, summary(inst, me));
   // The screen: anyone who sees the instance reads it; only its own run writes it.
   if (action === 'screen' && req.method === 'GET') return send(res, 200, inst.doc);
-  if (action === 'screen' && req.method === 'PUT' && run) return send(res, 200, `saved, rev ${inst.put((await body(req)).toString(), run.n)}`);
+  if (action === 'screen' && req.method === 'PUT' && run) {
+    const text = (await body(req)).toString();
+    if (running(run.token) !== run) throw new HttpError(409, 'its run has ended');
+    return send(res, 200, `saved, rev ${inst.put(text, run.n)}`);
+  }
   if (action === 'screen') throw new HttpError(405, "GET, or PUT by the instance's own run");
   if (req.method !== 'POST') throw new HttpError(405, 'POST only');
   if (inst.doc.status === 'deleted') throw new HttpError(409, `${inst.label} was deleted: nothing is left of it but its place in its series`);

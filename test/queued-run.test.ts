@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-for (const mode of ['body', 'queue']) test(`an admitted withdraw cannot act after run revocation while waiting on its ${mode}`, () => {
+for (const mode of ['body', 'queue', 'screen']) test(`an admitted agent request cannot act after run revocation while waiting on its ${mode}`, () => {
   const root = mkdtempSync(join(tmpdir(), 'rf-queued-run-'));
   try {
     execFileSync(process.execPath, ['--experimental-test-module-mocks', '--input-type=module', '-e', `
@@ -42,7 +42,7 @@ for (const mode of ['body', 'queue']) test(`an admitted withdraw cannot act afte
       const a = {
         inst, n: 1, runner: alice, token: 'queued-run', view: view(inst), workspace: 'w', cost: 0, estimated: false,
         seen: 1, delivered: 1, done: false, process: '', texts: new Map(),
-        run: { interrupt: () => { if (mode === 'body') { entered.resolve(); return rpc.promise; } }, stop: async () => {}, alone: () => false },
+        run: { interrupt: () => { if (mode !== 'queue') { entered.resolve(); return rpc.promise; } }, stop: async () => {}, alone: () => false },
         ...(mode === 'queue' && { browsers: { closeUnlent: () => { entered.resolve(); return rpc.promise; }, end: async () => {} } }),
       };
       inst.append('server', 'run', { run: 1, runner: alice, consent: 1 });
@@ -50,22 +50,23 @@ for (const mode of ['body', 'queue']) test(`an admitted withdraw cannot act afte
       mkdirSync(root + '/.rf/runs/' + a.token, { recursive: true });
       active.set('s', a);
       byToken.set(a.token, a);
-      const req = Object.assign(new PassThrough(), { method: 'POST', headers: { authorization: 'Bearer ' + a.token, 'content-type': 'application/json' } });
+      const req = Object.assign(new PassThrough(), { method: mode === 'screen' ? 'PUT' : 'POST', headers: { authorization: 'Bearer ' + a.token, 'content-type': 'application/json' } });
       const res = Object.assign(new EventEmitter(), {
         headersSent: false, statusCode: 0,
         writeHead(status) { this.headersSent = true; this.statusCode = status; return this; }, end() {},
       });
-      const withdrawing = agent(req, res, new URL('/api/instances/' + inst.id + '/withdraw', base));
-      const interrupting = fetch(base + '/api/instances/' + inst.id + (mode === 'body' ? '/interrupt' : '/logins'), { method: 'POST', headers: { cookie } });
+      const withdrawing = agent(req, res, new URL('/api/instances/' + inst.id + (mode === 'screen' ? '/screen' : '/withdraw'), base));
+      const interrupting = fetch(base + '/api/instances/' + inst.id + (mode !== 'queue' ? '/interrupt' : '/logins'), { method: 'POST', headers: { cookie } });
       await Promise.race([entered.promise, interrupting.then(async r => { throw new Error('blocking action returned ' + r.status + ': ' + await r.text()); })]);
-      req.end(JSON.stringify({ thread: 'c' + ask.seq, text: 'No longer needed.' }));
+      req.end(JSON.stringify(mode === 'screen' ? { rev: inst.doc.rev, items: [{ id: 'late', name: 'Late', kind: 'output', file: null }] } : { thread: 'c' + ask.seq, text: 'No longer needed.' }));
       await new Promise(ok => setImmediate(ok));
       if (mode === 'queue') await interruptRun(a);
       rpc.resolve();
       assert.equal((await interrupting).status, 200);
       await withdrawing;
       assert.equal(res.statusCode, 409);
-      assert.equal(inst.log.some(e => e.op === 'withdraw'), false);
+      assert.equal(inst.log.some(e => e.op === (mode === 'screen' ? 'screen' : 'withdraw')), false);
+      assert.equal(inst.doc.items.length, 0);
       process.exit(0);
     `], { cwd: join(import.meta.dirname, '..'), timeout: 15_000, stdio: 'pipe' });
   } catch (e) {
