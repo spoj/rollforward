@@ -587,6 +587,30 @@ test('the proxy reaches nothing, not even what a tick is checked against, for a 
   assert.deepEqual([methods.length, asked.length], [before, n], 'no request reached Graph or OpenRouter');
 });
 
+test("a body the proxy reads is read only for a runner who may lend, and refused with 413 as it passes 32 MB", async () => {
+  const { upsertUser } = await import('../src/auth.ts'), before = methods.length, headers = { 'content-type': 'application/json' };
+  const sent = Promise.withResolvers<void>();
+  async function* endless() {
+    yield Buffer.from('{"message":');
+    await sent.promise;
+  }
+  upsertUser(ALICE, { disabled: true });
+  try {
+    assert.match((await via('POST', `${G}/me/sendMail`, { body: endless(), headers })).text, /can no longer run this instance/, 'answered with the body still coming');
+  } finally {
+    sent.resolve();
+    upsertUser(ALICE, { disabled: false });
+  }
+  async function* big() {
+    yield Buffer.from('{"message":"');
+    for (let i = 0; i < 33; i++) yield Buffer.alloc(2 ** 20, 0x61);
+    yield Buffer.from('"}');
+  }
+  const r = await via('POST', `${G}/me/sendMail`, { body: big(), headers }).catch(e => ({ status: 0, text: String(e) }));
+  assert.deepEqual([r.status, calls().at(-1)!.status], [413, 413], r.text);
+  assert.equal(methods.length, before, 'none reached Graph');
+});
+
 test('rf delivered records an output delivered, with where it went and its receipt', async () => {
   assert.equal((await call('/agent/delivered', { args: ['pack', '--to', 'E1, batch 4471', '--receipt', 'document 81234'] }))!.status, 200);
   assert.deepEqual(log.at(-1), { op: 'delivered', data: { item: 'pack', to: 'E1, batch 4471', receipt: 'document 81234', run: 1 } });

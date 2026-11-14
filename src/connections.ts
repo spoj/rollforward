@@ -170,16 +170,27 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     if (link) use(a.inst, a.n, link.offer);
     if (mine?.expired) throw Object.assign(new HttpError(409, `${runner}'s own OpenRouter key is out of credits: they save another, or stop using it, on the Logins page, and the instance carries on`), { login: 'openrouter' });
     if (!link && !c && !s) throw new HttpError(403, `${url.origin + url.pathname} is no link a connection's answer gave this run`);
-    // A POST's or PATCH's body, a JSON one, or any to the server's own services, is read whole, for the policy; a JSON body goes on as the JSON it read, as it rewrote
+    const lent = c && lender(a.inst, a.n);
+    // A POST's or PATCH's body, a JSON one, or any to the server's own services, is read whole, for the policy, up to 32 MB, the
+    // most any of their hosts takes; a JSON body goes on as the JSON it read, as it rewrote
     // it, never as bytes another parser might read otherwise, such as a key twice. A deployment's service takes any body as bytes,
     // streamed, as a file's content is.
     const isJson = /json/i.test(String(req.headers['content-type']));
     // A file's content, PUT …/content, streams on as its bytes, a JSON file's too.
-    const raw = c?.type !== 'service' && !link && (s || ['POST', 'PATCH'].includes(method) || (method === 'PUT' && isJson && !/\/content$/i.test(url.pathname))) ? Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)) : undefined;
+    let raw: Buffer | undefined;
+    if (c?.type !== 'service' && !link && (s || ['POST', 'PATCH'].includes(method) || (method === 'PUT' && isJson && !/\/content$/i.test(url.pathname)))) {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      for await (const b of req as AsyncIterable<Buffer>) {
+        if ((size += b.length) > 32 * 2 ** 20) throw new HttpError(413, `a request's body to ${host} holds 32 MB at most, but for a file's content, which streams`);
+        chunks.push(b);
+      }
+      raw = Buffer.concat(chunks);
+    }
     const json = isJson && raw?.length ? JSON.parse(raw.toString()) : undefined, r = { method, url, headers: req.headers, json, body: raw, target: req.url! };
     let out = json, auth: Record<string, string> = {}, as = '', ticks: string[] = [], redirect: string | undefined, offer = '';
     if (c) {
-      const { by, logins } = lender(a.inst, a.n), checked = await types[c.type].check!(c, by, ticks = logins, r), login = loginOf(c) as EntraLogin;
+      const { by, logins } = lent!, checked = await types[c.type].check!(c, by, ticks = logins, r), login = loginOf(c) as EntraLogin;
       out = checked.json ?? json;
       redirect = checked.redirect;
       as = use(a.inst, a.n, offer = checked.offer).email;
