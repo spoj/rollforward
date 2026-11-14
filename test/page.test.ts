@@ -2061,3 +2061,21 @@ test('cell comments on sheets whose names contain apostrophes mark the right she
   assert.deepEqual(notedRefs, ["Q3 '26.csv!B2", "Q3 '26.csv!B3"]);
   await page.click('#pv [data-act=unpv]');
 });
+
+test('Assign dialog when no other signed-in person sees the workspace explains that instead of showing an empty select', async () => {
+  const origin = new URL(page.url()).origin;
+  const { inst } = await page.evaluate(async () => {
+    const { id: ws } = await (await fetch('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: 'SoloAssign' }) })).json();
+    const { id: sid } = await (await fetch('/api/series', { method: 'POST', body: JSON.stringify({ workspace: ws, name: 'S' }) })).json();
+    const { id: inst } = await (await fetch(`/api/series/${sid}`, { method: 'POST', body: JSON.stringify({ label: 'Solo-1', quiet: true }) })).json();
+    return { inst };
+  });
+  await page.goto(`${origin}/#/${inst}`);
+  await page.waitForSelector('#bar [data-act=assign]');
+  await page.click('#bar [data-act=assign]');
+  await page.waitForSelector('#ask[open]');
+  assert.equal(await page.locator('#ask #assignto').count(), 0);
+  assert.equal(await page.locator('#ask button[value=ok]').count(), 0);
+  assert.match(await page.textContent('#ask p') ?? '', /signed in/i);
+  await page.keyboard.press('Escape');
+});

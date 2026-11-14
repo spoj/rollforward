@@ -1815,6 +1815,7 @@ async function onAct(act, el) {
   }
   if (act === 'assign') {
     const people = (await api(`${instPath()}/assignees`)).filter(p => p !== me.email).sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
+    if (!people.length) return ask({ title: `Assign ${cur.i.label}`, text: 'No one else who sees this workspace has signed in yet.' });
     const stops = data.run?.n ?? null;
     if (await ask({
       title: `Assign ${cur.i.label}`, text: `They run it from now on, ticking their own logins, none until they do; to its agent, what came before is history.${stops !== null ? ` Run ${stops} is going: assigning stops it.` : ''}`,
