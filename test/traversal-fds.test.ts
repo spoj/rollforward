@@ -37,8 +37,43 @@ for (const operation of ['pylib', 'wipe']) test(`${operation} walks deep and wid
       fs.readdirSync = original;
       syncBuiltinESMExports();
       assert.equal(readdirSync('/proc/self/fd').length, before, 'failed traversal closes every descriptor');
+      const originalOpen = fs.openSync;
+      let opens = 0;
+      fs.openSync = (...args) => { opens++; return originalOpen(...args); };
+      syncBuiltinESMExports();
       ${operation === 'pylib' ? "pylib(dir, root);" : "wipe(Buffer.from(dir));"}
+      assert.ok(opens < 128 * 20, 'directory opens grow linearly with depth, not quadratically: ' + opens);
       assert.equal(readdirSync('/proc/self/fd').length, before);
+    `], { cwd: join(import.meta.dirname, '..'), timeout: 10_000, stdio: 'pipe' });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+for (const operation of ['pylib', 'wipe']) test(`${operation} refuses a moved directory's new parent and closes its descriptors`, () => {
+  const root = mkdtempSync(join(tmpdir(), 'rf-fds-move-'));
+  try {
+    execFileSync(process.execPath, ['--input-type=module', '-e', `
+      import assert from 'node:assert/strict';
+      import fs from 'node:fs';
+      import { syncBuiltinESMExports } from 'node:module';
+      import { pylib } from './src/runner.ts';
+      import { wipe } from './src/store.ts';
+      const root = ${JSON.stringify(root)}, dir = root + '/tree', outside = root + '/outside';
+      fs.mkdirSync(dir + '/z', { recursive: true });
+      fs.mkdirSync(outside);
+      fs.writeFileSync(dir + '/victim', 'inside');
+      fs.writeFileSync(outside + '/victim', 'outside');
+      const before = fs.readdirSync('/proc/self/fd').length, original = fs.readdirSync;
+      let reads = 0;
+      fs.readdirSync = (...args) => {
+        if (++reads === 2) fs.renameSync(dir + '/z', outside + '/z');
+        return original(...args);
+      };
+      syncBuiltinESMExports();
+      assert.throws(() => ${operation === 'pylib' ? 'pylib(dir, root)' : 'wipe(Buffer.from(dir))'}, /a folder moved/);
+      assert.equal(fs.readFileSync(outside + '/victim', 'utf8'), 'outside');
+      assert.equal(fs.readdirSync('/proc/self/fd').length, before);
     `], { cwd: join(import.meta.dirname, '..'), timeout: 10_000, stdio: 'pipe' });
   } finally {
     rmSync(root, { recursive: true, force: true });

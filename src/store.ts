@@ -59,33 +59,38 @@ export function wipe(path: Buffer) {
     }
   } finally { closeSync(p); }
   if (dfd < 0) return unlinkSync(path);
-  const todo: { parts: Buffer[]; remove: boolean }[] = [{ parts: [], remove: false }];
   try {
-    while (todo.length) {
-      const { parts, remove } = todo.pop()!;
-      let cur = openSync(`/proc/self/fd/${dfd}`, constants.O_RDONLY | constants.O_DIRECTORY);
-      try {
-        for (const name of remove ? parts.slice(0, -1) : parts) {
-          const p = openSync(Buffer.concat([Buffer.from(`/proc/self/fd/${cur}/`), name]), O_PATH | constants.O_NOFOLLOW);
-          let next: number;
-          try {
-            const st = fstatSync(p), self = `/proc/self/fd/${p}`;
-            if (st.isDirectory() && (st.mode & 0o700) !== 0o700) chmodSync(self, (st.mode | 0o700) & 0o7777);
-            next = openSync(self, constants.O_RDONLY | constants.O_DIRECTORY);
-          } finally { closeSync(p); }
-          closeSync(cur);
-          cur = next;
-        }
-        if (remove) rmdirSync(Buffer.concat([Buffer.from(`/proc/self/fd/${cur}/`), parts.at(-1)!]));
-        else {
-          if (parts.length) todo.push({ parts, remove: true });
-          for (const e of readdirSync(`/proc/self/fd/${cur}`, { encoding: 'buffer', withFileTypes: true })) {
-            const name = e.name as unknown as Buffer;
-            if (e.isDirectory()) todo.push({ parts: [...parts, name], remove: false });
-            else unlinkSync(Buffer.concat([Buffer.from(`/proc/self/fd/${cur}/`), name]));
+    const stack = [{ name: Buffer.alloc(0), names: readdirSync(`/proc/self/fd/${dfd}`, { encoding: 'buffer' }), stat: fstatSync(dfd) }];
+    while (stack.length) {
+      const frame = stack.at(-1)!, name = frame.names.pop();
+      if (name) {
+        const at = Buffer.concat([Buffer.from(`/proc/self/fd/${dfd}/`), name]);
+        const p = openSync(at, O_PATH | constants.O_NOFOLLOW);
+        let sub = -1;
+        try {
+          const st = fstatSync(p), self = `/proc/self/fd/${p}`;
+          if (st.isDirectory()) {
+            if ((st.mode & 0o700) !== 0o700) chmodSync(self, (st.mode | 0o700) & 0o7777);
+            sub = openSync(self, constants.O_RDONLY | constants.O_DIRECTORY);
           }
-        }
-      } finally { closeSync(cur); }
+        } finally { closeSync(p); }
+        if (sub < 0) { unlinkSync(at); continue; }
+        try {
+          stack.push({ name, names: readdirSync(`/proc/self/fd/${sub}`, { encoding: 'buffer' }), stat: fstatSync(sub) });
+        } catch (e) { closeSync(sub); throw e; }
+        closeSync(dfd);
+        dfd = sub;
+      } else {
+        if (stack.length === 1) break;
+        const child = stack.pop()!, parent = openSync(`/proc/self/fd/${dfd}/..`, constants.O_RDONLY | constants.O_DIRECTORY);
+        try {
+          const st = fstatSync(parent), expected = stack.at(-1)!.stat;
+          if (st.dev !== expected.dev || st.ino !== expected.ino) throw new Error('a folder moved during deletion');
+        } catch (e) { closeSync(parent); throw e; }
+        closeSync(dfd);
+        dfd = parent;
+        rmdirSync(Buffer.concat([Buffer.from(`/proc/self/fd/${dfd}/`), child.name]));
+      }
     }
   } finally { closeSync(dfd); }
   rmdirSync(path);

@@ -118,31 +118,40 @@ export function pylib(dir: string, instance: string): string {
       return openSync(self, constants.O_RDONLY | constants.O_DIRECTORY);
     } finally { closeSync(p); }
   };
-  const top = openDir(Buffer.from(dir)), todo: Buffer[][] = [[]];
+  let dfd = openDir(Buffer.from(dir)), rel = Buffer.alloc(0);
   try {
-    while (todo.length) {
-      const parts = todo.pop()!;
-      let dfd = openSync(`/proc/self/fd/${top}`, constants.O_RDONLY | constants.O_DIRECTORY);
-      try {
-        for (const name of parts) {
-          const sub = openDir(Buffer.concat([Buffer.from(`/proc/self/fd/${dfd}/`), name]));
+    const stack = [{ name: Buffer.alloc(0), entries: readdirSync(`/proc/self/fd/${dfd}`, { withFileTypes: true, encoding: 'buffer' }), stat: fstatSync(dfd) }];
+    while (stack.length) {
+      const e = stack.at(-1)!.entries.pop();
+      if (e) {
+        const name = e.name as unknown as Buffer, path = Buffer.concat([Buffer.from(`/proc/self/fd/${dfd}/`), name]);
+        const at = rel.length ? Buffer.concat([rel, slash, name]) : name;
+        if (!rel.length && /^(site|user)customize(\\.|$)|\\.pth$/.test(name.toString('latin1'))) { wipe(path); continue; }
+        if (e.isDirectory()) {
+          const sub = openDir(path);
+          try {
+            stack.push({ name, entries: readdirSync(`/proc/self/fd/${sub}`, { withFileTypes: true, encoding: 'buffer' }), stat: fstatSync(sub) });
+          } catch (e) { closeSync(sub); throw e; }
           closeSync(dfd);
           dfd = sub;
+          rel = at;
+        } else {
+          const st = lstatSync(path);
+          lines.push(Buffer.concat([at, Buffer.from(`\t${st.size}\t${st.ctime.toISOString()}\n`)]));
         }
-        const rel = Buffer.concat(parts.flatMap((p, n) => n ? [slash, p] : [p]));
-        for (const e of readdirSync(`/proc/self/fd/${dfd}`, { withFileTypes: true, encoding: 'buffer' })) {
-          const name = e.name as unknown as Buffer, path = Buffer.concat([Buffer.from(`/proc/self/fd/${dfd}/`), name]);
-          const at = rel.length ? Buffer.concat([rel, slash, name]) : name;
-          if (!rel.length && /^(site|user)customize(\.|$)|\.pth$/.test(name.toString('latin1'))) { wipe(path); continue; }
-          if (e.isDirectory()) todo.push([...parts, name]);
-          else {
-            const st = lstatSync(path);
-            lines.push(Buffer.concat([at, Buffer.from(`\t${st.size}\t${st.ctime.toISOString()}\n`)]));
-          }
-        }
-      } finally { closeSync(dfd); }
+      } else {
+        if (stack.length === 1) break;
+        const child = stack.pop()!, parent = openSync(`/proc/self/fd/${dfd}/..`, constants.O_RDONLY | constants.O_DIRECTORY);
+        try {
+          const st = fstatSync(parent), expected = stack.at(-1)!.stat;
+          if (st.dev !== expected.dev || st.ino !== expected.ino) throw new Error('a folder moved during the Python package listing');
+        } catch (e) { closeSync(parent); throw e; }
+        closeSync(dfd);
+        dfd = parent;
+        rel = rel.subarray(0, rel.length === child.name.length ? 0 : rel.length - child.name.length - 1);
+      }
     }
-  } finally { closeSync(top); }
+  } finally { closeSync(dfd); }
   const list = Buffer.concat(lines.sort(Buffer.compare));
   writeFileSync(join(instance, 'pylib.tsv'), list);
   return createHash('sha256').update(list).digest('hex');
