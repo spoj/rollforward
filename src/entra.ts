@@ -4,8 +4,6 @@ import { HttpError } from './store.ts';
 import { changes } from './system.ts';
 import { renew, upsertUser, users } from './auth.ts';
 import { logins, personDir, saveLogin, seal, secret } from './logins.ts';
-import { dropUnpermittedVpns } from './vpns.ts';
-import { endSignIns, endUnpermittedSignIns } from './browsers.ts';
 
 // A person's Entra logins, each a connection's (connections.ts), such as Microsoft 365's: each access token comes from the login's
 // sealed refresh token, which turns over as it's used and is sealed again. A login Microsoft no longer renews is marked expired,
@@ -50,6 +48,8 @@ export function keepSignIn(email: string, refresh: string) {
 export async function confirm(email: string) {
   if (users()[email]?.disabled) throw Object.assign(new HttpError(401, `${email} is disabled here`), { left: true });
   if (!existsSync(join(personDir(email), 'entra.sealed'))) throw new HttpError(401, `${email} hasn't signed in to rollforward since sign-ins are kept`);
+  const { dropUnpermittedVpns } = await import('./vpns.ts');
+  const { endSignIns, endUnpermittedSignIns } = await import('./browsers.ts');
   try {
     const r = await renew(secret(email, 'entra'), []), claims = JSON.parse(Buffer.from(r.idToken.split('.')[1], 'base64url').toString());
     seal(email, 'entra', r.refresh);
