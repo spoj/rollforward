@@ -2,7 +2,7 @@ import { RpcClient, type JsonAgentSessionEvent } from '@earendil-works/pi-coding
 import type { ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { createHash, randomBytes } from 'node:crypto';
-import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, posix, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,15 +24,13 @@ const SCOPE = 'systemd-run --user --scope --quiet --collect --slice=rollforward-
 // A run's processes and threads at most, a fork bomb's end, and its biggest file, which bounds a runaway write and a sparse file.
 const TASKS = process.env.RF_RUN_TASKS ?? '2048', FILE_GB = Number(process.env.RF_RUN_FILE_GB ?? 16);
 
-// A run's Pi, which takes turns: each a prompt the agent takes, and steers it may get, until it settles, aborted or not.
+// A run's Pi: a prompt the agent takes, and steers it may get, until it settles, aborted or not.
 export type TurnEnd = { aborted: boolean; error?: string };
 export type Run = {
   turn(text: string): Promise<{ settled: Promise<TurnEnd> }>;
   steer(text: string): Promise<unknown>;
   interrupt(): Promise<void>;
   stop(): Promise<void>;
-  // Whether its sandbox runs nothing but Pi: no job the agent left running, with & or nohup.
-  alone(): boolean;
 };
 
 // The run's view of the data, which the server builds: its own instance at instance, such as /work/<workspace>/<series>/<label>,
@@ -45,10 +43,9 @@ export type View = { instance: string; dir: string; pylib: string; ro: [string, 
 
 // Pi for one run, in its sandbox (sandbox.ts): its view read-only but for the instance's working/ and session/ and the series'
 // .pylib, the live skills and nothing else of the host's. prompt.md is its system prompt, to which Pi adds the AGENTS.md
-// files from / down to the instance. A run that starts Pi, `n`, starts a session, which later runs may continue (waker.ts), its
-// transcript in the instance's session/ beside the earlier sessions'. Pi starts from a transcript there with its session's id, so
-// the id is one no earlier run, which could write there, knew. The skills are the versions live as it starts, read-only at
-// /skills/<id>, so a push applies from the next run.
+// files from / down to the instance. Each run starts a session of its own, its transcript in the instance's session/ beside the
+// earlier runs'. Pi starts from a transcript there with its session's id, so the id is one no earlier run, which could write
+// there, knew. The skills are the versions live as it starts, read-only at /skills/<id>, so a push applies from the next run.
 export function pi(o: { token: string; id: string; n: number; view: View; skills: { id: string; dir: string }[] }): RpcClient {
   const run = join(scratch, 'runs', o.token), home = join(run, 'home'), agentDir = join(home, '.pi', 'agent'), tmp = join(run, 'tmp');
   const { instance, dir, pylib } = o.view, working = join(dir, 'working'), session = join(dir, 'session'), lib = `${posix.dirname(instance)}/.pylib`;
@@ -171,73 +168,56 @@ async function ready(client: RpcClient, tries = 4): Promise<void> {
 
 export async function startRun(o: Parameters<typeof pi>[0] & { onEvent: (e: JsonAgentSessionEvent) => void }): Promise<Run> {
   if (!process.env.OPENROUTER_API_KEY) throw new Error('no model key: the server has no OPENROUTER_API_KEY');
-  const client = pi(o), run = join(scratch, 'runs', o.token);
-  let child: ChildProcess | undefined;
+  const run = join(scratch, 'runs', o.token);
+  let client: RpcClient | undefined;
   // A run may leave folders it can't write in its home, or named in bytes that aren't UTF-8: wipe() removes them all.
   const stop = async () => {
-    const exited = !child || child.exitCode !== null || child.signalCode !== null ? Promise.resolve() : once(child, 'exit');
-    await client.stop();
+    const child = (client as unknown as { process: ChildProcess | null } | undefined)?.process;
+    const exited = !child?.pid || child.exitCode !== null || child.signalCode !== null ? Promise.resolve() : once(child, 'exit');
+    await client?.stop();
     await exited;
     unlistenRun(o.token);
     wipe(Buffer.from(run));
   };
-  let settle = (_: TurnEnd) => {}, settled = Promise.resolve<TurnEnd>({ aborted: false });
-  client.onEvent(e => e.type === 'agent_settled' && settle({ aborted: e.aborted }));
-  client.onEvent(o.onEvent);
-  await client.start();
-  const rpc = client as unknown as { process: ChildProcess; stderr: string; stopReadingStdout?: () => void };
-  child = rpc.process;
-  let errForwarded = 0, lineBytes = 0;
-  child.stderr!.removeAllListeners('data').on('data', (d: Buffer) => {
-    if (errForwarded < 65536) { process.stderr.write(d.subarray(0, 65536 - errForwarded)); errForwarded += d.length; }
-    rpc.stderr = (rpc.stderr + d.toString()).slice(-65536);
-  });
-  child.stdout!.prependListener('data', (d: Buffer) => {
-    const nl = d.lastIndexOf(10);
-    lineBytes = nl < 0 ? lineBytes + d.length : d.length - nl - 1;
-    if (lineBytes > 64 * 2 ** 20) {
-      rpc.stopReadingStdout?.();
-      rpc.stopReadingStdout = undefined;
-      child!.stdout!.destroy();
-      child!.kill('SIGKILL');
-      settle({ aborted: true, error: 'Pi stdout line exceeded 64 MB' });
-    }
-  });
-  child.once('exit', (code, signal) => settle({ aborted: true, error: `Pi exited with ${signal ? `signal ${signal}` : `code ${code}`}: ${client.getStderr()}` }));
-  await ready(client).catch(async e => { await stop(); throw e; });
-  return {
-    turn: async text => {
-      settled = new Promise<TurnEnd>(resolve => { settle = resolve; });
-      await client.prompt(text);
-      return { settled };
-    },
-    steer: text => client.steer(text),
-    // Done once the turn settles: Pi says so before it answers the abort, and the run's end may stop it first.
-    interrupt: async () => { void client.clearQueue().then(() => client.abort()).catch(() => {}); await settled; },
-    stop,
-    // The sandbox by the process Pi's client started, which is its outer bwrap (bin/sandbox/node).
-    alone: () => alone(child!.pid!),
-  };
-}
-
-// Whether a sandbox, by its outer bwrap, still runs and runs nothing but its PID namespace's init, Pi, which is the second process
-// there, and the socat offering the server's socket, the third, which bin/sandbox/node starts before Pi, with a process of its own
-// per connection: by their PIDs, never their names, which a job may take; one that has exited counts for nothing.
-function alone(bwrap: number): boolean {
-  const read = (p: string, f: (p: string) => string) => { try { return f(p); } catch { return ''; } };
-  const kids = (pid: number, seen = new Set<number>()): number[] => {
-    for (const t of (() => { try { return readdirSync(`/proc/${pid}/task`); } catch { return []; } })())
-      for (const c of read(`/proc/${pid}/task/${t}/children`, p => readFileSync(p, 'utf8')).trim().split(/\s+/).filter(Boolean).map(Number))
-        if (!seen.has(c)) { seen.add(c); kids(c, seen); }
-    return [...seen];
-  };
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const all = kids(bwrap), ns = all[0] ? read(`/proc/${all[0]}/ns/pid`, readlinkSync) : '';
-    if (!ns) return false;
-    const statuses = all.map(p => ({ ns: read(`/proc/${p}/ns/pid`, readlinkSync), status: read(`/proc/${p}/status`, s => readFileSync(s, 'utf8')) })).filter(x => x.status);
-    if (statuses.length < all.length) continue;
-    const inside = (status: string) => Number(/^NSpid:.*\s(\d+)$/m.exec(status)![1]), socat = statuses.find(x => x.ns === ns && inside(x.status) === 3)?.status;
-    return statuses.every(x => x.ns === ns && (inside(x.status) <= 3 || /^PPid:\t(\d+)$/m.exec(x.status)![1] === /^Pid:\t(\d+)$/m.exec(socat ?? '')?.[1] || /^State:\tZ/m.test(x.status)));
+  try {
+    const rpcClient = client = pi(o);
+    let settle = (_: TurnEnd) => {}, settled = Promise.resolve<TurnEnd>({ aborted: false });
+    rpcClient.onEvent(e => e.type === 'agent_settled' && settle({ aborted: e.aborted }));
+    rpcClient.onEvent(o.onEvent);
+    await rpcClient.start();
+    const rpc = rpcClient as unknown as { process: ChildProcess; stderr: string; stopReadingStdout?: () => void };
+    const child = rpc.process;
+    let errForwarded = 0, lineBytes = 0;
+    child.stderr!.removeAllListeners('data').on('data', (d: Buffer) => {
+      if (errForwarded < 65536) { process.stderr.write(d.subarray(0, 65536 - errForwarded)); errForwarded += d.length; }
+      rpc.stderr = (rpc.stderr + d.toString()).slice(-65536);
+    });
+    child.stdout!.prependListener('data', (d: Buffer) => {
+      const nl = d.lastIndexOf(10);
+      lineBytes = nl < 0 ? lineBytes + d.length : d.length - nl - 1;
+      if (lineBytes > 64 * 2 ** 20) {
+        rpc.stopReadingStdout?.();
+        rpc.stopReadingStdout = undefined;
+        child.stdout!.destroy();
+        child.kill('SIGKILL');
+        settle({ aborted: true, error: 'Pi stdout line exceeded 64 MB' });
+      }
+    });
+    child.once('exit', (code, signal) => settle({ aborted: true, error: `Pi exited with ${signal ? `signal ${signal}` : `code ${code}`}: ${rpcClient.getStderr()}` }));
+    await ready(rpcClient);
+    return {
+      turn: async text => {
+        settled = new Promise<TurnEnd>(resolve => { settle = resolve; });
+        await rpcClient.prompt(text);
+        return { settled };
+      },
+      steer: text => rpcClient.steer(text),
+      // Done once the turn settles: Pi says so before it answers the abort, and the run's end may stop it first.
+      interrupt: async () => { void rpcClient.clearQueue().then(() => rpcClient.abort()).catch(() => {}); await settled; },
+      stop,
+    };
+  } catch (e) {
+    await stop();
+    throw e;
   }
-  return false;
 }

@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-for (const mode of ['queued', 'success', 'failure']) test(`a mid-turn steer is retained until answered, not replayed from an idle queue: ${mode}`, () => {
+for (const mode of ['queued', 'success', 'failure']) test(`a mid-turn steer is retained until answered: ${mode}`, () => {
   const root = mkdtempSync(join(tmpdir(), 'rf-steer-'));
   try {
     execFileSync(process.execPath, ['--experimental-test-module-mocks', '--input-type=module', '-e', `
@@ -42,7 +42,7 @@ for (const mode of ['queued', 'success', 'failure']) test(`a mid-turn steer is r
             emit({ type: 'message_end', message: { role: 'assistant', stopReason: mode === 'success' ? 'stop' : 'error', errorMessage: 'model failed' } });
           }
         },
-        interrupt: async () => {}, stop: async () => {}, alone: () => turns === 1,
+        interrupt: async () => {}, stop: async () => {},
       };
       mock.module('./src/runner.ts', { namedExports: { ...runner, startRun: async o => { starts++; emit = o.onEvent; return run; } } });
       mock.module('./src/entra.ts', { namedExports: { ...entra, confirm: async () => {} } });
@@ -66,7 +66,7 @@ for (const mode of ['queued', 'success', 'failure']) test(`a mid-turn steer is r
       }
       if (mode !== 'success') {
         assert.match(await second.promise, /Mid-turn instruction/);
-        assert.equal(starts, 2, 'an undelivered or failed steer needs a fresh session, not an idle queue replay');
+        assert.equal(starts, 2, "an undelivered or failed steer carries into the next run's fresh session");
         const next = active.get('s');
         nextSettled.resolve({ aborted: false });
         await new Promise(ok => setImmediate(ok));

@@ -42,7 +42,7 @@ for (const mode of ['body', 'queue', 'screen']) test(`an admitted agent request 
       const a = {
         inst, n: 1, runner: alice, token: 'queued-run', view: view(inst), workspace: 'w', cost: 0, estimated: false,
         seen: 1, delivered: 1, done: false, process: '', texts: new Map(),
-        run: { interrupt: () => { if (mode !== 'queue') { entered.resolve(); return rpc.promise; } }, stop: async () => {}, alone: () => false },
+        run: { interrupt: () => { if (mode !== 'queue') { entered.resolve(); return rpc.promise; } }, stop: async () => {} },
         ...(mode === 'queue' && { browsers: { closeUnlent: () => { entered.resolve(); return rpc.promise; }, end: async () => {} } }),
       };
       inst.append('server', 'run', { run: 1, runner: alice, consent: 1 });

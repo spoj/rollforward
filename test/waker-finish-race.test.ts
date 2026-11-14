@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-test('an interrupt during natural turn cost draining stops the sandbox rather than keeping it idle', () => {
+test('an interrupt during natural turn cost draining stops the sandbox and marks the run aborted', () => {
   const root = mkdtempSync(join(tmpdir(), 'rf-finish-race-'));
   try {
     execFileSync(process.execPath, ['--experimental-test-module-mocks', '--input-type=module', '-e', `
@@ -28,7 +28,7 @@ test('an interrupt during natural turn cost draining stops the sandbox rather th
       const run = {
         turn: async () => { turned.resolve(); return { settled: settled.promise }; },
         steer: async () => {}, interrupt: () => rpc.promise,
-        stop: async () => { stops++; }, alone: () => true,
+        stop: async () => { stops++; },
       };
       mock.module('./src/runner.ts', { namedExports: { ...runner, startRun: async () => run } });
       mock.module('./src/entra.ts', { namedExports: { ...entra, confirm: async () => {} } });
@@ -48,7 +48,7 @@ test('an interrupt during natural turn cost draining stops the sandbox rather th
       await new Promise(ok => setImmediate(ok));
       rpc.resolve();
       await interrupted;
-      assert.equal(stops, 1, 'interrupt must not leave the naturally settled sandbox idle');
+      assert.equal(stops, 1, 'interrupt stops the sandbox once');
       const dones = inst.log.filter(e => e.op === 'done');
       assert.equal(dones.length, 1);
       assert.equal(dones[0].aborted, true);
@@ -60,7 +60,7 @@ test('an interrupt during natural turn cost draining stops the sandbox rather th
   }
 });
 
-test('pre-run failures try each due sibling once rather than bouncing between them forever', () => {
+for (const phase of ['before-log', 'before-sandbox']) test(`pre-sandbox failures release the memory reservation and try each due sibling once: ${phase}`, () => {
   const root = mkdtempSync(join(tmpdir(), 'rf-start-cycle-'));
   try {
     execFileSync(process.execPath, ['--experimental-test-module-mocks', '--input-type=module', '-e', `
@@ -77,9 +77,15 @@ test('pre-run failures try each due sibling once rather than bouncing between th
       saveTree({ workspaces: { w: { name: 'Work', owners: [alice], members: [] } }, series: { s: { name: 'Series', workspace: 'w' } } });
       writeJson('users.json', { [alice]: { role: 'user' } });
       mkdirSync(root + '/series/s', { recursive: true });
+      const phase = ${JSON.stringify(phase)};
+      process.env.RF_MIN_FREE_GB = '6';
+      const os = await import('node:os'), indexes = await import('./src/indexes.ts');
+      mock.method(os.default, 'freemem', () => 6.5 * 2 ** 30);
+      (await import('node:module')).syncBuiltinESMExports();
       let confirms = 0, attempts = 0;
       mock.method(console, 'error', () => {});
-      mock.module('./src/runner.ts', { namedExports: { ...runner, pylib: () => { attempts++; throw new Error('ENOSPC'); } } });
+      if (phase === 'before-log') mock.module('./src/runner.ts', { namedExports: { ...runner, pylib: () => { attempts++; throw new Error('ENOSPC'); } } });
+      else mock.module('./src/indexes.ts', { namedExports: { ...indexes, prepare: () => { attempts++; throw new Error('ENOSPC'); } } });
       mock.module('./src/entra.ts', { namedExports: { ...entra, confirm: async () => {
         if (++confirms > 2) throw Object.assign(new Error('repeated confirmation'), { status: 401 });
       } } });
@@ -88,7 +94,7 @@ test('pre-run failures try each due sibling once rather than bouncing between th
       for (const inst of [first, second]) inst.append(alice, 'comment', { text: 'Work.' });
       kick(first);
       await new Promise(ok => setTimeout(ok, 2000));
-      assert.equal(confirms, 2, 'a persistent startup failure must not renew Entra sign-ins in a loop');
+      assert.equal(confirms, 2, 'each due sibling is tried once without a phantom memory reservation or an infinite retry');
       assert.equal(attempts, 2);
       assert.equal(active.size, 0);
       assert.equal(byToken.size, 0);
@@ -124,7 +130,7 @@ test('a run ended while prompt acknowledgement is pending cannot steer or arm a 
       mock.method(globalThis, 'setTimeout', (fn, ms, ...args) => { if (ms === 120 * 60000) limits++; return timeout(fn, ms, ...args); });
       const run = {
         turn: async () => { turning.resolve(); await prompt.promise; return { settled: new Promise(() => {}) }; },
-        steer: async () => { steers++; }, interrupt: async () => {}, stop: async () => {}, alone: () => false,
+        steer: async () => { steers++; }, interrupt: async () => {}, stop: async () => {},
       };
       mock.module('./src/runner.ts', { namedExports: { ...runner, startRun: async () => run } });
       mock.module('./src/entra.ts', { namedExports: { ...entra, confirm: async () => {} } });

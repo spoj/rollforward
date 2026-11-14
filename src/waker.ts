@@ -1,11 +1,11 @@
 import { freemem } from 'node:os';
-import { closeSync, existsSync, mkdirSync, readdirSync, readFileSync, readSync, realpathSync, rmSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, readFileSync, readSync, realpathSync, rmSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
 import { agentsFile, closedBefore, createInstance, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, seriesDir, type Entry, type Instance } from './store.ts';
 import { pylib, startRun, type Run, type TurnEnd, type View } from './runner.ts';
 import type { JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
-import { prepare, sources } from './indexes.ts';
+import { prepare } from './indexes.ts';
 import { act, canSee, changes, readJson, rfDir, tree, type Tree, writeJson } from './system.ts';
 import { asPerson, users } from './auth.ts';
 import { websitesOf, type Browsers } from './browsers.ts';
@@ -26,8 +26,8 @@ const MAX_RUNS = Number(process.env.RF_MAX_RUNS ?? 20);
 const MIN_FREE = Number(process.env.RF_MIN_FREE_GB ?? 6) * 2 ** 30;
 const started: number[] = [];
 // An update's drain (scripts/update.ts): from SIGUSR2 until RF_DRAIN_MIN after the latest, no run starts, as though every slot
-// were taken, and no Pi idles. What would start waits, as for a slot, and starts if the drain lapses or, as an update means, after
-// the restart (recover()).
+// were taken. What would start waits, as for a slot, and starts if the drain lapses or, as an update means, after the restart
+// (recover()).
 const DRAIN_MS = Number(process.env.RF_DRAIN_MIN ?? 15) * 60_000;
 if (!Number.isFinite(DRAIN_MS) || DRAIN_MS < 0 || DRAIN_MS > 2_147_483_647) throw new Error('RF_DRAIN_MIN must be between 0 and 35791 minutes');
 let draining: NodeJS.Timeout | undefined;
@@ -35,7 +35,7 @@ const full = () => !!draining || active.size >= MAX_RUNS || (MIN_FREE > 0 && fre
 export const MAX_OPEN = 3;
 const SPACING_MS = 15 * 60_000, MAX_WAKES = 20;
 
-export type Active = { inst: Instance; n: number; runner: string; session: number; token: string; view: View; workspace: string; skills: Record<string, number>; shape: string; run?: Run; sent: number; noted: number; seen: number; delivered: number; texts: Map<string, number>; done: boolean; cost: number; estimated: boolean; failed?: string; hosts: Set<string>; links: Map<string, { name: string; offer: string }>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string;
+export type Active = { inst: Instance; n: number; runner: string; token: string; view: View; workspace: string; run?: Run; sent: number; noted: number; seen: number; delivered: number; texts: Map<string, number>; done: boolean; cost: number; estimated: boolean; failed?: string; hosts: Set<string>; links: Map<string, { name: string; offer: string }>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string;
   // Its Pi as it starts, and once its Pi, sandbox and browsers have stopped, after it ends; whether its stop was asked for, from when
   // its token opens nothing (server.ts running()).
   ready?: Promise<Run>; ended?: Promise<unknown>; stopped?: boolean; interrupted?: boolean };
@@ -45,43 +45,15 @@ const debounce = new Map<string, NodeJS.Timeout>();
 const waiting = new Set<Instance>();
 const retiring = new Set<Active>();
 
-// A run's Pi, idle once the run ends cleanly, which its instance's next run within RF_IDLE_MIN carries on, as a new turn of the same
-// session whose message is the new log entries; at most RF_MAX_IDLE are idle, the longest ended first, and none holds its series'
-// slot. Anything the run would start from otherwise ends it: an assign, new ticks, a view of the data changed, as by a rename, its
-// instance closed or abandoned, its runner no longer seeing it. So does a run that failed or was cut short, as by a refusal, whose
-// session is no place to carry on, and one that left a job running in its sandbox, which no run would watch.
-const IDLE_MS = Number(process.env.RF_IDLE_MIN ?? 60) * 60_000, MAX_IDLE = Number(process.env.RF_MAX_IDLE ?? 8);
-type Idle = { inst: Instance; run: Run; token: string; view: View; skills: Record<string, number>; session: number; shape: string; seq: number; since: number };
-const idle = new Map<string, Idle>();
-// What a run's Pi starts from, which a run carrying its session on must still: its view of the data, the AGENTS.md files there, the
-// live skills' versions, and the caches it has copies of at $RF_INDEX, a first one for a source so starting a session that has them.
-function startsFrom(inst: Instance): string {
-  const v = view(inst);
-  return JSON.stringify([v.instance, v.names, v.series, v.env, runnerOf(inst).consent,
-    v.ro.map(([p, at]) => at.endsWith('/AGENTS.md') ? existsSync(p) && readFileSync(p, 'utf8') : [at, existsSync(p)]),
-    skills().map(s => [s.id, pushed(s).version]), sources(inst).map(({ o }) => o.id)]);
-}
 // Whether an instance's runner can still see its workspace, as each run of theirs needs.
 function sees(i: Instance, t = tree()) {
   const runner = asPerson(runnerOf(i).by);
   return !!runner && canSee(runner, t.workspaces[t.series[i.seriesId].workspace]);
 }
-function stale(i: Idle): boolean {
-  return Date.now() - i.since > IDLE_MS || i.inst.doc.status !== 'open' || !sees(i.inst)
-    || i.inst.log.some(e => e.seq > i.seq && ['takeover', 'assign', 'logins'].includes(e.op)) || startsFrom(i.inst) !== i.shape;
-}
 // A run's Pi stopped, and its copies of indexes gone.
-const ending = new Set<{ view: View; done: Promise<void> }>();
-function end(token: string, run: Run | Promise<Run>, view: View) {
-  const e = { view, done: Promise.resolve(run).then(r => r.stop().catch(e => console.error('a run left its scratch folder', e)), () => {})
-    .finally(() => { ending.delete(e); rmSync(join(rfDir(), 'runs', token), { recursive: true, force: true }); }) };
-  ending.add(e);
-  return e.done;
-}
-function drop(id: string) {
-  const i = idle.get(id)!;
-  idle.delete(id);
-  end(i.token, i.run, i.view);
+function end(token: string, run: Run | Promise<Run>) {
+  return Promise.resolve(run).then(r => r.stop().catch(e => console.error('a run left its scratch folder', e)), () => {})
+    .finally(() => rmSync(join(rfDir(), 'runs', token), { recursive: true, force: true }));
 }
 
 function seenBefore(inst: Instance): number {
@@ -206,6 +178,7 @@ export function kick(inst: Instance) {
 }
 
 function flush(a: Active) {
+  if (a.stopped) return;
   const entries = a.inst.log.filter(e => e.seq > a.sent && (e.by !== 'agent' || e.note)), fresh = notes(a.inst.series()).filter(e => e.seq > a.noted && !e.settled);
   // What it is told of reaches it at once, notes too.
   if (!entries.some(told) && !fresh.length) return;
@@ -258,26 +231,16 @@ async function begin(inst: Instance, tried: Set<Instance>) {
   if (full()) return void waiting.add(inst);
   // One who can no longer see its workspace, as after being removed from it, waits for someone to take the instance over.
   if (!sees(inst)) return bail(inst, tried);
-  let kept = idle.get(inst.id);
-  idle.delete(inst.id);
-  if (kept && stale(kept)) {
-    end(kept.token, kept.run, kept.view);
-    kept = undefined;
-  }
-  if (!kept) {
-    started.push(Date.now());
-    started.splice(0, started.length - MAX_RUNS);
-  }
   const n = inst.log.filter(e => e.op === 'run').length + 1;
   const entries = inst.log.filter(e => e.seq > seen && (e.by !== 'agent' || e.note)), left = notes(inst.series());
-  const text = message(inst, n, entries, !kept, left.filter(e => !e.settled));
+  const text = message(inst, n, entries, true, left.filter(e => !e.settled));
   // A run is a lease: one runner for the whole of it, the act whose ticks it may use (logins.ts lender()), and the AGENTS.md
   // files it reads, by their sha256, as its series' .pylib's listing is (runner.ts pylib()).
   const lease = runnerOf(inst);
   // The versions live as its Pi starts, which it uses to its end.
-  const live = kept ? [] : skills().map(s => ({ ...s, dir: realpathSync(s.dir) }));
+  const live = skills().map(s => ({ ...s, dir: realpathSync(s.dir) }));
   const a: Active = {
-    inst, n, runner: lease.by, session: kept?.session ?? n, token: kept?.token ?? randomUUID(), view: kept?.view ?? view(inst), workspace: tree().series[series].workspace, skills: kept?.skills ?? Object.fromEntries(live.map(s => [s.id, pushed(s).version])), shape: kept?.shape ?? startsFrom(inst),
+    inst, n, runner: lease.by, token: randomUUID(), view: view(inst), workspace: tree().series[series].workspace,
     sent: entries.at(-1)!.seq, noted: left.at(-1)?.seq ?? 0, seen, delivered: seen, texts: new Map([[text, entries.at(-1)!.seq]]), done: false, cost: 0, estimated: false, hosts: new Set(), links: new Map(),
     process: processOf(inst), thread: pending(inst, seen)[0]?.thread as string | undefined,
   };
@@ -288,32 +251,23 @@ async function begin(inst: Instance, tried: Set<Instance>) {
     // Whose OpenRouter key it starts with, its runner's own or the server's (connections.ts), never the key.
     const key = logins(lease.by).some(l => l.id === 'openrouter' && l.enabled) ? 'own' : 'shared';
     const agents = Object.fromEntries(a.view.ro.filter(([p, at]) => at.endsWith('/AGENTS.md') && existsSync(p)).map(([p, at]) => [at, createHash('sha256').update(readFileSync(p)).digest('hex')]));
-    inst.append('server', 'run', { run: n, runner: lease.by, consent: lease.consent, agents, pylib: pylib(a.view.pylib, inst.dir), upto: a.sent, skills: a.skills, key, ...(kept && { continues: kept.session }) });
+    inst.append('server', 'run', { run: n, runner: lease.by, consent: lease.consent, agents, pylib: pylib(a.view.pylib, inst.dir), upto: a.sent, skills: Object.fromEntries(live.map(s => [s.id, pushed(s).version])), key });
     loggedRun = true;
-    // A continued run's index copies are made again, in the folder its Pi reads them from, so it reads what's indexed since, and
-    // nothing of a source no longer ticked.
-    if (kept) {
-      a.run = kept.run;
-      const index = join(rfDir(), 'runs', a.token);
-      if (a.view.env.RF_INDEX) {
-        for (const f of readdirSync(index)) rmSync(join(index, f), { recursive: true });
-        prepare(inst, index);
-      }
-    } else {
-      // Copies of the indexes of what its runner ticked, on the indexes' own disk, read-only at $RF_INDEX.
-      const index = join(rfDir(), 'runs', a.token);
-      mkdirSync(index, { recursive: true });
-      if (prepare(inst, index)) {
-        a.view.ro.push([index, '/index']);
-        a.view.env.RF_INDEX = '/index';
-      }
-      a.ready = startRun({ token: a.token, id: inst.id, n, view: a.view, skills: live, onEvent: e => byToken.has(a.token) && heard(byToken.get(a.token)!, e) });
-      a.run = await a.ready;
-      // Cut as it started (leases(), remove()).
-      if (a.done) return;
+    // Copies of the indexes of what its runner ticked, on the indexes' own disk, read-only at $RF_INDEX.
+    const index = join(rfDir(), 'runs', a.token);
+    mkdirSync(index, { recursive: true });
+    if (prepare(inst, index)) {
+      a.view.ro.push([index, '/index']);
+      a.view.env.RF_INDEX = '/index';
     }
+    started.push(Date.now());
+    started.splice(0, started.length - MAX_RUNS);
+    a.ready = startRun({ token: a.token, id: inst.id, n, view: a.view, skills: live, onEvent: e => byToken.has(a.token) && heard(byToken.get(a.token)!, e) });
+    a.run = await a.ready;
+    // Cut as it started (leases(), remove(), stop()).
+    if (a.stopped) return;
     ({ settled } = await a.run.turn(text));
-    if (a.done) return;
+    if (a.stopped) return;
   } catch (err) {
     if (loggedRun) await finishRun(a, true, String(err));
     else { active.delete(series); byToken.delete(a.token); bail(inst, tried); throw err; }
@@ -384,16 +338,10 @@ function finish(a: Active, aborted: boolean, error?: string): Entry | undefined 
   // The rules it added to the process, or reworded, for the thread whose entry started it, where they were likely agreed.
   const added = rules(a.process, processMd(a.inst.dir) ?? a.process);
   const done = a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(6), estimated: a.estimated, ...(error && { error }), ...(added && { rules: added, thread: a.thread }) });
-  // Its Pi idles for the instance's next run, or stops, the longest idle too past RF_MAX_IDLE.
-  const keep = !draining && !aborted && !error && !!a.run && !a.texts.size && a.inst.doc.status === 'open' && a.run.alone() && startsFrom(a.inst) === a.shape;
-  if (keep) {
-    idle.set(a.inst.id, { inst: a.inst, run: a.run!, token: a.token, view: a.view, skills: a.skills, session: a.session, shape: a.shape, seq: a.inst.log.at(-1)!.seq, since: Date.now() });
-    if (idle.size > MAX_IDLE) drop(idle.keys().next().value!);
-  }
   // The run's changes are one commit, with the names.tsv they were written under, which the instance's next run and its other
-  // commits wait for: once its browsers and sandbox have stopped, or, idle, once its browsers have, nothing running in it.
+  // commits wait for, once its browsers and sandbox have stopped.
   if (!a.run && !a.ready) rmSync(join(rfDir(), 'runs', a.token), { recursive: true, force: true });
-  const stopped = keep || (!a.run && !a.ready) ? undefined : end(a.token, a.run ?? a.ready!, a.view);
+  const stopped = !a.run && !a.ready ? undefined : end(a.token, a.run ?? a.ready!);
   const closed = Promise.all([closing, stopped]);
   const committed = commit(a.inst.dir, AGENT, [`Run ${a.n}`, error].filter(Boolean).join(': '), closed).catch(e => a.inst.append('server', 'commit', { run: a.n, error: e.message }));
   retiring.add(a);
@@ -451,10 +399,10 @@ function cut(a: Active, why: string) {
   a.ended = draining.then(() => a.ended).finally(() => retiring.delete(a));
 }
 
-// Deleting an instance (store.ts markDeleted()) cuts a run going for it, as a lease is cut, and one queued or idling for it, and any run,
-// going or idle, whose view holds it, which carries on in a run of a view without it; its wakes go, and its series' one-off wakes
-// and requests for its label, or all of a task's. Once nothing runs in its folder, its last commit is done and its runs' browsers
-// have logged what they did, it becomes a hole. `fields` says what it cost, as its runs ended.
+// Deleting an instance (store.ts markDeleted()) cuts a run going or queued for it, as a lease is cut, and any run whose view
+// holds it, which carries on in a run of a view without it; its wakes go, and its series' one-off wakes and requests for its
+// label, or all of a task's. Once nothing runs in its folder, its last commit is done and its runs' browsers have logged what
+// they did, it becomes a hole. `fields` says what it cost, as its runs ended.
 export async function remove(inst: Instance, by: string, fields: () => Record<string, unknown>): Promise<Entry> {
   const t = tree(), task = !!t.series[inst.seriesId].single;
   inst.doc.status = 'deleted';
@@ -470,10 +418,6 @@ export async function remove(inst: Instance, by: string, fields: () => Record<st
   }
   for (const a of runs) if (a.inst === inst && hasCalls(a)) await drainCalls(a);
   for (const a of runs) a.inst === inst ? finish(a, true, CUT.deleted) : cut(a, CUT.gone);
-  for (const [id, i] of idle) if (i.inst === inst || Object.values(i.view.names).includes(inst.id)) {
-    idle.delete(id);
-    end(i.token, i.run, i.view);
-  }
   const w = wakes();
   for (const [id, k] of Object.entries(w.pending)) if (k.target === inst.id || (k.target === inst.seriesId && (task || (k.label === inst.label && !k.days)))) delete w.pending[id];
   for (const [id, r] of Object.entries(w.requests)) if (r.target === inst.id || (r.series === inst.seriesId && (task || r.label === inst.label))) delete w.requests[id];
@@ -481,7 +425,7 @@ export async function remove(inst: Instance, by: string, fields: () => Record<st
   saveWakes(w);
   const commits = forget(inst.dir), deleted = inst.markDeleted(by, fields());
   act(by, { method: 'POST', path: `/api/instances/${inst.id}/delete`, deleted: `${named(t, inst.seriesId)}/${inst.label}` });
-  await Promise.all([...[...retiring].filter(a => a.inst === inst || Object.values(a.view.names).includes(inst.id)).map(a => a.ended), ...[...ending].filter(e => e.view.dir === inst.dir || Object.values(e.view.names).includes(inst.id)).map(e => e.done), commits]);
+  await Promise.all([...[...retiring].filter(a => a.inst === inst || Object.values(a.view.names).includes(inst.id)).map(a => a.ended), commits]);
   inst.clear();
   return deleted;
 }
@@ -503,19 +447,17 @@ export function stop() {
   active.clear();
 }
 
-// A drain stops the idle Pis; a second signal only renews its deadline. Drained, no run goes, nor does any Pi stop.
+// A second signal only renews its deadline. Drained, no run goes.
 export function drain() {
   if (!DRAIN_MS) return;
   const was = draining;
   clearTimeout(draining);
   draining = setTimeout(() => { draining = undefined; changes.emit('change', 'tree'); startWaiting(); }, DRAIN_MS).unref();
-  if (was) return;
-  for (const id of idle.keys()) drop(id);
-  changes.emit('change', 'tree');
+  if (!was) changes.emit('change', 'tree');
 }
-export const drained = () => !!draining && !active.size && !retiring.size && !ending.size;
+export const drained = () => !!draining && !active.size && !retiring.size;
 // The runs a drain waits for, or null with none.
-export const updating = () => (draining ? active.size + retiring.size : null);
+export const updating = () => (draining ? new Set([...active.values(), ...retiring]).size : null);
 
 function startWaiting() {
   for (const i of waiting) {
@@ -658,7 +600,6 @@ export function wakeWith(inst: Instance, wakes: Woken[]): Instance {
 }
 
 function fire() {
-  for (const [id, i] of idle) if (stale(i)) drop(id);
   startWaiting();
   const w = wakes(), now = new Date().toISOString(), t = tree();
   const due = Object.entries(w.pending).filter(([, k]) => k.at <= now).sort(([, a], [, b]) => a.at.localeCompare(b.at));

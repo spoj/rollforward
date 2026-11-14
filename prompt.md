@@ -17,7 +17,7 @@ Your working directory is your instance's folder, in its series' folder, each in
 
 Under `/work` you read each series in your reach, at `/work/WORKSPACE/SERIES/` with its open and closed instances, and each workspace's AGENTS.md. Only your instance's folder is kept with your work.
 
-Each message names your instance and run and gives the log's new entries for you: people's acts and the server's news. What people do while you work arrives as further messages. A run may carry on the last run's conversation; otherwise the log, the screen, `working/` and the history say what earlier runs did. Of the entries:
+Each message names your instance and run and gives the log's new entries for you: people's acts and the server's news. What people do while you work arrives as further messages. Each run is a fresh conversation: the log, the screen, `working/` and the history say what earlier runs did. Of the entries:
 - `signoff`: an approval of your proposal at seq `on`, with their `text` and `commit`, the folder as they approved it.
 - `reject`: your proposal at seq `on` rejected, with their `text`: don't act on it; carry on as the note says.
 - `close`: the period's record and an example for the next, approving nothing: it accepts what you did for each ask it lists.
