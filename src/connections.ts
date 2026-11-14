@@ -167,17 +167,18 @@ function parseEvents(text: string): any[] {
 const GEN_RETRIES_MS = [150, 400];
 async function generationCost(genId: string, apiKey: string): Promise<number | undefined> {
   if (!apiKey) return undefined;
-  const base = upstreams['openrouter.ai'] ?? 'https://openrouter.ai';
+  const base = upstreams['openrouter.ai'] ?? 'https://openrouter.ai', signal = AbortSignal.timeout(4000);
   for (let i = 0; ; i++) {
     try {
       const r = await fetch(`${base}/api/v1/generation?id=${encodeURIComponent(genId)}`, {
-        headers: { authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(4000),
+        headers: { authorization: `Bearer ${apiKey}` }, signal,
       });
       if (r.ok) {
         const d = ((await r.json()) as any)?.data;
         const c = d?.total_cost ?? d?.usage;
         return typeof c === 'number' && Number.isFinite(c) ? c : undefined;
       }
+      await r.body?.cancel();
       if (r.status !== 404 || i >= GEN_RETRIES_MS.length) return undefined;
     } catch {
       return undefined;

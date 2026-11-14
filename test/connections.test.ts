@@ -67,7 +67,7 @@ const runs = new Map<string, Instance>(), callRuns = new Map<string, import('../
 const asked: { path: string; auth?: string; key?: string | string[]; body: unknown }[] = [];
 let held = Promise.resolve();
 let sock = '', ca = '', proxy: Server;
-const generations = new Map<string, { cost: number; wait404?: number }>();
+const generations = new Map<string, { cost: number; wait404?: number; delay?: number; stall?: boolean; key?: string }>();
 const m365 = () => logins.logins(ALICE).find(l => l.id === 'm365')!;
 
 // A request as a run's tool makes it: CONNECT through the proxy with the run's token, then TLS to the host, trusting what the run
@@ -184,7 +184,10 @@ before(async () => {
       const id = new URL(req.url, 'http://x').searchParams.get('id')!;
       const g = generations.get(id);
       if (!g) return void res.writeHead(404, { 'content-type': 'application/json' }).end('{"error":{"code":404}}');
+      if (g.delay) await new Promise(ok => setTimeout(ok, g.delay));
+      if (g.key && req.headers.authorization !== `Bearer ${g.key}`) return void res.writeHead(404).end('{}');
       if (g.wait404 && g.wait404-- > 0) return void res.writeHead(404, { 'content-type': 'application/json' }).end('{"error":{"code":404}}');
+      if (g.stall) return void res.writeHead(200, { 'content-type': 'application/json' }).write('{"data":');
       return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ data: { id, total_cost: g.cost, usage: g.cost } }));
     }
     if (body?.user === 'held-json') {
@@ -1029,6 +1032,17 @@ test('a deployment service gets streamed requests only under the runner\'s ticke
   }
 });
 
+
+test('generation retries share a deadline shorter than the run drain bound, including stalled response bodies', { timeout: 10_000 }, async t => {
+  const { drainCalls, hasCalls } = await import('../src/connections.ts');
+  generations.set('gen-deadline', { cost: 1, wait404: 2, delay: 800, stall: true });
+  await via('POST', `${O}/embeddings`, json({ input: 'test', user: 'gen-deadline' }));
+  const a = callRuns.get('run')!;
+  t.after(() => drainCalls(a));
+  await drainCalls(a);
+  assert.equal(hasCalls(a), false, 'cost lookup settled before the five-second drain limit');
+  assert.ok(calls().at(-1)!.cost > 0 && calls().at(-1)!.estimated);
+});
 
 test('stopping a run aborts a stalled non-streaming provider response', async t => {
   const { abortCalls, drainCalls, hasCalls } = await import('../src/connections.ts');
