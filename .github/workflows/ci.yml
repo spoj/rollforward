@@ -1,7 +1,7 @@
 # The tests on every push and pull request, in the agent image the commit runs (src/agent.ts): its published tarball, else one
 # built here. A tag's run, once they pass, makes its GitHub Release, which the hosts' updaters deploy (docs/deploy.md), and the
 # image's prerelease agent-<id> if it's the first to run that image; a tag whose message has a line starting "Manual:" makes a
-# prerelease, which they stop at. Only the release job may write to the repository: the tests, and the packages they install,
+# prerelease, which they stop at, and one with "Urgent:" skips their drain. Only the release job may write to the repository: the tests, and the packages they install,
 # only read it.
 name: ci
 on:

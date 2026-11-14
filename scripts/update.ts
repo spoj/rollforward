@@ -1,5 +1,5 @@
-// Moves this checkout to the newest release CI made and restarts the server, whatever runs are going: they carry on after the
-// restart. A systemd timer runs it (docs/deploy.md), and never twice at once. A release is taken once every check on its commit has passed, and never past a prerelease, which a tag with
+// Moves this checkout to the newest release CI made and restarts the server, once the runs going have ended, or RF_DRAIN_MIN has
+// passed: those it cuts carry on after the restart. A systemd timer runs it (docs/deploy.md), and never twice at once. A release is taken once every check on its commit has passed, and never past a prerelease, which a tag with
 // a Manual: line makes for a release that needs a person first. What it installs, its packages and its agent image, is fetched
 // before the server stops, so a failure there, as without the network, changes nothing, and the next tick tries again. If the
 // server doesn't answer HEALTH after the move, the checkout goes back, and that release isn't tried again; if going back fails too,
@@ -13,7 +13,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { AGENTS, agentId, download, id, remove, unpack } from '../src/agent.ts';
 
-const repo = 'spoj/rollforward', health = process.argv[2];
+const repo = 'spoj/rollforward', health = process.argv[2], limit = Number(process.env.RF_DRAIN_MIN ?? 15) * 60_000;
 const app = join(dirname(fileURLToPath(import.meta.url)), '..'), state = join(homedir(), '.local', 'state', 'rollforward-update.json');
 const sh = (cmd: string, ...args: string[]) => execFileSync(cmd, args, { cwd: app, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }).trim();
 async function github(path: string) {
@@ -43,6 +43,25 @@ const checks = (await github(`/commits/${target}/check-runs?per_page=100`)).chec
 if (!checks.length || checks.some((c: any) => c.status !== 'completed' || !['success', 'skipped'].includes(c.conclusion))) {
   console.log(`${target} waits for its checks to pass`);
   process.exit(0);
+}
+
+// The server drained, so the runs going end on the release they started on rather than being cut: on SIGUSR2 it starts no run, for
+// RF_DRAIN_MIN from the latest signal, and GET /drained answers 200 once none goes. It's signalled and polled until then, or
+// RF_DRAIN_MIN, or its restart meanwhile, and stopped all the same; this dead, its drain ends by itself. One that knows no drain,
+// as an older server, answers /drained otherwise, and isn't signalled, which would kill it.
+async function drain() {
+  const pid = () => sh('systemctl', '--user', 'show', '--property=MainPID', '--value', 'rollforward'), was = pid();
+  const drained = () => fetch(new URL('/drained', health)).then(r => r.status, () => 0);
+  if (!Number(was) || ![200, 503].includes(await drained()) || pid() !== was) return;
+  for (const end = Date.now() + limit; pid() === was; ) {
+    try { process.kill(Number(was), 'SIGUSR2'); } catch { return; }
+    if (await drained() === 200) return;
+    if (Date.now() >= end) {
+      console.log('the runs still going are cut');
+      return;
+    }
+    await sleep(Math.min(2000, end - Date.now()));
+  }
 }
 
 // The checkout at `to`, with what changed since `from` installed, and the server started on it. It stops first, so the old process
@@ -81,6 +100,10 @@ try {
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }
+// A release on the way with a line starting Urgent: in its tag's message, which CI makes its notes, cuts the runs at once.
+const urgent = releases.slice(0, releases.findIndex((r: any) => r.tag_name === target) + 1).find((r: any) => /^Urgent:/m.test(r.body ?? ''));
+if (urgent) console.log(`${urgent.tag_name} is urgent: the runs going are cut`);
+else await drain();
 try {
   move(current, target);
   if (await answers()) {

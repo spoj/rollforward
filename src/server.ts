@@ -25,7 +25,7 @@ import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, prune, startIndexing, track } from './indexes.ts';
 import { addNote, notes, seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, archived, assigned, byToken, cancelWake, cancelWakes, closed, correct, dropRequest, held, kick, named, noted, pending, queued, remove, resolveFor, setWake, standing, startWaking, startWith, stop, wakes, wakesOf, wakeWith, weekly, reads, CUT, type Active, type Request } from './waker.ts';
+import { active, archived, assigned, byToken, cancelWake, cancelWakes, closed, correct, drain, drained, dropRequest, held, kick, named, noted, pending, queued, remove, resolveFor, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesOf, wakeWith, weekly, reads, CUT, type Active, type Request } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -1156,6 +1156,8 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       res.writeHead(200, { 'content-type': type, 'cache-control': 'no-cache', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" });
       return void res.end(Buffer.from(logo, 'base64'));
     }
+    // Whether an update may stop the server (scripts/update.ts), its answer alone, to anyone: 200 drained, else 503.
+    if (req.method === 'GET' && url.pathname === '/drained') return void res.writeHead(drained() ? 200 : 503).end();
     const me = await authenticate(req, res, url);
     if (!me) return;
     // What a person changes beyond an instance is an act of theirs in the system's log, once it's done.
@@ -1166,7 +1168,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       res.end(readFileSync(page));
     } else if (url.pathname === '/me') {
       const { text, logo } = brand();
-      send(res, 200, { ...me, names: names(me), browsers: !!process.env.RF_BROWSER_URL, brand: { text: text || null, logo: !!logo }, themeLogo: !!themeLogo, can: CAPS.filter(c => can(me, c)), version });
+      send(res, 200, { ...me, names: names(me), browsers: !!process.env.RF_BROWSER_URL, brand: { text: text || null, logo: !!logo }, themeLogo: !!themeLogo, can: CAPS.filter(c => can(me, c)), version, draining: updating() });
     } else if (url.pathname === '/capabilities') {
       if (me.role !== 'admin') throw new HttpError(403, 'admins grant capabilities');
       if (req.method === 'PUT') {
@@ -1393,6 +1395,9 @@ server.on('upgrade', (req, socket, head) => {
   if (!to) return socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
   passUpgrade(req, socket, head, to);
 });
+// An update drains the server before it stops it (waker.ts drain()), heard before top-level awaits yield, as Node ends on a
+// SIGUSR2 it doesn't handle.
+process.on('SIGUSR2', drain);
 passAllowed();
 await enrolFlagged();
 if (process.env.RF_BROWSER_URL) await reap().catch(e => console.error('the browser service: browsers a restart left open are still open', e));

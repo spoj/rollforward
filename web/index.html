@@ -14,6 +14,7 @@
   <header class="masthead" id="masthead"></header>
   <main class="main">
     <div class="bar" id="bar"></div>
+    <div class="draining" id="draining" hidden></div>
     <div class="needs" id="needs" hidden></div>
     <div class="corrs" id="corrs" hidden></div>
     <div class="panes" id="panes">
@@ -147,8 +148,7 @@ const ago = iso => {
 };
 
 async function refresh() {
-  me ??= await api('/me');
-  const n = ++refreshes, [t, mine] = await Promise.all([api('/api'), api('/logins')]);
+  const n = ++refreshes, [t, mine, who] = await Promise.all([api('/api'), api('/logins'), api('/me')]);
   const [id, at] = location.hash.slice(2).split('/'), all = t.flatMap(w => [[w], ...w.series.flatMap(s => [[w, s], ...s.instances.map(i => [w, s, i])])]), found = all.find(e => e.at(-1).id === id);
   // An address that names nothing here opens the sidebar's first workspace, and then names what it shows.
   const ws = t.filter(w => !w.archived && (w.mine || localStorage.workspaces === 'all' || !t.some(w => w.mine)));
@@ -158,7 +158,7 @@ async function refresh() {
   const path = i ? `/api/instances/${i.id}` : '', [d, st] = path ? await fetchInstance(path) : [null, null];
   if (n !== refreshes) return;
   if ((!found || at) && w) history.replaceState(null, '', `#/${(i ?? s ?? w).id}`);
-  [tree, expired, myLogins] = [t, mine.filter(l => l.expired), mine];
+  [tree, expired, myLogins, me] = [t, mine.filter(l => l.expired), mine, who];
   land(w && { w, s, i }, path, d, st);
   if (at && i) showComment(+at.slice(1));
 }
@@ -571,6 +571,8 @@ function logText(e) {
 // What this instance waits on you for, above it: the threads that wait on you, a question, a proposal, an ask from before those, or
 // a note, and your logins that expired under it. Most of the time there is nothing.
 function renderNeeds() {
+  $('#draining').hidden = me.draining == null;
+  put($('#draining'), me.draining == null ? '' : `An update is waiting for ${plural(me.draining, 'run')} to finish; new runs start after it.`);
   const held = new Map(data?.log.filter(e => e.op === 'expired' && e.runner === me.email && !data.log.some(x => x.seq > e.seq && x.op === 'wake' && x.login === e.login)).map(e => [e.login, e]));
   const act = (e, mode, name) => `<button class="btn ${mode === 'reply' ? 'reply-to' : ''}" data-act="reply" data-mode="${mode}" data-seq="${e.seq}">${name}</button>`;
   const h = (data ? data.waiting.filter(w => w.who === me.email).map(w => data.log[w.seq - 1]) : []).map(e => `<div><b class="${e.ask === 'proposal' ? 'propose' : ''}">${{ question: 'Question', proposal: 'Proposal', true: 'Ask' }[e.ask] ?? 'Note'}</b><span>${esc(firstLine(e.text))}</span>`

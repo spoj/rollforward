@@ -425,6 +425,7 @@ iframe.mail { width: 100%; border: 0; background: var(--doc); }
 .bad { color: var(--red); }
 .shots { display: flex; gap: 6px; overflow-x: auto; margin-top: 6px; }
 .shots img { width: 112px; border: 1px solid var(--rule); border-radius: var(--r1); cursor: zoom-in; flex-shrink: 0; }
+.draining { padding: 6px 28px; border-bottom: 1px solid var(--rule); color: var(--ink-2); font-size: 12.5px; }
 .needs { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 8px 28px; border-bottom: 1px solid var(--rule); background: var(--ask-bg); font-size: 13px; }
 .needs > div { display: flex; align-items: center; gap: 10px; }
 .needs > div > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -523,6 +524,7 @@ a.more, a.up { display: block; font-size: 12px; color: var(--ink-3); cursor: poi
   .side.open { display: flex; }
   .menu { display: inline-block; }
   .bar { padding: 10px 14px; }
+  .draining { padding: 6px 14px; }
   .masthead { padding: 0 14px; }
   .app-name .pagename, .user .mail, .sidefold { display: none; }
   .mv { grid-template-columns: minmax(0, 1fr); }

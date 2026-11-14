@@ -222,7 +222,7 @@ Usual work
 
 Watching over it, for admins and power users; each sees what the caller sees
 - What's stuck: rf status lists runs going, flagging those past --long MIN (30); queued runs, since when and why: their series is
-  running, the RF_MAX_RUNS cap, or memory; what waits on whom since when: asks, notes for runners, expired logins and the instances
+  running, an update's drain, the RF_MAX_RUNS cap, or memory; what waits on whom since when: asks, notes for runners, expired logins and the instances
   they hold, and requests to start; open instances whose last run failed; and indexes crawling or failing.
 - Indexes: rf indexes shows each index of a big library or mailbox you index, every one for admins: its items and size, and per
   person whether it is crawling or following changes, pages read, when last caught up, and an error, if any, with its next try.
