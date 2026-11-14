@@ -2171,15 +2171,17 @@ test('Assign dialog when no other signed-in person sees the workspace explains t
   await page.keyboard.press('Escape');
 });
 
-test('clicking or resizing before the initial identity loads causes no page error', async () => {
+test('clicking, resizing or sidebar keys before the initial identity loads cause no page error', async () => {
   const ctx = await browser.newContext({ storageState: await page.context().storageState() }), tab = await ctx.newPage();
   const errors: string[] = [], gate = Promise.withResolvers<void>();
   tab.on('pageerror', e => errors.push(e.message));
+  await tab.addInitScript(() => { localStorage.side = 'folded'; });
   await tab.route('**/me', async route => { await gate.promise; await route.continue(); });
   try {
     await tab.goto(`${new URL(page.url()).origin}/#/a5c0ff5e1f00`, { waitUntil: 'domcontentloaded' });
     await tab.mouse.click(5, 5);
     await tab.setViewportSize({ width: 600, height: 800 });
+    await tab.keyboard.press('j');
     await tab.evaluate(() => new Promise(requestAnimationFrame));
     assert.deepEqual(errors, []);
   } finally {
