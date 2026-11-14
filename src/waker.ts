@@ -14,6 +14,7 @@ import { pushed, skills } from './skills.ts';
 import { AGENT, commit, committed, forget } from './git.ts';
 import { lastAssign, logins, runnerAt, runnerOf } from './logins.ts';
 import { confirm } from './entra.ts';
+import { pruneGrants } from './grants.ts';
 import { abortCalls, drainCalls, hasCalls, reachable, types } from './connections.ts';
 
 // What runs when: one run at a time per series, at most RF_MAX_RUNS at once, started by people's acts and by wakes.
@@ -241,6 +242,7 @@ async function begin(inst: Instance, tried: Set<Instance>) {
   if (held(inst, 'entra', runner)) return bail(inst, tried);
   try {
     await confirm(runner);
+    pruneGrants();
   } catch (e) {
     if (stopping || !due(inst)) return bail(inst, tried);
     if (runnerOf(inst).by !== runner) return void kick(inst);

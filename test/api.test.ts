@@ -2110,6 +2110,34 @@ test('rf comment --wake and --wait on a shared series start and wait for the run
   await quiet();
 });
 
+test('run-start group renewal revokes workspace grants only after the last visible group is lost', async () => {
+  const { personDir, saveLogin } = await import('../src/logins.ts');
+  const email = 'grant-groups@demo.test', first = '8d7e332d-b4c7-4ff5-aac3-10a87909a40b', second = '0e3dcbbb-bb2e-4fb3-b21d-a87f9b5aa624';
+  entra.who.groups[email] = [first, second];
+  const cookie = sessionOf(await login(email))!;
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'RenewedGrants' }))).json();
+  await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ members: [first, second] }));
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'S' }))).json();
+  const { id: inst } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'L1', quiet: true }), cookie)).json();
+  saveLogin(email, { id: 'web:renewed-grant', kind: 'website', name: 'Renewed grant', since: new Date().toISOString(), offers: [{ id: 'web:renewed-grant', name: 'Renewed grant' }] });
+  writeFileSync(join(personDir(email), 'websites.json'), JSON.stringify({
+    'renewed-grant': { url: 'https://portal.example.com/', hosts: ['portal.example.com'], writeback: true, added: new Date().toISOString(),
+      profile: { what: 'Supplier portal', category: 'vendor', risk: 'medium', flags: [] } },
+  }));
+  const { id } = await (await call('POST', '/grants', JSON.stringify({ site: 'renewed-grant', workspace: ws, reason: 'Review invoices' }), cookie)).json();
+  assert.equal((await call('POST', `/grants/${id}`, JSON.stringify({ approve: true }))).status, 200);
+  entra.who.groups[email] = [second];
+  await call('POST', `/api/instances/${inst}/comment`, JSON.stringify({ text: 'Still in one group' }), cookie);
+  await ran(`/api/instances/${inst}`);
+  assert.equal((await json('/grants')).find(g => g.id === id).state, 'approved');
+  delete entra.who.groups[email];
+  await call('POST', `/api/instances/${inst}/comment`, JSON.stringify({ text: 'Refresh my groups' }), cookie);
+  for (let i = 0; i < 100 && (await json('/me', cookie)).groups.length; i++) await new Promise(r => setTimeout(r, 50));
+  assert.deepEqual((await json('/me', cookie)).groups, []);
+  assert.equal((await json('/grants')).find(g => g.id === id).state, 'revoked');
+  assert.equal((await json('/logins', cookie)).some(l => l.id === 'web:renewed-grant'), false);
+});
+
 test('an RF_ADMINS admin keeps workspace grants when another admin changes their stored role to user', async () => {
   const { personDir, saveLogin } = await import('../src/logins.ts');
   const b = sessionOf(await login(bob))!;
