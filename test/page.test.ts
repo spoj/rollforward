@@ -2108,6 +2108,23 @@ test('Enter does not submit a busy confirmation dialog twice', async () => {
   }
 });
 
+test('a failed sign-out keeps unsent drafts through reload', async () => {
+  const ctx = await browser.newContext({ storageState: await page.context().storageState() }), tab = await ctx.newPage();
+  try {
+    await tab.goto(`${new URL(page.url()).origin}/#/a5c0ff5e1f00`);
+    await tab.fill('#newcomment', 'Keep this if sign-out fails');
+    await tab.route('**/auth/logout', route => route.fulfill({ status: 500, body: 'Sign-out failed' }));
+    await tab.click('#user summary');
+    await tab.click('[data-act=signout]');
+    await tab.waitForSelector('#toasts .toast:text-is("Sign-out failed")');
+    await tab.reload();
+    await tab.waitForSelector('#newcomment');
+    assert.equal(await tab.inputValue('#newcomment'), 'Keep this if sign-out fails');
+  } finally {
+    await ctx.close();
+  }
+});
+
 test('Enter respects aria-busy, row settings do not hang when location.hash already matches, and #wname stays synced in settings', async () => {
   // 1. Enter twice in #tname while POST /tokens is in flight submits only once.
   let tokenPosts = 0;

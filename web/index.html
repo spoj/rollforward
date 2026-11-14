@@ -1605,7 +1605,7 @@ async function onAct(act, el) {
   if (act === 'unpv') closePv();
   if (act === 'settings') await openSeriesSettings();
   if (act === 'workspace-settings') openWorkspaceSettings();
-  if (act === 'signout') { drafts.clear(); sessionStorage.clear(); location.href = (await api('/auth/logout', { method: 'POST' })).next; }
+  if (act === 'signout') { const { next } = await api('/auth/logout', { method: 'POST' }); drafts.clear(); sessionStorage.clear(); location.href = next; }
   if (act === 'wadd' || act === 'wremove' || act === 'wrole') {
     // An addition is an email or an Entra group's id, alone or as a suggestion shows it, NAME <ID>, where NAME labels a group.
     const [, label, inside] = act === 'wadd' && /^(.*?)\s*<(.+)>$/.exec($('#wperson').value.trim()) || [];
