@@ -60,7 +60,7 @@ test('an interrupt during natural turn cost draining stops the sandbox and marks
   }
 });
 
-test('pre-run failures try each due sibling once rather than bouncing between them forever', () => {
+for (const phase of ['before-log', 'before-sandbox']) test(`pre-sandbox failures release the memory reservation and try each due sibling once: ${phase}`, () => {
   const root = mkdtempSync(join(tmpdir(), 'rf-start-cycle-'));
   try {
     execFileSync(process.execPath, ['--experimental-test-module-mocks', '--input-type=module', '-e', `
@@ -77,9 +77,15 @@ test('pre-run failures try each due sibling once rather than bouncing between th
       saveTree({ workspaces: { w: { name: 'Work', owners: [alice], members: [] } }, series: { s: { name: 'Series', workspace: 'w' } } });
       writeJson('users.json', { [alice]: { role: 'user' } });
       mkdirSync(root + '/series/s', { recursive: true });
+      const phase = ${JSON.stringify(phase)};
+      process.env.RF_MIN_FREE_GB = '6';
+      const os = await import('node:os'), indexes = await import('./src/indexes.ts');
+      mock.method(os.default, 'freemem', () => 6.5 * 2 ** 30);
+      (await import('node:module')).syncBuiltinESMExports();
       let confirms = 0, attempts = 0;
       mock.method(console, 'error', () => {});
-      mock.module('./src/runner.ts', { namedExports: { ...runner, pylib: () => { attempts++; throw new Error('ENOSPC'); } } });
+      if (phase === 'before-log') mock.module('./src/runner.ts', { namedExports: { ...runner, pylib: () => { attempts++; throw new Error('ENOSPC'); } } });
+      else mock.module('./src/indexes.ts', { namedExports: { ...indexes, prepare: () => { attempts++; throw new Error('ENOSPC'); } } });
       mock.module('./src/entra.ts', { namedExports: { ...entra, confirm: async () => {
         if (++confirms > 2) throw Object.assign(new Error('repeated confirmation'), { status: 401 });
       } } });
@@ -88,7 +94,7 @@ test('pre-run failures try each due sibling once rather than bouncing between th
       for (const inst of [first, second]) inst.append(alice, 'comment', { text: 'Work.' });
       kick(first);
       await new Promise(ok => setTimeout(ok, 2000));
-      assert.equal(confirms, 2, 'a persistent startup failure must not renew Entra sign-ins in a loop');
+      assert.equal(confirms, 2, 'each due sibling is tried once without a phantom memory reservation or an infinite retry');
       assert.equal(attempts, 2);
       assert.equal(active.size, 0);
       assert.equal(byToken.size, 0);

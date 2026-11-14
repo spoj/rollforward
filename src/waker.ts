@@ -220,8 +220,6 @@ async function begin(inst: Instance, tried: Set<Instance>) {
   if (full()) return void waiting.add(inst);
   // One who can no longer see its workspace, as after being removed from it, waits for someone to take the instance over.
   if (!sees(inst)) return bail(inst, tried);
-  started.push(Date.now());
-  started.splice(0, started.length - MAX_RUNS);
   const n = inst.log.filter(e => e.op === 'run').length + 1;
   const entries = inst.log.filter(e => e.seq > seen && (e.by !== 'agent' || e.note)), left = notes(inst.series());
   const text = message(inst, n, entries, true, left.filter(e => !e.settled));
@@ -251,6 +249,8 @@ async function begin(inst: Instance, tried: Set<Instance>) {
       a.view.ro.push([index, '/index']);
       a.view.env.RF_INDEX = '/index';
     }
+    started.push(Date.now());
+    started.splice(0, started.length - MAX_RUNS);
     a.ready = startRun({ token: a.token, id: inst.id, n, view: a.view, skills: live, onEvent: e => byToken.has(a.token) && heard(byToken.get(a.token)!, e) });
     a.run = await a.ready;
     // Cut as it started (leases(), remove()).
