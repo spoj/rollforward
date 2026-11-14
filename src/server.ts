@@ -679,6 +679,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     throw new HttpError(404, 'not found');
   // The body before the tree: a request held open must not save a tree from before others' changes, such as an owner's removal.
   const payload = ['upload', 'attach', 'screen'].includes(action) ? {} : await json(req);
+  if (run && running(run.token) !== run) throw new HttpError(409, 'its run has ended');
   const t = tree(), by = me.email;
   const about = t.series[kind === 'instances' ? instance(id).seriesId : kind === 'series' ? id : ''];
   // A run acts on an instance or a series in its own workspace alone, and learns nothing of one elsewhere by trying.
@@ -1132,6 +1133,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   } else if (['signoff', 'reject', 'withdraw', 'interrupt', 'logins', 'assign', 'takeover', 'close', 'abandon'].includes(action)) {
     const out = await inOrder(inst.id, async () => {
       const recheck = () => {
+        if (run && running(run.token) !== run) throw new HttpError(409, 'its run has ended');
         const now = tree(), s = now.series[inst.seriesId], ws = now.workspaces[s.workspace], shut = [ws, s].find(x => x?.archived);
         const who: Me | undefined = run ? me : asPerson(by);
         if (!who) throw new HttpError(401, 'sign in');
