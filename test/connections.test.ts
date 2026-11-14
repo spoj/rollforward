@@ -6,7 +6,7 @@ import { createServer, request, type IncomingHttpHeaders, type Server } from 'no
 import { request as httpsRequest } from 'node:https';
 import { connect as tlsConnect } from 'node:tls';
 import type { Socket } from 'node:net';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Instance } from '../src/store.ts';
@@ -537,14 +537,18 @@ test("a refusal that names the server's own app, as when its secret expired, is 
 });
 
 test('a push takes an id of letters, digits and dashes, and a SKILL.md; a push cut short leaves nothing behind', async () => {
-  const { pushSkill, skills, versionsOf } = await import('../src/skills.ts');
+  const { pushSkill, skills, versionFiles, versionsOf } = await import('../src/skills.ts');
   const files = { 'SKILL.md': Buffer.from('---\nname: x\n---\n').toString('base64') };
   assert.throws(() => pushSkill('Half', files, ALICE), /a skill id is/);
   assert.throws(() => pushSkill('half', {}, ALICE), /a skill has a SKILL.md/);
+  for (const bad of ['.git/HEAD', 'sub/.GIT/config', 'GIT~1/HEAD', '.pushed.json']) assert.throws(() => pushSkill('half', { ...files, [bad]: files['SKILL.md'] }, ALICE), /bad path/);
   assert.throws(() => versionsOf('../../instances'), /a skill id is/);
   mkdirSync(join(tmp, 'skills', 'versions', 'half', '1'), { recursive: true });
   symlinkSync(join('..', 'versions', 'half', '1'), join(tmp, 'skills', 'live', 'half.new'));
   assert.equal(pushSkill('half', files, ALICE), 2, 'after a version cut short, and its leftover link');
+  mkdirSync(join(tmp, 'skills', 'versions', 'half', '2', '.git'), { recursive: true });
+  writeFileSync(join(tmp, 'skills', 'versions', 'half', '2', '.git', 'HEAD'), 'ref: refs/heads/main\n');
+  assert.deepEqual(Object.keys(versionFiles('half', 2)), ['SKILL.md'], 'versionFiles leaves out .git from an earlier push');
   assert.deepEqual(versionsOf('half').map(v => v.version), [2]);
   assert.ok(!skills().some(s => s.id.includes('.')));
 });

@@ -1008,8 +1008,10 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   assert.match(await rf('help'), /What rf pull copies/);
   const tool = join(tmp, 'skill', 'tool');
   assert.match(await rf('skill', 'pull', 'tool', tool), /^pulled tool version 3 into /);
+  execFileSync('git', ['init', '-q'], { cwd: tool });
   assert.match(await rf('skill', 'push', tool), /^pushed tool version 4, live now/);
-  assert.deepEqual(await json('/skills/tool/versions/4'), await json('/skills/tool/versions/3'), 'pulled as push reads it');
+  assert.deepEqual(await json('/skills/tool/versions/4'), await json('/skills/tool/versions/3'), 'pulled as push reads it, leaving out .git');
+  assert.match(await rf('skill', 'pull', 'tool', join(tmp, 'fourth')), /^pulled tool version 4 into /);
   await assert.rejects(rf('skill', 'pull', 'tool', tool), /isn't empty/);
   await rf('skill', 'pull', 'tool', join(tmp, 'second'), '--version', '2');
   assert.match(readFileSync(join(tmp, 'second', 'SKILL.md'), 'utf8'), /description: the second/);

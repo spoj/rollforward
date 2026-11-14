@@ -683,8 +683,10 @@ else if (cmd === 'comment' && args.length === 2) {
   await post(`/api/workspaces/${ws.id}/readers/${other.id}`, {}, args[1] === 'add' ? 'PUT' : 'DELETE');
   console.log(args[1] === 'add' ? `${other.name}'s agents read ${ws.name} from their next run` : `${other.name}'s agents no longer read ${ws.name}`);
 } else if (cmd === 'skill' && args[0] === 'push' && args[1]) {
-  const files = Object.fromEntries(readdirSync(args[1], { recursive: true, withFileTypes: true }).filter(d => d.isFile())
-    .map(d => [relative(args[1], join(d.parentPath, d.name)).split(sep).join('/'), readFileSync(join(d.parentPath, d.name)).toString('base64')]));
+  const dotgit = (n: string) => [n, ...Array.from(n.slice(1).matchAll(/\\/g), m => n.slice(m.index + 2))].some(t => /^(\.git|git~1)[. ]*([:\\]|$)/i.test(t));
+  const walk = (at: string): string[] => readdirSync(at, { withFileTypes: true }).filter(d => !dotgit(d.name))
+    .flatMap(d => d.isDirectory() ? walk(join(at, d.name)) : d.isFile() ? [join(at, d.name)] : []);
+  const files = Object.fromEntries(walk(args[1]).map(p => [relative(args[1], p).split(sep).join('/'), readFileSync(p).toString('base64')]).filter(([rel]) => rel !== '.pushed.json'));
   console.log(await (await post(`/skills/${encodeURIComponent(basename(resolve(args[1])))}/versions`, { files })).text());
 } else if (cmd === 'skill' && args[0] === 'pull' && args[1] && args.length <= 3) {
   const id = encodeURIComponent(args[1]), dir = resolve(args[2] ?? args[1]), n = flags.version ?? (await get(`/skills/${id}/versions`)).at(-1)?.version;

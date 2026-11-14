@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, posix } from 'node:path';
 import { HttpError } from './store.ts';
+import { refused } from './git.ts';
 
 // Skills: what to fetch or do, and how, each a Pi skill whole in a folder, which admins and those they let publish push with
 // rf skill push (none ship here): a SKILL.md, whose front matter has `name` and `description`, then instructions the agent reads
@@ -24,7 +25,7 @@ function checkId(id: string) {
 export function pushSkill(id: string, files: Record<string, string>, by: string): number {
   checkId(id);
   if (!files['SKILL.md']) throw new HttpError(400, 'a skill has a SKILL.md at its top');
-  for (const rel of Object.keys(files)) if (posix.normalize(rel) !== rel || rel.startsWith('../') || posix.isAbsolute(rel)) throw new HttpError(400, `bad path ${rel}`);
+  for (const rel of Object.keys(files)) if (posix.normalize(rel) !== rel || rel.startsWith('../') || posix.isAbsolute(rel) || rel === '.pushed.json' || rel.split('/').some(n => !n || n === '.' || n === '..' || refused(n, false))) throw new HttpError(400, `bad path ${rel}`);
   const versions = join(root, '..', 'versions', id), n = Math.max(0, ...(existsSync(versions) ? readdirSync(versions).map(Number) : [])) + 1, dir = join(versions, String(n));
   for (const [rel, data] of Object.entries(files)) {
     mkdirSync(dirname(join(dir, rel)), { recursive: true });
@@ -43,7 +44,9 @@ export function versionFiles(id: string, n: number): Record<string, string> {
   const dir = join(root, '..', 'versions', id, String(n));
   if (!existsSync(dir)) throw new HttpError(404, `${id} has no version ${n}`);
   return Object.fromEntries(readdirSync(dir, { recursive: true, withFileTypes: true }).filter(d => d.isFile() && d.name !== '.pushed.json')
-    .map(d => [posix.relative(dir, join(d.parentPath, d.name)), readFileSync(join(d.parentPath, d.name)).toString('base64')]));
+    .map(d => [posix.relative(dir, join(d.parentPath, d.name)), d] as const)
+    .filter(([rel]) => !rel.split('/').some(n => refused(n, false)))
+    .map(([rel, d]) => [rel, readFileSync(join(d.parentPath, d.name)).toString('base64')]));
 }
 
 // A version without its .pushed.json is a push that failed halfway.
