@@ -2093,6 +2093,66 @@ test('cell comments on sheets whose names contain apostrophes mark the right she
   await page.click('#pv [data-act=unpv]');
 });
 
+test('apostrophes and markup in sheet names, cells and notes stay text through comment pinning and reload', async () => {
+  const ctx = await browser.newContext({ storageState: await page.context().storageState() }), tab = await ctx.newPage();
+  const name = `O'Brien"><img src=x onerror="document.documentElement.dataset.sheetXss='yes'">`;
+  try {
+    await tab.goto(`${new URL(page.url()).origin}/#/a5c0ff5e1f02`);
+    await tab.waitForSelector('#bar h1 .t');
+    await tab.route('**/preview/**', route => route.fulfill({ json: {
+      sheets: [{ name, rows: [[name, 'Marked']], truncated: false }],
+      threads: [{ id: 'c2', ref: `'${name.replaceAll("'", "''")}'!$B$1`, posts: [{ by: 'admin@demo.test', text: name }] }],
+    } }));
+    await tab.click('.tile[data-item=tie]');
+    await tab.click('#card .acts [data-act=preview]');
+    await tab.waitForSelector('#pv table.sh');
+    assert.equal(await tab.locator('#pv td[data-act=cell]').first().textContent(), name);
+    assert.deepEqual(await tab.locator('#pv td.noted').evaluateAll(tds => tds.map(td => [(td as HTMLElement).dataset.ref, (td as HTMLElement).dataset.note])), [[`${name}!B1`, `you: ${name}`]]);
+    await tab.locator('#pv td[data-act=cell]').first().click();
+    assert.equal(await tab.textContent('#pvn button'), `Comment on ${name}!A1`);
+    await tab.click('#pvn [data-act=comment-cell]');
+    await tab.fill('#newcomment', 'A safe pinned draft');
+    await tab.reload();
+    await tab.waitForSelector('#newcomment');
+    assert.equal(await tab.inputValue('#newcomment'), 'A safe pinned draft');
+    assert.deepEqual(await tab.evaluate(() => [draft.on, draft.ref]), ['tie', `${name}!A1`]);
+    assert.equal(await tab.locator('#pv img, #conv img, [onerror]').count(), 0);
+    assert.equal(await tab.getAttribute('html', 'data-sheet-xss'), null);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('sidebar navigation and reload keep each draft but do not restore a cancelled reply', async () => {
+  const ctx = await browser.newContext({ storageState: await page.context().storageState() }), tab = await ctx.newPage();
+  try {
+    await tab.goto(`${new URL(page.url()).origin}/#/a5c0ff5e1f02`);
+    await tab.fill('#newcomment', 'October draft');
+    const reply = tab.locator('#conv .post[data-seq="2"] > .reply[data-mode=reply]');
+    await tab.click('#conv .post[data-seq="2"] > .pa [data-act=reply]');
+    await reply.locator('textarea').fill('Cancelled reply');
+    await reply.locator('[data-act=reply]').click();
+    await tab.click('#tree a[href="#/a5c0ff5e1f00"]');
+    await tab.waitForSelector('#bar h1 .t:text-is("2026-12")');
+    await tab.fill('#newcomment', 'December draft');
+    await tab.click('#tree a[href="#/a5c0ff5e1f02"]');
+    await tab.waitForSelector('#bar h1 .t:text-is("2026-10")');
+    assert.equal(await tab.inputValue('#newcomment'), 'October draft');
+    assert.equal(await reply.isHidden(), true);
+    await tab.reload();
+    await tab.waitForSelector('#newcomment');
+    assert.equal(await tab.inputValue('#newcomment'), 'October draft');
+    assert.equal(await reply.isHidden(), true);
+    await tab.click('#conv .post[data-seq="2"] > .pa [data-act=reply]');
+    assert.equal(await reply.locator('textarea').inputValue(), '');
+    await tab.click('#tree a[href="#/a5c0ff5e1f00"]');
+    await tab.waitForSelector('#bar h1 .t:text-is("2026-12")');
+    assert.equal(await tab.inputValue('#newcomment'), 'December draft');
+  } finally {
+    await ctx.close();
+  }
+});
+
 test('Assign dialog when no other signed-in person sees the workspace explains that instead of showing an empty select', async () => {
   const origin = new URL(page.url()).origin;
   const { inst } = await page.evaluate(async () => {
