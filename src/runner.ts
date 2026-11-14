@@ -157,7 +157,24 @@ export async function startRun(o: Parameters<typeof pi>[0] & { onEvent: (e: Json
   client.onEvent(e => e.type === 'agent_settled' && settle({ aborted: e.aborted }));
   client.onEvent(o.onEvent);
   await client.start();
-  child = (client as unknown as { process: ChildProcess }).process;
+  const rpc = client as unknown as { process: ChildProcess; stderr: string; stopReadingStdout?: () => void };
+  child = rpc.process;
+  let errForwarded = 0, lineBytes = 0;
+  child.stderr!.removeAllListeners('data').on('data', (d: Buffer) => {
+    if (errForwarded < 65536) { process.stderr.write(d.subarray(0, 65536 - errForwarded)); errForwarded += d.length; }
+    rpc.stderr = (rpc.stderr + d.toString()).slice(-65536);
+  });
+  child.stdout!.prependListener('data', (d: Buffer) => {
+    const nl = d.lastIndexOf(10);
+    lineBytes = nl < 0 ? lineBytes + d.length : d.length - nl - 1;
+    if (lineBytes > 64 * 2 ** 20) {
+      rpc.stopReadingStdout?.();
+      rpc.stopReadingStdout = undefined;
+      child!.stdout!.destroy();
+      child!.kill('SIGKILL');
+      settle({ aborted: true, error: 'Pi stdout line exceeded 64 MB' });
+    }
+  });
   child.once('exit', (code, signal) => settle({ aborted: true, error: `Pi exited with ${signal ? `signal ${signal}` : `code ${code}`}: ${client.getStderr()}` }));
   await ready(client).catch(async e => { await stop(); throw e; });
   return {

@@ -187,3 +187,56 @@ wb.save('book.xlsx')" && soffice --headless --convert-to pdf --outdir out book.x
   assert.equal(await sh(`python -W ignore -c "import pypdf, fitz, extract_msg; print(len(pypdf.PdfReader('$RF_WORKING/out/book.pdf').pages), fitz.open('$RF_WORKING/out/book.pdf').page_count, extract_msg.openMsg('$RF_WORKING/sample.msg').subject)"`), '1 1 TxtSampleEmail');
   assert.equal(await sh(`python -W ignore -c "import polars, pyarrow, pptx, pyxlsb, pbixray, formulas, scipy, tabulate, markdown, yaml, httpx; print(polars.read_excel('$RF_WORKING/out/book.xlsx', has_header=False).row(2)[0])"`), '6', "Polars reads a workbook, through fastexcel");
 });
+
+test("over 512 MB written to Pi's stderr or as one stdout line without a newline never crashes the server", () => {
+  const fake = join(tmp, 'fake-pi');
+  writeFileSync(fake, `#!${process.execPath}
+let buf = '';
+process.stdin.on('data', d => {
+  buf += d;
+  let k;
+  while ((k = buf.indexOf('\\n')) >= 0) {
+    const cmd = JSON.parse(buf.slice(0, k));
+    buf = buf.slice(k + 1);
+    if (cmd.type === 'get_state') process.stdout.write(JSON.stringify({ id: cmd.id, type: 'response', command: 'get_state', success: true, data: {} }) + '\\n');
+    if (cmd.type === 'prompt') {
+      process.stdout.write(JSON.stringify({ id: cmd.id, type: 'response', command: 'prompt', success: true, data: {} }) + '\\n');
+      const chunk = Buffer.alloc(2 ** 20, 0x61);
+      const out = cmd.message === 'stderr' ? process.stderr : process.stdout;
+      let n = 0;
+      const pump = () => {
+        while (n < 520) { n++; if (!out.write(chunk)) return void out.once('drain', pump); }
+        if (cmd.message === 'stderr') process.stdout.write(JSON.stringify({ type: 'agent_settled', aborted: false }) + '\\n');
+      };
+      pump();
+    }
+  }
+});
+`, { mode: 0o755 });
+  const script = `
+    import { initSystem } from ${JSON.stringify(new URL('../src/system.ts', import.meta.url).href)};
+    import { serveSandboxes } from ${JSON.stringify(new URL('../src/sandbox.ts', import.meta.url).href)};
+    import { startRun } from ${JSON.stringify(new URL('../src/runner.ts', import.meta.url).href)};
+    initSystem(${JSON.stringify(root)});
+    serveSandboxes({ agent: async () => {}, run: () => undefined });
+    const view = { instance: '/work/ws/s/w1', dir: ${JSON.stringify(i('w1'))}, pylib: ${JSON.stringify(join(root, 'series', 'weekly', '.pylib'))}, ro: [], names: {}, series: {}, env: {} };
+    const r1 = await startRun({ token: 'flood-err', id: 'w1', n: 1, view, skills: [], onEvent() {} });
+    const t1 = await (await r1.turn('stderr')).settled;
+    await r1.stop();
+    const r2 = await startRun({ token: 'flood-out', id: 'w1', n: 2, view, skills: [], onEvent() {} });
+    const t2 = await (await r2.turn('stdout')).settled;
+    await r2.stop();
+    console.log(JSON.stringify({ errAborted: t1.aborted, outAborted: t2.aborted, outErr: t2.error }));
+    process.exit(0);
+  `;
+  const out = execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+    env: { ...process.env, RF_SANDBOX_SCOPE: `${fake} --` },
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+  const res = JSON.parse(out);
+  assert.equal(res.errAborted, false);
+  assert.equal(res.outAborted, true);
+  assert.match(res.outErr, /stdout line/);
+});
+
