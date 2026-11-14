@@ -365,7 +365,7 @@ export async function endSignIn(email: string, id: string, save: boolean, keepal
     if (!save) return;
     currentSignIn(signing);
     await checkWebsite(email, site, trace);
-    const w = currentSignIn(signing), hosts = Object.keys(requests).filter(h => reached(w).some(p => covers(p, h))), s = state as { cookies: { domain: string }[]; origins: { origin: string }[] };
+    const w = currentSignIn(signing), allowed = reached(w).filter(h => !w.checks?.[h] || w.checks[h].verdict === 'pass'), hosts = Object.keys(requests).filter(h => allowed.some(p => covers(p, h))), s = state as { cookies: { domain: string }[]; origins: { origin: string }[] };
     const trimmed = s && { ...s, cookies: s.cookies.filter(c => hosts.some(h => c.domain === h || (c.domain.startsWith('.') && (h === c.domain.slice(1) || h.endsWith(c.domain))))),
       origins: s.origins.filter(o => hosts.includes(new URL(o.origin).hostname)) };
     saveLogin(email, { id: `web:${site}`, kind: 'website', name, since: new Date().toISOString(), offers: [{ id: `web:${site}`, name }], ...(until && { keepalive: new Date(until).toISOString() }), trace }, JSON.stringify(trimmed));
@@ -400,7 +400,7 @@ const setJournal = (all: Record<string, Opened>) => replaceReadOnly(join(rfDir()
 function keep(inst: Instance, b: Opened, { state, log }: { state: unknown; log: Entry[] }) {
   const login = b.writeback && logins(b.email).find(l => l.id === `web:${b.site}`), w = websitesOf(b.email)[b.site];
   if (login && state && w && !login.expired && login.since === b.since) {
-    const ps = reached(w), s = state as { cookies?: { domain?: string }[]; origins?: { origin?: string }[] };
+    const ps = reached(w).filter(h => !w.checks?.[h] || w.checks[h].verdict === 'pass'), s = state as { cookies?: { domain?: string }[]; origins?: { origin?: string }[] };
     const trimmed = {
       ...s,
       ...(Array.isArray(s.cookies) && {

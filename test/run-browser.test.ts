@@ -1068,6 +1068,36 @@ test('run writeback trims cookies and origins to allowed hosts and rejects overs
   assert.deepEqual(JSON.parse(secret(alice, 'web:crm')).cookies.map((c: any) => c.value), ['refreshed']);
 });
 
+test('saved browser state excludes refused exact hosts while preserving wildcard subdomains and their parent-domain cookies', async () => {
+  const { changeWebsite } = await import('../src/browsers.ts');
+  const wasBack = back, wasRequested = requested;
+  const domains = ['crm.example.com', 'denied.external.test', 'sub.assets.example.net', '.assets.example.net', '.example.net', 'assets.example.net'];
+  back = { cookies: domains.map(d => state(d, d).cookies[0]), origins: domains.filter(d => !d.startsWith('.')).map(d => ({ origin: `https://${d}`, localStorage: [] })) };
+  requested = domains.filter(d => !d.startsWith('.')).map(d => ({ method: 'GET', url: `https://${d}/`, status: 200, live: true }));
+  try {
+    for (const mode of ['writeback', 'sign-in']) {
+      sites({ crm: { url: 'https://crm.example.com', hosts: ['denied.external.test', '*.assets.example.net'], writeback: true } });
+      writeJson('grants.json', everyone);
+      saveLogin(alice, website('crm', 'CRM'), JSON.stringify(state('initial')));
+      const run = new Browsers(running(`trim-refused-${mode}`, ['web:crm']), 1);
+      const id = mode === 'writeback' ? await run.browser('crm') : await startSignIn(alice, 'crm', '');
+      changeWebsite(alice, 'crm', { checks: {
+        'crm.example.com': { verdict: 'refused', why: 'Refused.' },
+        'denied.external.test': { verdict: 'high', why: 'Not approved.' },
+        'sub.assets.example.net': { verdict: 'refused', why: 'A wildcard still allows it.' },
+      } });
+      if (mode === 'writeback') await run.close();
+      else await endSignIn(alice, id!, true);
+      const saved = JSON.parse(secret(alice, 'web:crm'));
+      assert.deepEqual(saved.cookies.map((c: { domain: string }) => c.domain), ['sub.assets.example.net', '.assets.example.net', '.example.net'], mode);
+      assert.deepEqual(saved.origins.map((o: { origin: string }) => o.origin), ['https://sub.assets.example.net'], mode);
+    }
+  } finally {
+    back = wasBack;
+    requested = wasRequested;
+  }
+});
+
 test('browser-service error responses obey the same 64 MB bound as successful responses', async () => {
   const { browserJson } = await import('../src/browsers.ts');
   oversizeClose = true;
