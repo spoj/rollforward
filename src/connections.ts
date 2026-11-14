@@ -1,11 +1,13 @@
-import { request as httpRequest, type IncomingMessage, type ServerResponse } from 'node:http';
+import { request as httpRequest, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { createCipheriv, createDecipheriv, createHash, randomBytes, type Hash } from 'node:crypto';
-import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib';
+import { StringDecoder } from 'node:string_decoder';
+import { brotliDecompressSync, createBrotliDecompress, createGunzip, createInflate, gunzipSync, inflateSync } from 'node:zlib';
 import { HttpError, type Instance } from './store.ts';
 import { lookup } from 'node:dns/promises';
 import { getDomain } from 'tldts';
 import { isPrivate, key, readJson, tree, writeJson } from './system.ts';
+import { recordCost } from './costs.ts';
 import type { EntraLogin } from './auth.ts';
 import { token } from './entra.ts';
 import { lender, logins, runnerOf, saveLogin, secret, use, type Offer } from './logins.ts';
@@ -121,7 +123,7 @@ export const reachable = (inst: Instance) => {
 
 // What a run, as the proxy knows it, has: its instance, its number, the links its connections' answers held, each the name of
 // the connection that gave it and the offer that allowed it, and what its calls have cost.
-export type CallRun = { inst: Instance; n: number; links: Map<string, { name: string; offer: string }>; cost: number };
+export type CallRun = { inst: Instance; n: number; links: Map<string, { name: string; offer: string }>; cost: number; estimated?: boolean };
 
 // Tests point a host at a stand-in.
 export const upstreams: Record<string, string> = {};
@@ -133,11 +135,113 @@ export const intercepts = (a: CallRun, host: string) =>
 
 const HOP = ['connection', 'keep-alive', 'proxy-authorization', 'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade'];
 
-// The sends going: each logged as sent, its answer not yet.
+// The sends going: each logged as sent, its answer not yet, and in-flight OpenRouter/Exa calls recording their cost.
 const sending = new Set<IncomingMessage>();
+const inFlight = new WeakMap<CallRun, Set<Promise<void>>>();
+const abortHooks = new WeakMap<CallRun, Set<() => void>>();
+
+export const hasCalls = (a: CallRun) => (inFlight.get(a)?.size ?? 0) > 0;
+export function abortCalls(a: CallRun) {
+  for (const fn of abortHooks.get(a) ?? []) fn();
+}
+export async function drainCalls(a: CallRun, ms = 5000) {
+  const set = inFlight.get(a);
+  if (!set?.size) return;
+  await Promise.race([Promise.allSettled([...set]), new Promise(ok => setTimeout(ok, ms))]);
+}
+
 // Once the sends going are answered and logged, or `ms` on, as a stop waits (server.ts).
 export async function answered(ms: number) {
   for (const until = Date.now() + ms; sending.size && Date.now() < until;) await new Promise(ok => setTimeout(ok, 100));
+}
+
+function parseEvents(text: string): any[] {
+  const trimmed = text.trimStart();
+  const raw = trimmed.startsWith('{') ? [trimmed]
+    : text.split(/\r?\n/).filter(l => /^data:\s*\{/.test(l)).map(l => l.replace(/^data:\s*/, ''));
+  const out: any[] = [];
+  for (const s of raw) try { out.push(JSON.parse(s)); } catch {}
+  return out;
+}
+
+const GEN_RETRIES_MS = [150, 400];
+async function generationCost(genId: string, apiKey: string): Promise<number | undefined> {
+  if (!apiKey) return undefined;
+  const base = upstreams['openrouter.ai'] ?? 'https://openrouter.ai';
+  for (let i = 0; ; i++) {
+    try {
+      const r = await fetch(`${base}/api/v1/generation?id=${encodeURIComponent(genId)}`, {
+        headers: { authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(4000),
+      });
+      if (r.ok) {
+        const d = ((await r.json()) as any)?.data;
+        const c = d?.total_cost ?? d?.usage;
+        return typeof c === 'number' && Number.isFinite(c) ? c : undefined;
+      }
+      if (r.status !== 404 || i >= GEN_RETRIES_MS.length) return undefined;
+    } catch {
+      return undefined;
+    }
+    await new Promise(ok => setTimeout(ok, GEN_RETRIES_MS[i]));
+  }
+}
+
+async function resolveCost(
+  s: typeof openrouter | typeof exa, method: string, path: string, reqJson: any,
+  status: number, headers: IncomingHttpHeaders | Record<string, string | string[] | undefined>,
+  type: string, events: any[], bytes: number, cut: boolean, apiKey: string,
+): Promise<{ cost: number; estimated: boolean }> {
+  const nonBillable = ['GET', 'HEAD', 'OPTIONS'].includes(method);
+  if (s === openrouter && nonBillable) return { cost: 0, estimated: false };
+  const inline = events.map(s.cost).findLast(x => x !== undefined);
+  if (inline !== undefined) return { cost: inline, estimated: false };
+  if (nonBillable) return { cost: 0, estimated: false };
+  const streamed = type.includes('event-stream');
+  if (s === openrouter) {
+    const genId = openrouter.generationId(headers, events);
+    if (genId && (status < 400 || cut || streamed || !path.endsWith('/images'))) {
+      const charged = await generationCost(genId, apiKey);
+      if (charged !== undefined) return { cost: charged, estimated: false };
+    }
+    if (status >= 400 && !cut && !streamed) return { cost: 0, estimated: false };
+    return { cost: openrouter.estimate(path, reqJson, events, bytes), estimated: true };
+  }
+  if (status >= 400 && !cut && !streamed) return { cost: 0, estimated: false };
+  return { cost: exa.estimate(path, reqJson), estimated: true };
+}
+
+export async function serverCall(
+  serviceName: 'openrouter' | 'exa', path: string, json: Record<string, any>,
+  cause: { kind: 'website-check' | 'try'; site?: string; person: string }, timeoutMs = 120_000,
+): Promise<{ ok: boolean; status: number; data: any; cost: number; estimated: boolean }> {
+  const s = serviceName === 'openrouter' ? openrouter : exa;
+  const apiKey = process.env[s.key] ?? '';
+  const url = new URL(path, `https://${s.host}`), raw = Buffer.from(JSON.stringify(json));
+  const out = s.check({ method: 'POST', url, headers: { 'content-type': 'application/json' }, json, body: raw }) ?? json;
+  const target = `${upstreams[s.host] ?? `https://${s.host}`}${url.pathname}${url.search}`;
+  const redact = (msg: string) => apiKey ? msg.replaceAll(apiKey, '[redacted]') : msg;
+  let r: Response, text = '';
+  try {
+    r = await fetch(target, {
+      method: 'POST', signal: AbortSignal.timeout(timeoutMs),
+      headers: { authorization: `Bearer ${apiKey}`, 'x-api-key': apiKey, 'content-type': 'application/json' },
+      body: JSON.stringify(out),
+    });
+    text = await r.text();
+  } catch (e) {
+    throw new Error(redact((e as Error).message));
+  }
+  const type = r.headers.get('content-type') ?? '', events = parseEvents(text);
+  const headers: Record<string, string> = {};
+  r.headers.forEach((v, k) => { headers[k.toLowerCase()] = v; });
+  const { cost, estimated } = await resolveCost(s, 'POST', url.pathname, json, r.status, headers, type, events, Buffer.byteLength(text), false, apiKey);
+  if (r.status < 400 || cost > 0 || estimated) {
+    recordCost({
+      at: new Date().toISOString(), by: 'server', service: serviceName, kind: cause.kind,
+      ...(cause.site && { site: cause.site }), person: cause.person, cost, ...(estimated && { estimated: true }),
+    });
+  }
+  return { ok: r.ok, status: r.status, data: events.at(-1), cost, estimated };
 }
 
 export async function call(a: CallRun, host: string, req: IncomingMessage, res: ServerResponse) {
@@ -194,82 +298,190 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
         auth = { authorization: `Bearer ${k}`, 'x-rf-runner': as, 'x-rf-instance': a.inst.id, 'x-rf-run': String(a.n), 'x-rf-series': a.inst.seriesId, 'x-rf-workspace': a.inst.seriesId ? tree().series[a.inst.seriesId].workspace : '' };
       } else auth = { authorization: `Bearer ${await token(as, login.id, login.scope)}` };
     }
+    let apiKey = '';
     if (s) {
       // The key goes in both headers SDKs send one in: Authorization, and x-api-key, as Anthropic's, Pi's among them, and Exa's do.
       out = s.check(r);
-      const k = mine ? secret(runner, 'openrouter') : process.env[s.key]!;
-      auth = { authorization: `Bearer ${k}`, 'x-api-key': k };
+      apiKey = mine ? secret(runner, 'openrouter') : process.env[s.key]!;
+      auth = { authorization: `Bearer ${apiKey}`, 'x-api-key': apiKey };
     }
     const body = out === undefined ? raw : Buffer.from(JSON.stringify(out));
     if (!s && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
       if (c?.type === 'service') digest = { hash: createHash('sha256'), size: 0 };
       sent = a.inst.append('agent', 'send', { run: a.n, name, method, path }).seq;
       sending.add(req);
+    } else if (s) sending.add(req);
+    const doneWork = Promise.withResolvers<void>();
+    if (s) {
+      let set = inFlight.get(a);
+      if (!set) inFlight.set(a, set = new Set());
+      set.add(doneWork.promise);
     }
-    // A Location where the check lets one go, as a redirect's, is a link for this run before the run can follow it.
-    const answer = await forward(`${c?.type === 'service' ? c.url : upstreams[host] ?? url.origin}${url.pathname}${url.search}`, req, res, {
-      auth, body, digest, keep: !link && c?.type !== 'service', location: to => { const l = URL.parse(to); if (l && l.origin === redirect) a.links.set(l.href, { name, offer }); },
-    });
-    // An answer's links go through for this run; what a service's answer cost, whole or in the last event of its stream that says,
-    // adds to the run's as it comes.
-    if (c && types[c.type].links && answer.type.includes('json')) for (const l of await types[c.type].links?.(JSON.parse(answer.text || 'null'), url.pathname, as, ticks) ?? []) a.links.set(new URL(l).href, { name: c.name, offer });
-    const cost = !s ? 0 : (answer.text.trimStart().startsWith('{') ? [answer.text] : answer.text.split('\n').filter(l => l.startsWith('data: {')).map(l => l.slice(6)))
-      .map(e => s.cost(JSON.parse(e))).findLast(x => x !== undefined) ?? 0;
-    a.cost += cost;
-    log(answer.status, answer.bytes, s ? { ...(json?.model && { model: json.model }), cost } : answer.incomplete ? { incomplete: true } : undefined);
-    if (mine && answer.status === 402) {
-      saveLogin(runner, { ...mine, expired: true });
-      a.inst.append('server', 'expired', { run: a.n, login: 'openrouter', name: 'OpenRouter', runner });
+    const registerAbort = (fn: () => void) => {
+      let set = abortHooks.get(a);
+      if (!set) abortHooks.set(a, set = new Set());
+      set.add(fn);
+      return () => set!.delete(fn);
+    };
+    try {
+      // A Location where the check lets one go, as a redirect's, is a link for this run before the run can follow it.
+      const answer = await forward(`${c?.type === 'service' ? c.url : upstreams[host] ?? url.origin}${url.pathname}${url.search}`, req, res, {
+        auth, body, digest, keep: !link && c?.type !== 'service', service: !!s, registerAbort,
+        location: to => { const l = URL.parse(to); if (l && l.origin === redirect) a.links.set(l.href, { name, offer }); },
+      });
+      // An answer's links go through for this run; what a service's answer cost, whole, in its stream's events, from OpenRouter's
+      // generation endpoint, or estimated where none could be learned, adds to the run's as it comes.
+      if (c && types[c.type].links && answer.type.includes('json')) for (const l of await types[c.type].links?.(JSON.parse(answer.text || 'null'), url.pathname, as, ticks) ?? []) a.links.set(new URL(l).href, { name, offer });
+      const { cost, estimated } = !s ? { cost: 0, estimated: false }
+        : await resolveCost(s, method, url.pathname, json, answer.status, answer.headers, answer.type, answer.events, answer.bytes, !!answer.cut, apiKey);
+      a.cost += cost;
+      if (estimated) a.estimated = true;
+      if (s && (cost > 0 || estimated)) {
+        const at = new Date().toISOString(), svc = s === openrouter ? 'openrouter' : 'exa';
+        if (a.inst.id === 'try' && a.n === 0) {
+          recordCost({ at, by: 'server', service: svc, kind: 'try', person: runner, cost, ...(estimated && { estimated: true }), ...(mine && { own: true }) });
+        } else if (a.n > 0) {
+          recordCost({ at, service: svc, inst: a.inst.id, run: a.n, person: runner, cost, ...(estimated && { estimated: true }), ...(mine && { own: true }) });
+        }
+      }
+      log(answer.status, answer.bytes, s ? { ...(json?.model && { model: json.model }), cost, ...(estimated && { estimated: true }) } : answer.incomplete ? { incomplete: true } : undefined);
+      if (mine && answer.status === 402) {
+        saveLogin(runner, { ...mine, expired: true });
+        a.inst.append('server', 'expired', { run: a.n, login: 'openrouter', name: 'OpenRouter', runner });
+      }
+    } finally {
+      sending.delete(req);
+      inFlight.get(a)?.delete(doneWork.promise);
+      doneWork.resolve();
     }
   } catch (e) {
     // A refusal, or an expired login, is the server's answer; anything else, a failure to reach the host.
     const err = e as Error & { status?: number; login?: string }, status = e instanceof HttpError ? err.status! : 502;
+    const msg = [process.env.OPENROUTER_API_KEY, process.env.EXA_API_KEY].reduce((m, k) => k ? m.replaceAll(k, '[redacted]') : m, err.message);
     if (err.login) a.inst.append('server', 'expired', { run: a.n, login: err.login, name: byLogin(err.login) ? loginOf(byLogin(err.login)!).name : err.login, runner: runnerOf(a.inst).by });
-    log(status, 0, e instanceof HttpError ? { refused: err.message } : { failed: err.message });
+    log(status, 0, e instanceof HttpError ? { refused: msg } : { failed: msg });
     if (res.headersSent) return void res.destroy();
-    res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8' }).end(`${err.message}\n`);
+    res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8' }).end(`${msg}\n`);
   }
 }
 
 // The request goes on as it came, but for its credential and the hop's own headers; the answer comes back as it is, its Location
-// told first, and, where it's kept and is JSON or a stream of events, as text too, for what it holds. A run gone before its
-// answer, as one cut, leaves it read to its end all the same, so what was sent is logged as answered.
-function forward(target: string, req: IncomingMessage, res: ServerResponse, o: { auth: Record<string, string>; body?: Buffer; digest?: { hash: Hash; size: number }; keep: boolean; location(to: string): void }) {
-  return new Promise<{ status: number; bytes: number; type: string; text: string; incomplete?: boolean }>((ok, fail) => {
+// told first, and, where it's kept, JSON as text or an event stream's data events scanned as chunks pass without buffering the
+// stream. A run gone before its answer on a non-service write leaves it read to its end; on an OpenRouter or Exa stream, closing
+// cancels the upstream stream so its partial cost can be looked up.
+function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
+  auth: Record<string, string>; body?: Buffer; digest?: { hash: Hash; size: number }; keep: boolean;
+  service?: boolean; registerAbort?: (fn: () => void) => () => void; location(to: string): void;
+}) {
+  return new Promise<{ status: number; bytes: number; type: string; text: string; events: any[]; headers: IncomingHttpHeaders; cut?: boolean; incomplete?: boolean }>((ok, fail) => {
     // X-RF- headers are the server's, X_RF_ too, which some servers read as the same.
     const headers = Object.fromEntries(Object.entries(req.headers).filter(([k]) => k !== 'authorization' && k !== 'host' && !HOP.includes(k) && !/^x[-_]rf[-_]/.test(k)));
+    let settled = false, unregister: (() => void) | undefined;
+    const done = (v: { status: number; bytes: number; type: string; text: string; events: any[]; headers: IncomingHttpHeaders; cut?: boolean; incomplete?: boolean }) => {
+      if (settled) return;
+      settled = true;
+      unregister?.();
+      ok(v);
+    };
+    const die = (e: Error) => {
+      if (settled) return;
+      settled = true;
+      unregister?.();
+      fail(e);
+    };
     const up = (target.startsWith('https:') ? httpsRequest : httpRequest)(target, {
       // A chunked body goes on chunked: Node sends a GET's, DELETE's or OPTIONS' otherwise unframed, as a request of its own.
       method: req.method, headers: { ...headers, ...(o.body ? { 'content-length': String(o.body.length) } : req.headers['transfer-encoding'] && { 'transfer-encoding': 'chunked' }), ...o.auth },
     }, r => {
       if (r.headers.location) o.location(r.headers.location);
       res.writeHead(r.statusCode!, Object.fromEntries(Object.entries(r.headers).filter(([k]) => !HOP.includes(k))));
-      const kept: Buffer[] = [], type = String(r.headers['content-type']), keep = o.keep && /json|event-stream/.test(type);
-      let bytes = 0;
-      r.on('data', (b: Buffer) => { bytes += b.length; if (keep) kept.push(b); });
-      if (res.closed) r.resume();
-      else r.pipe(res).once('close', () => r.resume());
+      const type = String(r.headers['content-type']), isSse = type.includes('event-stream'), isJson = /json/i.test(type);
+      const kept: Buffer[] = [], events: any[] = [], enc = r.headers['content-encoding'];
+      let bytes = 0, cut = false, carry = '';
+      const pushLine = (line: string) => {
+        if (!/^data:\s*\{/.test(line)) return;
+        try { events.push(JSON.parse(line.replace(/^data:\s*/, ''))); } catch {}
+      };
+      const feedText = (chunk: string) => {
+        const parts = (carry + chunk).split(/\r?\n/);
+        carry = parts.pop()!;
+        for (const l of parts) pushLine(l);
+      };
+      const decoder = o.keep && isSse ? new StringDecoder('utf8') : undefined;
+      const unzip = decoder && (enc === 'gzip' ? createGunzip() : enc === 'deflate' ? createInflate() : enc === 'br' ? createBrotliDecompress() : undefined);
+      if (unzip) {
+        unzip.on('data', (b: Buffer) => feedText(decoder!.write(b)));
+        unzip.on('error', () => {});
+      }
+      r.on('data', (b: Buffer) => {
+        bytes += b.length;
+        if (decoder) {
+          if (unzip) unzip.write(b);
+          else feedText(decoder.write(b));
+        } else if (o.keep && isJson) kept.push(b);
+      });
+      const finishAnswer = () => {
+        if (decoder) {
+          if (!unzip) feedText(decoder.end());
+          if (carry) { pushLine(carry); carry = ''; }
+        }
+        let text = '';
+        if (o.keep && isJson && kept.length) {
+          const raw = Buffer.concat(kept);
+          try {
+            text = (enc === 'gzip' ? gunzipSync(raw) : enc === 'deflate' ? inflateSync(raw) : enc === 'br' ? brotliDecompressSync(raw) : raw).toString();
+          } catch {
+            text = raw.toString();
+          }
+          const trimmed = text.trimStart();
+          if (trimmed.startsWith('{')) try { events.push(JSON.parse(trimmed)); } catch {}
+        }
+        return { status: r.statusCode!, bytes, type, text, events, headers: r.headers, ...(cut && { cut: true }) };
+      };
+      const abortStream = () => {
+        if (r.readableEnded || settled) return;
+        cut = true;
+        up.destroy();
+        res.destroy();
+        done(finishAnswer());
+      };
+      unregister?.();
+      if (o.service && isSse) unregister = o.registerAbort?.(abortStream);
+      if (res.closed) {
+        if (o.service && isSse) return abortStream();
+        r.resume();
+      } else {
+        r.pipe(res).once('close', () => {
+          if (o.service && isSse && !r.readableEnded) abortStream();
+          else r.resume();
+        });
+      }
       r.on('end', () => {
-        const raw = Buffer.concat(kept), enc = r.headers['content-encoding'];
-        const text = keep ? (enc === 'gzip' ? gunzipSync(raw) : enc === 'deflate' ? inflateSync(raw) : enc === 'br' ? brotliDecompressSync(raw) : raw).toString() : '';
-        const answer = { status: r.statusCode!, bytes, type, text };
-        if (!o.digest || req.readableEnded) return ok(answer);
+        const answer = finishAnswer();
+        if (!o.digest || req.readableEnded) return done(answer);
         const finish = () => {
           req.off('end', finish);
           req.off('error', finish);
           req.socket.off('close', finish);
           const incomplete = !req.readableEnded;
           if (incomplete) up.destroy();
-          ok({ ...answer, ...(incomplete && { incomplete }) });
+          done({ ...answer, ...(incomplete && { incomplete }) });
         };
         req.once('end', finish);
         req.once('error', finish);
         req.socket.once('close', finish);
         req.resume();
       });
-      r.on('error', fail);
+      r.on('error', e => {
+        if (o.service) {
+          cut = true;
+          res.destroy();
+          done(finishAnswer());
+        } else die(e);
+      });
     });
-    up.on('error', fail);
+    if (o.service) unregister = o.registerAbort?.(() => up.destroy(new Error('run stopped')));
+    up.on('error', e => { if (!settled) die(e); });
     if (o.body) up.end(o.body);
     else {
       if (o.digest) req.on('data', (b: Buffer) => { o.digest!.hash.update(b); o.digest!.size += b.length; });

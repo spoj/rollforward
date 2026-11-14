@@ -66,6 +66,7 @@ const runs = new Map<string, Instance>(), callRuns = new Map<string, import('../
 const asked: { path: string; auth?: string; key?: string | string[]; body: unknown }[] = [];
 let held = Promise.resolve();
 let sock = '', ca = '', proxy: Server;
+const generations = new Map<string, { cost: number; wait404?: number }>();
 const m365 = () => logins.logins(ALICE).find(l => l.id === 'm365')!;
 
 // A request as a run's tool makes it: CONNECT through the proxy with the run's token, then TLS to the host, trusting what the run
@@ -174,17 +175,37 @@ before(async () => {
     send({ error: { code: 'itemNotFound', message: 'not here' } }, 404);
   });
   await new Promise<void>(ok => graph.listen(0, '127.0.0.1', ok));
-  // OpenRouter and Exa, whose answers say what they cost: a chat completion whole, a message and a response streamed, and a search.
+  // OpenRouter and Exa, whose answers say what they cost: whole, streamed, via /api/v1/generation when cut or inline-costless, or Exa's costDollars.
   services = createServer(async (req, res) => {
     const chunks = await Array.fromAsync(req as AsyncIterable<Buffer>), body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined;
     asked.push({ path: req.url!, auth: req.headers.authorization, key: req.headers['x-api-key'], body });
-    const stream = async (first: object, ...events: object[]) => {
-      res.writeHead(200, { 'content-type': 'text/event-stream' }).write(`: OPENROUTER PROCESSING\n\ndata: ${JSON.stringify(first)}\n\n`);
+    if (req.url?.startsWith('/api/v1/generation?')) {
+      const id = new URL(req.url, 'http://x').searchParams.get('id')!;
+      const g = generations.get(id);
+      if (!g) return void res.writeHead(404, { 'content-type': 'application/json' }).end('{"error":{"code":404}}');
+      if (g.wait404 && g.wait404-- > 0) return void res.writeHead(404, { 'content-type': 'application/json' }).end('{"error":{"code":404}}');
+      return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ data: { id, total_cost: g.cost, usage: g.cost } }));
+    }
+    const stream = async (genId: string, first: object, ...events: object[]) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'x-generation-id': genId }).write(`: OPENROUTER PROCESSING\n\ndata: ${JSON.stringify(first)}\n\n`);
       await held;
-      res.end(`${events.map(e => `data: ${JSON.stringify(e)}\n\n`).join('')}data: [DONE]\n\n`);
+      if (!res.destroyed) res.end(`${events.map(e => `data: ${JSON.stringify(e)}\n\n`).join('')}data: [DONE]\n\n`);
     };
-    if (req.url === '/api/v1/messages') return stream({ type: 'message_start', message: { usage: { input_tokens: 0 } } }, { type: 'message_delta', usage: { output_tokens: 3, cost: 0.002 } }, { type: 'message_stop' });
-    if (req.url === '/api/v1/responses') return stream({ type: 'response.created', response: { usage: null } }, { type: 'response.completed', response: { usage: { cost: 0.004 } } });
+    if (req.url === '/api/v1/messages' && body?.stream === false) {
+      const genId = body.metadata?.gen ?? 'gen-msg-sync';
+      return void res.writeHead(200, { 'content-type': 'application/json', 'x-generation-id': genId }).end(JSON.stringify({
+        id: 'msg_1', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'Sync' }],
+        usage: { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 5000, cache_creation_input_tokens: 500 },
+      }));
+    }
+    if (req.url === '/api/v1/messages') return stream(body?.metadata?.gen ?? 'gen-msg', { type: 'message_start', message: { usage: { input_tokens: 0 } } }, { type: 'message_delta', usage: { output_tokens: 3, cost: 0.002 } }, { type: 'message_stop' });
+    if (req.url === '/api/v1/responses') return stream('gen-resp', { type: 'response.created', response: { id: 'gen-resp', usage: null } }, { type: 'response.completed', response: { id: 'gen-resp', usage: { cost: 0.004 } } });
+    if (req.url === '/api/v1/chat/completions' && body?.stream) return stream(body.user ?? 'gen-chat-stream', { id: body.user ?? 'gen-chat-stream', choices: [{ delta: { content: 'Part ' } }] }, { id: body.user ?? 'gen-chat-stream', choices: [], usage: { cost: 0.009 } });
+    if (req.url === '/api/v1/embeddings') return void res.writeHead(200, { 'content-type': 'application/json', 'x-generation-id': body?.user ?? 'gen-emb' }).end(JSON.stringify({ object: 'list', data: [{ object: 'embedding', embedding: [0.1, 0.2] }], usage: { prompt_tokens: 500, total_tokens: 500 } }));
+    if (req.url === '/api/v1/audio/speech') return void res.writeHead(200, { 'content-type': 'audio/mpeg', 'x-generation-id': body?.user ?? 'gen-tts' }).end(Buffer.alloc(128, 7));
+    if (req.url === '/api/v1/images') return void res.writeHead(200, { 'content-type': 'application/json', 'x-generation-id': 'gen-img' }).end(JSON.stringify({ data: [{ b64_json: 'AA==' }], usage: body?.user === 'no-cost' ? {} : { cost: 0.04 } }));
+    if (req.url === '/contents') return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ results: [{ url: 'https://a.test', text: 'x' }], ...(body?.livecrawl !== 'omit-cost' && { costDollars: { total: 0.002 } }) }));
+    if (req.url?.startsWith('/websets/')) return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ id: 'ws_1', costDollars: { total: 0.003 } }));
     const answer = req.url === '/search' ? { results: [], costDollars: { total: 0.005 } } : req.url === '/api/v1/models' ? { data: [] } : { choices: [{ message: { content: 'Hello' } }], usage: { cost: 0.001 } };
     res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(answer));
   });
@@ -995,5 +1016,82 @@ test('a deployment service gets streamed requests only under the runner\'s ticke
     logins.signOut(ALICE, 'drop');
     delete process.env.RF_SERVICE_KEY_DROP;
     runs.delete('service');
+  }
+});
+
+
+test('cut streams and endpoints without inline usage.cost query /api/v1/generation, or fall back to an estimate marked estimated, without leaking keys', async () => {
+  const { drainCalls } = await import('../src/connections.ts');
+  const { syncCosts } = await import('../src/costs.ts');
+  const token = 'cost-edge';
+  const edgeInst = { id: 'edge1', dir: instDir, seriesId: 'weekly', log: started(ticks), doc: { items: [] }, series: () => seriesDir, append: (_by: string, op: string, data: any) => { log.push({ op, data }); return { seq: log.length }; } } as unknown as Instance;
+  runs.set(token, edgeInst);
+  try {
+    // 1. Streaming call cut mid-way: proxy cancels upstream stream, retries 404 once on /api/v1/generation, and records exact charged cost.
+    generations.set('gen-cut-1', { cost: 0.0017, wait404: 1 });
+    held = new Promise(() => {}); // never resolves unless aborted
+    await via('POST', `${O}/chat/completions`, { token, cut: true, ...json({ model: 'openai/gpt-5-mini', stream: true, user: 'gen-cut-1', messages: [{ role: 'user', content: 'Hi' }] }) });
+    await drainCalls(callRuns.get(token)!);
+    held = Promise.resolve();
+    const cutCall = log.findLast(e => e.op === 'call' && e.data.path === '/api/v1/chat/completions')!.data;
+    assert.deepEqual([cutCall.cost, cutCall.estimated], [0.0017, undefined], 'charged cost learned from /api/v1/generation after stream cut');
+    assert.equal(asked.filter(a => a.path === '/api/v1/generation?id=gen-cut-1').length, 2, 'retried 404 while OpenRouter settled');
+    assert.equal(callRuns.get(token)!.estimated, undefined);
+
+    // 2. Non-streaming /messages, /embeddings, /images, binary /audio/speech, and Exa /contents resolve provider cost without buffering audio.
+    generations.set('gen-msg-exact', { cost: 0.0063 });
+    generations.set('gen-emb-exact', { cost: 0.00005 });
+    generations.set('gen-tts-exact', { cost: 0.0024 });
+    await via('POST', `${O}/messages`, { token, ...json({ model: 'anthropic/claude-opus-5.5', stream: false, metadata: { gen: 'gen-msg-exact' }, messages: [{ role: 'user', content: 'Hi' }] }) });
+    await drainCalls(callRuns.get(token)!);
+    assert.deepEqual([calls().at(-1)!.cost, calls().at(-1)!.estimated], [0.0063, undefined]);
+    await via('POST', `${O}/embeddings`, { token, ...json({ model: 'openai/text-embedding-3-small', input: 'embed me', user: 'gen-emb-exact' }) });
+    await drainCalls(callRuns.get(token)!);
+    assert.deepEqual([calls().at(-1)!.cost, calls().at(-1)!.estimated], [0.00005, undefined]);
+    const tts = await via('POST', `${O}/audio/speech`, { token, ...json({ model: 'openai/tts-1', input: 'Hello world', user: 'gen-tts-exact' }) });
+    await drainCalls(callRuns.get(token)!);
+    assert.deepEqual([tts.status, Buffer.byteLength(tts.text), calls().at(-1)!.cost, calls().at(-1)!.estimated], [200, 128, 0.0024, undefined]);
+    await via('POST', `${O}/images`, { token, ...json({ model: 'openai/gpt-image-1', prompt: 'chart' }) });
+    await drainCalls(callRuns.get(token)!);
+    assert.deepEqual([calls().at(-1)!.cost, calls().at(-1)!.estimated], [0.04, undefined]);
+    await via('POST', 'https://api.exa.ai/contents', { token, ...json({ urls: ['https://a.test'] }) });
+    await drainCalls(callRuns.get(token)!);
+    assert.deepEqual([calls().at(-1)!.cost, calls().at(-1)!.estimated], [0.002, undefined]);
+
+    // 3. Fallback estimation when /api/v1/generation has no record (cut stream, cache-read/write /messages, and Exa without costDollars).
+    await via('POST', `${O}/messages`, { token, ...json({ model: 'anthropic/claude-opus-5.5', stream: false, metadata: { gen: 'gen-missing' }, messages: [{ role: 'user', content: 'Hi' }] }) });
+    await drainCalls(callRuns.get(token)!);
+    const estMsg = calls().at(-1)!;
+    // 1000 * $4/M + 200 * $20/M + 5000 * $0.2/M + 500 * $5/M = 0.004 + 0.004 + 0.001 + 0.0025 = 0.0115
+    assert.deepEqual([estMsg.cost, estMsg.estimated], [0.0115, true], 'fallback estimate prices input, output, cacheRead and cacheWrite');
+    assert.equal(callRuns.get(token)!.estimated, true);
+
+    held = new Promise(() => {});
+    await via('POST', `${O}/chat/completions`, { token, cut: true, ...json({ model: 'openai/gpt-5-mini', stream: true, user: 'gen-unrecorded', messages: [{ role: 'user', content: 'Tell me a long story' }] }) });
+    await drainCalls(callRuns.get(token)!);
+    held = Promise.resolve();
+    const estCut = log.findLast(e => e.op === 'call' && e.data.path === '/api/v1/chat/completions')!.data;
+    assert.ok(estCut.cost > 0 && estCut.estimated === true, 'cut stream without generation stats is estimated and marked');
+
+    await via('POST', 'https://api.exa.ai/contents', { token, ...json({ urls: ['https://a.test', 'https://b.test'], livecrawl: 'omit-cost' }) });
+    await drainCalls(callRuns.get(token)!);
+    assert.deepEqual([calls().at(-1)!.cost, calls().at(-1)!.estimated], [0.002, true], 'Exa response without costDollars falls back to estimate');
+
+    // 4. cli.ts try stand-in records against server, and keys never appear in logs or costs.jsonl.
+    const tryInst = { id: 'try', dir: '', seriesId: '', log: [{ seq: 1, op: 'create', by: ALICE, logins: [] }], append: () => ({ seq: 1 }) } as unknown as Instance;
+    runs.set('try-tok', tryInst);
+    callRuns.set('try-tok', { inst: tryInst, n: 0, links: new Map(), cost: 0 });
+    await via('POST', `${O}/chat/completions`, { token: 'try-tok', ...json({ model: 'openai/gpt-5-mini', messages: [{ role: 'user', content: 'Hi' }] }) });
+    await drainCalls(callRuns.get('try-tok')!);
+    const records = syncCosts();
+    assert.ok(records.some(r => 'by' in r && r.by === 'server' && r.kind === 'try' && r.person === ALICE && r.cost === 0.001));
+    const serialized = JSON.stringify({ log, records });
+    assert.ok(!serialized.includes('the-openrouter-key') && !serialized.includes('the-exa-key'), 'keys never reach logs or cost records');
+  } finally {
+    held = Promise.resolve();
+    runs.delete(token);
+    runs.delete('try-tok');
+    callRuns.delete(token);
+    callRuns.delete('try-tok');
   }
 });

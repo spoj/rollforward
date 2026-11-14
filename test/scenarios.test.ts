@@ -59,7 +59,7 @@ async function answer(req: IncomingMessage, res: ServerResponse) {
   if (body.response_format) {
     checks.push(body);
     const verdict = verdicts.length ? verdicts.shift()! : { profile, hosts: {} };
-    return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: typeof verdict === 'string' ? verdict : JSON.stringify(verdict) } }] }));
+    return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: typeof verdict === 'string' ? verdict : JSON.stringify(verdict) } }], usage: { cost: 0.003 } }));
   }
   keys.push(String(req.headers['x-api-key']));
   if (keys.at(-1) === 'sk-or-broke') return void res.writeHead(402, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: 'Insufficient credits', code: 402 } }));

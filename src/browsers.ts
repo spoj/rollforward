@@ -9,7 +9,7 @@ import { pipeline } from 'node:stream/promises';
 import { HttpError, instance, replaceReadOnly, type Instance } from './store.ts';
 import { logins, personDir, runnerOf, saveLogin, seal, secret, signOut, use, type Trace } from './logins.ts';
 import { getDomain } from 'tldts';
-import { checkHost, covers, except, letIn, reached, resolvesInternal, setLetIn, upstreams } from './connections.ts';
+import { checkHost, covers, except, letIn, reached, resolvesInternal, serverCall, setLetIn } from './connections.ts';
 import { answer, model } from './connections/openrouter.ts';
 import { asPerson, can, users, type Me } from './auth.ts';
 import { approved, forgetGrants, unapproved } from './grants.ts';
@@ -370,7 +370,7 @@ export async function checkWebsite(email: string, site: string, given?: Trace): 
   const candidates = [...new Set([address, ...w.hosts.filter(h => !h.startsWith('*.')), ...Object.keys(trace?.requests ?? {}), ...trace?.blocked ?? []])];
   const todo = candidates.filter(h => !w.checks?.[h] || (w.checks[h].verdict === 'internal' && (!!letIn()[h] || throughVpn(w, h))));
   const checks: NonNullable<Website['checks']> = {}, queries: string[] = [];
-  let profile = w.profile, failed: string | undefined;
+  let profile = w.profile, failed: string | undefined, checkCost = 0, checkEstimated = false;
   const settle = (decisions: NonNullable<Website['checks']>, result?: Profile) => {
     const now = websitesOf(email)[site];
     if (!now || now.url !== w.url || now.added !== w.added || websiteGenerations.get(siteKey) !== generation) throw new HttpError(409, `${site} was removed or replaced while it was checked`);
@@ -408,13 +408,15 @@ export async function checkWebsite(email: string, site: string, given?: Trace): 
     if (!key) throw new Error('the server has no OPENROUTER_API_KEY');
     const messages: any[] = [{ role: 'system', content: CHECK + (w.via ? '\nThis website is reached through a client VPN. Its own DNS names are not public search targets; search only external dependencies. Classify the system, not its route: a VPN does not make a general-purpose or high-risk website safe.' : '') }, { role: 'user', content: JSON.stringify({ website: { name: site, address, hosts: website(email, site).hosts, profile: profile && !('error' in profile) ? profile : null, ...(w.via && { via: w.via }) }, evidence: trace ?? null, checks: website(email, site).checks, unchecked: rest }) }];
     const tools = [{ type: 'function', function: { name: 'search', description: 'Search the public web for a website or host.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false } } }];
+    const cause = { kind: 'website-check' as const, site, person: email };
     for (;;) {
-      const res = await fetch(`${upstreams['openrouter.ai'] ?? 'https://openrouter.ai'}/api/v1/chat/completions`, {
-        method: 'POST', headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' }, signal: AbortSignal.timeout(120_000),
-        body: JSON.stringify({ model, provider: { data_collection: 'deny' }, response_format: { type: 'json_object' }, messages, ...(exa && { tools, tool_choice: queries.length < 5 ? 'auto' : 'none' }) }),
-      });
+      const res = await serverCall('openrouter', '/api/v1/chat/completions', {
+        model, response_format: { type: 'json_object' }, messages, ...(exa && { tools, tool_choice: queries.length < 5 ? 'auto' : 'none' }),
+      }, cause, 120_000);
+      checkCost += res.cost;
+      if (res.estimated) checkEstimated = true;
       if (!res.ok) throw new Error(`OpenRouter answered ${res.status}`);
-      const said = (await res.json()).choices[0].message;
+      const said = res.data.choices[0].message;
       if (said.tool_calls?.length) {
         messages.push(said);
         for (const t of said.tool_calls) {
@@ -432,9 +434,12 @@ export async function checkWebsite(email: string, site: string, given?: Trace): 
             continue;
           }
           // A failed search is the tool's error, for the model to weigh, as a refused one is.
-          const found = await fetch(`${upstreams['api.exa.ai'] ?? 'https://api.exa.ai'}/search`, { method: 'POST', headers: { 'x-api-key': exa, 'content-type': 'application/json' }, signal: AbortSignal.timeout(30_000),
-            body: JSON.stringify({ query, numResults: 3, contents: { highlights: true } }) }).catch((e: Error) => e);
-          const results = found instanceof Response && found.ok ? (await found.json()).results : { error: `The search failed: ${found instanceof Response ? `Exa answered ${found.status}` : found.message}` };
+          const found = await serverCall('exa', '/search', { query, numResults: 3, contents: { highlights: true } }, cause, 30_000).catch((e: Error) => e);
+          if (!(found instanceof Error)) {
+            checkCost += found.cost;
+            if (found.estimated) checkEstimated = true;
+          }
+          const results = !(found instanceof Error) && found.ok ? found.data.results : { error: `The search failed: ${!(found instanceof Error) ? `Exa answered ${found.status}` : found.message}` };
           messages.push({ role: 'tool', tool_call_id: t.id, content: JSON.stringify(results) });
         }
         continue;
@@ -456,7 +461,7 @@ export async function checkWebsite(email: string, site: string, given?: Trace): 
     if (!profile || 'error' in profile) profile = { error: failed };
     settle({}, profile);
   } finally {
-    act('server', { op: 'website-check', person: email, site, evidence: trace ?? null, queries, profile, checks, ...(failed && { error: failed }) });
+    act('server', { op: 'website-check', person: email, site, evidence: trace ?? null, queries, profile, checks, cost: +checkCost.toFixed(6), ...(checkEstimated && { estimated: true }), ...(failed && { error: failed }) });
   }
   return profile!;
 }
