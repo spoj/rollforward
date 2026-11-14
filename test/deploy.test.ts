@@ -9,3 +9,8 @@ test('the server and updater units load the same drain configuration', () => {
   assert.match(server, /node --env-file=%h\/\.config\/rollforward\.env/);
   assert.match(updater, /node --env-file=%h\/\.config\/rollforward\.env/);
 });
+
+test('the container drain signals the container rather than the systemd monitor PID', () => {
+  const doc = readFileSync(new URL('../docs/deploy.md', import.meta.url), 'utf8');
+  assert.match(doc, /podman kill --signal=SIGUSR2 rollforward/);
+});
