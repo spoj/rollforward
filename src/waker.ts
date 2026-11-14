@@ -28,6 +28,7 @@ const started: number[] = [];
 // were taken, and no Pi idles. What would start waits, as for a slot, and starts if the drain lapses or, as an update means, after
 // the restart (recover()).
 const DRAIN_MS = Number(process.env.RF_DRAIN_MIN ?? 15) * 60_000;
+if (!Number.isFinite(DRAIN_MS) || DRAIN_MS < 0 || DRAIN_MS > 2_147_483_647) throw new Error('RF_DRAIN_MIN must be between 0 and 35791 minutes');
 let draining: NodeJS.Timeout | undefined;
 const full = () => !!draining || active.size >= MAX_RUNS || (MIN_FREE > 0 && freemem() < MIN_FREE + started.filter(t => t > Date.now() - 60_000).length * 2 ** 30);
 export const MAX_OPEN = 3;

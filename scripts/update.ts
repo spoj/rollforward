@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { AGENTS, agentId, download, id, remove, unpack } from '../src/agent.ts';
 
 const repo = 'spoj/rollforward', health = process.argv[2], limit = Number(process.env.RF_DRAIN_MIN ?? 15) * 60_000;
+if (!Number.isFinite(limit) || limit < 0 || limit > 2_147_483_647) throw new Error('RF_DRAIN_MIN must be between 0 and 35791 minutes');
 const app = join(dirname(fileURLToPath(import.meta.url)), '..'), state = join(homedir(), '.local', 'state', 'rollforward-update.json');
 const sh = (cmd: string, ...args: string[]) => execFileSync(cmd, args, { cwd: app, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }).trim();
 async function github(path: string) {
