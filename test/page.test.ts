@@ -760,6 +760,7 @@ test("a cN link to a reply under a withdrawn ask opens the ask to show it", asyn
 test("hovering a link to a deleted instance's comment says nothing of it, and no error", async () => {
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f0a'; });
   await page.waitForSelector('#bar h1 .t:text-is("February")');
+  await page.waitForSelector('#bar .state .bad:text("Run 1 failed")');
   await page.evaluate(() => api('/api/instances/a5c0ff5e1f09/delete', { method: 'POST' }));
   const toasts = await page.locator('#toasts .toast').count();
   for (let i = 0; i < 2; i++) {

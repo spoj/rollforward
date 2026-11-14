@@ -860,7 +860,7 @@ test("a website set --internal true before 0.3.12 keeps its reach: at the server
   sites({ crm: { url: 'https://crm.example.com/', hosts: ['10.4.5.6', '10.1.2.3'], writeback: false, internal: true }, later: { url: 'https://later.invalid/', hosts: [], writeback: false, internal: true } });
   await enrolFlagged();
   assert.deepEqual(Object.entries(letIn()).map(([h, { by }]) => [h, by]), [['10.4.5.6', 'server']]);
-  assert.deepEqual(websitesOf(alice), { crm: { url: 'https://crm.example.com/', hosts: ['10.4.5.6', '10.1.2.3'], writeback: false }, later: { url: 'https://later.invalid/', hosts: [], writeback: false, internal: true } });
+  assert.deepEqual({ ...websitesOf(alice) }, { crm: { url: 'https://crm.example.com/', hosts: ['10.4.5.6', '10.1.2.3'], writeback: false }, later: { url: 'https://later.invalid/', hosts: [], writeback: false, internal: true } });
   const act = readFileSync(join(tmp, '.rf', 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)).findLast(a => a.person === alice);
   assert.deepEqual([act.by, act.op, act.site, act.hosts, act.let], ['server', 'internal', 'crm', ['10.4.5.6'], true]);
   saveLogin(alice, website('crm', 'CRM'), '{}');

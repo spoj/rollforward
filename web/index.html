@@ -1232,7 +1232,7 @@ async function saveKey() {
   const k = pv.settings.logins.find(l => l.id === 'openrouter');
   await api('/logins/openrouter', { method: 'PUT', body: JSON.stringify({ key: $('#orkey')?.value ?? '', enabled: $('#oruse')?.checked ?? !k }) });
   await openLogins();
-  await patch();
+  await refresh();
   saved();
 }
 
@@ -1926,9 +1926,11 @@ async function onAct(act, el) {
   }
   if (act === 'signout-login') {
     await api(`/logins/${enc(el.dataset.id)}`, { method: 'DELETE' });
-    pv.settings.logins = await api('/logins');
-    renderPv();
-    await patch();
+    await refresh();
+    if (pv?.settings?.kind === 'logins') {
+      pv.settings.logins = await api('/logins');
+      renderPv();
+    }
   }
   if (act === 'new-workspace') {
     const made = await ask({ title: 'New workspace', text: 'Such as a client. You become its owner.', value: '', placeholder: 'Name', ok: 'Make workspace', act: name => api('/api/workspaces', { method: 'POST', body: JSON.stringify({ name }) }) });
