@@ -403,7 +403,7 @@ async function costs(me: Me, since: string, tz: string) {
   const counted = (r: { outcome: string }) => r.outcome === 'cut' ? 0 : 1;
   const days: DayEntry[] = [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([day, b]) => {
     b.runs.sort((x, y) => x.at.localeCompare(y.at));
-    const byWs: DayEntry['by_workspace'] = {}, byPerson: DayEntry['by_person'] = {};
+    const byWs: DayEntry['by_workspace'] = Object.create(null), byPerson: DayEntry['by_person'] = Object.create(null);
     let runCost = 0, runCount = 0, est = false;
     for (const r of b.runs) {
       const c = counted(r);

@@ -350,3 +350,20 @@ test('daily totals, live website-check attribution, cached /api/v1/key view, una
   assert.equal(await bobPage.locator('#sidefoot [data-act=costs]').count(), 0, 'non-admin sees no admin Costs button');
   await bobCtx.close();
 });
+
+test('cost totals support workspace names that collide with Object.prototype', async () => {
+  const rename = (name: string) => fetch(`${base}/api/workspaces/ops001`, {
+    method: 'PUT', headers: { cookie: adminCookie, 'content-type': 'application/json' }, body: JSON.stringify({ name }),
+  });
+  try {
+    for (const name of ['__proto__', 'constructor', 'toString']) {
+      assert.equal((await rename(name)).status, 200);
+      const report = await apiJson('/api/costs?tz=UTC');
+      const d = report.days.find((d: any) => d.day === today);
+      assert.deepEqual(d.by_workspace[name], { runs: 3, cost: 1.5, estimated: true });
+      assert.deepEqual(d.by_person[adminEmail], { runs: 1, cost: 0.45 });
+    }
+  } finally {
+    await rename('Ops');
+  }
+});
