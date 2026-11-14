@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { createServer as createHttpServer } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -371,6 +371,78 @@ test('UTC key reconciliation includes only today’s legacy calls even when the 
   const recorded = records.filter(e => e.at.startsWith(today) && e.service === 'openrouter' && !e.own).reduce((n, e) => n + e.cost, 0);
   assert.equal(report.key.server_total, +(recorded + 0.15).toFixed(6));
   assert.equal(report.key.unattributed, +(report.key.usage_daily - recorded - 0.15).toFixed(6));
+});
+
+test('owners, members, reader-workspace people and personal tokens cannot obtain admin cost data', async () => {
+  const owner = 'owner@demo.test', reader = 'reader@demo.test';
+  const signIn = async (email: string) => (await entra.signIn(base, email)).headers.getSetCookie().find(c => c.startsWith('rf_session='))!.split(';')[0];
+  const ownerCookie = await signIn(owner), readerCookie = await signIn(reader);
+  const change = (path: string, method: string, body: unknown = {}) => fetch(base + path, { method, headers: { cookie: adminCookie, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  assert.equal((await change('/api/workspaces/ops001', 'PUT', { owners: [adminEmail, owner] })).status, 200);
+  const { id } = await (await change('/api/workspaces', 'POST', { name: 'Reader only' })).json();
+  assert.equal((await change(`/api/workspaces/${id}`, 'PUT', { owners: [reader] })).status, 200);
+  assert.equal((await change(`/api/workspaces/ops001/readers/${id}`, 'PUT')).status, 200);
+  appendFileSync(join(root, '.rf', 'costs.jsonl'), JSON.stringify({ at: new Date().toISOString(), by: 'server', service: 'openrouter', kind: 'try', person: 'private-cost-person@demo.test', cost: 0.01 }) + '\n');
+  for (const [cookie, seesRuns] of [[ownerCookie, true], [bobCookie, true], [readerCookie, false]] as const) {
+    const { token } = await (await fetch(base + '/tokens', { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'review', days: 1 }) })).json();
+    for (const headers of [{ cookie }, { authorization: `Bearer ${token}` }]) {
+      for (const path of ['/api/costs?tz=UTC&admin=true&person=private-cost-person@demo.test', '/me', '/api/status']) {
+        const r = await fetch(base + path, { headers });
+        assert.equal(r.status, 200);
+        const data = await r.json();
+        assert.equal(data.low_credit, undefined);
+        assert.equal(data.key, undefined);
+        assert.doesNotMatch(JSON.stringify(data), /private-cost-person|vendor-erp|sk-or-|exa-server-secret|usage_daily|server_total|unattributed/);
+        if (path.startsWith('/api/costs')) {
+          assert.ok(data.days.every((d: any) => !d.server && d.runs.every((r: any) => r.workspace === 'Ops')));
+          assert.equal(data.days.some((d: any) => d.runs.length), seesRuns);
+        }
+      }
+    }
+  }
+  for (const path of ['/api/costs', '/me', '/api/status', '/api/events']) {
+    assert.equal((await fetch(base + path, { headers: { authorization: 'Bearer 00000000-0000-4000-8000-000000000000' } })).status, 401);
+  }
+  const controller = new AbortController();
+  const stream = await fetch(base + '/api/events', { headers: { cookie: bobCookie }, signal: controller.signal });
+  const events = stream.body!.getReader();
+  try {
+    await change('/api/workspaces/ops001', 'PUT', { name: 'Ops' });
+    const got = await events.read();
+    assert.equal(new TextDecoder().decode(got.value), 'data: tree\n\n');
+  } finally { controller.abort(); }
+  await change('/api/workspaces/ops001', 'PUT', { owners: [adminEmail] });
+});
+
+test('cost dialog and masthead escape upstream reset strings, workspace names, websites and people', async () => {
+  const payload = '<img src=x onerror="window.costXss=1">';
+  const report = await apiJson('/api/costs?tz=UTC'), who = await apiJson('/me');
+  who.names[payload] = payload;
+  who.low_credit = { remaining: 1, limit: 200, usage: 199, reset: payload };
+  report.key.reset = payload;
+  report.key.low_credit = true;
+  report.days = [{
+    day: payload, cost: 1, runs_count: 1,
+    by_workspace: { [payload]: { cost: 1, runs: 1 } }, by_person: { [payload]: { cost: 1, runs: 1 } },
+    runs: [{ path: payload, run: 1, person: payload, outcome: payload, failure: payload, cost: 1 }],
+    server: { cost: 1, items: [{ kind: payload, site: payload, person: payload, calls: 1, cost: 1 }] },
+  }];
+  const ctx = await browser.newContext();
+  const [name, value] = adminCookie.split('=');
+  await ctx.addCookies([{ name, value, url: base }]);
+  try {
+    const page = await ctx.newPage();
+    await page.route('**/me', route => route.fulfill({ json: who }));
+    await page.route('**/api/costs?*', route => route.fulfill({ json: report }));
+    await page.goto(base);
+    await page.waitForSelector('#masthead #low-credit');
+    assert.ok((await page.locator('#masthead #low-credit').innerText()).includes(payload));
+    await page.click('#masthead #low-credit');
+    await page.waitForSelector('#pv[open]');
+    assert.ok((await page.locator('#pv').innerText()).includes(payload));
+    assert.equal(await page.locator('#pv img, #masthead img').count(), 0);
+    assert.equal(await page.evaluate(() => (window as any).costXss), undefined);
+  } finally { await ctx.close(); }
 });
 
 test('cost totals support workspace names that collide with Object.prototype', async () => {

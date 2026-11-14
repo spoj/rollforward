@@ -1033,6 +1033,36 @@ test('a deployment service gets streamed requests only under the runner\'s ticke
 });
 
 
+test('generation lookups use exactly the key that created each call, including cut personal-key streams', async () => {
+  const { drainCalls } = await import('../src/connections.ts');
+  const { syncCosts } = await import('../src/costs.ts');
+  logins.saveLogin(ALICE, { id: 'openrouter', kind: 'key', name: 'OpenRouter', since: '2026-11-04T00:00:00Z', offers: [], enabled: true }, 'sk-or-alice');
+  try {
+    for (const cut of [false, true]) {
+      const id = cut ? 'gen-own-cut' : 'gen-own-embed', from = asked.length;
+      generations.set(id, { cost: 0.012345, key: 'sk-or-alice' });
+      held = cut ? new Promise(() => {}) : Promise.resolve();
+      await via('POST', `${O}/${cut ? 'chat/completions' : 'embeddings'}`, { cut, ...json({ user: id, stream: cut, input: 'test', messages: [] }) });
+      await drainCalls(callRuns.get('run')!);
+      assert.deepEqual(asked.slice(from).map(a => [a.path, a.auth]), [
+        [`/api/v1/${cut ? 'chat/completions' : 'embeddings'}`, 'Bearer sk-or-alice'],
+        [`/api/v1/generation?id=${id}`, 'Bearer sk-or-alice'],
+      ]);
+      assert.equal(calls().at(-1)!.cost, 0.012345);
+      assert.equal(syncCosts().at(-1)!.own, true);
+    }
+  } finally {
+    held = Promise.resolve();
+    logins.signOut(ALICE, 'openrouter');
+  }
+  const from = asked.length;
+  generations.set('gen-shared-embed', { cost: 0.00001, key: 'the-openrouter-key' });
+  await via('POST', `${O}/embeddings`, json({ user: 'gen-shared-embed', input: 'test' }));
+  await drainCalls(callRuns.get('run')!);
+  assert.ok(asked.slice(from).every(a => a.auth === 'Bearer the-openrouter-key'));
+  assert.equal(calls().at(-1)!.cost, 0.00001);
+});
+
 test('generation retries share a deadline shorter than the run drain bound, including stalled response bodies', { timeout: 10_000 }, async t => {
   const { drainCalls, hasCalls } = await import('../src/connections.ts');
   generations.set('gen-deadline', { cost: 1, wait404: 2, delay: 800, stall: true });
