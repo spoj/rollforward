@@ -338,6 +338,7 @@ test("owners and admins assign an instance to whoever sees its workspace, as its
   const id = (await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'A', quiet: true }), b)).json()).id, path = `/api/instances/${id}`;
   const assign = (body: object, cookie: string) => call('POST', `${path}/assign`, JSON.stringify(body), cookie);
   assert.deepEqual((await json(`${path}/assignees`, b)).sort(), [adminEmail, carol], 'whoever sees the workspace but its runner');
+  assert.equal((await call('GET', `${path}/assignees`, undefined, c)).status, 403, 'not for those who may only take it over, as groups resolve to their people there');
   assert.equal((await assign({ to: adminEmail }, c)).status, 403, 'a member assigns only to themselves');
   assert.equal((await assign({ to: 'stranger@demo.test' }, admin)).status, 400);
   assert.equal((await assign({ to: carol, logins: ['web:portal'] }, b)).status, 400, "logins are their own");

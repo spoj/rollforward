@@ -831,8 +831,12 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   const said = !action && new Map(inst.log.flatMap(e => { const s = standing(inst, e); return s ? [[e.seq, s.word]] : []; }));
   if (said) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => said.get(e.seq) === 'note' ? { ...e, note: true } : e), standing: Object.fromEntries(said), starts: inst.doc.status === 'open' && standing(inst, { seq: inst.log.length + 1, at: '', by, op: 'comment' })!.starts, run: mine ? { n: mine.n, cost: +mine.cost.toFixed(4), browsers: [...(mine.browsers?.watchable().keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), runner: runner(inst), previous: await previous(inst), sums: Object.fromEntries(await Promise.all(inst.doc.items.filter(i => i.file).map(async i => [i.id, await sha256(inst.dir, i.file!)]))), waiting: waits(inst).map(({ who, e }) => ({ who, seq: e.seq })) });
   if (action === 'trace') return send(res, 200, trace(inst));
-  // Whom it may be assigned to: whoever sees its workspace and may sign in, but its runner.
-  if (action === 'assignees') return send(res, 200, Object.keys(users()).filter(e => { const p = asPerson(e); return p && e !== runnerOf(inst).by && canSee(p, t.workspaces[t.series[inst.seriesId].workspace]); }));
+  // Whom it may be assigned to, for those who may assign it to someone else: whoever sees its workspace and may sign in, but its runner.
+  if (action === 'assignees') {
+    const ws = t.workspaces[t.series[inst.seriesId].workspace];
+    if (runnerOf(inst).by !== by && !canManage(me, ws)) throw new HttpError(403, `only its runner, ${runnerOf(inst).by}, the workspace's owners and admins assign it to someone else`);
+    return send(res, 200, Object.keys(users()).filter(e => { const p = asPerson(e); return p && e !== runnerOf(inst).by && canSee(p, ws); }));
+  }
   if (action === 'summary') return send(res, 200, summary(inst, me));
   // The screen: anyone who sees the instance reads it; only its own run writes it.
   if (action === 'screen' && req.method === 'GET') return send(res, 200, inst.doc);
