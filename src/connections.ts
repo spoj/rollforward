@@ -607,7 +607,13 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
       });
     });
     if (o.service) unregister = o.registerAbort?.(() => up.destroy(new Error('run stopped')));
-    up.on('error', e => { if (!settled) die(e); });
+    up.on('error', e => {
+      if (settled) return;
+      if (!o.service) return die(e);
+      if (res.headersSent) res.destroy();
+      else res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' }).end('provider request failed\n');
+      done({ status: 502, bytes: 0, type: '', text: '', events: [], headers: {}, cut: true });
+    });
     if (o.body) up.end(o.body);
     else {
       if (o.digest) req.on('data', (b: Buffer) => { o.digest!.hash.update(b); o.digest!.size += b.length; });

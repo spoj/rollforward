@@ -190,6 +190,7 @@ before(async () => {
       if (g.stall) return void res.writeHead(200, { 'content-type': 'application/json' }).write('{"data":');
       return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ data: { id, total_cost: g.cost, usage: g.cost } }));
     }
+    if (body?.user === 'reset-before-headers') return req.socket.destroy();
     if (req.url === '/api/v1/edge-head') return void res.writeHead(200, { 'content-type': 'application/json', 'content-encoding': 'gzip' }).end(gzipSync('{"usage":{"cost":1}}'));
     if (body?.user === 'malformed-json') return void res.writeHead(200, { 'content-type': 'application/json' }).end('{"usage":');
     if (body?.user === 'compressed-error') return void res.writeHead(429, { 'content-type': 'application/json', 'content-encoding': 'gzip' }).end(gzipSync('{"error":'));
@@ -1037,6 +1038,14 @@ test('a deployment service gets streamed requests only under the runner\'s ticke
   }
 });
 
+
+test('a provider connection reset before response headers records an estimated cost rather than silently zero', async () => {
+  const { drainCalls } = await import('../src/connections.ts');
+  assert.equal((await via('POST', `${O}/chat/completions`, json({ user: 'reset-before-headers', messages: [{ role: 'user', content: 'billable request' }] }))).status, 502);
+  await drainCalls(callRuns.get('run')!);
+  const e = calls().at(-1)!;
+  assert.ok(e.cost > 0 && e.estimated === true);
+});
 
 test('malformed JSON, malformed SSE, compressed errors, broken compression and HEAD responses do not crash accounting', async () => {
   const { drainCalls } = await import('../src/connections.ts');
