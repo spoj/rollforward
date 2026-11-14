@@ -168,49 +168,56 @@ async function ready(client: RpcClient, tries = 4): Promise<void> {
 
 export async function startRun(o: Parameters<typeof pi>[0] & { onEvent: (e: JsonAgentSessionEvent) => void }): Promise<Run> {
   if (!process.env.OPENROUTER_API_KEY) throw new Error('no model key: the server has no OPENROUTER_API_KEY');
-  const client = pi(o), run = join(scratch, 'runs', o.token);
-  let child: ChildProcess | undefined;
+  const run = join(scratch, 'runs', o.token);
+  let client: RpcClient | undefined;
   // A run may leave folders it can't write in its home, or named in bytes that aren't UTF-8: wipe() removes them all.
   const stop = async () => {
-    const exited = !child || child.exitCode !== null || child.signalCode !== null ? Promise.resolve() : once(child, 'exit');
-    await client.stop();
+    const child = (client as unknown as { process: ChildProcess | null } | undefined)?.process;
+    const exited = !child?.pid || child.exitCode !== null || child.signalCode !== null ? Promise.resolve() : once(child, 'exit');
+    await client?.stop();
     await exited;
     unlistenRun(o.token);
     wipe(Buffer.from(run));
   };
-  let settle = (_: TurnEnd) => {}, settled = Promise.resolve<TurnEnd>({ aborted: false });
-  client.onEvent(e => e.type === 'agent_settled' && settle({ aborted: e.aborted }));
-  client.onEvent(o.onEvent);
-  await client.start();
-  const rpc = client as unknown as { process: ChildProcess; stderr: string; stopReadingStdout?: () => void };
-  child = rpc.process;
-  let errForwarded = 0, lineBytes = 0;
-  child.stderr!.removeAllListeners('data').on('data', (d: Buffer) => {
-    if (errForwarded < 65536) { process.stderr.write(d.subarray(0, 65536 - errForwarded)); errForwarded += d.length; }
-    rpc.stderr = (rpc.stderr + d.toString()).slice(-65536);
-  });
-  child.stdout!.prependListener('data', (d: Buffer) => {
-    const nl = d.lastIndexOf(10);
-    lineBytes = nl < 0 ? lineBytes + d.length : d.length - nl - 1;
-    if (lineBytes > 64 * 2 ** 20) {
-      rpc.stopReadingStdout?.();
-      rpc.stopReadingStdout = undefined;
-      child!.stdout!.destroy();
-      child!.kill('SIGKILL');
-      settle({ aborted: true, error: 'Pi stdout line exceeded 64 MB' });
-    }
-  });
-  child.once('exit', (code, signal) => settle({ aborted: true, error: `Pi exited with ${signal ? `signal ${signal}` : `code ${code}`}: ${client.getStderr()}` }));
-  await ready(client).catch(async e => { await stop(); throw e; });
-  return {
-    turn: async text => {
-      settled = new Promise<TurnEnd>(resolve => { settle = resolve; });
-      await client.prompt(text);
-      return { settled };
-    },
-    steer: text => client.steer(text),
-    // Done once the turn settles: Pi says so before it answers the abort, and the run's end may stop it first.
-    interrupt: async () => { void client.clearQueue().then(() => client.abort()).catch(() => {}); await settled; },
-    stop,
-  };
+  try {
+    const rpcClient = client = pi(o);
+    let settle = (_: TurnEnd) => {}, settled = Promise.resolve<TurnEnd>({ aborted: false });
+    rpcClient.onEvent(e => e.type === 'agent_settled' && settle({ aborted: e.aborted }));
+    rpcClient.onEvent(o.onEvent);
+    await rpcClient.start();
+    const rpc = rpcClient as unknown as { process: ChildProcess; stderr: string; stopReadingStdout?: () => void };
+    const child = rpc.process;
+    let errForwarded = 0, lineBytes = 0;
+    child.stderr!.removeAllListeners('data').on('data', (d: Buffer) => {
+      if (errForwarded < 65536) { process.stderr.write(d.subarray(0, 65536 - errForwarded)); errForwarded += d.length; }
+      rpc.stderr = (rpc.stderr + d.toString()).slice(-65536);
+    });
+    child.stdout!.prependListener('data', (d: Buffer) => {
+      const nl = d.lastIndexOf(10);
+      lineBytes = nl < 0 ? lineBytes + d.length : d.length - nl - 1;
+      if (lineBytes > 64 * 2 ** 20) {
+        rpc.stopReadingStdout?.();
+        rpc.stopReadingStdout = undefined;
+        child.stdout!.destroy();
+        child.kill('SIGKILL');
+        settle({ aborted: true, error: 'Pi stdout line exceeded 64 MB' });
+      }
+    });
+    child.once('exit', (code, signal) => settle({ aborted: true, error: `Pi exited with ${signal ? `signal ${signal}` : `code ${code}`}: ${rpcClient.getStderr()}` }));
+    await ready(rpcClient);
+    return {
+      turn: async text => {
+        settled = new Promise<TurnEnd>(resolve => { settle = resolve; });
+        await rpcClient.prompt(text);
+        return { settled };
+      },
+      steer: text => rpcClient.steer(text),
+      // Done once the turn settles: Pi says so before it answers the abort, and the run's end may stop it first.
+      interrupt: async () => { void rpcClient.clearQueue().then(() => rpcClient.abort()).catch(() => {}); await settled; },
+      stop,
+    };
+  } catch (e) {
+    await stop();
+    throw e;
+  }
 }
