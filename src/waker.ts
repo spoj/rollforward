@@ -28,7 +28,7 @@ const full = () => active.size >= MAX_RUNS || (MIN_FREE > 0 && freemem() < MIN_F
 export const MAX_OPEN = 3;
 const SPACING_MS = 15 * 60_000, MAX_WAKES = 20;
 
-export type Active = { inst: Instance; n: number; session: number; token: string; view: View; workspace: string; skills: Record<string, number>; shape: string; run?: Run; sent: number; noted: number; seen: number; texts: Map<string, number>; done: boolean; cost: number; failed?: string; hosts: Set<string>; links: Map<string, { name: string; offer: string }>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string;
+export type Active = { inst: Instance; n: number; runner: string; session: number; token: string; view: View; workspace: string; skills: Record<string, number>; shape: string; run?: Run; sent: number; noted: number; seen: number; texts: Map<string, number>; done: boolean; cost: number; failed?: string; hosts: Set<string>; links: Map<string, { name: string; offer: string }>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string;
   // Its Pi as it starts, and once its Pi, sandbox and browsers have stopped, after it ends; whether its stop was asked for, from when
   // its token opens nothing (server.ts running()).
   ready?: Promise<Run>; ended?: Promise<unknown>; stopped?: boolean };
@@ -243,20 +243,21 @@ async function begin(inst: Instance) {
   const n = inst.log.filter(e => e.op === 'run').length + 1;
   const entries = inst.log.filter(e => e.seq > seen && (e.by !== 'agent' || e.note)), left = notes(inst.series());
   const text = message(inst, n, entries, !kept, left.filter(e => !e.settled));
+  // A run is a lease: one runner for the whole of it, the act whose ticks it may use (logins.ts lender()), and the AGENTS.md
+  // files it reads, by their sha256, as its series' .pylib's listing is (runner.ts pylib()).
+  const lease = runnerOf(inst);
   // The versions live as its Pi starts, which it uses to its end.
   const live = kept ? [] : skills().map(s => ({ ...s, dir: realpathSync(s.dir) }));
   const a: Active = {
-    inst, n, session: kept?.session ?? n, token: kept?.token ?? randomUUID(), view: kept?.view ?? view(inst), workspace: tree().series[series].workspace, skills: kept?.skills ?? Object.fromEntries(live.map(s => [s.id, pushed(s).version])), shape: kept?.shape ?? startsFrom(inst),
+    inst, n, runner: lease.by, session: kept?.session ?? n, token: kept?.token ?? randomUUID(), view: kept?.view ?? view(inst), workspace: tree().series[series].workspace, skills: kept?.skills ?? Object.fromEntries(live.map(s => [s.id, pushed(s).version])), shape: kept?.shape ?? startsFrom(inst),
     sent: entries.at(-1)!.seq, noted: left.at(-1)?.seq ?? 0, seen, texts: new Map([[text, entries.at(-1)!.seq]]), done: false, cost: 0, hosts: new Set(), links: new Map(),
     process: processOf(inst), thread: pending(inst, seen)[0]?.thread as string | undefined,
   };
   active.set(series, a);
   byToken.set(a.token, a);
   // Whose OpenRouter key it starts with, its runner's own or the server's (connections.ts), never the key.
-  const key = logins(runnerOf(inst).by).some(l => l.id === 'openrouter' && l.enabled) ? 'own' : 'shared';
-  // A run is a lease: one runner for the whole of it, the act whose ticks it may use (logins.ts lender()), and the AGENTS.md
-  // files it reads, by their sha256, as its series' .pylib's listing is (runner.ts pylib()).
-  const lease = runnerOf(inst), agents = Object.fromEntries(a.view.ro.filter(([p, at]) => at.endsWith('/AGENTS.md') && existsSync(p)).map(([p, at]) => [at, createHash('sha256').update(readFileSync(p)).digest('hex')]));
+  const key = logins(lease.by).some(l => l.id === 'openrouter' && l.enabled) ? 'own' : 'shared';
+  const agents = Object.fromEntries(a.view.ro.filter(([p, at]) => at.endsWith('/AGENTS.md') && existsSync(p)).map(([p, at]) => [at, createHash('sha256').update(readFileSync(p)).digest('hex')]));
   inst.append('server', 'run', { run: n, runner: lease.by, consent: lease.consent, agents, pylib: pylib(a.view.pylib, inst.dir), upto: a.sent, skills: a.skills, key, ...(kept && { continues: kept.session }) });
   let settled: Promise<TurnEnd>;
   try {
@@ -372,6 +373,13 @@ function leases() {
 }
 
 // A run cut, its token first, so nothing more goes out, then its browsers and its sandbox; its instance carries on in a new run.
+export async function interruptRun(a: Active) {
+  a.stopped = true;
+  await Promise.race([a.run!.interrupt(), new Promise(r => setTimeout(r, 1500))]);
+  finish(a, true);
+  await a.ended;
+}
+
 function cut(a: Active, why: string) {
   const done = finish(a, true, why)!;
   a.inst.append('server', 'wake', { reason: `Run ${a.n} was cut: ${why}; carry on`, from: 'server', cause: done.seq });

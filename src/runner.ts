@@ -1,5 +1,6 @@
 import { RpcClient, type JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import type { ChildProcess } from 'node:child_process';
+import { once } from 'node:events';
 import { createHash, randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -143,13 +144,20 @@ async function ready(client: RpcClient, tries = 4): Promise<void> {
 export async function startRun(o: Parameters<typeof pi>[0] & { onEvent: (e: JsonAgentSessionEvent) => void }): Promise<Run> {
   if (!process.env.OPENROUTER_API_KEY) throw new Error('no model key: the server has no OPENROUTER_API_KEY');
   const client = pi(o), run = join(scratch, 'runs', o.token);
+  let child: ChildProcess | undefined;
   // A run may leave folders it can't write in its home, or named in bytes that aren't UTF-8: wipe() removes them all.
-  const stop = async () => { await client.stop(); unlistenRun(o.token); wipe(Buffer.from(run)); };
+  const stop = async () => {
+    const exited = !child || child.exitCode !== null || child.signalCode !== null ? Promise.resolve() : once(child, 'exit');
+    await client.stop();
+    await exited;
+    unlistenRun(o.token);
+    wipe(Buffer.from(run));
+  };
   let settle = (_: TurnEnd) => {}, settled = Promise.resolve<TurnEnd>({ aborted: false });
   client.onEvent(e => e.type === 'agent_settled' && settle({ aborted: e.aborted }));
   client.onEvent(o.onEvent);
   await client.start();
-  const child = (client as unknown as { process: ChildProcess }).process;
+  child = (client as unknown as { process: ChildProcess }).process;
   child.once('exit', (code, signal) => settle({ aborted: true, error: `Pi exited with ${signal ? `signal ${signal}` : `code ${code}`}: ${client.getStderr()}` }));
   await ready(client).catch(async e => { await stop(); throw e; });
   return {
@@ -160,10 +168,10 @@ export async function startRun(o: Parameters<typeof pi>[0] & { onEvent: (e: Json
     },
     steer: text => client.steer(text),
     // Done once the turn settles: Pi says so before it answers the abort, and the run's end may stop it first.
-    interrupt: async () => { await Promise.race([client.clearQueue().then(() => client.abort()), settled]); },
+    interrupt: async () => { void client.clearQueue().then(() => client.abort()).catch(() => {}); await settled; },
     stop,
     // The sandbox by the process Pi's client started, which is its outer bwrap (bin/sandbox/node).
-    alone: () => alone(child.pid!),
+    alone: () => alone(child!.pid!),
   };
 }
 

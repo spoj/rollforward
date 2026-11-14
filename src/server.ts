@@ -25,7 +25,7 @@ import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, prune, startIndexing, track } from './indexes.ts';
 import { addNote, notes, seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, archived, assigned, byToken, cancelWake, cancelWakes, closed, correct, dropRequest, held, kick, named, noted, pending, queued, remove, resolveFor, setWake, standing, startWaking, startWith, stop, wakes, wakesOf, wakeWith, weekly, reads, CUT, type Active, type Request } from './waker.ts';
+import { active, archived, assigned, byToken, cancelWake, cancelWakes, closed, correct, dropRequest, held, interruptRun, kick, named, noted, pending, queued, remove, resolveFor, setWake, standing, startWaking, startWith, stop, wakes, wakesOf, wakeWith, weekly, reads, CUT, type Active, type Request } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -532,7 +532,7 @@ async function interrupt(inst: Instance, a: Active | undefined, me: Me, why?: st
   if (!a?.run) throw new HttpError(409, a ? 'its run is starting: try again in a moment' : 'no run going');
   a.stopped = true;
   inst.append(me.email, 'interrupt', { ...(why && { why }) });
-  await a.run.interrupt();
+  await interruptRun(a);
 }
 
 async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: URL) {
@@ -749,7 +749,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     }
     if (action === 'notes' && req.method === 'GET') return send(res, 200, notes(book));
     if (action === 'notes' && req.method === 'POST') {
-      const { text, files = [], how, thread } = payload, from = run && { run: run.n, runner: runnerOf(run.inst).by };
+      const { text, files = [], how, thread } = payload, from = run && { run: run.n, runner: run.runner };
       if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a note has text');
       if (!other) {
         for (const f of files) if (!(typeof f === 'string' && /^files\/[^./][^/]*$/.test(f) && existsSync(join(book, 'notes', f)))) throw new HttpError(400, `no attachment ${f}`);
@@ -961,7 +961,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const said = inst.append(by, 'comment', {
       ...(under ? { thread: under.thread, parent: under.seq } : { thread: `c${inst.log.length + 1}`, item: item ?? null, ref: ref ?? null }), text: text.trim(), ...(files.length && { files }),
       ...(run && { run: run.n, ...(ask && { ask, ...(who && { to: who }) }) }), ...(quiet && { quiet: true }),
-      ...(away && { runner: runnerOf(run.inst).by, see: { inst: run.inst.id, label: run.inst.label, ...(run.thread && { thread: run.thread }) }, note: true }),
+      ...(away && { runner: run.runner, see: { inst: run.inst.id, label: run.inst.label, ...(run.thread && { thread: run.thread }) }, note: true }),
     });
     if (away) {
       run.inst.append('agent', 'said', { run: run.n, inst: inst.id, label: inst.label, seq: said.seq, thread: said.thread });

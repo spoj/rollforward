@@ -410,6 +410,21 @@ test("from Interrupt on, a run's token opens nothing: what the run still sends a
   assert.equal(log.find(e => e.op === 'done')!.aborted, true);
 });
 
+test('Interrupt and Assign terminate a run whose in-sandbox Pi is frozen with SIGSTOP rather than failing on RPC', async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'FrozenPi' })).json();
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB] })).status, 200);
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec' })).json();
+  scripts.push({ bash: ['touch working/frozen && kill -STOP 2 && sleep 60'], report: 'unreached', saw: [] });
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json(), dir = join(root, 'instances', id);
+  await until('Pi frozen', () => existsSync(join(dir, 'working', 'frozen')));
+  await new Promise(ok => setTimeout(ok, 200));
+  const r = await call('POST', `/api/instances/${id}/assign`, { to: BOB, stops: 1 });
+  assert.equal(r.status, 200, await r.clone().text());
+  const log = await runs(id, 1);
+  assert.equal(log.find(e => e.op === 'done')!.aborted, true);
+  assert.equal(log.find(e => e.op === 'assign')!.to, BOB);
+});
+
 test('people rename the instance, its series and its workspace mid-run: the run carries on by the names it started with, and the next run has the new ones', async () => {
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Named' })).json();
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Before' })).json();
