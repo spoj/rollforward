@@ -149,7 +149,8 @@ export function pruneGrants() {
   for (const [id, g] of Object.entries(all)) {
     if (!live(g)) continue;
     const w = t.workspaces[g.workspace], u = us[g.person];
-    if (w && (!u || canSee({ email: g.person, role: u.role, groups: u.groups ?? [] }, w))) continue;
+    // Disabling suspends lending, not approval; RF_ADMINS still determines the person's effective role.
+    if (w && (!u || canSee(asPerson(g.person, { ...u, disabled: false })!, w))) continue;
     all[id] = { ...g, state: 'revoked', by: 'server', decided: new Date().toISOString() };
     dropped.push(g);
   }

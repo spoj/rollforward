@@ -242,6 +242,35 @@ test('owners may deny restricted requests, and lapse, withdrawal and removal kee
   assert.deepEqual(Object.keys(grants()), []);
 });
 
+test('grants survive owner/member moves, alternate group or direct membership, and admin visibility', async () => {
+  const group = '6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b', other = '7f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b';
+  const { id } = await ask(person, 'portal', 'w', grant.reason);
+  decide(owner, id, true, '');
+  upsertUser(person.email, { groups: [group, other] });
+  for (const people of [
+    { owners: [person.email], members: [] },
+    { owners: [owner.email], members: [person.email] },
+    { owners: [group], members: [other] },
+    { owners: [owner.email], members: [group, other] },
+    { owners: [owner.email], members: [other] },
+    { owners: [group], members: [person.email] },
+    { owners: [owner.email], members: [person.email] },
+  ]) {
+    saveTree({ ...tree(), workspaces: { ...tree().workspaces, w: { name: 'Acme', ...people } } });
+    pruneGrants();
+    assert.equal(grants()[id].state, 'approved', JSON.stringify(people));
+    assert.equal(logins(person.email).length, 1);
+  }
+  upsertUser(person.email, { role: 'admin', groups: [] });
+  saveTree({ ...tree(), workspaces: { ...tree().workspaces, w: { name: 'Acme', owners: [], members: [] } } });
+  pruneGrants();
+  assert.equal(grants()[id].state, 'approved');
+  upsertUser(person.email, { role: 'user' });
+  pruneGrants();
+  assert.equal(grants()[id].state, 'revoked');
+  assert.deepEqual(logins(person.email), []);
+});
+
 test('losing workspace visibility revokes live grants, hides the workspace from grants endpoints, and aborts an in-flight ask', async () => {
   const { id } = await ask(person, 'portal', 'w', grant.reason);
   decide(owner, id, true, '');

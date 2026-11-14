@@ -2110,6 +2110,30 @@ test('rf comment --wake and --wait on a shared series start and wait for the run
   await quiet();
 });
 
+test('an RF_ADMINS admin keeps workspace grants when another admin changes their stored role to user', async () => {
+  const { personDir, saveLogin } = await import('../src/logins.ts');
+  const b = sessionOf(await login(bob))!;
+  assert.equal((await call('PUT', '/users', JSON.stringify({ roles: { [bob]: 'admin' } }))).status, 200);
+  try {
+    const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'AdminGrant' }), b)).json();
+    saveLogin(adminEmail, { id: 'web:admin-grant', kind: 'website', name: 'Admin grant', since: new Date().toISOString(), offers: [{ id: 'web:admin-grant', name: 'Admin grant' }] });
+    const sites = join(personDir(adminEmail), 'websites.json');
+    writeFileSync(sites, JSON.stringify({ ...(existsSync(sites) ? JSON.parse(readFileSync(sites, 'utf8')) : {}),
+      'admin-grant': { url: 'https://portal.example.com/', hosts: ['portal.example.com'], writeback: true, added: new Date().toISOString(),
+        profile: { what: 'Supplier portal', category: 'vendor', risk: 'medium', flags: [] } } }));
+    const asked = await call('POST', '/grants', JSON.stringify({ site: 'admin-grant', workspace: ws, reason: 'Review invoices' }));
+    assert.equal(asked.status, 200);
+    const { id } = await asked.json();
+    assert.equal((await json('/grants')).find(g => g.id === id).state, 'approved');
+    assert.equal((await call('PUT', '/users', JSON.stringify({ roles: { [adminEmail]: 'user' }, force: true }), b)).status, 200);
+    assert.ok((await workspaces()).some(w => w.id === ws), 'RF_ADMINS still grants visibility');
+    assert.equal((await json('/grants')).find(g => g.id === id).state, 'approved');
+    assert.ok((await json('/logins')).some(l => l.id === 'web:admin-grant'));
+  } finally {
+    await call('PUT', '/users', JSON.stringify({ roles: { [adminEmail]: 'admin', [bob]: 'user' }, force: true }));
+  }
+});
+
 test('/correct restricts a person’s see target to another non-deleted instance of the same series', async () => {
   const { id: ws1 } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'CorrWs1' }))).json();
   const { id: ws2 } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'CorrWs2' }))).json();
