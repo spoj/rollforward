@@ -1283,3 +1283,49 @@ test('cut streams and endpoints without inline usage.cost query /api/v1/generati
     callRuns.delete('try-tok');
   }
 });
+
+test('parentOf caches ancestor lookups per user so one runner lacking parent visibility cannot block another runner', async () => {
+  const BOB = 'bob-cache@demo.test', CAROL = 'carol-cache@demo.test', { upsertUser } = await import('../src/auth.ts'), { saveTree, tree } = await import('../src/system.ts');
+  if (!tree().series.weekly) saveTree({ workspaces: { w: { name: 'W', owners: [ALICE], members: [] } }, series: { weekly: { name: 'Weekly', workspace: 'w' } } });
+  upsertUser(BOB, { role: 'admin' });
+  upsertUser(CAROL, { role: 'admin' });
+  logins.saveLogin(BOB, { id: 'm365', kind: 'm365', name: 'Microsoft 365', account: BOB, since: '2026-10-01T00:00:00Z', offers: [{ id: 'm365:item:b!d1/leaf-only', name: 'Leaf' }] }, 'bob-refresh');
+  logins.saveLogin(CAROL, { id: 'm365', kind: 'm365', name: 'Microsoft 365', account: CAROL, since: '2026-10-01T00:00:00Z', offers: [{ id: 'm365:item:b!d1/y2026', name: '2026' }] }, 'carol-refresh');
+  content.deep = 'ok-deep';
+  const fetchWas = globalThis.fetch;
+  let bobLookups = 0;
+  try {
+    globalThis.fetch = async (input, init) => {
+      const u = new URL(String(input)), auth = new Headers(init?.headers).get('authorization');
+      if (u.pathname.endsWith('/token')) {
+        const f = new URLSearchParams(String(init?.body ?? '')), rt = f.get('refresh_token');
+        if (rt === 'bob-refresh' || rt === 'carol-refresh') return Response.json({ access_token: rt === 'bob-refresh' ? 'bob-tok' : 'tok', refresh_token: rt, expires_in: 3600 });
+      }
+      if (u.pathname.endsWith('/drives/b!d1/items/mid-folder')) {
+        if (auth === 'Bearer bob-tok') bobLookups++;
+        return auth === 'Bearer bob-tok'
+          ? Response.json({ error: { code: 'itemNotFound' } }, { status: 404 })
+          : Response.json({ id: 'mid-folder', parentReference: { driveId: 'b!d1', id: 'y2026' } });
+      }
+      if (u.pathname.endsWith('/drives/b!d1/items/deep')) {
+        return Response.json({ id: 'deep', name: 'deep.csv', parentReference: { driveId: 'b!d1', id: 'mid-folder' } });
+      }
+      if (u.pathname.endsWith('/drives/b!d1')) return Response.json({ id: 'b!d1', ...drives['b!d1'] });
+      return fetchWas(input, init);
+    };
+    const bobInst = { ...inst, log: [{ seq: 1, op: 'create', by: BOB, logins: ['m365:item:b!d1/leaf-only'] }, { seq: 2, op: 'run', run: 1, runner: BOB, consent: 1 }] } as unknown as Instance;
+    const carolInst = { ...inst, log: [{ seq: 1, op: 'create', by: CAROL, logins: ['m365:item:b!d1/y2026'] }, { seq: 2, op: 'run', run: 1, runner: CAROL, consent: 1 }] } as unknown as Instance;
+    runs.set('bob-parent', bobInst);
+    runs.set('carol-parent', carolInst);
+    const bobRes = await via('GET', `${G}/drives/b!d1/items/deep/content`, { token: 'bob-parent' });
+    assert.equal(bobRes.status, 403);
+    assert.equal(bobLookups, 1, 'Bob triggered parentOf(mid-folder)');
+    const carolRes = await via('GET', `${G}/drives/b!d1/items/deep/content`, { token: 'carol-parent' });
+    assert.equal(carolRes.status, 200);
+    assert.equal(carolRes.text, 'ok-deep');
+  } finally {
+    globalThis.fetch = fetchWas;
+    runs.delete('bob-parent');
+    runs.delete('carol-parent');
+  }
+});
