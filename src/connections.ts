@@ -243,7 +243,13 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
       method: req.method, headers: { ...headers, ...(o.body ? { 'content-length': String(o.body.length) } : req.headers['transfer-encoding'] && { 'transfer-encoding': 'chunked' }), ...o.auth },
     }, r => {
       if (r.headers.location) o.location(r.headers.location);
-      res.writeHead(r.statusCode!, Object.fromEntries(Object.entries(r.headers).filter(([k]) => !HOP.includes(k))));
+      // A status Node won't send on, such as 099, fails the request, as an unreadable answer does below.
+      try {
+        res.writeHead(r.statusCode!, Object.fromEntries(Object.entries(r.headers).filter(([k]) => !HOP.includes(k))));
+      } catch (e) {
+        up.destroy();
+        return fail(e);
+      }
       const kept: Buffer[] = [], type = String(r.headers['content-type']), keep = o.keep && /json|event-stream/.test(type);
       let bytes = 0;
       r.on('data', (b: Buffer) => { bytes += b.length; if (keep) kept.push(b); });
@@ -251,7 +257,13 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
       else r.pipe(res).once('close', () => r.resume());
       r.on('end', () => {
         const raw = Buffer.concat(kept), enc = r.headers['content-encoding'];
-        const text = keep ? (enc === 'gzip' ? gunzipSync(raw) : enc === 'deflate' ? inflateSync(raw) : enc === 'br' ? brotliDecompressSync(raw) : raw).toString() : '';
+        // A HEAD's answer, or any other with no body, says it is compressed with nothing to decompress.
+        let text = '';
+        try {
+          if (keep && raw.length) text = (enc === 'gzip' ? gunzipSync(raw) : enc === 'deflate' ? inflateSync(raw) : enc === 'br' ? brotliDecompressSync(raw) : raw).toString();
+        } catch (e) {
+          return fail(e);
+        }
         const answer = { status: r.statusCode!, bytes, type, text };
         if (!o.digest || req.readableEnded) return ok(answer);
         const finish = () => {

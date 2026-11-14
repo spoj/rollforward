@@ -184,6 +184,9 @@ before(async () => {
       res.end(`${events.map(e => `data: ${JSON.stringify(e)}\n\n`).join('')}data: [DONE]\n\n`);
     };
     if (req.url === '/api/v1/messages') return stream({ type: 'message_start', message: { usage: { input_tokens: 0 } } }, { type: 'message_delta', usage: { output_tokens: 3, cost: 0.002 } }, { type: 'message_stop' });
+    if (req.url === '/api/v1/empty') return void res.writeHead(200, { 'content-type': 'application/json', 'content-encoding': 'gzip' }).end();
+    if (req.url === '/api/v1/corrupt') return void res.writeHead(200, { 'content-type': 'application/json', 'content-encoding': 'gzip' }).end(Buffer.from([0x1f, 0x8b, 8, 0, 0, 0]));
+    if (req.url === '/api/v1/odd') return void res.socket!.end('HTTP/1.1 099 Odd\r\ncontent-length: 0\r\n\r\n');
     if (req.url === '/api/v1/responses') return stream({ type: 'response.created', response: { usage: null } }, { type: 'response.completed', response: { usage: { cost: 0.004 } } });
     const answer = req.url === '/search' ? { results: [], costDollars: { total: 0.005 } } : req.url === '/api/v1/models' ? { data: [] } : { choices: [{ message: { content: 'Hello' } }], usage: { cost: 0.001 } };
     res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(answer));
@@ -810,6 +813,17 @@ test("OpenRouter is every run's, with the server's key put in for the run's: its
   assert.equal(calls().at(-1)!.cost, 0.004, "a response's, in its last event");
   assert.deepEqual([(await via('GET', `${O}/models`)).status, calls().at(-1)!.cost], [200, 0]);
   assert.equal(+(callRuns.get('run')!.cost - before).toFixed(6), 0.007);
+});
+
+test('an answer the proxy cannot read or pass on, compressed with nothing in it, cut short, or with a status Node refuses, fails that request, logged, and the proxy keeps serving', async () => {
+  const head = await via('HEAD', `${O}/empty`, { headers: { 'accept-encoding': 'gzip' } });
+  assert.equal(head.status, 200);
+  assert.deepEqual([calls().at(-1)!.path, calls().at(-1)!.status, calls().at(-1)!.cost], ['/api/v1/empty', 200, 0]);
+  assert.equal((await via('GET', `${O}/empty`, { headers: { 'accept-encoding': 'gzip' } })).status, 200);
+  await via('GET', `${O}/corrupt`, { headers: { 'accept-encoding': 'gzip' } }).catch(() => {});
+  assert.deepEqual([calls().at(-1)!.path, calls().at(-1)!.status, !!calls().at(-1)!.failed], ['/api/v1/corrupt', 502, true]);
+  assert.equal((await via('GET', `${O}/odd`)).status, 502);
+  assert.equal((await via('GET', `${O}/models`)).status, 200);
 });
 
 test("OpenRouter takes any request, with the run's key, and whatever body one carries, by any method to any path, is a JSON object, which goes on asking only for providers that don't collect its data", async () => {
