@@ -1483,6 +1483,31 @@ test('a run waking its own workspace is logged in .rf/log.jsonl, and cross-works
   assert.equal(putAct.wake.target, ownInst);
 });
 
+test('unticking logins during a run ends its Pi session instead of carrying the revoked session into the next run', async () => {
+  assert.equal((await call('POST', '/logins/sites', { name: 'midcred', url: 'https://midcred.example.com/' })).status, 200);
+  const { id: sIn } = await (await call('POST', '/logins/web/midcred', {})).json();
+  assert.equal((await call('POST', `/signins/${sIn}`)).status, 200);
+
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'MidRunUntick' })).json();
+  const { id: sid } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec' })).json();
+  scripts.push({
+    bash: ['touch working/in-run; for i in $(seq 1 50); do [ -f working/release ] && break; sleep 0.05; done'],
+    report: 'Run 1 done.', saw: [],
+  });
+  const { id: inst } = await (await call('POST', `/api/series/${sid}`, { label: '2026-11', logins: ['web:midcred'] })).json();
+  await until('run 1 in progress', () => existsSync(join(root, 'instances', inst, 'working', 'in-run')));
+  assert.equal((await call('POST', `/api/instances/${inst}/logins`, { logins: [], quiet: true })).status, 200);
+  writeFileSync(join(root, 'instances', inst, 'working', 'release'), 'go');
+  await runs(inst, 1);
+
+  scripts.push({ bash: ['true'], report: 'Run 2 done.', saw: [] });
+  assert.equal((await call('POST', `/api/instances/${inst}/comment`, { text: 'Continue without login' })).status, 200);
+  await runs(inst, 2);
+
+  const sessions = readdirSync(join(root, 'instances', inst, 'session')).filter(f => f.endsWith('.jsonl'));
+  assert.equal(sessions.length, 2, 'run 2 started a fresh Pi session after mid-run login untick');
+});
+
 test("every entry names its source: a person, a run whose entry names its runner and the act whose ticks it uses, or what caused it", () => {
   const logs = new Map(readdirSync(join(root, 'instances')).map(id => [id, readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l) as Record<string, any>)]));
   for (const [id, log] of logs) for (const e of log) {

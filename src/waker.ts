@@ -56,7 +56,7 @@ const idle = new Map<string, Idle>();
 // live skills' versions, and the caches it has copies of at $RF_INDEX, a first one for a source so starting a session that has them.
 function startsFrom(inst: Instance): string {
   const v = view(inst);
-  return JSON.stringify([v.instance, v.names, v.series, v.env, v.ro.filter(([, at]) => at.endsWith('/AGENTS.md')).map(([p]) => existsSync(p) && readFileSync(p, 'utf8')),
+  return JSON.stringify([v.instance, v.names, v.series, v.env, runnerOf(inst).consent, v.ro.filter(([, at]) => at.endsWith('/AGENTS.md')).map(([p]) => existsSync(p) && readFileSync(p, 'utf8')),
     skills().map(s => [s.id, pushed(s).version]), sources(inst).map(({ o }) => o.id)]);
 }
 // Whether an instance's runner can still see its workspace, as each run of theirs needs.
@@ -381,7 +381,7 @@ function finish(a: Active, aborted: boolean, error?: string): Entry | undefined 
   const added = rules(a.process, processMd(a.inst.dir) ?? a.process);
   const done = a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(6), estimated: a.estimated, ...(error && { error }), ...(added && { rules: added, thread: a.thread }) });
   // Its Pi idles for the instance's next run, or stops, the longest idle too past RF_MAX_IDLE.
-  const keep = !draining && !aborted && !error && !!a.run && !a.texts.size && a.inst.doc.status === 'open' && a.run.alone();
+  const keep = !draining && !aborted && !error && !!a.run && !a.texts.size && a.inst.doc.status === 'open' && a.run.alone() && startsFrom(a.inst) === a.shape;
   if (keep) {
     idle.set(a.inst.id, { inst: a.inst, run: a.run!, token: a.token, view: a.view, skills: a.skills, session: a.session, shape: a.shape, seq: a.inst.log.at(-1)!.seq, since: Date.now() });
     if (idle.size > MAX_IDLE) drop(idle.keys().next().value!);
