@@ -2006,9 +2006,9 @@ document.addEventListener('change', async ev => {
   }
   if (group) group.querySelector('.tickall').checked = [...group.querySelectorAll('input.tick')].every(k => k.checked);
   if (el.matches('#mvwhat, #mvto')) return mvSay();
-  if (el.id === 'sname') { const name = el.value.trim(); await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ name }) }); own.settings.name = name; own.title = `${name} \u00b7 Settings`; }
+  if (el.id === 'sname') { await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) }); own.settings.name = el.value.trim(); own.title = `${own.settings.name} \u00b7 Settings`; }
   else if (el.matches('#pv input.tick') && pv.settings.kind === 'series' && pv.settings.shared_by === me.email) await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ share: true, logins: ticked() }) });
-  else if (el.id === 'wname') { const name = el.value.trim(); await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ name }) }); own.settings.name = name; own.title = `${name} \u00b7 Settings`; }
+  else if (el.id === 'wname') { await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) }); own.settings.name = el.value.trim(); own.title = `${own.settings.name} \u00b7 Settings`; }
   else if (el.id === 'oruse') await saveKey();
   else if (el.matches('#log input.tick')) {
     const logins = [...document.querySelectorAll('#log input.tick:checked')].map(i => i.value);

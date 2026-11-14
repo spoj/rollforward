@@ -18,7 +18,7 @@ type Tunnel = { id: string; token: string; type: string; gateway: string; since:
 const cookie = (domain = '.customer.test', name = 'SVPNCOOKIE', value = COOKIE): Cookie => ({ name, value, domain, path: '/', expires: -1, secure: true, httpOnly: true, sameSite: 'Lax' });
 const sessions = new Map<string, { body: any; cookies: Cookie[]; expires: number }>(), tunnels = new Map<string, Tunnel>();
 const opened: any[] = [], created: any[] = [], deleted: string[] = [], browserDeleted: string[] = [], serviceAuth: string[] = [];
-let nextCookies = [cookie()], browserSerial = 0, tunnelSerial = 0, tunnelError = '', browserError = '';
+let nextCookies = [cookie()], browserSerial = 0, tunnelSerial = 0, tunnelError = '', browserError = '', browserOpenGate: Promise<void> | undefined;
 let base = '', browserBase = '', tunnelBase = '', proc: ChildProcess, output = '', admin = '', bob = '', owner = '', second = '';
 let entra: Awaited<ReturnType<typeof idp>>;
 const body = async (req: IncomingMessage) => JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString() || '{}');
@@ -34,6 +34,7 @@ const browser = createServer(async (req, res) => {
     if (browserError) return void send({ error: browserError }, 503);
     const id = `b${++browserSerial}`;
     sessions.set(id, { body: data, cookies: structuredClone(nextCookies), expires: Date.now() + (data.ttl_s ?? 3600) * 1000 });
+    await browserOpenGate;
     return void send({ id, view: `/sessions/${id}/view`, cdp: `/sessions/${id}/cdp` }, 201);
   }
   const session = sessions.get(id);
@@ -216,6 +217,34 @@ test('VPN sign-ins are short, personal browser sessions, protected on HTTP and w
   assert.equal(created.length, count, 'cancel never connects');
   assert.equal((await call('GET', `/signins/${cancel}/view`)).status, 404);
   assert.equal((await call('POST', `/signins/${cancel}`, {})).status, 404);
+});
+
+test('VPN sign-ins still opening cannot survive capability revocation or sign-out followed by restored access', { timeout: 10000 }, async () => {
+  for (const stop of ['signout', 'capability']) {
+    let release!: () => void;
+    browserOpenGate = new Promise<void>(ok => { release = ok; });
+    const before = browserSerial, pending = call('POST', '/vpns/client/signins', {});
+    try {
+      while (browserSerial === before) await new Promise(ok => setTimeout(ok, 5));
+      if (stop === 'capability') {
+        await grant([BOB, GROUP]);
+        await grant();
+      } else {
+        assert.equal((await call('PUT', `/users/${encodeURIComponent(ADMIN)}`, { signout: true }, second)).status, 200);
+        admin = await login(ADMIN);
+      }
+      release();
+      const response = await pending;
+      assert.equal(response.status, 409, stop);
+      assert.match(await response.text(), /superseded/);
+      assert.equal(sessions.has(`b${before + 1}`), false, 'a delayed browser is collected');
+    } finally {
+      release();
+      browserOpenGate = undefined;
+      const response = await pending;
+      if (response.status === 200) await call('DELETE', `/signins/${(await response.json()).id}`);
+    }
+  }
 });
 
 test('save extracts only the gateway cookie server-side and reconnect replaces only that person and named VPN', async () => {
