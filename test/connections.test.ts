@@ -169,6 +169,7 @@ before(async () => {
     if ((m = /^\/(?:drives\/(b!\w+)|sites\/[^/]+\/drives\/(b!\w+)|users\/alice@demo\.test\/drive)\/root$/i.exec(path))) return send(roots[m[1] ?? m[2] ?? 'b!own']);
     if ((m = /^\/drives\/(b!\w+)$/.exec(path)) && drives[m[1]]) return send({ id: m[1], ...drives[m[1]] });
     if (path === '/sites/host,site1,web1') return send({ id: 'host,site1,web1', displayName: 'Reports' });
+    if (path === '/sites/host,siter,webr') return send({ error: { code: 'accessDenied', message: 'not a site member' } }, 403);
     if (path === '/drives/b!d1/root:/LFM:') return send(item('top', 'LFM', '2026-01-01T00:00:00Z', true, 'root1'));
     if (path === '/me/messages') return send({ value: mail });
     if (path === '/me/messages/m1/$value') return void res.writeHead(200, { 'content-type': 'message/rfc822' }).end(MIME);
@@ -378,6 +379,27 @@ test('a person adds, in one box, a mailbox by its address, a site by its link, a
     { id: 'm365:item:b!d1/top', name: 'Folder LFM, Reports' }, { id: 'm365:item:b!d1/y2025', name: 'Folder 2025, Reports' },
     { id: 'm365:item:b!own/root2', name: "Alice Ames's OneDrive" }, { id: 'm365:item:b!d1/y2026', name: 'Folder 2026, Reports' },
   ], 'the same item again replaces its offer');
+});
+
+test('adding a shared folder or file succeeds without site membership or on consumer OneDrive, and encodes # and ? in ?id= segments', async () => {
+  const { offer } = await import('../src/connections/graph.ts'), was = m365();
+  drives['b!restr'] = { driveType: 'documentLibrary', sharePointIds: { siteUrl: 'https://host/sites/RestrictedSite', siteId: 'siter', webId: 'webr' } };
+  drives['b!pers'] = { driveType: 'personal', owner: { user: { displayName: 'Sam Consumer' } } };
+  shares['https://host/:f:/s/RestrictedSite/TokShared'] = { id: 'sh1', name: 'Vendor Pack', folder: {}, parentReference: { driveId: 'b!restr' } };
+  shares['https://onedrive.live.com/redir?resid=1'] = { id: 'p1', name: 'Receipt.pdf', file: {}, parentReference: { driveId: 'b!pers' } };
+  shares['https://host/sites/reports/Shared%20Documents/2026%20%231%3Fdraft'] = { id: 'h1', name: '2026 #1?draft', folder: {}, parentReference: { driveId: 'b!d1' } };
+  try {
+    await offer(ALICE, 'https://host/:f:/s/RestrictedSite/TokShared');
+    await offer(ALICE, 'https://onedrive.live.com/redir?resid=1');
+    await offer(ALICE, 'https://host/sites/reports/Shared%20Documents/Forms/AllItems.aspx?id=%2Fsites%2Freports%2FShared%20Documents%2F2026%20%231%3Fdraft');
+    assert.deepEqual(m365().offers.slice(was.offers.length), [
+      { id: 'm365:item:b!restr/sh1', name: 'Folder Vendor Pack, RestrictedSite' },
+      { id: 'm365:item:b!pers/p1', name: "File Receipt.pdf, Sam Consumer's OneDrive" },
+      { id: 'm365:item:b!d1/h1', name: 'Folder 2026 #1?draft, Reports' },
+    ]);
+  } finally {
+    logins.saveLogin(ALICE, was);
+  }
 });
 
 test('adding Microsoft 365 sources keeps concurrent adds and removals and never restores a signed-out login', async () => {

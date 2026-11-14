@@ -217,7 +217,7 @@ export async function offer(email: string, add: string): Promise<void> {
     if (!URL.canParse(v)) throw new HttpError(400, 'a mailbox address, or a link to a SharePoint site, or to a folder or file in SharePoint or OneDrive');
     // A library's or a OneDrive's view names its folder in ?id=, and a Copy link (/:f:/r/…) keeps the path: each reads as that path.
     const u = new URL(v), id = u.searchParams.get('id');
-    const link = id ? u.origin + encodeURI(id) : /^\/:\w:\/r\//.test(u.pathname) ? u.origin + u.pathname.replace(/^\/:\w:\/r/, '') : v;
+    const link = id ? u.origin + (id.startsWith('/') ? '' : '/') + id.split('/').map(encodeURIComponent).join('/') : /^\/:\w:\/r\//.test(u.pathname) ? u.origin + u.pathname.replace(/^\/:\w:\/r/, '') : v;
     const path = new URL(link).pathname.replace(/\/$/, '');
     if (/^\/(sites|teams)\/[^/]+$/.test(path)) {
       needs('Sites.Read.All', 'read SharePoint sites');
@@ -226,8 +226,16 @@ export async function offer(email: string, add: string): Promise<void> {
     } else {
       needs('Files.Read.All', 'read OneDrive or SharePoint files');
       const item = await graph(email, `/shares/u!${Buffer.from(link).toString('base64url')}/driveItem?$select=id,name,root,folder,parentReference`);
-      const d = await graph(email, `/drives/${encodeURIComponent(item.parentReference.driveId)}?$select=driveType,owner,sharePointIds`), s = d.sharePointIds;
-      const where = d.driveType === 'business' ? `${d.owner?.user?.displayName ?? 'Someone'}'s OneDrive` : (await graph(email, `/sites/${new URL(s.siteUrl).hostname},${s.siteId},${s.webId}?$select=displayName`)).displayName;
+      const d = await graph(email, `/drives/${encodeURIComponent(item.parentReference.driveId)}?$select=driveType,owner,sharePointIds`).catch(e => {
+        if (e instanceof HttpError && (e.status === 403 || e.status === 404)) return undefined;
+        throw e;
+      }), s = d?.sharePointIds, driveType = d?.driveType ?? item.parentReference.driveType;
+      const siteName = s ? await graph(email, `/sites/${new URL(s.siteUrl).hostname},${s.siteId},${s.webId}?$select=displayName`).then(x => x.displayName as string, e => {
+        if (e instanceof HttpError && (e.status === 403 || e.status === 404)) return undefined;
+        throw e;
+      }) : undefined;
+      const where = ['business', 'personal'].includes(driveType) ? `${d?.owner?.user?.displayName ?? 'Someone'}'s OneDrive`
+        : siteName ?? (s?.siteUrl ? decodeURIComponent(new URL(s.siteUrl).pathname.split('/').filter(Boolean).pop() ?? '') || new URL(s.siteUrl).hostname : u.hostname);
       o = { id: `m365:item:${item.parentReference.driveId}/${item.id}`, name: item.root ? where : `${item.folder ? 'Folder' : 'File'} ${item.name}, ${where}` };
     }
   }
