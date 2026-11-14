@@ -56,7 +56,8 @@ const idle = new Map<string, Idle>();
 // live skills' versions, and the caches it has copies of at $RF_INDEX, a first one for a source so starting a session that has them.
 function startsFrom(inst: Instance): string {
   const v = view(inst);
-  return JSON.stringify([v.instance, v.names, v.series, v.env, runnerOf(inst).consent, v.ro.filter(([, at]) => at.endsWith('/AGENTS.md')).map(([p]) => existsSync(p) && readFileSync(p, 'utf8')),
+  return JSON.stringify([v.instance, v.names, v.series, v.env, runnerOf(inst).consent,
+    v.ro.map(([p, at]) => at.endsWith('/AGENTS.md') ? existsSync(p) && readFileSync(p, 'utf8') : [at, existsSync(p)]),
     skills().map(s => [s.id, pushed(s).version]), sources(inst).map(({ o }) => o.id)]);
 }
 // Whether an instance's runner can still see its workspace, as each run of theirs needs.

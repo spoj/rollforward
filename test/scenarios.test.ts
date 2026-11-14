@@ -1508,6 +1508,25 @@ test('unticking logins during a run ends its Pi session instead of carrying the 
   assert.equal(sessions.length, 2, 'run 2 started a fresh Pi session after mid-run login untick');
 });
 
+test('the first series note added while Pi is idle starts a fresh sandbox with ../.notes mounted', async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'IdleNotesMount' })).json();
+  const { id: sid } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec' })).json();
+  scripts.push({ bash: ['true'], report: 'Run 1 done.', saw: [] });
+  const { id: inst } = await (await call('POST', `/api/series/${sid}`, { label: '2026-11', logins: [] })).json();
+  await runs(inst, 1);
+
+  const up = await fetch(`${base}/api/series/${sid}/attach?name=rule.txt`, { method: 'POST', headers: { cookie: admin }, body: 'FX=7.82' });
+  assert.equal(up.status, 200);
+  const { file } = await up.json();
+  assert.equal((await call('POST', `/api/series/${sid}/notes`, { text: 'Use FX rate', files: [file] })).status, 200);
+
+  const reader: Script = { bash: [`cat ../.notes/${file}`], report: 'Read note attachment.', saw: [] };
+  scripts.push(reader);
+  assert.equal((await call('POST', `/api/instances/${inst}/comment`, { text: 'Apply the new FX note' })).status, 200);
+  await runs(inst, 2);
+  assert.equal(reader.saw[0].trim(), 'FX=7.82');
+});
+
 test("every entry names its source: a person, a run whose entry names its runner and the act whose ticks it uses, or what caused it", () => {
   const logs = new Map(readdirSync(join(root, 'instances')).map(id => [id, readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l) as Record<string, any>)]));
   for (const [id, log] of logs) for (const e of log) {
