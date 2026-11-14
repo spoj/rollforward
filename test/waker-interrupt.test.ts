@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { createInstance, openStore } from '../src/store.ts';
 import { initSystem, saveTree, writeJson } from '../src/system.ts';
 import { call, upstreams } from '../src/connections.ts';
-import { active, byToken, interruptRun, view, type Active } from '../src/waker.ts';
+import { active, byToken, interruptRun, stop, view, type Active } from '../src/waker.ts';
 import type { Run } from '../src/runner.ts';
 
 const root = mkdtempSync(join(tmpdir(), 'rf-interrupt-')), alice = 'alice@demo.test';
@@ -89,5 +89,51 @@ test('concurrent interrupts revoke and abort before RPC settles, drain charges, 
     delete process.env.OPENROUTER_API_KEY;
     delete upstreams['openrouter.ai'];
     provider.close();
+  }
+});
+
+for (const mode of ['interrupt', 'shutdown']) test(`${mode} refuses a proxy request still reading its body before it can start a provider call`, async t => {
+  let requests = 0;
+  const provider = createServer((req, res) => {
+    requests++;
+    res.end('{"usage":{"cost":0.02}}');
+  });
+  t.after(() => { provider.closeAllConnections(); provider.close(); });
+  await new Promise<void>(ok => provider.listen(0, '127.0.0.1', ok));
+  upstreams['openrouter.ai'] = `http://127.0.0.1:${(provider.address() as { port: number }).port}`;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+  const body = Promise.withResolvers<void>(), reading = Promise.withResolvers<void>();
+  const inst = createInstance('s', `Reading-${mode}`, alice, []);
+  const a = {
+    inst, n: 1, runner: alice, token: 'reading', view: view(inst), workspace: 'w', cost: 0, estimated: false,
+    seen: 1, delivered: 1, done: false, process: '', links: new Map(),
+    run: { interrupt: async () => {}, stop: async () => {}, alone: () => false } as Run,
+  } as Active;
+  inst.append('server', 'run', { run: 1 });
+  active.set('s', a);
+  byToken.set(a.token, a);
+  const req = Object.assign(new EventEmitter(), {
+    method: 'POST', url: '/api/v1/chat/completions', headers: { 'content-type': 'application/json' },
+    [Symbol.asyncIterator]: async function* () { reading.resolve(); await body.promise; yield Buffer.from('{"model":"test"}'); },
+  });
+  const res = Object.assign(new EventEmitter(), {
+    closed: false, headersSent: false,
+    writeHead() { this.headersSent = true; return this; },
+    write() { return true; }, end() { this.closed = true; this.emit('close'); }, destroy() { this.closed = true; this.emit('close'); },
+  });
+  const called = call(a, 'openrouter.ai', req as any, res as any);
+  try {
+    await reading.promise;
+    if (mode === 'interrupt') await interruptRun(a);
+    else stop();
+    body.resolve();
+    await called;
+    assert.equal(requests, 0, 'no request goes upstream after interruption');
+    assert.equal(inst.log.find(e => e.op === 'done')?.cost, mode === 'interrupt' ? 0 : undefined);
+  } finally {
+    body.resolve();
+    await called;
+    delete process.env.OPENROUTER_API_KEY;
+    delete upstreams['openrouter.ai'];
   }
 });

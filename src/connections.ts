@@ -123,7 +123,7 @@ export const reachable = (inst: Instance) => {
 
 // What a run, as the proxy knows it, has: its instance, its number, the links its connections' answers held, each the name of
 // the connection that gave it and the offer that allowed it, and what its calls have cost.
-export type CallRun = { inst: Instance; n: number; links: Map<string, { name: string; offer: string }>; cost: number; estimated?: boolean };
+export type CallRun = { inst: Instance; n: number; links: Map<string, { name: string; offer: string }>; cost: number; estimated?: boolean; stopped?: boolean };
 
 // Tests point a host at a stand-in.
 export const upstreams: Record<string, string> = {};
@@ -401,6 +401,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       auth = { authorization: `Bearer ${apiKey}`, 'x-api-key': apiKey };
     }
     const body = out === undefined ? raw : Buffer.from(JSON.stringify(out));
+    if (a.stopped) throw new HttpError(409, 'run stopped');
     if (!s && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
       if (c?.type === 'service') digest = { hash: createHash('sha256'), size: 0 };
       sent = a.inst.append('agent', 'send', { run: a.n, name, method, path }).seq;

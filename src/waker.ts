@@ -481,6 +481,7 @@ export function stop() {
   clearTimeout(draining);
   byToken.clear();
   for (const a of active.values()) {
+    a.stopped = true;
     abortCalls(a);
     a.browsers?.cut();
   }
