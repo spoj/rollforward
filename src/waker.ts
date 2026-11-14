@@ -72,7 +72,7 @@ function stale(i: Idle): boolean {
 const ending = new Set<{ view: View; done: Promise<void> }>();
 function end(token: string, run: Run | Promise<Run>, view: View) {
   const e = { view, done: Promise.resolve(run).then(r => r.stop().catch(e => console.error('a run left its scratch folder', e)), () => {})
-    .finally(() => { rmSync(join(rfDir(), 'runs', token), { recursive: true, force: true }); ending.delete(e); }) };
+    .finally(() => { ending.delete(e); rmSync(join(rfDir(), 'runs', token), { recursive: true, force: true }); }) };
   ending.add(e);
   return e.done;
 }
