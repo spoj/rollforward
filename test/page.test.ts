@@ -2154,6 +2154,50 @@ test('a failed sign-out keeps unsent drafts through reload', async () => {
   }
 });
 
+for (const kind of ['workspace', 'series']) test(`a delayed ${kind} rename does not overwrite the next settings dialog`, async () => {
+  const ctx = await browser.newContext({ storageState: await page.context().storageState() }), tab = await ctx.newPage();
+  let release!: () => void;
+  const pending = new Promise<void>(ok => { release = ok; });
+  try {
+    const ids = await page.evaluate(async kind => {
+      const ids = [];
+      for (const label of ['First settings', 'Second settings']) {
+        const name = `${kind} ${label}`;
+        const { id: ws } = await (await fetch('/api/workspaces', { method: 'POST', body: JSON.stringify({ name }) })).json();
+        const { id: sid } = await (await fetch('/api/series', { method: 'POST', body: JSON.stringify({ workspace: ws, name }) })).json();
+        ids.push(kind === 'workspace' ? ws : sid);
+      }
+      return ids;
+    }, kind);
+    const act = kind === 'workspace' ? 'workspace-settings' : 'settings', input = kind === 'workspace' ? '#wname' : '#sname';
+    await tab.goto(`${new URL(page.url()).origin}/#/${ids[0]}`);
+    await tab.locator(`[data-act=${act}][data-id="${ids[0]}"]`).evaluate((el: HTMLElement) => el.click());
+    await tab.fill(input, 'Renamed first settings');
+    const url = `**/api/${kind === 'workspace' ? 'workspaces' : 'series'}/${ids[0]}`;
+    await tab.route(url, async route => {
+      if (route.request().method() !== 'PUT') return route.continue();
+      await pending;
+      await route.fulfill({ status: 200, body: '{}' });
+    });
+    const sending = tab.waitForRequest(r => r.method() === 'PUT' && r.url().endsWith(ids[0]));
+    await tab.dispatchEvent(input, 'change');
+    await sending;
+    await tab.click('#pv [data-act=unpv]');
+    await tab.goto(`${new URL(page.url()).origin}/#/${ids[1]}`);
+    await tab.locator(`[data-act=${act}][data-id="${ids[1]}"]`).evaluate((el: HTMLElement) => el.click());
+    await tab.waitForSelector(input);
+    const refreshed = tab.waitForResponse(r => r.url().endsWith('/api'));
+    release();
+    await refreshed;
+    await tab.evaluate(() => renderPv());
+    assert.equal(await tab.inputValue(input), `${kind} Second settings`);
+    assert.equal(await tab.textContent('#pv .saved'), '');
+  } finally {
+    release();
+    await ctx.close();
+  }
+});
+
 test('Enter respects aria-busy, row settings do not hang when location.hash already matches, and #wname stays synced in settings', async () => {
   // 1. Enter twice in #tname while POST /tokens is in flight submits only once.
   let tokenPosts = 0;
