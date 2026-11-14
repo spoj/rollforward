@@ -122,8 +122,10 @@ function send(res: ServerResponse, status: number, data: unknown) {
 // A run, on its sandbox's socket, by its token: on /api a caller like any person, with the few rights api() gives a run; on /agent
 // what only a run has, its series' skills and its runner's logins and browsers.
 type Caller = Me & { run?: Active };
+// A run by its token, until its stop is asked for: nothing it sends from then on counts, however long it takes to end.
+const running = (token: string) => { const a = byToken.get(token); return a?.stopped ? undefined : a; };
 async function agent(req: IncomingMessage, res: ServerResponse, url: URL) {
-  const a = byToken.get(req.headers.authorization?.replace('Bearer ', '') ?? '');
+  const a = running(req.headers.authorization?.replace('Bearer ', '') ?? '');
   if (!a) throw new HttpError(401, 'no run for this token');
   if (url.pathname.startsWith('/api/')) return api({ email: 'agent', name: 'Agent', role: 'user', groups: [], run: a }, req, res, url);
   // Browsers and deliveries: rf expired, rf delivered (see agent-api.ts).
@@ -520,6 +522,7 @@ async function interrupt(inst: Instance, a: Active | undefined, me: Me, why?: st
   if (runnerOf(inst).by !== me.email && !canManage(me, t.workspaces[t.series[inst.seriesId].workspace]))
     throw new HttpError(403, `only its runner, ${runnerOf(inst).by}, the workspace's owners and admins stop its run`);
   if (!a?.run) throw new HttpError(409, a ? 'its run is starting: try again in a moment' : 'no run going');
+  a.stopped = true;
   inst.append(me.email, 'interrupt', { ...(why && { why }) });
   await a.run.interrupt();
 }
@@ -1116,17 +1119,17 @@ serveSandboxes({
   },
   // The run its token is as each request comes, which a later turn of the same Pi makes another run, over a connection kept open
   // across them; none while the Pi is idle.
-  run: token => byToken.has(token) ? {
+  run: token => running(token) ? {
     egress(host, allowed) {
-      const a = byToken.get(token);
+      const a = running(token);
       if (!a || a.hosts.has(host)) return;
       a.hosts.add(host);
       a.inst.append('server', 'egress', { run: a.n, host, allowed });
     },
-    browsers: () => { const a = byToken.get(token)!; return (a.browsers ??= new Browsers(a.inst, a.n)); },
-    intercepts: host => intercepts(byToken.get(token)!, host),
+    browsers: () => { const a = running(token)!; return (a.browsers ??= new Browsers(a.inst, a.n)); },
+    intercepts: host => intercepts(running(token)!, host),
     call: async (host, req, res) => {
-      const a = byToken.get(token);
+      const a = running(token);
       return a ? call(a, host, req, res) : void res.writeHead(409).end('its run has ended');
     },
   } : undefined,

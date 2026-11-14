@@ -29,8 +29,9 @@ export const MAX_OPEN = 3;
 const SPACING_MS = 15 * 60_000, MAX_WAKES = 20;
 
 export type Active = { inst: Instance; n: number; session: number; token: string; view: View; workspace: string; skills: Record<string, number>; shape: string; run?: Run; sent: number; noted: number; seen: number; texts: Map<string, number>; done: boolean; cost: number; failed?: string; hosts: Set<string>; links: Map<string, { name: string; offer: string }>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string;
-  // Its Pi as it starts, and once its Pi, sandbox and browsers have stopped, after it ends.
-  ready?: Promise<Run>; ended?: Promise<unknown> };
+  // Its Pi as it starts, and once its Pi, sandbox and browsers have stopped, after it ends; whether its stop was asked for, from when
+  // its token opens nothing (server.ts running()).
+  ready?: Promise<Run>; ended?: Promise<unknown>; stopped?: boolean };
 export const active = new Map<string, Active>();
 export const byToken = new Map<string, Active>();
 const debounce = new Map<string, NodeJS.Timeout>();

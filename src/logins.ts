@@ -107,7 +107,8 @@ export function lender(inst: Instance, run?: number): { by: string; logins: stri
     throw new HttpError(403, `${r.by} can no longer run this instance, so their logins aren't used: someone in its workspace takes it over`);
   if (run === undefined) return r;
   const started = inst.log.find(e => e.op === 'run' && e.run === run)!, lease = inst.log[(started.consent as number) - 1].logins as string[];
-  // An assign stops the run going first; what it still sends as it stops lends nothing of the new runner's.
+  // An assign stops the run going first, its token then refused (server.ts running()); what it had going, such as a connection to a
+  // browser, lends nothing of the new runner's.
   if (started.runner !== r.by) throw new HttpError(403, `run ${run} was ${started.runner}'s, and ${r.by} runs the instance now`);
   return { by: r.by, logins: r.logins.filter(l => lease.includes(l)) };
 }

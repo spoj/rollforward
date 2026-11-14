@@ -375,6 +375,26 @@ test("assigning mid-run stops the run first, as Interrupt does, saying why; the 
   assert.match(next.prompt!, /"by":"bob@demo\.test","op":"comment","thread":"c\d+","item":null,"ref":null,"text":"Mine now\."\}/, "the new runner's word");
 });
 
+test("from Interrupt on, a run's token opens nothing: what the run still sends as it stops, as a comment or a wake, is refused, however long Pi takes to settle", async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Stopping' })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec' })).json();
+  // Out of the tool's process group, so the abort leaves it, it keeps writing to the tool's output, which keeps Pi from settling,
+  // until what it sends once the interrupt is logged is answered.
+  const late = `setsid sh -c 'touch working/waiting; until grep -q op.:.interrupt log.jsonl; do echo .; sleep 0.05; done
+    (rf say Late. > working/late 2>&1; rf wake . +1d >> working/late 2>&1; touch working/sent) &
+    until [ -e working/sent ]; do echo .; sleep 0.05; done' & sleep 60`;
+  scripts.push({ bash: [late], report: 'unreached', saw: [] });
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json(), dir = join(root, 'instances', id);
+  await until('the run waiting', () => existsSync(join(dir, 'working', 'waiting')));
+  assert.equal((await call('POST', `/api/instances/${id}/interrupt`)).status, 200);
+  const log = await runs(id, 1);
+  assert.equal(readFileSync(join(dir, 'working', 'late'), 'utf8'), 'no run for this token\n'.repeat(2), 'rf say, then rf wake, sent once the interrupt is logged');
+  assert.deepEqual(log.filter(e => e.op === 'comment'), [], 'nothing it said');
+  const wakes = join(root, '.rf', 'wakes.json');
+  assert.ok(!existsSync(wakes) || !readFileSync(wakes, 'utf8').includes(id), 'nor a wake set');
+  assert.equal(log.find(e => e.op === 'done')!.aborted, true);
+});
+
 test('people rename the instance, its series and its workspace mid-run: the run carries on by the names it started with, and the next run has the new ones', async () => {
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Named' })).json();
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Before' })).json();
