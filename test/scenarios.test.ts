@@ -620,7 +620,7 @@ test("a start removes its data root's abandoned scratch, for runs without indexe
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Scratch' })).json();
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'First' })).json();
   const { id: busy } = await (await call('POST', '/api/series', { workspace: ws, name: 'Busy' })).json();
-  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [], quiet: true })).json();
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-10', logins: [], quiet: true })).json();
   const { id: running } = await (await call('POST', `/api/series/${busy}`, { label: '2026-11', logins: [], quiet: true })).json();
   let reached = 0;
   scripts.push(
