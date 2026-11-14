@@ -21,7 +21,7 @@ const remote = join(tmp, 'remote.git'), work = join(tmp, 'work'), oldApp = join(
 const ADMIN = 'admin@demo.test';
 const releases: Release[] = [], scripts: Script[] = [], byPrompt = new Map<string, Script>();
 const exits: { code: number | null; signal: NodeJS.Signals | null }[] = [];
-let drainedProbes = 0;
+let drainedProbes = 0, hangingProbes = 0;
 let entra: Awaited<ReturnType<typeof idp>>, hub: ReturnType<typeof createServer>, proc: ChildProcess | null = null;
 let base = '', hubBase = '', cookie = '', serveDir = work;
 
@@ -103,7 +103,7 @@ function publish(tag: string, o: { body?: string; prerelease?: boolean; extraAge
 }
 
 function spawnUpdater(dir = work, env: NodeJS.ProcessEnv = {}) {
-  const hook = `const f = globalThis.fetch; globalThis.fetch = (u, i) => { const s = String(u); return s.startsWith('https://api.github.com/') || s.startsWith('https://github.com/') ? f(s.replace(/^https:\\/\\/(api\\.)?github\\.com/, ${JSON.stringify(hubBase)}), i) : s.endsWith('/drained') ? (f(${JSON.stringify(`${hubBase}/probe`)}).catch(() => {}), f(u, i)) : f(u, i); };`;
+  const hook = `const f = globalThis.fetch; let probes = 0; globalThis.fetch = (u, i) => { const s = String(u); return s.startsWith('https://api.github.com/') || s.startsWith('https://github.com/') ? f(s.replace(/^https:\\/\\/(api\\.)?github\\.com/, ${JSON.stringify(hubBase)}), i) : s.endsWith('/drained') ? (f(${JSON.stringify(`${hubBase}/probe`)}).catch(() => {}), f(process.env.RF_TEST_HANG_DRAIN && ++probes > 1 ? ${JSON.stringify(`${hubBase}/hang`)} : u, i)) : f(u, i); };`;
   const child = spawn(process.execPath, ['--import', `data:text/javascript,${encodeURIComponent(hook)}`, join(dir, 'scripts', 'update.ts'), `${base}/`], {
     cwd: dir,
     env: { ...process.env, HOME: home, PATH: `${join(tmp, 'bin')}:${process.env.PATH}`, ...env },
@@ -127,6 +127,7 @@ before(async () => {
     const url = new URL(req.url!, 'http://hub');
     if (req.method === 'POST' && url.pathname.endsWith('/messages')) return model(req, res);
     if (url.pathname === '/probe') { drainedProbes++; return void res.end('ok'); }
+    if (url.pathname === '/hang') { hangingProbes++; return; }
     if (url.pathname === '/ctl/pid') return void res.end(String(proc?.pid ?? 0));
     if (url.pathname === '/ctl/stop') { await stopServer(); return void res.end('ok'); }
     if (url.pathname === '/ctl/start') { serveDir = work; await startServer(work); return void res.end('ok'); }
@@ -335,4 +336,24 @@ test('RF_DRAIN_MIN=0 updates without probing or signalling a drain', async () =>
   const result = await spawnUpdater(work, { RF_DRAIN_MIN: '0' }).done;
   assert.equal(result.code, 0, result.out);
   assert.equal(drainedProbes, before);
+});
+
+test('a drain probe that never answers cannot keep the updater waiting past RF_DRAIN_MIN', async () => {
+  publish('v0.5.11');
+  const updater = spawnUpdater(work, { RF_DRAIN_MIN: '0.005', RF_TEST_HANG_DRAIN: '1' });
+  let timer: NodeJS.Timeout;
+  try {
+    await until('a hanging drain probe after signalling', () => hangingProbes > 0);
+    const result = await Promise.race([
+      updater.done,
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('drain probe outlived the update deadline')), 5000); }),
+    ]);
+    assert.equal(result.code, 0, result.out);
+    assert.equal(git(work, 'describe', '--tags', '--exact-match', 'HEAD'), 'v0.5.11');
+  } finally {
+    clearTimeout(timer!);
+    if (updater.child.exitCode === null) { updater.child.kill('SIGKILL'); await updater.done; }
+    await stopServer();
+    await startServer(work);
+  }
 });

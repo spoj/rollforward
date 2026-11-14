@@ -53,9 +53,10 @@ if (!checks.length || checks.some((c: any) => c.status !== 'completed' || !['suc
 async function drain() {
   if (!limit) return;
   const pid = () => sh('systemctl', '--user', 'show', '--property=MainPID', '--value', 'rollforward'), was = pid();
-  const drained = () => fetch(new URL('/drained', health)).then(r => r.status, () => 0);
+  const end = Date.now() + limit;
+  const drained = () => fetch(new URL('/drained', health), { signal: AbortSignal.timeout(Math.max(1, Math.min(2000, end - Date.now()))) }).then(r => r.status, () => 0);
   if (!Number(was) || ![200, 503].includes(await drained()) || pid() !== was) return;
-  for (const end = Date.now() + limit; pid() === was; ) {
+  for (; pid() === was; ) {
     try { process.kill(Number(was), 'SIGUSR2'); } catch { return; }
     if (await drained() === 200) return;
     if (Date.now() >= end) {
