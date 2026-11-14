@@ -5,6 +5,7 @@ import { changes } from './system.ts';
 import { renew, upsertUser, users } from './auth.ts';
 import { logins, personDir, saveLogin, seal, secret } from './logins.ts';
 import { dropUnpermittedVpns } from './vpns.ts';
+import { endSignIns } from './browsers.ts';
 
 // A person's Entra logins, each a connection's (connections.ts), such as Microsoft 365's: each access token comes from the login's
 // sealed refresh token, which turns over as it's used and is sealed again. A login Microsoft no longer renews is marked expired,
@@ -57,6 +58,8 @@ export async function confirm(email: string) {
   } catch (e) {
     if (!/AADSTS(50057|50034)\b/.test((e as Error).message)) throw e;
     upsertUser(email, { disabled: true });
+    await endSignIns(email);
+    await dropUnpermittedVpns(email);
     throw Object.assign(e as Error, { left: true });
   }
 }

@@ -135,3 +135,32 @@ test('OIDC callbacks collect VPN resources after group-derived capability loss',
   await login(ADMIN);
   assert.deepEqual([...tunnels.keys()], before, 'an email grant survives signing in without groups');
 });
+
+test('an automatic Entra disable ends website and VPN sign-ins and tunnels, unlike an expired sign-in', { timeout: 10000 }, async () => {
+  const email = 'leaver@demo.test';
+  entra.who.groups[email] = [GROUP];
+  const session = await login(email), own = await access(session);
+  await call('POST', '/logins/sites', { name: 'portal', url: 'https://portal.customer.test/' }, session);
+  await call('PATCH', '/logins/sites/portal', { via: 'client' }, session);
+  const website = await (await call('POST', '/logins/web/portal', {}, session)).json();
+  const unrelatedBrowsers = [...sessions.keys()].filter(id => id !== own.signin && id !== website.id);
+  const unrelatedTunnels = [...tunnels.keys()].filter(id => id !== own.tunnel);
+  entra.who.stale.add(email);
+  const expired = await confirm(email);
+  assert.match(expired.error!, /AADSTS700082/);
+  assert.equal(expired.left, undefined);
+  assert.ok(sessions.has(website.id), 'an expired rollforward sign-in is not a disable');
+  assert.ok(sessions.has(own.signin));
+  assert.ok(tunnels.has(own.tunnel));
+  entra.who.stale.delete(email);
+  entra.who.gone.add(email);
+  const disabled = await confirm(email);
+  assert.match(disabled.error!, /AADSTS50057/);
+  assert.equal(disabled.left, true);
+  assert.equal((await fetch(base + '/me', { headers: { cookie: session } })).status, 401);
+  assert.equal(sessions.has(website.id), false, 'automatic disable deletes the website sign-in browser');
+  assert.equal(sessions.has(own.signin), false, 'automatic disable deletes the VPN sign-in browser');
+  assert.equal(tunnels.has(own.tunnel), false, 'automatic disable deletes the VPN tunnel');
+  assert.ok(unrelatedBrowsers.every(id => sessions.has(id)), 'other people retain their browsers');
+  assert.ok(unrelatedTunnels.every(id => tunnels.has(id)), 'other people retain their tunnels');
+});
