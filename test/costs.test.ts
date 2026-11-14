@@ -129,6 +129,21 @@ before(async () => {
   ];
   writeFileSync(join(instDir, 'log.jsonl'), logEntries.map(e => JSON.stringify(e) + '\n').join(''));
 
+  const legacyDir = join(root, 'instances', 'c05750000002');
+  mkdirSync(legacyDir, { recursive: true });
+  writeFileSync(join(legacyDir, 'instance.json'), JSON.stringify({ label: 'legacy-midnight', series: 'ser001' }));
+  writeFileSync(join(legacyDir, 'screen.json'), JSON.stringify({ rev: 1, status: 'closed', items: [] }));
+  const yesterday = new Date(Date.parse(`${today}T00:00:00Z`) - 86400000).toISOString().slice(0, 10);
+  const legacy = [
+    { at: `${yesterday}T23:58:00Z`, by: adminEmail, op: 'create', logins: [] },
+    { at: `${yesterday}T23:59:00Z`, by: 'server', op: 'run', run: 1, runner: adminEmail, consent: 1, upto: 1, key: 'shared' },
+    { at: `${yesterday}T23:59:30Z`, by: 'agent', op: 'call', run: 1, name: 'openrouter', cost: 0.05 },
+    { at: `${today}T00:00:30Z`, by: 'agent', op: 'call', run: 1, name: 'openrouter', cost: 0.15 },
+    { at: `${today}T00:01:00Z`, by: 'agent', op: 'call', run: 1, name: 'exa', cost: 0.02 },
+    { at: `${today}T00:01:30Z`, by: 'server', op: 'done', run: 1, cost: 0.22, aborted: false, seen: 1 },
+  ];
+  writeFileSync(join(legacyDir, 'log.jsonl'), legacy.map((e, i) => JSON.stringify({ seq: i + 1, ...e }) + '\n').join(''));
+
   const costRecords = [
     { at: t1, service: 'openrouter', inst: instId, run: 1, person: adminEmail, cost: 0.40 },
     { at: t1, service: 'exa', inst: instId, run: 1, person: adminEmail, cost: 0.05 },
@@ -248,9 +263,8 @@ test('daily totals, live website-check attribution, cached /api/v1/key view, una
   });
 
   // 4. Verify OpenRouter key comparison on today's UTC day:
-  // Shared-key OpenRouter calls today = run 1 ($0.40) + run 2 ($0.25, estimated) + server website-check ($0.05) = $0.70!
-  // (Exa $0.05 + $0.005 and Bob's own-key $0.80 are NOT charged to the server's OpenRouter key!)
-  // Provider usage_daily is $0.95 -> unattributed difference is +$0.25!
+  // Shared-key OpenRouter calls today include the legacy run's $0.15 after midnight, not its $0.05 yesterday or Exa.
+  // $0.40 + $0.25 estimated + $0.05 website-check + $0.15 legacy = $0.85; own-key calls are excluded.
   assert.deepEqual(adminCosts.key, {
     usage: 140.25,
     usage_daily: 0.95,
@@ -260,9 +274,9 @@ test('daily totals, live website-check attribution, cached /api/v1/key view, una
     fetched_at: adminCosts.key.fetched_at,
     low_credit: false,
     day: today,
-    server_total: 0.7,
+    server_total: 0.85,
     server_estimated: true,
-    unattributed: 0.25,
+    unattributed: 0.1,
   });
 
   // 5. Verify non-admin (bob) isolation: sees Ops runs, sees NO larkfield runs, NO server costs, and NO OpenRouter key data!
@@ -276,7 +290,7 @@ test('daily totals, live website-check attribution, cached /api/v1/key view, una
   const adminCliCosts = await rfAs(adminHome, 'costs', '--since', today);
   assert.match(adminCliCosts, /~\$1\.50\s+3 runs\s+~\$0\.50 a run\s+Ops\/Daily \(est\.\)/);
   assert.match(adminCliCosts, /\$0\.06\s+0 runs\s+- a run\s+server\/website-check\/vendor-erp/);
-  assert.match(adminCliCosts, /OpenRouter key \(\d{4}-\d{2}-\d{2} UTC\): \$0\.95 today vs ~\$0\.70 \(est\.\) recorded \(\+\$0\.25 unattributed\) · \$140\.25 used · \$59\.75 of \$200\.00 remaining \(monthly\)/);
+  assert.match(adminCliCosts, /OpenRouter key \(\d{4}-\d{2}-\d{2} UTC\): \$0\.95 today vs ~\$0\.85 \(est\.\) recorded \(\+\$0\.10 unattributed\) · \$140\.25 used · \$59\.75 of \$200\.00 remaining \(monthly\)/);
 
   const adminDaily = await rfAs(adminHome, 'costs', '--daily', '--since', today);
   assert.match(adminDaily, /server\s+\$0\.06\s+website-check: vendor-erp \(bob@demo\.test\)\s+3 calls/);
@@ -330,7 +344,7 @@ test('daily totals, live website-check attribution, cached /api/v1/key view, una
   const pvText = await adminPage.locator('#pv').innerText();
   assert.match(pvText, /OpenRouter key/);
   assert.match(pvText, /\$85\.00 remaining of \$1000\.00 limit \(resets weekly\)/);
-  assert.match(pvText, /OpenRouter key: \$0\.95 · Server recorded on key: ~\$0\.70 \(est\.\) · Unattributed: \+\$0\.25/);
+  assert.match(pvText, /OpenRouter key: \$0\.95 · Server recorded on key: ~\$0\.85 \(est\.\) · Unattributed: \+\$0\.10/);
   assert.match(pvText, /Server · website-check: vendor-erp/);
 
   const pageHtml = await adminPage.content();
@@ -349,6 +363,14 @@ test('daily totals, live website-check attribution, cached /api/v1/key view, una
   assert.equal(await bobPage.locator('#masthead #low-credit').count(), 0, 'non-admin sees no low-credit banner');
   assert.equal(await bobPage.locator('#sidefoot [data-act=costs]').count(), 0, 'non-admin sees no admin Costs button');
   await bobCtx.close();
+});
+
+test('UTC key reconciliation includes only today’s legacy calls even when the run started yesterday', async () => {
+  const report = await apiJson('/api/costs?tz=UTC');
+  const records = readFileSync(join(root, '.rf', 'costs.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+  const recorded = records.filter(e => e.at.startsWith(today) && e.service === 'openrouter' && !e.own).reduce((n, e) => n + e.cost, 0);
+  assert.equal(report.key.server_total, +(recorded + 0.15).toFixed(6));
+  assert.equal(report.key.unattributed, +(report.key.usage_daily - recorded - 0.15).toFixed(6));
 });
 
 test('cost totals support workspace names that collide with Object.prototype', async () => {

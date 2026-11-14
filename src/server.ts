@@ -441,7 +441,14 @@ async function costs(me: Me, since: string, tz: string) {
   }
   // Include any run on today's UTC day that predates costs.jsonl (e.g. from earlier on deploy day).
   for (const sid of Object.keys(t.series)) for (const i of instances(sid)) for (const r of cachedRunsOf(i)) {
-    if (r.at.slice(0, 10) === utcDay && r.key !== 'own' && !trackedRuns.has(`${i.id}:${r.run}`)) {
+    if (r.key === 'own' || trackedRuns.has(`${i.id}:${r.run}`)) continue;
+    const calls = i.log.filter(e => e.op === 'call' && e.run === r.run && e.name === 'openrouter');
+    if (calls.length) {
+      for (const e of calls) if (e.at.slice(0, 10) === utcDay) {
+        serverTotal += (e.cost as number | undefined) ?? 0;
+        if (e.estimated) serverEst = true;
+      }
+    } else if (r.at.slice(0, 10) === utcDay) {
       serverTotal += Math.max(0, r.cost - (r.exaCost ?? 0));
       if (r.estimated) serverEst = true;
     }
