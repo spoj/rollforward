@@ -6,7 +6,7 @@ export type CostRecord =
   | { at: string; service: 'openrouter' | 'exa'; inst: string; run: number; person: string; cost: number; estimated?: true; own?: true }
   | { at: string; by: 'server'; service: 'openrouter' | 'exa'; kind: 'website-check' | 'try'; site?: string; person: string; cost: number; estimated?: true; own?: true };
 
-let cachedRoot = '', cachedOffset = 0, cached: CostRecord[] = [];
+let cachedRoot = '', cachedOffset = 0, cachedInode = 0, cached: CostRecord[] = [];
 
 const file = () => join(rfDir(), 'costs.jsonl');
 
@@ -37,11 +37,12 @@ export function syncCosts(): CostRecord[] {
     cached = [];
     return cached;
   }
-  const size = statSync(p).size;
-  if (size < cachedOffset) {
+  const { size, ino } = statSync(p);
+  if (ino !== cachedInode || size < cachedOffset) {
     cachedOffset = 0;
     cached = [];
   }
+  cachedInode = ino;
   if (size === cachedOffset) return cached;
   const fd = openSync(p, 'r');
   try {

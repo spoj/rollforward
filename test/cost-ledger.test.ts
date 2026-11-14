@@ -1,6 +1,6 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initSystem, rfDir } from '../src/system.ts';
@@ -25,4 +25,20 @@ test('ledger starts absent, tails complete UTF-8 lines, and recovers a torn tail
   recordCost(entry);
   assert.deepEqual(readFileSync(path, 'utf8').trim().split('\n').map(l => JSON.parse(l)), [{ ...entry, person: 'é@test' }, entry]);
   assert.equal(syncCosts().length, 2);
+});
+
+test('ledger invalidates its cursor after rotation, truncation, and removal', () => {
+  initSystem(join(tmp, 'rotate'));
+  const path = join(rfDir(), 'costs.jsonl');
+  recordCost(entry);
+  renameSync(path, path + '.old');
+  const replacement = { ...entry, cost: 0.02 };
+  writeFileSync(path, JSON.stringify(replacement) + '\n');
+  assert.deepEqual(syncCosts(), [replacement], 'same-size replacement is not the cached ledger');
+  writeFileSync(path, '');
+  assert.deepEqual(syncCosts(), []);
+  recordCost(entry);
+  assert.deepEqual(syncCosts(), [entry]);
+  rmSync(path);
+  assert.deepEqual(syncCosts(), []);
 });
