@@ -689,10 +689,11 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const name = single ? freeName(t, workspace, 'Untitled') : folderName(String(asked ?? ''));
     if (Object.values(t.series).some(s => s.workspace === workspace && s.name === name)) throw new HttpError(409, `${name} exists`);
     const ticks = checkTicks(by, logins ?? []), sid = newId();
-    t.series[sid] = { name, workspace, ...(single && { single: true }) };
+    const inst = single ? createInstance(sid, name, by, ticks) : undefined;
     mkdirSync(seriesDir(sid));
+    t.series[sid] = { name, workspace, ...(single && { single: true }) };
     saveTree(t);
-    return send(res, 200, { id: sid, ...(single && { instance: createInstance(sid, name, by, ticks).id }) });
+    return send(res, 200, { id: sid, ...(inst && { instance: inst.id }) });
   }
   if (kind === 'series') {
     const s = t.series[id];

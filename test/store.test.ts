@@ -248,3 +248,34 @@ test("a file whose name passes the 255 bytes a name holds, as an Outlook mail sa
   assert.equal(inst.doc.items[0].name, name.slice(0, -5), 'the item keeps the whole name');
   rmSync(tmp, { recursive: true, force: true });
 });
+
+test('a createInstance cut short leaves no instance behind, and openStore removes an uncreated instance folder while keeping a deleted hole', t => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
+  openStore(tmp);
+  const out = execFileSync('bash', ['-c', `trap '' XFSZ; ulimit -f 1; exec "${process.execPath}" --input-type=module -e "$0"`, `
+    import { createInstance, labels, openStore } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, '..', 'src', 'store.ts')).href)};
+    import { readdirSync } from 'node:fs';
+    import { join } from 'node:path';
+    openStore(${JSON.stringify(tmp)});
+    let code = '';
+    try { createInstance('monthly', 'cut', 'alex', Array.from({ length: 80 }, (_, i) => 'm365:mail:box' + i + '@demo.test')); } catch (e) { code = e.code; }
+    console.log(JSON.stringify({ code, dirs: readdirSync(join(${JSON.stringify(tmp)}, 'instances')), indexed: labels('monthly') }));
+  `], { encoding: 'utf8' }).trim();
+  assert.deepEqual(JSON.parse(out), { code: 'EFBIG', dirs: [], indexed: [] });
+
+  const hole = createInstance('monthly', 'hole', 'alex', []);
+  hole.markDeleted('alex', { cost: 0, runs: [] });
+  mkdirSync(join(tmp, 'instances', 'deadbeef0001', 'upload'), { recursive: true });
+  const torn = join(tmp, 'instances', 'deadbeef0002');
+  mkdirSync(torn, { recursive: true });
+  writeFileSync(join(torn, 'instance.json'), JSON.stringify({ label: 'torn', series: 'monthly' }));
+  writeFileSync(join(torn, 'log.jsonl'), '{"seq":1,"by":"al');
+  const said = t.mock.method(console, 'error', () => {});
+  openStore(tmp);
+  assert.equal(instance(hole.id).hole, true);
+  assert.throws(() => instance('deadbeef0001'), /no instance/);
+  assert.throws(() => instance('deadbeef0002'), /no instance/);
+  assert.ok(said.mock.calls.some(c => String(c.arguments[0]).includes('removed an uncreated instance')));
+  rmSync(tmp, { recursive: true, force: true });
+});
+

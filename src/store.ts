@@ -1,4 +1,4 @@
-import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { basename, extname, join, posix, sep } from 'node:path';
 import { appendLine, changes, readLines, tree } from './system.ts';
@@ -74,6 +74,17 @@ let root = '';
 const index = new Map<string, Meta>();
 const cache = new Map<string, Instance>();
 
+function hasEntry(log: string): boolean {
+  if (!existsSync(log)) return false;
+  const fd = openSync(log, 'r'), buf = Buffer.allocUnsafe(65536);
+  try {
+    for (let n; (n = readSync(fd, buf, 0, buf.length, null)) > 0;) if (buf.subarray(0, n).includes(10)) return true;
+    return false;
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export function openStore(dataRoot: string) {
   root = dataRoot;
   index.clear();
@@ -82,7 +93,14 @@ export function openStore(dataRoot: string) {
   mkdirSync(join(root, 'series'), { recursive: true });
   mkdirSync(join(root, 'agents'), { recursive: true });
   for (const id of readdirSync(join(root, 'instances'))) {
-    index.set(id, JSON.parse(readFileSync(join(root, 'instances', id, 'instance.json'), 'utf8')));
+    const dir = instanceDir(id), meta = join(dir, 'instance.json'), log = join(dir, 'log.jsonl');
+    if (!existsSync(meta) || !hasEntry(log)) {
+      readLines(log);
+      console.error(`${dir}: removed an uncreated instance`);
+      wipe(Buffer.from(dir));
+      continue;
+    }
+    index.set(id, JSON.parse(readFileSync(meta, 'utf8')));
   }
 }
 
@@ -164,13 +182,22 @@ function freeLabel(seriesId: string, label: string): string {
 // A new instance starts empty: its agent learns from the series' earlier instances what to roll forward from. `by` is its runner,
 // and `logins` the offers of their logins they ticked for it (logins.ts).
 export function createInstance(seriesId: string, label: string, by: string, logins: string[]): Instance {
-  const name = freeLabel(seriesId, label), id = newId(), dir = instanceDir(id);
-  mkdirSync(join(dir, 'upload'), { recursive: true });
-  mkdirSync(join(dir, 'working'));
-  setMeta(id, { label: name, series: seriesId });
+  const name = freeLabel(seriesId, label), id = newId(), stage = join(root, '.tmp', id), dir = instanceDir(id), meta = { label: name, series: seriesId };
+  try {
+    mkdirSync(join(stage, 'upload'), { recursive: true });
+    mkdirSync(join(stage, 'working'));
+    replaceReadOnly(join(stage, 'instance.json'), JSON.stringify(meta));
+    replaceReadOnly(join(stage, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [] }, null, 1));
+    appendLine(join(stage, 'log.jsonl'), JSON.stringify({ seq: 1, at: new Date().toISOString(), by, op: 'create', logins }));
+    renameSync(stage, dir);
+  } catch (e) {
+    wipe(Buffer.from(stage));
+    throw e;
+  }
+  index.set(id, meta);
   const inst = instance(id);
-  inst.save();
-  inst.append(by, 'create', { logins });
+  changes.emit('change', 'tree');
+  changes.emit('change', id);
   return inst;
 }
 
