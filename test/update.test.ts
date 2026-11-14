@@ -328,3 +328,11 @@ test('a release on the way with an Urgent: line skips the drain, and a server re
   assert.doesNotMatch(r2.out, /the runs still going are cut/);
   assert.equal(git(work, 'describe', '--tags', '--exact-match', 'HEAD'), 'v0.5.9');
 });
+
+test('RF_DRAIN_MIN=0 updates without probing or signalling a drain', async () => {
+  publish('v0.5.10');
+  const before = drainedProbes;
+  const result = await spawnUpdater(work, { RF_DRAIN_MIN: '0' }).done;
+  assert.equal(result.code, 0, result.out);
+  assert.equal(drainedProbes, before);
+});

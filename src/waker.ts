@@ -430,6 +430,7 @@ export function stop() {
 
 // A drain stops the idle Pis; a second signal only renews its deadline. Drained, no run goes, nor does any Pi stop.
 export function drain() {
+  if (!DRAIN_MS) return;
   const was = draining;
   clearTimeout(draining);
   draining = setTimeout(() => { draining = undefined; changes.emit('change', 'tree'); startWaiting(); }, DRAIN_MS).unref();

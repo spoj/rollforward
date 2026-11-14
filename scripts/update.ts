@@ -51,6 +51,7 @@ if (!checks.length || checks.some((c: any) => c.status !== 'completed' || !['suc
 // RF_DRAIN_MIN, or its restart meanwhile, and stopped all the same; this dead, its drain ends by itself. One that knows no drain,
 // as an older server, answers /drained otherwise, and isn't signalled, which would kill it.
 async function drain() {
+  if (!limit) return;
   const pid = () => sh('systemctl', '--user', 'show', '--property=MainPID', '--value', 'rollforward'), was = pid();
   const drained = () => fetch(new URL('/drained', health)).then(r => r.status, () => 0);
   if (!Number(was) || ![200, 503].includes(await drained()) || pid() !== was) return;

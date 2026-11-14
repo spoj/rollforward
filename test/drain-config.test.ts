@@ -23,3 +23,15 @@ test('a drain timer does not keep the process alive', () => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), '0');
 });
+
+test('RF_DRAIN_MIN=0 disables draining without briefly refusing runs', () => {
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import { drain, updating } from './src/waker.ts';
+    import { changes } from './src/system.ts';
+    changes.removeAllListeners('change');
+    drain();
+    console.log(updating());
+  `], { cwd: new URL('..', import.meta.url), env: { ...process.env, RF_DRAIN_MIN: '0' }, encoding: 'utf8', timeout: 5000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'null');
+});
