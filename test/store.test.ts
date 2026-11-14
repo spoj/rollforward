@@ -139,6 +139,10 @@ test("a file the screen shows stays the agent's to change, and closing takes it 
   inst.put(JSON.stringify({ rev: inst.doc.rev, status: 'open', items: [{ id: 'a1', name: 'A1', kind: 'step', file: 'working/a1.md' }] }), 1);
   assert.deepEqual(inst.log.filter(e => e.op === 'point').map(e => [e.item, e.file, e.was]), [['a1', 'working/a1.md', null]]);
   writeFileSync(page, 'changed\n');
+  rmSync(page);
+  await assert.rejects(inst.close(alex), { status: 409, message: 'a1: no file working/a1.md' });
+  assert.equal(inst.doc.status, 'open');
+  writeFileSync(page, 'changed\n');
   await inst.close(alex);
   assert.equal(inst.doc.status, 'closed');
   rmSync(tmp, { recursive: true, force: true });

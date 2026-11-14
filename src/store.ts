@@ -328,6 +328,11 @@ export class Instance {
   // accepted as the agent said it did them. It commits the folder in the runner's name. The instance is closed meanwhile, so nothing
   // changes it, but saved only once committed and packed: either failing, or a restart, leaves it open.
   async close(by: Who) {
+    for (const i of this.doc.items) if (i.file !== null) {
+      const fd = openFile(this.dir, i.file);
+      if (fd === undefined) throw new HttpError(409, `${i.id}: no file ${i.file}`);
+      closeSync(fd);
+    }
     const accepted = this.asking().map(e => `c${e.seq}`);
     this.doc.status = 'closed';
     let hash: string;

@@ -1921,3 +1921,11 @@ test("while an update drains the server, the page shows a quiet line above the i
   await page.click('#sidefoot [data-act=fold-side]');
   await page.waitForSelector('#draining', { state: 'hidden', timeout: 10_000 });
 });
+
+test('previewing a missing text file shows the error rather than rendering the 404 body as file contents', async () => {
+  await page.evaluate(() => preview('working/missing.md'));
+  await page.waitForSelector('#pv .empty');
+  assert.equal(await page.locator('#pv .say').count(), 0);
+  assert.equal(await page.textContent('#pv .empty'), 'no such file');
+  await page.click('#pv [data-act=unpv]');
+});

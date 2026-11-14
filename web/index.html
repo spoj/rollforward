@@ -1401,7 +1401,12 @@ function previewOf(path, item) {
 // What a preview shows: a text file as it is, a file of a kind the server reads, or any attachment, as the server reads it.
 async function load(p) {
   try {
-    if (/\.(md|txt|json|py|sql|log)$/i.test(p.path)) p.text = await (await fetch(fileUrl(p.path))).text();
+    if (/\.(md|txt|json|py|sql|log)$/i.test(p.path)) {
+      const r = await fetch(fileUrl(p.path)), t = await r.text();
+      if (r.status === 401) location.reload();
+      if (!r.ok) throw new Error(t);
+      p.text = t;
+    }
     else if (!p.path || /\.(xlsx|xlsm|xls|csv|eml|msg|pdf|docx)$/i.test(p.path)) Object.assign(p, await api(p.src));
     if (p.sheets) p.sheet = p.sheets.findIndex(s => s.rows);
   } catch (e) {
