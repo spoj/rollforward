@@ -1857,3 +1857,45 @@ test("Assign… on the bar hands an instance to whoever sees its workspace, who 
   await page.click('.find .mine');
   await page.waitForSelector(`a.row.inst[href="#/${theirs}"]`);
 });
+
+test("an expired login's banner on an instance agrees with held(): gone once closed, assigned away and back, or its OpenRouter key removed", async () => {
+  const origin = new URL(page.url()).origin;
+  const { id: ws } = await page.evaluate(async () => (await (await fetch('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: 'Held needs' }) })).json()));
+  await page.evaluate(async ws => fetch(`/api/workspaces/${ws}`, { method: 'PUT', body: JSON.stringify({ add: 'bob@demo.test', as: 'member' }) }), ws);
+  const { id: sid } = await page.evaluate(async ws => (await (await fetch('/api/series', { method: 'POST', body: JSON.stringify({ workspace: ws, name: 'Rec' }) })).json()), ws);
+  const { id: i1 } = await page.evaluate(async sid => (await (await fetch(`/api/series/${sid}`, { method: 'POST', body: JSON.stringify({ label: '2026-10', quiet: true }) })).json()), sid);
+  const { id: i2 } = await page.evaluate(async sid => (await (await fetch(`/api/series/${sid}`, { method: 'POST', body: JSON.stringify({ label: '2026-09', quiet: true }) })).json()), sid);
+  entra.who.stale.add('admin@demo.test');
+  await page.evaluate(async ([a, b]) => {
+    await fetch(`/api/instances/${a}/comment`, { method: 'POST', body: JSON.stringify({ text: 'Go 1' }) });
+    await fetch(`/api/instances/${b}/comment`, { method: 'POST', body: JSON.stringify({ text: 'Go 2' }) });
+  }, [i1, i2]);
+  for (let k = 0; k < 50; k++) {
+    const [d1, d2] = await page.evaluate(async ([a, b]) => Promise.all([a, b].map(async x => (await fetch(`/api/instances/${x}`)).json())), [i1, i2]);
+    if (d1.log.some((e: any) => e.op === 'expired') && d2.log.some((e: any) => e.op === 'expired')) break;
+    await new Promise(r => setTimeout(r, 100));
+  }
+  entra.who.stale.delete('admin@demo.test');
+  await page.goto(`${origin}/#/${i1}`);
+  await page.waitForSelector('#needs:not([hidden])');
+  assert.match(await page.textContent('#needs') ?? '', /Your rollforward login has expired/);
+  await page.evaluate(async ([a, b]) => {
+    await fetch(`/api/instances/${b}/close`, { method: 'POST', body: JSON.stringify({ quiet: true }) });
+    await fetch(`/api/instances/${a}/assign`, { method: 'POST', body: JSON.stringify({ to: 'bob@demo.test' }) });
+  }, [i1, i2]);
+  const bob = await browser.newPage();
+  entra.who.as = 'bob@demo.test';
+  await bob.goto(`${origin}/auth/login`);
+  await bob.waitForSelector('#bar h1 .t');
+  await bob.evaluate(async a => fetch(`/api/instances/${a}/assign`, { method: 'POST', body: JSON.stringify({ to: 'admin@demo.test' }) }), i1);
+  await bob.close();
+  entra.who.as = 'admin@demo.test';
+  await page.goto(`${origin}/auth/login`);
+  await page.waitForSelector('#bar h1 .t');
+  await page.goto(`${origin}/#/${i1}`);
+  await page.waitForSelector('#bar h1 .t:text-is("2026-10")');
+  assert.equal(await page.locator('#needs').isHidden(), true, 'gone after assign and sign-in');
+  await page.goto(`${origin}/#/${i2}`);
+  await page.waitForSelector('#bar h1 .t:text-is("2026-09")');
+  assert.equal(await page.locator('#needs').isHidden(), true, 'gone on closed instance');
+});

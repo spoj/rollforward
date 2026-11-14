@@ -15,8 +15,8 @@ delete process.env.OPENROUTER_API_KEY;
 process.env.RF_WAKE_TICK_MS = '50';
 const entra = await idp();
 Object.assign(process.env, entra.env('http://127.0.0.1:1'));
-const { active, byToken, cancelWakes, closed, kick, message, recover, remove, resolveFor, setWake, startWaking, view, wakes, wakesOf, weekly } = await import('../src/waker.ts');
-const { personDir, saveLogin } = await import('../src/logins.ts');
+const { active, byToken, cancelWakes, closed, held, kick, message, recover, remove, resolveFor, setWake, startWaking, view, wakes, wakesOf, weekly } = await import('../src/waker.ts');
+const { personDir, saveLogin, signOut } = await import('../src/logins.ts');
 const { keepSignIn } = await import('../src/entra.ts');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-wake-')), alice = 'alice@demo.test';
 initSystem(tmp);
@@ -238,7 +238,7 @@ test("an act just after a run ends, as its folder is committed, starts the next 
 });
 
 test("an instance whose run met its runner's expired login carries on when they sign in again, once", async () => {
-  const waits = make('s2', 'waits');
+  const waits = createInstance('s2', 'waits', alice, ['m365:item:d1/i1']);
   waits.append('server', 'expired', { login: 'm365', runner: alice });
   saveLogin(alice, { id: 'm365', kind: 'm365', name: 'Microsoft 365', since: '', offers: [], expired: true });
   assert.ok(!waits.log.some(e => e.op === 'wake'), 'an expired login wakes nothing');
@@ -271,6 +271,33 @@ test("signing in again wakes nothing whose expired login a run met before the in
   kick(back);
   await settle();
   assert.ok(back.log.some(e => e.op === 'run'), "her act starts a run, Microsoft's old refusal holding nothing");
+});
+
+test("unticking an expired login, or closing the instance, stops holding or waking it; removing an expired OpenRouter key wakes what it held", async () => {
+  const unticked = createInstance('s2', 'unticked', alice, ['web:erp']);
+  unticked.append('server', 'expired', { login: 'web:erp', name: 'erp', runner: alice });
+  assert.equal(held(unticked, 'web:erp', alice), true);
+  unticked.append(alice, 'logins', { logins: [] });
+  assert.equal(held(unticked, 'web:erp', alice), false);
+  saveLogin(alice, { id: 'web:erp', kind: 'website', name: 'erp', since: '', offers: [{ id: 'web:erp', name: 'erp' }], expired: true }, '{}');
+  saveLogin(alice, { id: 'web:erp', kind: 'website', name: 'erp', since: '', offers: [{ id: 'web:erp', name: 'erp' }] }, '{}');
+  assert.ok(!unticked.log.some(e => e.op === 'wake'), 'signing in to an unticked login wakes nothing');
+
+  const shut = createInstance('s2', 'shut-expired', alice, ['web:erp']);
+  shut.append('server', 'expired', { login: 'web:erp', name: 'erp', runner: alice });
+  await shut.close({ email: alice, name: 'Alice' });
+  assert.equal(held(shut, 'web:erp', alice), false);
+
+  const broke = make('s2', 'broke-key');
+  saveLogin(alice, { id: 'openrouter', kind: 'key', name: 'OpenRouter', since: '', offers: [], enabled: true, expired: true }, 'sk');
+  broke.append(alice, 'comment', { thread: 'c2', text: 'Go' });
+  broke.append('server', 'expired', { login: 'openrouter', name: 'OpenRouter', runner: alice });
+  assert.equal(held(broke, 'openrouter', alice), true);
+  signOut(alice, 'openrouter');
+  assert.equal(held(broke, 'openrouter', alice), false);
+  assert.ok(broke.log.some(e => e.op === 'wake' && e.login === 'openrouter'), 'removing the expired key wakes the instance');
+  await settle();
+  assert.ok(broke.log.some(e => e.op === 'run'));
 });
 
 test('after a restart every open instance with something for a run starts; an Interrupt holds until the next act, and a quiet entry is nothing for a run, which the next reads', async () => {

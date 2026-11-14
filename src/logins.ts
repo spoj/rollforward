@@ -35,6 +35,7 @@ export function saveLogin(email: string, login: Login, secret?: string) {
   mkdirSync(personDir(email), { recursive: true, mode: 0o700 });
   if (secret !== undefined) seal(email, login.id, secret);
   replaceFile(list(email), JSON.stringify([...logins(email).filter(l => l.id !== login.id), login], null, 1));
+  changes.emit('change', 'tree');
   if ((!was || was.expired) && !login.expired) changes.emit('login', email, login.id, login.name);
 }
 
@@ -54,9 +55,12 @@ export function secret(email: string, id: string): string {
 
 // Signing out deletes the record, and a website's token with it.
 export function signOut(email: string, id: string) {
-  if (!logins(email).some(l => l.id === id)) throw new HttpError(404, `you have no login ${id}`);
+  const was = logins(email).find(l => l.id === id);
+  if (!was) throw new HttpError(404, `you have no login ${id}`);
   for (const s of [id, `${id}.header`]) rmSync(join(personDir(email), `${s}.sealed`), { force: true });
   replaceFile(list(email), JSON.stringify(logins(email).filter(l => l.id !== id), null, 1));
+  changes.emit('change', 'tree');
+  if (id === 'openrouter' && was.expired && was.enabled) changes.emit('login', email, id, was.name);
 }
 
 export function forgetLogins(email: string) {

@@ -545,7 +545,7 @@ function logText(e) {
     resolve: () => `${w} resolved a thread${e.text ? `<div class="d">${esc(e.text)}</div>` : ''}`,
     react: () => `${w} ${e.up === null ? 'took back a reaction' : e.up ? 'gave a thumbs up' : 'gave a thumbs down'} on ${e.on ? `comment c${e.on}` : 'the instance'}`,
     wake: () => `${data.standing[e.seq] === 'note' ? `${person(e.from)} would wake it: a note for ${who(data.runner.by)}` : `Woken${e.from ? ` by ${who(e.from)}` : ''}`}${[e.reason, e.text].filter(Boolean).map(t => `<div class="d">${esc(t)}</div>`).join('')}`,
-    expired: () => e.left ? `${who(e.runner)} has left: Microsoft no longer signs them in, so someone takes the instance over` : `Waiting for ${who(e.runner)} ${e.login === 'openrouter' ? 'to save another OpenRouter key, or stop using their own, out of credits' : `to sign in to ${esc(e.name ?? (e.login === 'm365' ? 'Microsoft 365' : e.login))} again`}${e.runner === me.email && !data.log.some(x => x.seq > e.seq && x.op === 'wake' && x.login === e.login) ? `<div>${signInHtml(e.login, e.name ?? e.login)}</div>` : ''}`,
+    expired: () => e.left ? `${who(e.runner)} has left: Microsoft no longer signs them in, so someone takes the instance over` : `Waiting for ${who(e.runner)} ${e.login === 'openrouter' ? 'to save another OpenRouter key, or stop using their own, out of credits' : `to sign in to ${esc(e.name ?? (e.login === 'm365' ? 'Microsoft 365' : e.login))} again`}${data.runner.by === me.email && (data.held ?? []).includes(e.login) && e === data.log.findLast(x => x.op === 'expired' && !x.left && x.login === e.login && x.runner === me.email) ? `<div>${signInHtml(e.login, e.name ?? e.login)}</div>` : ''}`,
     takeover: () => `${w} took over from ${who(e.from)}${e.logins?.length ? `<div class="d">Logins: ${esc(e.logins.join(', '))}</div>` : ''}`,
     assign: () => `${w} ${e.to === e.by ? 'took over' : `assigned it to ${who(e.to)}`} from ${who(e.from)}${e.logins?.length ? `<div class="d">Logins: ${esc(e.logins.join(', '))}</div>` : ''}`,
     promote: () => `${w} made it a series, ${esc(e.series)}`,
@@ -571,11 +571,11 @@ function logText(e) {
 // What this instance waits on you for, above it: the threads that wait on you, a question, a proposal, an ask from before those, or
 // a note, and your logins that expired under it. Most of the time there is nothing.
 function renderNeeds() {
-  const held = new Map(data?.log.filter(e => e.op === 'expired' && e.runner === me.email && !data.log.some(x => x.seq > e.seq && x.op === 'wake' && x.login === e.login)).map(e => [e.login, e]));
+  const held = data?.runner.by === me.email ? (data.held ?? []).map(l => data.log.findLast(e => e.op === 'expired' && !e.left && e.login === l && e.runner === me.email)).filter(Boolean) : [];
   const act = (e, mode, name) => `<button class="btn ${mode === 'reply' ? 'reply-to' : ''}" data-act="reply" data-mode="${mode}" data-seq="${e.seq}">${name}</button>`;
   const h = (data ? data.waiting.filter(w => w.who === me.email).map(w => data.log[w.seq - 1]) : []).map(e => `<div><b class="${e.ask === 'proposal' ? 'propose' : ''}">${{ question: 'Question', proposal: 'Proposal', true: 'Ask' }[e.ask] ?? 'Note'}</b><span>${esc(firstLine(e.text))}</span>`
     + (!editable() ? `<button class="btn" data-act="thread" data-thread="${e.thread}">Open</button>` : e.ask === 'proposal' ? act(e, 'approve', 'Approve\u2026') + act(e, 'reject', 'Reject\u2026') : act(e, 'reply', 'Reply')) + '</div>').join('')
-    + [...held.values()].map(e => `<div><b>Login</b><span>${e.login === 'openrouter' ? 'Your OpenRouter key is out of credits' : `Your ${esc(e.name)} login has expired`}: this instance waits for it</span>${signInHtml(e.login, e.name)}</div>`).join('');
+    + held.map(e => `<div><b>Login</b><span>${e.login === 'openrouter' ? 'Your OpenRouter key is out of credits' : `Your ${esc(e.name)} login has expired`}: this instance waits for it</span>${signInHtml(e.login, e.name)}</div>`).join('');
   $('#needs').hidden = !h;
   put($('#needs'), h);
   // A closed instance is read with the corrections it took since: what was wrong in it, or what superseded it, and where.
@@ -1232,6 +1232,7 @@ async function saveKey() {
   const k = pv.settings.logins.find(l => l.id === 'openrouter');
   await api('/logins/openrouter', { method: 'PUT', body: JSON.stringify({ key: $('#orkey')?.value ?? '', enabled: $('#oruse')?.checked ?? !k }) });
   await openLogins();
+  await patch();
   saved();
 }
 
@@ -1923,6 +1924,7 @@ async function onAct(act, el) {
     await api(`/logins/${enc(el.dataset.id)}`, { method: 'DELETE' });
     pv.settings.logins = await api('/logins');
     renderPv();
+    await patch();
   }
   if (act === 'new-workspace') {
     const made = await ask({ title: 'New workspace', text: 'Such as a client. You become its owner.', value: '', placeholder: 'Name', ok: 'Make workspace', act: name => api('/api/workspaces', { method: 'POST', body: JSON.stringify({ name }) }) });
