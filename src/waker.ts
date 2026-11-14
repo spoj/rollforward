@@ -170,6 +170,7 @@ export function kick(inst: Instance) {
 }
 
 function flush(a: Active) {
+  if (a.stopped) return;
   const entries = a.inst.log.filter(e => e.seq > a.sent && (e.by !== 'agent' || e.note)), fresh = notes(a.inst.series()).filter(e => e.seq > a.noted && !e.settled);
   // What it is told of reaches it at once, notes too.
   if (!entries.some(told) && !fresh.length) return;
@@ -253,10 +254,10 @@ async function begin(inst: Instance, tried: Set<Instance>) {
     started.splice(0, started.length - MAX_RUNS);
     a.ready = startRun({ token: a.token, id: inst.id, n, view: a.view, skills: live, onEvent: e => byToken.has(a.token) && heard(byToken.get(a.token)!, e) });
     a.run = await a.ready;
-    // Cut as it started (leases(), remove()).
-    if (a.done) return;
+    // Cut as it started (leases(), remove(), stop()).
+    if (a.stopped) return;
     ({ settled } = await a.run.turn(text));
-    if (a.done) return;
+    if (a.stopped) return;
   } catch (err) {
     if (loggedRun) await finishRun(a, true, String(err));
     else { active.delete(series); byToken.delete(a.token); bail(inst, tried); throw err; }
