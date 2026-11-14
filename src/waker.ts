@@ -28,7 +28,7 @@ const full = () => active.size >= MAX_RUNS || (MIN_FREE > 0 && freemem() < MIN_F
 export const MAX_OPEN = 3;
 const SPACING_MS = 15 * 60_000, MAX_WAKES = 20;
 
-export type Active = { inst: Instance; n: number; runner: string; session: number; token: string; view: View; workspace: string; skills: Record<string, number>; shape: string; run?: Run; sent: number; noted: number; seen: number; texts: Map<string, number>; done: boolean; cost: number; failed?: string; hosts: Set<string>; links: Map<string, { name: string; offer: string }>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string;
+export type Active = { inst: Instance; n: number; runner: string; session: number; token: string; view: View; workspace: string; skills: Record<string, number>; shape: string; run?: Run; sent: number; noted: number; seen: number; delivered: number; texts: Map<string, number>; done: boolean; cost: number; failed?: string; hosts: Set<string>; links: Map<string, { name: string; offer: string }>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string;
   // Its Pi as it starts, and once its Pi, sandbox and browsers have stopped, after it ends; whether its stop was asked for, from when
   // its token opens nothing (server.ts running()).
   ready?: Promise<Run>; ended?: Promise<unknown>; stopped?: boolean };
@@ -115,9 +115,10 @@ export function pending(inst: Instance, seen: number, upto = inst.log.length): E
   return inst.log.filter(e => e.seq > seen && e.seq <= upto && standing(inst, e, upto)?.starts);
 }
 
-// Whether an instance has something for a run: what came since its last run, or since an Interrupt, which waits for the next act;
-// nothing while its series or its workspace is archived, which does no work until it's restored.
-const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math.max(seenBefore(inst), inst.log.findLast(e => e.op === 'interrupt')?.seq ?? 0)).length > 0
+// Whether an instance has something for a run: what came since its last run, or since an Interrupt or a failed or cut run, which
+// waits for the next act; nothing while its series or its workspace is archived, which does no work until it's restored.
+const stopped = (inst: Instance) => inst.log.findLast(e => e.op === 'interrupt' || (e.op === 'done' && (e.aborted || e.error)))?.seq ?? 0;
+const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math.max(seenBefore(inst), stopped(inst))).length > 0
   && !archived(tree(), inst.seriesId);
 
 // What a run is told of: people's acts, other instances' agents' notes, and the server's wakes, expired logins, uploads made items,
@@ -250,7 +251,7 @@ async function begin(inst: Instance) {
   const live = kept ? [] : skills().map(s => ({ ...s, dir: realpathSync(s.dir) }));
   const a: Active = {
     inst, n, runner: lease.by, session: kept?.session ?? n, token: kept?.token ?? randomUUID(), view: kept?.view ?? view(inst), workspace: tree().series[series].workspace, skills: kept?.skills ?? Object.fromEntries(live.map(s => [s.id, pushed(s).version])), shape: kept?.shape ?? startsFrom(inst),
-    sent: entries.at(-1)!.seq, noted: left.at(-1)?.seq ?? 0, seen, texts: new Map([[text, entries.at(-1)!.seq]]), done: false, cost: 0, hosts: new Set(), links: new Map(),
+    sent: entries.at(-1)!.seq, noted: left.at(-1)?.seq ?? 0, seen, delivered: seen, texts: new Map([[text, entries.at(-1)!.seq]]), done: false, cost: 0, hosts: new Set(), links: new Map(),
     process: processOf(inst), thread: pending(inst, seen)[0]?.thread as string | undefined,
   };
   active.set(series, a);
@@ -301,11 +302,12 @@ function heard(a: Active, e: JsonAgentSessionEvent) {
   if (e.type === 'tool_execution_end') a.browsers?.shoot().catch(err => console.error(`run ${a.n} of ${a.inst.id}: no screenshot`, err));
   if (e.type === 'message_end' && e.message.role === 'assistant') {
     a.failed = e.message.stopReason === 'error' ? e.message.errorMessage ?? 'the model failed' : undefined; // a later success clears it
+    if (!['error', 'aborted'].includes(e.message.stopReason ?? '')) a.seen = Math.max(a.seen, a.delivered);
   }
   if (e.type !== 'message_start' || e.message.role !== 'user') return;
   const c = e.message.content;
   const seq = a.texts.get(typeof c === 'string' ? c : c.map(b => (b.type === 'text' ? b.text : '')).join(''));
-  if (seq) a.seen = Math.max(a.seen, seq);
+  if (seq) a.delivered = Math.max(a.delivered, seq);
 }
 
 // The process a run starts from: its instance's working/process.md, or, until it has one, that of the series' latest closed instance

@@ -839,10 +839,12 @@ test("a person's own OpenRouter key, checked as it's saved, goes in for the runs
   assert.deepEqual([failed.outcome, failed.failure], ['failed', 'credits']);
   assert.equal((await (await call('GET', '/logins')).json()).find((l: { id: string }) => l.id === 'openrouter').expired, true);
   keys.length = 0;
-  scripts.push({ bash: [], report: 'On the shared key.', saw: [] });
+  const run3: Script = { bash: [], report: 'On the shared key.', saw: [] };
+  scripts.push(run3);
   assert.equal((await call('PUT', '/logins/openrouter', { enabled: false })).status, 200);
   log = await runs(id, 3);
   assert.deepEqual([log.findLast(e => e.op === 'run')!.key, [...new Set(keys)]], ['shared', ['stand-in-key']]);
+  assert.match(run3.prompt!, /Again\./, "the next session carries on from before the failed run, keeping the runner's unread comment");
 });
 
 test("a run that adds rules to the process, or rewords them, says how many in its done entry, with the thread whose comment started it", async () => {

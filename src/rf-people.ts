@@ -500,7 +500,7 @@ else if (cmd === 'comment' && args.length === 2) {
   else for (;;) {
     // The run that saw the comment, and what it said from then on: a run ending as it came may not have.
     await new Promise(r => setTimeout(r, 5000));
-    const log = (await get(at)).log, done = log.find(e => e.op === 'done' && e.seen >= seq);
+    const log = (await get(at)).log, done = log.find(e => e.op === 'done' && (e.seen >= seq || ((e.error || e.aborted) && (log.find(r => r.op === 'run' && r.run === e.run)?.upto ?? 0) >= seq && !log.some(w => w.seq > e.seq && w.op === 'wake' && w.cause === e.seq))));
     if (!done) continue;
     const from = Math.max(seq, log.find(e => e.op === 'run' && e.run === done.run).seq);
     for (const e of log.filter(e => e.seq > from && e.seq < done.seq && e.op === 'comment' && e.by === 'agent' && !e.see)) console.log(`${e.ask === 'proposal' ? 'Proposes' : e.ask ? 'Asks' : 'Says'} in ${e.thread}:\n${e.text}\n`);
