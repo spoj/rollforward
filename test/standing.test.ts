@@ -152,3 +152,28 @@ test("a wake pending as its instance was assigned stays no one's word, though th
   i.append(carol, 'assign', { to: alice, from: carol, logins: [] });
   assert.match(message(i, 1, [], true), /from alice@demo\.test, a note/);
 });
+
+test("a colleague's reply to a withdrawn, already-answered, plain or pre-copy comment is a note, not an answer", () => {
+  const i = make(false);
+  const withdrawn = i.append('agent', 'comment', { thread: 'c2', text: 'Which rate?', ask: 'question', to: bob });
+  i.append('agent', 'withdraw', { thread: 'c2', on: withdrawn.seq, text: 'Found it.' });
+  const afterWithdraw = i.append(bob, 'comment', { thread: 'c2', parent: withdrawn.seq, text: 'Use 9%.' });
+  assert.deepEqual(standing(i, afterWithdraw), { word: 'note', starts: false });
+  assert.match(message(i, 2, [afterWithdraw]), /"note":true/);
+
+  const asked = i.append('agent', 'comment', { thread: 'c3', text: 'Which bank?', ask: 'question', to: bob });
+  const first = i.append(bob, 'comment', { thread: 'c3', parent: asked.seq, text: 'HSBC.' });
+  const second = i.append(bob, 'comment', { thread: 'c3', parent: asked.seq, text: 'Actually Citi.' });
+  assert.deepEqual(standing(i, first), { word: 'answer', starts: true });
+  assert.deepEqual(standing(i, second), { word: 'note', starts: false });
+
+  const plain = i.append('agent', 'comment', { thread: 'c4', text: 'FYI.', to: bob });
+  assert.deepEqual(standing(i, i.append(bob, 'comment', { thread: 'c4', parent: plain.seq, text: 'Noted.' })), { word: 'note', starts: false });
+
+  const copy = make(false);
+  const oldAsk = copy.append('agent', 'comment', { thread: 'c2', text: 'Confirm?', ask: 'question', to: bob });
+  copy.append(alice, 'close', { accepted: [`c${oldAsk.seq}`], commit: '0'.repeat(40) });
+  copy.append(alice, 'duplicate', { from: 'old', logins: [] });
+  assert.deepEqual(standing(copy, copy.append(bob, 'comment', { thread: 'c2', parent: oldAsk.seq, text: 'Change it.' })), { word: 'note', starts: false });
+});
+

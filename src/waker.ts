@@ -97,7 +97,8 @@ export function standing(inst: Instance, e: Entry, upto = inst.log.length): Stan
   if (e.op !== 'wake' && !(['upload', 'comment', 'signoff', 'reject'].includes(e.op) && (isPerson(e) || e.note))) return undefined;
   const line = lastAssign(inst.log, upto)?.seq ?? 0, runner = runnerAt(inst.log, e.seq);
   if (e.seq < line && e.seq <= readAt(inst, line)) return undefined;
-  const ask = e.op === 'upload' ? undefined : e.parent ?? e.on ? inst.log[(e.parent ?? e.on) as number - 1] : inst.log.findLast(x => x.seq < e.seq && x.op === 'comment' && x.thread === e.thread && x.by === 'agent');
+  const rawAsk = e.op === 'upload' || !e.thread ? undefined : e.parent ?? e.on ? inst.log[(e.parent ?? e.on) as number - 1] : inst.log.findLast(x => x.seq < e.seq && x.op === 'comment' && x.thread === e.thread && x.by === 'agent');
+  const ask = rawAsk?.op === 'comment' && rawAsk.by === 'agent' && !!rawAsk.ask && rawAsk.seq > inst.copied && rawAsk.seq < e.seq && rawAsk.thread === e.thread && (rawAsk.ask !== 'proposal' || e.op !== 'comment') && !inst.answered(rawAsk, e.seq - 1) ? rawAsk : undefined;
   const word = e.seq < line || e.note ? 'note'
     : e.op !== 'wake' ? (e.by === runner ? 'runner' : ask?.to === e.by ? 'answer' : 'note')
     : e.seq <= inst.log.length || (!e.assigned && (e.from === runner || (!!e.inst && instance(e.inst as string).seriesId === inst.seriesId && runnerOf(instance(e.inst as string)).by === runner))) ? 'runner' : 'note';
