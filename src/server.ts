@@ -294,13 +294,13 @@ function listing(me: Me) {
 // An instance's runs started since `since`, and since its latest duplication: when, how each ended, its cost, whose it was and what started it. A deleted instance's are
 // as its deletion kept them, for the totals: when, how each ended, its cost and whose it was.
 type RunRow = { run: number; at: string; outcome: string; failure: string | null; seconds: number; cost: number; estimated?: true; runner: string; started: { op: string; by: string } | null; error: string | null };
-type CachedRun = RunRow & { key?: 'own' | 'shared'; exaCost?: number };
-const runsKept = new WeakMap<Instance, { len: number; rows: CachedRun[] }>();
+type CachedRun = RunRow & { key?: 'own' | 'shared'; exaCost?: number; openrouterByDay?: Record<string, { cost: number; estimated?: true }> };
+const runsKept = new WeakMap<Instance, { log: object; len: number; rows: CachedRun[] }>();
 
 function cachedRunsOf(i: Instance): CachedRun[] {
   const a = active.get(i.seriesId), runningHere = a?.inst === i;
   const hit = !runningHere && runsKept.get(i);
-  if (hit && hit.len === i.log.length) return hit.rows;
+  if (hit && hit.log === i.log && hit.len === i.log.length) return hit.rows;
   let rows: CachedRun[];
   if (i.hole) {
     rows = ((i.log[0].runs ?? []) as CachedRun[]).map(r => ({ ...r, started: null, error: null }));
@@ -311,7 +311,18 @@ function cachedRunsOf(i: Instance): CachedRun[] {
       const cause = pending(i, seen, r.seq).find(e => e.seq <= (r.upto as number));
       const error = d?.error as string | undefined, outcome = !d ? 'running' : !error ? (d.aborted ? 'interrupted' : 'done') : Object.values(CUT).includes(error) ? 'cut' : 'failed';
       const estimated = d ? d.estimated === true : runningHere && !!a.estimated;
-      const exaCost = slice.reduce((t, e) => t + (e.op === 'call' && e.run === r.run && e.name === 'exa' ? (e.cost as number | undefined) ?? 0 : 0), 0);
+      const exaCost = +slice.reduce((t, e) => t + (e.op === 'call' && e.run === r.run && e.name === 'exa' ? (e.cost as number | undefined) ?? 0 : 0), 0).toFixed(6);
+      const calls = r.key === 'own' ? [] : slice.filter(e => e.op === 'call' && e.run === r.run && e.name === 'openrouter');
+      let openrouterByDay: Record<string, { cost: number; estimated?: true }> | undefined;
+      if (calls.length) {
+        openrouterByDay = Object.create(null);
+        for (const e of calls) {
+          const day = e.at.slice(0, 10), prev = openrouterByDay![day] ??= { cost: 0 };
+          prev.cost += (e.cost as number | undefined) ?? 0;
+          if (e.estimated) prev.estimated = true;
+        }
+        for (const d of Object.values(openrouterByDay!)) d.cost = +d.cost.toFixed(6);
+      }
       return {
         run: r.run as number, at: r.at, outcome,
         failure: outcome !== 'failed' ? null : /\b402\b|credits/i.test(error!) ? 'credits' : /\b403\b|terms of service|usage polic|flagged/i.test(error!) ? 'policy' : error === 'time limit' ? 'time limit' : 'other',
@@ -323,15 +334,16 @@ function cachedRunsOf(i: Instance): CachedRun[] {
         error: error ?? null,
         ...(r.key && { key: r.key as 'own' | 'shared' }),
         ...(exaCost && { exaCost }),
+        ...(openrouterByDay && { openrouterByDay }),
       };
     });
   }
-  if (!runningHere) runsKept.set(i, { len: i.log.length, rows });
+  if (!runningHere) runsKept.set(i, { log: i.log, len: i.log.length, rows });
   return rows;
 }
 
 function runsOf(i: Instance, since = ''): RunRow[] {
-  return cachedRunsOf(i).filter(r => r.at >= since).map(({ key: _k, exaCost: _e, ...r }) => r);
+  return cachedRunsOf(i).filter(r => r.at >= since).map(({ key: _k, exaCost: _e, openrouterByDay: _o, ...r }) => r);
 }
 
 // Every run in what `me` sees, started since `since`, by where it ran.
@@ -443,15 +455,20 @@ async function costs(me: Me, since: string, tz: string) {
   // Include any run on today's UTC day that predates costs.jsonl (e.g. from earlier on deploy day).
   for (const sid of Object.keys(t.series)) for (const i of instances(sid)) for (const r of cachedRunsOf(i)) {
     if (r.key === 'own' || trackedRuns.has(`${i.id}:${r.run}`)) continue;
-    const calls = i.log.filter(e => e.op === 'call' && e.run === r.run && e.name === 'openrouter');
-    if (calls.length) {
-      for (const e of calls) if (e.at.slice(0, 10) === utcDay) {
-        serverTotal += (e.cost as number | undefined) ?? 0;
-        if (e.estimated) serverEst = true;
+    if (r.openrouterByDay) {
+      const day = Object.hasOwn(r.openrouterByDay, utcDay) ? r.openrouterByDay[utcDay] : undefined;
+      if (day) {
+        serverTotal += day.cost;
+        if (day.estimated) serverEst = true;
       }
     } else if (r.at.slice(0, 10) === utcDay) {
-      serverTotal += Math.max(0, r.cost - (r.exaCost ?? 0));
-      if (r.estimated) serverEst = true;
+      if (i.hole && !r.key) {
+        if (r.cost > 0) serverEst = true;
+      } else {
+        const orCost = Math.max(0, r.cost - (r.exaCost ?? 0));
+        serverTotal += orCost;
+        if (r.estimated && (orCost > 0 || !r.exaCost)) serverEst = true;
+      }
     }
   }
   return {
@@ -1067,7 +1084,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // holds of it goes, but its id, label and place in its series, and who deleted it and when, with what its runs cost, for the
     // totals (waker.ts remove()); the system's log records it.
     if (!canManage(me, t.workspaces[t.series[inst.seriesId].workspace])) throw new HttpError(403, "only the workspace's owners and admins delete an instance");
-    await remove(inst, by, () => ({ cost: costOf(inst), ...(estimatedOf(inst) && { estimated: true }), runs: runsOf(inst).map(({ started, error, ...r }) => r) }));
+    await remove(inst, by, () => ({ cost: costOf(inst), ...(estimatedOf(inst) && { estimated: true }), runs: cachedRunsOf(inst).map(({ started, error, ...r }) => r) }));
     for (const p of readdirSync(previews)) if (p.startsWith(inst.id + '-')) rmSync(join(previews, p));
     for (const k of sums.keys()) if (k.startsWith(inst.dir + sep)) sums.delete(k);
     return send(res, 200, 'ok');
