@@ -1,12 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import fs, { chmodSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
+import fs, { chmodSync, closeSync, constants, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { commit } from '../src/git.ts';
 import { openSkills, pushSkill, skills, versionsOf } from '../src/skills.ts';
-import { createInstance, openStore } from '../src/store.ts';
+import { createInstance, openStore, wipe } from '../src/store.ts';
 
 const who = { name: 'Alice', email: 'alice@demo.test' };
 
@@ -89,3 +91,64 @@ test('B-R4-DATA-03a: pushSkill() atomically writes .pushed.json and versionsOf()
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('B-R4-DATA-03b: commit() bounds open directory descriptors on deep working/ trees and checks parent inodes', () => {
+  const root = mkdtempSync(join(tmpdir(), 'r4-03b-'));
+  try {
+    const dir = join(root, 'deep');
+    mkdirSync(join(dir, 'working'), { recursive: true });
+    let fd = openSync(join(dir, 'working'), constants.O_RDONLY | constants.O_DIRECTORY);
+    for (let n = 0; n < 80; n++) {
+      mkdirSync(`/proc/self/fd/${fd}/d`);
+      const next = openSync(`/proc/self/fd/${fd}/d`, constants.O_RDONLY | constants.O_DIRECTORY);
+      closeSync(fd);
+      fd = next;
+    }
+    writeFileSync(`/proc/self/fd/${fd}/leaf.txt`, 'deep\n');
+    closeSync(fd);
+
+    const gitHref = pathToFileURL(join(import.meta.dirname, '..', 'src', 'git.ts')).href;
+    const script = `
+      import assert from 'node:assert/strict';
+      import { execFileSync } from 'node:child_process';
+      import { readdirSync } from 'node:fs';
+      import { commit } from ${JSON.stringify(gitHref)};
+      const before = readdirSync('/proc/self/fd').length;
+      const hash = await commit(${JSON.stringify(dir)}, ${JSON.stringify(who)}, 'deep');
+      assert.equal(readdirSync('/proc/self/fd').length, before);
+      const leaf = 'working/' + 'd/'.repeat(80) + 'leaf.txt';
+      assert.equal(execFileSync('git', ['show', hash + ':' + leaf], { cwd: ${JSON.stringify(dir)}, encoding: 'utf8' }), 'deep\\n');
+    `;
+    execFileSync('bash', ['-c', 'ulimit -n 256; exec "$@"', 'limit', process.execPath, '--input-type=module', '-e', script], { stdio: 'pipe', timeout: 10_000 });
+    execFileSync('bash', ['-c', 'ulimit -n 64; exec "$@"', 'limit', process.execPath, '--input-type=module', '-e', script], { stdio: 'pipe', timeout: 10_000 });
+
+    execFileSync(process.execPath, ['--input-type=module', '-e', `
+      import assert from 'node:assert/strict';
+      import fs from 'node:fs';
+      import { syncBuiltinESMExports } from 'node:module';
+      import { commit } from ${JSON.stringify(gitHref)};
+      const base = ${JSON.stringify(join(root, 'move'))}, tree = base + '/inst', out = base + '/out';
+      fs.mkdirSync(tree + '/working/z', { recursive: true });
+      fs.mkdirSync(out + '/working', { recursive: true });
+      fs.writeFileSync(out + '/secret.txt', 'outside');
+      const before = fs.readdirSync('/proc/self/fd').length, orig = fs.readdirSync;
+      let seenZ = false;
+      fs.readdirSync = (...args) => {
+        const r = orig(...args);
+        if (!seenZ && typeof args[0] === 'string' && args[0].startsWith('/proc/self/fd/') && args[1]?.withFileTypes && r.length === 0) {
+          seenZ = true;
+          fs.renameSync(tree + '/working/z', out + '/working/z');
+        }
+        return r;
+      };
+      syncBuiltinESMExports();
+      await assert.rejects(commit(tree, { name: 'A', email: 'a@b' }, 'moved'), /a folder moved/);
+      fs.readdirSync = orig;
+      syncBuiltinESMExports();
+      assert.equal(fs.readdirSync('/proc/self/fd').length, before);
+    `], { stdio: 'pipe', timeout: 10_000 });
+  } finally {
+    wipe(Buffer.from(root));
+  }
+});
+

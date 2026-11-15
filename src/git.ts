@@ -87,41 +87,75 @@ type Seen = Map<string, [string, string]>;
 // The folder's files and links as fast-import's file commands. Each name is reached through its folder's open descriptor, and
 // opened without following a link, so a folder swapped for a link meanwhile leads nowhere outside. Names are bytes, as git keeps
 // them, which needn't be UTF-8.
-async function* files(dfd: number, rel: Buffer, seen: Seen, now: Seen, holes: { left: bigint }, inModules = false): AsyncGenerator<Buffer> {
-  const at = (name: Buffer) => Buffer.concat([Buffer.from(`/proc/self/fd/${dfd}/`), name]);
-  for (const d of readdirSync(`/proc/self/fd/${dfd}`, { withFileTypes: true, encoding: 'buffer' })) {
-    const name = d.name as unknown as Buffer, path = rel.length ? Buffer.concat([rel, SLASH, name]) : name, raw = name.toString('latin1');
-    if (refused(raw, d.isSymbolicLink()) || (inModules && d.isSymbolicLink())) continue;
-    if (d.isDirectory()) {
-      const sub = open(path, at(name), constants.O_RDONLY | constants.O_DIRECTORY, 0o500);
-      try { yield* files(sub, path, seen, now, holes, inModules || refused(raw, true)); } finally { closeSync(sub); }
-    } else if (d.isSymbolicLink()) {
-      const to = read(path, () => readlinkSync(at(name), { encoding: 'buffer' }));
-      yield Buffer.concat([Buffer.from('M 120000 inline '), quote(path), Buffer.from(`\ndata ${to.length}\n`), to, Buffer.from('\n')]);
-    } else if (d.isFile()) {
-      const fd = open(path, at(name), constants.O_RDONLY | constants.O_NONBLOCK, 0o400), st = fstatSync(fd, { bigint: true });
-      const mode = st.mode & 0o111n ? '100755' : '100644', key = path.toString('latin1'), stat = `${st.ino} ${st.size} ${st.mtimeNs} ${st.ctimeNs} ${mode}`;
-      const was = seen.get(key), size = Number(st.size), fresh = st.ctimeNs > BigInt(Date.now() - 1000) * 1_000_000n;
-      if (!st.isFile() || !size || was?.[0] === stat) closeSync(fd);
-      if (!st.isFile()) throw new Error(`${path} changed as it was committed`);
-      if (was?.[0] === stat) {
-        now.set(key, was);
-        yield Buffer.concat([Buffer.from(`M ${mode} ${was[1]} `), quote(path), Buffer.from('\n')]);
+async function* files(dir: string, seen: Seen, now: Seen, holes: { left: bigint }): AsyncGenerator<Buffer> {
+  let dfd = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY);
+  try {
+    const stack = [{
+      rel: Buffer.alloc(0),
+      entries: readdirSync(`/proc/self/fd/${dfd}`, { withFileTypes: true, encoding: 'buffer' }).reverse(),
+      stat: fstatSync(dfd),
+      inModules: false,
+    }];
+    while (stack.length) {
+      const frame = stack.at(-1)!, d = frame.entries.pop();
+      if (!d) {
+        if (stack.length === 1) break;
+        const child = stack.pop()!, parent = read(child.rel, () => openSync(`/proc/self/fd/${dfd}/..`, constants.O_RDONLY | constants.O_DIRECTORY));
+        try {
+          const st = fstatSync(parent), expected = stack.at(-1)!.stat;
+          if (st.dev !== expected.dev || st.ino !== expected.ino) throw new Error('a folder moved as it was committed');
+        } catch (e) { closeSync(parent); throw e; }
+        closeSync(dfd);
+        dfd = parent;
         continue;
       }
-      if ((holes.left -= st.size > st.blocks * 512n ? st.size - st.blocks * 512n : 0n) < 0n) {
-        closeSync(fd);
-        throw new Error(`${path} has holes, as a sparse file does, and the folder's files have over ${HOLES >> 30n} GB of them in all, which a commit would read in full: remove it`);
+      const name = d.name as unknown as Buffer, path = frame.rel.length ? Buffer.concat([frame.rel, SLASH, name]) : name, raw = name.toString('latin1');
+      if (refused(raw, d.isSymbolicLink()) || (frame.inModules && d.isSymbolicLink())) continue;
+      const at = Buffer.concat([Buffer.from(`/proc/self/fd/${dfd}/`), name]);
+      if (d.isDirectory()) {
+        const sub = open(path, at, constants.O_RDONLY | constants.O_DIRECTORY, 0o500);
+        let entries, stat;
+        try {
+          entries = read(path, () => readdirSync(`/proc/self/fd/${sub}`, { withFileTypes: true, encoding: 'buffer' })).reverse();
+          stat = fstatSync(sub);
+        } catch (e) { closeSync(sub); throw e; }
+        stack.push({ rel: path, entries, stat, inModules: frame.inModules || refused(raw, true) });
+        closeSync(dfd);
+        dfd = sub;
+      } else if (d.isSymbolicLink()) {
+        const to = read(path, () => readlinkSync(at, { encoding: 'buffer' }));
+        yield Buffer.concat([Buffer.from('M 120000 inline '), quote(path), Buffer.from(`\ndata ${to.length}\n`), to, Buffer.from('\n')]);
+      } else if (d.isFile()) {
+        const fd = open(path, at, constants.O_RDONLY | constants.O_NONBLOCK, 0o400), st = fstatSync(fd, { bigint: true });
+        const mode = st.mode & 0o111n ? '100755' : '100644', key = path.toString('latin1'), stat = `${st.ino} ${st.size} ${st.mtimeNs} ${st.ctimeNs} ${mode}`;
+        const was = seen.get(key), size = Number(st.size), fresh = st.ctimeNs > BigInt(Date.now() - 1000) * 1_000_000n;
+        if (!st.isFile() || !size || was?.[0] === stat) closeSync(fd);
+        if (!st.isFile()) throw new Error(`${path} changed as it was committed`);
+        if (was?.[0] === stat) {
+          now.set(key, was);
+          yield Buffer.concat([Buffer.from(`M ${mode} ${was[1]} `), quote(path), Buffer.from('\n')]);
+          continue;
+        }
+        if ((holes.left -= st.size > st.blocks * 512n ? st.size - st.blocks * 512n : 0n) < 0n) {
+          if (size) closeSync(fd);
+          throw new Error(`${path} has holes, as a sparse file does, and the folder's files have over ${HOLES >> 30n} GB of them in all, which a commit would read in full: remove it`);
+        }
+        let owned = size > 0;
+        try {
+          yield Buffer.concat([Buffer.from(`M ${mode} inline `), quote(path), Buffer.from(`\ndata ${size}\n`)]);
+          const blob = createHash('sha1').update(`blob ${size}\0`);
+          let sent = 0;
+          if (size) {
+            owned = false;
+            for await (const c of createReadStream('', { fd, end: size - 1 })) { sent += c.length; blob.update(c); yield c; }
+          }
+          if (sent !== size) throw new Error(`${path} changed as it was committed`);
+          if (!fresh) now.set(key, [stat, blob.digest('hex')]);
+          yield Buffer.from('\n');
+        } finally { if (owned) closeSync(fd); }
       }
-      yield Buffer.concat([Buffer.from(`M ${mode} inline `), quote(path), Buffer.from(`\ndata ${size}\n`)]);
-      const blob = createHash('sha1').update(`blob ${size}\0`);
-      let sent = 0;
-      if (size) for await (const c of createReadStream('', { fd, end: size - 1 })) { sent += c.length; blob.update(c); yield c; }
-      if (sent !== size) throw new Error(`${path} changed as it was committed`);
-      if (!fresh) now.set(key, [stat, blob.digest('hex')]);
-      yield Buffer.from('\n');
     }
-  }
+  } finally { closeSync(dfd); }
 }
 
 async function* stream(dir: string, who: Who, message: string, parent: string, seen: Seen, now: Seen) {
@@ -129,8 +163,7 @@ async function* stream(dir: string, who: Who, message: string, parent: string, s
   yield Buffer.from(`commit refs/heads/main\nauthor ${ident(who)} ${at} +0000\ncommitter rollforward <server@rollforward> ${at} +0000\ndata ${text.length}\n`);
   yield text;
   yield Buffer.from(`${parent ? `from ${parent}\n` : ''}deleteall\n`);
-  const top = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY);
-  try { yield* files(top, Buffer.alloc(0), seen, now, { left: HOLES }); } finally { closeSync(top); }
+  yield* files(dir, seen, now, { left: HOLES });
   yield Buffer.from('done\n');
 }
 
