@@ -293,6 +293,9 @@ test('daily totals, live website-check attribution, cached /api/v1/key view, una
   assert.match(adminCliCosts, /OpenRouter key \(\d{4}-\d{2}-\d{2} UTC\): \$0\.95 today vs ~\$0\.85 \(est\.\) recorded \(\+\$0\.10 unattributed\) · \$140\.25 used · \$59\.75 of \$200\.00 remaining \(monthly\)/);
 
   const adminDaily = await rfAs(adminHome, 'costs', '--daily', '--since', today);
+  assert.match(adminDaily, /workspace\s+~\$1\.50 \(est\.\)\s+3 runs\s+Ops/);
+  assert.match(adminDaily, /person\s+\$0\.45\s+1 runs\s+admin@demo\.test/);
+  assert.match(adminDaily, /run\s+\$0\.45\s+Ops\/Daily\/.+\s+run 1\s+admin@demo\.test\s+done/);
   assert.match(adminDaily, /server\s+\$0\.06\s+website-check: vendor-erp \(bob@demo\.test\)\s+3 calls/);
 
   const opsRuns = await rfAs(adminHome, 'runs', `Ops/Daily/${today}`);
@@ -323,29 +326,27 @@ test('daily totals, live website-check attribution, cached /api/v1/key view, una
   assert.doesNotMatch(bobStatusText, /Low OpenRouter credit/);
   assert.equal(JSON.parse(await rfAs(bobHome, 'status', '--json')).low_credit, undefined);
 
-  // 8. Verify web page for admin vs non-admin: low-credit line at top, Costs dialog, estimated run display, and zero key leaks!
+  // 8. Verify the web's low-credit warning, inline run costs and absence of a costs report for either role.
   const adminCtx = await browser.newContext();
   const [cName, cVal] = adminCookie.split('=');
   await adminCtx.addCookies([{ name: cName, value: cVal, url: base }]);
-  const adminPage = await adminCtx.newPage();
+  const adminPage = await adminCtx.newPage(), costRequests: string[] = [];
+  adminPage.on('request', req => { if (new URL(req.url()).pathname === '/api/costs') costRequests.push(req.url()); });
   await adminPage.goto(`${base}/#/c05750000001`);
   await adminPage.waitForSelector('#masthead #low-credit');
   assert.equal(await adminPage.textContent('#masthead #low-credit'), 'Low OpenRouter credit: $85.00 remaining of $1000.00 limit (resets weekly)');
-  assert.equal(await adminPage.locator('#sidefoot [data-act=costs]').count(), 1);
+  assert.equal(await adminPage.locator('#sidefoot [data-act=costs]').count(), 0);
+  assert.equal(await adminPage.locator('#masthead #low-credit').getAttribute('data-act'), null);
+  assert.equal(await adminPage.locator('#masthead button#low-credit').count(), 0);
 
   // Conversation shows exact vs estimated run costs clearly.
   const runLines = await adminPage.locator('#log .runl').allInnerTexts();
   assert.ok(runLines.some(t => t.includes('Run 1 · done') && t.includes('$0.45') && !t.includes('est.')));
   assert.ok(runLines.some(t => t.includes('Run 2 · done') && t.includes('~$0.25 (est.)')));
 
-  // Clicking the low-credit banner opens the Admin Costs view with OpenRouter key, unattributed diff, and server website-check!
   await adminPage.click('#masthead #low-credit');
-  await adminPage.waitForSelector('#pv[open]');
-  const pvText = await adminPage.locator('#pv').innerText();
-  assert.match(pvText, /OpenRouter key/);
-  assert.match(pvText, /\$85\.00 remaining of \$1000\.00 limit \(resets weekly\)/);
-  assert.match(pvText, /OpenRouter key: \$0\.95 · Server recorded on key: ~\$0\.85 \(est\.\) · Unattributed: \+\$0\.10/);
-  assert.match(pvText, /Server · website-check: vendor-erp/);
+  assert.equal(await adminPage.locator('#pv[open]').count(), 0);
+  assert.deepEqual(costRequests, []);
 
   const pageHtml = await adminPage.content();
   for (const secret of [secretKey, exaSecret, 'sk-or-v1-leaked']) {
@@ -414,33 +415,19 @@ test('owners, members, reader-workspace people and personal tokens cannot obtain
   await change('/api/workspaces/ops001', 'PUT', { owners: [adminEmail] });
 });
 
-test('cost dialog and masthead escape upstream reset strings, workspace names, websites and people', async () => {
-  const payload = '<img src=x onerror="window.costXss=1">';
-  const report = await apiJson('/api/costs?tz=UTC'), who = await apiJson('/me');
-  who.names[payload] = payload;
+test('masthead escapes upstream reset strings', async () => {
+  const payload = '<img src=x onerror="window.costXss=1">', who = await apiJson('/me');
   who.low_credit = { remaining: 1, limit: 200, usage: 199, reset: payload };
-  report.key.reset = payload;
-  report.key.low_credit = true;
-  report.days = [{
-    day: payload, cost: 1, runs_count: 1,
-    by_workspace: { [payload]: { cost: 1, runs: 1 } }, by_person: { [payload]: { cost: 1, runs: 1 } },
-    runs: [{ path: payload, run: 1, person: payload, outcome: payload, failure: payload, cost: 1 }],
-    server: { cost: 1, items: [{ kind: payload, site: payload, person: payload, calls: 1, cost: 1 }] },
-  }];
   const ctx = await browser.newContext();
   const [name, value] = adminCookie.split('=');
   await ctx.addCookies([{ name, value, url: base }]);
   try {
     const page = await ctx.newPage();
     await page.route('**/me', route => route.fulfill({ json: who }));
-    await page.route('**/api/costs?*', route => route.fulfill({ json: report }));
     await page.goto(base);
     await page.waitForSelector('#masthead #low-credit');
     assert.ok((await page.locator('#masthead #low-credit').innerText()).includes(payload));
-    await page.click('#masthead #low-credit');
-    await page.waitForSelector('#pv[open]');
-    assert.ok((await page.locator('#pv').innerText()).includes(payload));
-    assert.equal(await page.locator('#pv img, #masthead img').count(), 0);
+    assert.equal(await page.locator('#masthead img').count(), 0);
     assert.equal(await page.evaluate(() => (window as any).costXss), undefined);
   } finally { await ctx.close(); }
 });

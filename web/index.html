@@ -39,7 +39,6 @@ const $ = s => document.querySelector(s);
 const enc = encodeURIComponent;
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const usd = (n, est) => `${est ? '~' : ''}${n < 0 ? '-$' + (-n).toFixed(2) : '$' + n.toFixed(2)}${est ? ' (est.)' : ''}`;
-const signedUsd = n => `${n >= 0 ? '+$' : '-$'}${Math.abs(n).toFixed(2)}`;
 const lowCreditText = lc => `Low OpenRouter credit: ${usd(lc.remaining)} remaining${lc.limit !== null ? ` of ${usd(lc.limit)} limit` : ''}${lc.reset ? ` (resets ${lc.reset})` : ''}`;
 const APP = 'RollForward';
 // The buttons' icons, line drawings in the colour of their text.
@@ -270,7 +269,7 @@ function renderBrand() {
 // The top bar: the app and what the page shows, and your account, whose menu has your role and Sign out.
 function renderTop() {
   const view = cur?.i ? 'Instance workspace' : cur?.s ? 'Series' : cur?.w ? 'Workspace' : '';
-  const low = me.role === 'admin' && me.low_credit ? `<button class="lowcredit" id="low-credit" data-act="costs">${esc(lowCreditText(me.low_credit))}</button>` : '';
+  const low = me.role === 'admin' && me.low_credit ? `<div class="lowcredit" id="low-credit">${esc(lowCreditText(me.low_credit))}</div>` : '';
   put($('#masthead'), `<div class="app-name"><b>${APP}</b>${view ? `<span class="pagename">${view}</span>` : ''}</div>` + low
     + `<details class="user" id="user"><summary title="${esc(me.name)}"><span class="avatar">${esc(initials(me.name || me.email))}</span><span class="mail">${esc(me.email)}</span></summary>`
     + `<div class="upop"><b>${esc(me.name)}${me.role === 'user' ? '' : ' · ' + me.role}</b><span class="sub">${esc(me.email)}</span><button class="quiet" data-act="signout">Sign out</button></div></details>`);
@@ -368,7 +367,6 @@ function renderSide() {
   // The foot: Settings, the version the server runs, and « to fold the sidebar to a rail, as this browser keeps it.
   const folded = $('.app').classList.contains('folded');
   put($('#sidefoot'), `<button class="setting" data-act="logins" title="Logins and tokens"><span class="cog">\u2699</span>Settings<span class="go-on">\u203A</span></button>`
-    + (me.role === 'admin' ? '<button class="setting" data-act="costs" title="Daily costs and model key">Costs<span class="go-on">\u203A</span></button>' : '')
     + (me.version ? `<div class="release">rollforward ${esc(me.version)}</div>` : '')
     + `<button class="sidefold" data-act="fold-side" title="${folded ? 'Open' : 'Fold'} the sidebar">${folded ? '\u00BB' : '\u00AB'}${folded && waits ? '<span class="dot"></span>' : ''}</button>`);
 }
@@ -928,7 +926,7 @@ function renderPv() {
   if (!pv) return void (d.open && d.close());
   // Your account's dialog: Logins and Tokens, as tabs.
   const account = [['logins', 'Logins'], ['tokens', 'Tokens']], mine = account.some(([k]) => k === pv.settings?.kind);
-  d.className = 'pv' + (pv.settings ? ' small' : '') + (mine || ['workspace', 'waiting', 'costs'].includes(pv.settings?.kind) ? ' wide' : '');
+  d.className = 'pv' + (pv.settings ? ' small' : '') + (mine || ['workspace', 'waiting'].includes(pv.settings?.kind) ? ' wide' : '');
   let h = `<div class="pvh"><b>${esc(pv.title)}</b><span class="saved"></span>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${(pv.att ?? pv).doc ? '<button class="btn" data-act="layout">Exact layout</button>' : ''}${pv.path ? `<a class="btn" href="${fileUrl(pv.path)}">Download</a>` : ''}${pv.signin ? `<button class="btn primary" data-act="signin-save"${pv.signinExpired ? ' disabled' : ''}>${pv.vpn ? 'Connect' : 'Save login'}</button>` : ''}<button class="btn${pv.signin && !pv.signinExpired ? '' : ' primary'}" data-act="unpv">${pv.signin && !pv.signinExpired ? 'Cancel' : 'Close'}</button></div>`;
   if (mine) h += `<div class="pvtabs">${account.map(([k, name]) => `<button class="tab ${pv.settings.kind === k ? 'sel' : ''}" data-act="${k}">${name}</button>`).join('')}</div>`;
   if (pv.att) h += `<div class="sub" style="padding:8px 14px"><a data-act="attachment-back">\u2190 ${esc(pv.title)}</a> \u00b7 ${esc(pv.att.title)}</div>` + previewBody(pv.att);
@@ -940,7 +938,6 @@ function renderPv() {
   else if (pv.settings?.kind === 'wakes') h += `<div class="pvb vl">${wakesHtml(cur.i.id, cur.i.wakes, false)}</div>`;
   else if (pv.settings?.kind === 'notes') h += `<div class="pvb vl">${notesHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'waiting') h += `<div class="pvb vl">${waiting().join('') || '<div class="sub">Nothing waits on you.</div>'}</div>`;
-  else if (pv.settings?.kind === 'costs') h += `<div class="pvb vl">${costsHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'start') h += `<div class="pvb vl">${startHtml(pv.settings)}</div>`;
   else if (pv.settings) {
     const s = pv.settings;
@@ -1102,34 +1099,6 @@ async function openSeriesSettings() {
 }
 
 
-function costsHtml(c) {
-  const k = c.key;
-  let h = '';
-  if (k) {
-    h += `<h3>OpenRouter key</h3>${k.low_credit ? `<div class="bad">${esc(lowCreditText(k))}</div>` : ''}`
-      + `<div class="lline"><b>Key usage</b><span class="sub">${usd(k.usage)} used${k.limit !== null ? ` · ${usd(k.remaining)} remaining of ${usd(k.limit)} limit${k.reset ? ` (resets ${esc(k.reset)})` : ''}` : ' · no spending limit'}</span></div>`
-      + (k.usage_daily !== null ? `<div class="lline"><b>Today (${esc(k.day)} UTC)</b><span class="sub">OpenRouter key: ${usd(k.usage_daily)} · Server recorded on key: ${usd(k.server_total, k.server_estimated)} · Unattributed: ${signedUsd(k.unattributed)}</span></div>` : '');
-  } else h += '<h3>OpenRouter key</h3><div class="sub">Unavailable or no server key set.</div>';
-  h += '<h3>Daily totals</h3>';
-  if (!c.days.length) return h + '<div class="sub">No costs recorded yet.</div>';
-  for (const d of c.days.slice().reverse()) {
-    h += `<details class="tgroup" ${d === c.days.at(-1) ? 'open' : ''}><summary><b>${esc(d.day)}</b> · ${usd(d.cost, d.estimated)}<span class="sub">${plural(d.runs_count, 'run')}${d.server?.cost ? ` · server ${usd(d.server.cost, d.server.estimated)}` : ''}</span></summary>`;
-    const ws = Object.entries(d.by_workspace);
-    if (ws.length) h += '<div class="sub">Workspaces: ' + ws.map(([w, v]) => `${esc(w)} ${usd(v.cost, v.estimated)} (${v.runs})`).join(' · ') + '</div>';
-    const ps = Object.entries(d.by_person);
-    if (ps.length) h += '<div class="sub">People: ' + ps.map(([p, v]) => `${person(p)} ${usd(v.cost, v.estimated)} (${v.runs})`).join(' · ') + '</div>';
-    for (const s of d.server?.items ?? []) h += `<div class="lsub"><span>Server · ${esc(s.kind)}${s.site ? `: <b>${esc(s.site)}</b>` : ''} (${person(s.person)}) · ${plural(s.calls, 'call')}</span><span>${usd(s.cost, s.estimated)}</span></div>`;
-    for (const r of d.runs) h += `<div class="lsub"><span>${esc(r.path)} · run ${r.run} · ${person(r.person)} · ${esc(r.failure ? `${r.outcome} (${r.failure})` : r.outcome)}${r.key === 'own' ? ' · own key' : ''}</span><span>${usd(r.cost, r.estimated)}</span></div>`;
-    h += '</details>';
-  }
-  return h;
-}
-
-async function openCosts() {
-  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone ?? '';
-  pv = { title: 'Costs', settings: { kind: 'costs', ...await api(`/api/costs?tz=${enc(tz)}`) } };
-  renderPv();
-}
 // "Saved" in the dialog's header for a moment, after a change it saved as it was made.
 let savedFor;
 function saved() {
@@ -1859,7 +1828,6 @@ async function onAct(act, el) {
   }
   if (act === 'logins') await openLogins();
   if (act === 'tokens') await openTokens();
-  if (act === 'costs') await openCosts();
   if (act === 'new-token') {
     const name = $('#tname').value.trim();
     if (!name) return toast('Name the token, such as laptop');
