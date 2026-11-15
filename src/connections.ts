@@ -432,7 +432,8 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       // generation endpoint, or estimated where none could be learned, adds to the run's as it comes.
       if (c && types[c.type].links && /json/i.test(answer.type) && answer.text) {
         let parsed: unknown;
-        try { parsed = JSON.parse(answer.text); } catch {}
+        try { parsed = JSON.parse(answer.text); }
+        catch { console.error(`${name}: invalid JSON metadata on ${method} ${targetPath} (${answer.status}, ${answer.bytes} bytes)`); }
         if (parsed !== undefined) for (const l of await types[c.type].links?.(parsed, targetPath, as, ticks) ?? []) a.links.set(new URL(l).href, { name, offer });
       }
       const { cost, estimated } = !s ? { cost: 0, estimated: false }
