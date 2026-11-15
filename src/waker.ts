@@ -202,12 +202,15 @@ function bail(inst: Instance, tried: Set<Instance>) {
 
 async function begin(inst: Instance, tried: Set<Instance>) {
   tried.add(inst);
-  // A run starts from its instance's folder as the last run's commit left it.
+  // No replacement writer starts until every old process and browser of this series has retired.
+  await Promise.all([...retiring].filter(a => a.inst.seriesId === inst.seriesId).map(a => a.ended));
   await committed(inst.dir);
   const series = inst.seriesId;
+  if ([...retiring].some(a => a.inst.seriesId === series)) return begin(inst, tried);
+  const lastRun = inst.log.findLast(e => e.op === 'run');
   const seen = seenBefore(inst);
   // A kick that starts nothing ends the instance's queued state all the same: pages that showed it should hear.
-  if (active.has(series) || !due(inst)) return bail(inst, tried);
+  if (stopping || active.has(series) || !due(inst)) return bail(inst, tried);
   if (full()) return void waiting.add(inst);
   // A run starts only for a runner Microsoft still signs in (entra.ts): one it no longer does waits for them to sign in again, and
   // one who has left, for someone to take the instance over. Microsoft unreachable, it tries again in a minute.
@@ -228,6 +231,7 @@ async function begin(inst: Instance, tried: Set<Instance>) {
   }
   if (stopping || active.has(series) || !due(inst)) return bail(inst, tried);
   if (runnerOf(inst).by !== runner) return void kick(inst);
+  if ([...retiring].some(a => a.inst.seriesId === series) || inst.log.findLast(e => e.op === 'run') !== lastRun) return begin(inst, tried);
   if (full()) return void waiting.add(inst);
   // One who can no longer see its workspace, as after being removed from it, waits for someone to take the instance over.
   if (!sees(inst)) return bail(inst, tried);
