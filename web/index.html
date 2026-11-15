@@ -1280,11 +1280,11 @@ async function saveKey() {
   saved();
 }
 
-async function openLogins(savedSignIn) {
+async function openLogins(savedSignIn, website) {
   const n = ++accountOpens, before = pv;
   const [logins, connections, grants, sites, vpn] = await Promise.all([api('/logins'), api('/connections'), api('/grants'), api('/logins/sites'),
     me.can.includes('vpn') ? api('/vpns').then(rows => ({ rows }), e => ({ error: e.message })) : null]);
-  if (n !== accountOpens || pv !== before || pv?.saving && pv !== savedSignIn) return;
+  if (n !== accountOpens || pv !== before || pv?.saving && pv !== savedSignIn || website && !sites[website]) return;
   pv = { title: 'Logins', shown: pv?.shown ?? [], back: pv?.back, website: pv?.website, workspace: pv?.workspace, settings: { kind: 'logins', logins, connections, grants, sites, vpn } };
   myLogins = logins;
   expired = logins.filter(l => l.expired);
@@ -1905,7 +1905,7 @@ async function onAct(act, el) {
     const back = pv;
     if (back?.settings?.kind === 'start') Object.assign(back.settings, { label: $('#slabel')?.value, on: ticked() });
     if (back?.settings?.kind === 'series') back.on = ticked();
-    const setup = await openLogins();
+    const setup = await openLogins(undefined, el.dataset.id);
     if (!setup) return;
     Object.assign(setup, { back, website: el.dataset.id, workspace: el.dataset.ws, shown: ['web', `web:${el.dataset.id}`] });
     renderPv();

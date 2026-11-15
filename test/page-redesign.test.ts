@@ -824,6 +824,43 @@ test('renewing a first-comment login updates ticks and expiry before an instance
   } finally { saveRelease.resolve(); refreshRelease.resolve(); await page.close(); }
 });
 
+for (const firstComment of [false, true]) test(`removing a website during setup loading leaves the ${firstComment ? 'first comment' : 'credential draft'} in place without an error`, async () => {
+  const { page, responses } = await openWebsiteTicks(firstComment);
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), errors: string[] = [];
+  page.on('pageerror', e => errors.push(e.message));
+  try {
+    if (firstComment) await page.fill('#newcomment', 'Keep this first prompt');
+    else {
+      await page.evaluate(() => onAct('new-instance', document.createElement('button')));
+      await page.fill('#slabel', 'Keep this draft');
+      await page.check('#pv input.tick[value="drop:AP/"]');
+    }
+    await page.evaluate(() => { window.beforeSetup = pv; });
+    await page.route('**/logins/sites', async route => {
+      started.resolve();
+      await release.promise;
+      const sites = { ...responses['/logins/sites'] as object };
+      delete sites.missing;
+      await route.fulfill({ json: sites });
+    }, { times: 1 });
+    const opening = page.evaluate(firstComment => onAct('website-setup', document.querySelector(`${firstComment ? '#log' : '#pv'} [data-act=website-setup][data-id=missing]`)), firstComment);
+    await started.promise;
+    release.resolve();
+    await opening;
+    assert.equal(await page.evaluate(() => pv === window.beforeSetup), true, 'a removed target must not open a stale account dialog');
+    assert.equal(await page.locator('#pv .lline').count(), 0);
+    if (firstComment) {
+      assert.equal(await page.locator('#pv').isVisible(), false);
+      assert.equal(await page.inputValue('#newcomment'), 'Keep this first prompt');
+    } else {
+      assert.equal(await page.inputValue('#slabel'), 'Keep this draft');
+      assert.equal(await page.isChecked('#pv input.tick[value="drop:AP/"]'), true);
+    }
+    assert.deepEqual(errors, []);
+    assert.equal(await page.locator('#toasts .toast').count(), 0);
+  } finally { release.resolve(); await page.close(); }
+});
+
 test('both series-share tick paths use the series workspace and filter disabled values from share payloads', async () => {
   const { page, requests, series } = await openWebsiteTicks();
   try {
