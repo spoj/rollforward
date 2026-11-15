@@ -1757,7 +1757,7 @@ test("whoever manages a workspace deletes an instance, in any status, once: all 
   assert.deepEqual([listed.label, listed.status, listed.deleted.by], ['2026-11-07', 'deleted', adminEmail], 'its place, shown as deleted, by whom');
   assert.ok((await json('/api/runs')).some((r: { path: string }) => r.path === 'Purge/Payroll/2026-11-07'), 'its runs still count');
   assert.deepEqual(Object.values(JSON.parse(readFileSync(join(root, '.rf', 'wakes.json'), 'utf8')).pending).filter((k: { target: string }) => [id, sid].includes(k.target)), [], 'its wakes go, and its series\' for its label');
-  const act = JSON.parse(readFileSync(join(root, '.rf', 'log.jsonl'), 'utf8').trim().split('\n')[before]);
+  const act = readFileSync(join(root, '.rf', 'log.jsonl'), 'utf8').trim().split('\n').slice(before).map(l => JSON.parse(l)).findLast(e => e.path === `${path}/delete`);
   assert.deepEqual([act.by, act.path, act.deleted], [adminEmail, `${path}/delete`, 'Purge/Payroll/2026-11-07'], "the system's log records it");
 
   for (const action of ['delete', 'rename?as=x', 'react', 'comment', 'upload?name=y.csv'])
