@@ -200,9 +200,11 @@ async function begin(inst: Instance, tried: Set<Instance>) {
   await Promise.all([...retiring].filter(a => a.inst.seriesId === inst.seriesId).map(a => a.ended));
   await committed(inst.dir);
   const series = inst.seriesId;
+  if ([...retiring].some(a => a.inst.seriesId === series)) return begin(inst, tried);
+  const lastRun = inst.log.findLast(e => e.op === 'run');
   const seen = seenBefore(inst);
   // A kick that starts nothing ends the instance's queued state all the same: pages that showed it should hear.
-  if (active.has(series) || !due(inst)) return bail(inst, tried);
+  if (stopping || active.has(series) || !due(inst)) return bail(inst, tried);
   if (full()) return void waiting.add(inst);
   // Confirmation may wait across transfers: recheck the captured epoch, not email equality.
   if (!sees(inst)) return bail(inst, tried);
@@ -226,6 +228,7 @@ async function begin(inst: Instance, tried: Set<Instance>) {
   }
   if (stopping || active.has(series) || !due(inst)) return bail(inst, tried);
   if (!sameAuthority(inst, lease)) return bail(inst, tried);
+  if ([...retiring].some(a => a.inst.seriesId === series) || inst.log.findLast(e => e.op === 'run') !== lastRun) return begin(inst, tried);
   if (full()) return void waiting.add(inst);
   // Losing workspace visibility never chooses a replacement owner.
   if (!sees(inst)) return bail(inst, tried);
