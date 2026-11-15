@@ -42,7 +42,7 @@ export type Type = {
   // The offer a request needs ticked, its JSON body as it goes on, if the type rewrote it, and the origin where its answer's
   // Location, as a redirect's, is a link; or a refusal.
   // A request that sends mail also reads, on asking, what goes, its recipients and its attachments' sha256s, or why that can't be read.
-  check?(c: Connection, runner: string, ticks: string[], r: Request): Promise<{ offer: string; json?: unknown; redirect?: string }>;
+  check?(c: Connection, runner: string, ticks: string[], r: Request): Promise<{ offer: string; json?: unknown; redirect?: string; pathname?: string }> | { offer: string; json?: unknown; redirect?: string; pathname?: string };
   links?(answer: any, path: string, email: string, ticks: string[]): string[] | Promise<string[]>;
   // What a run's environment holds for it, given the instance's ticks.
   env?(c: Connection, ticks: string[]): Record<string, string>;
@@ -366,8 +366,9 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     // streamed, as a file's content is.
     const isJson = /json/i.test(String(req.headers['content-type']));
     // A file's content, PUT …/content, streams on as its bytes, a JSON file's too.
-    let raw: Buffer | undefined;
-    if (c?.type !== 'service' && !link && (s || ['POST', 'PATCH'].includes(method) || (method === 'PUT' && isJson && !/\/content$/i.test(url.pathname)))) {
+    let raw: Buffer | undefined, lastSeg = '';
+    try { lastSeg = decodeURIComponent(url.pathname.split('/').pop() ?? '').toLowerCase(); } catch {}
+    if (c?.type !== 'service' && !link && (s || ['POST', 'PATCH'].includes(method) || (method === 'PUT' && isJson && lastSeg !== 'content'))) {
       const chunks: Buffer[] = [];
       let size = 0;
       for await (const b of req as AsyncIterable<Buffer>) {
@@ -377,11 +378,12 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       raw = Buffer.concat(chunks);
     }
     const json = isJson && raw?.length ? JSON.parse(raw.toString()) : undefined, r = { method, url, headers: req.headers, json, body: raw, target: req.url! };
-    let out = json, auth: Record<string, string> = {}, as = '', ticks: string[] = [], redirect: string | undefined, offer = '';
+    let out = json, auth: Record<string, string> = {}, as = '', ticks: string[] = [], redirect: string | undefined, offer = '', targetPath = url.pathname;
     if (c) {
       const { by, logins } = lent!, checked = await types[c.type].check!(c, by, ticks = logins, r), login = loginOf(c) as EntraLogin;
       out = checked.json ?? json;
       redirect = checked.redirect;
+      targetPath = checked.pathname ?? url.pathname;
       as = use(a.inst, a.n, offer = checked.offer).email;
       if (c.type === 'service') {
         let k = process.env[`RF_SERVICE_KEY_${c.name.toUpperCase().replaceAll('-', '_')}`];
@@ -422,13 +424,13 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     };
     try {
       // A Location where the check lets one go, as a redirect's, is a link for this run before the run can follow it.
-      const answer = await forward(`${c?.type === 'service' ? c.url : upstreams[host] ?? url.origin}${url.pathname}${url.search}`, req, res, {
+      const answer = await forward(`${c?.type === 'service' ? c.url : upstreams[host] ?? url.origin}${targetPath}${url.search}`, req, res, {
         auth, body, digest, keep: !link && c?.type !== 'service', service: !!s, registerAbort,
         location: to => { const l = URL.parse(to); if (l && l.origin === redirect) a.links.set(l.href, { name, offer }); },
       });
       // An answer's links go through for this run; what a service's answer cost, whole, in its stream's events, from OpenRouter's
       // generation endpoint, or estimated where none could be learned, adds to the run's as it comes.
-      if (c && types[c.type].links && answer.type.includes('json')) for (const l of await types[c.type].links?.(JSON.parse(answer.text || 'null'), url.pathname, as, ticks) ?? []) a.links.set(new URL(l).href, { name, offer });
+      if (c && types[c.type].links && answer.type.includes('json')) for (const l of await types[c.type].links?.(JSON.parse(answer.text || 'null'), targetPath, as, ticks) ?? []) a.links.set(new URL(l).href, { name, offer });
       const { cost, estimated } = !s ? { cost: 0, estimated: false }
         : await resolveCost(s, method, url.pathname, json, answer.status, answer.headers, answer.type, answer.events, answer.bytes, !!answer.cut, apiKey);
       a.cost += cost;

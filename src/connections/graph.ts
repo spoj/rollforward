@@ -47,16 +47,23 @@ function mime(body: Buffer | undefined, box: string, bare: string) {
   if (address.toLowerCase() !== box) throw refuse(`mail from ${box} goes out as ${box}, not ${address}`);
 }
 
+const encodePart = (s: string) => encodeURIComponent(s).replace(/%(?:24|26|2B|2C|3A|3B|3D|40)/gi, m => decodeURIComponent(m));
+
 // The offer that lets a request through, or why not; and, for files, their drive's own site, where the answer's Location is a
 // link, as a file's content redirects to its download address.
-async function check(runner: string, ticks: string[], { method, url, headers, json, body: raw }: Request): Promise<{ offer: string; redirect?: string }> {
-  if (!/^\/(v1\.0|beta)\//.test(url.pathname)) throw new HttpError(403, `${url.pathname}: Microsoft Graph, under /v1.0/ or /beta/`);
+async function check(runner: string, ticks: string[], { method, url, headers, json, body: raw }: Request): Promise<{ offer: string; redirect?: string; pathname: string }> {
+  const [, ver] = /^\/(v1\.0|beta)\//.exec(url.pathname) ?? [];
+  if (!ver) throw new HttpError(403, `${url.pathname}: Microsoft Graph, under /v1.0/ or /beta/`);
   // Neither another method in a header, nor a Prefer that redeems a sharing link, which grants the runner access.
   if (Object.keys(headers).some(h => /^x-http-method/i.test(h)) || /redeemsharinglink/i.test(String(headers.prefer ?? ''))) throw new HttpError(403, 'no X-HTTP-Method header, and no Prefer that redeems a sharing link');
-  const bare = url.pathname.replace(/^\/[^/]+/, ''), path = bare + url.search, segments = bare.split('/').slice(1).map(s => decodeURIComponent(s));
-  // Each part a name, as the checks below read it: none empty, as a trailing / makes, and none holding / or \, or . or .., as %2F,
-  // %5C and %2E%2E decode to, which Graph may read as more parts.
-  if (segments.some(s => !s || /[/\\]/.test(s) || s === '.' || s === '..')) throw new HttpError(403, `${bare}: each part of the path is a name, none empty, with no / or \\ in it, nor . or ..`);
+  const rawBare = url.pathname.slice(ver.length + 1);
+  let segments: string[];
+  try { segments = rawBare.split('/').slice(1).map(s => decodeURIComponent(s)); }
+  catch { throw new HttpError(403, `${rawBare}: invalid path encoding`); }
+  // Each part a name, as the checks below read it: none empty, as a trailing / makes, and none holding / or \, control characters, or . or ..,
+  // as %2F, %5C and %2E%2E decode to, which Graph may read as more parts.
+  if (segments.some(s => !s || /[/\\\x00-\x1f\x7f]/.test(s) || s === '.' || s === '..')) throw new HttpError(403, `${rawBare}: each part of the path is a name, none empty, with no / or \\ in it, nor . or ..`);
+  const bare = `/${segments.map(encodePart).join('/')}`, path = bare + url.search;
   // /me is the runner, and mailFolders('inbox') is mailFolders.
   const segs = segments[0].toLowerCase() === 'me' ? ['users', runner, ...segments.slice(1)] : segments;
   const [rawTop, id = '', rawPart = ''] = segs.map(s => s.replace(/\(.*$/, '')), top = rawTop.toLowerCase(), part = rawPart.toLowerCase();
@@ -92,7 +99,7 @@ async function check(runner: string, ticks: string[], { method, url, headers, js
     if (actions.some((a, k) => a === 'children' && k < actions.length - 1) || segs.some(s => /(^|\.)children\(./i.test(s))) throw new HttpError(403, `${bare}: name an item by its own id, as /drives/ID/items/ITEM, not under another's children`);
     if (actions[idx] === 'items' && !segs[idx + 1]) throw new HttpError(403, `${bare}: name an item by its own id, as /drives/ID/items/ITEM`);
     if (top === 'shares' && !['', 'driveitem', 'root', 'items', 'listitem'].includes(part)) throw new HttpError(403, `${bare}: a share is read through its driveItem, root or items, not its ${rawPart}, which reaches past what is ticked`);
-    const item = await located(runner, addressed(bare.replace(/^\/me(?=\/|$)/i, `/users/${runner}`)));
+    const item = await located(runner, addressed(`/${segs.map(encodePart).join('/')}`));
     offer = await covering(runner, ticks, item.parentReference.driveId, item.id, item.parentReference.id);
     if (!offer) throw new HttpError(403, `${bare} is in no folder, file or SharePoint site ticked for this instance`);
     site = (await siteOf(runner, item.parentReference.driveId)).split(',')[0];
@@ -114,7 +121,7 @@ async function check(runner: string, ticks: string[], { method, url, headers, js
       if (!await covering(runner, ticks, folder.parentReference.driveId, folder.id, folder.parentReference.id)) throw new HttpError(403, `${bare} would put it in a folder no tick covers`);
     }
   }
-  return { offer, redirect: site && `https://${site}` };
+  return { offer, redirect: site && `https://${site}`, pathname: `/${ver}${bare}` };
 }
 
 // Links an answer gives, which the run may then use as they are, read from the path as check() reads it: an upload session's, from
@@ -126,7 +133,7 @@ async function links(j: any, path: string, email: string, ticks: string[]): Prom
   const [top, , part] = parts[0] === 'me' ? ['users', '', ...parts.slice(1)] : parts, action = parts.at(-1)!, url = (u: unknown): u is string => typeof u === 'string' && URL.canParse(u);
   if (action === 'createuploadsession') return [j?.uploadUrl].filter(u => url(u) && (parts.includes('attachments') ? /^https:\/\/outlook\.office(365)?\.com\//i : /^https:\/\/([\w-]+\.)*(sharepoint\.com|svc\.ms)\//i).test(u));
   if (!['drives', 'shares'].includes(top) && !['drive', 'drives'].includes(part) || ['content', '$value'].includes(action)) return [];
-  const items = [j, ...(Array.isArray(j?.value) ? j.value : [])].filter(i => url(i?.['@microsoft.graph.downloadUrl']));
+  const items = [j, ...(Array.isArray(j?.value) ? j.value : [])].filter(i => url(i?.['@microsoft.graph.downloadUrl']) && typeof i?.id === 'string' && typeof i?.parentReference?.driveId === 'string');
   const at = await Promise.all(items.map(async i => new URL(i['@microsoft.graph.downloadUrl']).origin === `https://${(await siteOf(email, i.parentReference?.driveId)).split(',')[0]}`
     && !!await covering(email, ticks, i.parentReference.driveId, i.id, i.parentReference.id)));
   return items.filter((_, k) => at[k]).map(i => i['@microsoft.graph.downloadUrl']);
@@ -156,7 +163,8 @@ async function located(email: string, at: string): Promise<any> {
 // The item a files path is about: one in a drive, by id or by path, the item a share names, or the root of a drive, for anything
 // else about the drive, such as a search across it.
 function addressed(path: string): string {
-  const m = /^(\/(?:drives|shares)\/[^/]+|\/sites\/[^/]+\/drives\/[^/]+|\/(?:users|sites)\/[^/]+\/drive(?=\/|$))(\/(?:root|driveItem|items\/[^/:]+)(?::[^:]*:?)?)?/i.exec(path)!;
+  const m = /^(\/(?:drives|shares)\/[^/]+|\/sites\/[^/]+\/drives\/[^/]+|\/(?:users|sites)\/[^/]+\/drive(?=\/|$))(\/(?:root|driveItem|items\/[^/:]+)(?::[^:]*:?)?)?/i.exec(path);
+  if (!m) throw new HttpError(403, `${path}: invalid files path`);
   return m[1] + (m[2]?.replace(/(:[^:]*[^:])$/, '$1:') ?? (/^\/shares\//i.test(m[1]) ? '/driveItem' : '/root'));
 }
 
