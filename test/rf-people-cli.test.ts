@@ -2,11 +2,12 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
+import { createServer as createHttpServer } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { idp } from './idp.ts';
 
@@ -24,7 +25,7 @@ async function freePort(): Promise<number> {
 }
 
 type Actor = { cookie: string; home: string; token: string };
-let entra: Awaited<ReturnType<typeof idp>>, srv: ChildProcess, base = '';
+let entra: Awaited<ReturnType<typeof idp>>, srv: ChildProcess, orMock: ReturnType<typeof createHttpServer>, base = '';
 let admin: Actor, carol: Actor, bob: Actor;
 
 function seedInst(id: string, series: string, label: string, runner: string, extraLog: object[] = []) {
@@ -71,35 +72,63 @@ before(async () => {
     { by: 'server', op: 'run', run: 1, runner: 'carol@demo.test', consent: 1, upto: 1, key: 'shared' },
     { by: 'server', op: 'done', run: 1, aborted: false, seen: 1, cost: 0.42, estimated: false },
   ]);
-  seedInst('instfeb00001', 'serbank00001', 'February', 'carol@demo.test');
+  seedInst('instfeb00001', 'serbank00001', 'February', 'bob@demo.test', [
+    { by: 'server', op: 'run', run: 1, runner: 'bob@demo.test', consent: 1, upto: 1, key: 'shared' },
+    { by: 'server', op: 'done', run: 1, aborted: true, seen: 0, cost: 0.10, estimated: false, error: 'a restart cut the run' },
+    { by: 'server', op: 'run', run: 2, runner: 'bob@demo.test', consent: 1, upto: 1, key: 'shared' },
+    { by: 'server', op: 'done', run: 2, aborted: false, seen: 1, cost: 0.20, estimated: true },
+  ]);
   seedInst('instdel00001', 'serbank00001', 'ToDelete', 'carol@demo.test');
   seedInst('instbet00001', 'serbeta00001', '2026-11', 'admin@demo.test', [
     { by: 'server', op: 'run', run: 1, runner: 'admin@demo.test', consent: 1, upto: 1, key: 'shared' },
     { by: 'server', op: 'done', run: 1, aborted: false, seen: 1, cost: 1.25, estimated: false },
   ]);
+  const bet2Dir = join(root, 'instances', 'instbet00002');
+  mkdirSync(join(bet2Dir, 'upload'), { recursive: true });
+  mkdirSync(join(bet2Dir, 'working'), { recursive: true });
+  writeFileSync(join(bet2Dir, 'instance.json'), JSON.stringify({ label: '2026-12', series: 'serbeta00001' }));
+  writeFileSync(join(bet2Dir, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [] }));
+  writeFileSync(join(bet2Dir, 'log.jsonl'), [
+    { seq: 1, at: '2026-11-16T08:00:00.000Z', by: 'admin@demo.test', op: 'create', logins: [] },
+    { seq: 2, at: '2026-11-16T08:01:00.000Z', by: 'server', op: 'run', run: 1, runner: 'admin@demo.test', consent: 1, upto: 1, key: 'shared' },
+    { seq: 3, at: '2026-11-16T08:02:00.000Z', by: 'server', op: 'done', run: 1, aborted: false, seen: 1, cost: 0.50, estimated: false },
+  ].map(e => JSON.stringify(e) + '\n').join(''));
 
   writeFileSync(join(root, '.rf', 'costs.jsonl'), [
     { at: '2026-11-15T08:01:00.000Z', inst: 'instjan00001', run: 1, service: 'openrouter', cost: 0.42 },
+    { at: '2026-11-15T08:01:00.000Z', inst: 'instfeb00001', run: 1, service: 'openrouter', cost: 0.10 },
+    { at: '2026-11-15T08:02:00.000Z', inst: 'instfeb00001', run: 2, service: 'openrouter', cost: 0.20, estimated: true },
     { at: '2026-11-15T08:01:00.000Z', inst: 'instbet00001', run: 1, service: 'openrouter', cost: 1.25 },
     { at: '2026-11-15T08:02:00.000Z', by: 'server', kind: 'website-check', site: 'erp', person: 'admin@demo.test', service: 'openrouter', cost: 0.09 },
+    { at: '2026-11-16T08:01:00.000Z', inst: 'instbet00002', run: 1, service: 'openrouter', cost: 0.50 },
   ].map(x => JSON.stringify(x) + '\n').join(''));
+
+  orMock = createHttpServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
+      data: { usage: 10, usage_daily: 2.56, limit: 200, limit_remaining: 190, limit_reset: 'monthly' },
+    }));
+  });
+  await new Promise<void>(ok => orMock.listen(0, '127.0.0.1', ok));
+  const orUrl = `http://127.0.0.1:${(orMock.address() as { port: number }).port}`;
 
   const port = await freePort();
   base = `http://127.0.0.1:${port}`;
   entra = await idp();
   const srvEnv: NodeJS.ProcessEnv = {
     ...process.env,
+    TZ: 'UTC',
     HOME: join(tmp, 'srv-home'),
     RF_SCRATCH: join(tmp, 'scratch'),
     RF_MIN_FREE_GB: '0',
     RF_ADMINS: 'admin@demo.test',
+    OPENROUTER_API_KEY: 'sk-or-test-key',
     ...entra.env(base),
   };
   mkdirSync(srvEnv.HOME!, { recursive: true });
-  delete srvEnv.OPENROUTER_API_KEY;
   delete srvEnv.RF_BROWSER_URL;
 
-  srv = spawn(process.execPath, [join(app, 'src', 'server.ts'), root, String(port)], {
+  const upstream = `import { upstreams } from ${JSON.stringify(pathToFileURL(join(app, 'src', 'connections.ts')).href)}; upstreams['openrouter.ai'] = ${JSON.stringify(orUrl)};`;
+  srv = spawn(process.execPath, ['--import', `data:text/javascript,${encodeURIComponent(upstream)}`, join(app, 'src', 'server.ts'), root, String(port)], {
     env: srvEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -125,6 +154,7 @@ before(async () => {
 after(async () => {
   srv?.kill('SIGTERM');
   if (srv) await once(srv, 'exit');
+  orMock?.close();
   entra?.close();
   rmSync(tmp, { recursive: true, force: true });
 });
@@ -157,3 +187,46 @@ test('R4-PEOPLE-01: find(path) rejects excess file segments and trims trailing s
   const delShow = await runRf(carol.home, ['show', 'larkfield/Bank pack/ToDelete', '--json']);
   assert.equal(JSON.parse(delShow.stdout).status, 'deleted');
 });
+
+test('R4-PEOPLE-03: rf costs [PATH] --daily scopes days, runs and totals to PATH and omits unrelated global items', async () => {
+  const unscoped = await runRf(admin.home, ['costs', '--daily'], { TZ: 'UTC' });
+  assert.equal(unscoped.code, 0);
+  assert.match(unscoped.stdout, /OpenRouter key/);
+  assert.match(unscoped.stdout, /beta-ws/);
+  assert.match(unscoped.stdout, /website-check/);
+
+  const scopedText = await runRf(admin.home, ['costs', 'larkfield/', '--daily'], { TZ: 'UTC' });
+  assert.equal(scopedText.code, 0);
+  assert.doesNotMatch(scopedText.stdout, /OpenRouter key|beta-ws|website-check|2026-11-16/);
+  assert.match(scopedText.stdout, /^2026-11-15  ~\$0\.72 \(est\.\)  2 runs$/m);
+  assert.match(scopedText.stdout, /workspace\s+~\$0\.72 \(est\.\)\s+2 runs\s+larkfield/);
+
+  const scopedJson = JSON.parse((await runRf(admin.home, ['costs', 'larkfield', '--since', '2026-11-15', '--daily', '--json'], { TZ: 'UTC' })).stdout);
+  assert.equal(scopedJson.key, undefined);
+  assert.equal(scopedJson.days.length, 1);
+  assert.equal(scopedJson.days[0].day, '2026-11-15');
+  assert.equal(scopedJson.days[0].cost, 0.72);
+  assert.equal(scopedJson.days[0].runs_count, 2);
+  assert.equal(scopedJson.days[0].estimated, true);
+  assert.equal(scopedJson.days[0].server, undefined);
+  assert.deepEqual(scopedJson.days[0].by_workspace, { larkfield: { runs: 2, cost: 0.72, estimated: true } });
+  assert.deepEqual(scopedJson.days[0].by_person, {
+    'carol@demo.test': { runs: 1, cost: 0.42 },
+    'bob@demo.test': { runs: 1, cost: 0.3, estimated: true },
+  });
+
+  const janJson = JSON.parse((await runRf(admin.home, ['costs', 'larkfield/Bank pack/January', '--daily', '--json'], { TZ: 'UTC' })).stdout);
+  assert.equal(janJson.days.length, 1);
+  assert.equal(janJson.days[0].cost, 0.42);
+  assert.equal(janJson.days[0].runs_count, 1);
+  assert.equal(janJson.days[0].estimated, undefined);
+
+  const srvOnly = JSON.parse((await runRf(admin.home, ['costs', 'server', '--daily', '--json'], { TZ: 'UTC' })).stdout);
+  assert.equal(srvOnly.key, undefined);
+  assert.equal(srvOnly.days.length, 1);
+  assert.equal(srvOnly.days[0].cost, 0.09);
+  assert.equal(srvOnly.days[0].runs_count, 0);
+  assert.equal(srvOnly.days[0].runs.length, 0);
+  assert.equal(srvOnly.days[0].server.cost, 0.09);
+});
+

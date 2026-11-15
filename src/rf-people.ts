@@ -787,19 +787,40 @@ else if (cmd === 'comment' && args.length === 2) {
   else for (const r of rows) console.log(`${when(r.at)}  ${r.path}  run ${r.run}  ${r.outcome}${r.failure ? ` (${r.failure})` : ''}  ${took(r.seconds)}  ${usdNote(r.cost, r.estimated)}  ${r.started ? `${r.started.op} by ${r.started.by}` : '-'}  ${r.error ?? ''}`);
 } else if (cmd === 'costs' && args.length <= 1) {
   const keyText = (k: any) => `OpenRouter key (${k.day} UTC): ${k.usage_daily !== null ? `${usd(k.usage_daily)} today vs ${usdNote(k.server_total, k.server_estimated)} recorded (${signedUsd(k.unattributed)} unattributed) · ` : ''}${usd(k.usage)} used${k.limit !== null ? ` · ${usd(k.remaining)} of ${usd(k.limit)} remaining${k.reset ? ` (${k.reset})` : ''}` : ', no limit'}`;
+  // A run that was cut is carried on by the next, so it adds its cost, not a run.
+  const at = (args[0] ?? '').replace(/\/+$/, ''), counted = (r: { outcome: string }) => r.outcome === 'cut' ? 0 : 1;
   const report = await get(`/api/costs?since=${since}&tz=${encodeURIComponent(localTz)}`);
   if (flags.daily) {
-    if (flags.json) console.log(JSON.stringify(report, null, 1));
+    const scoped = !at ? report : {
+      days: report.days.flatMap((d: any) => {
+        const runs = at === 'server' ? [] : d.runs.filter((r: any) => r.path === at || r.path.startsWith(at + '/'));
+        const server = at === 'server' && d.server?.items.length ? d.server : undefined;
+        if (!runs.length && !server) return [];
+        const by_workspace: Record<string, { runs: number; cost: number; estimated?: true }> = Object.create(null);
+        const by_person: Record<string, { runs: number; cost: number; estimated?: true }> = Object.create(null);
+        let runCost = 0, runs_count = 0, est = !!server?.estimated;
+        for (const r of runs) {
+          const c = counted(r);
+          runCost += r.cost; runs_count += c; est ||= !!r.estimated;
+          const w = by_workspace[r.workspace] ??= { runs: 0, cost: 0 };
+          w.runs += c; w.cost = +(w.cost + r.cost).toFixed(6); if (r.estimated) w.estimated = true;
+          const p = by_person[r.person] ??= { runs: 0, cost: 0 };
+          p.runs += c; p.cost = +(p.cost + r.cost).toFixed(6); if (r.estimated) p.estimated = true;
+        }
+        return [{ day: d.day, cost: +(runCost + (server?.cost ?? 0)).toFixed(6), runs_count, ...(est && { estimated: true }), by_workspace, by_person, runs, ...(server && { server }) }];
+      }),
+    };
+    if (flags.json) console.log(JSON.stringify(scoped, null, 1));
     else {
-      if (report.key) console.log(keyText(report.key));
-      for (const d of report.days) {
+      if (scoped.key) console.log(keyText(scoped.key));
+      for (const d of scoped.days) {
         console.log(`${d.day}  ${usdNote(d.cost, d.estimated)}  ${d.runs_count} runs${d.server?.cost ? `  server ${usdNote(d.server.cost, d.server.estimated)}` : ''}`);
         for (const [w, v] of Object.entries<any>(d.by_workspace)) console.log(`  workspace  ${usdNote(v.cost, v.estimated).padStart(10)}  ${v.runs} runs  ${w}`);
         for (const [p, v] of Object.entries<any>(d.by_person)) console.log(`  person     ${usdNote(v.cost, v.estimated).padStart(10)}  ${v.runs} runs  ${p}`);
         for (const r of d.runs) console.log(`  run        ${usdNote(r.cost, r.estimated).padStart(10)}  ${r.path}  run ${r.run}  ${r.person}  ${r.outcome}`);
         for (const s of d.server?.items ?? []) console.log(`  server     ${usdNote(s.cost, s.estimated).padStart(10)}  ${s.kind}${s.site ? `: ${s.site}` : ''} (${s.person})  ${s.calls} calls`);
       }
-      if (!report.days.length && !report.key) console.log('No costs recorded.');
+      if (!scoped.days.length && !scoped.key) console.log('No costs recorded.');
     }
   } else {
     const by = String(flags.by ?? 'series'), key = {
@@ -807,9 +828,7 @@ else if (cmd === 'comment' && args.length === 2) {
       outcome: (r: any) => r.failure ? `failed, ${r.failure}` : r.outcome,
     }[by];
     if (!key) throw new Error('--by: workspace, series, person, day or outcome');
-    const at = (args[0] ?? '').replace(/\/+$/, '');
-    // A run that was cut is carried on by the next, so it adds its cost, not a run.
-    const sums = new Map<string, { runs: number; cost: number; estimated: boolean }>(), counted = (r: { outcome: string }) => r.outcome === 'cut' ? 0 : 1;
+    const sums = new Map<string, { runs: number; cost: number; estimated: boolean }>();
     const add = (k: string, runs: number, cost: number, est: boolean) => {
       const prev = sums.get(k) ?? { runs: 0, cost: 0, estimated: false };
       sums.set(k, { runs: prev.runs + runs, cost: prev.cost + cost, estimated: prev.estimated || est });
