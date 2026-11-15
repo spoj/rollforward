@@ -15,10 +15,10 @@ export function seriesSettings(seriesDir: string): SeriesSettings {
   return settings;
 }
 
-export function saveSeriesSettings(dir: string, settings: SeriesSettings) {
+export function saveSeriesSettings(dir: string, settings: SeriesSettings, actor?: string) {
   mkdirSync(dir, { recursive: true });
   replaceFile(join(dir, 'series.json'), JSON.stringify(settings, null, 1));
-  changes.emit('change', 'tree');
+  changes.emit('change', 'tree', actor);
 }
 
 // notes/: a series' notes thread, log.jsonl, append-only, by seq, and files/, their attachments, which its runs read at

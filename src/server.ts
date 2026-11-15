@@ -50,14 +50,14 @@ cpSync(join(root, '.rf'), join(backups, new Date().toISOString().replace(/[:.]/g
 for (const old of readdirSync(backups).sort().slice(0, -5)) rmSync(join(backups, old), { recursive: true });
 openStore(root);
 const authorityEpochs = new Map(Object.keys(tree().series).map(sid => [sid, seriesSettings(seriesDir(sid)).epoch]));
-changes.on('change', (id: string) => {
+changes.on('change', (id: string, actor?: string) => {
   if (id !== 'tree') return;
   const t = tree();
   for (const [sid, s] of Object.entries(t.series)) {
     const settings = seriesSettings(seriesDir(sid)), previous = authorityEpochs.get(sid);
     authorityEpochs.set(sid, settings.epoch);
     if (previous !== undefined && previous !== settings.epoch) for (const i of instances(sid)) if (i.doc.status === 'open')
-      i.append('server', 'authority', { owner: settings.owner, epoch: settings.epoch, workspace: s.workspace });
+      i.append(actor ?? 'server', 'authority', { owner: settings.owner, epoch: settings.epoch, workspace: s.workspace });
   }
 });
 // A new data root starts with one connection, Microsoft 365's, graph.
@@ -751,8 +751,8 @@ function inOrder<T>(id: string, fn: () => Promise<T>): Promise<T> {
   return next;
 }
 
-function changeAuthority(sid: string, settings: SeriesSettings): Promise<void> {
-  saveSeriesSettings(seriesDir(sid), settings);
+function changeAuthority(sid: string, settings: SeriesSettings, actor?: string): Promise<void> {
+  saveSeriesSettings(seriesDir(sid), settings, actor);
   return retireSeries(sid);
 }
 
@@ -922,7 +922,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const [owners, members] = people(payload);
     const retirements = moving.map(sid => {
       const { consent, ...settings } = seriesSettings(seriesDir(sid));
-      return changeAuthority(sid, { ...settings, epoch: settings.epoch + 1, since: new Date().toISOString() });
+      return changeAuthority(sid, { ...settings, epoch: settings.epoch + 1, since: new Date().toISOString() }, by);
     });
     const moved = move(t);
     b.owners = [...new Set([...b.owners, ...owners])];
@@ -988,14 +988,14 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
         const to = typeof payload.owner === 'string' ? payload.owner.toLowerCase() : '', p = asPerson(to);
         if (!p || !users()[to].last_login || !can(p, 'series-owner') || !canSee(p, ws)) throw new HttpError(400, 'the owner must be an enabled, signed-in, opted-in person who sees the workspace');
         if (to === settings.owner) throw new HttpError(409, `${to} already owns this series`);
-        await changeAuthority(id, { version: 1, owner: to, epoch: settings.epoch + 1, since: at });
+        await changeAuthority(id, { version: 1, owner: to, epoch: settings.epoch + 1, since: at }, by);
       } else {
         if (settings.owner !== by) throw new HttpError(403, 'only the series owner selects credentials');
         if (!Array.isArray(payload.logins) || typeof payload.autonomous !== 'boolean') throw new HttpError(400, 'select logins explicitly, including [], and an autonomous boolean');
         const ticks = checkTicks(by, payload.logins, tree().series[id].workspace), was = settings.consent;
         const removed = !!was && (was.logins.some(l => !ticks.includes(l)) || (was.autonomous && !payload.autonomous));
         const next = { ...settings, epoch: settings.epoch + (removed ? 1 : 0), since: removed ? at : settings.since, consent: { by, at, workspace: tree().series[id].workspace, logins: ticks, autonomous: payload.autonomous } };
-        if (removed) await changeAuthority(id, next);
+        if (removed) await changeAuthority(id, next, by);
         else saveSeriesSettings(seriesDir(id), next);
       }
       return send(res, 200, 'ok');

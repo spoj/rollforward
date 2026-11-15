@@ -275,6 +275,8 @@ test('membership safeguard includes empty owned series; force withdraws consent 
 
 test('move preserves owner and clears workspace-bound authority', async () => {
   const sid = await series('Moving');
+  const inst = await (await ok('POST', `/api/series/${sid}`, { label: 'Period', quiet: true })).json();
+  await json(`/api/instances/${inst.id}`);
   await ok('PUT', '/api/proposals/ws', { kind: 'move', series: sid, to: 'dest' });
   await ok('POST', '/api/proposals/ws', { owners: [], members: [] });
   assert.equal(settings(sid).owner, alice);
@@ -282,6 +284,8 @@ test('move preserves owner and clears workspace-bound authority', async () => {
   assert.equal(settings(sid).epoch, 2);
   await ok('PUT', `/api/series/${sid}/credentials`, { logins: [], autonomous: false }, alice);
   assert.equal(settings(sid).consent.workspace, 'dest');
+  const row = (await json('/api')).flatMap(w => w.series).flatMap(s => s.instances).find(i => i.id === inst.id);
+  assert.equal(row.unread, false, 'the accepting manager does not receive unread news of their own authority withdrawal');
 });
 
 test('deletion retains the captured executor and initiator, not the current owner or original creator', async () => {
