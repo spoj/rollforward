@@ -1,6 +1,6 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -447,6 +447,83 @@ test('SIGUSR2 during startup, before recover, is handled and can lapse before th
     await stopServer();
     await startServer(work);
   }
+});
+
+for (const mode of ['slow', 'hanging', 'rejected', 'instant', 'healthy']) test(`post-start health window bounds ${mode} probes`, () => {
+  const healthHome = mkdtempSync(join(tmp, 'health-'));
+  const hook = `
+    import cp from 'node:child_process';
+    import fs from 'node:fs';
+    import timers from 'node:timers/promises';
+    import { syncBuiltinESMExports } from 'node:module';
+    let elapsed = 0, probes = 0, aborted = 0;
+    const commands = [], starts = [], mode = ${JSON.stringify(mode)};
+    const exists = fs.existsSync, readdir = fs.readdirSync;
+    fs.existsSync = p => String(p).includes('/.agent/') || exists(p);
+    fs.readdirSync = (p, ...args) => String(p) === ${JSON.stringify(join(app, '.agent'))} ? [] : readdir(p, ...args);
+    cp.execFileSync = (cmd, args) => {
+      commands.push([cmd, ...args]);
+      if (cmd === 'systemctl') return '';
+      if (cmd !== 'git') throw Error('unexpected command: ' + cmd);
+      if (args[0] === 'describe') return 'v0.5.0';
+      if (args[0] === 'ls-tree') return 'agent/Containerfile';
+      if (args[0] === 'show') return fs.readFileSync(${JSON.stringify(join(app, 'agent', 'Containerfile'))});
+      if (['diff', 'fetch', 'checkout'].includes(args[0])) return '';
+      throw Error('unexpected git command: ' + args);
+    };
+    timers.setTimeout = async ms => { elapsed += ms; };
+    Date.now = () => 1800000000000 + elapsed;
+    const timeout = AbortSignal.timeout.bind(AbortSignal), budgets = new WeakMap();
+    AbortSignal.timeout = ms => {
+      const signal = timeout(1);
+      budgets.set(signal, ms);
+      return signal;
+    };
+    globalThis.fetch = async (url, options) => {
+      if (String(url).includes('/releases')) return Response.json([{ tag_name: 'v0.5.1', body: 'Urgent: test', html_url: 'mock' }]);
+      if (String(url).includes('/check-runs')) return Response.json({ check_runs: [{ status: 'completed', conclusion: 'success' }] });
+      if (String(url) !== 'http://health.test/') throw Error('unexpected network target: ' + url);
+      probes++;
+      starts.push(elapsed);
+      if (mode === 'healthy') return new Response('ok');
+      const signal = options?.signal, remaining = budgets.get(signal) ?? Infinity, duration = mode === 'slow' ? 6100 : 6000;
+      if (mode === 'hanging' || (mode !== 'instant' && remaining < duration)) {
+        return new Promise((_, reject) => {
+          const keepAlive = setTimeout(() => reject(Error('health probe never cancelled')), 10_000);
+          const cancel = () => {
+            clearTimeout(keepAlive);
+            elapsed += remaining;
+            aborted++;
+            reject(signal.reason);
+          };
+          if (signal?.aborted) cancel();
+          else signal?.addEventListener('abort', cancel, { once: true });
+        });
+      }
+      if (mode !== 'instant') elapsed += duration;
+      if (mode === 'rejected') throw TypeError('connection reset');
+      return new Response('', { status: 503 });
+    };
+    syncBuiltinESMExports();
+    process.on('exit', () => console.log('HEALTH_RESULT ' + JSON.stringify({ elapsed, probes, aborted, starts, commands })));
+  `;
+  const result = spawnSync(process.execPath, ['--import', `data:text/javascript,${encodeURIComponent(hook)}`, join(app, 'scripts', 'update.ts'), 'http://health.test/'], {
+    cwd: app, env: { ...process.env, HOME: healthHome }, encoding: 'utf8', timeout: 5000,
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, mode === 'healthy' ? 0 : 1, result.stdout + result.stderr);
+  const report = JSON.parse(result.stdout.match(/HEALTH_RESULT (.*)/)![1]);
+  assert.equal(report.elapsed, mode === 'healthy' ? 2000 : 300_000, result.stdout);
+  assert.ok(report.starts.every((at: number) => at < 300_000), 'no health request starts at or after the deadline');
+  if (mode === 'healthy') {
+    assert.equal(report.probes, 1);
+    assert.equal(existsSync(join(healthHome, '.local', 'state', 'rollforward-update.json')), false);
+  } else {
+    assert.match(result.stdout, /back on v0\.5\.0; v0\.5\.1 won't be tried again/);
+    assert.deepEqual(JSON.parse(readFileSync(join(healthHome, '.local', 'state', 'rollforward-update.json'), 'utf8')).bad, ['v0.5.1']);
+    assert.deepEqual(report.commands.filter((c: string[]) => c[0] === 'git' && c[1] === 'checkout').map((c: string[]) => c.at(-1)), ['v0.5.1', 'v0.5.0']);
+  }
+  if (mode === 'hanging') assert.equal(report.aborted, 1);
 });
 
 test('fractional millisecond drain budgets still use valid HTTP timeout delays', async () => {

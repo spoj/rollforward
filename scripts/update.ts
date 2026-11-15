@@ -78,9 +78,11 @@ function move(from: string, to: string) {
 const changed = (from: string, to: string, file: string) => !!sh('git', 'diff', '--name-only', from, to, '--', file);
 // A start may take a while, as one that moves data does.
 async function answers() {
-  for (let i = 0; i < 150; i++) {
-    await sleep(2000);
-    if (await fetch(health).then(r => r.ok, () => false)) return true;
+  const end = Date.now() + 5 * 60_000;
+  while (Date.now() < end) {
+    await sleep(Math.min(2000, Math.max(0, end - Date.now())));
+    if (Date.now() >= end) break;
+    if (await fetch(health, { signal: AbortSignal.timeout(Math.max(1, Math.ceil(end - Date.now()))) }).then(r => r.ok, () => false)) return true;
   }
   return false;
 }
