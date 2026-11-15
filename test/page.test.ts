@@ -1440,6 +1440,7 @@ test("a comment or reply uploading attachments posts to its original instance af
   try {
     for (const reply of [false, true]) {
       await tab.goto(new URL('/#/a5c0ff5e1f07', page.url()).href);
+      await tab.waitForSelector('#bar h1 .t:text-is("January")');
       await tab.waitForSelector('#newcomment');
       const box = reply ? '#conv .post[data-seq="2"] > .reply' : '#conv .compose';
       if (reply) await tab.click('#conv .post[data-seq="2"] > .pa [data-act=reply]');
