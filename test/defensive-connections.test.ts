@@ -16,6 +16,9 @@ const tmp = mkdtempSync(join(tmpdir(), 'rf-def-conn-')), instDir = join(tmp, 'in
 const calls: { op: string; data: any }[] = [];
 const upstreamPaths: string[] = [];
 
+let tokenCalls = 0;
+let tokenGate: PromiseWithResolvers<void> | undefined;
+let tokenEntered: PromiseWithResolvers<void> | undefined;
 let upstream: Server, proxy: Server;
 let sock = '', ca = '';
 let loginsMod: typeof import('../src/logins.ts');
@@ -86,7 +89,20 @@ before(async () => {
       return send({ issuer: base, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token` });
     }
     if (u.pathname === '/token') {
-      return send({ access_token: 'atok', refresh_token: 'rtok', expires_in: 3600 });
+      const bodyChunks: Buffer[] = [];
+      req.on('data', c => bodyChunks.push(c)).on('end', async () => {
+        tokenCalls++;
+        const rt = new URLSearchParams(Buffer.concat(bodyChunks).toString()).get('refresh_token');
+        if (rt?.startsWith('hold-')) {
+          tokenEntered?.resolve();
+          await tokenGate?.promise;
+        }
+        if (rt === 'hold-401') {
+          return send({ error: 'invalid_grant', error_description: 'AADSTS700082: expired' }, 400);
+        }
+        return send({ access_token: `atok-${rt}`, refresh_token: `next-${rt}`, expires_in: 3600 });
+      });
+      return;
     }
 
     // Graph mock using exact canonical paths
@@ -377,4 +393,63 @@ test('Compressed zstd and x-gzip responses decode metadata and usage while non-J
   assert.equal(calls.at(-1)?.data.status, 502);
   assert.equal(calls.at(-1)?.data.estimated, true);
   assert.ok(calls.at(-1)?.data.failed);
+});
+
+test('Entra token() coalesces concurrent refreshes and ignores stale completions after reconnect', async () => {
+  const { token } = await import('../src/entra.ts');
+  const scope = ['https://graph.microsoft.com/Files.Read.All'];
+
+  // 1. Concurrent callers share one /token refresh
+  loginsMod.saveLogin(USER, {
+    id: 'm365', kind: 'm365', name: 'Microsoft 365', account: USER,
+    since: '2026-11-15T01:00:00Z', offers: [],
+  }, 'coalesce-1');
+  tokenCalls = 0;
+  const [tA, tB, tC] = await Promise.all([
+    token(USER, 'm365', scope),
+    token(USER, 'm365', scope),
+    token(USER, 'm365', scope),
+  ]);
+  assert.equal(tokenCalls, 1);
+  assert.equal(tA, 'atok-coalesce-1');
+  assert.equal(tB, tA);
+  assert.equal(tC, tA);
+
+  // 2. Stale 401 refresh completing after user reconnected does not mark the new login expired
+  loginsMod.saveLogin(USER, {
+    id: 'm365', kind: 'm365', name: 'Microsoft 365', account: USER,
+    since: '2026-11-15T02:00:00Z', offers: [],
+  }, 'hold-401');
+  tokenGate = Promise.withResolvers();
+  tokenEntered = Promise.withResolvers();
+  const stale401 = token(USER, 'm365', scope);
+  await tokenEntered.promise;
+  loginsMod.saveLogin(USER, {
+    id: 'm365', kind: 'm365', name: 'Microsoft 365', account: USER,
+    since: '2026-11-15T02:05:00Z', offers: [],
+  }, 'fresh-after-401');
+  tokenGate.resolve();
+  await assert.rejects(stale401, /expired/);
+  assert.equal(loginsMod.logins(USER).find(l => l.id === 'm365')?.expired, undefined);
+  assert.equal(loginsMod.secret(USER, 'm365'), 'fresh-after-401');
+
+  // 3. Stale 200 refresh completing after user reconnected does not overwrite the new refresh token
+  loginsMod.saveLogin(USER, {
+    id: 'm365', kind: 'm365', name: 'Microsoft 365', account: USER,
+    since: '2026-11-15T03:00:00Z', offers: [],
+  }, 'hold-200');
+  tokenGate = Promise.withResolvers();
+  tokenEntered = Promise.withResolvers();
+  const stale200 = token(USER, 'm365', scope);
+  await tokenEntered.promise;
+  loginsMod.saveLogin(USER, {
+    id: 'm365', kind: 'm365', name: 'Microsoft 365', account: USER,
+    since: '2026-11-15T03:05:00Z', offers: [],
+  }, 'fresh-after-200');
+  tokenGate.resolve();
+  assert.equal(await stale200, 'atok-hold-200');
+  assert.equal(loginsMod.secret(USER, 'm365'), 'fresh-after-200');
+  assert.equal(await token(USER, 'm365', scope), 'atok-fresh-after-200');
+  tokenGate = undefined;
+  tokenEntered = undefined;
 });
