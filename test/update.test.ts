@@ -204,6 +204,7 @@ esac
 
   await startServer(work);
   cookie = (await entra.signIn(base, ADMIN)).headers.getSetCookie().find(c => c.startsWith('rf_session='))!.split(';')[0];
+  assert.equal((await call('PUT', '/capabilities', { cap: 'series-owner', people: [ADMIN] })).status, 200);
 });
 
 after(async () => {
@@ -528,6 +529,19 @@ for (const mode of ['slow', 'hanging', 'rejected', 'instant', 'healthy']) test(`
     assert.deepEqual(report.commands.filter((c: string[]) => c[0] === 'git' && c[1] === 'checkout').map((c: string[]) => c.at(-1)), ['v0.5.1', 'v0.5.0']);
   }
   if (mode === 'hanging') assert.equal(report.aborted, 1);
+});
+
+for (const tag of ['v0.6.0', 'v0.7.0', 'v1.0.0']) test(`an incompatible ${tag} without Manual metadata never crosses the automatic rollback reader boundary`, async () => {
+  const current = git(work, 'describe', '--tags', '--exact-match', 'HEAD'), pid = proc!.pid, probes = drainedProbes;
+  publish(tag);
+  try {
+    const result = await spawnUpdater(work).done;
+    assert.equal(result.code, 0, result.out);
+    assert.match(result.out, /needs a person first.*reader boundary/);
+    assert.equal(git(work, 'describe', '--tags', '--exact-match', 'HEAD'), current);
+    assert.equal(proc!.pid, pid, 'neither stop nor target/rollback start ran');
+    assert.equal(drainedProbes, probes);
+  } finally { releases.pop(); }
 });
 
 test('fractional millisecond drain budgets still use valid HTTP timeout delays', async () => {

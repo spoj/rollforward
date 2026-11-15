@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { appendFileSync, closeSync, existsSync, fstatSync, ftruncateSync, mkdirSync, openSync, readFileSync, renameSync, truncateSync, writeFileSync } from 'node:fs';
 import { BlockList } from 'node:net';
 import { join } from 'node:path';
+import { AUTHORITY_FORMAT, authorityTree } from './authority-format.ts';
 
 // The data root's .rf/ holds what only the server uses: the people who can sign in, the sessions' key, and tree.json, the
 // workspaces and series by id.
@@ -123,11 +124,11 @@ export const canSee = (who: Who, w: Workspace) => who.role === 'admin' || isIn(w
 export const canManage = (who: Who, w: Workspace) => who.role === 'admin' || isIn(who, w.owners);
 
 export function tree(): Tree {
-  return readJson<Tree>('tree.json', { workspaces: {}, series: {} });
+  return authorityTree(readJson('tree.json', { ...AUTHORITY_FORMAT, tree: { workspaces: {}, series: {} } }));
 }
 
 export function saveTree(t: Tree) {
-  writeJson('tree.json', t);
+  writeJson('tree.json', { ...AUTHORITY_FORMAT, tree: t });
 }
 
 export function forgetPerson(email: string) {

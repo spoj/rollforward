@@ -2,30 +2,45 @@ import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { replaceFile, type Tree } from './system.ts';
 
-export const AUTHORITY_FORMAT = { version: 1, minReader: 1, state: 'complete' } as const;
+export const AUTHORITY_FORMAT = { format: 'rollforward-series-owner', version: 1, minReader: '0.7.0', state: 'complete' } as const;
+
+export function authorityTree(data: any): Tree {
+  if (data?.format !== AUTHORITY_FORMAT.format || data.version !== 1 || data.minReader !== '0.7.0' || data.state !== 'complete'
+    || 'workspaces' in data || 'series' in data || !data.tree || typeof data.tree !== 'object' || Array.isArray(data.tree)
+    || !data.tree.workspaces || typeof data.tree.workspaces !== 'object' || Array.isArray(data.tree.workspaces)
+    || !data.tree.series || typeof data.tree.series !== 'object' || Array.isArray(data.tree.series))
+    throw new Error('unsupported or incomplete series owner authority format; manual offline migration required; see docs/deploy.md');
+  for (const [id, w] of Object.entries(data.tree.workspaces) as [string, any][]) {
+    if (!/^[\w-]+$/.test(id) || !w || typeof w.name !== 'string' || !Array.isArray(w.owners) || !w.owners.every((p: unknown) => typeof p === 'string')
+      || !Array.isArray(w.members) || !w.members.every((p: unknown) => typeof p === 'string'))
+      throw new Error(`unsupported or incomplete workspace format for ${id}`);
+  }
+  for (const [id, s] of Object.entries(data.tree.series) as [string, any][]) {
+    if (!/^[\w-]+$/.test(id) || !s || typeof s.name !== 'string' || typeof s.workspace !== 'string' || !Object.hasOwn(data.tree.workspaces, s.workspace))
+      throw new Error(`unsupported or incomplete series authority for ${id}`);
+  }
+  return data.tree;
+}
 
 export function checkAuthorityFormat(root: string): void {
-  const marker = join(root, '.rf', 'authority-format.json');
-  if (!existsSync(marker)) {
+  const path = join(root, '.rf', 'tree.json');
+  if (!existsSync(path)) {
     if (existsSync(root) && readdirSync(root).length) throw new Error('series owner authority format: manual offline migration required; see docs/deploy.md');
     mkdirSync(join(root, '.rf'), { recursive: true, mode: 0o700 });
-    replaceFile(marker, JSON.stringify(AUTHORITY_FORMAT));
+    const tree = { workspaces: {}, series: {} };
+    replaceFile(path, JSON.stringify({ ...AUTHORITY_FORMAT, state: 'incomplete', tree }));
+    replaceFile(path, JSON.stringify({ ...AUTHORITY_FORMAT, tree }));
     return;
   }
-  const format = JSON.parse(readFileSync(marker, 'utf8'));
-  if (format?.version !== 1 || format.minReader !== 1 || format.state !== 'complete')
-    throw new Error('unsupported or incomplete series owner authority format; restore a complete compatible backup, never downgrade code over this data');
-  const treePath = join(root, '.rf', 'tree.json');
-  const tree: Tree = existsSync(treePath) ? JSON.parse(readFileSync(treePath, 'utf8')) : { workspaces: {}, series: {} };
-  const seriesDir = join(root, 'series');
-  for (const id of Object.keys(tree.series)) {
-    const path = join(seriesDir, id, 'series.json');
-    if (!/^[\w-]+$/.test(id) || !existsSync(path)) throw new Error(`incomplete series authority for ${id}`);
-    const s = JSON.parse(readFileSync(path, 'utf8'));
+  const tree = authorityTree(JSON.parse(readFileSync(path, 'utf8')));
+  for (const [id, series] of Object.entries(tree.series)) {
+    const settings = join(root, 'series', id, 'series.json');
+    if (!existsSync(settings)) throw new Error(`incomplete series authority for ${id}`);
+    const s = JSON.parse(readFileSync(settings, 'utf8'));
     const c = s?.consent;
     if (s?.version !== 1 || !Number.isSafeInteger(s.epoch) || s.epoch < 0 || typeof s.since !== 'string' || 'shared' in s
       || (s.owner !== undefined && (typeof s.owner !== 'string' || !/^[^@\s]+@[^@\s]+$/.test(s.owner)))
-      || (c !== undefined && (!s.owner || c?.by !== s.owner || typeof c.at !== 'string' || typeof c.workspace !== 'string' || c.workspace !== tree.series[id]?.workspace
+      || (c !== undefined && (!s.owner || c?.by !== s.owner || typeof c.at !== 'string' || c.workspace !== series.workspace
         || !Array.isArray(c.logins) || !c.logins.every((l: unknown) => typeof l === 'string') || typeof c.autonomous !== 'boolean')))
       throw new Error(`unsupported or incomplete series authority for ${id}`);
   }

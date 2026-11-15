@@ -1,4 +1,5 @@
 import { after, before, test } from 'node:test';
+import { readFixtureTree } from './owner-fixture.ts';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
@@ -58,12 +59,12 @@ async function stopServer() {
 
 before(async () => {
   cpSync(join(repoDir, 'test', 'fixture'), root, { recursive: true });
-  const t = JSON.parse(readFileSync(join(root, '.rf', 'tree.json'), 'utf8'));
+  const t = readFixtureTree(root);
   for (const id of Object.keys(t.series)) {
     mkdirSync(join(root, 'series', id), { recursive: true });
     writeFileSync(join(root, 'series', id, 'series.json'), JSON.stringify({ version: 1, epoch: 0, since: '' }));
   }
-  writeFileSync(join(root, '.rf', 'authority-format.json'), JSON.stringify({ version: 1, minReader: 1, state: 'complete' }));
+
   writeFileSync(join(root, '.rf', 'capabilities.json'), JSON.stringify({ 'series-owner': [ADMIN, BOB, CAROL] }));
   const probe = createServer();
   await new Promise<void>(ok => probe.listen(0, '127.0.0.1', ok));
@@ -254,14 +255,15 @@ test('R4-DATA-04: streaming upload/attach recheck archive, proposals refuse movi
       import { createServer } from 'node:net';
       import { join } from 'node:path';
       import { idp } from './test/idp.ts';
+      import { readFixtureTree } from './test/owner-fixture.ts';
       const subTmp = ${JSON.stringify(subTmp)}, root = join(subTmp, 'data');
       cpSync('./test/fixture', root, { recursive: true });
-      const t = JSON.parse(readFileSync(join(root, '.rf', 'tree.json'), 'utf8'));
+      const t = readFixtureTree(root);
       for (const id of Object.keys(t.series)) {
         mkdirSync(join(root, 'series', id), { recursive: true });
         writeFileSync(join(root, 'series', id, 'series.json'), JSON.stringify({ version: 1, epoch: 0, since: '' }));
       }
-      writeFileSync(join(root, '.rf', 'authority-format.json'), JSON.stringify({ version: 1, minReader: 1, state: 'complete' }));
+
       writeFileSync(join(root, '.rf', 'capabilities.json'), JSON.stringify({ 'series-owner': ['admin@demo.test'] }));
       const probe = createServer();
       await new Promise(ok => probe.listen(0, '127.0.0.1', ok));

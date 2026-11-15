@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
 import { idp } from './idp.ts';
+import { writeFixtureTree } from './owner-fixture.ts';
 
 // Real runs, from a person's act down to Pi in its sandbox, with a scripted stand-in for OpenRouter: each run's prompt takes the
 // next script, bash commands and then the report, and the stand-in keeps what each command answered. So the walls a run meets, a
@@ -141,7 +142,7 @@ exec ${git} "$@"
 `);
   chmodSync(join(tmp, 'bin', 'git'), 0o755);
   mkdirSync(join(root, '.rf'), { recursive: true });
-  writeFileSync(join(root, '.rf', 'authority-format.json'), JSON.stringify({ version: 1, minReader: 1, state: 'complete' }));
+  writeFixtureTree(root, { workspaces: {}, series: {} });
   await serve();
   [admin, bob] = [await login(ADMIN), await login(BOB)];
   assert.equal((await call('PUT', '/capabilities', { cap: 'series-owner', people: [ADMIN, BOB, 'carol@demo.test', 'dana@demo.test'] })).status, 200);

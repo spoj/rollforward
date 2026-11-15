@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { idp } from './idp.ts';
+import { writeFixtureTree } from './owner-fixture.ts';
 
 const admin = 'admin@demo.test', alice = 'alice@demo.test', bob = 'bob@demo.test', colleague = 'colleague@demo.test';
 const tmp = mkdtempSync(join(tmpdir(), 'rf-owner-api-')), root = join(tmp, 'data');
@@ -33,11 +34,10 @@ async function series(name: string, who = alice, extra = {}) {
 
 before(async () => {
   mkdirSync(join(root, '.rf'), { recursive: true });
-  writeFileSync(join(root, '.rf', 'authority-format.json'), JSON.stringify({ version: 1, minReader: 1, state: 'complete' }));
-  writeFileSync(join(root, '.rf', 'tree.json'), JSON.stringify({
+  writeFixtureTree(root, {
     workspaces: { ws: { name: 'Workspace', owners: [admin], members: [alice, bob, colleague] }, dest: { name: 'Destination', owners: [admin], members: [alice, bob] } },
     series: { history: { name: 'History', workspace: 'ws' }, unowned: { name: 'Unowned', workspace: 'ws' } },
-  }));
+  });
   mkdirSync(join(root, 'series', 'history'), { recursive: true });
   mkdirSync(join(root, 'series', 'unowned'));
   writeFileSync(join(root, 'series', 'unowned', 'series.json'), JSON.stringify({ version: 1, epoch: 0, since: '' }));

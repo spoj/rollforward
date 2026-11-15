@@ -1,4 +1,5 @@
 import { after, before, test } from 'node:test';
+import { readFixtureTree, writeFixtureTree } from './owner-fixture.ts';
 import assert from 'node:assert/strict';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
@@ -68,19 +69,19 @@ async function runRf(home: string, args: string[], extraEnv: Record<string, stri
 
 before(async () => {
   cpSync(join(app, 'test', 'fixture'), root, { recursive: true });
-  const treePath = join(root, '.rf', 'tree.json');
-  const tree = JSON.parse(readFileSync(treePath, 'utf8'));
+
+  const tree = readFixtureTree(root);
   tree.workspaces['1b3031035ff6'].owners = ['carol@demo.test'];
   tree.workspaces['1b3031035ff6'].members = ['bob@demo.test'];
   tree.workspaces['wsbeta000001'] = { name: 'beta-ws', owners: ['admin@demo.test'], members: [] };
   tree.workspaces['wsseeddup001'] = { name: 'seeded-dup', owners: ['carol@demo.test', 'bob@demo.test'], members: ['bob@demo.test'] };
   tree.series['serbank00001'] = { name: 'Bank pack', workspace: '1b3031035ff6' };
   tree.series['serbeta00001'] = { name: 'Beta series', workspace: 'wsbeta000001' };
-  writeFileSync(treePath, JSON.stringify(tree, null, 1));
+  writeFixtureTree(root, tree);
   mkdirSync(join(root, 'series', 'serbank00001'), { recursive: true });
   mkdirSync(join(root, 'series', 'serbeta00001'), { recursive: true });
   writeFileSync(join(root, '.rf', 'users.json'), JSON.stringify(Object.fromEntries(['admin', 'carol', 'bob'].map(name => [`${name}@demo.test`, { role: name === 'admin' ? 'admin' : 'user', name, created: '2026-11-15T08:00:00.000Z' }]))));
-  writeFileSync(join(root, '.rf', 'authority-format.json'), JSON.stringify({ version: 1, minReader: 1, state: 'complete' }));
+
   writeFileSync(join(root, '.rf', 'capabilities.json'), JSON.stringify({ 'series-owner': ['admin@demo.test', 'carol@demo.test', 'bob@demo.test'] }));
   for (const [id, series] of Object.entries(tree.series) as [string, { workspace: string }][]) {
     const owner = series.workspace === 'wsbeta000001' ? 'admin@demo.test' : 'carol@demo.test', at = '2026-11-15T08:00:00.000Z';

@@ -1,4 +1,5 @@
 import { after, before, test } from 'node:test';
+import { readFixtureTree, writeFixtureTree } from './owner-fixture.ts';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -77,10 +78,10 @@ before(async () => {
   appendFileSync(join(copy, 'log.jsonl'), JSON.stringify({ seq: 15, at: new Date().toISOString(), by: adminEmail, op: 'duplicate', from: '2026-08-30', logins: [] }) + '\n');
   // An instance as v0.4.0 left it: bob ran it, its run read his comment and dana's, the agent asked erin, bob's last word went
   // unread, and carol took it over.
-  const trees = join(root, '.rf', 'tree.json'), t = JSON.parse(readFileSync(trees, 'utf8')), taken = join(root, 'instances', '01d7a4e00003');
+  const t = readFixtureTree(root), taken = join(root, 'instances', '01d7a4e00003');
   t.workspaces['01d7a4e00001'] = { name: 'Old takeover', owners: [], members: [CAROL, DANA, ERIN] };
   t.series['01d7a4e00002'] = { name: 'Rec', workspace: '01d7a4e00001' };
-  writeFileSync(trees, JSON.stringify(t));
+  writeFixtureTree(root, t);
   mkdirSync(join(root, 'series', '01d7a4e00002'), { recursive: true });
   writeFileSync(join(root, 'series', '01d7a4e00002', 'series.json'), '{}');
   mkdirSync(taken);
@@ -454,7 +455,7 @@ test("series settings write series.json; a rename edits .rf/tree.json", async ()
   assert.deepEqual([before.version, before.owner, before.consent.logins, before.consent.autonomous], [1, adminEmail, [], true]);
 
   assert.equal((await put(series, { name: renamed })).status, 200);
-  assert.equal(JSON.parse(readFileSync(join(root, '.rf', 'tree.json'), 'utf8')).series[id].name, renamed);
+  assert.equal(readFixtureTree(root).series[id].name, renamed);
   assert.equal((await shown(renamed)).id, id);
 
   assert.equal((await put(renamed, { name: monthly })).status, 409);
@@ -706,7 +707,7 @@ test("the page names everyone who has signed in, and the Entra groups in the wor
   assert.equal((await people('Acme Payroll', { members: [other], groups: { [other]: 'Payroll team' } })).status, 200);
   assert.equal((await names())[other], 'Payroll team');
   assert.ok(!(other in await names(b)), "a group in a workspace bob doesn't see goes unnamed for him");
-  assert.deepEqual(JSON.parse(readFileSync(join(root, '.rf', 'tree.json'), 'utf8')).groups, { [group]: 'Finance HK', [other]: 'Payroll team' });
+  assert.deepEqual(readFixtureTree(root).groups, { [group]: 'Finance HK', [other]: 'Payroll team' });
 });
 
 test("everyone sees the skills, which every run loads; admins keep the connections, and each person their own websites, admins seeing anyone's and only letting one reach internal addresses", async () => {
@@ -1640,7 +1641,7 @@ test('merging a workspace deletes proposals into it, including one whose propose
   assert.equal((await call('GET', '/api')).status, 200);
   assert.equal((await call('GET', '/api/status')).status, 200);
   assert.equal((await named('Lapsed source')).proposal, null);
-  assert.equal(JSON.parse(readFileSync(join(root, '.rf/tree.json'), 'utf8')).workspaces[from].proposal, undefined);
+  assert.equal(readFixtureTree(root).workspaces[from].proposal, undefined);
 });
 
 test("a workspace's owners propose to merge it into another or move a series there, whose owners accept or decline within a week; what moves keeps its ids, and both sides hear of it", async () => {
@@ -1673,9 +1674,9 @@ test("a workspace's owners propose to merge it into another or move a series the
   assert.deepEqual([twice.status, await twice.text()], [409, "Moves A has a proposal open, into Moves B: until it's accepted, declined or withdrawn, or lapses a week on, neither takes another"]);
   assert.equal((await accept({ owners: [], members: [] }, b)).status, 403, "the other workspace's managers accept it");
   assert.deepEqual({ ...(await listed(into)).proposal, at: undefined }, { id: from, into, kind: 'move', from: 'Moves A', to: 'Moves B', series: 'Rec', by: bob, at: undefined });
-  const treeFile = join(root, '.rf', 'tree.json'), t = JSON.parse(readFileSync(treeFile, 'utf8'));
+  const t = readFixtureTree(root);
   t.workspaces[from].proposal.at = new Date(Date.now() - 8 * 86400e3).toISOString();
-  writeFileSync(treeFile, JSON.stringify(t));
+  writeFixtureTree(root, t);
   assert.deepEqual([(await listed(from)).proposal, (await call('DELETE', `/api/proposals/${from}`)).status], [null, 404], 'a week on, it lapses');
 
   await put(into, { members: [], archived: true });

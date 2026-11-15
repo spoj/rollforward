@@ -30,7 +30,6 @@ for (const mode of ['body', 'queue', 'screen']) test(`an admitted agent request 
       const { active, byToken, interruptRun, view } = await import('./src/waker.ts'), sandbox = await import('./src/sandbox.ts');
       initSystem(root);
       openStore(root);
-      writeJson('authority-format.json', { version: 1, minReader: 1, state: 'complete' });
       saveTree({ workspaces: { w: { name: 'Work', owners: [alice], members: [] } }, series: { s: { name: 'Series', workspace: 'w' } } });
       writeJson('users.json', { [alice]: { role: 'admin' } });
       mkdirSync(root + '/series/s', { recursive: true });

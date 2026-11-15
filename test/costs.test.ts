@@ -1,4 +1,5 @@
 import { after, before, test } from 'node:test';
+import { readFixtureTree, writeFixtureTree } from './owner-fixture.ts';
 import assert from 'node:assert/strict';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { createServer as createHttpServer } from 'node:http';
@@ -98,16 +99,16 @@ before(async () => {
   // - run 1: exact shared-key OpenRouter ($0.40) + Exa ($0.05) = $0.45 today
   // - run 2: partly-estimated shared-key OpenRouter ($0.25, estimated: true) today
   // - run 3: runner's own OpenRouter key ($0.80, key: 'own', estimated: false) today
-  const treePath = join(root, '.rf', 'tree.json');
-  const tree = JSON.parse(readFileSync(treePath, 'utf8'));
+
+  const tree = readFixtureTree(root);
   tree.workspaces.ops001 = { name: 'Ops', owners: [adminEmail], members: [bobEmail] };
   tree.series.ser001 = { name: 'Daily', workspace: 'ops001' };
-  writeFileSync(treePath, JSON.stringify(tree, null, 1));
+  writeFixtureTree(root, tree);
   for (const id of Object.keys(tree.series)) {
     mkdirSync(join(root, 'series', id), { recursive: true });
     writeFileSync(join(root, 'series', id, 'series.json'), JSON.stringify({ version: 1, epoch: 0, since: '' }));
   }
-  writeFileSync(join(root, '.rf', 'authority-format.json'), JSON.stringify({ version: 1, minReader: 1, state: 'complete' }));
+
   writeFileSync(join(root, '.rf', 'capabilities.json'), JSON.stringify({ 'series-owner': [adminEmail, bobEmail] }));
   writeFileSync(join(root, 'series', 'ser001', 'series.json'), JSON.stringify({ version: 1, owner: bobEmail, epoch: 2, since: today, consent: { by: bobEmail, at: today, workspace: 'ops001', logins: [], autonomous: false } }));
 

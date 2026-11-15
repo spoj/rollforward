@@ -1,4 +1,5 @@
 import { after, before, test } from 'node:test';
+import { readFixtureTree, writeFixtureTree } from './owner-fixture.ts';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
@@ -21,10 +22,10 @@ const native: string[] = [];
 before(async () => {
   cpSync(join(app, 'test', 'fixture'), root, { recursive: true });
   // An open instance of a series of its own, whose agent asks its owner, the admin, to sign off the file it pins.
-  const tree = JSON.parse(readFileSync(join(root, '.rf', 'tree.json'), 'utf8')), signed = join(root, 'instances', 'a5c0ff5e1f00');
+  const tree = readFixtureTree(root), signed = join(root, 'instances', 'a5c0ff5e1f00');
   tree.workspaces['1b3031035ff6'].members = ['bob@demo.test'];
   tree.series.a5c0ff5e1fee = { name: 'Year-end pack', workspace: '1b3031035ff6' };
-  writeFileSync(join(root, '.rf', 'tree.json'), JSON.stringify(tree));
+  writeFixtureTree(root, tree);
   mkdirSync(join(root, 'series', 'a5c0ff5e1fee'));
   mkdirSync(join(signed, 'working'), { recursive: true });
   writeFileSync(join(signed, 'instance.json'), JSON.stringify({ label: '2026-12', series: 'a5c0ff5e1fee' }));
@@ -71,7 +72,7 @@ before(async () => {
   // A series of its own, quiet since July.
   const sampled = join(root, 'instances', 'a5c0ff5e1f05');
   tree.series.a5c0ff5e1fef = { name: 'Invoice checks', workspace: '1b3031035ff6' };
-  writeFileSync(join(root, '.rf', 'tree.json'), JSON.stringify(tree));
+  writeFixtureTree(root, tree);
   mkdirSync(join(root, 'series', 'a5c0ff5e1fef'));
   mkdirSync(join(sampled, 'working'), { recursive: true });
   writeFileSync(join(sampled, 'instance.json'), JSON.stringify({ label: '2026-07', series: 'a5c0ff5e1fef' }));
@@ -83,7 +84,7 @@ before(async () => {
   // A series of its own whose open instance's agent asks a question, proposes to send the pack, citing the closed one's comment, and
   // withdrew a question.
   tree.series.a5c0ff5e1ff0 = { name: 'Bank pack', workspace: '1b3031035ff6' };
-  writeFileSync(join(root, '.rf', 'tree.json'), JSON.stringify(tree));
+  writeFixtureTree(root, tree);
   mkdirSync(join(root, 'series', 'a5c0ff5e1ff0'));
   const october = [
     { by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'I will email the pack to the bank.', ask: 'proposal' },
@@ -129,7 +130,7 @@ before(async () => {
   doc.items.find((i: { id: string }) => i.id === 'borrowing-base').from = ['eligible', 'inventory'];
   doc.items.push({ id: 'eligible', name: 'Eligible AR', kind: 'step', file: 'working/eligible.csv', from: ['ar-aging'] });
   writeFileSync(join(stepped, 'screen.json'), JSON.stringify(doc));
-  writeFileSync(join(root, '.rf', 'authority-format.json'), JSON.stringify({ version: 1, minReader: 1, state: 'complete' }));
+
   writeFileSync(join(root, '.rf', 'users.json'), JSON.stringify({
     'admin@demo.test': { role: 'admin', name: 'Demo Admin', created: '2026-08-01T09:00:00.000Z' },
     'bob@demo.test': { role: 'user', name: 'Bob', created: '2026-08-01T09:00:00.000Z' },

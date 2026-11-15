@@ -1,15 +1,21 @@
 {
- "workspaces": {
-  "1b3031035ff6": {
-   "name": "larkfield",
-   "owners": [],
-   "members": []
-  }
- },
- "series": {
-  "d83e3e5c41da": {
-   "name": "Weekly borrowing base",
-   "workspace": "1b3031035ff6"
+ "format": "rollforward-series-owner",
+ "version": 1,
+ "minReader": "0.7.0",
+ "state": "complete",
+ "tree": {
+  "workspaces": {
+   "1b3031035ff6": {
+    "name": "larkfield",
+    "owners": [],
+    "members": []
+   }
+  },
+  "series": {
+   "d83e3e5c41da": {
+    "name": "Weekly borrowing base",
+    "workspace": "1b3031035ff6"
+   }
   }
  }
 }
