@@ -355,14 +355,14 @@ test('refused run checks share the checker and retry unchecked hosts on the foll
   log = [{ method: 'GET', url: 'https://auth.vendor.test/private?code=do-not-log', status: 403, blocked: 'host not on the list', dest: 'document', from: 'https://erp.company.test/private' }];
   mode = 'fail';
   const first = new Browsers(inst, 1);
-  first.bySite.set('run', { id: 'first', email, since: '', writeback: false, file: 'browser/first.jsonl', conns: 0 });
+  first.bySite.set('run', { id: 'first', email, since: '', writeback: false, source: () => true, file: 'browser/first.jsonl', conns: 0 });
   await first.close();
   for (let i = 0; !websitesOf(email).run.profile; i++) { assert.ok(i < 100); await new Promise(ok => setTimeout(ok, 10)); }
   assert.ok('error' in websitesOf(email).run.profile!);
   assert.equal(websitesOf(email).run.checks!['auth.vendor.test'], undefined);
   mode = 'normal';
   const second = new Browsers(inst, 2);
-  second.bySite.set('run', { id: 'second', email, since: '', writeback: false, file: 'browser/second.jsonl', conns: 0 });
+  second.bySite.set('run', { id: 'second', email, since: '', writeback: false, source: () => true, file: 'browser/second.jsonl', conns: 0 });
   await second.close();
   for (let i = 0; !events.some(e => e.action === 'allowed'); i++) { assert.ok(i < 100); await new Promise(ok => setTimeout(ok, 10)); }
   assert.deepEqual(events.find(e => e.action === 'allowed').allowed, ['auth.vendor.test']);
