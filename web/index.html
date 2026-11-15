@@ -152,8 +152,25 @@ const ago = iso => {
   return m < 1 ? 'now' : m < 60 ? `${m | 0}m` : m < 1440 ? `${m / 60 | 0}h` : m < 10080 ? `${m / 1440 | 0}d` : `${m / 10080 | 0}w`;
 };
 
+let loginReads = 0, loginApplied = 0;
+async function readLogins() {
+  const n = ++loginReads;
+  return { n, logins: await api('/logins') };
+}
+function applyLogins({ n, logins }) {
+  if (n > loginApplied) {
+    loginApplied = n;
+    myLogins = logins;
+    expired = logins.filter(l => l.expired);
+    if (pv?.settings?.logins) pv.settings.logins = logins;
+    if (pv?.back?.settings?.logins) pv.back.settings.logins = logins;
+    renderLog();
+  }
+  return myLogins;
+}
+
 async function refresh() {
-  const n = ++refreshes, [t, mine, who] = await Promise.all([api('/api'), api('/logins'), api('/me')]);
+  const n = ++refreshes, [t, mine, who] = await Promise.all([api('/api'), readLogins(), api('/me')]);
   const [id, at] = location.hash.slice(2).split('/'), all = t.flatMap(w => [[w], ...w.series.flatMap(s => [[w, s], ...s.instances.map(i => [w, s, i])])]), found = all.find(e => e.at(-1).id === id);
   // An address that names nothing here opens the sidebar's first workspace, and then names what it shows.
   const ws = t.filter(w => !w.archived && (w.mine || localStorage.workspaces === 'all' || !t.some(w => w.mine)));
@@ -163,13 +180,14 @@ async function refresh() {
   const path = i ? `/api/instances/${i.id}` : '', [d, st] = path ? await fetchInstance(path) : [null, null];
   if (n !== refreshes) return;
   if ((!found || at) && w) history.replaceState(null, '', `#/${(i ?? s ?? w).id}`);
-  [tree, expired, myLogins, me] = [t, mine.filter(l => l.expired), mine, who];
+  [tree, me] = [t, who];
+  applyLogins(mine);
   land(w && { w, s, i }, path, d, st);
   if (at && i) showComment(+at.slice(1));
   if (pv?.settings?.kind === 'logins') {
     const p = pv, [sites, grants] = await Promise.all([api('/logins/sites'), api('/grants')]);
     if (pv === p && n === refreshes) {
-      Object.assign(p.settings, { sites, grants, logins: mine });
+      Object.assign(p.settings, { sites, grants });
       const next = document.createElement('div');
       next.innerHTML = loginsHtml(p.settings);
       for (const attr of ['data-site-summary', 'data-site-profile', 'data-grant']) for (const el of document.querySelectorAll(`#pv [${attr}]`)) {
@@ -1105,7 +1123,7 @@ function openWorkspaceSettings() {
 }
 
 async function openSeriesSettings() {
-  const s = cur.s, logins = await api('/logins');
+  const s = cur.s, logins = applyLogins(await readLogins());
   pv = { title: 'Series settings', settings: { ...s, kind: 'series', logins, cost: s.instances.reduce((t, i) => t + i.cost, 0), estimated: s.instances.some(i => i.estimated), closed: s.instances.filter(i => i.status === 'closed').length } };
   renderPv();
 }
@@ -1127,10 +1145,13 @@ function tokensHtml(s) {
     + `<h3>New token</h3><div class="row2"><input type="text" id="tname" placeholder="Name, such as laptop" style="flex:1"><select id="tdays"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option></select><button class="btn primary" data-act="new-token">Make</button></div>`;
 }
 
+let accountOpens = 0;
 async function openTokens(made) {
-  const before = pv, tokens = await api('/tokens');
-  if (pv !== before || pv?.saving) return;
-  pv = { title: 'Tokens', settings: { kind: 'tokens', tokens, made } };
+  if (pv?.saving) return;
+  const n = ++accountOpens, before = pv, tokens = await api('/tokens');
+  if (n !== accountOpens || pv !== before || pv?.saving) return;
+  if (pv?.back && pv.settings?.kind === 'logins') pv.back.settings.logins = pv.settings.logins;
+  pv = { title: 'Tokens', shown: pv?.shown ?? [], back: pv?.back, website: pv?.website, workspace: pv?.workspace, settings: { kind: 'tokens', tokens, made } };
   renderPv();
 }
 
@@ -1261,19 +1282,23 @@ function waiting() {
 
 // Your own OpenRouter key, if a new one is given, and whether your runs use it; a first one is used at once.
 async function saveKey() {
-  const k = pv.settings.logins.find(l => l.id === 'openrouter');
+  const p = pv, n = accountOpens, k = p.settings.logins.find(l => l.id === 'openrouter');
   await api('/logins/openrouter', { method: 'PUT', body: JSON.stringify({ key: $('#orkey')?.value ?? '', enabled: $('#oruse')?.checked ?? !k }) });
-  await openLogins();
+  if (pv !== p || n !== accountOpens) return;
+  const next = await openLogins();
   await refresh();
-  saved();
+  if (next && pv === next) saved();
 }
 
-async function openLogins(savedSignIn) {
-  const before = pv;
-  const [logins, connections, grants, sites, vpn] = await Promise.all([api('/logins'), api('/connections'), api('/grants'), api('/logins/sites'),
+async function openLogins(savedSignIn, website) {
+  if (pv?.saving && pv !== savedSignIn) return;
+  const n = ++accountOpens, before = pv;
+  const [mine, connections, grants, sites, vpn] = await Promise.all([readLogins(), api('/connections'), api('/grants'), api('/logins/sites'),
     me.can.includes('vpn') ? api('/vpns').then(rows => ({ rows }), e => ({ error: e.message })) : null]);
-  if (pv !== before || pv?.saving && pv !== savedSignIn) return;
+  if (n !== accountOpens || pv !== before || pv?.saving && pv !== savedSignIn || website && !sites[website]) return;
+  const logins = applyLogins(mine);
   pv = { title: 'Logins', shown: pv?.shown ?? [], back: pv?.back, website: pv?.website, workspace: pv?.workspace, settings: { kind: 'logins', logins, connections, grants, sites, vpn } };
+  if (pv.back) pv.back.settings.logins = logins;
   renderPv();
   return pv;
 }
@@ -1337,6 +1362,7 @@ function editName(el, name, save) {
 // Closing a sign-in without saving or connecting throws its browser away.
 function closePv(restore = false) {
   if (pv?.saving) return;
+  accountOpens++;
   if (restore && pv?.back && pv.settings?.kind === 'logins') pv.back.settings.logins = pv.settings.logins;
   if (pv?.signin) api(`/signins/${pv.signin}`, { method: 'DELETE' }).catch(e => toast(e.message));
   pv = restore ? pv?.back ?? null : null;
@@ -1344,7 +1370,8 @@ function closePv(restore = false) {
 }
 
 async function openStart(title, go, then, label, on, ws = cur.w.id, warn) {
-  pv = { title, settings: { kind: 'start', go, then, label, on, ws, warn, logins: await api('/logins') } };
+  const logins = applyLogins(await readLogins());
+  pv = { title, settings: { kind: 'start', go, then, label, on, ws, warn, logins } };
   renderPv();
   $('#slabel')?.focus();
 }
@@ -1751,8 +1778,7 @@ async function onAct(act, el) {
   }
   if (act === 'comment-cell') {
     const item = pv.item;
-    pv = null;
-    renderPv();
+    closePv();
     Object.assign(ui, { open: true, audit: false });
     Object.assign(draft, { on: item, ref: el.dataset.ref });
     renderLog(); renderBar(); renderAudit();
@@ -1873,8 +1899,7 @@ async function onAct(act, el) {
     const s = pv.settings, label = $('#slabel')?.value.trim();
     if (label === '') return toast('Give it a label');
     const r = await s.then({ label, logins: ticked(), autonomous: $('#autonomous').checked });
-    pv = null;
-    renderPv();
+    closePv();
     if (r?.id) go(r.id);
     else await refresh();
   }
@@ -1882,22 +1907,25 @@ async function onAct(act, el) {
     const back = pv;
     if (back?.settings?.kind === 'start') Object.assign(back.settings, { label: $('#slabel')?.value, on: ticked(), autonomous: $('#autonomous').checked });
     if (back?.settings?.kind === 'series') Object.assign(back, { on: ticked(), autonomous: $('#autonomous').checked });
-    const setup = await openLogins();
+    const setup = await openLogins(undefined, el.dataset.id);
     if (!setup) return;
     Object.assign(setup, { back, website: el.dataset.id, workspace: el.dataset.ws, shown: ['web', `web:${el.dataset.id}`] });
+    if (back?.settings?.logins) back.settings.logins = setup.settings.logins;
     renderPv();
     $('#pv details[open].website').scrollIntoView({ block: 'nearest' });
   }
   if (act === 'logins') await openLogins();
   if (act === 'tokens') await openTokens();
   if (act === 'new-token') {
-    const name = $('#tname').value.trim();
+    const p = pv, n = accountOpens, name = $('#tname').value.trim();
     if (!name) return toast('Name the token, such as laptop');
-    await openTokens((await api('/tokens', { method: 'POST', body: JSON.stringify({ name, days: Number($('#tdays').value) }) })).token);
+    const { token } = await api('/tokens', { method: 'POST', body: JSON.stringify({ name, days: Number($('#tdays').value) }) });
+    if (pv === p && n === accountOpens) await openTokens(token);
   }
   if (act === 'revoke-token') {
+    const p = pv, n = accountOpens;
     await api(`/tokens/${enc(el.dataset.id)}`, { method: 'DELETE' });
-    await openTokens();
+    if (pv === p && n === accountOpens) await openTokens();
   }
   if (act === 'waiting') {
     pv = { title: 'Waiting on you', settings: { kind: 'waiting' } };
@@ -1911,17 +1939,22 @@ async function onAct(act, el) {
     await refresh();
   }
   if (act === 'offer-add') {
-    const id = el.dataset.id, v = document.getElementById(`offer-add-${id}`).value.trim();
+    const p = pv, n = accountOpens, id = el.dataset.id, v = document.getElementById(`offer-add-${id}`).value.trim();
     if (!v) return;
     const failed = await api(`/logins/${enc(id)}/offers`, { method: 'POST', body: JSON.stringify({ add: v }) }).then(() => null, e => e);
-    pv.settings.logins = await api('/logins');
+    const mine = await readLogins();
+    if (pv !== p || n !== accountOpens) { if (failed) throw failed; return; }
+    applyLogins(mine);
     // A login Microsoft no longer renews shows as expired, with Sign in again, in place of the error; others leave the box as it was.
-    if (failed && !pv.settings.logins.find(l => l.id === id)?.expired) throw failed;
+    if (failed && !p.settings.logins.find(l => l.id === id)?.expired) throw failed;
     renderPv();
   }
   if (act === 'unoffer') {
+    const p = pv, n = accountOpens;
     await api(`/logins/${enc(el.dataset.login)}/offers/${enc(el.dataset.id)}`, { method: 'DELETE' });
-    pv.settings.logins = await api('/logins');
+    const mine = await readLogins();
+    if (pv !== p || n !== accountOpens) return;
+    applyLogins(mine);
     renderPv();
   }
   if (act === 'web-signin' || act === 'vpn-signin' && me.can.includes('vpn')) {
@@ -1938,6 +1971,7 @@ async function onAct(act, el) {
       await api(`/signins/${r.id}`, { method: 'DELETE' });
       return;
     }
+    if (before?.back && before.settings?.kind === 'logins') before.back.settings.logins = before.settings.logins;
     const p = pv = { title: `Sign in to ${vpn ? `${el.dataset.id} VPN` : el.dataset.name}`, signin: r.id, expires: r.expires, vpn, back: before?.back, website: before?.website, workspace: before?.workspace, shown: before?.shown ?? [] };
     renderPv();
     while (pv === p && p.signin) {
@@ -1988,9 +2022,14 @@ async function onAct(act, el) {
     else if (pv.settings.kind === 'logins') await openLogins();
     else renderPv();
   }
-  if (act === 'site-remove' && await ask({ title: `Remove ${el.dataset.id}?`, text: 'Your login to it and your grants for it go too.', ok: 'Remove', kind: 'danger',
-    act: () => api(`/logins/sites/${enc(el.dataset.id)}`, { method: 'DELETE' }) })) {
-    [pv.settings.logins, pv.settings.sites, pv.settings.grants] = await Promise.all([api('/logins'), api('/logins/sites'), api('/grants')]);
+  if (act === 'site-remove') {
+    const p = pv, n = accountOpens;
+    if (!await ask({ title: `Remove ${el.dataset.id}?`, text: 'Your login to it and your grants for it go too.', ok: 'Remove', kind: 'danger',
+      act: () => api(`/logins/sites/${enc(el.dataset.id)}`, { method: 'DELETE' }) })) return;
+    const [mine, sites, grants] = await Promise.all([readLogins(), api('/logins/sites'), api('/grants')]);
+    if (pv !== p || n !== accountOpens) return;
+    applyLogins(mine);
+    Object.assign(p.settings, { sites, grants });
     renderPv();
   }
   if (act === 'host-remove' && await ask({ title: `Remove ${el.dataset.host}?`, text: `${el.dataset.site}'s runs no longer reach it, and the server's check won't let them again. Only an admin can allow it again.`, ok: 'Remove', kind: 'danger',
@@ -2030,16 +2069,19 @@ async function onAct(act, el) {
     renderPv();
   }
   if (act === 'service-connect') {
+    const p = pv, n = accountOpens;
     await api(`/logins/${enc(el.dataset.id)}/connect`, { method: 'POST' });
-    return openLogins();
+    if (pv === p && n === accountOpens) return openLogins();
   }
   if (act === 'signout-login') {
+    const p = pv, n = accountOpens;
     await api(`/logins/${enc(el.dataset.id)}`, { method: 'DELETE' });
-    await refresh();
-    if (pv?.settings?.kind === 'logins') {
-      pv.settings.logins = await api('/logins');
+    const mine = await readLogins();
+    if (pv === p && n === accountOpens) {
+      applyLogins(mine);
       renderPv();
     }
+    await refresh();
   }
   if (act === 'new-workspace') {
     const made = await ask({ title: 'New workspace', text: 'Such as a client. You become its owner.', value: '', placeholder: 'Name', ok: 'Make workspace', act: name => api('/api/workspaces', { method: 'POST', body: JSON.stringify({ name }) }) });

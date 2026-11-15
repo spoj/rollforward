@@ -32,7 +32,7 @@ const grant = {
 async function open(role: string, grants: object[] = []) {
   const page = await browser.newPage(), requests: { path: string; method: string; body: unknown }[] = [];
   const workspace = { id: 'w1', name: 'Finance', manage: true, owners: [person], members: [], archived: false, mine: true,
-    series: [] as object[], grants, reads: [], readers: [], moved: [], agents: '' };
+    series: [] as object[], grants: grants.filter(g => ['pending', 'approved'].includes((g as { state: string }).state)), reads: [], readers: [], moved: [], agents: '' };
   const responses: Record<string, unknown> = {
     '/me': { email: person, name: 'Bob', role, can: ['keepalive', 'series-owner'], browsers: true, brand: {}, names: { [person]: 'Bob' } },
     '/api': [workspace], '/connections': [], '/grants': grants,
@@ -55,7 +55,7 @@ async function open(role: string, grants: object[] = []) {
   return { page, requests, workspace, responses };
 }
 
-async function openWebsiteTicks() {
+async function openWebsiteTicks(conversation = false) {
   const rows = ['pending', 'denied', 'revoked', 'lapsed', 'approved', 'expired'].map(site => ({ ...grant, id: site, site,
     state: site === 'expired' ? 'approved' : site, at: new Date().toISOString(), profile: { error: 'Check unavailable' } }));
   rows.push({ ...rows[0], id: 'someone-else', site: 'missing', state: 'approved', person: 'alice@demo.test' });
@@ -66,14 +66,25 @@ async function openWebsiteTicks() {
     { id: 'drop', name: 'Service', kind: 'service', since: '', expired: false, missing: [], offers: [{ id: 'drop:AP/', name: 'AP/' }] });
   responses['/logins'] = logins;
   responses['/logins/sites'] = Object.fromEntries(sites.map(site => [site, { url: `https://${site}.test/`, hosts: [], profile: { error: 'Check unavailable' } }]));
-  const series = { id: 's1', name: 'Ledger', instances: [], wakes: [], requests: [], owner: person, epoch: 1, since: '2026-11-15T10:00:00Z', consent: { by: person, at: '2026-11-15T10:00:00Z', workspace: 'w1', logins: [] as string[], autonomous: false }, archived: false };
+  const series = { id: 's1', name: 'Ledger', instances: [] as object[], wakes: [], requests: [], owner: person, epoch: 1, since: '2026-11-15T10:00:00Z', consent: { by: person, at: '2026-11-15T10:00:00Z', workspace: 'w1', logins: [] as string[], autonomous: false }, archived: false };
   workspace.series.push(series);
   responses['/api'] = [{ ...workspace, id: 'w2', name: 'Other workspace', series: [], grants: [{ ...grant, site: 'missing', workspace: 'w2', state: 'approved' }] }, workspace];
   responses['/api/series/s1'] = {};
   responses['/api/series/s1/credentials'] = 'ok';
   responses['/api/series'] = { instance: 's1' };
-  await page.evaluate(async () => { await refresh(); location.hash = '#/s1'; });
-  await page.waitForFunction(() => cur.s?.id === 's1');
+  if (conversation) {
+    series.instances.push({ id: 'i1', label: 'First prompt', status: 'open', asks: [], refused: [], owner: person, wakes: [] });
+    responses['/api/instances/i1'] = { doc: { status: 'open', items: [] },
+      log: [{ seq: 1, at: new Date().toISOString(), by: person, op: 'create' }],
+      owner: { by: person, epoch: 1, since: series.since, consent: series.consent, logins: [], ticked: [] },
+      waiting: [], standing: {}, starts: true, sums: {}, run: null, queued: false, previous: null };
+  }
+  await page.evaluate(async conversation => { await refresh(); location.hash = conversation ? '#/i1' : '#/s1'; }, conversation);
+  await page.waitForFunction(conversation => cur.s?.id === 's1' && (!conversation || cur.i?.id === 'i1'), conversation);
+  if (conversation) {
+    await page.evaluate(() => { ui.open = true; renderLog(); });
+    await page.waitForSelector('#newcomment');
+  }
   return { ...state, series, sites };
 }
 
@@ -516,7 +527,7 @@ test('website ticks require this person’s approved workspace grant, never a su
       const tick = page.locator(`#pv input.tick[value="web:${site}"]`);
       assert.equal(await tick.isDisabled(), site !== 'approved', site);
       assert.equal(await tick.isChecked(), site === 'approved', 'stale selection: ' + site);
-      if (site !== 'approved') assert.match(await tick.locator('xpath=../..').innerText(), new RegExp(site === 'expired' ? 'expired' : 'grant ' + (site === 'missing' ? 'required' : site)));
+      if (site !== 'approved') assert.match(await tick.locator('xpath=../..').innerText(), new RegExp(site === 'expired' ? 'expired' : 'grant ' + (site === 'pending' ? 'pending' : 'required')));
     }
     assert.equal(await page.locator('#pv [data-act=grant-ask], #pv input[placeholder*="use it for"]').count(), 0);
     assert.match(await page.locator('#pv .tickrow:has(input[value="web:pending"]) .about').textContent(), /You asked .+; it waits on Finance's owners, you/);
@@ -681,6 +692,560 @@ test('a new task ignores remembered ticks and explicitly consents to an empty se
     assert.deepEqual(requests.find(r => r.path === '/api/series' && r.method === 'POST')!.body,
       { workspace: 'w1', single: true, logins: [], autonomous: false });
   } finally { await page.close(); }
+});
+
+for (const backToLogins of [false, true]) for (const dismiss of ['Close', 'Escape', 'backdrop']) test(`website setup retains its draft and workspace through Tokens${backToLogins ? ' and Logins' : ''}, then ${dismiss}`, async () => {
+  const { page, responses } = await openWebsiteTicks();
+  responses['/tokens'] = [];
+  try {
+    await page.evaluate(() => onAct('new-task', document.createElement('button')));
+    await page.check('#autonomous');
+    await page.check('#pv input.tick[value="drop:AP/"]');
+    await page.check('#pv input.tick[value="web:approved"]');
+    const row = page.locator('#pv .tickrow:has(input[value="web:missing"])');
+    await row.locator('[data-act=info]').click();
+    await row.locator('[data-act=website-setup]').click();
+    await page.waitForSelector('#pv details[data-shown="web:missing"][open]');
+    await page.click('#pv .pvtabs [data-act=tokens]');
+    await page.waitForSelector('#tname');
+    if (backToLogins) {
+      await page.click('#pv .pvtabs [data-act=logins]');
+      await page.waitForSelector('#pv .lline');
+      assert.equal(await page.locator('#pv details[data-shown="web:missing"][open]').count(), 1);
+      assert.equal(await page.locator('#pv .row2:has([data-act=grant-ask][data-id=missing]) select').inputValue(), 'w1');
+    }
+    if (dismiss === 'Close') await page.click('#pv [data-act=unpv]');
+    if (dismiss === 'Escape') await page.keyboard.press('Escape');
+    if (dismiss === 'backdrop') await page.mouse.click(5, 5);
+    await page.waitForFunction(() => pv?.settings?.kind !== 'tokens' && pv?.settings?.kind !== 'logins');
+    assert.equal(await page.locator('#pv').isVisible(), true, 'closing account settings must return to the draft');
+    assert.equal(await page.isChecked('#autonomous'), true);
+    assert.equal(await page.isChecked('#pv input.tick[value="drop:AP/"]'), true);
+    assert.equal(await page.isChecked('#pv input.tick[value="web:approved"]'), true);
+  } finally { await page.close(); }
+});
+
+test('website setup keeps context and fresh logins through token changes, key Save and website Save', async () => {
+  const { page, responses, requests } = await openWebsiteTicks();
+  let tokens: object[] = [];
+  try {
+    await page.route('**/tokens', r => {
+      if (r.request().method() === 'POST') {
+        tokens = [{ id: 't1', name: 'Local fixture', created: new Date().toISOString(), expires: new Date(Date.now() + 86_400_000).toISOString() }];
+        return r.fulfill({ json: { token: 'fixture-token' } });
+      }
+      return r.fulfill({ json: tokens });
+    });
+    await page.route('**/tokens/t1', r => { tokens = []; return r.fulfill({ body: 'ok' }); });
+    await page.route('**/logins/openrouter', r => r.fulfill({ body: 'ok' }));
+    await page.route('**/logins/web/expired', r => r.fulfill({ json: { id: 'renew', expires: new Date(Date.now() + 600_000).toISOString() } }));
+    await page.route('**/signins/renew', r => {
+      requests.push({ path: '/signins/renew', method: r.request().method(), body: r.request().postData() && r.request().postDataJSON() });
+      (responses['/logins'] as { id: string; expired: boolean }[]).find(l => l.id === 'web:expired')!.expired = false;
+      return r.fulfill({ body: 'ok' });
+    });
+    await page.evaluate(() => onAct('new-task', document.createElement('button')));
+    await page.check('#autonomous');
+    await page.check('#pv input.tick[value="drop:AP/"]');
+    const row = page.locator('#pv .tickrow:has(input[value="web:expired"])');
+    await row.locator('[data-act=info]').click();
+    await row.locator('[data-act=website-setup]').click();
+    await page.waitForSelector('#pv details[data-shown="web:expired"][open]');
+    await page.click('#pv .pvtabs [data-act=tokens]');
+    await page.fill('#tname', 'Local fixture');
+    await page.click('#pv [data-act=new-token]');
+    await page.waitForSelector('#pv [data-act=revoke-token]');
+    await page.click('#pv [data-act=revoke-token]');
+    await page.waitForSelector('#pv [data-act=revoke-token]', { state: 'detached' });
+    await page.click('#pv .pvtabs [data-act=logins]');
+    await page.waitForSelector('#pv .lline');
+    assert.equal(await page.locator('#pv details[data-shown="web:expired"][open]').count(), 1);
+    await page.click('#pv [data-act=logins-show][data-id=key]');
+    await page.fill('#orkey', 'local-fixture-only');
+    await page.click('#pv [data-act=orkey-save]');
+    await page.waitForFunction(() => document.querySelector('#pv .saved').textContent === 'Saved');
+    await page.click('#pv details[data-shown="web:expired"] [data-act=web-signin]');
+    await page.click('#pv [data-act=signin-save]');
+    await page.waitForSelector('#pv details[data-shown="web:expired"][open]');
+    await page.click('#pv .pvtabs [data-act=tokens]');
+    await page.waitForSelector('#tname');
+    await page.click('#pv [data-act=unpv]');
+    assert.equal(await page.isChecked('#autonomous'), true);
+    assert.equal(await page.isChecked('#pv input.tick[value="drop:AP/"]'), true);
+    assert.equal(await row.locator('input').isEnabled(), true, 'fresh saved logins survive closing from Tokens');
+    assert.equal(requests.filter(r => r.path === '/signins/renew' && r.method === 'POST').length, 1);
+    assert.equal(requests.filter(r => r.path === '/signins/renew' && r.method === 'DELETE').length, 0);
+  } finally { await page.close(); }
+});
+
+test('an account load from the conversation cannot follow navigation when both dialogs are null', async () => {
+  const { page, responses } = await openWebsiteTicks(true);
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  try {
+    await page.route('**/logins/sites', async route => {
+      started.resolve();
+      await release.promise;
+      await route.fulfill({ json: responses['/logins/sites'] });
+    }, { times: 1 });
+    const opening = page.evaluate(() => openLogins());
+    await started.promise;
+    await page.evaluate(() => { location.hash = '#/w2'; });
+    await page.waitForFunction(() => cur.w.id === 'w2' && pv === null);
+    release.resolve();
+    await opening;
+    assert.equal(await page.locator('#pv').isVisible(), false, 'the old workspace must not open over the new one');
+    assert.equal(await page.evaluate(() => pv), null);
+  } finally { release.resolve(); await page.close(); }
+});
+
+test('an older website setup load cannot overwrite an edited draft after a faster setup returns the same object', async () => {
+  const { page, responses } = await openWebsiteTicks();
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  try {
+    await page.evaluate(() => onAct('new-task', document.createElement('button')));
+    await page.check('#autonomous');
+    await page.check('#pv input.tick[value="drop:AP/"]');
+    await page.locator('#pv .tickrow:has(input[value="web:missing"]) [data-act=info]').click();
+    await page.route('**/logins/sites', async route => {
+      started.resolve();
+      await release.promise;
+      await route.fulfill({ json: responses['/logins/sites'] });
+    }, { times: 1 });
+    await page.evaluate(() => { window.setupDraft = pv; });
+    const opening = page.evaluate(() => onAct('website-setup', document.querySelector('#pv [data-act=website-setup][data-id=missing]')));
+    await started.promise;
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#pv').isVisible(), true, 'Escape dismisses only the popover');
+    await page.locator('#pv .tickrow:has(input[value="web:denied"]) [data-act=info]').click();
+    await page.locator('#pv [data-act=website-setup][data-id=denied]').click();
+    await page.waitForSelector('#pv details[data-shown="web:denied"][open]');
+    await page.click('#pv [data-act=unpv]');
+    assert.equal(await page.evaluate(() => pv === window.setupDraft), true);
+    await page.uncheck('#autonomous');
+    await page.uncheck('#pv input.tick[value="drop:AP/"]');
+    release.resolve();
+    await opening;
+    assert.equal(await page.locator('#pv .pvh b').textContent(), 'New task: series credentials');
+    assert.equal(await page.isChecked('#autonomous'), false);
+    assert.equal(await page.isChecked('#pv input.tick[value="drop:AP/"]'), false);
+  } finally { release.resolve(); await page.close(); }
+});
+
+test('an account load from the conversation survives a same-navigation refresh', async () => {
+  const { page, responses } = await openWebsiteTicks(true);
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  try {
+    await page.fill('#newcomment', 'Keep this prompt');
+    await page.route('**/logins/sites', async route => {
+      started.resolve();
+      await release.promise;
+      await route.fulfill({ json: responses['/logins/sites'] });
+    }, { times: 1 });
+    const opening = page.evaluate(() => openLogins());
+    await started.promise;
+    await page.evaluate(() => refresh());
+    release.resolve();
+    await opening;
+    assert.equal(await page.textContent('#pv .pvh b'), 'Logins');
+    assert.equal(await page.locator('#pv .lline').count() > 0, true);
+    await page.click('#pv [data-act=unpv]');
+    assert.equal(await page.inputValue('#newcomment'), 'Keep this prompt');
+  } finally { release.resolve(); await page.close(); }
+});
+
+for (const closeEarly of [false, true]) test(`renewing a series-ceiling login stays fresh after an older refresh, closing ${closeEarly ? 'before' : 'after'} it lands`, async () => {
+  const { page, responses } = await openWebsiteTicks(true);
+  const saved = Promise.withResolvers<void>(), saveRelease = Promise.withResolvers<void>();
+  const refreshing = Promise.withResolvers<void>(), refreshRelease = Promise.withResolvers<void>();
+  try {
+    await page.fill('#newcomment', 'Renew then pull the ledger');
+    await page.locator('#newfiles').setInputFiles({ name: 'ledger.txt', mimeType: 'text/plain', buffer: Buffer.from('ledger') });
+    await page.evaluate(() => { window.promptNode = document.querySelector('#newcomment'); window.filesNode = document.querySelector('#newfiles'); window.promptDraft = draft; });
+    await page.evaluate(() => openSeriesSettings());
+    await page.check('#autonomous');
+    await page.check('#pv input.tick[value="drop:AP/"]');
+    const row = page.locator('#pv .tickrow:has(input[value="web:expired"])');
+    await row.locator('[data-act=info]').click();
+    await row.locator('[data-act=website-setup]').click();
+    await page.waitForSelector('#pv details[data-shown="web:expired"][open]');
+    await page.route('**/logins/web/expired', r => r.fulfill({ json: { id: 'renew', expires: new Date(Date.now() + 600_000).toISOString() } }));
+    await page.route('**/signins/renew', async r => {
+      saved.resolve();
+      await saveRelease.promise;
+      (responses['/logins'] as { id: string; expired: boolean }[]).find(l => l.id === 'web:expired')!.expired = false;
+      await r.fulfill({ body: 'ok' });
+    });
+    await page.route('**/api/instances/i1', async r => {
+      refreshing.resolve();
+      await refreshRelease.promise;
+      await r.fulfill({ json: responses['/api/instances/i1'] });
+    }, { times: 1 });
+    await page.click('#pv details[data-shown="web:expired"] [data-act=web-signin]');
+    await page.click('#pv [data-act=signin-save]');
+    await saved.promise;
+    await page.evaluate(() => { window.renewalRefresh = refresh(); });
+    await refreshing.promise;
+    saveRelease.resolve();
+    await page.waitForSelector('#pv details[data-shown="web:expired"][open]');
+    if (closeEarly) await page.click('#pv [data-act=unpv]');
+    assert.equal(await page.evaluate(() => pv.settings.logins.find(l => l.id === 'web:expired').expired), false, 'fresh login data must not wait for fetchInstance/SSE');
+    assert.equal(await page.evaluate(() => (pv.back?.on ?? pv.on).includes('web:expired')), false, 'renewing does not grant a new selection');
+    assert.equal(await page.evaluate(() => myLogins.find(l => l.id === 'web:expired').expired), false);
+    assert.equal(await page.evaluate(() => expired.some(l => l.id === 'web:expired')), false);
+    assert.equal(await page.inputValue('#newcomment'), 'Renew then pull the ledger');
+    assert.deepEqual(await page.locator('#newfiles').evaluate(el => [...el.files].map(f => f.name)), ['ledger.txt']);
+    assert.equal(await page.evaluate(() => window.promptNode === document.querySelector('#newcomment') && window.filesNode === document.querySelector('#newfiles') && window.promptDraft === draft), true);
+    refreshRelease.resolve();
+    await page.evaluate(() => window.renewalRefresh);
+    assert.equal(await page.evaluate(() => pv.settings.logins.find(l => l.id === 'web:expired').expired), false);
+    assert.equal(await page.evaluate(() => myLogins.find(l => l.id === 'web:expired').expired), false);
+    assert.equal(await page.evaluate(() => expired.some(l => l.id === 'web:expired')), false);
+    assert.equal(await page.evaluate(() => window.promptNode === document.querySelector('#newcomment') && window.filesNode === document.querySelector('#newfiles') && window.promptDraft === draft), true);
+    if (!closeEarly) {
+      assert.equal(await page.evaluate(() => pv.settings.logins.find(l => l.id === 'web:expired').expired), false);
+      await page.click('#pv [data-act=unpv]');
+    }
+    assert.equal(await row.locator('input').isEnabled(), true);
+    assert.equal(await row.locator('input').isChecked(), false);
+    assert.equal(await page.isChecked('#autonomous'), true);
+    assert.equal(await page.isChecked('#pv input.tick[value="drop:AP/"]'), true);
+  } finally { saveRelease.resolve(); refreshRelease.resolve(); await page.close(); }
+});
+
+for (const seriesConsent of [false, true]) test(`removing a website during setup loading leaves the ${seriesConsent ? 'series consent' : 'task consent'} in place without an error`, async () => {
+  const { page, responses } = await openWebsiteTicks(seriesConsent);
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), errors: string[] = [];
+  page.on('pageerror', e => errors.push(e.message));
+  try {
+    if (seriesConsent) {
+      await page.fill('#newcomment', 'Keep this first prompt');
+      await page.evaluate(() => openSeriesSettings());
+      await page.check('#autonomous');
+      await page.check('#pv input.tick[value="drop:AP/"]');
+    } else {
+      await page.evaluate(() => onAct('new-task', document.createElement('button')));
+      await page.check('#autonomous');
+      await page.check('#pv input.tick[value="drop:AP/"]');
+    }
+    await page.evaluate(() => { window.beforeSetup = pv; });
+    await page.route('**/logins/sites', async route => {
+      started.resolve();
+      await release.promise;
+      const sites = { ...responses['/logins/sites'] as object };
+      delete sites.missing;
+      await route.fulfill({ json: sites });
+    }, { times: 1 });
+    const opening = page.evaluate(() => onAct('website-setup', document.querySelector('#pv [data-act=website-setup][data-id=missing]')));
+    await started.promise;
+    release.resolve();
+    await opening;
+    assert.equal(await page.evaluate(() => pv === window.beforeSetup), true, 'a removed target must not open a stale account dialog');
+    assert.equal(await page.locator('#pv .lline').count(), 0);
+    if (seriesConsent) {
+      assert.equal(await page.locator('#pv [data-act=series-credentials]').count(), 1);
+      assert.equal(await page.isChecked('#autonomous'), true);
+      assert.equal(await page.isChecked('#pv input.tick[value="drop:AP/"]'), true);
+      assert.equal(await page.inputValue('#newcomment'), 'Keep this first prompt');
+    } else {
+      assert.equal(await page.isChecked('#autonomous'), true);
+      assert.equal(await page.isChecked('#pv input.tick[value="drop:AP/"]'), true);
+    }
+    assert.deepEqual(errors, []);
+    assert.equal(await page.locator('#toasts .toast').count(), 0);
+  } finally { release.resolve(); await page.close(); }
+});
+
+for (const overlap of ['none', 'Logins', 'Tokens']) test(`post-Save Logins remains current despite ${overlap} overlap`, async () => {
+  const { page, responses } = await openWebsiteTicks();
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  try {
+    responses['/tokens'] = [];
+    await page.evaluate(() => onAct('new-task', document.createElement('button')));
+    await page.check('#autonomous');
+    await page.evaluate(() => onAct('website-setup', document.querySelector('#pv [data-act=website-setup][data-id=expired]')));
+    await page.route('**/logins/web/expired', r => r.fulfill({ json: { id: 'renew', expires: new Date(Date.now() + 600_000).toISOString() } }));
+    await page.route('**/signins/renew', r => {
+      (responses['/logins'] as { id: string; expired: boolean }[]).find(l => l.id === 'web:expired')!.expired = false;
+      return r.fulfill({ body: 'ok' });
+    });
+    await page.click('#pv details[data-shown="web:expired"] [data-act=web-signin]');
+    await page.route('**/connections', async r => {
+      started.resolve();
+      await release.promise;
+      await r.fulfill({ json: [] });
+    }, { times: 1 });
+    await page.click('#pv [data-act=signin-save]');
+    await started.promise;
+    const before = await page.evaluate(() => accountOpens);
+    await page.evaluate(() => {
+      window.blockedReads = [];
+      const request = window.fetch;
+      window.fetch = (...args) => { window.blockedReads.push(args[0]); return request(...args); };
+    });
+    await page.evaluate(async overlap => {
+      if (overlap === 'Logins') await openLogins();
+      if (overlap === 'Tokens') await openTokens();
+    }, overlap);
+    assert.equal(await page.isDisabled('#pv [data-act=unpv]'), true);
+    assert.deepEqual(await page.evaluate(() => window.blockedReads), [], 'blocked opens cannot issue reads');
+    release.resolve();
+    await page.waitForFunction(() => !pv?.saving);
+    assert.equal(await page.textContent('#pv .pvh b'), 'Logins');
+    assert.equal(await page.evaluate(() => accountOpens), before, 'blocked opens cannot obsolete the active Save');
+    await page.click('#pv [data-act=unpv]');
+    assert.equal(await page.isChecked('#autonomous'), true);
+    assert.equal(await page.isEnabled('#pv input.tick[value="web:expired"]'), true);
+  } finally { release.resolve(); await page.close(); }
+});
+
+for (const action of ['new-token', 'revoke-token', 'orkey-save', 'service-connect', 'offer-add', 'unoffer', 'site-remove', 'signout-login']) for (const leave of ['Close', 'navigation', 'pending tab']) test(`${action} completion cannot undo ${leave}`, async () => {
+  const { page, responses } = await openWebsiteTicks();
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const tabStarted = Promise.withResolvers<void>(), tabRelease = Promise.withResolvers<void>();
+  const tokens = action.endsWith('token');
+  try {
+    responses['/tokens'] = [{ id: 'old', name: 'Laptop', created: new Date().toISOString(), expires: '2099-01-01' }];
+    responses['/connections'] = [{ name: 'incoming', type: 'service', login: { id: 'incoming', name: 'Incoming' } },
+      { name: 'graph', type: 'graph', login: { id: 'm365', name: 'Microsoft 365', scope: ['Mail.Read'] } }];
+    await page.evaluate(() => onAct('new-task', document.createElement('button')));
+    await page.check('#autonomous');
+    await page.check('#pv input.tick[value="drop:AP/"]');
+    await page.evaluate(() => onAct('website-setup', document.querySelector('#pv [data-act=website-setup][data-id=missing]')));
+    if (tokens) {
+      await page.click('#pv [data-act=tokens]');
+      await page.waitForSelector('#tname');
+    }
+    if (action === 'new-token') await page.fill('#tname', 'New laptop');
+    if (action === 'orkey-save') {
+      await page.click('#pv [data-act=logins-show][data-id=key]');
+      await page.fill('#orkey', 'fake-key');
+    }
+    if (action === 'offer-add' || action === 'unoffer') await page.click('#pv [data-act=logins-show][data-id=m365]');
+    if (action === 'offer-add') await page.fill('#offer-add-m365', 'https://files.test/ledger');
+    const path = {
+      'new-token': '/tokens', 'revoke-token': '/tokens/old', 'orkey-save': '/logins/openrouter', 'service-connect': '/logins/incoming/connect',
+      'offer-add': '/logins/m365/offers', unoffer: '/logins/m365/offers/m365%3Amail', 'site-remove': '/logins/sites/approved', 'signout-login': '/logins/web%3Aapproved',
+    }[action];
+    if (action === 'site-remove' && leave === 'Close') await page.route('**/logins', async r => {
+      started.resolve();
+      await release.promise;
+      await r.fulfill({ json: responses['/logins'] });
+    }, { times: 1 });
+    await page.route(`**${path}`, async r => {
+      if (action === 'site-remove' && leave === 'Close') return r.fulfill({ body: 'ok' });
+      started.resolve();
+      await release.promise;
+      if (action === 'new-token') await r.fulfill({ json: { token: 'fake-token' } });
+      else await r.fulfill({ body: 'ok' });
+    }, { times: 1 });
+    await page.evaluate(action => {
+      const id = { 'offer-add': 'm365', unoffer: 'm365:mail', 'site-remove': 'approved', 'signout-login': 'web:approved' }[action];
+      window.mutation = onAct(action, document.querySelector(`#pv [data-act="${action}"]${id ? `[data-id="${id}"]` : ''}`));
+    }, action);
+    if (action === 'site-remove') await page.click('#ask button[value=ok]');
+    await started.promise;
+    if (leave === 'Close') {
+      await page.click('#pv [data-act=unpv]');
+      assert.equal(await page.textContent('#pv .pvh b'), 'New task: series credentials');
+      await page.uncheck('#autonomous');
+      await page.uncheck('#pv input.tick[value="drop:AP/"]');
+    }
+    if (leave === 'navigation') {
+      await page.evaluate(() => { location.hash = '#/w2'; });
+      await page.waitForFunction(() => cur.w.id === 'w2' && pv === null);
+    }
+    if (leave === 'pending tab') {
+      await page.route(tokens ? '**/connections' : '**/tokens', async r => {
+        tabStarted.resolve();
+        await tabRelease.promise;
+        await r.fulfill({ json: [] });
+      }, { times: 1 });
+      await page.evaluate(tokens => { window.newTab = tokens ? openLogins() : openTokens(); }, tokens);
+      await tabStarted.promise;
+    }
+    release.resolve();
+    await page.evaluate(() => window.mutation);
+    if (leave === 'Close') {
+      assert.equal(await page.textContent('#pv .pvh b'), 'New task: series credentials');
+      assert.equal(await page.isChecked('#autonomous'), false);
+      assert.equal(await page.isChecked('#pv input.tick[value="drop:AP/"]'), false);
+      assert.equal(await page.textContent('#pv .saved'), '');
+    }
+    if (leave === 'navigation') assert.equal(await page.evaluate(() => pv), null);
+    if (leave === 'pending tab') {
+      assert.equal(await page.textContent('#pv .pvh b'), tokens ? 'Tokens' : 'Logins', 'the mutation must not start a competing open');
+      tabRelease.resolve();
+      await page.evaluate(() => window.newTab);
+      assert.equal(await page.textContent('#pv .pvh b'), tokens ? 'Logins' : 'Tokens');
+      assert.equal(await page.evaluate(() => pv.back?.settings.kind), 'start');
+      await page.click('#pv [data-act=unpv]');
+      assert.equal(await page.isChecked('#autonomous'), true);
+      assert.equal(await page.isChecked('#pv input.tick[value="drop:AP/"]'), true);
+    }
+  } finally { release.resolve(); tabRelease.resolve(); await page.close(); }
+});
+
+for (const signout of [false, true]) for (const vpn of [false, true]) test(`fresh setup logins survive ${vpn ? 'VPN' : 'website'} Sign in and Cancel${signout ? ' after sign-out' : ''}`, async () => {
+  const { page, responses } = await openWebsiteTicks();
+  try {
+    if (vpn) {
+      (responses['/me'] as { can: string[] }).can.push('vpn');
+      responses['/vpns'] = [{ name: 'office', gateway: 'vpn.test', connected: false }];
+      await page.evaluate(() => refresh());
+    }
+    await page.evaluate(() => onAct('new-task', document.createElement('button')));
+    await page.check('#autonomous');
+    await page.check('#pv input.tick[value="web:approved"]');
+    (responses['/logins'] as { id: string; expired: boolean }[]).find(l => l.id === 'web:expired')!.expired = false;
+    await page.evaluate(() => onAct('website-setup', document.querySelector('#pv [data-act=website-setup][data-id=missing]')));
+    if (signout) {
+      await page.route('**/logins/web%3Aapproved', r => {
+        responses['/logins'] = (responses['/logins'] as { id: string }[]).filter(l => l.id !== 'web:approved');
+        return r.fulfill({ body: 'ok' });
+      });
+      await page.evaluate(() => onAct('signout-login', document.querySelector('#pv [data-act=signout-login][data-id="web:approved"]')));
+    }
+    await page.route(vpn ? '**/vpns/office/signins' : '**/logins/web/missing', r => r.fulfill({ json: { id: 'cancel', expires: new Date(Date.now() + 600_000).toISOString() } }));
+    await page.click(vpn ? '#pv [data-act=vpn-signin][data-id=office]' : '#pv details[data-shown="web:missing"] [data-act=web-signin]');
+    await page.waitForSelector('#pv [data-act=signin-save]');
+    await page.click('#pv [data-act=unpv]');
+    assert.equal(await page.isChecked('#autonomous'), true);
+    assert.equal(await page.isEnabled('#pv input.tick[value="web:expired"]'), true);
+    assert.equal(await page.locator('#pv input.tick[value="web:approved"]').count(), signout ? 0 : 1);
+    if (!signout) assert.equal(await page.isChecked('#pv input.tick[value="web:approved"]'), true);
+  } finally { await page.close(); }
+});
+
+for (const action of ['offer-add', 'unoffer', 'site-remove', 'signout-login']) test(`${action} applies its login reread globally and to series consent`, async () => {
+  const { page, responses } = await openWebsiteTicks(true);
+  const refreshing = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  try {
+    responses['/connections'] = [{ name: 'graph', type: 'graph', login: { id: 'm365', name: 'Microsoft 365', scope: ['Mail.Read'] } }];
+    await page.fill('#newcomment', 'Keep the global prompt');
+    await page.evaluate(() => { window.promptNode = document.querySelector('#newcomment'); });
+    await page.evaluate(() => openSeriesSettings());
+    await page.check('#autonomous');
+    await page.check('#pv input.tick[value="drop:AP/"]');
+    await page.evaluate(() => onAct('website-setup', document.querySelector('#pv [data-act=website-setup][data-id=missing]')));
+    await page.click('#pv [data-act=logins-show][data-id=m365]');
+    if (action === 'offer-add') await page.fill('#offer-add-m365', 'https://files.test/ledger');
+    const path = action === 'offer-add' ? '/logins/m365/offers' : action === 'unoffer' ? '/logins/m365/offers/m365%3Amail' : action === 'site-remove' ? '/logins/sites/approved' : '/logins/web%3Aapproved';
+    if (action === 'signout-login') await page.route('**/api/instances/i1', async r => {
+      refreshing.resolve();
+      await release.promise;
+      await r.fulfill({ json: responses['/api/instances/i1'] });
+    }, { times: 1 });
+    await page.route(`**${path}`, r => {
+      responses['/logins'] = (responses['/logins'] as { id: string; expired: boolean }[])
+        .filter(l => l.id !== 'web:approved').map(l => l.id === 'web:expired' ? { ...l, expired: false } : l);
+      if (action === 'site-remove') delete (responses['/logins/sites'] as Record<string, unknown>).approved;
+      return r.fulfill({ body: 'ok' });
+    });
+    await page.evaluate(action => {
+      const id = action === 'offer-add' ? 'm365' : action === 'unoffer' ? 'm365:mail' : action === 'site-remove' ? 'approved' : 'web:approved';
+      window.mutation = onAct(action, document.querySelector(`#pv [data-act="${action}"][data-id="${id}"]`));
+    }, action);
+    if (action === 'site-remove') await page.click('#ask button[value=ok]');
+    if (action === 'signout-login') await refreshing.promise;
+    else await page.evaluate(() => window.mutation);
+    assert.equal(await page.evaluate(() => myLogins.find(l => l.id === 'web:expired').expired), false);
+    assert.equal(await page.evaluate(() => expired.some(l => l.id === 'web:expired')), false);
+    assert.equal(await page.evaluate(() => pv.back.settings.logins.find(l => l.id === 'web:expired').expired), false);
+    assert.equal(await page.evaluate(() => pv.back.settings.logins.some(l => l.id === 'web:approved')), false);
+    release.resolve();
+    await page.evaluate(() => window.mutation);
+    await page.click('#pv [data-act=unpv]');
+    assert.equal(await page.isChecked('#autonomous'), true);
+    assert.equal(await page.isEnabled('#pv input.tick[value="web:expired"]'), true);
+    assert.equal(await page.locator('#pv input.tick[value="web:approved"]').count(), 0);
+    assert.equal(await page.isChecked('#pv input.tick[value="drop:AP/"]'), true);
+    assert.equal(await page.inputValue('#newcomment'), 'Keep the global prompt');
+    assert.equal(await page.evaluate(() => window.promptNode === document.querySelector('#newcomment')), true);
+  } finally { release.resolve(); await page.close(); }
+});
+
+test('a key Save finishing its refresh cannot label the restored credential draft Saved', async () => {
+  const { page, responses } = await openWebsiteTicks(true);
+  const refreshing = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  try {
+    await page.evaluate(() => onAct('new-task', document.createElement('button')));
+    await page.check('#autonomous');
+    await page.evaluate(() => onAct('website-setup', document.querySelector('#pv [data-act=website-setup][data-id=missing]')));
+    await page.route('**/logins/openrouter', r => r.fulfill({ body: 'ok' }));
+    await page.route('**/api/instances/i1', async r => {
+      refreshing.resolve();
+      await release.promise;
+      await r.fulfill({ json: responses['/api/instances/i1'] });
+    }, { times: 1 });
+    await page.evaluate(() => { window.keySave = saveKey(); });
+    await refreshing.promise;
+    await page.click('#pv [data-act=unpv]');
+    release.resolve();
+    await page.evaluate(() => window.keySave);
+    assert.equal(await page.isChecked('#autonomous'), true);
+    assert.equal(await page.textContent('#pv .saved'), '');
+  } finally { release.resolve(); await page.close(); }
+});
+
+test('a canceled newer login read does not prevent an earlier valid refresh from applying', async () => {
+  const { page, responses } = await openWebsiteTicks(true);
+  const refreshing = Promise.withResolvers<void>(), refreshRelease = Promise.withResolvers<void>();
+  const opening = Promise.withResolvers<void>(), openRelease = Promise.withResolvers<void>();
+  try {
+    (responses['/logins'] as { id: string; expired: boolean }[]).find(l => l.id === 'web:expired')!.expired = false;
+    await page.route('**/api/instances/i1', async r => {
+      refreshing.resolve();
+      await refreshRelease.promise;
+      await r.fulfill({ json: responses['/api/instances/i1'] });
+    }, { times: 1 });
+    await page.evaluate(() => { window.oldRefresh = refresh(); });
+    await refreshing.promise;
+    (responses['/logins'] as { id: string; expired: boolean }[]).find(l => l.id === 'web:expired')!.expired = true;
+    await page.route('**/connections', async r => {
+      opening.resolve();
+      await openRelease.promise;
+      await r.fulfill({ json: [] });
+    }, { times: 1 });
+    await page.evaluate(() => { window.canceledOpen = openLogins(); });
+    await opening.promise;
+    await page.evaluate(() => closePv());
+    refreshRelease.resolve();
+    await page.evaluate(() => window.oldRefresh);
+    assert.equal(await page.evaluate(() => myLogins.find(l => l.id === 'web:expired').expired), false);
+    openRelease.resolve();
+    await page.evaluate(() => window.canceledOpen);
+    assert.equal(await page.evaluate(() => pv), null);
+    assert.equal(await page.evaluate(() => myLogins.find(l => l.id === 'web:expired').expired), false);
+  } finally { refreshRelease.resolve(); openRelease.resolve(); await page.close(); }
+});
+
+for (const close of ['start-go', 'comment-cell']) test(`${close} cancels a null-origin account load`, async () => {
+  const { page, responses } = await openWebsiteTicks(close === 'comment-cell');
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  try {
+    await page.route('**/logins/sites', async r => {
+      started.resolve();
+      await release.promise;
+      await r.fulfill({ json: responses['/logins/sites'] });
+    }, { times: 1 });
+    await page.evaluate(() => { window.oldAccount = openLogins(); });
+    await started.promise;
+    if (close === 'start-go') {
+      await page.evaluate(() => onAct('new-task', document.createElement('button')));
+      await page.click('#pv [data-act=start-go]');
+      await page.waitForFunction(() => pv === null);
+    } else {
+      await page.evaluate(() => {
+        pv = { title: 'Ledger', path: 'working/ledger.xlsx', item: 'sheet', sheets: [{ name: 'Ledger', rows: [['Value']], truncated: false }], sheet: 0 };
+        renderPv();
+      });
+      await page.click('#pv td[data-ref="Ledger!A1"]');
+      await page.click('#pvn [data-act=comment-cell]');
+    }
+    release.resolve();
+    await page.evaluate(() => window.oldAccount);
+    assert.equal(await page.evaluate(() => pv), null);
+  } finally { release.resolve(); await page.close(); }
 });
 
 test('a request from Waiting is owner-only and starts without changing target series credentials from another workspace', async () => {
