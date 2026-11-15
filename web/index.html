@@ -1285,6 +1285,10 @@ async function openLogins(savedSignIn) {
     me.can.includes('vpn') ? api('/vpns').then(rows => ({ rows }), e => ({ error: e.message })) : null]);
   if (n !== accountOpens || pv !== before || pv?.saving && pv !== savedSignIn) return;
   pv = { title: 'Logins', shown: pv?.shown ?? [], back: pv?.back, website: pv?.website, workspace: pv?.workspace, settings: { kind: 'logins', logins, connections, grants, sites, vpn } };
+  myLogins = logins;
+  expired = logins.filter(l => l.expired);
+  if (pv.back) pv.back.settings.logins = logins;
+  renderLog();
   renderPv();
   return pv;
 }

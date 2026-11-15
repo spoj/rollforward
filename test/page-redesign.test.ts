@@ -695,6 +695,51 @@ test('a first-comment website setup load survives a same-navigation refresh', as
   } finally { release.resolve(); await page.close(); }
 });
 
+test('renewing a first-comment login updates ticks and expiry before an instance refresh finishes without replacing prompt or files', async () => {
+  const { page, responses } = await openWebsiteTicks(true);
+  const saved = Promise.withResolvers<void>(), saveRelease = Promise.withResolvers<void>();
+  const refreshing = Promise.withResolvers<void>(), refreshRelease = Promise.withResolvers<void>();
+  try {
+    await page.fill('#newcomment', 'Renew then pull the ledger');
+    await page.locator('#newfiles').setInputFiles({ name: 'ledger.txt', mimeType: 'text/plain', buffer: Buffer.from('ledger') });
+    await page.evaluate(() => { window.promptNode = document.querySelector('#newcomment'); window.filesNode = document.querySelector('#newfiles'); window.promptDraft = draft; });
+    const row = page.locator('#log .tickrow:has(input[value="web:expired"])');
+    await row.locator('[data-act=info]').click();
+    await row.locator('[data-act=website-setup]').click();
+    await page.waitForSelector('#pv details[data-shown="web:expired"][open]');
+    await page.route('**/logins/web/expired', r => r.fulfill({ json: { id: 'renew', expires: new Date(Date.now() + 600_000).toISOString() } }));
+    await page.route('**/signins/renew', async r => {
+      (responses['/logins'] as { id: string; expired: boolean }[]).find(l => l.id === 'web:expired')!.expired = false;
+      saved.resolve();
+      await saveRelease.promise;
+      await r.fulfill({ body: 'ok' });
+    });
+    await page.route('**/api/instances/i1', async r => {
+      refreshing.resolve();
+      await refreshRelease.promise;
+      await r.fulfill({ json: responses['/api/instances/i1'] });
+    }, { times: 1 });
+    await page.click('#pv details[data-shown="web:expired"] [data-act=web-signin]');
+    await page.click('#pv [data-act=signin-save]');
+    await saved.promise;
+    await page.evaluate(() => { window.renewalRefresh = refresh(); });
+    await refreshing.promise;
+    saveRelease.resolve();
+    await page.waitForSelector('#pv details[data-shown="web:expired"][open]');
+    await page.click('#pv [data-act=unpv]');
+    assert.equal(await row.locator('input').isEnabled(), true, 'fresh login data must not wait for fetchInstance/SSE');
+    assert.equal(await row.locator('input').isChecked(), false, 'renewing does not grant a new selection');
+    assert.equal(await page.evaluate(() => myLogins.find(l => l.id === 'web:expired').expired), false);
+    assert.equal(await page.evaluate(() => expired.some(l => l.id === 'web:expired')), false);
+    assert.equal(await page.inputValue('#newcomment'), 'Renew then pull the ledger');
+    assert.deepEqual(await page.locator('#newfiles').evaluate(el => [...el.files].map(f => f.name)), ['ledger.txt']);
+    assert.equal(await page.evaluate(() => window.promptNode === document.querySelector('#newcomment') && window.filesNode === document.querySelector('#newfiles') && window.promptDraft === draft), true);
+    refreshRelease.resolve();
+    await page.evaluate(() => window.renewalRefresh);
+    assert.equal(await row.locator('input').isEnabled(), true);
+  } finally { saveRelease.resolve(); refreshRelease.resolve(); await page.close(); }
+});
+
 test('both series-share tick paths use the series workspace and filter disabled values from share payloads', async () => {
   const { page, requests, series } = await openWebsiteTicks();
   try {
