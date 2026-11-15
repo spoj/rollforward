@@ -10,7 +10,7 @@ import { logins, personDir, saveLogin, seal, secret } from './logins.ts';
 // for its person to sign in again on the Logins page.
 
 const tokens = new Map<string, { token: string; exp: number; since: string }>();
-const inFlight = new Map<string, Promise<string>>();
+const inFlight = new Map<string, { run: Promise<string>; waiters: Set<{ checkpoint?: () => void }> }>();
 
 // The login as it is now: its person may change its offers, or sign out, while Microsoft answers.
 const current = (email: string, id: string) => logins(email).find(l => l.id === id);
@@ -21,30 +21,41 @@ export function token(email: string, id: string, scope: string[], checkpoint?: (
   const key = `${id} ${email}`, t = tokens.get(key), login = current(email, id);
   if (t && t.exp > Date.now() && t.since === login?.since && !login.expired) return Promise.resolve(t.token);
   if (!login || login.expired) return Promise.reject(Object.assign(new HttpError(409, `${email} has no current ${login?.name ?? id} login: they sign in to it on the Logins page`), { login: id }));
-  const inflightKey = `${key}\0${login.since}\0${scope.join(' ')}`, pending = inFlight.get(inflightKey);
-  if (pending) return pending;
-  const run = (async () => {
-    try {
-      // Until its person consents to what the server asks for anew, a Microsoft 365 login renews with what Microsoft last granted it.
-      const sealed = secret(email, id), r = await renew(sealed, scope, checkpoint).catch(e => e.consent && login.scopes ? renew(sealed, login.scopes.map(s => `https://graph.microsoft.com/${s}`), checkpoint) : Promise.reject(e));
-      const now = current(email, id);
-      if (now?.since === login.since) {
-        saveLogin(email, { ...now, ...(id === 'm365' && r.scopes && { scopes: r.scopes }) }, r.refresh);
-        tokens.set(key, { token: r.access, exp: r.expires, since: login.since });
+  const inflightKey = `${key}\0${login.since}\0${scope.join(' ')}`;
+  let pending = inFlight.get(inflightKey);
+  const waiter = { checkpoint }, waiters = pending?.waiters ?? new Set<{ checkpoint?: () => void }>();
+  waiters.add(waiter);
+  if (!pending) {
+    const authorized = () => {
+      for (const w of waiters) {
+        try { w.checkpoint?.(); return; } catch { /* Another waiting caller may still authorize the renewal. */ }
       }
-      return r.access;
-    } catch (e) {
-      if ((e as HttpError).status !== 401) throw e;
-      const now = current(email, id);
-      if (now?.since === login.since) {
-        tokens.delete(key);
-        saveLogin(email, { ...now, expired: true });
+      // Never pass a caller's 401 into the shared provider-expiry handling.
+      throw new HttpError(409, 'no authorized caller waiting for login renewal');
+    };
+    const run = (async () => {
+      try {
+        // Until its person consents to what the server asks for anew, a Microsoft 365 login renews with what Microsoft last granted it.
+        const sealed = secret(email, id), r = await renew(sealed, scope, authorized).catch(e => e.consent && login.scopes ? renew(sealed, login.scopes.map(s => `https://graph.microsoft.com/${s}`), authorized) : Promise.reject(e));
+        const now = current(email, id);
+        if (now?.since === login.since) {
+          saveLogin(email, { ...now, ...(id === 'm365' && r.scopes && { scopes: r.scopes }) }, r.refresh);
+          tokens.set(key, { token: r.access, exp: r.expires, since: login.since });
+        }
+        return r.access;
+      } catch (e) {
+        if ((e as HttpError).status !== 401) throw e;
+        const now = current(email, id);
+        if (now?.since === login.since) {
+          tokens.delete(key);
+          saveLogin(email, { ...now, expired: true });
+        }
+        throw Object.assign(new HttpError(409, `${email}'s ${login.name} login has expired: they sign in to it again on the Logins page`), { login: id });
       }
-      throw Object.assign(new HttpError(409, `${email}'s ${login.name} login has expired: they sign in to it again on the Logins page`), { login: id });
-    }
-  })().finally(() => inFlight.delete(inflightKey));
-  inFlight.set(inflightKey, run);
-  return run;
+    })().finally(() => inFlight.delete(inflightKey));
+    inFlight.set(inflightKey, pending = { run, waiters });
+  }
+  return pending.run.finally(() => { waiters.delete(waiter); checkpoint?.(); });
 }
 
 // A person's sign-in to rollforward, kept as its refresh token, which signing in again replaces, waking what waited for it (waker.ts).
