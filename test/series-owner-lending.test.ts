@@ -97,7 +97,7 @@ function consent(ticks: string[], owner = ALICE, epoch = 1) {
 }
 function running(ticks = ['web:portal']) {
   consent(ticks);
-  const inst = createInstance('s', `instance-${session}-${Math.random()}`, BOB, []);
+  const inst = createInstance('s', `instance-${session}-${Math.random()}`, BOB);
   inst.append('server', 'run', { run: 1, runner: ALICE, initiator: ALICE, authority: authority(inst) });
   active = { inst, n: 1, runner: ALICE, links: new Map(), cost: 0 };
   return inst;

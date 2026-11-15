@@ -410,7 +410,7 @@ function renderBar() {
     h += `<div class="state">${state}</div>${wake}${del}`;
     const off = data.run ? 'disabled title="Available when the run ends"' : '', mine = data.owner.by === me.email;
     if (open) h += (mine ? `<button class="btn commit top" data-act="close" ${off}>Close</button>` : '')
-      + ((mine || cur.w.manage) && me.can.includes('series-owner') ? '<button class="btn top" data-act="series-owner">Transfer series…</button>' : '');
+      + ((mine || cur.w.manage) ? '<button class="btn top" data-act="series-owner">Transfer series…</button>' : '');
     else if (cur.s.single && !archived() && !gone()) h += '<button class="btn top" data-act="start-series">Start series</button>';
     if (cur.s.single && !gone()) h += '<button class="btn top" data-act="settings">Series settings</button>';
     // One control opens and closes the side panel, where it stays, with what waits there as its badge.
@@ -1001,7 +1001,7 @@ function grantHtml(g, cls = 'website', showCheckError = true) {
 function startsHtml(s) {
   const mine = s.owner === me.email;
   return `<div>Series owner: ${s.owner ? person(s.owner) : 'not selected'}. Only this person starts runs, across every instance. Collaborators leave information and sign off on content; they never start runs as the owner.</div>`
-    + ((mine || cur.w.manage) && me.can.includes('series-owner') ? '<div class="row2"><button class="btn" data-act="series-owner">Transfer whole series…</button></div>' : '')
+    + ((mine || cur.w.manage) ? '<div class="row2"><button class="btn" data-act="series-owner">Transfer whole series…</button></div>' : '')
     + (mine && me.can.includes('series-owner') ? `<h3>Series credential ceiling</h3><div class="sub">Every instance may use the selected credentials. New logins are never added automatically. Saving an empty selection explicitly allows work with no credentials. Removing authority stops existing runs and invalidates old schedules.</div>${ticksHtml(s.logins, pv.on ?? s.consent?.logins ?? [], cur.w)}<label><input type="checkbox" id="autonomous" ${(pv.autonomous ?? s.consent?.autonomous) ? 'checked' : ''}> Allow scheduled and autonomous runs</label><div class="consent">Save explicitly consents to this series-wide selection. Autonomous runs are opt-in; collaborators still cannot initiate execution.</div><button class="btn primary" data-act="series-credentials">Save series credentials</button>`
       : `<div class="sub">${s.consent ? `Selected ceiling: ${s.consent.logins.length} credentials; autonomous runs ${s.consent.autonomous ? 'allowed' : 'not allowed'}.` : 'No execution consent: the owner must explicitly select credentials, including none.'}</div>`);
 }

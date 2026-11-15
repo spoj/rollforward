@@ -427,6 +427,7 @@ test("a run starts only for a runner Microsoft still signs in: one it no longer 
   await go();
   const { users } = await import('../src/auth.ts');
   assert.deepEqual([runs(), users()[lee].disabled, seriesSettings(inst.series()).consent], [2, true, undefined], 'Microsoft account loss disables the owner and withdraws series consent');
+  assert.equal(inst.log.findLast(e => e.op === 'expired')?.left, true, 'departure remains attributed after its synchronous authority withdrawal');
   assert.ok(seriesSettings(inst.series()).epoch > beforeLoss, 'old authority cannot resume after sign-in');
 });
 

@@ -262,6 +262,20 @@ test('unresolved migrated series stay readable without inferring creator, newest
   assert.equal(settings('unowned').consent, undefined);
 });
 
+test('a non-pilot workspace manager can assign a pilot owner without lending execution consent', async () => {
+  const sid = await series('Manager assignment');
+  await ok('PUT', '/capabilities', { cap: 'series-owner', people: [alice, bob, colleague] });
+  try {
+    await ok('PUT', `/api/series/${sid}/owner`, { owner: bob });
+    assert.equal(settings(sid).owner, bob);
+    assert.equal(settings(sid).consent, undefined);
+    assert.equal((await request('PUT', `/api/series/${sid}/credentials`, { logins: [], autonomous: false })).status, 403);
+    assert.equal((await request('POST', '/api/series', { workspace: 'ws', name: 'Still no authoring' })).status, 403);
+  } finally {
+    await ok('PUT', '/capabilities', { cap: 'series-owner', people: [admin, alice, bob, colleague] });
+  }
+});
+
 test('membership safeguard includes empty owned series; force withdraws consent without replacement', async () => {
   const sid = await series('Empty ownership', bob);
   assert.equal((await request('PUT', '/api/workspaces/ws', { remove: bob })).status, 409);

@@ -15,7 +15,7 @@ const alex = { email: 'alex', name: 'Alex' };
 test('deleting during a close never restores the instance or writes a close over its tombstone', async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
   openStore(tmp);
-  const inst = createInstance('monthly', 'deleted', 'alex', []), gate = Promise.withResolvers<void>();
+  const inst = createInstance('monthly', 'deleted', 'alex'), gate = Promise.withResolvers<void>();
   const last = commit(inst.dir, alex, 'Last run', gate.promise), closing = inst.close(alex);
   const forgotten = forget(inst.dir);
   inst.markDeleted(alex.email, { cost: 0, runs: [] });
@@ -30,7 +30,7 @@ test('deleting during a close never restores the instance or writes a close over
 test('Close checks item files after the preceding run finishes stopping', async () => {
   const root = mkdtempSync(join(tmpdir(), 'rf-close-files-'));
   openStore(root);
-  const inst = createInstance('monthly', 'closing', 'alex', []), gate = Promise.withResolvers<void>();
+  const inst = createInstance('monthly', 'closing', 'alex'), gate = Promise.withResolvers<void>();
   const file = join(inst.dir, 'working', 'pack.csv');
   writeFileSync(file, 'approved output');
   inst.put(JSON.stringify({ ...inst.doc, items: [{ id: 'pack', name: 'Pack', kind: 'output', file: 'working/pack.csv' }] }), 1);
@@ -51,7 +51,7 @@ test("a name is a folder's and a line's: slashes, control characters and line br
   assert.throws(() => safeName('AGENTS.md'), /AGENTS\.md is the name of the agents' instructions/);
   const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
   openStore(tmp);
-  assert.throws(() => createInstance('s', '供应商对账单'.repeat(15), 'alex', []), /a name is 200 bytes at most/, "a label is a folder's in a run's view, which holds 255 bytes");
+  assert.throws(() => createInstance('s', '供应商对账单'.repeat(15), 'alex'), /a name is 200 bytes at most/, "a label is a folder's in a run's view, which holds 255 bytes");
   rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -68,7 +68,7 @@ test('openFile opens only what is under its base: a path that climbs with .., or
 test('an upload named attachments takes the next free name, leaving the folder for comment attachments', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
   openStore(tmp);
-  const inst = createInstance('weekly', 'w1', 'alex', []), incoming = join(tmp, 'incoming');
+  const inst = createInstance('weekly', 'w1', 'alex'), incoming = join(tmp, 'incoming');
   writeFileSync(incoming, 'first');
   const up = inst.upload('alex', 'attachments', incoming, 'hash', 'in', null, true);
   assert.equal(up.file, 'upload/attachments_2');
@@ -86,7 +86,7 @@ test('an upload named attachments takes the next free name, leaving the folder f
 test('a screen starts empty; a put takes steps and from, which must name items and not go round in a circle', async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-')), series = 'weekly';
   openStore(tmp);
-  const inst = createInstance(series, 'w1', 'alex', []);
+  const inst = createInstance(series, 'w1', 'alex');
   assert.deepEqual(inst.doc.items, []);
   writeFileSync(join(inst.dir, 'working', 'eligible.csv'), 'a\n');
   const put = (items: object[]) => inst.put(JSON.stringify({ rev: inst.doc.rev, status: 'open', items }), 1);
@@ -101,7 +101,7 @@ test('a screen starts empty; a put takes steps and from, which must name items a
 test("an output's destination is free text, logged as it changes", async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-')), series = 'monthly';
   openStore(tmp);
-  const inst = createInstance(series, 'm1', 'alex', []);
+  const inst = createInstance(series, 'm1', 'alex');
   const put = (items: object[]) => inst.put(JSON.stringify({ rev: inst.doc.rev, status: 'open', items }), 1);
   assert.throws(() => put([{ id: 'pack', name: 'Pack', kind: 'output', file: null, destination: 3 }]), /pack: destination must be a string/);
   put([{ id: 'pack', name: 'Pack', kind: 'output', file: null, destination: 'Mail to ap@demo.test' }]);
@@ -112,7 +112,7 @@ test("an output's destination is free text, logged as it changes", async () => {
 test("an ask from before questions and proposals waits on people until someone replies under it, the agent too, or approves or rejects it, as one from before replies named their parent did until any later word in its thread; closing accepts the ones still waiting", async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-')), sam = 'sam@example.com';
   openStore(tmp);
-  const inst = createInstance('weekly', 'w1', 'alex', []);
+  const inst = createInstance('weekly', 'w1', 'alex');
   const ask = (thread: string, more: object = {}) => inst.append('agent', 'comment', { thread, text: 'Which?', ask: true, ...more });
   ask('c2', { item: null, ref: null });
   ask('c3', { item: null, ref: null });
@@ -137,7 +137,7 @@ test("an ask from before questions and proposals waits on people until someone r
 test("a question waits until a person replies under it, a proposal until someone approves or rejects it, and either until the agent withdraws it", () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-')), sam = 'sam@example.com';
   openStore(tmp);
-  const inst = createInstance('weekly', 'w1', 'alex', []);
+  const inst = createInstance('weekly', 'w1', 'alex');
   const ask = (kind: string) => inst.append('agent', 'comment', { thread: `c${inst.log.length + 1}`, item: null, ref: null, text: 'Which?', ask: kind });
   const q1 = ask('question'), q2 = ask('question'), q3 = ask('question'), p1 = ask('proposal'), p2 = ask('proposal'), p3 = ask('proposal'), p4 = ask('proposal');
   inst.append('agent', 'comment', { thread: q1.thread, parent: q1.seq, text: 'Never mind.' });
@@ -153,7 +153,7 @@ test("a question waits until a person replies under it, a proposal until someone
 test("a file the screen shows stays the agent's to change, and closing takes it as it is", async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
   openStore(tmp);
-  const inst = createInstance('weekly', 'w1', 'alex', []), page = join(inst.dir, 'working', 'a1.md');
+  const inst = createInstance('weekly', 'w1', 'alex'), page = join(inst.dir, 'working', 'a1.md');
   writeFileSync(page, 'a1 is right\n');
   inst.put(JSON.stringify({ rev: inst.doc.rev, status: 'open', items: [{ id: 'a1', name: 'A1', kind: 'step', file: 'working/a1.md' }] }), 1);
   assert.deepEqual(inst.log.filter(e => e.op === 'point').map(e => [e.item, e.file, e.was]), [['a1', 'working/a1.md', null]]);
@@ -170,7 +170,7 @@ test("a file the screen shows stays the agent's to change, and closing takes it 
 test('a close whose commit succeeds but packing fails leaves the instance open, with no close entry, and can be retried', async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
   openStore(tmp);
-  const inst = createInstance('monthly', 'pack-fails', 'alex', []);
+  const inst = createInstance('monthly', 'pack-fails', 'alex');
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: inst.dir });
   const lock = join(inst.dir, '.git', 'gc.pid');
   writeFileSync(lock, `${process.pid} ${hostname()}`);
@@ -186,7 +186,7 @@ test('a close whose commit succeeds but packing fails leaves the instance open, 
 test("closing commits the folder in the runner's name, files and folders a run made unreadable made readable again; a commit that fails leaves it open", async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
   openStore(tmp);
-  const inst = createInstance('monthly', 'm1', 'alex', []), locked = join(inst.dir, 'working', 'locked.csv'), shut = join(inst.dir, 'working', 'shut');
+  const inst = createInstance('monthly', 'm1', 'alex'), locked = join(inst.dir, 'working', 'locked.csv'), shut = join(inst.dir, 'working', 'shut');
   writeFileSync(locked, 'x\n');
   mkdirSync(shut);
   writeFileSync(join(shut, 'in.csv'), 'y\n');
@@ -212,7 +212,7 @@ const cutShort = (script: string) => execFileSync('bash', ['-c', `trap '' XFSZ; 
 test("an append a full disk cuts short is taken back, and a torn last line a kill left is dropped as the log is read, said in the server's log: the instance still loads", t => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
   openStore(tmp);
-  const id = createInstance('monthly', 'torn', 'alex', []).id, log = join(tmp, 'instances', id, 'log.jsonl');
+  const id = createInstance('monthly', 'torn', 'alex').id, log = join(tmp, 'instances', id, 'log.jsonl');
   const [kept, code] = cutShort(`
     import { instance, openStore } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, '..', 'src', 'store.ts')).href)};
     openStore(${JSON.stringify(tmp)});
@@ -251,7 +251,7 @@ test("a series' notes and the system's log drop a torn last line as they're read
 test('a read-only temporary file a write cut short left stops no later save', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
   openStore(tmp);
-  const inst = createInstance('monthly', 'left', 'alex', []);
+  const inst = createInstance('monthly', 'left', 'alex');
   writeFileSync(join(inst.dir, 'screen.json.tmp'), '{"rev"', { mode: 0o444 });
   inst.save();
   assert.equal(JSON.parse(readFileSync(join(inst.dir, 'screen.json'), 'utf8')).rev, inst.doc.rev);
@@ -261,7 +261,7 @@ test('a read-only temporary file a write cut short left stops no later save', ()
 test("a file whose name passes the 255 bytes a name holds, as an Outlook mail saved under a long subject, is kept under its stem cut short", () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
   openStore(tmp);
-  const inst = createInstance('monthly', 'long', 'alex', []), incoming = join(tmp, 'incoming'), name = `${'发票'.repeat(45)}.xlsx`;
+  const inst = createInstance('monthly', 'long', 'alex'), incoming = join(tmp, 'incoming'), name = `${'发票'.repeat(45)}.xlsx`;
   for (const n of [1, 2]) {
     writeFileSync(incoming, `copy ${n}`);
     const { file } = inst.upload('alex', name, incoming, 'hash', 'in', null, true), base = (file as string).slice('upload/'.length);
@@ -288,12 +288,12 @@ test('a createInstance cut short leaves no instance behind, and openStore remove
     import { join } from 'node:path';
     openStore(${JSON.stringify(tmp)});
     let code = '';
-    try { createInstance('monthly', 'cut', 'alex', Array.from({ length: 80 }, (_, i) => 'm365:mail:box' + i + '@demo.test')); } catch (e) { code = e.code; }
+    try { createInstance('monthly', 'cut', 'alex'.repeat(300)); } catch (e) { code = e.code; }
     console.log(JSON.stringify({ code, dirs: readdirSync(join(${JSON.stringify(tmp)}, 'instances')), indexed: labels('monthly') }));
   `], { encoding: 'utf8' }).trim();
   assert.deepEqual(JSON.parse(out), { code: 'EFBIG', dirs: [], indexed: [] });
 
-  const hole = createInstance('monthly', 'hole', 'alex', []);
+  const hole = createInstance('monthly', 'hole', 'alex');
   hole.markDeleted('alex', { cost: 0, runs: [] });
   mkdirSync(join(tmp, 'instances', 'deadbeef0001', 'upload'), { recursive: true });
   const torn = join(tmp, 'instances', 'deadbeef0002');

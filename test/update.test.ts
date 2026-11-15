@@ -117,6 +117,9 @@ function spawnUpdater(dir = work, env: NodeJS.ProcessEnv = {}) {
 }
 
 before(async () => {
+  mkdirSync(join(root, '.rf'), { recursive: true });
+  writeFileSync(join(root, '.rf', 'authority-format.json'), JSON.stringify({ version: 1, minReader: 1, state: 'complete' }));
+  writeFileSync(join(root, '.rf', 'capabilities.json'), JSON.stringify({ 'series-owner': [ADMIN] }));
   mkdirSync(home, { recursive: true });
   entra = await idp();
   const probe = createServer();
@@ -162,6 +165,7 @@ esac
 `);
   chmodSync(ctl, 0o755);
 
+  // Both synthetic releases use the current authority format; only drain support differs, not the manual migration barrier.
   // Build remote with v0.5.0: an older server and updater that know neither /drained nor SIGUSR2.
   git(tmp, 'init', '--bare', '-q', remote);
   git(tmp, 'clone', '-q', remote, stage);
@@ -213,8 +217,8 @@ async function makeSeries(ws: string, name: string, hold = false) {
   let reached = false, go!: () => void;
   const gate = new Promise<void>(ok => (go = ok));
   scripts.push({ bash: hold ? [async () => { reached = true; await gate; return 'echo ok'; }] : [], report: 'Done.' });
-  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name })).json();
-  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name, logins: [], autonomous: true })).json();
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11' })).json();
   if (hold) await until(`${name} mid-turn`, () => reached);
   else await doneRuns(id, 1);
   return { id: id as string, go };

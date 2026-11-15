@@ -12,7 +12,7 @@ import { websitesOf, type Browsers } from './browsers.ts';
 import { notes, saveSeriesSettings, seriesSettings, type Authority, type Note } from './series.ts';
 import { pushed, skills } from './skills.ts';
 import { AGENT, commit, committed, forget } from './git.ts';
-import { authority, lender, logins, ownerOf, runnerAt, sameAuthority } from './logins.ts';
+import { authority, logins, ownerOf, runnerAt, sameAuthority } from './logins.ts';
 import { confirm } from './entra.ts';
 import { pruneGrants } from './grants.ts';
 import { abortCalls, connections, drainCalls, hasCalls, loginOf, types } from './connections.ts';
@@ -213,13 +213,14 @@ async function begin(inst: Instance, tried: Set<Instance>) {
     await confirm(runner);
     pruneGrants();
   } catch (e) {
-    if (stopping || !due(inst)) return bail(inst, tried);
-    if (!sameAuthority(inst, lease)) return bail(inst, tried);
+    const left = !!(e as { left?: boolean }).left && ownerOf(inst).by === runner;
+    if (stopping || inst.doc.status !== 'open' || (!left && !due(inst))) return bail(inst, tried);
+    if (!left && !sameAuthority(inst, lease)) return bail(inst, tried);
     if ((e as HttpError).status !== 401) {
       console.error(`a run of ${inst.id} waits a minute: Microsoft didn't confirm ${runner}'s sign-in`, e);
       return void setTimeout(() => kick(inst), 60_000).unref();
     }
-    inst.append('server', 'expired', { cause: pending(inst, seen)[0].seq, login: 'entra', name: 'rollforward', runner, authority: lease, initiator: runner, error: (e as Error).message, ...((e as { left?: boolean }).left && { left: true }) });
+    inst.append('server', 'expired', { cause: cause.seq, login: 'entra', name: 'rollforward', runner, authority: lease, initiator: runner, error: (e as Error).message, ...((e as { left?: boolean }).left && { left: true }) });
     return bail(inst, tried);
   }
   if (stopping || active.has(series) || !due(inst)) return bail(inst, tried);
@@ -547,7 +548,7 @@ export function setWake(target: string, wake: Omit<Wake, 'target'>): Wake & { id
   // A weekly one keeps its time of day; fire() spaces it.
   if (!k.days) k.at = new Date(Math.max(Date.parse(k.at), Date.parse(w.fired[target] ?? '1970-01-01') + SPACING_MS)).toISOString();
   const [id = newId(), was] = Object.entries(w.pending).find(([, p]) => p.target === target && p.label === k.label
-    && !!p.authority === !!k.authority && (!!k.authority || (p.from === k.from && p.inst === k.inst))
+    && !!p.authority === !!k.authority && (k.authority ? p.authority!.owner === k.authority.owner && p.authority!.epoch === k.authority.epoch && p.authority!.workspace === k.authority.workspace && p.authority!.autonomous === true : p.from === k.from && p.inst === k.inst)
     && (labelled || (p.at === k.at && String(p.days) === String(k.days)))) ?? [];
   if (!was && Object.values(w.pending).filter(p => p.target === target).length >= MAX_WAKES) throw new HttpError(409, `${MAX_WAKES} wakes are pending for it: cancel one first`);
   if (!(labelled && was?.days)) w.pending[id] = k;
@@ -699,11 +700,11 @@ export function held(inst: Instance, login: string, who: string, ticked = true):
 changes.on('login', (email: string, id: string, name: string) => {
   for (const sid of Object.keys(tree().series)) for (const inst of instances(sid).filter(i => i.doc.status === 'open' && ownerOf(i).by === email)) {
     if (!held(inst, id, email, id !== 'openrouter')) continue;
-    const hit = inst.log.findLast(e => e.op === 'expired' && e.login === id && e.runner === email)!, run = inst.log.find(e => e.op === 'run' && e.run === hit.run);
+    const hit = inst.log.findLast(e => e.op === 'expired' && !e.left && e.login === id && e.runner === email)!, run = inst.log.find(e => e.op === 'run' && e.run === hit.run);
     const lease = (hit.authority ?? run?.authority) as Authority;
-    if (!lease.autonomous || !ownerOf(inst).consent?.autonomous) continue;
-    inst.append('server', 'wake', { reason: id === 'openrouter' && !logins(email).find(l => l.id === 'openrouter')?.enabled ? `${email} stopped using their OpenRouter key` : `${email} signed in to ${name} again`, from: email, login: id, authority: hit.authority ?? run!.authority, initiator: hit.initiator ?? run!.initiator, recovery: { run: run?.run, login: id } });
-    kick(inst);
+    const autonomous = !!lease.autonomous && !!ownerOf(inst).consent?.autonomous;
+    inst.append('server', 'wake', { ...(!autonomous && { quiet: true }), reason: id === 'openrouter' && !logins(email).find(l => l.id === 'openrouter')?.enabled ? `${email} stopped using their OpenRouter key` : `${email} signed in to ${name} again`, from: email, login: id, authority: hit.authority ?? run!.authority, initiator: hit.initiator ?? run!.initiator, recovery: { run: run?.run, login: id } });
+    if (autonomous) kick(inst);
   }
 });
 

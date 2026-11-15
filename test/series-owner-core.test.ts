@@ -8,7 +8,7 @@ import { initSystem, saveTree, tree, writeJson } from '../src/system.ts';
 import { createInstance, openStore, seriesDir } from '../src/store.ts';
 import { authority, lender, ownerOf, runnerAt, saveLogin, unoffer, use } from '../src/logins.ts';
 import { saveSeriesSettings, seriesSettings, type Authority } from '../src/series.ts';
-import { fire, pending, retireSeries, setWake, standing, wakes } from '../src/waker.ts';
+import { fire, held, pending, retireSeries, setWake, standing, wakes } from '../src/waker.ts';
 
 const alice = 'alice@example.test', bob = 'bob@example.test', admin = 'admin@example.test';
 
@@ -45,6 +45,17 @@ test('one canonical series owner: creator is an actor, absent consent differs fr
   inst.append(bob, 'logins', { logins: ['m365:y'] });
   assert.equal(ownerOf(inst).by, alice);
   assert.deepEqual(ownerOf(inst).logins, []);
+});
+
+test('consent never retroactively authorizes an earlier nonexecuting owner act', t => {
+  const inst = fixture(t);
+  const early = inst.append(alice, 'comment', { text: 'Before consent' });
+  assert.equal(standing(inst, early)?.starts, false);
+  consent(['m365:x']);
+  assert.equal(standing(inst, early)?.starts, false);
+  assert.equal(pending(inst, 0).length, 0);
+  const fresh = inst.append(alice, 'comment', { text: 'After explicit consent' });
+  assert.equal(standing(inst, fresh)?.starts, true);
 });
 
 test('collaborators, admins, named answers and signoffs never initiate or queue owner execution', t => {
@@ -106,6 +117,19 @@ test('a collaborator schedule request cannot overwrite an owner-authorized sched
   assert.notEqual(request.id, owner.id);
   assert.deepEqual({ ...wakes().pending[owner.id].authority }, owner.authority);
   assert.equal(wakes().pending[owner.id].at, owner.at);
+});
+
+test('a revoked weekly schedule cannot swallow the incoming owner\'s new one-off consent', t => {
+  fixture(t);
+  consent([], true, 'empty');
+  const old = setWake('empty', { at: '2099-01-01', from: alice, label: 'Next', days: ['mon'] });
+  saveSeriesSettings(seriesDir('empty'), { version: 1, owner: bob, epoch: 2, since: 'later' });
+  consent([], true, 'empty');
+  const next = setWake('empty', { at: '2099-01-02', from: bob, label: 'Next' });
+  assert.notEqual(next.id, old.id);
+  assert.equal(next.authority?.owner, bob);
+  assert.equal(next.authority?.epoch, 2);
+  assert.equal(next.days, undefined);
 });
 
 test('schedules snapshot credentials for both existing and new periods; stale epochs become requests', t => {
@@ -227,6 +251,20 @@ test('recovery needs autonomy captured by the original run, not a later consent 
     await new Promise(ok => setTimeout(ok, 1700)); assert.equal(starts, 1);
     await retireSeries('s'); rmSync(root, { recursive: true, force: true });
   `], { cwd: join(import.meta.dirname, '..'), env: { ...process.env, RF_MIN_FREE_GB: '0' }, timeout: 8_000, stdio: 'pipe' });
+});
+
+test('manual-only reauthentication clears the expiry notice without authorizing execution', t => {
+  const inst = fixture(t);
+  consent(['m365:x']);
+  inst.append('server', 'run', { run: 1, runner: alice, initiator: alice, authority: authority(inst) });
+  saveLogin(alice, { id: 'm365', kind: 'm365', name: 'Microsoft', since: 'expired', offers: [{ id: 'm365:x', name: 'X' }], expired: true });
+  inst.append('server', 'expired', { run: 1, runner: alice, login: 'm365' });
+  assert.equal(held(inst, 'm365', alice), true);
+  saveLogin(alice, { id: 'm365', kind: 'm365', name: 'Microsoft', since: 'renewed', offers: [{ id: 'm365:x', name: 'X' }], expired: false });
+  assert.equal(held(inst, 'm365', alice), false);
+  const renewed = inst.log.findLast(e => e.op === 'wake')!;
+  assert.equal(renewed.quiet, true);
+  assert.equal(standing(inst, renewed)?.starts, false);
 });
 
 test('membership and capability withdrawal clear consent even for an empty owned series', t => {

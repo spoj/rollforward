@@ -27,7 +27,7 @@ import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, prune, startIndexing, track } from './indexes.ts';
 import { addNote, notes, saveSeriesSettings, seriesSettings, type SeriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, archived, byToken, cancelWake, cancelWakes, closed, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, pending, queued, remove, retireSeries, resolveFor, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesOf, wakeWith, weekly, reads, CUT, type Active, type Request } from './waker.ts';
+import { active, archived, byToken, cancelWake, cancelWakes, closed, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, queued, remove, retireSeries, resolveFor, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesOf, wakeWith, weekly, reads, CUT, type Active, type Request } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -981,7 +981,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     }));
     if (['owner', 'credentials'].includes(action) && req.method === 'PUT') return inOrder(id, async () => {
       const { ws, who } = mustUnarchived(by, id), settings = seriesSettings(seriesDir(id)), at = new Date().toISOString();
-      if (!can(who, 'series-owner')) throw new HttpError(403, 'series authority requires the series-owner capability');
+      if (action === 'credentials' && !can(who, 'series-owner')) throw new HttpError(403, 'series credential authority requires the series-owner capability');
       if (action === 'owner') {
         if (settings.owner !== by && !canManage(who, ws)) throw new HttpError(403, 'only the current series owner or a workspace manager transfers ownership');
         if ('logins' in payload || 'autonomous' in payload || 'consent' in payload) throw new HttpError(400, 'a transfer never grants credential consent; the new owner selects credentials separately');
