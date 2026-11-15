@@ -715,8 +715,9 @@ else if (cmd === 'comment' && args.length === 2) {
   if (flags.json) console.log(JSON.stringify({ readers: ws.readers, reads: ws.reads }, null, 1));
   else console.log([...ws.readers.map(r => `${r.name} reads ${ws.name}`), ...ws.reads.map(r => `${ws.name} reads ${r.name}`)].join('\n') || `${ws.name} reads no other workspace, and none reads it`);
 } else if (cmd === 'readers' && args.length === 3 && ['add', 'remove'].includes(args[1])) {
-  // A workspace you don't see, whose agents' reading of one of yours you take off, is found among what yours read.
-  const all = await get('/api'), [ws, other] = [args[0], args[2]].map(name => all.find(w => w.name === name) ?? all.flatMap(w => w.reads).find(r => r.name === name));
+  // A workspace you don't see, whose link with one of yours you take off, is found among what yours read or let read them.
+  const all = await get('/api'), linked = args[1] === 'remove' ? all.flatMap(w => [...w.reads, ...w.readers]) : [];
+  const [ws, other] = [args[0], args[2]].map(name => all.find(w => w.name === name) ?? linked.find(r => r.name === name));
   if (!ws || !other) throw new Error(`no workspace ${ws ? args[2] : args[0]}`);
   await post(`/api/workspaces/${ws.id}/readers/${other.id}`, {}, args[1] === 'add' ? 'PUT' : 'DELETE');
   console.log(args[1] === 'add' ? `${other.name}'s agents read ${ws.name} from their next run` : `${other.name}'s agents no longer read ${ws.name}`);

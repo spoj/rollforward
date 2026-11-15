@@ -273,4 +273,25 @@ test('R4-PEOPLE-05: rf pull on Windows/macOS skips all files under case-collidin
   assert.equal(existsSync(join(linuxDest, '2026-Aug', 'upload', 'upper.csv')), true);
 });
 
+test('R4-PEOPLE-06: rf readers WORKSPACE remove OTHER resolves unseen linked reader workspaces', async () => {
+  assert.equal((await runRf(admin.home, ['readers', 'larkfield', 'add', 'beta-ws'])).code, 0);
+  const listed = await runRf(carol.home, ['readers', 'larkfield']);
+  assert.equal(listed.stdout.trim(), 'beta-ws reads larkfield');
+
+  const addUnseen = await runRf(carol.home, ['readers', 'larkfield', 'add', 'beta-ws']);
+  assert.equal(addUnseen.code, 1);
+  assert.match(addUnseen.stderr, /no workspace beta-ws/);
+
+  const removed = await runRf(carol.home, ['readers', 'larkfield', 'remove', 'beta-ws']);
+  assert.equal(removed.code, 0);
+  assert.equal(removed.stdout.trim(), "beta-ws's agents no longer read larkfield");
+  assert.equal((await runRf(carol.home, ['readers', 'larkfield'])).stdout.trim(), 'larkfield reads no other workspace, and none reads it');
+
+  assert.equal((await runRf(admin.home, ['readers', 'beta-ws', 'add', 'larkfield'])).code, 0);
+  const reverseRemoved = await runRf(carol.home, ['readers', 'beta-ws', 'remove', 'larkfield']);
+  assert.equal(reverseRemoved.code, 0);
+  assert.equal(reverseRemoved.stdout.trim(), "larkfield's agents no longer read beta-ws");
+});
+
+
 
