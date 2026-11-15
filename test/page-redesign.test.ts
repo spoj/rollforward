@@ -55,7 +55,7 @@ async function open(role: string, grants: object[] = []) {
   return { page, requests, workspace, responses };
 }
 
-async function openWebsiteTicks() {
+async function openWebsiteTicks(firstComment = false) {
   const rows = ['pending', 'denied', 'revoked', 'lapsed', 'approved', 'expired'].map(site => ({ ...grant, id: site, site,
     state: site === 'expired' ? 'approved' : site, at: new Date().toISOString(), profile: { error: 'Check unavailable' } }));
   rows.push({ ...rows[0], id: 'someone-else', site: 'missing', state: 'approved', person: 'alice@demo.test' });
@@ -71,8 +71,18 @@ async function openWebsiteTicks() {
   responses['/api'] = [{ ...workspace, id: 'w2', name: 'Other workspace', series: [], grants: [{ ...grant, site: 'missing', workspace: 'w2', state: 'approved' }] }, workspace];
   responses['/api/series/s1'] = {};
   responses['/api/series'] = { instance: 's1' };
-  await page.evaluate(async () => { await refresh(); location.hash = '#/s1'; });
-  await page.waitForFunction(() => cur.s?.id === 's1');
+  if (firstComment) {
+    series.instances.push({ id: 'i1', label: 'First prompt', status: 'open', asks: [], refused: [], runner: person, wakes: [] });
+    responses['/api/instances/i1'] = { doc: { status: 'open', items: [] },
+      log: [{ seq: 1, at: new Date().toISOString(), by: person, op: 'create', logins: [] }],
+      runner: { by: person, logins: [], ticked: [] }, waiting: [], standing: {}, starts: true, sums: {}, run: null, queued: false, previous: null };
+  }
+  await page.evaluate(async firstComment => { await refresh(); location.hash = firstComment ? '#/i1' : '#/s1'; }, firstComment);
+  await page.waitForFunction(firstComment => cur.s?.id === 's1' && (!firstComment || cur.i?.id === 'i1'), firstComment);
+  if (firstComment) {
+    await page.evaluate(() => { ui.open = true; renderLog(); });
+    await page.waitForSelector('#newcomment');
+  }
   return { ...state, series, sites };
 }
 
@@ -607,6 +617,81 @@ test('canceling a draft while website setup loads cannot restore or overwrite it
     await opening;
     assert.equal(await page.locator('#pv').isVisible(), false);
     assert.equal(await page.evaluate(() => pv), null);
+  } finally { release.resolve(); await page.close(); }
+});
+
+test('a first-comment website setup load cannot follow navigation when both dialogs are null', async () => {
+  const { page, responses } = await openWebsiteTicks(true);
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  try {
+    await page.route('**/logins/sites', async route => {
+      started.resolve();
+      await release.promise;
+      await route.fulfill({ json: responses['/logins/sites'] });
+    }, { times: 1 });
+    await page.locator('#log .tickrow:has(input[value="web:missing"]) [data-act=info]').click();
+    const opening = page.evaluate(() => onAct('website-setup', document.querySelector('#log [data-act=website-setup][data-id=missing]')));
+    await started.promise;
+    await page.evaluate(() => { location.hash = '#/w2'; });
+    await page.waitForFunction(() => cur.w.id === 'w2' && pv === null);
+    release.resolve();
+    await opening;
+    assert.equal(await page.locator('#pv').isVisible(), false, 'the old workspace must not open over the new one');
+    assert.equal(await page.evaluate(() => pv), null);
+  } finally { release.resolve(); await page.close(); }
+});
+
+test('an older website setup load cannot overwrite an edited draft after a faster setup returns the same object', async () => {
+  const { page, responses } = await openWebsiteTicks();
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  try {
+    await page.evaluate(() => onAct('new-instance', document.createElement('button')));
+    await page.fill('#slabel', 'Version 1');
+    await page.check('#pv input.tick[value="drop:AP/"]');
+    await page.locator('#pv .tickrow:has(input[value="web:missing"]) [data-act=info]').click();
+    await page.route('**/logins/sites', async route => {
+      started.resolve();
+      await release.promise;
+      await route.fulfill({ json: responses['/logins/sites'] });
+    }, { times: 1 });
+    await page.evaluate(() => { window.setupDraft = pv; });
+    const opening = page.evaluate(() => onAct('website-setup', document.querySelector('#pv [data-act=website-setup][data-id=missing]')));
+    await started.promise;
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#pv').isVisible(), true, 'Escape dismisses only the popover');
+    await page.locator('#pv .tickrow:has(input[value="web:denied"]) [data-act=info]').click();
+    await page.locator('#pv [data-act=website-setup][data-id=denied]').click();
+    await page.waitForSelector('#pv details[data-shown="web:denied"][open]');
+    await page.click('#pv [data-act=unpv]');
+    assert.equal(await page.evaluate(() => pv === window.setupDraft), true);
+    await page.fill('#slabel', 'Version 2');
+    await page.uncheck('#pv input.tick[value="drop:AP/"]');
+    release.resolve();
+    await opening;
+    assert.equal(await page.locator('#pv .pvh b').textContent(), 'New instance');
+    assert.equal(await page.inputValue('#slabel'), 'Version 2');
+    assert.equal(await page.isChecked('#pv input.tick[value="drop:AP/"]'), false);
+  } finally { release.resolve(); await page.close(); }
+});
+
+test('a first-comment website setup load survives a same-navigation refresh', async () => {
+  const { page, responses } = await openWebsiteTicks(true);
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  try {
+    await page.fill('#newcomment', 'Keep this prompt');
+    await page.route('**/logins/sites', async route => {
+      started.resolve();
+      await release.promise;
+      await route.fulfill({ json: responses['/logins/sites'] });
+    }, { times: 1 });
+    const opening = page.evaluate(() => onAct('website-setup', document.querySelector('#log [data-act=website-setup][data-id=missing]')));
+    await started.promise;
+    await page.evaluate(() => refresh());
+    release.resolve();
+    await opening;
+    assert.equal(await page.locator('#pv details[data-shown="web:missing"][open]').count(), 1);
+    await page.click('#pv [data-act=unpv]');
+    assert.equal(await page.inputValue('#newcomment'), 'Keep this prompt');
   } finally { release.resolve(); await page.close(); }
 });
 

@@ -1137,9 +1137,10 @@ function tokensHtml(s) {
     + `<h3>New token</h3><div class="row2"><input type="text" id="tname" placeholder="Name, such as laptop" style="flex:1"><select id="tdays"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option></select><button class="btn primary" data-act="new-token">Make</button></div>`;
 }
 
+let accountOpens = 0;
 async function openTokens(made) {
-  const before = pv, tokens = await api('/tokens');
-  if (pv !== before || pv?.saving) return;
+  const n = ++accountOpens, before = pv, tokens = await api('/tokens');
+  if (n !== accountOpens || pv !== before || pv?.saving) return;
   pv = { title: 'Tokens', settings: { kind: 'tokens', tokens, made } };
   renderPv();
 }
@@ -1279,10 +1280,10 @@ async function saveKey() {
 }
 
 async function openLogins(savedSignIn) {
-  const before = pv;
+  const n = ++accountOpens, before = pv;
   const [logins, connections, grants, sites, vpn] = await Promise.all([api('/logins'), api('/connections'), api('/grants'), api('/logins/sites'),
     me.can.includes('vpn') ? api('/vpns').then(rows => ({ rows }), e => ({ error: e.message })) : null]);
-  if (pv !== before || pv?.saving && pv !== savedSignIn) return;
+  if (n !== accountOpens || pv !== before || pv?.saving && pv !== savedSignIn) return;
   pv = { title: 'Logins', shown: pv?.shown ?? [], back: pv?.back, website: pv?.website, workspace: pv?.workspace, settings: { kind: 'logins', logins, connections, grants, sites, vpn } };
   renderPv();
   return pv;
@@ -1347,6 +1348,7 @@ function editName(el, name, save) {
 // Closing a sign-in without saving or connecting throws its browser away.
 function closePv(restore = false) {
   if (pv?.saving) return;
+  accountOpens++;
   if (restore && pv?.back && pv.settings?.kind === 'logins') pv.back.settings.logins = pv.settings.logins;
   if (pv?.signin) api(`/signins/${pv.signin}`, { method: 'DELETE' }).catch(e => toast(e.message));
   pv = restore ? pv?.back ?? null : null;
