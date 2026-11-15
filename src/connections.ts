@@ -231,7 +231,7 @@ export async function serverCall(
   const out = s.check({ method: 'POST', url, headers: { 'content-type': 'application/json' }, json, body: raw }) ?? json;
   const target = `${upstreams[s.host] ?? `https://${s.host}`}${url.pathname}${url.search}`;
   const redact = (msg: string) => apiKey ? msg.replaceAll(apiKey, '[redacted]') : msg;
-  let r: Response, text = '';
+  let r: Response | undefined, text = '', failed: Error | undefined;
   try {
     r = await fetch(target, {
       method: 'POST', signal: AbortSignal.timeout(timeoutMs),
@@ -240,19 +240,20 @@ export async function serverCall(
     });
     text = await providerText(r);
   } catch (e) {
-    throw new Error(redact((e as Error).message));
+    failed = new Error(redact((e as Error).message));
   }
-  const type = r.headers.get('content-type') ?? '', events = parseEvents(text);
+  const type = r?.headers.get('content-type') ?? '', events = parseEvents(text);
   const headers: Record<string, string> = {};
-  r.headers.forEach((v, k) => { headers[k.toLowerCase()] = v; });
-  const { cost, estimated } = await resolveCost(s, 'POST', url.pathname, json, r.status, headers, type, events, Buffer.byteLength(text), false, apiKey);
-  if (r.status < 400 || cost > 0 || estimated) {
+  r?.headers.forEach((v, k) => { headers[k.toLowerCase()] = v; });
+  const { cost, estimated } = await resolveCost(s, 'POST', url.pathname, json, r?.status ?? 502, headers, type, events, Buffer.byteLength(text), !!failed, apiKey);
+  if ((!failed && r!.status < 400) || cost > 0 || estimated) {
     recordCost({
       at: new Date().toISOString(), by: 'server', service: serviceName, kind: cause.kind,
       ...(cause.site && { site: cause.site }), person: cause.person, cost, ...(estimated && { estimated: true }),
     });
   }
-  return { ok: r.ok, status: r.status, data: events.at(-1), cost, estimated };
+  if (failed) throw Object.assign(failed, { cost, estimated });
+  return { ok: r!.ok, status: r!.status, data: events.at(-1), cost, estimated };
 }
 
 export type KeyInfo = {

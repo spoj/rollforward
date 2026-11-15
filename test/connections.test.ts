@@ -1329,3 +1329,85 @@ test('parentOf caches ancestor lookups per user so one runner lacking parent vis
     runs.delete('carol-parent');
   }
 });
+
+test('failed server calls and website checks record incurred or estimated costs while redacting keys', async () => {
+  const { serverCall, upstreams } = await import('../src/connections.ts');
+  const { syncCosts } = await import('../src/costs.ts');
+  const { addSite, allowHost, checkWebsite, removeSite } = await import('../src/browsers.ts');
+  const { readLines, rfDir } = await import('../src/system.ts');
+  const prevOr = upstreams['openrouter.ai'], prevExa = upstreams['api.exa.ai'], fetchWas = globalThis.fetch;
+  let mode = 'reset-headers', chatTurn = 0;
+  const provider = createServer(async (req, res) => {
+    for await (const _ of req) {}
+    if (req.url === '/api/v1/generation?id=gen-srv-body') return void res.writeHead(200, { 'content-type': 'application/json' }).end('{"data":{"total_cost":0.37}}');
+    if (req.url === '/api/v1/generation?id=gen-srv-big') return void res.writeHead(200, { 'content-type': 'application/json' }).end('{"data":{"total_cost":0.41}}');
+    if (req.url === '/api/v1/generation?id=gen-check-cut') return void res.writeHead(200, { 'content-type': 'application/json' }).end('{"data":{"total_cost":0.37}}');
+    if (req.url?.startsWith('/api/v1/generation')) return void res.writeHead(404).end('{}');
+    if (req.url === '/search') {
+      res.writeHead(200, { 'content-type': 'application/json' }).write('{"results":[');
+      return void setTimeout(() => res.destroy(), 10);
+    }
+    if (mode === 'check') {
+      if (++chatTurn === 1) {
+        return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
+          choices: [{ message: { role: 'assistant', content: null, tool_calls: [{ id: 'tc1', type: 'function', function: { name: 'search', arguments: '{"query":"erp portal"}' } }] } }],
+          usage: { cost: 0.02 },
+        }));
+      }
+      res.writeHead(200, { 'content-type': 'application/json', 'x-generation-id': 'gen-check-cut' }).write('{"choices":[');
+      return void setTimeout(() => res.destroy(), 10);
+    }
+    if (mode === 'reset-headers') return void req.socket.destroy();
+    if (mode === 'broken-gzip') return void res.writeHead(200, { 'content-type': 'application/json', 'content-encoding': 'gzip' }).end('not-gzip');
+    if (mode === 'oversize') return void res.writeHead(200, { 'content-type': 'application/json', 'x-generation-id': 'gen-srv-big' }).end('{"x":"' + 'x'.repeat(9 * 1024 * 1024) + '"}');
+    res.writeHead(200, { 'content-type': 'application/json', 'x-generation-id': 'gen-srv-body' }).write('{"usage":{"cost":0.37},"x":"');
+    setTimeout(() => res.destroy(), 10);
+  });
+  await new Promise<void>(ok => provider.listen(0, '127.0.0.1', ok));
+  const addr = `http://127.0.0.1:${(provider.address() as { port: number }).port}`;
+  upstreams['openrouter.ai'] = upstreams['api.exa.ai'] = addr;
+  try {
+    const cause = { kind: 'website-check' as const, site: 'portal', person: ALICE };
+    for (const [m, exact] of [['reset-headers', null], ['reset-body', 0.37], ['broken-gzip', null], ['oversize', 0.41]] as const) {
+      mode = m;
+      const before = syncCosts().length;
+      let caught: any;
+      await serverCall('openrouter', '/api/v1/chat/completions', { model: 'openai/gpt-5-mini', messages: [{ role: 'user', content: 'hi' }] }, cause, 2000).catch(e => { caught = e; });
+      assert.ok(caught instanceof Error, m);
+      assert.equal(syncCosts().length, before + 1, m);
+      const rec = syncCosts().at(-1)!;
+      if (exact !== null) {
+        assert.deepEqual([caught.cost, caught.estimated, rec.cost, rec.estimated], [exact, false, exact, undefined], m);
+      } else {
+        assert.ok(caught.cost > 0 && caught.estimated === true && rec.cost === caught.cost && rec.estimated === true, m);
+      }
+    }
+
+    globalThis.fetch = async () => { throw new Error('leaked the-openrouter-key in transport error'); };
+    let redactedErr: any;
+    await serverCall('openrouter', '/api/v1/chat/completions', { model: 'openai/gpt-5-mini', messages: [] }, cause, 1000).catch(e => { redactedErr = e; });
+    globalThis.fetch = fetchWas;
+    assert.equal(redactedErr.message, 'leaked [redacted] in transport error');
+    assert.ok(redactedErr.cost > 0 && redactedErr.estimated === true);
+
+    mode = 'check';
+    await addSite(ALICE, 'check-cost', 'https://erp.test/');
+    await allowHost({ email: 'admin@demo.test', role: 'admin' } as never, 'check-cost', 'erp.test', ALICE);
+    const beforeCheck = syncCosts().length;
+    const prof = await checkWebsite(ALICE, 'check-cost');
+    assert.ok('error' in prof);
+    assert.equal(syncCosts().length, beforeCheck + 3, '1 successful OpenRouter + 1 failed Exa + 1 cut OpenRouter');
+    const acts = readLines(join(rfDir(), 'log.jsonl')).filter(e => e.op === 'website-check' && e.site === 'check-cost');
+    assert.equal(acts.length, 1);
+    assert.equal(acts[0].cost, +(0.02 + 0.008 + 0.37).toFixed(6));
+    assert.equal(acts[0].estimated, true);
+    assert.ok(typeof acts[0].error === 'string' && !JSON.stringify({ acts, ledger: syncCosts() }).includes('the-openrouter-key') && !JSON.stringify({ acts, ledger: syncCosts() }).includes('the-exa-key'));
+    removeSite(ALICE, 'check-cost');
+  } finally {
+    globalThis.fetch = fetchWas;
+    upstreams['openrouter.ai'] = prevOr;
+    upstreams['api.exa.ai'] = prevExa;
+    provider.close();
+    provider.closeAllConnections();
+  }
+});

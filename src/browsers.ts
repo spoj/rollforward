@@ -510,11 +510,9 @@ export async function checkWebsite(email: string, site: string, given?: Trace): 
             continue;
           }
           // A failed search is the tool's error, for the model to weigh, as a refused one is.
-          const found = await serverCall('exa', '/search', { query, numResults: 3, contents: { highlights: true } }, cause, 30_000).catch((e: Error) => e);
-          if (!(found instanceof Error)) {
-            checkCost += found.cost;
-            if (found.estimated) checkEstimated = true;
-          }
+          const found = await serverCall('exa', '/search', { query, numResults: 3, contents: { highlights: true } }, cause, 30_000).catch((e: Error & { cost?: number; estimated?: boolean }) => e);
+          if (found.cost) checkCost += found.cost;
+          if (found.estimated) checkEstimated = true;
           const results = !(found instanceof Error) && found.ok ? found.data.results : { error: `The search failed: ${!(found instanceof Error) ? `Exa answered ${found.status}` : found.message}` };
           messages.push({ role: 'tool', tool_call_id: t.id, content: JSON.stringify(results) });
         }
@@ -533,7 +531,10 @@ export async function checkWebsite(email: string, site: string, given?: Trace): 
     }
   } catch (e) {
     // A check that fails keeps an earlier good profile.
-    failed = (e as Error).message;
+    const err = e as Error & { cost?: number; estimated?: boolean };
+    if (err.cost) checkCost += err.cost;
+    if (err.estimated) checkEstimated = true;
+    failed = err.message;
     if (!profile || 'error' in profile) profile = { error: failed };
     settle({}, profile);
   } finally {
