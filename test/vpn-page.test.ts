@@ -556,8 +556,7 @@ test('regular website sign-in keeps Save login, keepalive, countdown and its ori
     await page.waitForSelector('#pv .lline');
     const saved = requests.find(r => r.path === '/signins/web1' && r.method === 'POST')!.body as { keepalive: string };
     assert.ok(Math.abs(Date.parse(saved.keepalive) - Date.now() - 7 * 86_400_000) < 120_000);
-    await page.click('[data-act=logins-show][data-id=web]');
-    await page.click('#pv details[data-shown="web:ledger"] > summary');
+    assert.equal(await page.locator('#pv details[data-shown="web:ledger"]').getAttribute('open'), '');
     await page.click('[data-act=web-signin]');
     await page.click('#pv [data-act=unpv]');
     await page.waitForSelector('#pv:not([open])', { state: 'attached' });
