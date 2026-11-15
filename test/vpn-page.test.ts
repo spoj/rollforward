@@ -29,8 +29,8 @@ const grant = {
 };
 type Vpn = { name: string; type: string; gateway: string; connected: boolean; since?: string; error?: string };
 
-async function open(can = ['vpn', 'keepalive'], role = 'user', grants: object[] = []) {
-  const page = await browser.newPage(), requests: { path: string; method: string; body: unknown }[] = [], signinNames = new Map<string, string>();
+async function open(can = ['vpn', 'keepalive'], role = 'user', grants: object[] = [], hasTouch = false) {
+  const page = await browser.newPage({ hasTouch }), requests: { path: string; method: string; body: unknown }[] = [], signinNames = new Map<string, string>();
   const state = {
     vpns: [
       { name: 'client', type: 'fortinet', gateway: 'vpn.client.test:10443', connected: false },
@@ -84,8 +84,149 @@ async function open(can = ['vpn', 'keepalive'], role = 'user', grants: object[] 
   });
   await page.goto(origin + '/#/w1');
   await page.waitForSelector('#sidefoot [data-act=logins]');
-  return { page, requests, state };
+  return { page, requests, state, responses };
 }
+
+test('website lists use native collapsed disclosures, keep drafts through refresh and actions, and show check errors once', async () => {
+  const error = 'The model check failed <try again later>';
+  const grants = [
+    { ...grant, person, state: 'approved', by: person, decided: since, text: 'For month end.', use: { runs: 4, wrote: 2, last: since } },
+    { ...grant, id: 'failed', person, site: 'bank', url: 'https://bank.test/signin?account=finance', profile: { error }, flags: [`the website profile could not be checked: ${error}`, 'Owner concern'], adminOnly: true, adminWhy: `the website profile could not be checked: ${error}: an admin decides` },
+  ];
+  const { page, responses } = await open(['keepalive'], 'admin', grants, true);
+  try {
+    responses['/logins/sites'] = {
+      ledger: { url: grant.url, hosts: ['cdn.ledger.test'], header: 'x-bot-token', profile: grant.profile },
+      bank: { url: grants[1].url, hosts: [], profile: { error } },
+      ...Object.fromEntries(['wiki', 'payroll', 'expenses', 'archive'].map(name => [name, { url: `https://${name}.example.test/signin/long-path?account=finance`, hosts: [] }])),
+    };
+    await page.click('#sidefoot [data-act=logins]');
+    await page.click('[data-act=logins-show][data-id=web]');
+    const ledger = page.locator('details[data-shown="web:ledger"]'), bank = page.locator('details[data-shown="web:bank"]'), add = page.locator('details[data-shown=site-add]');
+    assert.equal(await page.locator('#pv details[open]').count(), 0);
+    assert.match(await ledger.locator('summary').innerText(), /ledger ledger\.client\.test · signed in · 1 approved/);
+    assert.match(await bank.locator('summary').innerText(), /bank bank\.test · not signed in · 1 pending · check failed/);
+    assert.doesNotMatch((await page.locator('#pv').innerText()), /https:\/\/|Sign in yourself|try again later|What runs there use/);
+    assert.equal(await page.locator('#site-name').isVisible(), false);
+    const info = page.getByRole('button', { name: 'About website logins', exact: true }), explanation = page.locator('#websites-info');
+    assert.equal(await explanation.isVisible(), false);
+    await info.hover();
+    assert.equal(await explanation.isVisible(), true);
+    assert.match(await explanation.innerText(), /cookies[\s\S]*submitting and approving[\s\S]*counts its writes[\s\S]*owners approved[\s\S]*signed out a week/);
+    await info.focus();
+    await page.keyboard.press('Escape');
+    assert.equal(await explanation.isVisible(), false, 'Escape dismisses without closing Logins, even while hovered');
+    assert.equal(await page.locator('#pv').getAttribute('open'), '');
+    await page.mouse.move(0, 0);
+    await info.blur();
+    await info.focus();
+    assert.equal(await explanation.isVisible(), true, 'keyboard focus reveals the description');
+    await page.keyboard.press('Tab');
+    assert.equal(await explanation.evaluate(el => el === document.activeElement), true, 'keyboard users can focus and scroll the explanation');
+    await page.keyboard.press('End');
+    await page.waitForFunction(() => document.querySelector('#websites-info')!.scrollTop > 0);
+    await page.keyboard.press('Escape');
+    assert.equal(await explanation.isVisible(), false);
+    await info.click();
+    await page.click('#pv .pvh b');
+    assert.equal(await explanation.isVisible(), false, 'a click outside dismisses');
+    await ledger.locator('summary').focus();
+    await page.keyboard.press('Enter');
+    assert.equal(await ledger.getAttribute('open'), '');
+    const ax = await page.context().newCDPSession(page);
+    const { nodes } = await ax.send('Accessibility.getFullAXTree');
+    assert.ok(nodes.some(n => n.role?.value === 'DisclosureTriangle' && n.name?.value.includes('ledger ledger.client.test') && n.properties?.some(p => p.name === 'expanded' && p.value.value === true)));
+    await ax.detach();
+    assert.equal(await ledger.locator('[data-act=grant-revoke]').innerText(), 'Stop using');
+    await page.fill('#hdr-ledger', 'private token');
+    await page.evaluate(() => refresh());
+    assert.equal(await page.inputValue('#hdr-ledger'), 'private token');
+    await bank.locator('summary').click();
+    assert.equal((await bank.innerText()).split(error).length - 1, 1, 'not repeated in Flags or admin-only reasons');
+    assert.match(await bank.innerText(), /Owner concern/);
+    Object.assign(grants[1], { profile: { error: 'timeout' }, flags: ['the website profile could not be checked: timeout', 'Payment may still be submitted after timeout'], adminWhy: 'the website profile could not be checked: timeout: an admin decides' });
+    await page.evaluate(() => openLogins());
+    assert.match(await bank.innerText(), /Payment may still be submitted after timeout/, 'distinct warnings mentioning the error survive');
+    assert.doesNotMatch(await bank.innerText(), /Flags: the website profile could not be checked/);
+    await bank.locator('summary').click();
+    await page.evaluate(() => renderPv());
+    assert.equal(await ledger.getAttribute('open'), '');
+    assert.equal(await bank.getAttribute('open'), null);
+    const addInfo = page.getByRole('button', { name: 'About adding a website', exact: true });
+    await addInfo.click();
+    assert.equal(await page.locator('#site-add-info').isVisible(), true);
+    assert.equal(await add.getAttribute('open'), null, 'the info button does not toggle Add website');
+    await page.locator('#site-add-info').click();
+    assert.equal(await add.getAttribute('open'), null, 'reading the explanation does not toggle Add website either');
+    await page.keyboard.press('Escape');
+    await add.locator('summary').focus();
+    await page.keyboard.press('Space');
+    await page.fill('#site-name', 'new bank');
+    await page.evaluate(() => refresh());
+    assert.equal(await page.inputValue('#site-name'), 'new bank');
+    for (const width of [930, 390, 320]) {
+      await page.setViewportSize({ width, height: 559 });
+      assert.equal(await page.locator('#pv .pvb').evaluate(el => el.scrollWidth <= el.clientWidth), true, `${width}px expanded websites and Add website`);
+      await info.tap();
+      const box = (await explanation.boundingBox())!;
+      assert.ok(box.x >= 0 && box.x + box.width <= width, `${width}px info stays on screen`);
+      assert.equal(await explanation.evaluate(el => el.scrollHeight > el.clientHeight), true, 'long explanations scroll within the popover');
+      await page.click('#pv .pvh b');
+    }
+    await page.setViewportSize({ width: 930, height: 559 });
+    await page.route('**/grants/g1', r => { grants.splice(0, 1); return r.fulfill({ json: {} }); });
+    await ledger.locator('[data-act=grant-revoke]').click();
+    await ledger.locator('[data-act=grant-revoke]').waitFor({ state: 'detached' });
+    assert.equal(await ledger.getAttribute('open'), '', 'Stop using leaves the website open');
+    await page.route('**/logins/web%3Aledger', r => { responses['/logins'] = []; return r.fulfill({ json: {} }); });
+    const signedOut = page.waitForRequest(r => r.url().endsWith('/logins/web%3Aledger') && r.method() === 'DELETE');
+    await ledger.locator('[data-act=signout-login]').click();
+    await signedOut;
+    await ledger.locator('[data-act=signout-login]').waitFor({ state: 'detached' });
+    assert.equal(await ledger.getAttribute('open'), '', 'sign-out refresh leaves the website open');
+    await page.click('#pv [data-act=unpv]');
+    await page.click('.row.ws [data-act=workspace-settings]');
+    const failed = page.locator('details[data-grant=failed]');
+    assert.equal(await failed.getAttribute('open'), null);
+    await failed.locator('summary').click();
+    assert.equal((await failed.innerText()).split('the website profile could not be checked: timeout').length - 1, 1);
+    assert.match(await failed.innerText(), /Payment may still be submitted after timeout/);
+    assert.equal(await failed.locator('[data-act=grant-approve]').isVisible(), true);
+    await page.evaluate(() => { renderPv(); openWorkspaceSettings(); });
+    assert.equal(await failed.getAttribute('open'), '');
+    await page.click('#pv [data-act=unpv]');
+    await page.click('[data-act=waiting]');
+    assert.equal(await page.locator('#pv details[data-grant]').count(), 0, 'approval cards stay unfolded');
+    assert.equal(await page.locator('#pv [data-grant=failed] [data-act=grant-approve]').isVisible(), true);
+  } finally {
+    await page.close();
+  }
+});
+
+test('info popovers fit an empty website list, remain hoverable, and Escape dismisses them without closing Logins', async () => {
+  const { page, responses } = await open(['keepalive']);
+  try {
+    responses['/logins/sites'] = {};
+    await page.click('#sidefoot [data-act=logins]');
+    await page.click('[data-act=logins-show][data-id=web]');
+    for (const width of [930, 320]) {
+      await page.setViewportSize({ width, height: 559 });
+      await page.getByRole('button', { name: 'Close', exact: true }).focus();
+      const icon = page.getByRole('button', { name: 'About adding a website', exact: true }), note = page.locator('#site-add-info');
+      await icon.hover();
+      const box = (await note.boundingBox())!;
+      assert.ok(box.y >= 0 && box.y + box.height <= 559 && box.x >= 0 && box.x + box.width <= width, `${width}px empty-list explanation is not clipped`);
+      await note.hover();
+      assert.equal(await note.isVisible(), true, 'hover users can reach and scroll the note');
+      await page.keyboard.press('Escape');
+      assert.equal(await note.isVisible(), false);
+      assert.equal(await page.locator('#pv').getAttribute('open'), '');
+      await page.mouse.move(0, 0);
+    }
+  } finally {
+    await page.close();
+  }
+});
 
 test('users and admins without explicit vpn capability neither fetch VPN routes nor see controls or their own via label', async () => {
   for (const role of ['user', 'admin']) {
@@ -117,6 +258,8 @@ test('explicitly opted-in users get the trial box only under Logins and a read-o
     assert.equal(await page.locator('[data-act=vpn-disconnect]').count(), 0);
     assert.equal(await page.locator('.website-via').count(), 0);
     await page.click('[data-act=logins-show][data-id=web]');
+    assert.equal(await page.locator('.website-via').isVisible(), false);
+    await page.click('#pv details[data-shown="web:ledger"] > summary');
     assert.equal(await page.textContent('.website-via'), 'Via client VPN');
     assert.equal(await page.locator('input[id*=via], select[id*=via], [data-act=vpn-add], [data-act=vpn-remove]').count(), 0);
     await page.click('#pv [data-act=tokens]');
@@ -364,6 +507,7 @@ test('workspace owners see client-VPN grant disclosure even without VPN capabili
     assert.equal(await page.locator('.vpn, [data-act^="vpn-"]').count(), 0);
     await page.click('#pv [data-act=unpv]');
     await page.click('.row.ws [data-act=workspace-settings]');
+    await page.click('#pv details[data-grant=g1] > summary');
     assert.match(await page.locator('[data-grant=g1]').innerText(), /Through client VPN into the client's network/);
     assert.equal(requests.some(r => r.path.startsWith('/vpns')), false);
   } finally {
@@ -379,6 +523,7 @@ test('VPN controls, website via disclosure, and sign-in fit a narrow phone witho
     state.vpns[0].since = since;
     await page.click('#sidefoot [data-act=logins]');
     await page.click('[data-act=logins-show][data-id=web]');
+    await page.click('#pv details[data-shown="web:ledger"] > summary');
     for (const width of [390, 320]) {
       await page.setViewportSize({ width, height: 844 });
       assert.equal(await page.locator('#pv .pvb').evaluate(el => el.scrollWidth <= el.clientWidth), true, `${width}px Logins`);
@@ -402,6 +547,7 @@ test('regular website sign-in keeps Save login, keepalive, countdown and its ori
   try {
     await page.click('#sidefoot [data-act=logins]');
     await page.click('[data-act=logins-show][data-id=web]');
+    await page.click('#pv details[data-shown="web:ledger"] > summary');
     await page.click('[data-act=web-signin]');
     assert.equal(await page.textContent('[data-act=signin-save]'), 'Save login');
     assert.match(await page.textContent('#signin-clock') ?? '', /^9:5\d|10:00$/);
@@ -411,6 +557,7 @@ test('regular website sign-in keeps Save login, keepalive, countdown and its ori
     const saved = requests.find(r => r.path === '/signins/web1' && r.method === 'POST')!.body as { keepalive: string };
     assert.ok(Math.abs(Date.parse(saved.keepalive) - Date.now() - 7 * 86_400_000) < 120_000);
     await page.click('[data-act=logins-show][data-id=web]');
+    await page.click('#pv details[data-shown="web:ledger"] > summary');
     await page.click('[data-act=web-signin]');
     await page.click('#pv [data-act=unpv]');
     await page.waitForSelector('#pv:not([open])', { state: 'attached' });

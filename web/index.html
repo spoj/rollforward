@@ -966,16 +966,17 @@ function renderPv() {
   if ((pv.att ?? pv).pdf) watchPages(d, pv.att ?? pv);
 }
 
-function grantHtml(g, cls = 'lsub') {
+function grantHtml(g, cls = 'website') {
   const w = tree.find(w => w.id === g.workspace), ws = g.workspaceName ?? w?.name ?? g.workspace, pending = g.state === 'pending', mine = g.person === me.email, manage = me.role === 'admin' || w?.manage;
-  const c = g.profile ?? g.check, flags = g.flags ?? c?.flags ?? [], what = c?.what ?? c?.summary;
+  const c = g.profile ?? g.check, flags = (g.flags ?? c?.flags ?? []).filter(f => !c?.error || ![c.error, `the website profile could not be checked: ${c.error}`, `The old check failed: ${c.error}`].includes(f)), what = c?.what ?? c?.summary;
   const why = g.adminWhy || (c?.category === 'general' ? 'This is a general-purpose website.' : c?.risk === 'high' ? 'The website is high risk.' : ''), adminOnly = g.adminOnly ?? !!why;
   const category = { company: 'Company system', vendor: 'Vendor system', bank: 'Bank system', government: 'Government system', general: 'General-purpose website' }[c?.category];
-  return `<div class="${cls} grant" data-grant="${esc(g.id)}"><div>${person(g.person)} ${pending ? 'asks for' : 'lets'} runs in <a href="#/${esc(g.workspace)}">${esc(ws)}</a> ${pending ? 'to ' : ''}use their <b>${esc(g.site)}</b> login to ${esc(new URL(g.url).hostname)}.</div>`
+  const key = `grant:${g.id}`, compact = cls === 'website';
+  return (compact ? `<details class="website" data-grant="${esc(g.id)}" data-shown="${esc(key)}" ${pv.shown?.includes(key) ? 'open' : ''}><summary><b>${esc(g.site)}</b> <span class="sub">${esc(new URL(g.url).hostname)} · ${esc(g.state)} · ${person(g.person)}${!c ? ' · not checked' : c.error ? ' · check failed' : flags.length || adminOnly ? ' · warning' : ''}</span></summary><div class="grant">` : `<div class="${cls} grant" data-grant="${esc(g.id)}">`) + `<div>${person(g.person)} ${pending ? 'asks for' : 'lets'} runs in <a href="#/${esc(g.workspace)}">${esc(ws)}</a> ${pending ? 'to ' : ''}use their <b>${esc(g.site)}</b> login to ${esc(new URL(g.url).hostname)}.</div>`
     + `<div class="sub">${esc(g.url)}${category ? ` · ${category}` : ''}${!g.profile && c?.risk ? ` · ${esc(c.risk)} risk` : ''}</div>`
     + (what ? `<div class="sub">${esc(what)}</div>` : '')
     + (g.via ? `<div class="sub">Through ${esc(g.via)} VPN into the client's network.</div>` : '')
-    + (!c || c.error ? `<div class="sub">Not checked${c?.error ? `: ${esc(c.error)}` : ''}.</div>` : '')
+    + (!c || c.error && !(pending && adminOnly && why.includes(c.error)) ? `<div class="sub">${c?.error ? `Check failed: ${esc(c.error)}` : 'Not checked'}.</div>` : '')
     + `<div>Runs may do whatever ${esc(nameOf(g.person))} can there, including submitting and approving.</div>`
     + `<div>Reason: ${esc(g.reason)}</div>`
     + (flags.length ? `<div class="sub">Flags: ${esc(flags.join('; '))}</div>` : '')
@@ -984,7 +985,7 @@ function grantHtml(g, cls = 'lsub') {
     + (!pending && g.by ? `<div class="sub">Approved by ${person(g.by)}${g.decided ? ` ${esc(when(g.decided))}` : ''}.${g.text ? ` ${esc(g.text)}` : ''}</div>` : '')
     + (g.use ? `<div class="sub">Opened in ${plural(g.use.runs, 'run')} · ${plural(g.use.wrote, 'run')} wrote · last used ${g.use.last ? esc(when(g.use.last)) : 'never'}.</div>` : '')
     + `<div class="row2">${pending && manage ? `${!adminOnly || me.role === 'admin' ? `<button class="btn" data-act="grant-approve" data-id="${esc(g.id)}">Approve</button>` : ''}<button class="btn" data-act="grant-deny" data-id="${esc(g.id)}">Deny</button>` : ''}`
-    + `${pending && mine || !pending && (manage || mine) ? `<button class="quiet" data-act="grant-revoke" data-id="${esc(g.id)}">${pending ? 'Withdraw' : mine ? 'Stop using' : 'Revoke'}</button>` : ''}</div></div>`;
+    + `${pending && mine || !pending && (manage || mine) ? `<button class="quiet" data-act="grant-revoke" data-id="${esc(g.id)}">${pending ? 'Withdraw' : mine ? 'Stop using' : 'Revoke'}</button>` : ''}</div></div>` + (compact ? '</details>' : '');
 }
 
 // Sharing a series lends your logins to whoever starts its runs, so it takes two clicks, the second saying what you take on. Once it's
@@ -1088,7 +1089,7 @@ function peopleHtml(s) {
 const localInput = iso => new Date(new Date(iso).getTime() - new Date(iso).getTimezoneOffset() * 60e3).toISOString().slice(0, 16);
 
 function openWorkspaceSettings() {
-  pv = { title: 'Workspace settings', settings: { ...cur.w, kind: 'workspace' } };
+  pv = { title: 'Workspace settings', shown: pv?.settings?.kind === 'workspace' && pv.settings.id === cur.w.id ? pv.shown : [], settings: { ...cur.w, kind: 'workspace' } };
   renderPv();
 }
 
@@ -1125,7 +1126,7 @@ async function openTokens(made) {
 function loginsHtml(s) {
   const entra = s.connections.filter(c => c.login.scope), sites = Object.entries(s.sites);
   const mine = id => s.logins.find(l => l.id === id), k = mine('openrouter'), shown = id => pv.shown?.includes(id);
-  const line = (name, sub, acts = '') => `<div class="lline"><b>${esc(name)}</b><span class="sub">${sub}</span>${acts}</div>`;
+  const line = (name, sub, acts = '', info = '') => `<div class="lline"><b>${esc(name)}${info}</b><span class="sub">${sub}</span>${acts}</div>`;
   const show = id => `<button class="quiet" data-act="logins-show" data-id="${id}">${shown(id) ? 'Hide \u25BE' : 'Show \u25B8'}</button>`;
   const connect = l => `<a class="btn primary" href="/logins/${enc(l.id)}/connect">${l.expired ? 'Sign in again' : 'Reconnect'}</a>`;
   const signOut = id => `<button class="quiet" data-act="signout-login" data-id="${esc(id)}">Sign out</button>`;
@@ -1158,23 +1159,24 @@ function loginsHtml(s) {
   }
   const ids = new Set([...s.connections.map(c => c.login.id), ...sites.map(([n]) => `web:${n}`), 'openrouter']), signed = sites.filter(([n]) => mine(`web:${n}`) && !mine(`web:${n}`).expired).length;
   for (const l of s.logins.filter(l => !ids.has(l.id))) h += line(l.name, 'no longer a connection on this server, so no run uses it', signOut(l.id));
-  h += line('Websites', sites.length ? `${signed} of ${sites.length} signed in` : me.browsers ? 'none yet: add one' : 'not set up on this server: website logins need the browser service (docs/system.md, Websites)', sites.length || me.browsers ? show('web') : '');
-  if (sites.length && shown('web')) h += `<div class="sub">Sign in yourself, in a browser shown here. Your login is what that browser keeps, its cookies, never your password; a run's browser starts from it and brings it back refreshed. Runs reach only its address's host and the others the server allows, but there they can do whatever you can, including submitting and approving. Each run's log counts its writes.${sites.some(([, w]) => w.header) ? " Where a site's sign-in needs a token, give it in the box under its name: it goes only to that sign-in, never to a run's browser, and is kept, sealed, for the next." : ''}</div>`
-    + `<div class="sub">A run uses your login only in a workspace whose owners approved it: once signed in, ask to use it there, saying what for. In a workspace you own, it's approved as you ask, unless the website needs an admin. Until one approves it, your login is signed out a week after you signed in.</div>`
-    + sites.map(([n, w]) => {
+  h += line('Websites', sites.length ? `${signed} of ${sites.length} signed in` : me.browsers ? 'none yet: add one' : 'not set up on this server: website logins need the browser service (docs/system.md, Websites)', sites.length || me.browsers ? show('web') : '', ` <span class="info"><button type="button" class="quiet" data-act="info" aria-label="About website logins" aria-describedby="websites-info" popovertarget="websites-info">ⓘ</button><span class="about" role="note" tabindex="0" id="websites-info" popover><span>Sign in yourself, in a browser shown here. Your login is what that browser keeps, its cookies, never your password; a run's browser starts from it and brings it back refreshed. Runs reach only its address's host and the others the server allows, but there they can do whatever you can, including submitting and approving. Each run's log counts its writes. Where a site's sign-in needs a token, give it in the box under its name: it goes only to that sign-in, never to a run's browser, and is kept, sealed, for the next.</span><span>A run uses your login only in a workspace whose owners approved it: once signed in, ask to use it there, saying what for. In a workspace you own, it's approved as you ask, unless the website needs an admin. Until one approves it, your login is signed out a week after you signed in.</span></span></span>`);
+  if (sites.length && shown('web')) h += sites.map(([n, w]) => {
       const l = mine(`web:${n}`), gs = s.grants.filter(g => g.person === me.email && g.site === n && ['pending', 'approved'].includes(g.state));
       const free = tree.filter(x => !x.archived && !gs.some(g => g.workspace === x.id));
-      return `<div class="lsub"><span>${esc(n)} <span class="sub">${esc(w.url)}${l ? ` · ${l.expired ? 'expired' : `since ${esc(when(l.since))}${l.keepalive > new Date().toISOString() ? `, kept alive until ${esc(when(l.keepalive))}` : ''}`}` : ''}</span>${me.can.includes('vpn') && w.via ? `<span class="sub website-via">Via ${esc(w.via)} VPN</span>` : ''}`
-        + `${w.header ? `<input type="password" id="hdr-${esc(n)}" placeholder="${l ? `New ${esc(w.header)}, if any` : `Your ${esc(w.header)}`}" autocomplete="off" style="display:block;width:100%;margin-top:6px">` : ''}</span>`
+      const key = `web:${n}`, c = w.profile, flags = c?.flags ?? [];
+      return `<details class="website" data-shown="${esc(key)}" ${shown(key) ? 'open' : ''}><summary><b>${esc(n)}</b> <span class="sub">${esc(new URL(w.url).hostname)} · ${l ? l.expired ? 'expired' : 'signed in' : 'not signed in'} · ${gs.length ? ['approved', 'pending'].map(state => gs.filter(g => g.state === state).length ? `${gs.filter(g => g.state === state).length} ${state}` : '').filter(Boolean).join(', ') : 'no workspace access'}${!c ? ' · not checked' : c.error ? ' · check failed' : flags.length || c.risk === 'high' || c.category === 'general' ? ' · warning' : ''}</span></summary><div class="website-body"><div class="sub">${esc(w.url)}${l ? ` · ${l.expired ? 'expired' : `since ${esc(when(l.since))}${l.keepalive > new Date().toISOString() ? `, kept alive until ${esc(when(l.keepalive))}` : ''}`}` : ''}</div>${me.can.includes('vpn') && w.via ? `<div class="sub website-via">Via ${esc(w.via)} VPN</div>` : ''}`
+        + (!gs.length ? (c?.error ? `<div class="sub">Check failed: ${esc(c.error)}</div>` : c ? `<div class="sub">${esc(c.what)} · ${esc(c.category)} · ${esc(c.risk)} risk</div>` : '')
+          + (flags.length ? `<div class="sub">Flags: ${esc(flags.join('; '))}</div>` : '') : '')
+        + `${w.header ? `<input type="password" id="hdr-${esc(n)}" placeholder="${l ? `New ${esc(w.header)}, if any` : `Your ${esc(w.header)}`}" autocomplete="off" style="display:block;width:100%;margin-top:6px">` : ''}<div class="row2">`
         + `<button class="btn" data-act="web-signin" data-id="${esc(n)}" data-name="${esc(n)}">${l ? 'Sign in again' : 'Sign in'}</button>${l ? signOut(l.id) : ''}`
         + `<button class="quiet" data-act="site-remove" data-id="${esc(n)}">Remove</button></div>`
         + w.hosts.map(x => `<div class="lsub"><span class="sub">Reaches ${esc(x)}${w.checks?.[x]?.verdict === 'pass' ? `: ${esc(w.checks[x].why)}` : ''}</span><button class="quiet" data-act="host-remove" data-site="${esc(n)}" data-host="${esc(x)}">Remove</button></div>`).join('')
-        + gs.map(g => grantHtml(g)).join('')
+        + gs.map(g => grantHtml(g, 'lsub')).join('')
         + (l && !l.expired && free.length ? `<div class="row2"><select>${free.map(x => `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join('')}</select>`
-          + `<input type="text" placeholder="What runs there use it for" style="flex:1"><button class="btn" data-act="grant-ask" data-id="${esc(n)}">Ask to use</button></div>` : '');
+          + `<input type="text" placeholder="What runs there use it for" style="flex:1"><button class="btn" data-act="grant-ask" data-id="${esc(n)}">Ask to use</button></div>` : '') + '</div></details>';
     }).join('');
-  if (me.browsers && shown('web')) h += `<div class="sub">A new website: a name for it, the https address where you sign in and, if its sign-in needs a header its pages never send, such as x-bot-token, that header's name, whose value you give as you sign in. Sign-in opens a browser briefly; the server checks which other hosts its pages need for runs.</div>`
-    + '<div class="row2"><input type="text" id="site-name" placeholder="Name" style="width:30%"><input type="text" id="site-url" placeholder="https://… where you sign in" style="flex:1"><input type="text" id="site-header" placeholder="Header, if any" style="width:20%"><button class="btn" data-act="site-add">Add</button></div>';
+  if (me.browsers && shown('web')) h += `<details class="website" data-shown="site-add" ${shown('site-add') ? 'open' : ''}><summary>Add website <span class="info"><button type="button" class="quiet" data-act="info" aria-label="About adding a website" aria-describedby="site-add-info" popovertarget="site-add-info">ⓘ</button><span class="about" role="note" tabindex="0" id="site-add-info" popover>Give it a name, the https address where you sign in and, if its sign-in needs a header its pages never send, such as x-bot-token, that header's name, whose value you give as you sign in. Sign-in opens a browser briefly; the server checks which other hosts its pages need for runs.</span></span></summary><div class="website-body">`
+    + '<div class="row2"><input type="text" id="site-name" placeholder="Name" style="width:30%"><input type="text" id="site-url" placeholder="https://… where you sign in" style="flex:1"><input type="text" id="site-header" placeholder="Header, if any" style="width:20%"><button class="btn" data-act="site-add">Add</button></div></div></details>';
   if (me.can.includes('vpn')) {
     h += `<section class="vpn" aria-label="VPN trial"><h3>VPN · Trial</h3><div class="sub">Connect to reach websites on the client's network. Only your websites set to use that VPN go through it.</div>`;
     if (s.vpn.error === undefined) h += s.vpn.rows.map(v => `<div class="vpn-row" data-vpn="${esc(v.name)}"><span><b>${esc(v.name)}</b><span class="sub">${esc(v.gateway)}</span><span class="sub">${v.connected ? `Connected since ${esc(when(v.since))}` : 'Disconnected'}${v.error ? ` · ${esc(v.error)}` : ''}</span></span>`
@@ -1257,7 +1259,7 @@ async function saveKey() {
 async function openLogins() {
   const [logins, connections, grants, sites, vpn] = await Promise.all([api('/logins'), api('/connections'), api('/grants'), api('/logins/sites'),
     me.can.includes('vpn') ? api('/vpns').then(rows => ({ rows }), e => ({ error: e.message })) : null]);
-  pv = { title: 'Logins', settings: { kind: 'logins', logins, connections, grants, sites, vpn } };
+  pv = { title: 'Logins', shown: pv?.settings?.kind === 'logins' ? pv.shown : [], settings: { kind: 'logins', logins, connections, grants, sites, vpn } };
   renderPv();
 }
 
@@ -1426,7 +1428,17 @@ async function upload(files, pane, onto) {
   renderPanes();
 }
 
+function showInfo(button) {
+  const note = document.getElementById(button.getAttribute('aria-describedby')), box = button.getBoundingClientRect();
+  note.showPopover();
+  note.style.left = `${Math.max(16, Math.min(box.left, innerWidth - note.offsetWidth - 16))}px`;
+  note.style.top = `${box.bottom + note.offsetHeight <= innerHeight - 16 ? box.bottom : Math.max(16, box.top - note.offsetHeight)}px`;
+}
+$('#pv').addEventListener('pointerover', ev => { const button = ev.target.closest('[data-act=info]'); if (button) showInfo(button); });
+$('#pv').addEventListener('focusin', ev => { const button = ev.target.closest('[data-act=info]'); if (button) showInfo(button); });
+
 document.addEventListener('click', async ev => {
+  if (ev.target.closest('.info')) ev.preventDefault();
   if (!ev.target.closest('#sorter')) $('#sorter').open = false;
   if (!ev.target.closest('#user') && $('#user')) $('#user').open = false;
   if (!ev.target.closest('#side, [data-act=menu]') || ev.target.closest('#side a')) $('#side').classList.remove('open');
@@ -1436,6 +1448,8 @@ document.addEventListener('click', async ev => {
     ui.sect[sum.parentElement.dataset.key] = !sum.parentElement.open;
     drawn.delete($('#conv'));
   }
+  const site = ev.target.closest('#pv details[data-shown] > summary')?.parentElement;
+  if (site && !ev.target.closest('.info')) pv.shown = [...(pv.shown ?? []).filter(id => id !== site.dataset.shown), ...(!site.open ? [site.dataset.shown] : [])];
   const el = ev.target.closest('[data-act], .tile, .lrow');
   if (!el) {
     if (!ev.target.closest('#card, dialog')) { openItem = null; renderCard(); renderPanes(); }
@@ -1458,6 +1472,7 @@ const holder = el => (el.closest('#card') ? [cardPv, renderCard] : [pv, renderPv
 
 // What a click on an element with data-act does.
 async function onAct(act, el) {
+  if (act === 'info') { el.focus(); showInfo(el); }
   if (act === 'menu') $('#side').classList.toggle('open');
   if (act === 'people-all') { pv.peopleAll = !pv.peopleAll; renderPv(); }
   if (act === 'fold-side') { foldSide(!$('.app').classList.contains('folded')); renderSide(); }

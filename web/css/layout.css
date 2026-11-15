@@ -39,6 +39,12 @@ a { color: inherit; }
 .lsub > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .grant { display: grid; align-items: start; gap: 6px; padding-top: 8px; padding-bottom: 8px; }
 .grant .row2 .btn { margin-left: 0; }
+.website { border-bottom: 1px solid var(--rule); overflow-wrap: anywhere; }
+.website > summary { padding: 8px 0; cursor: pointer; }
+.website > summary b { margin-right: 8px; }
+.website-body { display: grid; gap: 8px; padding: 8px 0 8px 16px; }
+.website > .grant { padding-left: 16px; }
+.website .row2 > :is(input, select) { min-width: 0; max-width: 100%; }
 .website-via, .vpn-row .sub { display: block; }
 .vpn { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--rule); border-radius: var(--r1); }
 .vpn-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
@@ -221,8 +227,13 @@ button.twisty:hover { background: var(--rule); color: var(--ink); }
 .bar h1:hover .ren { color: var(--ink); }
 /* Whose an instance is: a chip by its title, which tells more on hover or a click, and their initials on others' rows. */
 .owner { position: relative; display: inline-block; vertical-align: 3px; margin-left: 10px; padding: 1px 9px; border-radius: 10px; font-size: 12.5px; font-weight: 500; letter-spacing: 0; color: var(--owner); background: var(--owner-bg); cursor: default; }
-.owner .about { display: none; position: absolute; left: 0; top: calc(100% + 6px); z-index: 5; width: max-content; max-width: 340px; font-weight: 400; color: var(--ink-2); background: var(--sheet); border: 1px solid var(--rule-2); border-radius: var(--r1); box-shadow: var(--shadow-pop); padding: 8px 12px; line-height: 1.5; }
-.owner:is(:hover, :focus-within) .about { display: block; }
+.owner .about, .info .about { display: none; position: absolute; left: 0; top: calc(100% + 6px); z-index: 5; width: max-content; max-width: 340px; font-weight: 400; color: var(--ink-2); background: var(--sheet); border: 1px solid var(--rule-2); border-radius: var(--r1); box-shadow: var(--shadow-pop); padding: 8px 12px; line-height: 1.5; }
+.owner:is(:hover, :focus-within) .about, .info .about:popover-open { display: block; }
+.info { display: inline-block; }
+.info button { padding: 2px 5px; }
+.info .about { position: fixed; inset: auto; margin: 0; max-width: min(340px, calc(100vw - 32px)); max-height: 40dvh; overflow: auto; font-size: 12.5px; letter-spacing: 0; }
+.info .about > span { display: block; }
+.info .about > span + span { margin-top: 8px; }
 .creds { vertical-align: 3px; margin-left: 6px; padding: 1px 9px; border: 1px solid var(--rule-2); border-radius: 10px; background: var(--sheet); font: 500 12.5px var(--sans); color: var(--ink-2); cursor: pointer; }
 .creds:hover { color: var(--ink); border-color: var(--edge); }
 .creds a { text-decoration: underline; cursor: pointer; }

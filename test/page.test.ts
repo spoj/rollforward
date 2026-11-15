@@ -1031,14 +1031,18 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   assert.deepEqual((await page.$$eval('#pv h3', hs => hs.map(h => h.textContent))), ['Needs you', 'All']);
   const all = await lines();
   assert.equal(all[0], 'Databricks adb | expired | Sign in again', 'first, what needs you');
-  assert.match(all.slice(1).join('\n'), /^Microsoft 365 \| Demo Admin · since .+ · 2 sources \| Show ▸\nDatabricks adb \| expired · 1 warehouse \| Show ▸\nWebsites \| 1 of 2 signed in \| Show ▸\nModel key \| the server's \| Add mine$/);
+  assert.match(all.slice(1).join('\n'), /^Microsoft 365 \| Demo Admin · since .+ · 2 sources \| Show ▸\nDatabricks adb \| expired · 1 warehouse \| Show ▸\nWebsites\s+ⓘ \| 1 of 2 signed in \| Show ▸\nModel key \| the server's \| Add mine$/);
   await page.click('#pv [data-act=logins-show][data-id=m365]');
   assert.deepEqual(await page.$$eval('#pv .lsub', rs => rs.map(r => (r as HTMLElement).innerText.replace(/\s+/g, ' ').trim())), ['OneDrive Remove', 'SharePoint Reports Remove']);
   await page.click('#pv [data-act=logins-show][data-id=adb]');
   assert.deepEqual((await page.$$eval('#pv .lsub', rs => rs.map(r => (r as HTMLElement).innerText.replace(/\s+/g, ' ').trim()))).slice(2), ['Warehouse Finance, adb-1.azuredatabricks.net Remove'], "Databricks' warehouses, as Microsoft 365's sources");
   await page.click('#pv [data-act=logins-show][data-id=adb]');
   await page.click('#pv [data-act=logins-show][data-id=web]');
-  assert.match((await page.$$eval('#pv .lsub', rs => rs.map(r => (r as HTMLElement).innerText.replace(/\s+/g, ' ').trim()))).slice(2).join('\n'), /^portal https:\/\/portal\.test\/ · since .+, kept alive until .+ Sign in again Sign out Remove\nReaches cdn\.portal\.test: Its CDN\. Remove\nReaches sso\.idp\.test Remove\nwiki https:\/\/wiki\.test\/start Sign in Remove$/);
+  assert.deepEqual(await page.locator('#pv details.website > summary').allTextContents(), ['portal portal.test · signed in · no workspace access · not checked', 'wiki wiki.test · not signed in · no workspace access · not checked']);
+  assert.equal(await page.locator('#pv details.website[open]').count(), 0);
+  assert.equal(await page.locator('#pv details[data-shown=site-add], #site-name').count(), 0, 'no Add website without a browser service');
+  await page.click('#pv details[data-shown="web:portal"] > summary');
+  assert.match(await page.locator('#pv details[data-shown="web:portal"]').innerText(), /https:\/\/portal\.test\/ · since .+, kept alive until .+[\s\S]*Sign in again[\s\S]*Sign out[\s\S]*Reaches cdn\.portal\.test: Its CDN\./);
   // Signing in, those granted keepalive may tick it, a week ahead unless they set less, and Save login sends it.
   const saved: unknown[] = [], routes = ['**/logins/web/portal', '**/signins/s1/view?drive', '**/signins/s1'];
   await page.route(routes[0], r => r.fulfill({ json: { id: 's1', expires: new Date(Date.now() + 600_000).toISOString() } }));
@@ -1058,6 +1062,7 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   await page.route(meBrowsers, async r => r.fulfill({ json: { ...await (await r.fetch()).json(), browsers: true } }));
   await page.evaluate(() => { me.browsers = true; return openLogins(); });
   await page.click('#pv [data-act=logins-show][data-id=web]');
+  await page.click('#pv details[data-shown=site-add] > summary');
   await page.route('**/logins/sites', r => r.request().method() === 'POST' ? r.fulfill({ json: { site: 'bank' } }) : r.continue());
   await page.fill('#pv #site-name', 'bank');
   await page.fill('#pv #site-url', 'https://bank.test/login');
@@ -1067,11 +1072,13 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   assert.deepEqual((await added).postDataJSON(), { name: 'bank', url: 'https://bank.test/login', header: 'x-bot-token' });
   await page.unroute('**/logins/sites');
   await page.unroute(meBrowsers);
+  await page.click('#pv details[data-shown="web:wiki"] > summary');
   await page.click('#pv [data-act=site-remove][data-id=wiki]');
   assert.equal(await page.textContent('#ask p'), 'Your login to it and your grants for it go too.');
   await page.click('#ask button:text-is("Remove")');
   await page.waitForSelector('#pv [data-act=site-remove][data-id=wiki]', { state: 'detached' });
   // Each of its other hosts, with what the server's check said of one it let it reach, its person removes, and it stays refused.
+  await page.click('#pv details[data-shown="web:portal"] > summary');
   await page.click('#pv [data-act=host-remove][data-host="cdn.portal.test"]');
   assert.equal(await page.textContent('#ask p'), "portal's runs no longer reach it, and the server's check won't let them again. Only an admin can allow it again.");
   await page.click('#ask button:text-is("Remove")');
@@ -1138,7 +1145,11 @@ test('a legacy grant check stays readable without inventing a profile or usage, 
   await page.mouse.click(5, 5);
   await page.hover('.row.ws');
   await page.click('.row.ws [data-act=workspace-settings]');
-  const detail = await page.locator('#pv .lsub', { hasText: 'For the weekly pull' }).innerText();
+  const grant = page.locator('#pv details[data-grant=g1]');
+  assert.equal(await grant.getAttribute('open'), null);
+  assert.equal(await grant.locator('[data-act=grant-approve]').isVisible(), false);
+  await grant.locator('summary').click();
+  const detail = await grant.innerText();
   assert.match(detail, /gg[\s\S]*https:\/\/gg\.test\/start[\s\S]*For the weekly pull/);
   assert.match(detail, /A ledger\./, 'the old production check still shows');
   assert.doesNotMatch(detail, /Approving lets it reach|, also sso\.gg\.test/, 'hosts are no longer part of the grant decision');
@@ -1178,6 +1189,10 @@ test('grant decisions say who can do what, why an admin is needed, owner concern
   await page.evaluate(id => { location.hash = `#/${id}`; }, workspace);
   await page.evaluate(async () => { await refresh(); openWorkspaceSettings(); });
   const used = page.locator('#pv [data-grant=used]');
+  assert.equal(await used.getAttribute('open'), null);
+  await used.locator('summary').click();
+  await page.evaluate(() => renderPv());
+  assert.equal(await used.getAttribute('open'), '', 'the grant stays expanded when redrawn');
   assert.match(await used.innerText(), /Vendor system[\s\S]*A vendor ledger\.[\s\S]*For month end\.[\s\S]*Opened in 4 runs · 2 runs wrote · last used/);
   assert.equal(await used.locator('[data-act=grant-revoke]').count(), 1);
   assert.doesNotMatch(await used.innerText(), /Approving lets|also |undefined|NaN/);
@@ -1778,6 +1793,7 @@ test("a website ticked without an approved grant in the instance's workspace say
   // On the Logins page, under the website, choosing the workspace, the page says what came of it.
   await page.evaluate(async () => { await api('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: 'Ledgers' }) }); await refresh(); await openLogins(); });
   await page.click('#pv [data-act=logins-show][data-id=web]');
+  await page.click('#pv details[data-shown="web:ledger"] > summary');
   const row = page.locator('#pv .row2:has([data-act=grant-ask][data-id=ledger])');
   await row.locator('select').selectOption({ label: 'Ledgers' });
   await row.locator('input').fill('Ledger pulls there too');
