@@ -220,7 +220,7 @@ export async function setSite(by: Me, name: string, change: Record<string, unkno
   if (x.keepalive !== undefined && URL.parse(String(x.keepalive), w.url)?.host !== new URL(w.url).host) throw new HttpError(400, 'keepalive: a page of the website, by its address or path, such as https://patriarch.patrina.net/PatriArchMVC/');
   if (x.every !== undefined && !(every && Number(every[1]) > 0)) throw new HttpError(400, 'every: minutes or hours, such as 10m or 1h');
   if (change.header === '') rmSync(join(personDir(person), `web:${name}.header.sealed`), { force: true });
-  saveWebsites(person, { ...websitesOf(person), [name]: { url: w.url, hosts: w.hosts, writeback: x.writeback !== false && x.writeback !== 'false', added: w.added, generation: (w.generation ?? 0) + (viaChanged ? 1 : 0),
+  saveWebsites(person, { ...websitesOf(person), [name]: { url: w.url, hosts: w.hosts, writeback: x.writeback !== false && x.writeback !== 'false', added: w.added, generation: viaChanged ? (w.generation ?? 0) + 1 : w.generation,
     ...(x.header && { header: String(x.header) }), ...(x.via && { via: String(x.via) }),
     ...(x.keepalive !== undefined && { keepalive: String(x.keepalive) }), ...(every && { every: Number(every[1]) * (every[2] === 'h' ? 60 : 1) }),
     ...(w.profile && { profile: w.profile }), ...(w.checks && { checks: viaChanged ? Object.fromEntries(Object.entries(w.checks).filter(([h, c]) => c.verdict === 'refused' || !vpnHosts(w.url).some(p => covers(p, h)))) : w.checks }) } });

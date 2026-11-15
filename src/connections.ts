@@ -399,6 +399,10 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     if (s) {
       // The key goes in both headers SDKs send one in: Authorization, and x-api-key, as Anthropic's, Pi's among them, and Exa's do.
       out = s.check(r);
+      if (mine) {
+        const current = logins(runner).find(l => l.id === 'openrouter');
+        if (!current?.enabled || current.since !== mine.since) throw new HttpError(409, 'the selected personal model key changed before sending; retry under current consent');
+      }
       apiKey = mine ? secret(runner, 'openrouter') : process.env[s.key]!;
       auth = { authorization: `Bearer ${apiKey}`, 'x-api-key': apiKey };
     }
@@ -413,7 +417,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       sending.add(req);
     } else if (s) sending.add(req);
     const doneWork = Promise.withResolvers<void>();
-    if (s) {
+    if (s || sent !== undefined) {
       let set = inFlight.get(a);
       if (!set) inFlight.set(a, set = new Set());
       set.add(doneWork.promise);

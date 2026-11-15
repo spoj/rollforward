@@ -1,11 +1,11 @@
 import { after, afterEach, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { createServer } from 'node:http';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PassThrough } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 import { createInstance, openStore, type Instance } from '../src/store.ts';
 import { initSystem, readLines, saveTree, writeJson } from '../src/system.ts';
 import { authority, lender, logins, personDir, saveLogin, secret, unoffer } from '../src/logins.ts';
@@ -46,7 +46,7 @@ const base = `http://127.0.0.1:${(service.address() as { port: number }).port}`;
 Object.assign(process.env, { RF_BROWSER_URL: base, RF_BROWSER_KEY: 'synthetic-only', RF_BROWSER_IDLE_MS: '60000', RF_SERVICE_KEY_SVC: 'synthetic-service', OPENROUTER_API_KEY: 'synthetic-shared' });
 const { Browsers, serveBrowsers, reap, removeSite, setSite } = await import('../src/browsers.ts');
 const { agentCall } = await import('../src/agent-api.ts');
-const { call, reachable, types, upstreams } = await import('../src/connections.ts');
+const { call, reachable, types, upstreams, hasCalls, drainCalls } = await import('../src/connections.ts');
 const { sources, prepare, prune } = await import('../src/indexes.ts');
 upstreams['openrouter.ai'] = base;
 let active: import('../src/connections.ts').CallRun;
@@ -139,6 +139,43 @@ test('a delayed policy cannot forward after owner epoch changes', async t => {
   assert.equal((await pending).status, 403);
   assert.equal(received.length, 0);
   assert.equal(inst.log.some(e => e.op === 'send'), false);
+});
+
+test('a pending provider body never acquires a replacement key that was saved disabled', async () => {
+  running([]);
+  saveLogin(ALICE, { id: 'openrouter', kind: 'key', name: 'Model', since: 'old', offers: [], enabled: true }, 'old-enabled');
+  const reading = Promise.withResolvers<void>(), body = Promise.withResolvers<void>();
+  const req = Object.assign(Readable.from((async function* () { reading.resolve(); await body.promise; yield Buffer.from('{"model":"synthetic"}'); })()), { url: '/api/v1/chat/completions', method: 'POST', headers: { 'content-type': 'application/json' } });
+  const res = Object.assign(new PassThrough(), { statusCode: 0, writeHead(status: number) { this.statusCode = status; return this; } });
+  res.resume();
+  const response = call(active, 'openrouter.ai', req as IncomingMessage, res as unknown as ServerResponse);
+  await reading.promise;
+  saveLogin(ALICE, { id: 'openrouter', kind: 'key', name: 'Model', since: 'new', offers: [], enabled: false }, 'new-disabled');
+  body.resolve();
+  await response;
+  assert.equal(res.statusCode, 409);
+  assert.equal(received.length, 0);
+});
+
+test('already-sent ordinary service writes participate in the run retirement drain', async () => {
+  running(['svc:a/']);
+  const gate = Promise.withResolvers<void>();
+  providerGate = gate.promise;
+  const pending = fetch(`${proxyBase}/a/value`, { method: 'POST', headers: { 'x-test-host': 'svc.rf.internal' }, body: 'synthetic' });
+  await sent.promise;
+  let drained = false, draining: Promise<void> | undefined;
+  try {
+    assert.equal(hasCalls(active), true);
+    draining = drainCalls(active).then(() => { drained = true; });
+    await new Promise(ok => setTimeout(ok, 20));
+    assert.equal(drained, false);
+  } finally {
+    gate.resolve();
+    assert.equal((await pending).status, 200);
+    await draining;
+  }
+  assert.equal(active.inst.log.some(e => e.op === 'call' && e.status === 200), true);
+  assert.equal(hasCalls(active), false);
 });
 
 test('a sent provider answer costs the captured owner after transfer', async () => {
