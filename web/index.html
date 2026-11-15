@@ -968,7 +968,7 @@ function renderPv() {
   if ((pv.att ?? pv).pdf) watchPages(d, pv.att ?? pv);
 }
 
-function grantHtml(g, cls = 'website') {
+function grantHtml(g, cls = 'website', showCheckError = true) {
   const w = tree.find(w => w.id === g.workspace), ws = g.workspaceName ?? w?.name ?? g.workspace, pending = g.state === 'pending', mine = g.person === me.email, manage = me.role === 'admin' || w?.manage;
   const c = g.profile ?? g.check, flags = (g.flags ?? c?.flags ?? []).filter(f => !c?.error || ![c.error, `the website profile could not be checked: ${c.error}`, `The old check failed: ${c.error}`].includes(f)), what = c?.what ?? c?.summary;
   const why = g.adminWhy || (c?.category === 'general' ? 'This is a general-purpose website.' : c?.risk === 'high' ? 'The website is high risk.' : ''), adminOnly = g.adminOnly ?? !!why;
@@ -978,12 +978,12 @@ function grantHtml(g, cls = 'website') {
     + `<div class="sub">${esc(g.url)}${category ? ` · ${category}` : ''}${!g.profile && c?.risk ? ` · ${esc(c.risk)} risk` : ''}</div>`
     + (what ? `<div class="sub">${esc(what)}</div>` : '')
     + (g.via ? `<div class="sub">Through ${esc(g.via)} VPN into the client's network.</div>` : '')
-    + (!c || c.error && !(pending && adminOnly && why.includes(c.error)) ? `<div class="sub">${c?.error ? `Check failed: ${esc(c.error)}` : 'Not checked'}.</div>` : '')
+    + (!c || c.error && showCheckError && !(pending && adminOnly && why.includes(c.error)) ? `<div class="sub">${c?.error ? `Check failed: ${esc(c.error)}` : 'Not checked'}.</div>` : '')
     + `<div>Runs may do whatever ${esc(nameOf(g.person))} can there, including submitting and approving.</div>`
     + `<div>Reason: ${esc(g.reason)}</div>`
     + (flags.length ? `<div class="sub">Flags: ${esc(flags.join('; '))}</div>` : '')
     + (!g.profile && g.check?.hosts?.length ? `<div class="sub">Other hosts in the earlier check: ${esc(g.check.hosts.join(', '))}.</div>` : '')
-    + (pending && adminOnly ? `<div class="sub">Only an admin can approve. ${esc(why)}</div>` : '')
+    + (pending && adminOnly ? `<div class="sub">Only an admin can approve.${!showCheckError && c?.error && why.includes(c.error) ? '' : ` ${esc(why)}`}</div>` : '')
     + (!pending && g.by ? `<div class="sub">Approved by ${person(g.by)}${g.decided ? ` ${esc(when(g.decided))}` : ''}.${g.text ? ` ${esc(g.text)}` : ''}</div>` : '')
     + (g.use ? `<div class="sub">Opened in ${plural(g.use.runs, 'run')} · ${plural(g.use.wrote, 'run')} wrote · last used ${g.use.last ? esc(when(g.use.last)) : 'never'}.</div>` : '')
     + `<div class="row2">${pending && manage ? `${!adminOnly || me.role === 'admin' ? `<button class="btn" data-act="grant-approve" data-id="${esc(g.id)}">Approve</button>` : ''}<button class="btn" data-act="grant-deny" data-id="${esc(g.id)}">Deny</button>` : ''}`
@@ -1167,13 +1167,14 @@ function loginsHtml(s) {
       const free = tree.filter(x => !x.archived && !gs.some(g => g.workspace === x.id));
       const key = `web:${n}`, c = w.profile, flags = [...c?.flags ?? [], ...gs.flatMap(g => g.flags ?? [])];
       return `<details class="website" data-shown="${esc(key)}" ${shown(key) ? 'open' : ''}><summary><b>${esc(n)}</b> <span class="sub">${esc(new URL(w.url).hostname)} · ${l ? l.expired ? 'expired' : 'signed in' : 'not signed in'} · ${gs.length ? ['approved', 'pending'].map(state => gs.filter(g => g.state === state).length ? `${gs.filter(g => g.state === state).length} ${state}` : '').filter(Boolean).join(', ') : 'no workspace access'}${!c ? ' · not checked' : c.error ? ' · check failed' : flags.length || c.risk === 'high' || c.category === 'general' || gs.some(g => g.adminOnly) ? ' · warning' : ''}</span></summary><div class="website-body"><div class="sub">${esc(w.url)}${l ? ` · ${l.expired ? 'expired' : `since ${esc(when(l.since))}${l.keepalive > new Date().toISOString() ? `, kept alive until ${esc(when(l.keepalive))}` : ''}`}` : ''}</div>${me.can.includes('vpn') && w.via ? `<div class="sub website-via">Via ${esc(w.via)} VPN</div>` : ''}`
-        + (!gs.length ? (c?.error ? `<div class="sub">Check failed: ${esc(c.error)}</div>` : c ? `<div class="sub">${esc(c.what)} · ${esc(c.category)} · ${esc(c.risk)} risk</div>` : '')
+        + (c?.error ? `<div class="sub">Check failed: ${esc(c.error)}</div>` : '')
+        + (!gs.length ? (c && !c.error ? `<div class="sub">${esc(c.what)} · ${esc(c.category)} · ${esc(c.risk)} risk</div>` : '')
           + (flags.length ? `<div class="sub">Flags: ${esc(flags.join('; '))}</div>` : '') : '')
         + `${w.header ? `<input type="password" id="hdr-${esc(n)}" placeholder="${l ? `New ${esc(w.header)}, if any` : `Your ${esc(w.header)}`}" autocomplete="off" style="display:block;width:100%;margin-top:6px">` : ''}<div class="row2">`
         + `<button class="btn" data-act="web-signin" data-id="${esc(n)}" data-name="${esc(n)}">${l ? 'Sign in again' : 'Sign in'}</button>${l ? signOut(l.id) : ''}`
         + `<button class="quiet" data-act="site-remove" data-id="${esc(n)}">Remove</button></div>`
         + w.hosts.map(x => `<div class="lsub"><span class="sub">Reaches ${esc(x)}${w.checks?.[x]?.verdict === 'pass' ? `: ${esc(w.checks[x].why)}` : ''}</span><button class="quiet" data-act="host-remove" data-site="${esc(n)}" data-host="${esc(x)}">Remove</button></div>`).join('')
-        + gs.map(g => grantHtml(g, 'lsub')).join('')
+        + gs.map(g => grantHtml(g, 'lsub', !c?.error || (g.profile ?? g.check)?.error !== c.error)).join('')
         + (l && !l.expired && free.length ? `<div class="row2"><select>${free.map(x => `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join('')}</select>`
           + `<input type="text" placeholder="What runs there use it for" style="flex:1"><button class="btn" data-act="grant-ask" data-id="${esc(n)}">Ask to use</button></div>` : '') + '</div></details>';
     }).join('');

@@ -85,6 +85,22 @@ test('collapsed website rows warn about legacy grant concerns despite a low-risk
   } finally { await page.close(); }
 });
 
+test('one website check error is shared by its workspace grants without hiding other warnings', async () => {
+  const error = 'The website classifier timed out', why = `the website profile could not be checked: ${error}`;
+  const { page } = await open('user', [{ ...grant, id: 'approved-error', state: 'approved', profile: { error }, flags: [why], adminOnly: true },
+    { ...grant, id: 'pending-error', profile: { error }, flags: [why, 'Can approve payments'], adminOnly: true, adminWhy: `${why}: an admin decides` }]);
+  try {
+    await page.route('**/logins/sites', r => r.fulfill({ json: { portal: { url: grant.url, hosts: [], profile: { error } } } }));
+    await page.click('#sidefoot [data-act=logins]');
+    await page.click('[data-act=logins-show][data-id=web]');
+    const row = page.locator('details[data-shown="web:portal"]');
+    await row.locator('summary').click();
+    assert.equal((await row.innerText()).split(error).length - 1, 1);
+    assert.match(await row.innerText(), /Can approve payments/);
+    assert.match(await row.innerText(), /Only an admin can approve/);
+  } finally { await page.close(); }
+});
+
 test('a sign-in counts down from the server expiry, never asks to allow hosts, and expires without saving', async () => {
   const { page, requests } = await open('user');
   try {
