@@ -11,13 +11,21 @@ import { upstreams, type Connection, type Request, type Type } from '../connecti
 const STATEMENTS = '/api/2.0/sql/statements', WORKSPACE = /^[a-z0-9-]+(\.[a-z0-9-]+)*\.azuredatabricks\.net$/;
 const scope = ['2ff814a6-3304-4ab8-85cb-cd0e6f879c1d/user_impersonation'];
 
-function check(c: Connection, ticks: string[], { method, url, json }: Request): { offer: string } {
-  const p = url.pathname.replace(/\/$/, ''), at = `${c.name}:${url.host}`;
+const encodePart = (s: string) => encodeURIComponent(s).replace(/%(?:24|26|2B|2C|3A|3B|3D|40)/gi, m => decodeURIComponent(m));
+
+function check(c: Connection, ticks: string[], { method, url, json, target }: Request): { offer: string; pathname: string } {
+  const raw = target ? target.replace(/^https:\/\/[^/]+/i, '').split(/[?#]/, 1)[0] : url.pathname;
+  let decoded: string;
+  try { decoded = decodeURIComponent(raw); } catch { throw new HttpError(403, `${method} ${raw}: invalid path encoding`); }
+  if (!raw.startsWith('/') || raw.startsWith('//') || /[%\\?#\x00-\x1f\x7f]/.test(decoded) || /%(?:2f|5c)/i.test(raw)
+    || decoded.slice(1).split('/').some((s, i, parts) => /^[. ]+(;|$)/.test(s) || (!s && i < parts.length - 1)))
+    throw new HttpError(403, `${method} ${raw}: a path has no empty part, no part of dots and spaces alone or before ;, as .. or ..;, no encoded separator, backslash or nested encoding`);
+  const pathname = `/${decoded.slice(1).split('/').map(s => s && encodePart(s)).join('/')}`, p = decoded.replace(/\/$/, ''), at = `${c.name}:${url.host}`;
   if (method === 'POST' && p === STATEMENTS && !json?.warehouse_id)
     throw new HttpError(403, `a statement names its warehouse_id, one ticked for the instance: ${ticks.filter(t => t.startsWith(`${at}/`)).map(t => t.split('/')[1]).join(', ') || 'none is'}`);
-  if (method === 'POST' && p === STATEMENTS) return { offer: `${at}/${json.warehouse_id}` };
+  if (method === 'POST' && p === STATEMENTS) return { offer: `${at}/${json.warehouse_id}`, pathname };
   if ((method === 'GET' && new RegExp(`^${STATEMENTS}/[\\w-]+(/result/chunks/\\d+)?$`).test(p)) || (method === 'POST' && new RegExp(`^${STATEMENTS}/[\\w-]+/cancel$`).test(p))
-    || p.startsWith('/api/2.1/unity-catalog/')) return { offer: ticks.find(t => t.startsWith(`${at}/`)) ?? at };
+    || (p.startsWith('/api/2.1/unity-catalog/') && p.length > '/api/2.1/unity-catalog/'.length)) return { offer: ticks.find(t => t.startsWith(`${at}/`)) ?? at, pathname };
   throw new HttpError(403, `${method} ${p}: ${c.name} takes statements, ${STATEMENTS}, and the Unity Catalog API, /api/2.1/unity-catalog/…`);
 }
 

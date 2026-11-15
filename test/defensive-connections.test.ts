@@ -125,6 +125,18 @@ before(async () => {
       }
       return send({ id: 'child1', name: 'child1.csv', file: {}, parentReference: { driveId: 'b!d1', id: 'folderA' } });
     }
+    if (u.pathname === '/api/2.0/sql/statements' && req.method === 'POST') {
+      return send({ statement_id: 's1', status: { state: 'SUCCEEDED' } });
+    }
+    if (u.pathname === '/api/2.0/sql/statements/s1/result/chunks/0' && req.method === 'GET') {
+      return send({ chunk_index: 0 });
+    }
+    if (u.pathname === '/api/2.0/sql/statements/s1/cancel' && req.method === 'POST') {
+      return send({});
+    }
+    if (u.pathname.startsWith('/api/2.1/unity-catalog/')) {
+      return send({ path: u.pathname });
+    }
     return send({ error: { code: 'invalidRequest', message: `unexpected ${u.pathname}${u.search}` } }, 400);
   });
   await new Promise<void>(ok => upstream.listen(0, '127.0.0.1', () => ok()));
@@ -156,7 +168,17 @@ before(async () => {
 
   connMod = await import('../src/connections.ts');
   await connMod.setConnection('m365', { type: 'graph' }, USER);
+  await connMod.setConnection('adb', { type: 'databricks' }, USER);
   connMod.upstreams['graph.microsoft.com'] = base;
+  connMod.upstreams['adb-1.azuredatabricks.net'] = base;
+  loginsMod.saveLogin(USER, {
+    id: 'adb',
+    kind: 'databricks',
+    name: 'Databricks adb',
+    account: USER,
+    since: '2026-11-15T00:00:00Z',
+    offers: [{ id: 'adb:adb-1.azuredatabricks.net/wh1', name: 'Warehouse 1' }],
+  }, 'rtok');
 
   const { bundle } = await import('../src/ca.ts');
   const { serveSandboxes } = await import('../src/sandbox.ts');
@@ -215,4 +237,44 @@ test('Graph canonicalizes percent-encoded resource segments and colon paths cons
   assert.equal(selectRes.status, 200);
   assert.equal(calls.at(-1)?.data.status, 200);
   assert.equal(upstreamPaths.some(p => p.includes('/drives/undefined')), false);
+});
+
+test('Databricks rejects malformed or ambiguous path segments while allowing valid SQL and Unity Catalog paths', async () => {
+  const inst = makeInst(['adb:adb-1.azuredatabricks.net/wh1']);
+  runs.set('d1', inst);
+  callRuns.set('d1', { inst, n: 1, links: new Map(), cost: 0 });
+  upstreamPaths.length = 0;
+
+  const D = 'https://adb-1.azuredatabricks.net';
+  for (const [method, path, body] of [
+    ['POST', '/api/2.0/sql/statements', JSON.stringify({ statement: 'SELECT 1', warehouse_id: 'wh1' })],
+    ['GET', '/api/2.0/sql/statements/s1/result/chunks/0', undefined],
+    ['POST', '/api/2.0/sql/statements/s1/cancel', '{}'],
+    ['GET', '/api/2.1/unity-catalog/tables/main.finance.gl_2026', undefined],
+    ['GET', '/api/2.1/unity-catalog/catalogs/', undefined],
+  ] as const) {
+    const r = await viaProxy(method, `${D}${path}`, {
+      token: 'd1',
+      ...(body !== undefined && { body, headers: { 'content-type': 'application/json' } }),
+    });
+    assert.equal(r.status, 200, `expected 200 for ${method} ${path}, got ${r.status}: ${r.text}`);
+  }
+
+  const beforeBad = upstreamPaths.length;
+  for (const badPath of [
+    '/api/2.1/unity-catalog//catalogs',
+    '/api/2.1/unity-catalog/./catalogs',
+    '/api/2.1/unity-catalog/../2.1/unity-catalog/catalogs',
+    '/api/2.1/unity-catalog/.;v=1/catalogs',
+    '/api/2.1/unity-catalog/..;v=1/catalogs',
+    '/api/2.1/unity-catalog/catalogs%2fextra',
+    '/api/2.1/unity-catalog/catalogs%5cextra',
+    '/api/2.1/unity-catalog/catalogs%00',
+    '/api/2.1/unity-catalog/%252e/catalogs',
+    '/api/2.1/unity-catalog/%E0%A4%A',
+  ]) {
+    const r = await viaProxy('GET', `${D}/api/2.1/unity-catalog/catalogs`, { token: 'd1', path: badPath });
+    assert.equal(r.status, 403, `expected 403 for ${badPath}, got ${r.status}: ${r.text}`);
+  }
+  assert.equal(upstreamPaths.length, beforeBad, 'rejected paths must not be forwarded upstream');
 });
