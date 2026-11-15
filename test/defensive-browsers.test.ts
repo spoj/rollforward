@@ -125,3 +125,37 @@ test('revokeInternalHosts strips revoked internal hosts from websites.json folde
   assert.deepEqual(afterSite.hosts, []);
   assert.equal(afterSite.checks?.['sso.internal.test']?.verdict, 'internal');
 });
+
+test('run browser writeback excludes cookies scoped to bare private PSL suffixes like .github.io', async () => {
+  writeSites(USER, {
+    pages: {
+      url: 'https://app.github.io/',
+      hosts: [],
+      writeback: true,
+      added: '2026-11-15T00:00:00Z',
+      profile: { what: 'Docs site.', category: 'vendor', risk: 'low', flags: [] },
+      checks: { 'app.github.io': { verdict: 'pass', why: 'Own domain.' } },
+    },
+  });
+  const since = '2026-11-15T01:00:00Z';
+  saveLogin(USER, { id: 'web:pages', kind: 'website', name: 'pages', since, offers: [{ id: 'web:pages', name: 'pages' }] }, JSON.stringify({ cookies: [], origins: [] }));
+  const g = await ask({ email: USER, role: 'admin', caps: [] }, 'pages', 'w', 'read docs');
+  if (g.state === 'pending') decide({ email: USER, role: 'admin', caps: [] }, g.id, true);
+
+  const inst = createInstance('s', 'psl-check', USER, ['web:pages']);
+  inst.append('server', 'run', { run: 1, runner: USER, consent: 1 });
+  const br = new Browsers(inst, 1, 'tok-psl');
+  nextSessionId = 'bs-psl';
+  closeState = {
+    cookies: [
+      { name: 'ok', value: '1', domain: 'app.github.io' },
+      { name: 'shared', value: '2', domain: '.github.io' },
+    ],
+    origins: [],
+  };
+  closeLog = [{ method: 'GET', url: 'https://app.github.io/', status: 200 }];
+  await (br as any).browser('pages');
+  await br.close();
+  const saved = JSON.parse(secret(USER, 'web:pages'));
+  assert.deepEqual(saved.cookies.map((c: any) => c.domain), ['app.github.io']);
+});

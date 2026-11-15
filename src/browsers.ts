@@ -429,7 +429,7 @@ function keep(inst: Instance, b: Opened, { state, log }: { state: unknown; log: 
       ...(Array.isArray(s.cookies) && {
         cookies: s.cookies.filter(c => {
           const d = String(c?.domain ?? '').toLowerCase(), dom = d.replace(/^\./, '');
-          return Boolean(dom) && ps.some(p => covers(p, dom) || (d.startsWith('.') && Boolean(getDomain(dom)) && (p.replace(/^\*\./, '') === dom || p.replace(/^\*\./, '').endsWith(d))));
+          return Boolean(dom) && ps.some(p => covers(p, dom) || (d.startsWith('.') && Boolean(getDomain(dom, { allowPrivateDomains: true })) && (p.replace(/^\*\./, '') === dom || p.replace(/^\*\./, '').endsWith(d))));
         }),
       }),
       ...(Array.isArray(s.origins) && {
