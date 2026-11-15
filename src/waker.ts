@@ -607,8 +607,18 @@ function fire() {
   for (const [id, wake] of due) {
     const { target, days, label } = wake;
     if (Date.parse(w.fired[target] ?? '1970-01-01') + SPACING_MS > Date.parse(now)) continue;
-    // One a person set goes only while they may see its workspace: once they can't, as when they've left, it's gone.
-    const setter = asPerson(wake.from), ws = t.workspaces[t.series[t.series[target] ? target : instance(target).seriesId].workspace];
+    // One a person set goes only while they may see its workspace, and a run's while its instance lives in the same workspace.
+    const targetSeries = t.series[target] ? target : instance(target).seriesId, wsId = t.series[targetSeries].workspace, ws = t.workspaces[wsId];
+    if (wake.inst) {
+      let src: Instance | undefined;
+      try { src = instance(wake.inst); } catch {}
+      if (!src || t.series[src.seriesId]?.workspace !== wsId) {
+        delete w.pending[id];
+        console.log(`a wake for ${named(t, targetSeries)} went unfired, as the instance that set it is in another workspace`);
+        continue;
+      }
+    }
+    const setter = asPerson(wake.from);
     if (!wake.inst && wake.from.includes('@') && !(setter && canSee(setter, ws))) {
       delete w.pending[id];
       console.log(`a wake ${wake.from} set went unfired, as they can no longer see ${ws.name}`);
