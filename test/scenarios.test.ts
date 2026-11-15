@@ -1290,8 +1290,8 @@ test("personal websites are checked after Save, grants reuse the profile without
   verdicts.push('not JSON');
   scripts.push({ bash: ['curl -s -m 5 -H "connection: upgrade" -H "upgrade: websocket" "$RF_BROWSERS/bobs"'], report: 'Unchecked host refused.', saw: [] });
   assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Try the new page.' }, bob)).status, 200);
-  const retried = await runs(id, 2);
   await until('the failed host check', () => acts().some(a => a.op === 'website-check' && a.site === 'bobs' && a.error));
+  const retried = await runs(id, 2);
   const failed = await listed(bob);
   assert.deepEqual(failed.profile, portalProfile, 'a failed check keeps the good profile');
   assert.deepEqual([failed.checks['unreviewed.host.test'], failed.checks['static.cdnhost.test']], [undefined, { verdict: 'refused', why: 'Its person removed it.' }]);
