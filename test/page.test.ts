@@ -2257,8 +2257,13 @@ for (const kind of ['workspace', 'series']) test(`a delayed ${kind} rename does 
       return ids;
     }, kind);
     const act = kind === 'workspace' ? 'workspace-settings' : 'settings', input = kind === 'workspace' ? '#wname' : '#sname';
-    await tab.goto(`${new URL(page.url()).origin}/#/${ids[0]}`);
-    await tab.locator(`[data-act=${act}][data-id="${ids[0]}"]`).evaluate((el: HTMLElement) => el.click());
+    const openSettings = async (id: string) => {
+      await tab.goto(`${new URL(page.url()).origin}/#/${id}`);
+      await tab.waitForSelector(`#tree .row.on a[href="#/${id}"]`);
+      await tab.evaluate(([a, i]) => (document.querySelector(`#tree [data-act=${a}][data-id="${i}"]`) as HTMLElement).click(), [act, id] as const);
+      await tab.waitForSelector(`#pv[open] ${input}`);
+    };
+    await openSettings(ids[0]);
     await tab.fill(input, 'Renamed first settings');
     const url = `**/api/${kind === 'workspace' ? 'workspaces' : 'series'}/${ids[0]}`;
     await tab.route(url, async route => {
@@ -2270,9 +2275,7 @@ for (const kind of ['workspace', 'series']) test(`a delayed ${kind} rename does 
     await tab.dispatchEvent(input, 'change');
     await sending;
     await tab.click('#pv [data-act=unpv]');
-    await tab.goto(`${new URL(page.url()).origin}/#/${ids[1]}`);
-    await tab.locator(`[data-act=${act}][data-id="${ids[1]}"]`).evaluate((el: HTMLElement) => el.click());
-    await tab.waitForSelector(input);
+    await openSettings(ids[1]);
     const refreshed = tab.waitForResponse(r => r.url().endsWith('/api'));
     release();
     await refreshed;
