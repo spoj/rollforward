@@ -347,12 +347,22 @@ test('Compressed zstd and x-gzip responses decode metadata and usage while non-J
   assert.equal(chunk.status, 200);
   assert.equal(chunk.text, 'a,b\n1,2\n');
 
-  // 2. Non-JSON text with application/json Content-Type logs actual 200 status and byte count instead of 502
+  // 2. Non-JSON text with application/json Content-Type logs actual 200 status and byte count instead of 502, with a bounded diagnostic
   calls.length = 0;
-  const nonJson = await viaProxy('GET', 'https://adb-1.azuredatabricks.net/api/2.0/sql/statements/s-nonjson', { token: 'z1' });
+  const errs: string[] = [], origError = console.error;
+  console.error = (...args: unknown[]) => { errs.push(args.map(String).join(' ')); };
+  let nonJson: { status: number; text: string };
+  try {
+    nonJson = await viaProxy('GET', 'https://adb-1.azuredatabricks.net/api/2.0/sql/statements/s-nonjson', { token: 'z1' });
+  } finally {
+    console.error = origError;
+  }
   assert.equal(nonJson.status, 200);
   assert.equal(calls.at(-1)?.data.status, 200);
   assert.equal(calls.at(-1)?.data.bytes, 'plain-text-not-json'.length);
+  assert.equal(errs.length, 1);
+  assert.match(errs[0], /adb: invalid JSON metadata on GET \/api\/2\.0\/sql\/statements\/s-nonjson \(200, 19 bytes\)/);
+  assert.equal(errs[0].includes('plain-text-not-json'), false);
 
   // 3. Corrupt zstd on a connection JSON response still fails 502
   calls.length = 0;
@@ -452,4 +462,15 @@ test('Entra token() coalesces concurrent refreshes and ignores stale completions
   assert.equal(await token(USER, 'm365', scope), 'atok-fresh-after-200');
   tokenGate = undefined;
   tokenEntered = undefined;
+
+  // 4. Synchronous throw from missing .sealed file cleans up inFlight so a restored secret works immediately
+  loginsMod.saveLogin(USER, {
+    id: 'm365', kind: 'm365', name: 'Microsoft 365', account: USER,
+    since: '2026-11-15T04:00:00Z', offers: [],
+  }, 'sync-throw-check');
+  const sealedFile = join(loginsMod.personDir(USER), 'm365.sealed');
+  rmSync(sealedFile, { force: true });
+  await assert.rejects(token(USER, 'm365', scope));
+  loginsMod.seal(USER, 'm365', 'restored-after-sync-throw');
+  assert.equal(await token(USER, 'm365', scope), 'atok-restored-after-sync-throw');
 });

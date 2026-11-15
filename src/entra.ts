@@ -18,7 +18,7 @@ const current = (email: string, id: string) => logins(email).find(l => l.id === 
 // A token for `scope`, kept until it expires, or its login is signed in to again, as to grant more, or signed out of.
 export function token(email: string, id: string, scope: string[]): Promise<string> {
   const key = `${id} ${email}`, t = tokens.get(key), login = current(email, id);
-  if (t && t.exp > Date.now() && t.since === login?.since) return Promise.resolve(t.token);
+  if (t && t.exp > Date.now() && t.since === login?.since && !login.expired) return Promise.resolve(t.token);
   if (!login || login.expired) return Promise.reject(Object.assign(new HttpError(409, `${email} has no current ${login?.name ?? id} login: they sign in to it on the Logins page`), { login: id }));
   const inflightKey = `${key}\0${login.since}\0${scope.join(' ')}`, pending = inFlight.get(inflightKey);
   if (pending) return pending;
@@ -35,12 +35,13 @@ export function token(email: string, id: string, scope: string[]): Promise<strin
     } catch (e) {
       if ((e as HttpError).status !== 401) throw e;
       const now = current(email, id);
-      if (now?.since === login.since) saveLogin(email, { ...now, expired: true });
+      if (now?.since === login.since) {
+        tokens.delete(key);
+        saveLogin(email, { ...now, expired: true });
+      }
       throw Object.assign(new HttpError(409, `${email}'s ${login.name} login has expired: they sign in to it again on the Logins page`), { login: id });
-    } finally {
-      inFlight.delete(inflightKey);
     }
-  })();
+  })().finally(() => inFlight.delete(inflightKey));
   inFlight.set(inflightKey, run);
   return run;
 }
