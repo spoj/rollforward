@@ -568,11 +568,11 @@ export function cancelWakes(targets: string[]) {
   saveWakes(w);
 }
 
-// An assign makes its instance's pending wakes no one's word: each fires as a note, a request to its runner where they don't share
-// the series (fire()).
+// An assign makes wakes pending for or from its instance no one's word: each fires as a note, a request to its runner where they
+// don't share the series (fire()).
 export function assigned(inst: Instance) {
   const w = wakes();
-  for (const k of Object.values(w.pending)) if (k.target === inst.id) k.assigned = true;
+  for (const k of Object.values(w.pending)) if (k.target === inst.id || k.inst === inst.id || k.target === inst.seriesId && k.label === inst.label) k.assigned = true;
   saveWakes(w);
 }
 

@@ -144,6 +144,30 @@ describe('standing', { concurrency: true }, () => {
   }
 });
 
+test("a pending agent wake cannot acquire the recipient's authority when its source is reassigned", async () => {
+  const i = make(false), source = createInstance(i.seriesId, 'source', bob, []);
+  const { id } = setWake(i.id, { at: new Date(Date.now() + 50).toISOString(), from: `Acme/Series/${source.label}`, inst: source.id, text: 'Original source instruction.' });
+  source.append(bob, 'assign', { to: alice, from: bob, logins: [] });
+  assigned(source);
+  for (let k = 0; k < 60 && wakes().pending[id]; k++) await new Promise(r => setTimeout(r, 50));
+  assert.equal(wakes().pending[id], undefined, 'the wake was processed');
+  assert.deepEqual(Object.values(wakes().requests).filter(r => r.target === i.id).map(r => r.text), ['Original source instruction.']);
+  assert.equal(i.log.some(e => e.op === 'wake' || e.op === 'run'), false, 'the prior source runner cannot direct a run as the recipient');
+});
+
+test('a series-label wake pending through reassignment stays a request when its original runner returns', async () => {
+  const i = make(false);
+  const { id } = setWake(i.seriesId, { at: new Date(Date.now() + 50).toISOString(), label: i.label, from: alice, text: 'Before reassignment.' });
+  i.append(alice, 'assign', { to: bob, from: alice, logins: [] });
+  assigned(i);
+  i.append(bob, 'assign', { to: alice, from: bob, logins: [] });
+  assigned(i);
+  for (let k = 0; k < 60 && wakes().pending[id]; k++) await new Promise(r => setTimeout(r, 50));
+  assert.equal(wakes().pending[id], undefined, 'the wake was processed');
+  assert.deepEqual(Object.values(wakes().requests).filter(r => r.target === i.id).map(r => r.text), ['Before reassignment.']);
+  assert.equal(i.log.some(e => e.op === 'wake' || e.op === 'run'), false);
+});
+
 test("a wake pending as its instance was assigned stays no one's word, though the instance comes back to whoever set it", () => {
   const i = make(false);
   setWake(i.id, { at: new Date(Date.now() + 3600e3).toISOString(), from: alice });
