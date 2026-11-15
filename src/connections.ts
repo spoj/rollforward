@@ -441,7 +441,8 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
           recordCost({ at, service: svc, inst: a.inst.id, run: a.n, person: runner, cost, ...(estimated && { estimated: true }), ...(mine && { own: true }) });
         }
       }
-      log(answer.status, answer.bytes, s ? { ...(json?.model && { model: json.model }), cost, ...(estimated && { estimated: true }) } : answer.incomplete ? { incomplete: true } : undefined);
+      const failed = answer.failed && [process.env.OPENROUTER_API_KEY, process.env.EXA_API_KEY, apiKey].reduce((m, k) => k ? m.replaceAll(k, '[redacted]') : m, answer.failed);
+      log(failed ? 502 : answer.status, failed ? 0 : answer.bytes, s ? { ...(json?.model && { model: json.model }), cost, ...(estimated && { estimated: true }), ...(failed && { failed }) } : answer.incomplete ? { incomplete: true } : undefined);
       if (mine && answer.status === 402) {
         saveLogin(runner, { ...mine, expired: true });
         a.inst.append('server', 'expired', { run: a.n, login: 'openrouter', name: 'OpenRouter', runner });
@@ -470,11 +471,11 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
   auth: Record<string, string>; body?: Buffer; digest?: { hash: Hash; size: number }; keep: boolean;
   service?: boolean; registerAbort?: (fn: () => void) => () => void; location(to: string): void;
 }) {
-  return new Promise<{ status: number; bytes: number; type: string; text: string; events: any[]; headers: IncomingHttpHeaders; cut?: boolean; incomplete?: boolean }>((ok, fail) => {
+  return new Promise<{ status: number; bytes: number; type: string; text: string; events: any[]; headers: IncomingHttpHeaders; cut?: boolean; incomplete?: boolean; failed?: string }>((ok, fail) => {
     // X-RF- headers are the server's, X_RF_ too, which some servers read as the same.
     const headers = Object.fromEntries(Object.entries(req.headers).filter(([k]) => k !== 'authorization' && k !== 'host' && !HOP.includes(k) && !/^x[-_]rf[-_]/.test(k)));
     let settled = false, unregister: (() => void) | undefined;
-    const done = (v: { status: number; bytes: number; type: string; text: string; events: any[]; headers: IncomingHttpHeaders; cut?: boolean; incomplete?: boolean }) => {
+    const done = (v: { status: number; bytes: number; type: string; text: string; events: any[]; headers: IncomingHttpHeaders; cut?: boolean; incomplete?: boolean; failed?: string }) => {
       if (settled) return;
       settled = true;
       unregister?.();
@@ -563,19 +564,24 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
           feedText(decoder.end());
           if (carry) { pushLine(carry); carry = ''; }
         }
-        let text = '';
+        let text = '', failed: string | undefined;
         if (o.keep && isJson && kept.length) {
           const raw = Buffer.concat(kept);
           try {
             const options = o.service ? { maxOutputLength: 8 * 1024 * 1024 } : undefined;
             text = (enc === 'gzip' ? gunzipSync(raw, options) : enc === 'deflate' ? inflateSync(raw, options) : enc === 'br' ? brotliDecompressSync(raw, options) : raw).toString();
           } catch (e) {
-            if ((e as NodeJS.ErrnoException).code !== 'ERR_BUFFER_TOO_LARGE') die(e as Error);
+            if ((e as NodeJS.ErrnoException).code !== 'ERR_BUFFER_TOO_LARGE') {
+              res.destroy();
+              if (!o.service) { die(e as Error); return { status: r.statusCode!, bytes, type, text, events, headers: r.headers }; }
+              cut = true;
+              failed = (e as Error).message;
+            }
           }
           const trimmed = text.trimStart();
           if (trimmed.startsWith('{')) try { events.push(JSON.parse(trimmed)); } catch {}
         }
-        return { status: r.statusCode!, bytes, type, text, events, headers: r.headers, ...(cut && { cut: true }) };
+        return { status: r.statusCode!, bytes, type, text, events, headers: r.headers, ...(cut && { cut: true }), ...(failed && { failed }) };
       };
       const abortStream = () => {
         if (r.readableEnded || settled) return;
@@ -587,11 +593,12 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
       };
       unregister?.();
       if (o.service) unregister = o.registerAbort?.(abortStream);
+      const holdEnd = o.keep && isJson && (enc === 'gzip' || enc === 'deflate' || enc === 'br');
       if (res.closed) {
         if (o.service && isSse) return abortStream();
         r.resume();
       } else {
-        r.pipe(res).once('close', () => {
+        r.pipe(res, { end: !holdEnd }).once('close', () => {
           if (o.service && isSse && !r.readableEnded) abortStream();
           else r.resume();
         });
@@ -602,6 +609,8 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
           await decoded;
         }
         const answer = finishAnswer();
+        if (settled) return;
+        if (holdEnd && !answer.failed && !res.closed) res.end();
         if (!o.digest || req.readableEnded) return done(answer);
         const finish = () => {
           req.off('end', finish);

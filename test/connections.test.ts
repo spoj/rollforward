@@ -1411,3 +1411,84 @@ test('failed server calls and website checks record incurred or estimated costs 
     provider.closeAllConnections();
   }
 });
+
+test('corrupt compressed JSON answers fail the request while still reconciling generation or estimated provider charges', async () => {
+  const { call: proxyCall, drainCalls, upstreams } = await import('../src/connections.ts');
+  const { syncCosts } = await import('../src/costs.ts');
+  const prevOr = upstreams['openrouter.ai'];
+  let mode: 'broken-gen' | 'broken-est' | 'valid-gen' = 'broken-gen', lookups = 0;
+  const provider = createServer(async (req, res) => {
+    if (req.url === '/api/v1/generation?id=gen-corrupt-json') {
+      lookups++;
+      return void res.writeHead(200, { 'content-type': 'application/json' }).end('{"data":{"total_cost":0.37}}');
+    }
+    if (req.url?.startsWith('/api/v1/generation')) return void res.writeHead(404).end('{}');
+    for await (const _ of req) {}
+    const full = gzipSync(JSON.stringify({ answer: 'ok' }));
+    res.writeHead(200, {
+      'content-type': 'application/json',
+      'content-encoding': 'gzip',
+      ...(mode !== 'broken-est' && { 'x-generation-id': 'gen-corrupt-json' }),
+    });
+    res.end(mode === 'valid-gen' ? full : full.subarray(0, 12));
+  });
+  const callLog: any[] = [];
+  const mockInst = {
+    id: 'corrupt-json-inst', seriesId: 'weekly',
+    log: [{ seq: 1, op: 'create', by: ALICE, logins: [] }, { seq: 2, op: 'run', run: 1, runner: ALICE, consent: 1 }],
+    append: (by: string, op: string, data: any) => { callLog.push({ by, op, ...data }); return { seq: callLog.length }; },
+  } as unknown as Instance;
+  let a: import('../src/connections.ts').CallRun = { inst: mockInst, n: 1, links: new Map(), cost: 0 };
+  const localProxy = createServer((req, res) => void proxyCall(a, 'openrouter.ai', req, res));
+  await Promise.all([
+    new Promise<void>(ok => provider.listen(0, '127.0.0.1', ok)),
+    new Promise<void>(ok => localProxy.listen(0, '127.0.0.1', ok)),
+  ]);
+  upstreams['openrouter.ai'] = `http://127.0.0.1:${(provider.address() as { port: number }).port}`;
+  const proxyUrl = `http://127.0.0.1:${(localProxy.address() as { port: number }).port}/api/v1/chat/completions`;
+  try {
+    // 1. Corrupt gzip with x-generation-id: caller request fails, generation charge (0.37) is reconciled and recorded, call logged as failed 502.
+    const before1 = syncCosts().length;
+    await assert.rejects(fetch(proxyUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'openai/gpt-5-mini', messages: [] }) }).then(r => r.text()));
+    await drainCalls(a);
+    assert.equal(lookups, 1);
+    assert.equal(a.cost, 0.37);
+    assert.equal(a.estimated, undefined);
+    assert.equal(syncCosts().length, before1 + 1);
+    assert.equal(syncCosts().at(-1)!.cost, 0.37);
+    assert.equal(syncCosts().at(-1)!.estimated, undefined);
+    assert.equal(callLog.at(-1)!.status, 502);
+    assert.ok(callLog.at(-1)!.failed);
+    assert.equal(callLog.at(-1)!.cost, 0.37);
+
+    // 2. Corrupt gzip without generation charge: caller request fails, fallback estimate recorded and marked estimated, call logged as failed 502.
+    mode = 'broken-est';
+    a = { inst: mockInst, n: 1, links: new Map(), cost: 0 };
+    const before2 = syncCosts().length;
+    await assert.rejects(fetch(proxyUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'openai/gpt-5-mini', messages: [{ role: 'user', content: 'hi' }] }) }).then(r => r.text()));
+    await drainCalls(a);
+    assert.ok(a.cost > 0 && a.estimated === true);
+    assert.equal(syncCosts().length, before2 + 1);
+    assert.equal(syncCosts().at(-1)!.estimated, true);
+    assert.equal(callLog.at(-1)!.status, 502);
+    assert.ok(callLog.at(-1)!.failed && callLog.at(-1)!.cost === a.cost && callLog.at(-1)!.estimated === true);
+
+    // 3. Control: valid gzip without inline cost succeeds cleanly and resolves generation charge.
+    mode = 'valid-gen';
+    a = { inst: mockInst, n: 1, links: new Map(), cost: 0 };
+    const res = await fetch(proxyUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'openai/gpt-5-mini', messages: [] }) });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { answer: 'ok' });
+    await drainCalls(a);
+    assert.equal(lookups, 2);
+    assert.equal(a.cost, 0.37);
+    assert.equal(callLog.at(-1)!.status, 200);
+    assert.equal(callLog.at(-1)!.failed, undefined);
+  } finally {
+    upstreams['openrouter.ai'] = prevOr;
+    localProxy.close();
+    localProxy.closeAllConnections();
+    provider.close();
+    provider.closeAllConnections();
+  }
+});
