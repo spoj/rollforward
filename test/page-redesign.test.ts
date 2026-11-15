@@ -70,6 +70,21 @@ test('saving a website sign-in keeps its expanded setup row', async () => {
   } finally { await page.close(); }
 });
 
+test('collapsed website rows warn about legacy grant concerns despite a low-risk current profile', async () => {
+  const warning = 'Can approve payments', { page } = await open('user', [{ ...grant, flags: [warning], adminOnly: true,
+    adminWhy: 'The old check rates portal high risk: an admin decides', check: { risk: 'high', flags: [warning], summary: 'An earlier check.', hosts: [] } }]);
+  try {
+    await page.route('**/logins/sites', r => r.fulfill({ json: { portal: { url: grant.url, hosts: [], profile: grant.profile } } }));
+    await page.click('#sidefoot [data-act=logins]');
+    await page.click('[data-act=logins-show][data-id=web]');
+    const row = page.locator('details[data-shown="web:portal"]');
+    assert.match(await row.locator('summary').innerText(), /warning/);
+    await row.locator('summary').click();
+    assert.match(await row.innerText(), /Can approve payments/);
+    assert.match(await row.innerText(), /Only an admin can approve/);
+  } finally { await page.close(); }
+});
+
 test('a sign-in counts down from the server expiry, never asks to allow hosts, and expires without saving', async () => {
   const { page, requests } = await open('user');
   try {
