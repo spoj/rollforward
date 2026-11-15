@@ -305,3 +305,22 @@ for (const status of [403, 404, 503]) test(`a genuine Graph parent ${status} ret
   assert.equal(second.res.statusCode, status === 503 ? 200 : 403);
   assert.equal(sent.filter(s => s.path.includes('/items/parent')).length, status === 503 ? 2 : 1);
 });
+
+test('an unexpected checkpoint failure is not swallowed by another authorized waiter', { timeout: 5000 }, async () => {
+  saveLogin(ALICE, { id: 'm365', kind: 'm365', name: 'Microsoft 365', since: `unexpected-${seq}`, scopes: ['Mail.Read'], offers: [] }, 'synthetic-refresh');
+  tokenMode = 'consent-once';
+  holdPath = '/token';
+  let broken = false;
+  const error = new Error('unexpected checkpoint failure');
+  const first = token(ALICE, 'm365', scope(), () => { if (broken) throw error; });
+  await entered.promise;
+  const second = token(ALICE, 'm365', scope(), () => {});
+  const settled = Promise.allSettled([first, second]);
+  broken = true;
+  holdPath = '';
+  gate.resolve();
+  const results = await settled;
+  assert.deepEqual(results.map(r => r.status), ['rejected', 'rejected']);
+  for (const result of results) if (result.status === 'rejected') assert.equal(result.reason, error);
+  assert.equal(sent.filter(s => s.path === '/token').length, 1, 'unexpected failure must not start a fallback renewal');
+});

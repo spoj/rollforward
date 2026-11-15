@@ -28,7 +28,8 @@ export function token(email: string, id: string, scope: string[], checkpoint?: (
   if (!pending) {
     const authorized = () => {
       for (const w of waiters) {
-        try { w.checkpoint?.(); return; } catch { /* Another waiting caller may still authorize the renewal. */ }
+        try { w.checkpoint?.(); return; }
+        catch (e) { if (!(e instanceof HttpError)) throw e; }
       }
       // Never pass a caller's 401 into the shared provider-expiry handling.
       throw new HttpError(409, 'no authorized caller waiting for login renewal');
