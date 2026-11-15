@@ -495,7 +495,7 @@ export async function checkWebsite(email: string, site: string, given?: Trace, s
   const before = websiteChecks.get(key);
   if (before?.current()) {
     if (before.trace === evidence && before.source === source) return before.promise;
-    const queued = before.promise.then(() => {
+    const queued = Promise.allSettled([before.promise]).then(() => {
       if (!current()) throw new HttpError(409, `${site} was removed, replaced or signed out while it was checked`);
       return checkWebsite(email, site, given, source);
     }).finally(() => assessments.delete(queued));
