@@ -701,11 +701,11 @@ test("a question asks, with Reply alone; a proposal offers only Approve and Reje
   await cardThread.locator('[data-act=thread]').click();
   assert.equal(await open.count(), 0, 'opening a proposal thread opens no decision or reply composer');
   await proposal.locator(':scope > .pa [data-mode=approve]').click();
-  assert.deepEqual([await open.count(), await open.locator('.hint').innerText(), await open.locator('.btn').innerText()],
-    [1, 'The agent will go ahead with this. Approving commits the instance as it is now, in your name.', 'Approve: go ahead']);
+  assert.deepEqual([await open.count(), await open.locator('.hint').count(), await open.locator('.btn').innerText()], [1, 0, 'Approve']);
+  assert.equal(await open.locator('textarea').getAttribute('placeholder'), 'A note, if you like');
   await proposal.locator(':scope > .pa [data-mode=reject]').click();
-  assert.deepEqual([await open.count(), await open.locator('.hint').innerText()],
-    [1, "The agent won't do this. If information is missing, say what it needs before proposing again."], 'one box at a time');
+  assert.deepEqual([await open.count(), await open.locator('.hint').count()], [1, 0], 'one box at a time, without redundant prose');
+  assert.equal(await open.locator('textarea').getAttribute('placeholder'), 'What is missing or should change, if you like');
   await open.locator('textarea').fill('The bank account is missing. Include it in a new proposal.');
   await open.locator('[data-act=reject]').click();
   const rejection = proposal.locator('.kids .post', { hasText: 'Rejected: The bank account is missing. Include it in a new proposal.' });

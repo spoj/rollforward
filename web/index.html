@@ -769,8 +769,8 @@ function postHtml(t, p, depth) {
   if (p.op === 'comment') h += `<div class="pa">${reactHtml(p.seq)}${open && !proposal ? `<button class="quiet reply-to" data-act="reply" data-seq="${p.seq}">Reply</button>` : ''}`
     + `${decides ? `<button class="quiet" data-act="reply" data-mode="approve" data-seq="${p.seq}">Approve\u2026</button><button class="quiet" data-act="reply" data-mode="reject" data-seq="${p.seq}">Reject\u2026</button>` : ''}</div>`;
   if (open && p.op === 'comment' && !proposal) h += box('reply', '', 'Reply', `<button class="btn" data-act="reply-post" data-seq="${p.seq}">Reply</button>`);
-  if (decides) h += box('approve', 'The agent will go ahead with this. Approving commits the instance as it is now, in your name.', 'A note, if you like', `<button class="btn commit" data-act="approve" data-seq="${p.seq}"${off}>Approve: go ahead</button>`)
-    + box('reject', "The agent won't do this. If information is missing, say what it needs before proposing again.", 'What is missing or should change, if you like', `<button class="btn" data-act="reject" data-seq="${p.seq}">Reject</button>`);
+  if (decides) h += box('approve', '', 'A note, if you like', `<button class="btn commit" data-act="approve" data-seq="${p.seq}"${off}>Approve</button>`)
+    + box('reject', '', 'What is missing or should change, if you like', `<button class="btn" data-act="reject" data-seq="${p.seq}">Reject</button>`);
   if (kids.length) h += depth < 3 ? `<div class="kids">${kids.map(k => postHtml(t, k, depth + 1)).join('')}</div>` : `<a class="more" data-act="alone" data-seq="${p.seq}">Continue this thread \u2192 ${all(p.seq)} more</a>`;
   return h + '</div>';
 }
