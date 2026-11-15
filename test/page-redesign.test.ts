@@ -52,7 +52,28 @@ async function open(role: string, grants: object[] = []) {
   });
   await page.goto(origin + '/#/w1');
   await page.waitForSelector('#sidefoot [data-act=logins]');
-  return { page, requests, workspace };
+  return { page, requests, workspace, responses };
+}
+
+async function openWebsiteTicks() {
+  const rows = ['pending', 'denied', 'revoked', 'lapsed', 'approved', 'expired'].map(site => ({ ...grant, id: site, site,
+    state: site === 'expired' ? 'approved' : site, at: new Date().toISOString(), profile: { error: 'Check unavailable' } }));
+  rows.push({ ...rows[0], id: 'someone-else', site: 'missing', state: 'approved', person: 'alice@demo.test' });
+  const state = await open('user', rows), { page, workspace, responses } = state;
+  const sites = ['missing', 'pending', 'denied', 'revoked', 'lapsed', 'approved', 'expired'];
+  const logins = sites.map(site => ({ id: `web:${site}`, name: site, kind: 'website', since: new Date().toISOString(), expired: site === 'expired', missing: [], offers: [{ id: `web:${site}`, name: site }] }));
+  logins.push({ id: 'm365', name: 'Microsoft 365', kind: 'm365', since: '', expired: false, missing: [], offers: [{ id: 'm365:mail', name: 'Mail' }, { id: 'm365:files', name: 'Files' }] },
+    { id: 'drop', name: 'Service', kind: 'service', since: '', expired: false, missing: [], offers: [{ id: 'drop:AP/', name: 'AP/' }] });
+  responses['/logins'] = logins;
+  responses['/logins/sites'] = Object.fromEntries(sites.map(site => [site, { url: `https://${site}.test/`, hosts: [], profile: { error: 'Check unavailable' } }]));
+  const series = { id: 's1', name: 'Ledger', instances: [], wakes: [], requests: [], shared_by: null, shared_logins: [], archived: false };
+  workspace.series.push(series);
+  responses['/api'] = [{ ...workspace, id: 'w2', name: 'Other workspace', series: [], grants: [{ ...grant, site: 'missing', workspace: 'w2', state: 'approved' }] }, workspace];
+  responses['/api/series/s1'] = {};
+  responses['/api/series'] = { instance: 's1' };
+  await page.evaluate(async () => { await refresh(); location.hash = '#/s1'; });
+  await page.waitForFunction(() => cur.s?.id === 's1');
+  return { ...state, series, sites };
 }
 
 test('saving a website sign-in keeps its expanded setup row', async () => {
@@ -440,6 +461,7 @@ test('grant cards disclose scope, profile, flags, admin decisions, usage and leg
     await page.click('.row.ws [data-act=workspace-settings]');
     const used = page.locator('[data-grant=approved]');
     await used.locator('summary').click();
+    await page.locator('[data-grant=legacy] > summary').click();
     assert.match(await used.innerText(), /Opened in 7 runs · 2 runs wrote · last used/);
     assert.equal(await used.locator('[data-act=grant-revoke]').count(), 1);
     assert.doesNotMatch(await page.locator('[data-grant=legacy]').innerText(), /undefined|NaN|Opened in/);
@@ -481,4 +503,173 @@ test('only admins see the server-filtered high and internal host decisions in Wa
       await page.close();
     }
   }
+});
+
+test('website ticks require this person’s approved workspace grant, never a successful profile, and omit stale ticks from new-instance payloads', async () => {
+  const { page, requests, sites } = await openWebsiteTicks();
+  try {
+    await page.evaluate(() => onAct('new-instance', document.createElement('button')));
+    await page.evaluate(sites => { pv.settings.on = sites.map(s => `web:${s}`); renderPv(); }, sites);
+    await page.fill('#slabel', 'Draft period');
+    for (const site of sites) {
+      const tick = page.locator(`#pv input.tick[value="web:${site}"]`);
+      assert.equal(await tick.isDisabled(), site !== 'approved', site);
+      assert.equal(await tick.isChecked(), site === 'approved', 'stale selection: ' + site);
+      if (site !== 'approved') assert.match(await tick.locator('xpath=../..').innerText(), new RegExp(site === 'expired' ? 'expired' : 'grant ' + (site === 'missing' ? 'required' : site)));
+    }
+    assert.equal(await page.locator('#pv [data-act=grant-ask], #pv input[placeholder*="use it for"]').count(), 0);
+    assert.match(await page.locator('#pv .tickrow:has(input[value="web:pending"]) .about').textContent(), /You asked .+; it waits on Finance's owners, you/);
+    await page.click('#pv .tgroup > summary .sub');
+    await page.check('#pv input.tick[value="m365:mail"]');
+    await page.check('#pv input.tick[value="drop:AP/"]');
+    await page.evaluate(() => { document.querySelector('#pv input.tick[value="web:revoked"]').checked = true; });
+    await page.click('#pv [data-act=start-go]');
+    await page.waitForFunction(() => !pv);
+    assert.deepEqual(requests.find(r => r.path === '/api/series/s1' && r.method === 'POST')!.body,
+      { label: 'Draft period', logins: ['m365:mail', 'drop:AP/', 'web:approved'], quiet: true });
+  } finally { await page.close(); }
+});
+
+test('website info works by hover, focus and tap, linking to the existing site/workspace form and returning to a new-instance draft', async () => {
+  const { page, requests, responses } = await openWebsiteTicks();
+  try {
+    await page.evaluate(() => onAct('new-instance', document.createElement('button')));
+    await page.fill('#slabel', 'Keep my label');
+    await page.check('#pv input.tick[value="drop:AP/"]');
+    const row = page.locator('#pv .tickrow:has(input[value="web:missing"])'), info = row.locator('[data-act=info]'), about = row.locator('.about');
+    await page.mouse.move(0, 0);
+    assert.equal(await about.isVisible(), false);
+    await info.hover();
+    assert.equal(await about.isVisible(), true);
+    await page.mouse.move(0, 0);
+    await info.focus();
+    assert.equal(await about.isVisible(), true);
+    assert.equal(await info.getAttribute('aria-describedby'), await about.getAttribute('id'));
+    assert.match(await about.innerText(), /need an approved grant/);
+    assert.match(await about.innerText(), /Approval: Finance's owners, you/);
+    await page.keyboard.press('Escape');
+    assert.equal(await about.isVisible(), false);
+    assert.equal(await page.locator('#pv').isVisible(), true);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await info.click();
+    assert.equal(await about.isVisible(), true);
+    await row.locator('[data-act=website-setup]').click();
+    await page.waitForSelector('#pv details[data-shown="web:missing"][open]');
+    const form = page.locator('#pv .row2:has([data-act=grant-ask][data-id=missing])');
+    assert.equal(await form.locator('select').inputValue(), 'w1', 'target workspace is not the first workspace');
+    assert.equal(await page.locator('#pv details[data-shown="web:approved"]').getAttribute('open'), null, 'other native details stay collapsed');
+    assert.equal(requests.filter(r => r.path === '/grants' && r.method === 'POST').length, 0);
+    assert.equal(new URL(page.url()).hash, '#/s1');
+    await page.screenshot({ path: '/tmp/rf-setup-website-form-phone.png' });
+    await page.click('#pv [data-act=unpv]');
+    assert.equal(await page.inputValue('#slabel'), 'Keep my label');
+    assert.equal(await page.isChecked('#pv input.tick[value="drop:AP/"]'), true);
+    await page.setViewportSize({ width: 1100, height: 850 });
+    await page.screenshot({ path: '/tmp/rf-setup-website-ticks.png' });
+    const expired = page.locator('#pv .tickrow:has(input[value="web:expired"])');
+    await expired.locator('[data-act=info]').click();
+    await expired.locator('[data-act=website-setup]').click();
+    await page.waitForSelector('#pv details[data-shown="web:expired"][open]');
+    await page.route('**/logins/web/expired', r => r.fulfill({ json: { id: 'again', expires: new Date(Date.now() + 600_000).toISOString() } }));
+    await page.route('**/signins/again', r => {
+      (responses['/logins'] as { id: string; expired: boolean }[]).find(l => l.id === 'web:expired')!.expired = false;
+      return r.fulfill({ body: 'ok' });
+    });
+    await page.click('#pv details[data-shown="web:expired"] [data-act=web-signin]');
+    await page.click('#pv [data-act=signin-save]');
+    await page.waitForSelector('#pv details[data-shown="web:expired"][open]');
+    await page.click('#pv [data-act=unpv]');
+    assert.equal(await expired.locator('input').isEnabled(), true, 'a renewed login is usable on return to the draft');
+    assert.equal(await page.inputValue('#slabel'), 'Keep my label');
+    await info.click();
+    await row.locator('[data-act=website-setup]').click();
+    await page.waitForSelector('#pv details[data-shown="web:missing"][open]');
+    await page.evaluate(() => { location.hash = '#/w2'; });
+    await page.waitForFunction(() => cur.w.id === 'w2' && pv === null);
+    assert.equal(await page.locator('#pv').isVisible(), false, 'navigation discards the old context rather than restoring its draft');
+  } finally { await page.close(); }
+});
+
+test('canceling a draft while website setup loads cannot restore or overwrite its dialog', async () => {
+  const { page, responses } = await openWebsiteTicks();
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  try {
+    await page.evaluate(() => onAct('new-instance', document.createElement('button')));
+    await page.route('**/logins/sites', async route => {
+      started.resolve();
+      await release.promise;
+      await route.fulfill({ json: responses['/logins/sites'] });
+    });
+    const opening = page.evaluate(() => onAct('website-setup', document.querySelector('#pv [data-act=website-setup][data-id=missing]')));
+    await started.promise;
+    await page.evaluate(() => closePv(true));
+    release.resolve();
+    await opening;
+    assert.equal(await page.locator('#pv').isVisible(), false);
+    assert.equal(await page.evaluate(() => pv), null);
+  } finally { release.resolve(); await page.close(); }
+});
+
+test('both series-share tick paths use the series workspace and filter disabled values from share payloads', async () => {
+  const { page, requests, series } = await openWebsiteTicks();
+  try {
+    await page.evaluate(() => openSeriesSettings());
+    await page.click('#pv [data-act=share-arm]');
+    assert.equal(await page.isDisabled('#pv input.tick[value="web:missing"]'), true, 'approval in another workspace is not enough');
+    assert.equal(await page.isEnabled('#pv input.tick[value="web:approved"]'), true, 'profile failure is not grant failure');
+    await page.check('#pv input.tick[value="web:approved"]');
+    await page.check('#pv input.tick[value="drop:AP/"]');
+    const missing = page.locator('#pv .tickrow:has(input[value="web:missing"])');
+    await missing.locator('[data-act=info]').click();
+    await missing.locator('[data-act=website-setup]').click();
+    await page.waitForSelector('#pv details[data-shown="web:missing"][open]');
+    await page.click('#pv [data-act=unpv]');
+    assert.equal(await page.isChecked('#pv input.tick[value="drop:AP/"]'), true);
+    assert.equal(await page.isChecked('#pv input.tick[value="web:approved"]'), true, 'sharing consent draft survives setup too');
+    await page.evaluate(() => { document.querySelector('#pv input.tick[value="web:denied"]').checked = true; });
+    await page.click('#pv [data-act=share-on]');
+    await page.waitForSelector('#pv [data-act=share-arm]');
+    assert.deepEqual(requests.find(r => r.path === '/api/series/s1' && r.method === 'PUT')!.body, { share: true, logins: ['drop:AP/', 'web:approved'] });
+    Object.assign(series, { shared_by: person, shared_logins: ['web:missing', 'web:pending', 'web:denied', 'web:revoked', 'web:approved', 'web:expired'] });
+    await page.evaluate(async () => { await refresh(); await openSeriesSettings(); });
+    for (const site of ['missing', 'pending', 'denied', 'revoked', 'expired']) {
+      assert.equal(await page.isDisabled(`#pv input.tick[value="web:${site}"]`), true);
+      assert.equal(await page.isChecked(`#pv input.tick[value="web:${site}"]`), false);
+    }
+    await page.click('#pv .tgroup > summary .sub');
+    await page.check('#pv input.tick[value="m365:mail"]');
+    await page.waitForFunction(() => document.querySelector('#pv .saved').textContent.includes('Saved'));
+    const saves = requests.filter(r => r.path === '/api/series/s1' && r.method === 'PUT');
+    assert.deepEqual(saves.at(-1)!.body, { share: true, logins: ['m365:mail', 'web:approved'] });
+    await missing.locator('[data-act=info]').click();
+    await missing.locator('[data-act=website-setup]').click();
+    await page.waitForSelector('#pv details[data-shown="web:missing"][open]');
+    await page.click('#pv [data-act=unpv]');
+    assert.equal(await page.isChecked('#pv input.tick[value="m365:mail"]'), true, 'saved share selections are not reset to the older settings snapshot');
+  } finally { await page.close(); }
+});
+
+test('a new task filters stale remembered website ticks but retains normal Graph and service selections', async () => {
+  const { page, requests, sites } = await openWebsiteTicks();
+  try {
+    await page.evaluate(sites => { localStorage.ticks = JSON.stringify([...sites.map(s => `web:${s}`), 'm365:mail', 'drop:AP/']); }, sites);
+    await page.evaluate(() => onAct('new-task', document.createElement('button')));
+    assert.deepEqual(requests.find(r => r.path === '/api/series' && r.method === 'POST')!.body,
+      { workspace: 'w1', single: true, logins: ['web:approved', 'm365:mail', 'drop:AP/'] });
+  } finally { await page.close(); }
+});
+
+test('a request from Waiting uses its target workspace rather than the workspace currently open', async () => {
+  const { page, series, responses } = await openWebsiteTicks();
+  try {
+    series.requests.push({ id: 'r1', label: 'Next period', who: person, from: person });
+    responses['/api/requests/r1'] = {};
+    await page.evaluate(() => { location.hash = '#/w2'; });
+    await page.waitForFunction(() => cur.w.id === 'w2');
+    await page.evaluate(() => onAct('waiting', document.createElement('button')));
+    await page.waitForSelector('#pv [data-act=req-start]');
+    await page.click('#pv [data-act=req-start]');
+    assert.equal(await page.isDisabled('#pv input.tick[value="web:missing"]'), true, 'the open workspace’s approval does not apply to the request');
+    assert.equal(await page.locator('#pv .tickrow:has(input[value="web:missing"]) [data-act=website-setup]').getAttribute('data-ws'), 'w1');
+  } finally { await page.close(); }
 });
