@@ -689,7 +689,7 @@ test("everyone sees the skills, which every run loads; admins keep the connectio
   assert.equal((await call('PATCH', `/logins/sites/portal?person=${bob}`, JSON.stringify({ every: '1h' }))).status, 403, "admins change no one else's settings");
   assert.equal((await call('PATCH', `/logins/sites/portal?person=${bob}`, JSON.stringify({ internal: true }))).status, 200, 'but let it reach internal addresses');
   const { added, ...site } = (await json('/logins/sites', b)).portal;
-  assert.deepEqual(site, { url: 'https://portal.test/#/login', hosts: [], writeback: true, header: 'x-bot-token', every: 5 });
+  assert.deepEqual(site, { url: 'https://portal.test/#/login', hosts: [], writeback: true, header: 'x-bot-token', every: 5, checking: false });
   for (const host of ['cdn.portal.test', 'sso.other.test', '10.1.2.3']) {
     assert.equal((await call('POST', '/logins/web/portal/hosts', JSON.stringify({ host }), b)).status, 403, `persons never allow ${host}, even before a grant exists`);
   }

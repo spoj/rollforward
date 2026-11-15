@@ -151,6 +151,262 @@ test('saving a live sign-in preserves the keepalive choice', async () => {
   }
 });
 
+for (const attempt of ['Cancel', 'Escape', 'backdrop', 'navigation', 'duplicate Save', 'overlapping Logins', 'overlapping Tokens']) test(`a slow website Save blocks ${attempt} until the saved login is shown`, async () => {
+  const { page } = await open('user'), gate = Promise.withResolvers<void>(), seen = Promise.withResolvers<void>();
+  let saves = 0, cancels = 0, saved = false;
+  page.setDefaultTimeout(3000);
+  try {
+    const now = Date.now();
+    await page.clock.install({ time: new Date(now) });
+    await page.route('**/logins', r => r.fulfill({ json: saved ? [{ id: 'web:portal', kind: 'website', name: 'portal', since: new Date(now).toISOString(), offers: [], missing: [] }] : [] }));
+    await page.route('**/signins/s1', async r => {
+      if (r.request().method() === 'DELETE') {
+        cancels++;
+        return r.fulfill({ status: 404, body: 'no such sign-in' });
+      }
+      saves++;
+      seen.resolve();
+      await gate.promise;
+      saved = true;
+      await r.fulfill({ json: {} });
+    });
+    await page.click('#sidefoot [data-act=logins]');
+    await page.click('[data-act=logins-show][data-id=web]');
+    await page.click('details[data-shown="web:portal"] > summary');
+    await page.click('[data-act=web-signin]');
+    const oldLogins = Promise.withResolvers<void>(), oldSeen = Promise.withResolvers<void>();
+    if (attempt.startsWith('overlapping')) {
+      await page.route(attempt === 'overlapping Logins' ? '**/connections' : '**/tokens', async r => {
+        oldSeen.resolve();
+        await oldLogins.promise;
+        await r.fulfill({ json: [] });
+      }, { times: 1 });
+      await page.evaluate(attempt => { window.oldLogins = attempt === 'overlapping Logins' ? openLogins() : openTokens(); }, attempt);
+      await oldSeen.promise;
+    }
+    await page.click('[data-act=signin-save]');
+    await seen.promise;
+    if (attempt.startsWith('overlapping')) {
+      oldLogins.resolve();
+      await page.evaluate(() => window.oldLogins);
+    }
+    if (attempt === 'Cancel') await page.locator('[data-act=unpv]').dispatchEvent('click');
+    if (attempt === 'Escape') await page.keyboard.press('Escape');
+    if (attempt === 'backdrop') await page.mouse.click(5, 5);
+    if (attempt === 'navigation') {
+      await page.evaluate(() => { location.hash = '#/'; });
+      await page.waitForFunction(() => location.hash === '#/');
+    }
+    if (attempt === 'duplicate Save') {
+      await page.evaluate(() => renderPv());
+      await page.locator('[data-act=signin-save]').dispatchEvent('click');
+    }
+    await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 0)));
+    assert.equal(cancels, 0, 'Save has consumed the sign-in; closing must not DELETE it');
+    assert.equal(saves, 1, 'a redraw must not allow a duplicate POST');
+    assert.equal(await page.locator('#pv[open]').count(), 1);
+    assert.equal(await page.isDisabled('[data-act=signin-save]'), true);
+    assert.equal(await page.isDisabled('[data-act=unpv]'), true);
+    assert.equal(await page.textContent('[data-act=signin-save]'), 'Saving…');
+    assert.equal(await page.textContent('#pv [role=status]'), 'Saving login…');
+    await page.clock.fastForward(601_000);
+    await page.evaluate(() => renderPv());
+    assert.equal(await page.textContent('#pv [role=status]'), 'Saving login…', 'expiry must not relabel an active Save');
+    gate.resolve();
+    await page.waitForSelector('#pv .lline');
+    assert.equal(await page.textContent('#pv .pvh b'), 'Logins');
+    assert.match(await page.innerText('#pv'), /1 of 1 signed in/);
+    assert.equal(await page.locator('[data-act=signout-login][data-id="web:portal"]').count(), 1);
+    assert.deepEqual([saves, cancels], [1, 0]);
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('#pv:not([open])', { state: 'attached' });
+    assert.equal(cancels, 0, 'a late close must not cancel the saved sign-in');
+  } finally {
+    gate.resolve();
+    await page.close();
+  }
+});
+
+for (const fails of [false, true]) test(`a saved login stays usable while background checking ${fails ? 'fails' : 'succeeds'}`, async () => {
+  const { page, requests } = await open('user');
+  let assessment: object = { checking: true };
+  try {
+    await page.route('**/logins/sites', r => r.fulfill({ json: { portal: { url: 'https://portal.test/start', hosts: [], ...assessment } } }));
+    await page.click('#sidefoot [data-act=logins]');
+    await page.click('[data-act=logins-show][data-id=web]');
+    await page.click('details[data-shown="web:portal"] > summary');
+    await page.click('[data-act=web-signin]');
+    await page.click('[data-act=signin-save]');
+    await page.waitForSelector('#pv .lline');
+    await page.getByText('Login saved', { exact: true }).waitFor();
+    await page.getByText('Checking website…', { exact: true }).waitFor();
+    assert.match(await page.innerText('#pv'), /1 of 1 signed in/);
+    assert.equal(await page.locator('[data-act=signin-save]').count(), 0);
+    assert.equal(await page.isDisabled('[data-act=unpv]'), false);
+    assessment = { checking: false, profile: fails ? { error: 'OpenRouter answered 500' } : grant.profile };
+    await page.evaluate(() => refresh());
+    assert.equal(await page.getByText('Checking website…', { exact: true }).count(), 0);
+    assert.equal(await page.getByText('Website check failed: OpenRouter answered 500', { exact: true }).count(), fails ? 1 : 0);
+    assert.equal(await page.locator('[data-act=signout-login][data-id="web:portal"]').count(), 1);
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('#pv:not([open])', { state: 'attached' });
+    assert.equal(requests.filter(r => r.path === '/signins/s1' && r.method === 'DELETE').length, 0);
+  } finally {
+    await page.close();
+  }
+});
+
+test('assessment refreshes preserve Logins drafts and cannot restore an older Checking response', async () => {
+  const { page } = await open('user'), gate = Promise.withResolvers<void>(), seen = Promise.withResolvers<void>();
+  const portal = { url: 'https://portal.test/start', hosts: [], header: 'x-bot-token' };
+  try {
+    await page.route('**/logins/sites', r => r.fulfill({ json: { portal: { ...portal, checking: true } } }));
+    await page.click('#sidefoot [data-act=logins]');
+    await page.click('[data-act=logins-show][data-id=web]');
+    await page.click('details[data-shown="web:portal"] > summary');
+    await page.fill('#hdr-portal', 'fake-token-draft');
+    await page.click('details[data-shown="site-add"] > summary');
+    await page.fill('#site-name', 'draft-site');
+    await page.fill('input[placeholder="What runs there use it for"]', 'draft-reason');
+    let reads = 0;
+    await page.route('**/logins/sites', async r => {
+      if (++reads === 1) {
+        seen.resolve();
+        await gate.promise;
+        return r.fulfill({ json: { portal: { ...portal, checking: true } } });
+      }
+      return r.fulfill({ json: { portal: { ...portal, checking: false, profile: grant.profile } } });
+    });
+    await page.evaluate(() => { window.oldRefresh = refresh(); });
+    await seen.promise;
+    await page.evaluate(() => refresh());
+    gate.resolve();
+    await page.evaluate(() => window.oldRefresh);
+    assert.equal(await page.getByText('Checking website…', { exact: true }).count(), 0);
+    assert.equal(await page.inputValue('#hdr-portal'), 'fake-token-draft');
+    assert.equal(await page.inputValue('#site-name'), 'draft-site');
+    assert.equal(await page.inputValue('input[placeholder="What runs there use it for"]'), 'draft-reason');
+  } finally {
+    gate.resolve();
+    await page.close();
+  }
+});
+
+test('a saved login with a failed model profile shows a website-check warning, not an authentication failure', async () => {
+  const { page } = await open('user');
+  try {
+    await page.route('**/logins/sites', r => r.fulfill({ json: { portal: { url: 'https://portal.test/start', hosts: [], profile: { error: 'OpenRouter answered 500' } } } }));
+    await page.click('#sidefoot [data-act=logins]');
+    await page.click('[data-act=logins-show][data-id=web]');
+    await page.click('details[data-shown="web:portal"] > summary');
+    await page.click('[data-act=web-signin]');
+    await page.click('[data-act=signin-save]');
+    await page.waitForSelector('#pv .lline');
+    assert.match(await page.innerText('#pv'), /1 of 1 signed in/);
+    assert.equal(await page.locator('[data-act=signout-login][data-id="web:portal"]').count(), 1);
+    await page.getByText('Website check failed: OpenRouter answered 500', { exact: true }).waitFor({ timeout: 1000 });
+  } finally {
+    await page.close();
+  }
+});
+
+test('a rejected website Save reports the error and restores Save and Cancel', async () => {
+  const { page } = await open('user'), gate = Promise.withResolvers<void>(), seen = Promise.withResolvers<void>(), bodies: unknown[] = [];
+  try {
+    await page.route('**/signins/s1', async r => {
+      if (r.request().method() === 'DELETE') return r.fulfill({ json: {} });
+      bodies.push(r.request().postDataJSON());
+      seen.resolve();
+      await gate.promise;
+      await r.fulfill(bodies.length === 1 ? { status: 409, body: 'Take control and sign in first, then Save login.' } : { json: {} });
+    });
+    await page.click('#sidefoot [data-act=logins]');
+    await page.click('[data-act=logins-show][data-id=web]');
+    await page.click('details[data-shown="web:portal"] > summary');
+    await page.click('[data-act=web-signin]');
+    await page.check('#keep');
+    const until = new Date(Date.now() + 86_400_000).toISOString().slice(0, 16);
+    await page.fill('#keep-until', until);
+    await page.click('[data-act=signin-save]');
+    await seen.promise;
+    assert.equal(await page.isDisabled('[data-act=unpv]'), true);
+    gate.resolve();
+    await page.getByText('Take control and sign in first, then Save login.', { exact: true }).waitFor();
+    assert.equal(await page.isDisabled('[data-act=signin-save]'), false);
+    assert.equal(await page.isDisabled('[data-act=unpv]'), false);
+    assert.equal(await page.textContent('[data-act=signin-save]'), 'Save login');
+    assert.equal(await page.isChecked('#keep'), true);
+    assert.equal(await page.inputValue('#keep-until'), until);
+    await page.click('[data-act=signin-save]');
+    await page.waitForSelector('#pv .lline');
+    assert.deepEqual(bodies, [{ keepalive: new Date(until).toISOString() }, { keepalive: new Date(until).toISOString() }]);
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('#pv:not([open])', { state: 'attached' });
+  } finally {
+    gate.resolve();
+    await page.close();
+  }
+});
+
+test('Save stays protected while its successful POST waits for Logins to load', async () => {
+  const { page, requests } = await open('user'), gate = Promise.withResolvers<void>(), seen = Promise.withResolvers<void>();
+  try {
+    await page.clock.install();
+    await page.click('#sidefoot [data-act=logins]');
+    await page.click('[data-act=logins-show][data-id=web]');
+    await page.click('details[data-shown="web:portal"] > summary');
+    await page.click('[data-act=web-signin]');
+    await page.route('**/connections', async r => {
+      seen.resolve();
+      await gate.promise;
+      await r.fulfill({ json: [] });
+    });
+    await page.click('[data-act=signin-save]');
+    await seen.promise;
+    await page.keyboard.press('Escape');
+    await page.locator('[data-act=unpv]').dispatchEvent('click');
+    await page.evaluate(() => { location.hash = '#/'; });
+    await page.clock.fastForward(601_000);
+    await page.evaluate(() => renderPv());
+    assert.equal(await page.locator('#pv[open]').count(), 1);
+    assert.equal(await page.isDisabled('[data-act=unpv]'), true);
+    assert.equal(await page.textContent('#pv [role=status]'), 'Saving login…');
+    assert.equal(requests.filter(r => r.path === '/signins/s1' && r.method === 'DELETE').length, 0);
+    gate.resolve();
+    await page.waitForSelector('#pv .lline');
+    assert.equal(await page.textContent('#pv .pvh b'), 'Logins');
+  } finally {
+    gate.resolve();
+    await page.close();
+  }
+});
+
+test('a Logins refresh error after Save does not offer to save or cancel a consumed sign-in', async () => {
+  const { page } = await open('user');
+  let cancels = 0;
+  try {
+    await page.click('#sidefoot [data-act=logins]');
+    await page.click('[data-act=logins-show][data-id=web]');
+    await page.click('details[data-shown="web:portal"] > summary');
+    await page.click('[data-act=web-signin]');
+    await page.route('**/signins/s1', r => {
+      if (r.request().method() === 'DELETE') cancels++;
+      return r.fulfill({ json: {} });
+    });
+    await page.route('**/logins', r => r.fulfill({ status: 502, body: 'Cannot load Logins' }));
+    await page.click('[data-act=signin-save]');
+    await page.getByText('Cannot load Logins', { exact: true }).waitFor();
+    assert.equal(await page.locator('[data-act=signin-save]').count(), 0);
+    assert.equal(await page.textContent('#pv [role=status]'), 'Login saved. Close this and open Logins again.');
+    assert.equal(await page.textContent('#pv [data-act=unpv]'), 'Close');
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('#pv:not([open])', { state: 'attached' });
+    assert.equal(cancels, 0);
+  } finally {
+    await page.close();
+  }
+});
+
 test('grant cards disclose scope, profile, flags, admin decisions, usage and legacy checks in each settings view', async () => {
   const grants = [grant,
     { ...grant, id: 'general', profile: { ...grant.profile, category: 'general' }, adminOnly: true, adminWhy: 'This is a general-purpose website: an admin decides', flags: ['Files may be shared outside the company'] },

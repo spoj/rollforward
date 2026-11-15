@@ -1,18 +1,19 @@
 import { after, beforeEach, test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { initSystem, rfDir, saveTree, writeJson } from '../src/system.ts';
+import { changes, initSystem, rfDir, saveTree, writeJson } from '../src/system.ts';
 import { upsertUser, type Me } from '../src/auth.ts';
 import type { Trace } from '../src/logins.ts';
 
 type Pause = { seen: PromiseWithResolvers<void>; release: PromiseWithResolvers<void> };
-const pauses = new Map<string, Pause>(), sessions = new Map<string, string>(), models: any[] = [];
+const pauses = new Map<string, Pause>(), pendingPauses = new Set<Pause>(), sessions = new Map<string, string>(), models: any[] = [];
 const email = 'alice@company.test', url = 'https://vendor.review.test/';
 const profile = { what: 'A vendor accounting portal', category: 'vendor', risk: 'low', flags: [] };
-let serial = 0;
+let serial = 0, extraHosts: string[] = [], modelProfile = profile, search = false, exaCalls = 0;
 const service = createServer(async (req, res) => {
   const u = new URL(req.url!, 'http://service');
   const body = req.method === 'POST' ? JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString()) : undefined;
@@ -25,9 +26,11 @@ const service = createServer(async (req, res) => {
   }
   res.setHeader('content-type', 'application/json');
   if (u.pathname === '/blocked') return void res.end(JSON.stringify(Object.fromEntries(u.searchParams.getAll('host').map(h => [h, false]))));
+  if (u.pathname === '/search') { exaCalls++; return void res.end(JSON.stringify({ results: [], costDollars: { total: 0.005 } })); }
   if (u.pathname === '/api/v1/chat/completions') {
+    if (search && !body.messages.some((m: any) => m.role === 'tool')) return void res.end(JSON.stringify({ choices: [{ message: { content: null, tool_calls: [{ id: 'search1', type: 'function', function: { name: 'search', arguments: JSON.stringify({ query: 'vendor.review.test operator' }) } }] } }] }));
     const evidence = JSON.parse(body.messages[1].content);
-    const checked = evidence.website.address.startsWith('general.') ? { ...profile, what: 'A public file-sharing service', category: 'general', risk: 'high' } : profile;
+    const checked = evidence.website.address.startsWith('general.') ? { ...profile, what: 'A public file-sharing service', category: 'general', risk: 'high' } : modelProfile;
     const hosts = Object.fromEntries(evidence.unchecked.map((h: string) => [h, { verdict: 'pass', why: 'Its role was checked.' }]));
     return void res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ profile: checked, hosts }) } }] }));
   }
@@ -37,7 +40,7 @@ const service = createServer(async (req, res) => {
     return void res.writeHead(201).end(JSON.stringify({ id }));
   }
   const id = u.pathname.split('/')[2], host = sessions.get(id)!;
-  const log = [{ method: 'GET', url: `https://${host}/private?code=not-evidence`, status: 200, live: true }];
+  const log = [{ method: 'GET', url: `https://${host}/private?code=not-evidence`, status: 200, live: true }, ...extraHosts.map(h => ({ method: 'GET', url: `https://${h}/`, status: 200 }))];
   if (req.method === 'DELETE') return void res.end(JSON.stringify({ state: { cookies: [{ name: 'sid', domain: host, value: id }], origins: [] }, log }));
   if (u.pathname.endsWith('/log')) return void res.end(JSON.stringify(log));
   res.end('{}');
@@ -46,11 +49,12 @@ await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
 const base = `http://127.0.0.1:${(service.address() as { port: number }).port}`;
 Object.assign(process.env, { RF_BROWSER_URL: base, RF_BROWSER_KEY: 'browser-key', RF_PUBLIC_URL: 'https://rf.company.test', OPENROUTER_API_KEY: 'server-key' });
 delete process.env.EXA_API_KEY;
-const { addSite, checkWebsite, endSignIn, removeSite, startSignIn, websitesOf } = await import('../src/browsers.ts');
+const { addSite, changeWebsite, checkWebsite, drainWebsiteChecks, endSignIn, isCheckingWebsite, removeSite, startSignIn, websitesOf } = await import('../src/browsers.ts');
 const { upstreams } = await import('../src/connections.ts');
 const { logins, personDir, saveLogin, seal, secret, signOut } = await import('../src/logins.ts');
 const { ask, decide, visible } = await import('../src/grants.ts');
 upstreams['openrouter.ai'] = base;
+upstreams['api.exa.ai'] = base;
 after(async () => { await new Promise<void>(ok => service.close(() => ok())); });
 beforeEach(t => {
   const root = mkdtempSync(join(tmpdir(), 'rf-website-races-'));
@@ -58,12 +62,23 @@ beforeEach(t => {
   writeJson('connections.json', {});
   writeJson('internal.json', {});
   models.length = 0;
+  extraHosts = [];
+  modelProfile = profile;
+  search = false;
+  exaCalls = 0;
+  delete process.env.EXA_API_KEY;
   delete process.env.RF_SIGNIN_S;
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(async () => {
+    for (const p of pendingPauses) p.release.resolve();
+    await drainWebsiteChecks(1000);
+    pendingPauses.clear();
+    rmSync(root, { recursive: true, force: true });
+  });
 });
 function pause(t: TestContext, path: string) {
   const pending = { seen: Promise.withResolvers<void>(), release: Promise.withResolvers<void>() };
   pauses.set(path, pending);
+  pendingPauses.add(pending);
   t.after(() => pending.release.resolve());
   return pending;
 }
@@ -73,6 +88,20 @@ function oldLogin() {
   saveLogin(email, { id: 'web:portal', kind: 'website', name: 'portal', since: '2026-01-01T00:00:00Z', offers: [{ id: 'web:portal', name: 'portal' }] }, JSON.stringify({ cookies: [{ domain: 'vendor.review.test', value: 'original' }], origins: [] }));
   seal(email, 'web:portal.header', 'original-token');
 }
+
+for (const path of ['/api/v1/chat/completions', '/search']) test(`sign-out during ${path} prevents further assessment disclosures`, { timeout: 5000 }, async t => {
+  await portal();
+  oldLogin();
+  process.env.EXA_API_KEY = 'exa-key';
+  search = true;
+  const pending = pause(t, `POST ${path}`), checking = assert.rejects(checkWebsite(email, 'portal', trace), { status: 409 });
+  await pending.seen.promise;
+  signOut(email, 'web:portal');
+  pending.release.resolve();
+  await checking;
+  assert.equal(exaCalls, path === '/search' ? 1 : 0);
+  assert.equal(models.length, 1);
+});
 
 test('a delayed model answer cannot give a replacement website an owner-approvable profile', { timeout: 5000 }, async t => {
   await portal();
@@ -126,50 +155,155 @@ test('a pending rule request cannot add old host decisions to a recreated websit
   assert.equal(models.length, 0);
 });
 
-test('a delayed save cannot overwrite a newer saved login or its sealed header', { timeout: 5000 }, async t => {
+test('a delayed assessment cannot overwrite a newer saved login or its sealed header', { timeout: 5000 }, async t => {
   const lines: string[] = [];
   t.mock.method(console, 'log', (line: string) => lines.push(line));
   await portal();
   const first = await startSignIn(email, 'portal', 'first-token'), pending = pause(t, 'POST /api/v1/chat/completions');
-  const saving = assert.rejects(endSignIn(email, first, true), { status: 409 });
+  await endSignIn(email, first, true);
   await pending.seen.promise;
+  const checking = assert.rejects(checkWebsite(email, 'portal'), { status: 409 });
   const second = await startSignIn(email, 'portal', 'second-token');
   await endSignIn(email, second, true);
+  await checkWebsite(email, 'portal');
   assert.equal(JSON.parse(secret(email, 'web:portal')).cookies[0].value, second);
   assert.equal(secret(email, 'web:portal.header'), 'second-token');
   pending.release.resolve();
-  await saving;
+  await checking;
   assert.equal(JSON.parse(secret(email, 'web:portal')).cookies[0].value, second);
   assert.equal(secret(email, 'web:portal.header'), 'second-token');
-  assert.deepEqual(lines.map(l => JSON.parse(l.slice('sign-in ended '.length))).map(s => [s.id, s.saved]), [[second, true], [first, false]]);
+  assert.deepEqual(lines.map(l => JSON.parse(l.slice('sign-in ended '.length))).map(s => [s.id, s.saved]), [[first, true], [second, true]]);
   for (const file of [join(personDir(email), 'websites.json'), join(personDir(email), 'logins.json'), join(rfDir(), 'log.jsonl')]) assert.doesNotMatch(readFileSync(file, 'utf8'), /first-token|second-token|not-evidence/);
 });
 
-test('a delayed save cannot resurrect a signed-out login or sealed header', { timeout: 5000 }, async t => {
+test('a delayed assessment cannot resurrect a signed-out login or sealed header', { timeout: 5000 }, async t => {
   await portal();
   oldLogin();
   const id = await startSignIn(email, 'portal', 'replacement-token'), pending = pause(t, 'POST /api/v1/chat/completions');
-  const saving = assert.rejects(endSignIn(email, id, true), { status: 409 });
+  await endSignIn(email, id, true);
   await pending.seen.promise;
+  const checking = assert.rejects(checkWebsite(email, 'portal'), { status: 409 });
   signOut(email, 'web:portal');
+  assert.equal(isCheckingWebsite(email, 'portal'), false);
   pending.release.resolve();
-  await saving;
+  await checking;
   assert.deepEqual(logins(email), []);
   for (const name of ['web:portal.sealed', 'web:portal.header.sealed']) assert.equal(existsSync(join(personDir(email), name)), false);
 });
 
-test('starting then canceling a newer sign-in still supersedes an older pending save', { timeout: 5000 }, async t => {
+test('starting then canceling a newer sign-in invalidates the older background assessment', { timeout: 5000 }, async t => {
   await portal();
   oldLogin();
   const first = await startSignIn(email, 'portal', 'first-token'), pending = pause(t, 'POST /api/v1/chat/completions');
-  const saving = assert.rejects(endSignIn(email, first, true), { status: 409 });
+  await endSignIn(email, first, true);
   await pending.seen.promise;
+  const checking = assert.rejects(checkWebsite(email, 'portal'), { status: 409 });
   const second = await startSignIn(email, 'portal', 'second-token');
   await endSignIn(email, second, false);
   pending.release.resolve();
-  await saving;
-  assert.equal(JSON.parse(secret(email, 'web:portal')).cookies[0].value, 'original');
-  assert.equal(secret(email, 'web:portal.header'), 'original-token');
+  await checking;
+  assert.equal(JSON.parse(secret(email, 'web:portal')).cookies[0].value, first);
+  assert.equal(secret(email, 'web:portal.header'), 'first-token');
+});
+
+for (const hadProfile of [false, true]) test(`two grant asks join the saved login assessment with ${hadProfile ? 'an older good' : 'no'} profile`, { timeout: 5000 }, async t => {
+  await portal();
+  if (hadProfile) {
+    changeWebsite(email, 'portal', { profile });
+    extraHosts = ['new.vendor.test'];
+    modelProfile = { ...profile, risk: 'high' };
+  }
+  const me: Me = { email, name: 'Alice', role: 'user', groups: [] };
+  upsertUser(email, { name: me.name, role: me.role });
+  saveTree({ workspaces: { one: { name: 'One', owners: [email], members: [] }, two: { name: 'Two', owners: [email], members: [] } }, series: {} });
+  const pending = pause(t, 'POST /api/v1/chat/completions');
+  await endSignIn(email, await startSignIn(email, 'portal', 'fake-token'), true);
+  await pending.seen.promise;
+  const one = ask(me, 'portal', 'one', 'Read invoices'), two = ask(me, 'portal', 'two', 'Read invoices');
+  assert.equal(visible(me).length, 0);
+  assert.equal(models.length, 1);
+  pending.release.resolve();
+  assert.deepEqual((await Promise.all([one, two])).map(r => r.state), hadProfile ? ['pending', 'pending'] : ['approved', 'approved']);
+  if (hadProfile) assert.equal(visible(me).every(g => g.adminOnly), true);
+  assert.equal(models.length, 1);
+});
+
+test('a superseded assessment finalizer cannot clear the newer Checking status', { timeout: 5000 }, async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  await portal();
+  const first = pause(t, 'POST /api/v1/chat/completions');
+  await endSignIn(email, await startSignIn(email, 'portal', 'first-token'), true);
+  await first.seen.promise;
+  const stale = assert.rejects(checkWebsite(email, 'portal'), { status: 409 });
+  const next = await startSignIn(email, 'portal', 'second-token'), second = pause(t, 'POST /api/v1/chat/completions');
+  await endSignIn(email, next, true);
+  await second.seen.promise;
+  assert.equal(isCheckingWebsite(email, 'portal'), true);
+  first.release.resolve();
+  await stale;
+  assert.equal(isCheckingWebsite(email, 'portal'), true);
+  const current = checkWebsite(email, 'portal');
+  second.release.resolve();
+  await current;
+  assert.equal(isCheckingWebsite(email, 'portal'), false);
+  assert.equal(JSON.parse(secret(email, 'web:portal')).cookies[0].value, next);
+});
+
+test('different evidence waits for the active assessment then checks its own undecided dependencies', { timeout: 5000 }, async t => {
+  await portal();
+  const pending = pause(t, 'POST /api/v1/chat/completions'), first = checkWebsite(email, 'portal', trace);
+  await pending.seen.promise;
+  const second = checkWebsite(email, 'portal', { ...trace, requests: { 'other.vendor.test': { 200: 1 } } });
+  let drained = false;
+  const draining = drainWebsiteChecks(2000).then(() => { drained = true; }), next = pause(t, 'POST /api/v1/chat/completions');
+  pending.release.resolve();
+  await next.seen.promise;
+  await new Promise(ok => setImmediate(ok));
+  assert.equal(drained, false, 'shutdown still tracks queued evidence after the first assessment finishes');
+  next.release.resolve();
+  await Promise.all([first, second, draining]);
+  assert.equal(models.length, 2);
+  assert.equal(websitesOf(email).portal.checks!['other.vendor.test'].verdict, 'pass');
+});
+
+test('queued evidence cannot start a fresh assessment after sign-out invalidates its generation', { timeout: 5000 }, async t => {
+  await portal();
+  oldLogin();
+  const pending = pause(t, 'POST /api/v1/chat/completions'), first = checkWebsite(email, 'portal', trace);
+  await pending.seen.promise;
+  const second = assert.rejects(checkWebsite(email, 'portal', { ...trace, requests: { 'later.vendor.test': { 200: 1 } } }), { status: 409 });
+  const signout = () => signOut(email, 'web:portal');
+  changes.once('change', signout);
+  t.after(() => changes.off('change', signout));
+  pending.release.resolve();
+  await Promise.all([first, second]);
+  assert.equal(models.length, 1);
+  assert.equal(websitesOf(email).portal.checks!['later.vendor.test'], undefined);
+});
+
+test('Checking is memory-only and shutdown drains assessments only within its deadline', { timeout: 5000 }, async t => {
+  await portal();
+  const pending = pause(t, 'POST /api/v1/chat/completions');
+  await endSignIn(email, await startSignIn(email, 'portal', 'fake-token'), true);
+  await pending.seen.promise;
+  assert.equal(isCheckingWebsite(email, 'portal'), true);
+  assert.doesNotMatch(readFileSync(join(personDir(email), 'websites.json'), 'utf8'), /checking/);
+  const restarted = execFileSync(process.execPath, ['--input-type=module', '-e', `
+    import { initSystem } from './src/system.ts';
+    import { isCheckingWebsite, websitesOf } from './src/browsers.ts';
+    initSystem(${JSON.stringify(join(rfDir(), '..'))});
+    console.log(JSON.stringify({ checking: isCheckingWebsite(${JSON.stringify(email)}, 'portal'), profile: websitesOf(${JSON.stringify(email)}).portal.profile ?? null }));
+  `], { cwd: join(import.meta.dirname, '..'), encoding: 'utf8', timeout: 3000 });
+  assert.deepEqual(JSON.parse(restarted), { checking: false, profile: null });
+  await drainWebsiteChecks(0);
+  assert.equal(isCheckingWebsite(email, 'portal'), true);
+  let drained = false;
+  const draining = drainWebsiteChecks(1000).then(() => { drained = true; });
+  await new Promise(ok => setImmediate(ok));
+  assert.equal(drained, false);
+  pending.release.resolve();
+  await draining;
+  assert.equal(isCheckingWebsite(email, 'portal'), false);
 });
 
 test('canceling while the live log is pending prevents the same sign-in from saving', { timeout: 5000 }, async t => {
@@ -227,17 +361,18 @@ test('replacing a website during close prevents its old sign-in evidence from ch
   assert.equal(models.length, 0);
 });
 
-test('removing and recreating a website during its model check cannot save its old login', { timeout: 5000 }, async t => {
+test('removing and recreating a website during its background check discards the old assessment', { timeout: 5000 }, async t => {
   await portal();
   oldLogin();
   const id = await startSignIn(email, 'portal', 'old-token'), pending = pause(t, 'POST /api/v1/chat/completions');
-  const saving = assert.rejects(endSignIn(email, id, true), { status: 409 });
+  await endSignIn(email, id, true);
   await pending.seen.promise;
+  const checking = assert.rejects(checkWebsite(email, 'portal'), { status: 409 });
   removeSite(email, 'portal');
   await portal();
   const replacement = websitesOf(email).portal;
   pending.release.resolve();
-  await saving;
+  await checking;
   assert.deepEqual(websitesOf(email).portal, replacement);
   assert.deepEqual(logins(email), []);
   assert.equal(existsSync(join(personDir(email), 'web:portal.header.sealed')), false);

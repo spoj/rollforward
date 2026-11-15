@@ -1,4 +1,4 @@
-import { after, test } from 'node:test';
+import { after, afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -78,7 +78,7 @@ const service = createServer(async (req, res) => {
 }).on('upgrade', (req, socket) => socket.end(`HTTP/1.1 101 Switching Protocols\r\n\r\nservice got ${req.url}`));
 await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
 Object.assign(process.env, { RF_BROWSER_URL: `http://127.0.0.1:${(service.address() as { port: number }).port}`, RF_BROWSER_IDLE_MS: '300', RF_BROWSER_CLOSE_MS: '500' });
-const { Browsers, endSignIn, isSignIn, keepAlive, reap, removeSite, startSignIn, websitesOf } = await import('../src/browsers.ts');
+const { Browsers, checkWebsite, drainWebsiteChecks, endSignIn, isSignIn, keepAlive, reap, removeSite, startSignIn, websitesOf } = await import('../src/browsers.ts');
 const { upstreams } = await import('../src/connections.ts');
 const { ask, decide, grants, lapse, revoke } = await import('../src/grants.ts');
 // The server's model checks no website here.
@@ -103,7 +103,9 @@ writeJson('users.json', { 'alice@demo.test': { role: 'admin' } });
 const everyone = Object.fromEntries(['alice@demo.test', 'bob@demo.test', 'carol@demo.test'].flatMap(p => ['crm', 'ledger', 'rl', 'pa', 'erp'].map(s => [`${p} ${s}`, { workspace: 'w', person: p, site: s, reason: 'tests', at: '', state: 'approved' }])));
 writeJson('grants.json', everyone);
 
-after(() => {
+afterEach(() => drainWebsiteChecks(1000));
+after(async () => {
+  await drainWebsiteChecks(1000);
   service.close();
   rmSync(tmp, { recursive: true, force: true });
 });
@@ -295,7 +297,7 @@ test("a website's header goes, with its person's value, to their sign-in's brows
   assert.ok(!existsSync(join(personDir(alice), 'web:rl.header.sealed')));
 });
 
-test('saving a sign-in profiles and checks hosts once, keeps reduced evidence and only allowed cookies and origins, including when an old trace has no kinds', async t => {
+test('saving trims to settled hosts before background profiling, keeps reduced evidence, and accepts old traces without kinds', async t => {
   const profile = { what: 'The company CRM.', category: 'company', risk: 'low', flags: ['Can submit records.'] }, evidence: any[] = [];
   const stand = createServer(async (req, res) => {
     evidence.push(JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString()));
@@ -328,20 +330,20 @@ test('saving a sign-in profiles and checks hosts once, keeps reduced evidence an
   const hosts = ['crm.example.com', 'cdn.example.com', 'sso.idp.test', 'tracker.third.test', 'blocked.example.com', '10.77.88.99'];
   back = { cookies: hosts.map(h => state('secret-cookie', h).cookies[0]), origins: hosts.map(h => ({ origin: `https://${h}`, localStorage: [{ name: 'token', value: 'secret-storage' }] })) };
   await endSignIn(alice, await startSignIn(alice, 'crm', ''), true);
+  await checkWebsite(alice, 'crm');
   const w = websitesOf(alice).crm, kept = JSON.parse(secret(alice, 'web:crm')), trace = logins(alice).find(l => l.id === 'web:crm')!.trace!;
   assert.deepEqual(w.profile, profile);
   assert.equal(w.writeback, false);
   assert.equal(w.checks!['cdn.example.com'].verdict, 'pass');
   assert.equal(w.checks!['blocked.example.com'].verdict, 'refused', 'a blocklist beats the own-domain rule and a model pass');
   assert.equal(w.checks!['10.77.88.99'].verdict, 'internal');
-  assert.deepEqual(kept.cookies.map((c: { domain: string }) => c.domain).sort(), ['cdn.example.com', 'crm.example.com', 'sso.idp.test']);
-  assert.deepEqual(kept.origins.map((o: { origin: string }) => o.origin).sort(), ['https://cdn.example.com', 'https://crm.example.com', 'https://sso.idp.test']);
+  assert.deepEqual(kept.cookies.map((c: { domain: string }) => c.domain), ['crm.example.com']);
+  assert.deepEqual(kept.origins.map((o: { origin: string }) => o.origin), ['https://crm.example.com']);
   assert.deepEqual(trace.kinds!['sso.idp.test'], { dest: ['document'], from: ['crm.example.com'] });
   assert.doesNotMatch(JSON.stringify(trace), /private-|secret|https:\/\//);
   assert.doesNotMatch(JSON.stringify(evidence), /private-|secret-cookie|secret-storage|token=|code=/);
   assert.equal(evidence.length, 1, 'one shared check describes the website and decides its non-rule hosts');
   sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: true } });
-  const { checkWebsite } = await import('../src/browsers.ts');
   assert.deepEqual(await checkWebsite(alice, 'crm', { requests: { 'crm.example.com': { 200: 1 } }, blocked: [], seconds: 3 }), profile, 'production traces without kinds still check');
 });
 

@@ -2,7 +2,7 @@ import { HttpError, instances, newId, type Entry, type Instance } from './store.
 import { act, canManage, canSee, isIn, readJson, tree, writeJson } from './system.ts';
 import { asPerson, users, type Me } from './auth.ts';
 import { logins, signOut } from './logins.ts';
-import { checkWebsite, websitesOf, type Profile } from './browsers.ts';
+import { checkWebsite, isCheckingWebsite, websitesOf, type Profile } from './browsers.ts';
 
 // Grants, in .rf/grants.json: a person's use of their login to their website in one workspace, (workspace, person, site). The person
 // asks, with a reason, once they've signed in to it; one of the workspace's owners, or an admin, approves or denies it, and may
@@ -103,7 +103,7 @@ export async function ask(me: Me, site: string, workspace: string, reason: strin
   const asked = (g: Grant) => new HttpError(409, `you've ${g.state === 'approved' ? 'been granted' : 'asked for'} ${site} in ${w.name} already`);
   if (had()) throw asked(had()!);
   const existing = websitesOf(me.email)[site].profile;
-  const profile = !existing || 'error' in existing ? await checkWebsite(me.email, site, login.trace) : existing, again = had();
+  const profile = isCheckingWebsite(me.email, site) || !existing || 'error' in existing ? await checkWebsite(me.email, site, login.trace) : existing, again = had();
   if (again) throw asked(again);
   // Removing the website meanwhile signed them out of it, and took their grants for it.
   if (!logins(me.email).some(l => l.id === login.id)) throw new HttpError(409, `you removed ${site} or signed out of it while it was checked`);

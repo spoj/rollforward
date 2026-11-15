@@ -57,7 +57,7 @@ const service = createServer(async (req, res) => {
 await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
 const base = `http://127.0.0.1:${(service.address() as { port: number }).port}`;
 Object.assign(process.env, { RF_BROWSER_URL: base, RF_BROWSER_KEY: 'browser-key', RF_PUBLIC_URL: 'https://rf.company.test' });
-const { Browsers, addSite, allowHost, changeWebsite, checkWebsite, endSignIn, isSignIn, keepAlive, passAllowed, removeHost, setSite, startSignIn, websitesOf } = await import('../src/browsers.ts');
+const { Browsers, addSite, allowHost, changeWebsite, checkWebsite, endSignIn, isSignIn, isCheckingWebsite, keepAlive, passAllowed, removeHost, setSite, startSignIn, websitesOf } = await import('../src/browsers.ts');
 const { checkHost, setLetIn, upstreams } = await import('../src/connections.ts');
 const { logins, saveLogin, secret } = await import('../src/logins.ts');
 Object.assign(upstreams, { 'openrouter.ai': base, 'api.exa.ai': base });
@@ -213,18 +213,71 @@ test('a saved sign-in records host-only kinds and trims cookies and origins to r
   const until = new Date(Date.now() + 60_000).toISOString(), id = await startSignIn(email, 'saved', 'header-secret');
   assert.deepEqual(openings.at(-1).site.headers, { 'x-bot-token': 'header-secret' });
   await endSignIn(email, id, true, until);
+  await checkWebsite(email, 'saved');
   const login = logins(email).find(l => l.id === 'web:saved')!;
   assert.equal(login.keepalive, until);
   assert.deepEqual(login.trace!.kinds!['cdn.company.test'], { dest: ['script'], from: ['erp.company.test'] });
   assert.equal(JSON.stringify(login.trace).includes('do-not-log'), false);
   assert.equal(models.at(-1).messages[1].content.includes('do-not-log'), false);
   const saved = JSON.parse(secret(email, 'web:saved'));
-  assert.deepEqual(saved.cookies.map((c: any) => c.domain), ['erp.company.test', '.company.test', 'cdn.company.test', 'auth.vendor.test']);
-  assert.deepEqual(saved.origins.map((o: any) => o.origin), ['https://erp.company.test', 'https://cdn.company.test', 'https://auth.vendor.test']);
+  assert.deepEqual(saved.cookies.map((c: any) => c.domain), ['erp.company.test', '.company.test']);
+  assert.deepEqual(saved.origins.map((o: any) => o.origin), ['https://erp.company.test']);
   assert.equal(secret(email, 'web:saved.header'), 'header-secret');
   await setSite({ email, role: 'user' } as never, 'saved', { every: '9m' });
   assert.deepEqual(websitesOf(email).saved.profile, profile);
   assert.deepEqual([websitesOf(email).saved.writeback, websitesOf(email).saved.keepalive, websitesOf(email).saved.every], [false, '/home', 9]);
+});
+
+for (const fails of [false, true]) test(`a slow ${fails ? 'failed' : 'successful'} model check runs after the login is durably saved`, async t => {
+  const name = fails ? 'saved-profile-error' : 'saved-profile-ok';
+  await site(name);
+  mode = fails ? 'fail' : 'normal';
+  log = [
+    { method: 'GET', url: 'https://erp.company.test/', status: 200, live: true },
+    { method: 'GET', url: 'https://auth.vendor.test/', status: 200 },
+  ];
+  state = { cookies: ['erp.company.test', 'auth.vendor.test', 'unreached.company.test'].map(domain => ({ name: 'sid', domain, value: 'fake' })),
+    origins: ['erp.company.test', 'auth.vendor.test', 'unreached.company.test'].map(h => ({ origin: `https://${h}`, localStorage: [] })) };
+  const pending = Promise.withResolvers<void>(), seen = Promise.withResolvers<void>();
+  gate = pending.promise;
+  modelSeen = seen.resolve;
+  let completed = false;
+  const id = await startSignIn(email, name, ''), saving = endSignIn(email, id, true).then(() => { completed = true; });
+  t.after(async () => { pending.resolve(); await saving; });
+  await seen.promise;
+  assert.equal(completed, true, 'Save must resolve before the model gate opens');
+  assert.equal(isSignIn(email, id), false);
+  assert.equal(logins(email).some(l => l.id === `web:${name}`), true);
+  assert.equal(isCheckingWebsite(email, name), true);
+  const before = secret(email, `web:${name}`), checking = checkWebsite(email, name);
+  await assert.rejects(endSignIn(email, id, false), { status: 404, message: 'no such sign-in' });
+  pending.resolve();
+  await Promise.all([saving, checking]);
+  assert.equal(logins(email).some(l => l.id === `web:${name}`), true);
+  assert.deepEqual(websitesOf(email)[name].profile, fails ? { error: 'OpenRouter answered 500' } : profile);
+  assert.equal(secret(email, `web:${name}`), before, 'assessment never merges newly allowed cookies into the saved login');
+  assert.equal(models.length, 1, 'a duplicate check joins the background assessment');
+  assert.equal(isCheckingWebsite(email, name), false);
+  const saved = JSON.parse(before), hosts = ['erp.company.test'];
+  assert.deepEqual(saved.cookies.map((c: any) => c.domain), hosts);
+  assert.deepEqual(saved.origins.map((o: any) => new URL(o.origin).hostname), hosts);
+});
+
+test('a failed sealed-state write cannot report a saved login or start its assessment', async () => {
+  await site('write-error');
+  log = [{ method: 'GET', url: 'https://erp.company.test/', status: 200, live: true }];
+  const id = await startSignIn(email, 'write-error', '');
+  const { personDir } = await import('../src/logins.ts');
+  const temporary = join(personDir(email), 'web:write-error.sealed.tmp');
+  mkdirSync(temporary, { recursive: true });
+  try {
+    await assert.rejects(endSignIn(email, id, true), { code: 'EISDIR' });
+    assert.equal(logins(email).some(l => l.id === 'web:write-error'), false);
+    assert.equal(isCheckingWebsite(email, 'write-error'), false);
+    assert.equal(models.length, 0);
+  } finally {
+    rmSync(temporary, { recursive: true });
+  }
 });
 
 test('expired sign-ins cannot save, and every manual host allowance requires an admin', async () => {

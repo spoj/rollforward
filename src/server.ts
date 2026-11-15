@@ -18,7 +18,7 @@ import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { answered, byLogin, call, connections, intercepts, keyStatus, letIn, loginOf, removeConnection, setConnection, setLetIn, upstreams } from './connections.ts';
 import { syncCosts } from './costs.ts';
-import { addSite, allowHost, Browsers, endSignIn, endSignIns, endUnpermittedSignIns, enrolFlagged, isSignIn, keepAlive, passAllowed, passUpgrade, reap, removeHost, removeSite, revokeInternalHosts, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
+import { addSite, allowHost, Browsers, endSignIn, endSignIns, endUnpermittedSignIns, enrolFlagged, isSignIn, isCheckingWebsite, drainWebsiteChecks, keepAlive, passAllowed, passUpgrade, reap, removeHost, removeSite, revokeInternalHosts, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
 import { addVpn, cancelVpnSignIn, disconnectVpn, dropUnpermittedVpns, isVpnSignIn, reapVpns, removeVpn, saveVpnSignIn, startVpnSignIn, vpns } from './vpns.ts';
 import { ask, decide, forgetGrants, forgetWorkspace, lapse, pruneGrants, revoke, visible } from './grants.ts';
 import { offer } from './connections/graph.ts';
@@ -1594,7 +1594,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     else if (url.pathname === '/logins/sites' && req.method === 'GET') {
       const person = url.searchParams.get('person') ?? me.email;
       if (person !== me.email && me.role !== 'admin') throw new HttpError(403, `${person}'s websites are theirs`);
-      send(res, 200, websitesOf(person));
+      send(res, 200, Object.fromEntries(Object.entries(websitesOf(person)).map(([site, w]) => [site, { ...w, checking: isCheckingWebsite(person, site) }])));
     }
     else if (url.pathname === '/logins/sites' && req.method === 'POST') {
       const { name, url: start, header } = await json(req);
@@ -1726,7 +1726,7 @@ await reapVpns().catch(e => console.error('the tunnel service: tunnels a restart
 // A stop, as an update's, cuts the runs (waker.ts stop()) and exits once what they had sent is answered and logged, within 10 s.
 process.on('SIGTERM', async () => {
   stop();
-  await answered(10_000);
+  await Promise.all([answered(10_000), drainWebsiteChecks(10_000)]);
   process.exit();
 });
 server.listen(port, host, () => {

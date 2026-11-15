@@ -161,6 +161,7 @@ export async function startSignIn(email: string, site: string, given: string): P
   }
   const generation = (signInGenerations.get(key) ?? 0) + 1;
   signInGenerations.set(key, generation);
+  changes.emit('change', 'tree');
   const ttl_s = Number(process.env.RF_SIGNIN_S ?? 600), since = Date.now();
   const signing = { email, site, name: site, token, since, expires: since + ttl_s * 1000, website: w, websiteGeneration, generation, loginSince };
   await checkHost(new URL(w.url).hostname, !!w.via);
@@ -396,14 +397,13 @@ export async function endSignIn(email: string, id: string, save: boolean, keepal
   try {
     if (save && expired) throw new HttpError(410, 'This sign-in expired; sign in again.');
     if (!save) return;
-    currentSignIn(signing);
-    await checkWebsite(email, site, trace);
     const w = currentSignIn(signing), allowed = allowedHosts(w), hosts = Object.keys(requests).filter(h => allowed.some(p => covers(p, h))), s = state as { cookies: { domain: string }[]; origins: { origin: string }[] };
     const trimmed = s && { ...s, cookies: s.cookies.filter(c => hosts.some(h => c.domain === h || (c.domain.startsWith('.') && (h === c.domain.slice(1) || h.endsWith(c.domain))))),
       origins: s.origins.filter(o => hosts.includes(new URL(o.origin).hostname)) };
     saveLogin(email, { id: `web:${site}`, kind: 'website', name, since: new Date().toISOString(), offers: [{ id: `web:${site}`, name }], ...(until && { keepalive: new Date(until).toISOString() }), trace }, JSON.stringify(trimmed));
     if (token) seal(email, `web:${site}.header`, token);
     saved = true;
+    checkWebsite(email, site, trace).catch(e => console.error(`checking ${site} after sign-in:`, e));
   } finally {
     console.log(`sign-in ended ${JSON.stringify({ id, site, email, saved, seconds, requests, blocked, failed })}`);
   }
@@ -466,15 +466,40 @@ Answer one JSON object {"profile":{"what":"one plain sentence naming the website
 Company means a company's own business portal; vendor a business service; bank and government their institutions; general includes personal storage, file sharing, pastes, webmail, Google and Microsoft consumer services, and social networks. High risk includes imitation domains, credentials going to unrelated services and general-purpose ways to take company data elsewhere. Classify the website, not the person or their intended use.
 Decide only the unchecked hosts: pass what its pages need, such as sign-on, scripts, styles, fonts and images; refuse analytics, advertising, telemetry and optional chat widgets; high for data export services and anything uncertain. Own-domain, blocklist and internal-address rules are already decided and cannot be overridden.`;
 
+const websiteChecks = new Map<string, { current: () => boolean; trace: string; promise: Promise<Profile> }>(), assessments = new Set<Promise<Profile>>();
+export const isCheckingWebsite = (email: string, site: string) => websiteChecks.get(`${rfDir()} ${email} ${site}`)?.current() ?? false;
+export async function drainWebsiteChecks(ms: number) {
+  const until = Date.now() + ms;
+  while (assessments.size && Date.now() < until) {
+    let timer: ReturnType<typeof setTimeout>;
+    await Promise.race([Promise.allSettled([...assessments]), new Promise(ok => { timer = setTimeout(ok, until - Date.now()); })]).finally(() => clearTimeout(timer));
+  }
+}
+
 export async function checkWebsite(email: string, site: string, given?: Trace): Promise<Profile> {
-  const w = website(email, site), trace = given ?? logins(email).find(l => l.id === `web:${site}`)?.trace, address = new URL(w.url).hostname, siteKey = `${email} ${site}`, generation = websiteGenerations.get(siteKey);
+  const w = website(email, site), login = logins(email).find(l => l.id === `web:${site}`), trace = given ?? login?.trace, address = new URL(w.url).hostname, siteKey = `${email} ${site}`, generation = websiteGenerations.get(siteKey), signing = signInGenerations.get(siteKey), root = rfDir(), key = `${root} ${siteKey}`, evidence = JSON.stringify(trace) ?? '';
+  const current = () => {
+    const now = websitesOf(email)[site];
+    return rfDir() === root && !!now && now.url === w.url && now.via === w.via && now.added === w.added && websiteGenerations.get(siteKey) === generation && signInGenerations.get(siteKey) === signing && logins(email).find(l => l.id === `web:${site}`)?.since === login?.since;
+  };
+  const before = websiteChecks.get(key);
+  if (before?.current()) {
+    if (before.trace === evidence) return before.promise;
+    const queued = before.promise.then(() => {
+      if (!current()) throw new HttpError(409, `${site} was removed, replaced or signed out while it was checked`);
+      return checkWebsite(email, site, given);
+    }).finally(() => assessments.delete(queued));
+    assessments.add(queued);
+    return queued;
+  }
+  const pending = (async () => {
   const candidates = [...new Set([address, ...w.hosts.filter(h => !h.startsWith('*.')), ...Object.keys(trace?.requests ?? {}), ...trace?.blocked ?? []])];
   const todo = candidates.filter(h => !w.checks?.[h] || (w.checks[h].verdict === 'internal' && (!!letIn()[h] || throughVpn(w, h))));
   const checks: NonNullable<Website['checks']> = {}, queries: string[] = [];
   let profile = w.profile, failed: string | undefined, checkCost = 0, checkEstimated = false;
   const settle = (decisions: NonNullable<Website['checks']>, result?: Profile) => {
     const now = websitesOf(email)[site];
-    if (!now || now.url !== w.url || now.added !== w.added || websiteGenerations.get(siteKey) !== generation) throw new HttpError(409, `${site} was removed or replaced while it was checked`);
+    if (!current()) throw new HttpError(409, `${site} was removed, replaced or signed out while it was checked`);
     const fresh = Object.fromEntries(Object.entries(decisions).filter(([h]) => !now.checks?.[h] || (now.checks[h].verdict === 'internal' && (!!letIn()[h] || throughVpn(now, h)))));
     const hosts = now.hosts.filter(p => p.startsWith('*.') || (fresh[p]?.verdict ?? 'pass') === 'pass'), all = { ...now.checks, ...fresh };
     const allowed = Object.keys(all).filter(h => all[h].verdict === 'pass' && !reached({ ...now, hosts }).some(p => covers(p, h)));
@@ -511,6 +536,7 @@ export async function checkWebsite(email: string, site: string, given?: Trace): 
     const tools = [{ type: 'function', function: { name: 'search', description: 'Search the public web for a website or host.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false } } }];
     const cause = { kind: 'website-check' as const, site, person: email };
     for (;;) {
+      if (!current()) throw new HttpError(409, `${site} was removed, replaced or signed out while it was checked`);
       const res = await serverCall('openrouter', '/api/v1/chat/completions', {
         model, response_format: { type: 'json_object' }, messages, ...(exa && { tools, tool_choice: queries.length < 5 ? 'auto' : 'none' }),
       }, cause, 120_000);
@@ -521,6 +547,7 @@ export async function checkWebsite(email: string, site: string, given?: Trace): 
       if (said.tool_calls?.length) {
         messages.push(said);
         for (const t of said.tool_calls) {
+          if (!current()) throw new HttpError(409, `${site} was removed, replaced or signed out while it was checked`);
           if (!exa || t.function.name !== 'search' || queries.length === 5) throw new Error('The website check exceeded its search tools.');
           const { query } = JSON.parse(t.function.arguments);
           if (typeof query !== 'string') throw new Error('The website check gave no search query.');
@@ -566,6 +593,15 @@ export async function checkWebsite(email: string, site: string, given?: Trace): 
     act('server', { op: 'website-check', person: email, site, evidence: trace ?? null, queries, profile, checks, cost: +checkCost.toFixed(6), ...(checkEstimated && { estimated: true }), ...(failed && { error: failed }) });
   }
   return profile!;
+  })().finally(() => {
+    assessments.delete(pending);
+    if (websiteChecks.get(key)?.promise === pending) websiteChecks.delete(key);
+    changes.emit('change', 'tree');
+  });
+  websiteChecks.set(key, { current, trace: evidence, promise: pending });
+  assessments.add(pending);
+  changes.emit('change', 'tree');
+  return pending;
 }
 
 async function checkRefused(inst: Instance, run: number, email: string, site: string, log: Entry[]) {
