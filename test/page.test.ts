@@ -440,13 +440,62 @@ test("the sidebar's filter keeps, as you type, the rows whose names match and wh
   await page.fill('#find', '');
   assert.deepEqual(await series(), before);
   await page.click('#sorter summary');
-  assert.deepEqual(await page.locator('#sortpop .opt:not([data-act=toggle-archived])').allTextContents(), ['My workspaces', 'All workspaces', 'Newest activity', 'Name']);
+  assert.deepEqual(await page.locator('#sortpop .opt:not([data-act=toggle-archived])').allTextContents(), ['My workspaces', 'All workspaces', 'Mine', 'Newest activity', 'Name']);
   await page.click('#sortpop [data-act=order][data-id=name]');
   assert.deepEqual([await series(), await page.locator('#sorter.on').count()], [[...before].sort(), 1], 'by name, the button marked');
   await page.click('#sortpop [data-act=order][data-id=activity]');
   assert.deepEqual([await series(), await page.locator('#sorter.on').count()], [before, 0]);
   await page.mouse.click(5, 5);
   assert.equal(await page.locator('#sorter[open]').count(), 0, 'a click beside the menu closes it');
+});
+
+test("Mine is a keyboard-operated Show toggle, off by default, kept per person independently of My workspaces, and marks the filter button", async () => {
+  const tab = await browser.newPage({ storageState: { cookies: (await page.context().storageState()).cookies, origins: [] } });
+  try {
+    await tab.goto(page.url());
+    await tab.waitForSelector('#sortpop [data-act=mine-only]', { state: 'attached' });
+    const mine = tab.locator('#sortpop [data-act=mine-only]');
+    assert.equal(await tab.locator('.find > [data-act=mine-only]').count(), 0, 'no standalone Mine button');
+    assert.equal(await mine.getAttribute('aria-pressed'), 'false');
+    assert.equal(await tab.locator('#sorter.on').count(), 0);
+    assert.equal(await tab.evaluate(() => localStorage.getItem('mine:admin@demo.test')), null);
+    await tab.focus('#sorter summary');
+    await tab.keyboard.press('Enter');
+    for (let n = 0; n < 3; n++) await tab.keyboard.press('Tab');
+    assert.equal(await mine.evaluate(el => el === document.activeElement), true, 'Tab reaches Mine in Show');
+    assert.deepEqual(await mine.evaluate(el => [getComputedStyle(el).outlineStyle, getComputedStyle(el).outlineWidth]), ['solid', '2px'], 'keyboard focus is visible');
+    await tab.keyboard.press('Space');
+    assert.equal(await mine.evaluate(el => el === document.activeElement), true, 'Mine keeps focus when redrawn');
+    assert.equal(await mine.getAttribute('aria-pressed'), 'true');
+    assert.equal(await mine.evaluate(el => el.classList.contains('sel')), true);
+    assert.equal(await tab.locator('#sorter.on').count(), 1);
+    assert.equal(await tab.evaluate(() => localStorage.getItem('workspaces')), null, 'Mine does not select All workspaces');
+    await tab.click('#sortpop [data-act=workspaces][data-id=all]');
+    assert.equal(await mine.getAttribute('aria-pressed'), 'true', 'All workspaces does not disable Mine');
+    await tab.reload();
+    await tab.waitForSelector('#sortpop [data-act=mine-only][aria-pressed=true]', { state: 'attached' });
+    assert.equal(await tab.locator('#sorter.on').count(), 1);
+    assert.equal(await tab.locator('#sortpop [data-act=workspaces][data-id=all].sel').count(), 1);
+    await tab.click('#sorter summary');
+    await tab.click('#sortpop [data-act=workspaces][data-id=mine]');
+    assert.equal(await mine.getAttribute('aria-pressed'), 'true', 'My workspaces does not disable Mine');
+    await tab.keyboard.press('Escape');
+    assert.equal(await tab.locator('#sorter[open]').count(), 0);
+    await tab.focus('#sorter summary');
+    await tab.keyboard.press('Space');
+    for (let n = 0; n < 3; n++) await tab.keyboard.press('Tab');
+    assert.equal(await mine.evaluate(el => el === document.activeElement), true);
+    await tab.keyboard.press('Enter');
+    assert.equal(await mine.evaluate(el => el === document.activeElement), true);
+    assert.equal(await mine.getAttribute('aria-pressed'), 'false');
+    assert.equal(await mine.evaluate(el => el.classList.contains('sel')), false);
+    assert.equal(await tab.locator('#sorter.on').count(), 0);
+    assert.equal(await tab.evaluate(() => localStorage['mine:admin@demo.test']), '');
+    assert.equal(await tab.evaluate(() => localStorage.workspaces), 'mine', 'Mine does not change My workspaces');
+    await tab.reload();
+    await tab.waitForSelector('#sortpop [data-act=mine-only][aria-pressed=false]', { state: 'attached' });
+    assert.equal(await tab.locator('#sorter.on').count(), 0);
+  } finally { await tab.close(); }
 });
 
 test('keys: c goes to the comment box, Ctrl+Enter sends it, Esc leaves it, and j moves through the sidebar', async () => {
@@ -1916,7 +1965,9 @@ test("Assign… on the bar hands an instance to whoever sees its workspace, who 
   await handed.close();
   await page.goto(`${origin}/#/${mine}`);
   await page.waitForSelector(`a.row.inst[href="#/${theirs}"]`);
-  await page.click('.find .mine');
+  await page.click('#sorter summary');
+  await page.click('#sortpop [data-act=mine-only]');
+  await page.keyboard.press('Escape');
   await page.waitForSelector(`a.row.inst[href="#/${theirs}"]`, { state: 'detached' });
   assert.equal(await page.locator(`a.row.inst[href="#/${mine}"]`).count(), 1);
   assert.ok(await page.locator('a.row.inst').evaluateAll(rows => rows.length > 0));
@@ -1929,7 +1980,9 @@ test("Assign… on the bar hands an instance to whoever sees its workspace, who 
   await page.goto(`${origin}/#/${mine}`);
   await page.waitForSelector(`a[href="#/${unrun}"]`, { state: 'detached' });
   assert.equal(await page.locator(`a[href="#/${empty}"]`).count(), 0);
-  await page.click('.find .mine');
+  await page.click('#sorter summary');
+  await page.click('#sortpop [data-act=mine-only]');
+  await page.keyboard.press('Escape');
   await page.waitForSelector(`a.row.inst[href="#/${theirs}"]`);
 });
 

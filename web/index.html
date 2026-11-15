@@ -10,7 +10,7 @@
 </head>
 <body>
 <div class="app">
-  <aside class="side" id="side"><div class="brand" id="brand"></div><div class="find"><input type="search" id="find" placeholder="Filter" autocomplete="off" spellcheck="false" aria-label="Filter workspaces, series and instances"><button class="add mine" data-act="mine-only" title="Only the open instances you run">Mine</button><details class="sorter" id="sorter"><summary class="add" title="Show and sort"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 4h12M4.5 8h7M7 12h2"/></svg></summary><div class="pop" id="sortpop"></div></details><span id="newws"></span></div><div class="scroll" id="tree"></div><div class="sidefoot" id="sidefoot"></div></aside>
+  <aside class="side" id="side"><div class="brand" id="brand"></div><div class="find"><input type="search" id="find" placeholder="Filter" autocomplete="off" spellcheck="false" aria-label="Filter workspaces, series and instances"><details class="sorter" id="sorter"><summary class="add" title="Show and sort"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 4h12M4.5 8h7M7 12h2"/></svg></summary><div class="pop" id="sortpop"></div></details><span id="newws"></span></div><div class="scroll" id="tree"></div><div class="sidefoot" id="sidefoot"></div></aside>
   <header class="masthead" id="masthead"></header>
   <main class="main">
     <div class="bar" id="bar"></div>
@@ -291,7 +291,6 @@ function renderSide() {
   // marks and counts theirs alone, and the series and workspace shown, though they hold none.
   const only = localStorage[`mine:${me.email}`] === 'on', ours = i => (i.status === 'open' && i.runner === me.email) || i.id === cur?.i?.id;
   const side = only ? tree.map(w => ({ ...w, series: w.series.map(s => ({ ...s, instances: s.instances.filter(ours) })).filter(s => s.instances.length || s.id === cur?.s?.id) })).filter(w => w.series.length || w.id === cur?.w.id) : tree;
-  $('.find .mine').classList.toggle('on', only);
   const listed = (x, on) => !x.archived || showArchived || on, mine = localStorage.workspaces !== 'all' && side.some(w => w.mine), byName = localStorage.order === 'name';
   const q = $('#find').value.trim().toLowerCase(), hit = name => name.toLowerCase().includes(q), opened = new Set(), shut = id => !expanded.has(id) && !opened.has(id);
   // A dot on a folded row: red for asks waiting on people, else blue for something new to you.
@@ -357,8 +356,9 @@ function renderSide() {
   if (q && !shown) h += '<div class="empty">Nothing matches.</div>';
   const opt = (act, id, on, label) => `<button class="opt ${on ? 'sel' : ''}" data-act="${act}" data-id="${id}">${label}</button>`;
   put($('#sortpop'), '<div class="head">Show</div>' + opt('workspaces', 'mine', mine, 'My workspaces') + opt('workspaces', 'all', !mine, 'All workspaces')
+    + `<button class="opt ${only ? 'sel' : ''}" data-act="mine-only" aria-pressed="${only}" title="Only the open instances you run">Mine</button>`
     + (archivedCount ? opt('toggle-archived', '', showArchived, `Archived (${archivedCount})`) : '') + '<div class="head">Sort</div>' + opt('order', 'activity', !byName, 'Newest activity') + opt('order', 'name', byName, 'Name'));
-  $('#sorter').classList.toggle('on', localStorage.workspaces === 'all' || showArchived || byName);
+  $('#sorter').classList.toggle('on', only || localStorage.workspaces === 'all' || showArchived || byName);
   put($('#newws'), me.can.includes('create') ? btn('new-workspace', 'New workspace', '+') : '');
   // Keys move a focus through the rows' links (j, k), which a new drawing keeps.
   const kf = $('#tree').contains(document.activeElement) && document.activeElement.getAttribute('href');
@@ -1478,7 +1478,7 @@ async function onAct(act, el) {
   if (act === 'fold-side') { foldSide(!$('.app').classList.contains('folded')); renderSide(); }
   if (act === 'expand') { expandRow(el.dataset.id); renderSide(); }
   if (act === 'workspaces') { localStorage.workspaces = el.dataset.id; renderSide(); }
-  if (act === 'mine-only') { localStorage[`mine:${me.email}`] = localStorage[`mine:${me.email}`] === 'on' ? '' : 'on'; renderSide(); }
+  if (act === 'mine-only') { localStorage[`mine:${me.email}`] = localStorage[`mine:${me.email}`] === 'on' ? '' : 'on'; renderSide(); $('#sortpop [data-act=mine-only]').focus(); }
   if (act === 'order') { localStorage.order = el.dataset.id; renderSide(); }
   // A row's settings and + act on that row, which they open first: after the hash change's own refresh starts, which this one
   // supersedes, so it lands before they act.
