@@ -35,8 +35,9 @@ rf comment PATH TEXT [--item ID] [--ref REF] [--thread cN] [--wake|--wait]   a n
                                   says back
 rf upload PATH FILE [--onto ITEM] [--output] [--wake]
 rf approve PATH cN [TEXT] [--wake]   approves the agent's proposal cN: it goes ahead with it, and the folder is
-                                  committed as it is now, in your name; a reply approves nothing
-rf reject PATH cN [TEXT] [--wake]   rejects the agent's proposal cN: it won't do it, and carries on as TEXT says
+                                  committed as it is now, in your name
+rf reject PATH cN [TEXT] [--wake]   rejects the agent's proposal cN, with feedback on missing information or changes;
+                                  revised work takes a new proposal
 rf react PATH [cN] up|down|none   your thumbs up or down on comment cN, or on the instance, or none; quiet, open or closed
 rf close PATH [--as-series NAME] [--wake]   the runner makes it the record and an example,
                                   approving nothing; a task closes as a one-off, or as the first instance of the series NAME it
@@ -178,7 +179,8 @@ What there is
   opening words, and replies go under any comment in it, cN by its seq, a thread's id its first comment's. The agent asks
   questions, which wait on someone, the one it names or else the runner, until a person replies under it, and proposes what it
   will do for its runner, such as sending mail, which waits until someone approves or rejects it, or the agent withdraws it; a
-  reply under a proposal approves nothing. rf ls says how many asks wait in each instance. Reactions, thumbs up or down, are
+  proposal missing information should be rejected with feedback, so the agent can revise and propose again. Generic comments
+  are not proposal decisions. rf ls says how many asks wait in each instance. Reactions, thumbs up or down, are
   quiet signals kept for later. Anyone who sees the instance may approve a proposal, which commits the instance's folder to its
   history, .git in it, as it is then, as closing does. Whose approval counts, and for what, is the series' call.
 

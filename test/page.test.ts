@@ -95,7 +95,7 @@ before(async () => {
     ['a5c0ff5e1f07', 'January', 'open', [{ id: 'notes', name: 'Notes', kind: 'step', file: 'working/notes.md' }], [
       { by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'The pack is built.' },
       { by: 'agent', op: 'comment', thread: 'c3', item: null, ref: null, text: 'Which account does it go to? See c2.', ask: 'question' },
-      { by: 'agent', op: 'comment', thread: 'c4', item: null, ref: null, text: 'I will send [the pack](working/pack.csv) to the bank, as [last month](../December#c2).', ask: 'proposal' },
+      { by: 'agent', op: 'comment', thread: 'c4', item: 'notes', ref: null, text: 'I will send [the pack](working/pack.csv) to the bank, as [last month](../December#c2).', ask: 'proposal' },
       { by: 'agent', op: 'comment', thread: 'c5', item: null, ref: null, text: 'Is the rate final?', ask: 'question' },
       { by: 'agent', op: 'withdraw', thread: 'c5', on: 5, text: 'The file says so.', see: 2 },
     ]],
@@ -198,8 +198,8 @@ for (const kind of ['series', 'workspace']) test(`an archived ${kind} is read-on
     await tab.goto(new URL('/#/a5c0ff5e1f00', page.url()).href);
     await tab.waitForSelector('#bar h1 .t:text-is("2026-12")');
     await tab.fill('#newcomment', 'A draft before archiving');
-    await tab.click('#conv .pa [data-act=reply]:text-is("Reply")');
-    await tab.fill('#conv .reply:not([hidden]) textarea', 'A reply before archiving');
+    await tab.click('#conv .pa [data-mode=reject]');
+    await tab.fill('#conv .reply:not([hidden]) textarea', 'Feedback before archiving');
     const row = kind === 'series' ? '.row.ser.on' : '.row.ws.on';
     await tab.hover(row);
     await tab.click(`${row} [data-act=${kind === 'series' ? 'settings' : 'workspace-settings'}]`);
@@ -268,7 +268,7 @@ for (const kind of ['series', 'workspace']) test(`an archived ${kind} is read-on
     await tab.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
     await tab.waitForSelector('#newcomment');
     assert.equal(await tab.inputValue('#newcomment'), 'A draft before archiving');
-    assert.equal(await tab.inputValue('#conv .reply:not([hidden]) textarea'), 'A reply before archiving');
+    assert.equal(await tab.inputValue('#conv .reply:not([hidden]) textarea'), 'Feedback before archiving');
     assert.equal(await tab.locator('#bar .creds, #bar [data-act=close]').count(), 2);
     assert.equal(await tab.locator('#conv .pa [data-act=reply]:text-is("Approve…")').count(), 1);
   } finally {
@@ -592,7 +592,7 @@ test("an ask from before questions and proposals shows the files it links and th
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
   await page.waitForSelector('#log.open');
   await page.locator('#needs', { hasText: 'The pack is ready to send to the bank.' }).waitFor();
-  assert.equal(await page.locator('#needs').innerText(), 'Ask\nThe pack is ready to send to the bank.\nReply');
+  assert.equal(await page.locator('#needs').innerText(), 'Ask\nThe pack is ready to send to the bank.\nApprove\u2026\nReject\u2026');
   const thread = page.locator('#log .thread', { hasText: 'The pack is ready to send to the bank.' });
   await thread.waitFor();
   assert.equal(await page.textContent('#bar .ptog .badge'), String(await page.locator('#log .post.waits').count()), "the panel's toggle counts what waits there");
@@ -609,7 +609,7 @@ test("an ask from before questions and proposals shows the files it links and th
   }
   assert.ok(runs >= 1, 'the fixture has a run since the ask');
   assert.match(since, new RegExp(`waits on you · ${runs} runs? since`), 'what it links may have changed since');
-  assert.deepEqual(await thread.locator('.post > .pa button').allInnerTexts(), ['\u{1F44D}', '\u{1F44E}', 'Reply', 'Approve\u2026', 'Reject\u2026'], 'it may have been either');
+  assert.deepEqual(await thread.locator('.post > .pa button').allInnerTexts(), ['\u{1F44D}', '\u{1F44E}', 'Approve\u2026', 'Reject\u2026'], 'an old ask takes a decision too');
   await thread.locator('.pa button', { hasText: 'Approve' }).click();
   await thread.locator('.reply:not([hidden]) textarea').fill('Looks right.');
   await thread.locator('[data-act=approve]').click();
@@ -629,7 +629,7 @@ test("an ask from before questions and proposals shows the files it links and th
   await page.click('#log .seg [data-act=audit]');
 });
 
-test("a question asks, with Reply alone; a proposal proposes, apart, with Approve and Reject, and a reply under it approves nothing; a withdrawn ask is a line until opened; cN links a comment, here or in another instance, and each comment's cN copies an address that opens the page at it", async () => {
+test("a question asks, with Reply alone; a proposal offers only Approve and Reject, with feedback for missing information; a withdrawn ask is a line until opened; cN links a comment, here or in another instance, and each comment's cN copies an address that opens the page at it", async () => {
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f07'; });
   await page.waitForSelector('#log.open');
@@ -643,23 +643,24 @@ test("a question asks, with Reply alone; a proposal proposes, apart, with Approv
   assert.deepEqual([asks[0], proposes[0]], ['" asks"', '" proposes"']);
   assert.ok(asks[1] !== proposes[1] && asks[2] !== proposes[2], `a proposal looks apart from a question: ${asks} ${proposes}`);
   assert.deepEqual(await question.locator(':scope > .pa button').allInnerTexts(), ['\u{1F44D}', '\u{1F44E}', 'Reply'], 'a question is answered, never approved');
-  assert.deepEqual(await proposal.locator(':scope > .pa button').allInnerTexts(), ['\u{1F44D}', '\u{1F44E}', 'Reply', 'Approve\u2026', 'Reject\u2026']);
+  assert.deepEqual(await proposal.locator(':scope > .pa button').allInnerTexts(), ['\u{1F44D}', '\u{1F44E}', 'Approve\u2026', 'Reject\u2026']);
+  assert.equal(await proposal.locator(':scope > .reply[data-mode=reply]').count(), 0);
   const open = proposal.locator(':scope > .reply:not([hidden])');
+  await page.click('.tile[data-item=notes]');
+  const cardThread = page.locator('#card .nb', { hasText: 'I will send' });
+  assert.equal(await cardThread.locator('[data-act=thread]').innerText(), 'Open');
+  await cardThread.locator('[data-act=thread]').click();
+  assert.equal(await open.count(), 0, 'opening a proposal thread opens no decision or reply composer');
   await proposal.locator(':scope > .pa [data-mode=approve]').click();
   assert.deepEqual([await open.count(), await open.locator('.hint').innerText(), await open.locator('.btn').innerText()],
     [1, 'The agent will go ahead with this. Approving commits the instance as it is now, in your name.', 'Approve: go ahead']);
-  await proposal.locator(':scope > .pa [data-act=reply]:text-is("Reply")').click();
-  assert.deepEqual([await open.count(), await open.locator('.hint').innerText()], [1, 'A reply approves nothing: for the agent to go ahead, approve it.'], 'one box at a time');
-  await open.locator('textarea').fill('Go ahead.');
-  await open.locator('[data-act=reply-post]').click();
-  const reply = proposal.locator('.kids .post', { hasText: 'Go ahead.' });
-  await reply.waitFor();
-  assert.match(await page.locator('#needs').innerText(), /Proposal/, 'a reply, however worded, approves nothing');
   await proposal.locator(':scope > .pa [data-mode=reject]').click();
-  assert.equal(await open.locator('.hint').innerText(), "The agent won't do this, and carries on as your note says.");
-  await open.locator('textarea').fill('Wait for the new rate.');
+  assert.deepEqual([await open.count(), await open.locator('.hint').innerText()],
+    [1, "The agent won't do this. If information is missing, say what it needs before proposing again."], 'one box at a time');
+  await open.locator('textarea').fill('The bank account is missing. Include it in a new proposal.');
   await open.locator('[data-act=reject]').click();
-  await proposal.locator('.kids .post', { hasText: 'Rejected: Wait for the new rate.' }).waitFor();
+  const rejection = proposal.locator('.kids .post', { hasText: 'Rejected: The bank account is missing. Include it in a new proposal.' });
+  await rejection.waitFor();
   await page.waitForFunction(() => !document.querySelector('#needs')!.textContent!.includes('Proposal'));
   assert.equal(await proposal.locator(':scope > .pa button', { hasText: 'Approve' }).count(), 0, 'rejected by you, it asks you no more');
 
@@ -676,7 +677,7 @@ test("a question asks, with Reply alone; a proposal proposes, apart, with Approv
   await page.waitForSelector('#conv .post.flash[data-seq="2"]');
   await question.locator(':scope > .tm .cn:text-is("c3")').click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), new URL('/#/a5c0ff5e1f07/c3', page.url()).href);
-  const seq = await reply.getAttribute('data-seq');
+  const seq = await rejection.getAttribute('data-seq');
   await proposal.locator(':scope > .fold').click();
   await page.waitForSelector('#conv .post.folded[data-seq="4"]');
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f08'; });
@@ -713,20 +714,19 @@ test("a copy's history is the copied instance's: its asks and notes wait on no o
   assert.equal((await page.request.post(new URL(`/api/instances/${id}/abandon`, page.url()).href, { data: {} })).status(), 200);
 });
 
-test("text left in a closed Reply box holds nothing still: once approved, the conversation shows it and offers Approve no more", async () => {
+test("text left in a closed rejection box holds nothing still: once approved, a proposal offers no decision or Reply box", async () => {
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f0a'; });
   await page.waitForSelector('#bar h1 .t:text-is("February")');
   if (!await page.locator('#log.open').count()) await page.click('#bar [data-act=panel]');
   const post = page.locator('#conv .post[data-seq="2"]');
-  await post.locator(':scope > .pa [data-act=reply]:text-is("Reply")').click();
-  await post.locator(':scope > .reply[data-mode=reply] textarea').fill('Go ahead.');
+  await post.locator(':scope > .pa [data-mode=reject]').click();
+  await post.locator(':scope > .reply[data-mode=reject] textarea').fill('The bank account is missing.');
   await post.locator(':scope > .pa [data-mode=approve]').click();
   await post.locator('[data-act=approve]').click();
   await post.locator('.kids .post', { hasText: 'Approved' }).waitFor();
   assert.equal(await post.locator(':scope > .pa [data-mode=approve]').count(), 0);
-  await post.locator(':scope > .pa [data-act=reply]:text-is("Reply")').click();
-  assert.equal(await post.locator(':scope > .reply[data-mode=reply] textarea').inputValue(), '', 'approving clears what its boxes held');
-  await post.locator(':scope > .pa [data-act=reply]:text-is("Reply")').click();
+  assert.equal(await post.locator(':scope > .reply').count(), 0);
+  assert.equal(await post.locator(':scope > .pa [data-act=reply]:text-is("Reply")').count(), 0);
 });
 
 test("a file link's path may hold an &, spaces and one level of parentheses, and an image's spaces and parentheses, as everyday Windows names do", async () => {
@@ -1243,7 +1243,7 @@ test('a thread is a tree: a reply hangs under the comment it answers, three leve
 test("conversation drafts and picked files stay with their instance, including an open reply at the same seq", async () => {
   const tab = await browser.newPage({ storageState: await page.context().storageState() });
   try {
-    await tab.goto(new URL('/#/a5c0ff5e1f00', page.url()).href);
+    await tab.goto(new URL('/#/a5c0ff5e1f07', page.url()).href);
     await tab.waitForSelector('#newcomment');
     await tab.fill('#newcomment', 'A draft for the pack');
     await tab.setInputFiles('#newfiles', { name: 'draft.txt', mimeType: 'text/plain', buffer: Buffer.from('draft') });
@@ -1254,10 +1254,10 @@ test("conversation drafts and picked files stay with their instance, including a
     await tab.waitForSelector('#bar h1 .t:text-is("2026-10")');
     assert.equal(await tab.inputValue('#newcomment'), '');
     assert.equal(await tab.locator('#conv .post[data-seq="2"] > .reply').isHidden(), true);
-    assert.equal(await tab.locator('#conv').textContent().then(s => s!.includes('The pack is ready')), false);
+    assert.equal(await tab.locator('#conv').textContent().then(s => s!.includes('The pack is built')), false);
     await tab.fill('#newcomment', 'A draft for October');
-    await tab.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
-    await tab.waitForSelector('#bar h1 .t:text-is("2026-12")');
+    await tab.evaluate(() => { location.hash = '#/a5c0ff5e1f07'; });
+    await tab.waitForSelector('#bar h1 .t:text-is("January")');
     assert.equal(await tab.inputValue('#newcomment'), 'A draft for the pack');
     assert.equal(await tab.inputValue('#conv .post[data-seq="2"] > .reply textarea'), 'A reply for the pack');
     assert.equal(await tab.locator('#conv .post[data-seq="2"] > .reply input[type=file]').evaluate((e: HTMLInputElement) => e.files![0].name), 'reply.txt');
@@ -1307,7 +1307,7 @@ test("a comment or reply uploading attachments posts to its original instance af
   const tab = await browser.newPage({ storageState: await page.context().storageState() });
   try {
     for (const reply of [false, true]) {
-      await tab.goto(new URL('/#/a5c0ff5e1f00', page.url()).href);
+      await tab.goto(new URL('/#/a5c0ff5e1f07', page.url()).href);
       await tab.waitForSelector('#newcomment');
       const box = reply ? '#conv .post[data-seq="2"] > .reply' : '#conv .compose';
       if (reply) await tab.click('#conv .post[data-seq="2"] > .pa [data-act=reply]');
@@ -1329,8 +1329,8 @@ test("a comment or reply uploading attachments posts to its original instance af
       await tab.fill('#newcomment', 'Do not clear this draft');
       release();
       const request = await posted;
-      assert.equal(new URL(request.url()).pathname, '/api/instances/a5c0ff5e1f00/comment');
-      assert.deepEqual(paths, ['/api/instances/a5c0ff5e1f00/attach', '/api/instances/a5c0ff5e1f00/attach']);
+      assert.equal(new URL(request.url()).pathname, '/api/instances/a5c0ff5e1f07/comment');
+      assert.deepEqual(paths, ['/api/instances/a5c0ff5e1f07/attach', '/api/instances/a5c0ff5e1f07/attach']);
       assert.equal(request.postDataJSON().thread, reply ? 'c2' : undefined);
       await tab.waitForResponse(r => r.request() === request);
       assert.equal(await tab.inputValue('#newcomment'), 'Do not clear this draft');

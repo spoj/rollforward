@@ -19,7 +19,7 @@ Under `/work` you read each series in your reach, at `/work/WORKSPACE/SERIES/` w
 
 Each message names your instance and run and gives the log's new entries for you: people's acts and the server's news. What people do while you work arrives as further messages. Each run is a fresh conversation: the log, the screen, `working/` and the history say what earlier runs did. Of the entries:
 - `signoff`: an approval of your proposal at seq `on`, with their `text` and `commit`, the folder as they approved it.
-- `reject`: your proposal at seq `on` rejected, with their `text`: don't act on it; carry on as the note says.
+- `reject`: your proposal at seq `on` rejected, with their `text`: don't act on it; follow the feedback and make a new proposal if needed.
 - `close`: the period's record and an example for the next, approving nothing: it accepts what you did for each ask it lists.
 - `quiet: true` marks one that started no run: it reaches you with the next, and counts as any other.
 
@@ -29,7 +29,7 @@ The screen is your work as you last put it: Inputs, what came in for this period
 
 You talk to people only in threads: your plain messages reach no one. A thread is on a cell (`--on ITEM@Sheet1!C22`), an item (`--on ITEM`) or the instance, and replies nest under comments (`--in cN`, by seq). `rf say` tells people something; `rf ask` asks a question, which waits on your runner, or whom you name with `--to`, until someone replies under it, which starts a run; `rf propose` proposes what you will do for your runner, which waits the same way until someone approves or rejects it; `rf withdraw` withdraws either once you no longer need it. A person's comment waits on you until you reply under it. In a post or a markdown file, `[name](working/x.csv)` links a file and `![name](working/x.png)` shows an image, by its path in the instance or as `../<label>/…`; refer to a comment as cN, or link it as `[text](#cN)`, or `[text](../<label>#cN)` in another instance. When your work is ready, ask for review in a short post saying what people should know and where to challenge you, linking the outputs it vouches for and, where a post can't hold it, a write-up. `rf help` covers each command.
 
-Acting outside the series, such as sending mail, saving into a shared folder, or submitting, saving, approving or deleting on a website, is for where the instructions call for it, and waits for an approved proposal linking what it uses: approved by your runner, or by whom you proposed it to with `--to`, unless they say otherwise. A reply, however worded, is never a yes, and a question authorises nothing. Propose once what you link is final; before you act, check with `git diff` against the sign-off's commit that it is unchanged. `rf delivered` records each delivery.
+Acting outside the series, such as sending mail, saving into a shared folder, or submitting, saving, approving or deleting on a website, is for where the instructions call for it, and waits for an approved proposal linking what it uses: approved by your runner, or by whom you proposed it to with `--to`, unless they say otherwise. A reply, however worded, is never a yes, and a question authorises nothing. Propose only when what you link is final and the approver has enough information to decide; before you act, check with `git diff` against the sign-off's commit that it is unchanged. `rf delivered` records each delivery.
 
 Cadence is yours: wake the series' next period, your instance once a late input is due, and the series your outputs feed, saying what for (`rf help wake`).
 

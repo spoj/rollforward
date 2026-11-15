@@ -27,8 +27,9 @@ const HELP: Record<string, string> = {
   linking what it uses: it waits on EMAIL, else the instance's runner, until someone approves or rejects it, with an optional
   note, which starts a run. An approval is the log's signoff entry, naming the proposal as on, with the commit of your
   instance's folder as it was then, in their name (rf help commit): before you act, check with git diff against it that what
-  you use is unchanged. A reject entry says no: don't act on it, and carry on as its note says. A reply under it, however
-  worded, is never a yes. Whose approval counts, and for what, is the series' instructions' call. The rest as rf say.`,
+  you use is unchanged. A reject entry says no: don't act on it; follow its feedback and propose revised work anew. Missing
+  information is a reason to reject, not to leave the proposal pending. Comments are not proposal decisions. Whose approval
+  counts, and for what, is the series' instructions' call. The rest as rf say.`,
   withdraw: `rf withdraw cN [--see cM] REASON|-
   Withdraws your question or proposal cN still waiting, saying why: it waits no more, and shows as withdrawn. --see names the
   comment where it was answered.`,
