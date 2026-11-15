@@ -1061,6 +1061,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       return send(res, 200, run ? `${other} ${how === 'taken' ? 'taken' : 'set aside'}` : 'ok');
     }
     if (req.method === 'POST') return inOrder(id, async () => {
+      recheckRequest(req);
       const { who } = mustUnarchived(by, id);
       if ('logins' in payload) throw new HttpError(410, 'instance credentials were removed; only the owner selects the series credential ceiling');
       if (!can(who, 'series-owner')) throw new HttpError(403, 'series authoring requires the series-owner capability');
@@ -1127,6 +1128,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (!r) throw new HttpError(404, `no request ${id}`);
     mustSee(me, t.workspaces[t.series[r.series].workspace]);
     if (req.method === 'POST') return inOrder(r.series, async () => {
+      recheckRequest(req);
       const { who } = mustUnarchived(by, r.series), settings = seriesSettings(seriesDir(r.series));
       if (!wakes().requests[id]) throw new HttpError(404, `no request ${id}`);
       if ('logins' in payload) throw new HttpError(410, 'request credentials were removed; the owner selects the series credential ceiling separately');
