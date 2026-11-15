@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { id as imageId } from '../src/agent.ts';
 import { idp } from './idp.ts';
+import { writeFixtureTree } from './owner-fixture.ts';
 
 // scripts/update.ts end-to-end against a real git remote, checkout and server: pre-staging before draining, waiting for going runs
 // up to RF_DRAIN_MIN, Urgent: tags skipping the drain, older servers without /drained or SIGUSR2, older updaters without drain, and
@@ -118,7 +119,7 @@ function spawnUpdater(dir = work, env: NodeJS.ProcessEnv = {}) {
 
 before(async () => {
   mkdirSync(join(root, '.rf'), { recursive: true });
-  writeFileSync(join(root, '.rf', 'authority-format.json'), JSON.stringify({ version: 1, minReader: 1, state: 'complete' }));
+  writeFixtureTree(root, { workspaces: {}, series: {} });
   writeFileSync(join(root, '.rf', 'capabilities.json'), JSON.stringify({ 'series-owner': [ADMIN] }));
   mkdirSync(home, { recursive: true });
   entra = await idp();
