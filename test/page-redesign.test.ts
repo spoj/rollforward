@@ -32,7 +32,7 @@ const grant = {
 async function open(role: string, grants: object[] = []) {
   const page = await browser.newPage(), requests: { path: string; method: string; body: unknown }[] = [];
   const workspace = { id: 'w1', name: 'Finance', manage: true, owners: [person], members: [], archived: false, mine: true,
-    series: [] as object[], grants, reads: [], readers: [], moved: [], agents: '' };
+    series: [] as object[], grants: grants.filter(g => ['pending', 'approved'].includes((g as { state: string }).state)), reads: [], readers: [], moved: [], agents: '' };
   const responses: Record<string, unknown> = {
     '/me': { email: person, name: 'Bob', role, can: ['keepalive'], browsers: true, brand: {}, names: { [person]: 'Bob' } },
     '/api': [workspace], '/connections': [], '/grants': grants,
@@ -525,7 +525,7 @@ test('website ticks require this person’s approved workspace grant, never a su
       const tick = page.locator(`#pv input.tick[value="web:${site}"]`);
       assert.equal(await tick.isDisabled(), site !== 'approved', site);
       assert.equal(await tick.isChecked(), site === 'approved', 'stale selection: ' + site);
-      if (site !== 'approved') assert.match(await tick.locator('xpath=../..').innerText(), new RegExp(site === 'expired' ? 'expired' : 'grant ' + (site === 'missing' ? 'required' : site)));
+      if (site !== 'approved') assert.match(await tick.locator('xpath=../..').innerText(), new RegExp(site === 'expired' ? 'expired' : 'grant ' + (site === 'pending' ? 'pending' : 'required')));
     }
     assert.equal(await page.locator('#pv [data-act=grant-ask], #pv input[placeholder*="use it for"]').count(), 0);
     assert.match(await page.locator('#pv .tickrow:has(input[value="web:pending"]) .about').textContent(), /You asked .+; it waits on Finance's owners, you/);
