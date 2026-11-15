@@ -1084,7 +1084,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       return send(res, 200, { id: r.target });
     }
     if (req.method === 'POST') {
-      const inst = startWith(r.series, r.label, by, checkTicks(by, payload.logins ?? []), payload.quiet ? [] : [{ from: r.from, text: r.text, inst: r.inst }, { from: by }]);
+      const inst = startWith(r.series, r.label, by, checkTicks(by, payload.logins ?? []), payload.quiet ? [] : [{ from: r.from, text: r.text, inst: r.inst, assigned: r.assigned }, { from: by }]);
       dropRequest(id);
       return send(res, 200, { id: inst.id });
     }

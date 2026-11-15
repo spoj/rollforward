@@ -129,7 +129,7 @@ export function message(inst: Instance, n: number, entries: Entry[], first = fal
   const from = (e: Note) => e.by !== 'agent' ? who(e.by) : `the agent of ${named(tree(), instance((e.see as { inst: string }).inst).seriesId)}/${instance((e.see as { inst: string }).inst).label}, run ${e.run}, for ${who(e.runner as string)}`;
   return `Instance ${inst.label}, run ${n}.`
     + (first || made ? ` Its runner is ${made && made.op !== 'logins' ? `now ${who(to)}, ${to === made.by ? 'taking over' : `assigned by ${who(made.by)}`} from ${who(made.from as string)}` : who(by)}, who lends you ${ticked.map(lent).join(', ') || 'no login'}.` : '')
-    + (first && set.length ? ` Pending wakes: ${set.map(k => `${k.id}, ${k.target === inst.id ? 'waking this instance' : `starting ${k.label}`} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''}, from ${k.from}${woken(inst, k).word === 'runner' ? '' : ', a note'}${k.text ? `, saying ${JSON.stringify(k.text)}` : ''}`).join('; ')}.` : '')
+    + (first && set.length ? ` Pending wakes: ${set.map(k => `${k.id}, ${k.target === inst.id ? 'waking this instance' : `starting ${k.label}`} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''}, from ${k.from}${woken(inst, { ...k, assigned: k.assigned || k.assignedLabel !== undefined && k.assignedLabel === k.label }).word === 'runner' ? '' : ', a note'}${k.text ? `, saying ${JSON.stringify(k.text)}` : ''}`).join('; ')}.` : '')
     + (fixed.length ? ` Corrections on earlier instances: ${fixed.join('; ')}.` : '')
     + (open.length ? ` Open notes on the series: ${open.map(e => `n${e.seq}, from ${from(e)} at ${e.at}, ${JSON.stringify(e.text)}${(e.files as string[] | undefined)?.map(f => `, ../.notes/${f}`).join('') ?? ''}`).join('; ')}.` : '')
     + ' New log entries:\n'
@@ -506,8 +506,8 @@ export function correct(inst: Instance, by: string, c: { kind: string; item?: st
 // waits. A run's wake notes its instance, `inst`, as its name in `from` may change before it fires, and any wake its `text`, which
 // the run it starts reads in its wake entry. One with `days` recurs each week on them at its time of day, in the server's time zone;
 // a series' moves the date in its label on with it, keeping it the day it fires or the one before that it fires on, as it was set.
-export type Wake = { target: string; at: string; from: string; label?: string; inst?: string; days?: string[]; text?: string; assigned?: boolean };
-export type Request = { series: string; label: string; from: string; at: string; inst?: string; text?: string; target?: string };
+export type Wake = { target: string; at: string; from: string; label?: string; inst?: string; days?: string[]; text?: string; assigned?: boolean; assignedLabel?: string };
+export type Request = { series: string; label: string; from: string; at: string; inst?: string; text?: string; target?: string; assigned?: boolean };
 type Wakes = { pending: Record<string, Wake>; fired: Record<string, string>; requests: Record<string, Request> };
 export const wakes = () => readJson<Wakes>('wakes.json', { pending: {}, fired: {}, requests: {} });
 const saveWakes = (w: Wakes) => writeJson('wakes.json', w);
@@ -568,11 +568,15 @@ export function cancelWakes(targets: string[]) {
   saveWakes(w);
 }
 
-// An assign makes wakes pending for or from its instance no one's word: each fires as a note, a request to its runner where they
-// don't share the series (fire()).
+// An assign invalidates wakes for or from its instance, but only the matching occurrence of a series-label wake. Requests from
+// its runs keep that boundary too.
 export function assigned(inst: Instance) {
   const w = wakes();
-  for (const k of Object.values(w.pending)) if (k.target === inst.id || k.inst === inst.id || k.target === inst.seriesId && k.label === inst.label) k.assigned = true;
+  for (const k of Object.values(w.pending)) {
+    if (k.target === inst.id || k.inst === inst.id) k.assigned = true;
+    else if (k.target === inst.seriesId && k.label === inst.label) k.assignedLabel = inst.label;
+  }
+  for (const r of Object.values(w.requests)) if (r.inst === inst.id) r.assigned = true;
   saveWakes(w);
 }
 
@@ -632,6 +636,7 @@ function fire() {
     }
     // Where the run that set it is now, though it was renamed or moved since.
     const from = wake.inst ? `${named(t, instance(wake.inst).seriesId)}/${instance(wake.inst).label}` : wake.from;
+    const was = { from, text: wake.text, inst: wake.inst, assigned: wake.assigned || wake.assignedLabel !== undefined && wake.assignedLabel === label };
     // A series' wake for a label it has already wakes that instance.
     const known = t.series[target] && labels(target).find(l => l.label === label)?.id;
     if (!t.series[target] || known) {
@@ -640,8 +645,7 @@ function fire() {
         console.log(`a wake found ${named(t, inst.seriesId)}/${inst.label} ${inst.doc.status}, so it woke nothing`);
         continue;
       }
-      const was = { from, text: wake.text, inst: wake.inst, assigned: wake.assigned };
-      if (wake.assigned && !woken(inst, was).starts) w.requests[newId()] = { series: inst.seriesId, label: inst.label, target: inst.id, from, at: now, ...(wake.inst && { inst: wake.inst }), ...(wake.text && { text: wake.text }) };
+      if (was.assigned && !woken(inst, was).starts) w.requests[newId()] = { series: inst.seriesId, label: inst.label, target: inst.id, from, at: now, ...(wake.inst && { inst: wake.inst }), ...(wake.text && { text: wake.text }), assigned: true };
       else wakeWith(inst, [was]);
       continue;
     }
@@ -649,9 +653,9 @@ function fire() {
     const runs = sharer && canSee(sharer, t.workspaces[t.series[target].workspace]);
     try {
       if (!runs) throw new Error('not shared');
-      startWith(target, label!, shared.by, shared.logins, [{ from, text: wake.text, inst: wake.inst }]);
+      startWith(target, label!, shared.by, shared.logins, [was]);
     } catch {
-      w.requests[newId()] = { series: target, label: label!, from, at: now, ...(wake.inst && { inst: wake.inst }), ...(wake.text && { text: wake.text }) };
+      w.requests[newId()] = { series: target, label: label!, from, at: now, ...(wake.inst && { inst: wake.inst }), ...(wake.text && { text: wake.text }), ...(was.assigned && { assigned: true }) };
     }
   }
   saveWakes(w);

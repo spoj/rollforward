@@ -76,6 +76,30 @@ after(async () => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
+for (const queuedFirst of [false, true]) test(`Start keeps a source-assigned new-instance request's text a note, queuedFirst=${queuedFirst}`, async () => {
+  const name = `request-assignment-${queuedFirst}`;
+  const ws = await (await call('POST', '/api/workspaces', JSON.stringify({ name }))).json();
+  assert.equal((await call('PUT', `/api/workspaces/${ws.id}`, JSON.stringify({ members: [BOB] }))).status, 200);
+  const ser = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws.id, name: 'S' }))).json();
+  const source = await (await call('POST', `/api/series/${ser.id}`, JSON.stringify({ label: 'source', quiet: true }), bobCookie)).json();
+  if (!queuedFirst) assert.equal((await call('POST', `/api/instances/${source.id}/assign`, JSON.stringify({ to: ADMIN }), bobCookie)).status, 200);
+  const wakesFile = join(root, '.rf', 'wakes.json');
+  const w = existsSync(wakesFile) ? JSON.parse(readFileSync(wakesFile, 'utf8')) : { pending: {}, fired: {}, requests: {} };
+  const id = `source-assigned-${queuedFirst}`;
+  w.requests[id] = { series: ser.id, label: 'next', from: `${name}/S/source`, inst: source.id, at: new Date().toISOString(), text: 'Original source instruction.', ...(!queuedFirst && { assigned: true }) };
+  writeFileSync(wakesFile, JSON.stringify(w));
+  if (queuedFirst) assert.equal((await call('POST', `/api/instances/${source.id}/assign`, JSON.stringify({ to: ADMIN }), bobCookie)).status, 200);
+  const started = await call('POST', `/api/requests/${id}`, '{}');
+  assert.equal(started.status, 200);
+  const { id: next } = await started.json();
+  const log = (await json(`/api/instances/${next}`)).log;
+  assert.deepEqual(log.filter((e: any) => e.op === 'wake').map((e: any) => [e.from, e.text, e.note]), [
+    [`${name}/S/source`, 'Original source instruction.', true],
+    [ADMIN, undefined, undefined],
+  ]);
+  assert.equal(JSON.parse(readFileSync(wakesFile, 'utf8')).requests[id], undefined);
+});
+
 test('R4-DATA-01: aborted /files/, cached /preview/, and series /files/ transfers close their file descriptors and do not pin deleted files', async () => {
   const ws = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'fd-ws' }))).json();
   const ser = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws.id, name: 'fd-ser' }))).json();
