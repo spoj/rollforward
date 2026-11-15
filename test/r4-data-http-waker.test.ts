@@ -182,3 +182,108 @@ test('R4-DATA-03 (BURST1-05): run-created wakes drop across workspaces while sam
   assert.equal(bobClosedSer.instances.length, 1, 'closed same-workspace source cadence still fires');
   assert.ok(finalWakes.pending['wk_closed'], 'closed same-workspace weekly cadence still re-arms');
 });
+
+test('R4-DATA-04: streaming upload/attach recheck archive, proposals refuse moving archived series, and archive refuses in-flight close/abandon', async () => {
+  const streamPost = (urlPath: string) => {
+    const req = httpRequest(`${base}${urlPath}`, {
+      method: 'POST',
+      headers: { cookie: adminCookie, 'transfer-encoding': 'chunked' },
+    });
+    req.write('first-chunk-');
+    return () => new Promise<number>((resolve, reject) => {
+      req.on('error', reject);
+      req.on('response', async res => {
+        for await (const _ of res) {}
+        resolve(res.statusCode!);
+      });
+      req.end('last-chunk');
+    });
+  };
+
+  // 1) Mid-stream series archive & workspace archive refuse upload, instance attach, and series attach (and clean .tmp)
+  for (const scope of ['series', 'workspaces'] as const) {
+    const ws = await (await call('POST', '/api/workspaces', JSON.stringify({ name: `arch-stream-${scope}` }))).json();
+    const ser = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws.id, name: 'S' }))).json();
+    const inst = await (await call('POST', `/api/series/${ser.id}`, JSON.stringify({ label: 'one', quiet: true }))).json();
+    const finishes = [
+      streamPost(`/api/instances/${inst.id}/upload?name=late.bin&quiet=1`),
+      streamPost(`/api/instances/${inst.id}/attach?name=late.bin`),
+      streamPost(`/api/series/${ser.id}/attach?name=late.bin`),
+    ];
+    await nap(80);
+    assert.equal((await call('PUT', `/api/${scope}/${scope === 'series' ? ser.id : ws.id}`, JSON.stringify({ archived: true }))).status, 200);
+    const statuses = await Promise.all(finishes.map(f => f()));
+    assert.deepEqual(statuses, [409, 409, 409], `mid-stream ${scope} archive must refuse all three`);
+    assert.equal((await json(`/api/instances/${inst.id}`)).doc.items.length, 0);
+    assert.equal(existsSync(join(root, 'instances', inst.id, 'upload', 'late.bin')), false);
+    assert.equal(existsSync(join(root, 'instances', inst.id, 'upload', 'attachments', 'late.bin')), false);
+    assert.equal(existsSync(join(root, 'series', ser.id, 'notes', 'files', 'late.bin')), false);
+    assert.deepEqual(readdirSync(join(root, '.tmp')), []);
+  }
+
+  // 2) Proposing or accepting a move of an archived series returns 409
+  const wsA = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'arch-move-src' }))).json();
+  const wsB = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'arch-move-dst' }))).json();
+  const ser1 = await (await call('POST', '/api/series', JSON.stringify({ workspace: wsA.id, name: 'ArchivedBeforePropose' }))).json();
+  assert.equal((await call('PUT', `/api/series/${ser1.id}`, JSON.stringify({ archived: true }))).status, 200);
+  assert.equal((await call('PUT', `/api/proposals/${wsA.id}`, JSON.stringify({ kind: 'move', series: ser1.id, to: wsB.id }))).status, 409);
+
+  const ser2 = await (await call('POST', '/api/series', JSON.stringify({ workspace: wsA.id, name: 'ArchivedBeforeAccept' }))).json();
+  assert.equal((await call('PUT', `/api/proposals/${wsA.id}`, JSON.stringify({ kind: 'move', series: ser2.id, to: wsB.id }))).status, 200);
+  assert.equal((await call('PUT', `/api/series/${ser2.id}`, JSON.stringify({ archived: true }))).status, 200);
+  assert.equal((await call('POST', `/api/proposals/${wsA.id}`, JSON.stringify({ owners: [], members: [] }))).status, 409);
+
+  // 3) Archive coordinated with in-flight close / abandon finalization (tested deterministically in-process with held prior commit)
+  const subTmp = mkdtempSync(join(tmpdir(), 'r4-data-04-fin-'));
+  try {
+    const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
+      import assert from 'node:assert/strict';
+      import { cpSync, mkdirSync } from 'node:fs';
+      import { createServer } from 'node:net';
+      import { join } from 'node:path';
+      import { idp } from './test/idp.ts';
+      const subTmp = ${JSON.stringify(subTmp)}, root = join(subTmp, 'data');
+      cpSync('./test/fixture', root, { recursive: true });
+      const probe = createServer();
+      await new Promise(ok => probe.listen(0, '127.0.0.1', ok));
+      const port = probe.address().port;
+      await new Promise(ok => probe.close(ok));
+      const base = 'http://127.0.0.1:' + port, admin = 'admin@demo.test', entra = await idp();
+      Object.assign(process.env, entra.env(base), { RF_ADMINS: admin, RF_MIN_FREE_GB: '0', RF_MAX_RUNS: '0', RF_WAKE_TICK_MS: '60000', HOME: join(subTmp, 'home'), RF_SCRATCH: join(subTmp, 'scratch') });
+      mkdirSync(process.env.HOME, { recursive: true });
+      const git = await import('./src/git.ts');
+      process.argv[2] = root; process.argv[3] = String(port);
+      await import('./src/server.ts');
+      const store = await import('./src/store.ts'), waker = await import('./src/waker.ts');
+      await new Promise(r => setTimeout(r, 50));
+      const cookie = (await entra.signIn(base, admin)).headers.getSetCookie().find(c => c.startsWith('rf_session=')).split(';')[0];
+      const call = (method, path, body) => fetch(base + path, { method, headers: { cookie }, ...(body && { body: JSON.stringify(body) }) });
+
+      const results = [];
+      for (const action of ['close', 'abandon']) for (const scope of ['series', 'workspaces']) {
+        const ws = await (await call('POST', '/api/workspaces', { name: action + '-' + scope })).json();
+        const ser = await (await call('POST', '/api/series', { workspace: ws.id, name: 'S' })).json();
+        const obj = await (await call('POST', '/api/series/' + ser.id, { label: 'one', quiet: true })).json();
+        const inst = store.instance(obj.id);
+        const hold = Promise.withResolvers();
+        const prior = git.commit(inst.dir, { name: 'Admin', email: admin }, 'prior', hold.promise);
+        const fin = call('POST', '/api/instances/' + inst.id + '/' + action, { quiet: true });
+        await new Promise(r => setTimeout(r, 40));
+        const arch = await call('PUT', '/api/' + scope + '/' + (scope === 'series' ? ser.id : ws.id), { archived: true });
+        hold.resolve();
+        await prior;
+        const finRes = await fin;
+        results.push({ action, scope, archStatus: arch.status, finStatus: finRes.status });
+      }
+      console.log(JSON.stringify(results));
+      waker.stop(); entra.close(); process.exit(0);
+    `], { cwd: repoDir, encoding: 'utf8', timeout: 15_000 });
+    const results = JSON.parse(out.trim().split('\n').at(-1)!);
+    for (const r of results) {
+      assert.equal(r.archStatus, 409, `expected archive 409 while ${r.action} finalizing on ${r.scope}, got ${JSON.stringify(r)}`);
+      assert.equal(r.finStatus, 200);
+    }
+  } finally {
+    rmSync(subTmp, { recursive: true, force: true });
+  }
+});

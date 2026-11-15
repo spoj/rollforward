@@ -151,6 +151,15 @@ function mustSee(me: Me, w: Workspace | undefined): Workspace {
   return w;
 }
 
+function mustUnarchived(by: string, sid: string, run?: Me) {
+  const now = tree(), s = now.series[sid], ws = now.workspaces[s.workspace], shut = [ws, s].find(x => x?.archived);
+  const who = run ?? asPerson(by);
+  if (!who) throw new HttpError(401, 'sign in');
+  if (!run) mustSee(who, ws);
+  if (shut) throw new HttpError(409, `${shut.name} is archived: nothing in it changes until it's restored`);
+  return { ws, who };
+}
+
 // What going runs are no longer lent goes: their browsers, and their copies of indexes.
 async function closeUnlent() {
   for (const a of active.values()) prune(a.inst, a.n, a.token);
@@ -834,6 +843,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // Archived, it does no work: a run going in it ends first, and what waited for one as it was archived runs once it's restored.
     const its = Object.keys(t.series).filter(sid => t.series[sid].workspace === id), going = change.archived && its.map(sid => active.get(sid)).find(a => a);
     if (going) throw new HttpError(409, `${named(t, going.inst.seriesId)}/${going.inst.label} is running: archive ${w.name} once its run ends, or interrupt it first`);
+    const closing = change.archived && its.flatMap(instances).find(i => i.closing);
+    if (closing) throw new HttpError(409, `${named(t, closing.seriesId)}/${closing.label} is closing: archive ${w.name} once it finishes`);
     if (change.archived !== undefined) w.archived = !!change.archived;
     if (change.archived) cancelWakes(its.flatMap(sid => [sid, ...labels(sid).map(l => l.id)]));
     if (change.agents !== undefined) replaceFile(agentsFile(id), String(change.agents));
@@ -853,7 +864,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       const b = mustSee(me, t.workspaces[payload.to]);
       if (!canManage(me, mustSee(me, a))) throw new HttpError(403, "only the workspace's owners and admins propose to merge it or move its series");
       if (!(payload.kind === 'merge' || (payload.kind === 'move' && t.series[payload.series]?.workspace === id)) || b === a) throw new HttpError(400, 'PUT {"kind": "merge", "to"} or {"kind": "move", "series", "to"}: one of its series, into another workspace');
-      if (a.archived || b.archived) throw new HttpError(409, `${a.archived ? a.name : b.name} is archived`);
+      const shut = [a, b, payload.kind === 'move' ? t.series[payload.series] : undefined].find(x => x?.archived);
+      if (shut) throw new HttpError(409, `${shut.name} is archived`);
       const busy = proposals(t).find(p => [p.id, p.into].some(x => x === id || x === payload.to));
       if (busy) throw new HttpError(409, `${busy.from} has a proposal open, into ${busy.to}: until it's accepted, declined or withdrawn, or lapses a week on, neither takes another`);
       a.proposal = { kind: payload.kind, to: payload.to, ...(payload.kind === 'move' ? { series: payload.series } : { had: Object.keys(t.series).filter(sid => t.series[sid].workspace === id) }), by, at: new Date().toISOString() };
@@ -880,7 +892,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       ...(p.kind === 'merge' && { agents: text(agentsFile(id)) }),
     });
     if (req.method !== 'POST') throw new HttpError(405, 'GET it, POST {"owners", "members"} to accept it, or DELETE to withdraw or decline it');
-    if (a.archived || b.archived) throw new HttpError(409, `${a.archived ? a.name : b.name} is archived`);
+    const shut = [a, b, p.kind === 'move' ? t.series[a.proposal!.series!] : undefined].find(x => x?.archived);
+    if (shut) throw new HttpError(409, `${shut.name} is archived`);
     // The runs going in what moves, and any whose reach it narrows, are cut, and carry on there (waker.ts leases()).
     const [owners, members] = people(payload), moved = move(t);
     b.owners = [...new Set([...b.owners, ...owners])];
@@ -953,9 +966,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       const tmp = join(tmpDir, randomUUID());
       try {
         await pipeline(req, capped, createWriteStream(tmp));
-        const now = tree(), who = asPerson(by);
-        if (!who) throw new HttpError(401, 'sign in');
-        mustSee(who, now.workspaces[now.series[id].workspace]);
+        mustUnarchived(by, id);
         return send(res, 200, { file: keep(join(book, 'notes'), 'files', url.searchParams.get('name') ?? 'file', tmp) });
       } finally {
         rmSync(tmp, { force: true });
@@ -990,6 +1001,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       s.name = name;
     }
     if (change.archived && active.has(id)) throw new HttpError(409, `${named(t, id)}/${active.get(id)!.inst.label} is running: archive ${s.name} once its run ends, or interrupt it first`);
+    const closing = change.archived && instances(id).find(i => i.closing);
+    if (closing) throw new HttpError(409, `${named(t, id)}/${closing.label} is closing: archive ${s.name} once it finishes`);
     if (change.archived !== undefined) s.archived = !!change.archived;
     if (change.archived) cancelWakes([id, ...labels(id).map(l => l.id)]);
     // Anyone may share it as themselves in place of whoever does; only they, or whoever manages the workspace, stop sharing it.
@@ -1145,9 +1158,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const tmp = join(tmpDir, randomUUID());
     try {
       await pipeline(req, capped, createWriteStream(tmp));
-      const now = tree(), who = asPerson(by);
-      if (!who) throw new HttpError(401, 'sign in');
-      mustSee(who, now.workspaces[now.series[inst.seriesId].workspace]);
+      mustUnarchived(by, inst.seriesId);
       const file = inst.keep(url.searchParams.get('name') ?? 'file', tmp, 'upload/attachments');
       // No entry of the instance's names it until a comment does: the system's log records it, and it's committed at once in its
       // person's name, unless a run of the instance is going, whose end commits it.
@@ -1162,9 +1173,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const pane = url.searchParams.get('pane') === 'out' ? 'out' : 'in', tmp = join(tmpDir, randomUUID()), hash = createHash('sha256');
     try {
       await pipeline(req, capped, async function* (chunks: AsyncIterable<Buffer>) { for await (const c of chunks) { hash.update(c); yield c; } }, createWriteStream(tmp));
-      const now = tree(), who = asPerson(by);
-      if (!who) throw new HttpError(401, 'sign in');
-      mustSee(who, now.workspaces[now.series[inst.seriesId].workspace]);
+      mustUnarchived(by, inst.seriesId);
       const up = inst.upload(by, url.searchParams.get('name') ?? 'file', tmp, hash.digest('hex'), pane, url.searchParams.get('onto'), quiet);
       // What starts no run, quiet or a note, is committed at once in its person's name; a run going commits it as it ends.
       if (!standing(inst, up)!.starts && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, me, `Upload ${up.file}`).catch(err => inst.append('server', 'commit', { cause: up.seq, error: err.message }));
@@ -1224,11 +1233,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const out = await inOrder(inst.id, async () => {
       const recheck = () => {
         if (run && running(run.token) !== run) throw new HttpError(409, 'its run has ended');
-        const now = tree(), s = now.series[inst.seriesId], ws = now.workspaces[s.workspace], shut = [ws, s].find(x => x?.archived);
-        const who: Me | undefined = run ? me : asPerson(by);
-        if (!who) throw new HttpError(401, 'sign in');
-        if (!run) mustSee(who, ws);
-        if (shut) throw new HttpError(409, `${shut.name} is archived: nothing in it changes until it's restored`);
+        const { ws, who } = mustUnarchived(by, inst.seriesId, run ? me : undefined);
         if (inst.doc.status !== 'open') throw new HttpError(409, `instance is ${inst.doc.status}`);
         const cur = active.get(inst.seriesId);
         return { ws, who, mine: cur?.inst === inst ? cur : undefined };

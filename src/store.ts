@@ -254,6 +254,7 @@ export class Instance {
   id: string;
   doc: Doc;
   log: Entry[];
+  closing = false;
 
   constructor(dir: string) {
     this.dir = dir;
@@ -330,6 +331,7 @@ export class Instance {
   async close(by: Who) {
     const accepted = this.asking().map(e => `c${e.seq}`);
     this.doc.status = 'closed';
+    this.closing = true;
     let hash: string;
     try {
       await committed(this.dir);
@@ -343,6 +345,8 @@ export class Instance {
     } catch (e) {
       if (!this.hole) this.doc.status = 'open';
       throw e;
+    } finally {
+      this.closing = false;
     }
     if (this.hole) throw new HttpError(409, `${this.label} was deleted during the close`);
     this.save();
@@ -350,7 +354,12 @@ export class Instance {
   }
 
   async abandon(by: string) {
-    await committed(this.dir);
+    this.closing = true;
+    try {
+      await committed(this.dir);
+    } finally {
+      this.closing = false;
+    }
     if (this.hole) throw new HttpError(409, `${this.label} was deleted`);
     this.doc.status = 'abandoned';
     this.save();
