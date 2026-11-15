@@ -168,3 +168,88 @@ test('R4-PEOPLE-02: terminal instance states redraw read-only conversation despi
     await page.close();
   }
 });
+
+test('R4-PEOPLE-04: Start series and close validates name first and promotes only after close succeeds', async () => {
+  const page = await browser.newPage();
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const calls: { method: string; path: string; body: unknown }[] = [];
+  let promoted = false, closed = false, failClose = true;
+
+  await page.route('**/*', async r => {
+    const url = new URL(r.request().url()), path = url.pathname, method = r.request().method();
+    if (url.origin !== origin) return r.abort();
+    if (method !== 'GET') calls.push({ method, path, body: r.request().postData() && r.request().postDataJSON() });
+    if (path === '/api/events') return r.fulfill({ contentType: 'text/event-stream', body: ': ready\n\n' });
+    if (path === '/me') return r.fulfill({ json: { email: person, name: 'Bob', role: 'user', can: [], browsers: false, brand: {}, names: { [person]: 'Bob' } } });
+    if (path === '/logins') return r.fulfill({ json: [] });
+    if (path === '/api') return r.fulfill({ json: [{
+      id: 'w1', name: 'Finance', manage: true, owners: [person], members: [], archived: false, mine: true,
+      grants: [], reads: [], readers: [], moved: [], agents: '',
+      series: [
+        { id: 'sExisting', name: 'ExistingSeries', single: false, archived: false, requests: [], wakes: [], fired: null, notes: 0, instances: [] },
+        { id: 't1', name: promoted ? 'Monthly rec' : 'Oct rec', single: !promoted, archived: false, requests: [], wakes: [], fired: null, notes: 0,
+          instances: [{ id: 'ti1', label: 'Oct rec', status: closed ? 'closed' : 'open', running: false, runner: person, asks: [], wakes: [], refused: [], unread: false, assigned: null, active: '2026-11-15T10:00:00Z' }] },
+      ],
+    }] });
+    if (path === '/api/instances/ti1') return r.fulfill({ json: {
+      doc: { rev: 1, status: closed ? 'closed' : 'open', items: [] },
+      log: [{ seq: 1, at: '2026-11-15T10:00:00Z', by: person, op: 'create', logins: [] }],
+      standing: {}, waiting: [], runner: { by: person, logins: [], ticked: [] },
+      starts: true, run: null, queued: null, held: [], sums: {},
+    } });
+    if (path === '/api/series/t1/promote' && method === 'POST') {
+      if (promoted) return r.fulfill({ status: 400, body: 'Monthly rec is a series already' });
+      promoted = true;
+      return r.fulfill({ status: 200, body: 'ok' });
+    }
+    if (path === '/api/instances/ti1/close' && method === 'POST') {
+      if (failClose) return r.fulfill({ status: 409, body: 'u2: no file upload/output.csv' });
+      closed = true;
+      return r.fulfill({ status: 200, body: 'ok' });
+    }
+    return r.continue();
+  });
+
+  try {
+    await page.goto(`${origin}/#/ti1`);
+    await page.waitForSelector('#bar [data-act=close]');
+    await page.click('#bar [data-act=close]');
+    await page.waitForSelector('#ask[open] #aseries');
+
+    // Refused close leaves the task unpromoted so retrying after fixing succeeds cleanly.
+    await page.fill('#aseries', 'Monthly rec');
+    await page.click('#ask button[value=series]');
+    await page.waitForSelector('#ask button[value=series]:not([aria-busy])');
+    assert.equal(await page.textContent('#ask .err'), 'u2: no file upload/output.csv');
+    assert.equal(promoted, false);
+    assert.deepEqual(calls.map(c => c.path), ['/api/instances/ti1/close']);
+
+    // Invalid names and existing series names are rejected before any mutation.
+    calls.length = 0;
+    await page.fill('#aseries', '.hidden');
+    await page.click('#ask button[value=series]');
+    await page.waitForSelector('#ask button[value=series]:not([aria-busy])');
+    assert.match(await page.textContent('#ask .err') ?? '', /can't start with a dot/);
+    assert.equal(calls.length, 0);
+
+    await page.fill('#aseries', 'ExistingSeries');
+    await page.click('#ask button[value=series]');
+    await page.waitForSelector('#ask button[value=series]:not([aria-busy])');
+    assert.equal(await page.textContent('#ask .err'), 'ExistingSeries exists');
+    assert.equal(calls.length, 0);
+
+    await page.fill('#aseries', 'Monthly rec');
+    failClose = false;
+    await page.click('#ask button[value=series]');
+    await page.waitForSelector('#ask:not([open])', { state: 'attached' });
+    assert.equal(closed, true);
+    assert.equal(promoted, true);
+    assert.deepEqual(calls, [
+      { method: 'POST', path: '/api/instances/ti1/close', body: null },
+      { method: 'POST', path: '/api/series/t1/promote', body: { name: 'Monthly rec' } },
+    ]);
+  } finally {
+    await page.close();
+  }
+});
+

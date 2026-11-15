@@ -1786,11 +1786,24 @@ async function onAct(act, el) {
       + `<div class="opts"><label>Series name<input type="text" id="aseries" value="${esc(cur.i.label)}" autocomplete="off"></label>`
       + `<div class="opt"><button class="btn commit" value="series">Start series and close</button><span>this task becomes its first instance, an example for later ones</span></div></div>` : '')
       + `<div class="abandon"><button class="quiet" value="abandon" formnovalidate>Abandon instead</button>: it stays as it is, but isn't an example or a starting point.</div>`;
-    if (await ask({ title: `Close ${cur.i.label}?`, text, html, ok: !task && el.textContent, kind: 'commit', act: async (_, how) => {
+    let closed = false;
+    if ((await ask({ title: `Close ${cur.i.label}?`, text, html, ok: !task && el.textContent, kind: 'commit', act: async (_, how) => {
       if (how === 'abandon') return api(`${instPath()}/abandon`, { method: 'POST' });
-      if (how === 'series') await api(`${seriesPath(cur)}/promote`, { method: 'POST', body: JSON.stringify({ name: $('#aseries').value.trim() }) });
-      return api(`${instPath()}/close`, { method: 'POST' });
-    } })) await refresh();
+      if (how === 'series') {
+        const raw = $('#aseries').value.trim(), clean = raw.replace(/[/\\\x00-\x1f\x7f\x85\u2028\u2029]/g, '_');
+        const bytes = new TextEncoder().encode(clean).length;
+        if (!clean) throw new Error('a name is needed');
+        if (clean.startsWith('.')) throw new Error(`a name can't start with a dot: ${raw}`);
+        if (clean === 'AGENTS.md') throw new Error("AGENTS.md is the name of the agents' instructions: choose another");
+        if (bytes > 200) throw new Error(`a name is 200 bytes at most, about 66 Chinese characters, not ${bytes}`);
+        if (clean !== cur.s.name && cur.w.series.some(x => x.name === clean)) throw new Error(`${clean} exists`);
+      }
+      if (!closed) {
+        await api(`${instPath()}/close`, { method: 'POST' });
+        closed = true;
+      }
+      return how === 'series' ? api(`${seriesPath(cur)}/promote`, { method: 'POST', body: JSON.stringify({ name: $('#aseries').value.trim() }) }) : 'ok';
+    } })) || closed) await refresh();
   }
   // A new instance waits for its first upload or comment, which starts its run.
   if (act === 'new-instance') await openStart('New instance', 'Make', ({ label, logins }) => api(seriesPath(cur), { method: 'POST', body: JSON.stringify({ label, logins, quiet: true }) }), '');
