@@ -58,6 +58,13 @@ async function stopServer() {
 
 before(async () => {
   cpSync(join(repoDir, 'test', 'fixture'), root, { recursive: true });
+  const t = JSON.parse(readFileSync(join(root, '.rf', 'tree.json'), 'utf8'));
+  for (const id of Object.keys(t.series)) {
+    mkdirSync(join(root, 'series', id), { recursive: true });
+    writeFileSync(join(root, 'series', id, 'series.json'), JSON.stringify({ version: 1, epoch: 0, since: '' }));
+  }
+  writeFileSync(join(root, '.rf', 'authority-format.json'), JSON.stringify({ version: 1, minReader: 1, state: 'complete' }));
+  writeFileSync(join(root, '.rf', 'capabilities.json'), JSON.stringify({ 'series-owner': [ADMIN, BOB, CAROL] }));
   const probe = createServer();
   await new Promise<void>(ok => probe.listen(0, '127.0.0.1', ok));
   port = (probe.address() as { port: number }).port;
@@ -134,8 +141,8 @@ test('R4-DATA-03 (BURST1-05): run-created wakes drop across workspaces while sam
     const wsB = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Dest-' + tag }))).json();
     await call('PUT', `/api/workspaces/${wsA.id}`, JSON.stringify({ owners: [BOB], members: [] }));
     await call('PUT', `/api/workspaces/${wsB.id}`, JSON.stringify({ owners: [CAROL], members: [] }));
-    const src = await (await call('POST', '/api/series', JSON.stringify({ workspace: wsA.id, name: 'Feeder' }), bobCookie)).json();
-    const target = await (await call('POST', '/api/series', JSON.stringify({ workspace: wsA.id, name: 'Target' }), bobCookie)).json();
+    const src = await (await call('POST', '/api/series', JSON.stringify({ workspace: wsA.id, name: 'Feeder', logins: [], autonomous: true }), bobCookie)).json();
+    const target = await (await call('POST', '/api/series', JSON.stringify({ workspace: wsA.id, name: 'Target', logins: [], autonomous: true }), bobCookie)).json();
     const inst = await (await call('POST', `/api/series/${src.id}`, JSON.stringify({ label: 'one', quiet: true }), bobCookie)).json();
     return { wsA, wsB, src, target, inst };
   };
@@ -146,23 +153,28 @@ test('R4-DATA-03 (BURST1-05): run-created wakes drop across workspaces while sam
   // 2) Source closed in the same workspace (cadence must keep firing & re-arming)
   const closedLocal = await setupPair('closed');
   assert.equal((await call('POST', `/api/instances/${closedLocal.inst.id}/close`, JSON.stringify({ quiet: true }), bobCookie)).status, 200);
-  assert.equal((await call('PUT', `/api/series/${closedLocal.target.id}`, JSON.stringify({ share: true, logins: [] }), bobCookie)).status, 200);
+  assert.equal((await call('PUT', `/api/series/${closedLocal.target.id}/credentials`, JSON.stringify({ autonomous: true, logins: [] }), bobCookie)).status, 200);
 
   const wakesFile = join(root, '.rf', 'wakes.json');
   const dueSoon = new Date(Date.now() + 700).toISOString();
   const w = existsSync(wakesFile) ? JSON.parse(readFileSync(wakesFile, 'utf8')) : { pending: {}, fired: {}, requests: {} };
-  w.pending['wk_moved'] = { target: moved.target.id, at: dueSoon, from: 'Source-moved/Feeder/one', inst: moved.inst.id, label: '2026-11-15', days, text: 'from moved' };
-  w.pending['wk_moved_del'] = { target: movedDeleted.target.id, at: dueSoon, from: 'Source-moved-del/Feeder/one', inst: movedDeleted.inst.id, label: '2026-11-15', days, text: 'from moved deleted' };
-  w.pending['wk_closed'] = { target: closedLocal.target.id, at: dueSoon, from: 'Source-closed/Feeder/one', inst: closedLocal.inst.id, label: '2026-11-15', days, text: 'from closed' };
+  const snapshot = (p: typeof moved) => {
+    const s = JSON.parse(readFileSync(join(root, 'series', p.target.id, 'series.json'), 'utf8'));
+    return { initiator: BOB, authority: { version: 1, owner: BOB, epoch: s.epoch, workspace: p.wsA.id, logins: [] } };
+  };
+  w.pending['wk_moved'] = { target: moved.target.id, at: dueSoon, from: 'Source-moved/Feeder/one', inst: moved.inst.id, label: '2026-11-15', days, text: 'from moved', ...snapshot(moved) };
+  w.pending['wk_moved_del'] = { target: movedDeleted.target.id, at: dueSoon, from: 'Source-moved-del/Feeder/one', inst: movedDeleted.inst.id, label: '2026-11-15', days, text: 'from moved deleted', ...snapshot(movedDeleted) };
+  w.pending['wk_closed'] = { target: closedLocal.target.id, at: dueSoon, from: 'Source-closed/Feeder/one', inst: closedLocal.inst.id, label: '2026-11-15', days, text: 'from closed', ...snapshot(closedLocal) };
   writeFileSync(wakesFile, JSON.stringify(w, null, 1));
 
   assert.equal((await call('POST', `/api/instances/${movedDeleted.inst.id}/delete`, '{}', bobCookie)).status, 200);
 
-  // Move both `moved.target` and `movedDeleted.target` into Carol's workspace B, share them there, and rename Bob's private workspaces
+  // Move both targets, transfer ownership, and consent afresh without reviving the old schedules.
   for (const p of [moved, movedDeleted]) {
     assert.equal((await call('PUT', `/api/proposals/${p.wsA.id}`, JSON.stringify({ kind: 'move', series: p.target.id, to: p.wsB.id }))).status, 200);
     assert.equal((await call('POST', `/api/proposals/${p.wsA.id}`, JSON.stringify({ owners: [], members: [] }), carolCookie)).status, 200);
-    assert.equal((await call('PUT', `/api/series/${p.target.id}`, JSON.stringify({ share: true, logins: [] }), carolCookie)).status, 200);
+    assert.equal((await call('PUT', `/api/series/${p.target.id}/owner`, JSON.stringify({ owner: CAROL }))).status, 200);
+    assert.equal((await call('PUT', `/api/series/${p.target.id}/credentials`, JSON.stringify({ autonomous: true, logins: [] }), carolCookie)).status, 200);
     assert.equal((await call('PUT', `/api/workspaces/${p.wsA.id}`, JSON.stringify({ name: 'SECRET-PRIVATE-' + p.wsA.id }), bobCookie)).status, 200);
   }
 
@@ -238,12 +250,19 @@ test('R4-DATA-04: streaming upload/attach recheck archive, proposals refuse movi
   try {
     const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
       import assert from 'node:assert/strict';
-      import { cpSync, mkdirSync } from 'node:fs';
+      import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
       import { createServer } from 'node:net';
       import { join } from 'node:path';
       import { idp } from './test/idp.ts';
       const subTmp = ${JSON.stringify(subTmp)}, root = join(subTmp, 'data');
       cpSync('./test/fixture', root, { recursive: true });
+      const t = JSON.parse(readFileSync(join(root, '.rf', 'tree.json'), 'utf8'));
+      for (const id of Object.keys(t.series)) {
+        mkdirSync(join(root, 'series', id), { recursive: true });
+        writeFileSync(join(root, 'series', id, 'series.json'), JSON.stringify({ version: 1, epoch: 0, since: '' }));
+      }
+      writeFileSync(join(root, '.rf', 'authority-format.json'), JSON.stringify({ version: 1, minReader: 1, state: 'complete' }));
+      writeFileSync(join(root, '.rf', 'capabilities.json'), JSON.stringify({ 'series-owner': ['admin@demo.test'] }));
       const probe = createServer();
       await new Promise(ok => probe.listen(0, '127.0.0.1', ok));
       const port = probe.address().port;

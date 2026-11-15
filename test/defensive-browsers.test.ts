@@ -5,7 +5,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInstance, openStore } from '../src/store.ts';
-import { initSystem, saveTree } from '../src/system.ts';
+import { authority } from '../src/logins.ts';
+import { saveSeriesSettings } from '../src/series.ts';
+import { initSystem, saveTree, writeJson } from '../src/system.ts';
 
 const USER = 'alice@demo.test';
 const tmp = mkdtempSync(join(tmpdir(), 'rf-def-browsers-'));
@@ -60,6 +62,7 @@ saveTree({ workspaces: { w: { name: 'W', owners: [USER], members: [] } }, series
 
 const { upsertUser } = await import('../src/auth.ts');
 upsertUser(USER, { role: 'admin' });
+writeJson('capabilities.json', { 'series-owner': [USER] });
 const { personDir, saveLogin, secret } = await import('../src/logins.ts');
 const { setConnection, setLetIn } = await import('../src/connections.ts');
 const { ask, decide } = await import('../src/grants.ts');
@@ -98,8 +101,9 @@ test('endSignIn and checkRefused handle unparseable request URLs in browser prox
 
   const g = await ask({ email: USER, role: 'admin', caps: [] }, 'portal', 'w', 'check');
   if (g.state === 'pending') decide({ email: USER, role: 'admin', caps: [] }, g.id, true);
-  const inst = createInstance('s', 'malformed-refused', USER, ['web:portal']);
-  inst.append('server', 'run', { run: 1, runner: USER, consent: 1 });
+  saveSeriesSettings(join(tmp, 'series', 's'), { version: 1, owner: USER, epoch: 1, since: '', consent: { by: USER, at: '', workspace: 'w', logins: ['web:portal'], autonomous: false } });
+  const inst = createInstance('s', 'malformed-refused', USER);
+  inst.append('server', 'run', { run: 1, runner: USER, initiator: USER, authority: authority(inst) });
   const br = new Browsers(inst, 1, 'tok-malformed');
   nextSessionId = 'bs-malformed-run';
   closeLog = [
@@ -187,8 +191,9 @@ test('run browser writeback excludes cookies scoped to bare private PSL suffixes
   const g = await ask({ email: USER, role: 'admin', caps: [] }, 'pages', 'w', 'read docs');
   if (g.state === 'pending') decide({ email: USER, role: 'admin', caps: [] }, g.id, true);
 
-  const inst = createInstance('s', 'psl-check', USER, ['web:pages']);
-  inst.append('server', 'run', { run: 1, runner: USER, consent: 1 });
+  saveSeriesSettings(join(tmp, 'series', 's'), { version: 1, owner: USER, epoch: 1, since: '', consent: { by: USER, at: '', workspace: 'w', logins: ['web:pages'], autonomous: false } });
+  const inst = createInstance('s', 'psl-check', USER);
+  inst.append('server', 'run', { run: 1, runner: USER, initiator: USER, authority: authority(inst) });
   const br = new Browsers(inst, 1, 'tok-psl');
   nextSessionId = 'bs-psl';
   closeState = {
@@ -225,8 +230,9 @@ test('run browser open and writeback exclude hosts covered by connections added 
   const g = await ask({ email: USER, role: 'admin', caps: [] }, 'mixed', 'w', 'check');
   if (g.state === 'pending') decide({ email: USER, role: 'admin', caps: [] }, g.id, true);
 
-  const inst = createInstance('s', 'except-check', USER, ['web:mixed']);
-  inst.append('server', 'run', { run: 1, runner: USER, consent: 1 });
+  saveSeriesSettings(join(tmp, 'series', 's'), { version: 1, owner: USER, epoch: 1, since: '', consent: { by: USER, at: '', workspace: 'w', logins: ['web:mixed'], autonomous: false } });
+  const inst = createInstance('s', 'except-check', USER);
+  inst.append('server', 'run', { run: 1, runner: USER, initiator: USER, authority: authority(inst) });
   const br = new Browsers(inst, 1, 'tok-except');
   openedBodies.length = 0;
   nextSessionId = 'bs-except';

@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ownSeries } from './owner-fixture.ts';
+import { authority } from '../src/logins.ts';
 import { createInstance, openStore } from '../src/store.ts';
 import { initSystem, saveTree, writeJson } from '../src/system.ts';
 import { active, byToken, drain, drained, remove, updating, view, type Active } from '../src/waker.ts';
@@ -14,16 +16,17 @@ openStore(root);
 saveTree({ workspaces: { w: { name: 'Work', owners: [alice], members: [] } }, series: { s: { name: 'Series', workspace: 'w' } } });
 writeJson('users.json', { [alice]: { role: 'user' } });
 mkdirSync(join(root, 'series', 's'), { recursive: true });
+ownSeries('s', alice);
 after(() => rmSync(root, { recursive: true, force: true }));
 
 test('a failed scratch cleanup cannot leave a stopped run in retiring and hold drained false', async () => {
-  const inst = createInstance('s', 'Cleanup', alice, []), token = 'cleanup';
+  const inst = createInstance('s', 'Cleanup', alice), token = 'cleanup';
   const locked = join(root, '.rf', 'runs', token, 'locked');
   mkdirSync(locked, { recursive: true });
   writeFileSync(join(locked, 'file'), 'scratch');
   chmodSync(locked, 0);
-  const a = { inst, n: 1, token, view: view(inst), ready: Promise.resolve({ stop: async () => {} } as Run), process: '', cost: 0, seen: 0, done: false } as Active;
-  inst.append('server', 'run', { run: 1 });
+  const a = { inst, n: 1, authority: authority(inst), token, view: view(inst), ready: Promise.resolve({ stop: async () => {} } as Run), process: '', cost: 0, seen: 0, done: false } as Active;
+  inst.append('server', 'run', { run: 1, runner: alice, initiator: alice, authority: authority(inst) });
   active.set(inst.seriesId, a);
   byToken.set(token, a);
   drain();
@@ -39,10 +42,10 @@ test('a failed scratch cleanup cannot leave a stopped run in retiring and hold d
 test('failed sandbox startup, stop and browser close leave no retiring entries behind', async t => {
   t.mock.method(console, 'error', () => {});
   for (const fails of ['startup', 'stop']) {
-    const inst = createInstance('s', fails, alice, []), token = fails;
+    const inst = createInstance('s', fails, alice), token = fails;
     const ready = fails === 'startup' ? Promise.reject(new Error('startup failed')) : Promise.resolve({ stop: async () => { throw new Error('stop failed'); } } as Run);
-    const a = { inst, n: 1, token, view: view(inst), ready, browsers: { end: async () => { throw new Error('browser close failed'); } }, process: '', cost: 0, seen: 0, done: false } as Active;
-    inst.append('server', 'run', { run: 1 });
+    const a = { inst, n: 1, authority: authority(inst), token, view: view(inst), ready, browsers: { cut: () => {}, end: async () => { throw new Error('browser close failed'); } }, process: '', cost: 0, seen: 0, done: false } as Active;
+    inst.append('server', 'run', { run: 1, runner: alice, initiator: alice, authority: authority(inst) });
     active.set(inst.seriesId, a);
     byToken.set(token, a);
     drain();

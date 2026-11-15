@@ -9,52 +9,69 @@ import { initSystem, readJson, saveTree, tree, writeJson } from '../src/system.t
 import type { Active } from '../src/waker.ts';
 import { committed } from '../src/git.ts';
 import { idp } from './idp.ts';
+import { ownSeries } from './owner-fixture.ts';
+import { seriesSettings } from '../src/series.ts';
 
 // Wakes without a model: a run that a wake starts ends at once for want of a key, which is enough to see what started it.
 delete process.env.OPENROUTER_API_KEY;
 process.env.RF_WAKE_TICK_MS = '50';
+process.env.RF_MIN_FREE_GB = '0';
 const entra = await idp();
 Object.assign(process.env, entra.env('http://127.0.0.1:1'));
 const { active, byToken, cancelWakes, closed, correct, held, kick, message, recover, remove, resolveFor, setWake, startWaking, view, wakes, wakesOf, weekly } = await import('../src/waker.ts');
-const { personDir, saveLogin, signOut } = await import('../src/logins.ts');
+const { authority, personDir, saveLogin, signOut } = await import('../src/logins.ts');
 const { keepSignIn } = await import('../src/entra.ts');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-wake-')), alice = 'alice@demo.test';
 initSystem(tmp);
 openStore(tmp);
 saveTree({
-  workspaces: { w: { name: 'Acme', owners: [alice], members: [] }, x: { name: 'Hidden', owners: ['zed@demo.test'], members: [] }, m: { name: 'Main', owners: [alice, 'zed@demo.test'], members: [], readers: ['w'] }, l: { name: 'Leavers', owners: ['lee@demo.test'], members: [] } },
+  workspaces: { w: { name: 'Acme', owners: [alice], members: ['bob@demo.test'] }, x: { name: 'Hidden', owners: ['zed@demo.test'], members: [] }, m: { name: 'Main', owners: [alice, 'zed@demo.test'], members: [], readers: ['w'] }, l: { name: 'Leavers', owners: ['lee@demo.test'], members: [] } },
   series: {
     s1: { name: 'Bank rec', workspace: 'w' }, s2: { name: 'Borrowing base', workspace: 'w' }, s3: { name: 'Payroll', workspace: 'x' },
     s4: { name: 'Lunch', workspace: 'w', single: true }, s5: { name: 'Close', workspace: 'm' }, s6: { name: 'Queue', workspace: 'w' }, s7: { name: 'Leaver', workspace: 'l' },
     s8: { name: 'Locked', workspace: 'w' },
   },
 });
-writeJson('users.json', { [alice]: { role: 'user' } });
+writeJson('users.json', { [alice]: { role: 'user' }, ['zed@demo.test']: { role: 'user' }, ['bob@demo.test']: { role: 'user' } });
 keepSignIn(alice, entra.refresh(alice));
 for (const s of ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8']) mkdirSync(join(tmp, 'series', s), { recursive: true });
-const make = (series: string, label: string) => createInstance(series, label, alice, []);
+for (const s of ['s1', 's2', 's4', 's5', 's6', 's8']) ownSeries(s, alice, [], true);
+ownSeries('s3', 'zed@demo.test');
+const make = (series: string, label: string) => createInstance(series, label, alice);
 const aug = make('s1', '2026-08');
 await aug.close({ email: alice, name: 'Alice' });
 const sep = make('s1', '2026-09'), oct = make('s1', '2026-10');
-const run = { inst: sep, view: view(sep) } as unknown as Active;
+const run = { inst: sep, authority: authority(sep), view: view(sep) } as unknown as Active;
 const ops = (i: Instance) => i.log.map(e => e.op);
 const settle = () => new Promise(r => setTimeout(r, 2000));
+function setRunWake(target: string, wake: Parameters<typeof setWake>[1] & { inst: string }) {
+  const source = instance(wake.inst), lease = authority(source);
+  assert.equal(active.has(source.seriesId), false);
+  const a = { inst: source, n: 1, runner: lease.owner, authority: lease, token: source.id, workspace: lease.workspace, view: view(source) } as Active;
+  active.set(source.seriesId, a); byToken.set(a.token, a);
+  try { return setWake(target, wake); }
+  finally { active.delete(source.seriesId); byToken.delete(a.token); }
+}
 startWaking();
 
 after(() => (entra.close(), rmSync(tmp, { recursive: true, force: true })));
 
-test("a run's first message names the runner and what they lend, each tick as logged, a website's with its address, as does a later one only where its entries change those", () => {
-  assert.match(message(oct, 1, oct.log, true), new RegExp(`^Instance 2026-10, run 1\\. Its runner is .+ <${alice}>, who lends you no login\\. New log entries:`));
+test("a run's first message names its captured owner and selected offers, including website addresses", () => {
+  assert.match(message(oct, 1, oct.log, true), new RegExp(`^Instance 2026-10, run 1\\. Its series owner and captured execution person is .+ <${alice}>, who lends you no login\\. Approvals from an earlier authority epoch are history, not authorization for this owner\\. New log entries:`));
   mkdirSync(personDir(alice), { recursive: true });
   writeFileSync(join(personDir(alice), 'websites.json'), JSON.stringify({ portal: { url: 'https://portal.test/login', hosts: [], writeback: true, added: '' } }));
-  saveLogin(alice, { id: 'm365', kind: 'm365', name: 'Microsoft 365', since: '', offers: [{ id: 'm365:item:d1/i1', name: 'Folder LFM, Reports' }] }, 'r');
-  const ticked = createInstance('s5', '2026-10', alice, ['web:portal', 'm365:mail:ann@demo.test', 'm365:item:d1/i1']);
-  assert.match(message(ticked, 1, ticked.log, true), /, who lends you web:portal at https:\/\/portal\.test\/login, m365:mail:ann@demo\.test, m365:item:d1\/i1 \(Folder LFM, Reports\)\. New log entries:/, 'each tick with what it is, where its login still offers it');
+  saveLogin(alice, { id: 'm365', kind: 'm365', name: 'Microsoft 365', since: '', offers: [{ id: 'm365:item:d1/i1', name: 'Folder LFM, Reports' }, { id: 'm365:mail:ann@demo.test', name: 'Mailbox' }] }, 'r');
+  saveLogin(alice, { id: 'web:portal', kind: 'website', name: 'portal', since: '', offers: [{ id: 'web:portal', name: 'portal' }] }, '{}');
+  writeJson('grants.json', { portal: { state: 'approved', site: 'portal', person: alice, workspace: 'm' } });
+  ownSeries('s5', alice, ['web:portal', 'm365:mail:ann@demo.test', 'm365:item:d1/i1'], true);
+  const ticked = createInstance('s5', '2026-10', alice);
+  ticked.append('server', 'run', { run: 1, runner: alice, initiator: alice, authority: authority(ticked) });
+  assert.match(message(ticked, 1, ticked.log, true), /, who lends you web:portal at https:\/\/portal\.test\/login, m365:mail:ann@demo\.test \(Mailbox\), m365:item:d1\/i1 \(Folder LFM, Reports\)\. Approvals from an earlier authority epoch are history, not authorization for this owner\. New log entries:/, 'each tick with what it is, where its login still offers it');
   const said = message(ticked, 2, [{ seq: 90, at: '', by: 'server', op: 'run', run: 1 }, { seq: 91, at: '', by: 'server', op: 'shot', run: 1 }, { seq: 92, at: '', by: 'server', op: 'done', run: 1, aborted: false }, { seq: 93, at: '', by: 'server', op: 'done', run: 2, aborted: true }, { seq: 94, at: '', by: alice, op: 'comment', text: 'go' }]);
   assert.deepEqual(said.split('\n').slice(1).map(l => JSON.parse(l).seq), [93, 94], "people's acts and a run cut, not the server's bookkeeping");
-  assert.match(message(oct, 2, [{ seq: 98, at: '', by: alice, op: 'comment', text: 'go' }], true), /^Instance 2026-10, run 2\. Its runner is /, 'every run is a new conversation');
+  assert.match(message(oct, 2, [{ seq: 98, at: '', by: alice, op: 'comment', text: 'go' }], true), /^Instance 2026-10, run 2\. Its series owner and captured execution person is /, 'every run is a new conversation');
   assert.match(message(oct, 2, []), /^Instance 2026-10, run 2\. New log entries:/);
-  assert.match(message(oct, 3, [{ seq: 99, at: '', by: 'bob@demo.test', op: 'takeover', from: alice }]), new RegExp(`run 3\\. Its runner is now .+ <bob@demo\\.test>, taking over from .+ <${alice}>, who lends you no login\\.`));
+  assert.doesNotMatch(message(oct, 3, [{ seq: 99, at: '', by: 'bob@demo.test', op: 'takeover', from: alice }], true), /captured execution person is .*<bob@demo\.test>/, 'historical takeover cannot change current owner');
 });
 
 test("a service prefix is lent at its private address in the run's first message, with no SDK environment", async () => {
@@ -62,8 +79,9 @@ test("a service prefix is lent at its private address in the run's first message
   const { signOut } = await import('../src/logins.ts');
   const c = await setConnection('drop', { type: 'service', url: 'http://127.0.0.1:9000', paths: 'AP/,GL/2026/' }, 'admin');
   saveLogin(alice, { ...loginOf(c), since: '' } as never);
-  const inst = createInstance('s5', 'Service', alice, ['drop:AP/']);
-  assert.match(message(inst, 1, inst.log, true), /who lends you drop:AP\/ \(AP\/ at https:\/\/drop\.rf\.internal\/\)\. New log entries:/);
+  ownSeries('s5', alice, ['drop:AP/'], true);
+  const inst = createInstance('s5', 'Service', alice);
+  assert.match(message(inst, 1, inst.log, true), /who lends you drop:AP\/ \(AP\/ at https:\/\/drop\.rf\.internal\/\)\. Approvals from an earlier authority epoch are history, not authorization for this owner\. New log entries:/);
   assert.deepEqual(view(inst).env, {});
   signOut(alice, 'drop');
   removeConnection('drop');
@@ -81,7 +99,7 @@ test("a run names a series or an instance by its folder, from its own instance's
 });
 
 test('a run names folders by the names it started with, though people renamed them since', () => {
-  const nov = make('s1', '2026-11'), started = { inst: sep, view: view(sep) } as unknown as Active, t = tree();
+  const nov = make('s1', '2026-11'), started = { inst: sep, authority: authority(sep), view: view(sep) } as unknown as Active, t = tree();
   renameInstance(nov, 'November');
   saveTree({ ...t, series: { ...t.series, s2: { ...t.series.s2, name: 'BB' } } });
   assert.equal(resolveFor(started, '../2026-11'), nov.id);
@@ -92,10 +110,10 @@ test('a run names folders by the names it started with, though people renamed th
 });
 
 test('a due wake its own run set continues an open instance, as a reply does, though it was renamed since, and names where that run is now, with what it says; one more than 15 minutes after its last is moved', async () => {
-  setWake(oct.id, { at: new Date(Date.now() + 3600e3).toISOString(), from: 'Acme/Bank rec/October', inst: oct.id, text: 'the statement is due by noon' });
+  setRunWake(oct.id, { at: new Date(Date.now() + 3600e3).toISOString(), from: 'Acme/Bank rec/October', inst: oct.id, text: 'the statement is due by noon' });
   assert.match(message(oct, 1, [], true), /Pending wakes: \w+, waking this instance at [^,]+, from Acme\/Bank rec\/October, saying "the statement is due by noon"\./);
   cancelWakes([oct.id]);
-  setWake(oct.id, { at: new Date().toISOString(), from: 'Acme/Bank rec/October', inst: oct.id, text: 'check the statement' });
+  setRunWake(oct.id, { at: new Date().toISOString(), from: 'Acme/Bank rec/October', inst: oct.id, text: 'check the statement' });
   await settle();
   assert.deepEqual(oct.log.filter(e => e.op === 'wake').map(e => [e.from, e.text, e.note]), [['Acme/Bank rec/2026-10', 'check the statement', undefined]]);
   assert.ok(ops(oct).includes('run'), 'it started a run');
@@ -137,21 +155,23 @@ test('a process.md over 1 MB is none to the server, which would fail to read one
   await committed(huge.dir);
 });
 
-test("a series' wake starts an instance as whoever shares the series, its text a note unless its runner, or a run of theirs in the series, set it; unshared, or with 3 open, it's a request, which keeps the text", async () => {
-  setWake('s2', { at: new Date().toISOString(), from: 'Acme/Bank rec/2026-09', label: '2026-10', inst: sep.id, text: 'rates moved' });
+test("a series schedule needs autonomous consent, captures its owner and offers, and becomes a request with 3 open instances", async () => {
+  ownSeries('s2', alice, [], false);
+  setRunWake('s2', { at: new Date().toISOString(), from: 'Acme/Bank rec/2026-09', label: '2026-10', inst: sep.id, text: 'rates moved' });
   await settle();
   assert.deepEqual(Object.values(wakes().requests).map(r => [r.series, r.label, r.from, r.text]), [['s2', '2026-10', 'Acme/Bank rec/2026-09', 'rates moved']]);
   assert.equal(labels('s2').length, 0);
 
-  writeFileSync(join(tmp, 'series', 's2', 'series.json'), JSON.stringify({ shared: { by: alice, since: new Date().toISOString(), logins: ['web:bank', 'web:portal'] } }));
+  ownSeries('s2', alice, ['m365:item:d1/i1'], true);
   writeJson('wakes.json', { ...readJson('wakes.json', {}), fired: {} });
-  setWake('s2', { at: new Date().toISOString(), from: 'Acme/Bank rec/2026-09', label: '2026-11', inst: sep.id, text: 'rates moved' });
+  setRunWake('s2', { at: new Date().toISOString(), from: 'Acme/Bank rec/2026-09', label: '2026-11', inst: sep.id, text: 'rates moved' });
   await settle();
   const made = instance(labels('s2').find(l => l.label === '2026-11')!.id);
-  assert.deepEqual([made.log[0].op, made.log[0].by, made.log[1].op, made.log[1].from, made.log[1].text, made.log[1].note], ['create', alice, 'wake', 'Acme/Bank rec/2026-09', 'rates moved', true], "another series' run's word");
-  assert.deepEqual(made.log[0].logins, ['web:bank', 'web:portal'], "the sharer's ticks");
+  assert.deepEqual([made.log[0].op, made.log[0].by, made.log[1].op, made.log[1].from, made.log[1].text, made.log[1].note], ['create', 'agent', 'wake', 'Acme/Bank rec/2026-09', 'rates moved', true], 'the cross-series source remains a note and the creator; execution authority is captured separately');
+  assert.equal(made.log[0].logins, undefined);
+  assert.deepEqual({ ...made.log.find(e => e.op === 'run')!.authority as object }, { version: 1, owner: alice, epoch: seriesSettings(made.series()).epoch, workspace: 'w', logins: ['m365:item:d1/i1'], autonomous: true });
   writeJson('wakes.json', { ...readJson('wakes.json', {}), fired: {} });
-  setWake('s2', { at: new Date().toISOString(), from: 'Acme/Borrowing base/2026-11', label: '2026-11b', inst: made.id, text: 'next period' });
+  setRunWake('s2', { at: new Date().toISOString(), from: 'Acme/Borrowing base/2026-11', label: '2026-11b', inst: made.id, text: 'next period' });
   await settle();
   const next = instance(labels('s2').find(l => l.label === '2026-11b')!.id);
   assert.deepEqual([next.log[1].text, next.log[1].note], ['next period', undefined], "a run of the runner's own in the series speaks for them");
@@ -159,20 +179,21 @@ test("a series' wake starts an instance as whoever shares the series, its text a
   make('s2', '2026-12');
   make('s2', '2027-01');
   writeJson('wakes.json', { ...readJson('wakes.json', {}), fired: {} });
-  setWake('s2', { at: new Date().toISOString(), from: 'x', label: '2027-02' });
+  setWake('s2', { at: new Date().toISOString(), from: alice, label: '2027-02' });
   await settle();
   assert.ok(Object.values(wakes().requests).some(r => r.label === '2027-02'), '3 open already');
 });
 
-test("a series' wake for a label it has already is its runner's word where a run of an instance of theirs in the series set it, as for one it starts, and a note where another series' run did", async () => {
+test("an authorized owner-agent schedule keeps source provenance when continuing a known label, including another series",  async () => {
   const feed = make('s2', 'feed'), woke = () => oct.log.findLast(e => e.op === 'wake')!;
-  setWake('s1', { at: new Date().toISOString(), from: 'Acme/Bank rec/2026-09', label: '2026-10', inst: sep.id, text: 'next period' });
+  setRunWake('s1', { at: new Date().toISOString(), from: 'Acme/Bank rec/2026-09', label: '2026-10', inst: sep.id, text: 'next period' });
   await settle();
   assert.deepEqual([woke().text, woke().note], ['next period', undefined]);
   writeJson('wakes.json', { ...readJson('wakes.json', {}), fired: {} });
-  setWake('s1', { at: new Date().toISOString(), from: 'Acme/Borrowing base/feed', label: '2026-10', inst: feed.id, text: 'inputs are in' });
+  setRunWake('s1', { at: new Date().toISOString(), from: 'Acme/Borrowing base/feed', label: '2026-10', inst: feed.id, text: 'inputs are in' });
   await settle();
-  assert.deepEqual([woke().text, woke().note], ['inputs are in', true]);
+  assert.deepEqual([woke().text, woke().note], ['inputs are in', true], 'cross-series provenance remains a note');
+  assert.equal((oct.log.findLast(e => e.op === 'run')!.provenance as { cause: number }).cause, woke().seq, 'the authorized schedule still starts execution');
   writeJson('wakes.json', { ...readJson('wakes.json', {}), fired: {} });
 });
 
@@ -181,7 +202,7 @@ test("closing an instance wakes the later open ones of its series, not the earli
   await sep.close({ email: alice, name: 'Alice' });
   closed(sep, alice);
   await settle();
-  assert.deepEqual([oct.log.findLast(e => e.op === 'wake')!.reason, oct.log.findLast(e => e.op === 'wake')!.note], [`2026-09 closed: its final figures may differ from the draft you read`, undefined]);
+  assert.deepEqual([oct.log.findLast(e => e.op === 'wake')!.text, oct.log.findLast(e => e.op === 'wake')!.note], [`2026-09 closed: its final figures may differ from the draft you read`, undefined]);
   assert.ok(!ops(before).includes('wake'));
   closed(sep, 'bob@demo.test');
   assert.equal(oct.log.findLast(e => e.op === 'wake')!.note, true);
@@ -204,10 +225,10 @@ test("a commit a restart cut leaves git's locks, which the next start clears for
 
 test('a run a restart cut ends as aborted, with what its calls cost so far, and its instance is woken to carry on', async () => {
   const cut = make('s8', 'cut');
-  cut.append('server', 'run', { run: 1, upto: 1 });
+  cut.append('server', 'run', { run: 1, runner: alice, initiator: alice, authority: authority(cut), upto: 1 });
   cut.append('agent', 'call', { run: 1, name: 'openrouter', cost: 5 });
   cut.append('server', 'done', { run: 1, aborted: false, seen: 1, cost: 5 });
-  cut.append('server', 'run', { run: 2, upto: 1 });
+  cut.append('server', 'run', { run: 2, runner: alice, initiator: alice, authority: authority(cut), upto: 1 });
   for (const c of [{ name: 'openrouter', cost: 0.25 }, { name: 'graph' }, { name: 'exa', cost: 0.5 }]) cut.append('agent', 'call', { run: 2, ...c });
   recover();
   assert.deepEqual(cut.log.slice(-2).map(e => [e.op, e.error ?? e.reason, e.cost]), [['done', 'a restart cut the run', 0.75], ['wake', 'A restart cut run 2; carry on', undefined]]);
@@ -215,11 +236,12 @@ test('a run a restart cut ends as aborted, with what its calls cost so far, and 
   assert.equal(cut.log.filter(e => e.op === 'run').length, 3, 'started again');
 });
 
-test("a run a restart cut as an assign stopped it, the assign logged and its end not, carries on for no one: what came before the assign starts nothing", async () => {
+test("a run cut by an owner-epoch change does not resume on restart even if its end was not logged",  async () => {
   const cut = make('s8', 'assigned as cut');
-  cut.append('server', 'run', { run: 1, runner: alice, consent: 1, upto: 1 });
-  cut.append(alice, 'interrupt', { why: 'to assign it to bob@demo.test' });
-  cut.append(alice, 'assign', { to: 'bob@demo.test', from: alice, logins: [] });
+  cut.append('server', 'run', { run: 1, runner: alice, initiator: alice, authority: authority(cut), upto: 1 });
+  cut.append(alice, 'interrupt', { why: 'to revoke its series authority' });
+  ownSeries('s8', alice, [], true);
+  cut.append('server', 'authority', { owner: alice, epoch: authority(cut).epoch, workspace: 'w' });
   recover();
   assert.deepEqual(cut.log.slice(-1).map(e => [e.op, e.error]), [['done', 'a restart cut the run']], 'ended, with no wake');
   await settle();
@@ -238,32 +260,37 @@ test("an act just after a run ends, as its folder is committed, starts the next 
 });
 
 test("an instance whose run met its runner's expired login carries on when they sign in again, once", async () => {
-  const waits = createInstance('s2', 'waits', alice, ['m365:item:d1/i1']);
-  waits.append('server', 'expired', { login: 'm365', runner: alice });
-  saveLogin(alice, { id: 'm365', kind: 'm365', name: 'Microsoft 365', since: '', offers: [], expired: true });
+  ownSeries('s2', alice, ['m365:item:d1/i1'], true);
+  const waits = createInstance('s2', 'waits', alice);
+  waits.append('server', 'expired', { login: 'm365', runner: alice, initiator: alice, authority: authority(waits) });
+  saveLogin(alice, { id: 'm365', kind: 'm365', name: 'Microsoft 365', since: '', offers: [{ id: 'm365:item:d1/i1', name: 'Reports' }], expired: true });
   assert.ok(!waits.log.some(e => e.op === 'wake'), 'an expired login wakes nothing');
-  saveLogin(alice, { id: 'm365', kind: 'm365', name: 'Microsoft 365', since: '', offers: [] }, 'refresh');
+  saveLogin(alice, { id: 'm365', kind: 'm365', name: 'Microsoft 365', since: '', offers: [{ id: 'm365:item:d1/i1', name: 'Reports' }] }, 'refresh');
   assert.deepEqual(waits.log.filter(e => e.op === 'wake').map(e => e.reason), [`${alice} signed in to Microsoft 365 again`]);
-  saveLogin(alice, { id: 'm365', kind: 'm365', name: 'Microsoft 365', since: '', offers: [] }, 'turned over');
+  saveLogin(alice, { id: 'm365', kind: 'm365', name: 'Microsoft 365', since: '', offers: [{ id: 'm365:item:d1/i1', name: 'Reports' }] }, 'turned over');
   assert.equal(waits.log.filter(e => e.op === 'wake').length, 1, 'a refresh token turning over wakes nothing');
   await settle();
   assert.ok(waits.log.some(e => e.op === 'run'), 'the wake started a run');
 });
 
-test("signing in again wakes only an instance its signer still runs, not one taken over since their run met the expired login", () => {
-  const taken = make('s2', 'taken-over');
-  taken.append('server', 'expired', { login: 'web:erp', runner: alice });
-  taken.append('bob@demo.test', 'takeover', { from: alice, logins: [], quiet: true });
-  saveLogin(alice, { id: 'web:erp', kind: 'website', name: 'erp', since: '', offers: [] }, '{}');
+test('signing in cannot wake a series whose owner changed after expiry', () => {
+  const taken = make('s2', 'transferred');
+  taken.append('server', 'expired', { login: 'entra', runner: alice, initiator: alice, authority: authority(taken) });
+  assert.equal(held(taken, 'entra', alice), true);
+  ownSeries('s2', 'bob@demo.test', [], true);
+  keepSignIn(alice, entra.refresh(alice));
+  assert.equal(held(taken, 'entra', alice), false);
   assert.ok(!taken.log.some(e => e.op === 'wake'));
+  ownSeries('s2', alice, [], true);
 });
 
-test("signing in again wakes nothing whose expired login a run met before the instance's last assign, though it came back to the signer, and holds none of its runs", async () => {
+test("signing in after A→B→A cannot revive an earlier expired authority epoch",  async () => {
   const back = make('s2', 'back again');
-  back.append('server', 'expired', { login: 'web:erp', runner: alice });
-  back.append('server', 'expired', { login: 'entra', runner: alice });
-  back.append(alice, 'assign', { to: 'bob@demo.test', from: alice, logins: [] });
-  back.append('bob@demo.test', 'assign', { to: alice, from: 'bob@demo.test', logins: [] });
+  back.append('server', 'expired', { login: 'web:erp', runner: alice, initiator: alice, authority: authority(back) });
+  back.append('server', 'expired', { login: 'entra', runner: alice, initiator: alice, authority: authority(back) });
+  ownSeries('s2', 'bob@demo.test', [], true);
+  ownSeries('s2', alice, [], true);
+  back.append('server', 'authority', { owner: alice, epoch: authority(back).epoch, workspace: 'w' });
   saveLogin(alice, { id: 'web:erp', kind: 'website', name: 'erp', since: '', offers: [], expired: true }, '{}');
   saveLogin(alice, { id: 'web:erp', kind: 'website', name: 'erp', since: '', offers: [] }, '{}');
   assert.ok(!back.log.some(e => e.op === 'wake'), 'its run was before the line');
@@ -274,24 +301,29 @@ test("signing in again wakes nothing whose expired login a run met before the in
 });
 
 test("unticking an expired login, or closing the instance, stops holding or waking it; removing an expired OpenRouter key wakes what it held", async () => {
-  const unticked = createInstance('s2', 'unticked', alice, ['web:erp']);
-  unticked.append('server', 'expired', { login: 'web:erp', name: 'erp', runner: alice });
+  saveLogin(alice, { id: 'web:erp', kind: 'website', name: 'erp', since: '', offers: [{ id: 'web:erp', name: 'erp' }], expired: true }, '{}');
+  writeJson('grants.json', { erp: { state: 'approved', site: 'erp', person: alice, workspace: 'w' } });
+  ownSeries('s2', alice, ['web:erp'], true);
+  const unticked = createInstance('s2', 'unticked', alice);
+  unticked.append('server', 'expired', { login: 'web:erp', name: 'erp', runner: alice, initiator: alice, authority: authority(unticked) });
   assert.equal(held(unticked, 'web:erp', alice), true);
-  unticked.append(alice, 'logins', { logins: [] });
+  ownSeries('s2', alice, [], true);
   assert.equal(held(unticked, 'web:erp', alice), false);
   saveLogin(alice, { id: 'web:erp', kind: 'website', name: 'erp', since: '', offers: [{ id: 'web:erp', name: 'erp' }], expired: true }, '{}');
   saveLogin(alice, { id: 'web:erp', kind: 'website', name: 'erp', since: '', offers: [{ id: 'web:erp', name: 'erp' }] }, '{}');
   assert.ok(!unticked.log.some(e => e.op === 'wake'), 'signing in to an unticked login wakes nothing');
 
-  const shut = createInstance('s2', 'shut-expired', alice, ['web:erp']);
-  shut.append('server', 'expired', { login: 'web:erp', name: 'erp', runner: alice });
+  ownSeries('s2', alice, ['web:erp'], true);
+  const shut = createInstance('s2', 'shut-expired', alice);
+  shut.append('server', 'expired', { login: 'web:erp', name: 'erp', runner: alice, initiator: alice, authority: authority(shut) });
   await shut.close({ email: alice, name: 'Alice' });
   assert.equal(held(shut, 'web:erp', alice), false);
 
+  ownSeries('s2', alice, [], true);
   const broke = make('s2', 'broke-key');
   saveLogin(alice, { id: 'openrouter', kind: 'key', name: 'OpenRouter', since: '', offers: [], enabled: true, expired: true }, 'sk');
   broke.append(alice, 'comment', { thread: 'c2', text: 'Go' });
-  broke.append('server', 'expired', { login: 'openrouter', name: 'OpenRouter', runner: alice });
+  broke.append('server', 'expired', { login: 'openrouter', name: 'OpenRouter', runner: alice, initiator: alice, authority: authority(broke) });
   assert.equal(held(broke, 'openrouter', alice), true);
   signOut(alice, 'openrouter');
   assert.equal(held(broke, 'openrouter', alice), false);
@@ -337,35 +369,35 @@ test("a task's run sees its own instance alone in its series' folder, and the se
   assert.ok(v.ro.some(([, at]) => at.startsWith('/work/Acme/Bank rec/')) && !v.ro.some(([, at]) => at.endsWith('/.pylib')), "another series' .pylib is its own runs' code");
 });
 
-test("others' comments and wakes are notes for an instance's runner, unless the agent asked them, and start runs only where the runner shares the series, where comments stay notes", async () => {
+test("collaborator comments, named answers and schedules never start the owner's execution", async () => {
   const bob = 'bob@demo.test', notes = make('s5', 'notes'), runs = (i: Instance) => i.log.filter(e => e.op === 'run').length;
   writeJson('users.json', { ...readJson('users.json', {}), [bob]: { role: 'user' } });
   saveTree({ ...tree(), workspaces: { ...tree().workspaces, m: { ...tree().workspaces.m, members: [bob] } } });
+  ownSeries('s5', alice, [], true);
   notes.append(bob, 'comment', { thread: 'n1', text: 'use the new rate' });
   setWake(notes.id, { at: new Date().toISOString(), from: bob });
   kick(notes);
   await settle();
-  assert.deepEqual([runs(notes), notes.log.at(-1)!.op, notes.log.at(-1)!.note], [0, 'wake', true], "bob's comment and wake are notes for alice");
-  notes.append('agent', 'comment', { thread: 'q1', text: 'Which rate?', ask: true, to: bob });
+  assert.equal(runs(notes), 0);
+  assert.ok(Object.values(wakes().requests).some(r => r.target === notes.id && r.from === bob));
+  assert.equal(notes.log.some(e => e.op === 'wake'), false);
+  notes.append('agent', 'comment', { thread: 'q1', text: 'Which rate?', ask: 'question', to: bob });
   notes.append(bob, 'comment', { thread: 'q1', text: 'the new one' });
   kick(notes);
   await settle();
-  assert.equal(runs(notes), 1, 'the agent asked bob, so his reply starts a run');
-  writeFileSync(join(tmp, 'series', 's5', 'series.json'), JSON.stringify({ shared: { by: alice, since: new Date().toISOString(), logins: [] } }));
-  const shared = make('s5', 'shared');
-  shared.append(bob, 'comment', { thread: 'n2', text: 'go' });
-  kick(shared);
+  assert.equal(runs(notes), 0, 'a named answer is information, not execution consent');
+  assert.match(message(notes, 1, notes.log), /"by":"bob@demo\.test","op":"comment".*"note":true/);
+  notes.append(alice, 'comment', { text: 'Use those answers and continue.' });
+  kick(notes);
   await settle();
-  assert.equal(runs(shared), 1, 'in a series its runner shares, anyone starts runs');
-  assert.match(message(shared, 1, shared.log), /"by":"bob@demo\.test","op":"comment".*"note":true/, "and bob's comment still reaches the agent as a note");
-  setWake(shared.id, { at: new Date().toISOString(), from: bob, text: 'the rate moved' });
-  await settle();
-  assert.deepEqual([runs(shared), shared.log.findLast(e => e.op === 'wake')!.note], [2, true], "bob's wake starts a run there, and stays a note");
+  assert.equal(runs(notes), 1, 'the current owner takes up the information explicitly');
 });
 
 test("a run starts only for a runner Microsoft still signs in: one it no longer does waits for them to sign in again, which wakes it, and one disabled or gone is disabled here too; while Microsoft can't be reached, nothing starts", async () => {
-  const lee = 'lee@demo.test', inst = createInstance('s7', 'books', lee, []), runs = () => inst.log.filter(e => e.op === 'run').length;
+  const lee = 'lee@demo.test';
   writeJson('users.json', { ...readJson('users.json', {}), [lee]: { role: 'user' } });
+  ownSeries('s7', lee, [], true);
+  const inst = createInstance('s7', 'books', lee), runs = () => inst.log.filter(e => e.op === 'run').length;
   const go = async () => (inst.append(lee, 'comment', { thread: 'g', text: 'go' }), kick(inst), await settle());
   await go();
   assert.deepEqual([runs(), inst.log.at(-1)!.op, inst.log.at(-1)!.error], [0, 'expired', "lee@demo.test hasn't signed in to rollforward since sign-ins are kept"], 'no sign-in kept, nor a Microsoft 365 login');
@@ -376,8 +408,11 @@ test("a run starts only for a runner Microsoft still signs in: one it no longer 
   await go();
   assert.match(inst.log.at(-1)!.error as string, /AADSTS700082/);
   const asked = entra.who.renewed.length;
+  kick(inst);
+  await settle();
+  assert.deepEqual([runs(), inst.log.filter(e => e.op === 'expired').length, entra.who.renewed.length], [1, 2, asked], 'the old act waits for sign-in, asking Microsoft no more');
   await go();
-  assert.deepEqual([runs(), inst.log.filter(e => e.op === 'expired').length, entra.who.renewed.length], [1, 2, asked], 'it waits for them, asking Microsoft no more');
+  assert.deepEqual([runs(), inst.log.filter(e => e.op === 'expired').length, entra.who.renewed.length], [1, 3, asked], 'a fresh owner act retries confirmation and records another refusal');
   entra.who.stale.delete(lee);
   entra.who.down = true;
   keepSignIn(lee, entra.refresh(lee));
@@ -387,13 +422,15 @@ test("a run starts only for a runner Microsoft still signs in: one it no longer 
   kick(inst);
   await settle();
   assert.equal(runs(), 2);
+  const beforeLoss = seriesSettings(inst.series()).epoch;
   entra.who.gone.add(lee);
   await go();
   const { users } = await import('../src/auth.ts');
-  assert.deepEqual([runs(), inst.log.at(-1)!.left, users()[lee].disabled], [2, true, true], 'Microsoft says the account is disabled: so is its person here');
+  assert.deepEqual([runs(), users()[lee].disabled, seriesSettings(inst.series()).consent], [2, true, undefined], 'Microsoft account loss disables the owner and withdraws series consent');
+  assert.ok(seriesSettings(inst.series()).epoch > beforeLoss, 'old authority cannot resume after sign-in');
 });
 
-for (const stale of [false, true]) test(`taking an instance over while Microsoft ${stale ? 'refuses' : 'confirms'} the runner starts over, confirming the new runner before the run their act starts`, async t => {
+for (const stale of [false, true]) test(`transferring the series while Microsoft ${stale ? 'refuses' : 'confirms'} the old owner rechecks the new owner before executing`, async t => {
   const before = `before-${stale}@demo.test`, next = `next-${stale}@demo.test`;
   writeJson('users.json', { ...readJson('users.json', {}), [before]: { role: 'user' }, [next]: { role: 'user' } });
   saveTree({ ...tree(), workspaces: { ...tree().workspaces, w: { ...tree().workspaces.w, members: [before, next] } } });
@@ -401,8 +438,9 @@ for (const stale of [false, true]) test(`taking an instance over while Microsoft
   keepSignIn(next, entra.refresh(next));
   entra.who.stale.add(next);
   if (stale) entra.who.stale.add(before);
-  const inst = createInstance('s8', `takeover-during-confirm-${stale}`, before, []);
-  inst.append('server', 'wake', { from: before });
+  ownSeries('s8', before, [], true);
+  const inst = createInstance('s8', `transfer-during-confirm-${stale}`, before);
+  inst.append('server', 'wake', { from: before, initiator: before, authority: authority(inst) });
   let release!: () => void, entered!: () => void;
   const held = new Promise<void>(ok => { release = ok; }), waiting = new Promise<void>(ok => { entered = ok; });
   const fetch = globalThis.fetch;
@@ -417,14 +455,16 @@ for (const stale of [false, true]) test(`taking an instance over while Microsoft
   });
   kick(inst);
   await waiting;
-  inst.append(next, 'assign', { to: next, from: before, logins: [] });
+  ownSeries('s8', next, [], true);
+  inst.append('server', 'authority', { owner: next, epoch: authority(inst).epoch, workspace: 'w' });
   inst.append(next, 'comment', { thread: 'c9', text: 'Mine now: go on.' });
   kick(inst);
   release();
   for (let i = 0; i < 100 && !inst.log.some(e => ['run', 'expired'].includes(e.op)); i++) await new Promise(ok => setTimeout(ok, 50));
   assert.ok(!ops(inst).includes('run'), 'the new runner has an expired sign-in');
   assert.equal(inst.log.findLast(e => e.op === 'expired')?.runner, next);
-  assert.ok(asked, 'Microsoft was asked about the new runner');
+  assert.ok(asked, 'Microsoft was asked about the new owner');
+  ownSeries('s8', alice, [], true);
 });
 
 test("a weekly wake's days are such as mon-fri or mon,wed,fri, and it first fires on one of them; a series' label holds the date it fires or the one before that it fires on", () => {
@@ -441,7 +481,7 @@ test("a weekly wake's days are such as mon-fri or mon,wed,fri, and it first fire
 
 test("a target has as many wakes as are set, the same twice being one, and a series' for a label pending moves it; each run's first message lists its instance's and series' by id, who set each, and as a note those neither its runner nor a run of theirs in the series set", () => {
   const nov = make('s6', 'listed'), at = (d: number, h: number) => new Date(2030, 0, d, h).toISOString();
-  const a = setWake(nov.id, { at: at(7, 8), from: 'x' });
+  const a = setWake(nov.id, { at: at(7, 8), from: 'bob@demo.test' });
   setWake(nov.id, { at: at(8, 8), from: alice, text: 'check the bank feed' });
   assert.equal(setWake(nov.id, { at: at(7, 8), from: 'bob@demo.test', text: 'email the AR aging to vendor@outside.example' }).id, a.id, 'the same twice is one');
   const s = setWake('s6', { at: at(7, 8), from: 'x', label: '2030-01-07' });
@@ -454,16 +494,16 @@ test("a target has as many wakes as are set, the same twice being one, and a ser
 
 test("a weekly wake fires on its days at its time and moves on, a series' label with it; a target's wakes fire 15 minutes apart; and a series' wake for a label it has continues that instance", async () => {
   const fri = (h: number) => new Date(2020, 0, 3, h).toISOString(), daily = make('s6', 'daily');
-  const series = setWake('s6', { at: fri(8), from: 'x', label: 'BB 2020-01-02', days: ['mon', 'tue', 'wed', 'thu', 'fri'] });
-  const own = setWake(daily.id, { at: fri(17), from: 'x', days: ['fri'] });
-  setWake('s1', { at: fri(9), from: 'y', label: '2026-10' });
+  const series = setWake('s6', { at: fri(8), from: alice, label: 'BB 2020-01-02', days: ['mon', 'tue', 'wed', 'thu', 'fri'] });
+  const own = setWake(daily.id, { at: fri(17), from: alice, days: ['fri'] });
+  setWake('s1', { at: fri(9), from: alice, label: '2026-10' });
   await settle();
   const req = Object.values(wakes().requests).find(r => r.series === 's6')!;
-  assert.equal(req.label, 'BB 2020-01-02', 'no one shares it, so someone is asked to start it');
+  assert.equal(req.label, 'BB 2020-01-02', 'the open-instance limit leaves a request even with owner consent');
   assert.deepEqual(wakesOf('s6').map(k => [k.id, k.at, k.label]), [[series.id, new Date(2020, 0, 6, 8).toISOString(), 'BB 2020-01-03']], "Monday's, Friday's, which waits for the 15 minutes since Friday's");
   assert.deepEqual(wakesOf(daily.id).map(k => [k.id, k.at]), [[own.id, new Date(2020, 0, 10, 17).toISOString()]]);
-  assert.ok(daily.log.some(e => e.op === 'wake' && e.from === 'x'));
-  assert.ok(oct.log.some(e => e.op === 'wake' && e.from === 'y'), "2026-10 is Bank rec's already");
+  assert.ok(daily.log.some(e => e.op === 'wake' && e.from === alice));
+  assert.ok(oct.log.some(e => e.op === 'wake' && e.from === alice), "2026-10 is Bank rec's already");
   cancelWakes(['s6', daily.id]);
 });
 
@@ -485,6 +525,7 @@ test("a run starts only for a runner who still sees its workspace: one removed f
   const t = tree();
   saveTree({ workspaces: { ...t.workspaces, r: { name: 'Removes', owners: ['zed@demo.test'], members: [alice] } }, series: { ...t.series, s9: { name: 'Gone', workspace: 'r' } } });
   mkdirSync(join(tmp, 'series', 's9'), { recursive: true });
+  ownSeries('s9', alice);
   const inst = make('s9', 'removed');
   inst.append(alice, 'comment', { thread: 'r1', text: 'go' });
   saveTree({ ...tree(), workspaces: { ...tree().workspaces, r: { ...tree().workspaces.r, members: [] } } });
@@ -496,13 +537,15 @@ test("a run starts only for a runner who still sees its workspace: one removed f
 test('deletion records its tombstone before waiting for a starting sandbox, and another deletion waits for that retiring reader too', async () => {
   const own = make('s1', 'deleting-start'), read = make('s2', 'deleting-read'), late = make('s2', 'deleting-late');
   const ready = Promise.withResolvers<Run>(), stopped = Promise.withResolvers<void>(), browsers = Promise.withResolvers<void>();
-  const a = { inst: own, n: 1, token: 'deleting-start', view: view(own), ready: ready.promise, process: '', cost: 0, estimated: false, runner: alice, seen: 0, delivered: 0, done: false, browsers: { end: () => browsers.promise } } as Active;
-  own.append('server', 'run', { run: 1 });
+  let cdpOpen = true;
+  const a = { inst: own, n: 1, authority: authority(own), workspace: 'w', token: 'deleting-start', view: view(own), ready: ready.promise, process: '', cost: 0, estimated: false, runner: alice, seen: 0, delivered: 0, done: false, browsers: { cut: () => { cdpOpen = false; }, end: () => browsers.promise } } as Active;
+  own.append('server', 'run', { run: 1, runner: alice, initiator: alice, authority: authority(own) });
   active.set(own.seriesId, a);
   byToken.set(a.token, a);
   let done = false, readDone = false;
   const removing = remove(own, alice, () => ({ cost: 0, runs: [] })).then(() => { done = true; });
   assert.equal(byToken.has(a.token), false);
+  assert.equal(cdpOpen, false, 'deletion cuts CDP before waiting for startup or teardown');
   assert.equal(new Instance(own.dir).hole, true, 'a restart already finds the tombstone');
   const removingRead = remove(read, alice, () => ({ cost: 0, runs: [] })).then(() => { readDone = true; });
   await new Promise(ok => setImmediate(ok));
@@ -548,7 +591,7 @@ test("a run's first message lists its series' open notes, each with who left it 
 
 test("a note reaches a run going at once, though it starts none: another person's comment, and a note left on its series", async () => {
   const { addNote } = await import('../src/series.ts'), going = make('s8', 'going'), steered: string[] = [];
-  const a = { inst: going, n: 1, sent: going.log.at(-1)!.seq, noted: 0, texts: new Map(), run: { steer: async (t: string) => void steered.push(t) } } as unknown as Active;
+  const a = { inst: going, n: 1, authority: authority(going), runner: alice, workspace: 'w', view: view(going), sent: going.log.at(-1)!.seq, noted: 0, texts: new Map(), run: { steer: async (t: string) => void steered.push(t) } } as unknown as Active;
   active.set('s8', a);
   going.append('bob@demo.test', 'comment', { thread: 'c9', text: 'the rate moved' });
   kick(going);
@@ -598,7 +641,7 @@ test('folders deeper than PATH_MAX in .pylib and working/ neither wedge active n
   }
 });
 
-test('deleting a starting run or bailing out of begin() on an expired login never strands another due instance of the series', async () => {
+test('deleting a starting run or bailing out of begin() on an expired login never strands another due instance of the series', async t => {
   const bob = 'bob@demo.test';
   saveTree({
     workspaces: { ...tree().workspaces, w: { ...tree().workspaces.w, members: [bob] } },
@@ -606,15 +649,15 @@ test('deleting a starting run or bailing out of begin() on an expired login neve
   });
   writeJson('users.json', { ...readJson('users.json', {}), [bob]: { role: 'user' } });
   keepSignIn(bob, entra.refresh(bob));
-  for (const s of ['s10', 's11']) mkdirSync(join(tmp, 'series', s), { recursive: true });
+  for (const s of ['s10', 's11']) { mkdirSync(join(tmp, 'series', s), { recursive: true }); ownSeries(s, alice, [], true); }
 
-  const oct1 = createInstance('s10', '2026-10', alice, []), nov1 = createInstance('s10', '2026-11', bob, []);
+  const oct1 = createInstance('s10', '2026-10', alice), nov1 = createInstance('s10', '2026-11', bob);
   const ready = Promise.withResolvers<Run>();
-  const a1 = { inst: oct1, n: 1, runner: alice, token: 'tok-s10', view: view(oct1), ready: ready.promise, process: '', cost: 0, estimated: false, seen: 0, delivered: 0, done: false } as Active;
-  oct1.append('server', 'run', { run: 1, runner: alice, consent: 1, upto: 1 });
+  const a1 = { inst: oct1, n: 1, authority: authority(oct1), workspace: 'w', runner: alice, token: 'tok-s10', view: view(oct1), ready: ready.promise, process: '', cost: 0, estimated: false, seen: 0, delivered: 0, done: false } as Active;
+  oct1.append('server', 'run', { run: 1, runner: alice, initiator: alice, authority: authority(oct1), upto: 1 });
   active.set('s10', a1);
   byToken.set(a1.token, a1);
-  nov1.append(bob, 'comment', { thread: 'c2', text: 'Run November now.' });
+  nov1.append(alice, 'comment', { thread: 'c2', text: 'Run November now.' });
   kick(nov1);
   await settle();
   const deleting = remove(oct1, alice, () => ({ cost: 0, runs: [] }));
@@ -624,29 +667,37 @@ test('deleting a starting run or bailing out of begin() on an expired login neve
   assert.ok(nov1.log.some(e => e.op === 'run'), 'deleting starting October still starts waiting November');
 
   const { interruptRun } = await import('../src/waker.ts');
-  const z2 = createInstance('s11', '2026-09', bob, []), oct2 = createInstance('s11', '2026-10', alice, []), nov2 = createInstance('s11', '2026-11', bob, []);
+  const z2 = createInstance('s11', '2026-09', bob), oct2 = createInstance('s11', '2026-10', alice), nov2 = createInstance('s11', '2026-11', bob);
   const a2 = {
-    inst: z2, n: 1, runner: bob, token: 'tok-s11', view: view(z2), workspace: 'w',
+    inst: z2, n: 1, runner: alice, authority: authority(z2), token: 'tok-s11', view: view(z2), workspace: 'w',
     run: { turn: async () => ({ settled: new Promise(() => {}) }), steer: async () => {}, interrupt: async () => {}, stop: async () => {} } as Run,
     sent: 1, noted: 0, seen: 1, delivered: 1, texts: new Map(), done: false, cost: 0, estimated: false, hosts: new Set(), links: new Map(), process: '',
   } as Active;
-  z2.append('server', 'run', { run: 1, runner: bob, consent: 1, upto: 1 });
+  z2.append('server', 'run', { run: 1, runner: alice, initiator: alice, authority: authority(z2), upto: 1 });
   active.set('s11', a2);
   byToken.set(a2.token, a2);
   oct2.append(alice, 'comment', { thread: 'c2', text: 'Update October.' });
-  nov2.append(bob, 'comment', { thread: 'c2', text: 'Run November.' });
+  nov2.append(alice, 'comment', { thread: 'c2', text: 'Run November.' });
   kick(oct2);
   kick(nov2);
   await settle();
-  entra.who.stale.add(alice);
+  const fetch = globalThis.fetch;
+  let refused = false;
+  const mocked = t.mock.method(globalThis, 'fetch', async (input, init) => {
+    if (!refused && String(input).endsWith('/token')) {
+      refused = true;
+      return Response.json({ error: 'invalid_grant', error_description: 'AADSTS700082: expired' }, { status: 400 });
+    }
+    return fetch(input, init);
+  });
   try {
-    z2.append(bob, 'interrupt');
+    z2.append(alice, 'interrupt');
     await interruptRun(a2);
     await settle();
     assert.equal(oct2.log.findLast(e => e.op === 'expired')?.runner, alice);
     assert.ok(nov2.log.some(e => e.op === 'run'), 'October bailing out on expired Entra still starts waiting November');
   } finally {
-    entra.who.stale.delete(alice);
+    mocked.mock.restore();
     keepSignIn(alice, entra.refresh(alice));
   }
 });
@@ -669,10 +720,10 @@ test('a cut run aborts and drains in-flight proxy calls before done, and done.es
     const inst = make('s2', 'inflight-cut');
     inst.append('server', 'done', { run: 0, aborted: false, seen: 1, cost: 0.09 }); // pre-change entry: estimated is undefined
     const a: Active = {
-      inst, n: 1, runner: alice, token: 'inflight-tok', view: view(inst), workspace: 'w',
+      inst, n: 1, runner: alice, authority: authority(inst), token: 'inflight-tok', view: view(inst), workspace: 'w',
       sent: 1, noted: 0, seen: 1, delivered: 1, texts: new Map(), done: false, cost: 0, estimated: false, hosts: new Set(), links: new Map(), process: '',
     };
-    inst.append('server', 'run', { run: 1, runner: alice, consent: 1 });
+    inst.append('server', 'run', { run: 1, runner: alice, initiator: alice, authority: authority(inst) });
     active.set('s2', a);
     byToken.set(a.token, a);
 
@@ -704,13 +755,14 @@ test('a cut run aborts and drains in-flight proxy calls before done, and done.es
     await inFlightCall;
     for (let i = 0; !inst.log.some(e => e.op === 'done' && e.run === 1); i++) { assert.ok(i < 50); await new Promise(ok => setTimeout(ok, 20)); }
     saveTree(oldTree);
+    ownSeries('s2', alice, [], true);
 
     const dones = inst.log.filter(e => e.op === 'done');
     assert.deepEqual(dones.map(d => [d.run, d.cost, d.estimated]), [[0, 0.09, undefined], [1, 0.017, false]]);
 
     // Recovery also marks estimated: true when a pre-crash call was estimated.
     const crash = make('s2', 'crash-est');
-    crash.append('server', 'run', { run: 1, runner: alice, consent: 1 });
+    crash.append('server', 'run', { run: 1, runner: alice, initiator: alice, authority: authority(crash) });
     crash.append('agent', 'call', { run: 1, name: 'openrouter', cost: 0.012, estimated: true });
     recover();
     const crashDone = crash.log.findLast(e => e.op === 'done')!;
@@ -726,20 +778,22 @@ test('a cut run aborts and drains in-flight proxy calls before done, and done.es
 test('message resolves the live label of a correction see target after that instance is renamed', async () => {
   mkdirSync(join(tmp, 'series', 'scorr'), { recursive: true });
   saveTree({ ...tree(), series: { ...tree().series, scorr: { name: 'CorrSeries', workspace: 'w' } } });
-  const c1 = createInstance('scorr', '2026-01', alice, []);
+  ownSeries('scorr', alice);
+  const c1 = createInstance('scorr', '2026-01', alice);
   await c1.close({ name: 'Alice', email: alice });
-  const c2 = createInstance('scorr', '2026-02', alice, []);
+  const c2 = createInstance('scorr', '2026-02', alice);
   correct(c1, alice, { kind: 'wrong', text: 'Fixed in Feb', see: c2 });
   await committed(c1.dir);
   renameInstance(c2, '2026-02-rev2');
-  const c3 = createInstance('scorr', '2026-03', alice, []);
+  const c3 = createInstance('scorr', '2026-03', alice);
   assert.match(message(c3, 1, c3.log, true), /see 2026-02-rev2/);
 });
 
 test('recover cleans git locks on closed instances too, and a confirm 401 after abandon appends no expired entry', async () => {
   mkdirSync(join(tmp, 'series', 'srec'), { recursive: true });
   saveTree({ ...tree(), series: { ...tree().series, srec: { name: 'RecLocks', workspace: 'w' } } });
-  const closedInst = createInstance('srec', '2026-01', alice, []);
+  ownSeries('srec', alice);
+  const closedInst = createInstance('srec', '2026-01', alice);
   await closedInst.close({ name: 'Alice', email: alice });
   writeFileSync(join(closedInst.dir, '.git', 'index.lock'), '');
   writeFileSync(join(closedInst.dir, '.git', 'gc.pid'), '12345 host');
@@ -751,7 +805,8 @@ test('recover cleans git locks on closed instances too, and a confirm 401 after 
   saveTree({ ...tree(), workspaces: { ...tree().workspaces, w: { ...tree().workspaces.w, members: [...tree().workspaces.w.members, racer] } } });
   writeJson('users.json', { ...readJson('users.json', {}), [racer]: { role: 'user' } });
   keepSignIn(racer, entra.refresh(racer));
-  const race = createInstance('srec', '2026-02', racer, []);
+  ownSeries('srec', racer);
+  const race = createInstance('srec', '2026-02', racer);
   race.append(racer, 'comment', { thread: 'c2', text: 'Go' });
   const fetchWas = globalThis.fetch;
   const gate = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>();

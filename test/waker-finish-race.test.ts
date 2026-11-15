@@ -16,6 +16,7 @@ test('an interrupt during natural turn cost draining stops the sandbox and marks
       import * as connections from './src/connections.ts';
       import * as entra from './src/entra.ts';
       import { initSystem, saveTree, writeJson } from './src/system.ts';
+      import { ownSeries } from './test/owner-fixture.ts';
       import { createInstance, openStore } from './src/store.ts';
       const root = ${JSON.stringify(root)}, alice = 'alice@demo.test';
       initSystem(root);
@@ -23,6 +24,7 @@ test('an interrupt during natural turn cost draining stops the sandbox and marks
       saveTree({ workspaces: { w: { name: 'Work', owners: [alice], members: [] } }, series: { s: { name: 'Series', workspace: 'w' } } });
       writeJson('users.json', { [alice]: { role: 'user' } });
       mkdirSync(root + '/series/s', { recursive: true });
+      ownSeries('s', alice);
       const turned = Promise.withResolvers(), settled = Promise.withResolvers(), draining = Promise.withResolvers(), charge = Promise.withResolvers(), rpc = Promise.withResolvers();
       let stops = 0;
       const run = {
@@ -36,7 +38,7 @@ test('an interrupt during natural turn cost draining stops the sandbox and marks
         hasCalls: () => true, abortCalls: () => {}, drainCalls: () => { draining.resolve(); return charge.promise; },
       } });
       const { active, interruptRun, kick } = await import('./src/waker.ts');
-      const inst = createInstance('s', 'Race', alice, []);
+      const inst = createInstance('s', 'Race', alice);
       inst.append(alice, 'comment', { text: 'Work.' });
       kick(inst);
       await turned.promise;
@@ -52,7 +54,7 @@ test('an interrupt during natural turn cost draining stops the sandbox and marks
       const dones = inst.log.filter(e => e.op === 'done');
       assert.equal(dones.length, 1);
       assert.equal(dones[0].aborted, true);
-    `], { cwd: join(import.meta.dirname, '..'), timeout: 10_000, stdio: 'pipe' });
+    `], { cwd: join(import.meta.dirname, '..'), env: { ...process.env, RF_MIN_FREE_GB: '0' }, timeout: 10_000, stdio: 'pipe' });
   } catch (e) {
     assert.fail((e as { stderr: Buffer }).stderr.toString());
   } finally {
@@ -70,6 +72,7 @@ for (const phase of ['before-log', 'before-sandbox']) test(`pre-sandbox failures
       import * as runner from './src/runner.ts';
       import * as entra from './src/entra.ts';
       import { initSystem, saveTree, writeJson } from './src/system.ts';
+      import { ownSeries } from './test/owner-fixture.ts';
       import { createInstance, openStore } from './src/store.ts';
       const root = ${JSON.stringify(root)}, alice = 'alice@demo.test';
       initSystem(root);
@@ -77,6 +80,7 @@ for (const phase of ['before-log', 'before-sandbox']) test(`pre-sandbox failures
       saveTree({ workspaces: { w: { name: 'Work', owners: [alice], members: [] } }, series: { s: { name: 'Series', workspace: 'w' } } });
       writeJson('users.json', { [alice]: { role: 'user' } });
       mkdirSync(root + '/series/s', { recursive: true });
+      ownSeries('s', alice);
       const phase = ${JSON.stringify(phase)};
       process.env.RF_MIN_FREE_GB = '6';
       const os = await import('node:os'), indexes = await import('./src/indexes.ts');
@@ -90,7 +94,7 @@ for (const phase of ['before-log', 'before-sandbox']) test(`pre-sandbox failures
         if (++confirms > 2) throw Object.assign(new Error('repeated confirmation'), { status: 401 });
       } } });
       const { active, byToken, kick } = await import('./src/waker.ts');
-      const first = createInstance('s', 'First', alice, []), second = createInstance('s', 'Second', alice, []);
+      const first = createInstance('s', 'First', alice), second = createInstance('s', 'Second', alice);
       for (const inst of [first, second]) inst.append(alice, 'comment', { text: 'Work.' });
       kick(first);
       await new Promise(ok => setTimeout(ok, 2000));
@@ -98,7 +102,7 @@ for (const phase of ['before-log', 'before-sandbox']) test(`pre-sandbox failures
       assert.equal(attempts, 2);
       assert.equal(active.size, 0);
       assert.equal(byToken.size, 0);
-    `], { cwd: join(import.meta.dirname, '..'), timeout: 10_000, stdio: 'pipe' });
+    `], { cwd: join(import.meta.dirname, '..'), env: { ...process.env, RF_MIN_FREE_GB: '0' }, timeout: 10_000, stdio: 'pipe' });
   } catch (e) {
     assert.fail((e as { stderr: Buffer }).stderr.toString());
   } finally {
@@ -116,6 +120,7 @@ test('a run ended while prompt acknowledgement is pending cannot steer or arm a 
       import * as runner from './src/runner.ts';
       import * as entra from './src/entra.ts';
       import { initSystem, saveTree, writeJson } from './src/system.ts';
+      import { ownSeries } from './test/owner-fixture.ts';
       import { createInstance, openStore } from './src/store.ts';
       const root = ${JSON.stringify(root)}, alice = 'alice@demo.test';
       initSystem(root);
@@ -123,6 +128,7 @@ test('a run ended while prompt acknowledgement is pending cannot steer or arm a 
       saveTree({ workspaces: { w: { name: 'Work', owners: [alice], members: [] } }, series: { s: { name: 'Series', workspace: 'w' } } });
       writeJson('users.json', { [alice]: { role: 'user' } });
       mkdirSync(root + '/series/s', { recursive: true });
+      ownSeries('s', alice);
       process.env.RF_LIMIT_MIN = '120';
       const turning = Promise.withResolvers(), prompt = Promise.withResolvers();
       let steers = 0, limits = 0;
@@ -135,7 +141,7 @@ test('a run ended while prompt acknowledgement is pending cannot steer or arm a 
       mock.module('./src/runner.ts', { namedExports: { ...runner, startRun: async () => run } });
       mock.module('./src/entra.ts', { namedExports: { ...entra, confirm: async () => {} } });
       const { active, interruptRun, kick } = await import('./src/waker.ts');
-      const inst = createInstance('s', 'Prompt', alice, []);
+      const inst = createInstance('s', 'Prompt', alice);
       inst.append(alice, 'comment', { text: 'Work.' });
       kick(inst);
       await turning.promise;
@@ -145,7 +151,7 @@ test('a run ended while prompt acknowledgement is pending cannot steer or arm a 
       await new Promise(ok => setImmediate(ok));
       assert.equal(steers, 0);
       assert.equal(limits, 0);
-    `], { cwd: join(import.meta.dirname, '..'), timeout: 10_000, stdio: 'pipe' });
+    `], { cwd: join(import.meta.dirname, '..'), env: { ...process.env, RF_MIN_FREE_GB: '0' }, timeout: 10_000, stdio: 'pipe' });
   } catch (e) {
     assert.fail((e as { stderr: Buffer }).stderr.toString());
   } finally {

@@ -79,6 +79,14 @@ before(async () => {
   writeFileSync(treePath, JSON.stringify(tree, null, 1));
   mkdirSync(join(root, 'series', 'serbank00001'), { recursive: true });
   mkdirSync(join(root, 'series', 'serbeta00001'), { recursive: true });
+  writeFileSync(join(root, '.rf', 'users.json'), JSON.stringify(Object.fromEntries(['admin', 'carol', 'bob'].map(name => [`${name}@demo.test`, { role: name === 'admin' ? 'admin' : 'user', name, created: '2026-11-15T08:00:00.000Z' }]))));
+  writeFileSync(join(root, '.rf', 'authority-format.json'), JSON.stringify({ version: 1, minReader: 1, state: 'complete' }));
+  writeFileSync(join(root, '.rf', 'capabilities.json'), JSON.stringify({ 'series-owner': ['admin@demo.test', 'carol@demo.test', 'bob@demo.test'] }));
+  for (const [id, series] of Object.entries(tree.series) as [string, { workspace: string }][]) {
+    const owner = series.workspace === 'wsbeta000001' ? 'admin@demo.test' : 'carol@demo.test', at = '2026-11-15T08:00:00.000Z';
+    mkdirSync(join(root, 'series', id), { recursive: true });
+    writeFileSync(join(root, 'series', id, 'series.json'), JSON.stringify({ version: 1, owner, epoch: 1, since: at, consent: { by: owner, at, workspace: series.workspace, logins: [], autonomous: false } }));
+  }
 
   seedInst('instjan00001', 'serbank00001', 'January', 'carol@demo.test', [
     { by: 'server', op: 'run', run: 1, runner: 'carol@demo.test', consent: 1, upto: 1, key: 'shared' },
@@ -181,6 +189,11 @@ test('R4-PEOPLE-01: find(path) rejects excess file segments and trims trailing s
   const janShow = await runRf(carol.home, ['show', 'larkfield/Bank pack/January/', '--json']);
   assert.equal(janShow.code, 0);
   assert.equal(JSON.parse(janShow.stdout).status, 'open');
+  assert.equal(JSON.parse(janShow.stdout).owner, 'carol@demo.test');
+  assert.equal('runner' in JSON.parse(janShow.stdout), false);
+  const febShow = await runRf(carol.home, ['show', 'larkfield/Bank pack/February', '--json']);
+  assert.equal(febShow.code, 0);
+  assert.equal(JSON.parse(febShow.stdout).owner, 'carol@demo.test', 'a different historical executor is not a second current owner');
   assert.equal(existsSync(join(root, 'instances', 'instjan00001', 'working', 'good.csv')), true);
 
   const renExtra = await runRf(carol.home, ['rename', 'larkfield/Bank pack/February/upload/wrong.csv', 'wrong2.csv']);
@@ -360,51 +373,51 @@ test('R4-PEOPLE-07: rf comment --wait exits on terminal states and steered/stopp
     if (req.url === '/api/instances/i') {
       polls++;
       const baseLog: any[] = [{ seq: 1, op: 'create' }, { seq: 2, op: 'comment', by: 'alice@demo.test', text: 'Run please' }];
-      if (scenario === 'closed' && polls > 1) return send({ doc: { status: 'closed' }, log: [...baseLog, { seq: 3, op: 'close' }], runner: { by: 'alice@demo.test' }, starts: true });
-      if (scenario === 'abandoned' && polls > 1) return send({ doc: { status: 'abandoned' }, log: [...baseLog, { seq: 3, op: 'abandon' }], runner: { by: 'alice@demo.test' }, starts: true });
-      if (scenario === 'deleted' && polls > 1) return send({ doc: { status: 'deleted' }, log: [{ seq: 1, op: 'delete' }], runner: { by: 'alice@demo.test' }, starts: false });
+      if (scenario === 'closed' && polls > 1) return send({ doc: { status: 'closed' }, log: [...baseLog, { seq: 3, op: 'close' }], owner: { by: 'alice@demo.test' }, starts: true });
+      if (scenario === 'abandoned' && polls > 1) return send({ doc: { status: 'abandoned' }, log: [...baseLog, { seq: 3, op: 'abandon' }], owner: { by: 'alice@demo.test' }, starts: true });
+      if (scenario === 'deleted' && polls > 1) return send({ doc: { status: 'deleted' }, log: [{ seq: 1, op: 'delete' }], owner: { by: 'alice@demo.test' }, starts: false });
       if (scenario === 'steer-fail' && polls > 1) return send({
         doc: { status: 'open' },
         log: [{ seq: 1, op: 'run', run: 1, upto: 1 }, baseLog[1], { seq: 3, op: 'done', run: 1, seen: 1, aborted: false, error: 'credits' }],
-        runner: { by: 'alice@demo.test' }, starts: true,
+        owner: { by: 'alice@demo.test' }, starts: true,
       });
       if (scenario === 'stopped' && polls > 1) return send({
         doc: { status: 'open' },
         log: [{ seq: 1, op: 'run', run: 1, upto: 1 }, baseLog[1], { seq: 3, op: 'done', run: 1, seen: 1, aborted: true }],
-        runner: { by: 'alice@demo.test' }, starts: true,
+        owner: { by: 'alice@demo.test' }, starts: true,
       });
       if (scenario === 'init-fail' && polls > 1) return send({
         doc: { status: 'open' },
         log: [...baseLog, { seq: 3, op: 'run', run: 1, upto: 2 }, { seq: 4, op: 'done', run: 1, seen: 1, aborted: false, error: 'credits' }],
-        runner: { by: 'alice@demo.test' }, starts: true,
+        owner: { by: 'alice@demo.test' }, starts: true,
       });
       if (scenario === 'cut-then-done') {
         if (polls === 2) return send({
           doc: { status: 'open' },
           log: [...baseLog, { seq: 3, op: 'run', run: 1, upto: 2 }, { seq: 4, op: 'done', run: 1, seen: 1, aborted: true, error: 'its series moved' }, { seq: 5, op: 'wake', cause: 4 }],
-          runner: { by: 'alice@demo.test' }, starts: true,
+          owner: { by: 'alice@demo.test' }, starts: true,
         });
         if (polls >= 3) return send({
           doc: { status: 'open' },
           log: [...baseLog, { seq: 3, op: 'run', run: 1, upto: 2 }, { seq: 4, op: 'done', run: 1, seen: 1, aborted: true, error: 'its series moved' }, { seq: 5, op: 'wake', cause: 4 },
             { seq: 6, op: 'run', run: 2, upto: 5 }, { seq: 7, op: 'comment', by: 'agent', thread: 'c2', text: 'Finished after cut' }, { seq: 8, op: 'done', run: 2, seen: 5, aborted: false }],
-          runner: { by: 'alice@demo.test' }, starts: true,
+          owner: { by: 'alice@demo.test' }, starts: true,
         });
       }
       if (scenario === 'hold-then-done') {
         if (polls <= 4) return send({
           doc: { status: 'open' }, held: ['entra'],
           log: [...baseLog, { seq: 3, op: 'expired', login: 'entra' }],
-          runner: { by: 'alice@demo.test' }, starts: true,
+          owner: { by: 'alice@demo.test' }, starts: true,
         });
         return send({
           doc: { status: 'open' }, held: [],
           log: [...baseLog, { seq: 3, op: 'expired', login: 'entra' }, { seq: 4, op: 'run', run: 1, upto: 3 },
             { seq: 5, op: 'comment', by: 'agent', thread: 'c2', text: 'Resumed after login' }, { seq: 6, op: 'done', run: 1, seen: 3, aborted: false }],
-          runner: { by: 'alice@demo.test' }, starts: true,
+          owner: { by: 'alice@demo.test' }, starts: true,
         });
       }
-      return send({ doc: { status: 'open' }, log: baseLog, runner: { by: 'alice@demo.test' }, starts: true });
+      return send({ doc: { status: 'open' }, log: baseLog, owner: { by: 'alice@demo.test' }, starts: true });
     }
     send('ok');
   });

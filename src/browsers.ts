@@ -7,7 +7,7 @@ import { request as httpsRequest } from 'node:https';
 import type { Duplex } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { HttpError, instance, replaceReadOnly, type Instance } from './store.ts';
-import { logins, personDir, runnerOf, saveLogin, seal, secret, signOut, use, type Trace } from './logins.ts';
+import { lender, logins, personDir, saveLogin, seal, secret, signOut, use, type Trace } from './logins.ts';
 import { getDomain } from 'tldts';
 import { checkHost, covers, except, letIn, reached, resolvesInternal, serverCall, setLetIn } from './connections.ts';
 import { answer, model } from './connections/openrouter.ts';
@@ -424,14 +424,23 @@ const IDLE_MS = Number(process.env.RF_BROWSER_IDLE_MS ?? 5 * 60_000);
 
 // The runs' browsers open on the service, by id, in .rf/browsers.json, so those a restart cut from their runs still leave what
 // their runs would have kept (reap).
-type Opened = { inst: string; run: number; site: string; email: string; since: string; writeback: boolean; file: string };
+type Opened = { inst: string; run: number; site: string; email: string; since: string; writeback: boolean; file: string; generation: number };
 const journal = () => readJson<Record<string, Opened>>('browsers.json', {});
 const setJournal = (all: Record<string, Opened>) => replaceReadOnly(join(rfDir(), 'browsers.json'), JSON.stringify(all));
 
 // A run's browser closed: its request log kept in its instance's browser/, logged as browser with the hosts its pages were refused, and,
 // where its website writes it back, its state its person's login again, unless they signed out or in anew since it opened.
 function keep(inst: Instance, b: Opened, { state, log }: { state: unknown; log: Entry[] }) {
-  const login = b.writeback && logins(b.email).find(l => l.id === `web:${b.site}`), w = websitesOf(b.email)[b.site];
+  if (inst.hole) return;
+  let login;
+  // Closing still accounts for a revoked run, but never writes its stale state back.
+  if (b.writeback) try {
+    const lent = use(inst, b.run, `web:${b.site}`);
+    if (lent.email === b.email && approved(b.site, b.email, tree().series[inst.seriesId]?.workspace) && b.generation === (websiteGenerations.get(`${b.email} ${b.site}`) ?? 0)) login = lent.login;
+  } catch (e) {
+    if (!(e instanceof HttpError)) throw e;
+  }
+  const w = websitesOf(b.email)[b.site];
   if (login && state && w && !login.expired && login.since === b.since) {
     const ps = allowedHosts(w), s = state as { cookies?: { domain?: string }[]; origins?: { origin?: string }[] };
     const trimmed = {
@@ -451,7 +460,7 @@ function keep(inst: Instance, b: Opened, { state, log }: { state: unknown; log: 
     };
     saveLogin(b.email, login, JSON.stringify(trimmed));
   }
-  if (inst.hole || inst.log?.some(e => e.op === 'close' || e.op === 'abandon')) return;
+  if (inst.log.some(e => e.op === 'close' || e.op === 'abandon')) return;
   mkdirSync(join(inst.dir, 'browser'), { recursive: true });
   replaceReadOnly(join(inst.dir, b.file), log.map(e => JSON.stringify(e) + '\n').join(''));
   const writes = log.filter(e => !e.blocked && !['GET', 'HEAD', 'OPTIONS'].includes(e.method)).length, hosts: Record<string, number> = {};
@@ -653,7 +662,7 @@ export async function reap() {
 export class Browsers {
   inst: Instance;
   run: number;
-  bySite = new Map<string, { id: string; email: string; since: string; writeback: boolean; file: string; conns: number; via?: Via; internal: string[]; idle?: NodeJS.Timeout; shot?: Buffer }>();
+  bySite = new Map<string, { id: string; email: string; since: string; writeback: boolean; file: string; generation: number; conns: number; via?: Via; internal: string[]; idle?: NodeJS.Timeout; shot?: Buffer }>();
   private opening = new Map<string, Promise<string | undefined>>();
   private closing = new Set<Promise<unknown>>();
   private opens = new Map<string, number>();
@@ -670,13 +679,16 @@ export class Browsers {
   // and as its lending changes. One its runner must sign in to again is logged, so the instance carries on once they do.
   async lent(site: string, quiet = false) {
     try {
+      if (this.ended) throw new HttpError(409, 'run stopped');
       // A try's stand-in instance (cli.ts) is in no workspace: any approved grant of its runner's does.
       const { email, login } = use(this.inst, this.run, `web:${site}`), had = this.bySite.get(site), ws = tree().series[this.inst.seriesId]?.workspace;
       if (!approved(site, email, ws)) throw Object.assign(new HttpError(403, unapproved(email, site, ws)), { refused: true });
       if (login.expired) throw Object.assign(new HttpError(409, `${email}'s login to ${site} has expired: they sign in to it again on the Logins page, and the instance carries on`), { login: login.id });
-      if (had && had.email !== email) throw Object.assign(new HttpError(409, `this run's browser on ${site} is in ${had.email}'s login, and ${email} has taken the instance over: the next run opens one in theirs`));
+      const generation = websiteGenerations.get(`${email} ${site}`) ?? 0;
+      if (had && (had.email !== email || had.since !== login.since || had.generation !== generation)) throw new HttpError(409, `this run's browser on ${site} has a superseded login`);
       const w = website(email, site), via = await vpnVia(email, w), current = use(this.inst, this.run, `web:${site}`);
-      if (current.email !== email || current.login.since !== login.since || current.login.expired || website(email, site).via !== w.via || this.bySite.get(site) !== had) return this.lent(site, quiet);
+      if (this.ended || current.email !== email || current.login.since !== login.since || current.login.expired || (websiteGenerations.get(`${email} ${site}`) ?? 0) !== generation || website(email, site).via !== w.via) throw new HttpError(409, `this run's login to ${site} changed while connecting`);
+      if (this.bySite.get(site) !== had) return this.lent(site, quiet);
       if (!approved(site, email, tree().series[this.inst.seriesId]?.workspace)) throw Object.assign(new HttpError(403, `${email}'s grant to use ${site} was revoked; this run goes on without it`), { refused: true });
       if (had && (had.via?.token !== via?.token || had.via?.url !== via?.url || had.internal.join(',') !== internalHosts(w).join(','))) {
         await this.close(site);
@@ -686,7 +698,7 @@ export class Browsers {
     } catch (e) {
       if (!quiet) {
         const { login, refused } = e as { login?: string; refused?: true };
-        if (login) this.inst.append('server', 'expired', { run: this.run, login, name: site, runner: runnerOf(this.inst).by });
+        if (login) this.inst.append('server', 'expired', { run: this.run, login, name: site, runner: this.inst.log.find(e => e.op === 'run' && e.run === this.run)!.runner });
         if (refused && !this.refused.has(site)) this.inst.append('server', 'browser', { run: this.run, site, action: 'refused', why: (e as Error).message });
         if (refused) this.refused.add(site);
       }
@@ -698,7 +710,11 @@ export class Browsers {
   async browser(site: string, conn?: Duplex): Promise<string | undefined> {
     for (let waited = false; ; waited = true) {
       if (this.ended) return undefined;
-      const { email, login, had, via } = site === PRINT ? { email: '', login: undefined, had: this.bySite.get(site), via: undefined } : await this.lent(site);
+      lender(this.inst, this.run);
+      let lent;
+      try { lent = site === PRINT ? { email: '', login: undefined, had: this.bySite.get(site), via: undefined } : await this.lent(site); }
+      catch (e) { if (this.ended) return undefined; throw e; }
+      const { email, login, had, via } = lent;
       if (this.ended) return undefined;
       if (had) return had.id;
       if (this.opening.has(site)) return this.opening.get(site);
@@ -714,20 +730,21 @@ export class Browsers {
         let release!: () => void;
         held.set(key, { run: this, released: new Promise<void>(ok => { release = ok; }), release: () => release() });
       }
-      const internal = w ? internalHosts(w) : [], opening = w ? open(w, 7200, state, via) : printer();
+      const generation = websiteGenerations.get(key) ?? 0, internal = w ? internalHosts(w) : [], opening = w ? open(w, 7200, state, via) : printer();
       const ready = opening.then(async id => {
         const n = (this.opens.get(site) ?? 0) + 1, file = `browser/run ${this.run} ${site}${n > 1 ? ` ${n}` : ''}.jsonl`;
-        const b = { id, email, since: login?.since ?? '', writeback, file, conns: 0, via, internal };
+        const b = { id, email, since: login?.since ?? '', writeback, file, generation, conns: 0, via, internal };
         this.opens.set(site, n);
         this.bySite.set(site, b);
         changes.emit('change', this.inst.id); // for its instance's page to show it
-        setJournal({ ...journal(), [id]: { inst: this.inst.id, run: this.run, site, email, since: b.since, writeback, file } });
+        setJournal({ ...journal(), [id]: { inst: this.inst.id, run: this.run, site, email, since: b.since, writeback, file, generation } });
         if (this.ended) {
           await this.close(site);
           return undefined;
         }
-        if (site !== PRINT) try {
-          if ((await this.lent(site)).had?.id !== id) return undefined;
+        try {
+          lender(this.inst, this.run);
+          if (site !== PRINT && (await this.lent(site)).had?.id !== id) return undefined;
         } catch (e) {
           await this.close(site);
           throw e;
@@ -745,6 +762,8 @@ export class Browsers {
 
   // A connection to the run's browser on `site`, which it holds while any is open.
   connected(site: string, conn: Duplex) {
+    if (this.ended) throw new HttpError(409, 'run stopped');
+    lender(this.inst, this.run);
     const b = this.bySite.get(site)!;
     b.conns++;
     this.conns.set(conn, site);
@@ -757,6 +776,7 @@ export class Browsers {
 
   // A stop cuts every connection to the run's browsers; the browsers stay open for the next start to close (reap()).
   cut() {
+    this.ended = true;
     for (const c of this.conns.keys()) c.destroy();
   }
 
@@ -802,7 +822,7 @@ export class Browsers {
     const { email, login } = use(this.inst, this.run, `web:${site}`);
     saveLogin(email, { ...login, expired: true });
     await this.close(site);
-    this.inst.append('server', 'expired', { run: this.run, login: login.id, name: site, runner: runnerOf(this.inst).by });
+    this.inst.append('server', 'expired', { run: this.run, login: login.id, name: site, runner: email });
     return `recorded: ${site} signed ${email} out; they sign in to it again on the Logins page, and the instance carries on`;
   }
 
@@ -814,6 +834,7 @@ export class Browsers {
       const { had } = await this.lent(site);
       if (!had) throw new HttpError(409, `no browser on ${site} in this run: connect to it at $RF_BROWSERS/${site} first`);
       const file = await request('GET', files(had.id, path));
+      try { if (this.ended) throw new HttpError(409, 'run stopped'); lender(this.inst, this.run); } catch (e) { file.destroy(); throw e; }
       file.on('data', c => (bytes += c.length));
       res.writeHead(200, { 'content-type': file.headers['content-type'] ?? 'application/octet-stream' });
       await pipeline(file, res);
@@ -850,7 +871,7 @@ export class Browsers {
   // back refreshed, unless it expired or its person signed in to it anew since the browser opened, which a stale state would
   // overwrite, and lets the next run have its person's browser there.
   close(only?: string) {
-    const closing = Promise.all([...this.bySite].filter(([site]) => !only || site === only).map(async ([site, { id, email, since, writeback, file, idle }]) => {
+    const closing = Promise.all([...this.bySite].filter(([site]) => !only || site === only).map(async ([site, { id, email, since, writeback, file, generation, idle }]) => {
       this.bySite.delete(site);
       clearTimeout(idle);
       for (const [conn, on] of this.conns) if (on === site) conn.destroy();
@@ -858,7 +879,7 @@ export class Browsers {
         const closed = await close(id), all = journal();
         delete all[id];
         setJournal(all);
-        keep(this.inst, { inst: this.inst.id, run: this.run, site, email, since, writeback, file }, closed);
+        keep(this.inst, { inst: this.inst.id, run: this.run, site, email, since, writeback, file, generation }, closed);
       } finally {
         if (writeback) this.release(`${email} ${site}`);
       }
@@ -926,11 +947,12 @@ own (new_page()).
 Ticked for this run:`;
 export async function serveBrowsers(b: Browsers, base: string, [site, what, ...path]: string[], req: IncomingMessage, res: ServerResponse) {
   if (req.method === 'GET' && !site) {
-    const { by, logins: ticked } = runnerOf(b.inst), sites = websitesOf(by), mine = ticked.filter(l => l.startsWith('web:') && sites[l.slice(4)]).map(l => l.slice(4));
+    const { by, logins: ticked } = lender(b.inst, b.run), sites = websitesOf(by), mine = ticked.filter(l => l.startsWith('web:') && sites[l.slice(4)]).map(l => l.slice(4));
     return void res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' }).end(`${BROWSERS}\n${mine.map(s => `  ${s}  ${sites[s].url}`).join('\n') || '  no website'}\n`);
   }
   if (req.method === 'GET' && what === 'json' && path.join('/').replace(/\/$/, '') === 'version') {
     if (site !== PRINT) await b.lent(site);
+    lender(b.inst, b.run);
     return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ webSocketDebuggerUrl: `ws://${req.headers.host}${base}/${site}` }));
   }
   if (req.method === 'GET' && what === 'downloads') return b.download(site, path.map(decodeURIComponent).join('/'), res);

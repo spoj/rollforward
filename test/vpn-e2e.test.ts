@@ -11,6 +11,7 @@ import type { Duplex } from 'node:stream';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
 import { idp } from './idp.ts';
+import { AUTHORITY_FORMAT } from '../src/authority-format.ts';
 
 // Uses an exclusive TUNNEL_TEST=1 service and a real browser service with test-only self-signed TLS enabled.
 // The test SOCKS container supplies the far-side network, not Fortinet's protocol or a real FortiGate.
@@ -75,6 +76,7 @@ test('rollforward signs in, connects, and routes only its website through the re
   const viaProxyUrl = `http://127.0.0.1:${(viaProxy.address() as { port: number }).port}`;
   const authority = `${here}:${(gateway.address() as { port: number }).port}`;
   mkdirSync(join(root, '.rf'), { recursive: true });
+  writeFileSync(join(root, '.rf/authority-format.json'), JSON.stringify(AUTHORITY_FORMAT));
   mkdirSync(join(tmp, 'home'));
   writeFileSync(join(root, '.rf/vpns.json'), JSON.stringify({ test: { type: 'test', gateway: authority } }));
   writeFileSync(join(root, '.rf/capabilities.json'), JSON.stringify({ vpn: [ADMIN] }));

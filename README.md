@@ -18,11 +18,11 @@ A Linux host, 5.14 or later, with Node 26, git, GNU tar and bubblewrap, and abou
 
 ## How
 
-- **Accountable actions.** A run acts as one person, through their own logins, and only those ticked for it. Every act is logged, each run's changes are a git commit, and an action outside the series waits for a person to approve the agent's proposal unless the instructions say it needs none.
+- **Accountable actions.** One series owner initiates runs across every instance, through their explicitly selected series-wide credential ceiling. Scheduled/autonomous runs need their opt-in; collaborators never initiate execution. Every act is logged, each run's changes are a git commit, and an action outside the series waits for a person to approve the agent's proposal unless the instructions say it needs none.
 - **Learning from examples,** not compiled skills or a knowledge base. Each period rolls forward from the closed periods before it: their files, scripts, threads, and what was actually sent.
 
 ## Limitations
 
-Highly agentic, with few hard guardrails. The agent does whatever its runner's logins allow within what's ticked, and keeps to its instructions rather than to rules the server enforces. It expects its people to know what they are doing, as accountable adults using a tool.
+Highly agentic, with few hard guardrails. The agent does whatever its series owner's logins allow within the selected ceiling, and keeps to its instructions rather than to rules the server enforces. The ceiling applies to every instance, not one period. Execution is an explicitly opted-in `series-owner` capability, even for admins; legacy series stay readable but cannot execute until an owner is selected and explicitly consents. It expects accountable adults using a tool.
 
 [docs/system.md](docs/system.md) describes the system in full.

@@ -17,7 +17,8 @@ for (const mode of ['body', 'queue', 'screen']) test(`an admitted agent request 
       import { mkdirSync } from 'node:fs';
       import { idp } from './test/idp.ts';
       import { initSystem, saveTree, writeJson } from './src/system.ts';
-      import { createInstance } from './src/store.ts';
+      import { ownSeries } from './test/owner-fixture.ts';
+      import { createInstance, openStore } from './src/store.ts';
       const root = ${JSON.stringify(root)}, mode = ${JSON.stringify(mode)}, alice = 'alice@demo.test';
       const probe = createServer();
       await new Promise(ok => probe.listen(0, '127.0.0.1', ok));
@@ -25,11 +26,15 @@ for (const mode of ['body', 'queue', 'screen']) test(`an admitted agent request 
       await new Promise(ok => probe.close(ok));
       const base = 'http://127.0.0.1:' + port, entra = await idp();
       Object.assign(process.env, entra.env(base), { RF_ADMINS: alice });
+      const { authority } = await import('./src/logins.ts');
       const { active, byToken, interruptRun, view } = await import('./src/waker.ts'), sandbox = await import('./src/sandbox.ts');
       initSystem(root);
+      openStore(root);
+      writeJson('authority-format.json', { version: 1, minReader: 1, state: 'complete' });
       saveTree({ workspaces: { w: { name: 'Work', owners: [alice], members: [] } }, series: { s: { name: 'Series', workspace: 'w' } } });
       writeJson('users.json', { [alice]: { role: 'admin' } });
       mkdirSync(root + '/series/s', { recursive: true });
+      ownSeries('s', alice);
       let agent;
       mock.module('./src/sandbox.ts', { namedExports: { ...sandbox, serveSandboxes: o => { agent = o.agent; } } });
       process.argv = [process.execPath, 'src/server.ts', root, String(port)];
@@ -38,14 +43,15 @@ for (const mode of ['body', 'queue', 'screen']) test(`an admitted agent request 
       await import('./src/server.ts');
       await ready.promise;
       const cookie = (await entra.signIn(base, alice)).headers.getSetCookie().find(c => c.startsWith('rf_session=')).split(';')[0];
-      const inst = createInstance('s', 'Queued', alice, []), rpc = Promise.withResolvers(), entered = Promise.withResolvers();
+      const inst = createInstance('s', 'Queued', alice), rpc = Promise.withResolvers(), entered = Promise.withResolvers();
+      const blocker = mode === 'queue' ? createInstance('s', 'Z-blocker', alice) : undefined;
+      if (blocker) mock.method(blocker, 'close', async () => { entered.resolve(); await rpc.promise; });
       const a = {
-        inst, n: 1, runner: alice, token: 'queued-run', view: view(inst), workspace: 'w', cost: 0, estimated: false,
+        inst, n: 1, runner: alice, authority: authority(inst), token: 'queued-run', view: view(inst), workspace: 'w', cost: 0, estimated: false,
         seen: 1, delivered: 1, done: false, process: '', texts: new Map(),
         run: { interrupt: () => { if (mode !== 'queue') { entered.resolve(); return rpc.promise; } }, stop: async () => {} },
-        ...(mode === 'queue' && { browsers: { closeUnlent: () => { entered.resolve(); return rpc.promise; }, end: async () => {} } }),
       };
-      inst.append('server', 'run', { run: 1, runner: alice, consent: 1 });
+      inst.append('server', 'run', { run: 1, runner: alice, initiator: alice, authority: authority(inst) });
       const ask = inst.append('agent', 'comment', { thread: 'c3', text: 'Which account?', ask: 'question', run: 1 });
       mkdirSync(root + '/.rf/runs/' + a.token, { recursive: true });
       active.set('s', a);
@@ -56,11 +62,15 @@ for (const mode of ['body', 'queue', 'screen']) test(`an admitted agent request 
         writeHead(status) { this.headersSent = true; this.statusCode = status; return this; }, end() {},
       });
       const withdrawing = agent(req, res, new URL('/api/instances/' + inst.id + (mode === 'screen' ? '/screen' : '/withdraw'), base));
-      const interrupting = fetch(base + '/api/instances/' + inst.id + (mode !== 'queue' ? '/interrupt' : '/logins'), { method: 'POST', headers: { cookie } });
+      const interrupting = fetch(base + '/api/instances/' + (blocker ? blocker.id + '/close' : inst.id + '/interrupt'), { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ quiet: true }) });
       await Promise.race([entered.promise, interrupting.then(async r => { throw new Error('blocking action returned ' + r.status + ': ' + await r.text()); })]);
       req.end(JSON.stringify(mode === 'screen' ? { rev: inst.doc.rev, items: [{ id: 'late', name: 'Late', kind: 'output', file: null }] } : { thread: 'c' + ask.seq, text: 'No longer needed.' }));
       await new Promise(ok => setImmediate(ok));
-      if (mode === 'queue') await interruptRun(a);
+      if (mode === 'queue') {
+        assert.equal(byToken.has(a.token), true, 'the admitted request passed its body check before queuing');
+        assert.equal(res.headersSent, false, 'the ordered action is still waiting');
+        await interruptRun(a);
+      }
       rpc.resolve();
       assert.equal((await interrupting).status, 200);
       await withdrawing;
@@ -68,7 +78,7 @@ for (const mode of ['body', 'queue', 'screen']) test(`an admitted agent request 
       assert.equal(inst.log.some(e => e.op === (mode === 'screen' ? 'screen' : 'withdraw')), false);
       assert.equal(inst.doc.items.length, 0);
       process.exit(0);
-    `], { cwd: join(import.meta.dirname, '..'), timeout: 15_000, stdio: 'pipe' });
+    `], { cwd: join(import.meta.dirname, '..'), env: { ...process.env, RF_MIN_FREE_GB: '0' }, timeout: 15_000, stdio: 'pipe' });
   } catch (e) {
     assert.fail((e as { stderr: Buffer }).stderr.toString());
   } finally {

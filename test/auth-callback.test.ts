@@ -7,11 +7,13 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { idp } from './idp.ts';
+import { AUTHORITY_FORMAT } from '../src/authority-format.ts';
 
 for (const callback of ['/signin/return', '/']) test(`sign-in at a custom OIDC callback revokes grants only after workspace visibility is lost: ${callback}`, async () => {
   const root = mkdtempSync(join(tmpdir(), 'rf-callback-')), entra = await idp();
   const email = 'bob@demo.test', group = '00000000-0000-0000-0000-000000000001', other = '00000000-0000-0000-0000-000000000002';
   mkdirSync(join(root, '.rf'));
+  writeFileSync(join(root, '.rf', 'authority-format.json'), JSON.stringify(AUTHORITY_FORMAT));
   writeFileSync(join(root, '.rf', 'tree.json'), JSON.stringify({ workspaces: { w: { name: 'Workspace', owners: [group], members: [other] } }, series: {} }));
   const probe = createServer();
   await new Promise<void>(ok => probe.listen(0, '127.0.0.1', ok));

@@ -10,7 +10,7 @@ import { changes, isPrivate, key, readJson, tree, writeJson } from './system.ts'
 import { recordCost } from './costs.ts';
 import type { EntraLogin } from './auth.ts';
 import { token } from './entra.ts';
-import { lender, logins, runnerOf, saveLogin, secret, use, type Offer } from './logins.ts';
+import { lender, logins, saveLogin, secret, use, type Offer } from './logins.ts';
 import graph from './connections/graph.ts';
 import databricks from './connections/databricks.ts';
 import service from './connections/service.ts';
@@ -115,15 +115,15 @@ export function removeConnection(name: string) {
 export const loginOf = (c: Connection) => types[c.type].login(c);
 // The connection a login is for, by the login's id.
 export const byLogin = (id: string) => connections().find(c => loginOf(c).id === id);
-// The connections an instance's runner ticked a login of.
-export const reachable = (inst: Instance) => {
-  const ticks = runnerOf(inst).logins;
+// The connections allowed by the current consent, or the narrower run lease.
+export const reachable = (inst: Instance, run?: number) => {
+  const ticks = lender(inst, run).logins;
   return connections().filter(c => ticks.some(t => t === loginOf(c).id || t.startsWith(`${loginOf(c).id}:`)));
 };
 
 // What a run, as the proxy knows it, has: its instance, its number, the links its connections' answers held, each the name of
 // the connection that gave it and the offer that allowed it, and what its calls have cost.
-export type CallRun = { inst: Instance; n: number; links: Map<string, { name: string; offer: string }>; cost: number; estimated?: boolean; stopped?: boolean };
+export type CallRun = { inst: Instance; n: number; runner: string; links: Map<string, { name: string; offer: string }>; cost: number; estimated?: boolean; stopped?: boolean };
 
 // Tests point a host at a stand-in.
 export const upstreams: Record<string, string> = {};
@@ -343,8 +343,9 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     const url = URL.parse(req.url!, `https://${host}`);
     if (!url) throw new HttpError(403, `invalid request target: ${req.url}`);
     const link = a.links.get(url.href), s = link ? undefined : own(host);
+    if (link) { name = link.name; path = url.origin + url.pathname; }
     // The runner's own OpenRouter key, where they use it, in place of the server's, never falling back to it.
-    const { by: runner, logins: ticked } = runnerOf(a.inst), mine = s === openrouter ? logins(runner).find(l => l.id === 'openrouter' && l.enabled) : undefined;
+    const runner = a.runner, { logins: ticked } = lender(a.inst, a.n), mine = s === openrouter ? logins(runner).find(l => l.id === 'openrouter' && l.enabled) : undefined;
     // Of the connections that take the host, the one a tick names it under, as a Databricks workspace's warehouse does, or the first.
     const serving = link || s ? [] : connections().filter(c => types[c.type].hosts?.(c).some(h => covers(h, host)));
     const c = serving.find(c => ticked.some(t => t.startsWith(`${loginOf(c).id}:${host}/`))) ?? serving[0];
@@ -354,8 +355,6 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     // one such as http://HOST/… to it in the clear.
     if (url.origin !== `https://${host}`) throw new HttpError(403, `${host} takes requests for https://${host}, not ${url.origin}`);
     if (method === 'TRACE') throw new HttpError(403, 'a TRACE would echo the credential put in');
-    // A runner's own key only while they may lend to the instance, never the server's in its place.
-    if (mine) lender(a.inst, a.n);
     if (link) use(a.inst, a.n, link.offer);
     if (mine?.expired) throw Object.assign(new HttpError(409, `${runner}'s own OpenRouter key is out of credits: they save another, or stop using it, on the Logins page, and the instance carries on`), { login: 'openrouter' });
     if (!link && !c && !s) throw new HttpError(403, `${url.origin + url.pathname} is no link a connection's answer gave this run`);
@@ -405,6 +404,9 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     }
     const body = out === undefined ? raw : Buffer.from(JSON.stringify(out));
     if (a.stopped) throw new HttpError(409, 'run stopped');
+    lender(a.inst, a.n);
+    if (offer) use(a.inst, a.n, offer);
+    if (link) use(a.inst, a.n, link.offer);
     if (!s && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
       if (c?.type === 'service') digest = { hash: createHash('sha256'), size: 0 };
       sent = a.inst.append('agent', 'send', { run: a.n, name, method, path }).seq;
@@ -451,6 +453,9 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       const failed = answer.failed && [process.env.OPENROUTER_API_KEY, process.env.EXA_API_KEY, apiKey].reduce((m, k) => k ? m.replaceAll(k, '[redacted]') : m, answer.failed);
       log(failed ? 502 : answer.status, failed ? 0 : answer.bytes, s ? { ...(json?.model && { model: json.model }), cost, ...(estimated && { estimated: true }), ...(failed && { failed }) } : answer.incomplete ? { incomplete: true } : undefined);
       if (mine && answer.status === 402) {
+        // A revoked lease or a replacement key must not receive a late expiry.
+        try { lender(a.inst, a.n); } catch (e) { if (!(e instanceof HttpError)) throw e; return; }
+        if (a.stopped || logins(runner).find(l => l.id === mine.id)?.since !== mine.since) return;
         saveLogin(runner, { ...mine, expired: true });
         a.inst.append('server', 'expired', { run: a.n, login: 'openrouter', name: 'OpenRouter', runner });
       }
@@ -463,7 +468,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     // A refusal, or an expired login, is the server's answer; anything else, a failure to reach the host.
     const err = e as Error & { status?: number; login?: string }, status = e instanceof HttpError ? err.status! : 502;
     const msg = [process.env.OPENROUTER_API_KEY, process.env.EXA_API_KEY].reduce((m, k) => k ? m.replaceAll(k, '[redacted]') : m, err.message);
-    if (err.login) a.inst.append('server', 'expired', { run: a.n, login: err.login, name: byLogin(err.login) ? loginOf(byLogin(err.login)!).name : err.login, runner: runnerOf(a.inst).by });
+    if (err.login) a.inst.append('server', 'expired', { run: a.n, login: err.login, name: byLogin(err.login) ? loginOf(byLogin(err.login)!).name : err.login, runner: a.runner });
     log(status, 0, e instanceof HttpError ? { refused: msg } : { failed: msg });
     if (res.headersSent) return void res.destroy();
     res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8' }).end(`${msg}\n`);

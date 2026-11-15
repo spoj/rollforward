@@ -31,7 +31,7 @@ test('R4-PEOPLE-02: terminal instance states redraw read-only conversation despi
 
   const state: Record<string, any> = {
     i1: {
-      summary: { id: 'i1', label: 'Jan', status: 'open', running: false, runner: person, asks: [{ who: person, seq: 2 }], wakes: [], refused: [], unread: false, assigned: null, active: '2026-11-15T10:01:00Z' },
+      summary: { id: 'i1', label: 'Jan', status: 'open', running: false, owner: person, asks: [{ who: person, seq: 2 }], wakes: [], refused: [], unread: false, active: '2026-11-15T10:01:00Z' },
       detail: {
         doc: { rev: 1, status: 'open', items: [] },
         log: [
@@ -40,12 +40,12 @@ test('R4-PEOPLE-02: terminal instance states redraw read-only conversation despi
         ],
         standing: { 2: 'runner' },
         waiting: [{ seq: 2, who: person }],
-        runner: { by: person, logins: [], ticked: [] },
+        owner: { by: person, logins: [], ticked: [], epoch: 1, workspace: 'w1', consent: { by: person, at: '2026-11-15T10:00:00Z', workspace: 'w1', logins: [], autonomous: false } },
         starts: true, run: null, queued: null, held: [], sums: {},
       },
     },
     i2: {
-      summary: { id: 'i2', label: 'Feb', status: 'open', running: false, runner: person, asks: [], wakes: [], refused: [], unread: false, assigned: null, active: '2026-11-15T10:02:00Z' },
+      summary: { id: 'i2', label: 'Feb', status: 'open', running: false, owner: person, asks: [], wakes: [], refused: [], unread: false, active: '2026-11-15T10:02:00Z' },
       detail: {
         doc: { rev: 1, status: 'open', items: [] },
         log: [
@@ -54,12 +54,12 @@ test('R4-PEOPLE-02: terminal instance states redraw read-only conversation despi
         ],
         standing: { 2: 'runner' },
         waiting: [{ seq: 2, who: person }],
-        runner: { by: person, logins: [], ticked: [] },
+        owner: { by: person, logins: [], ticked: [], epoch: 1, workspace: 'w1', consent: { by: person, at: '2026-11-15T10:00:00Z', workspace: 'w1', logins: [], autonomous: false } },
         starts: true, run: null, queued: null, held: [], sums: {},
       },
     },
     i3: {
-      summary: { id: 'i3', label: 'Mar', status: 'open', running: false, runner: person, asks: [], wakes: [], refused: [], unread: false, assigned: null, active: '2026-11-15T10:03:00Z' },
+      summary: { id: 'i3', label: 'Mar', status: 'open', running: false, owner: person, asks: [], wakes: [], refused: [], unread: false, active: '2026-11-15T10:03:00Z' },
       detail: {
         doc: { rev: 1, status: 'open', items: [] },
         log: [
@@ -68,7 +68,7 @@ test('R4-PEOPLE-02: terminal instance states redraw read-only conversation despi
         ],
         standing: { 2: 'runner' },
         waiting: [],
-        runner: { by: person, logins: [], ticked: [] },
+        owner: { by: person, logins: [], ticked: [], epoch: 1, workspace: 'w1', consent: { by: person, at: '2026-11-15T10:00:00Z', workspace: 'w1', logins: [], autonomous: false } },
         starts: true, run: null, queued: null, held: [], sums: {},
       },
     },
@@ -78,12 +78,12 @@ test('R4-PEOPLE-02: terminal instance states redraw read-only conversation despi
     const url = new URL(r.request().url()), path = url.pathname;
     if (url.origin !== origin) return r.abort();
     if (path === '/api/events') return r.fulfill({ contentType: 'text/event-stream', body: ': ready\n\n' });
-    if (path === '/me') return r.fulfill({ json: { email: person, name: 'Bob', role: 'user', can: [], browsers: false, brand: {}, names: { [person]: 'Bob' } } });
+    if (path === '/me') return r.fulfill({ json: { email: person, name: 'Bob', role: 'user', can: ['series-owner'], browsers: false, brand: {}, names: { [person]: 'Bob' } } });
     if (path === '/logins') return r.fulfill({ json: [] });
     if (path === '/api') return r.fulfill({ json: [{
       id: 'w1', name: 'Finance', manage: true, owners: [person], members: [], archived: false, mine: true,
       grants: [], reads: [], readers: [], moved: [], agents: '',
-      series: [{ id: 's1', name: 'Monthly', single: false, archived: false, requests: [], wakes: [], fired: null, notes: 0, instances: [state.i1.summary, state.i2.summary, state.i3.summary] }],
+      series: [{ id: 's1', name: 'Monthly', owner: person, epoch: 1, since: '2026-11-15T10:00:00Z', consent: { by: person, at: '2026-11-15T10:00:00Z', workspace: 'w1', logins: [], autonomous: false }, single: false, archived: false, requests: [], wakes: [], fired: null, notes: 0, instances: [state.i1.summary, state.i2.summary, state.i3.summary] }],
     }] });
     const m = path.match(/^\/api\/instances\/(i\d)(\/summary)?$/);
     if (m) return r.fulfill({ json: m[2] ? state[m[1]].summary : state[m[1]].detail });
@@ -144,7 +144,7 @@ test('R4-PEOPLE-02: terminal instance states redraw read-only conversation despi
     state.i3.detail = {
       doc: { rev: 1, status: 'deleted', items: [] },
       log: [{ seq: 1, at: '2026-11-15T10:07:00Z', by: person, op: 'delete' }],
-      standing: {}, waiting: [], runner: { by: person, logins: [], ticked: [] },
+      standing: {}, waiting: [], owner: { by: person, logins: [], ticked: [], epoch: 1, workspace: 'w1', consent: { by: person, at: '2026-11-15T10:00:00Z', workspace: 'w1', logins: [], autonomous: false } },
       starts: false, run: null, queued: null, held: [], sums: {},
     };
     await page.evaluate(() => (window as any).patch(['i3']));
@@ -180,21 +180,21 @@ test('R4-PEOPLE-04: Start series and close validates name first and promotes onl
     if (url.origin !== origin) return r.abort();
     if (method !== 'GET') calls.push({ method, path, body: r.request().postData() && r.request().postDataJSON() });
     if (path === '/api/events') return r.fulfill({ contentType: 'text/event-stream', body: ': ready\n\n' });
-    if (path === '/me') return r.fulfill({ json: { email: person, name: 'Bob', role: 'user', can: [], browsers: false, brand: {}, names: { [person]: 'Bob' } } });
+    if (path === '/me') return r.fulfill({ json: { email: person, name: 'Bob', role: 'user', can: ['series-owner'], browsers: false, brand: {}, names: { [person]: 'Bob' } } });
     if (path === '/logins') return r.fulfill({ json: [] });
     if (path === '/api') return r.fulfill({ json: [{
       id: 'w1', name: 'Finance', manage: true, owners: [person], members: [], archived: false, mine: true,
       grants: [], reads: [], readers: [], moved: [], agents: '',
       series: [
         { id: 'sExisting', name: 'ExistingSeries', single: false, archived: false, requests: [], wakes: [], fired: null, notes: 0, instances: [] },
-        { id: 't1', name: promoted ? 'Monthly rec' : 'Oct rec', single: !promoted, archived: false, requests: [], wakes: [], fired: null, notes: 0,
-          instances: [{ id: 'ti1', label: 'Oct rec', status: closed ? 'closed' : 'open', running: false, runner: person, asks: [], wakes: [], refused: [], unread: false, assigned: null, active: '2026-11-15T10:00:00Z' }] },
+        { id: 't1', name: promoted ? 'Monthly rec' : 'Oct rec', owner: person, epoch: 1, since: '2026-11-15T10:00:00Z', consent: { by: person, at: '2026-11-15T10:00:00Z', workspace: 'w1', logins: [], autonomous: false }, single: !promoted, archived: false, requests: [], wakes: [], fired: null, notes: 0,
+          instances: [{ id: 'ti1', label: 'Oct rec', status: closed ? 'closed' : 'open', running: false, owner: person, asks: [], wakes: [], refused: [], unread: false, active: '2026-11-15T10:00:00Z' }] },
       ],
     }] });
     if (path === '/api/instances/ti1') return r.fulfill({ json: {
       doc: { rev: 1, status: closed ? 'closed' : 'open', items: [] },
       log: [{ seq: 1, at: '2026-11-15T10:00:00Z', by: person, op: 'create', logins: [] }],
-      standing: {}, waiting: [], runner: { by: person, logins: [], ticked: [] },
+      standing: {}, waiting: [], owner: { by: person, logins: [], ticked: [], epoch: 1, workspace: 'w1', consent: { by: person, at: '2026-11-15T10:00:00Z', workspace: 'w1', logins: [], autonomous: false } },
       starts: true, run: null, queued: null, held: [], sums: {},
     } });
     if (path === '/api/series/t1/promote' && method === 'POST') {

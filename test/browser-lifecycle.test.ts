@@ -6,7 +6,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { createInstance, openStore } from '../src/store.ts';
-import { initSystem, saveTree } from '../src/system.ts';
+import { initSystem, saveTree, writeJson } from '../src/system.ts';
+import { authority } from '../src/logins.ts';
+import { ownSeries } from './owner-fixture.ts';
 import type { Browsers as RunBrowsers } from '../src/browsers.ts';
 
 const root = mkdtempSync(join(tmpdir(), 'rf-browser-end-'));
@@ -39,6 +41,8 @@ before(async () => {
   initSystem(root);
   openStore(root);
   saveTree({ workspaces: { w: { name: 'Files', owners: ['ann@demo.test'], members: [] } }, series: { s: { name: 'Print', workspace: 'w' } } });
+  writeJson('users.json', { 'ann@demo.test': { name: 'Ann', role: 'user' } });
+  ownSeries('s', 'ann@demo.test');
 });
 after(async () => {
   await new Promise<void>(ok => service.close(() => ok()));
@@ -49,7 +53,9 @@ test('ending waits for a browser still opening and for its subsequent close', as
   const gate = Promise.withResolvers<void>(), shut = Promise.withResolvers<void>();
   opening = gate.promise;
   closing = shut.promise;
-  const inst = createInstance('s', 'opening', 'ann@demo.test', []), browsers = new Browsers(inst, 1);
+  const inst = createInstance('s', 'opening', 'ann@demo.test');
+  inst.append('server', 'run', { run: 1, runner: 'ann@demo.test', authority: authority(inst) });
+  const browsers = new Browsers(inst, 1);
   const browser = browsers.browser('print');
   await opened.promise;
   let done = false;
@@ -71,7 +77,9 @@ test('ending waits for a browser whose idle close is already in progress', async
   const shut = Promise.withResolvers<void>();
   closing = shut.promise;
   closed = Promise.withResolvers<void>();
-  const inst = createInstance('s', 'closing', 'ann@demo.test', []), browsers = new Browsers(inst, 1);
+  const inst = createInstance('s', 'closing', 'ann@demo.test');
+  inst.append('server', 'run', { run: 1, runner: 'ann@demo.test', authority: authority(inst) });
+  const browsers = new Browsers(inst, 1);
   await browsers.browser('print');
   browsers.connected('print', new PassThrough());
   const close = browsers.close('print');
@@ -88,7 +96,9 @@ test('a screenshot answering after deletion never recreates browser files', asyn
   closing = Promise.resolve();
   const gate = Promise.withResolvers<void>();
   screenshot = gate.promise;
-  const inst = createInstance('s', 'screenshot', 'ann@demo.test', []), browsers = new Browsers(inst, 1);
+  const inst = createInstance('s', 'screenshot', 'ann@demo.test');
+  inst.append('server', 'run', { run: 1, runner: 'ann@demo.test', authority: authority(inst) });
+  const browsers = new Browsers(inst, 1);
   await browsers.browser('print');
   browsers.connected('print', new PassThrough());
   const shooting = browsers.shoot();

@@ -5,6 +5,8 @@ import { createServer } from 'node:http';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ownSeries } from './owner-fixture.ts';
+import { authority } from '../src/logins.ts';
 import { createInstance, openStore } from '../src/store.ts';
 import { initSystem, saveTree, writeJson } from '../src/system.ts';
 import { call, upstreams } from '../src/connections.ts';
@@ -17,6 +19,7 @@ openStore(root);
 saveTree({ workspaces: { w: { name: 'Work', owners: [alice], members: [] } }, series: { s: { name: 'Series', workspace: 'w' } } });
 writeJson('users.json', { [alice]: { role: 'user' } });
 mkdirSync(join(root, 'series', 's'), { recursive: true });
+ownSeries('s', alice);
 after(() => rmSync(root, { recursive: true, force: true }));
 
 test('concurrent interrupts revoke and abort before RPC settles, drain charges, and wait for sandbox and browsers exactly once', async t => {
@@ -35,15 +38,15 @@ test('concurrent interrupts revoke and abort before RPC settles, drain charges, 
   await new Promise<void>(ok => provider.listen(0, '127.0.0.1', ok));
   upstreams['openrouter.ai'] = `http://127.0.0.1:${(provider.address() as { port: number }).port}`;
   process.env.OPENROUTER_API_KEY = 'test-key';
-  const inst = createInstance('s', 'Interrupt', alice, []);
-  let stops = 0, closes = 0;
+  const inst = createInstance('s', 'Interrupt', alice);
+  let stops = 0, closes = 0, cdpOpen = true;
   const a = {
-    inst, n: 1, runner: alice, token: 'interrupt', view: view(inst), workspace: 'w', cost: 0, estimated: false, seen: 1, delivered: 1,
+    inst, n: 1, runner: alice, authority: authority(inst), token: 'interrupt', view: view(inst), workspace: 'w', cost: 0, estimated: false, seen: 1, delivered: 1,
     done: false, process: '', links: new Map(),
     run: { interrupt: () => rpc.promise, stop: () => { stops++; return stopped.promise; } } as Run,
-    browsers: { end: () => { closes++; return closed.promise; } },
+    browsers: { cut: () => { cdpOpen = false; }, end: () => { closes++; return closed.promise; } },
   } as Active;
-  inst.append('server', 'run', { run: 1 });
+  inst.append('server', 'run', { run: 1, runner: alice, initiator: alice, authority: authority(inst) });
   active.set('s', a);
   byToken.set(a.token, a);
   const req = Object.assign(new EventEmitter(), {
@@ -63,6 +66,7 @@ test('concurrent interrupts revoke and abort before RPC settles, drain charges, 
   const one = interruptRun(a).then(() => { finished++; }), two = interruptRun(a).then(() => { finished++; });
   try {
     assert.equal(byToken.has(a.token), false, 'revocation does not wait for Pi');
+    assert.equal(cdpOpen, false, 'CDP revocation does not wait for Pi, charges or browser teardown');
     assert.equal(res.closed, true, 'provider stream abort does not wait for Pi');
     await lookup.promise;
     rpc.resolve();
@@ -103,13 +107,13 @@ for (const mode of ['interrupt', 'shutdown']) test(`${mode} refuses a proxy requ
   upstreams['openrouter.ai'] = `http://127.0.0.1:${(provider.address() as { port: number }).port}`;
   process.env.OPENROUTER_API_KEY = 'test-key';
   const body = Promise.withResolvers<void>(), reading = Promise.withResolvers<void>();
-  const inst = createInstance('s', `Reading-${mode}`, alice, []);
+  const inst = createInstance('s', `Reading-${mode}`, alice);
   const a = {
-    inst, n: 1, runner: alice, token: 'reading', view: view(inst), workspace: 'w', cost: 0, estimated: false,
+    inst, n: 1, runner: alice, authority: authority(inst), token: 'reading', view: view(inst), workspace: 'w', cost: 0, estimated: false,
     seen: 1, delivered: 1, done: false, process: '', links: new Map(),
     run: { interrupt: async () => {}, stop: async () => {} } as Run,
   } as Active;
-  inst.append('server', 'run', { run: 1 });
+  inst.append('server', 'run', { run: 1, runner: alice, initiator: alice, authority: authority(inst) });
   active.set('s', a);
   byToken.set(a.token, a);
   const req = Object.assign(new EventEmitter(), {

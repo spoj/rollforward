@@ -2,7 +2,7 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -64,6 +64,8 @@ async function confirm(email: string) {
 }
 
 before(async () => {
+  mkdirSync(join(root, '.rf'));
+  writeFileSync(join(root, '.rf', 'authority-format.json'), JSON.stringify({ version: 1, minReader: 1, state: 'complete' }));
   entra = await idp();
   await Promise.all([browser, tunnel].map(server => new Promise<void>(ok => server.listen(0, '127.0.0.1', ok))));
   const address = (server: ReturnType<typeof createServer>) => `http://127.0.0.1:${(server.address() as { port: number }).port}`;
