@@ -35,18 +35,22 @@ for (const mode of ['new-instance', 'request-series', 'request-instance']) for (
         initSystem(root); openStore(root);
         writeJson('users.json', { [owner]: { role: 'admin' } });
         saveTree({ workspaces: { w: { name: 'Work', owners: [owner], members: [] } }, series: { s: { name: 'Series', workspace: 'w' } } });
-        ownSeries('s', owner);
+        ownSeries('s', owner, [], true);
+        const waker = await import('./src/waker.ts');
+        const entered = Promise.withResolvers(), release = Promise.withResolvers();
+        mock.module('./src/waker.ts', { namedExports: { ...waker, retireSeries: async sid => {
+          await waker.retireSeries(sid);
+          entered.resolve(); await release.promise;
+        } } });
         process.argv = [process.execPath, 'src/server.ts', root, String(port)];
         const ready = Promise.withResolvers();
         mock.method(console, 'log', line => { if (String(line).startsWith('rollforward on')) ready.resolve(); });
         await import('./src/server.ts'); await ready.promise;
         const cookie = (await entra.signIn(base, owner)).headers.getSetCookie().find(c => c.startsWith('rf_session=')).split(';')[0];
         const { pending } = await import('./src/waker.ts');
-        const blocker = createInstance('s', 'Z-blocker', owner);
+        createInstance('s', 'Z-existing', owner);
         const target = mode === 'request-instance' ? createInstance('s', 'A-existing', owner) : undefined;
-        const entered = Promise.withResolvers(), release = Promise.withResolvers();
-        mock.method(blocker, 'close', async () => { entered.resolve(); await release.promise; });
-        const blocked = fetch(base + '/api/instances/' + blocker.id + '/close', { method: 'POST', headers: { cookie }, body: '{"quiet":true}' });
+        const blocked = fetch(base + '/api/series/s/credentials', { method: 'PUT', headers: { cookie }, body: '{"logins":[],"autonomous":false}' });
         await entered.promise;
         writeJson('wakes.json', { pending: {}, fired: {}, requests: mode === 'new-instance' ? {} : {
           request1: { series: 's', label: 'Accepted', ...(target && { target: target.id }), from: 'collaborator@demo.test', at: new Date().toISOString(), text: 'Information only' }

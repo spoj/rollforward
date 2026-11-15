@@ -747,12 +747,12 @@ const people = (w: { owners?: unknown; members?: unknown }) => {
 
 // Workspaces, series and instances, by id. Renaming a workspace or a series edits .rf/tree.json, so it may happen mid-run; a run sees
 // the new names from its next start.
-// Authority changes and ordered instance controls share one series queue.
-const seriesQueue = new Map<string, Promise<void>>();
+// Instance controls order per instance; authority changes and initiation order per series.
+const actionQueue = new Map<string, Promise<void>>();
 function inOrder<T>(id: string, fn: () => Promise<T>): Promise<T> {
-  const next = (seriesQueue.get(id) ?? Promise.resolve()).then(fn, fn);
-  const tail = next.then(() => {}, () => {}).then(() => { if (seriesQueue.get(id) === tail) seriesQueue.delete(id); });
-  seriesQueue.set(id, tail);
+  const next = (actionQueue.get(id) ?? Promise.resolve()).then(fn, fn);
+  const tail = next.then(() => {}, () => {}).then(() => { if (actionQueue.get(id) === tail) actionQueue.delete(id); });
+  actionQueue.set(id, tail);
   return next;
 }
 
@@ -1290,7 +1290,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     inst.append('agent', 'commit', { run: run.n, message, commit: hash });
     return send(res, 200, `committed ${hash}`);
   } else if (['signoff', 'reject', 'withdraw', 'interrupt', 'close', 'abandon'].includes(action)) {
-    const out = await inOrder(inst.seriesId, async () => {
+    const out = await inOrder(inst.id, async () => {
       const recheck = () => {
         recheckRequest(req);
         if (run && running(run.token) !== run) throw new HttpError(409, 'its run has ended');

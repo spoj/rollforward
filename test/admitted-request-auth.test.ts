@@ -225,7 +225,7 @@ for (const action of ['reject', 'owner', 'credentials']) test(`a ${action} reque
     import { createServer } from 'node:http';
     import { join } from 'node:path';
     import { idp } from './test/idp.ts';
-    import { readFixtureTree, writeFixtureTree } from './test/owner-fixture.ts';
+    import { ownSeries, readFixtureTree, writeFixtureTree } from './test/owner-fixture.ts';
     const root = ${JSON.stringify(join(tmp, 'queued-data'))} + '-${action}';
     const action = '${action}';
     cpSync('./test/fixture', root, { recursive: true });
@@ -241,9 +241,20 @@ for (const action of ['reject', 'owner', 'credentials']) test(`a ${action} reque
     const { mock } = await import('node:test');
     const git = await import('./src/git.ts'), entered = Promise.withResolvers();
     let armed = false;
-    mock.module('./src/git.ts', { namedExports: { ...git, committed: dir => { if (armed) entered.resolve(); return git.committed(dir); } } });
+    mock.module('./src/git.ts', { namedExports: { ...git, committed: dir => { if (armed && action === 'reject') entered.resolve(); return git.committed(dir); } } });
+    const waker = await import('./src/waker.ts'), release = Promise.withResolvers();
+    mock.module('./src/waker.ts', { namedExports: { ...waker, retireSeries: async sid => {
+      await waker.retireSeries(sid);
+      if (armed && action !== 'reject') { entered.resolve(); await release.promise; }
+    } } });
+    const auth = await import('./src/auth.ts'), admitted = Promise.withResolvers();
+    let queuedPath;
+    mock.module('./src/auth.ts', { namedExports: { ...auth, recheckRequest: req => {
+      auth.recheckRequest(req);
+      if (req.url === queuedPath) admitted.resolve();
+    } } });
     await import('./src/server.ts');
-    const store = await import('./src/store.ts'), auth = await import('./src/auth.ts');
+    const store = await import('./src/store.ts');
     const { writeJson } = await import('./src/system.ts');
     writeJson('capabilities.json', { 'series-owner': ['${ADMIN}'] });
     const cookie = (await entra.signIn(base, '${ADMIN}')).headers.getSetCookie().find(c => c.startsWith('rf_session=')).split(';')[0];
@@ -254,18 +265,24 @@ for (const action of ['reject', 'owner', 'credentials']) test(`a ${action} reque
     const inst = store.instance(id), path = '/api/instances/' + id;
     inst.append('agent', 'comment', { text: 'Approve?', thread: 'c2', ask: 'proposal', run: 1 });
     inst.append('agent', 'comment', { text: 'Other proposal?', thread: 'c3', ask: 'proposal', run: 1 });
-    const hold = Promise.withResolvers(), prior = git.commit(inst.dir, { name: 'Admin', email: '${ADMIN}' }, 'prior', hold.promise);
+    ownSeries(sid, '${ADMIN}', [], true);
+    const hold = Promise.withResolvers(), prior = action === 'reject' ? git.commit(inst.dir, { name: 'Admin', email: '${ADMIN}' }, 'prior', hold.promise) : Promise.resolve();
     armed = true;
-    const first = call(path + '/signoff', { thread: 'c2', quiet: true });
+    const first = action === 'reject' ? call(path + '/signoff', { thread: 'c2', quiet: true })
+      : fetch(base + '/api/series/' + sid + '/credentials', { method: 'PUT', headers: { cookie }, body: '{"logins":[],"autonomous":false}' });
     await entered.promise;
     const token = auth.newToken('${ADMIN}', 'queued', 1), tokenId = auth.myTokens('${ADMIN}').at(-1).id;
     const before = JSON.stringify((await import('./src/series.ts')).seriesSettings(inst.series()));
-    const second = action === 'reject'
+    queuedPath = action === 'reject' ? path + '/reject' : '/api/series/' + sid + '/' + action;
+    let responded = false;
+    const second = (action === 'reject'
       ? call(path + '/reject', { thread: 'c3', text: 'must not be logged', quiet: true }, { authorization: 'Bearer ' + token })
-      : fetch(base + '/api/series/' + sid + '/' + action, { method: 'PUT', headers: { authorization: 'Bearer ' + token }, body: JSON.stringify(action === 'owner' ? { owner: '${ACTOR}' } : { logins: [], autonomous: false }) });
-    await new Promise(ok => setTimeout(ok, 80));
+      : fetch(base + '/api/series/' + sid + '/' + action, { method: 'PUT', headers: { authorization: 'Bearer ' + token }, body: JSON.stringify(action === 'owner' ? { owner: '${ACTOR}' } : { logins: [], autonomous: false }) })).then(r => { responded = true; return r; });
+    await admitted.promise;
+    await new Promise(ok => setImmediate(ok));
+    assert.equal(responded, false, 'the original credential passed its body check and now waits in the control queue');
     auth.revokeToken('${ADMIN}', tokenId);
-    hold.resolve();
+    hold.resolve(); release.resolve();
     await prior;
     assert.equal((await first).status, 200);
     assert.equal((await second).status, 401);

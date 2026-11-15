@@ -152,7 +152,12 @@ for (const mode of ['body', 'queue', 'screen']) test(`an admitted agent request 
       writeJson('users.json', { [alice]: { role: 'admin' } });
       mkdirSync(root + '/series/s', { recursive: true });
       ownSeries('s', alice);
-      let agent;
+      let agent, target;
+      const git = await import('./src/git.ts'), rpc = Promise.withResolvers(), entered = Promise.withResolvers();
+      mock.module('./src/git.ts', { namedExports: { ...git, committed: dir => {
+        if (mode === 'queue' && dir === target) entered.resolve();
+        return git.committed(dir);
+      } } });
       mock.module('./src/sandbox.ts', { namedExports: { ...sandbox, serveSandboxes: o => { agent = o.agent; } } });
       process.argv = [process.execPath, 'src/server.ts', root, String(port)];
       const ready = Promise.withResolvers();
@@ -160,9 +165,15 @@ for (const mode of ['body', 'queue', 'screen']) test(`an admitted agent request 
       await import('./src/server.ts');
       await ready.promise;
       const cookie = (await entra.signIn(base, alice)).headers.getSetCookie().find(c => c.startsWith('rf_session=')).split(';')[0];
-      const inst = createInstance('s', 'Queued', alice), rpc = Promise.withResolvers(), entered = Promise.withResolvers();
-      const blocker = mode === 'queue' ? createInstance('s', 'Z-blocker', alice) : undefined;
-      if (blocker) mock.method(blocker, 'close', async () => { entered.resolve(); await rpc.promise; });
+      const inst = createInstance('s', 'Queued', alice);
+      let signing;
+      if (mode === 'queue') {
+        const proposal = inst.append('agent', 'comment', { text: 'Approve the result?', ask: 'proposal', run: 1 });
+        git.commit(inst.dir, git.AGENT, 'prior', rpc.promise);
+        target = inst.dir;
+        signing = fetch(base + '/api/instances/' + inst.id + '/signoff', { method: 'POST', headers: { cookie }, body: JSON.stringify({ thread: 'c' + proposal.seq, quiet: true }) });
+        await entered.promise;
+      }
       const a = {
         inst, n: 1, runner: alice, authority: authority(inst), token: 'queued-run', view: view(inst), workspace: 'w', cost: 0, estimated: false,
         seen: 1, delivered: 1, done: false, process: '', texts: new Map(),
@@ -179,16 +190,19 @@ for (const mode of ['body', 'queue', 'screen']) test(`an admitted agent request 
         writeHead(status) { this.headersSent = true; this.statusCode = status; return this; }, end() {},
       });
       const withdrawing = agent(req, res, new URL('/api/instances/' + inst.id + (mode === 'screen' ? '/screen' : '/withdraw'), base));
-      const interrupting = fetch(base + '/api/instances/' + (blocker ? blocker.id + '/close' : inst.id + '/interrupt'), { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ quiet: true }) });
+      const interrupting = signing ?? fetch(base + '/api/instances/' + inst.id + '/interrupt', { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ quiet: true }) });
       await Promise.race([entered.promise, interrupting.then(async r => { throw new Error('blocking action returned ' + r.status + ': ' + await r.text()); })]);
       req.end(JSON.stringify(mode === 'screen' ? { rev: inst.doc.rev, items: [{ id: 'late', name: 'Late', kind: 'output', file: null }] } : { thread: 'c' + ask.seq, text: 'No longer needed.' }));
       await new Promise(ok => setImmediate(ok));
+      let retiring;
       if (mode === 'queue') {
         assert.equal(byToken.has(a.token), true, 'the admitted request passed its body check before queuing');
         assert.equal(res.headersSent, false, 'the ordered action is still waiting');
-        await interruptRun(a);
+        retiring = interruptRun(a);
+        assert.equal(byToken.has(a.token), false, 'revocation precedes release of the instance queue');
       }
       rpc.resolve();
+      await retiring;
       assert.equal((await interrupting).status, 200);
       await withdrawing;
       assert.equal(res.statusCode, 409);
