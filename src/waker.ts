@@ -64,6 +64,7 @@ function seenBefore(inst: Instance): number {
 export type Standing = { word: 'runner' | 'answer' | 'note'; starts: boolean };
 export function standing(inst: Instance, e: Entry, upto = inst.log.length): Standing | undefined {
   if (e.op !== 'wake' && !(['upload', 'comment', 'signoff', 'reject'].includes(e.op) && (isPerson(e) || e.note))) return undefined;
+  if (inst.doc.status !== 'open') return e.note ? { word: 'note', starts: false } : undefined;
   const r = ownerOf(inst), line = inst.log.findLast(e => e.seq <= upto && e.op === 'authority')?.seq ?? 0;
   const epoch = e.authorityEpoch ?? (e.seq > inst.log.length ? r.epoch : undefined);
   const owner = (e.authorityOwner ?? (e.seq > inst.log.length ? r.by : runnerAt(inst.log, e.seq))) as string | undefined;

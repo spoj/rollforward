@@ -4,8 +4,14 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { createServer as netServer } from 'node:net';
+import { promisify } from 'node:util';
 import { Script, runInNewContext } from 'node:vm';
+import { chromium } from 'playwright';
+import { idp } from './idp.ts';
+import { writeFixtureTree } from './owner-fixture.ts';
 
 const page = readFileSync(new URL('../web/index.html', import.meta.url), 'utf8');
 const code = page.split('<script>')[1].split('</script>')[0];
@@ -167,6 +173,120 @@ test('CLI live JSON exposes owner, and collaborator --wait does not wait for una
   r = await cli('comment', 'Finance/Monthly/Jan', 'Collaborator content', '--wait');
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /no run starts/);
+});
+
+test('terminal API, CLI and Conversation/Audit history stays settled after transfer and consent narrowing', async () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-terminal-clients-')), root = join(tmp, 'data');
+  const cases = ['closed-zero', 'closed-post', 'abandoned-zero', 'abandoned-post'];
+  const at = '2026-11-01T00:00:00.000Z', bob = 'bob@example.test';
+  mkdirSync(join(root, '.rf'), { recursive: true });
+  writeFixtureTree(root, { workspaces: { w: { name: 'Finance', owners: [owner], members: [colleague, bob] } }, series: { s: { name: 'History', workspace: 'w' } } });
+  mkdirSync(join(root, 'series', 's'), { recursive: true });
+  writeFileSync(join(root, 'series', 's', 'series.json'), JSON.stringify({ version: 1, owner, epoch: 1, since: at, consent: { by: owner, at, workspace: 'w', logins: [], autonomous: true } }));
+  for (const id of cases) {
+    const dir = join(root, 'instances', id);
+    mkdirSync(join(dir, 'working'), { recursive: true });
+    mkdirSync(join(dir, 'upload'));
+    writeFileSync(join(dir, 'instance.json'), JSON.stringify({ series: 's', label: id }));
+    writeFileSync(join(dir, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [] }));
+    const log: object[] = [{ by: colleague, op: 'create' }];
+    if (id.endsWith('post')) log.push(
+      { by: owner, op: 'comment', thread: 'c2', text: 'Read by the original run.', authorityOwner: owner, authorityEpoch: 1 },
+      { by: 'server', op: 'run', run: 1, runner: owner, initiator: owner, upto: 2 },
+      { by: 'server', op: 'done', run: 1, seen: 2, cost: 0.25 });
+    log.push({ by: colleague, op: 'comment', thread: `c${log.length + 1}`, text: 'Persisted legacy note; recipient unknown.', note: true });
+    for (let n = 0; n < 4; n++) log.push({ by: 'agent', op: 'comment', thread: `c${log.length + 1}`, text: `Proposal ${n}`, ask: 'proposal' });
+    writeFileSync(join(dir, 'log.jsonl'), log.map((e, n) => JSON.stringify({ seq: n + 1, at, ...e }) + '\n').join(''));
+  }
+  const probe = netServer();
+  await new Promise<void>(ok => probe.listen(0, '127.0.0.1', ok));
+  const port = (probe.address() as { port: number }).port;
+  await new Promise<void>(ok => probe.close(() => ok()));
+  const base = `http://127.0.0.1:${port}`, entra = await idp();
+  const proc = spawn(process.execPath, ['src/server.ts', root, String(port)], {
+    env: { PATH: process.env.PATH, HOME: tmp, LANG: 'C.UTF-8', ...entra.env(base), RF_ADMINS: owner, RF_MAX_RUNS: '0', RF_MIN_FREE_GB: '0', RF_SCRATCH: join(tmp, 'scratch') },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let errors = '';
+  proc.stderr.on('data', d => errors += d);
+  const cookies: Record<string, string> = {};
+  const api = async (method: string, path: string, body?: unknown, who = owner) => {
+    const res = await fetch(base + path, { method, headers: { cookie: cookies[who] }, ...(body !== undefined && { body: JSON.stringify(body) }) });
+    assert.equal(res.status, 200, await res.clone().text());
+    return res;
+  };
+  const browser = await chromium.launch();
+  try {
+    await new Promise<void>((ok, fail) => {
+      proc.stdout.on('data', d => String(d).includes('rollforward on') && ok());
+      proc.once('exit', status => fail(new Error(`server exited ${status}: ${errors}`)));
+    });
+    for (const who of [owner, colleague, bob]) {
+      const res = await entra.signIn(base, who);
+      cookies[who] = res.headers.getSetCookie().find(c => c.startsWith('rf_session='))!.split(';')[0];
+    }
+    await api('PUT', '/capabilities', { cap: 'series-owner', people: [owner, bob] });
+    const token = (await (await api('POST', '/tokens', { name: 'history', days: 1 })).json()).token;
+    mkdirSync(join(tmp, '.config'));
+    writeFileSync(join(tmp, '.config', 'rollforward.json'), JSON.stringify({ url: base, token }));
+    for (const id of cases) {
+      const detail = await (await api('GET', `/api/instances/${id}`)).json();
+      const asks = detail.log.filter(e => e.ask);
+      for (const [n, who] of [owner, colleague].entries()) {
+        await api('POST', `/api/instances/${id}/comment`, { text: `Post-run information from ${who}`, quiet: true }, who);
+        const upload = await fetch(`${base}/api/instances/${id}/upload?quiet&name=${n}.txt`, { method: 'POST', headers: { cookie: cookies[who] }, body: 'fixture' });
+        assert.equal(upload.status, 200, await upload.text());
+        for (const [k, action] of ['signoff', 'reject'].entries()) await api('POST', `/api/instances/${id}/${action}`, { thread: `c${asks[n * 2 + k].seq}`, quiet: true }, who);
+      }
+      await api('POST', `/api/instances/${id}/${id.startsWith('closed') ? 'close' : 'abandon'}`, { quiet: true });
+    }
+    const context = await browser.newContext();
+    const [name, value] = cookies[owner].split('=');
+    await context.addCookies([{ name, value, url: base }]);
+    const page = await context.newPage();
+    const snapshot = async () => {
+      const result = {};
+      for (const id of cases) {
+        const detail = await (await api('GET', `/api/instances/${id}`)).json();
+        assert.equal(detail.starts, false);
+        assert.equal(detail.queued, false);
+        assert.equal(detail.run, null);
+        const disk = readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8');
+        const cli = await promisify(execFile)(process.execPath, ['src/rf-people.ts', 'log', `Finance/History/${id}`, '--json'], { env: { PATH: process.env.PATH, HOME: tmp, LANG: 'C.UTF-8' } });
+        await page.goto(`${base}/#/${id}`);
+        await page.waitForFunction(id => cur.i?.id === id && data?.doc.status !== 'open', id);
+        await page.locator('#lh').getByRole('button', { name: 'Conversation', exact: true }).click();
+        await page.waitForSelector('#conv .post');
+        const conversation = await page.locator('#conv').innerText();
+        await page.click('#lh [data-act=audit]');
+        await page.waitForSelector('#audit .e');
+        result[id] = { disk, log: detail.log, standing: detail.standing, cli: cli.stdout, conversation, audit: await page.locator('#audit').innerText() };
+      }
+      return result;
+    };
+    const before = await snapshot(), snapshots = [];
+    await api('PUT', '/api/series/s/credentials', { logins: [], autonomous: false });
+    snapshots.push(await snapshot());
+    await api('PUT', '/api/series/s/owner', { owner: bob });
+    snapshots.push(await snapshot());
+    await api('PUT', '/api/series/s/credentials', { logins: [], autonomous: true }, bob);
+    await api('PUT', '/api/series/s/credentials', { logins: [], autonomous: false }, bob);
+    snapshots.push(await snapshot());
+    for (const after of snapshots) assert.deepEqual(after, before);
+    for (const record of Object.values(before) as any[]) {
+      assert.deepEqual(record.log, record.disk.trim().split('\n').map(JSON.parse));
+      assert.deepEqual(record.cli.trim().split('\n').map(JSON.parse), record.log);
+      assert.deepEqual(record.standing, Object.fromEntries(record.log.filter(e => e.note).map(e => [e.seq, 'note'])));
+      assert.match(record.conversation, /a note/);
+      assert.match(record.audit, /left a note/);
+      assert.doesNotMatch(record.conversation + record.audit, /a note for/);
+    }
+  } finally {
+    await browser.close();
+    if (proc.exitCode === null) { proc.kill('SIGTERM'); await once(proc, 'exit'); }
+    entra.close();
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test('CLI old instance commands are not reinterpreted as whole-series authority', async () => {

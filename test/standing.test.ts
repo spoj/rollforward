@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInstance, instances, openStore, type Entry, type Instance } from '../src/store.ts';
-import { initSystem, saveTree, writeJson } from '../src/system.ts';
+import { initSystem, saveTree, tree, writeJson } from '../src/system.ts';
 import { ownSeries } from './owner-fixture.ts';
 import { idp } from './idp.ts';
 import { committed } from '../src/git.ts';
@@ -25,7 +25,7 @@ let n = 0;
 function seriesOf(autonomous: boolean, owner = alice): string {
   const id = `s${++n}`;
   series[id] = { name: `Series ${n}`, workspace: 'w' };
-  saveTree({ workspaces: { w: { name: 'Acme', owners: [alice], members: [bob, carol] } }, series });
+  saveTree({ workspaces: { ...tree().workspaces, w: { name: 'Acme', owners: [alice], members: [bob, carol] } }, series });
   ownSeries(id, owner, [], autonomous);
   return id;
 }
@@ -143,6 +143,34 @@ for (const autonomous of [false, true]) describe(`standing with autonomous conse
     await new Promise(ok => setTimeout(ok, 200));
     assert.equal(runs(i), was);
   });
+});
+
+for (const status of ['closed', 'abandoned'] as const) for (const hadRun of [false, true]) test(`${status} ${hadRun ? 'post-run' : 'zero-run'} acts are settled history across authority changes`, () => {
+  const i = make(true);
+  if (hadRun) {
+    const read = i.append(alice, 'comment', { text: 'Read before closing.' });
+    i.append('server', 'run', { run: 1, runner: alice, initiator: alice, authority: authority(i) });
+    i.append('server', 'done', { run: 1, seen: read.seq, cost: 0.25 });
+  }
+  const acts = [alice, carol].flatMap(by => ['comment', 'upload', 'signoff', 'reject'].map(op => i.append(by, op, { text: 'After the last run.' })));
+  acts.push(i.append('server', 'wake', { from: alice, initiator: alice, authority: authority(i) }));
+  const note = i.append(carol, 'comment', { text: 'An explicit old note.', note: true });
+  i.doc.status = status;
+  const bytes = JSON.stringify(i.log), settled = acts.map(() => undefined);
+  assert.deepEqual(acts.map(e => standing(i, e)), settled);
+  assert.deepEqual(standing(i, note), { word: 'note', starts: false });
+  for (const owner of [alice, bob, alice]) {
+    ownSeries(i.seriesId, owner, [], false);
+    assert.deepEqual(acts.map(e => standing(i, e)), settled);
+    assert.deepEqual(standing(i, note), { word: 'note', starts: false });
+    assert.equal(JSON.stringify(i.log), bytes);
+  }
+  series[i.seriesId].workspace = 'destination';
+  saveTree({ ...tree(), workspaces: { ...tree().workspaces, destination: { name: 'Destination', owners: [alice], members: [bob, carol] } }, series });
+  ownSeries(i.seriesId, bob);
+  assert.deepEqual(acts.map(e => standing(i, e)), settled);
+  assert.deepEqual(standing(i, note), { word: 'note', starts: false });
+  assert.equal(JSON.stringify(i.log), bytes);
 });
 
 test('A→B→A never revives an old owner schedule', () => {
