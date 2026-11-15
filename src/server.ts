@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { agentsFile, closedBefore, createInstance, keep, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, folderName, seriesDir, type Entry, type Instance } from './store.ts';
-import { AGENT, commit, refused } from './git.ts';
+import { AGENT, commit, committed, refused } from './git.ts';
 import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
 import { checkTheme, stylesheet, themeLogo } from './theme.ts';
@@ -1255,6 +1255,19 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
         const cur = active.get(inst.seriesId);
         return { ws, who, mine: cur?.inst === inst ? cur : undefined };
       };
+      if (['signoff', 'close', 'abandon'].includes(action)) {
+        recheck();
+        if (action !== 'signoff') inst.closing = true;
+        try {
+          let prior;
+          do {
+            prior = committed(inst.dir);
+            await prior;
+          } while (committed(inst.dir) !== prior);
+        } finally {
+          if (action !== 'signoff') inst.closing = false;
+        }
+      }
       const { ws, who, mine } = recheck();
       if (action === 'signoff' || action === 'reject') {
         // Anyone who sees the instance approves a proposal of the agent's, which `thread` names as cN, or rejects it, with a note, as an

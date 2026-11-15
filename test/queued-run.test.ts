@@ -26,7 +26,7 @@ for (const action of ['interrupt', 'assign']) test(`agent bodies finishing durin
       Object.assign(process.env, entra.env(base), { RF_ADMINS: alice, RF_MAX_RUNS: '0' });
       for (const name of ['RF_BROWSER_URL', 'RF_TUNNEL_URL', 'OPENROUTER_API_KEY', 'EXA_API_KEY']) delete process.env[name];
       const { active, byToken, view } = await import('./src/waker.ts'), sandbox = await import('./src/sandbox.ts');
-      const { saveLogin, logins, runnerOf } = await import('./src/logins.ts');
+      const { saveLogin, logins, runnerOf } = await import('./src/logins.ts'), git = await import('./src/git.ts');
       initSystem(root);
       saveTree({ workspaces: { w: { name: 'Work', owners: [alice], members: [bob] } }, series: { s: { name: 'Series', workspace: 'w' } } });
       writeJson('users.json', { [alice]: { role: 'admin' }, [bob]: { role: 'user' } });
@@ -82,17 +82,23 @@ for (const action of ['interrupt', 'assign']) test(`agent bodies finishing durin
         await admitted.promise;
         finishes.push(() => { req.end(body.slice(1)); return response; });
       }
+      const gitHold = Promise.withResolvers();
+      let committed = false;
+      const prior = git.commit(inst.dir, git.AGENT, 'prior', gitHold.promise).then(() => { committed = true; });
       const stopping = fetch(base + '/api/instances/' + inst.id + '/' + action, {
         method: 'POST', headers: { cookie }, body: JSON.stringify(action === 'assign' ? { to: bob, stops: 1 } : {}),
       });
       await entered.promise;
       assert.equal(a.stopped, true);
       assert.equal(byToken.has(a.token), false);
+      assert.equal(committed, false, 'run revocation must not wait for Git');
       const statuses = await Promise.all(finishes.map(f => f()));
       assert.equal(stopped, false, 'requests finish during controlled teardown, not after sandbox exit');
       assert.deepEqual(statuses, [409, 409, 409]);
       assert.equal(logins(alice)[0].expired, undefined);
       assert.equal(inst.log.some(e => e.op === 'expired' || e.op === 'delivered' || e.op === 'commit'), false);
+      gitHold.resolve();
+      await prior;
       release.resolve();
       assert.equal((await stopping).status, 200);
       assert.equal(stopped, true);
