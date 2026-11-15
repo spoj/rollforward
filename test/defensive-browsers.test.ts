@@ -14,8 +14,15 @@ let closeLog: object[] = [];
 let closeState: unknown = { cookies: [], origins: [] };
 let nextSessionId = 'bs1';
 const openedBodies: any[] = [];
+let putHostsGate: PromiseWithResolvers<void> | undefined;
+let putHostsEntered: PromiseWithResolvers<void> | undefined;
 
 const browserSvc = createServer(async (req, res) => {
+  if (req.method === 'PUT' && req.url?.endsWith('/hosts')) {
+    putHostsEntered?.resolve();
+    await putHostsGate?.promise;
+    return res.writeHead(200).end('{}');
+  }
   if (req.method === 'POST' && req.url === '/sessions') {
     const body = JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString());
     openedBodies.push(body);
@@ -56,7 +63,7 @@ upsertUser(USER, { role: 'admin' });
 const { personDir, saveLogin, secret } = await import('../src/logins.ts');
 const { setConnection, setLetIn } = await import('../src/connections.ts');
 const { ask, decide } = await import('../src/grants.ts');
-const { Browsers, endSignIn, revokeInternalHosts, startSignIn, websitesOf } = await import('../src/browsers.ts');
+const { Browsers, changeWebsite, endSignIn, revokeInternalHosts, startSignIn, websitesOf } = await import('../src/browsers.ts');
 
 after(() => {
   browserSvc.close();
@@ -124,6 +131,44 @@ test('revokeInternalHosts strips revoked internal hosts from websites.json folde
   const afterSite = websitesOf(bootstrapAdmin).erp;
   assert.deepEqual(afterSite.hosts, []);
   assert.equal(afterSite.checks?.['sso.internal.test']?.verdict, 'internal');
+
+  // Concurrent website change while PUT /sessions/:id/hosts is in flight must not be overwritten by stale websites.json snapshot
+  setLetIn(['intra.internal.test'], USER, true);
+  writeSites(USER, {
+    intranet: {
+      url: 'https://intranet.vendor.com/',
+      hosts: ['intra.internal.test'],
+      writeback: true,
+      added: '2026-11-15T00:00:00Z',
+      checks: { 'intra.internal.test': { verdict: 'pass', why: 'An admin allowed this internal host.' } },
+    },
+    sibling: {
+      url: 'https://sibling.vendor.com/',
+      hosts: [],
+      writeback: true,
+      added: '2026-11-15T00:00:00Z',
+    },
+  });
+  nextSessionId = 'bs-concurrent-revoke';
+  const openId = await startSignIn(USER, 'intranet', '');
+  putHostsGate = Promise.withResolvers();
+  putHostsEntered = Promise.withResolvers();
+  setLetIn(['intra.internal.test'], USER, false);
+  const revoking = revokeInternalHosts(['intra.internal.test']);
+  await putHostsEntered.promise;
+  changeWebsite(USER, 'sibling', { writeback: false, hosts: ['extra.vendor.com'] });
+  putHostsGate.resolve();
+  await revoking;
+  putHostsGate = undefined;
+  putHostsEntered = undefined;
+  closeLog = [];
+  await endSignIn(USER, openId, false);
+
+  const userSites = websitesOf(USER);
+  assert.deepEqual(userSites.intranet.hosts, []);
+  assert.equal(userSites.intranet.checks?.['intra.internal.test']?.verdict, 'internal');
+  assert.equal(userSites.sibling.writeback, false);
+  assert.deepEqual(userSites.sibling.hosts, ['extra.vendor.com']);
 });
 
 test('run browser writeback excludes cookies scoped to bare private PSL suffixes like .github.io', async () => {

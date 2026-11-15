@@ -247,6 +247,7 @@ export async function revokeInternalHosts(hosts: string[]) {
   if (!hosts.length) return;
   const dir = join(rfDir(), 'people'), byFolder = new Map([...Object.keys(users()), ...[...signIns.values()].map(s => s.email)].map(e => [personDir(e), e]));
   const folders = new Set([...byFolder.keys(), ...(existsSync(dir) ? readdirSync(dir).map(f => join(dir, f)) : [])]);
+  const live: [string, string, string][] = [];
   for (const folder of folders) {
     const file = join(folder, 'websites.json');
     if (!existsSync(file)) continue;
@@ -262,9 +263,13 @@ export async function revokeInternalHosts(hosts: string[]) {
       };
       changed = true;
       const id = email && [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
-      if (id) await browserJson('PUT', `/sessions/${id}/hosts`, { hosts: internalHosts(all[site]) }).catch(() => {});
+      if (id) live.push([id, email, site]);
     }
     if (changed) replaceFile(file, JSON.stringify(all, null, 1));
+  }
+  for (const [id, email, site] of live) {
+    const cur = websitesOf(email)[site];
+    if (cur && signIns.has(id)) await browserJson('PUT', `/sessions/${id}/hosts`, { hosts: internalHosts(cur) }).catch(() => {});
   }
 }
 
@@ -374,7 +379,7 @@ export async function endSignIn(email: string, id: string, save: boolean, keepal
     const host = URL.parse(e.url)?.hostname, from = URL.parse(e.from ?? '')?.hostname;
     if (!host) {
       if (e.blocked) blocked.count++;
-      else if (e.status >= 400) failed.push(`${e.method} ${e.url} ${e.status}${e.error ? ` ${e.error}` : ''}`);
+      else if (e.status >= 400) failed.push(`${e.method} <invalid-url> ${e.status}${e.error ? ` ${e.error}` : ''}`);
       continue;
     }
     (requests[host] ??= {})[e.status] = (requests[host][e.status] ?? 0) + 1;
