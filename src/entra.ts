@@ -75,6 +75,9 @@ export async function confirm(email: string) {
     await endSignIns(email);
     await dropUnpermittedVpns(email);
     throw Object.assign(e as Error, { left: true });
+  } finally {
+    const { active } = await import('./waker.ts');
+    await Promise.all([...active.values()].map(a => a.browsers?.closeUnlent()));
   }
 }
 
