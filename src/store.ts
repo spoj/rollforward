@@ -389,12 +389,14 @@ export class Instance {
   put(text: string, run: number) {
     let doc: Doc;
     try { doc = JSON.parse(text); } catch (e) { throw new HttpError(400, `not JSON: ${(e as Error).message}`); }
+    if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new HttpError(400, 'screen must be an object');
     if (doc.rev !== this.doc.rev) throw new HttpError(409, `stale rev ${doc.rev}: the screen is at rev ${this.doc.rev} now, as each put and upload moves it on: run rf show and merge`);
     if (doc.status !== undefined && doc.status !== this.doc.status) throw new HttpError(400, 'status is set by the server; leave it out or as it is');
     if (!Array.isArray(doc.items)) throw new HttpError(400, 'items must be an array');
     const errors: string[] = [], ids = new Set<string>();
     const old = new Map(this.doc.items.map(i => [i.id, i]));
     for (const i of doc.items) {
+      if (!i || typeof i !== 'object' || Array.isArray(i)) { errors.push('each item must be an object'); continue; }
       if (typeof i.id !== 'string' || !i.id || ids.has(i.id)) errors.push(`item id missing or repeated: ${JSON.stringify(i.id)}`);
       ids.add(i.id);
       if (typeof i.name !== 'string' || !i.name) errors.push(`${i.id}: name missing`);
@@ -411,7 +413,7 @@ export class Instance {
         }
       }
     }
-    const from = new Map(doc.items.map(i => [i.id, Array.isArray(i.from) ? i.from : []]));
+    const from = new Map(doc.items.filter(i => i && typeof i === 'object' && !Array.isArray(i)).map(i => [i.id, Array.isArray(i.from) ? i.from : []]));
     for (const [id, fs] of from) for (const f of fs) if (!from.has(f)) errors.push(`${id}: from names no item ${JSON.stringify(f)}`);
     for (let peeled = true; peeled;) {
       peeled = false;

@@ -8,7 +8,11 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { commit } from '../src/git.ts';
 import { openSkills, pushSkill, skills, versionsOf } from '../src/skills.ts';
+<<<<<<< HEAD
 import { createInstance, openStore, wipe } from '../src/store.ts';
+=======
+import { createInstance, HttpError, Instance, openStore, wipe } from '../src/store.ts';
+>>>>>>> 6ebe1d1 (Validate top-level screen object and item objects in Instance.put)
 
 const who = { name: 'Alice', email: 'alice@demo.test' };
 
@@ -152,3 +156,29 @@ test('B-R4-DATA-03b: commit() bounds open directory descriptors on deep working/
   }
 });
 
+test('B-R4-DATA-13: Instance.put() rejects non-object screen JSON and non-object items with HttpError 400', () => {
+  const root = mkdtempSync(join(tmpdir(), 'r4-13-'));
+  try {
+    openStore(root);
+    const inst = createInstance('s', 'I', who.email, []);
+    for (const bad of ['null', '[]', '123', '"text"']) {
+      assert.throws(() => inst.put(bad, 1), (e: unknown) => e instanceof HttpError && e.status === 400, bad);
+    }
+    for (const item of [null, 123, 'x', []]) {
+      assert.throws(
+        () => inst.put(JSON.stringify({ rev: inst.doc.rev, items: [item] }), 1),
+        (e: unknown) => e instanceof HttpError && e.status === 400,
+        JSON.stringify(item),
+      );
+    }
+    assert.throws(
+      () => inst.put(JSON.stringify({ rev: inst.doc.rev + 1, items: [] }), 1),
+      (e: unknown) => e instanceof HttpError && e.status === 409,
+    );
+    const before = inst.doc.rev;
+    inst.put(JSON.stringify({ rev: before, items: [] }), 1);
+    assert.equal(inst.doc.rev, before + 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
