@@ -367,7 +367,8 @@ async function pull(path: string, dir: string) {
   const into = !from || at.endsWith('/') ? to : under(to, from.slice(from.lastIndexOf('/') + 1)), rel = (f: { path: string }) => f.path.slice(from ? from.length + 1 : 0);
   if (!into) throw new Error(`${from} can't be a name here: pull ${from}/ into a folder of your choosing`);
   let fetched = 0, same = 0, deleted = 0, failed = 0, big = 0;
-  const fetches: (() => Promise<void>)[] = [], cased = new Map<string, string>();
+  const fold = (r: string) => ['win32', 'darwin'].includes(process.platform) ? r.toLowerCase() : r;
+  const fetches: (() => Promise<void>)[] = [], cased = new Map<string, string>(), keep = new Set<string>();
   for (const f of list.filter(f => !excluded(rel(f)))) {
     const local = rel(f) ? under(into, rel(f)) : into;
     let st: Stats | undefined;
@@ -377,14 +378,17 @@ async function pull(path: string, dir: string) {
       console.error(`skipped ${f.path}: it can't be a file's name here`);
       continue;
     }
-    // Windows' and macOS's disks take two names that differ only in case for one file: the second is skipped.
+    // Windows' and macOS's disks take two names that differ only in case for one file or folder: the second is skipped.
     if (['win32', 'darwin'].includes(process.platform)) {
-      if (cased.has(f.path.toLowerCase())) {
-        console.error(`skipped ${f.path}: this disk takes it for ${cased.get(f.path.toLowerCase())}, which differs only in case`);
+      const parts = f.path.split('/'), prefixes = parts.map((_, k) => parts.slice(0, k + 1).join('/'));
+      const hit = prefixes.map(p => cased.get(p.toLowerCase())).find((v, k) => v && (v !== prefixes[k] || k === prefixes.length - 1));
+      if (hit) {
+        console.error(`skipped ${f.path}: this disk takes it for ${hit}, which differs only in case`);
         continue;
       }
-      cased.set(f.path.toLowerCase(), f.path);
+      for (const p of prefixes) cased.set(p.toLowerCase(), p);
     }
+    keep.add(fold(rel(f)));
     if (st?.isFile() && st.size === f.size && Math.floor(st.mtimeMs / 1000) === Math.floor(Date.parse(f.mtime) / 1000)) {
       same++;
       continue;
@@ -412,8 +416,6 @@ async function pull(path: string, dir: string) {
   }
   if (flags.delete && existsSync(into) && lstatSync(into).isDirectory()) {
     // Windows' and macOS's disks ignore case, as the fetches above did: a file renamed only in case is kept, as fetched.
-    const fold = (r: string) => ['win32', 'darwin'].includes(process.platform) ? r.toLowerCase() : r;
-    const keep = new Set(list.map(f => fold(rel(f))));
     const mine = (d: string): string[] => readdirSync(d, { withFileTypes: true }).flatMap(e => {
       const full = join(d, e.name), r = relative(into, full).split(sep).join('/');
       return excluded(r) ? [] : e.isDirectory() ? mine(full) : [full];

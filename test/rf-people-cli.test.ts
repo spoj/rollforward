@@ -42,9 +42,9 @@ function seedInst(id: string, series: string, label: string, runner: string, ext
   writeFileSync(join(dir, 'log.jsonl'), log);
 }
 
-async function runRf(home: string, args: string[], extraEnv: Record<string, string> = {}) {
+async function runRf(home: string, args: string[], extraEnv: Record<string, string> = {}, nodeFlags: string[] = []) {
   try {
-    const { stdout, stderr } = await execFileP(process.execPath, ['--preserve-symlinks', rfScript, ...args], {
+    const { stdout, stderr } = await execFileP(process.execPath, ['--preserve-symlinks', ...nodeFlags, rfScript, ...args], {
       env: { ...process.env, HOME: home, NODE_OPTIONS: '--preserve-symlinks', ...extraEnv },
       timeout: 8000,
     });
@@ -229,4 +229,48 @@ test('R4-PEOPLE-03: rf costs [PATH] --daily scopes days, runs and totals to PATH
   assert.equal(srvOnly.days[0].runs.length, 0);
   assert.equal(srvOnly.days[0].server.cost, 0.09);
 });
+
+test('R4-PEOPLE-05: rf pull on Windows/macOS skips all files under case-colliding directory prefixes instead of merging them', async () => {
+  const sr = await fetch(`${base}/api/series`, {
+    method: 'POST', headers: { cookie: carol.cookie }, body: JSON.stringify({ workspace: '1b3031035ff6', name: 'PullCases' }),
+  });
+  const { id: sid } = await sr.json() as { id: string };
+  const mk = async (label: string, file: string) => {
+    const r = await fetch(`${base}/api/series/${sid}`, {
+      method: 'POST', headers: { cookie: carol.cookie }, body: JSON.stringify({ label, quiet: true }),
+    });
+    const { id } = await r.json() as { id: string };
+    const up = await fetch(`${base}/api/instances/${id}/upload?pane=in&quiet=1&name=${file}`, {
+      method: 'POST', headers: { cookie: carol.cookie }, body: file,
+    });
+    assert.equal(up.status, 200);
+  };
+  await mk('2026-aug', 'lower.csv');
+  await mk('2026-Aug', 'upper.csv');
+
+  for (const platform of ['win32', 'darwin']) {
+    const dest = join(tmp, `pull-${platform}`);
+    const flag = ['--import', `data:text/javascript,Object.defineProperty(process, 'platform', { value: '${platform}' })`];
+    const pulled = await runRf(carol.home, ['pull', 'larkfield/PullCases/', dest], {}, flag);
+    assert.equal(pulled.code, 0);
+    assert.match(pulled.stderr, /skipped larkfield\/PullCases\/2026-Aug\/upload\/upper\.csv: this disk takes it for larkfield\/PullCases\/2026-aug, which differs only in case/);
+    assert.equal(existsSync(join(dest, '2026-aug', 'upload', 'lower.csv')), true);
+    assert.equal(existsSync(join(dest, '2026-Aug', 'upload', 'upper.csv')), false);
+    assert.equal(existsSync(join(dest, '2026-aug', 'upload', 'upper.csv')), false);
+
+    writeFileSync(join(dest, '2026-aug', 'upload', 'upper.csv'), 'stale');
+    const cleaned = await runRf(carol.home, ['pull', 'larkfield/PullCases/', dest, '--delete'], {}, flag);
+    assert.equal(cleaned.code, 0);
+    assert.equal(existsSync(join(dest, '2026-aug', 'upload', 'upper.csv')), false);
+    assert.equal(existsSync(join(dest, '2026-aug', 'upload', 'lower.csv')), true);
+  }
+
+  const linuxDest = join(tmp, 'pull-linux-control');
+  const linuxFlag = ['--import', "data:text/javascript,Object.defineProperty(process, 'platform', { value: 'linux' })"];
+  const linuxPulled = await runRf(carol.home, ['pull', 'larkfield/PullCases/', linuxDest], {}, linuxFlag);
+  assert.equal(linuxPulled.code, 0);
+  assert.equal(existsSync(join(linuxDest, '2026-aug', 'upload', 'lower.csv')), true);
+  assert.equal(existsSync(join(linuxDest, '2026-Aug', 'upload', 'upper.csv')), true);
+});
+
 
