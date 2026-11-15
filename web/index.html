@@ -213,17 +213,22 @@ async function fetchInstance(path) {
 }
 
 function land(next, path, d, st) {
-  const was = data && path === shown ? lastDone()?.seq ?? 0 : undefined, wasArchived = archived(), wasWorkspace = cur?.w.archived, wasSeries = cur?.s?.archived;
+  const was = data && path === shown ? lastDone()?.seq ?? 0 : undefined, wasOpen = data?.doc.status === 'open' && !archived(), open = d?.doc.status === 'open' && !archived(next?.w, next?.s), wasWorkspace = cur?.w.archived, wasSeries = cur?.s?.archived;
   // A new selection opens its rows in the sidebar; from then on only their chevrons fold and open them.
   if (next?.w && next.w.id !== cur?.w.id) expandRow(next.w.id, true);
   if (next?.s && next.s.id !== cur?.s?.id) expandRow(next.s.id, true);
-  if (d && (path !== shown || wasArchived !== archived(next.w, next.s))) {
+  if (d?.doc.status === 'deleted') {
+    drafts.delete(path);
+    delete sessionStorage[`drafts:${me.email}:${path}`];
+    draft = { el: $('#conv').cloneNode(false), on: null, ref: null, replying: new Map(), kept: {} };
+    $('#conv').replaceWith(draft.el);
+  } else if (d && (path !== shown || wasOpen !== open)) {
     if (!drafts.has(path)) {
       const raw = JSON.parse(sessionStorage[`drafts:${me.email}:${path}`] ?? '{}'), kept = raw.boxes ?? raw;
       drafts.set(path, { el: $('#conv').cloneNode(false), on: raw.on ?? null, ref: raw.ref ?? null, replying: new Map(Object.keys(kept).filter(k => k.includes(':')).map(k => [+k.split(':')[0], k.split(':')[1]])), kept });
     }
     draft = drafts.get(path);
-    $('#conv').replaceWith(archived(next.w, next.s) ? draft.el.cloneNode(false) : draft.el);
+    $('#conv').replaceWith(open ? draft.el : draft.el.cloneNode(false));
   }
   [cur, data, shown] = [next, d, path];
   if ((wasWorkspace !== cur?.w.archived || wasSeries !== cur?.s?.archived) && ['workspace', 'series'].includes(pv?.settings?.kind)) {
