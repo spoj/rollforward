@@ -495,6 +495,46 @@ test('A-R4-PEOPLE-07: rf new task rejects deterministic invalid or colliding lab
   assert.equal(explicitUntitled.code, 0);
   assert.match(explicitUntitled.stdout, /made task-labels\/Untitled\/Untitled/);
 
+  // Concurrent Untitled creation between initial GET /api and POST /api/series must still fail 409, not silently succeed as Untitled 2
+  let getCount = 0;
+  const raceHome = join(tmp, 'home-race');
+  mkdirSync(join(raceHome, '.config'), { recursive: true });
+  const raceSrv = createHttpServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    if (req.method === 'GET' && req.url === '/api') {
+      getCount++;
+      res.end(JSON.stringify([{
+        id: 'w1', name: 'W', owners: ['carol@demo.test'], members: [], readers: [], reads: [],
+        series: getCount === 1 ? [] : [
+          { id: 's1', name: 'Untitled', single: true, instances: [{ id: 'i1', label: 'Untitled' }] },
+          { id: 's2', name: 'Untitled 2', single: true, instances: [{ id: 'i2', label: 'Untitled 2' }] },
+        ],
+      }]));
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/api/series') {
+      res.end(JSON.stringify({ id: 's2', instance: 'i2' }));
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/api/instances/i2/rename?as=Untitled') {
+      res.statusCode = 409;
+      res.end(JSON.stringify({ error: 'Untitled exists' }));
+      return;
+    }
+    res.statusCode = 500;
+    res.end(JSON.stringify({ error: `unexpected ${req.method} ${req.url}` }));
+  });
+  await new Promise<void>(ok => raceSrv.listen(0, '127.0.0.1', ok));
+  try {
+    const racePort = (raceSrv.address() as { port: number }).port;
+    writeFileSync(join(raceHome, '.config', 'rollforward.json'), JSON.stringify({ url: `http://127.0.0.1:${racePort}`, token: 't' }));
+    const raced = await runRf(raceHome, ['new', 'task', 'W', 'Untitled']);
+    assert.equal(raced.code, 1);
+    assert.match(raced.stderr, /Untitled exists/);
+  } finally {
+    raceSrv.close();
+  }
+
   const badComment = await runRf(carol.home, ['new', 'task', 'task-labels', '--comment', '']);
   assert.equal(badComment.code, 1);
   const lsAfterCommentErr = await runRf(carol.home, ['ls']);

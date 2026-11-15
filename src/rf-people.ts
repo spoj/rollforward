@@ -603,10 +603,8 @@ else if (cmd === 'comment' && args.length === 2) {
     if (Buffer.byteLength(clean) > 200) throw new Error(`a name is 200 bytes at most, about 66 Chinese characters, not ${Buffer.byteLength(clean)}`);
     if (workspace.series.some((s: any) => s.name === clean)) throw new Error(`${clean} exists`);
   }
-  let made = 'Untitled';
-  for (let k = 2; workspace.series.some((s: any) => s.name === made); k++) made = `Untitled ${k}`;
   const { instance } = await (await post('/api/series', { workspace: workspace.id, single: true, logins: ticks() })).json();
-  if (clean && clean !== made) await post(`/api/instances/${instance}/rename?as=${encodeURIComponent(args[2])}`, {});
+  if (clean && (await pathOf(instance)).split('/').at(-1) !== clean) await post(`/api/instances/${instance}/rename?as=${encodeURIComponent(args[2])}`, {});
   if (typeof flags.comment === 'string') await post(`/api/instances/${instance}/comment`, { text: flags.comment, quiet: !flags.wake });
   console.log(`made ${await pathOf(instance)}${consent(ticks())}`);
 } else if (cmd === 'new' && args[0] === 'instance' && args.length === 3) {
