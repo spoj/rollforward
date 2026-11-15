@@ -819,7 +819,7 @@ test("a runner's name without letters shows its first characters in the sidebar"
   } finally { await tab.close(); }
 });
 
-test("the conversation reads as a chat: oldest first, a run below the comment that started it and a thread where its last post is, and the box to comment at the panel's foot; it opens at the latest and keeps there as posts come, unless the reader has scrolled up", async () => {
+test("the conversation reads as a chat: oldest first, a run below the comment that started it and each thread anchored at its original post, and the box to comment at the panel's foot; it opens at the latest and keeps there as posts come, unless the reader has scrolled up", async () => {
   const url = (path: string) => new URL(path, page.url()).href, signin = await entra.signIn(new URL(page.url()).origin, 'bob@demo.test');
   const bobs = signin.headers.getSetCookie().find(c => c.startsWith('rf_session='))!.split(';')[0];
   const note = async (text: string, thread?: string) => {
@@ -842,12 +842,53 @@ test("the conversation reads as a chat: oldest first, a run below the comment th
   const first = await page.locator('#log .thread', { hasText: 'First, the ledger.' }).getAttribute('data-thread');
   await note('Then the bank.');
   assert.deepEqual(await where(), ['latest', 0], 'kept at the latest as posts come');
+  const rooted = await order();
   await note('The ledger is in.', first!);
-  assert.deepEqual((await order()).slice(-2), [first, 'compose'], 'a reply takes its thread to the foot');
+  assert.deepEqual(await order(), rooted, 'a reply stays under its original root without moving the thread');
   await page.evaluate(() => new Promise(ok => { const l = document.querySelector('#log')!; l.addEventListener('scroll', ok, { once: true }); l.scrollTop = 0; }));
   await note('Friday at the latest.');
   assert.deepEqual(await where(), ['top', 0], 'scrolled up, the reader stays where they are, the box still at the foot');
   await page.setViewportSize({ width: 1280, height: 720 });
+});
+
+test('thread roots stay in original log order through legacy resolves, parentless replies and decisions', async () => {
+  const id = 'a5c0ff5e1f01', path = `/api/instances/${id}`, snapshot = await (await page.request.get(new URL(path, page.url()).href)).json();
+  const at = '2026-11-15T10:00:00Z';
+  snapshot.waiting = [];
+  snapshot.standing = {};
+  snapshot.run = null;
+  snapshot.queued = false;
+  snapshot.log = [
+    { seq: 1, at, by: 'admin@demo.test', op: 'create' },
+    { seq: 2, at, by: 'admin@demo.test', op: 'comment', thread: 'c2', text: 'hi test if you can access e1' },
+    { seq: 3, at, by: 'server', op: 'run', run: 1 },
+    ...Array.from({ length: 6 }, (_, i) => ({ seq: i + 4, at, by: 'agent', op: 'call', run: 1, name: 'test', method: 'GET', path: '/', status: 200, bytes: 0 })),
+    { seq: 10, at, by: 'agent', op: 'comment', thread: 'c10', text: 'Send the checked report?', ask: 'proposal' },
+    { seq: 11, at, by: 'server', op: 'done', run: 1, cost: 0.25 },
+  ];
+  const tab = await browser.newPage({ storageState: await page.context().storageState() });
+  try {
+    await tab.route(`**${path}`, route => route.fulfill({ json: snapshot }));
+    await tab.goto(new URL(`/#/${id}`, page.url()).href);
+    await tab.waitForSelector('#conv .post[data-seq="2"]');
+    const order = () => tab.locator('#conv > .thread, #conv > .runl').evaluateAll(es => es.map(e => (e as HTMLElement).dataset.thread ?? 'run1'));
+    assert.deepEqual(await order(), ['c2', 'c10', 'run1']);
+    for (const event of [
+      { seq: 12, at, by: 'agent', op: 'resolve', thread: 'c2' },
+      { seq: 13, at, by: 'agent', op: 'comment', thread: 'c2', text: 'The original access check is complete.' },
+      { seq: 14, at, by: 'admin@demo.test', op: 'reject', thread: 'c10', on: 10, text: 'Include the account first.' },
+    ]) {
+      snapshot.log.push(event);
+      await tab.evaluate(() => refresh());
+      assert.deepEqual(await order(), ['c2', 'c10', 'run1']);
+      assert.equal(await tab.locator('#conv > .thread').count(), 2);
+      assert.equal(await tab.locator('#conv .post[data-seq="2"] > .pb').innerText(), 'hi test if you can access e1');
+    }
+    assert.equal(await tab.locator('#conv .thread[data-thread=c2] .post[data-seq="13"] > .pb').innerText(), 'The original access check is complete.');
+    assert.equal(await tab.locator('#conv .post[data-seq="13"]').count(), 1);
+    assert.equal(await tab.locator('#conv .post[data-seq="14"] > .pb').innerText(), 'Rejected: Include the account first.');
+    assert.equal(await tab.locator('#conv .post[data-seq="12"]').count(), 0, 'legacy bookkeeping stays out of the conversation');
+  } finally { await tab.close(); }
 });
 
 test("a comment's twisty collapses it, with what hangs under it, to its first line, as this browser keeps it until someone adds to it", async () => {

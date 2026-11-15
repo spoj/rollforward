@@ -792,7 +792,7 @@ function runHtml(r, latest) {
   return body ? `<details class="runl" data-key="run${r.run}" ${ui.sect[`run${r.run}`] ?? latest ? 'open' : ''}><summary>${line}</summary>${body}</details>` : `<div class="runl">${line}</div>`;
 }
 
-// The conversation, as a chat reads: the threads and the runs among them, oldest first, a thread where its last word is and a run
+// The conversation, as a chat reads: the threads and the runs among them, oldest first, a thread where its root was said and a run
 // where it ended; and at the panel's foot, kept there as it scrolls, the box to comment on the instance.
 function conversationHtml() {
   const open = editable(), name = id => esc(data.doc.items.find(i => i.id === id)?.name ?? id), mine = data.runner.by === me.email;
@@ -807,7 +807,7 @@ function conversationHtml() {
       + up.map(a => `<a class="up" data-act="alone" data-seq="${a.seq}">${who(a.by)}: ${esc(firstLine(a.text))}</a>`).join('') + postHtml(alone, p, 0) + '</div>';
   }
   const ended = r => data.log.find(e => e.op === 'done' && e.run === r.run)?.seq ?? Infinity;
-  h += [...threads.map(t => [t.last.seq, threadHtml(t)]), ...runs.map(r => [ended(r), runHtml(r, r === runs.at(-1))])].sort((a, b) => a[0] - b[0]).map(([, x]) => x).join('');
+  h += [...threads.map(t => [t.posts[0].seq, threadHtml(t)]), ...runs.map(r => [ended(r), runHtml(r, r === runs.at(-1))])].sort((a, b) => a[0] - b[0]).map(([, x]) => x).join('');
   // Before its first run, its runner may tick its logins anew where they write its first prompt.
   const first = mine && !runs.length, lends = first && myLogins.some(l => l.offers.length);
   if (open) h += `<div class="compose"><h3>${draft.on ? `Comment on ${name(draft.on)}${draft.ref ? ` at ${esc(draft.ref)}` : ''}` : 'Comment on the instance'}</h3>`
