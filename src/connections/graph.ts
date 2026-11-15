@@ -189,6 +189,7 @@ async function parentOf(email: string, driveId: string, id: string, checkpoint: 
   const k = `${email}:${driveId}/${id}`, known = parents.get(k);
   if (known && known.at > Date.now() - 300_000) return known.parent;
   const parent = await graph(email, `/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(id)}?$select=parentReference`, checkpoint).then(j => j.parentReference?.id, e => {
+    checkpoint();
     if (e instanceof HttpError && (e.status === 403 || e.status === 404)) return undefined;
     throw e;
   });

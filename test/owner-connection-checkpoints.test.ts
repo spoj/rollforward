@@ -38,7 +38,7 @@ const upstream = createServer(async (req, res) => {
 await new Promise<void>(ok => upstream.listen(0, '127.0.0.1', ok));
 const base = `http://127.0.0.1:${(upstream.address() as { port: number }).port}`;
 Object.assign(process.env, { RF_OIDC_ISSUER: base, RF_OIDC_CLIENT_ID: 'synthetic', RF_OIDC_CLIENT_SECRET: 'synthetic', RF_PUBLIC_URL: 'https://rf.synthetic.test', RF_M365_SCOPES: 'Mail.Read Mail.Send Files.Read.All Files.ReadWrite.All Sites.Read.All' });
-const { authority, saveLogin, unoffer } = await import('../src/logins.ts');
+const { authority, logins, saveLogin, unoffer } = await import('../src/logins.ts');
 const { call, upstreams } = await import('../src/connections.ts');
 const { endpoints } = await import('../src/connections/graph.ts');
 endpoints.graph = upstreams['graph.microsoft.com'] = base;
@@ -236,4 +236,27 @@ test('authorized Graph policy, links and renewal retain the original owner authe
   assert.ok(sent.filter(s => s.path.startsWith('/v1.0')).every(s => s.auth === 'Bearer synthetic-alice'));
   assert.equal(run.cost, 0);
   assert.equal(run.inst.log.find(e => e.op === 'call')!.status, 200);
+});
+
+for (const selection of ['folder', 'site']) test(`a cancelled ${selection} lookup cannot cache absence for a fresh lease`, { timeout: 5000 }, async () => {
+  if (selection === 'site') {
+    ticks = ['m365:site:sp.synthetic.test,s,w'];
+    saveLogin(ALICE, { ...logins(ALICE).find(l => l.id === 'm365')!, offers: ticks.map(id => ({ id, name: id })) });
+    consent();
+  }
+  run.inst.append('server', 'run', { run: 2, runner: ALICE, initiator: ALICE, authority: authority(run.inst) });
+  run = { ...run, n: 2, links: new Map() };
+  hold = '/v1.0/drives/source/items/child?$select=id,parentReference';
+  const pending = request('/v1.0/drives/source/items/child');
+  await entered.promise;
+  revoke('transfer');
+  gate.resolve();
+  await pending.done;
+  assert.equal(pending.res.statusCode, 403);
+  consent(ALICE, 3);
+  run.inst.append('server', 'run', { run: 3, runner: ALICE, initiator: ALICE, authority: authority(run.inst) });
+  run = { ...run, n: 3, links: new Map() };
+  const fresh = request('/v1.0/drives/source/items/child');
+  await fresh.done;
+  assert.equal(fresh.res.statusCode, 200, Buffer.concat(fresh.chunks).toString());
 });
