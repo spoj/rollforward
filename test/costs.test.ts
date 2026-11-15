@@ -234,6 +234,10 @@ test('daily totals, live website-check attribution, cached /api/v1/key view, una
     method: 'POST', headers: { cookie: bobCookie, 'content-type': 'application/json' }, body: '{}',
   })).json();
   assert.equal((await fetch(`${base}/signins/${signinId}`, { method: 'POST', headers: { cookie: bobCookie, 'content-type': 'application/json' }, body: '{}' })).status, 200);
+  for (let i = 0; (await apiJson('/logins/sites', bobCookie))['vendor-erp'].checking; i++) {
+    assert.ok(i < 100, 'the background website check finishes');
+    await new Promise(ok => setTimeout(ok, 20));
+  }
 
   // 2. Verify /api/v1/key caching: multiple admin requests within TTL make only one upstream key call.
   const q0 = keyQueries;

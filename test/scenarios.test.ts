@@ -1154,7 +1154,7 @@ test('unticking, removing, signing out or revoking a website closes a going run\
   });
 });
 
-test("personal websites are checked on Save, grants reuse the profile without widening hosts, run hosts wait only on admins for high/internal verdicts, and people remove their own hosts and sites", async t => {
+test("personal websites are checked after Save, grants reuse the profile without widening hosts, run hosts wait only on admins for high/internal verdicts, and people remove their own hosts and sites", async t => {
   t.after(() => { refused = []; browserLog = []; browserState = { cookies: [], origins: [] }; });
   const carol = await login('carol@demo.test'), add = (body: object, cookie = bob) => call('POST', '/logins/sites', { name: 'bobs', url: 'https://bobs.example.com/', ...body }, cookie);
   const said = async (res: Response) => [res.status, await res.text()];
@@ -1178,7 +1178,7 @@ test("personal websites are checked on Save, grants reuse the profile without wi
     cookies: ['bobs.example.com', '.example.com', 'sso.idp.test', 'cdn.idp.test', 'unused.bobs.example.com'].map(domain => ({ domain, name: 'session', value: 'secret-cookie' })),
     origins: ['bobs.example.com', 'sso.idp.test', 'cdn.idp.test', 'unused.bobs.example.com'].map(host => ({ origin: `https://${host}`, localStorage: [{ name: 'access', value: 'secret-storage' }] })),
   };
-  const keptState = { cookies: browserState.cookies.slice(0, 3), origins: browserState.origins.slice(0, 2) }, since = Date.now();
+  const keptState = { cookies: browserState.cookies.slice(0, 2), origins: browserState.origins.slice(0, 1) }, since = Date.now();
   const { id: signIn, expires } = await (await call('POST', '/logins/web/bobs', {}, bob)).json();
   assert.ok(Date.parse(expires) >= since + 600_000 && Date.parse(expires) <= Date.now() + 600_000);
   assert.equal(expires, new Date(expires).toISOString());
@@ -1197,7 +1197,11 @@ test("personal websites are checked on Save, grants reuse the profile without wi
   const beforeSave = checks.length;
   verdicts.push({ profile: portalProfile, hosts: { 'sso.idp.test': { verdict: 'pass', why: 'Its sign-on provider.' }, 'cdn.idp.test': { verdict: 'refused', why: 'Optional telemetry.' } } });
   assert.equal((await call('POST', `/signins/${signIn}`, undefined, bob)).status, 200);
-  assert.equal(checks.length, beforeSave + 1, 'Save checks before there is any grant request');
+  await until('the background website assessment', () => readFileSync(join(root, '.rf', 'log.jsonl'), 'utf8').trim().split('\n').some(l => {
+    const e = JSON.parse(l);
+    return e.op === 'website-check' && e.site === 'bobs' && e.profile?.what === portalProfile.what;
+  }));
+  assert.equal(checks.length, beforeSave + 1, 'the background check finishes without a grant request');
   assert.deepEqual([(await listed(bob)).profile, (await listed(bob)).hosts], [portalProfile, ['assets.bobs.example.com', 'sso.idp.test']]);
   const asked = JSON.parse(checks.at(-1)!.messages[1].content), trace = (await (await call('GET', '/logins', undefined, bob)).json()).find((l: { id: string }) => l.id === 'web:bobs').trace;
   assert.deepEqual([checks.at(-1)!.provider, asked.website.address, asked.evidence, asked.unchecked], [{ data_collection: 'deny' }, 'bobs.example.com', trace, ['sso.idp.test', 'cdn.idp.test']]);
@@ -1253,7 +1257,7 @@ test("personal websites are checked on Save, grants reuse the profile without wi
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-12', logins: ['web:bobs'] }, bob)).json();
   await runs(id, 1);
   await until('the hosts checked', () => readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').includes('"action":"allowed"'));
-  assert.deepEqual(openings.at(-1)!.state, keptState, 'the run receives only requested allowed cookies and origins, including a parent-domain cookie');
+  assert.deepEqual(openings.at(-1)!.state, keptState, 'the run receives only cookies and origins allowed when saved, including a parent-domain cookie; late-approved SSO needs a new sign-in');
   const sent = JSON.parse(checks.at(-1)!.messages[1].content), hosts = refused.map(url => new URL(url).hostname);
   assert.deepEqual([sent.website.address, sent.website.profile, sent.unchecked], ['bobs.example.com', portalProfile, ['www.tracker.test', 'static.cdnhost.test', 'upload.elsewhere.test']]);
   assert.deepEqual(sent.evidence, { requests: Object.fromEntries(hosts.map(h => [h, { 403: 1 }])), kinds: Object.fromEntries(hosts.map(h => [h, { dest: [], from: [] }])), blocked: hosts, seconds: 0 });
