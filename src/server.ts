@@ -147,7 +147,11 @@ async function agent(req: IncomingMessage, res: ServerResponse, url: URL) {
   if (!a) throw new HttpError(401, 'no run for this token');
   if (url.pathname.startsWith('/api/')) return api({ email: 'agent', name: 'Agent', role: 'user', groups: [], run: a }, req, res, url);
   // Browsers and deliveries: rf expired, rf delivered (see agent-api.ts).
-  const r = await agentCall(a, url.pathname, req.method ?? 'GET', () => body(req));
+  const r = await agentCall(a, url.pathname, req.method ?? 'GET', async () => {
+    const bytes = await body(req);
+    if (running(a.token) !== a) throw new HttpError(409, 'its run has ended');
+    return bytes;
+  });
   if (r) return send(res, r.status, r.data);
   throw new HttpError(404, 'not found');
 }

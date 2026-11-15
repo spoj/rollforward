@@ -5,6 +5,111 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+for (const action of ['interrupt', 'assign']) test(`agent bodies finishing during ${action} teardown cannot expire a login or record a delivery`, () => {
+  const root = mkdtempSync(join(tmpdir(), 'rf-agent-body-'));
+  try {
+    execFileSync(process.execPath, ['--experimental-test-module-mocks', '--input-type=module', '-e', `
+      import assert from 'node:assert/strict';
+      import { mock } from 'node:test';
+      import { request } from 'node:http';
+      import { createServer } from 'node:net';
+      import { mkdirSync } from 'node:fs';
+      import { idp } from './test/idp.ts';
+      import { initSystem, saveTree, writeJson } from './src/system.ts';
+      import { createInstance } from './src/store.ts';
+      const root = ${JSON.stringify(root)}, action = ${JSON.stringify(action)}, alice = 'alice@demo.test', bob = 'bob@demo.test';
+      const probe = createServer();
+      await new Promise(ok => probe.listen(0, '127.0.0.1', ok));
+      const port = probe.address().port;
+      await new Promise(ok => probe.close(ok));
+      const base = 'http://127.0.0.1:' + port, entra = await idp();
+      Object.assign(process.env, entra.env(base), { RF_ADMINS: alice, RF_MAX_RUNS: '0' });
+      for (const name of ['RF_BROWSER_URL', 'RF_TUNNEL_URL', 'OPENROUTER_API_KEY', 'EXA_API_KEY']) delete process.env[name];
+      const { active, byToken, view } = await import('./src/waker.ts'), sandbox = await import('./src/sandbox.ts');
+      const { saveLogin, logins, runnerOf } = await import('./src/logins.ts');
+      initSystem(root);
+      saveTree({ workspaces: { w: { name: 'Work', owners: [alice], members: [bob] } }, series: { s: { name: 'Series', workspace: 'w' } } });
+      writeJson('users.json', { [alice]: { role: 'admin' }, [bob]: { role: 'user' } });
+      mkdirSync(root + '/series/s', { recursive: true });
+      saveLogin(alice, { id: 'web:portal', kind: 'website', name: 'portal', since: '2026-01-01T00:00:00Z', offers: [{ id: 'web:portal', name: 'portal' }] }, '{}');
+      const admissions = new Map();
+      mock.module('./src/sandbox.ts', { namedExports: { ...sandbox, serveSandboxes: o => sandbox.serveSandboxes({ ...o, agent: (req, res, url) => {
+        const result = o.agent(req, res, url);
+        admissions.get(url.pathname)?.resolve();
+        return result;
+      } }) } });
+      process.argv = [process.execPath, 'src/server.ts', root, String(port)];
+      const ready = Promise.withResolvers();
+      mock.method(console, 'log', line => { if (String(line).startsWith('rollforward on')) ready.resolve(); });
+      await import('./src/server.ts');
+      await ready.promise;
+      const cookie = (await entra.signIn(base, alice)).headers.getSetCookie().find(c => c.startsWith('rf_session=')).split(';')[0];
+      const inst = createInstance('s', 'Body', alice, ['web:portal']), entered = Promise.withResolvers(), release = Promise.withResolvers();
+      inst.doc.items.push({ id: 'out', name: 'Output', kind: 'output', file: null });
+      inst.save();
+      inst.append('server', 'run', { run: 1, runner: alice, consent: 1 });
+      let stopped = false;
+      const clients = [], a = {
+        inst, n: 1, runner: alice, token: 'agent-body', view: view(inst), workspace: 'w', cost: 0, estimated: false,
+        seen: 1, delivered: 1, done: false, process: '', texts: new Map(),
+        run: { interrupt: () => { entered.resolve(); return release.promise; }, stop: async () => {
+          stopped = true;
+          sandbox.unlistenRun(a.token);
+          for (const client of clients) client.destroy();
+        } },
+      };
+      mkdirSync(root + '/.rf/runs/' + a.token, { recursive: true });
+      active.set('s', a);
+      byToken.set(a.token, a);
+      const socketPath = root + '/run.sock';
+      sandbox.listenRun(socketPath, a.token);
+      const finishes = [];
+      for (const [path, args] of [
+        ['/agent/expired', ['portal']],
+        ['/agent/delivered', ['out', '--to', 'not-sent', '--receipt', 'fabricated']],
+        ['/api/instances/' + inst.id + '/commit', null],
+      ]) {
+        const admitted = Promise.withResolvers();
+        admissions.set(path, admitted);
+        const req = request({ socketPath, path, method: 'POST', headers: { authorization: 'Bearer ' + a.token, 'transfer-encoding': 'chunked' } });
+        clients.push(req);
+        const response = new Promise((ok, fail) => {
+          req.on('error', fail);
+          req.on('response', async res => { for await (const _ of res) {} ok(res.statusCode); });
+        });
+        const body = JSON.stringify(args ? { args } : { message: 'late body' });
+        req.write(body.slice(0, 1));
+        await admitted.promise;
+        finishes.push(() => { req.end(body.slice(1)); return response; });
+      }
+      const stopping = fetch(base + '/api/instances/' + inst.id + '/' + action, {
+        method: 'POST', headers: { cookie }, body: JSON.stringify(action === 'assign' ? { to: bob, stops: 1 } : {}),
+      });
+      await entered.promise;
+      assert.equal(a.stopped, true);
+      assert.equal(byToken.has(a.token), false);
+      const statuses = await Promise.all(finishes.map(f => f()));
+      assert.equal(stopped, false, 'requests finish during controlled teardown, not after sandbox exit');
+      assert.deepEqual(statuses, [409, 409, 409]);
+      assert.equal(logins(alice)[0].expired, undefined);
+      assert.equal(inst.log.some(e => e.op === 'expired' || e.op === 'delivered' || e.op === 'commit'), false);
+      release.resolve();
+      assert.equal((await stopping).status, 200);
+      assert.equal(stopped, true);
+      assert.equal(inst.log.some(e => e.op === 'done'), true);
+      if (action === 'assign') {
+        assert.equal(runnerOf(inst).by, bob);
+        assert.deepEqual(runnerOf(inst).logins, []);
+      }
+      process.exit(0);
+    `], { cwd: join(import.meta.dirname, '..'), timeout: 15_000, stdio: 'pipe' });
+  } catch (e) {
+    assert.fail((e as { stderr: Buffer }).stderr.toString());
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 for (const mode of ['body', 'queue', 'screen']) test(`an admitted agent request cannot act after run revocation while waiting on its ${mode}`, () => {
   const root = mkdtempSync(join(tmpdir(), 'rf-queued-run-'));
   try {
