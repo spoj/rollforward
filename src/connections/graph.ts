@@ -16,8 +16,10 @@ export const endpoints = { graph: 'https://graph.microsoft.com' };
 export const scope = () => graphScopes.map(s => `https://graph.microsoft.com/${s}`);
 
 // A GET's JSON, as a person; an error names what Microsoft said, such as no access to a mailbox.
-export async function graph(email: string, path: string): Promise<any> {
-  const r = await fetch(`${endpoints.graph}/v1.0${path}`, { headers: { authorization: `Bearer ${await token(email, 'm365', scope())}` }, signal: AbortSignal.timeout(120_000) });
+export async function graph(email: string, path: string, checkpoint?: () => void): Promise<any> {
+  const access = await token(email, 'm365', scope(), checkpoint);
+  checkpoint?.();
+  const r = await fetch(`${endpoints.graph}/v1.0${path}`, { headers: { authorization: `Bearer ${access}` }, signal: AbortSignal.timeout(120_000) });
   const j = (r.headers.get('content-type') ?? '').includes('json') ? await r.json() : {};
   if (r.status >= 300) throw new HttpError(r.status === 404 || r.status === 403 ? r.status : 502, `Microsoft Graph answered ${r.status} ${j.error?.code ?? ''}: ${j.error?.message ?? ''}`);
   return j;
@@ -51,7 +53,7 @@ const encodePart = (s: string) => encodeURIComponent(s).replace(/%(?:24|26|2B|2C
 
 // The offer that lets a request through, or why not; and, for files, their drive's own site, where the answer's Location is a
 // link, as a file's content redirects to its download address.
-async function check(runner: string, ticks: string[], { method, url, headers, json, body: raw }: Request): Promise<{ offer: string; redirect?: string; pathname: string }> {
+async function check(runner: string, ticks: string[], { method, url, headers, json, body: raw }: Request, checkpoint: () => void): Promise<{ offer: string; redirect?: string; pathname: string }> {
   const [, ver] = /^\/(v1\.0|beta)\//.exec(url.pathname) ?? [];
   if (!ver) throw new HttpError(403, `${url.pathname}: Microsoft Graph, under /v1.0/ or /beta/`);
   // Neither another method in a header, nor a Prefer that redeems a sharing link, which grants the runner access.
@@ -99,10 +101,10 @@ async function check(runner: string, ticks: string[], { method, url, headers, js
     if (actions.some((a, k) => a === 'children' && k < actions.length - 1) || segs.some(s => /(^|\.)children\(./i.test(s))) throw new HttpError(403, `${bare}: name an item by its own id, as /drives/ID/items/ITEM, not under another's children`);
     if (actions[idx] === 'items' && !segs[idx + 1]) throw new HttpError(403, `${bare}: name an item by its own id, as /drives/ID/items/ITEM`);
     if (top === 'shares' && !['', 'driveitem', 'root', 'items', 'listitem'].includes(part)) throw new HttpError(403, `${bare}: a share is read through its driveItem, root or items, not its ${rawPart}, which reaches past what is ticked`);
-    const item = await located(runner, addressed(`/${segs.map(encodePart).join('/')}`));
-    offer = await covering(runner, ticks, item.parentReference.driveId, item.id, item.parentReference.id);
+    const item = await located(runner, addressed(`/${segs.map(encodePart).join('/')}`), checkpoint);
+    offer = await covering(runner, ticks, item.parentReference.driveId, item.id, item.parentReference.id, checkpoint);
     if (!offer) throw new HttpError(403, `${bare} is in no folder, file or SharePoint site ticked for this instance`);
-    site = (await siteOf(runner, item.parentReference.driveId)).split(',')[0];
+    site = (await siteOf(runner, item.parentReference.driveId, checkpoint)).split(',')[0];
   } else if (top === 'sites') {
     needs(!write ? 'Sites.Read.All' : part === 'drives' ? 'Files.ReadWrite.All' : 'Sites.ReadWrite.All', `${write ? 'write' : 'read'} SharePoint sites`);
     if (segments.some(s => /(^|\.)getbypath\(/i.test(s))) throw new HttpError(403, `${bare}: getByPath reaches any site by its path; read the ticked one by its id`);
@@ -116,9 +118,9 @@ async function check(runner: string, ticks: string[], { method, url, headers, js
     const tos = keyed(json, 'parentreference');
     if (tos.length > 1 || tos.some(t => keyed(t, 'path').length || keyed(t, 'id').length !== 1 || keyed(t, 'driveid').length > 1)) throw new HttpError(403, `${bare}: name the folder by its parentReference's id, and driveId for another drive, each once`);
     if (tos.length) {
-      const [to] = keyed(tos[0], 'id'), drive = keyed(tos[0], 'driveid')[0] ?? (await graph(runner, `${method === 'PATCH' ? bare : bare.replace(/\/[^/]+$/, '')}?$select=parentReference`)).parentReference.driveId;
-      const folder = await graph(runner, `/drives/${encodeURIComponent(drive)}/items/${encodeURIComponent(to)}?$select=id,parentReference`);
-      if (!await covering(runner, ticks, folder.parentReference.driveId, folder.id, folder.parentReference.id)) throw new HttpError(403, `${bare} would put it in a folder no tick covers`);
+      const [to] = keyed(tos[0], 'id'), drive = keyed(tos[0], 'driveid')[0] ?? (await graph(runner, `${method === 'PATCH' ? bare : bare.replace(/\/[^/]+$/, '')}?$select=parentReference`, checkpoint)).parentReference.driveId;
+      const folder = await graph(runner, `/drives/${encodeURIComponent(drive)}/items/${encodeURIComponent(to)}?$select=id,parentReference`, checkpoint);
+      if (!await covering(runner, ticks, folder.parentReference.driveId, folder.id, folder.parentReference.id, checkpoint)) throw new HttpError(403, `${bare} would put it in a folder no tick covers`);
     }
   }
   return { offer, redirect: site && `https://${site}`, pathname: `/${ver}${bare}` };
@@ -128,14 +130,14 @@ async function check(runner: string, ticks: string[], { method, url, headers, js
 // the answer that makes one, at Outlook's host for mail and SharePoint's for files; and a file's download address, on the
 // driveItems an answer about files gives that a tick covers, at its drive's own site's host, as is the one its content redirects
 // to (check); never what a file's or a message's content holds.
-async function links(j: any, path: string, email: string, ticks: string[]): Promise<string[]> {
+async function links(j: any, path: string, email: string, ticks: string[], checkpoint: () => void): Promise<string[]> {
   const parts = path.replace(/^\/[^/]+/, '').split('/').slice(1).map(s => decodeURIComponent(s).replace(/\(.*$/, '').split('.').pop()!.toLowerCase());
   const [top, , part] = parts[0] === 'me' ? ['users', '', ...parts.slice(1)] : parts, action = parts.at(-1)!, url = (u: unknown): u is string => typeof u === 'string' && URL.canParse(u);
   if (action === 'createuploadsession') return [j?.uploadUrl].filter(u => url(u) && (parts.includes('attachments') ? /^https:\/\/outlook\.office(365)?\.com\//i : /^https:\/\/([\w-]+\.)*(sharepoint\.com|svc\.ms)\//i).test(u));
   if (!['drives', 'shares'].includes(top) && !['drive', 'drives'].includes(part) || ['content', '$value'].includes(action)) return [];
   const items = [j, ...(Array.isArray(j?.value) ? j.value : [])].filter(i => url(i?.['@microsoft.graph.downloadUrl']) && typeof i?.id === 'string' && typeof i?.parentReference?.driveId === 'string');
-  const at = await Promise.all(items.map(async i => new URL(i['@microsoft.graph.downloadUrl']).origin === `https://${(await siteOf(email, i.parentReference?.driveId)).split(',')[0]}`
-    && !!await covering(email, ticks, i.parentReference.driveId, i.id, i.parentReference.id)));
+  const at = await Promise.all(items.map(async i => new URL(i['@microsoft.graph.downloadUrl']).origin === `https://${(await siteOf(email, i.parentReference?.driveId, checkpoint)).split(',')[0]}`
+    && !!await covering(email, ticks, i.parentReference.driveId, i.id, i.parentReference.id, checkpoint)));
   return items.filter((_, k) => at[k]).map(i => i['@microsoft.graph.downloadUrl']);
 }
 
@@ -143,7 +145,7 @@ export default {
   settings: () => ({}),
   login: () => ({ id: 'm365', kind: 'm365', name: 'Microsoft 365', scope: scope() }),
   hosts: () => ['graph.microsoft.com'],
-  check: (_, runner, ticks, r) => check(runner, ticks, r),
+  check: (_, runner, ticks, r, checkpoint) => check(runner, ticks, r, checkpoint),
   links,
 } satisfies Type;
 
@@ -151,12 +153,12 @@ export default {
 const keyed = (o: unknown, k: string): any[] => o && typeof o === 'object' ? Object.entries(o).filter(([n]) => n.toLowerCase() === k).map(([, v]) => v) : [];
 
 // The item a path names or, for one a write is to make, the nearest folder above it.
-async function located(email: string, at: string): Promise<any> {
-  return graph(email, `${at}?$select=id,parentReference`).catch(e => {
+async function located(email: string, at: string, checkpoint: () => void): Promise<any> {
+  return graph(email, `${at}?$select=id,parentReference`, checkpoint).catch(e => {
     const m = /^(.*?):(\/.*):$/.exec(at);
     if ((e as HttpError).status !== 404 || !m) throw e;
     const up = m[2].replace(/\/[^/]*$/, '');
-    return located(email, up ? `${m[1]}:${up}:` : m[1]);
+    return located(email, up ? `${m[1]}:${up}:` : m[1], checkpoint);
   });
 }
 
@@ -170,32 +172,32 @@ function addressed(path: string): string {
 
 // The tick that covers a drive's item: a ticked folder above it, read up through its parents, or the ticked file itself; a ticked
 // site whose library holds it; or the runner's ticked OneDrive.
-async function covering(email: string, ticks: string[], driveId: string, id: string, parent: string | undefined): Promise<string | undefined> {
+async function covering(email: string, ticks: string[], driveId: string, id: string, parent: string | undefined, checkpoint: () => void): Promise<string | undefined> {
   for (const t of ticks.filter(t => t.startsWith(`m365:item:${driveId}/`))) {
     const top = t.split('/').pop();
     if (id === top) return t;
-    for (let at = parent; at; at = await parentOf(email, driveId, at)) if (at === top) return t;
+    for (let at = parent; at; at = await parentOf(email, driveId, at, checkpoint)) if (at === top) return t;
   }
-  if (ticks.includes(`m365:site:${await siteOf(email, driveId)}`)) return `m365:site:${await siteOf(email, driveId)}`;
-  if (ticks.includes('m365:onedrive') && driveId === await ownDrive(email)) return 'm365:onedrive';
+  if (ticks.includes(`m365:site:${await siteOf(email, driveId, checkpoint)}`)) return `m365:site:${await siteOf(email, driveId, checkpoint)}`;
+  if (ticks.includes('m365:onedrive') && driveId === await ownDrive(email, checkpoint)) return 'm365:onedrive';
 }
 
 // What Graph says doesn't change often: who an item's parent is, for 5 minutes; whose a drive is, and which site's, for good once
 // Graph answers. A parent the person can't read ends the climb, as does a drive whose site they can't see.
 const parents = new Map<string, { parent?: string; at: number }>(), sites = new Map<string, string>(), own = new Map<string, string>();
-async function parentOf(email: string, driveId: string, id: string): Promise<string | undefined> {
+async function parentOf(email: string, driveId: string, id: string, checkpoint: () => void): Promise<string | undefined> {
   const k = `${email}:${driveId}/${id}`, known = parents.get(k);
   if (known && known.at > Date.now() - 300_000) return known.parent;
-  const parent = await graph(email, `/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(id)}?$select=parentReference`).then(j => j.parentReference?.id, e => {
+  const parent = await graph(email, `/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(id)}?$select=parentReference`, checkpoint).then(j => j.parentReference?.id, e => {
     if (e instanceof HttpError && (e.status === 403 || e.status === 404)) return undefined;
     throw e;
   });
   parents.set(k, { parent, at: Date.now() });
   return parent;
 }
-async function siteOf(email: string, driveId: string): Promise<string> {
+async function siteOf(email: string, driveId: string, checkpoint: () => void): Promise<string> {
   if (!sites.has(driveId)) {
-    const d = await graph(email, `/drives/${encodeURIComponent(driveId)}?$select=sharePointIds`).catch(e => {
+    const d = await graph(email, `/drives/${encodeURIComponent(driveId)}?$select=sharePointIds`, checkpoint).catch(e => {
       if (e instanceof HttpError && (e.status === 403 || e.status === 404)) return undefined;
       throw e;
     }), s = d?.sharePointIds;
@@ -204,8 +206,8 @@ async function siteOf(email: string, driveId: string): Promise<string> {
   }
   return sites.get(driveId)!;
 }
-async function ownDrive(email: string): Promise<string> {
-  if (!own.has(email)) own.set(email, (await graph(email, '/me/drive?$select=id')).id);
+async function ownDrive(email: string, checkpoint: () => void): Promise<string> {
+  if (!own.has(email)) own.set(email, (await graph(email, '/me/drive?$select=id', checkpoint)).id);
   return own.get(email)!;
 }
 

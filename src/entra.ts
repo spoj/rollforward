@@ -16,7 +16,8 @@ const inFlight = new Map<string, Promise<string>>();
 const current = (email: string, id: string) => logins(email).find(l => l.id === id);
 
 // A token for `scope`, kept until it expires, or its login is signed in to again, as to grant more, or signed out of.
-export function token(email: string, id: string, scope: string[]): Promise<string> {
+export function token(email: string, id: string, scope: string[], checkpoint?: () => void): Promise<string> {
+  checkpoint?.();
   const key = `${id} ${email}`, t = tokens.get(key), login = current(email, id);
   if (t && t.exp > Date.now() && t.since === login?.since && !login.expired) return Promise.resolve(t.token);
   if (!login || login.expired) return Promise.reject(Object.assign(new HttpError(409, `${email} has no current ${login?.name ?? id} login: they sign in to it on the Logins page`), { login: id }));
@@ -25,7 +26,7 @@ export function token(email: string, id: string, scope: string[]): Promise<strin
   const run = (async () => {
     try {
       // Until its person consents to what the server asks for anew, a Microsoft 365 login renews with what Microsoft last granted it.
-      const sealed = secret(email, id), r = await renew(sealed, scope).catch(e => e.consent && login.scopes ? renew(sealed, login.scopes.map(s => `https://graph.microsoft.com/${s}`)) : Promise.reject(e));
+      const sealed = secret(email, id), r = await renew(sealed, scope, checkpoint).catch(e => e.consent && login.scopes ? renew(sealed, login.scopes.map(s => `https://graph.microsoft.com/${s}`), checkpoint) : Promise.reject(e));
       const now = current(email, id);
       if (now?.since === login.since) {
         saveLogin(email, { ...now, ...(id === 'm365' && r.scopes && { scopes: r.scopes }) }, r.refresh);

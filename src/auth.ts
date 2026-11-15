@@ -348,8 +348,10 @@ async function finishLogin(req: IncomingMessage, res: ServerResponse, claims: an
 // as for one expired, revoked, made through another app or wanting multi-factor sign-in again, for its person to sign in again. A refusal that names this server's own
 // app, as when its secret expired, is the server's to mend, and answers 502, as other failures do; one that wants the person's
 // consent to permissions the server asks for anew carries `consent`.
-export async function renew(refreshToken: string, scope: string[]): Promise<{ access: string; idToken: string; refresh: string; expires: number; scopes?: string[] }> {
+export async function renew(refreshToken: string, scope: string[], checkpoint?: () => void): Promise<{ access: string; idToken: string; refresh: string; expires: number; scopes?: string[] }> {
+  checkpoint?.();
   const d = await discovery();
+  checkpoint?.();
   const r = await fetch(d.token_endpoint, {
     method: 'POST', signal: AbortSignal.timeout(20_000),
     body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: oidc.clientId, scope: entraScope(scope), ...(oidc.clientSecret && { client_secret: oidc.clientSecret }) }),
