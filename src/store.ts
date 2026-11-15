@@ -276,7 +276,7 @@ export class Instance {
     // Nothing more is said of a deleted instance, such as by a run its deletion cut, as it ends.
     if (this.hole) return { seq: 0, at: new Date().toISOString(), by, op, ...fields };
     const s = ['upload', 'comment', 'signoff', 'reject'].includes(op) && by.includes('@') ? seriesSettings(this.series()) : undefined;
-    const e = { seq: this.log.length + 1, at: new Date().toISOString(), by, op, ...fields, ...(s && { authorityOwner: s.owner ?? null, ...(s.consent?.by === s.owner && s.consent?.workspace === tree().series[this.seriesId].workspace && { authorityEpoch: s.epoch }) }) };
+    const e = { seq: this.log.length + 1, at: new Date().toISOString(), by, op, ...fields, ...(s && { authorityOwner: s.owner ?? null, ...(s.consent && s.consent.by === s.owner && s.consent.workspace === tree().series[this.seriesId].workspace && { authorityEpoch: s.epoch }) }) };
     appendLine(join(this.dir, 'log.jsonl'), JSON.stringify(e));
     this.log.push(e);
     changes.emit('change', this.id);
