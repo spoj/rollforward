@@ -42,7 +42,19 @@ function seedInst(id: string, series: string, label: string, runner: string, ext
   writeFileSync(join(dir, 'log.jsonl'), log);
 }
 
-async function runRf(home: string, args: string[], extraEnv: Record<string, string> = {}, nodeFlags: string[] = []) {
+async function runRf(home: string, args: string[], extraEnv: Record<string, string> = {}, nodeFlags: string[] = [], stdin?: string) {
+  if (stdin !== undefined) {
+    return new Promise<{ code: number; stdout: string; stderr: string }>(done => {
+      const p = spawn(process.execPath, ['--preserve-symlinks', ...nodeFlags, rfScript, ...args], {
+        env: { ...process.env, HOME: home, NODE_OPTIONS: '--preserve-symlinks', ...extraEnv },
+      });
+      let stdout = '', stderr = '';
+      p.stdout.on('data', d => stdout += d);
+      p.stderr.on('data', d => stderr += d);
+      p.on('close', code => done({ code: code ?? 1, stdout, stderr }));
+      p.stdin.end(stdin);
+    });
+  }
   try {
     const { stdout, stderr } = await execFileP(process.execPath, ['--preserve-symlinks', ...nodeFlags, rfScript, ...args], {
       env: { ...process.env, HOME: home, NODE_OPTIONS: '--preserve-symlinks', ...extraEnv },
@@ -292,6 +304,52 @@ test('R4-PEOPLE-06: rf readers WORKSPACE remove OTHER resolves unseen linked rea
   assert.equal(reverseRemoved.code, 0);
   assert.equal(reverseRemoved.stdout.trim(), "larkfield's agents no longer read beta-ws");
 });
+
+test('R4-PEOPLE-08 + R4-DATA-14: workspace people normalizes owner/member overlap and CLI people --set demotes pre-existing overlapped owners', async () => {
+  const putWs = (id: string, body: object, cookie = admin.cookie) =>
+    fetch(`${base}/api/workspaces/${id}`, { method: 'PUT', headers: { cookie }, body: JSON.stringify(body) });
+  const getPeople = async (id: string) =>
+    (await (await fetch(`${base}/api/workspaces/${id}/people`, { headers: { cookie: admin.cookie } })).json()) as { who: string; as: string }[];
+
+  // 1. Pre-existing overlapped data on disk (wsseeddup001 has owners:[carol,bob], members:[bob])
+  assert.equal((await putWs('wsseeddup001', { agents: 'bob can manage before demotion' }, bob.cookie)).status, 200);
+  const demote = await runRf(admin.home, ['people', 'seeded-dup', '--set', '-'], {}, [], 'owner carol@demo.test\nmember bob@demo.test\n');
+  assert.equal(demote.code, 0);
+  assert.match(demote.stdout, /bob@demo\.test: owner -> member\nsaved/);
+  assert.equal((await putWs('wsseeddup001', { agents: 'bob refused after demotion' }, bob.cookie)).status, 403);
+  assert.deepEqual((await getPeople('wsseeddup001')).map(p => [p.who, p.as]), [
+    ['carol@demo.test', 'owner'],
+    ['bob@demo.test', 'member'],
+  ]);
+
+  // 2. Server PUT deduplicates owners and excludes owners from members (including partial PUTs)
+  const wRes = await fetch(`${base}/api/workspaces`, { method: 'POST', headers: { cookie: admin.cookie }, body: JSON.stringify({ name: 'norm-people' }) });
+  const { id: wid } = await wRes.json() as { id: string };
+  assert.equal((await putWs(wid, { owners: ['carol@demo.test'], members: ['bob@demo.test'] })).status, 200);
+  assert.equal((await putWs(wid, { owners: ['carol@demo.test', 'bob@demo.test', 'bob@demo.test'] })).status, 200);
+  assert.deepEqual((await getPeople(wid)).map(p => [p.who, p.as]), [
+    ['carol@demo.test', 'owner'],
+    ['bob@demo.test', 'owner'],
+  ]);
+  assert.equal((await putWs(wid, {
+    owners: ['carol@demo.test', 'bob@demo.test'],
+    members: ['bob@demo.test', 'dana@demo.test', 'dana@demo.test'],
+  })).status, 200);
+  assert.deepEqual((await getPeople(wid)).map(p => [p.who, p.as]), [
+    ['carol@demo.test', 'owner'],
+    ['bob@demo.test', 'owner'],
+    ['dana@demo.test', 'member'],
+  ]);
+
+  // 3. CLI --set with overlapping input uses effective owner precedence without claiming a false demotion, and subsequent demotion works
+  const overlapIn = await runRf(admin.home, ['people', 'norm-people', '--set', '-'], {}, [], 'owner carol@demo.test\nowner bob@demo.test\nmember bob@demo.test\n');
+  assert.equal(overlapIn.code, 0);
+  assert.doesNotMatch(overlapIn.stdout, /owner -> member/);
+  const demoteNorm = await runRf(admin.home, ['people', 'norm-people', '--set', '-'], {}, [], 'owner carol@demo.test\nmember bob@demo.test\n');
+  assert.equal(demoteNorm.code, 0);
+  assert.match(demoteNorm.stdout, /bob@demo\.test: owner -> member\nsaved/);
+});
+
 
 
 

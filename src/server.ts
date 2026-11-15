@@ -706,10 +706,13 @@ const json = async (req: IncomingMessage) => {
   bodies.set(req, parsed);
   return parsed;
 };
-const people = (w: { owners?: unknown; members?: unknown }) => [w.owners, w.members].map(list => {
-  if (!isPeople(list)) throw new HttpError(400, `owners and members are lists of emails and Entra group ids: ${JSON.stringify(list)}`);
-  return list.map(p => p.toLowerCase());
-});
+const people = (w: { owners?: unknown; members?: unknown }) => {
+  const [owners, members] = [w.owners, w.members].map(list => {
+    if (!isPeople(list)) throw new HttpError(400, `owners and members are lists of emails and Entra group ids: ${JSON.stringify(list)}`);
+    return [...new Set(list.map(p => p.toLowerCase()))];
+  });
+  return [owners, members.filter(p => !owners.includes(p))];
+};
 
 // Workspaces, series and instances, by id. Renaming a workspace or a series edits .rf/tree.json, so it may happen mid-run; a run sees
 // the new names from its next start.

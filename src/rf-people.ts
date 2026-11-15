@@ -894,25 +894,32 @@ else if (cmd === 'comment' && args.length === 2) {
 } else if (cmd === 'people' && args.length <= 1) {
   // People as lines to edit and set: ROLE EMAIL for everyone, owner|member EMAIL-OR-GROUP for a workspace, each with a comment.
   const ws = args[0] === undefined ? undefined : await workspaceNamed(args[0]);
+  const kinds = ws ? ['owner', 'member'] : ['admin', 'user'];
+  const canon = (rows: [string, string][]) => {
+    const m = new Map<string, string>();
+    for (const [who, kind] of rows) if (!m.has(who) || kind === kinds[0]) m.set(who, kind);
+    return m;
+  };
   const last = (iso: string | null) => iso ? `last in ${when(iso)}` : 'never in', listed = await get(ws ? `/api/workspaces/${ws.id}/people` : '/users');
-  const now = ws ? listed.map(p => ({ kind: p.as, who: p.who, note: [p.who.includes('@') ? last(p.last_login) : 'a group', p.runs.length && `runs ${p.runs.join(', ')}`] }))
+  const raw = ws ? listed.map(p => ({ kind: p.as, who: p.who, note: [p.who.includes('@') ? last(p.last_login) : 'a group', p.runs.length && `runs ${p.runs.join(', ')}`] }))
     : listed.map(u => ({ kind: u.role, who: u.email, note: [u.disabled && 'disabled', last(u.last_login), `in ${u.workspaces.join(', ') || 'none'}`, u.outside.length && `runs outside them: ${u.outside.join(', ')}`] }));
+  const had = canon(raw.map(p => [p.who, p.kind])), seen = new Set<string>();
+  const now = raw.filter(p => p.kind === had.get(p.who) && !seen.has(p.who) && !!seen.add(p.who));
   if (flags.json && typeof flags.set !== 'string') console.log(JSON.stringify(listed, null, 1));
   else if (typeof flags.set !== 'string') {
     const w = Math.max(0, ...now.map(p => p.who.length));
     for (const p of now) console.log(`${p.kind.padEnd(6)} ${p.who.padEnd(w)}  # ${p.note.filter(Boolean).join('; ')}`);
     if (!now.length) console.log('# no one is in it: only admins see it');
   } else {
-    const kinds = ws ? ['owner', 'member'] : ['admin', 'user'];
     const want = readFileSync(flags.set === '-' ? 0 : flags.set, 'utf8').split('\n').map(l => l.replace(/#.*/, '').trim()).filter(Boolean).map(l => l.split(/\s+/));
     const bad = want.find(([kind, who, more]) => !kinds.includes(kind) || !who || more);
     if (bad) throw new Error(`each line is ${kinds.join('|')} ${ws ? 'EMAIL-OR-GROUP' : 'EMAIL'}, not: ${bad.join(' ')}`);
-    const had = new Map(now.map(p => [p.who, p.kind])), wanted = new Map(want.map(([kind, who]) => [who.toLowerCase(), kind]));
+    const wanted = canon(want.map(([kind, who]) => [who.toLowerCase(), kind]));
     const set = [...wanted].filter(([who, kind]) => had.get(who) !== kind), gone = ws ? [...had].filter(([who]) => !wanted.has(who)) : [];
     const changes = [...set.map(([who, kind]) => had.has(who) ? `${who}: ${had.get(who)} -> ${kind}` : `+ ${kind} ${who}`), ...gone.map(([who, kind]) => `- ${kind} ${who}`)];
     console.log(changes.join('\n') || 'no changes');
     if (changes.length && !flags['dry-run']) {
-      const ofKind = (kind: string) => want.filter(([k]) => k === kind).map(([, who]) => who);
+      const ofKind = (kind: string) => [...wanted].filter(([, k]) => k === kind).map(([who]) => who);
       await (ws ? post(`/api/workspaces/${ws.id}`, { owners: ofKind('owner'), members: ofKind('member'), force: !!flags.force }, 'PUT')
         : post('/users', { roles: Object.fromEntries(set), force: !!flags.force }, 'PUT'));
       console.log('saved');
