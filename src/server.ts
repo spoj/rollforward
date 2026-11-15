@@ -7,12 +7,12 @@ import { promisify } from 'node:util';
 import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { agentsFile, closedBefore, createInstance, keep, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, openStore, readFile, folderName, seriesDir, type Entry, type Instance } from './store.ts';
-import { AGENT, commit, refused } from './git.ts';
+import { AGENT, commit, committed, refused } from './git.ts';
 import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
 import { checkTheme, stylesheet, themeLogo } from './theme.ts';
 import { checkAuthorityFormat } from './authority-format.ts';
-import { asPerson, authenticate, CAPS, can, capabilities, checkConfig, cli, connect, myTokens, newToken, redirectPath, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
+import { asPerson, authenticate, CAPS, can, capabilities, checkConfig, cli, connect, myTokens, newToken, recheckRequest, redirectPath, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
 import { act, canManage, canSee, changes, everyone, initSystem, isPeople, readJson, replaceFile, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
 import { checkTicks, logins, runnerAt, ownerOf, saveLogin, signOut, unoffer } from './logins.ts';
 import { agentCall } from './agent-api.ts';
@@ -121,6 +121,7 @@ async function body(req: IncomingMessage): Promise<Buffer> {
     if ((size += c.length) > 10 * 2 ** 20) throw new HttpError(413, 'a request body holds 10 MB at most');
     chunks.push(c);
   }
+  recheckRequest(req);
   return Buffer.concat(chunks);
 }
 
@@ -159,7 +160,11 @@ async function agent(req: IncomingMessage, res: ServerResponse, url: URL) {
   if (!a) throw new HttpError(401, 'no run for this token');
   if (url.pathname.startsWith('/api/')) return api({ email: 'agent', name: 'Agent', role: 'user', groups: [], run: a }, req, res, url);
   // Browsers and deliveries: rf expired, rf delivered (see agent-api.ts).
-  const r = await agentCall(a, url.pathname, req.method ?? 'GET', () => body(req));
+  const r = await agentCall(a, url.pathname, req.method ?? 'GET', async () => {
+    const bytes = await body(req);
+    if (running(a.token) !== a) throw new HttpError(409, 'its run has ended');
+    return bytes;
+  });
   if (r) return send(res, r.status, r.data);
   throw new HttpError(404, 'not found');
 }
@@ -980,6 +985,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       return p && users()[email].last_login && can(p, 'series-owner') && canSee(p, t.workspaces[s.workspace]);
     }));
     if (['owner', 'credentials'].includes(action) && req.method === 'PUT') return inOrder(id, async () => {
+      recheckRequest(req);
       const { ws, who } = mustUnarchived(by, id), settings = seriesSettings(seriesDir(id)), at = new Date().toISOString();
       if (action === 'credentials' && !can(who, 'series-owner')) throw new HttpError(403, 'series credential authority requires the series-owner capability');
       if (action === 'owner') {
@@ -1027,6 +1033,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       const tmp = join(tmpDir, randomUUID());
       try {
         await pipeline(req, capped, createWriteStream(tmp));
+        recheckRequest(req);
         mustUnarchived(by, id);
         return send(res, 200, { file: keep(join(book, 'notes'), 'files', url.searchParams.get('name') ?? 'file', tmp) });
       } finally {
@@ -1210,6 +1217,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const tmp = join(tmpDir, randomUUID());
     try {
       await pipeline(req, capped, createWriteStream(tmp));
+      recheckRequest(req);
       mustUnarchived(by, inst.seriesId);
       const file = inst.keep(url.searchParams.get('name') ?? 'file', tmp, 'upload/attachments');
       // No entry of the instance's names it until a comment does: the system's log records it, and it's committed at once in its
@@ -1225,6 +1233,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const pane = url.searchParams.get('pane') === 'out' ? 'out' : 'in', tmp = join(tmpDir, randomUUID()), hash = createHash('sha256');
     try {
       await pipeline(req, capped, async function* (chunks: AsyncIterable<Buffer>) { for await (const c of chunks) { hash.update(c); yield c; } }, createWriteStream(tmp));
+      recheckRequest(req);
       mustUnarchived(by, inst.seriesId);
       const up = inst.upload(by, url.searchParams.get('name') ?? 'file', tmp, hash.digest('hex'), pane, url.searchParams.get('onto'), quiet);
       // What starts no run, quiet or a note, is committed at once in its person's name; a run going commits it as it ends.
@@ -1281,20 +1290,26 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   } else if (['signoff', 'reject', 'withdraw', 'interrupt', 'close', 'abandon'].includes(action)) {
     const out = await inOrder(inst.seriesId, async () => {
       const recheck = () => {
+        recheckRequest(req);
         if (run && running(run.token) !== run) throw new HttpError(409, 'its run has ended');
         const { ws, who } = mustUnarchived(by, inst.seriesId, run ? me : undefined);
         if (inst.doc.status !== 'open') throw new HttpError(409, `instance is ${inst.doc.status}`);
         const cur = active.get(inst.seriesId);
         return { ws, who, mine: cur?.inst === inst ? cur : undefined };
       };
-      const { ws, who, mine } = recheck();
+      const before = recheck();
+      if (['signoff', 'close', 'abandon'].includes(action)) {
+        if (before.mine) throw new HttpError(409, 'wait for the run to end');
+        if (action !== 'signoff' && ownerOf(inst).by !== by) throw new HttpError(403, `only the series owner, ${ownerOf(inst).by}, ${action === 'close' ? 'closes it, making it the record' : 'abandons it'}`);
+      }
+      const { thread, text, approved } = payload;
+      const ask = action === 'signoff' || action === 'reject' ? inst.log.find(e => `c${e.seq}` === thread && e.op === 'comment' && e.by === 'agent' && (e.ask === true || e.ask === 'proposal')) : undefined;
       if (action === 'signoff' || action === 'reject') {
         // Anyone who sees the instance approves a proposal of the agent's, which `thread` names as cN, or rejects it, with a note, as an
         // ask from before questions and proposals, `ask: true`, which may have been either. Approving is a sign-off, the route's and the
         // entry's name: it commits the folder in their name, as they say yes to it, the proposal and the note its message, with their
         // Signed-off-by. Only an owner's non-quiet decision starts a run. rf 0.12's reject, a sign-off
         // with approved false, is refused.
-        const { thread, text, approved } = payload, ask = inst.log.find(e => `c${e.seq}` === thread && e.op === 'comment' && e.by === 'agent' && (e.ask === true || e.ask === 'proposal'));
         if (approved === false) throw new HttpError(400, 'a sign-off approves; to say no, reject it, on the page or with rf reject');
         if (!ask) throw new HttpError(409, `${thread} is no proposal of the agent's`);
         if (inst.log.some(e => e.op === 'withdraw' && e.on === ask.seq)) throw new HttpError(409, `the agent withdrew ${thread}`);
@@ -1303,6 +1318,21 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
         const closed = inst.log.find(e => e.op === 'close' && (e.accepted as string[] | undefined)?.includes(thread));
         if (closed) throw new HttpError(409, `${thread} was accepted as done at the close, by ${closed.by}`);
         if (ask.seq < inst.copied) throw new HttpError(409, `${thread} is from before this instance was copied`);
+      }
+      if (['signoff', 'close', 'abandon'].includes(action)) {
+        if (action !== 'signoff') inst.closing = true;
+        try {
+          let prior;
+          do {
+            prior = committed(inst.dir);
+            await prior;
+          } while (committed(inst.dir) !== prior);
+        } finally {
+          if (action !== 'signoff') inst.closing = false;
+        }
+      }
+      const { ws, who, mine } = recheck();
+      if (ask) {
         const note = typeof text === 'string' ? text.trim() : '';
         if (action === 'reject') inst.append(by, 'reject', { thread: ask.thread, on: ask.seq, ...(note && { text: note }), ...(quiet && { quiet: true }) });
         else {
@@ -1569,6 +1599,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       if (!own) throw new HttpError(403, 'tokens are made and revoked on the page');
       if (req.method === 'DELETE') return send(res, 200, (revokeToken(own.email, decodeURIComponent(url.pathname.slice(8))), 'ok'));
       const { name, days } = await json(req);
+      if (!session(req)) throw new HttpError(401, 'sign in first');
       send(res, 200, { token: newToken(own.email, String(name ?? '').trim(), Number(days)) });
     } else if (url.pathname === '/logins' && req.method === 'GET') send(res, 200, logins(me.email).map(l => ({ ...l, missing: ungranted(l) })));
     else if (/^\/logins\/[^/]+\/connect$/.test(url.pathname) && req.method === 'POST') {

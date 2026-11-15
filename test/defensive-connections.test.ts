@@ -9,8 +9,9 @@ import type { Socket } from 'node:net';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { saveSeriesSettings } from '../src/series.ts';
+import { saveSeriesSettings, seriesSettings } from '../src/series.ts';
 import { writeJson } from '../src/system.ts';
+import { ownSeries } from './owner-fixture.ts';
 import { openStore } from '../src/store.ts';
 import type { Instance } from '../src/store.ts';
 
@@ -22,6 +23,8 @@ const upstreamPaths: string[] = [];
 let tokenCalls = 0;
 let tokenGate: PromiseWithResolvers<void> | undefined;
 let tokenEntered: PromiseWithResolvers<void> | undefined;
+let sendGate: PromiseWithResolvers<void> | undefined;
+let sendEntered: PromiseWithResolvers<void> | undefined;
 let upstream: Server, proxy: Server;
 let sock = '', ca = '';
 let loginsMod: typeof import('../src/logins.ts');
@@ -30,11 +33,11 @@ const runs = new Map<string, Instance>(), callRuns = new Map<string, import('../
 
 const started = (ticks: string[]) => [
   { seq: 1, op: 'create', by: USER },
-  { seq: 2, op: 'run', run: 1, runner: USER, initiator: USER, authority: { version: 1, owner: USER, epoch: 1, workspace: 'w', logins: ticks } },
+  { seq: 2, op: 'run', run: 1, runner: USER, initiator: USER, authority: { version: 1, owner: USER, epoch: seriesSettings(seriesDir).epoch, workspace: 'w', logins: ticks, autonomous: false } },
 ];
 
 function makeInst(ticks: string[]): Instance {
-  saveSeriesSettings(seriesDir, { version: 1, owner: USER, epoch: 1, since: '', consent: { by: USER, at: '', workspace: 'w', logins: ticks, autonomous: false } });
+  ownSeries('s1', USER, ticks);
   return {
     id: 'i1',
     dir: instDir,
@@ -82,7 +85,7 @@ before(async () => {
   mkdirSync(join(instDir, 'working'), { recursive: true });
   mkdirSync(seriesDir, { recursive: true });
 
-  upstream = createServer((req, res) => {
+  upstream = createServer(async (req, res) => {
     upstreamPaths.push(req.url!);
     const u = new URL(req.url!, 'http://x');
     const send = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
@@ -107,6 +110,13 @@ before(async () => {
         return send({ access_token: `atok-${rt}`, refresh_token: `next-${rt}`, expires_in: 3600 });
       });
       return;
+    }
+
+    if (u.pathname === '/v1.0/me/sendMail') {
+      await Array.fromAsync(req);
+      sendEntered?.resolve();
+      await sendGate?.promise;
+      return void res.writeHead(202).end();
     }
 
     // Graph mock using exact canonical paths
@@ -203,6 +213,7 @@ before(async () => {
   process.env.RF_OIDC_CLIENT_SECRET = 'secret';
   process.env.RF_PUBLIC_URL = 'https://rf.demo.test';
   process.env.OPENROUTER_API_KEY = 'sk-or-defensive-test';
+  process.env.RF_M365_SCOPES = 'Mail.Read Mail.Send Files.Read.All Sites.Read.All';
 
   const { initSystem, saveTree } = await import('../src/system.ts');
   initSystem(tmp);
@@ -480,3 +491,84 @@ test('Entra token() coalesces concurrent refreshes and ignores stale completions
   loginsMod.seal(USER, 'm365', 'restored-after-sync-throw');
   assert.equal(await token(USER, 'm365', scope), 'atok-restored-after-sync-throw');
 });
+
+for (const mode of ['untick', 'unoffer', 'signout']) {
+  test(`credential withdrawal during token renewal prevents a new send: ${mode}`, { timeout: 5000 }, async () => {
+    const offer = `m365:mail:${USER}`;
+    loginsMod.saveLogin(USER, {
+      id: 'm365', kind: 'm365', name: 'Microsoft 365', since: `renew-${mode}`,
+      offers: [{ id: offer, name: 'Mailbox' }],
+    }, 'hold-revoke');
+    const inst = makeInst([offer]);
+    runs.set('revoke', inst);
+    callRuns.set('revoke', { inst, runner: USER, n: 1, links: new Map(), cost: 0 });
+    calls.length = 0;
+    upstreamPaths.length = 0;
+    tokenGate = Promise.withResolvers();
+    tokenEntered = Promise.withResolvers();
+    const pending = viaProxy('POST', 'https://graph.microsoft.com/v1.0/me/sendMail', {
+      token: 'revoke', headers: { 'content-type': 'application/json' }, body: '{"message":{"subject":"local fixture"}}',
+    });
+    try {
+      await tokenEntered.promise;
+      assert.equal(upstreamPaths.includes('/v1.0/me/sendMail'), false);
+      assert.equal(calls.some(c => c.op === 'send'), false);
+      if (mode === 'untick') saveSeriesSettings(seriesDir, { ...seriesSettings(seriesDir), epoch: seriesSettings(seriesDir).epoch + 1, consent: { by: USER, at: '', workspace: 'w', logins: [], autonomous: false } });
+      if (mode === 'unoffer') loginsMod.unoffer(USER, 'm365', offer);
+      if (mode === 'signout') loginsMod.signOut(USER, 'm365');
+      assert.throws(() => loginsMod.use(inst, 1, offer));
+      loginsMod.saveLogin(USER, { id: 'm365', kind: 'm365', name: 'Microsoft 365', since: `regranted-${mode}`, offers: [{ id: offer, name: 'Mailbox' }] }, 'regranted-refresh');
+      ownSeries('s1', USER, [offer]);
+      assert.throws(() => loginsMod.use(inst, 1, offer), 'regrant cannot revive the old run');
+    } finally {
+      tokenGate.resolve();
+    }
+    const response = await pending;
+    tokenGate = undefined;
+    tokenEntered = undefined;
+    assert.equal(upstreamPaths.includes('/v1.0/me/sendMail'), false, 'withdrawn credentials must not start a new upstream request');
+    assert.equal(response.status, 403);
+    assert.equal(calls.some(c => c.op === 'send'), false);
+    assert.equal(calls.at(-1)?.op, 'call');
+    assert.equal(calls.at(-1)?.data.status, response.status);
+    assert.ok(calls.at(-1)?.data.refused);
+    assert.equal(calls.at(-1)?.data.sent, undefined);
+  });
+
+  test(`credential withdrawal preserves an already-sent call: ${mode}`, { timeout: 5000 }, async () => {
+    const offer = `m365:mail:${USER}`;
+    loginsMod.saveLogin(USER, {
+      id: 'm365', kind: 'm365', name: 'Microsoft 365', since: `sent-${mode}`,
+      offers: [{ id: offer, name: 'Mailbox' }],
+    }, 'sent-refresh');
+    const inst = makeInst([offer]);
+    runs.set('sent', inst);
+    callRuns.set('sent', { inst, runner: USER, n: 1, links: new Map(), cost: 0 });
+    calls.length = 0;
+    upstreamPaths.length = 0;
+    sendGate = Promise.withResolvers();
+    sendEntered = Promise.withResolvers();
+    const pending = viaProxy('POST', 'https://graph.microsoft.com/v1.0/me/sendMail', {
+      token: 'sent', headers: { 'content-type': 'application/json' }, body: '{"message":{"subject":"local fixture"}}',
+    });
+    try {
+      await sendEntered.promise;
+      assert.equal(upstreamPaths.filter(p => p === '/v1.0/me/sendMail').length, 1);
+      assert.deepEqual(calls.map(c => c.op), ['send']);
+      if (mode === 'untick') saveSeriesSettings(seriesDir, { ...seriesSettings(seriesDir), epoch: seriesSettings(seriesDir).epoch + 1, consent: { by: USER, at: '', workspace: 'w', logins: [], autonomous: false } });
+      if (mode === 'unoffer') loginsMod.unoffer(USER, 'm365', offer);
+      if (mode === 'signout') loginsMod.signOut(USER, 'm365');
+      assert.throws(() => loginsMod.use(inst, 1, offer));
+    } finally {
+      sendGate.resolve();
+    }
+    const response = await pending;
+    sendGate = undefined;
+    sendEntered = undefined;
+    assert.equal(response.status, 202);
+    assert.deepEqual(calls.map(c => c.op), ['send', 'call']);
+    assert.equal(calls[1].data.status, 202);
+    assert.equal(calls[1].data.sent, 1);
+    assert.equal(calls[1].data.refused, undefined);
+  });
+}
