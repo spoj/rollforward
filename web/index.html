@@ -211,6 +211,8 @@ async function fetchInstance(path) {
   return [d, ui.audit && (d.run || key !== linesKey) ? [await api(path + '/trace'), key] : null];
 }
 
+let checkDelete = null;
+
 function land(next, path, d, st) {
   const was = data && path === shown ? lastDone()?.seq ?? 0 : undefined, wasOpen = data?.doc.status === 'open' && !archived(), open = d?.doc.status === 'open' && !archived(next?.w, next?.s), wasWorkspace = cur?.w.archived, wasSeries = cur?.s?.archived;
   // A new selection opens its rows in the sidebar; from then on only their chevrons fold and open them.
@@ -230,6 +232,7 @@ function land(next, path, d, st) {
     $('#conv').replaceWith(open ? draft.el : draft.el.cloneNode(false));
   }
   [cur, data, shown] = [next, d, path];
+  checkDelete?.();
   if ((wasWorkspace !== cur?.w.archived || wasSeries !== cur?.s?.archived) && ['workspace', 'series'].includes(pv?.settings?.kind)) {
     Object.assign(pv.settings, pv.settings.kind === 'workspace' ? cur.w : cur.s);
     renderPv();
@@ -1753,12 +1756,38 @@ async function onAct(act, el) {
     p.value = '';
     p.click();
   }
-  // Those who manage the workspace delete an instance, in any status: one confirm, which says it can't be undone, and what stays.
   if (act === 'delete') {
-    const html = '<p>Everything the server holds of it goes, and can\u2019t be brought back: its uploads, the agent\u2019s files, its items, threads and log, its runs\u2019 transcripts and browser logs, and its history.'
-      + `${data.run || data.queued ? ' Its run is stopped first.' : ''} Its label stays in its place, shown as deleted by you; what it cost still counts.</p>`
-      + '<p>Copies outside the server stay:</p><ul class="gone"><li>instances copied from it</li><li>files other runs copied</li><li>copies made with rf pull</li><li>mail and anything else already sent</li></ul>';
-    if (await ask({ title: `Delete ${cur.i.label}?`, html, ok: 'Delete', kind: 'danger', act: () => api(`${instPath()}/delete`, { method: 'POST' }) })) await refresh();
+    const path = instPath(), hash = location.hash, series = cur.s.name, instance = cur.i.label;
+    const identity = JSON.stringify([cur.w.id, cur.w.name, cur.s.id, series, cur.i.id, instance]);
+    const html = `<p>Workspace: <strong>${esc(cur.w.name)}</strong> (${esc(cur.w.id)})<br>Series: <strong>${esc(series)}</strong> (${esc(cur.s.id)})<br>INSTANCE: <strong>${esc(instance)}</strong> (${esc(cur.i.id)})</p>`
+      + '<p>Everything the server holds of this INSTANCE goes and can\u2019t be brought back: uploads, agent files, items, threads, logs and history.'
+      + `${data.run || data.queued ? ' Its run is stopped first.' : ''} Its label stays, shown as deleted by you; its cost still counts.</p>`
+      + '<p>Copies outside the server stay: instances copied from it, files other runs copied, rf pull copies, mail and anything else already sent.</p>'
+      + `<p>Type both names exactly to delete this INSTANCE.</p><div class="opts"><label>Series name<input id="delete-series" type="text" autocomplete="off" spellcheck="false"></label></div>`
+      + '<div class="opts"><label>Instance name<input id="delete-instance" type="text" autocomplete="off" spellcheck="false"></label></div>';
+    const pending = ask({ title: `Delete ${instance}?`, html, ok: 'Delete', kind: 'danger', act: () => {
+      if (!check()) throw new Error('Type both names exactly for the instance shown.');
+      return api(`${path}/delete`, { method: 'POST' });
+    } });
+    const d = $('#ask'), form = d.querySelector('form'), button = form.querySelector('[value=ok]');
+    const reset = () => { form.reset(); button.disabled = true; };
+    const check = () => {
+      const same = d.open && location.hash === hash && identity === JSON.stringify([cur?.w.id, cur?.w.name, cur?.s?.id, cur?.s?.name, cur?.i?.id, cur?.i?.label]);
+      if (!same) { reset(); d.close(); }
+      button.disabled = !same || form.querySelector('#delete-series').value !== series || form.querySelector('#delete-instance').value !== instance;
+      return !button.disabled;
+    };
+    form.oninput = checkDelete = check;
+    form.addEventListener('submit', e => { if (!e.submitter.value) reset(); });
+    d.addEventListener('cancel', reset);
+    check();
+    let deleted;
+    try { deleted = await pending; } finally {
+      reset();
+      d.removeEventListener('cancel', reset);
+      if (checkDelete === check) checkDelete = null;
+    }
+    if (deleted) await refresh();
   }
   // A task closes as a one-off, or as the first instance of a series it becomes; either may be abandoned instead.
   if (act === 'close') {

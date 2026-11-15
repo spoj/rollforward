@@ -1748,12 +1748,135 @@ test('only managers see Delete in an archive, its confirmation warns what stays,
   await page.click('#bar [data-act=delete]');
   assert.match(await page.textContent('#ask') ?? '', /can.t be brought back/);
   assert.match(await page.textContent('#ask') ?? '', /Copies outside the server stay/);
+  await page.getByLabel('Series name', { exact: true }).fill('Records');
+  await page.getByLabel('Instance name', { exact: true }).fill('Private');
   await page.click('#ask button[value=ok]');
   await page.waitForSelector('#bar .state:text("Deleted by")');
   assert.equal(await page.locator('#bar [data-act=delete], #bar [data-act=rename], #bar [data-act=takeover], #bar [data-act=start-series]').count(), 0);
   assert.match(await page.textContent('#ins') ?? '', /Nothing is left of it here/);
   if (!await page.locator(`a.row.inst.deleted[href="#/${id}"]`).count()) await page.click(`[data-act=toggle-closed][data-id="${sid}"]`);
   assert.equal(await page.locator(`a.row.inst.deleted[href="#/${id}"] .nm`).evaluate(el => getComputedStyle(el).textDecorationLine), 'line-through');
+});
+
+for (const [series, instance, single] of [
+  ['SP', '33', false],
+  ['SP & "Q" <2026> – (final)!', '33 & "Q" <Final> – done!', false],
+  ['One-off & "Q" <final>!', 'One-off & "Q" <final>!', true],
+] as const) test(`mindful Delete requires exact series and instance names: ${series}`, async () => {
+  const tab = await browser.newPage({ storageState: await page.context().storageState() });
+  const posts: string[] = [];
+  try {
+    const target = await page.evaluate(async ({ series, instance, single }) => {
+      const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) });
+      const { id: wid } = await post('/api/workspaces', { name: `MW WORKSPACE ${series}` });
+      const made = await post('/api/series', { workspace: wid, name: series, single });
+      const id = single ? made.instance : (await post(`/api/series/${made.id}`, { label: instance, quiet: true })).id;
+      if (single) await api(`/api/instances/${id}/rename?as=${encodeURIComponent(instance)}`, { method: 'POST' });
+      return { wid, sid: made.id, id };
+    }, { series, instance, single });
+    await tab.route('**/api/instances/*/delete', async route => {
+      posts.push(new URL(route.request().url()).pathname);
+      assert.equal(route.request().method(), 'POST');
+      await route.fulfill({ status: 200, body: 'ok' });
+    });
+    await tab.goto(new URL(`/#/${target.id}`, page.url()).href);
+    await tab.click('#bar [data-act=delete]');
+    const seriesInput = tab.getByLabel('Series name', { exact: true }), instanceInput = tab.getByLabel('Instance name', { exact: true });
+    const button = tab.locator('#ask button[value=ok]');
+    assert.deepEqual([await seriesInput.inputValue(), await instanceInput.inputValue()], ['', '']);
+    const text = await tab.innerText('#ask');
+    for (const expected of [`Workspace: MW WORKSPACE ${series} (${target.wid})`, `Series: ${series} (${target.sid})`, `INSTANCE: ${instance} (${target.id})`]) assert.ok(text.includes(expected), expected);
+    assert.ok(await button.isDisabled());
+    for (const [s, i] of [
+      ['', ''], [series, ''], ['', instance], ['wrong', instance], [series, 'wrong'],
+      [series.toLowerCase(), instance], [series, instance + ' '], [' ' + series, instance],
+      ...(instance !== instance.toLowerCase() ? [[series, instance.toLowerCase()]] : []),
+    ]) {
+      await seriesInput.fill(s);
+      await instanceInput.fill(i);
+      assert.ok(await button.isDisabled(), JSON.stringify([s, i]));
+      await instanceInput.press('Enter');
+      await tab.evaluate(() => {
+        const form = document.querySelector('#ask form') as HTMLFormElement, button = form.querySelector('[value=ok]') as HTMLButtonElement;
+        form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true, submitter: button }));
+      });
+      await tab.waitForSelector('#ask .err:text-is("Type both names exactly for the instance shown.")');
+      assert.equal(posts.length, 0);
+    }
+    await tab.evaluate(() => {
+      const button = document.querySelector('#ask [value=ok]') as HTMLButtonElement;
+      button.disabled = false;
+      button.click();
+    });
+    assert.equal(posts.length, 0, 'forcing the button enabled cannot bypass the submit check');
+    for (const cancel of ['Cancel', 'Escape']) {
+      await seriesInput.fill(series);
+      await instanceInput.fill(instance);
+      assert.ok(await button.isEnabled());
+      if (cancel === 'Cancel') await tab.getByRole('button', { name: 'Cancel', exact: true }).click();
+      else await tab.keyboard.press('Escape');
+      await tab.waitForSelector('#ask', { state: 'hidden' });
+      assert.deepEqual([await seriesInput.inputValue(), await instanceInput.inputValue()], ['', '']);
+      await tab.click('#bar [data-act=delete]');
+      assert.deepEqual([await seriesInput.inputValue(), await instanceInput.inputValue()], ['', '']);
+      assert.ok(await button.isDisabled());
+    }
+    await seriesInput.fill(series);
+    await instanceInput.fill(instance);
+    assert.ok(await button.isEnabled());
+    await instanceInput.press('Enter');
+    await tab.waitForSelector('#ask', { state: 'hidden' });
+    assert.deepEqual(posts, [`/api/instances/${target.id}/delete`]);
+    assert.notEqual((await (await tab.request.get(new URL(`/api/instances/${target.id}`, tab.url()).href)).json()).doc.status, 'deleted', 'the delete request was mocked');
+  } finally { await tab.close(); }
+});
+
+test('mindful Delete clears on context changes and cannot follow navigation, even before hashchange runs', async () => {
+  const tab = await browser.newPage({ storageState: await page.context().storageState() });
+  const posts: string[] = [];
+  try {
+    await tab.route('**/api/instances/*/delete', async route => {
+      posts.push(route.request().url());
+      await route.fulfill({ status: 200, body: 'ok' });
+    });
+    await tab.goto(new URL('/#/a5c0ff5e1f00', page.url()).href);
+    await tab.waitForSelector('#bar h1 .t:text-is("2026-12")');
+    for (const [part, field] of [['w', 'id'], ['w', 'name'], ['s', 'id'], ['s', 'name'], ['i', 'id'], ['i', 'label']]) {
+      await tab.click('#bar [data-act=delete]');
+      const names = await tab.evaluate(() => [cur.s.name, cur.i.label]);
+      await tab.getByLabel('Series name', { exact: true }).fill(names[0]);
+      await tab.getByLabel('Instance name', { exact: true }).fill(names[1]);
+      await tab.evaluate(() => refresh());
+      assert.ok(await tab.locator('#ask button[value=ok]').isEnabled(), 'an unchanged refresh keeps confirmations');
+      await tab.evaluate(([part, field]) => {
+        const before = cur, next = structuredClone(cur), form = document.querySelector('#ask form') as HTMLFormElement;
+        next[part][field] += '-changed';
+        land(next, shown, data, null);
+        form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true, submitter: form.querySelector('[value=ok]') }));
+        land(before, shown, data, null);
+      }, [part, field]);
+      await tab.waitForSelector('#ask', { state: 'hidden' });
+      assert.deepEqual(await tab.locator('#ask input').evaluateAll(inputs => inputs.map(i => (i as HTMLInputElement).value)), ['', '']);
+      assert.ok(await tab.locator('#ask button[value=ok]').isDisabled());
+      assert.equal(posts.length, 0);
+    }
+    await tab.click('#bar [data-act=delete]');
+    const names = await tab.evaluate(() => [cur.s.name, cur.i.label]);
+    await tab.getByLabel('Series name', { exact: true }).fill(names[0]);
+    await tab.getByLabel('Instance name', { exact: true }).fill(names[1]);
+    await tab.evaluate(() => {
+      const form = document.querySelector('#ask form') as HTMLFormElement;
+      location.hash = '#/a5c0ff5e1f02';
+      form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true, submitter: form.querySelector('[value=ok]') }));
+    });
+    await tab.waitForSelector('#bar h1 .t:text-is("2026-10")');
+    await tab.waitForSelector('#ask', { state: 'hidden' });
+    await tab.click('#bar [data-act=delete]');
+    assert.deepEqual(await tab.locator('#ask input').evaluateAll(inputs => inputs.map(i => (i as HTMLInputElement).value)), ['', '']);
+    assert.ok(await tab.locator('#ask button[value=ok]').isDisabled());
+    assert.equal(posts.length, 0);
+    await tab.keyboard.press('Escape');
+  } finally { await tab.close(); }
 });
 
 test('a service connects with one click and no sign-in, then lends the admin\'s prefixes as ordinary instance ticks', async () => {

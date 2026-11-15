@@ -102,7 +102,6 @@ label:has(> input.tick:not(:checked)) + .nogrant { display: none; }
 .wt .btn { margin-left: 8px; }
 .inst.abandoned .nm { text-decoration: line-through; }
 .inst.deleted .nm { text-decoration: line-through; color: var(--ink-3); }
-.dlg .gone { margin: 8px 0 0; padding-left: 18px; font-size: 13px; }
 .archived .nm { color: var(--ink-3); }
 .add { all: unset; cursor: pointer; flex: none; width: 24px; height: 24px; display: grid; place-items: center; border-radius: var(--r1); color: var(--ink-3); font-size: 17px; line-height: 1; }
 .add:hover { background: var(--rule); color: var(--ink); }
