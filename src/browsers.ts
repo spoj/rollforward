@@ -914,27 +914,34 @@ export class Browsers {
 const lastTurn = new Map<string, number>();
 
 export async function keepAlive(now = new Date()) {
-  const keeping = Object.entries(users()).filter(([email, u]) => { const p = asPerson(email, u); return p && can(p, 'keepalive'); }).map(([email]) => email);
+  const root = rfDir(), keeping = Object.entries(users()).filter(([email, u]) => { const p = asPerson(email, u); return p && can(p, 'keepalive'); }).map(([email]) => email);
   for (const email of keeping) for (const [site, w] of Object.entries(websitesOf(email))) {
     const key = `${email} ${site}`;
     if (now.getTime() - (lastTurn.get(key) ?? 0) < (w.every ?? 10) * 60_000) continue;
     lastTurn.set(key, now.getTime());
     const login = logins(email).find(l => l.id === `web:${site}`);
-    if (!login || login.expired || (login.keepalive ?? '') <= now.toISOString() || !approved(site, email) || held.has(key)) continue;
+    if (!login || held.has(key)) continue;
+    const current = () => {
+      const p = asPerson(email), next = websitesOf(email)[site], after = logins(email).find(l => l.id === login.id);
+      return rfDir() === root && !!p && can(p, 'keepalive') && !!next && next.url === w.url && next.via === w.via && next.added === w.added && (next.generation ?? 0) === (w.generation ?? 0)
+        && after?.since === login.since && !after.expired && (after.keepalive ?? '') > now.toISOString() && approved(site, email);
+    };
+    if (!current()) continue;
     let release!: () => void;
     if (w.writeback) held.set(key, { released: new Promise<void>(ok => { release = ok; }), release: () => release() });
     try {
       const via = await vpnVia(email, w);
+      if (!current()) continue;
       const page = new URL(w.keepalive ?? w.url, w.url), id = await open({ ...w, url: page.href, hosts: [] }, 300, JSON.parse(secret(email, login.id)), via);
       let shown: { url: string; password: boolean }, state: unknown;
       try {
+        if (!current()) continue;
         shown = await browserJson('GET', `/sessions/${id}/page`);
       } finally {
         ({ state } = await close(id));
       }
-      // Unless they signed in anew or out meanwhile.
-      const after = logins(email).find(l => l.id === login.id);
-      if (after?.since !== login.since || after.expired) continue;
+      if (!current()) continue;
+      const after = logins(email).find(l => l.id === login.id)!;
       const over = shown.password || new URL(shown.url).origin !== page.origin;
       if (!over && !state) continue;
       saveLogin(email, over ? { ...after, expired: true } : after, over ? undefined : JSON.stringify(state));
