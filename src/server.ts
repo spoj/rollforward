@@ -1256,7 +1256,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
         return { ws, who, mine: cur?.inst === inst ? cur : undefined };
       };
       if (['signoff', 'close', 'abandon'].includes(action)) {
-        recheck();
+        if (recheck().mine) throw new HttpError(409, 'wait for the run to end');
+        if (action !== 'signoff' && runnerOf(inst).by !== by) throw new HttpError(403, `only the runner, ${runnerOf(inst).by}, ${action === 'close' ? 'closes it, making it the record' : 'abandons it'}; take it over first`);
         if (action !== 'signoff') inst.closing = true;
         try {
           let prior;

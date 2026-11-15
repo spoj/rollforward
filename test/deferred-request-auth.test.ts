@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-for (const action of ['signoff', 'close', 'abandon']) for (const change of ['token', 'session', 'access', 'archive', 'status', 'runner', 'run', 'later-commit', 'unchanged']) {
+for (const action of ['signoff', 'close', 'abandon']) for (const change of ['token', 'session', 'access', 'archive', 'status', 'runner', 'run', 'later-commit', 'unchanged', 'initial-run', ...(action !== 'signoff' ? ['initial-runner'] : [])]) {
   test(`${action} revalidates at the Git wait boundary: ${change}`, () => {
     const root = mkdtempSync(join(tmpdir(), 'rf-deferred-auth-'));
     try {
@@ -60,11 +60,21 @@ for (const action of ['signoff', 'close', 'abandon']) for (const change of ['tok
         const ask = inst.append('agent', 'comment', { text: 'Approve the result?', thread: 'c2', ask: 'proposal', run: 1 });
         target = inst.dir;
         const hold = Promise.withResolvers(), prior = git.commit(inst.dir, git.AGENT, 'prior', hold.promise);
+        if (change === 'initial-run') active.set('s', { inst, workspace: 'w', view: { series: {} } });
+        if (change === 'initial-runner') inst.append(admin, 'assign', { to: admin, from: actor, logins: [] });
         armed = true;
         const response = fetch(base + '/api/instances/' + inst.id + '/' + action, {
           method: 'POST', headers: change === 'session' ? { cookie } : { authorization: 'Bearer ' + token },
           body: JSON.stringify({ thread: 'c' + ask.seq, quiet: true }),
         });
+        if (change.startsWith('initial-')) {
+          const result = await Promise.race([response, entered.promise.then(() => { throw new Error('an unauthorized action entered the Git wait'); })]);
+          assert.equal(result.status, change === 'initial-run' ? 409 : 403);
+          assert.equal(inst.closing, false);
+          hold.resolve();
+          await prior;
+          process.exit(0);
+        }
         await Promise.race([entered.promise, response.then(r => { throw new Error('action did not wait: ' + r.status); })]);
         let last = prior, release = hold;
         if (change === 'later-commit') {
@@ -95,7 +105,7 @@ for (const action of ['signoff', 'close', 'abandon']) for (const change of ['tok
           expected = action === 'signoff' ? 200 : 403;
         }
         if (change === 'run') {
-          active.set('s', { inst });
+          active.set('s', { inst, workspace: 'w', view: { series: {} } });
           expected = 409;
         }
         if (change === 'unchanged') expected = 200;
