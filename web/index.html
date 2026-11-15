@@ -1261,7 +1261,7 @@ async function saveKey() {
 async function openLogins() {
   const [logins, connections, grants, sites, vpn] = await Promise.all([api('/logins'), api('/connections'), api('/grants'), api('/logins/sites'),
     me.can.includes('vpn') ? api('/vpns').then(rows => ({ rows }), e => ({ error: e.message })) : null]);
-  pv = { title: 'Logins', shown: pv?.settings?.kind === 'logins' ? pv.shown : [], settings: { kind: 'logins', logins, connections, grants, sites, vpn } };
+  pv = { title: 'Logins', shown: pv?.shown ?? [], settings: { kind: 'logins', logins, connections, grants, sites, vpn } };
   renderPv();
 }
 
@@ -1918,7 +1918,7 @@ async function onAct(act, el) {
       await api(`/signins/${r.id}`, { method: 'DELETE' });
       return;
     }
-    const p = pv = { title: `Sign in to ${vpn ? `${el.dataset.id} VPN` : el.dataset.name}`, signin: r.id, expires: r.expires, vpn };
+    const p = pv = { title: `Sign in to ${vpn ? `${el.dataset.id} VPN` : el.dataset.name}`, signin: r.id, expires: r.expires, vpn, shown: pv?.shown ?? [] };
     renderPv();
     while (pv === p) {
       const seconds = Math.max(0, Math.ceil((Date.parse(p.expires) - Date.now()) / 1000));

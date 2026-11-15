@@ -55,6 +55,21 @@ async function open(role: string, grants: object[] = []) {
   return { page, requests, workspace };
 }
 
+test('saving a website sign-in keeps its expanded setup row', async () => {
+  const { page } = await open('user');
+  try {
+    await page.click('#sidefoot [data-act=logins]');
+    await page.click('[data-act=logins-show][data-id=web]');
+    await page.click('details[data-shown="web:portal"] > summary');
+    await page.click('[data-act=web-signin]');
+    await page.click('[data-act=signin-save]');
+    await page.waitForSelector('#pv .lline');
+    assert.equal(await page.locator('details[data-shown="web:portal"]').count(), 1);
+    assert.equal(await page.locator('details[data-shown="web:portal"]').getAttribute('open'), '');
+    assert.equal(await page.locator('details[data-shown="web:portal"] [data-act=web-signin]').isVisible(), true);
+  } finally { await page.close(); }
+});
+
 test('a sign-in counts down from the server expiry, never asks to allow hosts, and expires without saving', async () => {
   const { page, requests } = await open('user');
   try {
