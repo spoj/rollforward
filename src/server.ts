@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { accessSync, closeSync, constants, cpSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync, type Dirent } from 'node:fs';
+import { accessSync, closeSync, constants, cpSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync, type Dirent, type ReadStream } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { execFile, execFileSync } from 'node:child_process';
@@ -119,6 +119,16 @@ async function* capped(chunks: AsyncIterable<Buffer>) {
 function send(res: ServerResponse, status: number, data: unknown) {
   res.writeHead(status, { 'content-type': typeof data === 'string' ? 'text/plain; charset=utf-8' : 'application/json' });
   res.end(typeof data === 'string' ? data : JSON.stringify(data, null, 1));
+}
+
+async function sendStream(stream: ReadStream, res: ServerResponse) {
+  if (res.destroyed) return void stream.destroy();
+  try {
+    await pipeline(stream, res);
+  } catch (e) {
+    stream.destroy();
+    if (!['ERR_STREAM_PREMATURE_CLOSE', 'ERR_STREAM_UNABLE_TO_PIPE', 'ECONNRESET', 'EPIPE'].includes((e as NodeJS.ErrnoException).code!)) throw e;
+  }
 }
 
 // A run, on its sandbox's socket, by its token: on /api a caller like any person, with the few rights api() gives a run; on /agent
@@ -642,7 +652,7 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
     if (existsSync(kept)) {
       closeSync(fd);
       res.writeHead(200, { 'content-type': 'application/json' });
-      return void createReadStream(kept).pipe(res);
+      return sendStream(createReadStream(kept), res);
     }
     if (previewing < 2) previewing++;
     else await new Promise<void>(go => turns.push(go));
@@ -678,7 +688,7 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
     'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox",
     'content-disposition': `${image ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(basename(rel))}`,
   });
-  createReadStream('', { fd }).pipe(res);
+  await sendStream(createReadStream('', { fd }), res);
 }
 
 // The page's event stream: the id of each instance the person can see as it changes, and "tree" for anything else, at most one a
@@ -937,7 +947,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       const fd = openFile(join(book, 'notes', 'files'), other);
       if (fd === undefined) throw new HttpError(404, 'no such file');
       res.writeHead(200, { 'content-type': 'application/octet-stream', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; sandbox", 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(other)}` });
-      return void createReadStream('', { fd }).pipe(res);
+      return sendStream(createReadStream('', { fd }), res);
     }
     if (action === 'attach' && req.method === 'POST') {
       const tmp = join(tmpDir, randomUUID());
