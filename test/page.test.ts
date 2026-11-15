@@ -1975,6 +1975,66 @@ test("a website ticked without an approved grant in the instance's workspace say
   assert.equal(Object.values(JSON.parse(readFileSync(join(rf, 'grants.json'), 'utf8'))).filter((g: any) => g.site === 'ledger' && g.state === 'approved').length, 2);
 });
 
+test("series header Notes is hover- and keyboard-accessible, targets an empty series without navigating or expanding, and creates persistent notes", async () => {
+  const tab = await browser.newPage({ storageState: await page.context().storageState(), viewport: { width: 1280, height: 900 } });
+  try {
+    await tab.goto(new URL('/#/a5c0ff5e1f02', page.url()).href);
+    await tab.waitForSelector('#bar h1 .t:text-is("2026-10")');
+    const name = 'Notes for a different series with a long name';
+    const { id } = await tab.evaluate(async name => (await fetch('/api/series', { method: 'POST', body: JSON.stringify({ workspace: '1b3031035ff6', name }) })).json(), name);
+    await tab.reload();
+    await tab.waitForSelector('#bar h1 .t:text-is("2026-10")');
+    assert.equal(await tab.locator('#tree [data-act=notes]:not(.row.ser > button)').count(), 0, 'notes are only series header buttons');
+    const row = tab.locator('.row.ser').filter({ has: tab.locator(`a[href="#/${id}"]`) });
+    const notes = row.getByRole('button', { name: `Notes on ${name}`, exact: true });
+    assert.equal(await notes.getAttribute('title'), `Notes on ${name}`);
+    assert.equal(await notes.locator('svg[aria-hidden=true]').count(), 1);
+    assert.equal(await row.locator('.chev').innerText(), '\u25B8');
+    assert.equal(await row.locator('.n').innerText(), '');
+    assert.equal(await tab.locator('#tree .row.inst [data-act=notes]').count(), 0);
+    await tab.locator('#find').focus();
+    await tab.mouse.move(1000, 50);
+    assert.equal(await notes.evaluate(el => getComputedStyle(el).opacity), '0');
+    await row.hover();
+    assert.equal(await notes.evaluate(el => getComputedStyle(el).opacity), '1');
+    await tab.mouse.move(1000, 50);
+    await row.locator('a.nm').focus();
+    assert.equal(await notes.evaluate(el => getComputedStyle(el).opacity), '1', 'row focus reveals Notes');
+    await tab.keyboard.press('Tab');
+    assert.equal(await notes.evaluate(el => el === document.activeElement), true);
+    await tab.evaluate(() => document.querySelector<HTMLElement>('.app')!.style.setProperty('--side-w', '180px'));
+    const target = await notes.boundingBox(), sidebar = await tab.locator('#side').boundingBox();
+    assert.ok(target!.x >= sidebar!.x && target!.x + target!.width <= sidebar!.x + sidebar!.width, 'Notes fits the narrow sidebar');
+    const url = tab.url(), expanded = await tab.evaluate(() => localStorage.expanded);
+    for (const key of ['Enter', 'Space']) {
+      await notes.focus();
+      await tab.keyboard.press(key);
+      await tab.waitForSelector('#pv .pvh b:text-is("Notes on ' + name + '")');
+      assert.match(await tab.locator('#pv .pvb').innerText(), /No open notes/);
+      await tab.keyboard.press('Escape');
+      assert.equal(tab.url(), url);
+      assert.equal(await tab.evaluate(() => localStorage.expanded), expanded);
+    }
+    await row.hover();
+    await notes.locator('svg').click();
+    await tab.fill('#notetext', 'Created on the empty series, not the instance shown');
+    await tab.click('#pv [data-act=note-post]');
+    await tab.waitForSelector('#pv .note .pb:text-is("Created on the empty series, not the instance shown")');
+    await tab.keyboard.press('Escape');
+    assert.equal(tab.url(), url);
+    assert.equal(await tab.evaluate(() => localStorage.expanded), expanded);
+    assert.equal(await row.locator('.n').innerText(), '', 'notes are not an open-instance status');
+    assert.equal(await row.locator('.tally.open').count(), 0);
+    await tab.reload();
+    await notes.focus();
+    await tab.keyboard.press('Enter');
+    await tab.waitForSelector('#pv .note .pb:text-is("Created on the empty series, not the instance shown")');
+    assert.equal(await tab.locator('#bar .crumb a[data-act=notes]').count(), 0, 'the series shown still has no notes');
+  } finally {
+    await tab.close();
+  }
+});
+
 test("a wake carries a message; a series' notes thread takes notes from the sidebar, counted on its open instances, which its runners settle, folded with who and why; another instance's agent's note says whose it is", async () => {
   const tab = await browser.newPage({ storageState: await page.context().storageState() });
   try {
@@ -1995,13 +2055,13 @@ test("a wake carries a message; a series' notes thread takes notes from the side
     await tab.mouse.click(5, 5);
 
     assert.equal(await tab.locator('#bar .crumb a').count(), 0, 'no open notes, no link');
-    await tab.click('.row.ser.on + .tree .row.notes [data-act=notes]');
+    await tab.click('.row.ser.on > [data-act=notes]');
     await tab.waitForSelector('#pv .pvh b:text-is("Notes on Year-end pack")');
     assert.match(await tab.locator('#pv .pvb').innerText(), /No open notes/);
     await tab.fill('#notetext', 'From January the pack goes to the new bank');
     await tab.click('#pv [data-act=note-post]');
     await tab.waitForSelector('#pv .note .pb:text-is("From January the pack goes to the new bank")');
-    await tab.waitForSelector('.row.ser.on + .tree .row.notes .n:text-is("1 open")');
+    await tab.waitForSelector('#bar .crumb a:text-is("1 open note")');
     await tab.mouse.click(5, 5);
     await tab.click('#bar .crumb a:text-is("1 open note")');
     await tab.waitForSelector('#pv .pvh b:text-is("Notes on Year-end pack")');
@@ -2015,7 +2075,7 @@ test("a wake carries a message; a series' notes thread takes notes from the side
     assert.match(await tab.locator('#pv details.note').innerText(), /Acted on by Demo Admin · .+: In the process now/);
     await tab.mouse.click(5, 5);
     await tab.waitForSelector('#bar .crumb a', { state: 'detached' });
-    assert.equal(await tab.locator('.row.ser.on + .tree .row.notes .n').innerText(), '');
+    assert.equal(await tab.locator('#tree [data-act=notes]:not(.row.ser > button)').count(), 0);
   } finally {
     await tab.close();
   }
