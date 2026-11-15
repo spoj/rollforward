@@ -83,8 +83,13 @@ async function previous(inst: Instance) {
 // A free name among a workspace's series: the name, else the name 2, 3 and on.
 function freeName(t: Tree, ws: string, name: string): string {
   const taken = new Set(Object.values(t.series).filter(s => s.workspace === ws).map(s => s.name));
-  let n = name;
-  for (let k = 2; taken.has(n); k++) n = `${name} ${k}`;
+  const fit = (suffix: string) => {
+    let s = '';
+    for (const c of name) if (Buffer.byteLength(s + c + suffix) <= 200) s += c; else break;
+    return s + suffix;
+  };
+  let n = fit('');
+  for (let k = 2; taken.has(n); k++) n = fit(` ${k}`);
   return n;
 }
 
@@ -914,7 +919,10 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       a.moved = [...(a.moved ?? []).filter(m => fresh(m.at)), { name: p.series!, to: moved[0].to, at: new Date().toISOString() }];
     }
     saveTree(t);
-    for (const m of moved) for (const i of instances(m.id)) i.append(by, 'move', { from: m.from, to: m.to });
+    for (const m of moved) {
+      if (t.series[m.id].single && instances(m.id)[0] && instances(m.id)[0].label !== t.series[m.id].name) renameInstance(instances(m.id)[0], t.series[m.id].name);
+      for (const i of instances(m.id)) i.append(by, 'move', { from: m.from, to: m.to });
+    }
     return send(res, 200, 'ok');
   }
   if (kind === 'series' && !id && req.method === 'POST') {

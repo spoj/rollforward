@@ -287,3 +287,54 @@ test('R4-DATA-04: streaming upload/attach recheck archive, proposals refuse movi
     rmSync(subTmp, { recursive: true, force: true });
   }
 });
+
+test('R4-DATA-10 (BURST1-07): move/merge updates colliding single task label (not on GET preview) and bounds freeName to <=200 UTF-8 bytes', async () => {
+  const n200 = '中'.repeat(66) + 'ab'; // 198 + 2 = 200 bytes
+  const emoji200 = '😀'.repeat(50); // 50 * 4 = 200 bytes
+
+  for (const kind of ['move', 'merge'] as const) {
+    const wsSrc = await (await call('POST', '/api/workspaces', JSON.stringify({ name: `names-src-${kind}` }))).json();
+    const wsDst = await (await call('POST', '/api/workspaces', JSON.stringify({ name: `names-dst-${kind}` }))).json();
+
+    const srcTask = await (await call('POST', '/api/series', JSON.stringify({ workspace: wsSrc.id, single: true }))).json();
+    const dstTask = await (await call('POST', '/api/series', JSON.stringify({ workspace: wsDst.id, single: true }))).json();
+    const srcLong = await (await call('POST', '/api/series', JSON.stringify({ workspace: wsSrc.id, name: n200 }))).json();
+    await call('POST', '/api/series', JSON.stringify({ workspace: wsDst.id, name: n200 }));
+    if (kind === 'merge') {
+      const srcEmojiTask = await (await call('POST', '/api/series', JSON.stringify({ workspace: wsSrc.id, single: true }))).json();
+      assert.equal((await call('POST', `/api/instances/${srcEmojiTask.instance}/rename?as=${encodeURIComponent(emoji200)}`)).status, 200);
+      await call('POST', '/api/series', JSON.stringify({ workspace: wsDst.id, name: emoji200 }));
+    }
+
+    assert.equal((await call('PUT', `/api/proposals/${wsSrc.id}`, JSON.stringify({ kind, ...(kind === 'move' && { series: srcTask.id }), to: wsDst.id }))).status, 200);
+
+    // GET preview must NOT mutate source task's instance.json label
+    const preview = await json(`/api/proposals/${wsSrc.id}`);
+    assert.ok(preview.series.some((s: any) => s.id === srcTask.id && s.to.endsWith('/Untitled 2')));
+    assert.equal(JSON.parse(readFileSync(join(root, 'instances', srcTask.instance, 'instance.json'), 'utf8')).label, 'Untitled', 'GET preview must not mutate instance label');
+
+    assert.equal((await call('POST', `/api/proposals/${wsSrc.id}`, JSON.stringify({ owners: [], members: [] }))).status, 200);
+
+    if (kind === 'move') {
+      assert.equal((await call('PUT', `/api/proposals/${wsSrc.id}`, JSON.stringify({ kind: 'move', series: srcLong.id, to: wsDst.id }))).status, 200);
+      assert.equal((await call('POST', `/api/proposals/${wsSrc.id}`, JSON.stringify({ owners: [], members: [] }))).status, 200);
+    }
+
+    const dst = (await json('/api')).find((w: any) => w.id === wsDst.id);
+    const movedTask = dst.series.find((s: any) => s.id === srcTask.id);
+    const diskLabel = JSON.parse(readFileSync(join(root, 'instances', srcTask.instance, 'instance.json'), 'utf8')).label;
+    assert.equal(movedTask.name, 'Untitled 2');
+    assert.equal(movedTask.instances[0].label, 'Untitled 2');
+    assert.equal(diskLabel, 'Untitled 2');
+    assert.equal(JSON.parse(readFileSync(join(root, 'instances', dstTask.instance, 'instance.json'), 'utf8')).label, 'Untitled');
+
+    const seenNames = new Set<string>();
+    for (const s of dst.series) {
+      assert.ok(Buffer.byteLength(s.name) <= 200, `series name ${s.name} exceeded 200 bytes (${Buffer.byteLength(s.name)})`);
+      assert.equal( s.name.includes('\uFFFD'), false, 'must not split multi-byte UTF-8');
+      assert.equal( seenNames.has(s.name), false, `duplicate series name ${s.name}`);
+      seenNames.add(s.name);
+      if (s.single) assert.equal(s.instances[0].label, s.name, 'single task label must match series.name');
+    }
+  }
+});
