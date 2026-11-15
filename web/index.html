@@ -152,8 +152,25 @@ const ago = iso => {
   return m < 1 ? 'now' : m < 60 ? `${m | 0}m` : m < 1440 ? `${m / 60 | 0}h` : m < 10080 ? `${m / 1440 | 0}d` : `${m / 10080 | 0}w`;
 };
 
+let loginReads = 0, loginApplied = 0;
+async function readLogins() {
+  const n = ++loginReads;
+  return { n, logins: await api('/logins') };
+}
+function applyLogins({ n, logins }) {
+  if (n > loginApplied) {
+    loginApplied = n;
+    myLogins = logins;
+    expired = logins.filter(l => l.expired);
+    if (pv?.settings?.logins) pv.settings.logins = logins;
+    if (pv?.back?.settings?.logins) pv.back.settings.logins = logins;
+    renderLog();
+  }
+  return myLogins;
+}
+
 async function refresh() {
-  const n = ++refreshes, [t, mine, who] = await Promise.all([api('/api'), api('/logins'), api('/me')]);
+  const n = ++refreshes, [t, mine, who] = await Promise.all([api('/api'), readLogins(), api('/me')]);
   const [id, at] = location.hash.slice(2).split('/'), all = t.flatMap(w => [[w], ...w.series.flatMap(s => [[w, s], ...s.instances.map(i => [w, s, i])])]), found = all.find(e => e.at(-1).id === id);
   // An address that names nothing here opens the sidebar's first workspace, and then names what it shows.
   const ws = t.filter(w => !w.archived && (w.mine || localStorage.workspaces === 'all' || !t.some(w => w.mine)));
@@ -163,13 +180,14 @@ async function refresh() {
   const path = i ? `/api/instances/${i.id}` : '', [d, st] = path ? await fetchInstance(path) : [null, null];
   if (n !== refreshes) return;
   if ((!found || at) && w) history.replaceState(null, '', `#/${(i ?? s ?? w).id}`);
-  [tree, expired, myLogins, me] = [t, mine.filter(l => l.expired), mine, who];
+  [tree, me] = [t, who];
+  applyLogins(mine);
   land(w && { w, s, i }, path, d, st);
   if (at && i) showComment(+at.slice(1));
   if (pv?.settings?.kind === 'logins') {
     const p = pv, [sites, grants] = await Promise.all([api('/logins/sites'), api('/grants')]);
     if (pv === p && n === refreshes) {
-      Object.assign(p.settings, { sites, grants, logins: mine });
+      Object.assign(p.settings, { sites, grants });
       const next = document.createElement('div');
       next.innerHTML = loginsHtml(p.settings);
       for (const attr of ['data-site-summary', 'data-site-profile', 'data-grant']) for (const el of document.querySelectorAll(`#pv [${attr}]`)) {
@@ -1115,7 +1133,7 @@ function openWorkspaceSettings() {
 }
 
 async function openSeriesSettings() {
-  const s = cur.s, logins = await api('/logins');
+  const s = cur.s, logins = applyLogins(await readLogins());
   pv = { title: 'Series settings', settings: { ...s, kind: 'series', logins, cost: s.instances.reduce((t, i) => t + i.cost, 0), estimated: s.instances.some(i => i.estimated), closed: s.instances.filter(i => i.status === 'closed').length } };
   renderPv();
 }
@@ -1285,14 +1303,12 @@ async function saveKey() {
 async function openLogins(savedSignIn, website) {
   if (pv?.saving && pv !== savedSignIn) return;
   const n = ++accountOpens, before = pv;
-  const [logins, connections, grants, sites, vpn] = await Promise.all([api('/logins'), api('/connections'), api('/grants'), api('/logins/sites'),
+  const [mine, connections, grants, sites, vpn] = await Promise.all([readLogins(), api('/connections'), api('/grants'), api('/logins/sites'),
     me.can.includes('vpn') ? api('/vpns').then(rows => ({ rows }), e => ({ error: e.message })) : null]);
   if (n !== accountOpens || pv !== before || pv?.saving && pv !== savedSignIn || website && !sites[website]) return;
+  const logins = applyLogins(mine);
   pv = { title: 'Logins', shown: pv?.shown ?? [], back: pv?.back, website: pv?.website, workspace: pv?.workspace, settings: { kind: 'logins', logins, connections, grants, sites, vpn } };
-  myLogins = logins;
-  expired = logins.filter(l => l.expired);
   if (pv.back) pv.back.settings.logins = logins;
-  renderLog();
   renderPv();
   return pv;
 }
@@ -1364,7 +1380,8 @@ function closePv(restore = false) {
 }
 
 async function openStart(title, go, then, label, on, ws = cur.w.id, warn) {
-  pv = { title, settings: { kind: 'start', go, then, label, on, ws, warn, logins: await api('/logins') } };
+  const logins = applyLogins(await readLogins());
+  pv = { title, settings: { kind: 'start', go, then, label, on, ws, warn, logins } };
   renderPv();
   $('#slabel')?.focus();
 }
@@ -1855,7 +1872,7 @@ async function onAct(act, el) {
   if (act === 'new-instance') await openStart('New instance', 'Make', ({ label, logins }) => api(seriesPath(cur), { method: 'POST', body: JSON.stringify({ label, logins, quiet: true }) }), '');
   // A task starts at once, Untitled, with the logins last ticked, on its conversation, ready for the prompt that starts its run.
   if (act === 'new-task') {
-    const offers = new Set((await api('/logins')).filter(l => !l.expired && (l.kind !== 'website' || cur.w.grants.some(g => g.person === me.email && g.site === l.id.slice(4) && g.state === 'approved'))).flatMap(l => l.offers.map(o => o.id))), logins = JSON.parse(localStorage.ticks ?? '[]').filter(id => offers.has(id));
+    const offers = new Set(applyLogins(await readLogins()).filter(l => !l.expired && (l.kind !== 'website' || cur.w.grants.some(g => g.person === me.email && g.site === l.id.slice(4) && g.state === 'approved'))).flatMap(l => l.offers.map(o => o.id))), logins = JSON.parse(localStorage.ticks ?? '[]').filter(id => offers.has(id));
     const { instance } = await api('/api/series', { method: 'POST', body: JSON.stringify({ workspace: cur.w.id, single: true, logins }) });
     Object.assign(ui, { open: true, focus: instance });
     go(instance);
@@ -1909,6 +1926,7 @@ async function onAct(act, el) {
     const setup = await openLogins(undefined, el.dataset.id);
     if (!setup) return;
     Object.assign(setup, { back, website: el.dataset.id, workspace: el.dataset.ws, shown: ['web', `web:${el.dataset.id}`] });
+    if (back?.settings?.logins) back.settings.logins = setup.settings.logins;
     renderPv();
     $('#pv details[open].website').scrollIntoView({ block: 'nearest' });
   }
@@ -1937,17 +1955,22 @@ async function onAct(act, el) {
     await refresh();
   }
   if (act === 'offer-add') {
-    const id = el.dataset.id, v = document.getElementById(`offer-add-${id}`).value.trim();
+    const p = pv, n = accountOpens, id = el.dataset.id, v = document.getElementById(`offer-add-${id}`).value.trim();
     if (!v) return;
     const failed = await api(`/logins/${enc(id)}/offers`, { method: 'POST', body: JSON.stringify({ add: v }) }).then(() => null, e => e);
-    pv.settings.logins = await api('/logins');
+    const mine = await readLogins();
+    if (pv !== p || n !== accountOpens) { if (failed) throw failed; return; }
+    applyLogins(mine);
     // A login Microsoft no longer renews shows as expired, with Sign in again, in place of the error; others leave the box as it was.
-    if (failed && !pv.settings.logins.find(l => l.id === id)?.expired) throw failed;
+    if (failed && !p.settings.logins.find(l => l.id === id)?.expired) throw failed;
     renderPv();
   }
   if (act === 'unoffer') {
+    const p = pv, n = accountOpens;
     await api(`/logins/${enc(el.dataset.login)}/offers/${enc(el.dataset.id)}`, { method: 'DELETE' });
-    pv.settings.logins = await api('/logins');
+    const mine = await readLogins();
+    if (pv !== p || n !== accountOpens) return;
+    applyLogins(mine);
     renderPv();
   }
   if (act === 'web-signin' || act === 'vpn-signin' && me.can.includes('vpn')) {
@@ -1964,6 +1987,7 @@ async function onAct(act, el) {
       await api(`/signins/${r.id}`, { method: 'DELETE' });
       return;
     }
+    if (before?.back && before.settings?.kind === 'logins') before.back.settings.logins = before.settings.logins;
     const p = pv = { title: `Sign in to ${vpn ? `${el.dataset.id} VPN` : el.dataset.name}`, signin: r.id, expires: r.expires, vpn, back: before?.back, website: before?.website, workspace: before?.workspace, shown: before?.shown ?? [] };
     renderPv();
     while (pv === p && p.signin) {
@@ -2014,9 +2038,14 @@ async function onAct(act, el) {
     else if (pv.settings.kind === 'logins') await openLogins();
     else renderPv();
   }
-  if (act === 'site-remove' && await ask({ title: `Remove ${el.dataset.id}?`, text: 'Your login to it and your grants for it go too.', ok: 'Remove', kind: 'danger',
-    act: () => api(`/logins/sites/${enc(el.dataset.id)}`, { method: 'DELETE' }) })) {
-    [pv.settings.logins, pv.settings.sites, pv.settings.grants] = await Promise.all([api('/logins'), api('/logins/sites'), api('/grants')]);
+  if (act === 'site-remove') {
+    const p = pv, n = accountOpens;
+    if (!await ask({ title: `Remove ${el.dataset.id}?`, text: 'Your login to it and your grants for it go too.', ok: 'Remove', kind: 'danger',
+      act: () => api(`/logins/sites/${enc(el.dataset.id)}`, { method: 'DELETE' }) })) return;
+    const [mine, sites, grants] = await Promise.all([readLogins(), api('/logins/sites'), api('/grants')]);
+    if (pv !== p || n !== accountOpens) return;
+    applyLogins(mine);
+    Object.assign(p.settings, { sites, grants });
     renderPv();
   }
   if (act === 'host-remove' && await ask({ title: `Remove ${el.dataset.host}?`, text: `${el.dataset.site}'s runs no longer reach it, and the server's check won't let them again. Only an admin can allow it again.`, ok: 'Remove', kind: 'danger',
@@ -2061,12 +2090,14 @@ async function onAct(act, el) {
     if (pv === p && n === accountOpens) return openLogins();
   }
   if (act === 'signout-login') {
+    const p = pv, n = accountOpens;
     await api(`/logins/${enc(el.dataset.id)}`, { method: 'DELETE' });
-    await refresh();
-    if (pv?.settings?.kind === 'logins') {
-      pv.settings.logins = await api('/logins');
+    const mine = await readLogins();
+    if (pv === p && n === accountOpens) {
+      applyLogins(mine);
       renderPv();
     }
+    await refresh();
   }
   if (act === 'new-workspace') {
     const made = await ask({ title: 'New workspace', text: 'Such as a client. You become its owner.', value: '', placeholder: 'Name', ok: 'Make workspace', act: name => api('/api/workspaces', { method: 'POST', body: JSON.stringify({ name }) }) });

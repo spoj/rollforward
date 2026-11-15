@@ -779,7 +779,7 @@ test('a first-comment website setup load survives a same-navigation refresh', as
   } finally { release.resolve(); await page.close(); }
 });
 
-test('renewing a first-comment login updates ticks and expiry before an instance refresh finishes without replacing prompt or files', async () => {
+for (const closeEarly of [false, true]) test(`renewing a first-comment login stays fresh after an older refresh, closing ${closeEarly ? 'before' : 'after'} it lands`, async () => {
   const { page, responses } = await openWebsiteTicks(true);
   const saved = Promise.withResolvers<void>(), saveRelease = Promise.withResolvers<void>();
   const refreshing = Promise.withResolvers<void>(), refreshRelease = Promise.withResolvers<void>();
@@ -793,9 +793,9 @@ test('renewing a first-comment login updates ticks and expiry before an instance
     await page.waitForSelector('#pv details[data-shown="web:expired"][open]');
     await page.route('**/logins/web/expired', r => r.fulfill({ json: { id: 'renew', expires: new Date(Date.now() + 600_000).toISOString() } }));
     await page.route('**/signins/renew', async r => {
-      (responses['/logins'] as { id: string; expired: boolean }[]).find(l => l.id === 'web:expired')!.expired = false;
       saved.resolve();
       await saveRelease.promise;
+      (responses['/logins'] as { id: string; expired: boolean }[]).find(l => l.id === 'web:expired')!.expired = false;
       await r.fulfill({ body: 'ok' });
     });
     await page.route('**/api/instances/i1', async r => {
@@ -810,7 +810,7 @@ test('renewing a first-comment login updates ticks and expiry before an instance
     await refreshing.promise;
     saveRelease.resolve();
     await page.waitForSelector('#pv details[data-shown="web:expired"][open]');
-    await page.click('#pv [data-act=unpv]');
+    if (closeEarly) await page.click('#pv [data-act=unpv]');
     assert.equal(await row.locator('input').isEnabled(), true, 'fresh login data must not wait for fetchInstance/SSE');
     assert.equal(await row.locator('input').isChecked(), false, 'renewing does not grant a new selection');
     assert.equal(await page.evaluate(() => myLogins.find(l => l.id === 'web:expired').expired), false);
@@ -821,6 +821,13 @@ test('renewing a first-comment login updates ticks and expiry before an instance
     refreshRelease.resolve();
     await page.evaluate(() => window.renewalRefresh);
     assert.equal(await row.locator('input').isEnabled(), true);
+    assert.equal(await page.evaluate(() => myLogins.find(l => l.id === 'web:expired').expired), false);
+    assert.equal(await page.evaluate(() => expired.some(l => l.id === 'web:expired')), false);
+    assert.equal(await page.evaluate(() => window.promptNode === document.querySelector('#newcomment') && window.filesNode === document.querySelector('#newfiles') && window.promptDraft === draft), true);
+    if (!closeEarly) {
+      assert.equal(await page.evaluate(() => pv.settings.logins.find(l => l.id === 'web:expired').expired), false);
+      await page.click('#pv [data-act=unpv]');
+    }
   } finally { saveRelease.resolve(); refreshRelease.resolve(); await page.close(); }
 });
 
@@ -1013,6 +1020,83 @@ for (const action of ['new-token', 'revoke-token', 'orkey-save', 'service-connec
   } finally { release.resolve(); tabRelease.resolve(); await page.close(); }
 });
 
+for (const signout of [false, true]) for (const vpn of [false, true]) test(`fresh setup logins survive ${vpn ? 'VPN' : 'website'} Sign in and Cancel${signout ? ' after sign-out' : ''}`, async () => {
+  const { page, responses } = await openWebsiteTicks();
+  try {
+    if (vpn) {
+      (responses['/me'] as { can: string[] }).can.push('vpn');
+      responses['/vpns'] = [{ name: 'office', gateway: 'vpn.test', connected: false }];
+      await page.evaluate(() => refresh());
+    }
+    await page.evaluate(() => onAct('new-instance', document.createElement('button')));
+    await page.fill('#slabel', 'Keep selections');
+    await page.check('#pv input.tick[value="web:approved"]');
+    (responses['/logins'] as { id: string; expired: boolean }[]).find(l => l.id === 'web:expired')!.expired = false;
+    await page.evaluate(() => onAct('website-setup', document.querySelector('#pv [data-act=website-setup][data-id=missing]')));
+    if (signout) {
+      await page.route('**/logins/web%3Aapproved', r => {
+        responses['/logins'] = (responses['/logins'] as { id: string }[]).filter(l => l.id !== 'web:approved');
+        return r.fulfill({ body: 'ok' });
+      });
+      await page.evaluate(() => onAct('signout-login', document.querySelector('#pv [data-act=signout-login][data-id="web:approved"]')));
+    }
+    await page.route(vpn ? '**/vpns/office/signins' : '**/logins/web/missing', r => r.fulfill({ json: { id: 'cancel', expires: new Date(Date.now() + 600_000).toISOString() } }));
+    await page.click(vpn ? '#pv [data-act=vpn-signin][data-id=office]' : '#pv details[data-shown="web:missing"] [data-act=web-signin]');
+    await page.waitForSelector('#pv [data-act=signin-save]');
+    await page.click('#pv [data-act=unpv]');
+    assert.equal(await page.inputValue('#slabel'), 'Keep selections');
+    assert.equal(await page.isEnabled('#pv input.tick[value="web:expired"]'), true);
+    assert.equal(await page.locator('#pv input.tick[value="web:approved"]').count(), signout ? 0 : 1);
+    if (!signout) assert.equal(await page.isChecked('#pv input.tick[value="web:approved"]'), true);
+  } finally { await page.close(); }
+});
+
+for (const action of ['offer-add', 'unoffer', 'site-remove', 'signout-login']) test(`${action} applies its login reread to conversation and return draft`, async () => {
+  const { page, responses } = await openWebsiteTicks(true);
+  const refreshing = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  try {
+    responses['/connections'] = [{ name: 'graph', type: 'graph', login: { id: 'm365', name: 'Microsoft 365', scope: ['Mail.Read'] } }];
+    await page.fill('#newcomment', 'Keep the global prompt');
+    await page.evaluate(() => { window.promptNode = document.querySelector('#newcomment'); });
+    await page.evaluate(() => onAct('new-instance', document.createElement('button')));
+    await page.fill('#slabel', 'Keep the return draft');
+    await page.evaluate(() => onAct('website-setup', document.querySelector('#pv [data-act=website-setup][data-id=missing]')));
+    await page.click('#pv [data-act=logins-show][data-id=m365]');
+    if (action === 'offer-add') await page.fill('#offer-add-m365', 'https://files.test/ledger');
+    const path = action === 'offer-add' ? '/logins/m365/offers' : action === 'unoffer' ? '/logins/m365/offers/m365%3Amail' : action === 'site-remove' ? '/logins/sites/approved' : '/logins/web%3Aapproved';
+    if (action === 'signout-login') await page.route('**/api/instances/i1', async r => {
+      refreshing.resolve();
+      await release.promise;
+      await r.fulfill({ json: responses['/api/instances/i1'] });
+    }, { times: 1 });
+    await page.route(`**${path}`, r => {
+      responses['/logins'] = (responses['/logins'] as { id: string; expired: boolean }[])
+        .filter(l => l.id !== 'web:approved').map(l => l.id === 'web:expired' ? { ...l, expired: false } : l);
+      if (action === 'site-remove') delete (responses['/logins/sites'] as Record<string, unknown>).approved;
+      return r.fulfill({ body: 'ok' });
+    });
+    await page.evaluate(action => {
+      const id = action === 'offer-add' ? 'm365' : action === 'unoffer' ? 'm365:mail' : action === 'site-remove' ? 'approved' : 'web:approved';
+      window.mutation = onAct(action, document.querySelector(`#pv [data-act="${action}"][data-id="${id}"]`));
+    }, action);
+    if (action === 'site-remove') await page.click('#ask button[value=ok]');
+    if (action === 'signout-login') await refreshing.promise;
+    else await page.evaluate(() => window.mutation);
+    assert.equal(await page.evaluate(() => myLogins.find(l => l.id === 'web:expired').expired), false);
+    assert.equal(await page.evaluate(() => expired.some(l => l.id === 'web:expired')), false);
+    assert.equal(await page.isEnabled('#log input.tick[value="web:expired"]'), true);
+    assert.equal(await page.locator('#log input.tick[value="web:approved"]').count(), 0);
+    release.resolve();
+    await page.evaluate(() => window.mutation);
+    await page.click('#pv [data-act=unpv]');
+    assert.equal(await page.inputValue('#slabel'), 'Keep the return draft');
+    assert.equal(await page.isEnabled('#pv input.tick[value="web:expired"]'), true);
+    assert.equal(await page.locator('#pv input.tick[value="web:approved"]').count(), 0);
+    assert.equal(await page.inputValue('#newcomment'), 'Keep the global prompt');
+    assert.equal(await page.evaluate(() => window.promptNode === document.querySelector('#newcomment')), true);
+  } finally { release.resolve(); await page.close(); }
+});
+
 test('a key Save finishing its refresh cannot label the restored credential draft Saved', async () => {
   const { page, responses } = await openWebsiteTicks(true);
   const refreshing = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
@@ -1034,6 +1118,38 @@ test('a key Save finishing its refresh cannot label the restored credential draf
     assert.equal(await page.inputValue('#slabel'), 'Not a saved instance');
     assert.equal(await page.textContent('#pv .saved'), '');
   } finally { release.resolve(); await page.close(); }
+});
+
+test('a canceled newer login read does not prevent an earlier valid refresh from applying', async () => {
+  const { page, responses } = await openWebsiteTicks(true);
+  const refreshing = Promise.withResolvers<void>(), refreshRelease = Promise.withResolvers<void>();
+  const opening = Promise.withResolvers<void>(), openRelease = Promise.withResolvers<void>();
+  try {
+    (responses['/logins'] as { id: string; expired: boolean }[]).find(l => l.id === 'web:expired')!.expired = false;
+    await page.route('**/api/instances/i1', async r => {
+      refreshing.resolve();
+      await refreshRelease.promise;
+      await r.fulfill({ json: responses['/api/instances/i1'] });
+    }, { times: 1 });
+    await page.evaluate(() => { window.oldRefresh = refresh(); });
+    await refreshing.promise;
+    (responses['/logins'] as { id: string; expired: boolean }[]).find(l => l.id === 'web:expired')!.expired = true;
+    await page.route('**/connections', async r => {
+      opening.resolve();
+      await openRelease.promise;
+      await r.fulfill({ json: [] });
+    }, { times: 1 });
+    await page.evaluate(() => { window.canceledOpen = openLogins(); });
+    await opening.promise;
+    await page.evaluate(() => closePv());
+    refreshRelease.resolve();
+    await page.evaluate(() => window.oldRefresh);
+    assert.equal(await page.isEnabled('#log input.tick[value="web:expired"]'), true);
+    openRelease.resolve();
+    await page.evaluate(() => window.canceledOpen);
+    assert.equal(await page.evaluate(() => pv), null);
+    assert.equal(await page.isEnabled('#log input.tick[value="web:expired"]'), true);
+  } finally { refreshRelease.resolve(); openRelease.resolve(); await page.close(); }
 });
 
 for (const close of ['start-go', 'comment-cell']) test(`${close} cancels a null-origin account load`, async () => {
