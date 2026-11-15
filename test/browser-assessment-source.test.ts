@@ -1,6 +1,8 @@
 import { after, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import dns from 'node:dns/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -10,7 +12,7 @@ import { createInstance, openStore } from '../src/store.ts';
 const email = 'alice@synthetic.test', bob = 'bob@synthetic.test';
 const me = { email, name: 'Alice', role: 'user' as const, groups: [] };
 const profile = { what: 'Vendor portal', category: 'vendor', risk: 'low', flags: [] };
-const outbound: string[] = [];
+const outbound: string[] = [], lookups: string[] = [];
 let gate: { path: string; seen: PromiseWithResolvers<void>; release: PromiseWithResolvers<void> } | undefined;
 const service = createServer(async (req, res) => {
   const u = new URL(req.url!, 'http://localhost');
@@ -59,7 +61,9 @@ beforeEach(t => {
   writeJson('connections.json', {});
   writeJson('internal.json', {});
   mkdirSync(join(root, 'series/s'), { recursive: true });
-  outbound.length = 0;
+  outbound.length = lookups.length = 0;
+  t.mock.method(dns, 'lookup', async (host: string) => { lookups.push(host); return [{ address: '203.0.113.10', family: 4 }]; });
+  syncBuiltinESMExports();
   gate = undefined;
   t.after(async () => {
     gate?.release.resolve();
@@ -101,7 +105,7 @@ async function invalidate(kind: typeof invalidations[number], inst: ReturnType<t
       break;
   }
 }
-for (const path of ['DELETE /sessions/browser', 'POST /api/v1/chat/completions', 'POST /search']) {
+for (const path of ['DELETE /sessions/browser', 'GET /blocked', 'POST /api/v1/chat/completions', 'POST /search']) {
   for (const kind of invalidations) test(`${kind} during ${path} fences browser-close assessment`, { timeout: 5000 }, async t => {
     t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
     const { inst, browsers } = await running();
@@ -110,16 +114,17 @@ for (const path of ['DELETE /sessions/browser', 'POST /api/v1/chat/completions',
     t.after(async () => { gate?.release.resolve(); await closing; await drainWebsiteChecks(2000); });
     await gate.seen.promise;
     await invalidate(kind, inst);
-    const before = websitesOf(email), sent = [...outbound], checking = isCheckingWebsite(email, 'portal');
+    const before = websitesOf(email), sent = [...outbound], resolved = [...lookups], checking = isCheckingWebsite(email, 'portal');
     gate.release.resolve();
     await closing;
     await drainWebsiteChecks(2000);
     assert.equal(checking, false);
     assert.deepEqual(outbound, sent, 'no new rule, model or search calls after invalidation');
+    assert.deepEqual(lookups, resolved, 'no new DNS disclosures after invalidation');
     assert.deepEqual(websitesOf(email), before, 'no stale profile or verdict publication');
     assert.equal(inst.log.some(e => e.op === 'browser' && e.action === 'allowed'), false);
     assert.equal(inst.log.filter(e => e.op === 'browser' && e.file).length, 1, 'close accounting survives');
-    if (path !== 'DELETE /sessions/browser') {
+    if (path.startsWith('POST ')) {
       const costs = readFileSync(join(rfDir(), 'costs.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
       assert.equal(costs.length, path === 'POST /search' ? 2 : 1, 'already-issued calls remain accounted');
     }

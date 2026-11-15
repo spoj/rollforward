@@ -517,6 +517,7 @@ export async function checkWebsite(email: string, site: string, given?: Trace, s
     const validHosts = todo.filter(h => !rules[h]);
     if (validHosts.length) {
       const blocked = await browserJson('GET', `/blocked?${new URLSearchParams(validHosts.map(h => ['host', h]))}`);
+      if (!current()) throw new HttpError(409, `${site} was removed, replaced or signed out while it was checked`);
       await Promise.all(validHosts.map(async h => {
         if (blocked[h]) rules[h] = { verdict: 'refused', why: 'It is on a browser blocklist.' };
         else if (throughVpn(w, h)) rules[h] = { verdict: 'pass', why: `It is within the website's own domain, through client VPN ${w.via}.` };
