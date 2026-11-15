@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { closeSync, existsSync, openSync, readSync, statSync, truncateSync } from 'node:fs';
 import { join } from 'node:path';
 import { appendLine, rfDir } from './system.ts';
@@ -13,11 +14,18 @@ const file = () => join(rfDir(), 'costs.jsonl');
 export function recordCost(entry: CostRecord) {
   const root = rfDir();
   if (!root) return;
-  syncCosts();
-  if (cachedSize > cachedOffset) truncateSync(file(), cachedOffset);
-  const line = JSON.stringify(entry);
-  appendLine(file(), line, 0o600);
-  syncCosts();
+  const lock = openSync(file() + '.lock', 'a', 0o600);
+  try {
+    // flock shares this open file description; closing it (including on process death) releases the lock.
+    execFileSync('flock', ['-x', '3'], { stdio: ['ignore', 'ignore', 'pipe', lock] });
+    syncCosts();
+    if (cachedSize > cachedOffset) truncateSync(file(), cachedOffset);
+    const line = JSON.stringify(entry);
+    appendLine(file(), line, 0o600);
+    syncCosts();
+  } finally {
+    closeSync(lock);
+  }
 }
 
 // Incremental tail read: costs.jsonl is append-only (including from `cli.ts try` in another process), so after the first read

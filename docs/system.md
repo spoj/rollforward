@@ -391,7 +391,7 @@ Only an approved grant lets the runner's ticked login open a browser there; othe
 
 ## Without Docker
 
-You need Node 26, bubblewrap and tar, and a systemd user session for each run's memory limits (or `RF_SANDBOX_SCOPE=` without); everything a run uses comes in the agent image.
+You need Node 26, bubblewrap, tar and util-linux's `flock`, and a systemd user session for each run's memory limits (or `RF_SANDBOX_SCOPE=` without); everything a run uses comes in the agent image.
 
     npm install
     node scripts/agent.ts        # the agent image this checkout runs, published or built with podman or docker
