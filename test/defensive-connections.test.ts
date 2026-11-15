@@ -19,6 +19,8 @@ const upstreamPaths: string[] = [];
 let tokenCalls = 0;
 let tokenGate: PromiseWithResolvers<void> | undefined;
 let tokenEntered: PromiseWithResolvers<void> | undefined;
+let sendGate: PromiseWithResolvers<void> | undefined;
+let sendEntered: PromiseWithResolvers<void> | undefined;
 let upstream: Server, proxy: Server;
 let sock = '', ca = '';
 let loginsMod: typeof import('../src/logins.ts');
@@ -78,7 +80,7 @@ before(async () => {
   mkdirSync(join(instDir, 'working'), { recursive: true });
   mkdirSync(seriesDir, { recursive: true });
 
-  upstream = createServer((req, res) => {
+  upstream = createServer(async (req, res) => {
     upstreamPaths.push(req.url!);
     const u = new URL(req.url!, 'http://x');
     const send = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
@@ -103,6 +105,13 @@ before(async () => {
         return send({ access_token: `atok-${rt}`, refresh_token: `next-${rt}`, expires_in: 3600 });
       });
       return;
+    }
+
+    if (u.pathname === '/v1.0/me/sendMail') {
+      await Array.fromAsync(req);
+      sendEntered?.resolve();
+      await sendGate?.promise;
+      return void res.writeHead(202).end();
     }
 
     // Graph mock using exact canonical paths
@@ -198,6 +207,7 @@ before(async () => {
   process.env.RF_OIDC_CLIENT_ID = 'app';
   process.env.RF_OIDC_CLIENT_SECRET = 'secret';
   process.env.RF_PUBLIC_URL = 'https://rf.demo.test';
+  process.env.RF_M365_SCOPES = 'Mail.Read Mail.Send Files.Read.All Sites.Read.All';
   process.env.OPENROUTER_API_KEY = 'sk-or-defensive-test';
 
   const { initSystem, saveTree } = await import('../src/system.ts');
@@ -474,3 +484,79 @@ test('Entra token() coalesces concurrent refreshes and ignores stale completions
   loginsMod.seal(USER, 'm365', 'restored-after-sync-throw');
   assert.equal(await token(USER, 'm365', scope), 'atok-restored-after-sync-throw');
 });
+
+for (const mode of ['untick', 'unoffer', 'signout']) {
+  test(`credential withdrawal during token renewal prevents a new send: ${mode}`, { timeout: 5000 }, async () => {
+    const offer = `m365:mail:${USER}`, inst = makeInst([offer]);
+    runs.set('revoke', inst);
+    callRuns.set('revoke', { inst, n: 1, links: new Map(), cost: 0 });
+    loginsMod.saveLogin(USER, {
+      id: 'm365', kind: 'm365', name: 'Microsoft 365', since: `renew-${mode}`,
+      offers: [{ id: offer, name: 'Mailbox' }],
+    }, 'hold-revoke');
+    calls.length = 0;
+    upstreamPaths.length = 0;
+    tokenGate = Promise.withResolvers();
+    tokenEntered = Promise.withResolvers();
+    const pending = viaProxy('POST', 'https://graph.microsoft.com/v1.0/me/sendMail', {
+      token: 'revoke', headers: { 'content-type': 'application/json' }, body: '{"message":{"subject":"local fixture"}}',
+    });
+    try {
+      await tokenEntered.promise;
+      assert.equal(upstreamPaths.includes('/v1.0/me/sendMail'), false);
+      assert.equal(calls.some(c => c.op === 'send'), false);
+      if (mode === 'untick') inst.log.push({ seq: 3, at: new Date().toISOString(), op: 'logins', by: USER, logins: [] });
+      if (mode === 'unoffer') loginsMod.unoffer(USER, 'm365', offer);
+      if (mode === 'signout') loginsMod.signOut(USER, 'm365');
+      assert.throws(() => loginsMod.use(inst, 1, offer));
+    } finally {
+      tokenGate.resolve();
+    }
+    const response = await pending;
+    tokenGate = undefined;
+    tokenEntered = undefined;
+    assert.equal(upstreamPaths.includes('/v1.0/me/sendMail'), false, 'withdrawn credentials must not start a new upstream request');
+    assert.equal(response.status, mode === 'untick' ? 403 : 409);
+    assert.equal(calls.some(c => c.op === 'send'), false);
+    assert.equal(calls.at(-1)?.op, 'call');
+    assert.equal(calls.at(-1)?.data.status, response.status);
+    assert.ok(calls.at(-1)?.data.refused);
+    assert.equal(calls.at(-1)?.data.sent, undefined);
+  });
+
+  test(`credential withdrawal preserves an already-sent call: ${mode}`, { timeout: 5000 }, async () => {
+    const offer = `m365:mail:${USER}`, inst = makeInst([offer]);
+    runs.set('sent', inst);
+    callRuns.set('sent', { inst, n: 1, links: new Map(), cost: 0 });
+    loginsMod.saveLogin(USER, {
+      id: 'm365', kind: 'm365', name: 'Microsoft 365', since: `sent-${mode}`,
+      offers: [{ id: offer, name: 'Mailbox' }],
+    }, 'sent-refresh');
+    calls.length = 0;
+    upstreamPaths.length = 0;
+    sendGate = Promise.withResolvers();
+    sendEntered = Promise.withResolvers();
+    const pending = viaProxy('POST', 'https://graph.microsoft.com/v1.0/me/sendMail', {
+      token: 'sent', headers: { 'content-type': 'application/json' }, body: '{"message":{"subject":"local fixture"}}',
+    });
+    try {
+      await sendEntered.promise;
+      assert.equal(upstreamPaths.filter(p => p === '/v1.0/me/sendMail').length, 1);
+      assert.deepEqual(calls.map(c => c.op), ['send']);
+      if (mode === 'untick') inst.log.push({ seq: 3, at: new Date().toISOString(), op: 'logins', by: USER, logins: [] });
+      if (mode === 'unoffer') loginsMod.unoffer(USER, 'm365', offer);
+      if (mode === 'signout') loginsMod.signOut(USER, 'm365');
+      assert.throws(() => loginsMod.use(inst, 1, offer));
+    } finally {
+      sendGate.resolve();
+    }
+    const response = await pending;
+    sendGate = undefined;
+    sendEntered = undefined;
+    assert.equal(response.status, 202);
+    assert.deepEqual(calls.map(c => c.op), ['send', 'call']);
+    assert.equal(calls[1].data.status, 202);
+    assert.equal(calls[1].data.sent, 1);
+    assert.equal(calls[1].data.refused, undefined);
+  });
+}

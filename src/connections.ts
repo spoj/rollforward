@@ -405,6 +405,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     }
     const body = out === undefined ? raw : Buffer.from(JSON.stringify(out));
     if (a.stopped) throw new HttpError(409, 'run stopped');
+    if (c) use(a.inst, a.n, offer);
     if (!s && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
       if (c?.type === 'service') digest = { hash: createHash('sha256'), size: 0 };
       sent = a.inst.append('agent', 'send', { run: a.n, name, method, path }).seq;
