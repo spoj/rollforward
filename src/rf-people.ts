@@ -525,18 +525,26 @@ if (cmd === 'login' && url) {
 else if (cmd === 'comment' && args.length === 2) {
   const { at } = await instanceAt(args[0]);
   const posted = await post(`${at}/comment`, { text: args[1], item: flags.item, ref: flags.ref, thread: flags.thread, quiet: !flags.wake && !flags.wait });
-  const seq = Number(posted.headers.get('X-RF-Comment-Seq')), { log, runner, starts } = await get(at), { note } = log.find(e => e.seq === seq);
+  const seq = Number(posted.headers.get('X-RF-Comment-Seq')), { doc, log, runner, starts } = await get(at), note = log.find(e => e.seq === seq)?.note;
   if (note && !starts) console.log(`a note for the runner, ${runner.by}, seq ${seq}: it starts no run until they act`);
   else if (!flags.wait) console.log(`${note ? `a note for the runner, ${runner.by}` : 'commented'}, seq ${seq}`);
+  else if (doc.status !== 'open') console.log(`The instance was ${doc.status}.`);
   else for (;;) {
     // The run that saw the comment, and what it said from then on: a run ending as it came may not have.
     await new Promise(r => setTimeout(r, 5000));
-    const log = (await get(at)).log, done = log.find(e => e.op === 'done' && (e.seen >= seq || ((e.error || e.aborted) && (log.find(r => r.op === 'run' && r.run === e.run)?.upto ?? 0) >= seq && !log.some(w => w.seq > e.seq && w.op === 'wake' && w.cause === e.seq))));
-    if (!done) continue;
-    const from = Math.max(seq, log.find(e => e.op === 'run' && e.run === done.run).seq);
-    for (const e of log.filter(e => e.seq > from && e.seq < done.seq && e.op === 'comment' && e.by === 'agent' && !e.see)) console.log(`${e.ask === 'proposal' ? 'Proposes' : e.ask ? 'Asks' : 'Says'} in ${e.thread}:\n${e.text}\n`);
-    if (done.error) console.log(`The run failed: ${done.error}`);
-    break;
+    const { doc, log } = await get(at);
+    const done = log.find(e => e.op === 'done' && (e.seen >= seq || (e.seq > seq && (e.error || e.aborted) && !log.some(w => w.seq > e.seq && ((w.op === 'wake' && w.cause === e.seq) || w.op === 'run')))));
+    if (done) {
+      const from = Math.max(seq, log.find(e => e.op === 'run' && e.run === done.run)?.seq ?? 0);
+      for (const e of log.filter(e => e.seq > from && e.seq < done.seq && e.op === 'comment' && e.by === 'agent' && !e.see)) console.log(`${e.ask === 'proposal' ? 'Proposes' : e.ask ? 'Asks' : 'Says'} in ${e.thread}:\n${e.text}\n`);
+      if (done.error) console.log(`The run failed: ${done.error}`);
+      else if (done.aborted && done.seen < seq) console.log('The run was stopped.');
+      break;
+    }
+    if (doc.status !== 'open') {
+      console.log(`The instance was ${doc.status}.`);
+      break;
+    }
   }
 } else if (cmd === 'react' && [2, 3].includes(args.length) && ['up', 'down', 'none'].includes(args.at(-1)!)) {
   const on = args.length === 3 ? Number(args[1].replace(/^c/, '')) : undefined, up = { up: true, down: false, none: null }[args.at(-1)!];

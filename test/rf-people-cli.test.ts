@@ -350,6 +350,123 @@ test('R4-PEOPLE-08 + R4-DATA-14: workspace people normalizes owner/member overla
   assert.match(demoteNorm.stdout, /bob@demo\.test: owner -> member\nsaved/);
 });
 
+test('R4-PEOPLE-07: rf comment --wait exits on terminal states and steered/stopped failures while preserving cut and recoverable-hold waits', async () => {
+  let scenario = '', polls = 0;
+  const waitSrv = createHttpServer((req, res) => {
+    const send = (val: unknown, code = 200, hdrs: Record<string, string> = {}) =>
+      res.writeHead(code, { 'content-type': 'application/json', ...hdrs }).end(JSON.stringify(val));
+    if (req.url === '/api') return send([{ id: 'w', name: 'ws', series: [{ id: 's', name: 'ser', instances: [{ id: 'i', label: 'lbl' }] }] }]);
+    if (req.url === '/api/instances/i/comment') return send('ok', 200, { 'X-RF-Comment-Seq': '2' });
+    if (req.url === '/api/instances/i') {
+      polls++;
+      const baseLog: any[] = [{ seq: 1, op: 'create' }, { seq: 2, op: 'comment', by: 'alice@demo.test', text: 'Run please' }];
+      if (scenario === 'closed' && polls > 1) return send({ doc: { status: 'closed' }, log: [...baseLog, { seq: 3, op: 'close' }], runner: { by: 'alice@demo.test' }, starts: true });
+      if (scenario === 'abandoned' && polls > 1) return send({ doc: { status: 'abandoned' }, log: [...baseLog, { seq: 3, op: 'abandon' }], runner: { by: 'alice@demo.test' }, starts: true });
+      if (scenario === 'deleted' && polls > 1) return send({ doc: { status: 'deleted' }, log: [{ seq: 1, op: 'delete' }], runner: { by: 'alice@demo.test' }, starts: false });
+      if (scenario === 'steer-fail' && polls > 1) return send({
+        doc: { status: 'open' },
+        log: [{ seq: 1, op: 'run', run: 1, upto: 1 }, baseLog[1], { seq: 3, op: 'done', run: 1, seen: 1, aborted: false, error: 'credits' }],
+        runner: { by: 'alice@demo.test' }, starts: true,
+      });
+      if (scenario === 'stopped' && polls > 1) return send({
+        doc: { status: 'open' },
+        log: [{ seq: 1, op: 'run', run: 1, upto: 1 }, baseLog[1], { seq: 3, op: 'done', run: 1, seen: 1, aborted: true }],
+        runner: { by: 'alice@demo.test' }, starts: true,
+      });
+      if (scenario === 'init-fail' && polls > 1) return send({
+        doc: { status: 'open' },
+        log: [...baseLog, { seq: 3, op: 'run', run: 1, upto: 2 }, { seq: 4, op: 'done', run: 1, seen: 1, aborted: false, error: 'credits' }],
+        runner: { by: 'alice@demo.test' }, starts: true,
+      });
+      if (scenario === 'cut-then-done') {
+        if (polls === 2) return send({
+          doc: { status: 'open' },
+          log: [...baseLog, { seq: 3, op: 'run', run: 1, upto: 2 }, { seq: 4, op: 'done', run: 1, seen: 1, aborted: true, error: 'its series moved' }, { seq: 5, op: 'wake', cause: 4 }],
+          runner: { by: 'alice@demo.test' }, starts: true,
+        });
+        if (polls >= 3) return send({
+          doc: { status: 'open' },
+          log: [...baseLog, { seq: 3, op: 'run', run: 1, upto: 2 }, { seq: 4, op: 'done', run: 1, seen: 1, aborted: true, error: 'its series moved' }, { seq: 5, op: 'wake', cause: 4 },
+            { seq: 6, op: 'run', run: 2, upto: 5 }, { seq: 7, op: 'comment', by: 'agent', thread: 'c2', text: 'Finished after cut' }, { seq: 8, op: 'done', run: 2, seen: 5, aborted: false }],
+          runner: { by: 'alice@demo.test' }, starts: true,
+        });
+      }
+      if (scenario === 'hold-then-done') {
+        if (polls <= 4) return send({
+          doc: { status: 'open' }, held: ['entra'],
+          log: [...baseLog, { seq: 3, op: 'expired', login: 'entra' }],
+          runner: { by: 'alice@demo.test' }, starts: true,
+        });
+        return send({
+          doc: { status: 'open' }, held: [],
+          log: [...baseLog, { seq: 3, op: 'expired', login: 'entra' }, { seq: 4, op: 'run', run: 1, upto: 3 },
+            { seq: 5, op: 'comment', by: 'agent', thread: 'c2', text: 'Resumed after login' }, { seq: 6, op: 'done', run: 1, seen: 3, aborted: false }],
+          runner: { by: 'alice@demo.test' }, starts: true,
+        });
+      }
+      return send({ doc: { status: 'open' }, log: baseLog, runner: { by: 'alice@demo.test' }, starts: true });
+    }
+    send('ok');
+  });
+  await new Promise<void>(ok => waitSrv.listen(0, '127.0.0.1', ok));
+  const waitHome = join(tmp, 'home-wait');
+  mkdirSync(join(waitHome, '.config'), { recursive: true });
+  writeFileSync(join(waitHome, '.config', 'rollforward.json'), JSON.stringify({
+    url: `http://127.0.0.1:${(waitSrv.address() as { port: number }).port}`, token: 'tok',
+  }));
+  const fastPoll = ['--import', 'data:text/javascript,const _st=global.setTimeout;global.setTimeout=(f,n,...a)=>_st(f,n===5000?15:n,...a);'];
+
+  const runWait = async (sc: string) => {
+    scenario = sc; polls = 0;
+    try {
+      const { stdout, stderr } = await execFileP(process.execPath, ['--preserve-symlinks', ...fastPoll, rfScript, 'comment', 'ws/ser/lbl', 'Run please', '--wait'], {
+        env: { ...process.env, HOME: waitHome, NODE_OPTIONS: '--preserve-symlinks' },
+        timeout: 400,
+      });
+      return { code: 0, stdout, stderr, timedOut: false };
+    } catch (e: any) {
+      return { code: e.code ?? 1, stdout: e.stdout ?? '', stderr: e.stderr ?? '', timedOut: !!e.killed };
+    }
+  };
+
+  try {
+    const closedRes = await runWait('closed');
+    assert.equal(closedRes.timedOut, false);
+    assert.equal(closedRes.stdout, 'The instance was closed.\n');
+
+    const abandonedRes = await runWait('abandoned');
+    assert.equal(abandonedRes.timedOut, false);
+    assert.equal(abandonedRes.stdout, 'The instance was abandoned.\n');
+
+    const deletedRes = await runWait('deleted');
+    assert.equal(deletedRes.timedOut, false);
+    assert.equal(deletedRes.stdout, 'The instance was deleted.\n');
+
+    const steerFail = await runWait('steer-fail');
+    assert.equal(steerFail.timedOut, false);
+    assert.equal(steerFail.stdout, 'The run failed: credits\n');
+
+    const stoppedRes = await runWait('stopped');
+    assert.equal(stoppedRes.timedOut, false);
+    assert.equal(stoppedRes.stdout, 'The run was stopped.\n');
+
+    const initFail = await runWait('init-fail');
+    assert.equal(initFail.timedOut, false);
+    assert.equal(initFail.stdout, 'The run failed: credits\n');
+
+    const cutDone = await runWait('cut-then-done');
+    assert.equal(cutDone.timedOut, false);
+    assert.match(cutDone.stdout, /Says in c2:\nFinished after cut/);
+
+    const holdDone = await runWait('hold-then-done');
+    assert.equal(holdDone.timedOut, false);
+    assert.match(holdDone.stdout, /Says in c2:\nResumed after login/);
+  } finally {
+    waitSrv.close();
+  }
+});
+
+
 
 
 
