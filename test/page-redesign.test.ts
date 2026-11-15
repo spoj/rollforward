@@ -63,6 +63,7 @@ test('a sign-in counts down from the server expiry, never asks to allow hosts, a
     await page.route('**/logins/web/portal', r => r.fulfill({ json: { id: 's1', expires: new Date(now + 600_000).toISOString() } }));
     await page.click('#sidefoot [data-act=logins]');
     await page.click('[data-act=logins-show][data-id=web]');
+    await page.click('details[data-shown="web:portal"] > summary');
     assert.equal(await page.locator('[data-act=host-remove]').count(), 1);
     assert.equal(await page.locator('[data-act=allow-host]').count(), 0);
     await page.click('[data-act=web-signin]');
@@ -92,6 +93,7 @@ test('saving a live sign-in preserves the keepalive choice', async () => {
   try {
     await page.click('#sidefoot [data-act=logins]');
     await page.click('[data-act=logins-show][data-id=web]');
+    await page.click('details[data-shown="web:portal"] > summary');
     await page.click('[data-act=web-signin]');
     await page.check('#keep');
     await page.click('[data-act=signin-save]');
@@ -135,6 +137,7 @@ test('grant cards disclose scope, profile, flags, admin decisions, usage and leg
     await page.click('#pv [data-act=unpv]');
     await page.click('.row.ws [data-act=workspace-settings]');
     const used = page.locator('[data-grant=approved]');
+    await used.locator('summary').click();
     assert.match(await used.innerText(), /Opened in 7 runs · 2 runs wrote · last used/);
     assert.equal(await used.locator('[data-act=grant-revoke]').count(), 1);
     assert.doesNotMatch(await page.locator('[data-grant=legacy]').innerText(), /undefined|NaN|Opened in/);
@@ -144,6 +147,7 @@ test('grant cards disclose scope, profile, flags, admin decisions, usage and leg
     await page.click('#bar [data-act=menu]');
     await page.click('#sidefoot [data-act=logins]');
     await page.click('[data-act=logins-show][data-id=web]');
+    await page.click('details[data-shown="web:portal"] > summary');
     assert.match(await page.locator('[data-grant=approved]').innerText(), /Opened in 7 runs · 2 runs wrote · last used/);
     assert.equal(await page.locator('[data-act=allow-host]').count(), 0);
   } finally {
