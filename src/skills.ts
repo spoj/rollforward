@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, posix } from 'node:path';
 import { HttpError } from './store.ts';
 import { refused } from './git.ts';
@@ -25,13 +25,20 @@ function checkId(id: string) {
 export function pushSkill(id: string, files: Record<string, string>, by: string): number {
   checkId(id);
   if (!files['SKILL.md']) throw new HttpError(400, 'a skill has a SKILL.md at its top');
-  for (const rel of Object.keys(files)) if (posix.normalize(rel) !== rel || rel.startsWith('../') || posix.isAbsolute(rel) || rel === '.pushed.json' || rel.split('/').some(n => !n || n === '.' || n === '..' || refused(n, false))) throw new HttpError(400, `bad path ${rel}`);
+  for (const rel of Object.keys(files)) if (posix.normalize(rel) !== rel || rel.startsWith('../') || posix.isAbsolute(rel) || rel === '.pushed.json' || rel === '.pushed.json.tmp' || rel.split('/').some(n => !n || n === '.' || n === '..' || refused(n, false))) throw new HttpError(400, `bad path ${rel}`);
   const versions = join(root, '..', 'versions', id), n = Math.max(0, ...(existsSync(versions) ? readdirSync(versions).map(Number) : [])) + 1, dir = join(versions, String(n));
   for (const [rel, data] of Object.entries(files)) {
     mkdirSync(dirname(join(dir, rel)), { recursive: true });
     writeFileSync(join(dir, rel), Buffer.from(data, 'base64'));
   }
-  writeFileSync(join(dir, '.pushed.json'), JSON.stringify({ version: n, by, at: new Date().toISOString() }));
+  const marker = join(dir, '.pushed.json');
+  try {
+    writeFileSync(`${marker}.tmp`, JSON.stringify({ version: n, by, at: new Date().toISOString() }));
+    renameSync(`${marker}.tmp`, marker);
+  } catch (e) {
+    rmSync(`${marker}.tmp`, { force: true });
+    throw e;
+  }
   rmSync(`${join(root, id)}.new`, { force: true });
   symlinkSync(join('..', 'versions', id, String(n)), `${join(root, id)}.new`);
   renameSync(`${join(root, id)}.new`, join(root, id));
@@ -43,17 +50,32 @@ export function versionFiles(id: string, n: number): Record<string, string> {
   checkId(id);
   const dir = join(root, '..', 'versions', id, String(n));
   if (!existsSync(dir)) throw new HttpError(404, `${id} has no version ${n}`);
-  return Object.fromEntries(readdirSync(dir, { recursive: true, withFileTypes: true }).filter(d => d.isFile() && d.name !== '.pushed.json')
+  return Object.fromEntries(readdirSync(dir, { recursive: true, withFileTypes: true }).filter(d => d.isFile() && d.name !== '.pushed.json' && d.name !== '.pushed.json.tmp')
     .map(d => [posix.relative(dir, join(d.parentPath, d.name)), d] as const)
     .filter(([rel]) => !rel.split('/').some(n => refused(n, false)))
     .map(([rel, d]) => [rel, readFileSync(join(d.parentPath, d.name)).toString('base64')]));
 }
 
-// A version without its .pushed.json is a push that failed halfway.
+// A version without a complete .pushed.json is a push that failed halfway.
 export function versionsOf(id: string) {
   checkId(id);
   const dir = join(root, '..', 'versions', id);
-  return existsSync(dir) ? readdirSync(dir).filter(n => existsSync(join(dir, n, '.pushed.json'))).map(n => JSON.parse(readFileSync(join(dir, n, '.pushed.json'), 'utf8'))).sort((a, b) => a.version - b.version) : [];
+  if (!existsSync(dir)) return [];
+  const live = lstatSync(join(root, id), { throwIfNoEntry: false })?.isSymbolicLink() ? posix.basename(readlinkSync(join(root, id))) : '';
+  const out: { version: number; by: string; at: string }[] = [];
+  for (const n of readdirSync(dir)) {
+    const f = join(dir, n, '.pushed.json');
+    if (!existsSync(f)) continue;
+    const raw = readFileSync(f, 'utf8');
+    try {
+      const p = JSON.parse(raw);
+      if (p && typeof p.version === 'number' && typeof p.by === 'string' && typeof p.at === 'string') out.push(p);
+      else if (n === live) throw new SyntaxError(`corrupt ${f}`);
+    } catch (e) {
+      if (n === live || !(e instanceof SyntaxError)) throw e;
+    }
+  }
+  return out.sort((a, b) => a.version - b.version);
 }
 
 export type Skill = { id: string; name: string; description: string; dir: string };

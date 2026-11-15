@@ -1,7 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { chmodSync, closeSync, constants, createReadStream, existsSync, fstatSync, openSync, readdirSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, constants, createReadStream, existsSync, fstatSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
@@ -142,7 +142,13 @@ async function snapshot(dir: string, who: Who, message: string): Promise<string>
   }
   const parent = await git(dir, 'rev-parse', '-q', '--verify', 'refs/heads/main').catch(() => '');
   const cache = join(dir, '.git', 'rf-seen.json'), now: Seen = new Map();
-  const seen: Seen = new Map(parent && existsSync(cache) ? Object.entries(JSON.parse(readFileSync(cache, 'latin1'))) : []);
+  let cached: unknown;
+  if (parent && existsSync(cache)) {
+    const raw = readFileSync(cache, 'latin1');
+    try { cached = JSON.parse(raw); } catch {}
+  }
+  const seen: Seen = new Map(cached && typeof cached === 'object' && !Array.isArray(cached)
+    ? Object.entries(cached).filter((e): e is [string, [string, string]] => Array.isArray(e[1]) && e[1].length === 2 && typeof e[1][0] === 'string' && typeof e[1][1] === 'string') : []);
   const p = spawn('git', ['fast-import', '--quiet', '--done'], { cwd: dir, env, stdio: ['pipe', 'ignore', 'pipe'] });
   let err = '';
   p.stderr.on('data', c => (err += c));
@@ -153,7 +159,13 @@ async function snapshot(dir: string, who: Who, message: string): Promise<string>
   if (fed && !['EPIPE', 'ERR_STREAM_PREMATURE_CLOSE'].includes(fed.code!)) throw fed;
   if (code) throw new Error(`git fast-import failed: ${err.trim()}`);
   const hash = await git(dir, 'rev-parse', 'refs/heads/main');
-  writeFileSync(cache, JSON.stringify(Object.fromEntries(now)), 'latin1');
+  try {
+    writeFileSync(`${cache}.tmp`, JSON.stringify(Object.fromEntries(now)), 'latin1');
+    renameSync(`${cache}.tmp`, cache);
+  } catch (e) {
+    rmSync(`${cache}.tmp`, { force: true });
+    throw e;
+  }
   // An index of the commit, so a run's git diff and git status show what changed since.
   await git(dir, 'read-tree', hash);
   return hash;
