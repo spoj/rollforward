@@ -117,7 +117,7 @@ export function passUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, 
 // a host once for everyone's.
 
 export type Profile = { what: string; category: 'company' | 'vendor' | 'bank' | 'government' | 'general'; risk: 'low' | 'medium' | 'high'; flags: string[] } | { error: string };
-export type Website = { url: string; hosts: string[]; writeback: boolean; via?: string; header?: string; keepalive?: string; every?: number; profile?: Profile; checks?: Record<string, { verdict: 'pass' | 'refused' | 'high' | 'internal'; why: string }>; added: string };
+export type Website = { url: string; hosts: string[]; writeback: boolean; via?: string; header?: string; keepalive?: string; every?: number; profile?: Profile; checks?: Record<string, { verdict: 'pass' | 'refused' | 'high' | 'internal'; why: string }>; added: string; generation?: number };
 const websiteGenerations = new Map<string, number>();
 const sitesFile = (email: string) => join(personDir(email), 'websites.json');
 // By name, a person's: none is Object's, such as constructor.
@@ -220,7 +220,7 @@ export async function setSite(by: Me, name: string, change: Record<string, unkno
   if (x.keepalive !== undefined && URL.parse(String(x.keepalive), w.url)?.host !== new URL(w.url).host) throw new HttpError(400, 'keepalive: a page of the website, by its address or path, such as https://patriarch.patrina.net/PatriArchMVC/');
   if (x.every !== undefined && !(every && Number(every[1]) > 0)) throw new HttpError(400, 'every: minutes or hours, such as 10m or 1h');
   if (change.header === '') rmSync(join(personDir(person), `web:${name}.header.sealed`), { force: true });
-  saveWebsites(person, { ...websitesOf(person), [name]: { url: w.url, hosts: w.hosts, writeback: x.writeback !== false && x.writeback !== 'false', added: w.added,
+  saveWebsites(person, { ...websitesOf(person), [name]: { url: w.url, hosts: w.hosts, writeback: x.writeback !== false && x.writeback !== 'false', added: w.added, generation: (w.generation ?? 0) + (viaChanged ? 1 : 0),
     ...(x.header && { header: String(x.header) }), ...(x.via && { via: String(x.via) }),
     ...(x.keepalive !== undefined && { keepalive: String(x.keepalive) }), ...(every && { every: Number(every[1]) * (every[2] === 'h' ? 60 : 1) }),
     ...(w.profile && { profile: w.profile }), ...(w.checks && { checks: viaChanged ? Object.fromEntries(Object.entries(w.checks).filter(([h, c]) => c.verdict === 'refused' || !vpnHosts(w.url).some(p => covers(p, h)))) : w.checks }) } });
@@ -436,7 +436,7 @@ function keep(inst: Instance, b: Opened, { state, log }: { state: unknown; log: 
   // Closing still accounts for a revoked run, but never writes its stale state back.
   if (b.writeback) try {
     const lent = use(inst, b.run, `web:${b.site}`);
-    if (lent.email === b.email && approved(b.site, b.email, tree().series[inst.seriesId]?.workspace) && b.generation === (websiteGenerations.get(`${b.email} ${b.site}`) ?? 0)) login = lent.login;
+    if (lent.email === b.email && approved(b.site, b.email, tree().series[inst.seriesId]?.workspace) && b.generation === (website(b.email, b.site).generation ?? 0)) login = lent.login;
   } catch (e) {
     if (!(e instanceof HttpError)) throw e;
   }
@@ -684,10 +684,10 @@ export class Browsers {
       const { email, login } = use(this.inst, this.run, `web:${site}`), had = this.bySite.get(site), ws = tree().series[this.inst.seriesId]?.workspace;
       if (!approved(site, email, ws)) throw Object.assign(new HttpError(403, unapproved(email, site, ws)), { refused: true });
       if (login.expired) throw Object.assign(new HttpError(409, `${email}'s login to ${site} has expired: they sign in to it again on the Logins page, and the instance carries on`), { login: login.id });
-      const generation = websiteGenerations.get(`${email} ${site}`) ?? 0;
+      const generation = website(email, site).generation ?? 0;
       if (had && (had.email !== email || had.since !== login.since || had.generation !== generation)) throw new HttpError(409, `this run's browser on ${site} has a superseded login`);
       const w = website(email, site), via = await vpnVia(email, w), current = use(this.inst, this.run, `web:${site}`);
-      if (this.ended || current.email !== email || current.login.since !== login.since || current.login.expired || (websiteGenerations.get(`${email} ${site}`) ?? 0) !== generation || website(email, site).via !== w.via) throw new HttpError(409, `this run's login to ${site} changed while connecting`);
+      if (this.ended || current.email !== email || current.login.since !== login.since || current.login.expired || (website(email, site).generation ?? 0) !== generation || website(email, site).via !== w.via) throw new HttpError(409, `this run's login to ${site} changed while connecting`);
       if (this.bySite.get(site) !== had) return this.lent(site, quiet);
       if (!approved(site, email, tree().series[this.inst.seriesId]?.workspace)) throw Object.assign(new HttpError(403, `${email}'s grant to use ${site} was revoked; this run goes on without it`), { refused: true });
       if (had && (had.via?.token !== via?.token || had.via?.url !== via?.url || had.internal.join(',') !== internalHosts(w).join(','))) {
@@ -730,7 +730,7 @@ export class Browsers {
         let release!: () => void;
         held.set(key, { run: this, released: new Promise<void>(ok => { release = ok; }), release: () => release() });
       }
-      const generation = websiteGenerations.get(key) ?? 0, internal = w ? internalHosts(w) : [], opening = w ? open(w, 7200, state, via) : printer();
+      const generation = w?.generation ?? 0, internal = w ? internalHosts(w) : [], opening = w ? open(w, 7200, state, via) : printer();
       const ready = opening.then(async id => {
         const n = (this.opens.get(site) ?? 0) + 1, file = `browser/run ${this.run} ${site}${n > 1 ? ` ${n}` : ''}.jsonl`;
         const b = { id, email, since: login?.since ?? '', writeback, file, generation, conns: 0, via, internal };

@@ -44,7 +44,7 @@ const service = createServer(async (req, res) => {
 await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
 const base = `http://127.0.0.1:${(service.address() as { port: number }).port}`;
 Object.assign(process.env, { RF_BROWSER_URL: base, RF_BROWSER_KEY: 'synthetic-only', RF_BROWSER_IDLE_MS: '60000', RF_SERVICE_KEY_SVC: 'synthetic-service', OPENROUTER_API_KEY: 'synthetic-shared' });
-const { Browsers, serveBrowsers, reap, removeSite } = await import('../src/browsers.ts');
+const { Browsers, serveBrowsers, reap, removeSite, setSite } = await import('../src/browsers.ts');
 const { agentCall } = await import('../src/agent-api.ts');
 const { call, reachable, types, upstreams } = await import('../src/connections.ts');
 const { sources, prepare, prune } = await import('../src/indexes.ts');
@@ -306,6 +306,26 @@ test('restart browser writeback is checked against the original run epoch', asyn
   await (await reap()).closed;
   assert.equal(JSON.parse(secret(ALICE, 'web:portal')).cookies[0].value, ALICE);
   assert.equal(inst.log.filter(e => e.op === 'browser').length, 1);
+});
+
+test('restart cannot write back a browser predating a website route ABA', async () => {
+  const inst = running(['web:portal']), b = browser(inst);
+  await b.browser('portal');
+  const was = process.env.RF_TUNNEL_URL;
+  process.env.RF_TUNNEL_URL = base;
+  writeJson('capabilities.json', { 'series-owner': [ALICE, BOB], vpn: [ALICE] });
+  writeJson('vpns.json', { synthetic: { type: 'fortinet', gateway: 'vpn.example.test:443' } });
+  const me = { email: ALICE, name: 'Alice', role: 'user' as const, groups: [] };
+  try {
+    await setSite(me, 'portal', { via: 'synthetic' });
+    await setSite(me, 'portal', { via: '' });
+    const restarted = await import(`../src/browsers.ts?restart=${Date.now()}`);
+    await (await restarted.reap()).closed;
+    assert.equal(JSON.parse(secret(ALICE, 'web:portal')).cookies[0].value, ALICE);
+  } finally {
+    if (was === undefined) delete process.env.RF_TUNNEL_URL;
+    else process.env.RF_TUNNEL_URL = was;
+  }
 });
 
 test('print browsers also reject a delayed open after authority changes', async () => {
