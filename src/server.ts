@@ -11,7 +11,7 @@ import { AGENT, commit, refused } from './git.ts';
 import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
 import { checkTheme, stylesheet, themeLogo } from './theme.ts';
-import { asPerson, authenticate, CAPS, can, capabilities, checkConfig, cli, connect, myTokens, newToken, redirectPath, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
+import { asPerson, authenticate, CAPS, can, capabilities, checkConfig, cli, connect, myTokens, newToken, recheckRequest, redirectPath, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
 import { act, canManage, canSee, changes, everyone, initSystem, isPeople, readJson, replaceFile, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
 import { checkTicks, lastAssign, logins, runnerAt, runnerOf, saveLogin, signOut, unoffer } from './logins.ts';
 import { agentCall } from './agent-api.ts';
@@ -108,6 +108,7 @@ async function body(req: IncomingMessage): Promise<Buffer> {
     if ((size += c.length) > 10 * 2 ** 20) throw new HttpError(413, 'a request body holds 10 MB at most');
     chunks.push(c);
   }
+  recheckRequest(req);
   return Buffer.concat(chunks);
 }
 
@@ -974,6 +975,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       const tmp = join(tmpDir, randomUUID());
       try {
         await pipeline(req, capped, createWriteStream(tmp));
+        recheckRequest(req);
         mustUnarchived(by, id);
         return send(res, 200, { file: keep(join(book, 'notes'), 'files', url.searchParams.get('name') ?? 'file', tmp) });
       } finally {
@@ -1166,6 +1168,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const tmp = join(tmpDir, randomUUID());
     try {
       await pipeline(req, capped, createWriteStream(tmp));
+      recheckRequest(req);
       mustUnarchived(by, inst.seriesId);
       const file = inst.keep(url.searchParams.get('name') ?? 'file', tmp, 'upload/attachments');
       // No entry of the instance's names it until a comment does: the system's log records it, and it's committed at once in its
@@ -1181,6 +1184,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const pane = url.searchParams.get('pane') === 'out' ? 'out' : 'in', tmp = join(tmpDir, randomUUID()), hash = createHash('sha256');
     try {
       await pipeline(req, capped, async function* (chunks: AsyncIterable<Buffer>) { for await (const c of chunks) { hash.update(c); yield c; } }, createWriteStream(tmp));
+      recheckRequest(req);
       mustUnarchived(by, inst.seriesId);
       const up = inst.upload(by, url.searchParams.get('name') ?? 'file', tmp, hash.digest('hex'), pane, url.searchParams.get('onto'), quiet);
       // What starts no run, quiet or a note, is committed at once in its person's name; a run going commits it as it ends.
@@ -1240,6 +1244,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   } else if (['signoff', 'reject', 'withdraw', 'interrupt', 'logins', 'assign', 'takeover', 'close', 'abandon'].includes(action)) {
     const out = await inOrder(inst.id, async () => {
       const recheck = () => {
+        recheckRequest(req);
         if (run && running(run.token) !== run) throw new HttpError(409, 'its run has ended');
         const { ws, who } = mustUnarchived(by, inst.seriesId, run ? me : undefined);
         if (inst.doc.status !== 'open') throw new HttpError(409, `instance is ${inst.doc.status}`);
@@ -1550,6 +1555,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       if (!own) throw new HttpError(403, 'tokens are made and revoked on the page');
       if (req.method === 'DELETE') return send(res, 200, (revokeToken(own.email, decodeURIComponent(url.pathname.slice(8))), 'ok'));
       const { name, days } = await json(req);
+      if (!session(req)) throw new HttpError(401, 'sign in first');
       send(res, 200, { token: newToken(own.email, String(name ?? '').trim(), Number(days)) });
     } else if (url.pathname === '/logins' && req.method === 'GET') send(res, 200, logins(me.email).map(l => ({ ...l, missing: ungranted(l) })));
     else if (/^\/logins\/[^/]+\/connect$/.test(url.pathname) && req.method === 'POST') {

@@ -106,13 +106,25 @@ export function asPerson(email: string, u = users()[email]): Me | null {
   return u && !u.disabled ? { email, name: u.name ?? email, role: admins.has(email) ? 'admin' : u.role, groups: u.groups ?? [] } : null;
 }
 
-function bearer(req: IncomingMessage, url: URL): Me | null {
+function bearer(req: IncomingMessage, url: URL, record = true): Me | null {
   const token = /^Bearer (rft_\S+)$/.exec(req.headers.authorization ?? '')?.[1];
   if (!token) return null;
   const t = tokens()[digest(token)], u = t && users()[t.email];
   if (!u || u.disabled || (u.epoch ?? 0) !== t.epoch || t.expires < new Date().toISOString()) throw new HttpError(401, 'this token has expired or was revoked');
-  appendFileSync(join(rfDir(), 'token-uses.jsonl'), JSON.stringify({ at: new Date().toISOString(), token: t.id, email: t.email, method: req.method, path: url.pathname }) + '\n');
+  if (record) appendFileSync(join(rfDir(), 'token-uses.jsonl'), JSON.stringify({ at: new Date().toISOString(), token: t.id, email: t.email, method: req.method, path: url.pathname }) + '\n');
   return asPerson(t.email, u);
+}
+
+const admitted = new WeakMap<IncomingMessage, { me: Me; url: URL; caps: string[] }>();
+
+// Revalidate the credential, not just its person; pre-body permission checks cannot survive changed authority.
+export function recheckRequest(req: IncomingMessage) {
+  const before = admitted.get(req);
+  if (!before) return; // Sandbox requests authenticate by their run, not a person's credential.
+  const now = bearer(req, before.url, false) ?? session(req), { me, caps } = before;
+  if (!now) throw new HttpError(401, 'sign in first');
+  if (now.email !== me.email || now.role !== me.role || now.groups.length !== me.groups.length || now.groups.some(g => !me.groups.includes(g)) || caps.some(c => !can(now, c)))
+    throw new HttpError(403, 'permissions changed during the request; try again');
 }
 
 export function signOutEverywhere(email: string) {
@@ -225,6 +237,8 @@ export async function cli(req: IncomingMessage, res: ServerResponse, url: URL) {
   const own = session(req);
   if (!own) throw new HttpError(403, 'tokens are made on the page');
   const form = req.method === 'POST' ? new URLSearchParams(await small(req)) : new URLSearchParams();
+  recheckRequest(req);
+  if (!session(req)) throw new HttpError(401, 'sign in first');
   const typed = (form.get('code') ?? '').toUpperCase().replace(/[^A-Z]/g, ''), a = typed && pending((_, a) => a.code.replace('-', '') === typed)?.[1];
   const show = (body: string) => res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
     .end(shell('rf login · rollforward', `<h1>${APP}</h1>${body}`));
@@ -365,7 +379,10 @@ export async function authenticate(req: IncomingMessage, res: ServerResponse, ur
     res.end(JSON.stringify({ next: end ? `${end}?post_logout_redirect_uri=${encodeURIComponent(oidc.publicUrl + '/')}` : '/' }));
   } else {
     const me = bearer(req, url) ?? session(req);
-    if (me) return me;
+    if (me) {
+      admitted.set(req, { me, url, caps: CAPS.filter(c => can(me, c)) });
+      return me;
+    }
     if (!['/', '/cli'].includes(url.pathname) || req.method !== 'GET') throw new HttpError(401, 'sign in first');
     signInPage(res, url.pathname + url.search);
   }
