@@ -595,10 +595,18 @@ else if (cmd === 'comment' && args.length === 2) {
   else await post(`/api/workspaces/${(await workspaceNamed(w)).id}`, { name: args[1] }, 'PUT');
   console.log(`renamed ${args[0]} ${args[1]}`);
 } else if (cmd === 'new' && args[0] === 'task' && [2, 3].includes(args.length)) {
-  const workspace = await workspaceNamed(args[1]);
-  if (workspace.series.some(s => s.name === args[2])) throw new Error(`${args[2]} exists`);
+  const workspace = await workspaceNamed(args[1]), clean = args.length === 3 ? args[2].replace(/[/\\\x00-\x1f\x7f\x85\u2028\u2029]/g, '_') : '';
+  if (args.length === 3) {
+    if (!clean) throw new Error('a name is needed');
+    if (clean.startsWith('.')) throw new Error(`a name can't start with a dot: ${args[2]}`);
+    if (clean === 'AGENTS.md') throw new Error("AGENTS.md is the name of the agents' instructions: choose another");
+    if (Buffer.byteLength(clean) > 200) throw new Error(`a name is 200 bytes at most, about 66 Chinese characters, not ${Buffer.byteLength(clean)}`);
+    if (workspace.series.some((s: any) => s.name === clean)) throw new Error(`${clean} exists`);
+  }
+  let made = 'Untitled';
+  for (let k = 2; workspace.series.some((s: any) => s.name === made); k++) made = `Untitled ${k}`;
   const { instance } = await (await post('/api/series', { workspace: workspace.id, single: true, logins: ticks() })).json();
-  if (args[2]) await post(`/api/instances/${instance}/rename?as=${encodeURIComponent(args[2])}`, {});
+  if (clean && clean !== made) await post(`/api/instances/${instance}/rename?as=${encodeURIComponent(args[2])}`, {});
   if (typeof flags.comment === 'string') await post(`/api/instances/${instance}/comment`, { text: flags.comment, quiet: !flags.wake });
   console.log(`made ${await pathOf(instance)}${consent(ticks())}`);
 } else if (cmd === 'new' && args[0] === 'instance' && args.length === 3) {

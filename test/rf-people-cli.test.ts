@@ -466,6 +466,42 @@ test('R4-PEOPLE-07: rf comment --wait exits on terminal states and steered/stopp
   }
 });
 
+test('A-R4-PEOPLE-07: rf new task rejects deterministic invalid or colliding labels before creating Untitled tasks', async () => {
+  const wRes = await fetch(`${base}/api/workspaces`, { method: 'POST', headers: { cookie: admin.cookie }, body: JSON.stringify({ name: 'task-labels' }) });
+  const { id: wid } = await wRes.json() as { id: string };
+  await fetch(`${base}/api/workspaces/${wid}`, { method: 'PUT', headers: { cookie: admin.cookie }, body: JSON.stringify({ owners: ['carol@demo.test'] }) });
+  await fetch(`${base}/api/series`, { method: 'POST', headers: { cookie: carol.cookie }, body: JSON.stringify({ workspace: wid, name: 'Bank_pack' }) });
+
+  for (const [label, pattern] of [
+    ['.hidden', /can't start with a dot/],
+    ['AGENTS.md', /AGENTS\.md is the name/],
+    ['', /a name is needed/],
+    ['x'.repeat(201), /200 bytes at most/],
+    ['Bank/pack', /Bank_pack exists/],
+  ] as const) {
+    const r = await runRf(carol.home, ['new', 'task', 'task-labels', label]);
+    assert.equal(r.code, 1, `expected failure for label ${JSON.stringify(label)}`);
+    assert.match(r.stderr, pattern);
+  }
+
+  const lsAfterBad = await runRf(carol.home, ['ls']);
+  assert.doesNotMatch(lsAfterBad.stdout, /task-labels\/Untitled/);
+
+  const good = await runRf(carol.home, ['new', 'task', 'task-labels', 'Q4 Audit']);
+  assert.equal(good.code, 0);
+  assert.match(good.stdout, /made task-labels\/Q4 Audit\/Q4 Audit/);
+
+  const explicitUntitled = await runRf(carol.home, ['new', 'task', 'task-labels', 'Untitled']);
+  assert.equal(explicitUntitled.code, 0);
+  assert.match(explicitUntitled.stdout, /made task-labels\/Untitled\/Untitled/);
+
+  const badComment = await runRf(carol.home, ['new', 'task', 'task-labels', '--comment', '']);
+  assert.equal(badComment.code, 1);
+  const lsAfterCommentErr = await runRf(carol.home, ['ls']);
+  assert.match(lsAfterCommentErr.stdout, /task-labels\/Untitled 2\/Untitled 2/);
+});
+
+
 
 
 
