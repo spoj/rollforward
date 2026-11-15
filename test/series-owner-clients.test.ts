@@ -175,7 +175,7 @@ test('CLI live JSON exposes owner, and collaborator --wait does not wait for una
   assert.match(r.stdout, /no run starts/);
 });
 
-test('terminal API, CLI and Conversation/Audit history stays settled after transfer and consent narrowing', async () => {
+test('real owner clients preserve terminal history and task execution settings', async t => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-terminal-clients-')), root = join(tmp, 'data');
   const cases = ['closed-zero', 'closed-post', 'abandoned-zero', 'abandoned-post'];
   const at = '2026-11-01T00:00:00.000Z', bob = 'bob@example.test';
@@ -281,6 +281,50 @@ test('terminal API, CLI and Conversation/Audit history stays settled after trans
       assert.match(record.audit, /left a note/);
       assert.doesNotMatch(record.conversation + record.audit, /a note for/);
     }
+    await t.test('one-off task settings and credentials keep canonical owner/consent without series-only controls', async () => {
+      const task = await (await api('POST', '/api/series', { workspace: 'w', single: true, logins: [], autonomous: false })).json();
+      const stored = () => JSON.parse(readFileSync(join(root, 'series', task.id, 'series.json'), 'utf8'));
+      const failures: string[] = [];
+      page.on('response', r => { if (r.status() >= 400) failures.push(`${r.status()} ${r.url()}`); });
+      await page.goto(`${base}/#/${task.instance}`);
+      await page.waitForFunction(id => cur.i?.id === id, task.instance);
+      assert.equal(await page.locator('#bar button[data-act=rename]').count(), 1);
+      assert.equal(await page.locator('#bar [data-act=wakes]').count(), 1);
+      for (const act of ['settings', 'ticks']) {
+        await page.click(`#bar [data-act=${act}]`);
+        await page.waitForSelector('#pv [data-act=series-credentials]');
+        assert.equal(await page.locator('#pv #sname, #pv .wlabel, #pv [data-act=archive-series], #pv [data-act=wake-save]').count(), 0);
+        assert.equal(await page.locator('#pv [data-act=series-owner]').count(), 1);
+        assert.match(await page.locator('#pv').innerText(), /Every instance may use the selected credentials/);
+        await page.click('#pv [data-act=unpv]');
+      }
+      await page.click('#bar [data-act=settings]');
+      await page.check('#autonomous');
+      await page.click('#pv [data-act=series-credentials]');
+      await page.waitForSelector('#pv .saved:text-is("Saved")');
+      assert.equal(stored().owner, owner);
+      assert.deepEqual(stored().consent.logins, []);
+      assert.equal(stored().consent.autonomous, true);
+      await page.click('#pv [data-act=series-owner]');
+      await page.selectOption('#ownerto', bob);
+      await page.click('#ask [value=ok]');
+      await page.waitForFunction(bob => cur.s.owner === bob && !cur.s.consent, bob);
+      assert.equal(stored().owner, bob);
+      assert.equal(stored().consent, undefined);
+      await context.addCookies([{ name, value: cookies[bob].split('=')[1], url: base }]);
+      await page.reload();
+      await page.click('#bar [data-act=ticks]');
+      await page.waitForSelector('#pv [data-act=series-credentials]');
+      assert.equal(await page.locator('#pv #sname, #pv .wlabel, #pv [data-act=archive-series], #pv [data-act=wake-save]').count(), 0);
+      assert.equal(await page.isChecked('#autonomous'), false);
+      await page.click('#pv [data-act=series-credentials]');
+      await page.waitForSelector('#pv .saved:text-is("Saved")');
+      assert.equal(stored().consent.by, bob);
+      assert.deepEqual(stored().consent.logins, []);
+      assert.equal(stored().consent.autonomous, false);
+      assert.equal((await (await api('GET', `/api/instances/${task.instance}`)).json()).log.some(e => e.op === 'run'), false);
+      assert.deepEqual(failures, []);
+    });
   } finally {
     await browser.close();
     if (proc.exitCode === null) { proc.kill('SIGTERM'); await once(proc, 'exit'); }

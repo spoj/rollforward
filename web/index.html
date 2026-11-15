@@ -959,10 +959,10 @@ function renderPv() {
       + agentsHtml(s, 'Every agent in this workspace reads it at the start of each run: its conventions, and changes that cut across its series, such as a renamed entity.', s.manage)
       + (s.manage && !s.archived ? moveHtml(s) : '')
       + (s.manage ? `<div class="row2"><button class="btn${s.archived ? '' : ' danger'}" data-act="archive-workspace">${s.archived ? 'Restore workspace' : 'Archive workspace'}</button></div>` : '');
-    if (s.kind === 'series') h += `<h3>Name</h3><input type="text" id="sname" value="${esc(s.name)}">`
-      + `<h3>Who starts runs</h3>${startsHtml(s)}<h3>Wakes</h3>${wakesHtml(s.id, s.wakes, true)}`
+    if (s.kind === 'series') h += (s.single ? '' : `<h3>Name</h3><input type="text" id="sname" value="${esc(s.name)}">`)
+      + `<h3>Who starts runs</h3>${startsHtml(s)}` + (s.single ? '' : `<h3>Wakes</h3>${wakesHtml(s.id, s.wakes, true)}`)
       + `<h3>Cost</h3><div class="sub">This series' runs have cost ${usd(s.cost, s.estimated)} so far, ${usd(s.cost / Math.max(1, s.closed), s.estimated)} per closed instance.</div>`
-      + (cur.w.archived ? (cur.w.manage ? '<div class="row2"><button class="btn" data-act="archive-workspace">Restore workspace</button></div>' : '') : `<div class="row2"><button class="btn${s.archived ? '' : ' danger'}" data-act="archive-series">${s.archived ? 'Restore series' : 'Archive series'}</button></div>`);
+      + (cur.w.archived ? (cur.w.manage ? '<div class="row2"><button class="btn" data-act="archive-workspace">Restore workspace</button></div>' : '') : s.single ? '' : `<div class="row2"><button class="btn${s.archived ? '' : ' danger'}" data-act="archive-series">${s.archived ? 'Restore series' : 'Archive series'}</button></div>`);
     h += '</div>';
   }
   d.innerHTML = h + `<div class="pvn${pv.signin ? ' err' : ''}" id="pvn"${pv.signin ? ' role="alert"' : ''}></div>`;

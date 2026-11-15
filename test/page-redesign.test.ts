@@ -657,6 +657,18 @@ test('series credential drafts use the series workspace and filter disabled valu
   } finally { await page.close(); }
 });
 
+test('recurring series settings retain series name, wake and archive controls', async () => {
+  const { page } = await openWebsiteTicks();
+  try {
+    await page.evaluate(() => openSeriesSettings());
+    assert.equal(await page.locator('#pv #sname').count(), 1);
+    assert.equal(await page.locator('#pv .wlabel').count(), 1);
+    assert.equal(await page.locator('#pv [data-act=wake-save]').count(), 1);
+    assert.equal(await page.locator('#pv [data-act=archive-series]').count(), 1);
+    assert.equal(await page.locator('#pv [data-act=series-credentials]').count(), 1);
+  } finally { await page.close(); }
+});
+
 test('a new task ignores remembered ticks and explicitly consents to an empty selection with autonomous off', async () => {
   const { page, requests, sites } = await openWebsiteTicks();
   try {
