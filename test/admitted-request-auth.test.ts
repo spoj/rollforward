@@ -11,9 +11,17 @@ import { idp } from './idp.ts';
 const tmp = mkdtempSync(join(tmpdir(), 'rf-admitted-auth-')), root = join(tmp, 'data');
 const ADMIN = 'admin@demo.test', ACTOR = 'delayed@demo.test';
 let proc: ChildProcess, base: string, admin: string, entra: Awaited<ReturnType<typeof idp>>;
-const call = (method: string, path: string, body?: object, cookie = admin) => fetch(base + path, {
-  method, headers: { cookie }, body: body === undefined ? undefined : JSON.stringify(body),
-});
+const call = async (method: string, path: string, body?: object, cookie = admin) => {
+  const log = join(root, '.rf', 'log.jsonl'), before = existsSync(log) ? readFileSync(log, 'utf8').split('\n').length - 1 : 0;
+  const res = await fetch(base + path, { method, headers: { cookie }, body: body === undefined ? undefined : JSON.stringify(body) });
+  if (res.ok && !['GET', 'HEAD'].includes(method) && !path.startsWith('/api/instances/') && path !== '/auth/cli') {
+    for (let n = 0; !existsSync(log) || readFileSync(log, 'utf8').split('\n').length - 1 <= before; n++) {
+      assert.ok(n < 200, 'the control request is audited before capturing files');
+      await new Promise(ok => setTimeout(ok, 10));
+    }
+  }
+  return res;
+};
 const login = async () => (await entra.signIn(base, ACTOR)).headers.getSetCookie().find(c => c.startsWith('rf_session='))!.split(';')[0];
 const skillBody = JSON.stringify({ files: { 'SKILL.md': Buffer.from('---\nname: late\ndescription: late\n---\n').toString('base64') } });
 
