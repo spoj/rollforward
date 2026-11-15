@@ -966,6 +966,10 @@ test("adding or removing someone in a workspace's settings changes that one alon
   await page.keyboard.press('Escape');
   await page.waitForSelector('#pv:not([open])', { state: 'attached' });
   assert.equal(await put({ owners: before.owners, members: before.members }), 200);
+  await page.evaluate(async () => {
+    while (busy || pend.size) await new Promise(ok => setTimeout(ok, 10));
+    await refresh();
+  });
 });
 
 test("Logins shows what needs you first, then a line for each kind, Microsoft 365's sources and the websites opening in place; ticks go by kind, Microsoft 365's sources under a tick of their own, an expired login's flagged and off", async () => {
@@ -1009,16 +1013,19 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   await page.mouse.click(5, 5);
   // A website of your own, by a name you choose, with the header its sign-in needs; removing one takes only your login to it and
   // your grants for it.
+  const meBrowsers = (u: URL) => u.pathname === '/me';
+  await page.route(meBrowsers, async r => r.fulfill({ json: { ...await (await r.fetch()).json(), browsers: true } }));
   await page.evaluate(() => { me.browsers = true; return openLogins(); });
   await page.click('#pv [data-act=logins-show][data-id=web]');
   await page.route('**/logins/sites', r => r.request().method() === 'POST' ? r.fulfill({ json: { site: 'bank' } }) : r.continue());
-  const added = page.waitForRequest(r => r.url().endsWith('/logins/sites') && r.method() === 'POST');
   await page.fill('#pv #site-name', 'bank');
   await page.fill('#pv #site-url', 'https://bank.test/login');
   await page.fill('#pv #site-header', 'x-bot-token');
+  const added = page.waitForRequest(r => r.url().endsWith('/logins/sites') && r.method() === 'POST');
   await page.click('#pv [data-act=site-add]');
   assert.deepEqual((await added).postDataJSON(), { name: 'bank', url: 'https://bank.test/login', header: 'x-bot-token' });
   await page.unroute('**/logins/sites');
+  await page.unroute(meBrowsers);
   await page.click('#pv [data-act=site-remove][data-id=wiki]');
   assert.equal(await page.textContent('#ask p'), 'Your login to it and your grants for it go too.');
   await page.click('#ask button:text-is("Remove")');
