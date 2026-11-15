@@ -356,7 +356,12 @@ export async function endSignIn(email: string, id: string, save: boolean, keepal
   expired ||= Date.now() >= expires || state === null;
   const requests: Trace['requests'] = {}, kinds: NonNullable<Trace['kinds']> = {}, blocked = { count: 0, hosts: [] as string[] }, failed: string[] = [];
   for (const e of log) {
-    const host = new URL(e.url).hostname, from = URL.parse(e.from ?? '')?.hostname;
+    const host = URL.parse(e.url)?.hostname, from = URL.parse(e.from ?? '')?.hostname;
+    if (!host) {
+      if (e.blocked) blocked.count++;
+      else if (e.status >= 400) failed.push(`${e.method} ${e.url} ${e.status}${e.error ? ` ${e.error}` : ''}`);
+      continue;
+    }
     (requests[host] ??= {})[e.status] = (requests[host][e.status] ?? 0) + 1;
     const k = kinds[host] ??= { dest: [], from: [] };
     if (e.dest && !k.dest.includes(e.dest)) k.dest.push(e.dest);
@@ -430,7 +435,7 @@ function keep(inst: Instance, b: Opened, { state, log }: { state: unknown; log: 
   mkdirSync(join(inst.dir, 'browser'), { recursive: true });
   replaceReadOnly(join(inst.dir, b.file), log.map(e => JSON.stringify(e) + '\n').join(''));
   const writes = log.filter(e => !e.blocked && !['GET', 'HEAD', 'OPTIONS'].includes(e.method)).length, hosts: Record<string, number> = {};
-  for (const h of log.filter(e => e.blocked === 'host not on the list').map(e => URL.parse(e.url)!.hostname)) hosts[h] = (hosts[h] ?? 0) + 1;
+  for (const h of log.filter(e => e.blocked === 'host not on the list').flatMap(e => URL.parse(e.url)?.hostname || [])) hosts[h] = (hosts[h] ?? 0) + 1;
   inst.append('server', 'browser', { run: b.run, site: b.site, ...(b.email && { login: b.email }), requests: log.length, writes, blocked: log.filter(e => e.blocked).length, file: b.file,
     ...(Object.keys(hosts).length && { hosts }) });
   if (Object.keys(hosts).length && websitesOf(b.email)[b.site]) checkRefused(inst, b.run, b.email, b.site, log).catch(e => console.error(`checking the hosts ${b.site} was refused:`, e));
@@ -546,7 +551,8 @@ export async function checkWebsite(email: string, site: string, given?: Trace): 
 async function checkRefused(inst: Instance, run: number, email: string, site: string, log: Entry[]) {
   const before = website(email, site).hosts, trace: Trace = { requests: {}, kinds: {}, blocked: [], seconds: 0 };
   for (const e of log) {
-    const host = new URL(e.url).hostname, from = URL.parse(e.from ?? '')?.hostname;
+    const host = URL.parse(e.url)?.hostname, from = URL.parse(e.from ?? '')?.hostname;
+    if (!host) continue;
     (trace.requests[host] ??= {})[e.status] = (trace.requests[host][e.status] ?? 0) + 1;
     const k = trace.kinds![host] ??= { dest: [], from: [] };
     if (e.dest && !k.dest.includes(e.dest)) k.dest.push(e.dest);
