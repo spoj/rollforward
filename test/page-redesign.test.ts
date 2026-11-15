@@ -910,6 +910,162 @@ test('a new task filters stale remembered website ticks but retains normal Graph
   } finally { await page.close(); }
 });
 
+for (const overlap of ['none', 'Logins', 'Tokens']) test(`post-Save Logins remains current despite ${overlap} overlap`, async () => {
+  const { page, responses } = await openWebsiteTicks();
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  try {
+    responses['/tokens'] = [];
+    await page.evaluate(() => onAct('new-instance', document.createElement('button')));
+    await page.fill('#slabel', 'Renewed draft');
+    await page.evaluate(() => onAct('website-setup', document.querySelector('#pv [data-act=website-setup][data-id=expired]')));
+    await page.route('**/logins/web/expired', r => r.fulfill({ json: { id: 'renew', expires: new Date(Date.now() + 600_000).toISOString() } }));
+    await page.route('**/signins/renew', r => {
+      (responses['/logins'] as { id: string; expired: boolean }[]).find(l => l.id === 'web:expired')!.expired = false;
+      return r.fulfill({ body: 'ok' });
+    });
+    await page.click('#pv details[data-shown="web:expired"] [data-act=web-signin]');
+    await page.route('**/connections', async r => {
+      started.resolve();
+      await release.promise;
+      await r.fulfill({ json: [] });
+    }, { times: 1 });
+    await page.click('#pv [data-act=signin-save]');
+    await started.promise;
+    const before = await page.evaluate(() => accountOpens);
+    await page.evaluate(async overlap => {
+      if (overlap === 'Logins') await openLogins();
+      if (overlap === 'Tokens') await openTokens();
+    }, overlap);
+    assert.equal(await page.isDisabled('#pv [data-act=unpv]'), true);
+    release.resolve();
+    await page.waitForFunction(() => !pv?.saving);
+    assert.equal(await page.textContent('#pv .pvh b'), 'Logins');
+    assert.equal(await page.evaluate(() => accountOpens), before, 'blocked opens cannot obsolete the active Save');
+    await page.click('#pv [data-act=unpv]');
+    assert.equal(await page.inputValue('#slabel'), 'Renewed draft');
+    assert.equal(await page.isEnabled('#pv input.tick[value="web:expired"]'), true);
+  } finally { release.resolve(); await page.close(); }
+});
+
+for (const action of ['new-token', 'revoke-token', 'orkey-save', 'service-connect']) for (const leave of ['Close', 'navigation', 'pending tab']) test(`${action} completion cannot undo ${leave}`, async () => {
+  const { page, responses } = await openWebsiteTicks();
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const tabStarted = Promise.withResolvers<void>(), tabRelease = Promise.withResolvers<void>();
+  const tokens = action.endsWith('token');
+  try {
+    responses['/tokens'] = [{ id: 'old', name: 'Laptop', created: new Date().toISOString(), expires: '2099-01-01' }];
+    responses['/connections'] = [{ name: 'incoming', type: 'service', login: { id: 'incoming', name: 'Incoming' } }];
+    await page.evaluate(() => onAct('new-instance', document.createElement('button')));
+    await page.fill('#slabel', 'Keep my draft');
+    await page.check('#pv input.tick[value="drop:AP/"]');
+    await page.evaluate(() => onAct('website-setup', document.querySelector('#pv [data-act=website-setup][data-id=missing]')));
+    if (tokens) {
+      await page.click('#pv [data-act=tokens]');
+      await page.waitForSelector('#tname');
+    }
+    if (action === 'new-token') await page.fill('#tname', 'New laptop');
+    if (action === 'orkey-save') {
+      await page.click('#pv [data-act=logins-show][data-id=key]');
+      await page.fill('#orkey', 'fake-key');
+    }
+    const path = action === 'new-token' ? '/tokens' : action === 'revoke-token' ? '/tokens/old' : action === 'orkey-save' ? '/logins/openrouter' : '/logins/incoming/connect';
+    await page.route(`**${path}`, async r => {
+      started.resolve();
+      await release.promise;
+      if (action === 'new-token') await r.fulfill({ json: { token: 'fake-token' } });
+      else await r.fulfill({ body: 'ok' });
+    }, { times: 1 });
+    await page.evaluate(action => {
+      window.mutation = onAct(action, document.querySelector(`#pv [data-act="${action}"]`));
+    }, action);
+    await started.promise;
+    if (leave === 'Close') await page.click('#pv [data-act=unpv]');
+    if (leave === 'navigation') {
+      await page.evaluate(() => { location.hash = '#/w2'; });
+      await page.waitForFunction(() => cur.w.id === 'w2' && pv === null);
+    }
+    if (leave === 'pending tab') {
+      await page.route(tokens ? '**/connections' : '**/tokens', async r => {
+        tabStarted.resolve();
+        await tabRelease.promise;
+        await r.fulfill({ json: [] });
+      }, { times: 1 });
+      await page.evaluate(tokens => { window.newTab = tokens ? openLogins() : openTokens(); }, tokens);
+      await tabStarted.promise;
+    }
+    release.resolve();
+    await page.evaluate(() => window.mutation);
+    if (leave === 'Close') {
+      assert.equal(await page.textContent('#pv .pvh b'), 'New instance');
+      assert.equal(await page.inputValue('#slabel'), 'Keep my draft');
+      assert.equal(await page.isChecked('#pv input.tick[value="drop:AP/"]'), true);
+      assert.equal(await page.textContent('#pv .saved'), '');
+    }
+    if (leave === 'navigation') assert.equal(await page.evaluate(() => pv), null);
+    if (leave === 'pending tab') {
+      assert.equal(await page.textContent('#pv .pvh b'), tokens ? 'Tokens' : 'Logins', 'the mutation must not start a competing open');
+      tabRelease.resolve();
+      await page.evaluate(() => window.newTab);
+      assert.equal(await page.textContent('#pv .pvh b'), tokens ? 'Logins' : 'Tokens');
+      await page.click('#pv [data-act=unpv]');
+      assert.equal(await page.inputValue('#slabel'), 'Keep my draft');
+    }
+  } finally { release.resolve(); tabRelease.resolve(); await page.close(); }
+});
+
+test('a key Save finishing its refresh cannot label the restored credential draft Saved', async () => {
+  const { page, responses } = await openWebsiteTicks(true);
+  const refreshing = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  try {
+    await page.evaluate(() => onAct('new-instance', document.createElement('button')));
+    await page.fill('#slabel', 'Not a saved instance');
+    await page.evaluate(() => onAct('website-setup', document.querySelector('#pv [data-act=website-setup][data-id=missing]')));
+    await page.route('**/logins/openrouter', r => r.fulfill({ body: 'ok' }));
+    await page.route('**/api/instances/i1', async r => {
+      refreshing.resolve();
+      await release.promise;
+      await r.fulfill({ json: responses['/api/instances/i1'] });
+    }, { times: 1 });
+    await page.evaluate(() => { window.keySave = saveKey(); });
+    await refreshing.promise;
+    await page.click('#pv [data-act=unpv]');
+    release.resolve();
+    await page.evaluate(() => window.keySave);
+    assert.equal(await page.inputValue('#slabel'), 'Not a saved instance');
+    assert.equal(await page.textContent('#pv .saved'), '');
+  } finally { release.resolve(); await page.close(); }
+});
+
+for (const close of ['start-go', 'comment-cell']) test(`${close} cancels a null-origin account load`, async () => {
+  const { page, responses } = await openWebsiteTicks(true);
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  try {
+    await page.route('**/logins/sites', async r => {
+      started.resolve();
+      await release.promise;
+      await r.fulfill({ json: responses['/logins/sites'] });
+    }, { times: 1 });
+    await page.evaluate(() => { window.oldAccount = openLogins(); });
+    await started.promise;
+    if (close === 'start-go') {
+      responses['/api/instances/i1/logins'] = {};
+      await page.click('#bar [data-act=ticks]');
+      await page.click('#pv [data-act=start-go]');
+      await page.waitForFunction(() => pv === null);
+    } else {
+      await page.evaluate(() => {
+        pv = { title: 'Ledger', path: 'working/ledger.xlsx', item: 'sheet', sheets: [{ name: 'Ledger', rows: [['Value']], truncated: false }], sheet: 0 };
+        renderPv();
+      });
+      await page.click('#pv td[data-ref="Ledger!A1"]');
+      await page.click('#pvn [data-act=comment-cell]');
+    }
+    release.resolve();
+    await page.evaluate(() => window.oldAccount);
+    assert.equal(await page.evaluate(() => pv), null);
+  } finally { release.resolve(); await page.close(); }
+});
+
 test('a request from Waiting uses its target workspace rather than the workspace currently open', async () => {
   const { page, series, responses } = await openWebsiteTicks();
   try {

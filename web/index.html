@@ -1139,6 +1139,7 @@ function tokensHtml(s) {
 
 let accountOpens = 0;
 async function openTokens(made) {
+  if (pv?.saving) return;
   const n = ++accountOpens, before = pv, tokens = await api('/tokens');
   if (n !== accountOpens || pv !== before || pv?.saving) return;
   if (pv?.back && pv.settings?.kind === 'logins') pv.back.settings.logins = pv.settings.logins;
@@ -1273,14 +1274,16 @@ function waiting() {
 
 // Your own OpenRouter key, if a new one is given, and whether your runs use it; a first one is used at once.
 async function saveKey() {
-  const k = pv.settings.logins.find(l => l.id === 'openrouter');
+  const p = pv, n = accountOpens, k = p.settings.logins.find(l => l.id === 'openrouter');
   await api('/logins/openrouter', { method: 'PUT', body: JSON.stringify({ key: $('#orkey')?.value ?? '', enabled: $('#oruse')?.checked ?? !k }) });
-  await openLogins();
+  if (pv !== p || n !== accountOpens) return;
+  const next = await openLogins();
   await refresh();
-  saved();
+  if (next && pv === next) saved();
 }
 
 async function openLogins(savedSignIn, website) {
+  if (pv?.saving && pv !== savedSignIn) return;
   const n = ++accountOpens, before = pv;
   const [logins, connections, grants, sites, vpn] = await Promise.all([api('/logins'), api('/connections'), api('/grants'), api('/logins/sites'),
     me.can.includes('vpn') ? api('/vpns').then(rows => ({ rows }), e => ({ error: e.message })) : null]);
@@ -1771,8 +1774,7 @@ async function onAct(act, el) {
   }
   if (act === 'comment-cell') {
     const item = pv.item;
-    pv = null;
-    renderPv();
+    closePv();
     Object.assign(ui, { open: true, audit: false });
     Object.assign(draft, { on: item, ref: el.dataset.ref });
     renderLog(); renderBar(); renderAudit();
@@ -1896,8 +1898,7 @@ async function onAct(act, el) {
     if (label === '') return toast('Give it a label');
     localStorage.ticks = JSON.stringify(ticked());
     const r = await s.then({ label, logins: ticked() });
-    pv = null;
-    renderPv();
+    closePv();
     if (r?.id) go(r.id);
     else await refresh();
   }
@@ -1914,13 +1915,15 @@ async function onAct(act, el) {
   if (act === 'logins') await openLogins();
   if (act === 'tokens') await openTokens();
   if (act === 'new-token') {
-    const name = $('#tname').value.trim();
+    const p = pv, n = accountOpens, name = $('#tname').value.trim();
     if (!name) return toast('Name the token, such as laptop');
-    await openTokens((await api('/tokens', { method: 'POST', body: JSON.stringify({ name, days: Number($('#tdays').value) }) })).token);
+    const { token } = await api('/tokens', { method: 'POST', body: JSON.stringify({ name, days: Number($('#tdays').value) }) });
+    if (pv === p && n === accountOpens) await openTokens(token);
   }
   if (act === 'revoke-token') {
+    const p = pv, n = accountOpens;
     await api(`/tokens/${enc(el.dataset.id)}`, { method: 'DELETE' });
-    await openTokens();
+    if (pv === p && n === accountOpens) await openTokens();
   }
   if (act === 'waiting') {
     pv = { title: 'Waiting on you', settings: { kind: 'waiting' } };
@@ -2053,8 +2056,9 @@ async function onAct(act, el) {
     renderPv();
   }
   if (act === 'service-connect') {
+    const p = pv, n = accountOpens;
     await api(`/logins/${enc(el.dataset.id)}/connect`, { method: 'POST' });
-    return openLogins();
+    if (pv === p && n === accountOpens) return openLogins();
   }
   if (act === 'signout-login') {
     await api(`/logins/${enc(el.dataset.id)}`, { method: 'DELETE' });
