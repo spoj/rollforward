@@ -402,7 +402,8 @@ test("the side panel is the instance's conversation, a run a line among its thre
   const rows = await page.locator('#audit .e > div').evaluateAll(es => es.map(e => (e as HTMLElement).innerText.split('\n')[0]));
   assert.deepEqual(rows.slice(0, 4), ['alex opened the instance', 'alex uploaded an input', 'Server showed u2', 'Run 1 started']);
   assert.ok(rows.includes('alex closed the instance'), 'the historical closer is unchanged');
-  assert.match(rows.at(-1)!, /changed whole-series authority/, 'the later transfer has its own audit line');
+  assert.equal(rows.at(-1), 'alex closed the instance', 'later authority changes leave closed history unchanged');
+  assert.equal(rows.some(row => row.includes('Whole-series authority changed')), false);
   assert.ok(rows.includes('Run 1 finished · 4m 0s · $0.21') && rows.includes("alex's agent set up Borrowing base"), 'each entry a line');
   assert.ok(rows.includes("alex's agent said Borrowing base for 08-30: excess 180,542.50, up 6,742.50."), "and the agent's session, whose plain text reaches no one else");
   await page.click('#log .seg [data-act=audit]');

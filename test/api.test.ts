@@ -766,8 +766,9 @@ test('only admins receive high or internal refused hosts in Waiting; unchecked, 
 test("people see, set, move and cancel wakes, one-off or weekly, while only the series owner starts requests; a wake stays pending whatever runs before it", async () => {
   const s = await shown(series), wakes = join(root, '.rf', 'wakes.json'), sep = await iid(series, '2026-08-30 rework');
   const due = new Date(Date.now() + 86_400_000).toISOString();
+  const authority = { version: 1, owner: adminEmail, epoch: s.epoch, workspace: (await named('larkfield')).id, logins: [], autonomous: true };
   writeFileSync(wakes, JSON.stringify({
-    pending: { k1: { target: s.id, at: due, from: 'larkfield/x/y', label: '2026-09-20' }, k2: { target: sep, at: due, from: 'larkfield/x/y' } },
+    pending: { k1: { target: s.id, at: due, from: adminEmail, label: '2026-09-20', authority, initiator: adminEmail }, k2: { target: sep, at: due, from: 'larkfield/x/y' } },
     fired: {}, requests: { r1: { series: s.id, label: '2026-09-27', from: 'larkfield/Bank rec/2026-09', at: due } },
   }));
   const listed = await shown(series);
@@ -785,6 +786,12 @@ test("people see, set, move and cancel wakes, one-off or weekly, while only the 
   assert.equal((await shown(series)).wakes.length, 2);
   const ws = `/api/workspaces/${(await named('larkfield')).id}`, b = sessionOf(await login(bob))!;
   assert.equal((await call('PUT', ws, JSON.stringify({ owners: [adminEmail], members: [bob] }))).status, 200);
+  assert.equal((await call('DELETE', '/api/wakes/k1', undefined, b)).status, 403, 'a collaborator cannot cancel the owner-authorized schedule');
+  const request = await (await call('PUT', `/api/wakes/${s.id}`, JSON.stringify({ at: later, label: '2026-09-20', text: 'A collaborator request' }), b)).json();
+  assert.notEqual(request.id, 'k1', 'a nonexecuting request cannot replace an owner-authorized schedule');
+  assert.equal(request.authority, undefined);
+  assert.equal(JSON.parse(readFileSync(wakes, 'utf8')).pending.k1.text, 'the bank file is in');
+  assert.equal((await call('DELETE', `/api/wakes/${request.id}`, undefined, b)).status, 200, 'a collaborator can cancel their own nonexecuting request');
   assert.equal((await call('POST', `${await at(series, '2026-08-30 rework', 'comment')}`, JSON.stringify({ text: 'fyi' }), b)).status, 200);
   assert.equal(JSON.parse(readFileSync(wakes, 'utf8')).pending.k2?.at, due, "bob's note for the series owner starts nothing, so the wake stays");
   const asks = async () => (await shown(series)).instances.find((i: { id: string }) => i.id === sep).asks;
@@ -1125,9 +1132,9 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   assert.match(await rf('people', '--set', file, '--force'), /^bob@demo\.test: admin -> user\nsaved$/m);
 });
 
-test('historical runs retain their original executor and initiating act after canonical ownership changes', async () => {
+test('legacy historical runs retain their original executor without guessing an unrecorded initiating act from current ownership', async () => {
   const runs = JSON.parse(await rf('runs', `larkfield/${series}`, '--json'));
-  assert.deepEqual(runs[0], { path: `larkfield/${series}/2026-08-23`, run: 1, at: '2026-08-23T23:01:00.000Z', outcome: 'done', seconds: 240, cost: 0.21, runner: 'alex', started: { op: 'upload', by: 'alex' }, error: null, failure: null });
+  assert.deepEqual(runs[0], { path: `larkfield/${series}/2026-08-23`, run: 1, at: '2026-08-23T23:01:00.000Z', outcome: 'done', seconds: 240, cost: 0.21, runner: 'alex', started: null, error: null, failure: null });
 });
 
 test("rf pull on Windows or macOS, whose disks ignore case, skips the second of two files whose names differ only in case, saying so, rather than writing both to one file", async () => {
@@ -1654,6 +1661,9 @@ test("a workspace's owners propose to merge it into another or move a series the
   const authorityBefore = (await listed(from)).series.find((s: { id: string }) => s.id === rec).epoch;
   const { id: wake } = await (await call('PUT', `/api/wakes/${rec}`, JSON.stringify({ at: '+1d', label: 'w2' }), b)).json();
   await quiet();
+  const history = (await json('/api/runs')).find((r: { path: string }) => r.path === 'Moves A/Rec/w1');
+  const beforeMove = await json(`/api/instances/${inst}`), cause = beforeMove.log.find((e: { op: string }) => e.op === 'wake');
+  assert.deepEqual([history.runner, history.initiator, history.provenance.cause, history.started], [bob, bob, cause.seq, { op: 'wake', by: bob }]);
 
   assert.equal((await propose({ kind: 'move', series: rec, to: into }, b)).status, 404, 'into a workspace its proposer sees');
   await put(into, { members: [bob] });
@@ -1680,6 +1690,7 @@ test("a workspace's owners propose to merge it into another or move a series the
   const moved = (await listed(into)).series.find((s: { id: string }) => s.id === rec);
   assert.deepEqual([moved.name, moved.owner, moved.consent, moved.wakes.map((k: { id: string }) => k.id)], ['Rec 2', bob, null, [wake]], 'ownership and wake provenance survive; workspace-bound consent does not');
   assert.ok(moved.epoch > authorityBefore, 'the old schedule snapshot is retired by the move');
+  assert.deepEqual((await json('/api/runs')).find((r: { path: string }) => r.path === 'Moves B/Rec 2/w1'), { ...history, path: 'Moves B/Rec 2/w1' }, 'moving invalidates current consent, not the persisted historical initiating act');
   const { log } = await json(`/api/instances/${inst}`);
   assert.deepEqual({ ...log.at(-1), seq: 0, at: '' }, { seq: 0, at: '', by: adminEmail, op: 'move', from: 'Moves A/Rec', to: 'Moves B/Rec 2' });
   assert.equal((await call('GET', `/api/instances/${inst}`, undefined, b)).status, 404, 'left out, bob no longer sees it');

@@ -514,7 +514,7 @@ test("a run reads only its workspace's links: membership adds no reach, removing
   const { id: ledger } = await (await call('POST', '/api/series', { workspace: source, name: 'Ledger', logins: [], autonomous: false })).json();
   assert.equal((await call('POST', `/api/series/${ledger}`, { label: '2026-11', quiet: true })).status, 200);
   assert.equal((await call('PUT', `/api/workspaces/${source}/readers/${reader}`)).status, 200);
-  const { id: series } = await (await call('POST', '/api/series', { workspace: reader, name: 'Report', logins: [], autonomous: false })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: reader, name: 'Report', logins: [], autonomous: true })).json();
   const linked: Script = { bash: ['ls /work', async () => {
     assert.equal((await call('PUT', `/api/workspaces/${reader}`, { members: ['carol@demo.test'] })).status, 200);
     return 'ls /work';
@@ -647,8 +647,8 @@ test("approvals are git commits: the agent commits a moment worth keeping and pr
 
 test("a start removes its data root's abandoned scratch, for runs without indexes too, and leaves another root's scratch alone", async () => {
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Scratch' })).json();
-  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'First', logins: [], autonomous: false })).json();
-  const { id: busy } = await (await call('POST', '/api/series', { workspace: ws, name: 'Busy', logins: [], autonomous: false })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'First', logins: [], autonomous: true })).json();
+  const { id: busy } = await (await call('POST', '/api/series', { workspace: ws, name: 'Busy', logins: [], autonomous: true })).json();
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-10', quiet: true })).json();
   const { id: running } = await (await call('POST', `/api/series/${busy}`, { label: '2026-11', quiet: true })).json();
   let reached = 0;
@@ -754,7 +754,7 @@ test("a start drops the torn last line a kill left in an instance's log or the s
 
 test('a cut anywhere leaves the instance right, its log whole, and the next run carries on: mid model call, mid tool call, mid commit and mid upload', async () => {
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Cuts' })).json();
-  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec', logins: [], autonomous: false })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec', logins: [], autonomous: true })).json();
   scripts.push({ bash: [], report: 'Nothing to roll forward yet.', saw: [] });
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11' })).json();
   await runs(id, 1);
@@ -832,7 +832,7 @@ test('a stop, as an update makes, lets nothing more go out, and exits once what 
   let answer!: () => void;
   statement = new Promise(ok => (answer = ok));
   scripts.push({ bash: [`curl -s -m 60 https://adb-1.azuredatabricks.net/api/2.0/sql/statements -H 'content-type: application/json' -d '{"statement": "SELECT 1", "warehouse_id": "wh1"}'`], report: 'Never said.', saw: [] });
-  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Warehouse', logins: ['adb:adb-1.azuredatabricks.net/wh1'], autonomous: false })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Warehouse', logins: ['adb:adb-1.azuredatabricks.net/wh1'], autonomous: true })).json();
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11' })).json();
   await until('the statement', () => statements > 0);
   const runsDir = join(tmp, 'scratch', 'runs'), token = readdirSync(runsDir).find(t => readFileSync(join(runsDir, t, 'bwrap.args'), 'utf8').includes(`RF_INSTANCE\0${id}\0`))!;
@@ -961,7 +961,7 @@ test('a restart during a drain ends it: the run it cut carries on, and what wait
 
 test("a person's own OpenRouter key, checked as it's saved, goes in for the runs they run instead of the server's, each run logging whose; out of credits, the run fails as credits and the instance waits for them until they stop using it, which wakes it", async () => {
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Keys' })).json();
-  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Mine', logins: [], autonomous: false })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Mine', logins: [], autonomous: true })).json();
   assert.equal((await call('PUT', '/logins/openrouter', { key: 'nope' })).status, 400);
   assert.equal((await call('PUT', '/logins/openrouter', { key: 'sk-or-mine' })).status, 200);
   assert.deepEqual((await (await call('GET', '/logins')).json()).find((l: { id: string }) => l.id === 'openrouter').enabled, false, 'until they tick it');
@@ -1458,7 +1458,7 @@ os.close(w); os.read(r, 1)' </dev/null >/dev/null 2>&1`;
 test("deleting an instance cuts a run whose view holds it, which carries on without it, and a run going for it, whose sandbox stops before its folder goes", async () => {
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Purge' })).json();
   const { id: payroll } = await (await call('POST', '/api/series', { workspace: ws, name: 'Payroll', logins: [], autonomous: false })).json();
-  const { id: report } = await (await call('POST', '/api/series', { workspace: ws, name: 'Report', logins: [], autonomous: false })).json();
+  const { id: report } = await (await call('POST', '/api/series', { workspace: ws, name: 'Report', logins: [], autonomous: true })).json();
   const { id: old } = await (await call('POST', `/api/series/${payroll}`, { label: '2026-10', quiet: true })).json();
   const reader: Script = { bash: ['ls /work/Purge/Payroll', async () => {
     assert.equal((await call('POST', `/api/instances/${old}/delete`)).status, 200, 'deleted while a run in reach goes');
