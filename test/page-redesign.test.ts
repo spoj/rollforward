@@ -600,6 +600,90 @@ test('website info works by hover, focus and tap, linking to the existing site/w
   } finally { await page.close(); }
 });
 
+for (const backToLogins of [false, true]) for (const dismiss of ['Close', 'Escape', 'backdrop']) test(`website setup retains its draft and workspace through Tokens${backToLogins ? ' and Logins' : ''}, then ${dismiss}`, async () => {
+  const { page, responses } = await openWebsiteTicks();
+  responses['/tokens'] = [];
+  try {
+    await page.evaluate(() => onAct('new-instance', document.createElement('button')));
+    await page.fill('#slabel', 'Keep across tabs');
+    await page.check('#pv input.tick[value="drop:AP/"]');
+    await page.check('#pv input.tick[value="web:approved"]');
+    const row = page.locator('#pv .tickrow:has(input[value="web:missing"])');
+    await row.locator('[data-act=info]').click();
+    await row.locator('[data-act=website-setup]').click();
+    await page.waitForSelector('#pv details[data-shown="web:missing"][open]');
+    await page.click('#pv .pvtabs [data-act=tokens]');
+    await page.waitForSelector('#tname');
+    if (backToLogins) {
+      await page.click('#pv .pvtabs [data-act=logins]');
+      await page.waitForSelector('#pv .lline');
+      assert.equal(await page.locator('#pv details[data-shown="web:missing"][open]').count(), 1);
+      assert.equal(await page.locator('#pv .row2:has([data-act=grant-ask][data-id=missing]) select').inputValue(), 'w1');
+    }
+    if (dismiss === 'Close') await page.click('#pv [data-act=unpv]');
+    if (dismiss === 'Escape') await page.keyboard.press('Escape');
+    if (dismiss === 'backdrop') await page.mouse.click(5, 5);
+    await page.waitForFunction(() => pv?.settings?.kind !== 'tokens' && pv?.settings?.kind !== 'logins');
+    assert.equal(await page.locator('#pv').isVisible(), true, 'closing account settings must return to the draft');
+    assert.equal(await page.inputValue('#slabel'), 'Keep across tabs');
+    assert.equal(await page.isChecked('#pv input.tick[value="drop:AP/"]'), true);
+    assert.equal(await page.isChecked('#pv input.tick[value="web:approved"]'), true);
+  } finally { await page.close(); }
+});
+
+test('website setup keeps context and fresh logins through token changes, key Save and website Save', async () => {
+  const { page, responses, requests } = await openWebsiteTicks();
+  let tokens: object[] = [];
+  try {
+    await page.route('**/tokens', r => {
+      if (r.request().method() === 'POST') {
+        tokens = [{ id: 't1', name: 'Local fixture', created: new Date().toISOString(), expires: new Date(Date.now() + 86_400_000).toISOString() }];
+        return r.fulfill({ json: { token: 'fixture-token' } });
+      }
+      return r.fulfill({ json: tokens });
+    });
+    await page.route('**/tokens/t1', r => { tokens = []; return r.fulfill({ body: 'ok' }); });
+    await page.route('**/logins/openrouter', r => r.fulfill({ body: 'ok' }));
+    await page.route('**/logins/web/expired', r => r.fulfill({ json: { id: 'renew', expires: new Date(Date.now() + 600_000).toISOString() } }));
+    await page.route('**/signins/renew', r => {
+      requests.push({ path: '/signins/renew', method: r.request().method(), body: r.request().postData() && r.request().postDataJSON() });
+      (responses['/logins'] as { id: string; expired: boolean }[]).find(l => l.id === 'web:expired')!.expired = false;
+      return r.fulfill({ body: 'ok' });
+    });
+    await page.evaluate(() => onAct('new-instance', document.createElement('button')));
+    await page.fill('#slabel', 'Keep through saves');
+    await page.check('#pv input.tick[value="drop:AP/"]');
+    const row = page.locator('#pv .tickrow:has(input[value="web:expired"])');
+    await row.locator('[data-act=info]').click();
+    await row.locator('[data-act=website-setup]').click();
+    await page.waitForSelector('#pv details[data-shown="web:expired"][open]');
+    await page.click('#pv .pvtabs [data-act=tokens]');
+    await page.fill('#tname', 'Local fixture');
+    await page.click('#pv [data-act=new-token]');
+    await page.waitForSelector('#pv [data-act=revoke-token]');
+    await page.click('#pv [data-act=revoke-token]');
+    await page.waitForSelector('#pv [data-act=revoke-token]', { state: 'detached' });
+    await page.click('#pv .pvtabs [data-act=logins]');
+    await page.waitForSelector('#pv .lline');
+    assert.equal(await page.locator('#pv details[data-shown="web:expired"][open]').count(), 1);
+    await page.click('#pv [data-act=logins-show][data-id=key]');
+    await page.fill('#orkey', 'local-fixture-only');
+    await page.click('#pv [data-act=orkey-save]');
+    await page.waitForFunction(() => document.querySelector('#pv .saved').textContent === 'Saved');
+    await page.click('#pv details[data-shown="web:expired"] [data-act=web-signin]');
+    await page.click('#pv [data-act=signin-save]');
+    await page.waitForSelector('#pv details[data-shown="web:expired"][open]');
+    await page.click('#pv .pvtabs [data-act=tokens]');
+    await page.waitForSelector('#tname');
+    await page.click('#pv [data-act=unpv]');
+    assert.equal(await page.inputValue('#slabel'), 'Keep through saves');
+    assert.equal(await page.isChecked('#pv input.tick[value="drop:AP/"]'), true);
+    assert.equal(await row.locator('input').isEnabled(), true, 'fresh saved logins survive closing from Tokens');
+    assert.equal(requests.filter(r => r.path === '/signins/renew' && r.method === 'POST').length, 1);
+    assert.equal(requests.filter(r => r.path === '/signins/renew' && r.method === 'DELETE').length, 0);
+  } finally { await page.close(); }
+});
+
 test('canceling a draft while website setup loads cannot restore or overwrite its dialog', async () => {
   const { page, responses } = await openWebsiteTicks();
   const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();

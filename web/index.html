@@ -1141,7 +1141,8 @@ let accountOpens = 0;
 async function openTokens(made) {
   const n = ++accountOpens, before = pv, tokens = await api('/tokens');
   if (n !== accountOpens || pv !== before || pv?.saving) return;
-  pv = { title: 'Tokens', settings: { kind: 'tokens', tokens, made } };
+  if (pv?.back && pv.settings?.kind === 'logins') pv.back.settings.logins = pv.settings.logins;
+  pv = { title: 'Tokens', shown: pv?.shown ?? [], back: pv?.back, website: pv?.website, workspace: pv?.workspace, settings: { kind: 'tokens', tokens, made } };
   renderPv();
 }
 
