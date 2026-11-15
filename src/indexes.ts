@@ -31,8 +31,9 @@ const ndjson = (json: string) => `${json.replace(/\u2028/g, '\\u2028').replace(/
 const kind = (offer: string) => /^m365:(\w+):?(.*)$/.exec(offer)!.slice(1) as [string, string];
 const m365 = (email: string) => logins(email).find(l => l.id === 'm365');
 const indexed = (o: Offer) => /^m365:(item:|site:|mail:|onedrive$)/.test(o.id) && !o.name.startsWith('File ');
+const hasOffer = (person: string, offer: string) => !!m365(person)?.offers.some(o => o.id === offer);
 // A cache is kept up while its person's login offers its source and hasn't expired.
-const offered = (person: string, offer: string) => !!m365(person)?.offers.some(o => o.id === offer) && !m365(person)!.expired;
+const offered = (person: string, offer: string) => hasOffer(person, offer) && !m365(person)!.expired;
 const at = (person: string, offer: string) => join(personDir(person), 'index', createHash('sha256').update(offer).digest('hex').slice(0, 16));
 const feed = (c: Cache) => `${at(c.person, c.source)}.${c.gen}.ndjson.zst`;
 const load = (person: string, offer: string): Cache | undefined => (existsSync(`${at(person, offer)}.json`) ? JSON.parse(readFileSync(`${at(person, offer)}.json`, 'utf8')) : undefined);
@@ -106,9 +107,11 @@ async function slice(person: string, offer: string, until: number): Promise<void
     try {
       answers = (await call(person, '/$batch', due.map(([, p], k) => ({ id: String(k), method: 'GET', url: p.link.slice(G().length), headers: { prefer: prefer(offer) } })))).responses;
     } catch (e) {
+      if (!hasOffer(person, offer)) return;
       for (const [part, p] of due) failed(p, e, start(offer, part));
       return save(c);
     }
+    if (!hasOffer(person, offer)) return;
     const lines: string[] = [];
     let lost: [string, Part, Error & { status: number }] | undefined;
     for (const a of answers) {
@@ -143,7 +146,9 @@ async function slice(person: string, offer: string, until: number): Promise<void
       return rmSync(was, { force: true });
     }
     if (lines.length) {
-      const frame = await promisify(zstdCompress)(lines.join('')), fd = openSync(feed(c), 'a');
+      const frame = await promisify(zstdCompress)(lines.join(''));
+      if (!hasOffer(person, offer)) return;
+      const fd = openSync(feed(c), 'a');
       ftruncateSync(fd, c.length);
       writeSync(fd, frame);
       fsyncSync(fd);
@@ -196,24 +201,34 @@ async function tidy(c: Cache) {
       }
     }
   }, createZstdCompress(), createWriteStream(next));
+  if (!hasOffer(c.person, c.source)) return rmSync(next, { force: true });
   Object.assign(c, { gen: c.gen + 1, length: statSync(next).size, base: statSync(next).size, lines: kept });
   save(c);
   rmSync(file);
 }
 
+const epochs = new Map<string, number>();
+const epochOf = (k: string) => epochs.get(k) ?? 0;
+const bump = (k: string) => epochs.set(k, epochOf(k) + 1);
+
 // A cache starts with its source's first part, or for a site, a part per library, which are listed again each time.
-async function begin(o: Offer, person: string) {
+async function begin(o: Offer, person: string, since: string, ep: string) {
+  const key = at(person, o.id);
+  const alive = () => `${epochOf(personDir(person))}:${epochOf(key)}` === ep && m365(person)?.since === since && offered(person, o.id);
+  if (!alive()) return;
   const [k, id] = kind(o.id), c = load(person, o.id) ?? { person, source: o.id, name: o.name, gen: 0, length: 0, lines: 0, base: 0, parts: k === 'site' ? {} : { '': fresh(start(o.id, '')) } };
   c.name = o.name;
   if (k === 'site') {
     let path: string | undefined = `/sites/${id}/drives?$select=id`;
     while (path) {
       const page = await call(person, path);
+      if (!alive()) return;
       for (const d of page.value) c.parts[d.id] ??= fresh(start(o.id, d.id));
       path = page['@odata.nextLink']?.slice(G().length);
     }
   }
-  mkdirSync(dirname(at(person, o.id)), { recursive: true, mode: 0o700 });
+  if (!alive()) return;
+  mkdirSync(dirname(key), { recursive: true, mode: 0o700 });
   save(c);
 }
 
@@ -221,15 +236,26 @@ async function begin(o: Offer, person: string) {
 // server's start.
 export function track(email: string) {
   const l = m365(email);
-  for (const o of l && !l.expired ? l.offers.filter(indexed) : []) queue(at(email, o.id), () => begin(o, email)).then(() => poke(), e => console.error(`index of ${o.id} for ${email}: no start`, e));
+  if (!l || l.expired) return;
+  for (const o of l.offers.filter(indexed)) {
+    const key = at(email, o.id), ep = `${epochOf(personDir(email))}:${epochOf(key)}`;
+    queue(key, () => begin(o, email, l.since, ep)).then(() => poke(), e => console.error(`index of ${o.id} for ${email}: no start`, e));
+  }
 }
 
 // A person's cache goes when they remove its offer, or every one when they sign out of Microsoft 365, after any write going on.
 export function forget(email: string, offer?: string) {
-  for (const c of caches().filter(c => c.person === email && (!offer || c.source === offer)))
-    queue(at(email, c.source), async () => {
-      const now = load(email, c.source);
-      for (const f of now ? [feed(now), `${at(email, c.source)}.json`] : []) rmSync(f, { force: true });
+  bump(offer ? at(email, offer) : personDir(email));
+  const prefix = `${join(personDir(email), 'index')}/`;
+  const keys = new Set([
+    ...(offer ? [at(email, offer)] : [...queues.keys()].filter(k => k.startsWith(prefix))),
+    ...caches().filter(c => c.person === email && (!offer || c.source === offer)).map(c => at(email, c.source)),
+  ]);
+  for (const k of keys)
+    queue(k, async () => {
+      if (!existsSync(`${k}.json`)) return;
+      const now = JSON.parse(readFileSync(`${k}.json`, 'utf8')) as Cache;
+      for (const f of [feed(now), `${k}.json`]) rmSync(f, { force: true });
     });
 }
 

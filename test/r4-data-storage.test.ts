@@ -8,11 +8,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { commit } from '../src/git.ts';
 import { openSkills, pushSkill, skills, versionsOf } from '../src/skills.ts';
-<<<<<<< HEAD
-import { createInstance, openStore, wipe } from '../src/store.ts';
-=======
 import { createInstance, HttpError, Instance, openStore, wipe } from '../src/store.ts';
->>>>>>> 6ebe1d1 (Validate top-level screen object and item objects in Instance.put)
 
 const who = { name: 'Alice', email: 'alice@demo.test' };
 
@@ -178,6 +174,122 @@ test('B-R4-DATA-13: Instance.put() rejects non-object screen JSON and non-object
     const before = inst.doc.rev;
     inst.put(JSON.stringify({ rev: before, items: [] }), 1);
     assert.equal(inst.doc.rev, before + 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+for (const action of ['user', 'signout', 'unoffer'] as const) {
+  for (const when of ['after', 'during'] as const) {
+    test(`B-R4-DATA-10: ${action} revocation ${when} site-drive discovery leaves no index cache`, () => {
+      const root = mkdtempSync(join(tmpdir(), `r4-10-${action}-${when}-`));
+      try {
+        const out = execFileSync(process.execPath, ['--experimental-test-module-mocks', '--input-type=module', '-e', `
+          import { mock } from 'node:test';
+          import { existsSync, readdirSync } from 'node:fs';
+          import { join, resolve } from 'node:path';
+          import { pathToFileURL } from 'node:url';
+          const mod = name => pathToFileURL(resolve('src', name + '.ts')).href;
+          const { initSystem } = await import(mod('system'));
+          const auth = await import(mod('auth'));
+          const logins = await import(mod('logins'));
+          const entra = await import(mod('entra'));
+          mock.module(mod('entra'), { exports: { ...entra, token: async () => 'synthetic' } });
+
+          const email = 'bob@demo.test', offer = 'm365:site:tenant,site,web';
+          initSystem(${JSON.stringify(root)});
+          auth.upsertUser(email, { role: 'user' });
+          logins.saveLogin(email, { id: 'm365', kind: 'm365', name: 'M365', since: '2026-11-15T00:00:00Z', offers: [{ id: offer, name: 'Site Finance' }] }, 'synthetic');
+
+          const entered = Promise.withResolvers(), release = Promise.withResolvers();
+          globalThis.fetch = async url => {
+            if (!String(url).includes('/sites/tenant,site,web/drives?')) throw new Error('unexpected ' + url);
+            entered.resolve();
+            await release.promise;
+            return Response.json({ value: [{ id: 'drive-1' }] });
+          };
+
+          const ix = await import(mod('indexes'));
+          const act = ${JSON.stringify(action)}, timing = ${JSON.stringify(when)};
+          const revoke = () => {
+            if (act === 'user') { ix.forget(email); auth.removeUser(email); }
+            if (act === 'signout') { logins.signOut(email, 'm365'); ix.forget(email); }
+            if (act === 'unoffer') { logins.unoffer(email, 'm365', offer); ix.forget(email, offer); }
+          };
+
+          ix.track(email);
+          await entered.promise;
+          if (timing === 'during') revoke();
+          release.resolve();
+          for (let i = 0; i < 20; i++) await new Promise(ok => setImmediate(ok));
+          if (timing === 'after') {
+            revoke();
+            for (let i = 0; i < 20; i++) await new Promise(ok => setImmediate(ok));
+          }
+          const dir = join(logins.personDir(email), 'index');
+          console.log(JSON.stringify({
+            personExists: existsSync(logins.personDir(email)),
+            indexes: ix.indexes(),
+            files: existsSync(dir) ? readdirSync(dir) : [],
+          }));
+        `], { cwd: join(import.meta.dirname, '..'), encoding: 'utf8', timeout: 10_000 }).trim();
+        const res = JSON.parse(out.split('\n').at(-1)!);
+        if (action === 'user') assert.equal(res.personExists, false);
+        assert.deepEqual(res.indexes, []);
+        assert.deepEqual(res.files, []);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
+test('B-R4-DATA-10: unoffer + re-offer during discovery discards stale drive listing', () => {
+  const root = mkdtempSync(join(tmpdir(), 'r4-10-reoffer-'));
+  try {
+    const out = execFileSync(process.execPath, ['--experimental-test-module-mocks', '--input-type=module', '-e', `
+      import { mock } from 'node:test';
+      import { readFileSync, readdirSync } from 'node:fs';
+      import { join, resolve } from 'node:path';
+      import { pathToFileURL } from 'node:url';
+      const mod = name => pathToFileURL(resolve('src', name + '.ts')).href;
+      const { initSystem } = await import(mod('system'));
+      const auth = await import(mod('auth'));
+      const logins = await import(mod('logins'));
+      const entra = await import(mod('entra'));
+      mock.module(mod('entra'), { exports: { ...entra, token: async () => 'synthetic' } });
+
+      const email = 'bob@demo.test', offer = 'm365:site:tenant,site,web';
+      initSystem(${JSON.stringify(root)});
+      auth.upsertUser(email, { role: 'user' });
+      logins.saveLogin(email, { id: 'm365', kind: 'm365', name: 'M365', since: '2026-11-15T00:00:00Z', offers: [{ id: offer, name: 'Site Finance' }] }, 'synthetic');
+
+      let calls = 0;
+      const firstEntered = Promise.withResolvers(), releaseFirst = Promise.withResolvers();
+      globalThis.fetch = async () => {
+        if (++calls === 1) {
+          firstEntered.resolve();
+          await releaseFirst.promise;
+          return Response.json({ value: [{ id: 'stale-drive' }] });
+        }
+        return Response.json({ value: [{ id: 'fresh-drive' }] });
+      };
+
+      const ix = await import(mod('indexes'));
+      ix.track(email);
+      await firstEntered.promise;
+      logins.unoffer(email, 'm365', offer);
+      ix.forget(email, offer);
+      logins.saveLogin(email, { id: 'm365', kind: 'm365', name: 'M365', since: '2026-11-15T00:00:00Z', offers: [{ id: offer, name: 'Site Finance' }] }, 'synthetic');
+      ix.track(email);
+      releaseFirst.resolve();
+      for (let i = 0; i < 30; i++) await new Promise(ok => setImmediate(ok));
+      const dir = join(logins.personDir(email), 'index');
+      const [file] = readdirSync(dir).filter(f => f.endsWith('.json'));
+      const cache = JSON.parse(readFileSync(join(dir, file), 'utf8'));
+      console.log(JSON.stringify(Object.keys(cache.parts)));
+    `], { cwd: join(import.meta.dirname, '..'), encoding: 'utf8', timeout: 10_000 }).trim();
+    assert.deepEqual(JSON.parse(out.split('\n').at(-1)!), ['fresh-drive']);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
