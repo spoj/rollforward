@@ -159,3 +159,46 @@ test('run browser writeback excludes cookies scoped to bare private PSL suffixes
   const saved = JSON.parse(secret(USER, 'web:pages'));
   assert.deepEqual(saved.cookies.map((c: any) => c.domain), ['app.github.io']);
 });
+
+test('run browser open and writeback exclude hosts covered by connections added after site vetting', async () => {
+  writeSites(USER, {
+    mixed: {
+      url: 'https://portal.vendor.com/',
+      hosts: ['adb-99.azuredatabricks.net'],
+      writeback: true,
+      added: '2026-11-15T00:00:00Z',
+      profile: { what: 'Vendor portal.', category: 'vendor', risk: 'low', flags: [] },
+      checks: {
+        'portal.vendor.com': { verdict: 'pass', why: 'Own domain.' },
+        'adb-99.azuredatabricks.net': { verdict: 'pass', why: 'Added before databricks connection.' },
+      },
+    },
+  });
+  await setConnection('adb', { type: 'databricks' }, USER);
+  const since = '2026-11-15T02:00:00Z';
+  saveLogin(USER, { id: 'web:mixed', kind: 'website', name: 'mixed', since, offers: [{ id: 'web:mixed', name: 'mixed' }] }, JSON.stringify({ cookies: [], origins: [] }));
+  const g = await ask({ email: USER, role: 'admin', caps: [] }, 'mixed', 'w', 'check');
+  if (g.state === 'pending') decide({ email: USER, role: 'admin', caps: [] }, g.id, true);
+
+  const inst = createInstance('s', 'except-check', USER, ['web:mixed']);
+  inst.append('server', 'run', { run: 1, runner: USER, consent: 1 });
+  const br = new Browsers(inst, 1, 'tok-except');
+  openedBodies.length = 0;
+  nextSessionId = 'bs-except';
+  closeState = {
+    cookies: [
+      { name: 'ok', value: '1', domain: 'portal.vendor.com' },
+      { name: 'dbx', value: '2', domain: 'adb-99.azuredatabricks.net' },
+    ],
+    origins: [],
+  };
+  closeLog = [{ method: 'GET', url: 'https://portal.vendor.com/', status: 200 }];
+  try {
+    await (br as any).browser('mixed');
+    assert.deepEqual(openedBodies.at(-1).site.hosts, ['portal.vendor.com']);
+  } finally {
+    await br.close();
+  }
+  const saved = JSON.parse(secret(USER, 'web:mixed'));
+  assert.deepEqual(saved.cookies.map((c: any) => c.domain), ['portal.vendor.com']);
+});

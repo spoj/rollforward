@@ -77,8 +77,13 @@ export function files(id: string, path: string) {
 export const PRINT = 'print';
 const printer = async () => (await browserJson('POST', '/sessions', { site: { hosts: [], public: true }, ttl_s: 1800 })).id as string;
 
+const allowedHosts = (w: Website) => {
+  const ex = except();
+  return reached(w).filter(h => (!w.checks?.[h] || w.checks[h].verdict === 'pass') && !ex.some(x => covers(h, x) || covers(x, h)));
+};
+
 const open = async (w: Website, ttl_s: number, state?: unknown, via?: Via): Promise<string> =>
-  (await browserJson('POST', '/sessions', { site: { hosts: reached(w).filter(h => !w.checks?.[h] || w.checks[h].verdict === 'pass'), start_url: w.url, via, ...(!internalOf(w) && { public: true }) }, state, ttl_s })).id;
+  (await browserJson('POST', '/sessions', { site: { hosts: allowedHosts(w), start_url: w.url, via, ...(!internalOf(w) && { public: true }) }, state, ttl_s })).id;
 const throughVpn = (w: Website, host: string) => !!w.via && vpnHosts(w.url).some(p => covers(p, host));
 // Whether one of the website's exact hosts has an admin's internal-address permission.
 const internalOf = (w: Website) => {
@@ -388,7 +393,7 @@ export async function endSignIn(email: string, id: string, save: boolean, keepal
     if (!save) return;
     currentSignIn(signing);
     await checkWebsite(email, site, trace);
-    const w = currentSignIn(signing), allowed = reached(w).filter(h => !w.checks?.[h] || w.checks[h].verdict === 'pass'), hosts = Object.keys(requests).filter(h => allowed.some(p => covers(p, h))), s = state as { cookies: { domain: string }[]; origins: { origin: string }[] };
+    const w = currentSignIn(signing), allowed = allowedHosts(w), hosts = Object.keys(requests).filter(h => allowed.some(p => covers(p, h))), s = state as { cookies: { domain: string }[]; origins: { origin: string }[] };
     const trimmed = s && { ...s, cookies: s.cookies.filter(c => hosts.some(h => c.domain === h || (c.domain.startsWith('.') && (h === c.domain.slice(1) || h.endsWith(c.domain))))),
       origins: s.origins.filter(o => hosts.includes(new URL(o.origin).hostname)) };
     saveLogin(email, { id: `web:${site}`, kind: 'website', name, since: new Date().toISOString(), offers: [{ id: `web:${site}`, name }], ...(until && { keepalive: new Date(until).toISOString() }), trace }, JSON.stringify(trimmed));
@@ -423,7 +428,7 @@ const setJournal = (all: Record<string, Opened>) => replaceReadOnly(join(rfDir()
 function keep(inst: Instance, b: Opened, { state, log }: { state: unknown; log: Entry[] }) {
   const login = b.writeback && logins(b.email).find(l => l.id === `web:${b.site}`), w = websitesOf(b.email)[b.site];
   if (login && state && w && !login.expired && login.since === b.since) {
-    const ps = reached(w).filter(h => !w.checks?.[h] || w.checks[h].verdict === 'pass'), s = state as { cookies?: { domain?: string }[]; origins?: { origin?: string }[] };
+    const ps = allowedHosts(w), s = state as { cookies?: { domain?: string }[]; origins?: { origin?: string }[] };
     const trimmed = {
       ...s,
       ...(Array.isArray(s.cookies) && {
