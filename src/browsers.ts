@@ -240,16 +240,26 @@ export async function setSite(by: Me, name: string, change: Record<string, unkno
 
 export async function revokeInternalHosts(hosts: string[]) {
   if (!hosts.length) return;
-  const dir = join(rfDir(), 'people'), people = new Set([...Object.keys(users()), ...(existsSync(dir) ? readdirSync(dir) : [])]);
-  for (const email of people) for (const [site, w] of Object.entries(websitesOf(email))) {
-    const hit = hosts.filter(h => !throughVpn(w, h) && (reached(w).includes(h) || w.checks?.[h]?.verdict === 'pass'));
-    if (!hit.length) continue;
-    changeWebsite(email, site, {
-      hosts: w.hosts.filter(h => !hit.includes(h)),
-      checks: { ...w.checks, ...Object.fromEntries(hit.map(h => [h, { verdict: 'internal' as const, why: 'It is at an internal address.' }])) },
-    });
-    const id = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
-    if (id) await browserJson('PUT', `/sessions/${id}/hosts`, { hosts: internalHosts(website(email, site)) }).catch(() => {});
+  const dir = join(rfDir(), 'people'), byFolder = new Map([...Object.keys(users()), ...[...signIns.values()].map(s => s.email)].map(e => [personDir(e), e]));
+  const folders = new Set([...byFolder.keys(), ...(existsSync(dir) ? readdirSync(dir).map(f => join(dir, f)) : [])]);
+  for (const folder of folders) {
+    const file = join(folder, 'websites.json');
+    if (!existsSync(file)) continue;
+    const all: Record<string, Website> = Object.assign(Object.create(null), JSON.parse(readFileSync(file, 'utf8'))), email = byFolder.get(folder);
+    let changed = false;
+    for (const [site, w] of Object.entries(all)) {
+      const hit = hosts.filter(h => !throughVpn(w, h) && (reached(w).includes(h) || w.checks?.[h]?.verdict === 'pass'));
+      if (!hit.length) continue;
+      all[site] = {
+        ...w,
+        hosts: w.hosts.filter(h => !hit.includes(h)),
+        checks: { ...w.checks, ...Object.fromEntries(hit.map(h => [h, { verdict: 'internal' as const, why: 'It is at an internal address.' }])) },
+      };
+      changed = true;
+      const id = email && [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
+      if (id) await browserJson('PUT', `/sessions/${id}/hosts`, { hosts: internalHosts(all[site]) }).catch(() => {});
+    }
+    if (changed) replaceFile(file, JSON.stringify(all, null, 1));
   }
 }
 

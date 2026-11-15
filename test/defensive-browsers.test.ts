@@ -106,3 +106,22 @@ test('endSignIn and checkRefused handle unparseable request URLs in browser prox
   }
   assert.ok(websitesOf(USER).portal.hosts.includes('cdn.vendor.com'));
 });
+
+test('revokeInternalHosts strips revoked internal hosts from websites.json folders of unlogged-in bootstrap admins', async () => {
+  const bootstrapAdmin = 'bootstrap-admin@demo.test';
+  setLetIn(['sso.internal.test'], USER, true);
+  writeSites(bootstrapAdmin, {
+    erp: {
+      url: 'https://erp.vendor.com/',
+      hosts: ['sso.internal.test'],
+      writeback: true,
+      added: '2026-11-15T00:00:00Z',
+      checks: { 'sso.internal.test': { verdict: 'pass', why: 'An admin allowed this internal host.' } },
+    },
+  });
+  setLetIn(['sso.internal.test'], USER, false);
+  await revokeInternalHosts(['sso.internal.test']);
+  const afterSite = websitesOf(bootstrapAdmin).erp;
+  assert.deepEqual(afterSite.hosts, []);
+  assert.equal(afterSite.checks?.['sso.internal.test']?.verdict, 'internal');
+});
