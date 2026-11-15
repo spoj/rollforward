@@ -2,7 +2,7 @@ import { request as httpRequest, type IncomingHttpHeaders, type IncomingMessage,
 import { request as httpsRequest } from 'node:https';
 import { createCipheriv, createDecipheriv, createHash, randomBytes, type Hash } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
-import { brotliDecompressSync, createBrotliDecompress, createGunzip, createInflate, gunzipSync, inflateSync } from 'node:zlib';
+import { brotliDecompressSync, createBrotliDecompress, createGunzip, createInflate, createZstdDecompress, gunzipSync, inflateSync, zstdDecompressSync } from 'node:zlib';
 import { HttpError, type Instance } from './store.ts';
 import { lookup } from 'node:dns/promises';
 import { getDomain } from 'tldts';
@@ -430,7 +430,11 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       });
       // An answer's links go through for this run; what a service's answer cost, whole, in its stream's events, from OpenRouter's
       // generation endpoint, or estimated where none could be learned, adds to the run's as it comes.
-      if (c && types[c.type].links && answer.type.includes('json')) for (const l of await types[c.type].links?.(JSON.parse(answer.text || 'null'), targetPath, as, ticks) ?? []) a.links.set(new URL(l).href, { name, offer });
+      if (c && types[c.type].links && /json/i.test(answer.type) && answer.text) {
+        let parsed: unknown;
+        try { parsed = JSON.parse(answer.text); } catch {}
+        if (parsed !== undefined) for (const l of await types[c.type].links?.(parsed, targetPath, as, ticks) ?? []) a.links.set(new URL(l).href, { name, offer });
+      }
       const { cost, estimated } = !s ? { cost: 0, estimated: false }
         : await resolveCost(s, method, url.pathname, json, answer.status, answer.headers, answer.type, answer.events, answer.bytes, !!answer.cut, apiKey);
       a.cost += cost;
@@ -502,7 +506,7 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
         return die(e as Error);
       }
       const type = String(r.headers['content-type']), isSse = type.includes('event-stream'), isJson = /json/i.test(type);
-      const kept: Buffer[] = [], events: any[] = [], enc = r.headers['content-encoding'];
+      const kept: Buffer[] = [], events: any[] = [], enc = String(r.headers['content-encoding'] ?? '').trim().toLowerCase(), isGzip = enc === 'gzip' || enc === 'x-gzip';
       let bytes = 0, cut = false, carry = '', oversized = false;
       const pushLine = (line: string) => {
         if (!/^data:\s*\{/.test(line)) return;
@@ -544,7 +548,7 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
         }
       };
       const decoder = o.keep && isSse ? new StringDecoder('utf8') : undefined;
-      const unzip = decoder && (enc === 'gzip' ? createGunzip() : enc === 'deflate' ? createInflate() : enc === 'br' ? createBrotliDecompress() : undefined);
+      const unzip = decoder && (isGzip ? createGunzip() : enc === 'deflate' ? createInflate() : enc === 'br' ? createBrotliDecompress() : enc === 'zstd' ? createZstdDecompress() : undefined);
       const decoded = unzip && new Promise<void>(resolve => {
         unzip.on('data', (b: Buffer) => feedText(decoder!.write(b)));
         unzip.once('end', resolve);
@@ -571,7 +575,7 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
           const raw = Buffer.concat(kept);
           try {
             const options = o.service ? { maxOutputLength: 8 * 1024 * 1024 } : undefined;
-            text = (enc === 'gzip' ? gunzipSync(raw, options) : enc === 'deflate' ? inflateSync(raw, options) : enc === 'br' ? brotliDecompressSync(raw, options) : raw).toString();
+            text = (isGzip ? gunzipSync(raw, options) : enc === 'deflate' ? inflateSync(raw, options) : enc === 'br' ? brotliDecompressSync(raw, options) : enc === 'zstd' ? zstdDecompressSync(raw, options) : raw).toString();
           } catch (e) {
             if ((e as NodeJS.ErrnoException).code !== 'ERR_BUFFER_TOO_LARGE') {
               res.destroy();
@@ -595,7 +599,7 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
       };
       unregister?.();
       if (o.service) unregister = o.registerAbort?.(abortStream);
-      const holdEnd = o.keep && isJson && (enc === 'gzip' || enc === 'deflate' || enc === 'br');
+      const holdEnd = o.keep && isJson && (isGzip || enc === 'deflate' || enc === 'br' || enc === 'zstd');
       if (res.closed) {
         if (o.service && isSse) return abortStream();
         r.resume();

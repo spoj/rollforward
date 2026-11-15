@@ -1,6 +1,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { gzipSync, zstdCompressSync } from 'node:zlib';
 import { createServer, request, type IncomingHttpHeaders, type Server } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { connect as tlsConnect } from 'node:tls';
@@ -134,6 +135,41 @@ before(async () => {
     if (u.pathname === '/api/2.0/sql/statements/s1/cancel' && req.method === 'POST') {
       return send({});
     }
+    if (u.pathname === '/blob/zstd-chunk') {
+      return void res.writeHead(200, { 'content-type': 'text/csv' }).end('a,b\n1,2\n');
+    }
+    if (u.pathname === '/api/2.0/sql/statements/s-zstd' && req.method === 'GET') {
+      const payload = zstdCompressSync(Buffer.from(JSON.stringify({
+        statement_id: 's-zstd',
+        result: { external_links: [{ chunk_index: 0, external_link: 'https://dbstorage1.blob.core.windows.net/blob/zstd-chunk?sig=1' }] },
+      })));
+      return void res.writeHead(200, { 'content-type': 'application/json', 'content-encoding': 'zstd' }).end(payload);
+    }
+    if (u.pathname === '/api/2.0/sql/statements/s-corrupt-zstd' && req.method === 'GET') {
+      return void res.writeHead(200, { 'content-type': 'application/json', 'content-encoding': 'zstd' }).end(Buffer.from('not-valid-zstd'));
+    }
+    if (u.pathname === '/api/2.0/sql/statements/s-nonjson' && req.method === 'GET') {
+      return void res.writeHead(200, { 'content-type': 'application/json' }).end('plain-text-not-json');
+    }
+    if (u.pathname === '/api/v1/chat/completions' && req.method === 'POST') {
+      const chunks: Buffer[] = [];
+      req.on('data', c => chunks.push(c)).on('end', () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString());
+        if (body.mode === 'zstd-sse') {
+          const sse = zstdCompressSync(Buffer.from('data: {"id":"gen-z1","usage":{"cost":0.33}}\n\ndata: [DONE]\n\n'));
+          return void res.writeHead(200, { 'content-type': 'text/event-stream', 'content-encoding': ' ZSTD ' }).end(sse);
+        }
+        if (body.mode === 'xgzip-json') {
+          const gz = gzipSync(Buffer.from(JSON.stringify({ id: 'gen-g1', usage: { cost: 0.42 } })));
+          return void res.writeHead(200, { 'content-type': 'application/json', 'content-encoding': 'X-GZIP' }).end(gz);
+        }
+        if (body.mode === 'corrupt-zstd') {
+          return void res.writeHead(200, { 'content-type': 'application/json', 'content-encoding': 'zstd' }).end(Buffer.from('corrupt-zstd-bytes'));
+        }
+        return send({ usage: { cost: 0.01 } });
+      });
+      return;
+    }
     if (u.pathname.startsWith('/api/2.1/unity-catalog/')) {
       return send({ path: u.pathname });
     }
@@ -146,6 +182,7 @@ before(async () => {
   process.env.RF_OIDC_CLIENT_ID = 'app';
   process.env.RF_OIDC_CLIENT_SECRET = 'secret';
   process.env.RF_PUBLIC_URL = 'https://rf.demo.test';
+  process.env.OPENROUTER_API_KEY = 'sk-or-defensive-test';
 
   const { initSystem, saveTree } = await import('../src/system.ts');
   initSystem(tmp);
@@ -171,6 +208,8 @@ before(async () => {
   await connMod.setConnection('adb', { type: 'databricks' }, USER);
   connMod.upstreams['graph.microsoft.com'] = base;
   connMod.upstreams['adb-1.azuredatabricks.net'] = base;
+  connMod.upstreams['dbstorage1.blob.core.windows.net'] = base;
+  connMod.upstreams['openrouter.ai'] = base;
   loginsMod.saveLogin(USER, {
     id: 'adb',
     kind: 'databricks',
@@ -277,4 +316,65 @@ test('Databricks rejects malformed or ambiguous path segments while allowing val
     assert.equal(r.status, 403, `expected 403 for ${badPath}, got ${r.status}: ${r.text}`);
   }
   assert.equal(upstreamPaths.length, beforeBad, 'rejected paths must not be forwarded upstream');
+});
+
+test('Compressed zstd and x-gzip responses decode metadata and usage while non-JSON metadata preserves HTTP status', async () => {
+  const inst = makeInst(['adb:adb-1.azuredatabricks.net/wh1']);
+  runs.set('z1', inst);
+  callRuns.set('z1', { inst, n: 1, links: new Map(), cost: 0 });
+  calls.length = 0;
+
+  // 1. zstd-compressed Databricks statement result extracts external_links cleanly
+  const stmt = await viaProxy('GET', 'https://adb-1.azuredatabricks.net/api/2.0/sql/statements/s-zstd', { token: 'z1' });
+  assert.equal(stmt.status, 200);
+  const chunk = await viaProxy('GET', 'https://dbstorage1.blob.core.windows.net/blob/zstd-chunk?sig=1', { token: 'z1' });
+  assert.equal(chunk.status, 200);
+  assert.equal(chunk.text, 'a,b\n1,2\n');
+
+  // 2. Non-JSON text with application/json Content-Type logs actual 200 status and byte count instead of 502
+  calls.length = 0;
+  const nonJson = await viaProxy('GET', 'https://adb-1.azuredatabricks.net/api/2.0/sql/statements/s-nonjson', { token: 'z1' });
+  assert.equal(nonJson.status, 200);
+  assert.equal(calls.at(-1)?.data.status, 200);
+  assert.equal(calls.at(-1)?.data.bytes, 'plain-text-not-json'.length);
+
+  // 3. Corrupt zstd on a connection JSON response still fails 502
+  calls.length = 0;
+  const badConnZstd = await viaProxy('GET', 'https://adb-1.azuredatabricks.net/api/2.0/sql/statements/s-corrupt-zstd', { token: 'z1' }).catch(() => ({ status: 502, text: '' }));
+  assert.equal(calls.at(-1)?.data.status, 502);
+  assert.ok(badConnZstd);
+
+  // 4. OpenRouter zstd SSE and X-GZIP JSON record exact provider cost without falling back to estimated
+  calls.length = 0;
+  const sseRes = await viaProxy('POST', 'https://openrouter.ai/api/v1/chat/completions', {
+    token: 'z1',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'openai/gpt-5', mode: 'zstd-sse' }),
+  });
+  await connMod.drainCalls(callRuns.get('z1')!);
+  assert.equal(sseRes.status, 200);
+  assert.equal(calls.at(-1)?.data.cost, 0.33);
+  assert.equal(calls.at(-1)?.data.estimated, undefined);
+
+  const gzRes = await viaProxy('POST', 'https://openrouter.ai/api/v1/chat/completions', {
+    token: 'z1',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'openai/gpt-5', mode: 'xgzip-json' }),
+  });
+  await connMod.drainCalls(callRuns.get('z1')!);
+  assert.equal(gzRes.status, 200);
+  assert.equal(calls.at(-1)?.data.cost, 0.42);
+  assert.equal(calls.at(-1)?.data.estimated, undefined);
+
+  // 5. Corrupt zstd on OpenRouter logs 502 failed and marks estimated cost
+  const badOrZstd = await viaProxy('POST', 'https://openrouter.ai/api/v1/chat/completions', {
+    token: 'z1',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'openai/gpt-5', mode: 'corrupt-zstd' }),
+  }).catch(() => ({ status: 502 }));
+  await connMod.drainCalls(callRuns.get('z1')!);
+  assert.ok(badOrZstd);
+  assert.equal(calls.at(-1)?.data.status, 502);
+  assert.equal(calls.at(-1)?.data.estimated, true);
+  assert.ok(calls.at(-1)?.data.failed);
 });
