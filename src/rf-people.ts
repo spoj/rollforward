@@ -280,7 +280,8 @@ Sign in to a VPN on the page. VPN access needs an explicit grant, even for admin
 }
 
 async function find(path: string) {
-  const [w, s, l] = path.split('/'), series = (await get('/api')).find(x => x.name === w)?.series.find(x => x.name === s);
+  const [w, s, l, more] = path.replace(/\/+$/, '').split('/');
+  const series = s !== undefined && more === undefined ? (await get('/api')).find(x => x.name === w)?.series.find(x => x.name === s) : undefined;
   const inst = l === undefined ? undefined : series?.instances.find(i => i.label === l);
   if (!series || (l !== undefined && !inst)) throw new Error(`nothing you can see at ${path}`);
   return { series, inst, at: inst ? `/api/instances/${inst.id}` : '' };
