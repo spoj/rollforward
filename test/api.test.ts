@@ -1749,6 +1749,7 @@ test("what a person changes beyond an instance is an act of theirs in the system
   assert.equal((await call('POST', '/api/workspaces', JSON.stringify({ name: '' }))).status, 400);
   assert.equal((await call('PUT', '/brand', JSON.stringify({ text: 'Logged', logo: { name: 'l.png', data: 'iVBORw0KGgo=' } }))).status, 200);
   assert.equal((await call('PUT', '/brand', JSON.stringify({ clear: true }))).status, 200);
+  for (let i = 0; i < 100 && acts().length < before + 3; i++) await new Promise(ok => setTimeout(ok, 10));
   assert.deepEqual(acts().slice(before).map(a => [a.seq, a.by, a.method, a.path, a.body]), [
     [before + 1, adminEmail, 'POST', '/api/workspaces', { name: 'Logged' }],
     [before + 2, adminEmail, 'PUT', '/brand', { text: 'Logged', logo: { name: 'l.png' } }],
