@@ -1255,9 +1255,29 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
         const cur = active.get(inst.seriesId);
         return { ws, who, mine: cur?.inst === inst ? cur : undefined };
       };
+      const before = recheck();
       if (['signoff', 'close', 'abandon'].includes(action)) {
-        if (recheck().mine) throw new HttpError(409, 'wait for the run to end');
+        if (before.mine) throw new HttpError(409, 'wait for the run to end');
         if (action !== 'signoff' && runnerOf(inst).by !== by) throw new HttpError(403, `only the runner, ${runnerOf(inst).by}, ${action === 'close' ? 'closes it, making it the record' : 'abandons it'}; take it over first`);
+      }
+      const { thread, text, approved } = payload;
+      const ask = action === 'signoff' || action === 'reject' ? inst.log.find(e => `c${e.seq}` === thread && e.op === 'comment' && e.by === 'agent' && (e.ask === true || e.ask === 'proposal')) : undefined;
+      if (action === 'signoff' || action === 'reject') {
+        // Anyone who sees the instance approves a proposal of the agent's, which `thread` names as cN, or rejects it, with a note, as an
+        // ask from before questions and proposals, `ask: true`, which may have been either. Approving is a sign-off, the route's and the
+        // entry's name: it commits the folder in their name, as they say yes to it, the proposal and the note its message, with their
+        // Signed-off-by. Either starts a run, as a reply does, unless quiet, and a proposal takes one of them. rf 0.12's reject, a sign-off
+        // with approved false, is refused.
+        if (approved === false) throw new HttpError(400, 'a sign-off approves; to say no, reject it, on the page or with rf reject');
+        if (!ask) throw new HttpError(409, `${thread} is no proposal of the agent's`);
+        if (inst.log.some(e => e.op === 'withdraw' && e.on === ask.seq)) throw new HttpError(409, `the agent withdrew ${thread}`);
+        const decided = ask.ask === 'proposal' && inst.log.find(e => e.on === ask.seq && (e.op === 'signoff' || e.op === 'reject'));
+        if (decided) throw new HttpError(409, `${thread} was ${decided.op === 'signoff' ? 'approved' : 'rejected'} already, by ${decided.by}`);
+        const closed = inst.log.find(e => e.op === 'close' && (e.accepted as string[] | undefined)?.includes(thread));
+        if (closed) throw new HttpError(409, `${thread} was accepted as done at the close, by ${closed.by}`);
+        if (ask.seq < inst.copied) throw new HttpError(409, `${thread} is from before this instance was copied`);
+      }
+      if (['signoff', 'close', 'abandon'].includes(action)) {
         if (action !== 'signoff') inst.closing = true;
         try {
           let prior;
@@ -1270,21 +1290,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
         }
       }
       const { ws, who, mine } = recheck();
-      if (action === 'signoff' || action === 'reject') {
-        // Anyone who sees the instance approves a proposal of the agent's, which `thread` names as cN, or rejects it, with a note, as an
-        // ask from before questions and proposals, `ask: true`, which may have been either. Approving is a sign-off, the route's and the
-        // entry's name: it commits the folder in their name, as they say yes to it, the proposal and the note its message, with their
-        // Signed-off-by. Either starts a run, as a reply does, unless quiet, and a proposal takes one of them. rf 0.12's reject, a sign-off
-        // with approved false, is refused.
-        const { thread, text, approved } = payload, ask = inst.log.find(e => `c${e.seq}` === thread && e.op === 'comment' && e.by === 'agent' && (e.ask === true || e.ask === 'proposal'));
-        if (approved === false) throw new HttpError(400, 'a sign-off approves; to say no, reject it, on the page or with rf reject');
-        if (!ask) throw new HttpError(409, `${thread} is no proposal of the agent's`);
-        if (inst.log.some(e => e.op === 'withdraw' && e.on === ask.seq)) throw new HttpError(409, `the agent withdrew ${thread}`);
-        const decided = ask.ask === 'proposal' && inst.log.find(e => e.on === ask.seq && (e.op === 'signoff' || e.op === 'reject'));
-        if (decided) throw new HttpError(409, `${thread} was ${decided.op === 'signoff' ? 'approved' : 'rejected'} already, by ${decided.by}`);
-        const closed = inst.log.find(e => e.op === 'close' && (e.accepted as string[] | undefined)?.includes(thread));
-        if (closed) throw new HttpError(409, `${thread} was accepted as done at the close, by ${closed.by}`);
-        if (ask.seq < inst.copied) throw new HttpError(409, `${thread} is from before this instance was copied`);
+      if (ask) {
         const note = typeof text === 'string' ? text.trim() : '';
         if (action === 'reject') inst.append(by, 'reject', { thread: ask.thread, on: ask.seq, ...(note && { text: note }), ...(quiet && { quiet: true }) });
         else {
