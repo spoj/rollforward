@@ -170,10 +170,10 @@ test("the agent's python is the image's venv, with its packages", async () => {
 
 // sample.msg is TxtSampleEmail.msg from MsgReader's tests (github.com/kenjiuno/MSGReader, MIT).
 test("the agent's userland is the agent image: its programs, LibreOffice recalculating a workbook and rendering Chinese to PDF, poppler's, and Python's PDF and Outlook readers", async () => {
-  const programs = 'timeout grep head cat ls tail sed cp rm mkdir cut unzip zip wc diff cmp which sort sha256sum pwd find xargs git curl jq fd rg file zstd sqlite3 soffice pdftotext pdfinfo pdftoppm tesseract officecli playwright-cli ffmpeg node python pip';
+  const programs = 'timeout grep head cat ls tail sed cp rm mkdir cut unzip zip wc diff cmp which sort sha256sum pwd find xargs git curl jq fd rg file zstd sqlite3 soffice pdftotext pdfinfo pdftoppm officecli playwright-cli ffmpeg node python pip';
   assert.equal(await sh('cat /etc/debian_version'), readFileSync(join(agentRoot, 'etc', 'debian_version'), 'utf8').trim(), "the image's /etc, on any host");
   assert.equal(await sh(`for p in ${programs}; do command -v $p > /dev/null || echo $p; done`), '', 'none missing');
-  assert.match(await sh('tesseract --list-langs'), /chi_sim\nchi_tra\neng/);
+  assert.equal((await agent.bash('command -v tesseract')).exitCode, 1, 'Tesseract is not installed');
   assert.equal(await sh('officecli --version && jq -r .autoUpdate ~/.officecli/config.json && echo $OFFICECLI_NO_AUTO_RESIDENT'), '1.0.160\nfalse\n1', "officecli, which neither updates itself nor stays resident");
   assert.equal(await sh('playwright-cli --version && echo $PLAYWRIGHT_MCP_OUTPUT_DIR'), '0.1.23\n/tmp/playwright-cli', 'its files out of the instance');
   copyFileSync(join(import.meta.dirname, 'sample.msg'), i('w2/working/sample.msg'));
