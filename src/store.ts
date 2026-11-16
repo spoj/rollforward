@@ -254,6 +254,9 @@ export class Instance {
   id: string;
   doc: Doc;
   log: Entry[];
+  // What `copied` answers, kept as the log changes rather than found on each read: the sidebar and the page read it for each entry
+  // of a log thousands long.
+  private copiedSeq: number;
   closing = false;
 
   constructor(dir: string) {
@@ -262,6 +265,7 @@ export class Instance {
     const ws = join(dir, 'screen.json'), log = join(dir, 'log.jsonl');
     this.doc = existsSync(ws) ? JSON.parse(readFileSync(ws, 'utf8')) : { rev: 0, status: 'open', items: [] };
     this.log = readLines(log);
+    this.copiedSeq = this.log.findLast(e => e.op === 'duplicate')?.seq ?? 0;
     // Its log is written first as it's deleted, so a restart that cut a deletion finds it deleted (waker.ts recover()).
     if (this.hole) this.doc = { rev: this.doc.rev, status: 'deleted', items: [] };
   }
@@ -277,6 +281,7 @@ export class Instance {
     const e = { seq: this.log.length + 1, at: new Date().toISOString(), by, op, ...fields };
     appendLine(join(this.dir, 'log.jsonl'), JSON.stringify(e));
     this.log.push(e);
+    if (e.op === 'duplicate') this.copiedSeq = e.seq;
     changes.emit('change', this.id);
     return e;
   }
@@ -372,6 +377,7 @@ export class Instance {
     writeFileSync(join(this.dir, 'log.jsonl.tmp'), JSON.stringify(e) + '\n');
     renameSync(join(this.dir, 'log.jsonl.tmp'), join(this.dir, 'log.jsonl'));
     this.log = [e];
+    this.copiedSeq = 0;
     this.doc = { rev: this.doc.rev, status: 'deleted', items: [] };
     return e;
   }
@@ -439,7 +445,7 @@ export class Instance {
   // A copy, which earlier versions made, starts its own history at its latest duplicate entry: what came before is the copied
   // instance's, settled, pending nothing.
   get copied(): number {
-    return this.log.findLast(e => e.op === 'duplicate')?.seq ?? 0;
+    return this.copiedSeq;
   }
 
   get meta(): Meta {

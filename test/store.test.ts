@@ -150,6 +150,27 @@ test("a question waits until a person replies under it, a proposal until someone
   assert.deepEqual(inst.asking().map(e => e.seq), [q1.seq, p1.seq], "the agent's own word under a question, and a reply under a proposal, however worded, answer neither");
   rmSync(tmp, { recursive: true, force: true });
 });
+test("a copy an earlier version made starts its own history at its latest duplicate entry, as it comes and as the log is read again; a deletion's hole has none", () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
+  openStore(tmp);
+  const inst = createInstance('monthly', 'copy', 'alex', []);
+  const ask = inst.append('agent', 'comment', { thread: 'c2', text: 'Which?', ask: 'question' });
+  assert.equal(inst.copied, 0);
+  assert.deepEqual(inst.asking().map(e => e.seq), [ask.seq]);
+  const first = inst.append('alex', 'duplicate', { from: 'earlier', logins: [] });
+  assert.equal(inst.copied, first.seq, 'a duplicate entry counts as it comes');
+  const last = inst.append('alex', 'duplicate', { from: 'earlier still', logins: [] });
+  inst.append('alex', 'comment', { thread: 'c5', text: 'Go.' });
+  assert.equal(inst.copied, last.seq, 'the latest counts');
+  assert.deepEqual(inst.asking(), [], 'what came before it waits on no one');
+  openStore(tmp);
+  assert.equal(instance(inst.id).copied, last.seq, 'as the log is read again');
+  instance(inst.id).markDeleted('alex', { cost: 0, runs: [] });
+  assert.equal(instance(inst.id).copied, 0, 'its log is its delete entry alone');
+  openStore(tmp);
+  assert.equal(instance(inst.id).copied, 0, 'as a restart reads it');
+  rmSync(tmp, { recursive: true, force: true });
+});
 test("a file the screen shows stays the agent's to change, and closing takes it as it is", async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
   openStore(tmp);
