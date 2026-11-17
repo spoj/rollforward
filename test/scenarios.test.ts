@@ -1559,14 +1559,16 @@ test("an admin's system monitor shows a run's processes, kills one the agent lef
       m = await monitor();
       shown = [...new Map([...m.cpu, ...m.memory].filter(p => p.instance === id).map(p => [p.pid, p])).values()];
     }
+    // Pi names itself pi-rpc on its command line.
     const left = shown.find(p => p.command === 'sleep 300')!, own = shown.filter(p => p.own), kind = (p: Shown) => p.command.split(' ')[0];
     assert.deepEqual(m!.runs.filter(r => r.instance === id).map(r => r.run), [1]);
     assert.equal(left.own, false, "what the agent left running is the run's, as any of its processes");
     assert.match(left.script, /\/sleep$/, 'named by the program it runs');
-    assert.deepEqual([own.filter(p => kind(p) === 'bwrap').length, own.filter(p => kind(p) === 'node').length, own.some(p => kind(p) === 'socat')], [2, 1, true],
+    const pis = own.filter(p => !['bwrap', 'socat'].includes(kind(p)));
+    assert.deepEqual([own.filter(p => kind(p) === 'bwrap').length, pis.map(kind), own.some(p => kind(p) === 'socat')], [2, ['pi-rpc'], true],
       "the sandbox's bwraps, Pi and the socket's bridge are the run's own");
     for (const [method, path] of [['GET', '/monitor'], ['POST', '/monitor/kill'], ['POST', '/monitor/stop']]) assert.equal((await call(method, path, method === 'GET' ? undefined : {}, bob)).status, 404, `${method} ${path} isn't there for bob`);
-    const pi = own.find(p => kind(p) === 'node')!;
+    const pi = pis[0];
     assert.equal((await call('POST', '/monitor/kill', { pid: pi.pid, start: pi.start })).status, 409, "the run's own takes no kill");
     assert.equal((await call('POST', '/monitor/kill', { pid: left.pid, start: left.start + 1 })).status, 409, 'nor does a PID another process took since');
     const killed = await call('POST', '/monitor/kill', { pid: left.pid, start: left.start });

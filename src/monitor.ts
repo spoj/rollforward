@@ -11,7 +11,7 @@ import { HttpError } from './store.ts';
 // Linux counts a process's CPU time in USER_HZ, a hundredth of a second on every architecture it runs on.
 const HZ = 100;
 // CPU use is what a second's sample saw; each list holds the ten busiest; a kill gives SIGTERM five seconds, then SIGKILL.
-const SAMPLE_MS = 1000, TOP = 10, GRACE_MS = 5000, POLL_MS = 100;
+const SAMPLE_MS = 1000, TOP = 10, GRACE_MS = 5000, KILLED_MS = 1000, POLL_MS = 100;
 // A command line shows at most this many characters.
 const SHOWN = 300;
 const MASK = '***';
@@ -228,6 +228,8 @@ export async function killTree(pid: number, start: number, o: { proc?: string; g
   for (const until = Date.now() + (o.graceMs ?? GRACE_MS); left().length && Date.now() < until;) await sleep(POLL_MS);
   const rest = left();
   for (const [p, st] of rest) signal(proc, p, st, 'SIGKILL');
+  // SIGKILL takes a moment to land: it's done once they've gone.
+  for (const until = Date.now() + KILLED_MS; left().length && Date.now() < until;) await sleep(POLL_MS);
   return { pids: [...held.keys()], signal: rest.length ? 'SIGKILL' : 'SIGTERM' };
 }
 
