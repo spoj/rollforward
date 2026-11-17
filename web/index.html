@@ -441,7 +441,7 @@ function renderBar() {
 
 function owner() {
   const r = data.owner, mine = r.by === me.email;
-  return `<span class="owner" tabindex="0">${mine ? 'Your series' : r.by ? person(r.by) : 'No series owner'}<span class="about">Series owner for every instance. Only the owner starts runs and closes instances. Credentials are selected for the whole series, not this instance.${r.since ? `<br>Since ${when(r.since)}.` : ''}<br>${!r.consent ? 'No execution consent.' : r.ticked.length ? `Selected ceiling: ${esc(r.ticked.join(', '))}` : 'Explicit credentialless consent.'}</span></span>`
+  return `<span class="owner" tabindex="0">${mine ? 'Your series' : r.by ? person(r.by) : 'No series owner'}<span class="about">Series owner for every instance. The owner closes instances. Their acts and answers to the agent's named asks start runs. Credentials are selected for the whole series, not this instance.${r.since ? `<br>Since ${when(r.since)}.` : ''}<br>${!r.consent ? 'No execution consent.' : r.ticked.length ? `Selected ceiling: ${esc(r.ticked.join(', '))}` : 'Explicit credentialless consent.'}</span></span>`
     + (mine && !archived() ? `<button class="creds" data-act="ticks">Series credentials: ${r.consent ? credentials(r) : 'consent needed'}</button>` : '');
 }
 
@@ -841,7 +841,7 @@ function conversationHtml() {
   h += [...threads.map(t => [t.posts[0].seq, threadHtml(t)]), ...runs.map(r => [ended(r), runHtml(r, r === runs.at(-1))])].sort((a, b) => a[0] - b[0]).map(([, x]) => x).join('');
   const first = mine && !runs.length;
   if (open) h += `<div class="compose"><h3>${draft.on ? `Comment on ${name(draft.on)}${draft.ref ? ` at ${esc(draft.ref)}` : ''}` : 'Comment on the instance'}</h3>`
-    + `<textarea id="newcomment" rows="3" placeholder="${first ? 'What should the agent do? Drop files here too' : data.starts ? 'The agent replies in the thread' : `A note for ${esc(nameOf(data.owner.by))}: only the series owner starts runs`}"></textarea><input type="file" id="newfiles" multiple><div><button class="btn primary" data-act="comment">Comment</button></div></div>`;
+    + `<textarea id="newcomment" rows="3" placeholder="${first ? 'What should the agent do? Drop files here too' : data.starts ? 'The agent replies in the thread' : `A note for ${esc(nameOf(data.owner.by))}: reply under an ask addressed to you to start a run`}"></textarea><input type="file" id="newfiles" multiple><div><button class="btn primary" data-act="comment">Comment</button></div></div>`;
   if (data.doc.status === 'closed' && !archived()) h += '<div class="compose"><div><button class="btn" data-act="correct">Add a correction</button></div></div>';
   return h;
 }
@@ -1023,9 +1023,9 @@ function grantHtml(g, cls = 'website', showCheckError = true) {
 
 function startsHtml(s) {
   const mine = s.owner === me.email;
-  return `<div>Series owner: ${s.owner ? person(s.owner) : 'not selected'}. Only this person starts runs, across every instance. Collaborators leave information and sign off on content; they never start runs as the owner.</div>`
+  return `<div>Series owner: ${s.owner ? person(s.owner) : 'not selected'}. The owner's acts and answers to the agent's named asks start runs under the owner's current consent. Other collaborators' words are notes.</div>`
     + ((mine || cur.w.manage) ? '<div class="row2"><button class="btn" data-act="series-owner">Transfer whole series…</button></div>' : '')
-    + (mine ? `<h3>Series credential ceiling</h3><div class="sub">Every instance may use the selected credentials. New logins are never added automatically. Saving an empty selection explicitly allows work with no credentials. Removing authority stops existing runs and invalidates old schedules.</div>${ticksHtml(s.logins, pv.on ?? s.consent?.logins ?? [], cur.w)}<label><input type="checkbox" id="autonomous" ${(pv.autonomous ?? s.consent?.autonomous) ? 'checked' : ''}> Allow scheduled and autonomous runs</label><div class="consent">Save explicitly consents to this series-wide selection. Autonomous runs are opt-in; collaborators still cannot initiate execution.</div><button class="btn primary" data-act="series-credentials">Save series credentials</button>`
+    + (mine ? `<h3>Series credential ceiling</h3><div class="sub">Every instance may use the selected credentials. New logins are never added automatically. Saving an empty selection explicitly allows work with no credentials. Removing authority stops existing runs and invalidates old schedules.</div>${ticksHtml(s.logins, pv.on ?? s.consent?.logins ?? [], cur.w)}<label><input type="checkbox" id="autonomous" ${(pv.autonomous ?? s.consent?.autonomous) ? 'checked' : ''}> Allow scheduled and autonomous runs</label><div class="consent">Save explicitly consents to this series-wide selection. Scheduled and autonomous runs are opt-in.</div><button class="btn primary" data-act="series-credentials">Save series credentials</button>`
       : `<div class="sub">${s.consent ? `Selected ceiling: ${s.consent.logins.length} credentials; autonomous runs ${s.consent.autonomous ? 'allowed' : 'not allowed'}.` : 'No execution consent: the owner must explicitly select credentials, including none.'}</div>`);
 }
 

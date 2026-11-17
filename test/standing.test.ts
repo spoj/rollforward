@@ -75,13 +75,16 @@ for (const autonomous of [false, true]) describe(`standing with autonomous conse
     assert.equal(await started(own), autonomous);
   });
 
-  test('a named answer and named content signoff stay attributed but start nothing', async () => {
+  test('named replies, approvals and rejections start runs under the owner consent', async () => {
     const i = make(autonomous), ask = i.append('agent', 'comment', { thread: 'c2', text: 'Which rate?', ask: 'question', to: bob });
     const proposal = i.append('agent', 'comment', { thread: 'c3', text: 'Send it?', ask: 'proposal', to: bob });
-    assert.deepEqual(standing(i, i.append(bob, 'signoff', { thread: 'c3', on: proposal.seq, commit: 'x' })), { word: 'answer', starts: false });
+    assert.deepEqual(standing(i, i.append(bob, 'signoff', { thread: 'c3', on: proposal.seq, commit: 'x' })), { word: 'answer', starts: true });
+    const rejected = i.append('agent', 'comment', { thread: 'c5', text: 'Use this?', ask: 'proposal', to: bob });
+    assert.deepEqual(standing(i, i.append(bob, 'reject', { thread: 'c5', on: rejected.seq })), { word: 'answer', starts: true });
     const reply = i.append(bob, 'comment', { thread: 'c2', parent: ask.seq, text: 'The new one.' });
-    assert.deepEqual(standing(i, reply), { word: 'answer', starts: false });
-    assert.equal(await started(i), false);
+    assert.deepEqual(standing(i, reply), { word: 'answer', starts: true });
+    assert.ok(await started(i));
+    assert.deepEqual(i.log.filter(e => e.op === 'run').map(e => [e.runner, e.initiator]), [[alice, bob]]);
   });
 
   test('colleague comments, uploads, approvals and rejections are context only', async () => {
@@ -134,14 +137,14 @@ for (const autonomous of [false, true]) describe(`standing with autonomous conse
     i.append('server', 'authority', { owner: alice, epoch: authority(i).epoch, workspace: 'w', actor: bob });
     assert.equal(standing(i, { ...read, quiet: undefined }), undefined);
     for (const e of [before, colleague]) assert.deepEqual(standing(i, { ...e, quiet: undefined }), { word: 'note', starts: false });
-    assert.deepEqual(standing(i, i.append(carol, 'comment', { thread: 'c7', parent: asked.seq, text: 'HSBC.' })), { word: 'answer', starts: false });
+    assert.deepEqual(standing(i, i.append(carol, 'comment', { thread: 'c7', parent: asked.seq, text: 'HSBC.' })), { word: 'answer', starts: true });
     assert.match(message(i, 2, i.log, true), /"text":"Cut off at the 25th\.".*"note":true/);
     fire();
     assert.ok(Object.values(wakes().requests).some(r => r.target === i.id && r.from === bob));
-    const was = runs(i);
     kick(i);
-    await new Promise(ok => setTimeout(ok, 200));
-    assert.equal(runs(i), was);
+    for (let k = 0; k < 40 && runs(i) < 2; k++) await new Promise(r => setTimeout(r, 50));
+    assert.equal(runs(i), 2);
+    assert.equal(i.log.filter(e => e.op === 'run').at(-1)!.runner, alice);
   });
 });
 
@@ -191,7 +194,7 @@ test('withdrawn, answered, plain and pre-copy asks do not grant answer standing'
   const asked = i.append('agent', 'comment', { thread: 'c3', text: 'Which bank?', ask: 'question', to: bob });
   const first = i.append(bob, 'comment', { thread: 'c3', parent: asked.seq, text: 'HSBC.' });
   const second = i.append(bob, 'comment', { thread: 'c3', parent: asked.seq, text: 'Actually Citi.' });
-  assert.deepEqual(standing(i, first), { word: 'answer', starts: false });
+  assert.deepEqual(standing(i, first), { word: 'answer', starts: true });
   assert.deepEqual(standing(i, second), { word: 'note', starts: false });
   const plain = i.append('agent', 'comment', { thread: 'c4', text: 'FYI.', to: bob });
   assert.deepEqual(standing(i, i.append(bob, 'comment', { thread: 'c4', parent: plain.seq, text: 'Noted.' })), { word: 'note', starts: false });

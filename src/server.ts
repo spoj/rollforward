@@ -1411,7 +1411,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     });
     if (out !== undefined) return send(res, 200, out);
   } else throw new HttpError(404, `no action ${action}`);
-  if (!quiet && by === ownerOf(inst).by) kick(inst);
+  if (!quiet) kick(inst);
   send(res, 200, 'ok');
 }
 

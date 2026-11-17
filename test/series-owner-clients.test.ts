@@ -28,7 +28,7 @@ const server = createServer(async (req, res) => {
   const value = req.url === '/api' ? [{ id: 'w1', name: 'Finance', series: [series] }]
     : req.url === '/me' ? { email: colleague, can: [], role: 'user' }
     : req.url === '/logins' ? []
-    : req.url === '/api/instances/i1' && req.method === 'GET' ? { doc: { status: 'open', items: [] }, log: [{ seq: 1, op: 'create', by: colleague }, { seq: 2, op: 'comment', by: colleague }], owner: { by: owner }, waiting: [], starts: false }
+    : req.url === '/api/instances/i1' && req.method === 'GET' ? { doc: { status: 'open', items: [] }, log: [{ seq: 1, op: 'create', by: colleague }, { seq: 2, op: 'comment', by: colleague }], owner: { by: owner }, waiting: [], starts: false, standing: { 2: calls.some(c => c.path.endsWith('/comment') && c.body.thread === 'c1') ? 'answer' : 'note' } }
     : req.url === '/api/series' ? { instance: 'i1' } : { id: 'i1' };
   if (req.url?.endsWith('/comment')) res.setHeader('X-RF-Comment-Seq', '2');
   res.end(JSON.stringify(value));
@@ -83,7 +83,7 @@ test('series selection is owner-only, explicit empty, series-wide and autonomous
   assert.match(selected, /id="autonomous" checked/);
   const collaborator = settings(colleague, false);
   assert.doesNotMatch(collaborator, /SELECTED:|data-act="series-owner"|data-act="series-credentials"/);
-  assert.match(collaborator, /never start runs as the owner/);
+  assert.match(collaborator, /answers to the agent's named asks start runs/);
   const manager = settings(colleague, true);
   assert.match(manager, /Transfer whole series/);
   assert.doesNotMatch(manager, /SELECTED:|data-act="series-credentials"/);
@@ -173,6 +173,13 @@ test('CLI live JSON exposes owner, and collaborator --wait does not wait for una
   r = await cli('comment', 'Finance/Monthly/Jan', 'Collaborator content', '--wait');
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /no run starts/);
+});
+
+test('CLI recognizes a named answer as a run trigger', async () => {
+  const r = await cli('comment', 'Finance/Monthly/Jan', 'The new rate', '--thread', 'c1', '--wake');
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /commented, seq 2/);
+  assert.doesNotMatch(r.stdout, /no run starts/);
 });
 
 test('real owner clients preserve terminal history and task execution settings', async t => {

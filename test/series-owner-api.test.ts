@@ -210,7 +210,7 @@ test('transfer clears consent, updates all projections and retains immutable exe
   assert.equal(settings('history').consent, undefined);
 });
 
-test('collaborator content signoffs remain attributed without starting or queueing a run', async () => {
+test('a named collaborator signoff queues a run under current owner consent', async () => {
   await ok('PUT', '/api/series/history/credentials', { logins: [], autonomous: false }, alice);
   await ok('POST', '/api/instances/historical/signoff', { thread: 'c4' }, colleague);
   await ok('POST', '/api/instances/historical/comment', { thread: 'c4', text: 'A named collaborator reply' }, colleague);
@@ -218,7 +218,9 @@ test('collaborator content signoffs remain attributed without starting or queuei
   const detail = await json('/api/instances/historical');
   assert.equal(detail.log.find(e => e.op === 'signoff').by, colleague);
   assert.ok(detail.log.some(e => e.op === 'upload' && e.by === colleague));
-  assert.equal(detail.queued, false);
+  assert.equal(detail.standing[detail.log.find(e => e.op === 'signoff').seq], 'answer');
+  assert.equal(detail.standing[detail.log.find(e => e.op === 'upload').seq], 'note');
+  assert.equal(detail.queued, true);
   assert.equal(detail.log.filter(e => e.op === 'run').length, 1);
   assert.equal((await request('POST', '/api/instances/historical/close', {})).status, 403);
 });

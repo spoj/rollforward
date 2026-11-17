@@ -197,7 +197,7 @@ test("a series' gear opens its settings, which save as they change; a click besi
   await page.press('#sname', 'Enter');
   await page.waitForSelector('#pv .saved:text-is("Saved")');
   await page.waitForSelector('.row.ser.on .l:text-is("Weekly borrowing base")');
-  assert.match(await page.textContent('#pv') ?? '', /Only this person starts runs, across every instance/);
+  assert.match(await page.textContent('#pv') ?? '', /answers to the agent's named asks start runs under the owner's current consent/);
   assert.equal(await page.locator('#pv [data-act=series-credentials]').count(), 0, 'a manager cannot consent for the owner');
   assert.equal(await page.locator('#pv [data-act=series-owner]').count(), 1);
   await page.mouse.click(5, 5);

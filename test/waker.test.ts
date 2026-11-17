@@ -369,7 +369,7 @@ test("a task's run sees its own instance alone in its series' folder, and the se
   assert.ok(v.ro.some(([, at]) => at.startsWith('/work/Acme/Bank rec/')) && !v.ro.some(([, at]) => at.endsWith('/.pylib')), "another series' .pylib is its own runs' code");
 });
 
-test("collaborator comments, named answers and schedules never start the owner's execution", async () => {
+test("collaborator notes and schedules start nothing, but named answers start owner execution", async () => {
   const bob = 'bob@demo.test', notes = make('s5', 'notes'), runs = (i: Instance) => i.log.filter(e => e.op === 'run').length;
   writeJson('users.json', { ...readJson('users.json', {}), [bob]: { role: 'user' } });
   saveTree({ ...tree(), workspaces: { ...tree().workspaces, m: { ...tree().workspaces.m, members: [bob] } } });
@@ -385,12 +385,13 @@ test("collaborator comments, named answers and schedules never start the owner's
   notes.append(bob, 'comment', { thread: 'q1', text: 'the new one' });
   kick(notes);
   await settle();
-  assert.equal(runs(notes), 0, 'a named answer is information, not execution consent');
+  assert.equal(runs(notes), 1, 'a named answer runs under current owner consent');
+  assert.equal(notes.log.find(e => e.op === 'run')!.initiator, bob);
   assert.match(message(notes, 1, notes.log), /"by":"bob@demo\.test","op":"comment".*"note":true/);
   notes.append(alice, 'comment', { text: 'Use those answers and continue.' });
   kick(notes);
   await settle();
-  assert.equal(runs(notes), 1, 'the current owner takes up the information explicitly');
+  assert.equal(runs(notes), 2, 'a later owner act starts another run');
 });
 
 test("a run starts only for a runner Microsoft still signs in: one it no longer does waits for them to sign in again, which wakes it, and one disabled or gone is disabled here too; while Microsoft can't be reached, nothing starts", async () => {

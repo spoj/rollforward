@@ -372,7 +372,9 @@ test("in an instance taken over under v0.4.0, what its runs had read is history,
   const answered = await json(path, c);
   assert.deepEqual([answered.standing[answered.log.at(-1).seq], answered.waiting.map((w: { who: string }) => w.who)], ['answer', [CAROL, CAROL]], 'her answer, as erin was asked');
   await quiet();
-  assert.equal((await json(path, c)).log.filter((e: { op: string }) => e.op === 'run').length, 1, 'a named non-owner answer cannot start another owner run');
+  const runs = (await json(path, c)).log.filter((e: { op: string }) => e.op === 'run');
+  assert.equal(runs.length, 2, 'a named answer starts a run under current owner consent');
+  assert.equal(runs.at(-1).initiator, ERIN);
   assert.equal((await call('POST', `${path}/abandon`, undefined, c)).status, 200);
 });
 
@@ -1238,7 +1240,7 @@ test('rf comment reports its own seq and note when the first comment renames a t
   const { log } = await json(`/api/instances/${instance}`);
   assert.deepEqual(log.map((e: { op: string }) => e.op), ['create', 'comment', 'rename']);
   const { instance: his } = await (await call('POST', '/api/series', JSON.stringify({ logins: [], autonomous: false, workspace, single: true }), sessionOf(await login(bob))!)).json();
-  assert.equal(await rf('comment', 'Commenting/Untitled/Untitled', 'A note for Bob', '--wait'), `recorded for the series owner, ${bob}, seq 2: no run starts; only the current owner initiates execution with explicit series consent\n`);
+  assert.equal(await rf('comment', 'Commenting/Untitled/Untitled', 'A note for Bob', '--wait'), `recorded for the series owner, ${bob}, seq 2: no run starts\n`);
   const note = (await json(`/api/instances/${his}`)).log;
   assert.deepEqual(note.map((e: { op: string; note?: true }) => [e.op, e.note]), [['create', undefined], ['comment', true], ['rename', undefined]]);
 });
@@ -2185,11 +2187,11 @@ test('rf comment --wake and --wait cannot start another series owner’s executi
   const { id } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'L1', quiet: true }), b)).json();
 
   const wakeOut = await rf('comment', 'SharedComment/S/L1', 'Check this', '--wake');
-  assert.equal(wakeOut, `recorded for the series owner, ${bob}, seq 2: no run starts; only the current owner initiates execution with explicit series consent\n`);
+  assert.equal(wakeOut, `recorded for the series owner, ${bob}, seq 2: no run starts\n`);
   await quiet();
 
   const waitOut = await rf('comment', 'SharedComment/S/L1', 'And wait', '--wait');
-  assert.equal(waitOut, `recorded for the series owner, ${bob}, seq 3: no run starts; only the current owner initiates execution with explicit series consent\n`);
+  assert.equal(waitOut, `recorded for the series owner, ${bob}, seq 3: no run starts\n`);
   await quiet();
   assert.ok(!(await json(`/api/instances/${id}`)).log.some((e: { op: string }) => e.op === 'run'));
   assert.equal((await call('POST', `/api/instances/${id}/comment`, JSON.stringify({ text: 'Now continue as owner.' }), b)).status, 200);

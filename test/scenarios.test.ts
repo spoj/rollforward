@@ -1086,6 +1086,8 @@ test("a run leaves notes elsewhere in its workspace, in another instance and on 
   const detail = await (await call('GET', `/api/instances/${fed}`)).json();
   assert.deepEqual([detail.log[0].by, detail.owner.by], [ADMIN, BOB], 'an instance creator never changes its canonical series owner');
   const thread = noting.saw[7].match(/c\d+/)![0];
+  const takenUp: Script = { bash: ['cat upload/rate.csv'], report: 'Used the feed rate.', saw: [] };
+  scripts.push(takenUp);
   assert.equal((await call('POST', `/api/instances/${id}/comment`, { thread, text: 'Use 7.82.' }, bob)).status, 200);
   assert.equal((await fetch(`${base}/api/instances/${id}/upload?pane=in&name=rate.csv`, { method: 'POST', headers: { cookie: bob }, body: '7.82\n' })).status, 200);
   const { id: request } = await (await call('PUT', `/api/wakes/${feed}`, { at: 'now', label: 'f2', text: 'Use the feed.' })).json();
@@ -1094,12 +1096,9 @@ test("a run leaves notes elsewhere in its workspace, in another instance and on 
   assert.equal((await call('POST', `/api/requests/${request}`, { quiet: true }, bob)).status, 200);
   await new Promise(ok => setTimeout(ok, 2000));
   const idle = await (await call('GET', `/api/instances/${id}`)).json();
-  assert.deepEqual([idle.log.filter(e => e.op === 'run').length, idle.run, idle.queued], [1, null, false], 'a named answer and upload from Bob neither start nor queue execution');
-  const takenUp: Script = { bash: ['cat upload/rate.csv'], report: 'Used the feed rate.', saw: [] };
-  scripts.push(takenUp);
-  assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Take up Bob’s feed rate.' })).status, 200);
   const resumed = await runs(id, 2), last = resumed.findLast(e => e.op === 'run')!;
-  assert.deepEqual([last.runner, last.initiator, last.authority.owner], [ADMIN, ADMIN, ADMIN]);
+  assert.deepEqual([idle.log.filter(e => e.op === 'run').length, idle.run, idle.queued], [2, null, false], 'a named answer starts a run; the upload alone starts no additional run');
+  assert.deepEqual([last.runner, last.initiator, last.authority.owner], [ADMIN, BOB, ADMIN]);
   assert.equal(takenUp.saw[0].trim(), '7.82');
   assert.match(takenUp.prompt!, /Use 7\.82\./);
 });
@@ -1648,7 +1647,9 @@ test("every entry names its source: a person, a run with immutable owner authori
     const run = e.run !== undefined && logs.get(e.see?.inst ?? id)!.find(r => r.op === 'run' && r.run === e.run);
     const cause = typeof e.cause === 'number' && log[e.cause - 1];
     if (e.op === 'run') {
-      assert.deepEqual([e.runner, e.initiator, e.authority.version, e.authority.owner], [e.runner, e.runner, 1, e.runner]);
+      assert.deepEqual([e.runner, e.authority.version, e.authority.owner], [e.runner, 1, e.runner]);
+      const initiation = log[e.provenance.cause - 1];
+      assert.equal(e.initiator, initiation.op === 'wake' ? initiation.initiator : initiation.by);
       assert.ok(e.authority.epoch >= 1 && e.authority.workspace && Array.isArray(e.authority.logins));
       assert.ok(e.provenance.cause < e.seq, 'initiation provenance is separate from credential consent');
       assert.equal(e.consent, undefined, 'new runs never reuse historical numeric instance consent');

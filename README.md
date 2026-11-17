@@ -18,7 +18,7 @@ A Linux host, 5.14 or later, with Node 26, git, GNU tar and bubblewrap, and abou
 
 ## How
 
-- **Accountable actions.** One series owner initiates runs across every instance, through their explicitly selected series-wide credential ceiling. Scheduled/autonomous runs need their opt-in; collaborators never initiate execution. Every act is logged, each run's changes are a git commit, and an action outside the series waits for a person to approve the agent's proposal unless the instructions say it needs none.
+- **Accountable actions.** Each series' runs use its owner's selected credentials. The owner's acts and answers by whom the agent's ask named start runs; scheduled and autonomous runs need the owner's opt-in. Every act is logged, each run's changes are a git commit, and an action outside the series waits for a person to approve the agent's proposal unless the instructions say it needs none.
 - **Learning from examples,** not compiled skills or a knowledge base. Each period rolls forward from the closed periods before it: their files, scripts, threads, and what was actually sent.
 
 ## Limitations

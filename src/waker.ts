@@ -61,7 +61,6 @@ function seenBefore(inst: Instance): number {
 }
 
 // Human acts carry the owner/epoch at append time; autonomous entries carry an immutable lease.
-// Named answers remain answers, but only the current owner's authority can start execution.
 export type Standing = { word: 'runner' | 'answer' | 'note'; starts: boolean };
 export function standing(inst: Instance, e: Entry, upto = inst.log.length): Standing | undefined {
   if (e.op !== 'wake' && !(['upload', 'comment', 'signoff', 'reject'].includes(e.op) && (isPerson(e) || e.note))) return undefined;
@@ -76,10 +75,10 @@ export function standing(inst: Instance, e: Entry, upto = inst.log.length): Stan
   const ask = rawAsk?.op === 'comment' && rawAsk.by === 'agent' && !!rawAsk.ask && rawAsk.seq > inst.copied && rawAsk.seq < e.seq && rawAsk.thread === e.thread && (rawAsk.ask !== 'proposal' || e.op !== 'comment') && !inst.answered(rawAsk, e.seq - 1) ? rawAsk : undefined;
   const word = e.seq < line || e.note || stale ? 'note'
     : e.op !== 'wake' ? (e.by === owner ? 'runner' : ask?.to === e.by ? 'answer' : 'note')
-    : lease && e.initiator === lease.owner && (!e.inst || instance(e.inst as string).seriesId === inst.seriesId) ? 'runner' : 'note';
+    : lease && (e.recovery || e.initiator === lease.owner) && (!e.inst || instance(e.inst as string).seriesId === inst.seriesId) ? 'runner' : 'note';
   const valid = e.op === 'wake' ? !stale && (!(e.recovery || e.schedule) || (!!lease?.autonomous && !!r.consent?.autonomous))
-    : epoch === r.epoch && owner === r.by && e.by === r.by;
-  return { word, starts: !!r.by && !!r.consent && valid && !e.quiet && e.seq > Math.max(line, inst.copied) && (word === 'runner' || (e.op === 'wake' && !!e.schedule)) };
+    : epoch === r.epoch && owner === r.by;
+  return { word, starts: !!r.by && !!r.consent && valid && !e.quiet && e.seq > Math.max(line, inst.copied) && (word !== 'note' || (e.op === 'wake' && !!e.schedule)) };
 }
 // Read history stays history across an authority boundary; unread instructions become notes.
 function readAt(inst: Instance, line: number): number {
@@ -211,7 +210,7 @@ async function begin(inst: Instance, tried: Set<Instance>) {
   if (!sees(inst)) return bail(inst, tried);
   const cause = pending(inst, seen).at(-1)!, lease = (cause.authority as Authority | undefined) ?? authority(inst);
   if (!sameAuthority(inst, lease)) return bail(inst, tried);
-  const runner = lease.owner;
+  const runner = lease.owner, initiator = cause.op === 'wake' ? cause.initiator : cause.by;
   if (held(inst, 'entra', runner)) return bail(inst, tried);
   try {
     await confirm(runner);
@@ -224,7 +223,7 @@ async function begin(inst: Instance, tried: Set<Instance>) {
       console.error(`a run of ${inst.id} waits a minute: Microsoft didn't confirm ${runner}'s sign-in`, e);
       return void setTimeout(() => kick(inst), 60_000).unref();
     }
-    inst.append('server', 'expired', { cause: cause.seq, login: 'entra', name: 'rollforward', runner, authority: lease, initiator: runner, error: (e as Error).message, ...((e as { left?: boolean }).left && { left: true }) });
+    inst.append('server', 'expired', { cause: cause.seq, login: 'entra', name: 'rollforward', runner, authority: lease, initiator, error: (e as Error).message, ...((e as { left?: boolean }).left && { left: true }) });
     return bail(inst, tried);
   }
   if (stopping || active.has(series) || !due(inst)) return bail(inst, tried);
@@ -253,7 +252,7 @@ async function begin(inst: Instance, tried: Set<Instance>) {
     // Whose OpenRouter key it starts with, its runner's own or the server's (connections.ts), never the key.
     const key = logins(lease.owner).some(l => l.id === 'openrouter' && l.enabled) ? 'own' : 'shared';
     const agents = Object.fromEntries(a.view.ro.filter(([p, at]) => at.endsWith('/AGENTS.md') && existsSync(p)).map(([p, at]) => [at, createHash('sha256').update(readFileSync(p)).digest('hex')]));
-    inst.append('server', 'run', { run: n, runner: lease.owner, initiator: lease.owner, authority: lease, provenance: { cause: cause.seq, ...(cause.op === 'wake' && { from: cause.from, schedule: cause.schedule, inst: cause.inst, run: cause.sourceRun, recovery: cause.recovery }) }, agents, pylib: pylib(a.view.pylib, inst.dir), upto: a.sent, skills: Object.fromEntries(live.map(s => [s.id, pushed(s).version])), key, prompt: sha256(told.text), ...(told.own && { own_prompt: true }) });
+    inst.append('server', 'run', { run: n, runner: lease.owner, initiator, authority: lease, provenance: { cause: cause.seq, ...(cause.op === 'wake' && { from: cause.from, schedule: cause.schedule, inst: cause.inst, run: cause.sourceRun, recovery: cause.recovery }) }, agents, pylib: pylib(a.view.pylib, inst.dir), upto: a.sent, skills: Object.fromEntries(live.map(s => [s.id, pushed(s).version])), key, prompt: sha256(told.text), ...(told.own && { own_prompt: true }) });
     loggedRun = true;
     // Copies of the indexes of what its runner ticked, on the indexes' own disk, read-only at $RF_INDEX.
     const index = join(rfDir(), 'runs', a.token);

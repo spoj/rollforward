@@ -4,11 +4,11 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { initSystem, saveTree, tree, writeJson } from '../src/system.ts';
+import { changes, initSystem, saveTree, tree, writeJson } from '../src/system.ts';
 import { createInstance, openStore, seriesDir } from '../src/store.ts';
 import { authority, lender, ownerOf, runnerAt, saveLogin, unoffer, use } from '../src/logins.ts';
 import { saveSeriesSettings, seriesSettings, type Authority } from '../src/series.ts';
-import { fire, held, pending, retireSeries, setWake, standing, wakes } from '../src/waker.ts';
+import { fire, held, pending, recover, retireSeries, setWake, standing, wakes } from '../src/waker.ts';
 
 const alice = 'alice@example.test', bob = 'bob@example.test', admin = 'admin@example.test';
 
@@ -57,17 +57,29 @@ test('consent never retroactively authorizes an earlier nonexecuting owner act',
   assert.equal(standing(inst, fresh)?.starts, true);
 });
 
-test('collaborators, admins, named answers and signoffs never initiate or queue owner execution', t => {
+test('collaborators and admins start nothing except when answering a named ask', t => {
   const inst = fixture(t);
   consent();
   const ask = inst.append('agent', 'comment', { ask: 'proposal', to: bob, thread: 'c2', text: 'Approve?' });
   for (const by of [bob, admin]) for (const op of ['comment', 'upload', 'signoff', 'reject']) {
     const e = inst.append(by, op, { thread: 'c2', on: ask.seq, text: 'Do it' });
-    assert.equal(standing(inst, e)?.starts, false, `${by} ${op}`);
+    assert.equal(standing(inst, e)?.starts, by === bob && op === 'signoff', `${by} ${op}`);
   }
-  assert.equal(pending(inst, 0).length, 0);
+  assert.equal(pending(inst, 0).length, 1);
   const e = inst.append(alice, 'comment', { text: 'Continue' });
   assert.equal(standing(inst, e)?.starts, true);
+});
+
+test('named answers need current consent and non-quiet acts', t => {
+  const inst = fixture(t);
+  const ask = inst.append('agent', 'comment', { ask: 'question', to: bob, thread: 'c2', text: 'Which rate?' });
+  const answer = inst.append(bob, 'comment', { thread: 'c2', parent: ask.seq, text: '5%' });
+  assert.deepEqual(standing(inst, answer), { word: 'note', starts: false });
+  consent();
+  assert.deepEqual(standing(inst, answer), { word: 'note', starts: false });
+  const next = inst.append('agent', 'comment', { ask: 'question', to: bob, thread: 'c4', text: 'Which bank?' });
+  const quiet = inst.append(bob, 'comment', { thread: 'c4', parent: next.seq, text: 'HSBC', quiet: true });
+  assert.deepEqual(standing(inst, quiet), { word: 'answer', starts: false });
 });
 
 test('read history stays history while unread old-authority acts become notes', t => {
@@ -213,6 +225,31 @@ test('confirm ABA cannot authorize a delayed start, and retirement blocks replac
     assert.equal(current.runner, bob); assert.equal(current.initiator, bob);
     await retireSeries('s'); rmSync(root, { recursive: true, force: true });
   `], { cwd: join(import.meta.dirname, '..'), env: { ...process.env, RF_MIN_FREE_GB: '0' }, timeout: 12_000, stdio: 'pipe' });
+});
+
+test('a named-answer run keeps its initiator when a restart continues it', t => {
+  const inst = fixture(t);
+  consent([], true);
+  const lease = authority(inst);
+  inst.append('server', 'run', { run: 1, runner: alice, initiator: bob, authority: lease });
+  recover();
+  const wake = inst.log.findLast(e => e.op === 'wake')!;
+  assert.deepEqual(standing(inst, wake), { word: 'runner', starts: true });
+  assert.equal(wake.initiator, bob);
+});
+
+for (const hadRun of [false, true]) for (const autonomous of [false, true]) test(`named-answer login recovery, hadRun=${hadRun}, autonomous=${autonomous}`, t => {
+  const inst = fixture(t);
+  consent([], autonomous);
+  const lease = authority(inst);
+  if (hadRun) inst.append('server', 'run', { run: 1, runner: alice, initiator: bob, authority: lease });
+  inst.append('server', 'expired', { login: 'entra', runner: alice, initiator: bob, authority: lease, ...(hadRun && { run: 1 }) });
+  assert.equal(held(inst, 'entra', alice), true);
+  changes.emit('login', alice, 'entra', 'rollforward');
+  const wake = inst.log.findLast(e => e.op === 'wake')!;
+  assert.deepEqual(standing(inst, wake), { word: 'runner', starts: autonomous });
+  assert.equal(wake.initiator, bob);
+  assert.equal(held(inst, 'entra', alice), false);
 });
 
 test('recovery needs autonomy captured by the original run, not a later consent expansion', () => {

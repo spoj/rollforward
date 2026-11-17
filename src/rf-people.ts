@@ -166,9 +166,9 @@ What there is
   2026-08-23. A task is a one-off: a series of one instance, named by its label, until someone makes it a series. PATH is workspace/series/label, as rf ls prints it; for rf pull it may go deeper, into an instance's files.
 - An instance's screen is its items: inputs, outputs and steps, each pointing at a file, with what it's made from. People upload
   files, and review the work in threads with the agent. One series owner is accountable for every instance: only that person
-  initiates execution, closes and abandons. Runs use their explicitly selected series credential ceiling. Absence of consent
+  closes and abandons. Their acts and answers by whom the agent's ask named start runs under current consent. Runs use their explicitly selected series credential ceiling. Absence of consent
   prevents execution; an explicit empty selection permits credentialless work. Scheduled/autonomous starts require separate
-  owner opt-in. Collaborators' comments, uploads, named answers and approvals remain information, never new-run triggers.
+  owner opt-in. Other collaborators' comments, uploads and approvals are notes that start nothing.
   Transferring the whole series stops old authority and clears consent; old unread instructions become notes. Creator,
   commenter, approver and each historical run's executor remain separately attributed.
 - rf is quiet: a comment, upload, approval, rejection, close, new instance or request it starts begins no run unless --wake, and the agent
@@ -524,8 +524,8 @@ if (cmd === 'login' && url) {
 else if (cmd === 'comment' && args.length === 2) {
   const { at } = await instanceAt(args[0]);
   const posted = await post(`${at}/comment`, { text: args[1], item: flags.item, ref: flags.ref, thread: flags.thread, quiet: !flags.wake && !flags.wait });
-  const seq = Number(posted.headers.get('X-RF-Comment-Seq')), { doc, log, owner, starts } = await get(at), note = log.find(e => e.seq === seq)?.note;
-  if (!starts) console.log(`recorded for the series owner, ${owner.by}, seq ${seq}: no run starts; only the current owner initiates execution with explicit series consent`);
+  const seq = Number(posted.headers.get('X-RF-Comment-Seq')), { doc, log, owner, starts, standing } = await get(at), note = log.find(e => e.seq === seq)?.note;
+  if (!starts && standing?.[seq] !== 'answer') console.log(`recorded for the series owner, ${owner.by}, seq ${seq}: no run starts`);
   else if (!flags.wait) console.log(`${note ? `a note for the series owner, ${owner.by}` : 'commented'}, seq ${seq}`);
   else if (doc.status !== 'open') console.log(`The instance was ${doc.status}.`);
   else for (;;) {
