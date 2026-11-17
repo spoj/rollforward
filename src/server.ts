@@ -344,8 +344,10 @@ function cachedRunsOf(i: Instance): CachedRun[] {
     rows = slice.filter(r => r.op === 'run').map(r => {
       const d = slice.find(e => e.op === 'done' && e.run === r.run);
       const cause = slice.find(e => e.seq === (r.provenance as { cause?: number } | undefined)?.cause);
-      const error = d?.error as string | undefined, outcome = !d ? 'running' : !error ? (d.aborted ? 'interrupted' : 'done') : Object.values(CUT).includes(error) ? 'cut' : 'failed';
-      const estimated = d ? d.estimated === true : runningHere && !!a.estimated;
+      // A run with no done is going only if it's the one going here; any other ended unlogged, cut, as its last entry tells.
+      const going = !d && runningHere && a.n === r.run, end = d ?? (going ? undefined : slice.findLast(e => e.run === r.run) ?? r);
+      const error = d?.error as string | undefined, outcome = going ? 'running' : !d ? 'cut' : !error ? (d.aborted ? 'interrupted' : 'done') : Object.values(CUT).includes(error) ? 'cut' : 'failed';
+      const estimated = d ? d.estimated === true : going && !!a.estimated;
       const exaCost = +slice.reduce((t, e) => t + (e.op === 'call' && e.run === r.run && e.name === 'exa' ? (e.cost as number | undefined) ?? 0 : 0), 0).toFixed(6);
       const calls = r.key === 'own' ? [] : slice.filter(e => e.op === 'call' && e.run === r.run && e.name === 'openrouter');
       let openrouterByDay: Record<string, { cost: number; estimated?: true }> | undefined;
@@ -361,8 +363,8 @@ function cachedRunsOf(i: Instance): CachedRun[] {
       return {
         run: r.run as number, at: r.at, outcome,
         failure: outcome !== 'failed' ? null : /\b402\b|credits/i.test(error!) ? 'credits' : /\b403\b|terms of service|usage polic|flagged/i.test(error!) ? 'policy' : error === 'time limit' ? 'time limit' : 'other',
-        seconds: Math.round(((d ? Date.parse(d.at) : Date.now()) - Date.parse(r.at)) / 1000),
-        cost: d ? d.cost as number : runningHere ? +a.cost.toFixed(6) : 0,
+        seconds: Math.round(((end ? Date.parse(end.at) : Date.now()) - Date.parse(r.at)) / 1000),
+        cost: d ? d.cost as number : going ? +a.cost.toFixed(6) : 0,
         ...(estimated && { estimated: true as const }),
         runner: (r.runner as string | undefined) ?? runnerAt(i.log, r.seq),
         ...(typeof r.initiator === 'string' && { initiator: r.initiator }),

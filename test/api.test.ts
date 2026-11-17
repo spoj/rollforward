@@ -109,6 +109,19 @@ before(async () => {
     { seq: 3, at: '2026-09-20T00:02:00Z', by: 'agent', op: 'comment', thread: 'c3', item: null, ref: null, text: 'Send wire 2?', ask: 'proposal', run: 1 },
     { seq: 4, at: '2026-09-20T00:03:00Z', by: 'agent', op: 'comment', thread: 'c4', item: null, ref: null, text: 'Send wire 3?', ask: 'proposal', run: 1 },
   ].map(e => JSON.stringify(e) + '\n').join(''));
+  // A closed instance whose first run never logged its end, as some did before startup cut every run left going.
+  const unfinished = join(root, 'instances', 'unfin0000001');
+  mkdirSync(join(unfinished, 'working'), { recursive: true });
+  writeFileSync(join(unfinished, 'instance.json'), JSON.stringify({ label: '2026-09', series: '01d7a4e00002' }));
+  writeFileSync(join(unfinished, 'screen.json'), JSON.stringify({ rev: 1, status: 'closed', items: [] }));
+  writeFileSync(join(unfinished, 'log.jsonl'), [
+    { seq: 1, at: '2026-09-01T00:00:00.000Z', by: CAROL, op: 'create', logins: [] },
+    { seq: 2, at: '2026-09-01T01:00:00.000Z', by: 'server', op: 'run', run: 1, runner: CAROL },
+    { seq: 3, at: '2026-09-01T01:10:00.000Z', by: 'agent', op: 'comment', thread: 'c3', item: null, ref: null, text: 'Halfway.', run: 1 },
+    { seq: 4, at: '2026-09-02T00:00:00.000Z', by: 'server', op: 'run', run: 2, runner: CAROL },
+    { seq: 5, at: '2026-09-02T00:05:00.000Z', by: 'server', op: 'done', run: 2, aborted: false, seen: 4, cost: 0.2 },
+    { seq: 6, at: '2026-09-03T00:00:00.000Z', by: CAROL, op: 'close' },
+  ].map(e => JSON.stringify(e) + '\n').join(''));
   // What the tests save themselves, such as logins, goes to the server's data root, whichever tests run.
   (await import('../src/system.ts')).initSystem(root);
   (await import('../src/store.ts')).openStore(root);
@@ -282,6 +295,13 @@ test("a copy an earlier version made keeps its conversation but counts only runs
   assert.equal((await json(`${path}/summary`)).cost, done.cost);
 });
 
+test('a run that never logged its end, and is not going, counts as cut, not running, and lasted until its last entry', async () => {
+  const rows = (await json('/api/runs')).filter((r: { path: string }) => r.path === 'Old takeover/Rec/2026-09');
+  assert.deepEqual(rows.map((r: { run: number; outcome: string; seconds: number; error: string | null }) => [r.run, r.outcome, r.seconds, r.error]), [
+    [1, 'cut', 600, null], [2, 'done', 300, null],
+  ]);
+});
+
 test("an instance says which of its files are new since the series' latest closed instance before it, changed or the same, by content", async () => {
   const path = await at(series, '2026-08-30 copy');
   assert.deepEqual((await json(path)).previous, { label: '2026-08-30', changed: { 'ar-aging': 'same', inventory: 'same', 'borrowing-base': 'same' } });
@@ -367,7 +387,7 @@ test("in an instance taken over under v0.4.0, read history stays history, openin
   const { waiting, standing, log } = await json(path, c);
   assert.deepEqual(waiting.map((w: { who: string; seq: number }) => [w.who, w.seq]), [[ERIN, 5], [CAROL, 6]], "opening acknowledges bob's comment, not erin's question or the unnamed proposal");
   assert.deepEqual([standing, log.filter((e: { op: string; by: string }) => e.op === 'comment' && e.by !== 'agent').map((e: { note?: boolean }) => !!e.note)], [{ 8: 'note' }, [false, false, true]]);
-  const asks = (await workspaces(c)).find((w: { id: string }) => w.id === '01d7a4e00001').series[0].instances[0].asks;
+  const asks = (await workspaces(c)).find((w: { id: string }) => w.id === '01d7a4e00001').series[0].instances.find((i: { id: string }) => i.id === '01d7a4e00003').asks;
   assert.deepEqual(asks, [{ who: ERIN, kind: 'question' }, { who: CAROL, kind: 'proposal' }], 'neither read history nor the acknowledged note waits on her');
   assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ thread: 'c5', text: 'The HSBC one.' }), e)).status, 200);
   const answered = await json(path, c);
