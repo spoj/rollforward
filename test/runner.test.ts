@@ -58,8 +58,7 @@ mkdirSync(join(tmp, 'index'));
 writeFileSync(join(tmp, 'index', 'LFM.ndjson.zst'), Buffer.concat([{ id: 'f1', name: 'aging.xlsx', size: 1200 }, { id: 'f2', name: 'march.xlsx', size: 800 }].map(i => zstdCompressSync(`${JSON.stringify(i)}\n`))));
 const series = '/work/ws/Weekly: AR', at = `${series}/w2`;
 // The admins' own instructions, in place of the released ones (prompt.ts).
-writeFileSync(join(tmp, 'prompt.md'), 'Our own instructions.
-');
+writeFileSync(join(tmp, 'prompt.md'), 'Our own instructions.\n');
 const agent = pi({
   token: TOKEN, id: 'w2', n: 1, prompt: join(tmp, 'prompt.md'), skills: skills().filter(s => s.id === 'tool').map(s => ({ ...s, dir: realpathSync(s.dir) })),
   view: {
