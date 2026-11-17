@@ -49,7 +49,7 @@ await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
 const base = `http://127.0.0.1:${(service.address() as { port: number }).port}`;
 Object.assign(process.env, { RF_BROWSER_URL: base, RF_BROWSER_KEY: 'browser-key', RF_PUBLIC_URL: 'https://rf.company.test', OPENROUTER_API_KEY: 'server-key' });
 delete process.env.EXA_API_KEY;
-const { addSite, changeWebsite, checkWebsite, drainWebsiteChecks, endSignIn, isCheckingWebsite, removeSite, startSignIn, websitesOf } = await import('../src/browsers.ts');
+const { addSite, changeWebsite, checkWebsite, drainWebsiteChecks, endSignIn, isCheckingWebsite, removeSite, setSite, startSignIn, websitesOf } = await import('../src/browsers.ts');
 const { upstreams } = await import('../src/connections.ts');
 const { logins, personDir, saveLogin, seal, secret, signOut } = await import('../src/logins.ts');
 const { ask, decide, visible } = await import('../src/grants.ts');
@@ -88,6 +88,22 @@ function oldLogin() {
   saveLogin(email, { id: 'web:portal', kind: 'website', name: 'portal', since: '2026-01-01T00:00:00Z', offers: [{ id: 'web:portal', name: 'portal' }] }, JSON.stringify({ cookies: [{ domain: 'vendor.review.test', value: 'original' }], origins: [] }));
   seal(email, 'web:portal.header', 'original-token');
 }
+
+for (const saving of [false, true]) test(`clearing a header prevents an open sign-in from restoring its token${saving ? ' during Save' : ''}`, async t => {
+  await portal();
+  oldLogin();
+  const id = await startSignIn(email, 'portal', '');
+  const pending = saving ? pause(t, `DELETE /sessions/${id}`) : undefined;
+  const saved = pending ? assert.rejects(endSignIn(email, id, true), { status: 409 }) : undefined;
+  if (pending) await pending.seen.promise;
+  await setSite({ email, name: 'Alice', role: 'user', groups: [] }, 'portal', { header: '' });
+  assert.equal(existsSync(join(personDir(email), 'web:portal.header.sealed')), false);
+  pending?.release.resolve();
+  if (saved) await saved;
+  else await assert.rejects(endSignIn(email, id, true), { status: 409 });
+  assert.equal(existsSync(join(personDir(email), 'web:portal.header.sealed')), false);
+  assert.equal(JSON.parse(secret(email, 'web:portal')).cookies[0].value, 'original');
+});
 
 for (const path of ['/api/v1/chat/completions', '/search']) test(`sign-out during ${path} prevents further assessment disclosures`, { timeout: 5000 }, async t => {
   await portal();

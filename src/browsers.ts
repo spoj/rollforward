@@ -145,7 +145,7 @@ const signIns = new Map<string, SignIn>(), signInGenerations = new Map<string, n
 
 function currentSignIn(s: SignIn) {
   const key = `${s.email} ${s.site}`, w = websitesOf(s.email)[s.site];
-  if (!w || w.url !== s.website.url || w.via !== s.website.via || w.added !== s.website.added || websiteGenerations.get(key) !== s.websiteGeneration || signInGenerations.get(key) !== s.generation || logins(s.email).find(l => l.id === `web:${s.site}`)?.since !== s.loginSince)
+  if (!w || w.url !== s.website.url || w.via !== s.website.via || w.header !== s.website.header || w.added !== s.website.added || websiteGenerations.get(key) !== s.websiteGeneration || signInGenerations.get(key) !== s.generation || logins(s.email).find(l => l.id === `web:${s.site}`)?.since !== s.loginSince)
     throw new HttpError(409, 'This sign-in was superseded; sign in again.');
   return w;
 }
