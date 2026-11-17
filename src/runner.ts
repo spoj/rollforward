@@ -24,13 +24,15 @@ const SCOPE = 'systemd-run --user --scope --quiet --collect --slice=rollforward-
 // A run's processes and threads at most, a fork bomb's end, and its biggest file, which bounds a runaway write and a sparse file.
 const TASKS = process.env.RF_RUN_TASKS ?? '2048', FILE_GB = Number(process.env.RF_RUN_FILE_GB ?? 16);
 
-// A run's Pi: a prompt the agent takes, and steers it may get, until it settles, aborted or not.
+// A run's Pi: a prompt the agent takes, and steers it may get, until it settles, aborted or not; and its sandbox's bwrap, the
+// server's child, from which all the run's processes descend (monitor.ts).
 export type TurnEnd = { aborted: boolean; error?: string };
 export type Run = {
   turn(text: string): Promise<{ settled: Promise<TurnEnd> }>;
   steer(text: string): Promise<unknown>;
   interrupt(): Promise<void>;
   stop(): Promise<void>;
+  pid?: number;
 };
 
 // The run's view of the data, which the server builds: its own instance at instance, such as /work/<workspace>/<series>/<label>,
@@ -215,6 +217,7 @@ export async function startRun(o: Parameters<typeof pi>[0] & { onEvent: (e: Json
       // Done once the turn settles: Pi says so before it answers the abort, and the run's end may stop it first.
       interrupt: async () => { void rpcClient.clearQueue().then(() => rpcClient.abort()).catch(() => {}); await settled; },
       stop,
+      pid: child.pid,
     };
   } catch (e) {
     await stop();
