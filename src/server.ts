@@ -299,9 +299,9 @@ function listing(me: Me) {
   const t = tree(), w8 = wakes(), open = proposals(t), granted = visible(me).filter(g => ['pending', 'approved'].includes(g.state)), byName = (a: [string, { name: string }], b: [string, { name: string }]) => a[1].name.localeCompare(b[1].name);
   return Object.entries(t.workspaces).filter(([, w]) => canSee(me, w)).sort(byName).map(([id, w]) => {
     const series = Object.entries(t.series).filter(([, s]) => s.workspace === id).sort(byName).map(([sid, s]) => {
-      const { owner, consent, epoch, since } = seriesSettings(seriesDir(sid));
+      const { owner, consent, epoch, since } = seriesSettings(seriesDir(sid)), person = owner && asPerson(owner);
       return {
-        id: sid, name: s.name, archived: !!s.archived, single: !!s.single, owner: owner ?? null, epoch, since, consent: consent ?? null,
+        id: sid, name: s.name, archived: !!s.archived, single: !!s.single, owner: owner ?? null, ownerUnavailable: !person || !canSee(person, w), epoch, since, consent: consent ?? null,
         wakes: wakesOf(sid, w8), fired: w8.fired[sid] ?? null, notes: notes(seriesDir(sid)).filter(n => !n.settled).length,
         requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r, who: asked(r) })),
         instances: instances(sid).map(i => summary(i, me, w8)),
@@ -523,6 +523,7 @@ async function status(me: Me) {
     ...(k?.low_credit && { low_credit: { remaining: k.remaining!, limit: k.limit, usage: k.usage, reset: k.reset, key: k.key } }),
     running: seen.flatMap(([sid]) => active.get(sid) ?? []).map(a => ({ path: path(a.inst), run: a.n, owner: ownerOf(a.inst).by, at: a.inst.log.findLast(e => e.op === 'run')!.at, cost: +a.cost.toFixed(6), ...(a.estimated && { estimated: true }) })),
     queued: open.flatMap(i => { const q = queued(i); return q ? [{ path: path(i), owner: ownerOf(i).by, ...q }] : []; }),
+    ownership: listing(me).filter(w => w.manage && !w.archived).flatMap(w => w.series.filter(s => !s.archived && s.ownerUnavailable).map(s => ({ id: s.id, path: `${w.name}/${s.name}`, text: s.owner ? `${users()[s.owner]?.name ?? s.owner} can no longer run ${s.name}` : `${s.name} has no owner` }))),
     asks: open.flatMap(i => waits(i).map(({ who, e }) => ({ who, path: path(i), since: e.at, text: e.text as string, note: e.by !== 'agent' || !e.ask }))),
     expired: (me.role === 'admin' ? Object.keys(users()) : [me.email]).flatMap(who => logins(who).filter(l => l.expired).map(l => ({
       who, login: l.name,

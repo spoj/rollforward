@@ -27,6 +27,8 @@ const server = createServer(async (req, res) => {
   res.setHeader('content-type', 'application/json');
   const value = req.url === '/api' ? [{ id: 'w1', name: 'Finance', series: [series] }]
     : req.url === '/me' ? { email: colleague, can: [], role: 'user' }
+    : req.url === '/api/status' ? { ownership: [{ id: 's1', path: 'Finance/Monthly', text: 'Monthly has no owner' }], asks: [], requests: [], proposals: [], expired: [], running: [], queued: [], failed: [] }
+    : req.url === '/api/indexes' ? []
     : req.url === '/logins' ? []
     : req.url === '/api/instances/i1' && req.method === 'GET' ? { doc: { status: 'open', items: [] }, log: [{ seq: 1, op: 'create', by: colleague }, { seq: 2, op: 'comment', by: colleague }], owner: { by: owner }, waiting: [], starts: false, standing: { 2: calls.some(c => c.path.endsWith('/comment') && c.body.thread === 'c1') ? 'answer' : 'note' } }
     : req.url === '/api/series' ? { instance: 'i1' } : { id: 'i1' };
@@ -59,7 +61,7 @@ function settings(email: string, manage: boolean, consent: any = null) {
   const source = code.slice(code.indexOf('function startsHtml('), code.indexOf('// A series\' notes'));
   return runInNewContext(`${source}\nstartsHtml(s)`, {
     s: { ...series, consent, logins: [] }, me: { email, can: [] }, cur: { w: { manage } }, pv: {},
-    person: (x: string) => x, ticksHtml: (_: any, selected: string[]) => `SELECTED:${JSON.stringify(selected)}`,
+    ownershipHtml: () => '', person: (x: string) => x, ticksHtml: (_: any, selected: string[]) => `SELECTED:${JSON.stringify(selected)}`,
   });
 }
 
@@ -67,7 +69,7 @@ test('page script parses and removes live instance assignment, sharing and crede
   new Script(code);
   assert.doesNotMatch(code, /data\??\.runner|i\.runner|data-act="(?:takeover|assign|share-on|share-off)"|instPath\(\)\}\/logins|\/assignees/);
   assert.match(code, /seriesPath\(cur\)\}\/credentials/);
-  assert.match(code, /seriesPath\(cur\)\}\/owner/);
+  assert.match(code, /path\}\/owner/);
   assert.doesNotMatch(code, /localStorage\.ticks/);
 });
 
@@ -87,6 +89,43 @@ test('series selection is owner-only, explicit empty, series-wide and autonomous
   const manager = settings(colleague, true);
   assert.match(manager, /Transfer whole series/);
   assert.doesNotMatch(manager, /SELECTED:|data-act="series-credentials"/);
+});
+
+test('missing ownership names managers to viewers and opens transfer for managers', () => {
+  const source = code.slice(code.indexOf('function ownershipHtml('), code.indexOf('// What waits on you:'));
+  const html = (manage: boolean, owner: string | null = null, archived = false) => runInNewContext(`${source}\nownershipHtml(w, s)`, {
+    w: { name: 'Finance', owners: ['Manager'], manage }, s: { id: 's2', name: 'Monthly', owner, ownerUnavailable: true }, archived: () => archived,
+    person: (x: string) => x, esc: (x: string) => x,
+  });
+  assert.match(html(true), /Finance · Monthly has no owner.*data-act="series-owner" data-id="s2"/);
+  assert.match(html(false), /Ask Manager to pick an owner/);
+  assert.doesNotMatch(html(false), /data-act/);
+  assert.match(html(true, owner), /can no longer run Monthly/);
+  assert.equal(html(true, null, true), '');
+});
+
+test('Waiting transfers the named series rather than the currently open one', async () => {
+  const source = code.slice(code.indexOf("  if (act === 'series-owner') {"), code.indexOf("  if (act === 'start-go') {"));
+  const calls: string[] = [];
+  let rendered = false;
+  await runInNewContext(`(async () => { ${source} })()`, {
+    act: 'series-owner', el: { dataset: { id: 'unowned' } }, tree: [{ name: 'Other workspace', series: [{ id: 'unowned', name: 'Unowned' }] }],
+    cur: { s: series }, pv: { settings: { kind: 'waiting' } }, me: { names: {} }, nameOf: (x: string) => x, esc: (x: string) => x,
+    $: () => ({ value: owner }), refresh: async () => {},
+    api: async (path: string) => { calls.push(path); return [owner]; },
+    ask: async (options: any) => { assert.equal(options.title, 'Transfer whole series: Other workspace · Unowned'); await options.act(); return true; },
+    renderPv: () => { rendered = true; },
+  });
+  assert.deepEqual(calls, ['/api/series/unowned/owners', '/api/series/unowned/owner']);
+  assert.equal(rendered, true);
+});
+
+test('CLI waiting and status list ownership work for managers', async () => {
+  for (const command of ['waiting', 'status']) {
+    const r = await cli(command);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /Monthly has no owner/);
+  }
 });
 
 test('website selection retains setup-only grant gating and no implicit grant request', () => {

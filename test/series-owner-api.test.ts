@@ -110,6 +110,25 @@ test('startup refuses legacy authority before backups, recovery or other data mu
   assert.equal(existsSync(join(legacy, '.rf', 'authority-format.json')), false);
 });
 
+test('managers are told about missing and ineligible series owners', async () => {
+  const ownership = async (who = admin) => (await json('/api/status', who)).ownership;
+  assert.equal((await json('/api')).flatMap(w => w.series).find(s => s.id === 'unowned').ownerUnavailable, true);
+  assert.deepEqual((await ownership()).find(s => s.path === 'Workspace/Unowned'), { id: 'unowned', path: 'Workspace/Unowned', text: 'Unowned has no owner' });
+  assert.deepEqual(await ownership(colleague), []);
+  const sid = await series('Unavailable', bob);
+  await ok('PUT', `/users/${bob}`, { disabled: true });
+  assert.match((await ownership()).find(s => s.id === sid).text, /can no longer run Unavailable/);
+  await ok('PUT', `/users/${bob}`, { disabled: false });
+  const signed = await entra.signIn(base, bob);
+  cookies[bob] = signed.headers.getSetCookie().find(c => c.startsWith('rf_session='))!.split(';')[0];
+  assert.equal((await ownership()).some(s => s.id === sid), false);
+  await ok('PUT', '/api/workspaces/ws', { remove: bob, force: true });
+  assert.equal((await ownership()).some(s => s.id === sid), true);
+  await ok('PUT', '/api/workspaces/ws', { add: bob, as: 'member' });
+  await ok('PUT', `/api/series/${sid}`, { archived: true });
+  assert.equal((await ownership()).some(s => s.id === sid), false);
+});
+
 test('admins author series without a capability grant', async () => {
   assert.equal((await request('POST', '/api/series', { workspace: 'ws', name: 'Admin series' })).status, 200);
 });

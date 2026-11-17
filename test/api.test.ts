@@ -1080,7 +1080,7 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   assert.match(await rf('wakes', `larkfield/${series}`), /, none pending\n/);
   assert.match(await rf('activity', `larkfield/${series}/2026-08-23`), new RegExp(`^larkfield/${series}/2026-08-23\n  ${stamp}  alex  uploads upload/Larkfield AR aging 082326\\.csv\n  ${stamp}  alex  closes it\n$`));
   assert.match(await rf('costs', '--by', 'person'), /^ +\$\d+\.\d\d +\d+ runs +\$\d+\.\d\d a run  alex$/m);
-  assert.deepEqual(Object.keys(JSON.parse(await rf('status', '--json'))), ['running', 'queued', 'asks', 'expired', 'requests', 'proposals', 'failed', 'indexes']);
+  assert.deepEqual(Object.keys(JSON.parse(await rf('status', '--json'))), ['running', 'queued', 'ownership', 'asks', 'expired', 'requests', 'proposals', 'failed', 'indexes']);
   assert.equal(await rf('indexes'), 'No indexes.\n');
   assert.match(await rf('status'), /^Last run failed \(\d+\)\n  larkfield\//m);
 
