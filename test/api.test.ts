@@ -14,6 +14,7 @@ import { filesOf, standIns } from './push.ts';
 import { idp } from './idp.ts';
 import { saveSeriesSettings } from '../src/series.ts';
 import { checkAuthorityFormat } from '../src/authority-format.ts';
+import { replaceFile } from '../src/system.ts';
 
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const series = 'Weekly borrowing base', monthly = 'Monthly rec', renamed = 'Weekly BB';
@@ -697,7 +698,8 @@ test("the page names everyone who has signed in, and the Entra groups in the wor
   const b = sessionOf(await login(bob))!, dana = 'dana@demo.test', group = '6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b', other = '7a2e3d4c-5b6f-4a71-9b8c-0d1e2f3a4b5c';
   const users = join(root, '.rf', 'users.json'), names = async (cookie = admin) => (await json('/me', cookie)).names;
   const people = async (ws: string, body: object, cookie = admin) => call('PUT', `/api/workspaces/${(await named(ws)).id}`, JSON.stringify(body), cookie);
-  writeFileSync(users, JSON.stringify({ ...JSON.parse(readFileSync(users, 'utf8')), [dana]: { name: 'Dana Tan', role: 'user' } }));
+  // Whole, as the server writes it, since a run of an earlier test may still read it.
+  replaceFile(users, JSON.stringify({ ...JSON.parse(readFileSync(users, 'utf8')), [dana]: { name: 'Dana Tan', role: 'user' } }));
   assert.equal((await names(b))[dana], 'Dana Tan', "bob sees the name of someone he shares no workspace with");
   assert.equal((await people('BobCo', { members: [dana, group], groups: { [group]: ' Finance HK' } }, b)).status, 200);
   assert.deepEqual(await names(b), { [group]: 'Finance HK', [adminEmail]: 'Demo Admin', [bob]: 'Bob', [dana]: 'Dana Tan' });
