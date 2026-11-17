@@ -31,8 +31,8 @@ rf pull PATH DIR [--delete] [-n|--dry-run] [--exclude PATTERN]... [--max-size SI
 rf help [COMMAND]                 how rollforward works and how to use rf, for an agent, or COMMAND's usage
 rf --version                      rf's own version, to tell whether it's older than what the guide names
 rf comment PATH TEXT [--item ID] [--ref REF] [--thread cN] [--wake|--wait]   a new thread, or a reply under comment cN, as to
-                                  an agent's question; only the series owner's --wake or --wait starts a run; --wait prints what the agent
-                                  says back
+                                  an agent's question; --wake or --wait starts a run for the owner or an answer to the agent's named ask,
+                                  under current consent; --wait prints what the agent says back
 rf upload PATH FILE [--onto ITEM] [--output] [--wake]
 rf approve PATH cN [TEXT] [--wake]   records content approval of proposal cN, not permission to run as you; the folder is
                                   committed as it is now, in your name
@@ -50,13 +50,13 @@ rf interrupt PATH                 stops its run: its series owner, an owner of i
 rf series owner SERIES [EMAIL] [--json]   the whole series' owner; EMAIL transfers every instance, stopping old runs and
                                   clearing consent; only its current owner or a workspace manager may transfer it
 rf series credentials SERIES [--set OFFER,...|--clear] [--autonomous true|false] [--json]
-                                  the series-wide selected ceiling; only its owner saves it, explicitly including [] with
+                                  credentials for every instance; only the owner saves consent, explicitly including [] with
                                   --clear; saving requires --autonomous true|false; no credentials or schedules transfer
 rf rename PATH NAME               an instance, a series or a workspace, by its path
 rf new task WORKSPACE [LABEL] [--creds OFFER,...|--clear] [--autonomous true|false] [--comment TEXT [--wake]]   a one-off task, Untitled until LABEL or its
                                   first comment names it; --wake starts its run on the comment; without --creds or --clear,
                                   no execution consent is granted; --clear explicitly permits work with no credentials
-rf new instance SERIES LABEL [--wake]   another instance; keeps the series owner and ceiling; only the owner may start it
+rf new instance SERIES LABEL [--wake]   another instance; anyone in the workspace may create it; only the owner starts it with --wake
 rf new series PATH NAME           the task at PATH becomes the series NAME, itself its first instance
 rf new workspace NAME             yours to own, for admins and those they grant create
 rf archive PATH [--undo]          a workspace or a series leaves the sidebar, and nothing in it changes or runs, until --undo brings it back;
@@ -97,8 +97,9 @@ rf correct PATH TEXT [--item ID] [--ref REF] [--superseded] [--see LABEL]   a cl
                                   wrong, or superseded, as LABEL, another instance of its series, shows; it can't be withdrawn
 rf wake PATH AT [TEXT] [--label LABEL] [--days DAYS] | rf wake --cancel ID
                                   AT now, +<n>m|h|d or a date; PATH an open instance, or a series with LABEL; TEXT a short
-                                  message for the run it starts; DAYS, such as mon-fri, repeats it weekly at AT's time; rf ls
-                                  shows each wake's ID
+                                  message for the run; the owner's now starts under current consent without autonomous opt-in;
+                                  later or agent-set wakes need it. Collaborators' wakes are requests. DAYS, such as mon-fri,
+                                  repeats weekly at AT's time; rf ls shows each wake's ID
 rf note SERIES [TEXT] [--json]    tells the series something for its runs, about the series rather than one period or while no
                                   instance is open, which starts no run; without TEXT, its notes, open and settled
 rf agents [WORKSPACE] [--set FILE|-]     the company's AGENTS.md, or a workspace's; setting the company's is for admins
@@ -166,13 +167,14 @@ What there is
   2026-08-23. A task is a one-off: a series of one instance, named by its label, until someone makes it a series. PATH is workspace/series/label, as rf ls prints it; for rf pull it may go deeper, into an instance's files.
 - An instance's screen is its items: inputs, outputs and steps, each pointing at a file, with what it's made from. People upload
   files, and review the work in threads with the agent. One series owner is accountable for every instance: only that person
-  closes and abandons. Their acts and answers by whom the agent's ask named start runs under current consent. Runs use their explicitly selected series credential ceiling. Absence of consent
-  prevents execution; an explicit empty selection permits credentialless work. Scheduled/autonomous starts require separate
-  owner opt-in. Other collaborators' comments, uploads and approvals are notes that start nothing.
-  Transferring the whole series stops old authority and clears consent; old unread instructions become notes. Creator,
-  commenter, approver and each historical run's executor remain separately attributed.
+  closes and abandons. Their acts and answers by whom the agent's ask named start runs under current consent. Runs use the
+  owner's selected credentials, across every instance. Without consent, nothing runs; selecting none permits work with no
+  credentials. Scheduled and autonomous runs need a separate opt-in. Other collaborators' comments, uploads and approvals are notes that start nothing.
+  Transferring the whole series stops old runs and clears consent; old unread instructions become notes. Each act keeps
+  its author, and every run its executor.
 - rf is quiet: a comment, upload, approval, rejection, close, new instance or request it starts begins no run unless --wake, and the agent
-  reads it at its next run; the owner's rf wake PATH now starts one under current consent, without autonomous opt-in. A quiet upload or comment is committed to the instance's history at once.
+  reads it at its next run. The owner's rf wake PATH now starts one under current consent, without autonomous opt-in.
+  A quiet upload or comment is committed to the instance's history at once.
 - A comment starts a thread, on the instance or on an item, at a cell such as Base!C25 or a line of a markdown file by its
   opening words, and replies go under any comment in it, cN by its seq, a thread's id its first comment's. The agent asks
   questions, which wait on someone, the one it names or else the series owner, until a person replies under it, and proposes what it
@@ -208,7 +210,7 @@ Usual work
   rf approve PATH cN [TEXT] --wake, for the agent to go ahead, or rf reject PATH cN [TEXT] --wake. Close an
   instance once it's the record: rf close PATH.
 - Transfer a whole series, as its current owner or workspace manager: rf series owner SERIES EMAIL. The incoming owner
-  explicitly selects its ceiling with rf series credentials SERIES --set OFFER,... --autonomous false, or --clear for none.
+  selects credentials with rf series credentials SERIES --set OFFER,... --autonomous false, or --clear for none.
   Every instance may use that selection: this is not an instance setting. No self-takeover right for collaborators.
 - Your logins: rf logins lists them, with what each offers, and an expired one's link to sign in again on the page.
 - Give an input or a corrected output: rf upload PATH FILE [--onto ITEM] [--output], with --wake on the last for a run on them
