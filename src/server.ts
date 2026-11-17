@@ -16,7 +16,7 @@ import { act, canManage, canSee, changes, everyone, initSystem, isPeople, readJs
 import { checkTicks, lastAssign, logins, runnerAt, runnerOf, saveLogin, signOut, unoffer } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
-import { answered, byLogin, call, connections, intercepts, keyStatus, letIn, loginOf, removeConnection, setConnection, setLetIn, upstreams } from './connections.ts';
+import { answered, byLogin, call, connections, intercepts, keyStatus, refreshKeys, letIn, loginOf, removeConnection, setConnection, setLetIn, upstreams } from './connections.ts';
 import { syncCosts } from './costs.ts';
 import { addSite, allowHost, Browsers, endSignIn, endSignIns, endUnpermittedSignIns, enrolFlagged, isSignIn, isCheckingWebsite, drainWebsiteChecks, keepAlive, passAllowed, passUpgrade, reap, removeHost, removeSite, revokeInternalHosts, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
 import { addVpn, cancelVpnSignIn, disconnectVpn, dropUnpermittedVpns, isVpnSignIn, reapVpns, removeVpn, saveVpnSignIn, startVpnSignIn, vpns } from './vpns.ts';
@@ -507,7 +507,7 @@ async function costs(me: Me, since: string, tz: string) {
       usage: k.usage, usage_daily: k.usage_daily, limit: k.limit, remaining: k.remaining, reset: k.reset,
       fetched_at: k.fetched_at, low_credit: k.low_credit, day: utcDay,
       server_total: +serverTotal.toFixed(6), ...(serverEst && { server_estimated: true }),
-      unattributed: k.usage_daily !== null ? +(k.usage_daily - serverTotal).toFixed(6) : null,
+      unattributed: (k.usage_daily_all ?? k.usage_daily) !== null ? +((k.usage_daily_all ?? k.usage_daily)! - serverTotal).toFixed(6) : null,
     },
   };
 }
@@ -518,7 +518,7 @@ async function status(me: Me) {
   const open = seen.flatMap(([sid]) => instances(sid).filter(i => i.doc.status === 'open'));
   const k = me.role === 'admin' ? await keyStatus() : null;
   return {
-    ...(k?.low_credit && { low_credit: { remaining: k.remaining!, limit: k.limit, usage: k.usage, reset: k.reset } }),
+    ...(k?.low_credit && { low_credit: { remaining: k.remaining!, limit: k.limit, usage: k.usage, reset: k.reset, key: k.key } }),
     running: seen.flatMap(([sid]) => active.get(sid) ?? []).map(a => ({ path: path(a.inst), run: a.n, at: a.inst.log.findLast(e => e.op === 'run')!.at, cost: +a.cost.toFixed(6), ...(a.estimated && { estimated: true }) })),
     queued: open.flatMap(i => { const q = queued(i); return q ? [{ path: path(i), ...q }] : []; }),
     asks: open.flatMap(i => waits(i).map(({ who, e }) => ({ who, path: path(i), since: e.at, text: e.text as string, note: e.by !== 'agent' || !e.ask }))),
@@ -1544,7 +1544,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       const { text, logo } = brand(), k = me.role === 'admin' ? await keyStatus() : null;
       send(res, 200, {
         ...me, names: names(me), browsers: !!process.env.RF_BROWSER_URL, brand: { text: text || null, logo: !!logo }, themeLogo: !!themeLogo, can: CAPS.filter(c => can(me, c)), version, draining: updating(),
-        ...(k?.low_credit && { low_credit: { remaining: k.remaining!, limit: k.limit, usage: k.usage, reset: k.reset } }),
+        ...(k?.low_credit && { low_credit: { remaining: k.remaining!, limit: k.limit, usage: k.usage, reset: k.reset, key: k.key } }),
       });
     } else if (url.pathname === '/capabilities') {
       if (me.role !== 'admin') throw new HttpError(403, 'admins grant capabilities');
@@ -1811,7 +1811,12 @@ server.listen(port, host, () => {
     lapse();
     keepAlive().catch(e => console.error('keeping logins alive:', e));
   }, 60_000).unref();
+  // The server's OpenRouter keys, as soon as it starts, every RF_KEY_TTL_MS, and 30 s after each UTC midnight, when OpenRouter resets
+  // daily limits, so calls go back to the first key at once (connections.ts serverKey()).
+  if (process.env.OPENROUTER_API_KEY) keyStatus();
   setInterval(() => { if (process.env.OPENROUTER_API_KEY) keyStatus(); }, Number(process.env.RF_KEY_TTL_MS ?? 180_000)).unref();
+  const midnight = () => setTimeout(() => { if (process.env.OPENROUTER_API_KEY) refreshKeys(); midnight(); }, 86_400_000 - (Date.now() % 86_400_000) + 30_000).unref();
+  midnight();
   checkLogins(connections().map(loginOf).flatMap(l => l.scope ? [l] : []));
   console.log(`rollforward on http://${host}:${port}, data in ${root}${process.env.RF_TODAY ? `, skills take today as ${process.env.RF_TODAY} (RF_TODAY)` : ''}`);
 });

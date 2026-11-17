@@ -6,7 +6,7 @@ import { brotliDecompressSync, createBrotliDecompress, createGunzip, createInfla
 import { HttpError, type Instance } from './store.ts';
 import { lookup } from 'node:dns/promises';
 import { getDomain } from 'tldts';
-import { changes, isPrivate, key, readJson, tree, writeJson } from './system.ts';
+import { act, changes, isPrivate, key, readJson, tree, writeJson } from './system.ts';
 import { recordCost } from './costs.ts';
 import type { EntraLogin } from './auth.ts';
 import { token } from './entra.ts';
@@ -226,7 +226,7 @@ export async function serverCall(
   cause: { kind: 'website-check' | 'try'; site?: string; person: string }, timeoutMs = 120_000,
 ): Promise<{ ok: boolean; status: number; data: any; cost: number; estimated: boolean }> {
   const s = serviceName === 'openrouter' ? openrouter : exa;
-  const apiKey = process.env[s.key] ?? '';
+  const apiKey = s === openrouter ? serverKey() : process.env[s.key] ?? '';
   const url = new URL(path, `https://${s.host}`), raw = Buffer.from(JSON.stringify(json));
   const out = s.check({ method: 'POST', url, headers: { 'content-type': 'application/json' }, json, body: raw }) ?? json;
   const target = `${upstreams[s.host] ?? `https://${s.host}`}${url.pathname}${url.search}`;
@@ -245,6 +245,7 @@ export async function serverCall(
   const type = r?.headers.get('content-type') ?? '', events = parseEvents(text);
   const headers: Record<string, string> = {};
   r?.headers.forEach((v, k) => { headers[k.toLowerCase()] = v; });
+  if (s === openrouter && r) keyOut(apiKey, r.status);
   const { cost, estimated } = await resolveCost(s, 'POST', url.pathname, json, r?.status ?? 502, headers, type, events, Buffer.byteLength(text), !!failed, apiKey);
   if ((!failed && r!.status < 400) || cost > 0 || estimated) {
     recordCost({
@@ -264,14 +265,53 @@ export type KeyInfo = {
   reset: string | null;
   fetched_at: string;
   low_credit: boolean;
+  // Which of the server's keys calls use: OPENROUTER_API_KEY, or OPENROUTER_FALLBACK_KEY.
+  key?: 'primary' | 'fallback';
+  // What all the server's keys spent today, if OpenRouter said for each.
+  usage_daily_all?: number | null;
 };
 
-let cachedKey: KeyInfo | null = null, keyFetchedAt = 0, keyUsed = '', keyInFlight: Promise<KeyInfo | null> | null = null;
+// The server's OpenRouter keys: OPENROUTER_API_KEY, such as one with a daily limit, and OPENROUTER_FALLBACK_KEY, such as a monthly
+// one, which calls use while the first has under RF_KEY_SWITCH_USD (50) left, or has answered that it's out of credit, until a check
+// finds its credit back, as once its limit resets. Each key's state is OpenRouter's, fetched at most every RF_KEY_TTL_MS (3m), and
+// just after each UTC midnight, when its daily limits reset (refreshKeys()).
+type KeyState = { info: KeyInfo | null; at: number; inFlight: Promise<KeyInfo | null> | null };
+const keyStates = new Map<string, KeyState>(), spent = new Set<string>();
+let using: 'primary' | 'fallback' = 'primary';
+const switchUsd = () => Number(process.env.RF_KEY_SWITCH_USD ?? 50);
+export const serverKeys = () => [process.env.OPENROUTER_API_KEY, process.env.OPENROUTER_FALLBACK_KEY].filter((k): k is string => !!k);
+
+// Every key checked again now, as just after OpenRouter's daily limits reset at UTC midnight.
+export function refreshKeys() {
+  for (const st of keyStates.values()) st.at = 0;
+  return keyStatus();
+}
+
 export function resetKeyCache() {
-  cachedKey = null;
-  keyFetchedAt = 0;
-  keyUsed = '';
-  keyInFlight = null;
+  keyStates.clear();
+  spent.clear();
+  using = 'primary';
+}
+
+// The key the server's calls to OpenRouter go with now; a switch is logged.
+export function serverKey(): string {
+  const primary = process.env.OPENROUTER_API_KEY ?? '', fallback = process.env.OPENROUTER_FALLBACK_KEY ?? '';
+  const left = keyStates.get(primary)?.info?.remaining ?? null;
+  const now = fallback && (spent.has(primary) || (left !== null && left < switchUsd())) ? 'fallback' : 'primary';
+  if (now !== using) {
+    using = now;
+    act('server', { op: 'openrouter key', using: now, ...(left !== null && { primary_remaining: left }) });
+    console.log(`OpenRouter calls now use the ${now} key${left !== null ? `, the primary having $${left.toFixed(2)} left` : ''}`);
+    changes.emit('change', 'tree');
+  }
+  return now === 'fallback' ? fallback : primary;
+}
+
+// OpenRouter answered a call with `key` that it's out of credit, 402, or past its limit, 403.
+export function keyOut(key: string, status = 402) {
+  if (![402, 403].includes(status) || key !== process.env.OPENROUTER_API_KEY || !process.env.OPENROUTER_FALLBACK_KEY) return;
+  spent.add(key);
+  serverKey();
 }
 
 export function isLowCredit(remaining: number | null, limit: number | null): boolean {
@@ -280,22 +320,30 @@ export function isLowCredit(remaining: number | null, limit: number | null): boo
   return remaining < lowUsd || (limit !== null && limit > 0 && remaining < limit * 0.1);
 }
 
-// OpenRouter's view of the server's key, fetched at most every few minutes (RF_KEY_TTL_MS, default 3m), with label/key omitted.
+// OpenRouter's view of the key calls use now, each of the server's keys checked again once its last check is RF_KEY_TTL_MS old, with
+// label and key omitted.
 export async function keyStatus(): Promise<KeyInfo | null> {
-  const apiKey = process.env.OPENROUTER_API_KEY ?? '';
-  if (!apiKey) {
+  const keys = serverKeys();
+  if (!keys.length) {
     resetKeyCache();
     return null;
   }
-  if (keyInFlight) return keyInFlight;
-  const ttl = Number(process.env.RF_KEY_TTL_MS ?? 180_000);
-  if (keyUsed === apiKey && keyFetchedAt && Date.now() - keyFetchedAt < ttl) {
-    return cachedKey ? { ...cachedKey, low_credit: isLowCredit(cachedKey.remaining, cachedKey.limit) } : null;
-  }
-  keyInFlight = (async () => {
-    const prevLow = cachedKey?.low_credit ?? false;
-    if (keyUsed !== apiKey) cachedKey = null;
-    keyUsed = apiKey;
+  const prevLow = keyStates.get(serverKey())?.info?.low_credit ?? false;
+  await Promise.all(keys.map(keyInfo));
+  const k = serverKey(), info = keyStates.get(k)?.info;
+  if (!info) return null;
+  const low = isLowCredit(info.remaining, info.limit);
+  if (low !== prevLow) changes.emit('change', 'tree');
+  const daily = keys.map(k => keyStates.get(k)?.info?.usage_daily ?? null);
+  return { ...info, low_credit: low, key: using, usage_daily_all: daily.includes(null) ? null : (daily as number[]).reduce((t, d) => t + d, 0) };
+}
+
+async function keyInfo(apiKey: string): Promise<KeyInfo | null> {
+  const st = keyStates.get(apiKey) ?? { info: null, at: 0, inFlight: null };
+  keyStates.set(apiKey, st);
+  if (st.inFlight) return st.inFlight;
+  if (st.at && Date.now() - st.at < Number(process.env.RF_KEY_TTL_MS ?? 180_000)) return st.info;
+  st.inFlight = (async () => {
     try {
       const base = upstreams['openrouter.ai'] ?? 'https://openrouter.ai';
       const r = await fetch(`${base}/api/v1/key`, {
@@ -306,7 +354,7 @@ export async function keyStatus(): Promise<KeyInfo | null> {
         if (d && typeof d.usage === 'number' && Number.isFinite(d.usage)) {
           const limit = typeof d.limit === 'number' && Number.isFinite(d.limit) ? d.limit : null;
           const remaining = typeof d.limit_remaining === 'number' && Number.isFinite(d.limit_remaining) ? d.limit_remaining : null;
-          cachedKey = {
+          st.info = {
             usage: d.usage,
             usage_daily: typeof d.usage_daily === 'number' && Number.isFinite(d.usage_daily) ? d.usage_daily : null,
             limit,
@@ -315,18 +363,18 @@ export async function keyStatus(): Promise<KeyInfo | null> {
             fetched_at: new Date().toISOString(),
             low_credit: isLowCredit(remaining, limit),
           };
-          if (cachedKey.low_credit !== prevLow) changes.emit('change', 'tree');
+          if (remaining === null || remaining >= switchUsd()) spent.delete(apiKey);
         }
       }
     } catch {
       // Keep last cached value until next TTL window; never expose the key or upstream error.
     } finally {
-      keyFetchedAt = Date.now();
-      keyInFlight = null;
+      st.at = Date.now();
+      st.inFlight = null;
     }
-    return cachedKey ? { ...cachedKey, low_credit: isLowCredit(cachedKey.remaining, cachedKey.limit) } : null;
+    return st.info;
   })();
-  return keyInFlight;
+  return st.inFlight;
 }
 
 export async function call(a: CallRun, host: string, req: IncomingMessage, res: ServerResponse) {
@@ -400,7 +448,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     if (s) {
       // The key goes in both headers SDKs send one in: Authorization, and x-api-key, as Anthropic's, Pi's among them, and Exa's do.
       out = s.check(r);
-      apiKey = mine ? secret(runner, 'openrouter') : process.env[s.key]!;
+      apiKey = mine ? secret(runner, 'openrouter') : s === openrouter ? serverKey() : process.env[s.key]!;
       auth = { authorization: `Bearer ${apiKey}`, 'x-api-key': apiKey };
     }
     const body = out === undefined ? raw : Buffer.from(JSON.stringify(out));
@@ -449,8 +497,9 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
           recordCost({ at, service: svc, inst: a.inst.id, run: a.n, person: runner, cost, ...(estimated && { estimated: true }), ...(mine && { own: true }) });
         }
       }
-      const failed = answer.failed && [process.env.OPENROUTER_API_KEY, process.env.EXA_API_KEY, apiKey].reduce((m, k) => k ? m.replaceAll(k, '[redacted]') : m, answer.failed);
+      const failed = answer.failed && [process.env.OPENROUTER_API_KEY, process.env.OPENROUTER_FALLBACK_KEY, process.env.EXA_API_KEY, apiKey].reduce((m, k) => k ? m.replaceAll(k, '[redacted]') : m, answer.failed);
       log(failed ? 502 : answer.status, failed ? 0 : answer.bytes, s ? { ...(json?.model && { model: json.model }), cost, ...(estimated && { estimated: true }), ...(failed && { failed }) } : answer.incomplete ? { incomplete: true } : undefined);
+      if (s === openrouter && !mine) keyOut(apiKey, answer.status);
       if (mine && answer.status === 402) {
         saveLogin(runner, { ...mine, expired: true });
         a.inst.append('server', 'expired', { run: a.n, login: 'openrouter', name: 'OpenRouter', runner });
@@ -463,7 +512,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
   } catch (e) {
     // A refusal, or an expired login, is the server's answer; anything else, a failure to reach the host.
     const err = e as Error & { status?: number; login?: string }, status = e instanceof HttpError ? err.status! : 502;
-    const msg = [process.env.OPENROUTER_API_KEY, process.env.EXA_API_KEY].reduce((m, k) => k ? m.replaceAll(k, '[redacted]') : m, err.message);
+    const msg = [process.env.OPENROUTER_API_KEY, process.env.OPENROUTER_FALLBACK_KEY, process.env.EXA_API_KEY].reduce((m, k) => k ? m.replaceAll(k, '[redacted]') : m, err.message);
     if (err.login) a.inst.append('server', 'expired', { run: a.n, login: err.login, name: byLogin(err.login) ? loginOf(byLogin(err.login)!).name : err.login, runner: runnerOf(a.inst).by });
     log(status, 0, e instanceof HttpError ? { refused: msg } : { failed: msg });
     if (res.headersSent) return void res.destroy();

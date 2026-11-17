@@ -405,6 +405,7 @@ You need Node 26, bubblewrap, tar and util-linux's `flock`, and a systemd user s
 The [justfile](../justfile) has these and more as recipes; `just` lists them. `just test` runs the tests.
 
 - **Keys:** `OPENROUTER_API_KEY`, the model's, and `EXA_API_KEY`, for runs' web search. They stay with the server, whose proxy puts them in the runs' requests.
+  - `OPENROUTER_FALLBACK_KEY`, a second OpenRouter key, such as a monthly one beside a first with a daily limit: the server's calls, runs' and website checks', go with it while the first has under `RF_KEY_SWITCH_USD` (50) left, as `GET /api/v1/key` says at each check, or once OpenRouter answers a call with the first 402 or 403, out of credit or past its limit, and with the first again once a check finds its credit back, as after its limit resets. Each key is checked every `RF_KEY_TTL_MS` and 30 s after each UTC midnight, when OpenRouter resets daily limits; each switch is an `openrouter key` act in `.rf/log.jsonl`, saying which key calls use. The low-credit line is the key in use's, saying when it's the fallback's, and the costs' reconciliation counts both keys' spending.
 - **On a VM:** run the server as a systemd user service with lingering on, and cap all runs together with `systemctl --user set-property rollforward-runs.slice MemoryMax=50G`.
 - **Environment variables:**
   - `RF_MODEL` (default `openrouter/anthropic/claude-opus-5.5`), an OpenRouter model, as Pi names it

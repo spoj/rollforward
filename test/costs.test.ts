@@ -324,7 +324,7 @@ test('daily totals, live website-check attribution, cached /api/v1/key view, una
   const adminStatusText = await rfAs(adminHome, 'status');
   assert.match(adminStatusText, /^Low OpenRouter credit: \$85\.00 remaining of \$1000\.00 limit \(resets weekly\)/);
   const adminStatusJson = JSON.parse(await rfAs(adminHome, 'status', '--json'));
-  assert.deepEqual(adminStatusJson.low_credit, { remaining: 85, limit: 1000, usage: 915, reset: 'weekly' });
+  assert.deepEqual(adminStatusJson.low_credit, { remaining: 85, limit: 1000, usage: 915, reset: 'weekly', key: 'primary' }, 'the key in use, the only one');
 
   const bobStatusText = await rfAs(bobHome, 'status');
   assert.doesNotMatch(bobStatusText, /Low OpenRouter credit/);

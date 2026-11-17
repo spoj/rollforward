@@ -778,7 +778,7 @@ else if (cmd === 'comment' && args.length === 2) {
   const [s, ix] = await Promise.all([get('/api/status'), get('/api/indexes')]), long = Number(flags.long ?? 30);
   if (flags.json) console.log(JSON.stringify({ ...s, indexes: ix }, null, 1));
   else {
-    const lowLine = s.low_credit ? `Low OpenRouter credit: ${usd(s.low_credit.remaining)} remaining${s.low_credit.limit !== null ? ` of ${usd(s.low_credit.limit)} limit` : ''}${s.low_credit.reset ? ` (resets ${s.low_credit.reset})` : ''}` : '';
+    const lowLine = s.low_credit ? `Low OpenRouter credit: ${usd(s.low_credit.remaining)} remaining${s.low_credit.limit !== null ? ` of ${usd(s.low_credit.limit)} limit` : ''}${s.low_credit.reset ? ` (resets ${s.low_credit.reset})` : ''}${s.low_credit.key === 'fallback' ? ', on the fallback key, the first being low too' : ''}` : '';
     const sections = [
       [`Running`, s.running.map(r => `${r.path}  run ${r.run}  for ${took((Date.now() - Date.parse(r.at)) / 1000)}  ${usdNote(r.cost, r.estimated)}${Date.now() - Date.parse(r.at) > long * 60e3 ? `  LONG, past ${long}m` : ''}`)],
       [`Queued`, s.queued.map(q => `${q.path}  since ${when(q.since)}: ${q.why}`)],
