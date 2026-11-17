@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { changes, initSystem, saveTree, tree, writeJson } from '../src/system.ts';
 import { createInstance, openStore, seriesDir } from '../src/store.ts';
-import { authority, lender, ownerOf, runnerAt, saveLogin, unoffer, use } from '../src/logins.ts';
+import { authority, lender, ownerOf, runnerAt, saveLogin, signOut, unoffer, use } from '../src/logins.ts';
 import { saveSeriesSettings, seriesSettings, type Authority } from '../src/series.ts';
 import { fire, held, pending, recover, retireSeries, setWake, standing, wakes } from '../src/waker.ts';
 
@@ -105,7 +105,7 @@ test('run snapshots narrow additions, withdrawal/regrant and owner ABA cannot re
   unoffer(alice, 'm365', 'm365:x');
   const withdrawn = seriesSettings(inst.series());
   assert.equal(withdrawn.epoch, 2);
-  assert.equal(withdrawn.consent, undefined);
+  assert.deepEqual(withdrawn.consent?.logins, ['m365:y']);
   saveLogin(alice, { id: 'm365', kind: 'm365', name: 'Microsoft', since: 'later', offers: [{ id: 'm365:x', name: 'X' }] });
   consent(['m365:x']);
   assert.throws(() => lender(inst, 1), /authority has ended/);
@@ -118,6 +118,27 @@ test('run snapshots narrow additions, withdrawal/regrant and owner ABA cannot re
   assert.equal(run.initiator, alice);
   assert.deepEqual(run.authority, lease);
   assert.equal(runnerAt(inst.log, run.seq), bob, 'legacy historical decoder is not current authority');
+});
+
+for (const remove of ['unoffer', 'signout'] as const) test(`${remove} narrows every affected series and keeps the remaining consent`, t => {
+  const inst = fixture(t);
+  saveLogin(alice, { id: 'other', kind: 'synthetic', name: 'Other', since: '', offers: [{ id: 'other:z', name: 'Z' }] });
+  for (const sid of ['s', 'empty']) consent(['m365:x', 'other:z'], true, sid);
+  const old = authority(inst);
+  if (remove === 'unoffer') unoffer(alice, 'm365', 'm365:x');
+  else signOut(alice, 'm365');
+  for (const sid of ['s', 'empty']) {
+    const s = seriesSettings(seriesDir(sid));
+    assert.equal(s.epoch, 2);
+    assert.deepEqual(s.consent, { by: alice, at: 'now', workspace: 'w', logins: ['other:z'], autonomous: true });
+  }
+  inst.append('server', 'run', { run: 1, runner: alice, authority: old });
+  assert.throws(() => lender(inst, 1), /authority has ended/);
+  saveLogin(alice, { id: 'm365', kind: 'm365', name: 'Microsoft', since: 'again', offers: [{ id: 'm365:x', name: 'X' }] });
+  assert.deepEqual(authority(inst).logins, ['other:z']);
+  unoffer(alice, 'other', 'other:z');
+  assert.deepEqual(authority(inst).logins, []);
+  assert.equal(seriesSettings(inst.series()).epoch, 3);
 });
 
 test('a collaborator schedule request cannot overwrite an owner-authorized schedule', t => {

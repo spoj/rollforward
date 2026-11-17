@@ -141,8 +141,7 @@ changes.on('offers-withdrawn', (email: string, offers: string[]) => {
   for (const sid of Object.keys(tree().series)) {
     const s = seriesSettings(seriesDir(sid));
     if (s.owner !== email || !s.consent?.logins.some(o => offers.includes(o))) continue;
-    const { consent, ...rest } = s;
-    saveSeriesSettings(seriesDir(sid), { ...rest, epoch: s.epoch + 1, since: new Date().toISOString() });
+    saveSeriesSettings(seriesDir(sid), { ...s, consent: { ...s.consent, logins: s.consent.logins.filter(o => !offers.includes(o)) }, epoch: s.epoch + 1, since: new Date().toISOString() });
   }
 });
 
@@ -156,11 +155,11 @@ changes.on('change', (id: string) => {
       const s = seriesSettings(seriesDir(sid));
       if (!s.consent) continue;
       const p = asPerson(s.owner!), offers = new Set(logins(s.owner!).flatMap(l => l.offers.map(o => o.id)));
-      const valid = !!p && canSee(p, t.workspaces[meta.workspace]) && s.consent.workspace === meta.workspace
-        && s.consent.logins.every(o => offers.has(o) && (!o.startsWith('web:') || grants.some(g => g.state === 'approved' && g.site === o.slice(4) && g.person === s.owner && g.workspace === meta.workspace)));
-      if (valid) continue;
+      const ticks = s.consent.logins.filter(o => offers.has(o) && (!o.startsWith('web:') || grants.some(g => g.state === 'approved' && g.site === o.slice(4) && g.person === s.owner && g.workspace === meta.workspace)));
+      const visible = !!p && canSee(p, t.workspaces[meta.workspace]) && s.consent.workspace === meta.workspace;
+      if (visible && ticks.length === s.consent.logins.length) continue;
       const { consent, ...rest } = s;
-      saveSeriesSettings(seriesDir(sid), { ...rest, epoch: s.epoch + 1, since: new Date().toISOString() });
+      saveSeriesSettings(seriesDir(sid), { ...rest, ...(visible && { consent: { ...consent, logins: ticks } }), epoch: s.epoch + 1, since: new Date().toISOString() });
     }
   } finally { checkingConsent = false; }
 });

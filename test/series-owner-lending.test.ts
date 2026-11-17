@@ -302,6 +302,7 @@ test('website removal and personal unoffer cannot revive a lease after regrant',
   saveLogin(ALICE, { id: 'custom', kind: 'synthetic', name: 'Custom', since: '', offers: [{ id: 'custom:offer', name: 'Offer' }] });
   await b.browser('portal');
   removeSite(ALICE, 'portal');
+  assert.deepEqual(seriesSettings(inst.series()).consent?.logins, ['custom:offer']);
   saveLogin(ALICE, { id: 'web:portal', kind: 'website', name: 'Portal', since: 'replacement', offers: [{ id: 'web:portal', name: 'Portal' }] }, JSON.stringify(state('replacement')));
   await assert.rejects(b.browser('portal'), /authority has ended/);
   assert.ok(seriesSettings(inst.series()).epoch > 1);
@@ -313,9 +314,11 @@ test('website removal and personal unoffer cannot revive a lease after regrant',
 });
 
 test('revoking one workspace grant cannot revive a lease while another grant preserves the login', async () => {
-  const inst = running(), b = browser(inst);
+  const inst = running(['web:portal', 'custom:offer']), b = browser(inst);
   await b.browser('portal');
   writeJson('grants.json', { here: { workspace: 'w', person: ALICE, site: 'portal', at: '', state: 'revoked' }, elsewhere: { workspace: 'another', person: ALICE, site: 'portal', at: '', state: 'approved' } });
+  assert.deepEqual(seriesSettings(inst.series()).consent?.logins, ['custom:offer']);
+  assert.equal(seriesSettings(inst.series()).epoch, 2);
   writeJson('grants.json', { here: { workspace: 'w', person: ALICE, site: 'portal', at: '', state: 'approved' }, elsewhere: { workspace: 'another', person: ALICE, site: 'portal', at: '', state: 'approved' } });
   await assert.rejects(b.browser('portal'), /authority has ended/);
   assert.equal(JSON.parse(secret(ALICE, 'web:portal')).cookies[0].value, ALICE);
