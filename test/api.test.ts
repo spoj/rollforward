@@ -2282,7 +2282,7 @@ test("admins edit the agents' instructions, which each run started from then on 
   assert.deepEqual([view.text, view.own.by, view.own.stale], [text, adminEmail, false]);
   const acts = readFileSync(join(root, '.rf', 'log.jsonl'), 'utf8');
   assert.ok(acts.includes(`"path":"/prompt","body":{"sha256":"${sha}"}`) && !acts.includes('Answer in rhymes'), "the system's log has its sha256, not its text");
-  assert.equal((await call('POST', '/api/series', JSON.stringify({ workspace: (await named('larkfield')).id, name: 'Prompted' }))).status, 200);
+  assert.equal((await call('POST', '/api/series', JSON.stringify({ workspace: (await named('larkfield')).id, name: 'Prompted', logins: [], autonomous: false }))).status, 200);
   assert.equal((await create('Prompted', '2026-12')).status, 200);
   const run = (await ran(await at('Prompted', '2026-12'))).find(e => e.op === 'run')!;
   assert.deepEqual([run.prompt, run.own_prompt], [sha, true], 'a run started now names the instructions it read');
