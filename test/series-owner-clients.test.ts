@@ -127,6 +127,19 @@ test('CLI waiting and status list ownership work for managers', async () => {
   }
 });
 
+test('wake editor explains recurring requests without owner autonomous authority', () => {
+  const source = code.slice(code.indexOf('const WEEK ='), code.indexOf('// What this workspace\'s agents read'));
+  const html = (email: string, autonomous: boolean, list: object[] = []) => runInNewContext(`${source}\nwakesHtml('s1', list, true)`, {
+    cur: { s: { owner, consent: { autonomous } }, w: { manage: false } }, me: { email }, list,
+    esc: (x: string) => x, localInput: (x: string) => x, when: (x: string) => x,
+  });
+  assert.match(html(owner, false), /Each occurrence asks the owner to start it/);
+  assert.match(html(colleague, true), /Each occurrence asks the owner to start it/);
+  assert.doesNotMatch(html(owner, true), /asks the owner/);
+  assert.match(html(owner, true, [{ id: 'wake1', from: colleague }]), /Each occurrence asks the owner to start it/);
+  assert.doesNotMatch(html(owner, true, [{ id: 'wake1', from: 'agent/path', initiator: owner }]), /asks the owner/);
+});
+
 test('website selection retains setup-only grant gating and no implicit grant request', () => {
   const source = code.slice(code.indexOf('function ticksHtml('), code.indexOf('const ticked ='));
   const html = runInNewContext(`${source}\nticksHtml(logins, ['web:erp'], w)`, {

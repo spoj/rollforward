@@ -291,6 +291,32 @@ test('only immediate personal owner wakes can execute without autonomy', t => {
   assert.equal(noConsent.authority, undefined);
 });
 
+for (const [from, autonomous] of [[bob, true], [alice, false]] as const) for (const series of [false, true]) test(`weekly requests keep recurring: setter ${from}, autonomous ${autonomous}, series ${series}`, t => {
+  const inst = fixture(t);
+  consent([], autonomous, series ? 'empty' : 's');
+  const target = series ? 'empty' : inst.id, days = ['mon', 'tue', 'wed', 'thu', 'fri'];
+  const wake = setWake(target, { from, at: '2099-01-01T08:00:00.000Z', days, ...(series && { label: 'BB 2000-01-07' }), text: 'Please check' });
+  const w = wakes();
+  w.pending[wake.id].at = new Date(2000, 0, 7, 8).toISOString();
+  writeJson('wakes.json', w);
+  fire();
+  assert.equal(wakes().pending[wake.id].at, new Date(2000, 0, 10, 8).toISOString());
+  assert.deepEqual(wakes().pending[wake.id].days, days);
+  assert.equal(wakes().pending[wake.id].label, series ? 'BB 2000-01-10' : undefined);
+  assert.equal(wakes().pending[wake.id].authority, undefined);
+  assert.equal(wakes().pending[wake.id].immediate, undefined);
+  const [first] = Object.entries(wakes().requests);
+  assert.equal(first[1].from, from);
+  assert.equal(first[1].label, series ? 'BB 2000-01-07' : inst.label);
+  assert.equal(first[1].text, 'Please check');
+  assert.equal(first[1].target, series ? undefined : inst.id);
+  fire();
+  assert.equal(wakes().pending[wake.id].at, new Date(2000, 0, 11, 8).toISOString());
+  assert.equal(Object.keys(wakes().requests).length, 2);
+  assert.deepEqual(wakes().requests[first[0]], first[1], 'each occurrence retains its own request');
+  assert.equal(inst.log.some(e => e.op === 'wake' || e.op === 'run'), false);
+});
+
 for (const autonomous of [false, true]) test(`an immediate weekly wake keeps autonomy ${autonomous} for later occurrences`, t => {
   const inst = fixture(t);
   consent([], autonomous);

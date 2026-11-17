@@ -1058,9 +1058,9 @@ function wakesHtml(target, list, series) {
     + (series ? `<input type="text" class="wlabel" placeholder="Label it starts" value="${esc(k.label ?? '')}">` : '')
     + `<input type="text" class="wtext" maxlength="500" placeholder="Message for the run (optional)" value="${esc(k.text ?? '')}">`
     + '<div class="row2">' + WEEK.map(d => `<label class="sub"><input type="checkbox" value="${d}" ${k.days?.includes(d) ? 'checked' : ''}>${d[0].toUpperCase() + d.slice(1)}</label>`).join('')
-    + `<button class="btn" data-act="wake-save">${k.id ? 'Save' : 'Add'}</button>${k.id ? '<button class="quiet" data-act="wake-delete">Delete</button>' : ''}</div></div>`;
+    + `<button class="btn" data-act="wake-save">${k.id ? 'Save' : 'Add'}</button>${k.id ? '<button class="quiet" data-act="wake-delete">Delete</button>' : ''}</div>${k.id && owns && cur.s.consent?.autonomous && (k.initiator ?? k.from) !== cur.s.owner ? '<div class="sub">Each occurrence asks the owner to start it.</div>' : ''}</div>`;
   const existing = list.map(k => owns || (!k.authority && k.from === me.email) ? row(k) : `<div class="wakerow" data-id="${k.id}" data-target="${target}">${when(k.at)}${k.label ? ` · ${esc(k.label)}` : ''}${k.text ? ` · ${esc(k.text)}` : ''} · ${k.authority ? 'Captured owner schedule' : 'Wake request'}${cur.w.manage ? '<button class="quiet" data-act="wake-delete">Delete</button>' : ''}</div>`).join('');
-  return `<div class="sub">${series ? 'Each starts the instance it names, or continues it if the series has it.' : 'Each continues this instance.'} Tick days to repeat it weekly at its time.${owns ? '' : ' You can request a wake; only the owner authorizes execution.'}</div>${existing}${row()}`;
+  return `<div class="sub">${series ? 'Each starts the instance it names, or continues it if the series has it.' : 'Each continues this instance.'} Tick days to repeat it weekly at its time.${owns && cur.s.consent?.autonomous ? '' : ' Each occurrence asks the owner to start it.'}</div>${existing}${row()}`;
 }
 
 // What this workspace's agents read, and which other workspaces' agents read it, as each one's owners let them, choosing among the

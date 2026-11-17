@@ -630,17 +630,16 @@ export function fire() {
     const authorized = !!lease && (lease.autonomous ? !!s.consent?.autonomous : wake.immediate && !wake.inst && wake.from === s.owner) && wake.initiator === lease.owner && s.owner === lease.owner && s.epoch === lease.epoch && wsId === lease.workspace
       && !!s.consent && s.consent.by === s.owner && s.consent.workspace === wsId && lease.logins.every(o => s.consent!.logins.includes(o))
       && !!owner && canSee(owner, ws);
-    if (!authorized) {
-      delete w.pending[id];
-      w.requests[id] = { series: targetSeries, label: label ?? instance(target).label, ...(!t.series[target] && { target }), from: wake.from, at: now, ...(wake.inst && { inst: wake.inst }), ...(wake.text && { text: wake.text }) };
-      continue;
-    }
-    w.fired[target] = now;
     delete w.pending[id];
     if (days) {
       const was = new Date(wake.at), next = step(was, days, 1), date = dateIn(label);
-      w.pending[id] = { ...wake, immediate: undefined, ...(!lease!.autonomous && { authority: undefined, initiator: undefined }), at: next.toISOString(), ...(date && { label: label!.replace(date, ymd(date === ymd(was) ? next : was)) }) };
+      w.pending[id] = { ...wake, immediate: undefined, ...(!lease?.autonomous && { authority: undefined, initiator: undefined }), at: next.toISOString(), ...(date && { label: label!.replace(date, ymd(date === ymd(was) ? next : was)) }) };
     }
+    if (!authorized) {
+      w.requests[days ? newId() : id] = { series: targetSeries, label: label ?? instance(target).label, ...(!t.series[target] && { target }), from: wake.from, at: now, ...(wake.inst && { inst: wake.inst }), ...(wake.text && { text: wake.text }) };
+      continue;
+    }
+    w.fired[target] = now;
     // Where the run that set it is now, though it was renamed or moved since.
     const from = wake.inst ? `${named(t, instance(wake.inst).seriesId)}/${instance(wake.inst).label}` : wake.from;
     // A series' wake for a label it has already wakes that instance.
