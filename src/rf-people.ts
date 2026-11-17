@@ -172,7 +172,7 @@ What there is
   Transferring the whole series stops old authority and clears consent; old unread instructions become notes. Creator,
   commenter, approver and each historical run's executor remain separately attributed.
 - rf is quiet: a comment, upload, approval, rejection, close, new instance or request it starts begins no run unless --wake, and the agent
-  reads it at its next run; rf wake PATH now starts one. A quiet upload or comment is committed to the instance's history at once.
+  reads it at its next run; the owner's rf wake PATH now starts one under current consent, without autonomous opt-in. A quiet upload or comment is committed to the instance's history at once.
 - A comment starts a thread, on the instance or on an item, at a cell such as Base!C25 or a line of a markdown file by its
   opening words, and replies go under any comment in it, cN by its seq, a thread's id its first comment's. The agent asks
   questions, which wait on someone, the one it names or else the series owner, until a person replies under it, and proposes what it

@@ -273,6 +273,46 @@ for (const hadRun of [false, true]) for (const autonomous of [false, true]) test
   assert.equal(held(inst, 'entra', alice), false);
 });
 
+test('only immediate personal owner wakes can execute without autonomy', t => {
+  const inst = fixture(t);
+  consent();
+  const now = new Date().toISOString();
+  const immediate = setWake(inst.id, { from: alice, at: now });
+  assert.equal(immediate.authority?.autonomous, false);
+  fire();
+  assert.deepEqual(standing(inst, inst.log.findLast(e => e.op === 'wake')!), { word: 'runner', starts: true });
+  const future = setWake(inst.id, { from: alice, at: '2099-01-01' });
+  assert.equal(future.authority, undefined);
+  const agent = setWake(inst.id, { from: 'W/S/First', inst: inst.id, at: now });
+  assert.equal(agent.authority, undefined);
+  const absent = seriesSettings(inst.series());
+  saveSeriesSettings(inst.series(), { ...absent, consent: undefined });
+  const noConsent = setWake(inst.id, { from: alice, at: now });
+  assert.equal(noConsent.authority, undefined);
+});
+
+for (const autonomous of [false, true]) test(`an immediate weekly wake keeps autonomy ${autonomous} for later occurrences`, t => {
+  const inst = fixture(t);
+  consent([], autonomous);
+  const { id } = setWake(inst.id, { from: alice, at: new Date().toISOString(), days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] });
+  fire();
+  assert.equal(inst.log.some(e => e.op === 'wake'), true);
+  assert.equal(wakes().pending[id].immediate, undefined);
+  assert.equal(!!wakes().pending[id].authority, autonomous);
+});
+
+for (const autonomous of [false, true]) test(`an immediate owner wake bypasses schedule spacing with autonomy ${autonomous}`, t => {
+  const inst = fixture(t);
+  consent([], autonomous);
+  const now = new Date().toISOString();
+  writeJson('wakes.json', { ...wakes(), fired: { [inst.id]: now } });
+  const wake = setWake(inst.id, { from: alice, at: now });
+  assert.equal(wake.at, now);
+  assert.equal(wake.immediate, true);
+  fire();
+  assert.deepEqual(standing(inst, inst.log.findLast(e => e.op === 'wake')!), { word: 'runner', starts: true });
+});
+
 test('recovery needs autonomy captured by the original run, not a later consent expansion', () => {
   execFileSync(process.execPath, ['--experimental-test-module-mocks', '--input-type=module', '-e', `
     import assert from 'node:assert/strict';

@@ -59,7 +59,7 @@ for (const autonomous of [false, true]) describe(`standing with autonomous conse
     assert.deepEqual(i.log.filter(e => e.op === 'run').map(e => [e.runner, e.initiator]), [[alice, alice]]);
   });
 
-  test('owner and live owner-agent schedules need explicit autonomous consent', async () => {
+  test('owner immediate wakes need no autonomy; owner-agent wakes do', async () => {
     const i = make(autonomous), sibling = createInstance(i.seriesId, 'sibling', bob), lease = authority(sibling);
     const a = { inst: sibling, n: 1, runner: alice, authority: lease, token: sibling.id, workspace: 'w', view: view(sibling) } as import('../src/waker.ts').Active;
     active.set(i.seriesId, a); byToken.set(a.token, a);
@@ -72,7 +72,7 @@ for (const autonomous of [false, true]) describe(`standing with autonomous conse
     const own = make(autonomous);
     setWake(own.id, { at: new Date().toISOString(), from: alice });
     fire();
-    assert.equal(await started(own), autonomous);
+    assert.ok(await started(own));
   });
 
   test('named replies, approvals and rejections start runs under the owner consent', async () => {

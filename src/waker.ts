@@ -76,7 +76,7 @@ export function standing(inst: Instance, e: Entry, upto = inst.log.length): Stan
   const word = e.seq < line || e.note || stale ? 'note'
     : e.op !== 'wake' ? (e.by === owner ? 'runner' : ask?.to === e.by ? 'answer' : 'note')
     : lease && (e.recovery || e.initiator === lease.owner) && (!e.inst || instance(e.inst as string).seriesId === inst.seriesId) ? 'runner' : 'note';
-  const valid = e.op === 'wake' ? !stale && (!(e.recovery || e.schedule) || (!!lease?.autonomous && !!r.consent?.autonomous))
+  const valid = e.op === 'wake' ? !stale && (!(e.recovery || (e.schedule && !e.immediate)) || (!!lease?.autonomous && !!r.consent?.autonomous))
     : epoch === r.epoch && owner === r.by;
   return { word, starts: !!r.by && !!r.consent && valid && !e.quiet && e.seq > Math.max(line, inst.copied) && (word !== 'note' || (e.op === 'wake' && !!e.schedule)) };
 }
@@ -509,7 +509,7 @@ export function correct(inst: Instance, by: string, c: { kind: string; item?: st
 
 // Schedules retain target authority and independent setter/source-run provenance.
 // Unconsented or revoked schedules become requests, never execution as their clicker.
-export type Wake = { target: string; at: string; from: string; label?: string; inst?: string; sourceRun?: number; days?: string[]; text?: string; authority?: Authority; initiator?: string };
+export type Wake = { target: string; at: string; from: string; immediate?: boolean; label?: string; inst?: string; sourceRun?: number; days?: string[]; text?: string; authority?: Authority; initiator?: string };
 export type Request = { series: string; label: string; from: string; at: string; inst?: string; text?: string; target?: string };
 type Wakes = { pending: Record<string, Wake>; fired: Record<string, string>; requests: Record<string, Request> };
 export const wakes = () => readJson<Wakes>('wakes.json', { pending: {}, fired: {}, requests: {} });
@@ -548,14 +548,15 @@ export function weekly(text: string, at: Date, label?: string): string[] | undef
 export function setWake(target: string, wake: Omit<Wake, 'target'>): Wake & { id: string } {
   const w = wakes(), t = tree(), sid = t.series[target] ? target : instance(target).seriesId, s = seriesSettings(seriesDir(sid));
   const p = s.owner && asPerson(s.owner), source = wake.inst ? active.get(instance(wake.inst).seriesId) : undefined;
-  const authorized = s.consent?.autonomous && s.consent.by === s.owner && s.consent.workspace === t.series[sid].workspace
+  const immediate = !wake.inst && wake.from === s.owner && wake.at <= new Date().toISOString();
+  const authorized = s.consent && (immediate || s.consent.autonomous) && s.consent.by === s.owner && s.consent.workspace === t.series[sid].workspace
     && p && canSee(p, t.workspaces[t.series[sid].workspace])
     && (wake.inst ? source?.inst.id === wake.inst && byToken.has(source.token) && source.runner === s.owner && source.authority.autonomous && sameAuthority(source.inst, source.authority) && ownerOf(source.inst).consent?.autonomous : wake.from === s.owner);
-  const k: Wake = { ...wake, target, authority: authorized ? { version: 1, owner: s.owner!, epoch: s.epoch, workspace: t.series[sid].workspace, logins: s.consent!.logins.filter(o => !source || source.inst.seriesId !== sid || source.authority.logins.includes(o)), autonomous: true } : undefined, initiator: authorized ? s.owner : undefined, ...(source && { sourceRun: source.n }) }, labelled = k.label !== undefined && !k.days;
+  const k: Wake = { ...wake, target, immediate: immediate || undefined, authority: authorized ? { version: 1, owner: s.owner!, epoch: s.epoch, workspace: t.series[sid].workspace, logins: s.consent!.logins.filter(o => !source || source.inst.seriesId !== sid || source.authority.logins.includes(o)), autonomous: s.consent!.autonomous } : undefined, initiator: authorized ? s.owner : undefined, ...(source && { sourceRun: source.n }) }, labelled = k.label !== undefined && !k.days;
   // A weekly one keeps its time of day; fire() spaces it.
-  if (!k.days) k.at = new Date(Math.max(Date.parse(k.at), Date.parse(w.fired[target] ?? '1970-01-01') + SPACING_MS)).toISOString();
+  if (!k.days && !k.immediate) k.at = new Date(Math.max(Date.parse(k.at), Date.parse(w.fired[target] ?? '1970-01-01') + SPACING_MS)).toISOString();
   const [id = newId(), was] = Object.entries(w.pending).find(([, p]) => p.target === target && p.label === k.label
-    && !!p.authority === !!k.authority && (k.authority ? p.authority!.owner === k.authority.owner && p.authority!.epoch === k.authority.epoch && p.authority!.workspace === k.authority.workspace && p.authority!.autonomous === true : p.from === k.from && p.inst === k.inst)
+    && !!p.immediate === !!k.immediate && !!p.authority === !!k.authority && (k.authority ? p.authority!.owner === k.authority.owner && p.authority!.epoch === k.authority.epoch && p.authority!.workspace === k.authority.workspace && p.authority!.autonomous === k.authority.autonomous : p.from === k.from && p.inst === k.inst)
     && (labelled || (p.at === k.at && String(p.days) === String(k.days)))) ?? [];
   if (!was && Object.values(w.pending).filter(p => p.target === target).length >= MAX_WAKES) throw new HttpError(409, `${MAX_WAKES} wakes are pending for it: cancel one first`);
   if (!(labelled && was?.days)) w.pending[id] = k;
@@ -592,7 +593,7 @@ export function startWith(seriesId: string, label: string, by: string, wakes: Wo
 }
 
 // Wakes an instance, each wake logged with who set it and its text, a note unless it's the runner's word (standing()).
-type Woken = { from: string; text?: string; inst?: string; sourceRun?: number; assigned?: boolean; quiet?: boolean; authority?: Authority; initiator?: string; schedule?: string };
+type Woken = { from: string; immediate?: boolean; text?: string; inst?: string; sourceRun?: number; assigned?: boolean; quiet?: boolean; authority?: Authority; initiator?: string; schedule?: string };
 export function wakeWith(inst: Instance, wakes: Woken[]): Instance {
   for (const wake of wakes) {
     const r = ownerOf(inst);
@@ -611,7 +612,7 @@ export function fire() {
   if (!due.length) return;
   for (const [id, wake] of due) {
     const { target, days, label } = wake;
-    if (Date.parse(w.fired[target] ?? '1970-01-01') + SPACING_MS > Date.parse(now)) continue;
+    if (!wake.immediate && Date.parse(w.fired[target] ?? '1970-01-01') + SPACING_MS > Date.parse(now)) continue;
     // One a person set goes only while they may see its workspace, and a run's while its instance lives in the same workspace.
     const targetSeries = t.series[target] ? target : instance(target).seriesId, wsId = t.series[targetSeries].workspace, ws = t.workspaces[wsId];
     if (wake.inst) {
@@ -630,8 +631,8 @@ export function fire() {
       continue;
     }
     const s = seriesSettings(seriesDir(targetSeries)), lease = wake.authority, owner = s.owner && asPerson(s.owner);
-    const authorized = !!lease?.autonomous && wake.initiator === lease.owner && s.owner === lease.owner && s.epoch === lease.epoch && wsId === lease.workspace
-      && !!s.consent?.autonomous && s.consent.by === s.owner && s.consent.workspace === wsId && lease.logins.every(o => s.consent!.logins.includes(o))
+    const authorized = !!lease && (lease.autonomous ? !!s.consent?.autonomous : wake.immediate && !wake.inst && wake.from === s.owner) && wake.initiator === lease.owner && s.owner === lease.owner && s.epoch === lease.epoch && wsId === lease.workspace
+      && !!s.consent && s.consent.by === s.owner && s.consent.workspace === wsId && lease.logins.every(o => s.consent!.logins.includes(o))
       && !!owner && canSee(owner, ws);
     if (!authorized) {
       delete w.pending[id];
@@ -642,7 +643,7 @@ export function fire() {
     delete w.pending[id];
     if (days) {
       const was = new Date(wake.at), next = step(was, days, 1), date = dateIn(label);
-      w.pending[id] = { ...wake, at: next.toISOString(), ...(date && { label: label!.replace(date, ymd(date === ymd(was) ? next : was)) }) };
+      w.pending[id] = { ...wake, immediate: undefined, ...(!lease!.autonomous && { authority: undefined, initiator: undefined }), at: next.toISOString(), ...(date && { label: label!.replace(date, ymd(date === ymd(was) ? next : was)) }) };
     }
     // Where the run that set it is now, though it was renamed or moved since.
     const from = wake.inst ? `${named(t, instance(wake.inst).seriesId)}/${instance(wake.inst).label}` : wake.from;
@@ -655,12 +656,12 @@ export function fire() {
         console.log(`a wake found ${named(t, inst.seriesId)}/${inst.label} ${inst.doc.status}, so it woke nothing`);
         continue;
       }
-      wakeWith(inst, [{ from, text: wake.text, inst: wake.inst, sourceRun: wake.sourceRun, authority: lease, initiator: wake.initiator, schedule: id }]);
+      wakeWith(inst, [{ from, immediate: wake.immediate, text: wake.text, inst: wake.inst, sourceRun: wake.sourceRun, authority: lease, initiator: wake.initiator, schedule: id }]);
       continue;
     }
     if (instances(target).filter(i => i.doc.status === 'open').length >= MAX_OPEN) {
       w.requests[newId()] = { series: target, label: label!, from, at: now, ...(wake.inst && { inst: wake.inst }), ...(wake.text && { text: wake.text }) };
-    } else startWith(target, label!, wake.inst ? 'agent' : wake.from, [{ from, text: wake.text, inst: wake.inst, sourceRun: wake.sourceRun, authority: lease, initiator: wake.initiator, schedule: id }]);
+    } else startWith(target, label!, wake.inst ? 'agent' : wake.from, [{ from, immediate: wake.immediate, text: wake.text, inst: wake.inst, sourceRun: wake.sourceRun, authority: lease, initiator: wake.initiator, schedule: id }]);
   }
   saveWakes(w);
 }
