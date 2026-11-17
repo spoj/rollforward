@@ -145,7 +145,7 @@ const signIns = new Map<string, SignIn>(), signInGenerations = new Map<string, n
 
 function currentSignIn(s: SignIn) {
   const key = `${s.email} ${s.site}`, w = websitesOf(s.email)[s.site];
-  if (!w || w.url !== s.website.url || w.via !== s.website.via || w.added !== s.website.added || websiteGenerations.get(key) !== s.websiteGeneration || signInGenerations.get(key) !== s.generation || logins(s.email).find(l => l.id === `web:${s.site}`)?.since !== s.loginSince)
+  if (!w || w.url !== s.website.url || w.via !== s.website.via || w.header !== s.website.header || w.added !== s.website.added || websiteGenerations.get(key) !== s.websiteGeneration || signInGenerations.get(key) !== s.generation || logins(s.email).find(l => l.id === `web:${s.site}`)?.since !== s.loginSince)
     throw new HttpError(409, 'This sign-in was superseded; sign in again.');
   return w;
 }
@@ -268,10 +268,11 @@ export async function revokeInternalHosts(hosts: string[]) {
     }
     if (changed) replaceFile(file, JSON.stringify(all, null, 1));
   }
-  for (const [id, email, site] of live) {
+  const revoked = await Promise.allSettled(live.map(async ([id, email, site]) => {
     const cur = websitesOf(email)[site];
-    if (cur && signIns.has(id)) await browserJson('PUT', `/sessions/${id}/hosts`, { hosts: internalHosts(cur) }).catch(() => {});
-  }
+    if (cur && signIns.has(id)) await browserJson('PUT', `/sessions/${id}/hosts`, { hosts: internalHosts(cur) }).catch(() => endSignIn(email, id, false));
+  }));
+  for (const result of revoked) if (result.status === 'rejected') throw result.reason;
 }
 
 // A website set --internal true before 0.3.12 carries that as a flag of its own, which grants nothing now. At the server's start

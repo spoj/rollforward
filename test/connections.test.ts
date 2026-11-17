@@ -50,6 +50,8 @@ const drives: Record<string, any> = {
   'b!own': { driveType: 'business', owner: { user: { displayName: 'Alice Ames' } }, sharePointIds: { siteUrl: 'https://host-my/personal/alice', siteId: 'personal', webId: 'alice' } },
   'b!bob': { driveType: 'business', owner: { user: { displayName: 'Bob Bell' } }, sharePointIds: { siteUrl: 'https://host/personal/bob', siteId: 'personal', webId: 'bob' } },
 };
+const consumerFolder = { id: 'folder', name: 'Reports', folder: {}, parentReference: { driveId: 'b!consumer' } };
+const consumerFile = { id: 'file', parentReference: { driveId: 'b!consumer', id: 'folder' }, '@microsoft.graph.downloadUrl': 'https://public.bn.files.1drv.com/download/a?authkey=personal' };
 const mail = [
   { id: 'm1', subject: 'FW: Request successfully processed for DEMO SUPPLIER LLC', body: { contentType: 'text', content: 'The payment run is attached.' } },
   { id: 'm2', subject: 'Something else', body: { contentType: 'text', content: 'Lunch?' } },
@@ -167,6 +169,10 @@ before(async () => {
     if (req.headers.authorization !== 'Bearer tok') return void res.writeHead(401).end();
     let m;
     if (path === '/me/drive') return send({ id: 'b!own' });
+    if (path === '/drives/b!consumer/items/folder') return send(consumerFolder);
+    if (path === '/drives/b!consumer/items/file') return send(consumerFile);
+    if (path === '/drives/b!consumer/items/folder/children') return send({ value: [consumerFile, { id: 'outside', parentReference: { driveId: 'b!consumer' }, '@microsoft.graph.downloadUrl': 'https://public.bn.files.1drv.com/download/outside?authkey=other' }] });
+    if (path === '/drives/b!consumer/items/file/content') return void res.writeHead(302, { location: consumerFile['@microsoft.graph.downloadUrl'] }).end();
     if (path === '/drives/b!d1/root:/LFM/items(1).xlsx:') return send(item('a', 'items(1).xlsx', '2026-10-20T12:00:00Z', false, 'y2026'));
     if (path === '/drives/b!d1/root:/LFM/items(1).xlsx:/content') return void res.end('parenthesized filename');
     if ((m = /^\/shares\/u!([\w-]+)\/driveItem$/i.exec(path))) return send(shares[Buffer.from(m[1], 'base64url').toString()] ?? { error: { code: 'itemNotFound' } }, shares[Buffer.from(m[1], 'base64url').toString()] ? 200 : 404);
@@ -563,6 +569,29 @@ test("a file's content redirected to its download address, at its drive's own si
   assert.deepEqual(JSON.parse(download.text), { downloaded: true, auth: null });
   assert.deepEqual(calls().slice(-2).map(e => [e.path, e.status]), [['/v1.0/drives/b!d1/items/b/content', 302], ['https://host/download/a', 200]]);
   await assert.rejects(via('GET', redirect.headers.location!, { token: 'other' }), /CONNECT answered 403/, "another run's");
+});
+
+for (const source of ['metadata', 'redirect']) test(`a consumer OneDrive ${source} grants only its exact download URL under a ticked offer`, async () => {
+  const { offer } = await import('../src/connections/graph.ts');
+  const { upstreams } = await import('../src/connections.ts');
+  drives['b!consumer'] = { driveType: 'personal', owner: { user: { displayName: 'Consumer' } } };
+  shares['https://1drv.ms/f/reports'] = consumerFolder;
+  await offer(ALICE, 'https://1drv.ms/f/reports');
+  const tick = 'm365:item:b!consumer/folder', token = `consumer-${source}`;
+  const own = { ...inst, ...selected([tick]) } as unknown as Instance;
+  runs.set(token, own);
+  upstreams['public.bn.files.1drv.com'] = `http://127.0.0.1:${(graph.address() as { port: number }).port}`;
+  const answer = await via('GET', `${G}/drives/b!consumer/items/${source === 'metadata' ? 'folder/children' : 'file/content'}`, { token });
+  assert.equal(answer.status, source === 'metadata' ? 200 : 302);
+  const link = source === 'metadata' ? JSON.parse(answer.text).value[0]['@microsoft.graph.downloadUrl'] : answer.headers.location!;
+  const download = await via('GET', link, { token, headers: { authorization: '' } });
+  assert.deepEqual(JSON.parse(download.text), { downloaded: true, auth: null });
+  for (const url of [link.replace('personal', 'different'), 'https://public.bn.files.1drv.com/download/outside?authkey=other'])
+    assert.equal((await via('GET', url, { token })).status, 403);
+  runs.set(`consumer-other-${source}`, own);
+  await assert.rejects(via('GET', link, { token: `consumer-other-${source}` }), /CONNECT answered 403/);
+  saveSeriesSettings(own.series(), { ...seriesSettings(own.series()), epoch: 2, consent: { by: ALICE, at: '', workspace: 'w', logins: [], autonomous: false } });
+  assert.equal((await via('GET', link, { token })).status, 403);
 });
 
 test('a login Microsoft no longer renews is marked expired, and the run is told its runner signs in again', async () => {

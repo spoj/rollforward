@@ -51,9 +51,9 @@ function mime(body: Buffer | undefined, box: string, bare: string) {
 
 const encodePart = (s: string) => encodeURIComponent(s).replace(/%(?:24|26|2B|2C|3A|3B|3D|40)/gi, m => decodeURIComponent(m));
 
-// The offer that lets a request through, or why not; and, for files, their drive's own site, where the answer's Location is a
-// link, as a file's content redirects to its download address.
-async function check(runner: string, ticks: string[], { method, url, headers, json, body: raw }: Request, checkpoint: () => void): Promise<{ offer: string; redirect?: string; pathname: string }> {
+// The offer that lets a request through, or why not; and, for files, the origin allowed for Location, or any Graph-issued
+// Location for a validated file's content without a SharePoint site. Each redirect grants only the exact URL.
+async function check(runner: string, ticks: string[], { method, url, headers, json, body: raw }: Request, checkpoint: () => void): Promise<{ offer: string; redirect?: string | true; pathname: string }> {
   const [, ver] = /^\/(v1\.0|beta)\//.exec(url.pathname) ?? [];
   if (!ver) throw new HttpError(403, `${url.pathname}: Microsoft Graph, under /v1.0/ or /beta/`);
   // Neither another method in a header, nor a Prefer that redeems a sharing link, which grants the runner access.
@@ -80,7 +80,7 @@ async function check(runner: string, ticks: string[], { method, url, headers, js
   const mailbox = top === 'users' && (part === 'messages' || part === 'mailfolders' || (write && actions[2] === 'sendmail'));
   const body = headers['transfer-encoding'] !== undefined || Number(headers['content-length'] ?? 0) > 0, object = typeof json === 'object' && json !== null;
   if (write && body && !object && !mailbox && !(method === 'PUT' && action === 'content')) throw new HttpError(403, `${bare}: a write's body is a JSON object, but a file's content, with PUT …/content, or mail as MIME`);
-  let offer: string | undefined, mail = false, site: string | undefined;
+  let offer: string | undefined, mail = false, redirect: string | true | undefined;
   if (mailbox) {
     const scope = !write ? 'Mail.Read' : ['sendmail', 'send', 'reply', 'replyall', 'forward', 'unsubscribe'].includes(action!) ? 'Mail.Send' : 'Mail.ReadWrite';
     const what = { 'Mail.Read': ['read mail', 'read shared mailboxes'], 'Mail.Send': ['send mail', 'send from shared mailboxes'], 'Mail.ReadWrite': ['write mail', 'write to shared mailboxes'] }[scope];
@@ -104,7 +104,8 @@ async function check(runner: string, ticks: string[], { method, url, headers, js
     const item = await located(runner, addressed(`/${segs.map(encodePart).join('/')}`), checkpoint);
     offer = await covering(runner, ticks, item.parentReference.driveId, item.id, item.parentReference.id, checkpoint);
     if (!offer) throw new HttpError(403, `${bare} is in no folder, file or SharePoint site ticked for this instance`);
-    site = (await siteOf(runner, item.parentReference.driveId, checkpoint)).split(',')[0];
+    const site = (await siteOf(runner, item.parentReference.driveId, checkpoint)).split(',')[0];
+    redirect = site ? `https://${site}` : !write && action === 'content' ? true : undefined;
   } else if (top === 'sites') {
     needs(!write ? 'Sites.Read.All' : part === 'drives' ? 'Files.ReadWrite.All' : 'Sites.ReadWrite.All', `${write ? 'write' : 'read'} SharePoint sites`);
     if (segments.some(s => /(^|\.)getbypath\(/i.test(s))) throw new HttpError(403, `${bare}: getByPath reaches any site by its path; read the ticked one by its id`);
@@ -123,21 +124,24 @@ async function check(runner: string, ticks: string[], { method, url, headers, js
       if (!await covering(runner, ticks, folder.parentReference.driveId, folder.id, folder.parentReference.id, checkpoint)) throw new HttpError(403, `${bare} would put it in a folder no tick covers`);
     }
   }
-  return { offer, redirect: site && `https://${site}`, pathname: `/${ver}${bare}` };
+  return { offer, redirect, pathname: `/${ver}${bare}` };
 }
 
 // Links an answer gives, which the run may then use as they are, read from the path as check() reads it: an upload session's, from
 // the answer that makes one, at Outlook's host for mail and SharePoint's for files; and a file's download address, on the
-// driveItems an answer about files gives that a tick covers, at its drive's own site's host, as is the one its content redirects
-// to (check); never what a file's or a message's content holds.
+// driveItems an answer about files gives that a tick covers, at its drive's own site's host when it has one; never what a
+// file's or a message's content holds.
 async function links(j: any, path: string, email: string, ticks: string[], checkpoint: () => void): Promise<string[]> {
   const parts = path.replace(/^\/[^/]+/, '').split('/').slice(1).map(s => decodeURIComponent(s).replace(/\(.*$/, '').split('.').pop()!.toLowerCase());
   const [top, , part] = parts[0] === 'me' ? ['users', '', ...parts.slice(1)] : parts, action = parts.at(-1)!, url = (u: unknown): u is string => typeof u === 'string' && URL.canParse(u);
   if (action === 'createuploadsession') return [j?.uploadUrl].filter(u => url(u) && (parts.includes('attachments') ? /^https:\/\/outlook\.office(365)?\.com\//i : /^https:\/\/([\w-]+\.)*(sharepoint\.com|svc\.ms)\//i).test(u));
   if (!['drives', 'shares'].includes(top) && !['drive', 'drives'].includes(part) || ['content', '$value'].includes(action)) return [];
   const items = [j, ...(Array.isArray(j?.value) ? j.value : [])].filter(i => url(i?.['@microsoft.graph.downloadUrl']) && typeof i?.id === 'string' && typeof i?.parentReference?.driveId === 'string');
-  const at = await Promise.all(items.map(async i => new URL(i['@microsoft.graph.downloadUrl']).origin === `https://${(await siteOf(email, i.parentReference?.driveId, checkpoint)).split(',')[0]}`
-    && !!await covering(email, ticks, i.parentReference.driveId, i.id, i.parentReference.id, checkpoint)));
+  const at = await Promise.all(items.map(async i => {
+    const site = (await siteOf(email, i.parentReference.driveId, checkpoint)).split(',')[0];
+    return (!site || new URL(i['@microsoft.graph.downloadUrl']).origin === `https://${site}`)
+      && !!await covering(email, ticks, i.parentReference.driveId, i.id, i.parentReference.id, checkpoint);
+  }));
   return items.filter((_, k) => at[k]).map(i => i['@microsoft.graph.downloadUrl']);
 }
 
