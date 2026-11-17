@@ -17,7 +17,8 @@ const call = async (method: string, path: string, body?: object, cookie = admin)
   const before = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').length : 0;
   const res = await fetch(base + path, { method, headers: { cookie }, body: body === undefined ? undefined : JSON.stringify(body) });
   if (res.ok && !['GET', 'HEAD'].includes(method) && !path.startsWith('/api/instances/') && path !== '/auth/cli') {
-    for (let n = 0; !existsSync(log) || !readFileSync(log, 'utf8').trim().split('\n').slice(before).some(line => {
+    // A line the server is still appending reads torn; the next poll reads it whole.
+    for (let n = 0; !existsSync(log) || !readFileSync(log, 'utf8').split('\n').slice(before, -1).some(line => {
       const e = JSON.parse(line);
       return e.method === method && e.path === path && e.by === (cookie === admin ? ADMIN : ACTOR);
     }); n++) {
