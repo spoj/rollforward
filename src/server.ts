@@ -28,7 +28,6 @@ import { forget, indexes, prune, startIndexing, track } from './indexes.ts';
 import { addNote, notes, saveSeriesSettings, seriesSettings, type SeriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
 import { active, archived, byToken, cancelWake, cancelWakes, closed, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, queued, remove, retireSeries, resolveFor, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesOf, wakeWith, weekly, reads, CUT, type Active, type Request } from './waker.ts';
-import { find, holdings, killLeft, killTree, sample, type Monitor, type Sandbox } from './monitor.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -769,53 +768,14 @@ function withdrawOwner(email: string): Promise<void[]> {
   }));
 }
 
-async function interrupt(inst: Instance, a: Active | undefined, me: Me, why?: string) {
+async function interrupt(inst: Instance, a: Active | undefined, me: Me) {
   const t = tree();
   if (ownerOf(inst).by !== me.email && !canManage(me, t.workspaces[t.series[inst.seriesId].workspace]))
     throw new HttpError(403, `only its series owner, ${ownerOf(inst).by}, the workspace's owners and admins stop its run`);
   if (!a?.run) throw new HttpError(409, a ? 'its run is starting: try again in a moment' : 'no run going');
   a.stopped = true;
-  inst.append(me.email, 'interrupt', { ...(why && { why }) });
+  inst.append(me.email, 'interrupt');
   await interruptRun(a);
-}
-
-// The system monitor (monitor.ts), admins' alone: the runs going, by their sandboxes, sampled once for all who ask at the same time;
-// a process of a run killed, logged in its instance first, which its agent hears of once it has ended; and a run stopped, as
-// Interrupt stops it, with what of its sandbox is left killed.
-const sandboxes = (): Sandbox[] => {
-  const t = tree();
-  return [...active.values()].flatMap(a => (a.run?.pid ? [{
-    pid: a.run.pid, instance: a.inst.id, path: `${named(t, a.inst.seriesId)}/${a.inst.label}`, run: a.n, runner: a.runner,
-    since: a.inst.log.findLast(e => e.op === 'run' && e.run === a.n)?.at ?? '', token: a.token,
-  }] : []));
-};
-let sampling: Promise<Monitor> | undefined;
-async function monitor(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) {
-  if (process.platform !== 'linux') throw new HttpError(501, 'the system monitor reads /proc, which only Linux has');
-  const at = url.pathname.slice('/monitor'.length);
-  if (!at && req.method === 'GET') return send(res, 200, await (sampling ??= sample(sandboxes()).finally(() => { sampling = undefined; })));
-  if (at === '/kill' && req.method === 'POST') {
-    const { pid, start } = await json(req);
-    if (!Number.isInteger(pid) || !Number.isInteger(start)) throw new HttpError(400, 'pid and start: whole numbers, as the monitor shows a process');
-    const { box, script } = find(pid, start, sandboxes()), inst = instance(box.instance);
-    inst.append(me.email, 'kill', { run: box.run, pid, script });
-    const killed = await killTree(pid, start);
-    if (active.get(inst.seriesId)?.inst === inst) kick(inst);
-    return send(res, 200, killed);
-  }
-  if (at === '/stop' && req.method === 'POST') {
-    const { instance: id, run } = await json(req), inst = instance(String(id ?? ''));
-    if (!Number.isInteger(run)) throw new HttpError(400, 'run: the number of the run to stop, as the monitor shows it');
-    return send(res, 200, await inOrder(inst.id, async () => {
-      const a = active.get(inst.seriesId);
-      if (a?.inst !== inst) throw new HttpError(409, 'no run going');
-      if (a.n !== run) throw new HttpError(409, `run ${run} has ended: run ${a.n} goes now`);
-      const box = sandboxes().find(b => b.instance === inst.id), held = box ? holdings(box) : [];
-      await interrupt(inst, a, me, 'from the system monitor');
-      return { killed: killLeft(held) };
-    }));
-  }
-  throw new HttpError(404, 'not found');
 }
 
 async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: URL) {
@@ -1607,11 +1567,6 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       }
       writeJson('brand.json', b);
       send(res, 200, 'saved');
-    }
-    // The system monitor is admins' alone: to anyone else it isn't there.
-    else if (url.pathname === '/monitor' || url.pathname.startsWith('/monitor/')) {
-      if (me.role !== 'admin') throw new HttpError(404, 'not found');
-      await monitor(me, req, res, url);
     }
     else if (url.pathname === '/api/events') events(me, req, res);
     else if (url.pathname === '/api') send(res, 200, listing(me));

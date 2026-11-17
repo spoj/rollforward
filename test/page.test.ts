@@ -651,27 +651,12 @@ test("the top bar names the app, what the page shows and you, whose menu has you
   await page.waitForSelector('#pv:not([open])', { state: 'attached' });
 });
 
-test("for an admin the version opens the system monitor, which samples the server again every 5 seconds until it closes; for anyone else it's only the version", async () => {
-  const sampled = () => page.waitForRequest(r => new URL(r.url()).pathname === '/monitor', { timeout: 8000 });
-  await page.click('#sidefoot button.release[data-act=monitor]');
-  await page.waitForSelector('#pv[open] .pvb.monitor .mstat');
-  assert.equal(await page.textContent('#pv .pvh b'), 'System monitor');
-  assert.match(await page.textContent('#pv .mstat') ?? '', /^CPU \d+% of \d+ cores.*Load [\d.]+ [\d.]+ [\d.]+.*Memory [\d.]+ [MG]B of [\d.]+ [MG]B used.*Server \d+% CPU, [\d.]+ [MG]B$/);
-  assert.match(await page.textContent('#pv .pvb.monitor h3') ?? '', /^Runs going: \d+, holding \d+ process(es)?$/);
-  assert.deepEqual(await page.$$eval('#pv .pvb.monitor h3', hs => hs.slice(1).map(h => h.textContent)), ['Top 10 by CPU', 'Top 10 by memory']);
-  await sampled();
-  const refreshed = sampled();
-  await page.click('#pv [data-act=monitor-refresh]');
-  await refreshed;
-  await page.keyboard.press('Escape');
-  await page.waitForSelector('#pv:not([open])', { state: 'attached' });
-  await assert.rejects(page.waitForRequest(r => new URL(r.url()).pathname === '/monitor', { timeout: 6000 }), 'closed, it samples no more');
-  await page.evaluate(() => { me.role = 'user'; renderSide(); });
-  try {
+test("the sidebar version is plain text for admins and everyone else", async () => {
+  for (const role of ['admin', 'user']) {
+    await page.evaluate(role => { me.role = role; renderSide(); }, role);
     assert.deepEqual(await page.$$eval('#sidefoot .release', es => es.map(e => [e.tagName, e.getAttribute('data-act')])), [['DIV', null]]);
-  } finally {
-    await page.evaluate(() => { me.role = 'admin'; renderSide(); });
   }
+  await page.evaluate(() => { me.role = 'admin'; renderSide(); });
 });
 
 test("what the session names, such as a tool call's name, shows as text in the audit, never as markup", async () => {

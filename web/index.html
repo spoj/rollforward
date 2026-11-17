@@ -397,12 +397,10 @@ function renderSide() {
   const kf = $('#tree').contains(document.activeElement) && document.activeElement.getAttribute('href');
   put($('#tree'), h);
   if (kf) $(`#tree [href="${kf}"]`)?.focus();
-  // The foot: Settings, the version the server runs, which opens the system monitor for admins, and « to fold the sidebar to a
-  // rail, as this browser keeps it.
+  // The foot: Settings, the version the server runs, and « to fold the sidebar to a rail, as this browser keeps it.
   const folded = $('.app').classList.contains('folded');
   put($('#sidefoot'), `<button class="setting" data-act="logins" title="Logins and tokens"><span class="cog">\u2699</span>Settings<span class="go-on">\u203A</span></button>`
-    + (me.role === 'admin' ? `<button class="release" data-act="monitor" title="System monitor: the runs going and their processes">rollforward${me.version ? ` ${esc(me.version)}` : ''}</button>`
-      : me.version ? `<div class="release">rollforward ${esc(me.version)}</div>` : '')
+    + (me.version ? `<div class="release">rollforward ${esc(me.version)}</div>` : '')
     + `<button class="sidefold" data-act="fold-side" title="${folded ? 'Open' : 'Fold'} the sidebar">${folded ? '\u00BB' : '\u00AB'}${folded && waits ? '<span class="dot"></span>' : ''}</button>`);
 }
 
@@ -573,7 +571,6 @@ function logText(e) {
     authority: () => `Whole-series authority changed<div class="d">Owner: ${e.owner ? person(e.owner) : 'not selected'} · epoch ${e.epoch}. Earlier unread instructions are notes.</div>`,
     done: () => `Run ${e.run} finished${e.aborted ? ' (stopped)' : ''} · ${took(e)} · ${usd(e.cost, e.estimated)}${e.error ? `<div class="d">${esc(e.error)}</div>` : ''}`,
     interrupt: () => `${w} interrupted the run${e.why ? `<div class="d">${esc(e.why)}</div>` : ''}`,
-    kill: () => `${w} killed run ${e.run}'s process ${e.pid}, from the system monitor<div class="d">${esc(e.script)}</div>`,
     close: () => `${w} closed the instance${e.accepted ? `<div class="d">Accepting what the agent did for ${e.accepted.length} ask${e.accepted.length > 1 ? 's' : ''} still waiting</div>` : ''}${e.commit ? `<div class="d">Commit <code>${e.commit.slice(0, 7)}</code></div>` : ''}`,
     signoff: () => `${w} ${e.approved === false ? 'rejected' : 'approved'}${e.on ? ` c${e.on}` : ''}<div class="d">${e.text ? `${esc(e.text)} · ` : ''}Commit <code>${e.commit.slice(0, 7)}</code></div>`,
     reject: () => `${w} rejected c${e.on}${e.text ? `<div class="d">${esc(e.text)}</div>` : ''}`,
@@ -955,7 +952,7 @@ function renderPv() {
   if (!pv) return void (d.open && d.close());
   // Your account's dialog: Logins and Tokens, as tabs.
   const account = [['logins', 'Logins'], ['tokens', 'Tokens']], mine = account.some(([k]) => k === pv.settings?.kind);
-  d.className = 'pv' + (pv.settings ? ' small' : '') + (mine || ['workspace', 'waiting', 'monitor'].includes(pv.settings?.kind) ? ' wide' : '') + (pv.settings?.kind === 'monitor' ? ' monitor' : '');
+  d.className = 'pv' + (pv.settings ? ' small' : '') + (mine || ['workspace', 'waiting'].includes(pv.settings?.kind) ? ' wide' : '');
   let h = `<div class="pvh"><b>${esc(pv.title)}</b><span class="saved"></span>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${(pv.att ?? pv).doc ? '<button class="btn" data-act="layout">Exact layout</button>' : ''}${pv.path ? `<a class="btn" href="${fileUrl(pv.path)}">Download</a>` : ''}${pv.signin ? `<button class="btn primary" data-act="signin-save"${pv.signinExpired || pv.saving ? ' disabled' : ''}>${pv.saving ? 'Saving…' : pv.vpn ? 'Connect' : 'Save login'}</button>` : ''}<button class="btn${pv.signin && !pv.signinExpired ? '' : ' primary'}" data-act="unpv"${pv.saving ? ' disabled' : ''}>${pv.signin && !pv.signinExpired ? 'Cancel' : 'Close'}</button></div>`;
   if (mine) h += `<div class="pvtabs">${account.map(([k, name]) => `<button class="tab ${pv.settings.kind === k ? 'sel' : ''}" data-act="${k}">${name}</button>`).join('')}</div>`;
   if (pv.att) h += `<div class="sub" style="padding:8px 14px"><a data-act="attachment-back">\u2190 ${esc(pv.title)}</a> \u00b7 ${esc(pv.att.title)}</div>` + previewBody(pv.att);
@@ -969,7 +966,6 @@ function renderPv() {
   else if (pv.settings?.kind === 'wakes') h += `<div class="pvb vl">${wakesHtml(cur.i.id, cur.i.wakes, false)}</div>`;
   else if (pv.settings?.kind === 'notes') h += `<div class="pvb vl">${notesHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'waiting') h += `<div class="pvb vl">${waiting().join('') || '<div class="sub">Nothing waits on you.</div>'}</div>`;
-  else if (pv.settings?.kind === 'monitor') h += `<div class="pvb vl monitor">${monitorHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'start') h += `<div class="pvb vl">${startHtml(pv.settings)}</div>`;
   else if (pv.settings) {
     const s = pv.settings;
@@ -1284,49 +1280,6 @@ function waiting() {
   return [...out, ...expired.map(l => `<div class="wt">Your ${l.kind === 'key' ? 'OpenRouter key is out of credits' : `${esc(l.name)} login has expired`}. ${signInHtml(l.id, l.name)}</div>`)];
 }
 
-// The system monitor, admins' alone, from the version at the sidebar's foot: the server's load, the runs going and what their
-// processes use, and the busiest of those processes by CPU and by memory, each sampled over a second, and again every 5 seconds
-// while it's open, its scroll kept, the latest sample alone shown when two cross; and, once confirmed, a process killed or a run
-// stopped.
-const MONITOR_MS = 5000;
-const bytes = n => n >= 2 ** 30 ? `${(n / 2 ** 30).toFixed(1)} GB` : `${Math.round(n / 2 ** 20)} MB`;
-const lasted = s => s < 60 ? `${s}s` : s < 3600 ? `${s / 60 | 0}m ${s % 60}s` : s < 86400 ? `${s / 3600 | 0}h ${(s % 3600) / 60 | 0}m` : `${s / 86400 | 0}d ${(s % 86400) / 3600 | 0}h`;
-async function openMonitor() {
-  pv = { title: 'System monitor', settings: { kind: 'monitor', loads: 0 } };
-  renderPv();
-  await loadMonitor();
-}
-async function loadMonitor() {
-  const p = pv;
-  if (p?.settings?.kind !== 'monitor') return;
-  clearTimeout(p.settings.timer);
-  const n = ++p.settings.loads;
-  try { Object.assign(p.settings, { data: await api('/monitor'), error: null }); } catch (e) { p.settings.error = e.message; }
-  if (pv !== p || n !== p.settings.loads) return;
-  const body = $('#pv .pvb.monitor');
-  if (body) body.innerHTML = monitorHtml(p.settings);
-  else renderPv();
-  p.settings.timer = setTimeout(() => pv === p && loadMonitor(), MONITOR_MS);
-}
-function monitorHtml({ data: m, error }) {
-  const head = `<div class="row2 mhead"><span class="sub">${m ? `Sampled at ${hhmm(m.at)} over a second, again every 5 seconds` : 'Sampling…'}</span><button class="btn" data-act="monitor-refresh">Refresh</button></div>`;
-  if (error) return head + `<div class="sub err" role="alert">${esc(error)}</div>`;
-  if (!m) return head;
-  const h = m.host, held = m.runs.reduce((t, r) => t + r.procs, 0), run = r => `<a href="#/${esc(r.instance)}">${esc(r.path)}</a> · run ${r.run}`;
-  const rows = ps => ps.map(p => `<tr><td title="nice ${p.nice}">${p.pid}</td><td>${p.cpu}%</td><td>${bytes(p.rss)}</td><td class="mscript">${esc(p.script)}<div class="mcmd">${esc(p.command)}</div><div class="sub">${run(p)}</div></td><td>${lasted(p.age)}</td><td>`
-    + (p.own ? '<span class="sub" title="Its sandbox, Pi or its socket: stop the run instead">Run\'s own</span>'
-      : `<button class="btn danger" data-act="monitor-kill" data-pid="${p.pid}" data-start="${p.start}" data-script="${esc(p.script)}" data-run="${esc(`${p.path} · run ${p.run}`)}">Kill</button>`) + '</td></tr>').join('');
-  const top = (title, ps) => `<h3>${title}</h3>` + (ps.length ? `<table class="ut mon"><tr><th>PID</th><th>CPU</th><th>Memory</th><th>Process</th><th>For</th><th></th></tr>${rows(ps)}</table>` : '<div class="sub">No run holds a process.</div>');
-  return head
-    + `<div class="mstat"><span>CPU <b>${h.cpu}%</b> of ${h.cpus} cores</span><span>Load <b>${h.load.map(x => x.toFixed(2)).join(' ')}</b></span><span>Memory <b>${bytes(h.memory.total - h.memory.free)}</b> of ${bytes(h.memory.total)} used</span><span>Server <b>${h.server.cpu}%</b> CPU, <b>${bytes(h.server.rss)}</b></span></div>`
-    + `<h3>Runs going: ${m.runs.length}, holding ${held} process${held === 1 ? '' : 'es'}</h3>`
-    + (m.runs.length ? '<table class="ut mon"><tr><th>Run</th><th>Processes</th><th>CPU</th><th>Memory</th><th></th></tr>'
-      + m.runs.map(r => `<tr><td class="mrun">${run(r)}<div class="sub">${person(r.runner)} · for ${lasted(Math.max(0, (Date.parse(m.at) - Date.parse(r.since)) / 1000 | 0))}</div></td><td>${r.procs}</td><td>${r.cpu}%</td><td>${bytes(r.rss)}</td>`
-        + `<td><button class="btn danger" data-act="monitor-stop" data-instance="${esc(r.instance)}" data-run="${r.run}" data-path="${esc(r.path)}">Stop</button></td></tr>`).join('') + '</table>'
-      : '<div class="sub">No run is going.</div>')
-    + top('Top 10 by CPU', m.cpu) + top('Top 10 by memory', m.memory);
-}
-
 // Your own OpenRouter key, if a new one is given, and whether your runs use it; a first one is used at once.
 async function saveKey() {
   const p = pv, n = accountOpens, k = p.settings.logins.find(l => l.id === 'openrouter');
@@ -1593,21 +1546,6 @@ async function onAct(act, el) {
     renderLog(); renderBar(); placeCard();
   }
   if (act === 'interrupt') { await api(`${instPath()}/interrupt`, { method: 'POST' }); await refresh(); }
-  if (act === 'monitor') await openMonitor();
-  if (act === 'monitor-refresh') await loadMonitor();
-  // A process killed, or a run stopped, from the system monitor, once confirmed; the monitor samples again after.
-  if (act === 'monitor-kill') {
-    const { pid, start, script, run } = el.dataset;
-    const killed = await ask({ title: `Kill process ${pid}?`, text: `${script}, in ${run}. It and what it started get SIGTERM, and SIGKILL if they're still there after 5 seconds. The run goes on, and its agent is told.`, ok: 'Kill', kind: 'danger',
-      act: () => api('/monitor/kill', { method: 'POST', body: JSON.stringify({ pid: +pid, start: +start }) }) });
-    if (killed) { toast(`Process ${pid} ${killed.signal === 'SIGKILL' ? 'was killed with SIGKILL' : 'ended'}`, 'ok'); await loadMonitor(); }
-  }
-  if (act === 'monitor-stop') {
-    const { instance, run, path } = el.dataset;
-    const stopped = await ask({ title: `Stop run ${run}?`, text: `${path}, as Interrupt stops it: its browsers close, what it did is committed, and its next run waits for someone's next act. Anything left in its sandbox is killed.`, ok: 'Stop run', kind: 'danger',
-      act: () => api('/monitor/stop', { method: 'POST', body: JSON.stringify({ instance, run: +run }) }) });
-    if (stopped) { toast(`Run ${run} of ${path} stopped`, 'ok'); await loadMonitor(); }
-  }
   if (act === 'comment-on') { Object.assign(ui, { open: true, audit: false }); Object.assign(draft, { on: el.dataset.item, ref: null }); renderLog(); renderBar(); renderAudit(); $('#newcomment')?.focus(); }
   if (act === 'notes') await openNotes(el.dataset.id);
   if (act === 'note-post') {
