@@ -60,7 +60,7 @@ Run the image under podman, as a systemd service. The image is the agent image, 
    - `RF_SIGNIN_S` only to change the 600-second website and VPN sign-in window; the page shows its countdown;
    - `RF_MAX_UPLOAD_MB` only to change the 2048 MB an upload holds at most;
    - `RF_SANDBOX_RO`, only if runs should read folders besides their data, such as a read-only mount of a file share.
-   - `RF_RUN_TASKS` (2048) and `RF_RUN_FILE_GB` (16), only to change each run's cap on processes and threads, and on one file's size in GB; the host needs Linux 5.14 or later, which counts a run's processes apart from the server's.
+   - `RF_RUN_TASKS` (2048), `RF_RUN_FILE_GB` (16) and `RF_RUN_CPUS` (2), only to change each run's cap on processes and threads, on one file's size in GB, and on the cores it uses; the host needs Linux 5.14 or later, which counts a run's processes apart from the server's.
 
 4. Install the unit, then run `systemctl --user daemon-reload && systemctl --user start rollforward`:
 
@@ -94,10 +94,11 @@ Run the image under podman, as a systemd service. The image is the agent image, 
 
 - Node 26 beside the system's, such as in `/opt/node-v26`, bubblewrap, GNU tar and util-linux's `flock`; no zstd, Python or LibreOffice.
 - `npm ci --omit=dev`, then `/opt/node-v26/bin/node scripts/agent.ts`, which unpacks the agent image the checkout runs, CI's `agent-<id>` prerelease, into `.agent/<id>` (about 720 MB to fetch, 2.5 GB unpacked).
-- The unit `~/.config/systemd/user/rollforward.service` has `WorkingDirectory=%h/rollforward`, `ExecStart=/opt/node-v26/bin/node --env-file=%h/.config/rollforward.env src/server.ts %h/rollforward-data 8780` and `Restart=always`; `systemctl --user set-property rollforward-runs.slice MemoryMax=24G` caps all runs together.
+- The unit `~/.config/systemd/user/rollforward.service` has `WorkingDirectory=%h/rollforward`, `ExecStart=/opt/node-v26/bin/node --env-file=%h/.config/rollforward.env src/server.ts %h/rollforward-data 8780` and `Restart=always`; `systemctl --user set-property rollforward-runs.slice MemoryMax=24G CPUQuota=600%` caps all runs together, here leaving two of eight cores to the server and the host. Runs' CPU and disk limits need the user manager to have those controllers: `cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers` lists `cpu` and `io`, or a root drop-in, `/etc/systemd/system/user@.service.d/delegate.conf` with `[Service]` and `Delegate=cpu cpuset io memory pids`, adds them.
 
 ## Keys, backups and updates
 
+- **People's rf,** `@rfany/rf`, is published by CI from a tag whose `cli/package.json` version npm doesn't have yet; npm's trusted publisher for the package is this repository's `ci.yml`, so no npm token is kept.
 - **Keys:** `.rf/session.key` signs sessions, and `.rf/seal.key` encrypts everyone's logins. Back up the data folder nightly without them, and keep a copy of both elsewhere. Without seal.key, people sign in to their logins again.
 - **Ordinary compatible production releases deploy by themselves:** `scripts/update.ts` runs every 15 minutes as a per-user systemd timer (below). For v0.7.0, follow Updating to v0.7.0 below.
 - **Updates:** `podman kill --signal=SIGUSR2 rollforward` drains the container first; for the native service, use `systemctl --user kill --kill-whom=main --signal=SIGUSR2 rollforward` instead (the container unit's MainPID is its monitor, not Node). In either case, `GET /drained` answering 200 once the runs going end; then check out the next tag, rebuild, and `systemctl --user restart rollforward`. A restart without the drain cuts the runs going, whose cost so far is recorded. They carry on only with captured and current autonomous consent, unless an Interrupt or authority change holds them.
