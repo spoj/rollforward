@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInstance, openStore } from '../src/store.ts';
-import { initSystem, saveTree } from '../src/system.ts';
+import { changes, initSystem, saveTree } from '../src/system.ts';
 
 const USER = 'alice@demo.test';
 const tmp = mkdtempSync(join(tmpdir(), 'rf-def-browsers-'));
@@ -14,6 +14,8 @@ let closeLog: object[] = [];
 let closeState: unknown = { cookies: [], origins: [] };
 let nextSessionId = 'bs1';
 const openedBodies: any[] = [];
+let putHostsError = false, closeErrorSession = '';
+const deletedSessions: string[] = [];
 let putHostsGate: PromiseWithResolvers<void> | undefined;
 let putHostsEntered: PromiseWithResolvers<void> | undefined;
 
@@ -21,6 +23,7 @@ const browserSvc = createServer(async (req, res) => {
   if (req.method === 'PUT' && req.url?.endsWith('/hosts')) {
     putHostsEntered?.resolve();
     await putHostsGate?.promise;
+    if (putHostsError) return res.writeHead(503).end('{"error":"hosts update failed"}');
     return res.writeHead(200).end('{}');
   }
   if (req.method === 'POST' && req.url === '/sessions') {
@@ -36,6 +39,9 @@ const browserSvc = createServer(async (req, res) => {
     return res.writeHead(200).end(JSON.stringify(Object.fromEntries(hosts.map(h => [h, false]))));
   }
   if (req.method === 'DELETE' && req.url?.startsWith('/sessions/')) {
+    const id = req.url.split('/')[2];
+    deletedSessions.push(id);
+    if (id === closeErrorSession) return res.writeHead(503).end('{"error":"close failed"}');
     return res.writeHead(200).end(JSON.stringify({ state: closeState, log: closeLog }));
   }
   if (req.method === 'GET' && req.url === '/sessions') {
@@ -63,7 +69,7 @@ upsertUser(USER, { role: 'admin' });
 const { personDir, saveLogin, secret } = await import('../src/logins.ts');
 const { setConnection, setLetIn } = await import('../src/connections.ts');
 const { ask, decide } = await import('../src/grants.ts');
-const { Browsers, changeWebsite, endSignIn, revokeInternalHosts, startSignIn, websitesOf } = await import('../src/browsers.ts');
+const { Browsers, changeWebsite, endSignIn, isSignIn, revokeInternalHosts, startSignIn, websitesOf } = await import('../src/browsers.ts');
 
 after(() => {
   browserSvc.close();
@@ -169,6 +175,47 @@ test('revokeInternalHosts strips revoked internal hosts from websites.json folde
   assert.equal(userSites.intranet.checks?.['intra.internal.test']?.verdict, 'internal');
   assert.equal(userSites.sibling.writeback, false);
   assert.deepEqual(userSites.sibling.hosts, ['extra.vendor.com']);
+});
+
+test('a failed internal-host update ends the sign-in and cuts its live access', async t => {
+  writeSites(USER, {
+    intranet: { url: 'https://intranet.vendor.com/', hosts: ['intra.internal.test'], writeback: true, added: '2026-11-15T00:00:00Z' },
+  });
+  setLetIn(['intra.internal.test'], USER, true);
+  nextSessionId = 'bs-failed-revoke';
+  const id = await startSignIn(USER, 'intranet', '');
+  let cut = false;
+  const onChange = (key: string) => { if (key === 'tree' && !isSignIn(USER, id)) cut = true; };
+  changes.on('change', onChange);
+  t.after(() => { changes.off('change', onChange); putHostsError = false; });
+  putHostsError = true;
+  setLetIn(['intra.internal.test'], USER, false);
+  await revokeInternalHosts(['intra.internal.test']);
+  assert.equal(isSignIn(USER, id), false);
+  assert.equal(cut, true);
+  assert.ok(deletedSessions.includes(id));
+  await assert.rejects(endSignIn(USER, id, true), { status: 404 });
+});
+
+test('a failed sign-in close does not leave later sign-ins with revoked internal access', async t => {
+  const site = { url: 'https://intranet.vendor.com/', hosts: ['intra.internal.test'], writeback: true, added: '2026-11-15T00:00:00Z' };
+  writeSites(USER, { first: site, second: site });
+  setLetIn(['intra.internal.test'], USER, true);
+  nextSessionId = 'bs-revoke-first';
+  const first = await startSignIn(USER, 'first', '');
+  nextSessionId = 'bs-revoke-second';
+  const second = await startSignIn(USER, 'second', '');
+  putHostsError = true;
+  closeErrorSession = first;
+  t.after(async () => {
+    putHostsError = false; closeErrorSession = '';
+    for (const id of [first, second]) if (isSignIn(USER, id)) await endSignIn(USER, id, false);
+  });
+  setLetIn(['intra.internal.test'], USER, false);
+  await assert.rejects(revokeInternalHosts(['intra.internal.test']));
+  assert.equal(isSignIn(USER, first), false);
+  assert.equal(isSignIn(USER, second), false);
+  assert.ok(deletedSessions.includes(second));
 });
 
 test('run browser writeback excludes cookies scoped to bare private PSL suffixes like .github.io', async () => {
