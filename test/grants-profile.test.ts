@@ -8,6 +8,7 @@ import { upsertUser, type Me } from '../src/auth.ts';
 import { changeWebsite, websitesOf, type Profile } from '../src/browsers.ts';
 import { logins, personDir, saveLogin } from '../src/logins.ts';
 import { createInstance, openStore } from '../src/store.ts';
+import { saveSeriesSettings } from '../src/series.ts';
 import { approved, ask, decide, forgetGrants, forgetWorkspace, grants, lapse, pruneGrants, revoke, unapproved, visible, type Grant } from '../src/grants.ts';
 
 const person: Me = { email: 'bob@demo.test', name: 'Bob Baker', role: 'user', groups: [] };
@@ -32,6 +33,10 @@ beforeEach(t => {
     other: { name: 'Other workspace', owners: [owner.email], members: [person.email] },
   }, series: { s: { name: 'Invoices', workspace: 'w' }, other: { name: 'Other invoices', workspace: 'other' } } });
   for (const who of [person, owner, admin, outsider]) upsertUser(who.email, { name: who.name, role: who.role });
+  writeJson('capabilities.json', { 'series-owner': [person.email] });
+  for (const id of ['s', 'other']) {
+    saveSeriesSettings(join(root, 'series', id), { version: 1, owner: person.email, epoch: 1, since: '' });
+  }
   saveLogin(person.email, { id: 'web:portal', kind: 'website', name: 'portal', since: grant.at, offers: [{ id: 'web:portal', name: 'portal' }],
     trace: { requests: { 'portal.example.com': { 200: 3 } }, blocked: [], seconds: 30 } });
   writeFileSync(join(personDir(person.email), 'websites.json'), JSON.stringify({
@@ -198,9 +203,9 @@ test('whoever may approve their own ask has it approved as they ask, by them, bu
 
 test('approved usage counts distinct runs with browser summaries and writes, scoped to workspace, person and site, excluding copied history', () => {
   writeJson('grants.json', { g: { ...grant, state: 'approved' }, pending: { ...grant, workspace: 'other' } });
-  const first = createInstance('s', 'First', person.email, ['web:portal']);
-  const second = createInstance('s', 'Second', person.email, ['web:portal']);
-  const elsewhere = createInstance('other', 'Elsewhere', person.email, ['web:portal']);
+  const first = createInstance('s', 'First', person.email);
+  const second = createInstance('s', 'Second', person.email);
+  const elsewhere = createInstance('other', 'Elsewhere', person.email);
   for (const [run, writes, at] of [[1, 0, '2026-11-02T10:00:00Z'], [1, 2, '2026-11-05T10:00:00Z'], [2, 0, '2026-11-03T10:00:00Z']] as const) {
     first.append('server', 'browser', { run, site: 'portal', login: person.email, requests: 5, writes, at });
   }
@@ -211,7 +216,7 @@ test('approved usage counts distinct runs with browser summaries and writes, sco
   second.append('server', 'browser', { run: 3, site: 'another', login: person.email, requests: 5, writes: 1, at: '2026-12-01T00:00:00Z' });
   elsewhere.append('server', 'browser', { run: 1, site: 'portal', login: person.email, requests: 5, writes: 1, at: '2026-12-01T00:00:00Z' });
   // A copy as earlier versions made one: the source's entries, then a duplicate entry.
-  const copy = createInstance('s', 'Copy', person.email, ['web:portal']);
+  const copy = createInstance('s', 'Copy', person.email);
   for (const { seq, at, by, op, ...e } of first.log) copy.append(by, op, e);
   copy.append(person.email, 'duplicate', { from: 'First', logins: ['web:portal'] });
   copy.append('server', 'browser', { run: 3, site: 'portal', login: person.email, requests: 0, writes: 0, at: '2026-11-08T10:00:00Z' });

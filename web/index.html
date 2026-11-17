@@ -131,8 +131,8 @@ const instPath = () => `/api/instances/${cur.i.id}`;
 const go = id => { location.hash = '#/' + id; };
 const archived = (w = cur?.w, s = cur?.s) => !!(w?.archived || s?.archived);
 const editable = () => data?.doc.status === 'open' && !archived();
-// Whoever sees an instance watches its run; its runner, the workspace's owners and admins alone stop it.
-const canStop = () => data?.runner.by === me.email || !!cur?.w.manage;
+// Whoever sees an instance watches its run; its series owner, the workspace's owners and admins alone stop it.
+const canStop = () => data?.owner.by === me.email || !!cur?.w.manage;
 
 // Newest activity first, as in a chat: an instance's latest log entry, now while it runs; a series' newest instance's, and a
 // workspace's newest series'. A series' instances keep their labels' order.
@@ -268,8 +268,8 @@ function land(next, path, d, st) {
     Object.assign(pv.settings, pv.settings.kind === 'workspace' ? cur.w : cur.s);
     renderPv();
   }
-  // Seeing it sees what's new and an assignment to you, as the server now knows.
-  if (cur?.i) Object.assign(cur.i, { unread: false, assigned: null });
+
+  if (cur?.i) Object.assign(cur.i, { unread: false });
   threads = threadsOf();
   if (st) [lines, linesKey] = st;
   const done = data && lastDone();
@@ -323,7 +323,7 @@ function renderSide() {
   if (!me || editing) return;
   // Mine, as this browser keeps it for you: only the open instances you run, and the one shown, with the rows that hold them, their
   // marks and counts theirs alone, and the series and workspace shown, though they hold none.
-  const only = localStorage[`mine:${me.email}`] === 'on', ours = i => (i.status === 'open' && i.runner === me.email) || i.id === cur?.i?.id;
+  const only = localStorage[`mine:${me.email}`] === 'on', ours = i => (i.status === 'open' && i.owner === me.email) || i.id === cur?.i?.id;
   const side = only ? tree.map(w => ({ ...w, series: w.series.map(s => ({ ...s, instances: s.instances.filter(ours) })).filter(s => s.instances.length || s.id === cur?.s?.id) })).filter(w => w.series.length || w.id === cur?.w.id) : tree;
   const listed = (x, on) => !x.archived || showArchived || on, mine = localStorage.workspaces !== 'all' && side.some(w => w.mine), byName = localStorage.order === 'name';
   const q = $('#find').value.trim().toLowerCase(), hit = name => name.toLowerCase().includes(q), opened = new Set(), shut = id => !expanded.has(id) && !opened.has(id);
@@ -339,7 +339,7 @@ function renderSide() {
     const st = i.queued ? '\u29D7 queued' : i.asks.length ? `<span class="cnt" title="${i.asks.length} to answer">${i.asks.length}</span>` : i.wakes[0] ? `<span title="${when(i.wakes[0].at)}">wakes ${soon(i.wakes[0].at)}</span>` : i.status === 'open' ? ''
       : i.deleted ? `<span title="Deleted by ${esc(nameOf(i.deleted.by))} ${when(i.deleted.at)}">deleted</span>`
       : i.corrections ? `<span class="corr" title="Read with ${plural(i.corrections, 'correction')}">corrected</span>` : i.status;
-    return `<a class="row inst ${i.status} ${cur?.i?.id === i.id ? 'on' : ''}" href="#/${i.id}" title="${esc(i.label)}"><span class="nm ${i.unread ? 'b' : ''}"><span class="l">${esc(i.label)}</span>${i.runner === me.email || i.deleted ? '' : `<span class="who" title="${esc(nameOf(i.runner))} runs it">${esc(initials(me.names[i.runner] ?? i.runner))}</span>`}${i.unread && !i.asks.length ? '<span class="dot u"></span>' : ''}</span><span class="n">${st}</span>${age(i.active, i.running)}</a>`;
+    return `<a class="row inst ${i.status} ${cur?.i?.id === i.id ? 'on' : ''}" href="#/${i.id}" title="${esc(i.label)}"><span class="nm ${i.unread ? 'b' : ''}"><span class="l">${esc(i.label)}</span>${!i.owner ? '<span class="who" title="No series owner selected">?</span>' : i.owner === me.email || i.deleted ? '' : `<span class="who" title="${esc(nameOf(i.owner))} owns the series">${esc(initials(me.names[i.owner] ?? i.owner))}</span>`}${i.unread && !i.asks.length ? '<span class="dot u"></span>' : ''}</span><span class="n">${st}</span>${age(i.active, i.running)}</a>`;
   };
   const waits = waiting().length;
   let h = waits ? `<div class="row waits"><a class="nm" data-act="waiting">Waiting on you<span class="q"> ${waits}</span></a></div>` : '';
@@ -354,7 +354,7 @@ function renderSide() {
     shown++;
     if (!wHit) opened.add(w.id);
     h += `<div class="row ws ${won ? 'on' : ''} ${w.archived ? 'archived' : ''}">${chev(w.id)}<a class="nm" href="#/${w.id}" title="${esc(w.name)}"><span class="l">${esc(w.name)}</span>${dot(w.id, w.series)}</a>`
-      + `<span class="n">${w.archived ? 'archived' : ''}</span>${age(wAct(w), w.series.some(s => s.instances.some(i => i.running)))}` + btn('workspace-settings', 'Settings', '\u2699', w.id) + (w.archived ? '' : btn('new-task', 'New task', '+', w.id)) + '</div>';
+      + `<span class="n">${w.archived ? 'archived' : ''}</span>${age(wAct(w), w.series.some(s => s.instances.some(i => i.running)))}` + btn('workspace-settings', 'Settings', '\u2699', w.id) + (w.archived || !me.can.includes('series-owner') ? '' : btn('new-task', 'New task', '+', w.id)) + '</div>';
     if (shut(w.id)) continue;
     h += '<div class="tree">';
     for (const [s, found] of series) {
@@ -362,7 +362,7 @@ function renderSide() {
       if (found) opened.add(s.id);
       const note = s.archived ? 'archived' : s.requests.length ? `<span class="q">${s.requests.length} to start</span>` : open.length && shut(s.id) ? `<span class="tally open" title="${open.length} open">${open.length}</span>` : s.wakes[0] && shut(s.id) ? `<span title="${when(s.wakes[0].at)}">wakes ${soon(s.wakes[0].at)}</span>` : '';
       h += `<div class="row ser ${on ? 'on' : ''} ${s.archived ? 'archived' : ''}">${chev(s.id)}<a class="nm" href="#/${s.id}" title="${esc(s.name)}"><span class="l">${esc(s.name)}</span>${dot(s.id, [s])}</a>`
-        + `<span class="n">${note}</span>${age(sAct(s), s.instances.some(i => i.running))}` + `<button class="add notes" data-act="notes" data-id="${s.id}" title="Notes on ${esc(s.name)}" aria-label="Notes on ${esc(s.name)}">${ICON.chat}</button>` + btn('settings', 'Settings', '\u2699', s.id) + (archived(w, s) ? '' : btn('new-instance', 'New instance', '+', s.id)) + '</div>';
+        + `<span class="n">${note}</span>${age(sAct(s), s.instances.some(i => i.running))}` + `<button class="add notes" data-act="notes" data-id="${s.id}" title="Notes on ${esc(s.name)}" aria-label="Notes on ${esc(s.name)}">${ICON.chat}</button>` + btn('settings', 'Settings', '\u2699', s.id) + (archived(w, s) || !me.can.includes('series-owner') ? '' : btn('new-instance', 'New instance', '+', s.id)) + '</div>';
       if (shut(s.id)) continue;
       if (found) {
         h += `<div class="tree">${found.map(row).join('')}</div>`;
@@ -372,7 +372,7 @@ function renderSide() {
       h += '<div class="tree">';
       for (const k of s.wakes) h += `<div class="row wake"><span class="nm" title="Starts ${esc(k.label)} ${when(k.at)}${k.text ? `: ${esc(k.text)}` : ''}"><span class="l">Starts ${esc(k.label)} ${soon(k.at)}</span></span><span class="n">${k.days ? 'weekly' : 'wake'}</span></div>`;
       for (const r of s.requests) h += `<div class="row req"><span class="nm" title="${esc(`${r.from} asks to ${r.target ? 'wake' : 'start'} ${r.label}${r.text ? `: ${r.text}` : ''}`)}"><span class="l">${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to ${r.target ? 'wake' : 'start'} ${esc(r.label)}</span></span>`
-        + (archived(w, s) ? '' : `${r.target && r.who !== me.email ? '' : `<button class="add" data-act="req-start" data-ws="${w.id}" data-id="${r.id}"${r.target ? ` data-target="${r.target}"` : ''} title="${r.target ? 'Wake' : 'Start'} it">\u25B6</button>`}<button class="add" data-act="req-drop" data-id="${r.id}" title="Dismiss">\u00D7</button>`) + '</div>';
+        + (archived(w, s) ? '' : `${s.owner !== me.email ? '' : `<button class="add" data-act="req-start" data-ws="${w.id}" data-id="${r.id}"${r.target ? ` data-target="${r.target}"` : ''} title="${r.target ? 'Wake' : 'Start'} it">\u25B6</button>`}<button class="add" data-act="req-drop" data-id="${r.id}" title="Dismiss">\u00D7</button>`) + '</div>';
       h += s.instances.filter(i => i.status === 'open' || showClosed.has(s.id) || i.id === cur?.i?.id).map(row).join('');
       if (closed) h += closedToggle(s.id, closed);
       h += '</div>';
@@ -428,30 +428,24 @@ function renderBar() {
     const wake = open ? `<button class="btn top wake" data-act="wakes"${next ? ` title="Next wake ${when(next.at)}"` : ''}>${ICON.alarm}${next ? `Wakes ${soon(next.at)}` : 'No wake'}</button>` : '';
     const del = cur.w.manage && !gone() ? '<a class="del" data-act="delete" title="For those who manage the workspace: delete it, and all the server holds of it">Delete\u2026</a>' : '';
     h += `<div class="state">${state}</div>${wake}${del}`;
-    // Close for its runner; Take over for anyone else, while no run goes unless they may stop it; and Assign… for its runner and those
-    // who manage the workspace, a run going stopped first.
-    const off = data.run ? 'disabled title="Available when the run ends"' : '', mine = data.runner.by === me.email;
-    if (open) h += `${mine ? `<button class="btn commit top" data-act="close" ${off}>Close</button>`
-      : `<button class="btn top" data-act="takeover" ${data.run && !canStop() ? off : `title="${esc(nameOf(data.runner.by))} runs it, with their logins. Taking over makes it yours${data.run ? `, stopping run ${data.run.n}` : ''}."`}>${ICON.hand}Take over</button>`}`
-      + `${mine || cur.w.manage ? `<button class="btn top" data-act="assign" title="Make someone else its runner${data.run ? `, stopping run ${data.run.n}` : ''}">Assign\u2026</button>` : ''}`;
+    const off = data.run ? 'disabled title="Available when the run ends"' : '', mine = data.owner.by === me.email;
+    if (open) h += (mine ? `<button class="btn commit top" data-act="close" ${off}>Close</button>` : '')
+      + ((mine || cur.w.manage) ? '<button class="btn top" data-act="series-owner">Transfer series…</button>' : '');
     else if (cur.s.single && !archived() && !gone()) h += '<button class="btn top" data-act="start-series">Start series</button>';
+    if (cur.s.single && !gone()) h += '<button class="btn top" data-act="settings">Series settings</button>';
     // One control opens and closes the side panel, where it stays, with what waits there as its badge.
     h += `<button class="ptog ${ui.open ? 'on' : ''}" data-act="panel" title="${ui.open ? 'Close' : 'Open'} the conversation"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M10 2.5v11"/>${ui.open ? '<rect x="10" y="2.5" width="4.5" height="11" fill="currentColor" stroke="none" opacity=".35"/>' : ''}</svg>${talk ? `<span class="badge">${talk}</span>` : ''}</button>`;
   }
   put($('#bar'), h);
 }
 
-// The runner's chip: Yours, or their name; on hover or a click, what that means, since when, and the logins they ticked.
 function owner() {
-  const r = data.runner, mine = r.by === me.email, name = mine ? 'You' : person(r.by), e = made();
-  const how = { create: 'Made it', duplicate: `Copied it from ${esc(e.from)}`, takeover: `Took it over from ${who(e.from)}`, assign: e.by === e.to ? `Took it over from ${who(e.from)}` : `Assigned by ${who(e.by)}, from ${who(e.from)},` }[e.op];
-  return `<span class="owner" tabindex="0">${mine ? 'Yours' : name}<span class="about">`
-    + (editable() ? `${name} run${mine ? '' : 's'} it: runs use ${mine ? 'your' : 'their'} logins, and only ${mine ? 'you' : 'they'} close it.` : `${name} ran it.`)
-    + `<br>${how} ${when(e.at)}.<br>${r.ticked.length ? `Credentials: ${esc(r.ticked.join(', '))}` : 'No credentials ticked.'}</span></span>`
-    + (mine && editable() ? `<button class="creds" data-act="ticks" title="${esc(r.ticked.join(', '))}">Credentials: ${credentials(r)}</button>` : '');
+  const r = data.owner, mine = r.by === me.email;
+  return `<span class="owner" tabindex="0">${mine ? 'Your series' : r.by ? person(r.by) : 'No series owner'}<span class="about">Series owner for every instance. Only the owner starts runs and closes instances. Credentials are selected for the whole series, not this instance.${r.since ? `<br>Since ${when(r.since)}.` : ''}<br>${!r.consent ? 'No execution consent.' : r.ticked.length ? `Selected ceiling: ${esc(r.ticked.join(', '))}` : 'Explicit credentialless consent.'}</span></span>`
+    + (mine && me.can.includes('series-owner') && !archived() ? `<button class="creds" data-act="ticks">Series credentials: ${r.consent ? credentials(r) : 'consent needed'}</button>` : '');
 }
 
-// The runner's ticks at a glance, by kind, such as "Mail · 2 folders".
+// The selected series ceiling at a glance, by kind, such as "Mail · 2 folders".
 function credentials(r) {
   const n = {}, say = { mail: ['Mail', 'mailboxes'], site: ['1 site', 'sites'], folder: ['1 folder', 'folders'], file: ['1 file', 'files'], website: ['1 website', 'websites'], warehouse: ['1 warehouse', 'warehouses'] };
   r.logins.forEach((id, k) => {
@@ -555,8 +549,8 @@ const nameOf = id => id === 'agent' ? 'Agent' : id === me.email ? 'you' : me.nam
 // What made someone the instance's runner as of a time: making it, an earlier version's copy, or an assign, a takeover being one to
 // oneself; and whom it made the runner.
 const made = (at = '\uffff') => data.log.findLast(x => x.at <= at && ['create', 'duplicate', 'takeover', 'assign'].includes(x.op)), ranBy = e => e.op === 'assign' ? e.to : e.by;
-const actor = (by, at) => {
-  const r = by === 'agent' && ranBy(made(at));
+const actor = (by, at, run) => {
+  const r = by === 'agent' && (data.log.findLast(e => e.op === 'run' && (run !== undefined ? e.run === run : e.at <= at))?.runner ?? ranBy(made(at)));
   return by === 'server' ? '<span class="w">Server</span>' : `<span class="w p" title="${esc(r ? `Acting for ${r}` : by)}">${esc(r ? (r === me.email ? 'Your agent' : `${nameOf(r)}'s agent`) : by === me.email ? 'You' : nameOf(by))}</span>`;
 };
 // An instance by its label now, with its series' name where it's a series', else as an entry named it then.
@@ -566,7 +560,7 @@ const agentOf = e => `Agent of <a href="#/${esc(e.see.inst)}">${esc(labelOf(e.se
 const shotsHtml = es => `<div class="shots">${es.map(e => `<img src="${fileUrl(e.file)}" loading="lazy" alt="" title="${esc(e.site)} \u00b7 ${hhmm(e.at)}" data-act="preview" data-file="${esc(e.file)}">`).join('')}</div>`;
 
 function logText(e) {
-  const w = e.see && e.op === 'comment' ? agentOf(e) : actor(e.by, e.at);
+  const w = e.see && e.op === 'comment' ? agentOf(e) : actor(e.by, e.at, e.run);
   const item = id => esc(data.doc.items.find(i => i.id === id)?.name ?? id);
   const f = e.file ? `<div class="f"><a data-act="preview" data-file="${esc(e.file)}">${esc(e.file)}</a></div>` : '';
   return {
@@ -575,7 +569,8 @@ function logText(e) {
     point: () => `${w} ${e.file ? 'showed' : 'cleared'} ${item(e.item)}${e.was ? `<div class="d">Replacing ${esc(fname(e.was))}</div>` : ''}${f}`,
     item: () => `${w} set up ${esc(e.name)}${e.from?.length ? `<div class="d">From ${e.from.map(item).join(', ')}</div>` : ''}${e.headline ? `<div class="d">${esc(e.headline)}</div>` : ''}${e.source ? `<div class="d">Source: ${esc(e.source)}</div>` : ''}${e.destination ? `<div class="d">Destination: ${esc(e.destination)}</div>` : ''}`,
     remove: () => `${w} removed ${esc(e.item)} from the screen`,
-    run: () => `Run ${e.run} started${data.run?.n === e.run ? ` \u00b7 ${usd(data.run.cost, data.run.estimated)} so far` : ''}`,
+    run: () => `Run ${e.run} started${e.runner ? ` for ${person(e.runner)}` : ''}${data.run?.n === e.run ? ` \u00b7 ${usd(data.run.cost, data.run.estimated)} so far` : ''}`,
+    authority: () => `Whole-series authority changed<div class="d">Owner: ${e.owner ? person(e.owner) : 'not selected'} · epoch ${e.epoch}. Earlier unread instructions are notes.</div>`,
     done: () => `Run ${e.run} finished${e.aborted ? ' (stopped)' : ''} · ${took(e)} · ${usd(e.cost, e.estimated)}${e.error ? `<div class="d">${esc(e.error)}</div>` : ''}`,
     interrupt: () => `${w} interrupted the run${e.why ? `<div class="d">${esc(e.why)}</div>` : ''}`,
     kill: () => `${w} killed run ${e.run}'s process ${e.pid}, from the system monitor<div class="d">${esc(e.script)}</div>`,
@@ -589,11 +584,11 @@ function logText(e) {
     correction: () => `${w} marked ${e.item ? item(e.item) : 'the instance'}${e.ref ? ` at ${esc(e.ref)}` : ''} ${e.kind}<div class="d">${esc(e.text)}${seeHtml(e.see)}</div>`,
     said: () => `${w} left a note in <a href="#/${esc(e.inst)}">${esc(labelOf(e.inst, e.label))}</a>, ${esc(e.thread)}`,
     corrected: () => `${w} marked <a href="#/${esc(e.inst)}">${esc(cur.s?.instances.find(i => i.id === e.inst)?.label ?? labelOf(e.inst, e.label))}</a>${e.item ? ` ${esc(e.item)}` : ''} ${e.kind}`,
-    comment: () => `${w} ${data.standing[e.seq] === 'note' ? `left a note for ${who(data.runner.by)}` : e.by !== 'agent' ? 'commented' : e.ask ? `${e.ask === 'proposal' ? 'proposed' : 'asked'}${e.to ? ' ' + who(e.to) : ''}` : 'said'}${e.item ? ` on ${item(e.item)}${e.ref ? ` at ${esc(e.ref)}` : ''}` : ''}<div class="d">${esc(e.text)}</div>`,
+    comment: () => `${w} ${data.standing[e.seq] === 'note' ? `left a note${data.doc.status === 'open' ? ` for ${who(data.owner.by)}` : ''}` : e.by !== 'agent' ? 'commented' : e.ask ? `${e.ask === 'proposal' ? 'proposed' : 'asked'}${e.to ? ' ' + who(e.to) : ''}` : 'said'}${e.item ? ` on ${item(e.item)}${e.ref ? ` at ${esc(e.ref)}` : ''}` : ''}<div class="d">${esc(e.text)}</div>`,
     resolve: () => `${w} resolved a thread${e.text ? `<div class="d">${esc(e.text)}</div>` : ''}`,
     react: () => `${w} ${e.up === null ? 'took back a reaction' : e.up ? 'gave a thumbs up' : 'gave a thumbs down'} on ${e.on ? `comment c${e.on}` : 'the instance'}`,
-    wake: () => `${data.standing[e.seq] === 'note' ? `${person(e.from)} would wake it: a note for ${who(data.runner.by)}` : `Woken${e.from ? ` by ${who(e.from)}` : ''}`}${[e.reason, e.text].filter(Boolean).map(t => `<div class="d">${esc(t)}</div>`).join('')}`,
-    expired: () => e.left ? `${who(e.runner)} has left: Microsoft no longer signs them in, so someone takes the instance over` : `Waiting for ${who(e.runner)} ${e.login === 'openrouter' ? 'to save another OpenRouter key, or stop using their own, out of credits' : `to sign in to ${esc(e.name ?? (e.login === 'm365' ? 'Microsoft 365' : e.login))} again`}${data.runner.by === me.email && (data.held ?? []).includes(e.login) && e === data.log.findLast(x => x.op === 'expired' && !x.left && x.login === e.login && x.runner === me.email) ? `<div>${signInHtml(e.login, e.name ?? e.login)}</div>` : ''}`,
+    wake: () => `${data.standing[e.seq] === 'note' ? `${person(e.from)} would wake it: a note${data.doc.status === 'open' ? ` for ${who(data.owner.by)}` : ''}` : `Woken${e.from ? ` by ${who(e.from)}` : ''}`}${[e.reason, e.text].filter(Boolean).map(t => `<div class="d">${esc(t)}</div>`).join('')}`,
+    expired: () => e.left ? `${who(e.runner)} has left: Microsoft no longer signs them in, so a manager must explicitly transfer the whole series` : `Waiting for ${who(e.runner)} ${e.login === 'openrouter' ? 'to save another OpenRouter key, or stop using their own, out of credits' : `to sign in to ${esc(e.name ?? (e.login === 'm365' ? 'Microsoft 365' : e.login))} again`}${data.owner.by === me.email && (data.held ?? []).includes(e.login) && e === data.log.findLast(x => x.op === 'expired' && !x.left && x.login === e.login && x.runner === me.email) ? `<div>${signInHtml(e.login, e.name ?? e.login)}</div>` : ''}`,
     takeover: () => `${w} took over from ${who(e.from)}${e.logins?.length ? `<div class="d">Logins: ${esc(e.logins.join(', '))}</div>` : ''}`,
     assign: () => `${w} ${e.to === e.by ? 'took over' : `assigned it to ${who(e.to)}`} from ${who(e.from)}${e.logins?.length ? `<div class="d">Logins: ${esc(e.logins.join(', '))}</div>` : ''}`,
     promote: () => `${w} made it a series, ${esc(e.series)}`,
@@ -621,7 +616,7 @@ function logText(e) {
 function renderNeeds() {
   $('#draining').hidden = me.draining == null;
   put($('#draining'), me.draining == null ? '' : `An update is waiting for ${plural(me.draining, 'run')} to finish; new runs start after it.`);
-  const held = data?.runner.by === me.email ? (data.held ?? []).map(l => data.log.findLast(e => e.op === 'expired' && !e.left && e.login === l && e.runner === me.email)).filter(Boolean) : [];
+  const held = data?.owner.by === me.email ? (data.held ?? []).map(l => data.log.findLast(e => e.op === 'expired' && !e.left && e.login === l && e.runner === me.email)).filter(Boolean) : [];
   const act = (e, mode, name) => `<button class="btn ${mode === 'reply' ? 'reply-to' : ''}" data-act="reply" data-mode="${mode}" data-seq="${e.seq}">${name}</button>`;
   const h = (data ? data.waiting.filter(w => w.who === me.email).map(w => data.log[w.seq - 1]) : []).map(e => `<div><b class="${e.ask === 'proposal' ? 'propose' : ''}">${{ question: 'Question', proposal: 'Proposal', true: 'Ask' }[e.ask] ?? 'Note'}</b><span>${esc(firstLine(e.text))}</span>`
     + (!editable() ? `<button class="btn" data-act="thread" data-thread="${e.thread}">Open</button>` : e.ask === 'proposal' || e.ask === true ? act(e, 'approve', 'Approve\u2026') + act(e, 'reject', 'Reject\u2026') : act(e, 'reply', 'Reply')) + '</div>').join('')
@@ -653,10 +648,6 @@ function renderLog() {
     + '<button class="x" data-act="panel" title="Close">\u00D7</button>');
   $('#conv').hidden = ui.audit;
   if (!drafting) put($('#conv'), conversationHtml());
-  else if ($('#conv .ticks2')) {
-    put($('#conv .ticks2'), 'Credentials:' + ticksHtml(myLogins, data.runner.logins, cur.w, 'comment'));
-    drawn.delete($('#conv'));
-  }
   for (const [k, v] of Object.entries(draft.kept)) {
     const [seq, mode] = k.split(':'), box = mode ? $(`#conv .post[data-seq="${seq}"] > .reply[data-mode="${mode}"] textarea`) : $(`#${k}`);
     if (box) { box.value = v; delete draft.kept[k]; }
@@ -752,7 +743,7 @@ function md(text, threads) {
   return h.trimEnd();
 }
 // Threads from the log: a comment starts one, on an item (at a ref) or the instance, and later comments reply in it. In an open
-// instance it waits on a person while the server says so, on whom the agent's ask names or else the runner, and on the agent while
+// instance it waits on a person while the server says so, on whom the agent's ask names or else the series owner, and on the agent while
 // its last word is a person's. A file a run cited is kept by its instance's id, and shown by that instance's label now.
 function threadsOf() {
   const out = new Map(), open = editable(), waiting = new Map((data?.waiting ?? []).map(w => [w.seq, w.who]));
@@ -801,7 +792,7 @@ function postHtml(t, p, depth) {
   if (gone && !ui.withdrawn.has(p.seq)) return `<div class="post withdrawn folded" data-seq="${p.seq}" data-act="withdrawn" title="Show what it said"><span class="fold">\u25B8</span>${gone}${kids.length ? ` \u00b7 ${all(p.seq)} more` : ''}</div>`;
   if (JSON.parse(localStorage[`folds:${cur.i.id}`] ?? '{}')[p.seq] === end(p)) return `<div class="post folded ${kind} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}"><button class="fold" data-act="fold" data-seq="${p.seq}" title="Expand">\u25B8</button>${head}${hhmm(p.at)}</span> ${esc(firstLine(p.text))}${kids.length ? `<span class="tm"> \u00b7 ${all(p.seq)} more</span>` : ''}</div>`;
   const box = (mode, hint, placeholder, button) => `<div class="reply" data-mode="${mode}" ${draft.replying.get(p.seq) === mode ? '' : 'hidden'}>${hint ? `<div class="hint">${hint}</div>` : ''}<textarea rows="2" placeholder="${placeholder}"></textarea>${mode === 'reply' ? '<input type="file" multiple>' : ''}<div class="row2">${button}<button class="quiet" data-act="reply" data-mode="${mode}" data-seq="${p.seq}">Cancel</button></div></div>`;
-  let h = `<div class="post ${kind} ${gone ? 'withdrawn' : ''} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}">${gone ? `<div class="gone" data-act="withdrawn" data-seq="${p.seq}" title="Fold it again"><span class="fold">\u25BE</span>${gone}</div>` : ''}<button class="fold" data-act="fold" data-seq="${p.seq}" data-end="${end(p)}" title="Collapse">\u25BE</button>${head}${hhmm(p.at)}${p.op === 'comment' ? ` <a class="cn" data-act="copylink" data-seq="${p.seq}" title="Copy a link to this comment">c${p.seq}</a>` : ''}${p.to ? ` \u00b7 to ${who(p.to)}` : ''}${data.standing[p.seq] === 'note' ? ` \u00b7 a note for ${who(data.runner.by)}` : ''}${p.waits ? ` \u00b7 waits on ${who(p.waits)}` : ''}${since ? ` \u00b7 <span title="What it links may have changed since: check it before approving">${since} run${since > 1 ? 's' : ''} since</span>` : ''}${p.commit ? ` \u00b7 commit <code>${p.commit.slice(0, 7)}</code>` : ''}</span>`
+  let h = `<div class="post ${kind} ${gone ? 'withdrawn' : ''} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}">${gone ? `<div class="gone" data-act="withdrawn" data-seq="${p.seq}" title="Fold it again"><span class="fold">\u25BE</span>${gone}</div>` : ''}<button class="fold" data-act="fold" data-seq="${p.seq}" data-end="${end(p)}" title="Collapse">\u25BE</button>${head}${hhmm(p.at)}${p.op === 'comment' ? ` <a class="cn" data-act="copylink" data-seq="${p.seq}" title="Copy a link to this comment">c${p.seq}</a>` : ''}${p.to ? ` \u00b7 to ${who(p.to)}` : ''}${data.standing[p.seq] === 'note' ? ` \u00b7 a note${data.doc.status === 'open' ? ` for ${who(data.owner.by)}` : ''}` : ''}${p.waits ? ` \u00b7 waits on ${who(p.waits)}` : ''}${since ? ` \u00b7 <span title="What it links may have changed since: check it before approving">${since} run${since > 1 ? 's' : ''} since</span>` : ''}${p.commit ? ` \u00b7 commit <code>${p.commit.slice(0, 7)}</code>` : ''}</span>`
     + `<div class="pb ${long ? 'long' : ''}">${p.see ? esc(p.text) : crefs(p.by === 'agent' && p.op === 'comment' ? md(p.text) : esc(p.text))}</div>${long ? `<a class="more" data-act="more" data-seq="${p.seq}">More</a>` : ''}`
     + (p.files ?? []).map(f => `<div class="f">${/\.(png|jpe?g|gif|webp|svg)$/i.test(f) ? `<img src="${fileUrl(f)}" loading="lazy" alt="${esc(fname(f))}" title="${esc(fname(f))}" data-act="preview" data-file="${esc(f)}">` : `<a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a>`}</div>`).join('');
   if (p.op === 'comment') h += `<div class="pa">${reactHtml(p.seq)}${open && !proposal ? `<button class="quiet reply-to" data-act="reply" data-seq="${p.seq}">Reply</button>` : ''}`
@@ -835,7 +826,7 @@ function runHtml(r, latest) {
 // The conversation, as a chat reads: the threads and the runs among them, oldest first, a thread where its root was said and a run
 // where it ended; and at the panel's foot, kept there as it scrolls, the box to comment on the instance.
 function conversationHtml() {
-  const open = editable(), name = id => esc(data.doc.items.find(i => i.id === id)?.name ?? id), mine = data.runner.by === me.email;
+  const open = editable(), name = id => esc(data.doc.items.find(i => i.id === id)?.name ?? id), mine = data.owner.by === me.email;
   const moved = data.log.findLast(e => e.op === 'move'), runs = data.log.filter(e => e.op === 'run');
   let h = moved ? `<div class="sub">Moved ${when(moved.at)} from ${esc(moved.from)} to ${esc(moved.to)}, ${who(moved.accepted_by ?? moved.by)} accepting.</div>` : '';
   const alone = ui.alone && threads.find(t => t.posts.some(p => p.seq === ui.alone));
@@ -848,11 +839,9 @@ function conversationHtml() {
   }
   const ended = r => data.log.find(e => e.op === 'done' && e.run === r.run)?.seq ?? Infinity;
   h += [...threads.map(t => [t.posts[0].seq, threadHtml(t)]), ...runs.map(r => [ended(r), runHtml(r, r === runs.at(-1))])].sort((a, b) => a[0] - b[0]).map(([, x]) => x).join('');
-  // Before its first run, its runner may tick its logins anew where they write its first prompt.
-  const first = mine && !runs.length, lends = first && myLogins.some(l => l.offers.length);
+  const first = mine && !runs.length;
   if (open) h += `<div class="compose"><h3>${draft.on ? `Comment on ${name(draft.on)}${draft.ref ? ` at ${esc(draft.ref)}` : ''}` : 'Comment on the instance'}</h3>`
-    + (lends ? `<div class="ticks2">Credentials:${ticksHtml(myLogins, data.runner.logins, cur.w, 'comment')}</div>` : '')
-    + `<textarea id="newcomment" rows="3" placeholder="${first ? 'What should the agent do? Drop files here too' : data.starts ? 'The agent replies in the thread' : `A note for ${esc(nameOf(data.runner.by))}: the agent takes it up once they do`}"></textarea><input type="file" id="newfiles" multiple>${lends ? '<div class="consent">By clicking Comment, you agree that agents carry these credentials while acting as you.</div>' : ''}<div><button class="btn primary" data-act="comment">Comment</button></div></div>`;
+    + `<textarea id="newcomment" rows="3" placeholder="${first ? 'What should the agent do? Drop files here too' : data.starts ? 'The agent replies in the thread' : `A note for ${esc(nameOf(data.owner.by))}: only the series owner starts runs`}"></textarea><input type="file" id="newfiles" multiple><div><button class="btn primary" data-act="comment">Comment</button></div></div>`;
   if (data.doc.status === 'closed' && !archived()) h += '<div class="compose"><div><button class="btn" data-act="correct">Add a correction</button></div></div>';
   return h;
 }
@@ -993,10 +982,10 @@ function renderPv() {
       + agentsHtml(s, 'Every agent in this workspace reads it at the start of each run: its conventions, and changes that cut across its series, such as a renamed entity.', s.manage)
       + (s.manage && !s.archived ? moveHtml(s) : '')
       + (s.manage ? `<div class="row2"><button class="btn${s.archived ? '' : ' danger'}" data-act="archive-workspace">${s.archived ? 'Restore workspace' : 'Archive workspace'}</button></div>` : '');
-    if (s.kind === 'series') h += `<h3>Name</h3><input type="text" id="sname" value="${esc(s.name)}">`
-      + `<h3>Who starts runs</h3>${startsHtml(s)}<h3>Wakes</h3>${wakesHtml(s.id, s.wakes, true)}`
+    if (s.kind === 'series') h += (s.single ? '' : `<h3>Name</h3><input type="text" id="sname" value="${esc(s.name)}">`)
+      + `<h3>Who starts runs</h3>${startsHtml(s)}` + (s.single ? '' : `<h3>Wakes</h3>${wakesHtml(s.id, s.wakes, true)}`)
       + `<h3>Cost</h3><div class="sub">This series' runs have cost ${usd(s.cost, s.estimated)} so far, ${usd(s.cost / Math.max(1, s.closed), s.estimated)} per closed instance.</div>`
-      + (cur.w.archived ? (cur.w.manage ? '<div class="row2"><button class="btn" data-act="archive-workspace">Restore workspace</button></div>' : '') : `<div class="row2"><button class="btn${s.archived ? '' : ' danger'}" data-act="archive-series">${s.archived ? 'Restore series' : 'Archive series'}</button></div>`);
+      + (cur.w.archived ? (cur.w.manage ? '<div class="row2"><button class="btn" data-act="archive-workspace">Restore workspace</button></div>' : '') : s.single ? '' : `<div class="row2"><button class="btn${s.archived ? '' : ' danger'}" data-act="archive-series">${s.archived ? 'Restore series' : 'Archive series'}</button></div>`);
     h += '</div>';
   }
   d.innerHTML = h + `<div class="pvn${pv.signin ? ' err' : ''}" id="pvn"${pv.signin ? ' role="alert"' : ''}></div>`;
@@ -1032,17 +1021,16 @@ function grantHtml(g, cls = 'website', showCheckError = true) {
     + `${pending && mine || !pending && (manage || mine) ? `<button class="quiet" data-act="grant-revoke" data-id="${esc(g.id)}">${pending ? 'Withdraw' : mine ? 'Stop using' : 'Revoke'}</button>` : ''}</div></div>` + (compact ? '</details>' : '');
 }
 
-// Sharing a series lends your logins to whoever starts its runs, so it takes two clicks, the second saying what you take on. Once it's
-// yours, the ticks save as they change.
 function startsHtml(s) {
-  const mine = s.shared_by === me.email, ws = esc(cur.w.name), arm = `<button class="btn share ${pv.arming ? 'armed' : ''}" data-act="share-arm">${s.shared_by ? 'Have them wake it as me instead' : `Let ${ws} wake this series`}</button>`;
-  return `<div>${s.shared_by ? `People in ${ws} and their agents wake this series, as ${mine ? 'you, with these credentials:' : person(s.shared_by) + '.'}` : "Each instance's runner, and nobody else: others' comments are notes for them, and a wake asks someone to start the instance."}</div>`
-    + (mine ? ticksHtml(s.logins, pv.on ?? s.shared_logins, cur.w) + '<div class="row2"><button class="btn" data-act="share-off">Stop</button></div>' : `<div class="row2">${arm}</div>`)
-    + (pv.arming ? `<div class="warn"><h3>Credentials</h3>${ticksHtml(s.logins, pv.on ?? [], cur.w)}<div class="consent">By allowing, people in ${ws} and their agents can wake this series: start or continue its instances, with a short reason, and add notes and files. Those runs act as you, using the selected credentials, and do the series' usual work.</div><div><button class="btn danger" data-act="share-on">Allow ${ws} to wake this series</button></div></div>` : '');
+  const mine = s.owner === me.email;
+  return `<div>Series owner: ${s.owner ? person(s.owner) : 'not selected'}. Only this person starts runs, across every instance. Collaborators leave information and sign off on content; they never start runs as the owner.</div>`
+    + ((mine || cur.w.manage) ? '<div class="row2"><button class="btn" data-act="series-owner">Transfer whole series…</button></div>' : '')
+    + (mine && me.can.includes('series-owner') ? `<h3>Series credential ceiling</h3><div class="sub">Every instance may use the selected credentials. New logins are never added automatically. Saving an empty selection explicitly allows work with no credentials. Removing authority stops existing runs and invalidates old schedules.</div>${ticksHtml(s.logins, pv.on ?? s.consent?.logins ?? [], cur.w)}<label><input type="checkbox" id="autonomous" ${(pv.autonomous ?? s.consent?.autonomous) ? 'checked' : ''}> Allow scheduled and autonomous runs</label><div class="consent">Save explicitly consents to this series-wide selection. Autonomous runs are opt-in; collaborators still cannot initiate execution.</div><button class="btn primary" data-act="series-credentials">Save series credentials</button>`
+      : `<div class="sub">${s.consent ? `Selected ceiling: ${s.consent.logins.length} credentials; autonomous runs ${s.consent.autonomous ? 'allowed' : 'not allowed'}.` : 'No execution consent: the owner must explicitly select credentials, including none.'}</div>`);
 }
 
 // A series' notes, for its runs: the open ones, then those settled, folded, with who settled them, how and why; and a box to tell it
-// something. The runners of its open instances, the workspace's owners and admins settle one by hand.
+// something. The series owner and workspace managers settle one by hand.
 async function openNotes(id) {
   const [w, s] = tree.flatMap(w => w.series.filter(s => s.id === id).map(s => [w, s]))[0];
   pv = { title: `Notes on ${s.name}`, settings: { kind: 'notes', id, w, s, list: await api(`/api/series/${id}/notes`) } };
@@ -1050,7 +1038,7 @@ async function openNotes(id) {
 }
 
 function notesHtml({ id, w, s, list }) {
-  const shut = archived(w, s), settles = !shut && (w.manage || s.instances.some(i => i.status === 'open' && i.runner === me.email));
+  const shut = archived(w, s), settles = !shut && (w.manage || s.owner === me.email);
   const by = e => e.by === 'agent' ? agentOf(e) : person(e.by), how = e => e.op === 'taken' ? 'Acted on' : 'Set aside';
   const body = n => `<div class="pb">${esc(n.text)}</div>` + (n.files ?? []).map(f => `<div class="f"><a href="/api/series/${id}/${f.split('/').map(enc).join('/')}">${esc(fname(f))}</a></div>`).join('');
   const open = list.filter(n => !n.settled), done = list.filter(n => n.settled);
@@ -1067,12 +1055,14 @@ function notesHtml({ id, w, s, list }) {
 // A series' starts the instance it names, a weekly one's label holding the date it first fires or the one before it fires on.
 const WEEK = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 function wakesHtml(target, list, series) {
+  const owns = cur.s.owner === me.email;
   const row = (k = {}) => `<div class="wakerow" data-id="${k.id ?? ''}" data-target="${target}"><input type="datetime-local" class="wat" value="${k.at ? localInput(k.at) : ''}">`
     + (series ? `<input type="text" class="wlabel" placeholder="Label it starts" value="${esc(k.label ?? '')}">` : '')
     + `<input type="text" class="wtext" maxlength="500" placeholder="Message for the run (optional)" value="${esc(k.text ?? '')}">`
     + '<div class="row2">' + WEEK.map(d => `<label class="sub"><input type="checkbox" value="${d}" ${k.days?.includes(d) ? 'checked' : ''}>${d[0].toUpperCase() + d.slice(1)}</label>`).join('')
     + `<button class="btn" data-act="wake-save">${k.id ? 'Save' : 'Add'}</button>${k.id ? '<button class="quiet" data-act="wake-delete">Delete</button>' : ''}</div></div>`;
-  return `<div class="sub">${series ? 'Each starts the instance it names, or continues it if the series has it.' : 'Each continues this instance.'} Tick days to repeat it weekly at its time.</div>${list.map(row).join('')}${row()}`;
+  const existing = list.map(k => owns || (!k.authority && k.from === me.email) ? row(k) : `<div class="wakerow" data-id="${k.id}" data-target="${target}">${when(k.at)}${k.label ? ` · ${esc(k.label)}` : ''}${k.text ? ` · ${esc(k.text)}` : ''} · ${k.authority ? 'Captured owner schedule' : 'Wake request'}${cur.w.manage ? '<button class="quiet" data-act="wake-delete">Delete</button>' : ''}</div>`).join('');
+  return `<div class="sub">${series ? 'Each starts the instance it names, or continues it if the series has it.' : 'Each continues this instance.'} Tick days to repeat it weekly at its time.${owns ? '' : ' You can request a wake; only the owner authorizes execution.'}</div>${existing}${row()}`;
 }
 
 // What this workspace's agents read, and which other workspaces' agents read it, as each one's owners let them, choosing among the
@@ -1203,7 +1193,7 @@ function loginsHtml(s) {
     ...s.logins.filter(l => l.missing.length && !l.expired).map(l => line(l.name, `<span class="q">runs can't send or save</span>: Microsoft hasn't granted it ${esc(l.missing.join(', '))}, which this server now asks for`, connect(l))),
     ...(k?.enabled && k.expired ? [line('Model key', '<span class="q">your key is out of credits</span>: save another, or stop using it', '<button class="btn primary" data-act="logins-show" data-id="key">Change</button>')] : []),
   ];
-  let h = `<div class="sub">Every login is yours alone. A run uses only its runner's logins, and only those ticked for its instance. Nothing here is a password: you sign in to each system yourself.</div>`
+  let h = `<div class="sub">Every login is yours alone. A run acts as its series owner, using only the explicitly selected series credential ceiling. Nothing here is a password: you sign in to each system yourself.</div>`
     + (needs.length ? `<h3>Needs you</h3>${needs.join('')}<h3>All</h3>` : '');
   for (const c of entra) {
     const l = mine(c.login.id);
@@ -1260,7 +1250,7 @@ function loginsHtml(s) {
   return h;
 }
 
-// Ticks: which of your logins an instance may use, asked whenever you start or take over one, or share a series, by kind:
+// The owner's explicitly selected series-wide credential ceiling, by kind:
 // Microsoft 365's sources fold under a tick of its own, unless some are ticked and some not, and an expired login is flagged, its
 // ticks off. Website ticks need an approved grant in workspace w; asking belongs under Logins, Websites.
 function ticksHtml(logins, on = [], w, scope = 'pv') {
@@ -1283,8 +1273,8 @@ const ticked = () => [...document.querySelectorAll('#pv input.tick:checked:enabl
 
 function startHtml(s) {
   return (s.label !== undefined ? `<h3>Label</h3><input type="text" id="slabel" value="${esc(s.label)}" placeholder="such as a date">` : '')
-    + `<h3>Credentials</h3>` + ticksHtml(s.logins, s.on, tree.find(w => w.id === s.ws))
-    + (s.logins.some(l => l.offers.length) ? `<div class="consent">By clicking ${esc(s.go)}, you agree that agents carry these credentials while acting as you.</div>` : '')
+    + `<h3>Series credential ceiling</h3><div class="sub">You own this task's whole series. Every instance may use these selected credentials. Nothing is selected by default; an empty selection explicitly permits work without credentials.</div>` + ticksHtml(s.logins, s.on, tree.find(w => w.id === s.ws))
+    + `<label><input type="checkbox" id="autonomous" ${s.autonomous ? 'checked' : ''}> Allow scheduled and autonomous runs</label><div class="consent">By clicking ${esc(s.go)}, you explicitly consent to this series-wide selection.</div>`
     + (s.warn ? `<div class="warn">${esc(s.warn)}</div>` : '') + `<div><button class="btn primary" data-act="start-go">${esc(s.go)}</button></div>`;
 }
 
@@ -1303,12 +1293,12 @@ function waiting() {
     for (const i of s.instances) {
       const n = ['question', 'proposal', 'ask', 'note'].map(k => [k, i.asks.filter(a => a.who === me.email && a.kind === k).length]).filter(([, c]) => c);
       if (n.length) out.push(`<div class="wt">${at(w, s, i)}: ${n.map(([k, c]) => plural(c, k)).join(', ')} for you</div>`);
-      if (i.assigned) out.push(`<div class="wt">${person(i.assigned.by)} assigned you ${at(w, s, i)}</div>`);
+
       if (me.role === 'admin') for (const r of i.refused) out.push(`<div class="wt">${at(w, s, i)}: run ${r.run}'s browser on ${r.login === me.email ? '' : `${person(r.login)}'s `}${esc(r.site)} was refused`
         + r.hosts.map(x => ` <span class="creds">${esc(x)}${r.why[x] ? ` <span class="sub">${esc(r.why[x])}</span>` : ''} <a data-act="allow-host" data-site="${esc(r.site)}" data-host="${esc(x)}" data-person="${esc(r.login)}">Allow</a></span>`).join('') + '</div>');
-      if (i.wrong && i.runner === me.email) out.push(`<div class="wt">${at(w, s, i)}: ${plural(i.wrong, 'correction')} say${i.wrong > 1 ? '' : 's'} it's wrong</div>`);
+      if (i.wrong && i.owner === me.email) out.push(`<div class="wt">${at(w, s, i)}: ${plural(i.wrong, 'correction')} say${i.wrong > 1 ? '' : 's'} it's wrong</div>`);
     }
-    for (const r of s.requests.filter(r => (r.who ?? me.email) === me.email)) out.push(`<div class="wt">${at(w, s)}: ${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to ${r.target ? 'wake' : 'start'} ${esc(r.label)} <button class="btn" data-act="req-start" data-ws="${esc(w.id)}" data-id="${esc(r.id)}"${r.target ? ` data-target="${esc(r.target)}"` : ''}>${r.target ? 'Wake' : 'Start'}</button></div>`);
+    for (const r of s.requests.filter(() => s.owner === me.email)) out.push(`<div class="wt">${at(w, s)}: ${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to ${r.target ? 'wake' : 'start'} ${esc(r.label)} <button class="btn" data-act="req-start" data-ws="${esc(w.id)}" data-id="${esc(r.id)}"${r.target ? ` data-target="${esc(r.target)}"` : ''}>${r.target ? 'Wake' : 'Start'}</button></div>`);
   }
   for (const w of tree.filter(w => !w.archived && w.manage)) for (const g of w.grants.filter(g => g.state === 'pending')) out.push(grantHtml(g, 'wt'));
   return [...out, ...expired.map(l => `<div class="wt">Your ${l.kind === 'key' ? 'OpenRouter key is out of credits' : `${esc(l.name)} login has expired`}. ${signInHtml(l.id, l.name)}</div>`)];
@@ -1753,9 +1743,8 @@ async function onAct(act, el) {
     await refresh();
   }
   if (act === 'rename') { const path = instPath(); $('#bar .ren').disabled = true; editName($('#bar h1 .t'), cur.i.label, label => api(`${path}/rename?as=${enc(label)}`, { method: 'POST' })); }
-  if (act === 'share-arm') { pv.arming = !pv.arming; renderPv(); }
-  if (act === 'share-on' || act === 'share-off') {
-    await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify(act === 'share-on' ? { share: true, logins: ticked() } : { share: false }) });
+  if (act === 'series-credentials') {
+    await api(`${seriesPath(cur)}/credentials`, { method: 'PUT', body: JSON.stringify({ logins: ticked(), autonomous: $('#autonomous').checked }) });
     await refresh();
     await openSeriesSettings();
     saved();
@@ -1775,9 +1764,7 @@ async function onAct(act, el) {
     pv = { title: `Wakes of ${cur.i.label}`, settings: { kind: 'wakes' } };
     renderPv();
   }
-  // A request to wake an instance wakes it as it is, with its runner's logins; one to start an instance asks theirs first.
-  if (act === 'req-start' && el.dataset.target) go((await api(`/api/requests/${el.dataset.id}`, { method: 'POST', body: '{}' })).id);
-  else if (act === 'req-start') await openStart('Start the instance asked for', 'Start', ({ logins }) => api(`/api/requests/${el.dataset.id}`, { method: 'POST', body: JSON.stringify({ logins }) }), undefined, undefined, el.dataset.ws);
+  if (act === 'req-start') go((await api(`/api/requests/${el.dataset.id}`, { method: 'POST', body: '{}' })).id);
   if (act === 'propose') {
     const series = $('#mvwhat').value;
     await api(`/api/proposals/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ kind: series ? 'move' : 'merge', series, to: $('#mvto').value }) });
@@ -1797,14 +1784,14 @@ async function onAct(act, el) {
     if (pv.settings.kind === 'waiting') renderPv(); else openWorkspaceSettings();
   }
   // Accepting shows what it does now: the series coming and their names here, and who joins, as members unless made owners; for a
-  // series, whoever runs its open instances but isn't here, whom you may leave out.
+  // series, its owner if not here, whom you may leave out.
   if (act === 'accept') {
     const id = el.dataset.id, p = await api(`/api/proposals/${id}`), merge = p.kind === 'merge';
     const html = `<ul>${p.series.map(x => `<li>${esc(x.from)} \u2192 ${esc(x.to)}${x.since ? ', made since it was proposed' : ''}</li>`).join('')}</ul>`
       + (p.agents ? `<h3>Its AGENTS.md, added to ${esc(p.to)}'s</h3><pre class="agents">${esc(p.agents)}</pre>` : '')
       + p.people.map(x => `<div class="row2"><select data-p="${esc(x)}"><option value="members">Member</option><option value="owners">Owner</option>${merge ? '' : '<option value="">Not added</option>'}</select> ${person(x)}</div>`).join('');
-    const text = merge ? "Its series come here, its people join as members, and its AGENTS.md is added to this one's. Shared series stop being shared until their sharers share them here."
-      : `It comes here, and stops being shared, if it is, until its sharer shares it here.${p.people.length ? ` Who runs its open instances but isn't in ${p.to}: added, they go on; left out, their runs wait until someone here takes those over.` : ''}`;
+    const text = merge ? "Its series come here, its people join as members, and its AGENTS.md is added to this one's. Series execution consent is cleared; each owner must explicitly select credentials again here."
+      : `It comes here with execution consent cleared. Its owner must explicitly select credentials here before any run.${p.people.length ? ` Its owner must also be able to see ${p.to}.` : ''}`;
     if (await ask({
       title: merge ? `Merge ${p.from} into ${p.to}` : `Move ${p.series[0].from} to ${p.to}`, text, html, ok: 'Accept',
       act: () => {
@@ -1950,16 +1937,19 @@ async function onAct(act, el) {
       return how === 'series' ? api(`${seriesPath(cur)}/promote`, { method: 'POST', body: JSON.stringify({ name: $('#aseries').value.trim() }) }) : 'ok';
     } })) || closed) await refresh();
   }
-  // A new instance waits for its first upload or comment, which starts its run.
-  if (act === 'new-instance') await openStart('New instance', 'Make', ({ label, logins }) => api(seriesPath(cur), { method: 'POST', body: JSON.stringify({ label, logins, quiet: true }) }), '');
-  // A task starts at once, Untitled, with the logins last ticked, on its conversation, ready for the prompt that starts its run.
-  if (act === 'new-task') {
-    const offers = new Set(applyLogins(await readLogins()).filter(l => !l.expired && (l.kind !== 'website' || cur.w.grants.some(g => g.person === me.email && g.site === l.id.slice(4) && g.state === 'approved'))).flatMap(l => l.offers.map(o => o.id))), logins = JSON.parse(localStorage.ticks ?? '[]').filter(id => offers.has(id));
-    const { instance } = await api('/api/series', { method: 'POST', body: JSON.stringify({ workspace: cur.w.id, single: true, logins }) });
-    Object.assign(ui, { open: true, focus: instance });
-    go(instance);
+  if (act === 'new-instance') {
+    let made;
+    if (await ask({
+      title: 'New instance', text: 'Uses the existing series owner and selected series credential ceiling. Creating it changes neither.', value: '', placeholder: 'Label', ok: 'Make',
+      act: async label => (made = await api(seriesPath(cur), { method: 'POST', body: JSON.stringify({ label, quiet: true }) })),
+    })) go(made.id);
   }
-  if (act === 'ticks') await openStart('Credentials', 'Save', ({ logins }) => api(`${instPath()}/logins`, { method: 'POST', body: JSON.stringify({ logins }) }), undefined, data.runner.logins, cur.w.id);
+  if (act === 'new-task') await openStart('New task: series credentials', 'Make task', async ({ logins, autonomous }) => {
+    const { instance } = await api('/api/series', { method: 'POST', body: JSON.stringify({ workspace: cur.w.id, single: true, logins, autonomous }) });
+    Object.assign(ui, { open: true, focus: instance });
+    return { id: instance };
+  }, undefined, [], cur.w.id);
+  if (act === 'ticks') await openSeriesSettings();
   // A closed task made a series is its only instance, an example for the instances the series starts later.
   // A closed instance is never changed, but a correction is read with it: on it or one of its items, at a ref if given, and where
   // the change is, another instance of its series.
@@ -1978,33 +1968,27 @@ async function onAct(act, el) {
     title: `Start a series from ${cur.i.label}`, text: 'This task becomes its first instance, an example for later ones.', value: cur.i.label, placeholder: 'Series name', ok: 'Start series',
     act: name => api(`${seriesPath(cur)}/promote`, { method: 'POST', body: JSON.stringify({ name }) }),
   })) await refresh();
-  if (act === 'takeover') {
-    const stops = data.run?.n ?? null;
-    await openStart(`Take over ${cur.i.label}`, 'Take over', ({ logins }) => api(`${instPath()}/assign`, { method: 'POST', body: JSON.stringify({ logins, stops }) }), undefined, undefined, undefined, stops !== null && `Run ${stops} is going: taking over stops it.`);
-  }
-  if (act === 'assign') {
-    const people = (await api(`${instPath()}/assignees`)).filter(p => p !== me.email).sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
-    if (!people.length) return ask({ title: `Assign ${cur.i.label}`, text: 'No one else who sees this workspace has signed in yet.' });
-    const stops = data.run?.n ?? null;
+  if (act === 'series-owner') {
+    const people = (await api(`${seriesPath(cur)}/owners`)).filter(p => p !== cur.s.owner).sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
+    if (!people.length) return ask({ title: 'Transfer whole series', text: 'No other eligible person has signed in to this workspace.' });
     if (await ask({
-      title: `Assign ${cur.i.label}`, text: `They run it from now on, ticking their own logins, none until they do; to its agent, what came before is history.${stops !== null ? ` Run ${stops} is going: assigning stops it.` : ''}`,
-      html: `<select id="assignto">${people.map(p => `<option value="${esc(p)}">${esc(me.names[p] ? `${called(p)} <${p}>` : p)}</option>`).join('')}</select>`, ok: 'Assign',
-      act: () => api(`${instPath()}/assign`, { method: 'POST', body: JSON.stringify({ to: $('#assignto').value, stops }) }),
-    })) await refresh();
+      title: `Transfer whole series: ${cur.s.name}`, text: 'Changes the owner of every instance, not just this one. Stops old runs and invalidates schedules. No credentials transfer: the incoming owner must explicitly consent before any run. This starts no run.',
+      html: `<select id="ownerto"><option value="">Select the new series owner</option>${people.map(p => `<option value="${esc(p)}">${esc(me.names[p] ? `${called(p)} <${p}>` : p)}</option>`).join('')}</select>`, ok: 'Transfer whole series',
+      act: () => api(`${seriesPath(cur)}/owner`, { method: 'PUT', body: JSON.stringify({ owner: $('#ownerto').value }) }),
+    })) { await refresh(); if (pv?.settings?.kind === 'series') await openSeriesSettings(); }
   }
   if (act === 'start-go') {
     const s = pv.settings, label = $('#slabel')?.value.trim();
     if (label === '') return toast('Give it a label');
-    localStorage.ticks = JSON.stringify(ticked());
-    const r = await s.then({ label, logins: ticked() });
+    const r = await s.then({ label, logins: ticked(), autonomous: $('#autonomous').checked });
     closePv();
     if (r?.id) go(r.id);
     else await refresh();
   }
   if (act === 'website-setup') {
     const back = pv;
-    if (back?.settings?.kind === 'start') Object.assign(back.settings, { label: $('#slabel')?.value, on: ticked() });
-    if (back?.settings?.kind === 'series') back.on = ticked();
+    if (back?.settings?.kind === 'start') Object.assign(back.settings, { label: $('#slabel')?.value, on: ticked(), autonomous: $('#autonomous').checked });
+    if (back?.settings?.kind === 'series') Object.assign(back, { on: ticked(), autonomous: $('#autonomous').checked });
     const setup = await openLogins(undefined, el.dataset.id);
     if (!setup) return;
     Object.assign(setup, { back, website: el.dataset.id, workspace: el.dataset.ws, shown: ['web', `web:${el.dataset.id}`] });
@@ -2211,15 +2195,8 @@ document.addEventListener('change', async ev => {
   if (group) group.querySelector('.tickall').checked = [...group.querySelectorAll('input.tick')].every(k => k.checked);
   if (el.matches('#mvwhat, #mvto')) return mvSay();
   if (el.id === 'sname') { await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) }); own.settings.name = el.value.trim(); own.title = `${own.settings.name} \u00b7 Settings`; }
-  else if (el.matches('#pv input.tick') && pv.settings.kind === 'series' && pv.settings.shared_by === me.email) await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ share: true, logins: ticked() }) });
   else if (el.id === 'wname') { await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) }); own.settings.name = el.value.trim(); own.title = `${own.settings.name} \u00b7 Settings`; }
   else if (el.id === 'oruse') await saveKey();
-  else if (el.matches('#log input.tick')) {
-    const logins = [...document.querySelectorAll('#log input.tick:checked:enabled')].map(i => i.value);
-    localStorage.ticks = JSON.stringify(logins);
-    await api(`${instPath()}/logins`, { method: 'POST', body: JSON.stringify({ logins }) });
-    return refresh();
-  }
   else return;
   if (pv === own) saved();
   await refresh();

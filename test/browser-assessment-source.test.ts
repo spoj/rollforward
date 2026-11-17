@@ -7,7 +7,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { initSystem, rfDir, saveTree, writeJson } from '../src/system.ts';
-import { createInstance, openStore } from '../src/store.ts';
+import { createInstance, openStore, seriesDir } from '../src/store.ts';
+import { authority } from '../src/logins.ts';
+import { saveSeriesSettings } from '../src/series.ts';
 
 const email = 'alice@synthetic.test', bob = 'bob@synthetic.test';
 const me = { email, name: 'Alice', role: 'user' as const, groups: [] };
@@ -56,7 +58,7 @@ beforeEach(t => {
   openStore(root);
   saveTree({ workspaces: { w: { name: 'Work', owners: [email], members: [bob] }, other: { name: 'Other', owners: [email], members: [] } }, series: { s: { name: 'Series', workspace: 'w' } } });
   writeJson('users.json', { [email]: { role: 'user' }, [bob]: { role: 'user' } });
-  writeJson('capabilities.json', { vpn: [email] });
+  writeJson('capabilities.json', { vpn: [email], 'series-owner': [email, bob] });
   writeJson('vpns.json', { corp: { type: 'fortinet', gateway: 'vpn.synthetic.test:443' } });
   writeJson('connections.json', {});
   writeJson('internal.json', {});
@@ -76,8 +78,9 @@ async function running(writeback = true) {
   await setSite(me, 'portal', { writeback });
   saveLogin(email, { id: 'web:portal', kind: 'website', name: 'portal', since: 'original-login', offers: [{ id: 'web:portal', name: 'portal' }] }, JSON.stringify({ cookies: [], origins: [] }));
   writeJson('grants.json', { approved: { workspace: 'w', person: email, site: 'portal', reason: 'work', at: '', state: 'approved' }, pending: { workspace: 'other', person: email, site: 'portal', reason: 'work', at: '', state: 'pending' } });
-  const inst = createInstance('s', 'instance', email, ['web:portal']);
-  inst.append('server', 'run', { run: 1, runner: email, consent: 1 });
+  saveSeriesSettings(seriesDir('s'), { version: 1, owner: email, epoch: 1, since: '', consent: { by: email, at: '', workspace: 'w', logins: ['web:portal'], autonomous: false } });
+  const inst = createInstance('s', 'instance', email);
+  inst.append('server', 'run', { run: 1, runner: email, initiator: email, authority: authority(inst) });
   const browsers = new Browsers(inst, 1);
   await browsers.browser('portal');
   return { inst, browsers };
@@ -86,12 +89,12 @@ const invalidations = ['signout', 'assignment', 'assignment ABA', 'consent', 'gr
 async function invalidate(kind: typeof invalidations[number], inst: ReturnType<typeof createInstance>) {
   switch (kind) {
     case 'signout': signOut(email, 'web:portal'); break;
-    case 'assignment': inst.append(email, 'assign', { to: bob, from: email, logins: [] }); break;
+    case 'assignment': saveSeriesSettings(inst.series(), { version: 1, owner: bob, epoch: 2, since: '' }); break;
     case 'assignment ABA':
-      inst.append(email, 'assign', { to: bob, from: email, logins: [] });
-      inst.append(bob, 'assign', { to: email, from: bob, logins: ['web:portal'] });
+      saveSeriesSettings(inst.series(), { version: 1, owner: bob, epoch: 2, since: '' });
+      saveSeriesSettings(inst.series(), { version: 1, owner: email, epoch: 3, since: '', consent: { by: email, at: '', workspace: 'w', logins: ['web:portal'], autonomous: false } });
       break;
-    case 'consent': inst.append(email, 'logins', { logins: [] }); break;
+    case 'consent': saveSeriesSettings(inst.series(), { version: 1, owner: email, epoch: 2, since: '' }); break;
     case 'grant': revoke(me, 'approved'); break;
     case 'route': await setSite(me, 'portal', { via: 'corp' }); break;
     case 'route ABA':

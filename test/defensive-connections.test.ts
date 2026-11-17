@@ -9,6 +9,10 @@ import type { Socket } from 'node:net';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { saveSeriesSettings, seriesSettings } from '../src/series.ts';
+import { writeJson } from '../src/system.ts';
+import { ownSeries } from './owner-fixture.ts';
+import { openStore } from '../src/store.ts';
 import type { Instance } from '../src/store.ts';
 
 const USER = 'alice@demo.test';
@@ -28,11 +32,12 @@ let connMod: typeof import('../src/connections.ts');
 const runs = new Map<string, Instance>(), callRuns = new Map<string, import('../src/connections.ts').CallRun>();
 
 const started = (ticks: string[]) => [
-  { seq: 1, op: 'create', by: USER, logins: ticks },
-  { seq: 2, op: 'run', run: 1, runner: USER, consent: 1 },
+  { seq: 1, op: 'create', by: USER },
+  { seq: 2, op: 'run', run: 1, runner: USER, initiator: USER, authority: { version: 1, owner: USER, epoch: seriesSettings(seriesDir).epoch, workspace: 'w', logins: ticks, autonomous: false } },
 ];
 
 function makeInst(ticks: string[]): Instance {
+  ownSeries('s1', USER, ticks);
   return {
     id: 'i1',
     dir: instDir,
@@ -209,12 +214,15 @@ before(async () => {
   process.env.RF_PUBLIC_URL = 'https://rf.demo.test';
   process.env.RF_M365_SCOPES = 'Mail.Read Mail.Send Files.Read.All Sites.Read.All';
   process.env.OPENROUTER_API_KEY = 'sk-or-defensive-test';
+  process.env.RF_M365_SCOPES = 'Mail.Read Mail.Send Files.Read.All Sites.Read.All';
 
   const { initSystem, saveTree } = await import('../src/system.ts');
   initSystem(tmp);
+  openStore(tmp);
   saveTree({ workspaces: { w: { name: 'W', owners: [USER], members: [] } }, series: { s1: { name: 'S1', workspace: 'w' } } });
   const auth = await import('../src/auth.ts');
   auth.upsertUser(USER, { role: 'user' });
+  writeJson('capabilities.json', { 'series-owner': [USER] });
 
   const graphMod = await import('../src/connections/graph.ts');
   graphMod.endpoints.graph = base;
@@ -253,7 +261,7 @@ before(async () => {
     agent: async (_q, s) => void s.writeHead(404).end(),
     run: token => {
       if (!runs.has(token)) return undefined;
-      if (!callRuns.has(token)) callRuns.set(token, { inst: runs.get(token)!, n: 1, links: new Map(), cost: 0 });
+      if (!callRuns.has(token)) callRuns.set(token, { inst: runs.get(token)!, runner: USER, n: 1, links: new Map(), cost: 0 });
       const r = callRuns.get(token)!;
       return { egress() {}, browsers: () => { throw new Error('no browsers'); }, intercepts: h => connMod.intercepts(r, h), call: (h, q, s) => connMod.call(r, h, q, s) };
     },
@@ -270,7 +278,7 @@ after(async () => {
 test('Graph canonicalizes percent-encoded resource segments and colon paths consistently across lookup and forwarding', async () => {
   const inst = makeInst(['m365:item:b!d1/folderA']);
   runs.set('g1', inst);
-  callRuns.set('g1', { inst, n: 1, links: new Map(), cost: 0 });
+  callRuns.set('g1', { inst, runner: USER, n: 1, links: new Map(), cost: 0 });
   calls.length = 0;
   upstreamPaths.length = 0;
 
@@ -307,7 +315,7 @@ test('Graph canonicalizes percent-encoded resource segments and colon paths cons
 test('Databricks rejects malformed or ambiguous path segments while allowing valid SQL and Unity Catalog paths', async () => {
   const inst = makeInst(['adb:adb-1.azuredatabricks.net/wh1']);
   runs.set('d1', inst);
-  callRuns.set('d1', { inst, n: 1, links: new Map(), cost: 0 });
+  callRuns.set('d1', { inst, runner: USER, n: 1, links: new Map(), cost: 0 });
   upstreamPaths.length = 0;
 
   const D = 'https://adb-1.azuredatabricks.net';
@@ -347,7 +355,7 @@ test('Databricks rejects malformed or ambiguous path segments while allowing val
 test('Compressed zstd and x-gzip responses decode metadata and usage while non-JSON metadata preserves HTTP status', async () => {
   const inst = makeInst(['adb:adb-1.azuredatabricks.net/wh1']);
   runs.set('z1', inst);
-  callRuns.set('z1', { inst, n: 1, links: new Map(), cost: 0 });
+  callRuns.set('z1', { inst, runner: USER, n: 1, links: new Map(), cost: 0 });
   calls.length = 0;
 
   // 1. zstd-compressed Databricks statement result extracts external_links cleanly
@@ -487,13 +495,14 @@ test('Entra token() coalesces concurrent refreshes and ignores stale completions
 
 for (const mode of ['untick', 'unoffer', 'signout']) {
   test(`credential withdrawal during token renewal prevents a new send: ${mode}`, { timeout: 5000 }, async () => {
-    const offer = `m365:mail:${USER}`, inst = makeInst([offer]);
-    runs.set('revoke', inst);
-    callRuns.set('revoke', { inst, n: 1, links: new Map(), cost: 0 });
+    const offer = `m365:mail:${USER}`;
     loginsMod.saveLogin(USER, {
       id: 'm365', kind: 'm365', name: 'Microsoft 365', since: `renew-${mode}`,
       offers: [{ id: offer, name: 'Mailbox' }],
     }, 'hold-revoke');
+    const inst = makeInst([offer]);
+    runs.set('revoke', inst);
+    callRuns.set('revoke', { inst, runner: USER, n: 1, links: new Map(), cost: 0 });
     calls.length = 0;
     upstreamPaths.length = 0;
     tokenGate = Promise.withResolvers();
@@ -505,10 +514,13 @@ for (const mode of ['untick', 'unoffer', 'signout']) {
       await tokenEntered.promise;
       assert.equal(upstreamPaths.includes('/v1.0/me/sendMail'), false);
       assert.equal(calls.some(c => c.op === 'send'), false);
-      if (mode === 'untick') inst.log.push({ seq: 3, at: new Date().toISOString(), op: 'logins', by: USER, logins: [] });
+      if (mode === 'untick') saveSeriesSettings(seriesDir, { ...seriesSettings(seriesDir), epoch: seriesSettings(seriesDir).epoch + 1, consent: { by: USER, at: '', workspace: 'w', logins: [], autonomous: false } });
       if (mode === 'unoffer') loginsMod.unoffer(USER, 'm365', offer);
       if (mode === 'signout') loginsMod.signOut(USER, 'm365');
       assert.throws(() => loginsMod.use(inst, 1, offer));
+      loginsMod.saveLogin(USER, { id: 'm365', kind: 'm365', name: 'Microsoft 365', since: `regranted-${mode}`, offers: [{ id: offer, name: 'Mailbox' }] }, 'regranted-refresh');
+      ownSeries('s1', USER, [offer]);
+      assert.throws(() => loginsMod.use(inst, 1, offer), 'regrant cannot revive the old run');
     } finally {
       tokenGate.resolve();
     }
@@ -516,7 +528,7 @@ for (const mode of ['untick', 'unoffer', 'signout']) {
     tokenGate = undefined;
     tokenEntered = undefined;
     assert.equal(upstreamPaths.includes('/v1.0/me/sendMail'), false, 'withdrawn credentials must not start a new upstream request');
-    assert.equal(response.status, mode === 'untick' ? 403 : 409);
+    assert.equal(response.status, 403);
     assert.equal(calls.some(c => c.op === 'send'), false);
     assert.equal(calls.at(-1)?.op, 'call');
     assert.equal(calls.at(-1)?.data.status, response.status);
@@ -525,13 +537,14 @@ for (const mode of ['untick', 'unoffer', 'signout']) {
   });
 
   test(`credential withdrawal preserves an already-sent call: ${mode}`, { timeout: 5000 }, async () => {
-    const offer = `m365:mail:${USER}`, inst = makeInst([offer]);
-    runs.set('sent', inst);
-    callRuns.set('sent', { inst, n: 1, links: new Map(), cost: 0 });
+    const offer = `m365:mail:${USER}`;
     loginsMod.saveLogin(USER, {
       id: 'm365', kind: 'm365', name: 'Microsoft 365', since: `sent-${mode}`,
       offers: [{ id: offer, name: 'Mailbox' }],
     }, 'sent-refresh');
+    const inst = makeInst([offer]);
+    runs.set('sent', inst);
+    callRuns.set('sent', { inst, runner: USER, n: 1, links: new Map(), cost: 0 });
     calls.length = 0;
     upstreamPaths.length = 0;
     sendGate = Promise.withResolvers();
@@ -543,7 +556,7 @@ for (const mode of ['untick', 'unoffer', 'signout']) {
       await sendEntered.promise;
       assert.equal(upstreamPaths.filter(p => p === '/v1.0/me/sendMail').length, 1);
       assert.deepEqual(calls.map(c => c.op), ['send']);
-      if (mode === 'untick') inst.log.push({ seq: 3, at: new Date().toISOString(), op: 'logins', by: USER, logins: [] });
+      if (mode === 'untick') saveSeriesSettings(seriesDir, { ...seriesSettings(seriesDir), epoch: seriesSettings(seriesDir).epoch + 1, consent: { by: USER, at: '', workspace: 'w', logins: [], autonomous: false } });
       if (mode === 'unoffer') loginsMod.unoffer(USER, 'm365', offer);
       if (mode === 'signout') loginsMod.signOut(USER, 'm365');
       assert.throws(() => loginsMod.use(inst, 1, offer));

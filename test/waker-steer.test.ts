@@ -15,6 +15,8 @@ for (const mode of ['queued', 'success', 'failure']) test(`a mid-turn steer is r
       import * as runner from './src/runner.ts';
       import * as entra from './src/entra.ts';
       import { initSystem, saveTree, writeJson } from './src/system.ts';
+      import { ownSeries } from './test/owner-fixture.ts';
+      import { authority } from './src/logins.ts';
       import { createInstance, openStore } from './src/store.ts';
       const root = ${JSON.stringify(root)}, mode = ${JSON.stringify(mode)}, alice = 'alice@demo.test';
       initSystem(root);
@@ -22,6 +24,7 @@ for (const mode of ['queued', 'success', 'failure']) test(`a mid-turn steer is r
       saveTree({ workspaces: { w: { name: 'Work', owners: [alice], members: [] } }, series: { s: { name: 'Series', workspace: 'w' } } });
       writeJson('users.json', { [alice]: { role: 'user' } });
       mkdirSync(root + '/series/s', { recursive: true });
+      ownSeries('s', alice);
       const first = Promise.withResolvers(), second = Promise.withResolvers(), settled = Promise.withResolvers(), nextSettled = Promise.withResolvers();
       let starts = 0, turns = 0, emit;
       const run = {
@@ -47,7 +50,7 @@ for (const mode of ['queued', 'success', 'failure']) test(`a mid-turn steer is r
       mock.module('./src/runner.ts', { namedExports: { ...runner, startRun: async o => { starts++; emit = o.onEvent; return run; } } });
       mock.module('./src/entra.ts', { namedExports: { ...entra, confirm: async () => {} } });
       const { active, kick } = await import('./src/waker.ts');
-      const inst = createInstance('s', 'Steer', alice, []);
+      const inst = createInstance('s', 'Steer', alice);
       inst.append(alice, 'comment', { text: 'First instruction.' });
       kick(inst);
       await first.promise;
@@ -72,7 +75,7 @@ for (const mode of ['queued', 'success', 'failure']) test(`a mid-turn steer is r
         await new Promise(ok => setImmediate(ok));
         await next.ended;
       }
-    `], { cwd: join(import.meta.dirname, '..'), timeout: 10_000, stdio: 'pipe' });
+    `], { cwd: join(import.meta.dirname, '..'), env: { ...process.env, RF_MIN_FREE_GB: '0' }, timeout: 10_000, stdio: 'pipe' });
   } catch (e) {
     assert.fail((e as { stderr: Buffer }).stderr.toString());
   } finally {

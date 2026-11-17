@@ -19,9 +19,10 @@ export type User = { name?: string; role: Role; disabled?: boolean; sub?: string
 export type Me = { email: string; name: string; role: Role; groups: string[] };
 // Capabilities beyond what every user has, each granted by admins to people and Entra groups: publish, pushing skills, which every
 // run loads; create, making workspaces; and keepalive, keeping one's website logins alive (browsers.ts), which loads the website
-// every few minutes. Admins have those implicitly; trial VPN access is explicit, even for admins.
-export const CAPS = ['publish', 'create', 'keepalive', 'vpn'], capabilities = () => readJson<Record<string, string[]>>('capabilities.json', {});
-export const can = (me: Me, cap: string) => cap === 'vpn' ? !!process.env.RF_TUNNEL_URL && isIn(me, capabilities()[cap] ?? []) : me.role === 'admin' || isIn(me, capabilities()[cap] ?? []);
+// every few minutes. Admins have those implicitly; VPN and sole series ownership pilots require explicit grants even for admins.
+export const CAPS = ['publish', 'create', 'keepalive', 'vpn', 'series-owner'], capabilities = () => readJson<Record<string, string[]>>('capabilities.json', {});
+export const can = (me: Me, cap: string) => cap === 'vpn' ? !!process.env.RF_TUNNEL_URL && isIn(me, capabilities()[cap] ?? [])
+  : (cap !== 'series-owner' && me.role === 'admin') || isIn(me, capabilities()[cap] ?? []);
 
 const env = process.env;
 const oidc = {
@@ -347,8 +348,10 @@ async function finishLogin(req: IncomingMessage, res: ServerResponse, claims: an
 // as for one expired, revoked, made through another app or wanting multi-factor sign-in again, for its person to sign in again. A refusal that names this server's own
 // app, as when its secret expired, is the server's to mend, and answers 502, as other failures do; one that wants the person's
 // consent to permissions the server asks for anew carries `consent`.
-export async function renew(refreshToken: string, scope: string[]): Promise<{ access: string; idToken: string; refresh: string; expires: number; scopes?: string[] }> {
+export async function renew(refreshToken: string, scope: string[], checkpoint?: () => void): Promise<{ access: string; idToken: string; refresh: string; expires: number; scopes?: string[] }> {
+  checkpoint?.();
   const d = await discovery();
+  checkpoint?.();
   const r = await fetch(d.token_endpoint, {
     method: 'POST', signal: AbortSignal.timeout(20_000),
     body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: oidc.clientId, scope: entraScope(scope), ...(oidc.clientSecret && { client_secret: oidc.clientSecret }) }),

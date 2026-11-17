@@ -1,4 +1,4 @@
-import { after, before, test } from 'node:test';
+import { after, before, beforeEach, test } from 'node:test';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { gzipSync } from 'node:zlib';
@@ -10,7 +10,9 @@ import type { Socket } from 'node:net';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import type { Instance } from '../src/store.ts';
+import { saveTree, tree, writeJson } from '../src/system.ts';
+import { saveSeriesSettings, seriesSettings } from '../src/series.ts';
+import { openStore, type Instance } from '../src/store.ts';
 import type { AgentRun } from '../src/agent-api.ts';
 
 // A stand-in for Microsoft's sign-in and Graph: a SharePoint library with a folder of years of reports, the runner's OneDrive,
@@ -54,8 +56,14 @@ const mail = [
 ];
 const MIME = 'Subject: FW: Request successfully processed\r\n\r\nThe payment run is attached.\r\n';
 const ticks = ['m365:mail:alice@demo.test', 'm365:site:host,site1,web1'];
-// An instance's log as its run 1 started, with the logins ticked as it was made.
-const started = (logins: string[]) => [{ seq: 1, op: 'create', by: ALICE, logins }, { seq: 2, op: 'run', run: 1, runner: ALICE, consent: 1 }];
+const started = (logins: string[], owner = ALICE) => [{ seq: 1, op: 'create', by: owner }, { seq: 2, op: 'run', run: 1, runner: owner, initiator: owner, authority: { version: 1, owner, epoch: 1, workspace: 'w', logins } }];
+let serial = 0;
+function selected(logins: string[], owner = ALICE) {
+  const seriesId = `selected-${++serial}`, dir = join(tmp, 'series', seriesId);
+  saveTree({ ...tree(), series: { ...tree().series, [seriesId]: { name: seriesId, workspace: 'w' } } });
+  saveSeriesSettings(dir, { version: 1, owner, epoch: 1, since: '', consent: { by: owner, at: '', workspace: 'w', logins, autonomous: false } });
+  return { seriesId, series: () => dir, log: started(logins, owner) };
+}
 const inst = { id: 'w1', dir: instDir, seriesId: 'weekly', log: started(ticks), doc: { items: [{ id: 'pack', name: 'Pack', kind: 'output', file: null }] }, series: () => seriesDir, append: (_by: string, op: string, data: any) => { log.push({ op, data }); return { seq: log.length }; } } as unknown as Instance;
 const run: AgentRun = { inst, n: 1, token: 'run' };
 let call: (path: string, body?: unknown) => Promise<{ status: number; data: unknown } | null>;
@@ -241,7 +249,7 @@ before(async () => {
   await new Promise<void>(ok => services.listen(0, '127.0.0.1', ok));
   const base = `http://127.0.0.1:${(graph.address() as { port: number }).port}`;
   Object.assign(process.env, { OPENROUTER_API_KEY: 'the-openrouter-key', EXA_API_KEY: 'the-exa-key', RF_OIDC_ISSUER: base, RF_OIDC_CLIENT_ID: 'app', RF_PUBLIC_URL: 'http://127.0.0.1:1', RF_M365_SCOPES: 'Mail.ReadWrite Mail.ReadWrite.Shared Mail.Send Mail.Send.Shared Files.ReadWrite.All Sites.Read.All' });
-  const { initSystem, saveTree, writeJson } = await import('../src/system.ts');
+  const { initSystem } = await import('../src/system.ts');
   const { upsertUser } = await import('../src/auth.ts');
   const { openSkills, pushSkill } = await import('../src/skills.ts');
   const { filesOf, standIns } = await import('./push.ts');
@@ -250,8 +258,10 @@ before(async () => {
   agentCall = (await import('../src/agent-api.ts')).agentCall;
   logins = await import('../src/logins.ts');
   initSystem(tmp);
+  openStore(tmp);
   saveTree({ workspaces: { w: { name: 'W', owners: [ALICE], members: [] } }, series: { weekly: { name: 'Weekly', workspace: 'w' } } });
   upsertUser(ALICE, { role: 'user' });
+  writeJson('capabilities.json', { 'series-owner': [ALICE, 'bob-cache@demo.test', 'carol-cache@demo.test'] });
   openSkills(tmp);
   for (const id of ['mail-report', 'onedrive-report', 'portal', 'tool']) pushSkill(id, filesOf(join(standIns, id)), ALICE);
   writeJson('connections.json', {
@@ -271,7 +281,7 @@ before(async () => {
     agent: async (_q, s) => void s.writeHead(404).end(),
     run: token => {
       if (!runs.has(token)) return undefined;
-      if (!callRuns.has(token)) callRuns.set(token, { inst: runs.get(token)!, n: 1, links: new Map(), cost: 0 });
+      if (!callRuns.has(token)) callRuns.set(token, { inst: runs.get(token)!, runner: runs.get(token)!.log.find(e => e.op === 'run')!.runner as string, n: 1, links: new Map(), cost: 0 });
       const r = callRuns.get(token)!;
       return { egress() {}, browsers: () => { throw new Error('no browsers here'); }, intercepts: h => c.intercepts(r, h), call: (h, q, s) => c.call(r, h, q, s) };
     },
@@ -286,6 +296,10 @@ after(() => {
     s.closeAllConnections();
   }
   rmSync(tmp, { recursive: true, force: true, maxRetries: 3 });
+});
+
+beforeEach(() => {
+  saveSeriesSettings(seriesDir, { version: 1, owner: ALICE, epoch: 1, since: '', consent: { by: ALICE, at: '', workspace: 'w', logins: ticks, autonomous: false } });
 });
 
 const share = (link: string) => `/shares/u!${Buffer.from(link).toString('base64url')}`;
@@ -315,7 +329,7 @@ test('a failed parent or site lookup fails the request, not its ticks, and is re
       const tick = lookup === 'parent' ? `m365:item:${drive}/top` : 'm365:site:host,site1,web1';
       shares[link] = item('leaf', 'leaf.csv', '', false, 'middle', { ...lib, driveId: drive });
       logins.saveLogin(ALICE, { ...login, offers: [...login.offers, { id: tick, name: tick }] });
-      runs.set(token, { ...inst, log: started([tick]) } as unknown as Instance);
+      runs.set(token, { ...inst, ...selected([tick]) } as unknown as Instance);
       let failed = false;
       globalThis.fetch = async (input, init) => {
         const u = new URL(String(input));
@@ -357,8 +371,8 @@ test("the proxy refuses, with a plain 403 and why, what isn't ticked: the runner
   };
   await refused('/me/drive/root/children', /is in no folder, file or SharePoint site ticked for this instance/);
   await refused(`${share('https://share.test/bobs')}/driveItem/content`, /is in no folder, file or SharePoint site ticked/);
-  await refused(`/users/${AP}/messages`, /m365:mail:ap@demo.test is not ticked/);
-  await refused(`/me/messages/../../users/${AP}/messages`, /m365:mail:ap@demo.test is not ticked/);
+  await refused(`/users/${AP}/messages`, /m365:mail:ap@demo.test is outside this run's selected series credentials/);
+  await refused(`/me/messages/../../users/${AP}/messages`, /m365:mail:ap@demo.test is outside this run's selected series credentials/);
   await refused('/users', /the graph connection reaches mailboxes, and folders, files and SharePoint sites ticked for this instance, not \/users/);
   await refused('https://graph.microsoft.com/v2.0/me/messages', /Microsoft Graph, under \/v1.0\/ or \/beta\//);
   for (const out of ["/sites/host,site1,web1/getByPath(path='/sites/HR')/drive/root/children", "/sites/host,site1,web1/microsoft.graph.getByPath(path='/sites/HR')"]) await refused(out, /getByPath reaches any site by its path/);
@@ -367,7 +381,7 @@ test("the proxy refuses, with a plain 403 and why, what isn't ticked: the runner
   for (const out of ['/sites/host,site1,web1/Drives/b!own/items/secret/content', '/sites/host,site1,web1/drives/b!own']) await refused(out, /is in no folder, file or SharePoint site ticked/);
   assert.equal((await via('PUT', `${G}/sites/host,site1,web1/Drives/b!own/items/secret/content`, { body: 'x' })).status, 403);
   for (const out of ["/sites/host,site1,web1/drives('b!own')", `${share('https://share.test/reports')}/items('y2025')/children`]) await refused(out, /name resources as \/drives\/ID/);
-  await refused(`/Users/${AP}/Messages`, /m365:mail:ap@demo.test is not ticked/);
+  await refused(`/Users/${AP}/Messages`, /m365:mail:ap@demo.test is outside this run's selected series credentials/);
   await refused('/sites/host,site1,web1/sites/other', /subsites are ticked by themselves/);
   await via('GET', `${G}/sites/host,site1,web1/drives`);
   assert.deepEqual([calls().at(-1)!.path, calls().at(-1)!.refused], ['/v1.0/sites/host,site1,web1/drives', undefined], "a ticked site's libraries, listed");
@@ -381,7 +395,7 @@ test("the proxy refuses, with a plain 403 and why, what isn't ticked: the runner
 
 test('a malformed request target is refused and logged, and the proxy keeps serving', async () => {
   const { call } = await import('../src/connections.ts');
-  await assert.doesNotReject(call({ inst, n: 1, links: new Map(), cost: 0 }, 'openrouter.ai', { url: '//[', method: 'GET' } as any, { writeHead: () => ({ end() {} }) } as any));
+  await assert.doesNotReject(call({ inst, runner: ALICE, n: 1, links: new Map(), cost: 0 }, 'openrouter.ai', { url: '//[', method: 'GET' } as any, { writeHead: () => ({ end() {} }) } as any));
   const r = await via('GET', 'https://openrouter.ai/', { path: '//[' });
   assert.equal(r.status, 403);
   assert.deepEqual(calls().at(-1), { run: 1, name: 'openrouter.ai', method: 'GET', path: '//[', status: 403, bytes: 0, refused: 'invalid request target: //[' });
@@ -481,7 +495,7 @@ test('adding Microsoft 365 sources keeps concurrent adds and removals and never 
 });
 
 test("a ticked folder reaches what's under it, at any depth, and a search within it; not its parent, a sibling, or a search of the whole drive", async () => {
-  runs.set('run2', { ...inst, log: started(['m365:item:b!d1/y2026']) } as unknown as Instance);
+  runs.set('run2', { ...inst, ...selected(['m365:item:b!d1/y2026']) } as unknown as Instance);
   const get = (path: string) => via('GET', `${G}${path}`, { token: 'run2' });
   assert.deepEqual(JSON.parse((await get('/drives/b!d1/items/y2026/children')).text).value.map((i: any) => i.id), ['a', 'b', 'c']);
   assert.equal((await get('/drives/b!d1/items/a/content')).text, content.a, 'a file under it');
@@ -510,29 +524,35 @@ test("links an answer gave go through for that run alone, as they are, with no c
 test('an answer’s links stop when their source is unticked or their runner can no longer lend', async () => {
   const { upsertUser } = await import('../src/auth.ts');
   for (const source of ['download', 'redirect', 'upload']) {
-    const token = `revoke-${source}`, own = { ...inst, log: started(ticks) } as unknown as Instance;
+    const token = `revoke-${source}`, own = { ...inst, ...selected(ticks) } as unknown as Instance;
     runs.set(token, own);
     const answer = await via(source === 'upload' ? 'POST' : 'GET', `${G}${source === 'upload' ? '/me/messages/d1/attachments/createUploadSession' : `/drives/b!d1/items/${source === 'redirect' ? 'b/content' : 'a'}`}`, { token, ...(source === 'upload' && json({ AttachmentItem: { attachmentType: 'file', name: 'pack.xlsx', size: 9 } })) });
     assert.equal(answer.status, source === 'upload' ? 201 : source === 'redirect' ? 302 : 200);
     const link = source === 'redirect' ? answer.headers.location! : JSON.parse(answer.text)[source === 'upload' ? 'uploadUrl' : '@microsoft.graph.downloadUrl'];
-    const request = () => via(source === 'upload' ? 'PUT' : 'GET', link, { token, headers: { authorization: '' }, ...(source === 'upload' && { body: 'PK pack!!' }) });
+    let activeToken = token;
+    const request = () => via(source === 'upload' ? 'PUT' : 'GET', link, { token: activeToken, headers: { authorization: '' }, ...(source === 'upload' && { body: 'PK pack!!' }) });
     assert.equal((await request()).status, source === 'upload' ? 201 : 200);
     const before = writes.length;
-    own.log.push({ seq: 3, op: 'logins', by: ALICE, logins: ticks.filter(t => t !== (source === 'upload' ? `m365:mail:${ALICE}` : 'm365:site:host,site1,web1')) } as any);
+    saveSeriesSettings(own.series(), { ...seriesSettings(own.series()), epoch: 2, consent: { by: ALICE, at: '', workspace: 'w', logins: ticks.filter(t => t !== (source === 'upload' ? `m365:mail:${ALICE}` : 'm365:site:host,site1,web1')), autonomous: false } });
     const unticked = await request();
     assert.equal(unticked.status, 403, source);
-    assert.match(unticked.text, /is not ticked for this instance/);
+    assert.match(unticked.text, /series authority has ended/);
     assert.deepEqual(calls().at(-1), { run: 1, name: 'graph', method: source === 'upload' ? 'PUT' : 'GET', path: link.split('?')[0], status: 403, bytes: 0, refused: unticked.text.trim() });
-    own.log.pop();
+    assert.equal(writes.length, before, 'no unticked upload reached its host');
+    activeToken = `${token}-disabled`;
+    runs.set(activeToken, { ...inst, ...selected(ticks) } as unknown as Instance);
+    await via(source === 'upload' ? 'POST' : 'GET', `${G}${source === 'upload' ? '/me/messages/d1/attachments/createUploadSession' : `/drives/b!d1/items/${source === 'redirect' ? 'b/content' : 'a'}`}`, { token: activeToken, ...(source === 'upload' && json({ AttachmentItem: { attachmentType: 'file', name: 'pack.xlsx', size: 9 } })) });
+    assert.equal((await request()).status, source === 'upload' ? 201 : 200);
+    const beforeDisabled = writes.length;
     upsertUser(ALICE, { disabled: true });
     try {
       const disabled = await request();
       assert.equal(disabled.status, 403, source);
-      assert.match(disabled.text, /can no longer run this instance/);
+      assert.match(disabled.text, /series authority has ended/);
     } finally {
       upsertUser(ALICE, { disabled: false });
     }
-    assert.equal(writes.length, before, 'no revoked upload reached its host');
+    assert.equal(writes.length, beforeDisabled, 'no disabled upload reached its host');
   }
 });
 
@@ -663,10 +683,10 @@ test('a website cannot reach a wildcard that covers Graph or Databricks', async 
 test('the proxy reaches nothing, not even what a tick is checked against, for a runner who can no longer lend their login', async () => {
   const { upsertUser } = await import('../src/auth.ts'), before = methods.length;
   upsertUser(ALICE, { disabled: true });
-  assert.match((await via('GET', `${G}/drives/b!d1/items/y2026/children`)).text, /can no longer run this instance/);
+  assert.match((await via('GET', `${G}/drives/b!d1/items/y2026/children`)).text, /series authority has ended/);
   const { saveLogin, signOut } = await import('../src/logins.ts'), n = asked.length;
   saveLogin(ALICE, { id: 'openrouter', kind: 'key', name: 'OpenRouter', account: ALICE, since: '2026-11-04T00:00:00Z', offers: [], enabled: true } as never, 'sk-or-alice');
-  assert.match((await via('POST', `${O}/chat/completions`, json({ model: 'x', messages: [] }))).text, /can no longer run this instance/, "nor their own model key, nor the server's in its place");
+  assert.match((await via('POST', `${O}/chat/completions`, json({ model: 'x', messages: [] }))).text, /series authority has ended/, "nor their own model key, nor the server's in its place");
   signOut(ALICE, 'openrouter');
   upsertUser(ALICE, { disabled: false });
   assert.deepEqual([methods.length, asked.length], [before, n], 'no request reached Graph or OpenRouter');
@@ -681,7 +701,7 @@ test("a body the proxy reads is read only for a runner who may lend, and refused
   }
   upsertUser(ALICE, { disabled: true });
   try {
-    assert.match((await via('POST', `${G}/me/sendMail`, { body: endless(), headers })).text, /can no longer run this instance/, 'answered with the body still coming');
+    assert.match((await via('POST', `${G}/me/sendMail`, { body: endless(), headers })).text, /series authority has ended/, 'answered with the body still coming');
   } finally {
     sent.resolve();
     upsertUser(ALICE, { disabled: false });
@@ -691,7 +711,8 @@ test("a body the proxy reads is read only for a runner who may lend, and refused
     for (let i = 0; i < 33; i++) yield Buffer.alloc(2 ** 20, 0x61);
     yield Buffer.from('"}');
   }
-  const r = await via('POST', `${G}/me/sendMail`, { body: big(), headers }).catch(e => ({ status: 0, text: String(e) }));
+  runs.set('fresh-body', { ...inst, ...selected(ticks) } as unknown as Instance);
+  const r = await via('POST', `${G}/me/sendMail`, { token: 'fresh-body', body: big(), headers }).catch(e => ({ status: 0, text: String(e) }));
   assert.deepEqual([r.status, calls().at(-1)!.status], [413, 413], r.text);
   assert.equal(methods.length, before, 'none reached Graph');
 });
@@ -731,7 +752,7 @@ test('a write whose run hangs up before its answer is read, as a run cut does, i
 });
 
 test("writes share nothing, and make, move or copy nothing outside the ticks; mail goes out as the ticked mailbox, in JSON or in MIME whose one From is it", async () => {
-  runs.set('run3', { ...inst, log: started(['m365:item:b!d1/y2026', `m365:mail:${ALICE}`]) } as unknown as Instance);
+  runs.set('run3', { ...inst, ...selected(['m365:item:b!d1/y2026', `m365:mail:${ALICE}`]) } as unknown as Instance);
   const write = (method: string, path: string, body: unknown) => via(method, `${G}${path}`, { token: 'run3', ...json(body) }), before = writes.length;
   for (const [method, path, body, why] of [
     ['POST', '/drives/b!d1/items/a/createLink', { type: 'view', scope: 'anonymous' }, /would share it/],
@@ -748,7 +769,7 @@ test("writes share nothing, and make, move or copy nothing outside the ticks; ma
     ['PATCH', '/drives/b!d1/items/a', { parentReference: { id: 'y2025' } }, /would put it in a folder no tick covers/],
     ['POST', '/drives/b!d1/items/a/copy', { parentReference: { driveId: 'b!d1', id: 'top' } }, /would put it in a folder no tick covers/],
     ['PATCH', '/drives/b!d1/items/a', { parentReference: { path: '/drives/b!own/root:' } }, /name the folder by its parentReference's id/],
-    ['POST', `/users/${AP}/sendMail`, {}, /m365:mail:ap@demo.test is not ticked/],
+    ['POST', `/users/${AP}/sendMail`, {}, /m365:mail:ap@demo.test is outside this run's selected series credentials/],
     ['POST', '/me/sendMail', { message: { from: { emailAddress: { address: AP } } } }, /mail from alice@demo.test goes out as alice@demo.test/],
   ] as [string, string, unknown, RegExp][]) {
     const r = await write(method, path, body);
@@ -854,7 +875,7 @@ test('Databricks requests use the connection ticked for their workspace host, no
       ['second-only', ['adb2:adb-1.azuredatabricks.net/wh2'], [['adb-1', 'adb2', 'wh2']]],
       ['two-workspaces', ['adb:adb-1.azuredatabricks.net/wh1', 'adb2:adb-2.azuredatabricks.net/wh2'], [['adb-1', 'adb', 'wh1'], ['adb-2', 'adb2', 'wh2']]],
     ] as [string, string[], string[][]][]) {
-      runs.set(token, { ...inst, log: started(ticks) } as unknown as Instance);
+      runs.set(token, { ...inst, ...selected(ticks) } as unknown as Instance);
       for (const [host, connection, warehouse] of hosts) {
         for (const path of ['/api/2.0/sql/statements', '/api/2.0/sql/statements/s1', '/api/2.1/unity-catalog/catalogs']) {
           const post = path.endsWith('/statements');
@@ -872,7 +893,7 @@ test('Databricks requests use the connection ticked for their workspace host, no
 });
 
 test("a run queries Databricks at its own address as the runner: statements on a warehouse ticked for its instance, whatever they do, as the runner's own grants allow, their results through the links they give, and the catalogue", async () => {
-  runs.set('dbx', { ...inst, log: started(['adb:adb-1.azuredatabricks.net/wh1']) } as unknown as Instance);
+  runs.set('dbx', { ...inst, ...selected(['adb:adb-1.azuredatabricks.net/wh1']) } as unknown as Instance);
   const D = 'https://adb-1.azuredatabricks.net', go = (method: string, path: string, body?: unknown) => via(method, `${D}${path}`, { token: 'dbx', ...(body !== undefined && json(body)) });
   const r = await go('POST', '/api/2.0/sql/statements', { statement: '-- open items\nSELECT customer, open FROM ar', warehouse_id: 'wh1', disposition: 'EXTERNAL_LINKS', format: 'CSV' });
   assert.equal(r.status, 200);
@@ -886,7 +907,7 @@ test("a run queries Databricks at its own address as the runner: statements on a
   assert.deepEqual(types.databricks.env!({ name: 'adb', type: 'databricks' } as never, ['m365:onedrive', 'adb:adb-1.azuredatabricks.net/wh1']), { DATABRICKS_TOKEN: 'rf', DATABRICKS_HOST: 'https://adb-1.azuredatabricks.net', DATABRICKS_WAREHOUSE_ID: 'wh1' }, "its CLI's and SDK's, the first warehouse ticked");
   const before = statements.length;
   for (const [method, path, body, why] of [
-    ['POST', '/api/2.0/sql/statements', { statement: 'SELECT 1', warehouse_id: 'other' }, /adb:adb-1\.azuredatabricks\.net\/other is not ticked for this instance/],
+    ['POST', '/api/2.0/sql/statements', { statement: 'SELECT 1', warehouse_id: 'other' }, /adb:adb-1\.azuredatabricks\.net\/other is outside this run's selected series credentials/],
     ['POST', '/api/2.0/sql/statements', { statement: 'SELECT 1' }, /a statement names its warehouse_id, one ticked for the instance: wh1/],
     ['POST', '/api/2.0/jobs/run-now', { job_id: 1 }, /adb takes statements/],
     ['GET', '/api/2.0/clusters/list', undefined, /adb takes statements/],
@@ -896,7 +917,7 @@ test("a run queries Databricks at its own address as the runner: statements on a
     assert.match(x.text, why, path);
   }
   assert.equal(statements.length, before, 'none reached the warehouse');
-  assert.match((await via('GET', `${D}/api/2.1/unity-catalog/catalogs`)).text, /adb:adb-1\.azuredatabricks\.net is not ticked for this instance/, 'a run that ticked no warehouse there');
+  assert.match((await via('GET', `${D}/api/2.1/unity-catalog/catalogs`)).text, /adb:adb-1\.azuredatabricks\.net is outside this run's selected series credentials/, 'a run that ticked no warehouse there');
   const adb = logins.logins(ALICE).find(l => l.id === 'adb')!;
   logins.saveLogin(ALICE, { ...adb, since: new Date().toISOString() }, 'stale');
   const gone = await go('GET', '/api/2.1/unity-catalog/catalogs');
@@ -993,7 +1014,7 @@ test('a deployment service gets streamed requests only under the runner\'s ticke
   });
   await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
   const url = `http://127.0.0.1:${(service.address() as { port: number }).port}/base`, S = 'https://drop.rf.internal';
-  const own = { ...inst, log: started(['drop:AP/']) } as unknown as Instance;
+  let own = { ...inst, ...selected(['drop:AP/']) } as unknown as Instance;
   runs.set('service', own);
   try {
     await t.test('settings, sealed key and offers stay generic, and a service host is no website\'s', async () => {
@@ -1006,6 +1027,8 @@ test('a deployment service gets streamed requests only under the runner\'s ticke
       const c = connections().find(c => c.name === 'drop')!, login = loginOf(c);
       assert.deepEqual(login.offers, [{ id: 'drop:AP/', name: 'AP/ at https://drop.rf.internal/' }, { id: 'drop:GL/2026/', name: 'GL/2026/ at https://drop.rf.internal/' }]);
       logins.saveLogin(ALICE, { ...login, since: '2026-11-04T00:00:00Z' } as never);
+      own = { ...inst, ...selected(['drop:AP/']) } as unknown as Instance;
+      runs.set('service', own);
       assert.deepEqual(logins.checkTicks(ALICE, ['drop:AP/']), ['drop:AP/']);
       await assert.rejects(checkHost('drop.rf.internal', true), /drop's: no website reaches it/);
       await assert.rejects(checkHost('*.rf.internal', true), /drop's: no website reaches it/);
@@ -1016,7 +1039,7 @@ test('a deployment service gets streamed requests only under the runner\'s ticke
       const q = requests.at(-1)!;
       assert.deepEqual([r.status, r.text, r.headers['x-receipt'], r.headers.location, r.headers.authorization], [201, '{not JSON, passed unchanged}', 'kept', 'https://elsewhere.test/receipt', 'receipt-token']);
       assert.deepEqual([q.method, q.path, q.body, q.headers['content-type'], q.headers['x-custom'], q.headers.authorization], ['PATCH', '/base/AP/file%20name?overwrite=1&x=%2F', body, 'application/json', 'kept', 'Bearer deployment-secret']);
-      assert.deepEqual(['runner', 'instance', 'run', 'series', 'workspace'].map(k => q.headers[`x-rf-${k}`]), [ALICE, 'w1', '1', 'weekly', 'w']);
+      assert.deepEqual(['runner', 'instance', 'run', 'series', 'workspace'].map(k => q.headers[`x-rf-${k}`]), [ALICE, 'w1', '1', own.seriesId, 'w']);
       assert.deepEqual([q.headers['x-rf-role'], q.headers['x_rf_runner']], [undefined, undefined]);
       assert.deepEqual(calls().at(-1), { run: 1, name: 'drop', method: 'PATCH', path: '/AP/file%20name?overwrite=1&x=%2F', status: 201, bytes: r.text.length, sent: log.length - 1, sha256: createHash('sha256').update(body).digest('hex'), size: Buffer.byteLength(body) });
       assert.ok(!JSON.stringify(log).includes('deployment-secret'));
@@ -1088,21 +1111,32 @@ test('a deployment service gets streamed requests only under the runner\'s ticke
     await t.test('offers follow admin settings, a run keeps its starting lease, and signing out stops its use', async () => {
       await setConnection('drop', { type: 'service', url, paths: 'AP/,AR/' }, 'admin');
       assert.deepEqual(logins.logins(ALICE).find(l => l.id === 'drop')!.offers.map(o => o.id), ['drop:AP/', 'drop:AR/']);
-      own.log.push({ seq: 3, op: 'logins', by: ALICE, logins: ['drop:AP/', 'drop:AR/'] } as any);
+      saveSeriesSettings(own.series(), { ...seriesSettings(own.series()), consent: { by: ALICE, at: '', workspace: 'w', logins: ['drop:AP/', 'drop:AR/'], autonomous: false } });
       assert.match((await via('GET', `${S}/AR/`, { token: 'service' })).text, /ticked prefixes: AP\//, 'a new tick waits for the next run');
       assert.equal((await via('GET', `${S}/AP/`, { token: 'service' })).status, 201, 'the sealed key survives settings without --key');
       logins.signOut(ALICE, 'drop');
-      assert.equal((await via('GET', `${S}/AP/`, { token: 'service' })).status, 409);
+      assert.equal((await via('GET', `${S}/AP/`, { token: 'service' })).status, 403);
       logins.saveLogin(ALICE, { ...loginOf(connections().find(c => c.name === 'drop')!), since: '2026-11-04T00:00:00Z' } as never);
-      own.log.push({ seq: 4, op: 'logins', by: ALICE, logins: [] } as any);
-      assert.match((await via('GET', `${S}/AP/`, { token: 'service' })).text, /ticked prefixes: none/);
-      own.log.pop();
+      assert.equal((await via('GET', `${S}/AP/`, { token: 'service' })).status, 403, 'signing back in cannot revive the revoked run');
+      own = { ...inst, ...selected(['drop:AP/']) } as unknown as Instance;
+      runs.set('service', own);
+      callRuns.delete('service');
+      assert.equal((await via('GET', `${S}/AP/`, { token: 'service' })).status, 201);
+      saveSeriesSettings(own.series(), { ...seriesSettings(own.series()), epoch: 2, consent: { by: ALICE, at: '', workspace: 'w', logins: [], autonomous: false } });
+      assert.match((await via('GET', `${S}/AP/`, { token: 'service' })).text, /series authority has ended/);
+      own = { ...inst, ...selected(['drop:AP/']) } as unknown as Instance;
+      runs.set('service', own);
+      callRuns.delete('service');
+      assert.equal((await via('GET', `${S}/AP/`, { token: 'service' })).status, 201);
       await setConnection('drop', { type: 'service', url, paths: 'AR/' }, 'admin');
-      assert.match((await via('GET', `${S}/AP/`, { token: 'service' })).text, /ticked prefixes: none/, 'an admin removing an offer stops it too');
+      assert.match((await via('GET', `${S}/AP/`, { token: 'service' })).text, /series authority has ended/, 'an admin removing an offer stops it too');
     });
     await t.test('an environment key works, and a service that is down answers 502', async () => {
       removeConnection('drop');
       await setConnection('drop', { type: 'service', url, paths: 'AP/' }, 'admin');
+      own = { ...inst, ...selected(['drop:AP/']) } as unknown as Instance;
+      runs.set('service', own);
+      callRuns.delete('service');
       assert.equal((await via('GET', `${S}/AP/`, { token: 'service' })).status, 502, 'no key is never Bearer undefined');
       process.env.RF_SERVICE_KEY_DROP = 'environment-secret';
       assert.equal((await via('GET', `${S}/AP/`, { token: 'service' })).status, 201);
@@ -1266,9 +1300,11 @@ test('cut streams and endpoints without inline usage.cost query /api/v1/generati
     assert.deepEqual([calls().at(-1)!.cost, calls().at(-1)!.estimated], [0.002, true], 'Exa response without costDollars falls back to estimate');
 
     // 4. cli.ts try stand-in records against server, and keys never appear in logs or costs.jsonl.
-    const tryInst = { id: 'try', dir: '', seriesId: '', log: [{ seq: 1, op: 'create', by: ALICE, logins: [] }], append: () => ({ seq: 1 }) } as unknown as Instance;
+    const { upsertUser } = await import('../src/auth.ts');
+    upsertUser(ALICE, { role: 'admin' });
+    const tryInst = { id: 'try', dir: '', seriesId: '', log: [{ seq: 1, op: 'create', by: ALICE }, { seq: 2, op: 'run', run: 0, runner: ALICE, initiator: ALICE, authority: { version: 1, owner: ALICE, epoch: 0, workspace: '', logins: [] } }], append: () => ({ seq: 1 }) } as unknown as Instance;
     runs.set('try-tok', tryInst);
-    callRuns.set('try-tok', { inst: tryInst, n: 0, links: new Map(), cost: 0 });
+    callRuns.set('try-tok', { inst: tryInst, runner: ALICE, n: 0, links: new Map(), cost: 0 });
     await via('POST', `${O}/chat/completions`, { token: 'try-tok', ...json({ model: 'openai/gpt-5-mini', messages: [{ role: 'user', content: 'Hi' }] }) });
     await drainCalls(callRuns.get('try-tok')!);
     const records = syncCosts();
@@ -1313,8 +1349,8 @@ test('parentOf caches ancestor lookups per user so one runner lacking parent vis
       if (u.pathname.endsWith('/drives/b!d1')) return Response.json({ id: 'b!d1', ...drives['b!d1'] });
       return fetchWas(input, init);
     };
-    const bobInst = { ...inst, log: [{ seq: 1, op: 'create', by: BOB, logins: ['m365:item:b!d1/leaf-only'] }, { seq: 2, op: 'run', run: 1, runner: BOB, consent: 1 }] } as unknown as Instance;
-    const carolInst = { ...inst, log: [{ seq: 1, op: 'create', by: CAROL, logins: ['m365:item:b!d1/y2026'] }, { seq: 2, op: 'run', run: 1, runner: CAROL, consent: 1 }] } as unknown as Instance;
+    const bobInst = { ...inst, ...selected(['m365:item:b!d1/leaf-only'], BOB) } as unknown as Instance;
+    const carolInst = { ...inst, ...selected(['m365:item:b!d1/y2026'], CAROL) } as unknown as Instance;
     runs.set('bob-parent', bobInst);
     runs.set('carol-parent', carolInst);
     const bobRes = await via('GET', `${G}/drives/b!d1/items/deep/content`, { token: 'bob-parent' });
@@ -1434,11 +1470,10 @@ test('corrupt compressed JSON answers fail the request while still reconciling g
   });
   const callLog: any[] = [];
   const mockInst = {
-    id: 'corrupt-json-inst', seriesId: 'weekly',
-    log: [{ seq: 1, op: 'create', by: ALICE, logins: [] }, { seq: 2, op: 'run', run: 1, runner: ALICE, consent: 1 }],
+    id: 'corrupt-json-inst', ...selected([]),
     append: (by: string, op: string, data: any) => { callLog.push({ by, op, ...data }); return { seq: callLog.length }; },
   } as unknown as Instance;
-  let a: import('../src/connections.ts').CallRun = { inst: mockInst, n: 1, links: new Map(), cost: 0 };
+  let a: import('../src/connections.ts').CallRun = { inst: mockInst, runner: ALICE, n: 1, links: new Map(), cost: 0 };
   const localProxy = createServer((req, res) => void proxyCall(a, 'openrouter.ai', req, res));
   await Promise.all([
     new Promise<void>(ok => provider.listen(0, '127.0.0.1', ok)),
@@ -1463,7 +1498,7 @@ test('corrupt compressed JSON answers fail the request while still reconciling g
 
     // 2. Corrupt gzip without generation charge: caller request fails, fallback estimate recorded and marked estimated, call logged as failed 502.
     mode = 'broken-est';
-    a = { inst: mockInst, n: 1, links: new Map(), cost: 0 };
+    a = { inst: mockInst, runner: ALICE, n: 1, links: new Map(), cost: 0 };
     const before2 = syncCosts().length;
     await assert.rejects(fetch(proxyUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'openai/gpt-5-mini', messages: [{ role: 'user', content: 'hi' }] }) }).then(r => r.text()));
     await drainCalls(a);
@@ -1475,7 +1510,7 @@ test('corrupt compressed JSON answers fail the request while still reconciling g
 
     // 3. Control: valid gzip without inline cost succeeds cleanly and resolves generation charge.
     mode = 'valid-gen';
-    a = { inst: mockInst, n: 1, links: new Map(), cost: 0 };
+    a = { inst: mockInst, runner: ALICE, n: 1, links: new Map(), cost: 0 };
     const res = await fetch(proxyUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'openai/gpt-5-mini', messages: [] }) });
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), { answer: 'ok' });

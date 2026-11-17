@@ -13,9 +13,9 @@ process.on('uncaughtException', e => {
 
 const usage = (c?: string, vpn = false, admin = false) => {
   const all = `rf login URL [TOKEN]                without a TOKEN, through the browser: type rf's code on the page, and allow it
-rf ls [--mine] [--json]           every workspace, series and instance you see, with its status, runner, asks waiting and wakes;
-                                  --mine, only the open instances you run
-rf waiting [--json]               what waits on you: asks and notes, instances someone assigned you, requests to start or wake an
+rf ls [--mine] [--json]           every workspace, series and instance you see, with its status, owner, asks waiting and wakes;
+                                  --mine, only open instances of series you own
+rf waiting [--json]               what waits on you: asks and notes, requests to start or wake an
                                   instance or to use a
                                   website in a workspace you own, proposals and expired logins; only admins see hosts a run's
                                   browser was refused that the server rates high or finds at an internal address
@@ -31,40 +31,38 @@ rf pull PATH DIR [--delete] [-n|--dry-run] [--exclude PATTERN]... [--max-size SI
 rf help [COMMAND]                 how rollforward works and how to use rf, for an agent, or COMMAND's usage
 rf --version                      rf's own version, to tell whether it's older than what the guide names
 rf comment PATH TEXT [--item ID] [--ref REF] [--thread cN] [--wake|--wait]   a new thread, or a reply under comment cN, as to
-                                  an agent's question; --wake starts a run on it, as --wait does, which prints what the agent
+                                  an agent's question; only the series owner's --wake or --wait starts a run; --wait prints what the agent
                                   says back
 rf upload PATH FILE [--onto ITEM] [--output] [--wake]
-rf approve PATH cN [TEXT] [--wake]   approves the agent's proposal cN: it goes ahead with it, and the folder is
+rf approve PATH cN [TEXT] [--wake]   records content approval of proposal cN, not permission to run as you; the folder is
                                   committed as it is now, in your name
 rf reject PATH cN [TEXT] [--wake]   rejects the agent's proposal cN, with feedback on missing information or changes;
                                   revised work takes a new proposal
 rf react PATH [cN] up|down|none   your thumbs up or down on comment cN, or on the instance, or none; quiet, open or closed
-rf close PATH [--as-series NAME] [--wake]   the runner makes it the record and an example,
+rf close PATH [--as-series NAME] [--wake]   the series owner makes it the record and an example,
                                   approving nothing; a task closes as a one-off, or as the first instance of the series NAME it
                                   becomes; --wake starts runs of the series' later open instances, which may have used its draft
-rf abandon PATH                   the runner leaves it as it is, neither an example nor a starting point
+rf abandon PATH                   the series owner leaves it as it is, neither an example nor a starting point
 rf delete PATH [--yes]            its workspace's owners and admins delete an instance, in any status, once they confirm, or
                                   with --yes: a run for it is cut, and all the server holds of it goes but its label and place,
                                   shown as deleted, by whom and when; it can't be undone, and copies outside the server stay
-rf interrupt PATH                 stops its run: its runner, an owner of its workspace or an admin
-rf takeover PATH [--creds OFFER,...]   you run it from now on, with those offers of your logins ticked; a run going is stopped
-                                  first, if you may stop it
-rf assign PATH EMAIL              EMAIL runs it from now on, ticking their own logins, none until they do: its runner, its
-                                  workspace's owners and admins; a run going is stopped first
-rf creds PATH [--set OFFER,...|--clear]   what its runs may use: its runner's ticks, and the offers of your logins; --set
-                                  ticks anew, as its runner
+rf interrupt PATH                 stops its run: its series owner, an owner of its workspace or an admin
+rf series owner SERIES [EMAIL] [--json]   the whole series' owner; EMAIL transfers every instance, stopping old runs and
+                                  clearing consent; only its current owner or a workspace manager may transfer it
+rf series credentials SERIES [--set OFFER,...|--clear] [--autonomous true|false] [--json]
+                                  the series-wide selected ceiling; only its owner saves it, explicitly including [] with
+                                  --clear; saving requires --autonomous true|false; no credentials or schedules transfer
 rf rename PATH NAME               an instance, a series or a workspace, by its path
-rf new task WORKSPACE [LABEL] [--creds OFFER,...] [--comment TEXT [--wake]]   a one-off task, Untitled until LABEL or its
-                                  first comment names it; --wake starts its run on the comment
-rf new instance SERIES LABEL [--creds OFFER,...] [--wake]   the series' next instance, which --wake runs at once
+rf new task WORKSPACE [LABEL] [--creds OFFER,...|--clear] [--autonomous true|false] [--comment TEXT [--wake]]   a one-off task, Untitled until LABEL or its
+                                  first comment names it; --wake starts its run on the comment; without --creds or --clear,
+                                  no execution consent is granted; --clear explicitly permits work with no credentials
+rf new instance SERIES LABEL [--wake]   another instance; keeps the series owner and ceiling; only the owner may start it
 rf new series PATH NAME           the task at PATH becomes the series NAME, itself its first instance
 rf new workspace NAME             yours to own, for admins and those they grant create
-rf share PATH on|off [--creds OFFER,...]   the series' people, and their agents, wake it as you, with those offers ticked;
-                                  off stops it, for its sharer or its workspace's owners
 rf archive PATH [--undo]          a workspace or a series leaves the sidebar, and nothing in it changes or runs, until --undo brings it back;
                                   its wakes and requests are cancelled for good
-rf request start|drop ID [--creds OFFER,...] [--wake]   a request to start or wake an instance, by the ID rf waiting and rf
-                                  wakes print; --wake runs the instance it starts or wakes
+rf request start|drop ID [--wake]   a request to start or wake an instance, by the ID rf waiting and rf
+                                  wakes print; only the target's current owner may Start; --wake runs it with existing series consent
 rf logins [--json]                your logins, each with its state, keepalive and offers; you sign in to them on the page
 rf logins offer|unoffer LOGIN SOURCE|OFFER   what a login offers runs: Microsoft 365's (m365) mailboxes, sites, folders and
                                   files, by address or link, a Databricks login's SQL warehouses, by link; unoffer takes the
@@ -128,7 +126,7 @@ rf wakes [PATH] [--json]          each series' pending wakes and requests to sta
                                   fired, and each instance's pending wakes
 rf people WORKSPACE [--set FILE|-] [-n] [--force]   its owners and admins: its people as lines of owner|member EMAIL-OR-GROUP,
                                   each with a comment; --set replaces them, -n shows the changes, --force hides open instances
-                                  from their runners
+                                  from their series owners
 
 Admins, and those they grant publish:
 rf skill push DIR                 DIR/SKILL.md and the rest become the newest version of the skill named DIR's name, live at once
@@ -143,7 +141,7 @@ rf egress [add|remove HOST]       the hosts runs may reach beyond package regist
 rf internal [remove HOST] [--json]   the hosts at internal addresses admins let every website reach, each with who let it and
                                   when, as rf site set NAME --internal true or allowing one does; remove takes one out, after
                                   which everyone's websites at it wait for an admin again
-rf connection set NAME TYPE       an outside system runs reach as their runner, by a login each person makes: graph,
+rf connection set NAME TYPE       an outside system runs reach as their series owner, by a login each person makes: graph,
                                   Microsoft 365, or databricks, Azure Databricks, as each person adds what their login
                                   offers; service --url http://HOST:PORT --paths 'AP/,GL/2026/' [--key KEY] lends paths
                                   through a deployment's service at https://NAME.rf.internal/; websites are rf site's
@@ -153,7 +151,7 @@ rf brand [--text TEXT] [--logo FILE] [--clear]   the deployment's text and logo,
                                   no option it prints them
 rf can [CAP [EMAIL|GROUP,...] [--clear]]   what users may do beyond the rest, as admins may: publish, push skills;
                                   create, make workspaces; and keepalive, keep their website logins alive for up to a
-                                  week as they sign in; a list grants CAP to those
+                                  week as they sign in; series-owner, authoring and executing owned series, requires an explicit grant even for admins; a list grants CAP to those
                                   emails and Entra group ids in place of whom it had, --clear to no one, and with neither it
                                   prints whom each is granted to${vpn ? '\n                                  vpn, using client VPNs, needs an explicit grant even for admins' : ''}${vpn && admin ? '\nrf vpn add NAME fortinet HOST:PORT [--servercert pin-sha256:HASH]   admins with vpn add a client VPN definition, which each\n                                  person signs in to on the page; --servercert pins the gateway key, as a refusal names it\nrf vpn remove NAME               admins with vpn remove a client VPN definition' : ''}`;
   return (c && all.split(/\n(?=\S)/).map(e => e.trimEnd()).filter(e => e.split(/\s/)[1] === c).join('\n')) || all;
@@ -167,18 +165,18 @@ What there is
 - A workspace holds series, and its people. A series is one recurring job; an instance is one period of it, labelled such as
   2026-08-23. A task is a one-off: a series of one instance, named by its label, until someone makes it a series. PATH is workspace/series/label, as rf ls prints it; for rf pull it may go deeper, into an instance's files.
 - An instance's screen is its items: inputs, outputs and steps, each pointing at a file, with what it's made from. People upload
-  files, and review the work in threads with the agent. The runner is the person whose logins the runs use, and who closes the
-  instance, making it the period's record and an example for the next, which approves nothing. Their comments and uploads start a run of the agent, which reads them and carries on, as do everyone's where the
-  runner shares the series, and a reply, approval or rejection from whom an ask names; anyone else's is a note, as are a wake someone else sets, another
-  instance's agent's comment and rf note's notes on a series: the agent's next run reads it, using what it brings and putting what
-  it asks for to the runner. The runner changes only by an assign, rf takeover or rf assign, which stops a run going: what came
-  before it is a note to the agent, whoever said it, and starts nothing.
+  files, and review the work in threads with the agent. One series owner is accountable for every instance: only that person
+  initiates execution, closes and abandons. Runs use their explicitly selected series credential ceiling. Absence of consent
+  prevents execution; an explicit empty selection permits credentialless work. Scheduled/autonomous starts require separate
+  owner opt-in. Collaborators' comments, uploads, named answers and approvals remain information, never new-run triggers.
+  Transferring the whole series stops old authority and clears consent; old unread instructions become notes. Creator,
+  commenter, approver and each historical run's executor remain separately attributed.
 - rf is quiet: a comment, upload, approval, rejection, close, new instance or request it starts begins no run unless --wake, and the agent
   reads it at its next run; rf wake PATH now starts one. A quiet upload or comment is committed to the instance's history at once.
 - A comment starts a thread, on the instance or on an item, at a cell such as Base!C25 or a line of a markdown file by its
   opening words, and replies go under any comment in it, cN by its seq, a thread's id its first comment's. The agent asks
-  questions, which wait on someone, the one it names or else the runner, until a person replies under it, and proposes what it
-  will do for its runner, such as sending mail, which waits until someone approves or rejects it, or the agent withdraws it; a
+  questions, which wait on someone, the one it names or else the series owner, until a person replies under it, and proposes what it
+  will do for its series owner, such as sending mail, which waits until someone approves or rejects it, or the agent withdraws it; a
   proposal missing information should be rejected with feedback, so the agent can revise and propose again. Generic comments
   are not proposal decisions. rf ls says how many asks wait in each instance. Reactions, thumbs up or down, are
   quiet signals kept for later. Anyone who sees the instance may approve a proposal, which commits the instance's folder to its
@@ -209,15 +207,15 @@ Usual work
 - Answer a question: rf comment PATH TEXT --thread cN --wait, which prints what the agent says back. Decide a proposal:
   rf approve PATH cN [TEXT] --wake, for the agent to go ahead, or rf reject PATH cN [TEXT] --wake. Close an
   instance once it's the record: rf close PATH.
-- Take an instance over: rf creds PATH lists the offers of your logins, and rf takeover PATH --creds OFFER,... ticks them. Hand
-  one you run, or one in a workspace you own, to someone else: rf assign PATH EMAIL; they tick their own logins with rf creds
-  PATH --set. Either way, what came before is history to the agent, and the next run waits for the new runner's act.
+- Transfer a whole series, as its current owner or workspace manager: rf series owner SERIES EMAIL. The incoming owner
+  explicitly selects its ceiling with rf series credentials SERIES --set OFFER,... --autonomous false, or --clear for none.
+  Every instance may use that selection: this is not an instance setting. No self-takeover right for collaborators.
 - Your logins: rf logins lists them, with what each offers, and an expired one's link to sign in again on the page.
 - Give an input or a corrected output: rf upload PATH FILE [--onto ITEM] [--output], with --wake on the last for a run on them
   all.
-- Start an instance: rf new instance SERIES LABEL --wake, as you, or rf wake SERIES now --label LABEL, which starts it as
-  whoever shares the series, else asks on the page for someone to start it; take one you run up later: rf wake PATH +2h. A
-  one-off: rf new task WORKSPACE --comment TEXT --wake, which becomes a series with rf new series PATH NAME.
+- Start an instance: rf new instance SERIES LABEL --wake, only as the series owner. Scheduled wakes need that owner's
+  autonomous opt-in and keep their authorized credential snapshot; collaborators' wakes become requests for the owner.
+  A one-off: rf new task WORKSPACE --clear --comment TEXT --wake. Promotion with rf new series PATH NAME keeps its owner.
 - Tell a series something for its runs, such as a rule from now on, or while no instance is open: rf note SERIES TEXT, which
   starts no run; rf note SERIES lists its notes, open, and settled by a run or by hand.
 - Read what a run did: rf show PATH for its last run, rf log PATH for every entry, --follow as they come, and rf cat PATH/FILE
@@ -225,7 +223,7 @@ Usual work
 
 Watching over it, for admins and power users; each sees what the caller sees
 - What's stuck: rf status lists low OpenRouter credit (for admins), runs going, flagging those past --long MIN (30); queued runs, since when and why: their series is
-  running, an update's drain, the RF_MAX_RUNS cap, or memory; what waits on whom since when: asks, notes for runners, expired logins and the instances
+  running, an update's drain, the RF_MAX_RUNS cap, or memory; what waits on whom since when: asks, notes for series owners, expired logins and the instances
   they hold, and requests to start; open instances whose last run failed; and indexes crawling or failing.
 - Indexes: rf indexes shows each index of a big library or mailbox you index, every one for admins: its items and size, and per
   person whether it is crawling or following changes, pages read, when last caught up, and an error, if any, with its next try.
@@ -234,11 +232,11 @@ Watching over it, for admins and power users; each sees what the caller sees
   workspace|series|person|day|outcome] [--daily] totals them (by the runner for person, plus server calls and OpenRouter key usage
   for admins). A DATE such as 2026-11-01 starts at its midnight on this machine's clock, the days --by day groups by.
 - People: rf people (admins) prints everyone as ROLE EMAIL lines, and rf people WORKSPACE (its owners and admins) its owners and
-  members as owner|member lines; a comment after each says when they last signed in and which open instances they run, and for
-  everyone those they run in workspaces they aren't in. Edit the lines, see the changes with --set FILE -n (FILE may be - for
+  members as owner|member lines; a comment after each says when they last signed in and which series they own, and for
+  everyone those they own in workspaces they aren't in. Edit the lines, see the changes with --set FILE -n (FILE may be - for
   stdin), then --set FILE. For everyone it sets the roles of the people listed and adds new ones, removing no one (rf user remove
-  does); for a workspace it replaces its people. A change that would hide an open instance from the person who runs it is refused,
-  naming them, unless --force: have someone who stays take those over first.`;
+  does); for a workspace it replaces its people. A change that would hide an owned series from its owner is refused,
+  naming them, unless --force: explicitly transfer whole series to someone who stays first.`;
 
 const config = join(homedir(), '.config', 'rollforward.json');
 const [cmd, ...argv] = process.argv.slice(2);
@@ -305,9 +303,9 @@ async function workspaceNamed(name: string) {
 }
 // An instance's path as rf ls prints it, by its id.
 const pathOf = async (id: string) => (await get('/api')).flatMap(w => w.series.flatMap(s => s.instances.filter(i => i.id === id).map(i => `${w.name}/${s.name}/${i.label}`)))[0];
-// The offers of your logins that --creds or --set name, ticked for an instance, and what ticking them agrees to.
+// Explicit series-wide offer selection.
 const ticks = () => flags.clear ? [] : String(flags.creds ?? flags.set ?? '').split(',').map(o => o.trim()).filter(Boolean);
-const consent = (offers: string[]) => offers.length ? `, ticking ${offers.join(', ')}: you agree that agents carry these credentials while acting as you` : ', with no logins ticked';
+const consent = (offers: string[]) => `, series-wide ceiling: ${offers.join(', ') || 'no credentials'}; you explicitly consent to agents acting as you`;
 
 // Times as this machine's clock reads them, and lengths of time and costs, for the views.
 const when = (iso: string) => new Date(iso).toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' });
@@ -470,14 +468,14 @@ if (cmd === 'login' && url) {
   writeFileSync(config, JSON.stringify({ url, token }), { mode: 0o600 });
   console.log(`signed in as ${me.email}`);
 } else if (cmd === 'ls' && !args.length) {
-  // --mine: the open instances you run, alone.
+  // --mine: open instances of series you own.
   const me = flags.mine && await get('/me'), rows = (await get('/api')).flatMap(w => w.series.flatMap(s => [
-    ...me ? [] : [{ path: `${w.name}/${s.name}`, id: s.id, requests: s.requests.length, wakes: s.wakes }],
-    ...s.instances.filter(i => !me || (i.status === 'open' && i.runner === me.email)).map(i => ({ path: `${w.name}/${s.name}/${i.label}`, id: i.id, status: i.status, running: i.running, asks: i.asks.length, runner: i.runner, wakes: i.wakes, ...(i.deleted && { deleted: i.deleted }) })),
+    ...me ? [] : [{ path: `${w.name}/${s.name}`, id: s.id, owner: s.owner, requests: s.requests.length, wakes: s.wakes }],
+    ...s.instances.filter(i => !me || (i.status === 'open' && i.owner === me.email)).map(i => ({ path: `${w.name}/${s.name}/${i.label}`, id: i.id, status: i.status, running: i.running, asks: i.asks.length, owner: i.owner, wakes: i.wakes, ...(i.deleted && { deleted: i.deleted }) })),
   ]));
   if (flags.json) console.log(JSON.stringify(rows, null, 1));
   else for (const r of rows) {
-    console.log(r.deleted ? `${r.path}  deleted by ${r.deleted.by} ${when(r.deleted.at)}` : r.status ? `${r.path}  ${r.status}${r.running ? ', running' : ''}${r.asks ? `, ${r.asks} asks waiting` : ''}, runner ${r.runner}` : `${r.path}${r.requests ? `  ${r.requests} asking to start` : ''}`);
+    console.log(r.deleted ? `${r.path}  deleted by ${r.deleted.by} ${when(r.deleted.at)}` : r.status ? `${r.path}  ${r.status}${r.running ? ', running' : ''}${r.asks ? `, ${r.asks} asks waiting` : ''}, owner ${r.owner}` : `${r.path}${r.requests ? `  ${r.requests} asking to start` : ''}`);
     for (const k of r.wakes) console.log(`  wake ${k.id} ${k.at}${k.label ? ` starts ${k.label}` : ''}${k.days ? `, then each ${k.days.join(', ')}` : ''}${k.text ? `: ${k.text}` : ''}`);
   }
 } else if (cmd === 'waiting' && !args.length) {
@@ -485,7 +483,6 @@ if (cmd === 'login' && url) {
   const series = all.flatMap(w => w.series.map(x => ({ ...x, path: `${w.name}/${x.name}` })));
   const rows = [
     ...s.asks.filter(a => a.who === me.email).map(a => ({ kind: a.note ? 'note' : 'ask', path: a.path, since: a.since, text: a.text })),
-    ...s.assigned.filter(a => a.who === me.email).map(a => ({ kind: 'assigned', path: a.path, since: a.at, text: `${a.by} assigned you ${a.path}` })),
     ...series.flatMap(x => x.requests.filter(r => mine(r.who)).map(r => ({ kind: 'request', path: x.path, since: r.at, id: r.id, text: `${r.from} asks to ${r.target ? 'wake' : 'start'} ${r.label}${r.text ? `: ${r.text}` : ''}` }))),
     ...all.filter(w => w.manage && w.proposal?.into === w.id).map(({ proposal: p }) => ({ kind: 'proposal', path: p.to, since: p.at, text: `${p.by} proposes to ${p.kind === 'merge' ? `merge ${p.from} into it` : `move ${p.from}/${p.series} to it`}` })),
     ...s.expired.filter(e => e.who === me.email).map(e => ({ kind: 'expired', login: e.login, holding: e.holding, text: `your ${e.login} login expired` })),
@@ -495,15 +492,15 @@ if (cmd === 'login' && url) {
   if (flags.json) console.log(JSON.stringify(rows, null, 1));
   else console.log(rows.map(r => `${r.kind}  ${r.path ?? r.login}${r.since ? ` since ${when(r.since)}` : ''}${r.id ? `, ${r.kind === 'grant' ? 'grant' : 'request'} ${r.id}` : ''}: ${r.kind === 'grant' ? r.text : r.text.split('\n')[0].slice(0, 120)}`).join('\n') || 'Nothing waits on you.');
 } else if (cmd === 'show' && args.length === 1) {
-  const { inst, at } = await instanceAt(args[0]), { doc, log, run, queued, runner, waiting: w } = await get(at);
+  const { inst, at } = await instanceAt(args[0]), { doc, log, run, queued, owner, waiting: w } = await get(at);
   const waiting = w.map(({ who, seq }) => {
     const e = log[seq - 1], first = log.find(x => `c${x.seq}` === e.thread);
     return { comment: `c${seq}`, thread: e.thread, kind: e.ask === true ? 'ask' : e.ask ?? 'note', for: who, by: e.by, item: first.item, ref: first.ref, text: e.text };
   });
   const done = log.findLast(e => e.op === 'done'), last = done ? { run: done.run, cost: done.cost, ...(done.estimated && { estimated: true }), error: done.error ?? null } : null;
-  if (flags.json) console.log(JSON.stringify({ path: args[0], id: inst.id, status: doc.status, runner: runner.by, running: run, queued, items: doc.items, waiting, last_run: last, ...(doc.status === 'deleted' && { deleted: { by: log[0].by, at: log[0].at } }) }, null, 1));
+  if (flags.json) console.log(JSON.stringify({ path: args[0], id: inst.id, status: doc.status, owner: owner.by, running: run, queued, items: doc.items, waiting, last_run: last, ...(doc.status === 'deleted' && { deleted: { by: log[0].by, at: log[0].at } }) }, null, 1));
   else {
-    console.log(doc.status === 'deleted' ? `${args[0]}  deleted by ${log[0].by} ${when(log[0].at)}` : `${args[0]}  ${doc.status}, runner ${runner.by}${run ? `, run ${run.n} going, ${usdNote(run.cost, run.estimated)}` : queued ? ', queued' : ''}`);
+    console.log(doc.status === 'deleted' ? `${args[0]}  deleted by ${log[0].by} ${when(log[0].at)}` : `${args[0]}  ${doc.status}, series owner ${owner.by}${run ? `, run ${run.n} going, ${usdNote(run.cost, run.estimated)}` : queued ? ', queued' : ''}`);
     for (const i of doc.items) console.log(`  ${i.kind.padEnd(6)} ${i.id}  ${i.name}  ${i.file ?? 'no file yet'}${i.from?.length ? `  from ${i.from.join(', ')}` : ''}${i.headline ? `  ${i.headline}` : ''}`);
     for (const w of waiting) console.log(`${w.comment}  ${w.kind} for ${w.for}${w.comment === w.thread ? '' : ` in ${w.thread}`}${w.item ? `, on ${w.item}${w.ref ? ` at ${w.ref}` : ''}` : ''}: ${w.text.split('\n')[0].slice(0, 160)}`);
     if (last) console.log(`last run ${last.run}  ${usdNote(last.cost ?? 0, last.estimated)}${last.error ? `  ${last.error}` : ''}`);
@@ -527,9 +524,9 @@ if (cmd === 'login' && url) {
 else if (cmd === 'comment' && args.length === 2) {
   const { at } = await instanceAt(args[0]);
   const posted = await post(`${at}/comment`, { text: args[1], item: flags.item, ref: flags.ref, thread: flags.thread, quiet: !flags.wake && !flags.wait });
-  const seq = Number(posted.headers.get('X-RF-Comment-Seq')), { doc, log, runner, starts } = await get(at), note = log.find(e => e.seq === seq)?.note;
-  if (note && !starts) console.log(`a note for the runner, ${runner.by}, seq ${seq}: it starts no run until they act`);
-  else if (!flags.wait) console.log(`${note ? `a note for the runner, ${runner.by}` : 'commented'}, seq ${seq}`);
+  const seq = Number(posted.headers.get('X-RF-Comment-Seq')), { doc, log, owner, starts } = await get(at), note = log.find(e => e.seq === seq)?.note;
+  if (!starts) console.log(`recorded for the series owner, ${owner.by}, seq ${seq}: no run starts; only the current owner initiates execution with explicit series consent`);
+  else if (!flags.wait) console.log(`${note ? `a note for the series owner, ${owner.by}` : 'commented'}, seq ${seq}`);
   else if (doc.status !== 'open') console.log(`The instance was ${doc.status}.`);
   else for (;;) {
     // The run that saw the comment, and what it said from then on: a run ending as it came may not have.
@@ -573,22 +570,26 @@ else if (cmd === 'comment' && args.length === 2) {
   }
   await post(`${at}/delete`, {});
   console.log(`deleted ${args[0]}`);
-} else if (cmd === 'takeover' && args.length === 1) {
-  await post(`${(await instanceAt(args[0])).at}/assign`, { logins: ticks() });
-  console.log(`you run ${args[0]} now${consent(ticks())}`);
-} else if (cmd === 'assign' && args.length === 2) {
-  await post(`${(await instanceAt(args[0])).at}/assign`, { to: args[1] });
-  console.log(`${args[1]} runs ${args[0]} now, with no logins ticked until they tick theirs`);
-} else if (cmd === 'creds' && args.length === 1) {
-  const { at } = await instanceAt(args[0]);
+} else if (cmd === 'series' && args[0] === 'owner' && [2, 3].includes(args.length)) {
+  const s = await seriesAt(args[1]);
+  if (args.length === 3) {
+    if (flags.creds !== undefined || flags.set !== undefined || flags.clear || flags.autonomous !== undefined) throw new Error('a transfer grants no credentials: the incoming owner selects series credentials separately');
+    await post(`/api/series/${s.id}/owner`, { owner: args[2] }, 'PUT');
+    console.log(`transferred whole series ${args[1]} to ${args[2]}; all instances change owner, old runs stop, consent cleared; starts no run`);
+  } else if (flags.json) console.log(JSON.stringify({ owner: s.owner, since: s.since, epoch: s.epoch }, null, 1));
+  else console.log(`${args[1]}: series owner ${s.owner ?? 'not selected'}`);
+} else if (cmd === 'series' && args[0] === 'credentials' && args.length === 2) {
+  const s = await seriesAt(args[1]);
   if (flags.set !== undefined || flags.clear) {
-    await post(`${at}/logins`, { logins: ticks() });
-    console.log(`saved${consent(ticks())}`);
+    if (!['true', 'false'].includes(String(flags.autonomous))) throw new Error('saving requires --autonomous true|false');
+    await post(`/api/series/${s.id}/credentials`, { logins: ticks(), autonomous: flags.autonomous === 'true' }, 'PUT');
+    console.log(`saved ${args[1]}${consent(ticks())}; autonomous ${flags.autonomous}`);
   } else {
-    const [{ runner }, mine] = await Promise.all([get(at), get('/logins')]);
-    const out = { runner: runner.by, ticked: runner.logins.map((id, k) => ({ id, name: runner.ticked[k] })), yours: mine.flatMap(l => l.offers.map(o => ({ ...o, ...(l.expired && { expired: true }) }))) };
+    if (flags.autonomous !== undefined) throw new Error('select credentials with --set OFFER,... or --clear');
+    const mine = await get('/logins');
+    const out = { owner: s.owner, consent: s.consent, yours: mine.flatMap(l => l.offers.map(o => ({ ...o, ...(l.expired && { expired: true }) }))) };
     if (flags.json) console.log(JSON.stringify(out, null, 1));
-    else console.log([`${out.runner} ticks:`, ...out.ticked.map(o => `  ${o.id}  ${o.name}`), 'yours:', ...out.yours.map(o => `  ${o.id}  ${o.name}${o.expired ? '  expired' : ''}`)].join('\n'));
+    else console.log([`Series owner: ${out.owner ?? 'not selected'}`, out.consent ? `Series-wide ceiling: ${out.consent.logins.join(', ') || 'no credentials'}; autonomous ${out.consent.autonomous}` : 'No execution consent', 'your offers:', ...out.yours.map(o => `  ${o.id}  ${o.name}${o.expired ? '  expired' : ''}`)].join('\n'));
   }
 } else if (cmd === 'rename' && args.length === 2) {
   const [w, s, l] = args[0].replace(/\/+$/, '').split('/');
@@ -605,22 +606,23 @@ else if (cmd === 'comment' && args.length === 2) {
     if (Buffer.byteLength(clean) > 200) throw new Error(`a name is 200 bytes at most, about 66 Chinese characters, not ${Buffer.byteLength(clean)}`);
     if (workspace.series.some((s: any) => s.name === clean)) throw new Error(`${clean} exists`);
   }
-  const { instance } = await (await post('/api/series', { workspace: workspace.id, single: true, logins: ticks() })).json();
+  const selected = flags.creds !== undefined || !!flags.clear;
+  if (flags.autonomous !== undefined && !['true', 'false'].includes(String(flags.autonomous))) throw new Error('--autonomous is true or false');
+  if (flags.autonomous !== undefined && !selected) throw new Error('autonomous consent requires --creds OFFER,... or --clear');
+  const { instance } = await (await post('/api/series', { workspace: workspace.id, single: true, ...(selected && { logins: ticks(), autonomous: flags.autonomous === 'true' }) })).json();
   if (clean && (await pathOf(instance)).split('/').at(-1) !== clean) await post(`/api/instances/${instance}/rename?as=${encodeURIComponent(args[2])}`, {});
   if (typeof flags.comment === 'string') await post(`/api/instances/${instance}/comment`, { text: flags.comment, quiet: !flags.wake });
-  console.log(`made ${await pathOf(instance)}${consent(ticks())}`);
+  console.log(`made ${await pathOf(instance)}${selected ? consent(ticks()) : '; no execution consent: select series credentials before running'}`);
 } else if (cmd === 'new' && args[0] === 'instance' && args.length === 3) {
-  const { id } = await (await post(`/api/series/${(await seriesAt(args[1])).id}`, { label: args[2], logins: ticks(), quiet: !flags.wake })).json();
-  console.log(`made ${await pathOf(id)}${consent(ticks())}`);
+  if (flags.creds !== undefined || flags.clear || flags.autonomous !== undefined) throw new Error('instance credentials were removed: use rf series credentials SERIES');
+  const { id } = await (await post(`/api/series/${(await seriesAt(args[1])).id}`, { label: args[2], quiet: !flags.wake })).json();
+  console.log(`made ${await pathOf(id)}; series owner and ceiling unchanged`);
 } else if (cmd === 'new' && args[0] === 'series' && args.length === 3) {
   await post(`/api/series/${(await find(args[1])).series.id}/promote`, { name: args[2] });
   console.log(`made the series ${args[1].split('/')[0]}/${args[2]}`);
 } else if (cmd === 'new' && args[0] === 'workspace' && args.length === 2) {
   await post('/api/workspaces', { name: args[1] });
   console.log(`made ${args[1]}`);
-} else if (cmd === 'share' && ['on', 'off'].includes(args[1]) && args.length === 2) {
-  await post(`/api/series/${(await seriesAt(args[0])).id}`, { share: args[1] === 'on', logins: ticks() }, 'PUT');
-  console.log(args[1] === 'on' ? `shared ${args[0]}${consent(ticks())}` : `stopped sharing ${args[0]}`);
 } else if (cmd === 'archive' && args.length === 1) {
   const [w, s] = args[0].replace(/\/+$/, '').split('/');
   await post(s === undefined ? `/api/workspaces/${(await workspaceNamed(w)).id}` : `/api/series/${(await seriesAt(args[0])).id}`, { archived: !flags.undo }, 'PUT');
@@ -630,10 +632,10 @@ else if (cmd === 'comment' && args.length === 2) {
     await api(`/api/requests/${args[1]}`, { method: 'DELETE' });
     console.log(`dropped request ${args[1]}`);
   } else {
-    const setCreds = flags.creds !== undefined || !!flags.clear;
-    const r = await post(`/api/requests/${args[1]}`, { ...(setCreds && { logins: ticks() }), quiet: !flags.wake });
+    if (flags.creds !== undefined || flags.clear) throw new Error('request credentials were removed: use rf series credentials SERIES');
+    const r = await post(`/api/requests/${args[1]}`, { quiet: !flags.wake });
     const woke = r.headers.get('X-RF-Woke') === '1', { id } = await r.json();
-    console.log(`${woke ? 'woke' : 'made'} ${await pathOf(id)}${!woke || setCreds ? consent(ticks()) : ''}`);
+    console.log(`${woke ? 'woke' : 'made'} ${await pathOf(id)}; series owner and ceiling unchanged`);
   }
 } else if (cmd === 'logins' && !args.length) {
   const all = await get('/logins');
@@ -783,9 +785,9 @@ else if (cmd === 'comment' && args.length === 2) {
       [`Running`, s.running.map(r => `${r.path}  run ${r.run}  for ${took((Date.now() - Date.parse(r.at)) / 1000)}  ${usdNote(r.cost, r.estimated)}${Date.now() - Date.parse(r.at) > long * 60e3 ? `  LONG, past ${long}m` : ''}`)],
       [`Queued`, s.queued.map(q => `${q.path}  since ${when(q.since)}: ${q.why}`)],
       [`Waiting`, [
-        ...[...s.asks, ...s.assigned.map(a => ({ ...a, since: a.at, text: `${a.by} assigned it to them`, assigned: true })), ...s.requests.map(r => ({ ...r, who: r.who ?? 'anyone', since: r.at, text: `${r.from} asks to ${r.target ? 'wake' : 'start'} ${r.label}`, request: true })),
+        ...[...s.asks, ...s.requests.map(r => ({ ...r, who: r.who ?? 'anyone', since: r.at, text: `${r.from} asks to ${r.target ? 'wake' : 'start'} ${r.label}`, request: true })),
           ...s.proposals.map(p => ({ who: `${p.to}'s owners`, path: p.to, since: p.at, text: `${p.by} proposes to ${p.kind === 'merge' ? `merge ${p.from} into it` : `move ${p.from}/${p.series} to it`}`, proposal: true }))]
-          .sort((a, b) => a.who.localeCompare(b.who) || a.since.localeCompare(b.since)).map(a => `${a.who}  ${a.proposal ? 'a proposal' : a.request ? 'a request' : a.assigned ? 'an assignment' : a.note ? 'a note' : 'an ask'} in ${a.path} since ${when(a.since)}: ${a.text.split('\n')[0].slice(0, 80)}`),
+          .sort((a, b) => a.who.localeCompare(b.who) || a.since.localeCompare(b.since)).map(a => `${a.who}  ${a.proposal ? 'a proposal' : a.request ? 'a request' : a.note ? 'a note' : 'an ask'} in ${a.path} since ${when(a.since)}: ${a.text.split('\n')[0].slice(0, 80)}`),
         ...s.expired.map(e => `${e.who}  their ${e.login} login expired${e.holding.length ? `, holding ${e.holding.join(', ')}` : ''}`),
       ]],
       [`Last run failed`, s.failed.map(f => `${f.path}  run ${f.run} at ${when(f.at)}: ${f.error}`)],
@@ -954,7 +956,7 @@ else if (cmd === 'comment' && args.length === 2) {
   const [cap, list] = args, people = flags.clear ? [] : list?.split(',').map(p => p.trim()).filter(Boolean);
   const all: Record<string, string[]> = await (await (people ? post('/capabilities', { cap, people }, 'PUT') : api('/capabilities'))).json();
   if (flags.json) console.log(JSON.stringify(all, null, 1));
-  else for (const [c, who] of Object.entries(all)) if (!cap || c === cap) console.log(`${c}: ${who.join(', ') || (c === 'vpn' ? 'no one' : 'admins only')}`);
+  else for (const [c, who] of Object.entries(all)) if (!cap || c === cap) console.log(`${c}: ${who.join(', ') || (['vpn', 'series-owner'].includes(c) ? 'no one' : 'admins only')}`);
 } else if (cmd === 'user' && args.length >= 2) {
   const [what, email, role] = args, at = `/users/${encodeURIComponent(email)}`;
   if (what === 'add') await post('/users', { roles: { [email]: role ?? 'user' } }, 'PUT');

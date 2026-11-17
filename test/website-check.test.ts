@@ -351,7 +351,7 @@ test('refused run checks share the checker and retry unchecked hosts on the foll
   saveLogin(email, { id: 'web:run', kind: 'website', name: 'run', since: '', offers: [{ id: 'web:run', name: 'run' }] }, '{}');
   const events: any[] = [], dir = join(root, 'run');
   mkdirSync(dir);
-  const inst = { id: 'inst', dir, append: (by: string, op: string, more: object) => events.push({ by, op, ...more }) } as unknown as Instance;
+  const inst = { id: 'inst', dir, log: [], append: (by: string, op: string, more: object) => events.push({ by, op, ...more }) } as unknown as Instance;
   log = [{ method: 'GET', url: 'https://auth.vendor.test/private?code=do-not-log', status: 403, blocked: 'host not on the list', dest: 'document', from: 'https://erp.company.test/private' }];
   mode = 'fail';
   const first = new Browsers(inst, 1);

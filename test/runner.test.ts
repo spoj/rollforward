@@ -19,11 +19,17 @@ Object.assign(process.env, {
 const { pi } = await import('../src/runner.ts');
 const { agentRoot } = await import('../src/agent.ts');
 const { serveSandboxes } = await import('../src/sandbox.ts');
-const { HttpError } = await import('../src/store.ts');
+const { HttpError, openStore } = await import('../src/store.ts');
+const { authority } = await import('../src/logins.ts');
+const { ownSeries } = await import('./owner-fixture.ts');
 const { openSkills, pushSkill, skills } = await import('../src/skills.ts');
-const { initSystem, writeJson } = await import('../src/system.ts');
+const { initSystem, saveTree, writeJson } = await import('../src/system.ts');
 const { filesOf, standIns } = await import('./push.ts');
 initSystem(root);
+openStore(root);
+writeJson('users.json', { 'alice@demo.test': { role: 'user' } });
+saveTree({ workspaces: { w: { name: 'W', owners: ['alice@demo.test'], members: [] } }, series: { weekly: { name: 'Weekly', workspace: 'w' } } });
+ownSeries('weekly', 'alice@demo.test');
 openSkills(root);
 pushSkill('tool', filesOf(join(standIns, 'tool')), 'admin@demo.test');
 pushSkill('mail-report', filesOf(join(standIns, 'mail-report')), 'admin@demo.test');
@@ -35,7 +41,9 @@ const lent = (site: string) => {
   if (site !== 'erp') throw new HttpError(403, `web:${site} is not ticked for this instance`);
   return {};
 };
-const standIn = { lent, browser: async (site: string) => (lent(site), 'b1'), connected() {} } as unknown as import('../src/browsers.ts').Browsers;
+const browserInstance = { id: 'w2', seriesId: 'weekly', series: () => join(root, 'series', 'weekly'), log: [] } as unknown as import('../src/store.ts').Instance;
+browserInstance.log.push({ seq: 1, at: '', by: 'server', op: 'run', run: 1, runner: 'alice@demo.test', initiator: 'alice@demo.test', authority: authority(browserInstance) });
+const standIn = { inst: browserInstance, run: 1, lent, browser: async (site: string) => (lent(site), 'b1'), connected() {} } as unknown as import('../src/browsers.ts').Browsers;
 // The server's runs: this one, and another going at the same time, OTHER, whose token this one's agent might have read.
 const OTHER = 'other-token';
 const sockets = serveSandboxes({

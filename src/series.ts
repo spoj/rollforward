@@ -1,16 +1,24 @@
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Entry } from './store.ts';
-import { appendLine, changes, readLines } from './system.ts';
+import { appendLine, changes, readLines, replaceFile } from './system.ts';
 
-// series.json: {"shared"?: {"by", "since", "logins"}}, set by people through the server. shared is who lets anyone in the workspace,
-// and its agents, start runs of the series as them: a wake starts a new instance run by them with the logins they ticked then, and
-// in their instances anyone's comments, uploads and wakes start runs.
-export type SeriesSettings = { shared?: { by: string; since: string; logins: string[] } };
+export type SeriesConsent = { by: string; at: string; workspace: string; logins: string[]; autonomous: boolean };
+export type SeriesSettings = { version: 1; owner?: string; epoch: number; since: string; consent?: SeriesConsent };
+export type Authority = { version: 1; owner: string; epoch: number; workspace: string; logins: string[]; autonomous?: boolean };
 
 export function seriesSettings(seriesDir: string): SeriesSettings {
   const p = join(seriesDir, 'series.json');
-  return existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : {};
+  if (!existsSync(p)) return { version: 1, epoch: 0, since: '' };
+  const settings = JSON.parse(readFileSync(p, 'utf8'));
+  if (settings.version !== 1) throw new Error('legacy series settings require the offline series-owner migration');
+  return settings;
+}
+
+export function saveSeriesSettings(dir: string, settings: SeriesSettings, actor?: string) {
+  mkdirSync(dir, { recursive: true });
+  replaceFile(join(dir, 'series.json'), JSON.stringify(settings, null, 1));
+  changes.emit('change', 'tree', actor);
 }
 
 // notes/: a series' notes thread, log.jsonl, append-only, by seq, and files/, their attachments, which its runs read at

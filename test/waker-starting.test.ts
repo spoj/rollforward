@@ -16,13 +16,14 @@ for (const action of ['remove', 'remove-view', 'lease', 'lease-calls']) for (con
       import * as entra from './src/entra.ts';
       import * as connections from './src/connections.ts';
       import { initSystem, saveTree, tree, changes, writeJson } from './src/system.ts';
+      import { ownSeries } from './test/owner-fixture.ts';
       import { createInstance, openStore } from './src/store.ts';
       const root = ${JSON.stringify(root)}, action = ${JSON.stringify(action)}, result = ${JSON.stringify(result)}, alice = 'alice@demo.test';
       initSystem(root);
       openStore(root);
       saveTree({ workspaces: { w: { name: 'Work', owners: [alice], members: [] }, w2: { name: 'Elsewhere', owners: [alice], members: [] } }, series: { s: { name: 'Series', workspace: 'w' }, other: { name: 'Other', workspace: 'w' } } });
       writeJson('users.json', { [alice]: { role: 'user' } });
-      for (const id of ['s', 'other']) mkdirSync(root + '/series/' + id, { recursive: true });
+      for (const id of ['s', 'other']) { mkdirSync(root + '/series/' + id, { recursive: true }); ownSeries(id, alice); }
       const starting = Promise.withResolvers(), startup = Promise.withResolvers(), stopping = Promise.withResolvers(), stopped = Promise.withResolvers(), charged = Promise.withResolvers();
       let turns = 0, steers = 0, stops = 0, calls = action === 'lease-calls';
       const run = { turn: async () => { turns++; }, steer: async () => { steers++; }, stop: async () => { stops++; stopping.resolve(); await stopped.promise; } };
@@ -30,7 +31,7 @@ for (const action of ['remove', 'remove-view', 'lease', 'lease-calls']) for (con
       mock.module('./src/entra.ts', { namedExports: { ...entra, confirm: async () => {} } });
       mock.module('./src/connections.ts', { namedExports: { ...connections, hasCalls: () => calls, abortCalls: () => {}, drainCalls: () => charged.promise } });
       const { active, byToken, drain, drained, kick, remove, updating } = await import('./src/waker.ts');
-      const inst = createInstance('s', 'Starting', alice, []), target = action === 'remove-view' ? createInstance('other', 'Viewed', alice, []) : inst;
+      const inst = createInstance('s', 'Starting', alice), target = action === 'remove-view' ? createInstance('other', 'Viewed', alice) : inst;
       mkdirSync(target.dir + '/working', { recursive: true });
       const marker = target.dir + '/working/kept';
       writeFileSync(marker, 'kept until every sandbox stops');
@@ -87,7 +88,7 @@ for (const action of ['remove', 'remove-view', 'lease', 'lease-calls']) for (con
       assert.equal(a.done, true);
       if (action !== 'remove') assert.equal(inst.log.filter(e => e.op === 'done').length, 1);
       if (deletion) assert.equal(existsSync(marker), false);
-    `], { cwd: join(import.meta.dirname, '..'), timeout: 10_000, stdio: 'pipe' });
+    `], { cwd: join(import.meta.dirname, '..'), env: { ...process.env, RF_MIN_FREE_GB: '0' }, timeout: 10_000, stdio: 'pipe' });
   } catch (e) {
     assert.fail((e as { stderr: Buffer }).stderr.toString());
   } finally {
@@ -105,6 +106,7 @@ for (const phase of ['startup', 'prompt']) test(`shutdown sends no new work afte
       import * as runner from './src/runner.ts';
       import * as entra from './src/entra.ts';
       import { initSystem, saveTree, writeJson } from './src/system.ts';
+      import { ownSeries } from './test/owner-fixture.ts';
       import { createInstance, openStore } from './src/store.ts';
       import { committed } from './src/git.ts';
       const root = ${JSON.stringify(root)}, phase = ${JSON.stringify(phase)}, alice = 'alice@demo.test';
@@ -113,13 +115,14 @@ for (const phase of ['startup', 'prompt']) test(`shutdown sends no new work afte
       saveTree({ workspaces: { w: { name: 'Work', owners: [alice], members: [] } }, series: { s: { name: 'Series', workspace: 'w' } } });
       writeJson('users.json', { [alice]: { role: 'user' } });
       mkdirSync(root + '/series/s', { recursive: true });
+      ownSeries('s', alice, [], true);
       const starting = Promise.withResolvers(), startup = Promise.withResolvers(), turning = Promise.withResolvers(), prompt = Promise.withResolvers();
       let turns = 0, steers = 0;
       const run = { turn: async () => { turns++; turning.resolve(); await prompt.promise; return { settled: new Promise(() => {}) }; }, steer: async () => { steers++; }, stop: async () => {} };
       mock.module('./src/runner.ts', { namedExports: { ...runner, startRun: async () => { starting.resolve(); return startup.promise; } } });
       mock.module('./src/entra.ts', { namedExports: { ...entra, confirm: async () => {} } });
       const { active, byToken, kick, recover, stop } = await import('./src/waker.ts');
-      const inst = createInstance('s', 'Stopping', alice, []);
+      const inst = createInstance('s', 'Stopping', alice);
       inst.append(alice, 'comment', { text: 'Work.' });
       kick(inst);
       await starting.promise;
@@ -141,7 +144,7 @@ for (const phase of ['startup', 'prompt']) test(`shutdown sends no new work afte
       assert.equal(inst.log.findLast(e => e.op === 'done').error, 'a restart cut the run');
       assert.ok(inst.log.findLast(e => e.op === 'wake'));
       await committed(inst.dir);
-    `], { cwd: join(import.meta.dirname, '..'), timeout: 10_000, stdio: 'pipe' });
+    `], { cwd: join(import.meta.dirname, '..'), env: { ...process.env, RF_MIN_FREE_GB: '0' }, timeout: 10_000, stdio: 'pipe' });
   } catch (e) {
     assert.fail((e as { stderr: Buffer }).stderr.toString());
   } finally {

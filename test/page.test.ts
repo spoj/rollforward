@@ -1,4 +1,5 @@
 import { after, before, test } from 'node:test';
+import { readFixtureTree, writeFixtureTree } from './owner-fixture.ts';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
@@ -20,10 +21,11 @@ const native: string[] = [];
 
 before(async () => {
   cpSync(join(app, 'test', 'fixture'), root, { recursive: true });
-  // An open instance of a series of its own, whose agent asks its runner, the admin, to sign off the file it pins.
-  const tree = JSON.parse(readFileSync(join(root, '.rf', 'tree.json'), 'utf8')), signed = join(root, 'instances', 'a5c0ff5e1f00');
+  // An open instance of a series of its own, whose agent asks its owner, the admin, to sign off the file it pins.
+  const tree = readFixtureTree(root), signed = join(root, 'instances', 'a5c0ff5e1f00');
+  tree.workspaces['1b3031035ff6'].members = ['bob@demo.test'];
   tree.series.a5c0ff5e1fee = { name: 'Year-end pack', workspace: '1b3031035ff6' };
-  writeFileSync(join(root, '.rf', 'tree.json'), JSON.stringify(tree));
+  writeFixtureTree(root, tree);
   mkdirSync(join(root, 'series', 'a5c0ff5e1fee'));
   mkdirSync(join(signed, 'working'), { recursive: true });
   writeFileSync(join(signed, 'instance.json'), JSON.stringify({ label: '2026-12', series: 'a5c0ff5e1fee' }));
@@ -64,13 +66,13 @@ before(async () => {
   writeFileSync(join(reviewed, 'log.jsonl'), [
     { seq: 1, at: '2026-08-01T09:00:00.000Z', by: 'admin@demo.test', op: 'create', from: null, logins: [] },
     { seq: 2, at: '2026-08-01T09:05:00.000Z', by: 'agent', op: 'comment', thread: 'c2', text: 'Review the October notes.' },
-    // A note from the agent of 2026-12, for its runner.
+    // A note from the agent of 2026-12, for its captured executor.
     { seq: 3, at: '2026-08-01T09:06:00.000Z', by: 'agent', op: 'comment', thread: 'c3', item: null, ref: null, text: 'The pack went to the bank.', run: 2, runner: 'admin@demo.test', see: { inst: 'a5c0ff5e1f00', label: '2026-12', thread: 'c2' }, note: true },
   ].map(e => JSON.stringify(e) + '\n').join(''));
   // A series of its own, quiet since July.
   const sampled = join(root, 'instances', 'a5c0ff5e1f05');
   tree.series.a5c0ff5e1fef = { name: 'Invoice checks', workspace: '1b3031035ff6' };
-  writeFileSync(join(root, '.rf', 'tree.json'), JSON.stringify(tree));
+  writeFixtureTree(root, tree);
   mkdirSync(join(root, 'series', 'a5c0ff5e1fef'));
   mkdirSync(join(sampled, 'working'), { recursive: true });
   writeFileSync(join(sampled, 'instance.json'), JSON.stringify({ label: '2026-07', series: 'a5c0ff5e1fef' }));
@@ -82,7 +84,7 @@ before(async () => {
   // A series of its own whose open instance's agent asks a question, proposes to send the pack, citing the closed one's comment, and
   // withdrew a question.
   tree.series.a5c0ff5e1ff0 = { name: 'Bank pack', workspace: '1b3031035ff6' };
-  writeFileSync(join(root, '.rf', 'tree.json'), JSON.stringify(tree));
+  writeFixtureTree(root, tree);
   mkdirSync(join(root, 'series', 'a5c0ff5e1ff0'));
   const october = [
     { by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'I will email the pack to the bank.', ask: 'proposal' },
@@ -99,7 +101,7 @@ before(async () => {
       { by: 'agent', op: 'comment', thread: 'c5', item: null, ref: null, text: 'Is the rate final?', ask: 'question' },
       { by: 'agent', op: 'withdraw', thread: 'c5', on: 5, text: 'The file says so.', see: 2 },
     ]],
-    // Closed with an accepted proposal, a note for its runner and a delivery, which a copy of it takes as history.
+    // Closed with an accepted proposal, a note and a delivery, which a copy of it takes as history.
     ['a5c0ff5e1f0b', 'October', 'closed', [{ id: 'pack', name: 'Pack', kind: 'output', file: 'working/pack.csv' }], october],
     // Its copy, as earlier versions made one: its log, then a duplicate entry.
     ['a5c0ff5e1f0c', 'October copy', 'open', [{ id: 'pack', name: 'Pack', kind: 'output', file: 'working/pack.csv' }], [...october, { by: 'admin@demo.test', op: 'duplicate', from: 'October', logins: [] }]],
@@ -128,6 +130,17 @@ before(async () => {
   doc.items.find((i: { id: string }) => i.id === 'borrowing-base').from = ['eligible', 'inventory'];
   doc.items.push({ id: 'eligible', name: 'Eligible AR', kind: 'step', file: 'working/eligible.csv', from: ['ar-aging'] });
   writeFileSync(join(stepped, 'screen.json'), JSON.stringify(doc));
+
+  writeFileSync(join(root, '.rf', 'users.json'), JSON.stringify({
+    'admin@demo.test': { role: 'admin', name: 'Demo Admin', created: '2026-08-01T09:00:00.000Z' },
+    'bob@demo.test': { role: 'user', name: 'Bob', created: '2026-08-01T09:00:00.000Z' },
+  }));
+  writeFileSync(join(root, '.rf', 'capabilities.json'), JSON.stringify({ 'series-owner': ['admin@demo.test', 'bob@demo.test'] }));
+  for (const [id, series] of Object.entries(tree.series) as [string, { workspace: string }][]) {
+    const owner = id === 'd83e3e5c41da' ? 'bob@demo.test' : 'admin@demo.test', at = '2026-08-01T09:00:00.000Z';
+    mkdirSync(join(root, 'series', id), { recursive: true });
+    writeFileSync(join(root, 'series', id, 'series.json'), JSON.stringify({ version: 1, owner, epoch: 1, since: at, consent: { by: owner, at, workspace: series.workspace, logins: [], autonomous: false } }));
+  }
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch') };
   mkdirSync(env.HOME!);
   delete env.OPENROUTER_API_KEY;
@@ -150,7 +163,9 @@ before(async () => {
   page.on('pageerror', e => console.error('page error:', e.message));
   entra.who.as = 'admin@demo.test';
   await page.goto(`http://127.0.0.1:${port}/auth/login`);
-  await page.waitForSelector('#bar h1 .t'); // once the start's kick of the open instance has passed
+  await page.waitForSelector('#tree .row.ws');
+  await page.goto(`http://127.0.0.1:${port}/#/cec3e476c710`);
+  await page.waitForSelector('#bar h1 .t:text-is("2026-09-06")');
 });
 
 after(async () => {
@@ -183,10 +198,9 @@ test("a series' gear opens its settings, which save as they change; a click besi
   await page.press('#sname', 'Enter');
   await page.waitForSelector('#pv .saved:text-is("Saved")');
   await page.waitForSelector('.row.ser.on .l:text-is("Weekly borrowing base")');
-  const ws = /^Let (.+) wake this series$/.exec((await page.textContent('#pv [data-act=share-arm]'))!)![1];
-  await page.click('#pv [data-act=share-arm]');
-  assert.deepEqual([await page.textContent('#pv .warn h3'), await page.textContent('#pv [data-act=share-on]'), await page.textContent('#pv .warn .consent')], ['Credentials', `Allow ${ws} to wake this series`,
-    `By allowing, people in ${ws} and their agents can wake this series: start or continue its instances, with a short reason, and add notes and files. Those runs act as you, using the selected credentials, and do the series' usual work.`]);
+  assert.match(await page.textContent('#pv') ?? '', /Only this person starts runs, across every instance/);
+  assert.equal(await page.locator('#pv [data-act=series-credentials]').count(), 0, 'a manager cannot consent for the owner');
+  assert.equal(await page.locator('#pv [data-act=series-owner]').count(), 1);
   await page.mouse.click(5, 5);
   await page.waitForSelector('#pv:not([open])', { state: 'attached' });
 });
@@ -277,10 +291,14 @@ for (const kind of ['series', 'workspace']) test(`an archived ${kind} is read-on
   }
 });
 
-test("the workspace's + starts a task at once, which its first prompt names, newest first under Ungrouped; closing makes it a series if asked", async () => {
+test("the workspace's + explicitly selects task consent, then its first prompt names it, newest first under Ungrouped; closing makes it a series if asked", async () => {
   for (const prompt of ['Apple orchard audit for 2026', 'Zebra crossing survey']) {
     await page.hover('.row.ws.on');
     await page.click('.row.ws.on [data-act=new-task]');
+    await page.waitForSelector('#pv [data-act=start-go]');
+    assert.equal(await page.locator('#pv input.tick:checked').count(), 0);
+    assert.equal(await page.isChecked('#autonomous'), false);
+    await page.click('#pv [data-act=start-go]');
     await page.waitForSelector('#bar h1 .t:text-is("Untitled")');
     assert.equal(await page.evaluate(() => document.activeElement?.id), 'newcomment', 'its conversation waits for the prompt');
     await page.keyboard.type(prompt);
@@ -298,17 +316,21 @@ test("the workspace's + starts a task at once, which its first prompt names, new
   assert.deepEqual(await page.locator('.row.grp ~ a.row.inst .l').allTextContents(), ['Apple orchard audit for 2026']);
 });
 
-test("only the runner abandons, from the Close dialog, whose buttons for a task weigh the same, the series' name with the one that makes it", async () => {
+test("only the series owner abandons, from the Close dialog, whose buttons for a task weigh the same, the series' name with the one that makes it", async () => {
   await page.click('.row.ser .l:text-is("Weekly borrowing base")');
-  await page.waitForSelector('#bar [data-act=takeover]');
-  assert.deepEqual([await page.locator('#bar .btn').allTextContents(), await page.textContent('#bar .state'), await page.locator('#bar .creds').count()], [['No wake', 'Take over', 'Assign\u2026'], 'Waiting for files', 0], 'alex runs it, and the admin may assign it');
+  await page.waitForSelector('#bar [data-act=series-owner]');
+  assert.deepEqual([await page.locator('#bar .btn').allTextContents(), await page.textContent('#bar .state'), await page.locator('#bar .creds').count()], [['No wake', 'Transfer series…'], 'Waiting for files', 0], 'Bob owns it; a manager may transfer the whole series, not run it');
   await page.click('#bar [data-act=wakes]');
-  assert.equal(await page.textContent('#pv .pvh b'), 'Wakes of 2026-09-06 b', 'anyone in its workspace sets its wakes');
+  assert.equal(await page.textContent('#pv .pvh b'), 'Wakes of 2026-09-06 b', 'a collaborator may propose a wake');
   await page.mouse.click(5, 5);
-  await page.click('[data-act=takeover]');
-  await page.click('[data-act=start-go]');
-  await page.click('#bar .creds:text-is("Credentials: none")');
-  await page.waitForSelector('#pv .pvh b:text-is("Credentials")');
+  await page.click('#bar [data-act=series-owner]');
+  await page.selectOption('#ownerto', 'admin@demo.test');
+  await page.click('#ask button[value=ok]');
+  await page.waitForSelector('#bar .creds:text-is("Series credentials: consent needed")');
+  await page.click('#bar .creds');
+  await page.waitForSelector('#pv [data-act=series-credentials]');
+  await page.click('#pv [data-act=series-credentials]');
+  await page.waitForSelector('#pv .saved:text-is("Saved")');
   await page.mouse.click(5, 5);
   await page.click('#bar [data-act=close]');
   assert.deepEqual(await page.locator('#ask button').allTextContents(), ['Abandon instead', 'Close', 'Cancel']);
@@ -379,7 +401,10 @@ test("the side panel is the instance's conversation, a run a line among its thre
   await page.waitForSelector('#audit .e');
   assert.deepEqual([await page.textContent('#log .seg .sel'), await page.locator('#conv').isVisible()], ['Audit', false], 'in place of the conversation');
   const rows = await page.locator('#audit .e > div').evaluateAll(es => es.map(e => (e as HTMLElement).innerText.split('\n')[0]));
-  assert.deepEqual([...rows.slice(0, 4), rows.at(-1)], ['alex opened the instance', 'alex uploaded an input', 'Server showed u2', 'Run 1 started', 'alex closed the instance']);
+  assert.deepEqual(rows.slice(0, 4), ['alex opened the instance', 'alex uploaded an input', 'Server showed u2', 'Run 1 started']);
+  assert.ok(rows.includes('alex closed the instance'), 'the historical closer is unchanged');
+  assert.equal(rows.at(-1), 'alex closed the instance', 'later authority changes leave closed history unchanged');
+  assert.equal(rows.some(row => row.includes('Whole-series authority changed')), false);
   assert.ok(rows.includes('Run 1 finished · 4m 0s · $0.21') && rows.includes("alex's agent set up Borrowing base"), 'each entry a line');
   assert.ok(rows.includes("alex's agent said Borrowing base for 08-30: excess 180,542.50, up 6,742.50."), "and the agent's session, whose plain text reaches no one else");
   await page.click('#log .seg [data-act=audit]');
@@ -500,7 +525,7 @@ test("Mine is a keyboard-operated Show toggle, off by default, kept per person i
 
 test('keys: c goes to the comment box, Ctrl+Enter sends it, Esc leaves it, and j moves through the sidebar', async () => {
   await page.click('a.row.inst.open >> nth=0');
-  await page.waitForSelector('#bar [data-act=close], #bar [data-act=takeover]');
+  await page.waitForSelector('#bar [data-act=close], #bar [data-act=series-owner]');
   await page.keyboard.press('c');
   assert.equal(await page.evaluate(() => document.activeElement?.id), 'newcomment');
   await page.keyboard.type('Sent with keys');
@@ -852,6 +877,7 @@ test("a cN link to a reply under a withdrawn ask opens the ask to show it", asyn
 test("hovering a link to a deleted instance's comment says nothing of it, and no error", async () => {
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f0a'; });
   await page.waitForSelector('#bar h1 .t:text-is("February")');
+  await page.evaluate(() => api('/api/instances/a5c0ff5e1f0a/comment', { method: 'POST', body: JSON.stringify({ text: 'Check the comment links.' }) }));
   await page.waitForSelector('#bar .state .bad:text("Run 1 failed")');
   await page.evaluate(() => api('/api/instances/a5c0ff5e1f09/delete', { method: 'POST' }));
   const toasts = await page.locator('#toasts .toast').count();
@@ -880,6 +906,7 @@ test("people show by name, with their email on hover, and Entra groups by label;
   assert.deepEqual(await page.locator('#known option').evaluateAll(os => os.map(o => (o as HTMLOptionElement).value)), ['Demo Admin <admin@demo.test>', 'Bob <bob@demo.test>']);
   await page.fill('#wperson', 'Bob <bob@demo.test>');
   await page.click('[data-act=wadd]');
+  await page.waitForSelector('#pv .saved:text-is("Saved")');
   await page.waitForSelector(`#pv .ut span[title="${bob}"]:text-is("Bob")`);
   await page.fill('#wperson', `Finance HK <${group}>`);
   await page.click('[data-act=wadd]');
@@ -898,15 +925,15 @@ test("people show by name, with their email on hover, and Entra groups by label;
   assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('#needs, #log')].map(e => e.scrollWidth <= e.clientWidth).concat([...document.querySelectorAll('#needs .btn')].map(b => b.getBoundingClientRect().right <= document.querySelector('#needs')!.getBoundingClientRect().right))), [true, true, true, true], 'a long line ends in an ellipsis, and its Reply shows; the panel keeps its width');
 });
 
-test("a runner's name without letters shows its first characters in the sidebar", async () => {
+test("a series owner's name without letters shows its first characters in the sidebar", async () => {
   const tab = await browser.newPage({ storageState: await page.context().storageState() });
   try {
     await tab.goto(new URL('/#/3d70f7ca6f20', page.url()).href);
     await tab.waitForSelector('#bar h1 .t:text-is("2026-08-30")');
     for (const [name, short] of [['123', '12'], ['🚀🎯', '🚀🎯']]) {
-      await tab.evaluate(name => { me.names[cur.i.runner] = name; renderSide(); }, name);
+      await tab.evaluate(name => { cur.s.owner = 'bob@demo.test'; for (const i of cur.s.instances) i.owner = cur.s.owner; me.names[cur.s.owner] = name; renderSide(); }, name);
       assert.equal(await tab.textContent('.row.inst.on .who'), short);
-      assert.equal(await tab.getAttribute('.row.inst.on .who', 'title'), `${name} runs it`);
+      assert.equal(await tab.getAttribute('.row.inst.on .who', 'title'), `${name} owns the series`);
     }
   } finally { await tab.close(); }
 });
@@ -1179,7 +1206,7 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   assert.deepEqual([portal.hosts, portal.checks['cdn.portal.test'].verdict], [['sso.idp.test'], 'refused']);
   await page.mouse.click(5, 5);
 
-  await page.evaluate(() => openStart('New instance', 'Start', () => {}, '', ['m365:onedrive', 'adb:adb-1.azuredatabricks.net/wh1']));
+  await page.evaluate(() => openStart('New task: series credentials', 'Start', () => {}, '', ['m365:onedrive', 'adb:adb-1.azuredatabricks.net/wh1']));
   await page.waitForSelector('#pv details.tgroup');
   const ticks = () => page.$$eval('#pv input.tick, #pv input.tickall', ts => ts.map(t => `${(t as HTMLInputElement).value === 'on' ? 'all' : (t as HTMLInputElement).value}:${(t as HTMLInputElement).checked}`));
   assert.deepEqual(await ticks(), ['all:false', 'm365:onedrive:true', 'm365:site:s1:false', 'adb:adb-1.azuredatabricks.net/wh1:false', 'web:portal:false'], 'the expired login unticked');
@@ -1189,7 +1216,7 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   assert.deepEqual((await ticks()).slice(0, 3), ['all:true', 'm365:onedrive:true', 'm365:site:s1:true'], "the group's tick ticks its sources");
   await page.click('#pv details.tgroup input[value="m365:onedrive"]');
   assert.deepEqual((await ticks()).slice(0, 3), ['all:false', 'm365:onedrive:false', 'm365:site:s1:true'], 'and follows them');
-  assert.deepEqual([await page.locator('#pv h3').allTextContents(), await page.textContent('#pv .consent')], [['Label', 'Credentials'], 'By clicking Start, you agree that agents carry these credentials while acting as you.']);
+  assert.deepEqual([await page.locator('#pv h3').allTextContents(), await page.textContent('#pv .consent')], [['Label', 'Series credential ceiling'], 'By clicking Start, you explicitly consent to this series-wide selection.']);
   await page.mouse.click(5, 5);
   rmSync(join(rf, 'connections.json'));
   rmSync(join(mine, 'logins.json'));
@@ -1516,6 +1543,9 @@ test("a picture pasted into a comment, or a reply, goes with it, shown under the
 test('a task closed as a one-off starts a series later, by its name alone, as its only instance', async () => {
   await page.hover('.row.ws.on');
   await page.click('.row.ws.on [data-act=new-task]');
+  await page.waitForSelector('#pv [data-act=start-go]');
+  assert.equal(await page.locator('#pv input.tick:checked').count(), 0);
+  await page.click('#pv [data-act=start-go]');
   await page.waitForSelector('#bar h1 .t:text-is("Untitled")');
   await page.keyboard.type('Quarterly stock count');
   await page.click('[data-act=comment]');
@@ -1746,8 +1776,13 @@ test("a series' + makes an instance that waits for its first upload or comment, 
   const row = '.row.ser:has(.l:text-is("Year-end pack"))';
   await page.hover(row);
   await page.click(`${row} [data-act=new-instance]`);
-  await page.fill('#slabel', '2027-01');
-  await page.click('[data-act=start-go]:text-is("Make")');
+  await page.fill('#ask input', '2027-01');
+  assert.equal(await page.locator('#ask input.tick').count(), 0);
+  const made = page.waitForResponse(r => r.url().endsWith('/api/series/a5c0ff5e1fee') && r.request().method() === 'POST');
+  await page.click('#ask button[value=ok]');
+  const response = await made;
+  assert.equal(response.status(), 200);
+  assert.deepEqual(response.request().postDataJSON(), { label: '2027-01', quiet: true });
   await page.waitForSelector('#bar h1 .t:text-is("2027-01")');
   await new Promise(r => setTimeout(r, 2000));
   assert.deepEqual(await page.evaluate(() => data.log.map(e => e.op)), ['create'], 'no wake, and no run');
@@ -1796,7 +1831,7 @@ test('only managers see Delete in an archive, its confirmation warns what stays,
   await page.getByLabel('Instance name', { exact: true }).fill('Private');
   await page.click('#ask button[value=ok]');
   await page.waitForSelector('#bar .state:text("Deleted by")');
-  assert.equal(await page.locator('#bar [data-act=delete], #bar [data-act=rename], #bar [data-act=takeover], #bar [data-act=start-series]').count(), 0);
+  assert.equal(await page.locator('#bar [data-act=delete], #bar [data-act=rename], #bar [data-act=series-owner], #bar [data-act=start-series]').count(), 0);
   assert.match(await page.textContent('#ins') ?? '', /Nothing is left of it here/);
   if (!await page.locator(`a.row.inst.deleted[href="#/${id}"]`).count()) await page.click(`[data-act=toggle-closed][data-id="${sid}"]`);
   assert.equal(await page.locator(`a.row.inst.deleted[href="#/${id}"] .nm`).evaluate(el => getComputedStyle(el).textDecorationLine), 'line-through');
@@ -1923,7 +1958,7 @@ test('mindful Delete clears on context changes and cannot follow navigation, eve
   } finally { await tab.close(); }
 });
 
-test('a service connects with one click and no sign-in, then lends the admin\'s prefixes as ordinary instance ticks', async () => {
+test('a service connects with one click and no sign-in, then offers the admin\'s prefixes for explicit series selection', async () => {
   assert.equal(await page.evaluate(() => api('/connections/drop', { method: 'PUT', body: JSON.stringify({ type: 'service', url: 'http://127.0.0.1:9000', paths: 'AP/,GL/2026/', key: 'deployment-secret' }) }).then(() => 200)), 200);
   await page.evaluate(() => openLogins());
   await page.waitForSelector('#pv [data-act=service-connect][data-id=drop]');
@@ -1934,7 +1969,7 @@ test('a service connects with one click and no sign-in, then lends the admin\'s 
   assert.deepEqual(await page.locator('#pv .lsub').allTextContents(), ['AP/ at https://drop.rf.internal/', 'GL/2026/ at https://drop.rf.internal/']);
   assert.equal(await page.locator('#pv [data-act=unoffer][data-login=drop]').count(), 0);
   await page.mouse.click(5, 5);
-  await page.evaluate(() => openStart('New instance', 'Start', () => {}, '', ['drop:AP/']));
+  await page.evaluate(() => openStart('New task: series credentials', 'Start', () => {}, '', ['drop:AP/']));
   await page.waitForSelector('#pv input.tick[value="drop:AP/"]');
   assert.deepEqual(await page.locator('#pv .tkind', { hasText: 'Services' }).locator('input.tick').evaluateAll(ts => ts.map(t => [(t as HTMLInputElement).value, (t as HTMLInputElement).checked])), [['drop:AP/', true], ['drop:GL/2026/', false]]);
   await page.mouse.click(5, 5);
@@ -1946,7 +1981,7 @@ test('a service connects with one click and no sign-in, then lends the admin\'s 
   await page.evaluate(() => api('/connections/drop', { method: 'DELETE' }));
 });
 
-test("website permissions are asked only in Logins, linked from disabled ticks without losing a first prompt or credential draft", async t => {
+test("website permissions are asked only in Logins, linked from series ticks without losing a comment or whole-series credential draft", async t => {
   const rf = join(root, '.rf'), mine = join(rf, 'people', createHash('sha256').update('admin@demo.test').digest('hex').slice(0, 16)), since = new Date().toISOString();
   const site = (url: string) => ({ url, hosts: [], writeback: true, added: since, profile: { what: 'A company ledger.', category: 'company', risk: 'low', flags: [] } });
   const login = (name: string, expired = false) => ({ id: `web:${name}`, kind: 'website', name, since, offers: [{ id: `web:${name}`, name }], ...(expired && { expired }) });
@@ -1958,18 +1993,20 @@ test("website permissions are asked only in Logins, linked from disabled ticks w
     await page.keyboard.press('Escape');
     await page.evaluate(() => refresh());
   });
-  const { id } = await page.evaluate(() => api('/api/series/a5c0ff5e1fef', { method: 'POST', body: JSON.stringify({ label: '2027-02', logins: ['web:bank'], quiet: true }) }));
+  const { id } = await page.evaluate(() => api('/api/series/a5c0ff5e1fef', { method: 'POST', body: JSON.stringify({ label: '2027-02', quiet: true }) }));
   await page.evaluate(async id => { location.hash = `#/${id}`; await refresh(); }, id);
   await page.waitForSelector('#bar h1 .t:text-is("2027-02")');
   if (!await page.locator('#log.open').count()) await page.click('#bar [data-act=panel]');
   const row = (where: string, name: string) => page.locator(`${where} .tickrow:has(input.tick[value="web:${name}"])`);
-  assert.equal(await row('#log', 'ledger').locator('input').isDisabled(), true);
-  assert.equal(await row('#log', 'ledger').locator('input').isChecked(), false);
-  assert.match(await row('#log', 'ledger').innerText(), /grant required/);
-  assert.equal(await page.locator('#log [data-act=grant-ask], #log input[placeholder*="use it for"]').count(), 0);
   await page.fill('#newcomment', 'Pull the ledger.');
-  await row('#log', 'ledger').locator('[data-act=info]').click();
-  await row('#log', 'ledger').locator('[data-act=website-setup]').click();
+  await page.click('#bar [data-act=ticks]');
+  await page.waitForSelector('#pv [data-act=series-credentials]');
+  assert.equal(await row('#pv', 'ledger').locator('input').isDisabled(), true);
+  assert.equal(await row('#pv', 'ledger').locator('input').isChecked(), false);
+  assert.match(await row('#pv', 'ledger').innerText(), /grant required/);
+  assert.equal(await page.locator('#pv [data-act=grant-ask], #pv input[placeholder*="use it for"]').count(), 0);
+  await row('#pv', 'ledger').locator('[data-act=info]').click();
+  await row('#pv', 'ledger').locator('[data-act=website-setup]').click();
   await page.waitForSelector('#pv details[data-shown="web:ledger"][open]');
   assert.equal(new URL(page.url()).hash, `#/${id}`, 'the link opens setup without navigating away');
   const ask = page.locator('#pv .row2:has([data-act=grant-ask][data-id=ledger])');
@@ -1983,25 +2020,26 @@ test("website permissions are asked only in Logins, linked from disabled ticks w
   assert.deepEqual([granted.site, granted.workspace, granted.reason, granted.state, granted.by], ['ledger', '1b3031035ff6', 'Month-end ledger pulls', 'approved', 'admin@demo.test']);
   await page.click('#pv [data-act=unpv]');
   assert.equal(await page.inputValue('#newcomment'), 'Pull the ledger.');
-  assert.equal(await row('#log', 'ledger').locator('input').isEnabled(), true, 'approval updates ticks even while a prompt holds the conversation still');
-  await row('#log', 'ledger').locator('input').check();
-  await page.waitForFunction(() => data.runner.logins.includes('web:ledger'));
-  assert.deepEqual(await page.evaluate(() => data.runner.logins), ['web:ledger'], 'a stale ungranted first-comment selection is omitted from the saved payload');
-  await page.fill('#newcomment', '');
-
-  await page.click('#bar [data-act=ticks]');
+  assert.equal(await row('#pv', 'ledger').locator('input').isEnabled(), true, 'approval updates the series consent draft');
+  await row('#pv', 'ledger').locator('input').check();
+  assert.deepEqual(await page.evaluate(() => data.owner.logins), [], 'a draft does not silently change whole-series consent');
+  await page.click('#pv [data-act=series-credentials]');
+  await page.waitForFunction(() => data.owner.logins.includes('web:ledger'));
+  assert.deepEqual(await page.evaluate(() => data.owner.logins), ['web:ledger'], 'only explicit selected whole-series consent is saved');
+  assert.equal(await page.inputValue('#newcomment'), 'Pull the ledger.');
   await page.waitForSelector('#pv input.tick[value="web:bank"]');
   assert.equal(await row('#pv', 'ledger').locator('input').isEnabled(), true);
   assert.equal(await row('#pv', 'bank').locator('input').isDisabled(), true);
   assert.match(await row('#pv', 'erp').innerText(), /expired · grant required/);
-  assert.equal(await page.evaluate(() => { const ids = [...document.querySelectorAll('[id^="tick-info-"]')].map(e => e.id); return new Set(ids).size === ids.length; }), true, 'comment and modal descriptions have distinct ids');
+  assert.equal(await page.evaluate(() => { const ids = [...document.querySelectorAll('[id^="tick-info-"]')].map(e => e.id); return new Set(ids).size === ids.length; }), true, 'descriptions have distinct ids');
   await row('#pv', 'bank').locator('[data-act=info]').focus();
   await row('#pv', 'bank').locator('[data-act=website-setup]').click();
   await page.waitForSelector('#pv details[data-shown="web:bank"][open]');
   await page.click('#pv [data-act=unpv]');
-  await page.waitForSelector('#pv [data-act=start-go]');
-  assert.equal(await row('#pv', 'ledger').locator('input').isChecked(), true, 'returning from setup retains unsaved ticks');
+  await page.waitForSelector('#pv [data-act=series-credentials]');
+  assert.equal(await row('#pv', 'ledger').locator('input').isChecked(), true, 'returning from setup retains series ticks');
   await page.click('#pv [data-act=unpv]');
+  await page.fill('#newcomment', '');
 
   await page.evaluate(async () => { await api('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: 'Ledgers' }) }); await refresh(); await openLogins(); });
   await page.click('#pv [data-act=logins-show][data-id=web]');
@@ -2075,7 +2113,8 @@ test("series header Notes is hover- and keyboard-accessible, targets an empty se
   }
 });
 
-test("a wake carries a message; a series' notes thread takes notes from the sidebar, counted on its open instances, which its runners settle, folded with who and why; another instance's agent's note says whose it is", async () => {
+test("a wake carries a message; a series' notes thread takes notes from the sidebar, counted on its open instances, which its owner settles, folded with who and why; another instance's agent's note says whose it is", async () => {
+  await page.evaluate(() => api('/api/series/a5c0ff5e1fee/credentials', { method: 'PUT', body: JSON.stringify({ logins: [], autonomous: true }) }));
   const tab = await browser.newPage({ storageState: await page.context().storageState() });
   try {
     await tab.goto(new URL('/#/a5c0ff5e1f02', page.url()).href);
@@ -2121,70 +2160,79 @@ test("a wake carries a message; a series' notes thread takes notes from the side
   }
 });
 
-test("Assign… on the bar hands an instance to whoever sees its workspace, who sees it under Waiting on you until they open it, and wakes it from a request to wake it as it is; Mine shows only the open instances you run, and the series and workspace shown, as this browser keeps it for you", async () => {
-  const origin = new URL(page.url()).origin;
+test("Transfer series changes every instance without credentials; only its owner starts requests; Mine follows series ownership and retains the current selection", async () => {
+  const origin = new URL(page.url()).origin, chan = 'chan.taiman.finance-and-accounting@demo.test';
   entra.who.as = 'handed@demo.test';
-  const handed = await browser.newPage(), chan = 'chan.taiman.finance-and-accounting@demo.test';
+  const handed = await browser.newPage();
   await handed.goto(`${origin}/auth/login`);
   entra.who.as = chan;
-  await (await browser.newPage()).goto(`${origin}/auth/login`);
+  const colleague = await browser.newPage();
+  await colleague.goto(`${origin}/auth/login`);
+  await colleague.close();
   entra.who.as = 'admin@demo.test';
+  await page.evaluate(async chan => api('/capabilities', { method: 'PUT', body: JSON.stringify({ cap: 'series-owner', people: ['admin@demo.test', 'bob@demo.test', 'handed@demo.test', chan] }) }), chan);
   const { mine, theirs, sid, unrun, empty } = await page.evaluate(async () => {
-    const post = (path, body) => fetch(path, { method: 'POST', body: JSON.stringify(body) }).then(r => r.json());
+    const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) });
     const { id: ws } = await post('/api/workspaces', { name: 'Handing' });
-    await fetch(`/api/workspaces/${ws}`, { method: 'PUT', body: JSON.stringify({ owners: ['admin@demo.test'], members: ['handed@demo.test', 'chan.taiman.finance-and-accounting@demo.test'] }) });
-    const { id: sid } = await post('/api/series', { workspace: ws, name: 'Rec' });
+    await api(`/api/workspaces/${ws}`, { method: 'PUT', body: JSON.stringify({ owners: ['admin@demo.test'], members: ['handed@demo.test', 'chan.taiman.finance-and-accounting@demo.test'] }) });
+    const { id: sid } = await post('/api/series', { workspace: ws, name: 'Rec', logins: [], autonomous: false });
     const { id: unrun } = await post('/api/workspaces', { name: 'Unrun' }), { id: empty } = await post('/api/series', { workspace: unrun, name: 'Empty' });
     return { sid, unrun, empty, theirs: (await post(`/api/series/${sid}`, { label: 'H1', quiet: true })).id, mine: (await post(`/api/series/${sid}`, { label: 'H2', quiet: true })).id };
   });
   await page.goto(`${origin}/#/${theirs}`);
   await page.reload();
-  await page.waitForSelector('#bar [data-act=assign]');
-  assert.deepEqual(await page.locator('#bar .btn').allTextContents(), ['No wake', 'Close', 'Assign\u2026'], 'its runner closes it or hands it on');
-  await page.click('#bar [data-act=assign]');
-  await page.waitForSelector('#assignto option', { state: 'attached' });
+  await page.waitForSelector('#bar [data-act=series-owner]');
+  assert.deepEqual(await page.locator('#bar .btn').allTextContents(), ['No wake', 'Close', 'Transfer series…']);
+  await page.click('#bar [data-act=series-owner]');
+  await page.waitForSelector('#ownerto option', { state: 'attached' });
   await page.setViewportSize({ width: 390, height: 844 });
-  assert.deepEqual(await page.locator('#assignto option').evaluateAll(os => os.map(o => (o as HTMLOptionElement).value).sort()), [chan, 'handed@demo.test'], 'whoever sees its workspace but its runner and you');
-  assert.match(await page.locator(`#assignto option[value="${chan}"]`).textContent() ?? '', /^陳大文（財務及會計部，香港辦事處） </);
-  const [select, dialog] = await Promise.all(['#assignto', '#ask'].map(s => page.locator(s).boundingBox()));
-  assert.ok(select!.x + select!.width <= dialog!.x + dialog!.width - 16, 'the picker keeps within the dialog on a phone, a long name and address too');
-  assert.doesNotMatch(await page.textContent('#ask') ?? '', /stops it/);
-  await page.evaluate('data.run = { n: 7 }');
-  await page.selectOption('#assignto', 'handed@demo.test');
-  const sent = page.waitForRequest(r => r.url().endsWith(`/api/instances/${theirs}/assign`));
+  assert.deepEqual(await page.locator('#ownerto option').evaluateAll(os => os.map(o => (o as HTMLOptionElement).value).sort()), ['', chan, 'handed@demo.test']);
+  assert.match(await page.locator(`#ownerto option[value="${chan}"]`).textContent() ?? '', /^陳大文（財務及會計部，香港辦事處） </);
+  const [select, dialog] = await Promise.all(['#ownerto', '#ask'].map(s => page.locator(s).boundingBox()));
+  assert.ok(select!.x + select!.width <= dialog!.x + dialog!.width - 16, 'the picker fits a phone with a long name and address');
+  assert.match(await page.textContent('#ask') ?? '', /every instance[\s\S]*No credentials transfer[\s\S]*starts no run/);
+  await page.selectOption('#ownerto', 'handed@demo.test');
+  const sent = page.waitForRequest(r => r.url().endsWith(`/api/series/${sid}/owner`));
   await page.click('#ask button[value=ok]');
-  assert.deepEqual((await sent).postDataJSON(), { to: 'handed@demo.test', stops: null }, 'saying it stops no run, as it said: one started since is refused');
+  assert.deepEqual((await sent).postDataJSON(), { owner: 'handed@demo.test' });
   await page.setViewportSize({ width: 1280, height: 720 });
-  await page.waitForSelector('#bar [data-act=takeover]');
-  await page.click('#bar [data-act=takeover]');
-  await page.waitForSelector('#pv [data-act=start-go]');
-  await page.evaluate('data.run = { n: 9 }');
-  let tookStops: unknown = 'unset';
-  await page.route(`**/api/instances/${theirs}/assign`, r => { tookStops = r.request().postDataJSON().stops; return r.fulfill({ status: 200, contentType: 'application/json', body: '"ok"' }); });
-  await page.click('#pv [data-act=start-go]');
-  await page.waitForSelector('#pv [data-act=start-go]', { state: 'hidden' });
-  assert.equal(tookStops, null, 'Take over likewise sends stops: null when opened idle, though a run started since');
-  await page.unroute(`**/api/instances/${theirs}/assign`);
-  assert.match(await page.textContent('#bar .owner .about') ?? '', /Assigned by you, from you,/);
+  await page.waitForFunction(() => data.owner.by === 'handed@demo.test');
+  assert.equal(await page.locator('#bar [data-act=close], #bar [data-act=takeover], #bar [data-act=assign], #bar .creds').count(), 0);
+  for (const id of [mine, theirs]) {
+    const detail = await (await page.request.get(`${origin}/api/instances/${id}`)).json();
+    assert.equal(detail.owner.by, 'handed@demo.test');
+    assert.equal(detail.owner.consent, undefined);
+    assert.equal(detail.log.find(e => e.op === 'create').by, 'admin@demo.test');
+  }
   await handed.goto(`${origin}/#/${mine}`);
-  await handed.click('[data-act=waiting]');
-  assert.match(await handed.textContent('#pv') ?? '', /Demo Admin assigned you Handing · Rec · H1/);
-  await handed.click(`#pv a[href="#/${theirs}"]`);
-  await handed.waitForSelector('#bar .owner:text-is("Yours")');
-  assert.equal(await handed.locator('.row.waits').count(), 0, 'opening it, they were told, as it shows');
-  // A wake pending as it was assigned, come as a request to wake it.
+  await handed.reload();
+  await handed.waitForSelector('#bar .creds:text-is("Series credentials: consent needed")');
+  await handed.click('#bar .creds');
+  await handed.waitForSelector('#pv [data-act=series-credentials]');
+  assert.equal(await handed.locator('#pv input.tick:checked').count(), 0);
+  assert.equal(await handed.isChecked('#autonomous'), false);
+  await handed.click('#pv [data-act=series-credentials]');
+  await handed.waitForSelector('#pv .saved:text-is("Saved")');
+  await handed.keyboard.press('Escape');
   const wakes = join(root, '.rf', 'wakes.json'), w = JSON.parse(readFileSync(wakes, 'utf8'));
   writeFileSync(wakes, JSON.stringify({ ...w, requests: { ...w.requests, handing: { series: sid, label: 'H1', target: theirs, from: 'admin@demo.test', at: new Date().toISOString(), text: 'the statement is due' } } }));
+  await page.reload();
+  await page.waitForSelector('#tree .row.ws');
+  assert.equal(await page.locator('#tree [data-act=req-start][data-id=handing]').count(), 0, 'a non-owner manager cannot Start');
+  assert.equal((await page.request.post(`${origin}/api/requests/handing`, { data: {} })).status(), 403);
+  assert.equal((await (await page.request.get(`${origin}/api/instances/${theirs}`)).json()).log.filter(e => e.op === 'wake').length, 0, 'refused Start appends no execution or provenance');
   await handed.reload();
   await handed.click('[data-act=waiting]');
-  assert.match(await handed.textContent('#pv') ?? '', /^(?!.*assigned you).*asks to wake H1 Wake/s, 'opening it, they were told');
+  assert.match(await handed.textContent('#pv') ?? '', /asks to wake H1 Wake/s);
+  const request = handed.waitForRequest(r => r.url().endsWith('/api/requests/handing') && r.method() === 'POST');
   await handed.click('#pv [data-act=req-start]');
-  await handed.waitForSelector('#bar .owner:text-is("Yours")');
-  assert.equal(await handed.locator('#pv .slabel, #slabel').count(), 0, 'no credentials to tick: its runner\'s are');
-  assert.deepEqual(await handed.evaluate(async id => (await (await fetch(`/api/instances/${id}`)).json()).log.filter(e => e.op === 'wake').map(e => [e.from, e.note ?? false]), theirs), [['admin@demo.test', true], ['handed@demo.test', false]]);
+  assert.deepEqual((await request).postDataJSON(), {});
+  await handed.waitForFunction(id => cur.i?.id === id, theirs);
+  assert.equal(await handed.locator('#pv input.tick, #slabel').count(), 0, 'Start uses the existing whole-series ceiling');
+  assert.deepEqual(await handed.evaluate(async id => (await api(`/api/instances/${id}`)).log.filter(e => e.op === 'wake').map(e => [e.from, e.note ?? false]), theirs), [['admin@demo.test', true], ['handed@demo.test', false]], 'request provenance stays information beside the owner’s explicit start');
   await handed.reload();
   await handed.waitForSelector('#bar h1 .t');
-  assert.equal(await handed.locator('.row.waits').count(), 0, 'waking it, the request went');
+  assert.equal(await handed.locator('.row.waits').count(), 0, 'the request went');
   await handed.close();
   await page.goto(`${origin}/#/${mine}`);
   await page.waitForSelector(`a.row.inst[href="#/${theirs}"]`);
@@ -2192,13 +2240,13 @@ test("Assign… on the bar hands an instance to whoever sees its workspace, who 
   await page.click('#sortpop [data-act=mine-only]');
   await page.keyboard.press('Escape');
   await page.waitForSelector(`a.row.inst[href="#/${theirs}"]`, { state: 'detached' });
-  assert.equal(await page.locator(`a.row.inst[href="#/${mine}"]`).count(), 1);
+  assert.equal(await page.locator(`a.row.inst[href="#/${mine}"]`).count(), 1, 'the selected instance stays although another person owns it');
   assert.ok(await page.locator('a.row.inst').evaluateAll(rows => rows.length > 0));
   assert.equal(await page.evaluate(() => localStorage['mine:admin@demo.test']), 'on');
   for (const at of [empty, unrun]) {
     await page.goto(`${origin}/#/${at}`);
     await page.waitForSelector(`.row.ser.on a[href="#/${empty}"]`);
-    assert.equal(await page.locator(`.row.ws.on a[href="#/${unrun}"]`).count(), 1, 'the series and workspace shown stay, though you run nothing there');
+    assert.equal(await page.locator(`.row.ws.on a[href="#/${unrun}"]`).count(), 1, 'the selected series and workspace stay with no instances');
   }
   await page.goto(`${origin}/#/${mine}`);
   await page.waitForSelector(`a[href="#/${unrun}"]`, { state: 'detached' });
@@ -2209,11 +2257,11 @@ test("Assign… on the bar hands an instance to whoever sees its workspace, who 
   await page.waitForSelector(`a.row.inst[href="#/${theirs}"]`);
 });
 
-test("an expired login's banner on an instance agrees with held(): gone once closed, assigned away and back, or its OpenRouter key removed", async () => {
+test("an expired login's banner on an instance agrees with held(): gone once closed or its series transfers away and back", async () => {
   const origin = new URL(page.url()).origin;
   const { id: ws } = await page.evaluate(async () => (await (await fetch('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: 'Held needs' }) })).json()));
   await page.evaluate(async ws => fetch(`/api/workspaces/${ws}`, { method: 'PUT', body: JSON.stringify({ add: 'bob@demo.test', as: 'member' }) }), ws);
-  const { id: sid } = await page.evaluate(async ws => (await (await fetch('/api/series', { method: 'POST', body: JSON.stringify({ workspace: ws, name: 'Rec' }) })).json()), ws);
+  const { id: sid } = await page.evaluate(async ws => (await (await fetch('/api/series', { method: 'POST', body: JSON.stringify({ workspace: ws, name: 'Rec', logins: [], autonomous: false }) })).json()), ws);
   const { id: i1 } = await page.evaluate(async sid => (await (await fetch(`/api/series/${sid}`, { method: 'POST', body: JSON.stringify({ label: '2026-10', quiet: true }) })).json()), sid);
   const { id: i2 } = await page.evaluate(async sid => (await (await fetch(`/api/series/${sid}`, { method: 'POST', body: JSON.stringify({ label: '2026-09', quiet: true }) })).json()), sid);
   entra.who.stale.add('admin@demo.test');
@@ -2230,22 +2278,22 @@ test("an expired login's banner on an instance agrees with held(): gone once clo
   await page.goto(`${origin}/#/${i1}`);
   await page.waitForSelector('#needs:not([hidden])');
   assert.match(await page.textContent('#needs') ?? '', /Your rollforward login has expired/);
-  await page.evaluate(async ([a, b]) => {
+  await page.evaluate(async ([sid, b]) => {
     await fetch(`/api/instances/${b}/close`, { method: 'POST', body: JSON.stringify({ quiet: true }) });
-    await fetch(`/api/instances/${a}/assign`, { method: 'POST', body: JSON.stringify({ to: 'bob@demo.test' }) });
-  }, [i1, i2]);
+    await api(`/api/series/${sid}/owner`, { method: 'PUT', body: JSON.stringify({ owner: 'bob@demo.test' }) });
+  }, [sid, i2]);
   const bob = await browser.newPage();
   entra.who.as = 'bob@demo.test';
   await bob.goto(`${origin}/auth/login`);
   await bob.waitForSelector('#bar h1 .t');
-  await bob.evaluate(async a => fetch(`/api/instances/${a}/assign`, { method: 'POST', body: JSON.stringify({ to: 'admin@demo.test' }) }), i1);
+  await bob.evaluate(async sid => api(`/api/series/${sid}/owner`, { method: 'PUT', body: JSON.stringify({ owner: 'admin@demo.test' }) }), sid);
   await bob.close();
   entra.who.as = 'admin@demo.test';
   await page.goto(`${origin}/auth/login`);
   await page.waitForSelector('#bar h1 .t');
   await page.goto(`${origin}/#/${i1}`);
   await page.waitForSelector('#bar h1 .t:text-is("2026-10")');
-  assert.equal(await page.locator('#needs').isHidden(), true, 'gone after assign and sign-in');
+  assert.equal(await page.locator('#needs').isHidden(), true, 'gone after series transfer and sign-in');
   await page.goto(`${origin}/#/${i2}`);
   await page.waitForSelector('#bar h1 .t:text-is("2026-09")');
   assert.equal(await page.locator('#needs').isHidden(), true, 'gone on closed instance');
@@ -2493,19 +2541,19 @@ test('sidebar navigation and reload keep each draft but do not restore a cancell
   }
 });
 
-test('Assign dialog when no other signed-in person sees the workspace explains that instead of showing an empty select', async () => {
+test('Transfer series dialog when no other eligible signed-in person sees the workspace explains that instead of showing an empty select', async () => {
   const origin = new URL(page.url()).origin;
   const { inst } = await page.evaluate(async () => {
-    const { id: ws } = await (await fetch('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: 'SoloAssign' }) })).json();
+    const { id: ws } = await (await fetch('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: 'SoloOwner' }) })).json();
     const { id: sid } = await (await fetch('/api/series', { method: 'POST', body: JSON.stringify({ workspace: ws, name: 'S' }) })).json();
     const { id: inst } = await (await fetch(`/api/series/${sid}`, { method: 'POST', body: JSON.stringify({ label: 'Solo-1', quiet: true }) })).json();
     return { inst };
   });
   await page.goto(`${origin}/#/${inst}`);
-  await page.waitForSelector('#bar [data-act=assign]');
-  await page.click('#bar [data-act=assign]');
+  await page.waitForSelector('#bar [data-act=series-owner]');
+  await page.click('#bar [data-act=series-owner]');
   await page.waitForSelector('#ask[open]');
-  assert.equal(await page.locator('#ask #assignto').count(), 0);
+  assert.equal(await page.locator('#ask #ownerto').count(), 0);
   assert.equal(await page.locator('#ask button[value=ok]').count(), 0);
   assert.match(await page.textContent('#ask p') ?? '', /signed in/i);
   await page.keyboard.press('Escape');

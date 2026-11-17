@@ -16,7 +16,7 @@ test('B-R4-DATA-03a: commit() atomically replaces .git/rf-seen.json and rebuilds
   const root = mkdtempSync(join(tmpdir(), 'r4-03a-git-'));
   try {
     openStore(root);
-    const inst = createInstance('s', 'I', who.email, []), cache = join(inst.dir, '.git', 'rf-seen.json');
+    const inst = createInstance('s', 'I', who.email), cache = join(inst.dir, '.git', 'rf-seen.json');
     writeFileSync(join(inst.dir, 'working', 'report.txt'), 'first');
     await commit(inst.dir, who, 'healthy control');
 
@@ -45,7 +45,7 @@ test('B-R4-DATA-03a: commit() atomically replaces .git/rf-seen.json and rebuilds
     await inst.close(who);
     assert.equal(inst.doc.status, 'closed');
 
-    const inst2 = createInstance('s', 'I2', who.email, []), cache2 = join(inst2.dir, '.git', 'rf-seen.json');
+    const inst2 = createInstance('s', 'I2', who.email), cache2 = join(inst2.dir, '.git', 'rf-seen.json');
     writeFileSync(join(inst2.dir, 'working', 'f.txt'), 'x');
     await commit(inst2.dir, who, 'init');
     rmSync(cache2);
@@ -156,7 +156,7 @@ test('B-R4-DATA-13: Instance.put() rejects non-object screen JSON and non-object
   const root = mkdtempSync(join(tmpdir(), 'r4-13-'));
   try {
     openStore(root);
-    const inst = createInstance('s', 'I', who.email, []);
+    const inst = createInstance('s', 'I', who.email);
     for (const bad of ['null', '[]', '123', '"text"']) {
       assert.throws(() => inst.put(bad, 1), (e: unknown) => e instanceof HttpError && e.status === 400, bad);
     }

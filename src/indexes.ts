@@ -260,10 +260,10 @@ export function forget(email: string, offer?: string) {
 }
 
 // What a run of the instance reads: the cache of each source its lender ticked that has one so far, without waiting for it.
-export function sources(inst: Instance): { o: Offer; c: Cache }[] {
+export function sources(inst: Instance, run?: number): { o: Offer; c: Cache }[] {
   let by: string, ticked: string[];
   try {
-    ({ by, logins: ticked } = lender(inst));
+    ({ by, logins: ticked } = lender(inst, run));
   } catch {
     return [];
   }
@@ -293,9 +293,9 @@ A ticked source with neither file has no cache yet.
 // changed since, and as_of, when the oldest of them was reached, null while the cache is still being built; and the README.md that
 // says so. All of it runs at once, so no tidy-up starts a new feed in between. Stopped parts resume in their cache's queue, without
 // holding up the copy. Whether there was any.
-export function prepare(inst: Instance, to: string): boolean {
+export function prepare(inst: Instance, to: string, run?: number): boolean {
   const names = new Set<string>();
-  for (const { o, c } of sources(inst)) {
+  for (const { o, c } of sources(inst, run)) {
     const base = o.name.replace(/[/\0]/g, '-'), ps = Object.values(c.parts);
     const fit = (suffix: string) => {
       let s = '';

@@ -9,6 +9,8 @@ import { join } from 'node:path';
 import { initSystem, readJson, rfDir, saveTree, writeJson } from '../src/system.ts';
 import { createInstance, openStore } from '../src/store.ts';
 import type { Me } from '../src/auth.ts';
+import { authority } from '../src/logins.ts';
+import { ownSeries } from './owner-fixture.ts';
 
 const alice: Me = { email: 'alice@company.test', name: 'Alice', role: 'user', groups: [] };
 const bob: Me = { email: 'bob@company.test', name: 'Bob', role: 'user', groups: [] };
@@ -149,8 +151,9 @@ const site = async (person = alice, name = 'portal', url = 'https://erp.client.t
   writeJson('grants.json', all);
 };
 const running = (person = alice, name = 'portal') => {
-  const inst = createInstance('s', `case-${++serial}`, person.email, [`web:${name}`]);
-  inst.append('server', 'run', { run: 1, runner: person.email, consent: 1 });
+  ownSeries('s', person.email, [`web:${name}`]);
+  const inst = createInstance('s', `case-${++serial}`, person.email);
+  inst.append('server', 'run', { run: 1, runner: person.email, authority: authority(inst) });
   return new Browsers(inst, 1);
 };
 const disk = () => readdirSync(root, { recursive: true }).map(p => join(root, String(p))).filter(p => statSync(p).isFile()).map(p => readFileSync(p).toString()).join('\n');
@@ -509,9 +512,9 @@ test('the asynchronous VPN availability check rechecks ticks and grants before o
     listGate = new Promise<void>(ok => { release = ok; });
     const seen = new Promise<void>(ok => { onList = ok; });
     const opening = b.browser('portal');
-    const refused = assert.rejects(opening, revoke === 'tick' ? /not ticked/ : /grant.*revoked/);
+    const refused = assert.rejects(opening, /series authority has ended/);
     await seen;
-    if (revoke === 'tick') b.inst.append(alice.email, 'logins', { logins: [] });
+    if (revoke === 'tick') ownSeries('s', alice.email, []);
     else if (revoke === 'move') {
       saveTree({ workspaces: { w: { name: 'Client work', owners: [owner.email], members: [alice.email] }, other: { name: 'Other work', owners: [owner.email], members: [alice.email] } }, series: { s: { name: 'Weekly work', workspace: 'other' } } });
     } else writeJson('grants.json', {});

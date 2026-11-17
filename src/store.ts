@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { basename, extname, join, posix, sep } from 'node:path';
 import { appendLine, changes, readLines, tree } from './system.ts';
 import { commit, committed, pack, type Who } from './git.ts';
+import { seriesSettings } from './series.ts';
 
 // Paths in the screen are /-separated on every system.
 const normalize = posix.normalize;
@@ -224,15 +225,15 @@ function freeLabel(seriesId: string, label: string): string {
 }
 
 // A new instance starts empty: its agent learns from the series' earlier instances what to roll forward from. `by` is its runner,
-// and `logins` the offers of their logins they ticked for it (logins.ts).
-export function createInstance(seriesId: string, label: string, by: string, logins: string[]): Instance {
+// The creator is an actor, not an execution principal.
+export function createInstance(seriesId: string, label: string, by: string): Instance {
   const name = freeLabel(seriesId, label), id = newId(), stage = join(root, '.tmp', id), dir = instanceDir(id), meta = { label: name, series: seriesId };
   try {
     mkdirSync(join(stage, 'upload'), { recursive: true });
     mkdirSync(join(stage, 'working'));
     replaceReadOnly(join(stage, 'instance.json'), JSON.stringify(meta));
     replaceReadOnly(join(stage, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [] }, null, 1));
-    appendLine(join(stage, 'log.jsonl'), JSON.stringify({ seq: 1, at: new Date().toISOString(), by, op: 'create', logins }));
+    appendLine(join(stage, 'log.jsonl'), JSON.stringify({ seq: 1, at: new Date().toISOString(), by, op: 'create' }));
     renameSync(stage, dir);
   } catch (e) {
     wipe(Buffer.from(stage));
@@ -278,7 +279,8 @@ export class Instance {
   append(by: string, op: string, fields: Record<string, unknown> = {}): Entry {
     // Nothing more is said of a deleted instance, such as by a run its deletion cut, as it ends.
     if (this.hole) return { seq: 0, at: new Date().toISOString(), by, op, ...fields };
-    const e = { seq: this.log.length + 1, at: new Date().toISOString(), by, op, ...fields };
+    const s = ['upload', 'comment', 'signoff', 'reject'].includes(op) && by.includes('@') ? seriesSettings(this.series()) : undefined;
+    const e = { seq: this.log.length + 1, at: new Date().toISOString(), by, op, ...fields, ...(s && { authorityOwner: s.owner ?? null, ...(s.consent && s.consent.by === s.owner && s.consent.workspace === tree().series[this.seriesId].workspace && { authorityEpoch: s.epoch }) }) };
     appendLine(join(this.dir, 'log.jsonl'), JSON.stringify(e));
     this.log.push(e);
     if (e.op === 'duplicate') this.copiedSeq = e.seq;

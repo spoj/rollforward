@@ -17,15 +17,13 @@ const HELP: Record<string, string> = {
   shows an image, PATH under upload/ or working/ of this instance, or as ../<label>/working/x.csv of another of its series;
   cN, or [name](#cN), links a comment, and [name](../<label>#cN) one of another instance. - reads TEXT from stdin. --at PATH
   says it in another open instance of your workspace, such as ../<label> or ../../<series>/<label>, --in and --on then its
-  threads and items: a note for its runner, naming you, your run, your runner and this instance, which starts a run there only
-  where its series is shared.`,
+  threads and items: a note for its series owner, naming you, your run, your captured executor and this instance; it starts no run there.`,
   ask: `rf ask [--in cN | --on ITEM[@REF]] [--to EMAIL] TEXT|-
-  Asks a question, for information: it waits on EMAIL, else the instance's runner, until a person replies under it, which
-  starts a run. It authorises nothing. The rest as rf say.`,
+  Asks a question, for information: it waits on EMAIL, else the series owner, until a person replies under it. Only the current owner initiates execution. It authorises nothing. The rest as rf say.`,
   propose: `rf propose [--in cN | --on ITEM[@REF]] [--to EMAIL] TEXT|-
-  Proposes what you will do on your runner's behalf, such as an act outside the series, which waits for its approval,
-  linking what it uses: it waits on EMAIL, else the instance's runner, until someone approves or rejects it, with an optional
-  note, which starts a run. An approval is the log's signoff entry, naming the proposal as on, with the commit of your
+  Proposes what you will do on your series owner's behalf, such as an act outside the series, which waits for its approval,
+  linking what it uses: it waits on EMAIL, else the series owner, until someone approves or rejects it, with an optional
+  note. A collaborator's decision records content approval, never execution authority. An approval is the log's signoff entry, naming the proposal as on, with the commit of your
   instance's folder as it was then, in their name (rf help commit): before you act, check with git diff against it that what
   you use is unchanged. A reject entry says no: don't act on it; follow its feedback and propose revised work anew. Missing
   information is a reason to reject, not to leave the proposal pending. Comments are not proposal decisions. Whose approval
@@ -38,7 +36,8 @@ const HELP: Record<string, string> = {
   server commits; read it with git log, show or diff, such as git diff HEAD -- working. Each run's end commits it too, in your
   name, and an approval and closing, in the name of whoever approved or closed.`,
   wake: `rf wake TARGET AT [--label LABEL] [--days DAYS] [TEXT] | rf wake --cancel ID
-  Starts a run later, which sees who woke it and TEXT, a short message, such as what to look at. TARGET is a folder as you see
+  Requests a later run, with who woke it and TEXT. Execution requires the target owner's autonomous consent and a valid
+  authority snapshot; otherwise it waits as a request for that owner. TARGET is a folder as you see
   it, by the names your run started with: an open instance, such as . for your own, ../<label> or ../../<series>/<label>, which
   the wake continues; or a series, such as .. or ../../<series>, which it starts a new instance of, labelled LABEL, or continues
   the one it has by that label. AT is now, +<n>m, +<n>h, +<n>d, or a date and time with its offset, such as
@@ -49,7 +48,7 @@ const HELP: Record<string, string> = {
   with --label <its label>-r2.`,
   note: `rf note SERIES TEXT|- | rf note --taken ID [--see cN] TEXT|- | rf note --aside ID TEXT|-
   Leaves a note on a series of your workspace, such as .. for your own or ../../<series>, for its runs, whether or not an
-  instance is open; it names you, your run, your runner and this instance, and starts no run. Each run's first message lists
+  instance is open; it names you, your run, your captured executor and this instance, and starts no run. Each run's first message lists
   its series' open notes, by ID, their files under ../.notes/, all of them in ../.notes/log.jsonl. --taken settles one of your
   series' as acted on, saying where, --see cN a thread of yours; --aside sets it aside, saying why.`,
   correct: `rf correct PATH [--on ITEM[@REF]] --wrong|--superseded [--in THREAD] TEXT|-
@@ -60,7 +59,7 @@ const HELP: Record<string, string> = {
   Records that you delivered the output ITEM outside: where to, such as "E1, batch 4471" or the mail's recipients, and what
   proves it, such as the document number a website gave, or the Message-ID or the file's id and eTag Microsoft 365 gave.`,
   expired: `rf expired NAME
-  Says the website NAME signed your runner out, as when it shows its sign-in page: its browser closes, your runner is asked to
+  Says the website NAME signed your series owner out, as when it shows its sign-in page: its browser closes, your series owner is asked to
   sign in again, and the instance carries on once they do.`,
 };
 const USAGE = `${Object.values(HELP).map(h => h.split('\n  ')[0]).join('\n')}\nrf help COMMAND`;

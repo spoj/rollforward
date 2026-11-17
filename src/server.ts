@@ -11,9 +11,10 @@ import { AGENT, commit, committed, refused } from './git.ts';
 import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
 import { checkTheme, stylesheet, themeLogo } from './theme.ts';
+import { checkAuthorityFormat } from './authority-format.ts';
 import { asPerson, authenticate, CAPS, can, capabilities, checkConfig, cli, connect, myTokens, newToken, recheckRequest, redirectPath, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
 import { act, canManage, canSee, changes, everyone, initSystem, isPeople, readJson, replaceFile, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
-import { checkTicks, lastAssign, logins, runnerAt, runnerOf, saveLogin, signOut, unoffer } from './logins.ts';
+import { checkTicks, logins, runnerAt, ownerOf, saveLogin, signOut, unoffer } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { answered, byLogin, call, connections, intercepts, keyStatus, refreshKeys, letIn, loginOf, removeConnection, setConnection, setLetIn, upstreams } from './connections.ts';
@@ -24,9 +25,9 @@ import { ask, decide, forgetGrants, forgetWorkspace, lapse, pruneGrants, revoke,
 import { offer } from './connections/graph.ts';
 import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, prune, startIndexing, track } from './indexes.ts';
-import { addNote, notes, seriesSettings } from './series.ts';
+import { addNote, notes, saveSeriesSettings, seriesSettings, type SeriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, archived, assigned, byToken, cancelWake, cancelWakes, closed, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, pending, queued, remove, resolveFor, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesOf, wakeWith, weekly, reads, CUT, type Active, type Request } from './waker.ts';
+import { active, archived, byToken, cancelWake, cancelWakes, closed, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, queued, remove, retireSeries, resolveFor, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesOf, wakeWith, weekly, reads, CUT, type Active, type Request } from './waker.ts';
 import { find, holdings, killLeft, killTree, sample, type Monitor, type Sandbox } from './monitor.ts';
 import { promptView, savePrompt, sha256 as textSha } from './prompt.ts';
 
@@ -41,6 +42,7 @@ const port = Number(process.argv[3] ?? 8780);
 const host = process.env.RF_HOST ?? '127.0.0.1';
 const tmpDir = join(root, '.tmp'), previews = join(root, '.previews');
 if (!existsSync(join(agentRoot, 'usr'))) throw new Error(`no agent image at ${agentRoot}: node scripts/agent.ts unpacks agent-${agentId}, which this checkout runs`);
+checkAuthorityFormat(root);
 initSystem(root);
 // As it starts, before anything changes .rf/, the server copies it to .rf-backups/<time>/, keeping the newest five, but the indexes'
 // caches and the runs' copies of them, which Graph gives again: what a mistake or a release's migration changed is there to put back.
@@ -49,6 +51,17 @@ mkdirSync(backups, { recursive: true, mode: 0o700 });
 cpSync(join(root, '.rf'), join(backups, new Date().toISOString().replace(/[:.]/g, '-')), { recursive: true, filter: p => !['index', 'runs'].includes(basename(p)) });
 for (const old of readdirSync(backups).sort().slice(0, -5)) rmSync(join(backups, old), { recursive: true });
 openStore(root);
+const authorityEpochs = new Map(Object.keys(tree().series).map(sid => [sid, seriesSettings(seriesDir(sid)).epoch]));
+changes.on('change', (id: string, actor?: string) => {
+  if (id !== 'tree') return;
+  const t = tree();
+  for (const [sid, s] of Object.entries(t.series)) {
+    const settings = seriesSettings(seriesDir(sid)), previous = authorityEpochs.get(sid);
+    authorityEpochs.set(sid, settings.epoch);
+    if (previous !== undefined && previous !== settings.epoch) for (const i of instances(sid)) if (i.doc.status === 'open')
+      i.append(actor ?? 'server', 'authority', { owner: settings.owner, epoch: settings.epoch, workspace: s.workspace });
+  }
+});
 // A new data root starts with one connection, Microsoft 365's, graph.
 if (!existsSync(join(root, '.rf', 'connections.json'))) writeJson('connections.json', { graph: { type: 'graph', updated_by: 'server', updated_at: new Date().toISOString() } });
 
@@ -174,8 +187,17 @@ function mustUnarchived(by: string, sid: string, run?: Me) {
 
 // What going runs are no longer lent goes: their browsers, and their copies of indexes.
 async function closeUnlent() {
+  const t = tree(), retiring: Promise<void>[] = [];
+  for (const [sid, s] of Object.entries(t.series)) {
+    const settings = seriesSettings(seriesDir(sid)), p = settings.owner && asPerson(settings.owner);
+    if (!settings.consent) retiring.push(retireSeries(sid));
+    else if (!p || !can(p, 'series-owner') || !canSee(p, t.workspaces[s.workspace])) {
+      const { consent, ...rest } = settings;
+      retiring.push(changeAuthority(sid, { ...rest, epoch: settings.epoch + 1, since: new Date().toISOString() }));
+    }
+  }
   for (const a of active.values()) prune(a.inst, a.n, a.token);
-  await Promise.all([...active.values()].map(a => a.browsers?.closeUnlent()));
+  await Promise.all([...retiring, ...[...active.values()].map(a => a.browsers?.closeUnlent())]);
 }
 
 // A run's browser on a website, for whoever sees its instance to watch, if they may use the website: the run's browsers, and its
@@ -188,56 +210,37 @@ function watched(me: Me, id: string, site: string): { browsers: Browsers; id: st
   return { browsers: a!.browsers!, id: b };
 }
 
-// Whom an open instance waits on, and with what: each ask no one answered on the person it names, else the runner, from before its
-// last assign too, and each such note on the runner but their own, history being none; a copy's since it was copied.
+// Unanswered asks wait on their named person or the current owner; colleagues' unread notes wait on the owner.
 function waits(inst: Instance): { who: string; e: Entry }[] {
   if (inst.doc.status !== 'open') return [];
-  const runner = runnerOf(inst).by;
-  return inst.log.filter(e => e.seq > inst.copied && e.op === 'comment' && ((e.by === 'agent' && e.ask) || (standing(inst, e)?.word === 'note' && e.by !== runner)) && !inst.answered(e))
-    .map(e => ({ who: (e.to as string | undefined) ?? runner, e }));
+  const owner = ownerOf(inst).by;
+  return inst.log.filter(e => e.seq > inst.copied && e.op === 'comment' && ((e.by === 'agent' && e.ask) || (standing(inst, e)?.word === 'note' && e.by !== owner)) && !inst.answered(e))
+    .map(e => ({ who: (e.to as string | undefined) ?? owner, e })).filter(({ who }) => !!who);
 }
 
-// Whom an assign tells, until they open the instance or act in it: whoever someone else assigned it to.
-function assignment(i: Instance): { who: string; by: string; at: string } | undefined {
-  const a = lastAssign(i.log);
-  if (i.doc.status !== 'open' || a?.op !== 'assign' || a.to === a.by) return undefined;
-  const who = a.to as string;
-  return (seen(who).at[i.id] ?? 0) < a.seq && !i.log.some(e => e.seq > a.seq && e.by === who) ? { who, by: a.by, at: a.at } : undefined;
-}
-
-// Whom a request to start an instance of a series waits on: whoever shares it, else the runner of its newest instance, else the
-// person who asked, if a person did; no one in particular, who anyone in its workspace may answer, else.
 function asked(r: Request): string | null {
-  if (r.target) return runnerOf(instance(r.target)).by;
-  const newest = instances(r.series).filter(i => !i.hole).at(-1);
-  return seriesSettings(seriesDir(r.series)).shared?.by ?? (newest ? runnerOf(newest).by : r.from.includes('@') ? r.from : null);
+  return seriesSettings(seriesDir(r.series)).owner ?? null;
 }
 
-// The open instances whose runner couldn't see them with this tree and these people: their runs can't use the runner's logins.
 function hidden(t: Tree, us: Record<string, User>): string[] {
-  return Object.entries(t.series).flatMap(([sid, s]) => instances(sid).filter(i => {
-    const by = runnerOf(i).by, p = asPerson(by, us[by]);
-    return i.doc.status === 'open' && (!p || !canSee(p, t.workspaces[s.workspace]));
-  }).map(i => {
-    const by = runnerOf(i).by;
-    return `${named(t, sid)}/${i.label}, run by ${us[by]?.name ? `${us[by].name} <${by}>` : by}`;
-  }));
+  return Object.entries(t.series).flatMap(([sid, s]) => {
+    const by = seriesSettings(seriesDir(sid)).owner, p = by && asPerson(by, us[by]);
+    return by && (!p || !canSee(p, t.workspaces[s.workspace])) ? [`${named(t, sid)}, owned by ${us[by]?.name ? `${us[by].name} <${by}>` : by}`] : [];
+  });
 }
 
-// A change of who is where or of roles may hide no more open instances from their runners, unless forced.
+
 function guard(before: string[], after: string[], force: unknown) {
   const lost = after.filter(x => !before.includes(x));
-  if (lost.length && !force) throw new HttpError(409, `this would hide open instances from the people who run them, so their runs couldn't use their logins: ${lost.join('; ')}. Have someone who stays take them over first`);
+  if (lost.length && !force) throw new HttpError(409, `this would hide series from their owners, so their runs couldn't use their logins: ${lost.join('; ')}. Transfer their ownership to someone who stays first`);
 }
 
-// An instance as the sidebar shows it. What comes from its log and screen is kept until either moves on, or its series' sharing,
-// which says whose entries are notes, changes, so a listing reads each instance's log once, not on every refresh.
-const kept = new WeakMap<Instance, { key: string; active: string; asks: { who: string; kind: string }[]; runner: string; acted: string[]; cost: number; estimated: boolean; corrections: number; wrong: string[];
+// The cached sidebar projection also depends on series authority, including consent additions that keep the same epoch.
+const kept = new WeakMap<Instance, { key: string; active: string; asks: { who: string; kind: string }[]; owner: string; acted: string[]; cost: number; estimated: boolean; corrections: number; wrong: string[];
   refused: { at: string; run: number; site: string; login: string; hosts: string[] }[] }>();
-// Who runs an instance, and the logins they ticked for it, by name while they still offer them.
-function runner(inst: Instance) {
-  const r = runnerOf(inst), offers = logins(r.by).flatMap(l => l.offers);
-  return { ...r, ticked: r.logins.map(id => offers.find(o => o.id === id)?.name ?? id) };
+function owner(inst: Instance) {
+  const r = ownerOf(inst), offers = logins(r.by).flatMap(l => l.offers);
+  return { ...r, name: users()[r.by]?.name ?? r.by, since: seriesSettings(inst.series()).since, ticked: r.logins.map(id => offers.find(o => o.id === id)?.name ?? id) };
 }
 
 // Whom the page names: whoever has signed in, by their Entra name, as colleagues see each other in the directory; and the Entra
@@ -252,7 +255,7 @@ function names(me: Me) {
 
 // What makes an instance new to a person, when someone else or the agent did it: a run's end, a comment, an approval, a rejection, a
 // withdrawal, an upload, an assign, a close, a deletion, or a move to another workspace that someone else accepted.
-const NEWS = ['done', 'comment', 'signoff', 'reject', 'withdraw', 'upload', 'takeover', 'assign', 'close', 'abandon', 'delete', 'move'];
+const NEWS = ['done', 'comment', 'signoff', 'reject', 'withdraw', 'upload', 'takeover', 'assign', 'authority', 'close', 'abandon', 'delete', 'move'];
 
 // What an instance's runs cost, since its latest duplication, a deleted one's as its deletion kept it.
 const costOf = (i: Instance) => +i.log.slice(i.log.findLastIndex(e => e.op === 'duplicate') + 1).reduce((t, e) => t + (['done', 'delete'].includes(e.op) ? e.cost as number : 0), 0).toFixed(6);
@@ -260,21 +263,19 @@ const estimatedOf = (i: Instance) => i.log.slice(i.log.findLastIndex(e => e.op =
 
 function summary(i: Instance, me: Me, w8 = wakes()) {
   const email = me.email;
-  const key = `${i.log.length}:${i.doc.rev}:${seriesSettings(i.series()).shared?.by ?? ''}`;
-  const news = i.log.findLast(e => e.by !== email && e.accepted_by !== email && NEWS.includes(e.op)), s = seen(email), told = assignment(i);
+  const key = `${i.log.length}:${i.doc.rev}:${JSON.stringify(seriesSettings(i.series()))}`;
+  const news = i.log.findLast(e => e.by !== email && e.accepted_by !== email && NEWS.includes(e.op)), s = seen(email);
   let k = kept.get(i);
-  if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i).map(({ who, e }) => ({ who, kind: e.ask === true ? 'ask' : (e.ask as string | undefined) ?? 'note' })), runner: runnerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: costOf(i), estimated: estimatedOf(i), corrections: i.log.filter(e => e.op === 'correction').length,
+  if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i).map(({ who, e }) => ({ who, kind: e.ask === true ? 'ask' : (e.ask as string | undefined) ?? 'note' })), owner: ownerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: costOf(i), estimated: estimatedOf(i), corrections: i.log.filter(e => e.op === 'correction').length,
     wrong: i.log.filter(e => e.op === 'correction' && e.kind === 'wrong').map(e => e.at),
     refused: i.log.filter(e => e.op === 'browser' && e.hosts).map(e => ({ at: e.at, run: e.run as number, site: e.site as string, login: e.login as string, hosts: Object.keys(e.hosts as object) })) });
   return {
     id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(i.seriesId)?.inst === i, queued: !!queued(i),
-    asks: k.asks, wakes: wakesOf(i.id, w8), fired: w8.fired[i.id] ?? null, runner: k.runner, cost: k.cost, ...(k.estimated && { estimated: true }), active: k.active,
+    asks: k.asks, wakes: wakesOf(i.id, w8), fired: w8.fired[i.id] ?? null, owner: k.owner, cost: k.cost, ...(k.estimated && { estimated: true }), active: k.active,
     unread: !!news && news.at > s.since && news.seq > (s.at[i.id] ?? 0), corrections: k.corrections,
-    // Whoever assigned it to you, until you open it or act in it.
-    assigned: told?.who === email ? { by: told.by, at: told.at } : null,
     // A deleted instance's hole: who deleted it, and when.
     deleted: i.hole ? { by: i.log[0].by, at: i.log[0].at } : null,
-    // What says it was wrong, for its runner under Waiting on you, for a week, as a correction is never withdrawn.
+    // Corrections wait on the owner for a week; they are never withdrawn.
     wrong: k.wrong.filter(fresh).length,
     // Only admins decide hosts: those rated high or internal, with why, for a week.
     refused: k.refused.filter(e => fresh(e.at) && e.login && websitesOf(e.login)[e.site]).map(e => {
@@ -300,16 +301,16 @@ function listing(me: Me) {
   const t = tree(), w8 = wakes(), open = proposals(t), granted = visible(me).filter(g => ['pending', 'approved'].includes(g.state)), byName = (a: [string, { name: string }], b: [string, { name: string }]) => a[1].name.localeCompare(b[1].name);
   return Object.entries(t.workspaces).filter(([, w]) => canSee(me, w)).sort(byName).map(([id, w]) => {
     const series = Object.entries(t.series).filter(([, s]) => s.workspace === id).sort(byName).map(([sid, s]) => {
-      const { shared } = seriesSettings(seriesDir(sid));
+      const { owner, consent, epoch, since } = seriesSettings(seriesDir(sid));
       return {
-        id: sid, name: s.name, archived: !!s.archived, single: !!s.single, shared_by: shared?.by ?? null, shared_logins: shared?.by === me.email ? shared.logins : [],
+        id: sid, name: s.name, archived: !!s.archived, single: !!s.single, owner: owner ?? null, epoch, since, consent: consent ?? null,
         wakes: wakesOf(sid, w8), fired: w8.fired[sid] ?? null, notes: notes(seriesDir(sid)).filter(n => !n.settled).length,
         requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r, who: asked(r) })),
         instances: instances(sid).map(i => summary(i, me, w8)),
       };
     });
-    // Mine: a workspace you own, or one where you run an instance or acted in one; membership alone isn't.
-    const mine = w.owners.includes(me.email) || series.some(s => instances(s.id).some(i => kept.get(i)!.runner === me.email || kept.get(i)!.acted.includes(me.email)));
+
+    const mine = w.owners.includes(me.email) || series.some(s => s.owner === me.email || instances(s.id).some(i => kept.get(i)!.acted.includes(me.email)));
     return {
       id, name: w.name, archived: !!w.archived, owners: w.owners, members: w.members, manage: canManage(me, w), agents: text(agentsFile(id)), mine,
       proposal: open.find(p => p.id === id || p.into === id) ?? null, moved: (w.moved ?? []).filter(m => fresh(m.at)),
@@ -324,7 +325,7 @@ function listing(me: Me) {
 
 // An instance's runs started since `since`, and since its latest duplication: when, how each ended, its cost, whose it was and what started it. A deleted instance's are
 // as its deletion kept them, for the totals: when, how each ended, its cost and whose it was.
-type RunRow = { run: number; at: string; outcome: string; failure: string | null; seconds: number; cost: number; estimated?: true; runner: string; started: { op: string; by: string } | null; error: string | null };
+type RunRow = { run: number; at: string; outcome: string; failure: string | null; seconds: number; cost: number; estimated?: true; runner: string; initiator?: string; provenance?: unknown; started: { op: string; by: string } | null; error: string | null };
 type CachedRun = RunRow & { key?: 'own' | 'shared'; exaCost?: number; openrouterByDay?: Record<string, { cost: number; estimated?: true }> };
 const runsKept = new WeakMap<Instance, { log: object; len: number; rows: CachedRun[] }>();
 
@@ -338,8 +339,8 @@ function cachedRunsOf(i: Instance): CachedRun[] {
   } else {
     const slice = i.log.slice(i.log.findLastIndex(e => e.op === 'duplicate') + 1);
     rows = slice.filter(r => r.op === 'run').map(r => {
-      const d = slice.find(e => e.op === 'done' && e.run === r.run), seen = (slice.findLast(e => e.op === 'done' && e.seq < r.seq)?.seen as number | undefined) ?? 0;
-      const cause = pending(i, seen, r.seq).find(e => e.seq <= (r.upto as number));
+      const d = slice.find(e => e.op === 'done' && e.run === r.run);
+      const cause = slice.find(e => e.seq === (r.provenance as { cause?: number } | undefined)?.cause);
       const error = d?.error as string | undefined, outcome = !d ? 'running' : !error ? (d.aborted ? 'interrupted' : 'done') : Object.values(CUT).includes(error) ? 'cut' : 'failed';
       const estimated = d ? d.estimated === true : runningHere && !!a.estimated;
       const exaCost = +slice.reduce((t, e) => t + (e.op === 'call' && e.run === r.run && e.name === 'exa' ? (e.cost as number | undefined) ?? 0 : 0), 0).toFixed(6);
@@ -360,7 +361,9 @@ function cachedRunsOf(i: Instance): CachedRun[] {
         seconds: Math.round(((d ? Date.parse(d.at) : Date.now()) - Date.parse(r.at)) / 1000),
         cost: d ? d.cost as number : runningHere ? +a.cost.toFixed(6) : 0,
         ...(estimated && { estimated: true as const }),
-        runner: runnerAt(i.log, r.seq),
+        runner: (r.runner as string | undefined) ?? runnerAt(i.log, r.seq),
+        ...(typeof r.initiator === 'string' && { initiator: r.initiator }),
+        ...(r.provenance && { provenance: r.provenance }),
         started: cause ? { op: cause.op, by: cause.op === 'wake' ? cause.from as string : cause.by } : null,
         error: error ?? null,
         ...(r.key && { key: r.key as 'own' | 'shared' }),
@@ -520,10 +523,9 @@ async function status(me: Me) {
   const k = me.role === 'admin' ? await keyStatus() : null;
   return {
     ...(k?.low_credit && { low_credit: { remaining: k.remaining!, limit: k.limit, usage: k.usage, reset: k.reset, key: k.key } }),
-    running: seen.flatMap(([sid]) => active.get(sid) ?? []).map(a => ({ path: path(a.inst), run: a.n, at: a.inst.log.findLast(e => e.op === 'run')!.at, cost: +a.cost.toFixed(6), ...(a.estimated && { estimated: true }) })),
-    queued: open.flatMap(i => { const q = queued(i); return q ? [{ path: path(i), ...q }] : []; }),
+    running: seen.flatMap(([sid]) => active.get(sid) ?? []).map(a => ({ path: path(a.inst), run: a.n, owner: ownerOf(a.inst).by, at: a.inst.log.findLast(e => e.op === 'run')!.at, cost: +a.cost.toFixed(6), ...(a.estimated && { estimated: true }) })),
+    queued: open.flatMap(i => { const q = queued(i); return q ? [{ path: path(i), owner: ownerOf(i).by, ...q }] : []; }),
     asks: open.flatMap(i => waits(i).map(({ who, e }) => ({ who, path: path(i), since: e.at, text: e.text as string, note: e.by !== 'agent' || !e.ask }))),
-    assigned: open.flatMap(i => { const a = assignment(i); return a ? [{ ...a, path: path(i) }] : []; }),
     expired: (me.role === 'admin' ? Object.keys(users()) : [me.email]).flatMap(who => logins(who).filter(l => l.expired).map(l => ({
       who, login: l.name,
       holding: open.filter(i => held(i, l.id, who)).map(path),
@@ -747,20 +749,31 @@ const people = (w: { owners?: unknown; members?: unknown }) => {
 
 // Workspaces, series and instances, by id. Renaming a workspace or a series edits .rf/tree.json, so it may happen mid-run; a run sees
 // the new names from its next start.
-// A person stops an instance's run, as Interrupt does and as assigning does first: its runner, the workspace's owners and admins alone
-// may. Its entry says who, and why if it's for something else; the next run waits for the next act.
-const instQueue = new Map<string, Promise<void>>();
+// Instance controls order per instance; authority changes and initiation order per series.
+const actionQueue = new Map<string, Promise<void>>();
 function inOrder<T>(id: string, fn: () => Promise<T>): Promise<T> {
-  const next = (instQueue.get(id) ?? Promise.resolve()).then(fn, fn);
-  const tail = next.then(() => {}, () => {}).then(() => { if (instQueue.get(id) === tail) instQueue.delete(id); });
-  instQueue.set(id, tail);
+  const next = (actionQueue.get(id) ?? Promise.resolve()).then(fn, fn);
+  const tail = next.then(() => {}, () => {}).then(() => { if (actionQueue.get(id) === tail) actionQueue.delete(id); });
+  actionQueue.set(id, tail);
   return next;
+}
+
+function changeAuthority(sid: string, settings: SeriesSettings, actor?: string): Promise<void> {
+  saveSeriesSettings(seriesDir(sid), settings, actor);
+  return retireSeries(sid);
+}
+
+function withdrawOwner(email: string): Promise<void[]> {
+  return Promise.all(Object.keys(tree().series).flatMap(sid => {
+    const { consent, ...settings } = seriesSettings(seriesDir(sid));
+    return settings.owner === email ? [changeAuthority(sid, { ...settings, epoch: settings.epoch + 1, since: new Date().toISOString() })] : [];
+  }));
 }
 
 async function interrupt(inst: Instance, a: Active | undefined, me: Me, why?: string) {
   const t = tree();
-  if (runnerOf(inst).by !== me.email && !canManage(me, t.workspaces[t.series[inst.seriesId].workspace]))
-    throw new HttpError(403, `only its runner, ${runnerOf(inst).by}, the workspace's owners and admins stop its run`);
+  if (ownerOf(inst).by !== me.email && !canManage(me, t.workspaces[t.series[inst.seriesId].workspace]))
+    throw new HttpError(403, `only its series owner, ${ownerOf(inst).by}, the workspace's owners and admins stop its run`);
   if (!a?.run) throw new HttpError(409, a ? 'its run is starting: try again in a moment' : 'no run going');
   a.stopped = true;
   inst.append(me.email, 'interrupt', { ...(why && { why }) });
@@ -818,6 +831,10 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   if (run && running(run.token) !== run) throw new HttpError(409, 'its run has ended');
   const t = tree(), by = me.email;
   const about = t.series[kind === 'instances' ? instance(id).seriesId : kind === 'series' ? id : ''];
+  if (!run && ((kind === 'instances' && ['assign', 'takeover', 'assignees', 'logins'].includes(action)) || (kind === 'series' && id && !action && req.method === 'PUT' && ('share' in payload || 'logins' in payload)))) {
+    mustSee(me, about && t.workspaces[about.workspace]);
+    throw new HttpError(410, 'instance assignment, instance credentials and series sharing were removed; use the explicit series owner and credentials endpoints');
+  }
   // A run acts on an instance or a series in its own workspace alone, and learns nothing of one elsewhere by trying.
   if (run && (kind === 'instances' || kind === 'series') && about?.workspace !== t.series[run.inst.seriesId].workspace)
     throw new HttpError(403, `that ${kind === 'series' ? 'series' : 'instance'} is in another workspace: you can read it if it lets you, not act there`);
@@ -849,7 +866,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (!canManage(me, w)) throw new HttpError(403, "only the workspace's owners and admins see its people");
     const us = users(), open = Object.keys(t.series).filter(sid => t.series[sid].workspace === id).flatMap(sid => instances(sid).filter(i => i.doc.status === 'open'));
     return send(res, 200, [...w.owners.map(who => ({ who, as: 'owner' })), ...w.members.map(who => ({ who, as: 'member' }))].map(p => ({
-      ...p, last_login: us[p.who]?.last_login ?? null, runs: open.filter(i => runnerOf(i).by === p.who).map(i => `${t.series[i.seriesId].name}/${i.label}`),
+      ...p, last_login: us[p.who]?.last_login ?? null, series: Object.entries(t.series).filter(([sid, s]) => s.workspace === id && seriesSettings(seriesDir(sid)).owner === p.who).map(([, s]) => s.name), runs: open.filter(i => ownerOf(i).by === p.who).map(i => `${t.series[i.seriesId].name}/${i.label}`),
     })));
   }
   // A workspace's managers let another workspace they see read it, and its managers or the other's take that off. What its agents
@@ -908,7 +925,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   // A proposal to merge a workspace into another, or to move one of its series there, is the workspace's, by its id: whoever manages
   // it proposes and withdraws, and whoever manages the other accepts or declines, within a week. Neither may be archived, or in
   // another proposal. What moves, and who joins, is worked out as it's accepted: the series keep their ids, so their instances,
-  // wakes and requests go with them, and their names, but for a number on a name the other has; none stays shared.
+  // wakes and requests go with them, and their names, but for a number on a name the other has; execution consent is withdrawn.
   if (kind === 'proposals') {
     const a = t.workspaces[id], p = proposals(t).find(p => p.id === id);
     if (req.method === 'PUT') {
@@ -933,10 +950,12 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       Object.assign(t.series[sid], { name: freeName(t, p.into, t.series[sid].name), workspace: p.into });
       return { id: sid, from, to: named(t, sid) };
     });
-    // Who joins: everyone in a workspace merged, as members; for a series moved, whoever runs its open instances but can't see the
-    // other, whom its managers may add.
+    // A move previews the owner even when the series has no open instance.
     const joining = p.kind === 'merge' ? everyone(a).filter(x => !everyone(b).includes(x))
-      : [...new Set(instances(moving[0]).filter(i => i.doc.status === 'open').map(i => runnerOf(i).by))].filter(x => { const q = asPerson(x); return !q || !canSee(q, b); });
+      : moving.flatMap(sid => {
+        const owner = seriesSettings(seriesDir(sid)).owner, q = owner && asPerson(owner);
+        return owner && (!q || !canSee(q, b)) ? [owner] : [];
+      });
     // What the one accepting sees first: for a merge, the series made since it was proposed marked so, and the AGENTS.md it adds.
     if (req.method === 'GET') return send(res, 200, {
       ...p, series: move(structuredClone(t)).map(s => ({ ...s, ...(a.proposal!.had && !a.proposal!.had.includes(s.id) && { since: true }) })), people: joining,
@@ -945,11 +964,15 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (req.method !== 'POST') throw new HttpError(405, 'GET it, POST {"owners", "members"} to accept it, or DELETE to withdraw or decline it');
     const shut = [a, b, p.kind === 'move' ? t.series[a.proposal!.series!] : undefined].find(x => x?.archived);
     if (shut) throw new HttpError(409, `${shut.name} is archived`);
-    // The runs going in what moves, and any whose reach it narrows, are cut, and carry on there (waker.ts leases()).
-    const [owners, members] = people(payload), moved = move(t);
+    // Moving withdraws workspace-bound consent before waiting for retirement; the owner must consent again there.
+    const [owners, members] = people(payload);
+    const retirements = moving.map(sid => {
+      const { consent, ...settings } = seriesSettings(seriesDir(sid));
+      return changeAuthority(sid, { ...settings, epoch: settings.epoch + 1, since: new Date().toISOString() }, by);
+    });
+    const moved = move(t);
     b.owners = [...new Set([...b.owners, ...owners])];
     b.members = [...new Set([...b.members, ...members, ...(p.kind === 'merge' ? everyone(a) : [])])].filter(x => !b.owners.includes(x));
-    for (const sid of moving) replaceReadOnly(join(seriesDir(sid), 'series.json'), '{}');
     if (p.kind === 'merge') {
       const add = text(agentsFile(id)), keep = text(agentsFile(p.into)).trimEnd();
       if (add) replaceFile(agentsFile(p.into), `${keep && `${keep}\n\n`}## ${a.name}\n\n${add}`);
@@ -965,6 +988,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       a.moved = [...(a.moved ?? []).filter(m => fresh(m.at)), { name: p.series!, to: moved[0].to, at: new Date().toISOString() }];
     }
     saveTree(t);
+    await Promise.all(retirements);
     for (const m of moved) {
       if (t.series[m.id].single && instances(m.id)[0] && instances(m.id)[0].label !== t.series[m.id].name) renameInstance(instances(m.id)[0], t.series[m.id].name);
       for (const i of instances(m.id)) i.append(by, 'move', { from: m.from, to: m.to });
@@ -973,16 +997,20 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   }
   if (kind === 'series' && !id && req.method === 'POST') {
     // A series, or a task: a single series named Untitled, until its first prompt or a rename names it, and its one instance.
-    const { workspace, name: asked, single, logins } = payload;
+    const { workspace, name: asked, single, logins, autonomous = false } = payload;
+    if (logins !== undefined && typeof payload.autonomous !== 'boolean') throw new HttpError(400, 'series credential selection requires an explicit autonomous boolean; update your client for whole-series consent');
     mustSee(me, t.workspaces[workspace]);
+    if (!can(me, 'series-owner')) throw new HttpError(403, 'series authoring requires the series-owner capability');
+    if (typeof autonomous !== 'boolean' || (autonomous && logins === undefined)) throw new HttpError(400, 'autonomous consent requires an explicit credential selection and a boolean');
     const name = single ? freeName(t, workspace, 'Untitled') : folderName(String(asked ?? ''));
     if (Object.values(t.series).some(s => s.workspace === workspace && s.name === name)) throw new HttpError(409, `${name} exists`);
-    const ticks = checkTicks(by, logins ?? []), sid = newId();
+    const ticks = logins === undefined ? undefined : checkTicks(by, logins, workspace), sid = newId(), at = new Date().toISOString();
     t.series[sid] = { name, workspace, ...(single && { single: true }) };
     mkdirSync(seriesDir(sid));
+    saveSeriesSettings(seriesDir(sid), { version: 1, owner: by, epoch: 1, since: at, ...(ticks && { consent: { by, at, workspace, logins: ticks, autonomous } }) });
     saveTree(t);
     try {
-      return send(res, 200, { id: sid, ...(single && { instance: createInstance(sid, name, by, ticks).id }) });
+      return send(res, 200, { id: sid, ...(single && { instance: createInstance(sid, name, by).id }) });
     } catch (e) {
       delete t.series[sid];
       saveTree(t);
@@ -993,6 +1021,33 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   if (kind === 'series') {
     const s = t.series[id];
     if (!run) mustSee(me, s && t.workspaces[s.workspace]);
+    if (action === 'owners' && req.method === 'GET') return send(res, 200, Object.keys(users()).filter(email => {
+      const p = asPerson(email);
+      return p && users()[email].last_login && can(p, 'series-owner') && canSee(p, t.workspaces[s.workspace]);
+    }));
+    if (['owner', 'credentials'].includes(action) && req.method === 'PUT') return inOrder(id, async () => {
+      recheckRequest(req);
+      const { ws, who } = mustUnarchived(by, id), settings = seriesSettings(seriesDir(id)), at = new Date().toISOString();
+      if (action === 'credentials' && !can(who, 'series-owner')) throw new HttpError(403, 'series credential authority requires the series-owner capability');
+      if (action === 'owner') {
+        if (settings.owner !== by && !canManage(who, ws)) throw new HttpError(403, 'only the current series owner or a workspace manager transfers ownership');
+        if ('logins' in payload || 'autonomous' in payload || 'consent' in payload) throw new HttpError(400, 'a transfer never grants credential consent; the new owner selects credentials separately');
+        const to = typeof payload.owner === 'string' ? payload.owner.toLowerCase() : '', p = asPerson(to);
+        if (!p || !users()[to].last_login || !can(p, 'series-owner') || !canSee(p, ws)) throw new HttpError(400, 'the owner must be an enabled, signed-in, opted-in person who sees the workspace');
+        if (to === settings.owner) throw new HttpError(409, `${to} already owns this series`);
+        await changeAuthority(id, { version: 1, owner: to, epoch: settings.epoch + 1, since: at }, by);
+      } else {
+        if (settings.owner !== by) throw new HttpError(403, 'only the series owner selects credentials');
+        if (!Array.isArray(payload.logins) || typeof payload.autonomous !== 'boolean') throw new HttpError(400, 'select logins explicitly, including [], and an autonomous boolean');
+        const ticks = checkTicks(by, payload.logins, tree().series[id].workspace), was = settings.consent;
+        const removed = !!was && (was.logins.some(l => !ticks.includes(l)) || (was.autonomous && !payload.autonomous));
+        const next = { ...settings, epoch: settings.epoch + (removed ? 1 : 0), since: removed ? at : settings.since, consent: { by, at, workspace: tree().series[id].workspace, logins: ticks, autonomous: payload.autonomous } };
+        if (removed) await changeAuthority(id, next, by);
+        else saveSeriesSettings(seriesDir(id), next);
+      }
+      return send(res, 200, 'ok');
+    });
+    if (['owner', 'credentials', 'owners'].includes(action)) throw new HttpError(405, 'GET owners, or PUT owner or credentials');
     if (action === 'promote') {
       // A task made a series, as it is, under a name of its own, its one instance the series' first.
       if (!s.single) throw new HttpError(400, `${s.name} is a series already`);
@@ -1005,10 +1060,9 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       instances(id)[0].append(by, 'promote', { series: name });
       return send(res, 200, 'ok');
     }
-    if (s.single) throw new HttpError(400, `${s.name} is a task, with one instance and no settings: Start another based on this makes it a series`);
+    if (s.single) throw new HttpError(400, `${s.name} is a task with one instance; promote it before creating more periods or using series notes`);
     // Its notes: whoever sees it, and its workspace's runs, leave one, with files a person attaches first, which starts no run but
-    // reaches one going in the series; a run of the series settles one, taken, with where, or set aside, with why, as the runners of
-    // its open instances, its workspace's owners and admins do by hand. Nothing is deleted.
+    // reaches one going in the series; its owner and workspace managers settle it by hand. Nothing is deleted.
     const book = seriesDir(id);
     if (action === 'files' && req.method === 'GET') {
       const fd = openFile(join(book, 'notes', 'files'), other);
@@ -1041,15 +1095,22 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       if (!n) throw new HttpError(404, `no note ${other} on ${s.name}`);
       if (n.settled) throw new HttpError(409, `${other} is settled already, ${n.settled.op === 'taken' ? 'taken' : 'set aside'} by ${n.settled.by}`);
       if (!['taken', 'aside'].includes(how)) throw new HttpError(400, 'how is "taken", acted on, or "aside", set aside');
-      if (run ? run.inst.seriesId !== id : !(canManage(me, t.workspaces[s.workspace]) || instances(id).some(i => i.doc.status === 'open' && runnerOf(i).by === by)))
-        throw new HttpError(403, run ? "you settle your own series' notes" : "the runners of its open instances, the workspace's owners and admins settle its notes");
+      if (run ? run.inst.seriesId !== id : !(canManage(me, t.workspaces[s.workspace]) || seriesSettings(book).owner === by))
+        throw new HttpError(403, run ? "you settle your own series' notes" : "the series owner, the workspace's owners and admins settle its notes");
       if (thread != null && !run?.inst.threads().includes(thread)) throw new HttpError(400, `no thread ${thread} in ${run?.inst.label ?? 'your instance'}`);
       addNote(book, by, how, { on: n.seq, text: text.trim(), ...(run && { ...from, see: { inst: run.inst.id, label: run.inst.label, ...(thread != null && { thread }) } }) });
       return send(res, 200, run ? `${other} ${how === 'taken' ? 'taken' : 'set aside'}` : 'ok');
     }
-    if (req.method === 'POST') return send(res, 200, { id: startWith(id, String(payload.label ?? ''), by, checkTicks(by, payload.logins ?? []), payload.quiet ? [] : [{ from: by }]).id });
+    if (req.method === 'POST') return inOrder(id, async () => {
+      recheckRequest(req);
+      const { who } = mustUnarchived(by, id);
+      if ('logins' in payload) throw new HttpError(410, 'instance credentials were removed; only the owner selects the series credential ceiling');
+      if (!can(who, 'series-owner')) throw new HttpError(403, 'series authoring requires the series-owner capability');
+      return send(res, 200, { id: startWith(id, String(payload.label ?? ''), by, payload.quiet || seriesSettings(seriesDir(id)).owner !== by ? [] : [{ from: by }]).id });
+    });
     if (req.method !== 'PUT') throw new HttpError(405, 'PUT, or POST a new instance');
     const change = payload;
+    if (['owner', 'consent', 'epoch', 'autonomous'].some(k => k in change)) throw new HttpError(400, 'use the explicit series owner and credentials endpoints');
     if (change.name !== undefined && change.name !== s.name) {
       const name = folderName(String(change.name));
       if (Object.values(t.series).some(x => x.workspace === s.workspace && x.name === name)) throw new HttpError(409, `${name} exists`);
@@ -1060,13 +1121,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (closing) throw new HttpError(409, `${named(t, id)}/${closing.label} is closing: archive ${s.name} once it finishes`);
     if (change.archived !== undefined) s.archived = !!change.archived;
     if (change.archived) cancelWakes([id, ...labels(id).map(l => l.id)]);
-    // Anyone may share it as themselves in place of whoever does; only they, or whoever manages the workspace, stop sharing it.
-    const was = seriesSettings(seriesDir(id)).shared;
-    if (change.share !== undefined && !change.share && was && was.by !== by && !canManage(me, t.workspaces[s.workspace]))
-      throw new HttpError(403, `${was.by} shares it: they, or the workspace's owners, stop sharing it`);
-    const shared = change.share === undefined ? was : change.share ? { by, since: new Date().toISOString(), logins: checkTicks(by, change.logins ?? []) } : undefined;
     saveTree(t);
-    replaceReadOnly(join(seriesDir(id), 'series.json'), JSON.stringify({ ...(shared && { shared }) }, null, 1));
     if (change.archived === false) for (const i of instances(id)) kick(i);
     return send(res, 200, 'ok');
   }
@@ -1084,6 +1139,10 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     }
     if (t.series[to]?.single) throw new HttpError(400, `${t.series[to].name} is a task, with one instance: wake that`);
     if (req.method === 'DELETE') {
+      const owner = seriesSettings(seriesDir(sid)).owner;
+      const mayCancel = run ? run.runner === owner && !!run.authority.autonomous : by === owner || canManage(me, t.workspaces[t.series[sid].workspace]);
+      const ownRequest = !wake!.authority && (run ? wake!.inst === run.inst.id : wake!.from === by);
+      if (!mayCancel && !ownRequest) throw new HttpError(403, 'only the series owner, a workspace manager, or its authorized autonomous run cancels this schedule');
       // A person's cancellation is theirs in the system's log; a run's is recorded there too, with the wake, its instance and run.
       if (run) act('agent', { method: 'DELETE', path: url.pathname, wake, inst: run.inst.id, run: run.n });
       return void (cancelWake(id), send(res, 200, 'ok'));
@@ -1104,31 +1163,25 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (run) act('agent', { method: 'PUT', path: url.pathname, wake: wakes().pending[created.id], inst: run.inst.id, run: run.n });
     return send(res, 200, created);
   }
-  // A request to start an instance, which people start or dismiss: whoever starts it acts, so its wake is logged, a note unless its
-  // runner's, beside their own.
+  // Only the current owner starts a request. Its provenance stays a note beside that owner's explicit act.
   if (kind === 'requests') {
     const r = wakes().requests[id];
     if (!r) throw new HttpError(404, `no request ${id}`);
     mustSee(me, t.workspaces[t.series[r.series].workspace]);
-    if (req.method === 'POST' && r.target) {
-      // One to wake an instance, from before it was assigned: its runner's alone, as anyone else's wake is a note that starts nothing;
-      // its wake stays a note, beside the runner's own; quiet, both wakes are logged quiet so the next run reads them.
-      if (asked(r) !== by) throw new HttpError(403, `only its runner, ${asked(r)}, wakes it`);
-      const inst = instance(r.target), quiet = !!payload.quiet;
-      if (payload.logins !== undefined) {
-        inst.append(by, 'logins', { logins: checkTicks(by, payload.logins) });
-        await closeUnlent();
-      }
-      wakeWith(inst, [{ from: r.from, text: r.text, inst: r.inst, assigned: true, quiet }, { from: by, quiet }]);
+    if (req.method === 'POST') return inOrder(r.series, async () => {
+      recheckRequest(req);
+      const { who } = mustUnarchived(by, r.series), settings = seriesSettings(seriesDir(r.series));
+      if (!wakes().requests[id]) throw new HttpError(404, `no request ${id}`);
+      if ('logins' in payload) throw new HttpError(410, 'request credentials were removed; the owner selects the series credential ceiling separately');
+      if (settings.owner !== by || !can(who, 'series-owner')) throw new HttpError(403, 'only the current series owner starts requests');
+      if (!settings.consent || settings.consent.by !== by || settings.consent.workspace !== tree().series[r.series].workspace) throw new HttpError(403, 'the owner must explicitly select series credentials first, including an empty selection');
+      const quiet = !!payload.quiet, provenance = { from: r.from, text: r.text, inst: r.inst, note: true, quiet };
+      const inst = r.target ? wakeWith(instance(r.target), [provenance, { from: by, quiet }])
+        : startWith(r.series, r.label, by, [provenance, { from: by, quiet }]);
       dropRequest(id);
-      res.setHeader('X-RF-Woke', '1');
-      return send(res, 200, { id: r.target });
-    }
-    if (req.method === 'POST') {
-      const inst = startWith(r.series, r.label, by, checkTicks(by, payload.logins ?? []), payload.quiet ? [] : [{ from: r.from, text: r.text, inst: r.inst, assigned: r.assigned }, { from: by }]);
-      dropRequest(id);
+      if (r.target) res.setHeader('X-RF-Woke', '1');
       return send(res, 200, { id: inst.id });
-    }
+    });
     if (req.method !== 'DELETE') throw new HttpError(405, 'POST to start it, or DELETE');
     dropRequest(id);
     return send(res, 200, 'ok');
@@ -1141,14 +1194,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   if (!action) see(by, inst.id, inst.log.at(-1)!.seq);
   // Each entry's standing, by its seq, a note's entry saying note too; and whether a comment of yours would start a run now.
   const said = !action && new Map(inst.log.flatMap(e => { const s = standing(inst, e); return s ? [[e.seq, s.word]] : []; }));
-  if (said) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => said.get(e.seq) === 'note' ? { ...e, note: true } : e), standing: Object.fromEntries(said), starts: inst.doc.status === 'open' && standing(inst, { seq: inst.log.length + 1, at: '', by, op: 'comment' })!.starts, run: mine ? { n: mine.n, cost: +mine.cost.toFixed(6), ...(mine.estimated && { estimated: true }), browsers: [...(mine.browsers?.watchable().keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), runner: runner(inst), previous: await previous(inst), sums: Object.fromEntries(await Promise.all(inst.doc.items.filter(i => i.file).map(async i => [i.id, await sha256(inst.dir, i.file!)]))), waiting: waits(inst).map(({ who, e }) => ({ who, seq: e.seq })), held: [...new Set(inst.log.filter(e => e.op === 'expired').map(e => e.login as string))].filter(l => held(inst, l, runnerOf(inst).by)) });
+  if (said) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => said.get(e.seq) === 'note' ? { ...e, note: true } : e), standing: Object.fromEntries(said), starts: inst.doc.status === 'open' && standing(inst, { seq: inst.log.length + 1, at: '', by, op: 'comment' })!.starts, run: mine ? { n: mine.n, cost: +mine.cost.toFixed(6), ...(mine.estimated && { estimated: true }), browsers: [...(mine.browsers?.watchable().keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), owner: owner(inst), previous: await previous(inst), sums: Object.fromEntries(await Promise.all(inst.doc.items.filter(i => i.file).map(async i => [i.id, await sha256(inst.dir, i.file!)]))), waiting: waits(inst).map(({ who, e }) => ({ who, seq: e.seq })), held: [...new Set(inst.log.filter(e => e.op === 'expired').map(e => e.login as string))].filter(l => held(inst, l, ownerOf(inst).by)) });
   if (action === 'trace') return send(res, 200, trace(inst));
-  // Whom it may be assigned to, for those who may assign it to someone else: whoever sees its workspace and may sign in, but its runner.
-  if (action === 'assignees') {
-    const ws = t.workspaces[t.series[inst.seriesId].workspace];
-    if (runnerOf(inst).by !== by && !canManage(me, ws)) throw new HttpError(403, `only its runner, ${runnerOf(inst).by}, the workspace's owners and admins assign it to someone else`);
-    return send(res, 200, Object.keys(users()).filter(e => { const p = asPerson(e); return p && e !== runnerOf(inst).by && canSee(p, ws); }));
-  }
   if (action === 'summary') return send(res, 200, summary(inst, me));
   // The screen: anyone who sees the instance reads it; only its own run writes it.
   if (action === 'screen' && req.method === 'GET') return send(res, 200, inst.doc);
@@ -1240,8 +1287,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   } else if (action === 'comment') {
     // A comment starts a thread, on an item (at a ref, such as a cell, if given) or on the instance, or replies under one of its
     // comments, which `thread` names by its seq, as cN, a thread's own id its first comment's. A person's starts a run, unless quiet.
-    // The agent's starts nothing: it says something, or asks a question or makes a proposal, which then waits on the one it names or
-    // else the runner (store.ts answered()). A person's may attach files, uploaded to upload/attachments/ first.
+    // The agent's starts nothing; its questions and proposals wait on their named person or the owner.
     const { thread, item, ref, text, files = [], ask, to } = payload, under = thread === undefined ? undefined : inst.log.find(e => e.op === 'comment' && `c${e.seq}` === thread);
     if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a comment has text');
     if (ask !== undefined && !['question', 'proposal'].includes(ask)) throw new HttpError(400, 'ask is "question" or "proposal"');
@@ -1251,11 +1297,10 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     for (const f of files) if (!(typeof f === 'string' && f.startsWith('upload/attachments/') && !f.includes('..') && existsSync(join(inst.dir, f)))) throw new HttpError(400, `no attachment ${f}`);
     const who = typeof to === 'string' ? to.toLowerCase() : undefined, p = who && asPerson(who);
     if (who && !(p && canSee(p, t.workspaces[t.series[inst.seriesId].workspace])))
-      throw new HttpError(400, `${to} can't see this instance; ask its runner, ${runnerOf(inst).by}, or someone in its workspace`);
-    // A run's comment in another instance of its workspace is a note there, which names the run, its runner and its own instance and
-    // thread, and starts a run only where that series' runner shares it; its own instance logs where it went.
+      throw new HttpError(400, `${to} can't see this instance; ask its series owner, ${ownerOf(inst).by}, or someone in its workspace`);
+    // Another instance's run leaves a non-executing note with immutable execution provenance.
     const away = run && run.inst !== inst;
-    if (away && (ask || to)) throw new HttpError(400, 'you ask and propose only to your own runner: rf ask and rf propose in your own instance');
+    if (away && (ask || to)) throw new HttpError(400, 'you ask and propose only in your own instance: rf ask and rf propose');
     const said = inst.append(by, 'comment', {
       ...(under ? { thread: under.thread, parent: under.seq } : { thread: `c${inst.log.length + 1}`, item: item ?? null, ref: ref ?? null }), text: text.trim(), ...(files.length && { files }),
       ...(run && { run: run.n, ...(ask && { ask, ...(who && { to: who }) }) }), ...(quiet && { quiet: true }),
@@ -1264,8 +1309,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (away) {
       run.inst.append('agent', 'said', { run: run.n, inst: inst.id, label: inst.label, seq: said.seq, thread: said.thread });
       if (!standing(inst, said)!.starts && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, AGENT, `Note in ${said.thread}`).catch(err => inst.append('server', 'commit', { cause: said.seq, error: err.message }));
-      kick(inst);
-      return send(res, 200, `said c${said.seq} in ${named(t, inst.seriesId)}/${inst.label}${under ? `, under ${thread}` : ''}, a note for its runner`);
+      return send(res, 200, `said c${said.seq} in ${named(t, inst.seriesId)}/${inst.label}${under ? `, under ${thread}` : ''}, a note for its series owner`);
     }
     if (run) return send(res, 200, `${{ question: 'asked', proposal: 'proposed' }[ask as string] ?? 'said'} c${said.seq}${under ? `, under ${thread}` : ''}`);
     res.setHeader('X-RF-Comment-Seq', said.seq);
@@ -1286,7 +1330,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const hash = await commit(inst.dir, AGENT, message);
     inst.append('agent', 'commit', { run: run.n, message, commit: hash });
     return send(res, 200, `committed ${hash}`);
-  } else if (['signoff', 'reject', 'withdraw', 'interrupt', 'logins', 'assign', 'takeover', 'close', 'abandon'].includes(action)) {
+  } else if (['signoff', 'reject', 'withdraw', 'interrupt', 'close', 'abandon'].includes(action)) {
     const out = await inOrder(inst.id, async () => {
       const recheck = () => {
         recheckRequest(req);
@@ -1299,7 +1343,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       const before = recheck();
       if (['signoff', 'close', 'abandon'].includes(action)) {
         if (before.mine) throw new HttpError(409, 'wait for the run to end');
-        if (action !== 'signoff' && runnerOf(inst).by !== by) throw new HttpError(403, `only the runner, ${runnerOf(inst).by}, ${action === 'close' ? 'closes it, making it the record' : 'abandons it'}; take it over first`);
+        if (action !== 'signoff' && ownerOf(inst).by !== by) throw new HttpError(403, `only the series owner, ${ownerOf(inst).by}, ${action === 'close' ? 'closes it, making it the record' : 'abandons it'}`);
       }
       const { thread, text, approved } = payload;
       const ask = action === 'signoff' || action === 'reject' ? inst.log.find(e => `c${e.seq}` === thread && e.op === 'comment' && e.by === 'agent' && (e.ask === true || e.ask === 'proposal')) : undefined;
@@ -1307,7 +1351,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
         // Anyone who sees the instance approves a proposal of the agent's, which `thread` names as cN, or rejects it, with a note, as an
         // ask from before questions and proposals, `ask: true`, which may have been either. Approving is a sign-off, the route's and the
         // entry's name: it commits the folder in their name, as they say yes to it, the proposal and the note its message, with their
-        // Signed-off-by. Either starts a run, as a reply does, unless quiet, and a proposal takes one of them. rf 0.12's reject, a sign-off
+        // Signed-off-by. Only an owner's non-quiet decision starts a run. rf 0.12's reject, a sign-off
         // with approved false, is refused.
         if (approved === false) throw new HttpError(400, 'a sign-off approves; to say no, reject it, on the page or with rf reject');
         if (!ask) throw new HttpError(409, `${thread} is no proposal of the agent's`);
@@ -1357,42 +1401,9 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
         await interrupt(inst, mine, who);
         return 'ok';
       }
-      if (action === 'logins') {
-        // The runner ticks the instance's logins anew, as before its first prompt.
-        if (runnerOf(inst).by !== by) throw new HttpError(403, `${runnerOf(inst).by} runs it, and ticks its logins`);
-        inst.append(by, 'logins', { logins: checkTicks(by, payload.logins ?? []) });
-        await closeUnlent();
-        return 'ok';
-      }
-      if (action === 'assign' || action === 'takeover') {
-        // Assigning makes someone the runner from now on: its workspace's owners and admins assign it to anyone who sees the workspace, as
-        // its runner hands it over, and anyone else who sees it takes it over, assigning it to themselves, while no run goes. A run going
-        // stops first, as Interrupt stops it. Logins are never assigned: taking over ticks your own, and someone else ticks theirs. What
-        // came before is history (waker.ts standing()), its pending wakes no one's word, and it starts no run. rf 0.16's takeover is an
-        // assign to oneself.
-        const runner = runnerOf(inst).by, to = typeof payload.to === 'string' ? payload.to.toLowerCase() : by, p = asPerson(to);
-        if (to === runner) throw new HttpError(409, `${to} runs it already`);
-        if (to !== by && runner !== by && !canManage(who, ws)) throw new HttpError(403, `only its runner, ${runner}, the workspace's owners and admins assign it to someone else; you may take it over`);
-        if (!p || !canSee(p, ws)) throw new HttpError(400, `${to} can't see this instance`);
-        if (to !== by && payload.logins?.length) throw new HttpError(400, `logins are each person's own: ${to} ticks theirs`);
-        const ticks = to === by ? checkTicks(by, payload.logins ?? []) : [];
-        if (mine && runner !== by && !canManage(who, ws)) throw new HttpError(409, `run ${mine.n} is going: take it over once it ends, or ask its runner, ${runner}, the workspace's owners or admins, who may stop it`);
-        // The page says which run, if any, assigning stops, `stops`, and stops none it didn't say.
-        if (mine && 'stops' in payload && payload.stops !== mine.n) throw new HttpError(409, `run ${mine.n} started since you looked: assigning it now stops it`);
-        if (mine) {
-          await interrupt(inst, mine, who, `to assign it to ${to}`);
-          const after = recheck(), pNow = asPerson(to);
-          if (to !== by && runnerOf(inst).by !== by && !canManage(after.who, after.ws)) throw new HttpError(403, `only its runner, ${runnerOf(inst).by}, the workspace's owners and admins assign it to someone else; you may take it over`);
-          if (!pNow || !canSee(pNow, after.ws)) throw new HttpError(400, `${to} can't see this instance`);
-          if (after.mine) throw new HttpError(409, `run ${after.mine.n} started since you looked: assigning it now stops it`);
-        }
-        inst.append(by, 'assign', { to, from: runnerOf(inst).by, logins: ticks });
-        assigned(inst);
-        return 'ok';
-      }
       if (action === 'close' || action === 'abandon') {
         if (mine) throw new HttpError(409, 'wait for the run to end');
-        if (runnerOf(inst).by !== by) throw new HttpError(403, `only the runner, ${runnerOf(inst).by}, ${action === 'close' ? 'closes it, making it the record' : 'abandons it'}; take it over first`);
+        if (ownerOf(inst).by !== by) throw new HttpError(403, `only the series owner, ${ownerOf(inst).by}, ${action === 'close' ? 'closes it, making it the record' : 'abandons it'}`);
         await (action === 'close' ? inst.close(who) : inst.abandon(by));
         cancelWakes([inst.id]);
         if (action === 'close') closed(inst, by, quiet);
@@ -1402,7 +1413,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     });
     if (out !== undefined) return send(res, 200, out);
   } else throw new HttpError(404, `no action ${action}`);
-  if (!quiet) kick(inst);
+  if (!quiet && by === ownerOf(inst).by && can(me, 'series-owner')) kick(inst);
   send(res, 200, 'ok');
 }
 
@@ -1426,30 +1437,34 @@ async function admin(me: Me, req: IncomingMessage, res: ServerResponse, url: URL
       await closeUnlent();
       return send(res, 200, 'ok');
     }
-    // Besides where each person is: the open instances they run in workspaces they aren't in, which they'd lose sight of as users.
-    const open = Object.entries(t.series).flatMap(([sid, s]) => instances(sid).filter(i => i.doc.status === 'open').map(i => ({ i, w: t.workspaces[s.workspace], path: `${named(t, sid)}/${i.label}` })));
+    // Include empty owned series in the demotion preview.
+    const owned = Object.entries(t.series).map(([sid, s]) => ({ owner: seriesSettings(seriesDir(sid)).owner, w: t.workspaces[s.workspace], path: named(t, sid) }));
     return send(res, 200, Object.entries(us).map(([email, { sub, epoch, groups, ...u }]) => ({
       email, ...u, workspaces: Object.values(t.workspaces).filter(w => everyone(w).includes(email)).map(w => w.name),
-      outside: open.filter(o => runnerOf(o.i).by === email && !canSee({ email, role: 'user', groups: groups ?? [] }, o.w)).map(o => o.path),
+      outside: owned.filter(o => o.owner === email && !canSee({ email, role: 'user', groups: groups ?? [] }, o.w)).map(o => o.path),
     })));
   }
   if (!users()[email]) throw new HttpError(404, `no user ${email}`);
   if (req.method === 'DELETE') {
     if (email === me.email) throw new HttpError(409, 'you cannot remove yourself');
+    const retired = withdrawOwner(email);
     forget(email);
     forgetGrants(email);
     removeUser(email);
     await endSignIns(email);
     await dropUnpermittedVpns(email);
+    await retired;
     await closeUnlent();
   } else if (req.method === 'PUT') {
     const { disabled, signout } = await json(req);
     if (email === me.email && disabled) throw new HttpError(409, 'you cannot lock yourself out');
+    const retired = disabled || signout ? withdrawOwner(email) : Promise.resolve();
     if (disabled !== undefined) upsertUser(email, { disabled: !!disabled });
     if (signout) signOutEverywhere(email);
     if (disabled || signout) {
       await endSignIns(email);
       await dropUnpermittedVpns(email);
+      await retired;
       await closeUnlent();
     }
   } else throw new HttpError(405, 'PUT or DELETE');
@@ -1532,7 +1547,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     if (req.method === 'GET' && url.pathname === '/drained') return void res.writeHead(drained() ? 200 : 503).end();
     const me = await authenticate(req, res, url);
     if (!me) {
-      if (url.pathname === redirectPath) { pruneGrants(); await endUnpermittedSignIns(); await dropUnpermittedVpns(); await closeUnlent(); }
+      if (url.pathname === redirectPath) { const retired = closeUnlent(); pruneGrants(); await endUnpermittedSignIns(); await dropUnpermittedVpns(); await retired; }
       return;
     }
     // What a person changes beyond an instance is an act of theirs in the system's log, once it's done.
@@ -1553,7 +1568,14 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
         const { cap, people } = await json(req);
         if (!CAPS.includes(cap)) throw new HttpError(400, `a capability is one of ${CAPS.filter(c => c !== 'vpn' || can(me, c)).join(', ')}`);
         if (!isPeople(people)) throw new HttpError(400, `${cap}: a list of emails and Entra group ids: ${JSON.stringify(people)}`);
-        writeJson('capabilities.json', { ...capabilities(), [cap]: people.map(p => p.toLowerCase()) });
+        const selected = people.map(p => p.toLowerCase());
+        const owners = cap === 'series-owner' ? [...new Set(Object.keys(tree().series).map(sid => seriesSettings(seriesDir(sid)).owner).filter((email): email is string => !!email))].filter(email => {
+          const p = asPerson(email);
+          return p && can(p, cap) && !selected.includes(email) && !p.groups.some(g => selected.includes(g));
+        }) : [];
+        const retired = owners.map(email => withdrawOwner(email));
+        writeJson('capabilities.json', { ...capabilities(), [cap]: selected });
+        await Promise.all(retired);
         if (cap === 'vpn') {
           await endUnpermittedSignIns();
           await dropUnpermittedVpns();

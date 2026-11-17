@@ -7,16 +7,16 @@ import { pylib, startRun, type Run, type TurnEnd, type View } from './runner.ts'
 import type { JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { prepare } from './indexes.ts';
 import { act, canSee, changes, readJson, rfDir, tree, type Tree, writeJson } from './system.ts';
-import { asPerson, users } from './auth.ts';
+import { asPerson, can, users } from './auth.ts';
 import { websitesOf, type Browsers } from './browsers.ts';
-import { notes, seriesSettings, type Note } from './series.ts';
+import { notes, saveSeriesSettings, seriesSettings, type Authority, type Note } from './series.ts';
 import { pushed, skills } from './skills.ts';
 import { AGENT, commit, committed, forget } from './git.ts';
-import { lastAssign, logins, runnerAt, runnerOf } from './logins.ts';
+import { authority, logins, ownerOf, runnerAt, sameAuthority } from './logins.ts';
 import { confirm } from './entra.ts';
 import { instructions, sha256 } from './prompt.ts';
 import { pruneGrants } from './grants.ts';
-import { abortCalls, drainCalls, hasCalls, reachable, types } from './connections.ts';
+import { abortCalls, connections, drainCalls, hasCalls, loginOf, types } from './connections.ts';
 
 // What runs when: one run at a time per series, at most RF_MAX_RUNS at once, started by people's acts and by wakes.
 const LIMIT_MS = Number(process.env.RF_LIMIT_MIN ?? 120) * 60_000;
@@ -36,7 +36,7 @@ const full = () => !!draining || active.size >= MAX_RUNS || (MIN_FREE > 0 && fre
 export const MAX_OPEN = 3;
 const SPACING_MS = 15 * 60_000, MAX_WAKES = 20;
 
-export type Active = { inst: Instance; n: number; runner: string; token: string; view: View; workspace: string; run?: Run; sent: number; noted: number; seen: number; delivered: number; texts: Map<string, number>; done: boolean; cost: number; estimated: boolean; failed?: string; hosts: Set<string>; links: Map<string, { name: string; offer: string }>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string;
+export type Active = { inst: Instance; n: number; runner: string; authority: Authority; token: string; view: View; workspace: string; run?: Run; sent: number; noted: number; seen: number; delivered: number; texts: Map<string, number>; done: boolean; cost: number; estimated: boolean; failed?: string; hosts: Set<string>; links: Map<string, { name: string; offer: string }>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string;
   // Its Pi as it starts, and once its Pi, sandbox and browsers have stopped, after it ends; whether its stop was asked for, from when
   // its token opens nothing (server.ts running()).
   ready?: Promise<Run>; ended?: Promise<unknown>; stopped?: boolean; interrupted?: boolean };
@@ -46,10 +46,9 @@ const debounce = new Map<string, NodeJS.Timeout>();
 const waiting = new Set<Instance>();
 const retiring = new Set<Active>();
 
-// Whether an instance's runner can still see its workspace, as each run of theirs needs.
 function sees(i: Instance, t = tree()) {
-  const runner = asPerson(runnerOf(i).by);
-  return !!runner && canSee(runner, t.workspaces[t.series[i.seriesId].workspace]);
+  const r = ownerOf(i), owner = asPerson(r.by);
+  return !!owner && can(owner, 'series-owner') && !!r.consent && r.consent.by === r.by && r.consent.workspace === r.workspace && canSee(owner, t.workspaces[t.series[i.seriesId].workspace]);
 }
 // A run's Pi stopped, and its copies of indexes gone.
 function end(token: string, run: Run | Promise<Run>) {
@@ -61,37 +60,34 @@ function seenBefore(inst: Instance): number {
   return Math.max((inst.log.findLast(e => e.op === 'done')?.seen as number | undefined) ?? 0, inst.copied);
 }
 
-// An entry's standing, the one place it's decided (docs/system.md, Runner): the runner's word, an answer from whom the agent's ask
-// named, or a note, which the agent reads as context for its runner to take up; and whether it starts a run. People's comments,
-// uploads, approvals and rejections have one, as do wakes and another instance's agent's comments; nothing else directs a run.
-// - The last assign draws a line, a takeover being an assign to oneself: before it, what a run had read by then is history, with no
-//   standing, and what none had is a note, whoever said it; neither starts anything.
-// - After it, a person's act is the runner's word if they ran it as it was said, an answer if it answers an ask that named them,
-//   from before the line too (from before replies named what they answer, the thread's last ask), and else a note.
-// - A wake is judged as it fires and logged so, a note unless the runner set it, or a run of an instance of theirs in the series did,
-//   this one's own among them; one pending as its instance was assigned is no one's word. Another instance's agent's comment is a note.
-// - A note starts a run only where the runner shares the series; a quiet entry, such as rf's without --wake, none, and its act kicks
-//   nothing that waits: the next run reads it with the rest. Nothing from before an earlier version's copy starts one.
-// `upto` judges it as the log stood then, as history shows what started a run.
+// Human acts carry the owner/epoch at append time; autonomous entries carry an immutable lease.
+// Named answers remain answers, but only the current owner's authority can start execution.
 export type Standing = { word: 'runner' | 'answer' | 'note'; starts: boolean };
 export function standing(inst: Instance, e: Entry, upto = inst.log.length): Standing | undefined {
   if (e.op !== 'wake' && !(['upload', 'comment', 'signoff', 'reject'].includes(e.op) && (isPerson(e) || e.note))) return undefined;
-  const line = lastAssign(inst.log, upto)?.seq ?? 0, runner = runnerAt(inst.log, e.seq);
-  if (e.seq < line && e.seq <= readAt(inst, line)) return undefined;
+  if (inst.doc.status !== 'open') return e.note ? { word: 'note', starts: false } : undefined;
+  const r = ownerOf(inst), line = inst.log.findLast(e => e.seq <= upto && e.op === 'authority')?.seq ?? 0;
+  const epoch = e.authorityEpoch ?? (e.seq > inst.log.length ? r.epoch : undefined);
+  const owner = (e.authorityOwner ?? (e.seq > inst.log.length ? r.by : runnerAt(inst.log, e.seq))) as string | undefined;
+  const lease = e.authority as Authority | undefined;
+  const stale = e.op === 'wake' ? !lease || !sameAuthority(inst, lease) : epoch !== r.epoch;
+  if ((e.seq < line && e.seq <= readAt(inst, line)) || (stale && e.seq <= seenBefore(inst))) return undefined;
   const rawAsk = e.op === 'upload' || !e.thread ? undefined : e.parent ?? e.on ? inst.log[(e.parent ?? e.on) as number - 1] : inst.log.findLast(x => x.seq < e.seq && x.op === 'comment' && x.thread === e.thread && x.by === 'agent');
   const ask = rawAsk?.op === 'comment' && rawAsk.by === 'agent' && !!rawAsk.ask && rawAsk.seq > inst.copied && rawAsk.seq < e.seq && rawAsk.thread === e.thread && (rawAsk.ask !== 'proposal' || e.op !== 'comment') && !inst.answered(rawAsk, e.seq - 1) ? rawAsk : undefined;
-  const word = e.seq < line || e.note ? 'note'
-    : e.op !== 'wake' ? (e.by === runner ? 'runner' : ask?.to === e.by ? 'answer' : 'note')
-    : e.seq <= inst.log.length || (!e.assigned && (e.from === runner || (!!e.inst && instance(e.inst as string).seriesId === inst.seriesId && runnerOf(instance(e.inst as string)).by === runner))) ? 'runner' : 'note';
-  return { word, starts: !e.quiet && e.seq > Math.max(line, inst.copied) && (word !== 'note' || seriesSettings(inst.series()).shared?.by === runnerAt(inst.log, upto + 1)) };
+  const word = e.seq < line || e.note || stale ? 'note'
+    : e.op !== 'wake' ? (e.by === owner ? 'runner' : ask?.to === e.by ? 'answer' : 'note')
+    : lease && e.initiator === lease.owner && (!e.inst || instance(e.inst as string).seriesId === inst.seriesId) ? 'runner' : 'note';
+  const valid = e.op === 'wake' ? !stale && (!(e.recovery || e.schedule) || (!!lease?.autonomous && !!r.consent?.autonomous))
+    : epoch === r.epoch && owner === r.by && e.by === r.by;
+  return { word, starts: !!r.by && !!r.consent && valid && !e.quiet && e.seq > Math.max(line, inst.copied) && (word === 'runner' || (e.op === 'wake' && !!e.schedule)) };
 }
-// What the runs started before an assign, at seq `line`, had read, the run it stopped included, though its end is logged after it.
+// Read history stays history across an authority boundary; unread instructions become notes.
 function readAt(inst: Instance, line: number): number {
   const runs = inst.log.filter(e => e.seq < line && e.op === 'run').length;
   return Math.max(inst.copied, ...inst.log.filter(e => e.op === 'done' && (e.run as number) <= runs).map(e => (e.seen as number | undefined) ?? 0));
 }
 // A wake as it fires: its standing, which its entry keeps.
-const woken = (inst: Instance, wake: { from: string; inst?: string; assigned?: boolean }) => standing(inst, { seq: inst.log.length + 1, at: '', by: 'server', op: 'wake', ...wake })!;
+const woken = (inst: Instance, wake: Woken) => standing(inst, { seq: inst.log.length + 1, at: '', by: 'server', op: 'wake', ...wake })!;
 
 export function pending(inst: Instance, seen: number, upto = inst.log.length): Entry[] {
   return inst.log.filter(e => e.seq > seen && e.seq <= upto && standing(inst, e, upto)?.starts);
@@ -99,7 +95,7 @@ export function pending(inst: Instance, seen: number, upto = inst.log.length): E
 
 // Whether an instance has something for a run: what came since its last run, or since an Interrupt or a failed or cut run, which
 // waits for the next act; nothing while its series or its workspace is archived, which does no work until it's restored.
-const stopped = (inst: Instance) => inst.log.findLast(e => e.op === 'interrupt' || (e.op === 'done' && (e.aborted || e.error)))?.seq ?? 0;
+const stopped = (inst: Instance) => inst.log.findLast(e => e.op === 'interrupt' || (e.op === 'expired' && !e.run) || (e.op === 'done' && (e.aborted || e.error)))?.seq ?? 0;
 const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math.max(seenBefore(inst), stopped(inst))).length > 0
   && !archived(tree(), inst.seriesId);
 
@@ -107,12 +103,10 @@ const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math
 // renames and a run cut or failed; not the server's bookkeeping, such as a run's start, its hosts and screenshots, which the log keeps.
 const told = (e: Entry) => isPerson(e) || !!e.note || ['wake', 'expired', 'point', 'rename'].includes(e.op) || (e.op === 'done' && (!!e.aborted || !!e.error));
 
-// A run's first message names the runner, on whose behalf the agent acts, and what they lend it, each tick as logged with what it
-// is, a website's at its address, as does a later one whose entries change those: an assign and a runner's new ticks. It lists
-// the series' open notes, and a later one those left since.
-export function message(inst: Instance, n: number, entries: Entry[], first = false, open: Note[] = []): string {
-  const made = entries.findLast(e => ['takeover', 'assign', 'logins'].includes(e.op)), to = (made?.to ?? made?.by) as string, us = users(), who = (by: string) => `${us[by]?.name || by} <${by}>`;
-  const { by, logins: ticked } = runnerOf(inst), set = [...wakesOf(inst.id), ...wakesOf(inst.seriesId)], sites = websitesOf(by);
+// Messages describe the captured lease, never a later-expanded series ceiling.
+export function message(inst: Instance, n: number, entries: Entry[], first = false, open: Note[] = [], lease = (inst.log.find(e => e.op === 'run' && e.run === n)?.authority as Authority | undefined) ?? authority(inst)): string {
+  const us = users(), who = (by: string) => `${us[by]?.name || by} <${by}>`;
+  const by = lease.owner, ticked = lease.logins, set = [...wakesOf(inst.id), ...wakesOf(inst.seriesId)], sites = websitesOf(by);
   const offers = new Map(logins(by).flatMap(l => l.offers.map(o => [o.id, o.name])));
   const lent = (l: string) => l.startsWith('web:') && sites[l.slice(4)] ? `${l} at ${sites[l.slice(4)].url}` : offers.has(l) ? `${l} (${offers.get(l)})` : l;
   // The corrections on the instances before it, so an error isn't rolled forward.
@@ -129,8 +123,8 @@ export function message(inst: Instance, n: number, entries: Entry[], first = fal
   }));
   const from = (e: Note) => e.by !== 'agent' ? who(e.by) : `the agent of ${named(tree(), instance((e.see as { inst: string }).inst).seriesId)}/${instance((e.see as { inst: string }).inst).label}, run ${e.run}, for ${who(e.runner as string)}`;
   return `Instance ${inst.label}, run ${n}.`
-    + (first || made ? ` Its runner is ${made && made.op !== 'logins' ? `now ${who(to)}, ${to === made.by ? 'taking over' : `assigned by ${who(made.by)}`} from ${who(made.from as string)}` : who(by)}, who lends you ${ticked.map(lent).join(', ') || 'no login'}.` : '')
-    + (first && set.length ? ` Pending wakes: ${set.map(k => `${k.id}, ${k.target === inst.id ? 'waking this instance' : `starting ${k.label}`} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''}, from ${k.from}${woken(inst, { ...k, assigned: k.assigned || k.assignedLabel !== undefined && k.assignedLabel === k.label }).word === 'runner' ? '' : ', a note'}${k.text ? `, saying ${JSON.stringify(k.text)}` : ''}`).join('; ')}.` : '')
+    + (first ? ` Its series owner and captured execution person is ${who(by)}, who lends you ${ticked.map(lent).join(', ') || 'no login'}. Approvals from an earlier authority epoch are history, not authorization for this owner.` : '')
+    + (first && set.length ? ` Pending wakes: ${set.map(k => `${k.id}, ${k.target === inst.id ? 'waking this instance' : `starting ${k.label}`} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''}, from ${k.from}${woken(inst, k).word === 'runner' ? '' : ', a note'}${k.text ? `, saying ${JSON.stringify(k.text)}` : ''}`).join('; ')}.` : '')
     + (fixed.length ? ` Corrections on earlier instances: ${fixed.join('; ')}.` : '')
     + (open.length ? ` Open notes on the series: ${open.map(e => `n${e.seq}, from ${from(e)} at ${e.at}, ${JSON.stringify(e.text)}${(e.files as string[] | undefined)?.map(f => `, ../.notes/${f}`).join('') ?? ''}`).join('; ')}.` : '')
     + ' New log entries:\n'
@@ -153,7 +147,7 @@ export const archived = (t: Tree, seriesId: string) => !!(t.series[seriesId].arc
 // an abandoned one, neither an example nor a starting point, and a deleted one, of which nothing is left, and each series' notes at
 // /work/<workspace>/<series>/.notes/; the company's AGENTS.md at /work/AGENTS.md and each workspace's at
 // /work/<workspace>/AGENTS.md; and the environment its runner's connections set.
-export function view(inst: Instance): View {
+export function view(inst: Instance, lease = authority(inst)): View {
   const t = tree(), at = (id: string) => `/work/${named(t, id)}`, series = [inst.seriesId, ...reach(t, inst.seriesId)];
   const names = Object.fromEntries(series.flatMap(id => labels(id).filter(l => !['abandoned', 'deleted'].includes(instance(l.id).doc.status)).map(l => [`${at(id)}/${l.label}`, l.id])));
   const agents = [...new Set(series.map(id => t.series[id].workspace))].map(w => [agentsFile(w), `/work/${t.workspaces[w].name}/AGENTS.md`] as [string, string]);
@@ -161,7 +155,7 @@ export function view(inst: Instance): View {
   return {
     instance: `${at(inst.seriesId)}/${inst.label}`, dir: inst.dir, pylib: join(inst.series(), '.pylib'),
     ro: [[agentsFile(), '/work/AGENTS.md'], ...agents, ...noting, ...Object.entries(names).map(([path, id]) => [instanceDir(id), path] as [string, string])],
-    names, series: Object.fromEntries(series.map(id => [at(id), id])), env: Object.assign({}, ...reachable(inst).map(c => types[c.type].env?.(c, runnerOf(inst).logins))),
+    names, series: Object.fromEntries(series.map(id => [at(id), id])), env: Object.assign({}, ...connections().filter(c => lease.logins.some(o => o === loginOf(c).id || o.startsWith(`${loginOf(c).id}:`))).map(c => types[c.type].env?.(c, lease.logins))),
   };
 }
 
@@ -193,7 +187,7 @@ function flush(a: Active) {
 // What a timer starts, as a kick's, logs what fails rather than ending the server.
 const start = (inst: Instance, tried = new Set<Instance>()) => begin(inst, tried).catch(e => console.error(`a run of ${inst.id} failed to start`, e));
 
-const runnable = (i: Instance) => due(i) && sees(i) && !held(i, 'entra', runnerOf(i).by);
+const runnable = (i: Instance) => due(i) && sees(i) && !held(i, 'entra', ownerOf(i).by);
 function bail(inst: Instance, tried: Set<Instance>) {
   changes.emit('change', inst.id);
   if (stopping || active.has(inst.seriesId)) return;
@@ -213,41 +207,42 @@ async function begin(inst: Instance, tried: Set<Instance>) {
   // A kick that starts nothing ends the instance's queued state all the same: pages that showed it should hear.
   if (stopping || active.has(series) || !due(inst)) return bail(inst, tried);
   if (full()) return void waiting.add(inst);
-  // A run starts only for a runner Microsoft still signs in (entra.ts): one it no longer does waits for them to sign in again, and
-  // one who has left, for someone to take the instance over. Microsoft unreachable, it tries again in a minute.
-  const runner = runnerOf(inst).by;
+  // Confirmation may wait across transfers: recheck the captured epoch, not email equality.
+  if (!sees(inst)) return bail(inst, tried);
+  const cause = pending(inst, seen).at(-1)!, lease = (cause.authority as Authority | undefined) ?? authority(inst);
+  if (!sameAuthority(inst, lease)) return bail(inst, tried);
+  const runner = lease.owner;
   if (held(inst, 'entra', runner)) return bail(inst, tried);
   try {
     await confirm(runner);
     pruneGrants();
   } catch (e) {
-    if (stopping || !due(inst)) return bail(inst, tried);
-    if (runnerOf(inst).by !== runner) return void kick(inst);
+    const left = !!(e as { left?: boolean }).left && ownerOf(inst).by === runner;
+    if (stopping || inst.doc.status !== 'open' || (!left && !due(inst))) return bail(inst, tried);
+    if (!left && !sameAuthority(inst, lease)) return bail(inst, tried);
     if ((e as HttpError).status !== 401) {
       console.error(`a run of ${inst.id} waits a minute: Microsoft didn't confirm ${runner}'s sign-in`, e);
       return void setTimeout(() => kick(inst), 60_000).unref();
     }
-    inst.append('server', 'expired', { cause: pending(inst, seen)[0].seq, login: 'entra', name: 'rollforward', runner, error: (e as Error).message, ...((e as { left?: boolean }).left && { left: true }) });
+    inst.append('server', 'expired', { cause: cause.seq, login: 'entra', name: 'rollforward', runner, authority: lease, initiator: runner, error: (e as Error).message, ...((e as { left?: boolean }).left && { left: true }) });
     return bail(inst, tried);
   }
   if (stopping || active.has(series) || !due(inst)) return bail(inst, tried);
-  if (runnerOf(inst).by !== runner) return void kick(inst);
+  if (!sameAuthority(inst, lease)) return bail(inst, tried);
   if ([...retiring].some(a => a.inst.seriesId === series) || inst.log.findLast(e => e.op === 'run') !== lastRun) return begin(inst, tried);
   if (full()) return void waiting.add(inst);
-  // One who can no longer see its workspace, as after being removed from it, waits for someone to take the instance over.
+  // Losing workspace visibility never chooses a replacement owner.
   if (!sees(inst)) return bail(inst, tried);
   const n = inst.log.filter(e => e.op === 'run').length + 1;
   const entries = inst.log.filter(e => e.seq > seen && (e.by !== 'agent' || e.note)), left = notes(inst.series());
-  const text = message(inst, n, entries, true, left.filter(e => !e.settled));
-  // A run is a lease: one runner for the whole of it, the act whose ticks it may use (logins.ts lender()), and the AGENTS.md
-  // files it reads, by their sha256, as its series' .pylib's listing is (runner.ts pylib()).
-  const lease = runnerOf(inst);
+  const text = message(inst, n, entries, true, left.filter(e => !e.settled), lease);
+  // Authority, instructions and carried code are captured before the process starts.
   // The versions live as its Pi starts, which it uses to its end.
   const live = skills().map(s => ({ ...s, dir: realpathSync(s.dir) }));
   // And the instructions, the admins' own if they saved them (prompt.ts), by their sha256.
   const told = instructions();
   const a: Active = {
-    inst, n, runner: lease.by, token: randomUUID(), view: view(inst), workspace: tree().series[series].workspace,
+    inst, n, runner: lease.owner, authority: lease, token: randomUUID(), view: view(inst, lease), workspace: lease.workspace,
     sent: entries.at(-1)!.seq, noted: left.at(-1)?.seq ?? 0, seen, delivered: seen, texts: new Map([[text, entries.at(-1)!.seq]]), done: false, cost: 0, estimated: false, hosts: new Set(), links: new Map(),
     process: processOf(inst), thread: pending(inst, seen)[0]?.thread as string | undefined,
   };
@@ -256,15 +251,15 @@ async function begin(inst: Instance, tried: Set<Instance>) {
   let settled: Promise<TurnEnd>, loggedRun = false;
   try {
     // Whose OpenRouter key it starts with, its runner's own or the server's (connections.ts), never the key.
-    const key = logins(lease.by).some(l => l.id === 'openrouter' && l.enabled) ? 'own' : 'shared';
+    const key = logins(lease.owner).some(l => l.id === 'openrouter' && l.enabled) ? 'own' : 'shared';
     const agents = Object.fromEntries(a.view.ro.filter(([p, at]) => at.endsWith('/AGENTS.md') && existsSync(p)).map(([p, at]) => [at, createHash('sha256').update(readFileSync(p)).digest('hex')]));
-    inst.append('server', 'run', { run: n, runner: lease.by, consent: lease.consent, agents, pylib: pylib(a.view.pylib, inst.dir), upto: a.sent, skills: Object.fromEntries(live.map(s => [s.id, pushed(s).version])), key, prompt: sha256(told.text), ...(told.own && { own_prompt: true }) });
+    inst.append('server', 'run', { run: n, runner: lease.owner, initiator: lease.owner, authority: lease, provenance: { cause: cause.seq, ...(cause.op === 'wake' && { from: cause.from, schedule: cause.schedule, inst: cause.inst, run: cause.sourceRun, recovery: cause.recovery }) }, agents, pylib: pylib(a.view.pylib, inst.dir), upto: a.sent, skills: Object.fromEntries(live.map(s => [s.id, pushed(s).version])), key, prompt: sha256(told.text), ...(told.own && { own_prompt: true }) });
     loggedRun = true;
     // Copies of the indexes of what its runner ticked, on the indexes' own disk, read-only at $RF_INDEX.
     const index = join(rfDir(), 'runs', a.token);
     mkdirSync(index, { recursive: true });
     if (told.own) writeFileSync(join(index, 'prompt.md'), told.text);
-    if (prepare(inst, index)) {
+    if (prepare(inst, index, n)) {
       a.view.ro.push([index, '/index']);
       a.view.env.RF_INDEX = '/index';
     }
@@ -323,12 +318,17 @@ const rules = (was: string, now: string) => {
   return now.split('\n').filter(l => /^\s*([-*+]|\d+[.)])\s/.test(l) && !old.has(l.trim())).length;
 };
 
-async function finishRun(a: Active, aborted: boolean, error?: string) {
-  if (a.done || stopping) return;
+function revokeRun(a: Active) {
   a.stopped = true;
   clearTimeout(a.timer);
   byToken.delete(a.token);
+  a.browsers?.cut();
   abortCalls(a);
+}
+
+async function finishRun(a: Active, aborted: boolean, error?: string) {
+  if (a.done || stopping) return;
+  revokeRun(a);
   if (hasCalls(a)) await drainCalls(a);
   finish(a, aborted, error);
 }
@@ -337,9 +337,7 @@ function finish(a: Active, aborted: boolean, error?: string): Entry | undefined 
   if (a.done || stopping) return;
   aborted ||= !!a.interrupted;
   a.done = true;
-  clearTimeout(a.timer);
-  byToken.delete(a.token);
-  abortCalls(a);
+  revokeRun(a);
   const series = a.inst.seriesId;
   active.delete(series);
   const closing = a.browsers?.end().catch(e => a.inst.append('server', 'browsers', { run: a.n, error: e.message }));
@@ -373,6 +371,7 @@ function leases() {
   for (const a of active.values()) {
     const ws = t.series[a.inst.seriesId].workspace, reads = [a.inst.seriesId, ...reach(t, a.inst.seriesId)];
     const why = ws !== a.workspace ? CUT.moved : !sees(a.inst, t) ? CUT.runner
+      : !sameAuthority(a.inst, a.authority) ? CUT.authority
       : Object.values(a.view.series).some(id => !reads.includes(id)) ? CUT.reach : undefined;
     if (why) cut(a, why);
   }
@@ -381,25 +380,38 @@ function leases() {
 // A run cut, its token first, so nothing more goes out, then its browsers and its sandbox; its instance carries on in a new run.
 export async function interruptRun(a: Active) {
   a.interrupted = true;
-  a.stopped = true;
-  byToken.delete(a.token);
-  abortCalls(a);
-  await Promise.race([a.run!.interrupt(), new Promise(r => setTimeout(r, 1500))]);
+  revokeRun(a);
+  if (a.run) await Promise.race([a.run.interrupt(), new Promise(r => setTimeout(r, 1500))]);
   await finishRun(a, true);
   await a.ended;
 }
 
+export async function retireSeries(seriesId: string) {
+  const runs = [...active.values()].filter(a => a.inst.seriesId === seriesId);
+  for (const inst of instances(seriesId)) {
+    clearTimeout(debounce.get(inst.id));
+    debounce.delete(inst.id);
+    waiting.delete(inst);
+  }
+  for (const a of runs) {
+    a.interrupted = true;
+    revokeRun(a);
+  }
+  await Promise.all(runs.map(a => finishRun(a, true, CUT.authority)));
+  await Promise.all([...retiring].filter(a => a.inst.seriesId === seriesId).map(a => a.ended));
+  await Promise.all(instances(seriesId).filter(i => !i.hole).map(i => committed(i.dir)));
+}
+
 function cut(a: Active, why: string) {
   if (a.done || stopping) return;
-  a.stopped = true;
-  clearTimeout(a.timer);
-  byToken.delete(a.token);
-  abortCalls(a);
+  revokeRun(a);
   const after = () => {
     const done = finish(a, true, why);
     if (!done) return;
-    a.inst.append('server', 'wake', { reason: `Run ${a.n} was cut: ${why}; carry on`, from: 'server', cause: done.seq });
-    kick(a.inst);
+    if (a.authority.autonomous && ownerOf(a.inst).consent?.autonomous && sameAuthority(a.inst, a.authority)) {
+      a.inst.append('server', 'wake', { reason: `Run ${a.n} was cut: ${why}; carry on`, from: 'server', cause: done.seq, initiator: a.runner, authority: a.authority, recovery: { run: a.n, reason: why } });
+      kick(a.inst);
+    }
   };
   if (!hasCalls(a)) return after();
   const draining = drainCalls(a).then(after);
@@ -418,12 +430,7 @@ export async function remove(inst: Instance, by: string, fields: () => Record<st
   debounce.delete(inst.id);
   waiting.delete(inst);
   const runs = [...active.values()].filter(a => a.inst === inst || Object.values(a.view.names).includes(inst.id));
-  for (const a of runs) {
-    a.stopped = true;
-    clearTimeout(a.timer);
-    byToken.delete(a.token);
-    abortCalls(a);
-  }
+  for (const a of runs) revokeRun(a);
   for (const a of runs) if (a.inst === inst && hasCalls(a)) await drainCalls(a);
   for (const a of runs) a.inst === inst ? finish(a, true, CUT.deleted) : cut(a, CUT.gone);
   const w = wakes();
@@ -437,7 +444,7 @@ export async function remove(inst: Instance, by: string, fields: () => Record<st
   inst.clear();
   return deleted;
 }
-changes.on('change', (id: string) => id === 'tree' && setImmediate(leases));
+changes.on('change', (id: string) => id === 'tree' && leases());
 
 // A stop, as a restart's, cuts every run, its token first, so nothing more goes out, then its connections to its browsers, and
 // starts none; each Pi goes on, for what it had sent to be answered, until the server is gone. No run ends meanwhile: the next
@@ -447,11 +454,7 @@ export function stop() {
   stopping = true;
   clearTimeout(draining);
   byToken.clear();
-  for (const a of active.values()) {
-    a.stopped = true;
-    abortCalls(a);
-    a.browsers?.cut();
-  }
+  for (const a of active.values()) revokeRun(a);
   active.clear();
 }
 
@@ -483,13 +486,10 @@ export function queued(inst: Instance): { why: string; since: string } | undefin
   return { why, since: pending(inst, seenBefore(inst))[0]?.at ?? new Date().toISOString() };
 }
 
-// Closing an instance wakes its series' later open instances, which may have used its draft; a note for those the closer doesn't run,
-// which starts them only where the series is shared, and a quiet close's wake is quiet. A <label>-r2 closing supersedes <label>, as a
-// <label>-r3 does <label>-r2.
+// The owner's close continues later drafts. A <label>-r2 closing supersedes <label>, and <label>-r3 supersedes <label>-r2.
 export function closed(inst: Instance, by: string, quiet?: boolean) {
   for (const later of instances(inst.seriesId).filter(i => i.doc.status === 'open' && i.label.localeCompare(inst.label, 'en', { numeric: true }) > 0)) {
-    later.append('server', 'wake', { reason: `${inst.label} closed: its final figures may differ from the draft you read`, from: `${named(tree(), inst.seriesId)}/${inst.label}`, ...(woken(later, { from: by }).word === 'note' && { note: true }), ...(quiet && { quiet: true }) });
-    if (!quiet) kick(later);
+    wakeWith(later, [{ from: by, text: `${inst.label} closed: its final figures may differ from the draft you read`, quiet }]);
   }
   const [, base, r] = /^(.+)-r(\d+)$/.exec(inst.label) ?? [], was = base && instances(inst.seriesId).find(i => i.label === (r === '2' ? base : `${base}-r${Number(r) - 1}`) && i.doc.status === 'closed');
   if (was) correct(was, by, { kind: 'superseded', text: `${inst.label} supersedes it`, see: inst });
@@ -508,14 +508,10 @@ export function correct(inst: Instance, by: string, c: { kind: string; item?: st
   return e;
 }
 
-// Wakes (.rf/wakes.json): the pending ones by id, each for a target, an instance or a series by id, and the requests to start an
-// instance that a series no one shares, or with 3 open, got instead, or to wake an instance, `target`, that one pending as it was
-// assigned, `assigned`, got where its runner doesn't share the series. A target fires at most once in 15 minutes: a wake due sooner
-// waits. A run's wake notes its instance, `inst`, as its name in `from` may change before it fires, and any wake its `text`, which
-// the run it starts reads in its wake entry. One with `days` recurs each week on them at its time of day, in the server's time zone;
-// a series' moves the date in its label on with it, keeping it the day it fires or the one before that it fires on, as it was set.
-export type Wake = { target: string; at: string; from: string; label?: string; inst?: string; days?: string[]; text?: string; assigned?: boolean; assignedLabel?: string };
-export type Request = { series: string; label: string; from: string; at: string; inst?: string; text?: string; target?: string; assigned?: boolean };
+// Schedules retain target authority and independent setter/source-run provenance.
+// Unconsented or revoked schedules become requests, never execution as their clicker.
+export type Wake = { target: string; at: string; from: string; label?: string; inst?: string; sourceRun?: number; days?: string[]; text?: string; authority?: Authority; initiator?: string };
+export type Request = { series: string; label: string; from: string; at: string; inst?: string; text?: string; target?: string };
 type Wakes = { pending: Record<string, Wake>; fired: Record<string, string>; requests: Record<string, Request> };
 export const wakes = () => readJson<Wakes>('wakes.json', { pending: {}, fired: {}, requests: {} });
 const saveWakes = (w: Wakes) => writeJson('wakes.json', w);
@@ -551,10 +547,16 @@ export function weekly(text: string, at: Date, label?: string): string[] | undef
 // A series' one-off wake for a label pending already moves it, or is one a weekly wake starting that label has made; any other adds
 // up, unless the same is pending, to 20 a target.
 export function setWake(target: string, wake: Omit<Wake, 'target'>): Wake & { id: string } {
-  const w = wakes(), k: Wake = { ...wake, target }, labelled = k.label !== undefined && !k.days;
+  const w = wakes(), t = tree(), sid = t.series[target] ? target : instance(target).seriesId, s = seriesSettings(seriesDir(sid));
+  const p = s.owner && asPerson(s.owner), source = wake.inst ? active.get(instance(wake.inst).seriesId) : undefined;
+  const authorized = s.consent?.autonomous && s.consent.by === s.owner && s.consent.workspace === t.series[sid].workspace
+    && p && can(p, 'series-owner') && canSee(p, t.workspaces[t.series[sid].workspace])
+    && (wake.inst ? source?.inst.id === wake.inst && byToken.has(source.token) && source.runner === s.owner && source.authority.autonomous && sameAuthority(source.inst, source.authority) && ownerOf(source.inst).consent?.autonomous : wake.from === s.owner);
+  const k: Wake = { ...wake, target, authority: authorized ? { version: 1, owner: s.owner!, epoch: s.epoch, workspace: t.series[sid].workspace, logins: s.consent!.logins.filter(o => !source || source.inst.seriesId !== sid || source.authority.logins.includes(o)), autonomous: true } : undefined, initiator: authorized ? s.owner : undefined, ...(source && { sourceRun: source.n }) }, labelled = k.label !== undefined && !k.days;
   // A weekly one keeps its time of day; fire() spaces it.
   if (!k.days) k.at = new Date(Math.max(Date.parse(k.at), Date.parse(w.fired[target] ?? '1970-01-01') + SPACING_MS)).toISOString();
   const [id = newId(), was] = Object.entries(w.pending).find(([, p]) => p.target === target && p.label === k.label
+    && !!p.authority === !!k.authority && (k.authority ? p.authority!.owner === k.authority.owner && p.authority!.epoch === k.authority.epoch && p.authority!.workspace === k.authority.workspace && p.authority!.autonomous === true : p.from === k.from && p.inst === k.inst)
     && (labelled || (p.at === k.at && String(p.days) === String(k.days)))) ?? [];
   if (!was && Object.values(w.pending).filter(p => p.target === target).length >= MAX_WAKES) throw new HttpError(409, `${MAX_WAKES} wakes are pending for it: cancel one first`);
   if (!(labelled && was?.days)) w.pending[id] = k;
@@ -576,18 +578,6 @@ export function cancelWakes(targets: string[]) {
   saveWakes(w);
 }
 
-// An assign invalidates wakes for or from its instance, but only the matching occurrence of a series-label wake. Requests from
-// its runs keep that boundary too.
-export function assigned(inst: Instance) {
-  const w = wakes();
-  for (const k of Object.values(w.pending)) {
-    if (k.target === inst.id || k.inst === inst.id) k.assigned = true;
-    else if (k.target === inst.seriesId && k.label === inst.label) k.assignedLabel = inst.label;
-  }
-  for (const r of Object.values(w.requests)) if (r.inst === inst.id) r.assigned = true;
-  saveWakes(w);
-}
-
 export function dropRequest(id: string): Request {
   const w = wakes(), r = w.requests[id];
   if (!r) throw new HttpError(404, `no request ${id}`);
@@ -596,22 +586,26 @@ export function dropRequest(id: string): Request {
   return r;
 }
 
-// Makes an instance of a series, run by `by` with the logins they ticked, and starts it with wakes after its create: a wake's, a
-// person's, or a request's and the person who starts it; without one, as a person makes it quietly, it waits for its first act.
-export function startWith(seriesId: string, label: string, by: string, logins: string[], wakes: Woken[]): Instance {
+// Creation records its real actor; only an authorized wake can initiate execution.
+export function startWith(seriesId: string, label: string, by: string, wakes: Woken[]): Instance {
   if (instances(seriesId).filter(i => i.doc.status === 'open').length >= MAX_OPEN) throw new HttpError(409, `${MAX_OPEN} instances of ${tree().series[seriesId].name} are open: a new one waits until one closes`);
-  return wakeWith(createInstance(seriesId, label, by, logins), wakes);
+  return wakeWith(createInstance(seriesId, label, by), wakes);
 }
 
 // Wakes an instance, each wake logged with who set it and its text, a note unless it's the runner's word (standing()).
-type Woken = { from: string; text?: string; inst?: string; assigned?: boolean; quiet?: boolean };
+type Woken = { from: string; text?: string; inst?: string; sourceRun?: number; assigned?: boolean; quiet?: boolean; authority?: Authority; initiator?: string; schedule?: string };
 export function wakeWith(inst: Instance, wakes: Woken[]): Instance {
-  for (const wake of wakes) inst.append('server', 'wake', { from: wake.from, ...(wake.text && { text: wake.text }), ...(woken(inst, wake).word === 'note' && { note: true }), ...(wake.quiet && { quiet: true }) });
+  for (const wake of wakes) {
+    const r = ownerOf(inst);
+    const lease = wake.authority ?? (!wake.assigned && !wake.inst && wake.from === r.by && r.consent ? authority(inst) : undefined);
+    const fields = { ...wake, authority: lease, initiator: lease?.owner };
+    inst.append('server', 'wake', { ...fields, ...(woken(inst, fields).word === 'note' && { note: true }) });
+  }
   if (wakes.some(w => !w.quiet)) kick(inst);
   return inst;
 }
 
-function fire() {
+export function fire() {
   startWaiting();
   const w = wakes(), now = new Date().toISOString(), t = tree();
   const due = Object.entries(w.pending).filter(([, k]) => k.at <= now).sort(([, a], [, b]) => a.at.localeCompare(b.at));
@@ -636,6 +630,15 @@ function fire() {
       console.log(`a wake ${wake.from} set went unfired, as they can no longer see ${ws.name}`);
       continue;
     }
+    const s = seriesSettings(seriesDir(targetSeries)), lease = wake.authority, owner = s.owner && asPerson(s.owner);
+    const authorized = !!lease?.autonomous && wake.initiator === lease.owner && s.owner === lease.owner && s.epoch === lease.epoch && wsId === lease.workspace
+      && !!s.consent?.autonomous && s.consent.by === s.owner && s.consent.workspace === wsId && lease.logins.every(o => s.consent!.logins.includes(o))
+      && !!owner && can(owner, 'series-owner') && canSee(owner, ws);
+    if (!authorized) {
+      delete w.pending[id];
+      w.requests[id] = { series: targetSeries, label: label ?? instance(target).label, ...(!t.series[target] && { target }), from: wake.from, at: now, ...(wake.inst && { inst: wake.inst }), ...(wake.text && { text: wake.text }) };
+      continue;
+    }
     w.fired[target] = now;
     delete w.pending[id];
     if (days) {
@@ -653,29 +656,22 @@ function fire() {
         console.log(`a wake found ${named(t, inst.seriesId)}/${inst.label} ${inst.doc.status}, so it woke nothing`);
         continue;
       }
-      if (was.assigned && !woken(inst, was).starts) w.requests[newId()] = { series: inst.seriesId, label: inst.label, target: inst.id, from, at: now, ...(wake.inst && { inst: wake.inst }), ...(wake.text && { text: wake.text }), assigned: true };
-      else wakeWith(inst, [was]);
+      wakeWith(inst, [{ from, text: wake.text, inst: wake.inst, sourceRun: wake.sourceRun, authority: lease, initiator: wake.initiator, schedule: id }]);
       continue;
     }
-    const shared = seriesSettings(seriesDir(target)).shared, sharer = shared && asPerson(shared.by);
-    const runs = sharer && canSee(sharer, t.workspaces[t.series[target].workspace]);
-    try {
-      if (!runs) throw new Error('not shared');
-      startWith(target, label!, shared.by, shared.logins, [was]);
-    } catch {
-      w.requests[newId()] = { series: target, label: label!, from, at: now, ...(wake.inst && { inst: wake.inst }), ...(wake.text && { text: wake.text }), ...(was.assigned && { assigned: true }) };
-    }
+    if (instances(target).filter(i => i.doc.status === 'open').length >= MAX_OPEN) {
+      w.requests[newId()] = { series: target, label: label!, from, at: now, ...(wake.inst && { inst: wake.inst }), ...(wake.text && { text: wake.text }) };
+    } else startWith(target, label!, wake.inst ? 'agent' : wake.from, [{ from, text: wake.text, inst: wake.inst, sourceRun: wake.sourceRun, authority: lease, initiator: wake.initiator, schedule: id }]);
   }
   saveWakes(w);
 }
 
 // Why a run was cut, its done's error, which `rf runs` tells from a failure: a restart, or a change that broke its lease (leases()).
 // Either way its instance is woken to carry on.
-export const CUT = { restart: 'a restart cut the run', moved: 'its series moved', runner: 'its runner can no longer see it', reach: 'its reach narrowed', deleted: 'its instance was deleted', gone: 'an instance in its reach was deleted' };
+export const CUT = { restart: 'a restart cut the run', authority: 'its series authority ended', moved: 'its series moved', runner: 'its series owner can no longer execute it', reach: 'its reach narrowed', deleted: 'its instance was deleted', gone: 'an instance in its reach was deleted' };
 
-// A run a restart cut ends as aborted, with what its calls cost so far, its changes committed as at any run's end, and its instance
-// is woken to carry on, so a deploy needn't wait for quiet, unless it was assigned as the run stopped: what came before is history. A commit the restart cut leaves git's locks, which would refuse the
-// instance's next; no git runs as it starts.
+// Recovery accounts for the captured executor and resumes only a still-valid captured authority.
+// No git runs at startup, so interrupted commit locks can be removed.
 export function recover() {
   // A deletion a restart cut is done: what's left of its folder goes.
   for (const id of Object.keys(tree().series)) for (const inst of instances(id).filter(i => i.hole)) inst.clear();
@@ -688,8 +684,9 @@ export function recover() {
       const cost = calls.reduce((t, e) => t + ((e.cost as number | undefined) ?? 0), 0);
       const estimated = calls.some(e => e.estimated === true);
       const done = inst.append('server', 'done', { run: run.run, aborted: true, seen: seenBefore(inst), cost: +cost.toFixed(6), estimated, error: CUT.restart });
-      const held = Math.max(lastAssign(inst.log)?.seq ?? 0, inst.log.findLast(e => e.op === 'interrupt')?.seq ?? 0);
-      if (held < run.seq || pending(inst, held).length) inst.append('server', 'wake', { reason: `A restart cut run ${run.run}; carry on`, from: 'server', cause: done.seq });
+      const held = Math.max(inst.log.findLast(e => e.op === 'authority')?.seq ?? 0, inst.log.findLast(e => e.op === 'interrupt')?.seq ?? 0);
+      const lease = run.authority as Authority | undefined;
+      if (lease?.autonomous && ownerOf(inst).consent?.autonomous && sameAuthority(inst, lease) && (held < run.seq || pending(inst, held).length)) inst.append('server', 'wake', { reason: `A restart cut run ${run.run}; carry on`, from: 'server', cause: done.seq, initiator: run.initiator, authority: lease, recovery: { run: run.run, reason: CUT.restart } });
       commit(inst.dir, AGENT, `Run ${run.run}: ${CUT.restart}`).catch(e => inst.append('server', 'commit', { run: run.run, error: e.message }));
     }
     kick(inst);
@@ -699,20 +696,24 @@ export function recover() {
 // Whether a login of `who`'s that expired holds an instance's runs: the instance is open and theirs, a run of theirs met it since
 // the last assign, they haven't unticked or stopped using it since, and no sign-in woke it since.
 export function held(inst: Instance, login: string, who: string, ticked = true): boolean {
-  const r = runnerOf(inst);
+  const r = ownerOf(inst);
   if (inst.doc.status !== 'open' || r.by !== who) return false;
   if (ticked && !['entra', 'openrouter'].includes(login) && !r.logins.some(t => t === login || t.startsWith(`${login}:`))) return false;
   if (ticked && login === 'openrouter' && !logins(who).find(l => l.id === 'openrouter')?.enabled) return false;
   const hit = inst.log.findLast(e => e.op === 'expired' && !e.left && e.login === login && e.runner === who);
-  return !!hit && hit.seq > (lastAssign(inst.log)?.seq ?? 0) && !inst.log.some(e => e.seq > hit.seq && e.op === 'wake' && e.login === login);
+  const run = hit?.run && inst.log.find(e => e.op === 'run' && e.run === hit.run), lease = (hit?.authority ?? (run && run.authority)) as Authority | undefined;
+  return !!hit && !!lease && sameAuthority(inst, lease) && !inst.log.some(e => e.seq > hit.seq && ((e.op === 'wake' && e.login === login) || standing(inst, e)?.starts));
 }
 
 // An open instance whose run met its runner's expired login carries on when they sign in to it again, or stop using an expired key.
 changes.on('login', (email: string, id: string, name: string) => {
-  for (const sid of Object.keys(tree().series)) for (const inst of instances(sid).filter(i => i.doc.status === 'open' && runnerOf(i).by === email)) {
+  for (const sid of Object.keys(tree().series)) for (const inst of instances(sid).filter(i => i.doc.status === 'open' && ownerOf(i).by === email)) {
     if (!held(inst, id, email, id !== 'openrouter')) continue;
-    inst.append('server', 'wake', { reason: id === 'openrouter' && !logins(email).find(l => l.id === 'openrouter')?.enabled ? `${email} stopped using their OpenRouter key` : `${email} signed in to ${name} again`, from: email, login: id });
-    kick(inst);
+    const hit = inst.log.findLast(e => e.op === 'expired' && !e.left && e.login === id && e.runner === email)!, run = inst.log.find(e => e.op === 'run' && e.run === hit.run);
+    const lease = (hit.authority ?? run?.authority) as Authority;
+    const autonomous = !!lease.autonomous && !!ownerOf(inst).consent?.autonomous;
+    inst.append('server', 'wake', { ...(!autonomous && { quiet: true }), reason: id === 'openrouter' && !logins(email).find(l => l.id === 'openrouter')?.enabled ? `${email} stopped using their OpenRouter key` : `${email} signed in to ${name} again`, from: email, login: id, authority: hit.authority ?? run!.authority, initiator: hit.initiator ?? run!.initiator, recovery: { run: run?.run, login: id } });
+    if (autonomous) kick(inst);
   }
 });
 

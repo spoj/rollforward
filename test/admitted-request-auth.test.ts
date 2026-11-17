@@ -7,15 +7,20 @@ import { createServer, request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { idp } from './idp.ts';
+import { readFixtureTree, writeFixtureTree } from './owner-fixture.ts';
 
 const tmp = mkdtempSync(join(tmpdir(), 'rf-admitted-auth-')), root = join(tmp, 'data');
 const ADMIN = 'admin@demo.test', ACTOR = 'delayed@demo.test';
 let proc: ChildProcess, base: string, admin: string, entra: Awaited<ReturnType<typeof idp>>;
 const call = async (method: string, path: string, body?: object, cookie = admin) => {
-  const log = join(root, '.rf', 'log.jsonl'), before = existsSync(log) ? readFileSync(log, 'utf8').split('\n').length - 1 : 0;
+  const log = join(root, '.rf', 'log.jsonl');
+  const before = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').length : 0;
   const res = await fetch(base + path, { method, headers: { cookie }, body: body === undefined ? undefined : JSON.stringify(body) });
   if (res.ok && !['GET', 'HEAD'].includes(method) && !path.startsWith('/api/instances/') && path !== '/auth/cli') {
-    for (let n = 0; !existsSync(log) || readFileSync(log, 'utf8').split('\n').length - 1 <= before; n++) {
+    for (let n = 0; !existsSync(log) || !readFileSync(log, 'utf8').trim().split('\n').slice(before).some(line => {
+      const e = JSON.parse(line);
+      return e.method === method && e.path === path && e.by === (cookie === admin ? ADMIN : ACTOR);
+    }); n++) {
       assert.ok(n < 200, 'the control request is audited before capturing files');
       await new Promise(ok => setTimeout(ok, 10));
     }
@@ -27,6 +32,8 @@ const skillBody = JSON.stringify({ files: { 'SKILL.md': Buffer.from('---\nname: 
 
 before(async () => {
   cpSync(join(import.meta.dirname, 'fixture'), root, { recursive: true });
+  writeFixtureTree(root, readFixtureTree(root));
+  writeFileSync(join(root, '.rf', 'capabilities.json'), JSON.stringify({ 'series-owner': [ADMIN, ACTOR] }));
   const probe = createServer();
   await new Promise<void>(ok => probe.listen(0, '127.0.0.1', ok));
   const port = (probe.address() as { port: number }).port;
@@ -211,15 +218,18 @@ test('unchanged authority still admits delayed JSON and raw bodies, logging a be
   assert.equal(await raw(), 200);
 });
 
-test('a request queued after its body was read cannot act after token revocation', () => {
-  execFileSync(process.execPath, ['--input-type=module', '-e', `
+for (const action of ['reject', 'owner', 'credentials']) test(`a ${action} request queued after its body was read cannot act after token revocation`, () => {
+  execFileSync(process.execPath, ['--experimental-test-module-mocks', '--input-type=module', '-e', `
     import assert from 'node:assert/strict';
     import { cpSync } from 'node:fs';
     import { createServer } from 'node:http';
     import { join } from 'node:path';
     import { idp } from './test/idp.ts';
-    const root = ${JSON.stringify(join(tmp, 'queued-data'))};
+    import { ownSeries, readFixtureTree, writeFixtureTree } from './test/owner-fixture.ts';
+    const root = ${JSON.stringify(join(tmp, 'queued-data'))} + '-${action}';
+    const action = '${action}';
     cpSync('./test/fixture', root, { recursive: true });
+    writeFixtureTree(root, readFixtureTree(root));
     const probe = createServer();
     await new Promise(ok => probe.listen(0, '127.0.0.1', ok));
     const port = probe.address().port, base = 'http://127.0.0.1:' + port;
@@ -228,8 +238,25 @@ test('a request queued after its body was read cannot act after token revocation
     Object.assign(process.env, entra.env(base), { RF_ADMINS: '${ADMIN}', RF_HOST: '127.0.0.1', RF_MAX_RUNS: '0', RF_SCRATCH: ${JSON.stringify(join(tmp, 'queued-scratch'))} });
     for (const name of ['RF_BROWSER_URL', 'RF_TUNNEL_URL', 'OPENROUTER_API_KEY', 'EXA_API_KEY']) delete process.env[name];
     process.argv[2] = root; process.argv[3] = String(port);
+    const { mock } = await import('node:test');
+    const git = await import('./src/git.ts'), entered = Promise.withResolvers();
+    let armed = false;
+    mock.module('./src/git.ts', { namedExports: { ...git, committed: dir => { if (armed && action === 'reject') entered.resolve(); return git.committed(dir); } } });
+    const waker = await import('./src/waker.ts'), release = Promise.withResolvers();
+    mock.module('./src/waker.ts', { namedExports: { ...waker, retireSeries: async sid => {
+      await waker.retireSeries(sid);
+      if (armed && action !== 'reject') { entered.resolve(); await release.promise; }
+    } } });
+    const auth = await import('./src/auth.ts'), admitted = Promise.withResolvers();
+    let queuedPath;
+    mock.module('./src/auth.ts', { namedExports: { ...auth, recheckRequest: req => {
+      auth.recheckRequest(req);
+      if (req.url === queuedPath) admitted.resolve();
+    } } });
     await import('./src/server.ts');
-    const store = await import('./src/store.ts'), git = await import('./src/git.ts'), auth = await import('./src/auth.ts');
+    const store = await import('./src/store.ts');
+    const { writeJson } = await import('./src/system.ts');
+    writeJson('capabilities.json', { 'series-owner': ['${ADMIN}'] });
     const cookie = (await entra.signIn(base, '${ADMIN}')).headers.getSetCookie().find(c => c.startsWith('rf_session=')).split(';')[0];
     const call = (path, body, headers = { cookie }) => fetch(base + path, { method: 'POST', headers, body: JSON.stringify(body) });
     const { id: ws } = await (await call('/api/workspaces', { name: 'Queue' })).json();
@@ -238,19 +265,29 @@ test('a request queued after its body was read cannot act after token revocation
     const inst = store.instance(id), path = '/api/instances/' + id;
     inst.append('agent', 'comment', { text: 'Approve?', thread: 'c2', ask: 'proposal', run: 1 });
     inst.append('agent', 'comment', { text: 'Other proposal?', thread: 'c3', ask: 'proposal', run: 1 });
-    const hold = Promise.withResolvers(), prior = git.commit(inst.dir, { name: 'Admin', email: '${ADMIN}' }, 'prior', hold.promise);
-    const first = call(path + '/signoff', { thread: 'c2', quiet: true });
-    for (let n = 0; git.committed(inst.dir) === prior && n < 200; n++) await new Promise(ok => setTimeout(ok, 10));
-    assert.notEqual(git.committed(inst.dir), prior, 'signoff holds the instance action queue');
+    ownSeries(sid, '${ADMIN}', [], true);
+    const hold = Promise.withResolvers(), prior = action === 'reject' ? git.commit(inst.dir, { name: 'Admin', email: '${ADMIN}' }, 'prior', hold.promise) : Promise.resolve();
+    armed = true;
+    const first = action === 'reject' ? call(path + '/signoff', { thread: 'c2', quiet: true })
+      : fetch(base + '/api/series/' + sid + '/credentials', { method: 'PUT', headers: { cookie }, body: '{"logins":[],"autonomous":false}' });
+    await entered.promise;
     const token = auth.newToken('${ADMIN}', 'queued', 1), tokenId = auth.myTokens('${ADMIN}').at(-1).id;
-    const second = call(path + '/reject', { thread: 'c3', text: 'must not be logged', quiet: true }, { authorization: 'Bearer ' + token });
-    await new Promise(ok => setTimeout(ok, 80));
+    const before = JSON.stringify((await import('./src/series.ts')).seriesSettings(inst.series()));
+    queuedPath = action === 'reject' ? path + '/reject' : '/api/series/' + sid + '/' + action;
+    let responded = false;
+    const second = (action === 'reject'
+      ? call(path + '/reject', { thread: 'c3', text: 'must not be logged', quiet: true }, { authorization: 'Bearer ' + token })
+      : fetch(base + '/api/series/' + sid + '/' + action, { method: 'PUT', headers: { authorization: 'Bearer ' + token }, body: JSON.stringify(action === 'owner' ? { owner: '${ACTOR}' } : { logins: [], autonomous: false }) })).then(r => { responded = true; return r; });
+    await admitted.promise;
+    await new Promise(ok => setImmediate(ok));
+    assert.equal(responded, false, 'the original credential passed its body check and now waits in the control queue');
     auth.revokeToken('${ADMIN}', tokenId);
-    hold.resolve();
+    hold.resolve(); release.resolve();
     await prior;
     assert.equal((await first).status, 200);
     assert.equal((await second).status, 401);
     assert.equal(inst.log.some(e => e.op === 'reject'), false);
+    assert.equal(JSON.stringify((await import('./src/series.ts')).seriesSettings(inst.series())), before);
     entra.close(); process.exit(0);
   `], { cwd: join(import.meta.dirname, '..'), timeout: 15_000, stdio: 'pipe' });
 });

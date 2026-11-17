@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { readFixtureTree, writeFixtureTree } from './owner-fixture.ts';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
@@ -56,11 +57,17 @@ test('deleting instances preserves daily run key provenance and UTC shared-key O
   const yesterday = new Date(Date.parse(`${today}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
   const at = `${today}T01:00:00Z`;
   cpSync(join(app, 'test/fixture'), root, { recursive: true });
-  const treePath = join(root, '.rf/tree.json'), t = JSON.parse(readFileSync(treePath, 'utf8'));
+  const t = readFixtureTree(root);
   t.workspaces.r4ws = { name: 'Costs', owners: [admin], members: [] };
   t.series.r4ser = { name: 'Legacy', workspace: 'r4ws' };
-  writeFileSync(treePath, JSON.stringify(t));
+  writeFixtureTree(root, t);
   mkdirSync(join(root, 'series/r4ser'), { recursive: true });
+  for (const sid of Object.keys(t.series)) {
+    writeFileSync(join(root, 'series', sid, 'series.json'), JSON.stringify({ version: 1, epoch: 0, since: '' }));
+  }
+
+  writeFileSync(join(root, '.rf', 'capabilities.json'), JSON.stringify({ 'series-owner': [admin] }));
+  writeFileSync(join(root, 'series/r4ser/series.json'), JSON.stringify({ version: 1, owner: admin, epoch: 1, since: at, consent: { by: admin, at, workspace: 'r4ws', logins: [], autonomous: false } }));
 
   const writeInst = (id: string, entries: Record<string, unknown>[]) => {
     const dir = join(root, 'instances', id);

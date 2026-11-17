@@ -2,7 +2,7 @@
 // passed: those it cuts carry on after the restart. A systemd timer runs it (docs/deploy.md), and never twice at once. A release is taken once every check on its commit has passed, and never past a prerelease, which a tag with
 // a Manual: line makes for a release that needs a person first. What it installs, its packages and its agent image, is fetched
 // before the server stops, so a failure there, as without the network, changes nothing, and the next tick tries again. If the
-// server doesn't answer HEALTH after the move, the checkout goes back, and that release isn't tried again; if going back fails too,
+// server doesn't answer HEALTH after the move, the checkout goes back within the same major.minor, and that release isn't tried again; if going back fails too,
 // the server starts as the checkout is, never left stopped.
 //   node scripts/update.ts HEALTH
 import { execFileSync } from 'node:child_process';
@@ -36,8 +36,8 @@ try {
 const bad: string[] = existsSync(state) ? JSON.parse(readFileSync(state, 'utf8')).bad : [];
 const releases = (await github('/releases?per_page=100')).filter((r: any) => !r.draft && /^v\d+\.\d+\.\d+$/.test(r.tag_name) && later(r.tag_name, current))
   .sort((a: any, b: any) => (later(a.tag_name, b.tag_name) ? 1 : -1));
-const stop = releases.findIndex((r: any) => r.prerelease);
-if (stop >= 0) console.log(`${releases[stop].tag_name} needs a person first: ${releases[stop].html_url}`);
+const stop = releases.findIndex((r: any) => r.prerelease || parts(r.tag_name).slice(0, 2).join('.') !== parts(current).slice(0, 2).join('.'));
+if (stop >= 0) console.log(`${releases[stop].tag_name} needs a person first (manual release or reader boundary): ${releases[stop].html_url}`);
 const target: string | undefined = releases.slice(0, stop < 0 ? undefined : stop).map((r: any) => r.tag_name).filter((t: string) => !bad.includes(t)).at(-1);
 if (!target) process.exit(0);
 const checks = (await github(`/commits/${target}/check-runs?per_page=100`)).check_runs;
@@ -70,6 +70,7 @@ async function drain() {
 // The checkout at `to`, with what changed since `from` installed, and the server started on it. It stops first, so the old process
 // never serves the new files; the runs it cuts end as aborted, and their instances are woken to carry on as it starts.
 function move(from: string, to: string) {
+  if (parts(from).slice(0, 2).join('.') !== parts(to).slice(0, 2).join('.')) throw new Error('automatic move across a reader boundary refused; restore a complete compatible snapshot manually');
   sh('systemctl', '--user', 'stop', 'rollforward');
   sh('git', 'checkout', '-q', '--detach', to);
   if (changed(from, to, 'package-lock.json')) sh('npm', 'ci', '--omit=dev', '--no-audit', '--no-fund', '--offline');

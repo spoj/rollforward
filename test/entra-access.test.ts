@@ -2,11 +2,12 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { idp } from './idp.ts';
+import { writeFixtureTree } from './owner-fixture.ts';
 
 const root = mkdtempSync(join(tmpdir(), 'rf-entra-access-'));
 const ADMIN = 'admin@demo.test', GROUP = '00000000-0000-0000-0000-000000000001', OTHER = '00000000-0000-0000-0000-000000000002';
@@ -64,6 +65,8 @@ async function confirm(email: string) {
 }
 
 before(async () => {
+  mkdirSync(join(root, '.rf'));
+  writeFixtureTree(root, { workspaces: {}, series: {} });
   entra = await idp();
   await Promise.all([browser, tunnel].map(server => new Promise<void>(ok => server.listen(0, '127.0.0.1', ok))));
   const address = (server: ReturnType<typeof createServer>) => `http://127.0.0.1:${(server.address() as { port: number }).port}`;

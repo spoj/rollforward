@@ -10,7 +10,7 @@ import { act, changes, isPrivate, key, readJson, tree, writeJson } from './syste
 import { recordCost } from './costs.ts';
 import type { EntraLogin } from './auth.ts';
 import { token } from './entra.ts';
-import { lender, logins, runnerOf, saveLogin, secret, use, type Offer } from './logins.ts';
+import { lender, logins, saveLogin, secret, use, type Offer } from './logins.ts';
 import graph from './connections/graph.ts';
 import databricks from './connections/databricks.ts';
 import service from './connections/service.ts';
@@ -42,8 +42,9 @@ export type Type = {
   // The offer a request needs ticked, its JSON body as it goes on, if the type rewrote it, and the origin where its answer's
   // Location, as a redirect's, is a link; or a refusal.
   // A request that sends mail also reads, on asking, what goes, its recipients and its attachments' sha256s, or why that can't be read.
-  check?(c: Connection, runner: string, ticks: string[], r: Request): Promise<{ offer: string; json?: unknown; redirect?: string; pathname?: string }> | { offer: string; json?: unknown; redirect?: string; pathname?: string };
-  links?(answer: any, path: string, email: string, ticks: string[]): string[] | Promise<string[]>;
+  // Async policy and link work checkpoints before each new outbound request, including after awaiting credentials.
+  check?(c: Connection, runner: string, ticks: string[], r: Request, checkpoint: () => void): Promise<{ offer: string; json?: unknown; redirect?: string; pathname?: string }> | { offer: string; json?: unknown; redirect?: string; pathname?: string };
+  links?(answer: any, path: string, email: string, ticks: string[], checkpoint: () => void): string[] | Promise<string[]>;
   // What a run's environment holds for it, given the instance's ticks.
   env?(c: Connection, ticks: string[]): Record<string, string>;
 };
@@ -115,15 +116,15 @@ export function removeConnection(name: string) {
 export const loginOf = (c: Connection) => types[c.type].login(c);
 // The connection a login is for, by the login's id.
 export const byLogin = (id: string) => connections().find(c => loginOf(c).id === id);
-// The connections an instance's runner ticked a login of.
-export const reachable = (inst: Instance) => {
-  const ticks = runnerOf(inst).logins;
+// The connections allowed by the current consent, or the narrower run lease.
+export const reachable = (inst: Instance, run?: number) => {
+  const ticks = lender(inst, run).logins;
   return connections().filter(c => ticks.some(t => t === loginOf(c).id || t.startsWith(`${loginOf(c).id}:`)));
 };
 
 // What a run, as the proxy knows it, has: its instance, its number, the links its connections' answers held, each the name of
 // the connection that gave it and the offer that allowed it, and what its calls have cost.
-export type CallRun = { inst: Instance; n: number; links: Map<string, { name: string; offer: string }>; cost: number; estimated?: boolean; stopped?: boolean };
+export type CallRun = { inst: Instance; n: number; runner: string; links: Map<string, { name: string; offer: string }>; cost: number; estimated?: boolean; stopped?: boolean };
 
 // Tests point a host at a stand-in.
 export const upstreams: Record<string, string> = {};
@@ -379,7 +380,17 @@ async function keyInfo(apiKey: string): Promise<KeyInfo | null> {
 
 export async function call(a: CallRun, host: string, req: IncomingMessage, res: ServerResponse) {
   const method = req.method!;
-  let name = host, path = req.url!;
+  let name = host, path = req.url!, offer = '';
+  const checkpoint = () => {
+    if (a.stopped) throw new HttpError(409, 'run stopped');
+    const lent = lender(a.inst, a.n);
+    if (offer) use(a.inst, a.n, offer);
+    return lent;
+  };
+  const current = () => {
+    try { checkpoint(); return true; }
+    catch (e) { if (!(e instanceof HttpError)) throw e; return false; }
+  };
   // A request that may write, to anything but the server's own services, is logged as it goes too, so a cut leaves it as sent,
   // and a stop waits for its answer.
   let sent: number | undefined, digest: { hash: Hash; size: number } | undefined;
@@ -391,8 +402,9 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     const url = URL.parse(req.url!, `https://${host}`);
     if (!url) throw new HttpError(403, `invalid request target: ${req.url}`);
     const link = a.links.get(url.href), s = link ? undefined : own(host);
+    if (link) { name = link.name; path = url.origin + url.pathname; }
     // The runner's own OpenRouter key, where they use it, in place of the server's, never falling back to it.
-    const { by: runner, logins: ticked } = runnerOf(a.inst), mine = s === openrouter ? logins(runner).find(l => l.id === 'openrouter' && l.enabled) : undefined;
+    const runner = a.runner, { logins: ticked } = lender(a.inst, a.n), mine = s === openrouter ? logins(runner).find(l => l.id === 'openrouter' && l.enabled) : undefined;
     // Of the connections that take the host, the one a tick names it under, as a Databricks workspace's warehouse does, or the first.
     const serving = link || s ? [] : connections().filter(c => types[c.type].hosts?.(c).some(h => covers(h, host)));
     const c = serving.find(c => ticked.some(t => t.startsWith(`${loginOf(c).id}:${host}/`))) ?? serving[0];
@@ -402,12 +414,9 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     // one such as http://HOST/… to it in the clear.
     if (url.origin !== `https://${host}`) throw new HttpError(403, `${host} takes requests for https://${host}, not ${url.origin}`);
     if (method === 'TRACE') throw new HttpError(403, 'a TRACE would echo the credential put in');
-    // A runner's own key only while they may lend to the instance, never the server's in its place.
-    if (mine) lender(a.inst, a.n);
     if (link) use(a.inst, a.n, link.offer);
     if (mine?.expired) throw Object.assign(new HttpError(409, `${runner}'s own OpenRouter key is out of credits: they save another, or stop using it, on the Logins page, and the instance carries on`), { login: 'openrouter' });
     if (!link && !c && !s) throw new HttpError(403, `${url.origin + url.pathname} is no link a connection's answer gave this run`);
-    const lent = c && lender(a.inst, a.n);
     // A POST's or PATCH's body, a JSON one, or any to the server's own services, is read whole, for the policy, up to 32 MB, the
     // most any of their hosts takes; a JSON body goes on as the JSON it read, as it rewrote
     // it, never as bytes another parser might read otherwise, such as a key twice. A deployment's service takes any body as bytes,
@@ -426,9 +435,10 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       raw = Buffer.concat(chunks);
     }
     const json = isJson && raw?.length ? JSON.parse(raw.toString()) : undefined, r = { method, url, headers: req.headers, json, body: raw, target: req.url! };
-    let out = json, auth: Record<string, string> = {}, as = '', ticks: string[] = [], redirect: string | undefined, offer = '', targetPath = url.pathname;
+    let out = json, auth: Record<string, string> = {}, as = '', ticks: string[] = [], redirect: string | undefined, targetPath = url.pathname;
+    const lent = checkpoint();
     if (c) {
-      const { by, logins } = lent!, checked = await types[c.type].check!(c, by, ticks = logins, r), login = loginOf(c) as EntraLogin;
+      const { by, logins } = lent, checked = await types[c.type].check!(c, by, ticks = logins, r, checkpoint), login = loginOf(c) as EntraLogin;
       out = checked.json ?? json;
       redirect = checked.redirect;
       targetPath = checked.pathname ?? url.pathname;
@@ -442,25 +452,31 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
         }
         if (!k) throw new HttpError(502, `${c.name}: set --key or RF_SERVICE_KEY_${c.name.toUpperCase().replaceAll('-', '_')}`);
         auth = { authorization: `Bearer ${k}`, 'x-rf-runner': as, 'x-rf-instance': a.inst.id, 'x-rf-run': String(a.n), 'x-rf-series': a.inst.seriesId, 'x-rf-workspace': a.inst.seriesId ? tree().series[a.inst.seriesId].workspace : '' };
-      } else auth = { authorization: `Bearer ${await token(as, login.id, login.scope)}` };
+      } else auth = { authorization: `Bearer ${await token(as, login.id, login.scope, checkpoint)}` };
     }
     let apiKey = '';
     if (s) {
       // The key goes in both headers SDKs send one in: Authorization, and x-api-key, as Anthropic's, Pi's among them, and Exa's do.
       out = s.check(r);
+      if (mine) {
+        const current = logins(runner).find(l => l.id === 'openrouter');
+        if (!current?.enabled || current.since !== mine.since) throw new HttpError(409, 'the selected personal model key changed before sending; retry under current consent');
+      }
       apiKey = mine ? secret(runner, 'openrouter') : s === openrouter ? serverKey() : process.env[s.key]!;
       auth = { authorization: `Bearer ${apiKey}`, 'x-api-key': apiKey };
     }
     const body = out === undefined ? raw : Buffer.from(JSON.stringify(out));
     if (a.stopped) throw new HttpError(409, 'run stopped');
-    if (c) use(a.inst, a.n, offer);
+    lender(a.inst, a.n);
+    if (offer) use(a.inst, a.n, offer);
+    if (link) use(a.inst, a.n, link.offer);
     if (!s && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
       if (c?.type === 'service') digest = { hash: createHash('sha256'), size: 0 };
       sent = a.inst.append('agent', 'send', { run: a.n, name, method, path }).seq;
       sending.add(req);
     } else if (s) sending.add(req);
     const doneWork = Promise.withResolvers<void>();
-    if (s) {
+    if (s || sent !== undefined) {
       let set = inFlight.get(a);
       if (!set) inFlight.set(a, set = new Set());
       set.add(doneWork.promise);
@@ -483,7 +499,13 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
         let parsed: unknown;
         try { parsed = JSON.parse(answer.text); }
         catch { console.error(`${name}: invalid JSON metadata on ${method} ${targetPath} (${answer.status}, ${answer.bytes} bytes)`); }
-        if (parsed !== undefined) for (const l of await types[c.type].links?.(parsed, targetPath, as, ticks) ?? []) a.links.set(new URL(l).href, { name, offer });
+        if (parsed !== undefined && current()) {
+          try {
+            const links = await types[c.type].links!(parsed, targetPath, as, ticks, checkpoint);
+            checkpoint();
+            for (const l of links) a.links.set(new URL(l).href, { name, offer });
+          } catch (e) { if (current()) throw e; }
+        }
       }
       const { cost, estimated } = !s ? { cost: 0, estimated: false }
         : await resolveCost(s, method, url.pathname, json, answer.status, answer.headers, answer.type, answer.events, answer.bytes, !!answer.cut, apiKey);
@@ -501,6 +523,8 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       log(failed ? 502 : answer.status, failed ? 0 : answer.bytes, s ? { ...(json?.model && { model: json.model }), cost, ...(estimated && { estimated: true }), ...(failed && { failed }) } : answer.incomplete ? { incomplete: true } : undefined);
       if (s === openrouter && !mine) keyOut(apiKey, answer.status);
       if (mine && answer.status === 402) {
+        // A revoked lease or a replacement key must not receive a late expiry.
+        if (!current() || logins(runner).find(l => l.id === mine.id)?.since !== mine.since) return;
         saveLogin(runner, { ...mine, expired: true });
         a.inst.append('server', 'expired', { run: a.n, login: 'openrouter', name: 'OpenRouter', runner });
       }
@@ -513,7 +537,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     // A refusal, or an expired login, is the server's answer; anything else, a failure to reach the host.
     const err = e as Error & { status?: number; login?: string }, status = e instanceof HttpError ? err.status! : 502;
     const msg = [process.env.OPENROUTER_API_KEY, process.env.OPENROUTER_FALLBACK_KEY, process.env.EXA_API_KEY].reduce((m, k) => k ? m.replaceAll(k, '[redacted]') : m, err.message);
-    if (err.login) a.inst.append('server', 'expired', { run: a.n, login: err.login, name: byLogin(err.login) ? loginOf(byLogin(err.login)!).name : err.login, runner: runnerOf(a.inst).by });
+    if (err.login && current()) a.inst.append('server', 'expired', { run: a.n, login: err.login, name: byLogin(err.login) ? loginOf(byLogin(err.login)!).name : err.login, runner: a.runner });
     log(status, 0, e instanceof HttpError ? { refused: msg } : { failed: msg });
     if (res.headersSent) return void res.destroy();
     res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8' }).end(`${msg}\n`);

@@ -7,7 +7,9 @@ import { appendFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmS
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
-import type { Instance } from '../src/store.ts';
+import { saveSeriesSettings, seriesSettings } from '../src/series.ts';
+import { saveTree, tree, writeJson } from '../src/system.ts';
+import { openStore, type Instance } from '../src/store.ts';
 
 // A stand-in for Microsoft's sign-in and Graph: a library whose ticked folder has a subfolder shared with Bob, who sees only what is
 // under it; a bigger library for a crawl cut by a restart; Dan's OneDrive; and a shared mailbox. Each person's access token is their refresh token,
@@ -99,11 +101,13 @@ before(async () => {
   await new Promise<void>(ok => graph.listen(0, '127.0.0.1', ok));
   base = `http://127.0.0.1:${(graph.address() as { port: number }).port}`;
   Object.assign(process.env, { RF_OIDC_ISSUER: base, RF_OIDC_CLIENT_ID: 'app', RF_PUBLIC_URL: 'http://127.0.0.1:1', RF_M365_SCOPES: 'Mail.Read Mail.Read.Shared Files.Read.All Sites.Read.All' });
-  const { initSystem, saveTree } = await import('../src/system.ts');
+  const { initSystem } = await import('../src/system.ts');
   const { upsertUser } = await import('../src/auth.ts');
   initSystem(tmp);
+  openStore(tmp);
   saveTree({ workspaces: { w: { name: 'W', owners: [ALICE], members: [BOB, CAROL, DAN] } }, series: { weekly: { name: 'Weekly', workspace: 'w' } } });
   for (const p of [ALICE, BOB, CAROL, DAN]) upsertUser(p, { role: 'user' });
+  writeJson('capabilities.json', { 'series-owner': [ALICE, BOB, CAROL, DAN] });
   (await import('../src/connections/graph.ts')).endpoints.graph = base;
   logins = await import('../src/logins.ts');
   ix = await import('../src/indexes.ts');
@@ -162,10 +166,16 @@ async function due(who: string, ...offerIds: string[]) {
 }
 
 // A run of `who`'s with these offers ticked, and what it reads at $RF_INDEX: it never waits.
-const instance = (who: string, ticked: string[]) => ({ seriesId: 'weekly', log: [{ seq: 1, at: '', by: who, op: 'create', logins: ticked }] }) as unknown as Instance;
+let serial = 0;
+function instance(who: string, ticked: string[]) {
+  const seriesId = `selected-${++serial}`, dir = join(tmp, 'series', seriesId);
+  saveTree({ ...tree(), series: { ...tree().series, [seriesId]: { name: seriesId, workspace: 'w' } } });
+  saveSeriesSettings(dir, { version: 1, owner: who, epoch: 1, since: '', consent: { by: who, at: '', workspace: 'w', logins: ticked, autonomous: false } });
+  return { seriesId, series: () => dir, log: [{ seq: 1, at: '', by: who, op: 'create' }, { seq: 2, at: '', by: 'server', op: 'run', run: 1, runner: who, initiator: who, authority: { version: 1, owner: who, epoch: 1, workspace: 'w', logins: ticked } }] } as unknown as Instance;
+}
 function run(who: string, ticked: string[]) {
   const to = join(tmp, '.rf', 'runs', `run-${Math.random()}`);
-  ix.prepare(instance(who, ticked), to);
+  ix.prepare(instance(who, ticked), to, 1);
   return (name: string) => ({ lines: lines(join(to, `${name}.ndjson.zst`)), meta: existsSync(join(to, `${name}.json`)) ? JSON.parse(readFileSync(join(to, `${name}.json`), 'utf8')) : null, file: join(to, `${name}.ndjson.zst`) });
 }
 
@@ -199,9 +209,9 @@ test('a crawl cut by a restart goes on at the page it was on, and meanwhile a ru
 
 test("each person's cache is their own delta feed, and a run gets a copy of it, once its first crawl has begun", async () => {
   offer(ALICE, [{ id: FOLDER, name: 'Folder LFM, Reports' }]);
-  assert.deepEqual(ix.sources(instance(ALICE, [FOLDER])), [], 'none before its first crawl');
+  assert.deepEqual(ix.sources(instance(ALICE, [FOLDER]), 1), [], 'none before its first crawl');
   await work(settled(ALICE, FOLDER));
-  assert.deepEqual(ix.sources(instance(ALICE, [FOLDER])).map(({ o }) => o.id), [FOLDER]);
+  assert.deepEqual(ix.sources(instance(ALICE, [FOLDER]), 1).map(({ o }) => o.id), [FOLDER]);
   const a = run(ALICE, [FOLDER])('Folder LFM, Reports');
   assert.deepEqual(now(a.lines), ['f1', 'f2', 'f3', 'pub', 'sub', 'top']);
   assert.deepEqual(a.lines.find(l => l.id === 'pub'), state['b!d'].get('pub'), "Graph's own JSON, verbatim");
@@ -273,7 +283,7 @@ test('the tidy-up writes a new feed without what later lines replaced or removed
   const old = readFileSync(f), copies: { racing: boolean; bytes: Buffer }[] = [];
   const copy = () => {
     const racing = existsSync(next), to = join(tmp, '.rf', 'runs', `race-${copies.length}`);
-    ix.prepare(instance(ALICE, [FOLDER]), to);
+    ix.prepare(instance(ALICE, [FOLDER]), to, 1);
     copies.push({ racing, bytes: readFileSync(join(to, 'Folder LFM, Reports.ndjson.zst')) });
   };
   let done = false;
@@ -460,16 +470,19 @@ test('removing an offer deletes its cache', async () => {
 test("a going run's copy of a source goes as soon as it's no longer lent: unticked, or its login signed out of", async () => {
   offer(ALICE, [{ id: FOLDER, name: 'Folder' }, { id: PUB, name: 'Shared' }]);
   await work(settled(ALICE, FOLDER, PUB));
-  const inst = { seriesId: 'weekly', log: [{ seq: 1, at: '', by: ALICE, op: 'create', logins: [FOLDER, PUB] }, { seq: 2, at: '', by: 'server', op: 'run', run: 1, runner: ALICE, consent: 1 }] } as unknown as Instance;
+  const inst = instance(ALICE, [FOLDER, PUB]);
   const to = join(tmp, '.rf', 'runs', 'going'), copies = () => readdirSync(to).sort();
-  ix.prepare(inst, to);
+  ix.prepare(inst, to, 1);
   const before = copies();
   assert.ok(before.includes('Folder.json') && before.includes('Shared.ndjson.zst'));
-  inst.log.push({ seq: 3, at: '', by: ALICE, op: 'logins', logins: [PUB] });
+  saveSeriesSettings(inst.series(), { ...seriesSettings(inst.series()), epoch: 2, consent: { by: ALICE, at: '', workspace: 'w', logins: [PUB], autonomous: false } });
   ix.prune(inst, 1, 'going');
+  assert.deepEqual(copies(), ['README.md'], 'ceiling removal retires the entire old run authority');
+  const next = instance(ALICE, [PUB]);
+  ix.prepare(next, to, 1);
   assert.deepEqual(copies(), before.filter(f => !f.startsWith('Folder.')));
   logins.signOut(ALICE, 'm365');
-  ix.prune(inst, 1, 'going');
+  ix.prune(next, 1, 'going');
   assert.deepEqual(copies(), ['README.md']);
 });
 
@@ -477,9 +490,9 @@ test('prepare shortens long offer names so index copies fit within 255-byte file
   const long = `Folder ${'二零二六年度华南区供应商对账单核对归档'.repeat(3)}, ${'集团财务共享服务中心文档库'.repeat(3)}`;
   offer(DAN, [{ id: BIG, name: `${long} A` }, { id: ONEDRIVE, name: `${long} B` }]);
   await work(settled(DAN, BIG, ONEDRIVE));
-  const inst = { seriesId: 'weekly', log: [{ seq: 1, at: '', by: DAN, op: 'create', logins: [BIG, ONEDRIVE] }] } as unknown as Instance;
+  const inst = instance(DAN, [BIG, ONEDRIVE]);
   const to = join(tmp, '.rf', 'runs', 'long');
-  assert.equal(ix.prepare(inst, to), true);
+  assert.equal(ix.prepare(inst, to, 1), true);
   const files = readdirSync(to).filter(f => f !== 'README.md');
   assert.equal(files.length, 4);
   assert.ok(files.every(f => Buffer.byteLength(f) <= 255));

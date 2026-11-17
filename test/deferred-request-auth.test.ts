@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-for (const action of ['signoff', 'close', 'abandon']) for (const change of ['token', 'session', 'access', 'archive', 'status', 'runner', 'run', 'later-commit', 'unchanged', 'initial-run', ...(action !== 'signoff' ? ['initial-runner'] : [])]) {
+for (const action of ['signoff', 'close', 'abandon']) for (const change of ['token', 'session', 'access', 'archive', 'status', 'owner', 'run', 'later-commit', 'unchanged', 'initial-run', ...(action !== 'signoff' ? ['initial-owner'] : [])]) {
   test(`${action} revalidates at the Git wait boundary: ${change}`, () => {
     const root = mkdtempSync(join(tmpdir(), 'rf-deferred-auth-'));
     try {
@@ -43,12 +43,16 @@ for (const action of ['signoff', 'close', 'abandon']) for (const change of ['tok
           },
         } });
         const { initSystem, saveTree, writeJson, tree } = await import('./src/system.ts');
-        const { createInstance } = await import('./src/store.ts');
+        const { createInstance, openStore, seriesDir } = await import('./src/store.ts');
+        const { ownSeries } = await import('./test/owner-fixture.ts');
+        const { saveSeriesSettings, seriesSettings } = await import('./src/series.ts');
         const auth = await import('./src/auth.ts'), { active } = await import('./src/waker.ts');
         initSystem(root);
+        openStore(root);
         saveTree({ workspaces: { w: { name: 'Work', owners: [admin], members: [actor] } }, series: { s: { name: 'Series', workspace: 'w' } } });
         writeJson('users.json', { [admin]: { role: 'admin' }, [actor]: { role: 'user' } });
         mkdirSync(root + '/series/s', { recursive: true });
+        ownSeries('s', actor);
         process.argv = [process.execPath, 'src/server.ts', root, String(port)];
         const ready = Promise.withResolvers();
         mock.method(console, 'log', line => { if (String(line).startsWith('rollforward on')) ready.resolve(); });
@@ -56,12 +60,12 @@ for (const action of ['signoff', 'close', 'abandon']) for (const change of ['tok
         await ready.promise;
         const cookie = (await entra.signIn(base, actor)).headers.getSetCookie().find(c => c.startsWith('rf_session=')).split(';')[0];
         const token = auth.newToken(actor, 'deferred', 1), tokenId = auth.myTokens(actor).at(-1).id;
-        const inst = createInstance('s', 'Deferred', actor, []);
+        const inst = createInstance('s', 'Deferred', actor);
         const ask = inst.append('agent', 'comment', { text: 'Approve the result?', thread: 'c2', ask: 'proposal', run: 1 });
         target = inst.dir;
         const hold = Promise.withResolvers(), prior = git.commit(inst.dir, git.AGENT, 'prior', hold.promise);
         if (change === 'initial-run') active.set('s', { inst, workspace: 'w', view: { series: {} } });
-        if (change === 'initial-runner') inst.append(admin, 'assign', { to: admin, from: actor, logins: [] });
+        if (change === 'initial-owner') ownSeries('s', admin);
         armed = true;
         const response = fetch(base + '/api/instances/' + inst.id + '/' + action, {
           method: 'POST', headers: change === 'session' ? { cookie } : { authorization: 'Bearer ' + token },
@@ -100,8 +104,9 @@ for (const action of ['signoff', 'close', 'abandon']) for (const change of ['tok
           inst.save();
           expected = 409;
         }
-        if (change === 'runner') {
-          inst.append(admin, 'assign', { to: admin, from: actor, logins: [] });
+        if (change === 'owner') {
+          const settings = seriesSettings(seriesDir('s'));
+          saveSeriesSettings(seriesDir('s'), { version: 1, owner: admin, epoch: settings.epoch + 1, since: new Date().toISOString() }, admin);
           expected = action === 'signoff' ? 200 : 403;
         }
         if (change === 'run') {

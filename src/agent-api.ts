@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { HttpError, type Instance } from './store.ts';
 import { Browsers, serveBrowsers, upgradeBrowser } from './browsers.ts';
+import { lender } from './logins.ts';
 
 // What only a run has, behind `rf`: its runner's browsers. (For its own instance, its screen,
 // threads and wakes, `rf` calls the people's API; see server.ts.) Shared by the server, for runs, and by `cli.ts try`, which lets
@@ -9,7 +10,7 @@ import { Browsers, serveBrowsers, upgradeBrowser } from './browsers.ts';
 //   POST /agent/expired {args}     rf expired NAME: the website signed the run out, so its runner signs in to it again
 // A run's browsers are at $RF_BROWSERS/SITE, on its socket (see browsers.ts).
 // A run as the agent API sees it: its instance, its number, and its browsers.
-export type AgentRun = { inst: Instance; n: number; browsers?: Browsers };
+export type AgentRun = { inst: Instance; n: number; browsers?: Browsers; stopped?: boolean };
 
 export type Args = Record<string, string[]>;
 
@@ -51,12 +52,14 @@ export async function serveAgent(inst: Instance): Promise<{ url: string; token: 
   await new Promise<void>(ok => server.listen(0, '127.0.0.1', ok));
   return {
     url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, token, browsers,
-    async close() { await a.browsers?.end(); server.close(); server.closeAllConnections(); },
+    async close() { a.stopped = true; await a.browsers?.end(); server.close(); server.closeAllConnections(); },
   };
 }
 
 export async function agentCall(a: AgentRun, path: string, method: string, body: () => Promise<Buffer>): Promise<{ status: number; data: unknown } | null> {
-  const json = async () => { const text = (await body()).toString(); try { return JSON.parse(text || '{}'); } catch { throw new HttpError(400, 'the body is JSON'); } };
+  if (a.stopped) throw new HttpError(409, 'run stopped');
+  lender(a.inst, a.n);
+  const json = async () => { const text = (await body()).toString(); if (a.stopped) throw new HttpError(409, 'run stopped'); lender(a.inst, a.n); try { return JSON.parse(text || '{}'); } catch { throw new HttpError(400, 'the body is JSON'); } };
   const words = async () => ((await json()).args ?? []).map(String) as string[];
   if (path === '/agent/expired' && method === 'POST') {
     const [site, ...more] = await words();

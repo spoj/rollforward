@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { id as imageId } from '../src/agent.ts';
 import { idp } from './idp.ts';
+import { writeFixtureTree } from './owner-fixture.ts';
 
 // scripts/update.ts end-to-end against a real git remote, checkout and server: pre-staging before draining, waiting for going runs
 // up to RF_DRAIN_MIN, Urgent: tags skipping the drain, older servers without /drained or SIGUSR2, older updaters without drain, and
@@ -117,6 +118,9 @@ function spawnUpdater(dir = work, env: NodeJS.ProcessEnv = {}) {
 }
 
 before(async () => {
+  mkdirSync(join(root, '.rf'), { recursive: true });
+  writeFixtureTree(root, { workspaces: {}, series: {} });
+  writeFileSync(join(root, '.rf', 'capabilities.json'), JSON.stringify({ 'series-owner': [ADMIN] }));
   mkdirSync(home, { recursive: true });
   entra = await idp();
   const probe = createServer();
@@ -162,6 +166,7 @@ esac
 `);
   chmodSync(ctl, 0o755);
 
+  // Both synthetic releases use the current authority format; only drain support differs, not the manual migration barrier.
   // Build remote with v0.5.0: an older server and updater that know neither /drained nor SIGUSR2.
   git(tmp, 'init', '--bare', '-q', remote);
   git(tmp, 'clone', '-q', remote, stage);
@@ -200,6 +205,7 @@ esac
 
   await startServer(work);
   cookie = (await entra.signIn(base, ADMIN)).headers.getSetCookie().find(c => c.startsWith('rf_session='))!.split(';')[0];
+  assert.equal((await call('PUT', '/capabilities', { cap: 'series-owner', people: [ADMIN] })).status, 200);
 });
 
 after(async () => {
@@ -213,8 +219,8 @@ async function makeSeries(ws: string, name: string, hold = false) {
   let reached = false, go!: () => void;
   const gate = new Promise<void>(ok => (go = ok));
   scripts.push({ bash: hold ? [async () => { reached = true; await gate; return 'echo ok'; }] : [], report: 'Done.' });
-  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name })).json();
-  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11', logins: [] })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name, logins: [], autonomous: true })).json();
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11' })).json();
   if (hold) await until(`${name} mid-turn`, () => reached);
   else await doneRuns(id, 1);
   return { id: id as string, go };
@@ -524,6 +530,19 @@ for (const mode of ['slow', 'hanging', 'rejected', 'instant', 'healthy']) test(`
     assert.deepEqual(report.commands.filter((c: string[]) => c[0] === 'git' && c[1] === 'checkout').map((c: string[]) => c.at(-1)), ['v0.5.1', 'v0.5.0']);
   }
   if (mode === 'hanging') assert.equal(report.aborted, 1);
+});
+
+for (const tag of ['v0.6.0', 'v0.7.0', 'v1.0.0']) test(`an incompatible ${tag} without Manual metadata never crosses the automatic rollback reader boundary`, async () => {
+  const current = git(work, 'describe', '--tags', '--exact-match', 'HEAD'), pid = proc!.pid, probes = drainedProbes;
+  publish(tag);
+  try {
+    const result = await spawnUpdater(work).done;
+    assert.equal(result.code, 0, result.out);
+    assert.match(result.out, /needs a person first.*reader boundary/);
+    assert.equal(git(work, 'describe', '--tags', '--exact-match', 'HEAD'), current);
+    assert.equal(proc!.pid, pid, 'neither stop nor target/rollback start ran');
+    assert.equal(drainedProbes, probes);
+  } finally { releases.pop(); }
 });
 
 test('fractional millisecond drain budgets still use valid HTTP timeout delays', async () => {

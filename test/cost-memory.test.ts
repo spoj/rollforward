@@ -7,8 +7,22 @@ for (const mode of ['unterminated line', 'many events', 'JSON response', 'key me
   const script = `
     import { createServer, request } from 'node:http';
     import { once } from 'node:events';
+    import { mkdtempSync, rmSync } from 'node:fs';
+    import { tmpdir } from 'node:os';
+    import { join } from 'node:path';
+    import { initSystem, saveTree, writeJson } from ${JSON.stringify(new URL('../src/system.ts', import.meta.url).href)};
+    import { saveSeriesSettings } from ${JSON.stringify(new URL('../src/series.ts', import.meta.url).href)};
+    import { authority } from ${JSON.stringify(new URL('../src/logins.ts', import.meta.url).href)};
+    import { createInstance, openStore } from ${JSON.stringify(new URL('../src/store.ts', import.meta.url).href)};
     import { call, keyStatus, serverCall, upstreams } from ${JSON.stringify(new URL('../src/connections.ts', import.meta.url).href)};
     process.env.OPENROUTER_API_KEY = 'test-key';
+    const root = mkdtempSync(join(tmpdir(), 'rf-cost-memory-'));
+    initSystem(root);
+    openStore(root);
+    saveTree({ workspaces: { w: { name: 'W', owners: ['a@test'], members: [] } }, series: { s: { name: 'S', workspace: 'w' } } });
+    writeJson('users.json', { 'a@test': { role: 'user' } });
+    writeJson('capabilities.json', { 'series-owner': ['a@test'] });
+    saveSeriesSettings(join(root, 'series', 's'), { version: 1, owner: 'a@test', epoch: 1, since: '', consent: { by: 'a@test', at: '', workspace: 'w', logins: [], autonomous: false } });
     const mode = ${JSON.stringify(mode)};
     const provider = createServer(async (req, res) => {
       req.resume();
@@ -30,8 +44,10 @@ for (const mode of ['unterminated line', 'many events', 'JSON response', 'key me
     } else {
     let cost, finished;
     const done = new Promise(resolve => finished = resolve);
-    const inst = { id: 'memory', log: [{ seq: 1, op: 'create', by: 'a@test' }], append: (_by, _op, data) => { cost = data.cost; } };
-    const proxy = createServer(async (req, res) => { await call({ inst, n: 1, links: new Map(), cost: 0 }, 'openrouter.ai', req, res); finished(); });
+    const inst = createInstance('s', 'memory', 'a@test');
+    inst.append('server', 'run', { run: 1, runner: 'a@test', initiator: 'a@test', authority: authority(inst) });
+    inst.append = (_by, _op, data) => { cost = data.cost; return { seq: 3 }; };
+    const proxy = createServer(async (req, res) => { await call({ inst, runner: 'a@test', n: 1, links: new Map(), cost: 0 }, 'openrouter.ai', req, res); finished(); });
     proxy.listen(0, '127.0.0.1');
     await once(proxy, 'listening');
     await new Promise((resolve, reject) => {
@@ -45,6 +61,7 @@ for (const mode of ['unterminated line', 'many events', 'JSON response', 'key me
     }
     if (process.resourceUsage().maxRSS > 220 * 1024) throw new Error('accounting retained response buffers: ' + process.resourceUsage().maxRSS);
     provider.close();
+    rmSync(root, { recursive: true, force: true });
   `;
   const { stderr } = await promisify(execFile)(process.execPath, ['--max-old-space-size=64', '--input-type=module', '-e', script], { timeout: 25_000 });
   assert.equal(stderr, '');

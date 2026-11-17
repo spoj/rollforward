@@ -1,4 +1,5 @@
 import { after, before, test } from 'node:test';
+import { readFixtureTree, writeFixtureTree } from './owner-fixture.ts';
 import assert from 'node:assert/strict';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { createServer as createHttpServer } from 'node:http';
@@ -98,12 +99,18 @@ before(async () => {
   // - run 1: exact shared-key OpenRouter ($0.40) + Exa ($0.05) = $0.45 today
   // - run 2: partly-estimated shared-key OpenRouter ($0.25, estimated: true) today
   // - run 3: runner's own OpenRouter key ($0.80, key: 'own', estimated: false) today
-  const treePath = join(root, '.rf', 'tree.json');
-  const tree = JSON.parse(readFileSync(treePath, 'utf8'));
+
+  const tree = readFixtureTree(root);
   tree.workspaces.ops001 = { name: 'Ops', owners: [adminEmail], members: [bobEmail] };
   tree.series.ser001 = { name: 'Daily', workspace: 'ops001' };
-  writeFileSync(treePath, JSON.stringify(tree, null, 1));
-  mkdirSync(join(root, 'series', 'ser001'), { recursive: true });
+  writeFixtureTree(root, tree);
+  for (const id of Object.keys(tree.series)) {
+    mkdirSync(join(root, 'series', id), { recursive: true });
+    writeFileSync(join(root, 'series', id, 'series.json'), JSON.stringify({ version: 1, epoch: 0, since: '' }));
+  }
+
+  writeFileSync(join(root, '.rf', 'capabilities.json'), JSON.stringify({ 'series-owner': [adminEmail, bobEmail] }));
+  writeFileSync(join(root, 'series', 'ser001', 'series.json'), JSON.stringify({ version: 1, owner: bobEmail, epoch: 2, since: today, consent: { by: bobEmail, at: today, workspace: 'ops001', logins: [], autonomous: false } }));
 
   const instId = 'c05750000001', instDir = join(root, 'instances', instId);
   mkdirSync(join(instDir, 'upload'), { recursive: true });
@@ -116,15 +123,15 @@ before(async () => {
     { seq: 1, at: '2026-08-20T10:00:00.000Z', by: adminEmail, op: 'create', logins: [] },
     { seq: 2, at: '2026-08-20T10:01:00.000Z', by: 'server', op: 'run', run: 0, runner: adminEmail, consent: 1, upto: 1, key: 'shared' },
     { seq: 3, at: '2026-08-20T10:03:00.000Z', by: 'server', op: 'done', run: 0, aborted: false, seen: 1, cost: 0.15 }, // old entry: no `estimated`
-    { seq: 4, at: t1, by: 'server', op: 'run', run: 1, runner: adminEmail, consent: 1, upto: 1, key: 'shared' },
+    { seq: 4, at: t1, by: 'server', op: 'run', run: 1, runner: adminEmail, initiator: adminEmail, authority: { version: 1, owner: adminEmail, epoch: 1, workspace: 'ops001', logins: [] }, upto: 1, key: 'shared' },
     { seq: 5, at: t1, by: 'agent', op: 'call', run: 1, name: 'openrouter', method: 'POST', path: '/api/v1/messages', status: 200, bytes: 100, model: 'anthropic/claude-opus-5.5', cost: 0.40 },
     { seq: 6, at: t1, by: 'agent', op: 'call', run: 1, name: 'exa', method: 'POST', path: '/search', status: 200, bytes: 80, cost: 0.05 },
     { seq: 7, at: t2, by: 'server', op: 'done', run: 1, aborted: false, seen: 1, cost: 0.45, estimated: false },
-    { seq: 8, at: t3, by: adminEmail, op: 'assign', from: adminEmail, to: bobEmail },
-    { seq: 9, at: t3, by: 'server', op: 'run', run: 2, runner: bobEmail, consent: 8, upto: 8, key: 'shared' },
+    { seq: 8, at: t3, by: 'server', op: 'authority', owner: bobEmail, epoch: 2 },
+    { seq: 9, at: t3, by: 'server', op: 'run', run: 2, runner: bobEmail, initiator: bobEmail, authority: { version: 1, owner: bobEmail, epoch: 2, workspace: 'ops001', logins: [] }, upto: 8, key: 'shared' },
     { seq: 10, at: t3, by: 'agent', op: 'call', run: 2, name: 'openrouter', method: 'POST', path: '/api/v1/messages', status: 200, bytes: 90, model: 'anthropic/claude-opus-5.5', cost: 0.25, estimated: true },
     { seq: 11, at: t4, by: 'server', op: 'done', run: 2, aborted: false, seen: 8, cost: 0.25, estimated: true },
-    { seq: 12, at: t5, by: 'server', op: 'run', run: 3, runner: bobEmail, consent: 8, upto: 8, key: 'own' },
+    { seq: 12, at: t5, by: 'server', op: 'run', run: 3, runner: bobEmail, initiator: bobEmail, authority: { version: 1, owner: bobEmail, epoch: 2, workspace: 'ops001', logins: [] }, upto: 8, key: 'own' },
     { seq: 13, at: t6, by: 'server', op: 'done', run: 3, aborted: false, seen: 8, cost: 0.80, estimated: false },
   ];
   writeFileSync(join(instDir, 'log.jsonl'), logEntries.map(e => JSON.stringify(e) + '\n').join(''));

@@ -18,6 +18,7 @@ for (const [target, timing] of [['same', 'retiring'], ['same', 'retired'], ['sib
       import * as entra from './src/entra.ts';
       import * as git from './src/git.ts';
       import { initSystem, saveTree, writeJson } from './src/system.ts';
+      import { ownSeries } from './test/owner-fixture.ts';
       import { createInstance, openStore } from './src/store.ts';
       const root = ${JSON.stringify(root)}, target = ${JSON.stringify(target)}, timing = ${JSON.stringify(timing)}, owner = 'owner@synthetic.test';
       const confirmations = [Promise.withResolvers(), Promise.withResolvers()], confirming = confirmations.map(() => Promise.withResolvers());
@@ -54,8 +55,9 @@ for (const [target, timing] of [['same', 'retiring'], ['same', 'retired'], ['sib
       initSystem(root); openStore(root);
       saveTree({ workspaces: { w: { name: 'Work', owners: [owner], members: [] } }, series: { s: { name: 'Series', workspace: 'w' } } });
       writeJson('users.json', { [owner]: { role: 'user' } });
+      ownSeries('s', owner);
       const { kick, active, byToken, interruptRun, stop } = await import('./src/waker.ts');
-      const first = createInstance('s', 'First', owner, []), second = target === 'same' ? first : createInstance('s', 'Second', owner, []);
+      const first = createInstance('s', 'First', owner), second = target === 'same' ? first : createInstance('s', 'Second', owner);
       const original = first.append(owner, 'comment', { text: 'Already processed instruction', thread: 'old' });
       if (second !== first) second.append(owner, 'comment', { text: 'Sibling instruction', thread: 'sibling' });
       let ending;
@@ -99,7 +101,7 @@ for (const [target, timing] of [['same', 'retiring'], ['same', 'retired'], ['sib
         assert.equal(stops, 1);
         const replacement = active.get('s'), run = second.log.findLast(e => e.op === 'run');
         assert.equal(replacement.inst, second);
-        assert.equal(run.consent, second.log.findLast(e => e.op === 'create').seq);
+        assert.equal(run.provenance.cause, fresh.seq, 'the actual new owner act, not the stale captured act, causes the run');
         assert.equal(run.upto, fresh.seq);
         assert.equal(replacement.delivered, fresh.seq);
         if (target === 'same') {
