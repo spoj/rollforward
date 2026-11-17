@@ -25,6 +25,7 @@ import { ask, decide, forgetGrants, forgetWorkspace, lapse, pruneGrants, revoke,
 import { offer } from './connections/graph.ts';
 import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, prune, startIndexing, track } from './indexes.ts';
+import { find, killTree, sample, startOf, type Monitor, type Sandbox } from './monitor.ts';
 import { addNote, notes, saveSeriesSettings, seriesSettings, type SeriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
 import { active, archived, byToken, cancelWake, cancelWakes, closed, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, queued, remove, retireSeries, resolveFor, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesOf, wakeWith, weekly, reads, CUT, type Active, type Request } from './waker.ts';
@@ -784,6 +785,34 @@ async function interrupt(inst: Instance, a: Active | undefined, me: Me) {
   a.stopped = true;
   inst.append(me.email, 'interrupt');
   await interruptRun(a);
+}
+
+// The system monitor (monitor.ts), admins' alone, as rf top and rf kill show it: the runs going, by their sandboxes, sampled once
+// for all who ask at the same time; and a process of a run killed, logged in its instance first, which its agent hears of once it
+// has ended. A run is stopped as Interrupt stops it.
+const sandboxes = (): Sandbox[] => {
+  const t = tree();
+  return [...active.values()].flatMap(a => (a.run?.pid ? [{
+    pid: a.run.pid, instance: a.inst.id, path: `${named(t, a.inst.seriesId)}/${a.inst.label}`, run: a.n, runner: a.runner,
+    since: a.inst.log.findLast(e => e.op === 'run' && e.run === a.n)?.at ?? '', token: a.token,
+  }] : []));
+};
+let sampling: Promise<Monitor> | undefined;
+async function monitor(me: Me, req: IncomingMessage, res: ServerResponse, url: URL) {
+  if (process.platform !== 'linux') throw new HttpError(501, 'the system monitor reads /proc, which only Linux has');
+  const at = url.pathname.slice('/monitor'.length);
+  if (!at && req.method === 'GET') return send(res, 200, await (sampling ??= sample(sandboxes()).finally(() => { sampling = undefined; })));
+  if (at === '/kill' && req.method === 'POST') {
+    const { pid, start: given } = await json(req);
+    if (!Number.isInteger(pid) || (given !== undefined && !Number.isInteger(given))) throw new HttpError(400, 'pid, and start if given: whole numbers, as rf top shows a process');
+    // Without its start, the process the PID names now: it must still be a run's, and not the sandbox's own.
+    const start = given ?? startOf(pid), { box, script } = find(pid, start, sandboxes()), inst = instance(box.instance);
+    inst.append(me.email, 'kill', { run: box.run, pid, script });
+    const killed = await killTree(pid, start);
+    if (active.get(inst.seriesId)?.inst === inst) kick(inst);
+    return send(res, 200, { ...killed, path: box.path, run: box.run, script });
+  }
+  throw new HttpError(404, 'not found');
 }
 
 async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: URL) {
@@ -1591,6 +1620,11 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     else if (url.pathname.startsWith('/files/')) await file(me, res, url, false);
     else if (url.pathname.startsWith('/preview/')) await file(me, res, url, true);
     else if (url.pathname.startsWith('/api/')) await api(me, req, res, url);
+    // The system monitor is admins' alone: to anyone else it isn't there.
+    else if (url.pathname === '/monitor' || url.pathname.startsWith('/monitor/')) {
+      if (me.role !== 'admin') throw new HttpError(404, 'not found');
+      await monitor(me, req, res, url);
+    }
     else if (url.pathname === '/agents' && req.method === 'GET') send(res, 200, { text: text(agentsFile()) });
     else if (url.pathname === '/agents' && req.method === 'PUT') {
       if (me.role !== 'admin') throw new HttpError(403, "the company's AGENTS.md is the admins'");

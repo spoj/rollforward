@@ -1594,6 +1594,52 @@ test('the first series note added between runs is mounted at ../.notes in the ne
   assert.equal(reader.saw[0].trim(), 'FX=7.82');
 });
 
+test("an admin's system monitor shows a run's processes and kills one the agent left running, by its PID alone; to anyone else it isn't there", async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Monitor' })).json();
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec', logins: [], autonomous: false })).json();
+  // The agent leaves a sleep running in the background, which pid 1 of its sandbox adopts as the shell exits, and waits on another.
+  // The kill's entry waits for that one to end, and the interrupt clears it; should it reach the agent all the same, it takes `heard`.
+  const busy: Script = { bash: ['sleep 300 >/dev/null 2>&1 & echo started', 'sleep 301'], report: 'unreached', saw: [] }, heard: Script = { bash: [], report: 'Heard.', saw: [] };
+  scripts.push(busy, heard);
+  type Shown = { pid: number; start: number; script: string; command: string; own: boolean; instance: string };
+  type Sample = { runs: { instance: string; run: number; procs: number }[]; cpu: Shown[]; memory: Shown[] };
+  const monitor = async () => (await (await call('GET', '/monitor')).json()) as Sample;
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11' })).json();
+  try {
+    let m: Sample | undefined, shown: Shown[] = [];
+    for (let i = 0; !['sleep 300', 'sleep 301'].every(c => shown.some(p => p.command === c)); i++) {
+      if (i === 100) assert.fail(`the sleeps never showed: ${JSON.stringify({ runs: m?.runs, shown })}`);
+      m = await monitor();
+      shown = [...new Map([...m.cpu, ...m.memory].filter(p => p.instance === id).map(p => [p.pid, p])).values()];
+    }
+    // Pi names itself pi, or pi-rpc, on its command line.
+    const left = shown.find(p => p.command === 'sleep 300')!, own = shown.filter(p => p.own), kind = (p: Shown) => p.command.split(' ')[0];
+    assert.deepEqual(m!.runs.filter(r => r.instance === id).map(r => r.run), [1]);
+    assert.equal(left.own, false, "what the agent left running is the run's, as any of its processes");
+    assert.match(left.script, /\/sleep$/, 'named by the program it runs');
+    const pis = own.filter(p => !['bwrap', 'socat'].includes(kind(p)));
+    assert.deepEqual([own.filter(p => kind(p) === 'bwrap').length, pis.map(p => /^pi(-rpc)?$/.test(kind(p))), own.some(p => kind(p) === 'socat')], [2, [true], true],
+      "the sandbox's bwraps, Pi and the socket's bridge are the run's own");
+    for (const [method, path] of [['GET', '/monitor'], ['POST', '/monitor/kill']]) assert.equal((await call(method, path, method === 'GET' ? undefined : {}, bob)).status, 404, `${method} ${path} isn't there for bob`);
+    assert.equal((await call('POST', '/monitor/kill', { pid: pis[0].pid })).status, 409, "the run's own takes no kill");
+    assert.equal((await call('POST', '/monitor/kill', { pid: left.pid, start: left.start + 1 })).status, 409, 'nor does a PID another process took since');
+    const killed = await call('POST', '/monitor/kill', { pid: left.pid });
+    assert.deepEqual([killed.status, await killed.json()], [200, { pids: [left.pid], signal: 'SIGTERM', path: 'Monitor/Rec/2026-11', run: 1, script: left.script }]);
+    let { log } = await (await call('GET', `/api/instances/${id}`)).json();
+    assert.deepEqual(log.filter((e: { op: string }) => e.op === 'kill').map((e: Record<string, unknown>) => [e.by, e.run, e.pid, e.script]), [[ADMIN, 1, left.pid, left.script]]);
+    assert.equal((await call('POST', `/api/instances/${id}/interrupt`)).status, 200, 'a run is stopped as Interrupt stops it');
+    for (let i = 0; !log.some((e: { op: string }) => e.op === 'done'); i++) {
+      if (i === 100) assert.fail('the run never ended');
+      await new Promise(r => setTimeout(r, 100));
+      ({ log } = await (await call('GET', `/api/instances/${id}`)).json());
+    }
+    const after = await monitor();
+    assert.ok(!after.runs.some(r => r.instance === id) && ![...after.cpu, ...after.memory].some(p => p.instance === id), 'nothing of the run goes');
+  } finally {
+    for (const s of [busy, heard]) if (scripts.includes(s)) scripts.splice(scripts.indexOf(s), 1);
+  }
+});
+
 test("every entry names its source: a person, a run with immutable owner authority and initiator, an authority boundary, or its cause", () => {
   const logs = new Map(readdirSync(join(root, 'instances')).map(id => [id, readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l) as Record<string, any>)]));
   for (const [id, log] of logs) for (const e of log) {

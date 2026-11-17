@@ -1090,7 +1090,11 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   assert.deepEqual(JSON.parse(await rf('runs', `larkfield/${series}/2026-08-23`, '--since', '2026-08-24', '--json')).map((r: { at: string }) => r.at), ['2026-08-23T23:01:00.000Z']);
   if (tz === undefined) delete process.env.TZ;
   else process.env.TZ = tz;
-  assert.match(await rf('runs', '--failed'), /  run \d+  failed \(other\)  \d+[sm]  \$0\.00  (upload|comment|create|wake) by \S+  /, 'without a model key, the runs the tests start fail');
+  const failed = await rf('runs', '--failed');
+  assert.match(failed, /^START +PATH +RUN +OUTCOME +TIME +COST +STARTED BY +ERROR\n/, 'a table, under its header');
+  assert.match(failed, /^[\d-]+ [\d:]+  larkfield\/.+? +\d+ +failed \(other\) +\d+[sm] +\$0\.00 +(upload|comment|create|wake) by \S+ +\S/m, 'without a model key, the runs the tests start fail');
+  const rows = failed.trimEnd().split('\n'), col = (l: string) => l.indexOf(' failed ');
+  assert.ok(rows.slice(1).every(l => col(l) === col(rows[1])), 'its columns line up');
   const scratch = `larkfield/${series}/scratch`;
   assert.deepEqual(JSON.parse(await rf('runs', scratch, '--json')).map((r: { outcome: string; failure: string }) => [r.outcome, r.failure]), [['cut', null], ['failed', 'credits']]);
   assert.deepEqual(JSON.parse(await rf('costs', scratch, '--by', 'outcome', '--json')), [{ outcome: 'cut', runs: 0, cost: 0.05, per_run: null }, { outcome: 'failed, credits', runs: 1, cost: 0.01, per_run: 0.01 }]);
@@ -1104,7 +1108,16 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   assert.match(await rf('costs', '--by', 'person'), /^ +\$\d+\.\d\d +\d+ runs +\$\d+\.\d\d a run  alex$/m);
   assert.deepEqual(Object.keys(JSON.parse(await rf('status', '--json'))), ['running', 'queued', 'ownership', 'asks', 'expired', 'requests', 'proposals', 'failed', 'indexes']);
   assert.equal(await rf('indexes'), 'No indexes.\n');
-  assert.match(await rf('status'), /^Last run failed \(\d+\)\n  larkfield\//m);
+  assert.match(await rf('status'), /^Last run failed \(\d+\)\n  PATH +RUN +AT +ERROR\n  larkfield\//m);
+  // -d SECONDS shows it again, from the top of the screen, until it's stopped.
+  await assert.rejects(rf('status', '-d', '0'), fails(1, /^rf: -d: the seconds between refreshes, 1 or more\n$/));
+  const watching = spawn(process.execPath, [join(app, 'src', 'rf-people.ts'), 'runs', '--failed', '-d', '1'], { env: { ...process.env, HOME: home } });
+  let shown = '';
+  watching.stdout.on('data', d => (shown += d));
+  for (let i = 0; (shown.match(/\x1b\[H\x1b\[2J/g) ?? []).length < 2 && i < 100; i++) await new Promise(r => setTimeout(r, 100));
+  watching.kill();
+  assert.match(shown, /^\x1b\[H\x1b\[2J[\d-]+ [\d:]+  every 1s, Ctrl\+C to stop\n\nSTART +PATH /);
+  assert.equal(shown.match(/\x1b\[H\x1b\[2J/g)?.length, 2, 'shown again a second later');
 
   await assert.rejects(rf('user', 'add', 'carol@demo.test', 'publisher'), /a role is one of admin, user/);
   await rf('user', 'add', 'carol@demo.test', 'admin');

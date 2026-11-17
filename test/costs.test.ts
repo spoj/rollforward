@@ -309,9 +309,9 @@ test('daily totals, live website-check attribution, cached /api/v1/key view, una
   assert.match(adminDaily, /server\s+\$0\.06\s+website-check: vendor-erp \(bob@demo\.test\)\s+3 calls/);
 
   const opsRuns = await rfAs(adminHome, 'runs', `Ops/Daily/${today}`);
-  assert.match(opsRuns, /run 0\s+done\s+\d+[sm]\s+\$0\.15\s/); // old done entry
-  assert.match(opsRuns, /run 1\s+done\s+\d+[sm]\s+\$0\.45\s/); // new exact done entry
-  assert.match(opsRuns, /run 2\s+done\s+\d+[sm]\s+~\$0\.25 \(est\.\)\s/); // new estimated done entry
+  assert.match(opsRuns, /\s0\s+done\s+\d+[sm]\s+\$0\.15(\s|$)/m); // old done entry
+  assert.match(opsRuns, /\s1\s+done\s+\d+[sm]\s+\$0\.45(\s|$)/m); // new exact done entry
+  assert.match(opsRuns, /\s2\s+done\s+\d+[sm]\s+~\$0\.25 \(est\.\)(\s|$)/m); // new estimated done entry
 
   const bobCliCosts = await rfAs(bobHome, 'costs', '--since', today);
   assert.doesNotMatch(bobCliCosts, /OpenRouter key|website-check|larkfield/);

@@ -110,12 +110,14 @@ rf skills
 rf skill pull ID [DIR] [--version N]   the newest version, or N, into DIR, ./ID by default, new or empty, as push reads it
 rf skill versions ID
 rf connections
-rf status [--long MIN] [--json]   what goes on and what's stuck: low OpenRouter credit (for admins), runs going, flagged past
-                                  MIN minutes (30), and queued, with why; what waits on whom since when; open instances whose last run failed
+rf status [--long MIN] [--all] [-d SECONDS] [--json]   what goes on and what's stuck: low OpenRouter credit (for admins), runs going, flagged
+                                  past MIN minutes (30), and queued, with why; what waits on whom since when, the oldest three
+                                  each unless --all; open instances whose last run failed; -d shows it
+                                  again every SECONDS, as top does, until Ctrl+C
 rf indexes [--json]               each index of a source you index, all for admins: its kind, items and size, and per person
                                   its phase, crawl or follow, pages read, when last caught up, and its error and next try
-rf runs [PATH] [--since DATE] [--failed] [--running] [--long MIN] [--json]
-                                  a line per run: start, path, run, outcome, time, cost, what started it, and any error;
+rf runs [PATH] [--since DATE] [--failed] [--running] [--long MIN] [-d SECONDS] [--json]
+                                  a table, a row per run: start, path, run, outcome, time, cost, what started it, and any error;
                                   the outcome is done, interrupted by a person, cut, by a restart or a change that broke its
                                   lease, running, or failed, for credits, policy, time limit or other
 rf costs [PATH] [--since DATE] [--by workspace|series|person|day|outcome] [--daily] [--json]   totals, runs and cost per run,
@@ -136,6 +138,11 @@ rf skill rollback ID N            pushes version N again, as the newest
 Admins:
 rf people [--set FILE|-] [-n] [--force]   everyone as lines of ROLE EMAIL, each with a comment; --set sets the roles of the people
                                   listed and adds new ones, removing no one
+rf top [-d SECONDS] [--json]      the host's CPU, load and memory; each run going, with its processes and what they use; and the
+                                  ten processes of runs busiest by CPU and by memory, each by its PID, script and command line
+rf kill PID [--start N]           ends a process of a run going, as rf top lists it, and all it started, with SIGTERM, then SIGKILL
+                                  after 5 seconds, logged in its instance, whose agent hears of it; N, its start in rf top --json,
+                                  makes sure it's that process still; never the sandbox's own: rf interrupt PATH stops its run
 rf user add EMAIL [admin] | role EMAIL admin|user [--force] | disable EMAIL | enable EMAIL | signout EMAIL | remove EMAIL
 rf egress [add|remove HOST]       the hosts runs may reach beyond package registries, GitHub and documentation sites, such as
                                   api.example.com or *.example.org; admins add and remove them
@@ -226,10 +233,14 @@ Usual work
 Watching over it, for admins and power users; each sees what the caller sees
 - What's stuck: rf status lists low OpenRouter credit (for admins), runs going, flagging those past --long MIN (30); queued runs, since when and why: their series is
   running, an update's drain, the RF_MAX_RUNS cap, or memory; what waits on whom since when: asks, notes for series owners, expired logins and the instances
-  they hold, and requests to start; open instances whose last run failed; and indexes crawling or failing.
+  they hold, and requests to start, grouped by whom they wait on, the oldest three each unless --all; open instances whose last run
+  failed; and indexes crawling or failing.
+- What runs use (admins): rf top shows the host's CPU, load and memory, each run going with its processes, CPU and memory, and the
+  ten processes of runs busiest by CPU and by memory. rf kill PID ends one, with all it started; rf interrupt PATH stops a run.
+  rf top, rf status and rf runs take -d SECONDS to show again every SECONDS, as top does, until Ctrl+C.
 - Indexes: rf indexes shows each index of a big library or mailbox you index, every one for admins: its items and size, and per
   person whether it is crawling or following changes, pages read, when last caught up, and an error, if any, with its next try.
-- History: rf runs [PATH] [--since DATE] [--failed] [--running] [--long MIN] prints a line per run: its start, path, run number,
+- History: rf runs [PATH] [--since DATE] [--failed] [--running] [--long MIN] prints a table, a row per run: its start, path, run number,
   outcome, time taken, cost, what started it and by whom, and any error. rf costs [PATH] [--since DATE] [--by
   workspace|series|person|day|outcome] [--daily] totals them (by the runner for person, plus server calls and OpenRouter key usage
   for admins). A DATE such as 2026-11-01 starts at its midnight on this machine's clock, the days --by day groups by.
@@ -244,9 +255,9 @@ const config = join(homedir(), '.config', 'rollforward.json');
 const [cmd, ...argv] = process.argv.slice(2);
 const flags: Record<string, string | true> = {}, excludes: string[] = [], args: string[] = [];
 for (let i = 0; i < argv.length; i++) {
-  const flag = argv[i] === '-n' ? 'dry-run' : argv[i].match(/^--(.+)$/)?.[1];
+  const flag = argv[i] === '-n' ? 'dry-run' : argv[i] === '-d' ? 'delay' : argv[i].match(/^--(.+)$/)?.[1];
   if (!flag) args.push(argv[i]);
-  else if (['wait', 'wake', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear', 'follow', 'superseded', 'undo', 'by-amount', 'yes', 'mine', 'daily'].includes(flag)) flags[flag] = true;
+  else if (['wait', 'wake', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear', 'follow', 'superseded', 'undo', 'by-amount', 'yes', 'mine', 'daily', 'all'].includes(flag)) flags[flag] = true;
   else if (argv[i + 1] === undefined) throw new Error(`--${flag} takes a value`);
   else if (flag === 'exclude') excludes.push(argv[++i]);
   else flags[flag] = argv[++i];
@@ -312,10 +323,56 @@ const consent = (offers: string[]) => `, series-wide ceiling: ${offers.join(', '
 // Times as this machine's clock reads them, and lengths of time and costs, for the views.
 const when = (iso: string) => new Date(iso).toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' });
 const grantText = (g: any) => `${g.description}${g.flags.length ? ` Flags: ${g.flags.join('; ')}.` : ''}${g.adminOnly ? ` ${g.adminWhy}.` : ''}`;
-const took = (s: number) => s < 60 ? `${Math.round(s)}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${Math.floor(s / 3600)}h${String(Math.round((s % 3600) / 60)).padStart(2, '0')}`;
+const took = (s: number) => s < 60 ? `${Math.round(s)}s` : s < 3600 ? `${Math.round(s / 60)}m` : s < 86400 ? `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}` : `${Math.floor(s / 86400)}d${Math.floor((s % 86400) / 3600)}h`;
 const usd = (n: number, est?: boolean) => `${est ? '~' : ''}${n < 0 ? '-$' + (-n).toFixed(2) : '$' + n.toFixed(2)}`;
 const usdNote = (n: number, est?: boolean) => `${usd(n, est)}${est ? ' (est.)' : ''}`;
 const signedUsd = (n: number) => `${n >= 0 ? '+$' : '-$'}${Math.abs(n).toFixed(2)}`;
+// Text as a terminal lays it out: a CJK character or an emoji takes two columns. A cell is cut to its column's width with …, and a
+// table's columns line up under its header; the last one is left as long as it is.
+const wide = (c: number) => (c >= 0x1100 && c <= 0x115f) || (c >= 0x2e80 && c <= 0xa4cf) || (c >= 0xac00 && c <= 0xd7a3) || (c >= 0xf900 && c <= 0xfaff)
+  || (c >= 0xfe30 && c <= 0xfe4f) || (c >= 0xff00 && c <= 0xff60) || (c >= 0xffe0 && c <= 0xffe6) || (c >= 0x1f300 && c <= 0x1faff) || (c >= 0x20000 && c <= 0x3fffd);
+const cols = (t: string) => [...t].reduce((n, ch) => n + (wide(ch.codePointAt(0)!) ? 2 : 1), 0);
+function clip(t: string, max: number) {
+  if (cols(t) <= max) return t;
+  let out = '', n = 0;
+  for (const ch of t) {
+    const w = wide(ch.codePointAt(0)!) ? 2 : 1;
+    if (n + w > max - 1) break;
+    out += ch; n += w;
+  }
+  return `${out}…`;
+}
+const table = (header: string[], rows: string[][], indent = '  ') => {
+  const all = header.length ? [header, ...rows] : rows, widths = (all[0] ?? []).map((_, i) => Math.max(...all.map(r => cols(r[i] ?? ''))));
+  return all.map(r => indent + r.map((c, i) => (i === r.length - 1 ? c : c + ' '.repeat(widths[i] - cols(c)))).join('  ').trimEnd()).join('\n');
+};
+// What a person reads of an agent's words in a list: the first line, without markdown's marks, cut to `max` columns.
+const gist = (text: string, max: number) => clip((text.split('\n').find(l => l.trim()) ?? '').trim()
+  .replace(/\*\*|__|`/g, '').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/^#+\s*/, ''), max);
+// An error as one line: an answer's JSON body gives way to its message, as in "402 This request requires more credits".
+function brief(error: string, max = 100) {
+  const line = error.split('\n')[0], at = line.indexOf('{');
+  if (at < 0) return clip(line, max);
+  const head = line.slice(0, at).replace(/[\s:]+$/, ''), message = /"message"\s*:\s*"((?:[^"\\]|\\.)+)"/.exec(line.slice(at))?.[1];
+  return clip([head, message?.replace(/\\(.)/g, '$1')].filter(Boolean).join(' '), max);
+}
+// -d SECONDS shows a view again every SECONDS, from the top of the screen, as top does, until Ctrl+C; a failure to fetch it shows in
+// its place, and the next refresh tries again.
+const MIN_DELAY = 1;
+async function watch(view: () => Promise<string>) {
+  if (flags.delay === undefined) return console.log(await view());
+  const every = Number(flags.delay);
+  if (!(every >= MIN_DELAY)) throw new Error(`-d: the seconds between refreshes, ${MIN_DELAY} or more`);
+  for (;;) {
+    let text: string;
+    try { text = await view(); } catch (e) { if (!(e instanceof Error)) throw e; text = `rf: ${e.message}`; }
+    process.stdout.write(`\x1b[H\x1b[2J${new Date().toLocaleString('sv-SE')}  every ${every}s, Ctrl+C to stop\n\n${text}\n`);
+    await new Promise(r => setTimeout(r, every * 1000));
+  }
+}
+// A view's widest path and text, in columns, and how many of what waits on one person rf status lists before --all.
+const PATH_COLS = 60, TEXT_COLS = 70, WAITING = 3;
+const mb = (bytes: number) => bytes >= 2 ** 30 ? `${(bytes / 2 ** 30).toFixed(1)} GB` : `${Math.round(bytes / 2 ** 20)} MB`;
 const localTz = Intl.DateTimeFormat().resolvedOptions().timeZone ?? '';
 // --since DATE from its midnight on this machine's clock, as --by day groups by.
 const since = encodeURIComponent(/^\d{4}-\d{2}-\d{2}$/.test(String(flags.since)) ? new Date(`${flags.since}T00:00`).toISOString() : String(flags.since ?? ''));
@@ -780,37 +837,71 @@ else if (cmd === 'comment' && args.length === 2) {
 } else if (cmd === 'connection' && args[0] === 'remove' && args[1]) {
   await api(`/connections/${encodeURIComponent(args[1])}`, { method: 'DELETE' });
   console.log('removed');
-} else if (cmd === 'status' && !args.length) {
+} else if (cmd === 'status' && !args.length) await watch(async () => {
   const [s, ix] = await Promise.all([get('/api/status'), get('/api/indexes')]), long = Number(flags.long ?? 30);
-  if (flags.json) console.log(JSON.stringify({ ...s, indexes: ix }, null, 1));
+  if (flags.json) return JSON.stringify({ ...s, indexes: ix }, null, 1);
   else {
     const lowLine = s.low_credit ? `Low OpenRouter credit: ${usd(s.low_credit.remaining)} remaining${s.low_credit.limit !== null ? ` of ${usd(s.low_credit.limit)} limit` : ''}${s.low_credit.reset ? ` (resets ${s.low_credit.reset})` : ''}${s.low_credit.key === 'fallback' ? ', on the fallback key, the first being low too' : ''}` : '';
-    const sections = [
-      [`Running`, s.running.map(r => `${r.path}  run ${r.run}  for ${took((Date.now() - Date.parse(r.at)) / 1000)}  ${usdNote(r.cost, r.estimated)}${Date.now() - Date.parse(r.at) > long * 60e3 ? `  LONG, past ${long}m` : ''}`)],
-      [`Queued`, s.queued.map(q => `${q.path}  since ${when(q.since)}: ${q.why}`)],
-      [`Waiting`, [
-        ...s.ownership.map(s => `${s.path}  ${s.text}`),
-        ...[...s.asks, ...s.requests.map(r => ({ ...r, who: r.who ?? 'anyone', since: r.at, text: `${r.from} asks to ${r.target ? 'wake' : 'start'} ${r.label}`, request: true })),
-          ...s.proposals.map(p => ({ who: `${p.to}'s owners`, path: p.to, since: p.at, text: `${p.by} proposes to ${p.kind === 'merge' ? `merge ${p.from} into it` : `move ${p.from}/${p.series} to it`}`, proposal: true }))]
-          .sort((a, b) => a.who.localeCompare(b.who) || a.since.localeCompare(b.since)).map(a => `${a.who}  ${a.proposal ? 'a proposal' : a.request ? 'a request' : a.note ? 'a note' : 'an ask'} in ${a.path} since ${when(a.since)}: ${a.text.split('\n')[0].slice(0, 80)}`),
-        ...s.expired.map(e => `${e.who}  their ${e.login} login expired${e.holding.length ? `, holding ${e.holding.join(', ')}` : ''}`),
-      ]],
-      [`Last run failed`, s.failed.map(f => `${f.path}  run ${f.run} at ${when(f.at)}: ${f.error}`)],
-      [`Indexes crawling or failing`, ix.filter(x => x.people.some(p => p.phase === 'crawl' || p.error)).map(x => `${x.name}  ${x.people.filter(p => p.phase === 'crawl' || p.error)
-        .map(p => `${p.who} ${p.error ? `failing${p.retry_at ? `, again ${when(p.retry_at)}` : ''}: ${p.error.split('\n')[0].slice(0, 80)}` : `crawling, ${p.pages} pages`}`).join('; ')}`)],
-    ].filter(([, rows]) => rows.length);
-    const body = sections.map(([title, rows]) => `${title} (${rows.length})\n${rows.map(r => `  ${r}`).join('\n')}`).join('\n\n');
-    console.log([lowLine, body].filter(Boolean).join('\n\n') || 'Nothing is running, queued, waiting or failed.');
+    // What waits, by whom it waits on, oldest first, at most WAITING each unless --all.
+    const waiting: { who: string; kind: string; since?: string; path: string; text: string }[] = [
+      ...s.ownership.map(o => ({ who: 'workspace managers', kind: 'owner', path: o.path, text: o.text })),
+      ...s.asks.map(a => ({ who: a.who, kind: a.note ? 'note' : 'ask', since: a.since, path: a.path, text: a.text })),
+      ...s.requests.map(r => ({ who: r.who ?? 'anyone', kind: 'request', since: r.at, path: r.path, text: `${r.from} asks to ${r.target ? 'wake' : 'start'} ${r.label}` })),
+      ...s.proposals.map(p => ({ who: `${p.to}'s owners`, kind: 'proposal', since: p.at, path: p.to, text: `${p.by} proposes to ${p.kind === 'merge' ? `merge ${p.from} into it` : `move ${p.from}/${p.series} to it`}` })),
+      ...s.expired.map(e => ({ who: e.who, kind: 'login', path: e.holding.join(', '), text: `their ${e.login} login expired` })),
+    ];
+    const byWho = Map.groupBy(waiting.sort((a, b) => a.who.localeCompare(b.who) || (a.since ?? '').localeCompare(b.since ?? '')), w => w.who);
+    // One table, its columns lined up across everyone, with each person's name above their rows.
+    const groups = [...byWho].map(([who, ws]) => ({ who, all: ws.length, shown: flags.all ? ws : ws.slice(0, WAITING) }));
+    const lines = table([], groups.flatMap(g => g.shown.map(w => [w.kind, w.since ? when(w.since) : '', clip(w.path, PATH_COLS), gist(w.text, TEXT_COLS)])), '    ').split('\n');
+    const waits = groups.map(g => [`  ${g.who} (${g.all})`, ...lines.splice(0, g.shown.length),
+      ...(g.shown.length < g.all ? [`    … ${g.all - g.shown.length} more: rf status --all`] : [])].join('\n'));
+    const failing = ix.flatMap(x => x.people.filter(p => p.phase === 'crawl' || p.error).map(p => [clip(x.name, PATH_COLS), p.who,
+      p.error ? `failing${p.retry_at ? `, again ${when(p.retry_at)}` : ''}` : `crawling, ${p.pages} pages`, p.error ? brief(p.error, TEXT_COLS) : '']));
+    const sections: [string, number, string][] = [
+      ['Running', s.running.length, table(['PATH', 'RUN', 'FOR', 'COST', ''], s.running.map(r => [clip(r.path, PATH_COLS), String(r.run), took((Date.now() - Date.parse(r.at)) / 1000),
+        usdNote(r.cost, r.estimated), Date.now() - Date.parse(r.at) > long * 60e3 ? `LONG, past ${long}m` : '']))],
+      ['Queued', s.queued.length, table(['PATH', 'SINCE', 'WHY'], s.queued.map(q => [clip(q.path, PATH_COLS), when(q.since), q.why]))],
+      [`Waiting on ${byWho.size} ${byWho.size === 1 ? 'person' : 'people'}`, waiting.length, waits.join('\n')],
+      ['Last run failed', s.failed.length, table(['PATH', 'RUN', 'AT', 'ERROR'], s.failed.map(f => [clip(f.path, PATH_COLS), String(f.run), when(f.at), brief(f.error, TEXT_COLS)]))],
+      ['Indexes crawling or failing', failing.length, table(['INDEX', 'PERSON', 'STATE', 'ERROR'], failing)],
+    ].filter(([, n]) => n) as [string, number, string][];
+    const body = sections.map(([title, n, rows]) => `${title} (${n})\n${rows}`).join('\n\n');
+    return [lowLine, body].filter(Boolean).join('\n\n') || 'Nothing is running, queued, waiting or failed.';
   }
-} else if (cmd === 'indexes' && !args.length) {
+});
+else if (cmd === 'indexes' && !args.length) {
   const ix = await get('/api/indexes');
   if (flags.json) console.log(JSON.stringify(ix, null, 1));
   else console.log(ix.map(x => [`${x.name}  ${x.kind}  ${x.items} items  ${(x.bytes / 2 ** 20).toFixed(1)} MB`, ...x.people.map(p =>
     `  ${p.who}  ${p.phase}  ${p.pages} pages  caught up ${p.caught_up ? when(p.caught_up) : 'never'}${p.error ? `  ${p.retry_at ? `again ${when(p.retry_at)}` : 'stopped'}: ${p.error}` : ''}`)].join('\n')).join('\n\n') || 'No indexes.');
-} else if (cmd === 'runs' && args.length <= 1) {
+} else if (cmd === 'runs' && args.length <= 1) await watch(async () => {
   const rows = (await runsIn(args[0])).filter(r => (!flags.failed || r.outcome === 'failed') && (!flags.running || r.outcome === 'running') && (!flags.long || r.seconds >= Number(flags.long) * 60));
-  if (flags.json) console.log(JSON.stringify(rows, null, 1));
-  else for (const r of rows) console.log(`${when(r.at)}  ${r.path}  run ${r.run}  ${r.outcome}${r.failure ? ` (${r.failure})` : ''}  ${took(r.seconds)}  ${usdNote(r.cost, r.estimated)}  ${r.started ? `${r.started.op} by ${r.started.by}` : '-'}  ${r.error ?? ''}`);
+  if (flags.json) return JSON.stringify(rows, null, 1);
+  return rows.length ? table(['START', 'PATH', 'RUN', 'OUTCOME', 'TIME', 'COST', 'STARTED BY', 'ERROR'], rows.map(r => [when(r.at), clip(r.path, PATH_COLS), String(r.run),
+    `${r.outcome}${r.failure ? ` (${r.failure})` : ''}`, took(r.seconds), usdNote(r.cost, r.estimated), r.started ? `${r.started.op} by ${r.started.by}` : '', r.error ? brief(r.error, TEXT_COLS) : '']), '') : 'No runs.';
+});
+else if (cmd === 'top' && !args.length) await watch(async () => {
+  const m = await get('/monitor');
+  if (flags.json) return JSON.stringify(m, null, 1);
+  else {
+    const h = m.host, at = (p: any) => `${clip(p.path, PATH_COLS)} run ${p.run}`;
+    const procs = (ps: any[]) => table(['PID', 'CPU', 'MEMORY', 'AGE', 'RUN', 'SCRIPT', 'COMMAND'], ps.map(p => [`${p.pid}${p.own ? '*' : ''}`, `${p.cpu}%`, mb(p.rss), took(p.age), at(p),
+      clip(p.script, TEXT_COLS / 2), clip(p.command, TEXT_COLS)]));
+    return [
+      `Host${h.cpus} CPUs, ${h.cpu}% busy, load ${h.load.map((l: number) => l.toFixed(2)).join(' ')}, ${mb(h.memory.free)} free of ${mb(h.memory.total)}; the server ${h.server.cpu}% CPU, ${mb(h.server.rss)}`,
+      m.runs.length ? `Runs going (${m.runs.length})\n${table(['PATH', 'RUN', 'SERIES OWNER', 'FOR', 'PROCESSES', 'CPU', 'MEMORY'], m.runs.map((r: any) => [clip(r.path, PATH_COLS), String(r.run), r.runner,
+        took((Date.parse(m.at) - Date.parse(r.since)) / 1000), String(r.procs), `${r.cpu}%`, mb(r.rss)]))}` : 'No run is going.',
+      ...(m.runs.length ? [`Top ${m.cpu.length} by CPU\n${procs(m.cpu)}`, `Top ${m.memory.length} by memory\n${procs(m.memory)}`,
+        "* the sandbox's own, its bwrap, Pi or its socket: rf interrupt PATH stops the run; rf kill PID ends any other, with all it started"] : []),
+    ].join('\n\n');
+  }
+});
+else if (cmd === 'kill' && args.length === 1 && /^\d+$/.test(args[0])) {
+  if (flags.start !== undefined && !/^\d+$/.test(String(flags.start))) throw new Error('--start: a whole number, as rf top --json shows a process');
+  const k = await (await post('/monitor/kill', { pid: Number(args[0]), ...(flags.start !== undefined && { start: Number(flags.start) }) })).json();
+  const more = k.pids.length - 1;
+  console.log(`killed ${args[0]} (${k.script})${more ? ` and the ${more} it started` : ''}, of ${k.path} run ${k.run}, with ${k.signal}; its agent hears of it`);
 } else if (cmd === 'costs' && args.length <= 1) {
   const keyText = (k: any) => `OpenRouter key (${k.day} UTC): ${k.usage_daily !== null ? `${usd(k.usage_daily)} today vs ${usdNote(k.server_total, k.server_estimated)} recorded (${signedUsd(k.unattributed)} unattributed) · ` : ''}${usd(k.usage)} used${k.limit !== null ? ` · ${usd(k.remaining)} of ${usd(k.limit)} remaining${k.reset ? ` (${k.reset})` : ''}` : ', no limit'}`;
   // A run that was cut is carried on by the next, so it adds its cost, not a run.
