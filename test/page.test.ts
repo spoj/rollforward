@@ -674,26 +674,6 @@ test("for an admin the version opens the system monitor, which samples the serve
   }
 });
 
-test("an admin edits the agents' instructions under Settings, from the next run on, and goes back to the released ones", async () => {
-  // As a textarea holds it, its lines ending in LF.
-  const released = readFileSync(join(app, 'prompt.md'), 'utf8').replaceAll('\r\n', '\n');
-  await page.click('#sidefoot [data-act=logins]');
-  await page.click('#pv .pvtabs [data-act=instructions]');
-  await page.waitForSelector('#pv #prompttext');
-  assert.equal(await page.inputValue('#pv #prompttext'), released);
-  assert.equal(await page.locator('#pv [data-act=prompt-reset]').count(), 0, 'nothing to go back from');
-  await page.fill('#pv #prompttext', `${released}Be brief.\n`);
-  await page.click('#pv [data-act=prompt-save]');
-  await page.waitForSelector('#pv [data-act=prompt-reset]');
-  assert.match(await page.textContent('#pv .pvb') ?? '', /Demo Admin saved these .*, in place of the released ones\./);
-  await page.click('#pv [data-act=prompt-reset]');
-  await page.click('#ask button[value=ok]');
-  await page.waitForSelector('#pv [data-act=prompt-reset]', { state: 'detached' });
-  assert.equal(await page.inputValue('#pv #prompttext'), released);
-  await page.keyboard.press('Escape');
-  await page.waitForSelector('#pv:not([open])', { state: 'attached' });
-});
-
 test("what the session names, such as a tool call's name, shows as text in the audit, never as markup", async () => {
   appendFileSync(join(root, 'instances', '3d70f7ca6f20', 'session', 'main.jsonl'), JSON.stringify({ type: 'message', id: 'x1', parentId: 'm2', timestamp: '2026-08-30T23:03:00.000Z', message: { role: 'assistant', content: [{ type: 'toolCall', id: 't1', name: '<img src=x onerror="window.pwned=1">', arguments: {} }] } }) + '\n');
   await page.evaluate(() => { location.hash = '#/3d70f7ca6f20'; });
@@ -1145,7 +1125,7 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   const lines = () => page.$$eval('#pv .lline', ls => ls.map(l => [...l.children].map(c => (c as HTMLElement).innerText.trim()).join(' | ')));
   await page.evaluate(() => openLogins());
   await page.waitForSelector('#pv .lline');
-  assert.deepEqual(await page.$$eval('#pv .pvtabs .tab', ts => ts.map(t => t.textContent)), ['Logins', 'Tokens', 'Instructions'], "an admin's too: admins see people with rf people, and the agents' instructions besides");
+  assert.deepEqual(await page.$$eval('#pv .pvtabs .tab', ts => ts.map(t => t.textContent)), ['Logins', 'Tokens'], "an admin's too: admins see people with rf people");
   assert.deepEqual((await page.$$eval('#pv h3', hs => hs.map(h => h.textContent))), ['Needs you', 'All']);
   const all = await lines();
   assert.equal(all[0], 'Databricks adb | expired | Sign in again', 'first, what needs you');

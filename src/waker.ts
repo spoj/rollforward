@@ -1,5 +1,5 @@
 import { freemem } from 'node:os';
-import { closeSync, existsSync, mkdirSync, readFileSync, readSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, readFileSync, readSync, realpathSync, rmSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
 import { agentsFile, closedBefore, createInstance, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, seriesDir, type Entry, type Instance } from './store.ts';
@@ -14,7 +14,6 @@ import { pushed, skills } from './skills.ts';
 import { AGENT, commit, committed, forget } from './git.ts';
 import { authority, logins, ownerOf, runnerAt, sameAuthority } from './logins.ts';
 import { confirm } from './entra.ts';
-import { instructions, sha256 } from './prompt.ts';
 import { pruneGrants } from './grants.ts';
 import { abortCalls, connections, drainCalls, hasCalls, loginOf, types } from './connections.ts';
 
@@ -235,11 +234,9 @@ async function begin(inst: Instance, tried: Set<Instance>) {
   const n = inst.log.filter(e => e.op === 'run').length + 1;
   const entries = inst.log.filter(e => e.seq > seen && (e.by !== 'agent' || e.note)), left = notes(inst.series());
   const text = message(inst, n, entries, true, left.filter(e => !e.settled), lease);
-  // Authority, instructions and carried code are captured before the process starts.
+  // Authority and carried code are captured before the process starts.
   // The versions live as its Pi starts, which it uses to its end.
   const live = skills().map(s => ({ ...s, dir: realpathSync(s.dir) }));
-  // And the instructions, the admins' own if they saved them (prompt.ts), by their sha256.
-  const told = instructions();
   const a: Active = {
     inst, n, runner: lease.owner, authority: lease, token: randomUUID(), view: view(inst, lease), workspace: lease.workspace,
     sent: entries.at(-1)!.seq, noted: left.at(-1)?.seq ?? 0, seen, delivered: seen, texts: new Map([[text, entries.at(-1)!.seq]]), done: false, cost: 0, estimated: false, hosts: new Set(), links: new Map(),
@@ -252,19 +249,18 @@ async function begin(inst: Instance, tried: Set<Instance>) {
     // Whose OpenRouter key it starts with, its runner's own or the server's (connections.ts), never the key.
     const key = logins(lease.owner).some(l => l.id === 'openrouter' && l.enabled) ? 'own' : 'shared';
     const agents = Object.fromEntries(a.view.ro.filter(([p, at]) => at.endsWith('/AGENTS.md') && existsSync(p)).map(([p, at]) => [at, createHash('sha256').update(readFileSync(p)).digest('hex')]));
-    inst.append('server', 'run', { run: n, runner: lease.owner, initiator, authority: lease, provenance: { cause: cause.seq, ...(cause.op === 'wake' && { from: cause.from, schedule: cause.schedule, inst: cause.inst, run: cause.sourceRun, recovery: cause.recovery }) }, agents, pylib: pylib(a.view.pylib, inst.dir), upto: a.sent, skills: Object.fromEntries(live.map(s => [s.id, pushed(s).version])), key, prompt: sha256(told.text), ...(told.own && { own_prompt: true }) });
+    inst.append('server', 'run', { run: n, runner: lease.owner, initiator, authority: lease, provenance: { cause: cause.seq, ...(cause.op === 'wake' && { from: cause.from, schedule: cause.schedule, inst: cause.inst, run: cause.sourceRun, recovery: cause.recovery }) }, agents, pylib: pylib(a.view.pylib, inst.dir), upto: a.sent, skills: Object.fromEntries(live.map(s => [s.id, pushed(s).version])), key });
     loggedRun = true;
     // Copies of the indexes of what its runner ticked, on the indexes' own disk, read-only at $RF_INDEX.
     const index = join(rfDir(), 'runs', a.token);
     mkdirSync(index, { recursive: true });
-    if (told.own) writeFileSync(join(index, 'prompt.md'), told.text);
     if (prepare(inst, index, n)) {
       a.view.ro.push([index, '/index']);
       a.view.env.RF_INDEX = '/index';
     }
     started.push(Date.now());
     started.splice(0, started.length - MAX_RUNS);
-    a.ready = startRun({ token: a.token, id: inst.id, n, view: a.view, skills: live, ...(told.own && { prompt: join(index, 'prompt.md') }), onEvent: e => byToken.has(a.token) && heard(byToken.get(a.token)!, e) });
+    a.ready = startRun({ token: a.token, id: inst.id, n, view: a.view, skills: live, onEvent: e => byToken.has(a.token) && heard(byToken.get(a.token)!, e) });
     a.run = await a.ready;
     // Cut as it started (leases(), remove(), stop()).
     if (a.stopped) return;

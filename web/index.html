@@ -953,8 +953,8 @@ function sheetTable(p, s, first) {
 function renderPv() {
   const d = $('#pv');
   if (!pv) return void (d.open && d.close());
-  // Your account's dialog: Logins and Tokens, as tabs, and, for admins, the agents' Instructions.
-  const account = [['logins', 'Logins'], ['tokens', 'Tokens'], ...(me.role === 'admin' ? [['instructions', 'Instructions']] : [])], mine = account.some(([k]) => k === pv.settings?.kind);
+  // Your account's dialog: Logins and Tokens, as tabs.
+  const account = [['logins', 'Logins'], ['tokens', 'Tokens']], mine = account.some(([k]) => k === pv.settings?.kind);
   d.className = 'pv' + (pv.settings ? ' small' : '') + (mine || ['workspace', 'waiting', 'monitor'].includes(pv.settings?.kind) ? ' wide' : '') + (pv.settings?.kind === 'monitor' ? ' monitor' : '');
   let h = `<div class="pvh"><b>${esc(pv.title)}</b><span class="saved"></span>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${(pv.att ?? pv).doc ? '<button class="btn" data-act="layout">Exact layout</button>' : ''}${pv.path ? `<a class="btn" href="${fileUrl(pv.path)}">Download</a>` : ''}${pv.signin ? `<button class="btn primary" data-act="signin-save"${pv.signinExpired || pv.saving ? ' disabled' : ''}>${pv.saving ? 'Saving…' : pv.vpn ? 'Connect' : 'Save login'}</button>` : ''}<button class="btn${pv.signin && !pv.signinExpired ? '' : ' primary'}" data-act="unpv"${pv.saving ? ' disabled' : ''}>${pv.signin && !pv.signinExpired ? 'Cancel' : 'Close'}</button></div>`;
   if (mine) h += `<div class="pvtabs">${account.map(([k, name]) => `<button class="tab ${pv.settings.kind === k ? 'sel' : ''}" data-act="${k}">${name}</button>`).join('')}</div>`;
@@ -965,7 +965,6 @@ function renderPv() {
   else if (pv.signin) h += pv.signinExpired ? '<div class="pvb"><div class="empty" role="status">Sign-in expired. Close this and sign in again.</div></div>'
     : `<div class="sub" style="padding:8px 14px">Sign in as you always do, then ${pv.vpn ? 'Connect' : 'Save login'}. Only you see this browser. It closes in <b id="signin-clock"></b>.${!pv.vpn && me.can.includes('keepalive') ? `<label style="display:block;margin-top:6px"><input type="checkbox" id="keep"${pv.keep ? ' checked' : ''}> Keep the login alive until <input type="datetime-local" id="keep-until" value="${esc(pv.keepUntil ?? localInput(Date.now() + 7 * 864e5))}" max="${localInput(Date.now() + 7 * 864e5)}">, a week at most: the server opens the site every few minutes, so runs while you're away find you signed in.</label>` : ''}</div><div class="pvb"><iframe src="/signins/${pv.signin}/view?drive" title="${esc(pv.title)}" style="width:100%;height:100%;border:0"></iframe></div>`;
   else if (pv.settings?.kind === 'tokens') h += `<div class="pvb vl">${tokensHtml(pv.settings)}</div>`;
-  else if (pv.settings?.kind === 'instructions') h += `<div class="pvb vl">${instructionsHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'logins') h += `<div class="pvb vl">${loginsHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'wakes') h += `<div class="pvb vl">${wakesHtml(cur.i.id, cur.i.wakes, false)}</div>`;
   else if (pv.settings?.kind === 'notes') h += `<div class="pvb vl">${notesHtml(pv.settings)}</div>`;
@@ -1148,25 +1147,6 @@ function tokensHtml(s) {
     + (s.made ? `<h3>Your new token</h3><div class="sub">Copy it now: it isn't shown again.</div><input type="text" readonly value="${esc(s.made)}" onclick="this.select()">` : '')
     + (s.tokens.length ? `<h3>Your tokens</h3>` + s.tokens.map(t => `<div class="wt">${esc(t.name)} <span class="sub">made ${esc(when(t.created))}, ${t.expires < new Date().toISOString() ? 'expired' : 'until ' + esc(when(t.expires))}</span><button class="quiet" data-act="revoke-token" data-id="${esc(t.id)}">Revoke</button></div>`).join('') : '')
     + `<h3>New token</h3><div class="row2"><input type="text" id="tname" placeholder="Name, such as laptop" style="flex:1"><select id="tdays"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option></select><button class="btn primary" data-act="new-token">Make</button></div>`;
-}
-
-// The agents' instructions, their system prompt, which admins edit: a run reads them as it starts, so a save applies from the next
-// run on, and one going keeps its own. Their own say who saved them and when, and whether a release changed the released ones
-// since, which open beside them; Use the released ones throws theirs away.
-function instructionsHtml(s) {
-  const own = s.own;
-  return '<div class="sub">What every agent is told, before the AGENTS.md files: its system prompt. Saved, it applies to each run that starts from then on; a run going keeps the one it started with.</div>'
-    + (own ? `<div class="sub">${person(own.by)} saved these ${esc(when(own.at))}, in place of the released ones.${own.stale ? ' <b>A release has changed the released ones since:</b> compare them below.' : ''}</div>` : '<div class="sub">These are the released ones, as this version ships them.</div>')
-    + `<textarea id="prompttext" rows="22">${esc(s.text)}</textarea><div class="row2"><button class="btn primary" data-act="prompt-save">Save</button>${own ? '<button class="btn" data-act="prompt-reset">Use the released ones</button>' : ''}</div>`
-    + (own ? `<details><summary class="sub">The released ones</summary><pre class="mcmd">${esc(s.released)}</pre></details>` : '');
-}
-async function openInstructions() {
-  if (pv?.saving) return;
-  const n = ++accountOpens, before = pv, view = await api('/prompt');
-  if (n !== accountOpens || pv !== before || pv?.saving) return;
-  if (pv?.back && pv.settings?.kind === 'logins') pv.back.settings.logins = pv.settings.logins;
-  pv = { title: 'Instructions', shown: pv?.shown ?? [], back: pv?.back, website: pv?.website, workspace: pv?.workspace, settings: { kind: 'instructions', ...view } };
-  renderPv();
 }
 
 let accountOpens = 0;
@@ -1998,17 +1978,6 @@ async function onAct(act, el) {
   }
   if (act === 'logins') await openLogins();
   if (act === 'tokens') await openTokens();
-  if (act === 'instructions') await openInstructions();
-  if (act === 'prompt-save' || act === 'prompt-reset') {
-    const reset = act === 'prompt-reset';
-    if (reset && !await ask({ title: 'Use the released instructions?', text: 'Your own go, and each run that starts from now on reads the ones this version ships.', ok: 'Use the released ones', kind: 'danger', act: () => true })) return;
-    const view = await api('/prompt', { method: 'PUT', body: JSON.stringify(reset ? { reset: true } : { text: $('#prompttext').value }) });
-    if (pv?.settings?.kind !== 'instructions') return;
-    Object.assign(pv.settings, view, { own: view.own });
-    if (!view.own) delete pv.settings.own;
-    renderPv();
-    saved();
-  }
   if (act === 'new-token') {
     const p = pv, n = accountOpens, name = $('#tname').value.trim();
     if (!name) return toast('Name the token, such as laptop');

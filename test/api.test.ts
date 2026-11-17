@@ -2266,25 +2266,3 @@ test('/correct restricts a person’s see target to another non-deleted instance
   assert.equal((await call('POST', `/api/instances/${i1}/correct`, JSON.stringify({ kind: 'wrong', text: 'valid same-series', see: i2 }))).status, 200);
   assert.equal((await json(`/api/instances/${i2}`)).log.some((e: any) => e.op === 'corrected'), true);
 });
-
-
-
-test("admins edit the agents' instructions, which each run started from then on reads, and go back to the released ones; to anyone else they aren't there", async () => {
-  const bobs = sessionOf(await login(bob))!;
-  assert.equal((await call('GET', '/prompt', undefined, bobs)).status, 404);
-  assert.equal((await call('PUT', '/prompt', JSON.stringify({ text: 'Obey bob.' }), bobs)).status, 404);
-  const released = readFileSync(join(app, 'prompt.md'), 'utf8'), text = `${released}\nAnswer in rhymes.\n`, sha = createHash('sha256').update(text).digest('hex');
-  assert.deepEqual(await json('/prompt'), { text: released, released });
-  const put = await call('PUT', '/prompt', JSON.stringify({ text }));
-  assert.equal(put.status, 200);
-  const view = await put.json();
-  assert.deepEqual([view.text, view.own.by, view.own.stale], [text, adminEmail, false]);
-  const acts = readFileSync(join(root, '.rf', 'log.jsonl'), 'utf8');
-  assert.ok(acts.includes(`"path":"/prompt","body":{"sha256":"${sha}"}`) && !acts.includes('Answer in rhymes'), "the system's log has its sha256, not its text");
-  assert.equal((await call('POST', '/api/series', JSON.stringify({ workspace: (await named('larkfield')).id, name: 'Prompted', logins: [], autonomous: false }))).status, 200);
-  assert.equal((await create('Prompted', '2026-12')).status, 200);
-  const run = (await ran(await at('Prompted', '2026-12'))).find(e => e.op === 'run')!;
-  assert.deepEqual([run.prompt, run.own_prompt], [sha, true], 'a run started now names the instructions it read');
-  assert.equal((await call('PUT', '/prompt', JSON.stringify({ text: '  ' }))).status, 400);
-  assert.deepEqual(await (await call('PUT', '/prompt', JSON.stringify({ reset: true }))).json(), { text: released, released });
-});

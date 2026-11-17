@@ -48,8 +48,7 @@ export type View = { instance: string; dir: string; pylib: string; ro: [string, 
 // files from / down to the instance. Each run starts a session of its own, its transcript in the instance's session/ beside the
 // earlier runs'. Pi starts from a transcript there with its session's id, so the id is one no earlier run, which could write
 // there, knew. The skills are the versions live as it starts, read-only at /skills/<id>, so a push applies from the next run.
-// `prompt`, a file of the admins' own instructions (prompt.ts), is at /app/prompt.md in place of the released one.
-export function pi(o: { token: string; id: string; n: number; view: View; skills: { id: string; dir: string }[]; prompt?: string }): RpcClient {
+export function pi(o: { token: string; id: string; n: number; view: View; skills: { id: string; dir: string }[] }): RpcClient {
   const run = join(scratch, 'runs', o.token), home = join(run, 'home'), agentDir = join(home, '.pi', 'agent'), tmp = join(run, 'tmp');
   const { instance, dir, pylib } = o.view, working = join(dir, 'working'), session = join(dir, 'session'), lib = `${posix.dirname(instance)}/.pylib`;
   const socketDir = join(run, 'socket');
@@ -70,7 +69,7 @@ export function pi(o: { token: string; id: string; n: number; view: View; skills
   const args = sandboxArgs({
     cwd: instance, home, tmp, socketDir,
     ro: [
-      ...['bin', 'src', 'node_modules', 'package.json', 'prompt.md'].map(f => [f === 'prompt.md' && o.prompt ? o.prompt : join(app, f), `/app/${f}`] as [string, string]), ...o.skills.map(s => [s.dir, `/skills/${s.id}`] as [string, string]),
+      ...['bin', 'src', 'node_modules', 'package.json', 'prompt.md'].map(f => [join(app, f), `/app/${f}`] as [string, string]), ...o.skills.map(s => [s.dir, `/skills/${s.id}`] as [string, string]),
       ...(process.env.RF_SANDBOX_RO ?? '').split(delimiter).map(p => [p, p] as [string, string]),
     ].filter(([p]) => p && existsSync(p)),
     work: { ro: o.view.ro.filter(([src]) => existsSync(src)), rw: [[working, `${instance}/working`], [session, `${instance}/session`], [pylib, lib]] },
