@@ -74,12 +74,12 @@ export async function removeVpn(me: Me, name: string) {
   if (!vpnDefinitions()[name]) throw new HttpError(404, `no VPN ${name}`);
   definitionGenerations.set(name, (definitionGenerations.get(name) ?? 0) + 1);
   await changeTunnel(async () => {
-    const all = vpnDefinitions();
-    if (!all[name]) throw new HttpError(404, `no VPN ${name}`);
+    if (!vpnDefinitions()[name]) throw new HttpError(404, `no VPN ${name}`);
     for (const [key, tunnel] of tunnels) if (tunnel.vpn === name) {
       await tunnelJson('DELETE', `/tunnels/${tunnel.id}`);
       tunnels.delete(key);
     }
+    const all = vpnDefinitions();
     delete all[name];
     writeJson('vpns.json', all);
     act(me.email, { op: 'vpn-remove', name });

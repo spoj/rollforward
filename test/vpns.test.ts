@@ -18,8 +18,8 @@ const definition = { type: 'fortinet' as const, gateway: 'vpn.gateway.test:10443
 const home = mkdtempSync(join(tmpdir(), 'rf-vpns-'));
 let root = '', serial = 0, browserError = '', tunnelError = '', deleteError = '', listError = '', blocked = new Set<string>();
 let back: any = { cookies: [], origins: [] }, listGate: Promise<void> | undefined, onList: (() => void) | undefined;
-let openGate: Promise<void> | undefined, closeGate: Promise<void> | undefined, postGate: Promise<void> | undefined;
-let onOpen: (() => void) | undefined, onClose: (() => void) | undefined, onPost: (() => void) | undefined;
+let openGate: Promise<void> | undefined, closeGate: Promise<void> | undefined, postGate: Promise<void> | undefined, deleteGate: Promise<void> | undefined;
+let onOpen: (() => void) | undefined, onClose: (() => void) | undefined, onPost: (() => void) | undefined, onDelete: (() => void) | undefined;
 const browserCalls: any[] = [], tunnelCalls: any[] = [], events: string[] = [], models: any[] = [], lookups: string[] = [], searches: string[] = [];
 let toolQueries: string[] = [], modelProfile = { what: 'A client reporting system.', category: 'company', risk: 'medium', flags: [] as string[] };
 const sessions = new Map<string, any>(), remote = new Map<string, { id: string; up: boolean }>();
@@ -77,6 +77,8 @@ const service = createServer(async (req, res) => {
     await gate;
     return void res.writeHead(201).end(JSON.stringify({ id, token: `private-token-${id}` }));
   }
+  onDelete?.();
+  await deleteGate;
   if (deleteError) return void res.writeHead(502).end(JSON.stringify({ error: deleteError }));
   const id = req.url!.split('/')[2];
   if (!remote.delete(id)) return void res.writeHead(404).end('{"error":"no such tunnel"}');
@@ -119,8 +121,8 @@ beforeEach(async () => {
   toolQueries = [];
   modelProfile = { what: 'A client reporting system.', category: 'company', risk: 'medium', flags: [] };
   browserError = tunnelError = deleteError = listError = '';
-  listGate = openGate = closeGate = postGate = undefined;
-  onList = onOpen = onClose = onPost = undefined;
+  listGate = openGate = closeGate = postGate = deleteGate = undefined;
+  onList = onOpen = onClose = onPost = onDelete = undefined;
   await reapVpns();
   root = mkdtempSync(join(home, 'case-'));
   initSystem(root); openStore(root);
@@ -292,6 +294,19 @@ test('reconnect replaces only the same person and VPN, and concurrent saves leav
   assert.equal(remote.size, 2);
   assert.equal((await vpns(bob))[0].connected, true);
   assert.equal((await vpns(alice)).find(v => v.name === 'second')!.connected, true);
+});
+
+test('removing a VPN preserves definitions added while its tunnel is being deleted', async () => {
+  await connectVpn();
+  let release!: () => void;
+  deleteGate = new Promise<void>(ok => { release = ok; });
+  const deleting = new Promise<void>(ok => { onDelete = ok; });
+  const removing = removeVpn(admin, 'client');
+  await deleting;
+  addVpn(admin, 'second', definition);
+  release();
+  await removing;
+  assert.equal(JSON.stringify(readJson('vpns.json', {})), JSON.stringify({ second: definition }));
 });
 
 test('failed reconnect deletes the old tunnel without retaining stale state; failed deletes are surfaced', async () => {
