@@ -40,9 +40,9 @@ export type Type = {
   login(c: Connection): (EntraLogin | { id: string; kind: string; name: string; scope?: undefined; offers: Offer[] });
   hosts?(c: Connection): string[];
   // The offer a request needs ticked, its JSON body as it goes on, if the type rewrote it, and the origin where its answer's
-  // Location, as a redirect's, is a link; or a refusal.
+  // Location is a link (true accepts any Location, still granting only its exact URL); or a refusal.
   // A request that sends mail also reads, on asking, what goes, its recipients and its attachments' sha256s, or why that can't be read.
-  check?(c: Connection, runner: string, ticks: string[], r: Request): Promise<{ offer: string; json?: unknown; redirect?: string; pathname?: string }> | { offer: string; json?: unknown; redirect?: string; pathname?: string };
+  check?(c: Connection, runner: string, ticks: string[], r: Request): Promise<{ offer: string; json?: unknown; redirect?: string | true; pathname?: string }> | { offer: string; json?: unknown; redirect?: string | true; pathname?: string };
   links?(answer: any, path: string, email: string, ticks: string[]): string[] | Promise<string[]>;
   // What a run's environment holds for it, given the instance's ticks.
   env?(c: Connection, ticks: string[]): Record<string, string>;
@@ -426,7 +426,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       raw = Buffer.concat(chunks);
     }
     const json = isJson && raw?.length ? JSON.parse(raw.toString()) : undefined, r = { method, url, headers: req.headers, json, body: raw, target: req.url! };
-    let out = json, auth: Record<string, string> = {}, as = '', ticks: string[] = [], redirect: string | undefined, offer = '', targetPath = url.pathname;
+    let out = json, auth: Record<string, string> = {}, as = '', ticks: string[] = [], redirect: string | true | undefined, offer = '', targetPath = url.pathname;
     if (c) {
       const { by, logins } = lent!, checked = await types[c.type].check!(c, by, ticks = logins, r), login = loginOf(c) as EntraLogin;
       out = checked.json ?? json;
@@ -475,7 +475,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       // A Location where the check lets one go, as a redirect's, is a link for this run before the run can follow it.
       const answer = await forward(`${c?.type === 'service' ? c.url : upstreams[host] ?? url.origin}${targetPath}${url.search}`, req, res, {
         auth, body, digest, keep: !link && c?.type !== 'service', service: !!s, registerAbort,
-        location: to => { const l = URL.parse(to); if (l && l.origin === redirect) a.links.set(l.href, { name, offer }); },
+        location: to => { const l = URL.parse(to); if (l && (redirect === true || l.origin === redirect)) a.links.set(l.href, { name, offer }); },
       });
       // An answer's links go through for this run; what a service's answer cost, whole, in its stream's events, from OpenRouter's
       // generation endpoint, or estimated where none could be learned, adds to the run's as it comes.
