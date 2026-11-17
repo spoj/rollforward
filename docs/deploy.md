@@ -98,6 +98,7 @@ Run the image under podman, as a systemd service. The image is the agent image, 
 
 ## Keys, backups and updates
 
+- **People's rf,** `@rfany/rf`, is published by CI from a tag whose `cli/package.json` version npm doesn't have yet; npm's trusted publisher for the package is this repository's `ci.yml`, so no npm token is kept.
 - **Keys:** `.rf/session.key` signs sessions, and `.rf/seal.key` encrypts everyone's logins. Back up the data folder nightly without them, and keep a copy of both elsewhere. Without seal.key, people sign in to their logins again.
 - **Ordinary compatible production releases deploy by themselves:** `scripts/update.ts` runs every 15 minutes as a per-user systemd timer (below). For v0.7.0, follow Updating to v0.7.0 below.
 - **Updates:** `podman kill --signal=SIGUSR2 rollforward` drains the container first; for the native service, use `systemctl --user kill --kill-whom=main --signal=SIGUSR2 rollforward` instead (the container unit's MainPID is its monitor, not Node). In either case, `GET /drained` answering 200 once the runs going end; then check out the next tag, rebuild, and `systemctl --user restart rollforward`. A restart without the drain cuts the runs going, whose cost so far is recorded. They carry on only with captured and current autonomous consent, unless an Interrupt or authority change holds them.
