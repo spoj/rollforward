@@ -112,9 +112,10 @@ else await drain();
 try {
   move(current, target);
   if (await answers()) {
-    // Only this image and the one before, for a person's move back, are kept.
-    for (const d of readdirSync(AGENTS)) if (![image, id].includes(d)) remove(join(AGENTS, d));
     console.log(`on ${target}`);
+    // Only this image and the one before, for a person's move back, are kept; one that won't go, as one a stray mount holds,
+    // stays, as the release is already running.
+    for (const d of readdirSync(AGENTS)) if (![image, id].includes(d)) try { remove(join(AGENTS, d)); } catch (e) { console.log(`${d} stays: ${(e as Error).message}`); }
     process.exit(0);
   }
   console.log(`${target} didn't answer ${health}`);
