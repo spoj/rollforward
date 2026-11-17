@@ -312,7 +312,7 @@ test('real owner clients preserve terminal history and task execution settings',
         const disk = readFileSync(join(root, 'instances', id, 'log.jsonl'), 'utf8');
         const cli = await promisify(execFile)(process.execPath, ['src/rf-people.ts', 'log', `Finance/History/${id}`, '--json'], { env: { PATH: process.env.PATH, HOME: tmp, LANG: 'C.UTF-8' } });
         await page.goto(`${base}/#/${id}`);
-        await page.waitForFunction(id => cur.i?.id === id && data?.doc.status !== 'open', id);
+        await page.waitForFunction(id => cur?.i?.id === id && data?.doc.status !== 'open', id);
         await page.locator('#lh').getByRole('button', { name: 'Conversation', exact: true }).click();
         await page.waitForSelector('#conv .post');
         const conversation = await page.locator('#conv').innerText();
@@ -345,7 +345,7 @@ test('real owner clients preserve terminal history and task execution settings',
       const failures: string[] = [];
       page.on('response', r => { if (r.status() >= 400) failures.push(`${r.status()} ${r.url()}`); });
       await page.goto(`${base}/#/${task.instance}`);
-      await page.waitForFunction(id => cur.i?.id === id, task.instance);
+      await page.waitForFunction(id => cur?.i?.id === id, task.instance);
       assert.equal(await page.locator('#bar button[data-act=rename]').count(), 1);
       assert.equal(await page.locator('#bar [data-act=wakes]').count(), 1);
       for (const act of ['settings', 'ticks']) {
@@ -388,7 +388,7 @@ test('real owner clients preserve terminal history and task execution settings',
       const { id } = await (await api('POST', `/api/series/${incoming.id}`, { label: 'Feb', quiet: true }, colleague)).json();
       await context.addCookies([{ name, value: cookies[colleague].split('=')[1], url: base }]);
       await page.goto(`${base}/#/${id}`);
-      await page.waitForFunction(id => cur.i?.id === id, id);
+      await page.waitForFunction(id => cur?.i?.id === id, id);
       assert.match(await page.locator('#needs').innerText(), /owner@example.test starts this series' runs/);
       await context.addCookies([{ name, value: cookies[owner].split('=')[1], url: base }]);
       await page.goto(`${base}/#/${cases[0]}`);
@@ -397,17 +397,17 @@ test('real owner clients preserve terminal history and task execution settings',
       await page.waitForSelector('#pv .wt');
       assert.match(await page.locator('#pv').innerText(), /colleague@example.test started Incoming · Feb/);
       await page.click(`#pv a[href="#/${id}"]`);
-      await page.waitForFunction(id => cur.i?.id === id, id);
+      await page.waitForFunction(id => cur?.i?.id === id, id);
       assert.equal(await page.locator('#tree [data-act=waiting]').count(), 0);
       await page.goto(`${base}/#/${cases[0]}`);
-      await page.waitForFunction(id => cur.i?.id === id, cases[0]);
+      await page.waitForFunction(id => cur?.i?.id === id, cases[0]);
       const later = await (await api('POST', `/api/series/${incoming.id}`, { label: 'Mar', quiet: true }, colleague)).json();
       await page.waitForSelector('#tree [data-act=waiting]');
       await page.click('#tree [data-act=waiting]');
       await page.waitForSelector(`#pv a[href="#/${later.id}"]`);
       const other = await context.newPage();
       await other.goto(`${base}/#/${later.id}`);
-      await other.waitForFunction(id => cur.i?.id === id, later.id);
+      await other.waitForFunction(id => cur?.i?.id === id, later.id);
       await page.waitForSelector(`#pv a[href="#/${later.id}"]`, { state: 'detached' });
       await other.close();
     });

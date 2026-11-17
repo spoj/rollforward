@@ -2191,7 +2191,7 @@ test("Transfer series changes every instance without credentials; only its owner
   const request = handed.waitForRequest(r => r.url().endsWith('/api/requests/handing') && r.method() === 'POST');
   await handed.click('#pv [data-act=req-start]');
   assert.deepEqual((await request).postDataJSON(), {});
-  await handed.waitForFunction(id => cur.i?.id === id, theirs);
+  await handed.waitForFunction(id => cur?.i?.id === id, theirs);
   assert.equal(await handed.locator('#pv input.tick, #slabel').count(), 0, 'Start uses the existing whole-series ceiling');
   assert.deepEqual(await handed.evaluate(async id => (await api(`/api/instances/${id}`)).log.filter(e => e.op === 'wake').map(e => [e.from, e.note ?? false]), theirs), [['admin@demo.test', true], ['handed@demo.test', false]], 'request provenance stays information beside the owner’s explicit start');
   await handed.reload();

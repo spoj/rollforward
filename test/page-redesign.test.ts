@@ -80,7 +80,7 @@ async function openWebsiteTicks(conversation = false) {
       waiting: [], standing: {}, starts: true, sums: {}, run: null, queued: false, previous: null };
   }
   await page.evaluate(async conversation => { await refresh(); location.hash = conversation ? '#/i1' : '#/s1'; }, conversation);
-  await page.waitForFunction(conversation => cur.s?.id === 's1' && (!conversation || cur.i?.id === 'i1'), conversation);
+  await page.waitForFunction(conversation => cur?.s?.id === 's1' && (!conversation || cur.i?.id === 'i1'), conversation);
   if (conversation) {
     await page.evaluate(() => { ui.open = true; renderLog(); });
     await page.waitForSelector('#newcomment');
