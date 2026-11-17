@@ -90,7 +90,7 @@ export function checkTicks(email: string, ticks: unknown, workspace?: string): s
   return ticks;
 }
 
-// What makes someone an instance's runner: making it, an earlier version's copy, or an assign, a takeover being an assign to oneself.
+// Historical instance runners came from creation, copying or assignment.
 const MADE = ['create', 'duplicate', 'takeover', 'assign'];
 const ranBy = (e: Entry) => e.op === 'assign' ? e.to as string : e.by;
 

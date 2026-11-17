@@ -224,8 +224,7 @@ function freeLabel(seriesId: string, label: string): string {
   return name;
 }
 
-// A new instance starts empty: its agent learns from the series' earlier instances what to roll forward from. `by` is its runner,
-// The creator is an actor, not an execution principal.
+// A new instance starts empty. Its creator is recorded separately from its series owner.
 export function createInstance(seriesId: string, label: string, by: string): Instance {
   const name = freeLabel(seriesId, label), id = newId(), stage = join(root, '.tmp', id), dir = instanceDir(id), meta = { label: name, series: seriesId };
   try {
@@ -333,7 +332,7 @@ export class Instance {
   }
 
   // Closing makes the instance the period's record and an example for the next, approving nothing: the asks still waiting are
-  // accepted as the agent said it did them. It commits the folder in the runner's name. The instance is closed meanwhile, so nothing
+  // accepted as the agent said it did them. It commits the folder in the series owner's name. The instance is closed meanwhile, so nothing
   // changes it, but saved only once committed and packed: either failing, or a restart, leaves it open.
   async close(by: Who) {
     const accepted = this.asking().map(e => `c${e.seq}`);

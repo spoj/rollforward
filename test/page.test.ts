@@ -1546,7 +1546,7 @@ test('a task closed as a one-off starts a series later, by its name alone, as it
   assert.equal(await page.locator('#pv input.tick:checked').count(), 0);
   await page.click('#pv [data-act=start-go]');
   await page.waitForSelector('#bar h1 .t:text-is("Untitled")');
-  await page.keyboard.type('Quarterly stock count');
+  await page.fill('#newcomment', 'Quarterly stock count');
   await page.click('[data-act=comment]');
   await page.waitForSelector('#bar .state .bad:text("Run 1 failed")');
   await page.click('#bar [data-act=close]');

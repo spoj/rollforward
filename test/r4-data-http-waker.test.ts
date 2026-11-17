@@ -83,19 +83,17 @@ after(async () => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-for (const queuedFirst of [false, true]) test(`Start keeps a source-assigned new-instance request's text a note, queuedFirst=${queuedFirst}`, async () => {
-  const name = `request-assignment-${queuedFirst}`;
+test('Start keeps another instance request text a note', async () => {
+  const name = 'request-provenance';
   const ws = await (await call('POST', '/api/workspaces', JSON.stringify({ name }))).json();
   assert.equal((await call('PUT', `/api/workspaces/${ws.id}`, JSON.stringify({ members: [BOB] }))).status, 200);
-  const ser = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws.id, name: 'S' }))).json();
+  const ser = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws.id, name: 'S', logins: [], autonomous: false }))).json();
   const source = await (await call('POST', `/api/series/${ser.id}`, JSON.stringify({ label: 'source', quiet: true }), bobCookie)).json();
-  if (!queuedFirst) assert.equal((await call('POST', `/api/instances/${source.id}/assign`, JSON.stringify({ to: ADMIN }), bobCookie)).status, 200);
   const wakesFile = join(root, '.rf', 'wakes.json');
   const w = existsSync(wakesFile) ? JSON.parse(readFileSync(wakesFile, 'utf8')) : { pending: {}, fired: {}, requests: {} };
-  const id = `source-assigned-${queuedFirst}`;
-  w.requests[id] = { series: ser.id, label: 'next', from: `${name}/S/source`, inst: source.id, at: new Date().toISOString(), text: 'Original source instruction.', ...(!queuedFirst && { assigned: true }) };
+  const id = 'source-request';
+  w.requests[id] = { series: ser.id, label: 'next', from: `${name}/S/source`, inst: source.id, at: new Date().toISOString(), text: 'Original source instruction.' };
   writeFileSync(wakesFile, JSON.stringify(w));
-  if (queuedFirst) assert.equal((await call('POST', `/api/instances/${source.id}/assign`, JSON.stringify({ to: ADMIN }), bobCookie)).status, 200);
   const started = await call('POST', `/api/requests/${id}`, '{}');
   assert.equal(started.status, 200);
   const { id: next } = await started.json();

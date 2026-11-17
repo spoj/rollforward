@@ -592,12 +592,12 @@ export function startWith(seriesId: string, label: string, by: string, wakes: Wo
   return wakeWith(createInstance(seriesId, label, by), wakes);
 }
 
-// Wakes an instance, each wake logged with who set it and its text, a note unless it's the runner's word (standing()).
-type Woken = { from: string; immediate?: boolean; text?: string; inst?: string; sourceRun?: number; assigned?: boolean; quiet?: boolean; authority?: Authority; initiator?: string; schedule?: string };
+// Wakes an instance, each wake logged with who set it and its text, a note unless it's the owner's word (standing()).
+type Woken = { from: string; immediate?: boolean; text?: string; inst?: string; sourceRun?: number; quiet?: boolean; authority?: Authority; initiator?: string; schedule?: string };
 export function wakeWith(inst: Instance, wakes: Woken[]): Instance {
   for (const wake of wakes) {
     const r = ownerOf(inst);
-    const lease = wake.authority ?? (!wake.assigned && !wake.inst && wake.from === r.by && r.consent ? authority(inst) : undefined);
+    const lease = wake.authority ?? (!wake.inst && wake.from === r.by && r.consent ? authority(inst) : undefined);
     const fields = { ...wake, authority: lease, initiator: lease?.owner };
     inst.append('server', 'wake', { ...fields, ...(woken(inst, fields).word === 'note' && { note: true }) });
   }
@@ -647,7 +647,6 @@ export function fire() {
     }
     // Where the run that set it is now, though it was renamed or moved since.
     const from = wake.inst ? `${named(t, instance(wake.inst).seriesId)}/${instance(wake.inst).label}` : wake.from;
-    const was = { from, text: wake.text, inst: wake.inst, assigned: wake.assigned || wake.assignedLabel !== undefined && wake.assignedLabel === label };
     // A series' wake for a label it has already wakes that instance.
     const known = t.series[target] && labels(target).find(l => l.label === label)?.id;
     if (!t.series[target] || known) {
