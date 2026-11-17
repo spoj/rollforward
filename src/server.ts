@@ -28,6 +28,7 @@ import { addNote, notes, seriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
 import { active, archived, assigned, byToken, cancelWake, cancelWakes, closed, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, pending, queued, remove, resolveFor, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesOf, wakeWith, weekly, reads, CUT, type Active, type Request } from './waker.ts';
 import { find, holdings, killLeft, killTree, sample, type Monitor, type Sandbox } from './monitor.ts';
+import { promptView, savePrompt, sha256 as textSha } from './prompt.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -1593,6 +1594,19 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       }
       writeJson('brand.json', b);
       send(res, 200, 'saved');
+    }
+    // The agents' instructions (prompt.ts), which admins edit, from the next run on: to anyone else they aren't there.
+    else if (url.pathname === '/prompt') {
+      if (me.role !== 'admin') throw new HttpError(404, 'not found');
+      if (req.method === 'PUT') {
+        // Read raw, so the system's log has the text's sha256 rather than the text.
+        let put;
+        try { put = JSON.parse((await body(req)).toString() || '{}'); } catch { throw new HttpError(400, 'the body is JSON'); }
+        const text = put.reset === true ? null : put.text;
+        savePrompt(me.email, text);
+        bodies.set(req, text === null ? { reset: true } : { sha256: textSha(String(text)) });
+      } else if (req.method !== 'GET') throw new HttpError(405, 'GET shows them, PUT {"text"} saves them, PUT {"reset": true} goes back to the released ones');
+      send(res, 200, promptView());
     }
     // The system monitor is admins' alone: to anyone else it isn't there.
     else if (url.pathname === '/monitor' || url.pathname.startsWith('/monitor/')) {

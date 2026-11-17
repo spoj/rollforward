@@ -57,8 +57,11 @@ writeFileSync(i('p1/working/payroll.csv'), 'names');
 mkdirSync(join(tmp, 'index'));
 writeFileSync(join(tmp, 'index', 'LFM.ndjson.zst'), Buffer.concat([{ id: 'f1', name: 'aging.xlsx', size: 1200 }, { id: 'f2', name: 'march.xlsx', size: 800 }].map(i => zstdCompressSync(`${JSON.stringify(i)}\n`))));
 const series = '/work/ws/Weekly: AR', at = `${series}/w2`;
+// The admins' own instructions, in place of the released ones (prompt.ts).
+writeFileSync(join(tmp, 'prompt.md'), 'Our own instructions.
+');
 const agent = pi({
-  token: TOKEN, id: 'w2', n: 1, skills: skills().filter(s => s.id === 'tool').map(s => ({ ...s, dir: realpathSync(s.dir) })),
+  token: TOKEN, id: 'w2', n: 1, prompt: join(tmp, 'prompt.md'), skills: skills().filter(s => s.id === 'tool').map(s => ({ ...s, dir: realpathSync(s.dir) })),
   view: {
     instance: at, dir: i('w2'), pylib: join(root, 'series', 'weekly', '.pylib'), ro: [[i('w1'), `${series}/w1`], [i('w2'), at], [i('r1'), '/work/ws/Shared/r1'], [join(tmp, 'index'), '/index']],
     names: { [`${series}/w1`]: 'w1', [at]: 'w2', '/work/ws/Shared/r1': 'r1' }, series: { [series]: 'weekly', '/work/ws/Shared': 'shared' }, env: { DATABRICKS_HOST: 'https://adb-1.test', RF_INDEX: '/index' } },
@@ -93,6 +96,10 @@ test('the sandbox shows its view of the data by name, and nothing else of the da
   assert.equal(await sh('ls /work/ws'), 'Shared\nWeekly: AR');
   assert.equal(await sh('cat names.tsv'), `w1\t${series}/w1\nw2\t${at}\nr1\t/work/ws/Shared/r1`, "the instances in reach by id, at their folders by the names the run started with");
   for (const p of [root, '/root', import.meta.dirname]) assert.match(await sh(`ls ${p} 2>&1`), /No such file/, p);
+});
+
+test("the admins' own instructions are at /app/prompt.md, which the run reads as its system prompt", async () => {
+  assert.equal(await sh('cat /app/prompt.md'), 'Our own instructions.');
 });
 
 test("git finds the instance's repository from working/, across the mount between them", async () => {
