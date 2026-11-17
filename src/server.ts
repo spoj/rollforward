@@ -212,8 +212,13 @@ function watched(me: Me, id: string, site: string): { browsers: Browsers; id: st
 function waits(inst: Instance): { who: string; e: Entry }[] {
   if (inst.doc.status !== 'open') return [];
   const owner = ownerOf(inst).by;
-  return inst.log.filter(e => e.seq > inst.copied && e.op === 'comment' && ((e.by === 'agent' && e.ask) || (standing(inst, e)?.word === 'note' && e.by !== owner)) && !inst.answered(e))
-    .map(e => ({ who: (e.to as string | undefined) ?? owner, e })).filter(({ who }) => !!who);
+  const read = Math.max(inst.copied, seen(owner).at[inst.id] ?? 0, active.get(inst.seriesId)?.inst === inst ? active.get(inst.seriesId)!.seen : 0,
+    ...inst.log.filter(e => e.op === 'done').map(e => (e.seen as number | undefined) ?? 0),
+    inst.log.findLast(e => e.by === owner && ['create', 'comment', 'upload', 'attach', 'signoff', 'reject', 'react', 'rename', 'interrupt', 'promote'].includes(e.op))?.seq ?? 0);
+  return inst.log.filter(e => e.seq > inst.copied && (e.by === 'agent'
+    ? e.op === 'comment' && (e.ask || e.note) && !inst.answered(e)
+    : e.seq > read && e.by !== owner && isPerson(e) && ['create', 'comment', 'upload'].includes(e.op)))
+    .map(e => ({ who: e.by === 'agent' ? (e.to as string | undefined) ?? owner : owner, e })).filter(({ who }) => !!who);
 }
 
 function asked(r: Request): string | null {
@@ -234,7 +239,7 @@ function guard(before: string[], after: string[], force: unknown) {
 }
 
 // The cached sidebar projection also depends on series authority, including consent additions that keep the same epoch.
-const kept = new WeakMap<Instance, { key: string; active: string; asks: { who: string; kind: string }[]; owner: string; acted: string[]; cost: number; estimated: boolean; corrections: number; wrong: string[];
+const kept = new WeakMap<Instance, { key: string; active: string; asks: { who: string; kind: string; from?: string; started?: boolean }[]; owner: string; acted: string[]; cost: number; estimated: boolean; corrections: number; wrong: string[];
   refused: { at: string; run: number; site: string; login: string; hosts: string[] }[] }>();
 function owner(inst: Instance) {
   const r = ownerOf(inst), offers = logins(r.by).flatMap(l => l.offers);
@@ -261,10 +266,10 @@ const estimatedOf = (i: Instance) => i.log.slice(i.log.findLastIndex(e => e.op =
 
 function summary(i: Instance, me: Me, w8 = wakes()) {
   const email = me.email;
-  const key = `${i.log.length}:${i.doc.rev}:${JSON.stringify(seriesSettings(i.series()))}`;
+  const key = `${i.log.length}:${i.doc.rev}:${JSON.stringify(seriesSettings(i.series()))}:${seen(ownerOf(i).by).at[i.id]}:${active.get(i.seriesId)?.seen}`;
   const news = i.log.findLast(e => e.by !== email && e.accepted_by !== email && NEWS.includes(e.op)), s = seen(email);
   let k = kept.get(i);
-  if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i).map(({ who, e }) => ({ who, kind: e.ask === true ? 'ask' : (e.ask as string | undefined) ?? 'note' })), owner: ownerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: costOf(i), estimated: estimatedOf(i), corrections: i.log.filter(e => e.op === 'correction').length,
+  if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i).map(({ who, e }) => ({ who, kind: e.ask === true ? 'ask' : (e.ask as string | undefined) ?? 'note', ...(isPerson(e) && { from: e.by, started: e.op === 'create' }) })), owner: ownerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: costOf(i), estimated: estimatedOf(i), corrections: i.log.filter(e => e.op === 'correction').length,
     wrong: i.log.filter(e => e.op === 'correction' && e.kind === 'wrong').map(e => e.at),
     refused: i.log.filter(e => e.op === 'browser' && e.hosts).map(e => ({ at: e.at, run: e.run as number, site: e.site as string, login: e.login as string, hosts: Object.keys(e.hosts as object) })) });
   return {
@@ -524,7 +529,7 @@ async function status(me: Me) {
     running: seen.flatMap(([sid]) => active.get(sid) ?? []).map(a => ({ path: path(a.inst), run: a.n, owner: ownerOf(a.inst).by, at: a.inst.log.findLast(e => e.op === 'run')!.at, cost: +a.cost.toFixed(6), ...(a.estimated && { estimated: true }) })),
     queued: open.flatMap(i => { const q = queued(i); return q ? [{ path: path(i), owner: ownerOf(i).by, ...q }] : []; }),
     ownership: listing(me).filter(w => w.manage && !w.archived).flatMap(w => w.series.filter(s => !s.archived && s.ownerUnavailable).map(s => ({ id: s.id, path: `${w.name}/${s.name}`, text: s.owner ? `${users()[s.owner]?.name ?? s.owner} can no longer run ${s.name}` : `${s.name} has no owner` }))),
-    asks: open.flatMap(i => waits(i).map(({ who, e }) => ({ who, path: path(i), since: e.at, text: e.text as string, note: e.by !== 'agent' || !e.ask }))),
+    asks: open.flatMap(i => waits(i).map(({ who, e }) => ({ who, path: path(i), since: e.at, text: isPerson(e) ? `${users()[e.by]?.name ?? e.by} ${e.op === 'create' ? 'started' : 'added a note to'} ${t.series[i.seriesId].name} · ${i.label}` : e.text as string, note: e.by !== 'agent' || !e.ask }))),
     expired: (me.role === 'admin' ? Object.keys(users()) : [me.email]).flatMap(who => logins(who).filter(l => l.expired).map(l => ({
       who, login: l.name,
       holding: open.filter(i => held(i, l.id, who)).map(path),
@@ -1102,6 +1107,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       if (!mayCancel && !ownRequest) throw new HttpError(403, 'only the series owner, a workspace manager, or its authorized autonomous run cancels this schedule');
       // A person's cancellation is theirs in the system's log; a run's is recorded there too, with the wake, its instance and run.
       if (run) act('agent', { method: 'DELETE', path: url.pathname, wake, inst: run.inst.id, run: run.n });
+      if (!run && !t.series[to] && by === owner) see(by, to, instance(to).log.at(-1)!.seq);
       return void (cancelWake(id), send(res, 200, 'ok'));
     }
     const { at: when = '', label, days, text } = payload, w = String(when);
@@ -1118,6 +1124,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       ...(starts && { label: starts }), ...(days !== undefined && { days: weekly(String(days), first, starts) }), ...(text?.trim() && { text: text.trim() }),
     });
     if (run) act('agent', { method: 'PUT', path: url.pathname, wake: wakes().pending[created.id], inst: run.inst.id, run: run.n });
+    if (!run && !t.series[to] && by === seriesSettings(seriesDir(sid)).owner) see(by, to, instance(to).log.at(-1)!.seq);
     return send(res, 200, created);
   }
   // Only the current owner starts a request. Its provenance stays a note beside that owner's explicit act.
@@ -1137,6 +1144,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       const inst = r.target ? wakeWith(instance(r.target), [provenance, { from: by, quiet }])
         : startWith(r.series, r.label, by, [provenance, { from: by, quiet }]);
       dropRequest(id);
+      see(by, inst.id, inst.log.at(-1)!.seq);
       if (r.target) res.setHeader('X-RF-Woke', '1');
       return send(res, 200, { id: inst.id });
     });
@@ -1152,7 +1160,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   if (!action) see(by, inst.id, inst.log.at(-1)!.seq);
   // Each entry's standing, by its seq, a note's entry saying note too; and whether a comment of yours would start a run now.
   const said = !action && new Map(inst.log.flatMap(e => { const s = standing(inst, e); return s ? [[e.seq, s.word]] : []; }));
-  if (said) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => said.get(e.seq) === 'note' ? { ...e, note: true } : e), standing: Object.fromEntries(said), starts: inst.doc.status === 'open' && standing(inst, { seq: inst.log.length + 1, at: '', by, op: 'comment' })!.starts, run: mine ? { n: mine.n, cost: +mine.cost.toFixed(6), ...(mine.estimated && { estimated: true }), browsers: [...(mine.browsers?.watchable().keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), owner: owner(inst), previous: await previous(inst), sums: Object.fromEntries(await Promise.all(inst.doc.items.filter(i => i.file).map(async i => [i.id, await sha256(inst.dir, i.file!)]))), waiting: waits(inst).map(({ who, e }) => ({ who, seq: e.seq })), held: [...new Set(inst.log.filter(e => e.op === 'expired').map(e => e.login as string))].filter(l => held(inst, l, ownerOf(inst).by)) });
+  if (said) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => said.get(e.seq) === 'note' ? { ...e, note: true } : e), standing: Object.fromEntries(said), starts: inst.doc.status === 'open' && standing(inst, { seq: inst.log.length + 1, at: '', by, op: 'comment' })!.starts, run: mine ? { n: mine.n, cost: +mine.cost.toFixed(6), ...(mine.estimated && { estimated: true }), browsers: [...(mine.browsers?.watchable().keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), owner: owner(inst), previous: await previous(inst), sums: Object.fromEntries(await Promise.all(inst.doc.items.filter(i => i.file).map(async i => [i.id, await sha256(inst.dir, i.file!)]))), waiting: waits(inst).filter(({ e }) => e.op === 'comment').map(({ who, e }) => ({ who, seq: e.seq })), held: [...new Set(inst.log.filter(e => e.op === 'expired').map(e => e.login as string))].filter(l => held(inst, l, ownerOf(inst).by)) });
   if (action === 'trace') return send(res, 200, trace(inst));
   if (action === 'summary') return send(res, 200, summary(inst, me));
   // The screen: anyone who sees the instance reads it; only its own run writes it.

@@ -382,7 +382,7 @@ test("transferring mid-run retires the old epoch; fresh consent and an owner act
   const { log: still, waiting, owner } = await (await call('GET', path, undefined, bob)).json();
   assert.equal(still.filter(e => e.op === 'run').length, 1, 'transfer and a comment without consent start nothing');
   assert.equal(owner.consent, undefined);
-  assert.deepEqual(waiting.map(w => [w.who, still[w.seq - 1].by]), [[BOB, 'agent'], [BOB, ADMIN]], "the old unnamed ask and unread old-owner comment wait on the new owner");
+  assert.deepEqual(waiting.map(w => [w.who, still[w.seq - 1].by]), [[BOB, 'agent']], "the new owner's act acknowledges the old-owner comment, not the unnamed agent ask");
   assert.equal((await call('PUT', `/api/series/${series}/credentials`, { logins: [], autonomous: false })).status, 403, 'a manager cannot consent for Bob');
   assert.equal((await call('PUT', `/api/series/${series}/credentials`, { logins: [], autonomous: false }, bob)).status, 200);
   const next: Script = { bash: [], report: 'Taken up.', saw: [] };

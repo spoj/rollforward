@@ -93,13 +93,14 @@ export function seen(email: string): Seen {
   return seenBy.get(email)!;
 }
 
-// Written quietly, as no page shows what another has seen.
+// Acknowledging work also refreshes Waiting in the person's other browsers.
 export function see(email: string, id: string, seq: number) {
   const s = seen(email);
   if (s.at[id] === seq) return;
   s.at[id] = seq;
   mkdirSync(join(dir, 'seen'), { recursive: true });
   replaceFile(join(dir, 'seen', `${email}.json`), JSON.stringify(s));
+  changes.emit('change', id);
 }
 
 // A 32-byte key. Where systemd runs the server, it's the credential of that name (LoadCredentialEncrypted=, sealed to the machine's

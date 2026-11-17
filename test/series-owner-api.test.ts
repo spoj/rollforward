@@ -129,6 +129,38 @@ test('managers are told about missing and ineligible series owners', async () =>
   assert.equal((await ownership()).some(s => s.id === sid), false);
 });
 
+test('unread collaborator creations, comments and uploads wait until the owner opens or acts', async () => {
+  const sid = await series('Inbox');
+  const { id } = await (await ok('POST', `/api/series/${sid}`, { label: 'Jan', quiet: true }, colleague)).json();
+  const attention = async () => (await json('/api')).flatMap(w => w.series).find(s => s.id === sid).instances.find(i => i.id === id).asks;
+  assert.deepEqual((await attention()).map(a => [a.who, a.from, a.started]), [[alice, colleague, true]]);
+  assert.deepEqual((await json(`/api/instances/${id}`, colleague)).waiting, [], 'instance waiting remains comment threads, as existing clients expect');
+  assert.equal((await attention()).length, 1, 'the creator opening it does not acknowledge for its owner');
+  await json(`/api/instances/${id}`, alice);
+  assert.deepEqual(await attention(), []);
+  await ok('POST', `/api/instances/${id}/comment`, { text: 'Rate changed' }, colleague);
+  await ok('POST', `/api/instances/${id}/upload?name=note.txt`, { text: 'New input' }, colleague);
+  assert.equal((await attention()).length, 2);
+  const detail = await json(`/api/instances/${id}`, colleague);
+  assert.ok(detail.waiting.every(w => detail.log[w.seq - 1].op === 'comment'));
+  assert.ok((await json('/api/status', alice)).asks.filter(a => a.path === 'Workspace/Inbox/Jan').every(a => a.text === `${colleague} added a note to Inbox · Jan`));
+  await ok('POST', `/api/instances/${id}/comment`, { text: 'Thanks', quiet: true }, alice);
+  assert.deepEqual(await attention(), []);
+  await ok('POST', `/api/instances/${id}/comment`, { text: 'One more thing' }, colleague);
+  assert.equal((await attention()).length, 1);
+  await json(`/api/instances/${id}`, alice);
+  assert.deepEqual(await attention(), []);
+  await ok('POST', `/api/instances/${id}/comment`, { text: 'For a scheduled run' }, colleague);
+  await ok('PUT', `/api/series/${sid}/credentials`, { logins: [], autonomous: true }, alice);
+  assert.equal((await attention()).length, 1, 'series authority events do not acknowledge instance work');
+  await ok('PUT', `/api/wakes/${id}`, { at: '2099-01-01' }, alice);
+  assert.deepEqual(await attention(), []);
+  const historical = (await json('/api')).flatMap(w => w.series).find(s => s.id === 'history').instances.find(i => i.id === 'historical');
+  assert.equal(historical.asks.some(a => a.started), false, 'a run has read the historical creation');
+  await ok('POST', '/api/instances/historical/react', { on: 4, up: true }, colleague);
+  assert.deepEqual((await json('/api/instances/historical', colleague)).waiting, [{ who: colleague, seq: 4 }], 'reacting and opening acknowledge no agent proposal');
+});
+
 test('admins author series without a capability grant', async () => {
   assert.equal((await request('POST', '/api/series', { workspace: 'ws', name: 'Admin series' })).status, 200);
 });
@@ -357,6 +389,31 @@ test('disable revokes even empty owned series and enabling never restores old co
   assert.equal(settings(sid).consent, undefined);
   assert.equal(settings(sid).epoch, epoch);
   await ok('PUT', `/api/series/${sid}/credentials`, { logins: [], autonomous: false }, bob);
+});
+
+test('run-read notes disappear, quiet answers wait, and agent asks and notes keep their reply lifecycle', () => {
+  const source = readFileSync('src/server.ts', 'utf8');
+  const log = [
+    { seq: 1, op: 'create', by: colleague },
+    { seq: 2, op: 'comment', by: colleague },
+    { seq: 3, op: 'upload', by: colleague },
+    { seq: 4, op: 'comment', by: 'agent', ask: 'question' },
+    { seq: 5, op: 'comment', by: 'agent', note: true },
+    { seq: 6, op: 'done', by: 'server', seen: 3 },
+    { seq: 7, op: 'comment', by: colleague },
+  ];
+  const inst = { id: 'i', seriesId: 's', doc: { status: 'open' }, copied: 0, log, answered: () => false };
+  const waits = runInNewContext(stripTypeScriptTypes(source.slice(source.indexOf('function waits('), source.indexOf('\nfunction asked('))) + '\nwaits', {
+    ownerOf: () => ({ by: alice }), seen: () => ({ at: {} }), active: new Map(),
+    isPerson: e => e.by.includes('@'), standing: () => ({ word: 'answer', starts: false }),
+  });
+  assert.deepEqual(Array.from(waits(inst), x => x.e.seq), [4, 5, 7]);
+  log.push({ seq: 8, op: 'authority', by: alice });
+  assert.deepEqual(Array.from(waits(inst), x => x.e.seq), [4, 5, 7]);
+  log.push({ seq: 9, op: 'wake', by: 'server' });
+  assert.deepEqual(Array.from(waits(inst), x => x.e.seq), [4, 5, 7]);
+  log.push({ seq: 10, op: 'react', by: alice });
+  assert.deepEqual(Array.from(waits(inst), x => x.e.seq), [4, 5]);
 });
 
 test('authority mutation persists epoch and revokes tokens synchronously before waiting for physical retirement', async () => {

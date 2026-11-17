@@ -346,11 +346,11 @@ test("after a series transfer unread instructions become notes, while the incomi
   for (const [text, cookie] of [['Use the HSBC statement this time.', admin], ['And cut off at the 25th.', admin], ['The rate moved.', b]])
     assert.equal((await call('POST', `/api/instances/${id}/comment`, JSON.stringify({ text, quiet: true }), cookie)).status, 200);
   const before = await json(`/api/instances/${id}`);
-  assert.deepEqual([before.waiting.map((w: { who: string }) => w.who), before.starts], [[adminEmail], true]);
+  assert.deepEqual([before.waiting.map((w: { who: string }) => w.who), before.starts], [[], true], 'opening acknowledges collaborator notes');
   assert.equal((await call('PUT', `/api/series/${sid}/owner`, JSON.stringify({ owner: bob }))).status, 200);
   const { log: after, waiting, standing, starts, owner } = await json(`/api/instances/${id}`, b);
   assert.deepEqual([waiting.map((w: { who: string; seq: number }) => [w.who, w.seq]), after.filter((e: { op: string; by: string }) => e.op === 'comment' && e.by !== 'agent').map((e: { seq: number; note?: boolean }) => [standing[e.seq], !!e.note])],
-    [[[bob, 2], [bob, 3]], [['note', true], ['note', true], ['note', true]]]);
+    [[], [['note', true], ['note', true], ['note', true]]], 'the incoming owner already acted after those instructions; transfer does not make them unread');
   assert.equal(starts, false, 'a transfer grants no consent, even for an empty ceiling');
   assert.ok(owner.epoch > before.owner.epoch);
   assert.equal((await call('PUT', `/api/series/${sid}/credentials`, JSON.stringify({ logins: [], autonomous: false }), b)).status, 200);
@@ -360,17 +360,17 @@ test("after a series transfer unread instructions become notes, while the incomi
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ members: [] }))).status, 200);
 });
 
-test("in an instance taken over under v0.4.0, what its runs had read is history, waiting on no one and no note; what none had read waits on the explicit series owner as a note; the agent's asks still wait, on whom they named, whose answer is theirs", async () => {
+test("in an instance taken over under v0.4.0, read history stays history, opening acknowledges unread notes, and the agent's asks still wait on whom they named, whose answer is theirs", async () => {
   const c = sessionOf(await login(CAROL))!, e = sessionOf(await login(ERIN))!, path = '/api/instances/01d7a4e00003';
   assert.equal((await call('PUT', '/api/series/01d7a4e00002/credentials', JSON.stringify({ logins: [], autonomous: false }), c)).status, 200);
   const { waiting, standing, log } = await json(path, c);
-  assert.deepEqual(waiting.map((w: { who: string; seq: number }) => [w.who, w.seq]), [[ERIN, 5], [CAROL, 6], [CAROL, 8]], "erin's question, the proposal that named no one, and bob's unread comment");
+  assert.deepEqual(waiting.map((w: { who: string; seq: number }) => [w.who, w.seq]), [[ERIN, 5], [CAROL, 6]], "opening acknowledges bob's comment, not erin's question or the unnamed proposal");
   assert.deepEqual([standing, log.filter((e: { op: string; by: string }) => e.op === 'comment' && e.by !== 'agent').map((e: { note?: boolean }) => !!e.note)], [{ 8: 'note' }, [false, false, true]]);
   const asks = (await workspaces(c)).find((w: { id: string }) => w.id === '01d7a4e00001').series[0].instances[0].asks;
-  assert.deepEqual(asks, [{ who: ERIN, kind: 'question' }, { who: CAROL, kind: 'proposal' }, { who: CAROL, kind: 'note' }], 'nothing of the read history waits on her');
+  assert.deepEqual(asks, [{ who: ERIN, kind: 'question' }, { who: CAROL, kind: 'proposal' }], 'neither read history nor the acknowledged note waits on her');
   assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ thread: 'c5', text: 'The HSBC one.' }), e)).status, 200);
   const answered = await json(path, c);
-  assert.deepEqual([answered.standing[answered.log.at(-1).seq], answered.waiting.map((w: { who: string }) => w.who)], ['answer', [CAROL, CAROL]], 'her answer, as erin was asked');
+  assert.deepEqual([answered.standing[answered.log.at(-1).seq], answered.waiting.map((w: { who: string }) => w.who)], ['answer', [CAROL]], 'her answer, as erin was asked; opening acknowledges it, not the proposal');
   await quiet();
   const runs = (await json(path, c)).log.filter((e: { op: string }) => e.op === 'run');
   assert.equal(runs.length, 2, 'a named answer starts a run under current owner consent');
@@ -795,9 +795,9 @@ test("people see, set, move and cancel wakes, one-off or weekly, while only the 
   assert.equal((await call('POST', `${await at(series, '2026-08-30 rework', 'comment')}`, JSON.stringify({ text: 'fyi' }), b)).status, 200);
   assert.equal(JSON.parse(readFileSync(wakes, 'utf8')).pending.k2?.at, due, "bob's note for the series owner starts nothing, so the wake stays");
   const asks = async () => (await shown(series)).instances.find((i: { id: string }) => i.id === sep).asks;
-  assert.deepEqual(await asks(), [{ who: adminEmail, kind: 'note' }], "bob's note waits on the series owner");
+  assert.deepEqual(await asks(), [{ who: adminEmail, kind: 'note', from: bob, started: false }], "bob's unread note names its author and waits on the series owner");
   assert.equal((await call('PUT', await at(series), JSON.stringify({ share: true }))).status, 410);
-  assert.deepEqual(await asks(), [{ who: adminEmail, kind: 'note' }], 'obsolete sharing cannot make collaborator notes executable');
+  assert.deepEqual(await asks(), [{ who: adminEmail, kind: 'note', from: bob, started: false }], 'obsolete sharing cannot make collaborator notes executable');
   assert.equal((await call('PUT', await at(series), JSON.stringify({ share: false }))).status, 410);
   assert.equal((await call('POST', `${await at(series, '2026-08-30 rework', 'comment')}`, JSON.stringify({ text: 'go' }))).status, 200);
   assert.equal(JSON.parse(readFileSync(wakes, 'utf8')).pending.k2?.at, due, "the series owner's act starts a run now, and the wake still comes when it's due");
@@ -1254,12 +1254,13 @@ test('rf reads without a pull: waiting, what waits on you; show, an instance, th
   await quiet();
   assert.equal((await call('POST', `/api/instances/${id}/comment`, JSON.stringify({ text: 'Bob notes the rate moved.\nMore below.' }), sessionOf(await login(bob))!)).status, 200);
   await quiet();
-  const { log } = await json(`/api/instances/${id}`), note = log.findLast((e: { op: string }) => e.op === 'comment');
-  assert.match(await rf('waiting'), new RegExp(`^note  ${path} since [\\d-]+ [\\d:]+: Bob notes the rate moved\\.$`, 'm'));
-  assert.deepEqual(JSON.parse(await rf('waiting', '--json')).find((r: { path: string }) => r.path === path), { kind: 'note', path, since: note.at, text: note.text });
+  const { log } = await json(`/api/instances/${id}`, sessionOf(await login(bob))!), note = log.findLast((e: { op: string }) => e.op === 'comment');
+  assert.match(await rf('waiting'), new RegExp(`^note  ${path} since [\\d-]+ [\\d:]+: Bob added a note to Notes · a1$`, 'm'));
+  assert.deepEqual(JSON.parse(await rf('waiting', '--json')).find((r: { path: string }) => r.path === path), { kind: 'note', path, since: note.at, text: 'Bob added a note to Notes · a1' });
   const shown = JSON.parse(await rf('show', path, '--json'));
-  assert.deepEqual([shown.id, shown.status, shown.owner, shown.waiting], [id, 'open', adminEmail, [{ comment: note.thread, thread: note.thread, kind: 'note', for: adminEmail, by: bob, item: null, ref: null, text: note.text }]]);
-  assert.match(await rf('show', path), new RegExp(`^${path}  open, series owner ${adminEmail}\\n${note.thread}  note for ${adminEmail}: Bob notes the rate moved\\.\\nlast run \\d+  \\$0\\.00(  .+)?\\n$`));
+  assert.deepEqual([shown.id, shown.status, shown.owner, shown.waiting], [id, 'open', adminEmail, []], 'show opens the instance and acknowledges the collaborator note');
+  assert.ok(!JSON.parse(await rf('waiting', '--json')).some((r: { path: string }) => r.path === path));
+  assert.match(await rf('show', path), new RegExp(`^${path}  open, series owner ${adminEmail}\\nlast run \\d+  \\$0\\.00(  .+)?\\n$`));
   const lines = (await rf('log', path)).trim().split('\n');
   assert.equal(lines.length, log.length);
   assert.match(lines.find(l => l.startsWith(`${note.seq}  `))!, new RegExp(`^${note.seq}  [\\d-]+ [\\d:]+  ${bob}  comment  \\{.*"thread":"${note.thread}".*\\}  Bob notes the rate moved\\.$`));
@@ -1285,11 +1286,12 @@ test('rf close --as-series closes before promoting: a refused close leaves the t
 
 test('rf acts as the page does: react, series credentials and ownership, rename, interrupt, approve and reject, close, as a series for a task, abandon and correct', async () => {
   const b = sessionOf(await login(bob))!, rows = async () => JSON.parse(await rf('ls', '--json')) as { path: string; id: string; status?: string; owner?: string }[];
-  const shown = JSON.parse(await rf('show', 'Reads/Notes/a1', '--json')), on = shown.waiting[0].comment;
+  const shown = JSON.parse(await rf('show', 'Reads/Notes/a1', '--json'));
+  const log = (await rf('log', 'Reads/Notes/a1', '--json')).trim().split('\n').map(l => JSON.parse(l)), on = log.findLast(e => e.op === 'comment').thread;
   assert.equal(await rf('react', 'Reads/Notes/a1', on, 'up'), `up on ${on}\n`);
   assert.equal(await rf('react', 'Reads/Notes/a1', 'down'), 'down on Reads/Notes/a1\n');
   assert.deepEqual((await json(`/api/instances/${shown.id}`)).log.filter((e: { op: string }) => e.op === 'react').map((e: { on?: number; up: boolean }) => [e.on, e.up]), [[+on.slice(1), true], [undefined, false]]);
-  assert.equal(JSON.parse(await rf('show', 'Reads/Notes/a1', '--json')).waiting.length, 1, 'a reaction answers nothing');
+  assert.equal(JSON.parse(await rf('show', 'Reads/Notes/a1', '--json')).waiting.length, 0, 'acknowledged notes do not return after a reaction');
   for (const [body, why] of [[{ up: 'yes' }, 'up is true, false or null'], [{ on: 1, up: true }, 'no comment at seq 1']] as const) {
     const r = await call('POST', `/api/instances/${shown.id}/react`, JSON.stringify(body));
     assert.deepEqual([r.status, await r.text()], [400, why]);
@@ -1359,7 +1361,7 @@ test('rf makes what the page makes: a workspace, a task, named or by its first c
   assert.equal(await rf('new', 'series', 'Making/Lunch', 'Lunches'), 'made the series Making/Lunches\n');
   await assert.rejects(rf('new', 'instance', 'Making/Lunches/Lunch', '2026-11'), fails(1, /^rf: Making\/Lunches\/Lunch is an instance: name its series\n$/));
   await assert.rejects(rf('new', 'instance', 'Making/Lunches', '2026-11', '--creds', 'web:nosuch'), fails(1, /^rf: instance credentials were removed: use rf series credentials SERIES\n$/));
-  assert.equal(await rf('new', 'instance', 'Making/Lunches', '2026-11'), 'made Making/Lunches/2026-11; series owner and ceiling unchanged\n');
+  assert.equal(await rf('new', 'instance', 'Making/Lunches', '2026-11'), `made Making/Lunches/2026-11; series owner and ceiling unchanged; ${adminEmail} starts its runs\n`);
 });
 
 test("rf's acts start no run unless --wake: a new instance waits for its first act, and a task's first comment, a comment and an upload are quiet", async () => {
@@ -1376,7 +1378,7 @@ test("rf's acts start no run unless --wake: a new instance waits for its first a
   await rf('comment', path, 'Plan the week.', '--wake');
   const { id } = JSON.parse(await rf('ls', '--json')).find((r: { path: string }) => r.path === path);
   assert.equal((await ran(`/api/instances/${id}`)).findLast(e => e.op === 'comment')!.quiet, undefined);
-  assert.equal(await rf('new', 'instance', 'Making/Lunches', '2026-12', '--wake'), 'made Making/Lunches/2026-12; series owner and ceiling unchanged\n');
+  assert.equal(await rf('new', 'instance', 'Making/Lunches', '2026-12', '--wake'), `made Making/Lunches/2026-12; series owner and ceiling unchanged; ${adminEmail} starts its runs\n`);
   assert.deepEqual((await log('Making/Lunches/2026-12')).slice(0, 2).map(e => [e.op, e.from]), [['create', undefined], ['wake', adminEmail]]);
   await quiet();
 });

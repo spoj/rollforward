@@ -149,7 +149,7 @@ before(async () => {
   const port = (probe.address() as { port: number }).port;
   await new Promise(ok => probe.close(ok));
   entra = await idp();
-  Object.assign(env, entra.env(`http://127.0.0.1:${port}`), { RF_ADMINS: 'admin@demo.test', RF_DRAIN_MIN: '0.05' });
+  Object.assign(env, entra.env(`http://127.0.0.1:${port}`), { RF_ADMINS: 'admin@demo.test', RF_DRAIN_MIN: '0.05', RF_MIN_FREE_GB: '0' });
   proc = spawn(process.execPath, [join(app, 'src', 'server.ts'), root, String(port)], { env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'inherit'] });
   await new Promise((ok, fail) => {
     proc.stdout!.on('data', d => String(d).includes('rollforward on') && ok(null));
@@ -879,14 +879,15 @@ test("people show by name, with their email on hover, and Entra groups by label;
   assert.equal((await fetch(url('/api/instances/a5c0ff5e1f00/comment'), { method: 'POST', body: JSON.stringify({ text: 'The bank wants it by Friday.' }), headers: { cookie: bobs } })).status, 200);
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
   await page.waitForSelector(`#log .thread .post b.p span[title="${bob}"]:text-is("Bob")`);
-  assert.equal(await page.locator('#needs').innerText(), 'Note\nThe bank wants it by Friday.\nReply');
+  assert.equal(await page.locator('#needs').isHidden(), true, 'opening acknowledges the collaborator note');
   await page.click('#log [data-act=audit]');
   await page.locator('#audit .e', { hasText: 'Bob left a note for you' }).waitFor();
   await page.click('#log .seg [data-act=audit]');
   const long = `Wide${'_'.repeat(400)}`;
   assert.equal((await fetch(url('/api/instances/a5c0ff5e1f00/comment'), { method: 'POST', body: JSON.stringify({ text: long }), headers: { cookie: bobs } })).status, 200);
-  await page.waitForSelector(`#needs span:text-is("${long}")`);
-  assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('#needs, #log')].map(e => e.scrollWidth <= e.clientWidth).concat([...document.querySelectorAll('#needs .btn')].map(b => b.getBoundingClientRect().right <= document.querySelector('#needs')!.getBoundingClientRect().right))), [true, true, true, true], 'a long line ends in an ellipsis, and its Reply shows; the panel keeps its width');
+  await page.waitForSelector(`#log .pb:text-is("${long}")`);
+  assert.equal(await page.locator('#needs').isHidden(), true);
+  assert.equal(await page.locator('#log').evaluate(e => e.scrollWidth <= e.clientWidth), true, 'the panel keeps its width with a long note');
 });
 
 test("a series owner's name without letters shows its first characters in the sidebar", async () => {
@@ -2239,6 +2240,7 @@ test("an expired login's banner on an instance agrees with held(): gone once clo
   }
   entra.who.stale.delete('admin@demo.test');
   await page.goto(`${origin}/#/${i1}`);
+  await page.waitForFunction(id => cur?.i?.id === id, i1);
   await page.waitForSelector('#needs:not([hidden])');
   assert.match(await page.textContent('#needs') ?? '', /Your rollforward login has expired/);
   await page.evaluate(async ([sid, b]) => {
@@ -2255,10 +2257,10 @@ test("an expired login's banner on an instance agrees with held(): gone once clo
   await page.goto(`${origin}/auth/login`);
   await page.waitForSelector('#bar h1 .t');
   await page.goto(`${origin}/#/${i1}`);
-  await page.waitForSelector('#bar h1 .t:text-is("2026-10")');
+  await page.waitForFunction(id => cur?.i?.id === id, i1);
   assert.equal(await page.locator('#needs').isHidden(), true, 'gone after series transfer and sign-in');
   await page.goto(`${origin}/#/${i2}`);
-  await page.waitForSelector('#bar h1 .t:text-is("2026-09")');
+  await page.waitForFunction(id => cur?.i?.id === id, i2);
   assert.equal(await page.locator('#needs').isHidden(), true, 'gone on closed instance');
 });
 

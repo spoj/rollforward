@@ -107,17 +107,16 @@ test('missing ownership names managers to viewers and opens transfer for manager
 test('Waiting transfers the named series rather than the currently open one', async () => {
   const source = code.slice(code.indexOf("  if (act === 'series-owner') {"), code.indexOf("  if (act === 'start-go') {"));
   const calls: string[] = [];
-  let rendered = false;
+  let refreshed = false;
   await runInNewContext(`(async () => { ${source} })()`, {
     act: 'series-owner', el: { dataset: { id: 'unowned' } }, tree: [{ name: 'Other workspace', series: [{ id: 'unowned', name: 'Unowned' }] }],
     cur: { s: series }, pv: { settings: { kind: 'waiting' } }, me: { names: {} }, nameOf: (x: string) => x, esc: (x: string) => x,
-    $: () => ({ value: owner }), refresh: async () => {},
+    $: () => ({ value: owner }), refresh: async () => { refreshed = true; },
     api: async (path: string) => { calls.push(path); return [owner]; },
     ask: async (options: any) => { assert.equal(options.title, 'Transfer whole series: Other workspace · Unowned'); await options.act(); return true; },
-    renderPv: () => { rendered = true; },
   });
   assert.deepEqual(calls, ['/api/series/unowned/owners', '/api/series/unowned/owner']);
-  assert.equal(rendered, true);
+  assert.equal(refreshed, true);
 });
 
 test('CLI waiting and status list ownership work for managers', async () => {
@@ -183,6 +182,7 @@ test('CLI later instance and request Start never send credentials', async () => 
   let r = await cli('new', 'instance', 'Finance/Monthly', 'Feb');
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(calls.find(c => c.method === 'POST')?.body, { label: 'Feb', quiet: true });
+  assert.match(r.stdout, /owner@example.test starts its runs/);
   r = await cli('new', 'instance', 'Finance/Monthly', 'Feb', '--creds', 'web:erp');
   assert.equal(r.status, 1);
   assert.equal(calls.filter(c => c.method !== 'GET').length, 0);
@@ -369,6 +369,34 @@ test('real owner clients preserve terminal history and task execution settings',
       assert.equal(stored().consent.autonomous, false);
       assert.equal((await (await api('GET', `/api/instances/${task.instance}`)).json()).log.some(e => e.op === 'run'), false);
       assert.deepEqual(failures, []);
+    });
+    await t.test('collaborator creation names the owner and Waiting clears when the owner opens it', async () => {
+      const incoming = await (await api('POST', '/api/series', { workspace: 'w', name: 'Incoming' })).json();
+      const { id } = await (await api('POST', `/api/series/${incoming.id}`, { label: 'Feb', quiet: true }, colleague)).json();
+      await context.addCookies([{ name, value: cookies[colleague].split('=')[1], url: base }]);
+      await page.goto(`${base}/#/${id}`);
+      await page.waitForFunction(id => cur.i?.id === id, id);
+      assert.match(await page.locator('#needs').innerText(), /owner@example.test starts this series' runs/);
+      await context.addCookies([{ name, value: cookies[owner].split('=')[1], url: base }]);
+      await page.goto(`${base}/#/${cases[0]}`);
+      await page.waitForFunction(() => me.email === 'owner@example.test');
+      await page.click('#tree [data-act=waiting]');
+      await page.waitForSelector('#pv .wt');
+      assert.match(await page.locator('#pv').innerText(), /colleague@example.test started Incoming · Feb/);
+      await page.click(`#pv a[href="#/${id}"]`);
+      await page.waitForFunction(id => cur.i?.id === id, id);
+      assert.equal(await page.locator('#tree [data-act=waiting]').count(), 0);
+      await page.goto(`${base}/#/${cases[0]}`);
+      await page.waitForFunction(id => cur.i?.id === id, cases[0]);
+      const later = await (await api('POST', `/api/series/${incoming.id}`, { label: 'Mar', quiet: true }, colleague)).json();
+      await page.waitForSelector('#tree [data-act=waiting]');
+      await page.click('#tree [data-act=waiting]');
+      await page.waitForSelector(`#pv a[href="#/${later.id}"]`);
+      const other = await context.newPage();
+      await other.goto(`${base}/#/${later.id}`);
+      await other.waitForFunction(id => cur.i?.id === id, later.id);
+      await page.waitForSelector(`#pv a[href="#/${later.id}"]`, { state: 'detached' });
+      await other.close();
     });
   } finally {
     await browser.close();

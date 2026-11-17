@@ -618,8 +618,9 @@ else if (cmd === 'comment' && args.length === 2) {
   console.log(`made ${await pathOf(instance)}${selected ? consent(ticks()) : '; no execution consent: select series credentials before running'}`);
 } else if (cmd === 'new' && args[0] === 'instance' && args.length === 3) {
   if (flags.creds !== undefined || flags.clear || flags.autonomous !== undefined) throw new Error('instance credentials were removed: use rf series credentials SERIES');
-  const { id } = await (await post(`/api/series/${(await seriesAt(args[1])).id}`, { label: args[2], quiet: !flags.wake })).json();
-  console.log(`made ${await pathOf(id)}; series owner and ceiling unchanged`);
+  const series = await seriesAt(args[1]);
+  const { id } = await (await post(`/api/series/${series.id}`, { label: args[2], quiet: !flags.wake })).json();
+  console.log(`made ${await pathOf(id)}; series owner and ceiling unchanged${series.owner ? `; ${series.owner} starts its runs` : ''}`);
 } else if (cmd === 'new' && args[0] === 'series' && args.length === 3) {
   await post(`/api/series/${(await find(args[1])).series.id}/promote`, { name: args[2] });
   console.log(`made the series ${args[1].split('/')[0]}/${args[2]}`);
