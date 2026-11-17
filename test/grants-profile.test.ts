@@ -33,7 +33,7 @@ beforeEach(t => {
     other: { name: 'Other workspace', owners: [owner.email], members: [person.email] },
   }, series: { s: { name: 'Invoices', workspace: 'w' }, other: { name: 'Other invoices', workspace: 'other' } } });
   for (const who of [person, owner, admin, outsider]) upsertUser(who.email, { name: who.name, role: who.role });
-  writeJson('capabilities.json', { 'series-owner': [person.email] });
+  writeJson('capabilities.json', { });
   for (const id of ['s', 'other']) {
     saveSeriesSettings(join(root, 'series', id), { version: 1, owner: person.email, epoch: 1, since: '' });
   }

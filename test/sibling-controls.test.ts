@@ -59,7 +59,6 @@ for (const action of ['interrupt', 'transfer', 'same-instance']) test(action ===
       saveTree({ workspaces: { w: { name: 'Work', owners: [owner], members: [actor, incoming] } }, series: { s: { name: 'Series', workspace: 'w' } } });
       writeJson('users.json', { [owner]: { role: 'user' }, [actor]: { role: 'user' }, [incoming]: { role: 'user' } });
       ownSeries('s', owner);
-      writeJson('capabilities.json', { 'series-owner': [owner, incoming] });
       process.argv = [process.execPath, 'src/server.ts', root, String(port)];
       const ready = Promise.withResolvers();
       mock.method(console, 'log', line => { if (String(line).startsWith('rollforward on')) ready.resolve(); });

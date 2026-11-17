@@ -120,7 +120,6 @@ function spawnUpdater(dir = work, env: NodeJS.ProcessEnv = {}) {
 before(async () => {
   mkdirSync(join(root, '.rf'), { recursive: true });
   writeFixtureTree(root, { workspaces: {}, series: {} });
-  writeFileSync(join(root, '.rf', 'capabilities.json'), JSON.stringify({ 'series-owner': [ADMIN] }));
   mkdirSync(home, { recursive: true });
   entra = await idp();
   const probe = createServer();
@@ -205,7 +204,6 @@ esac
 
   await startServer(work);
   cookie = (await entra.signIn(base, ADMIN)).headers.getSetCookie().find(c => c.startsWith('rf_session='))!.split(';')[0];
-  assert.equal((await call('PUT', '/capabilities', { cap: 'series-owner', people: [ADMIN] })).status, 200);
 });
 
 after(async () => {

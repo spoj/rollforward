@@ -62,7 +62,6 @@ beforeEach(() => {
   openStore(root);
   saveTree({ workspaces: { w: { name: 'Synthetic', owners: [ALICE], members: [BOB] } }, series: { s: { name: 'Synthetic', workspace: 'w' } } });
   writeJson('users.json', { [ALICE]: { role: 'user' }, [BOB]: { role: 'user' } });
-  writeJson('capabilities.json', { 'series-owner': [ALICE, BOB] });
   writeJson('connections.json', { svc: { type: 'service', url: base, paths: ['a/', 'b/'] }, db: { type: 'databricks' }, later: { type: 'databricks' } });
   writeJson('grants.json', Object.fromEntries([ALICE, BOB].flatMap(person => ['portal', 'extra'].map(site => [`${person} ${site}`, { workspace: 'w', person, site, at: '', state: 'approved' }]))));
   for (const email of [ALICE, BOB]) {
@@ -350,7 +349,7 @@ test('restart cannot write back a browser predating a website route ABA', async 
   await b.browser('portal');
   const was = process.env.RF_TUNNEL_URL;
   process.env.RF_TUNNEL_URL = base;
-  writeJson('capabilities.json', { 'series-owner': [ALICE, BOB], vpn: [ALICE] });
+  writeJson('capabilities.json', { vpn: [ALICE] });
   writeJson('vpns.json', { synthetic: { type: 'fortinet', gateway: 'vpn.example.test:443' } });
   const me = { email: ALICE, name: 'Alice', role: 'user' as const, groups: [] };
   try {

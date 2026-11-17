@@ -66,7 +66,6 @@ test('deleting instances preserves daily run key provenance and UTC shared-key O
     writeFileSync(join(root, 'series', sid, 'series.json'), JSON.stringify({ version: 1, epoch: 0, since: '' }));
   }
 
-  writeFileSync(join(root, '.rf', 'capabilities.json'), JSON.stringify({ 'series-owner': [admin] }));
   writeFileSync(join(root, 'series/r4ser/series.json'), JSON.stringify({ version: 1, owner: admin, epoch: 1, since: at, consent: { by: admin, at, workspace: 'r4ws', logins: [], autonomous: false } }));
 
   const writeInst = (id: string, entries: Record<string, unknown>[]) => {

@@ -151,7 +151,7 @@ rf brand [--text TEXT] [--logo FILE] [--clear]   the deployment's text and logo,
                                   no option it prints them
 rf can [CAP [EMAIL|GROUP,...] [--clear]]   what users may do beyond the rest, as admins may: publish, push skills;
                                   create, make workspaces; and keepalive, keep their website logins alive for up to a
-                                  week as they sign in; series-owner, authoring and executing owned series, requires an explicit grant even for admins; a list grants CAP to those
+                                  week as they sign in; a list grants CAP to those
                                   emails and Entra group ids in place of whom it had, --clear to no one, and with neither it
                                   prints whom each is granted to${vpn ? '\n                                  vpn, using client VPNs, needs an explicit grant even for admins' : ''}${vpn && admin ? '\nrf vpn add NAME fortinet HOST:PORT [--servercert pin-sha256:HASH]   admins with vpn add a client VPN definition, which each\n                                  person signs in to on the page; --servercert pins the gateway key, as a refusal names it\nrf vpn remove NAME               admins with vpn remove a client VPN definition' : ''}`;
   return (c && all.split(/\n(?=\S)/).map(e => e.trimEnd()).filter(e => e.split(/\s/)[1] === c).join('\n')) || all;
@@ -956,7 +956,7 @@ else if (cmd === 'comment' && args.length === 2) {
   const [cap, list] = args, people = flags.clear ? [] : list?.split(',').map(p => p.trim()).filter(Boolean);
   const all: Record<string, string[]> = await (await (people ? post('/capabilities', { cap, people }, 'PUT') : api('/capabilities'))).json();
   if (flags.json) console.log(JSON.stringify(all, null, 1));
-  else for (const [c, who] of Object.entries(all)) if (!cap || c === cap) console.log(`${c}: ${who.join(', ') || (['vpn', 'series-owner'].includes(c) ? 'no one' : 'admins only')}`);
+  else for (const [c, who] of Object.entries(all)) if (!cap || c === cap) console.log(`${c}: ${who.join(', ') || (c === 'vpn' ? 'no one' : 'admins only')}`);
 } else if (cmd === 'user' && args.length >= 2) {
   const [what, email, role] = args, at = `/users/${encodeURIComponent(email)}`;
   if (what === 'add') await post('/users', { roles: { [email]: role ?? 'user' } }, 'PUT');

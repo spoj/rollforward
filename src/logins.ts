@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { HttpError, type Entry, type Instance } from './store.ts';
 import { canSee, changes, key, readJson, replaceFile, rfDir, tree } from './system.ts';
-import { asPerson, can } from './auth.ts';
+import { asPerson } from './auth.ts';
 import { saveSeriesSettings, seriesSettings, type Authority, type SeriesConsent } from './series.ts';
 import { seriesDir } from './store.ts';
 import service from './connections/service.ts';
@@ -104,8 +104,8 @@ export function ownerOf(inst: Instance): { by: string; logins: string[]; epoch: 
 
 export function authority(inst: Instance): Authority {
   const r = ownerOf(inst), p = asPerson(r.by), t = tree();
-  if (!p || !can(p, 'series-owner') || !canSee(p, t.workspaces[r.workspace]))
-    throw new HttpError(403, 'the series owner must be enabled, opted in and able to see its workspace');
+  if (!p || !canSee(p, t.workspaces[r.workspace]))
+    throw new HttpError(403, 'the series owner must be enabled and able to see its workspace');
   if (!r.consent || r.consent.by !== r.by || r.consent.workspace !== r.workspace)
     throw new HttpError(403, 'the series owner must explicitly select credentials for ALL instances, including an empty selection');
   return { version: 1, owner: r.by, epoch: r.epoch, workspace: r.workspace, logins: [...r.logins], autonomous: r.consent.autonomous };
@@ -113,7 +113,7 @@ export function authority(inst: Instance): Authority {
 
 export function sameAuthority(inst: Instance, lease: Authority): boolean {
   const r = ownerOf(inst), p = asPerson(r.by);
-  return !!p && can(p, 'series-owner') && canSee(p, tree().workspaces[r.workspace])
+  return !!p && canSee(p, tree().workspaces[r.workspace])
     && lease.version === 1 && lease.owner === r.by && lease.epoch === r.epoch && lease.workspace === r.workspace
     && !!r.consent && r.consent.by === r.by && r.consent.workspace === r.workspace
     && lease.logins.every(l => r.logins.includes(l));
@@ -124,7 +124,7 @@ export function lender(inst: Instance, run?: number): { by: string; logins: stri
   if (inst.id === 'try') {
     const started = inst.log.find(e => e.op === 'run' && e.run === run)!, lease = started.authority as Authority;
     const p = asPerson(lease.owner);
-    if (!p || p.role !== 'admin' || !can(p, 'series-owner')) throw new HttpError(403, 'try requires an enabled, opted-in admin');
+    if (!p || p.role !== 'admin') throw new HttpError(403, 'try requires an enabled admin');
     return { by: lease.owner, logins: lease.logins };
   }
   if (run === undefined) {
@@ -156,7 +156,7 @@ changes.on('change', (id: string) => {
       const s = seriesSettings(seriesDir(sid));
       if (!s.consent) continue;
       const p = asPerson(s.owner!), offers = new Set(logins(s.owner!).flatMap(l => l.offers.map(o => o.id)));
-      const valid = !!p && can(p, 'series-owner') && canSee(p, t.workspaces[meta.workspace]) && s.consent.workspace === meta.workspace
+      const valid = !!p && canSee(p, t.workspaces[meta.workspace]) && s.consent.workspace === meta.workspace
         && s.consent.logins.every(o => offers.has(o) && (!o.startsWith('web:') || grants.some(g => g.state === 'approved' && g.site === o.slice(4) && g.person === s.owner && g.workspace === meta.workspace)));
       if (valid) continue;
       const { consent, ...rest } = s;

@@ -261,7 +261,6 @@ before(async () => {
   openStore(tmp);
   saveTree({ workspaces: { w: { name: 'W', owners: [ALICE], members: [] } }, series: { weekly: { name: 'Weekly', workspace: 'w' } } });
   upsertUser(ALICE, { role: 'user' });
-  writeJson('capabilities.json', { 'series-owner': [ALICE, 'bob-cache@demo.test', 'carol-cache@demo.test'] });
   openSkills(tmp);
   for (const id of ['mail-report', 'onedrive-report', 'portal', 'tool']) pushSkill(id, filesOf(join(standIns, id)), ALICE);
   writeJson('connections.json', {

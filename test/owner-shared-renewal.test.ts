@@ -87,7 +87,6 @@ beforeEach(() => {
     },
   });
   writeJson('users.json', { [ALICE]: { role: 'user' }, [BOB]: { role: 'user' } });
-  writeJson('capabilities.json', { 'series-owner': [ALICE, BOB] });
   writeJson('connections.json', { m365: { type: 'graph' } });
   seq++;
   sent.length = 0;

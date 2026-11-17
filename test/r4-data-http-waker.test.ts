@@ -65,7 +65,6 @@ before(async () => {
     writeFileSync(join(root, 'series', id, 'series.json'), JSON.stringify({ version: 1, epoch: 0, since: '' }));
   }
 
-  writeFileSync(join(root, '.rf', 'capabilities.json'), JSON.stringify({ 'series-owner': [ADMIN, BOB, CAROL] }));
   const probe = createServer();
   await new Promise<void>(ok => probe.listen(0, '127.0.0.1', ok));
   port = (probe.address() as { port: number }).port;
@@ -288,7 +287,6 @@ test('R4-DATA-04: streaming upload/attach recheck archive, proposals refuse movi
         writeFileSync(join(root, 'series', id, 'series.json'), JSON.stringify({ version: 1, epoch: 0, since: '' }));
       }
 
-      writeFileSync(join(root, '.rf', 'capabilities.json'), JSON.stringify({ 'series-owner': ['admin@demo.test'] }));
       const probe = createServer();
       await new Promise(ok => probe.listen(0, '127.0.0.1', ok));
       const port = probe.address().port;

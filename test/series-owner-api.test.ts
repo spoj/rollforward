@@ -110,9 +110,8 @@ test('startup refuses legacy authority before backups, recovery or other data mu
   assert.equal(existsSync(join(legacy, '.rf', 'authority-format.json')), false);
 });
 
-test('admins are not implicitly opted into authoring', async () => {
-  assert.equal((await request('POST', '/api/series', { workspace: 'ws', name: 'No pilot' })).status, 403);
-  await ok('PUT', '/capabilities', { cap: 'series-owner', people: [admin, alice, bob, colleague] });
+test('admins author series without a capability grant', async () => {
+  assert.equal((await request('POST', '/api/series', { workspace: 'ws', name: 'Admin series' })).status, 200);
 });
 
 test('creation establishes sole owner; omitted selection is not empty consent; tasks retain owner on promotion', async () => {
@@ -262,18 +261,23 @@ test('unresolved migrated series stay readable without inferring creator, newest
   assert.equal(settings('unowned').consent, undefined);
 });
 
-test('a non-pilot workspace manager can assign a pilot owner without lending execution consent', async () => {
+test('a workspace manager transfers ownership without lending execution consent', async () => {
   const sid = await series('Manager assignment');
-  await ok('PUT', '/capabilities', { cap: 'series-owner', people: [alice, bob, colleague] });
-  try {
-    await ok('PUT', `/api/series/${sid}/owner`, { owner: bob });
-    assert.equal(settings(sid).owner, bob);
-    assert.equal(settings(sid).consent, undefined);
-    assert.equal((await request('PUT', `/api/series/${sid}/credentials`, { logins: [], autonomous: false })).status, 403);
-    assert.equal((await request('POST', '/api/series', { workspace: 'ws', name: 'Still no authoring' })).status, 403);
-  } finally {
-    await ok('PUT', '/capabilities', { cap: 'series-owner', people: [admin, alice, bob, colleague] });
-  }
+  await ok('PUT', `/api/series/${sid}/owner`, { owner: bob });
+  assert.equal(settings(sid).owner, bob);
+  assert.equal(settings(sid).consent, undefined);
+  assert.equal((await request('PUT', `/api/series/${sid}/credentials`, { logins: [], autonomous: false })).status, 403);
+  assert.equal((await request('POST', '/api/series', { workspace: 'ws', name: 'Authoring' })).status, 200);
+});
+
+test('an enabled workspace member can receive ownership before their first sign-in', async () => {
+  const incoming = 'incoming@demo.test', sid = await series('Incoming');
+  await ok('PUT', '/users', { roles: { [incoming]: 'user' } });
+  await ok('PUT', '/api/workspaces/ws', { add: incoming });
+  assert.ok((await json(`/api/series/${sid}/owners`)).includes(incoming));
+  await ok('PUT', `/api/series/${sid}/owner`, { owner: incoming });
+  assert.equal(settings(sid).owner, incoming);
+  assert.equal(settings(sid).consent, undefined);
 });
 
 test('membership safeguard includes empty owned series; force withdraws consent without replacement', async () => {
@@ -321,7 +325,7 @@ test('signout explicitly withdraws owner authority before later sign-in', async 
   assert.equal(settings(sid).consent, undefined);
 });
 
-test('disable and capability withdrawal revoke even empty owned series and never restore old consent', async () => {
+test('disable revokes even empty owned series and enabling never restores old consent', async () => {
   const sid = await series('Disable', bob);
   await ok('PUT', `/users/${bob}`, { disabled: true });
   assert.equal(settings(sid).consent, undefined);
@@ -329,10 +333,9 @@ test('disable and capability withdrawal revoke even empty owned series and never
   await ok('PUT', `/users/${bob}`, { disabled: false });
   const res = await entra.signIn(base, bob);
   cookies[bob] = res.headers.getSetCookie().find(c => c.startsWith('rf_session='))!.split(';')[0];
-  await ok('PUT', `/api/series/${sid}/credentials`, { logins: [], autonomous: false }, bob);
-  await ok('PUT', '/capabilities', { cap: 'series-owner', people: [admin, alice, colleague] });
   assert.equal(settings(sid).consent, undefined);
-  assert.equal(settings(sid).epoch, epoch + 1);
+  assert.equal(settings(sid).epoch, epoch);
+  await ok('PUT', `/api/series/${sid}/credentials`, { logins: [], autonomous: false }, bob);
 });
 
 test('authority mutation persists epoch and revokes tokens synchronously before waiting for physical retirement', async () => {

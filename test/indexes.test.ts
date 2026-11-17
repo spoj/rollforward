@@ -107,7 +107,6 @@ before(async () => {
   openStore(tmp);
   saveTree({ workspaces: { w: { name: 'W', owners: [ALICE], members: [BOB, CAROL, DAN] } }, series: { weekly: { name: 'Weekly', workspace: 'w' } } });
   for (const p of [ALICE, BOB, CAROL, DAN]) upsertUser(p, { role: 'user' });
-  writeJson('capabilities.json', { 'series-owner': [ALICE, BOB, CAROL, DAN] });
   (await import('../src/connections/graph.ts')).endpoints.graph = base;
   logins = await import('../src/logins.ts');
   ix = await import('../src/indexes.ts');

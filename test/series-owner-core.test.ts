@@ -22,7 +22,6 @@ function fixture(t: { after: (fn: () => void) => void }) {
   initSystem(root);
   openStore(root);
   writeJson('users.json', { [alice]: { role: 'user' }, [bob]: { role: 'user' }, [admin]: { role: 'admin' } });
-  writeJson('capabilities.json', { 'series-owner': [alice, bob] });
   saveTree({ workspaces: { w: { name: 'W', owners: [admin], members: [alice, bob] } }, series: { s: { name: 'S', workspace: 'w' }, empty: { name: 'Empty', workspace: 'w' } } });
   for (const sid of ['s', 'empty']) saveSeriesSettings(seriesDir(sid), { version: 1, owner: alice, epoch: 1, since: '' });
   saveLogin(alice, { id: 'm365', kind: 'm365', name: 'Microsoft', since: 'now', offers: [{ id: 'm365:x', name: 'X' }, { id: 'm365:y', name: 'Y' }] });
@@ -174,7 +173,6 @@ test('confirm ABA cannot authorize a delayed start, and retirement blocks replac
     const root = mkdtempSync(join(tmpdir(), 'rf-owner-retire-')), alice = 'alice@example.test', bob = 'bob@example.test';
     initSystem(root); openStore(root);
     writeJson('users.json', { [alice]: { role: 'user' }, [bob]: { role: 'user' } });
-    writeJson('capabilities.json', { 'series-owner': [alice, bob] });
     saveTree({ workspaces: { w: { name: 'W', owners: [alice], members: [bob] } }, series: { s: { name: 'S', workspace: 'w' } } });
     const inst = createInstance('s', 'First', alice);
     const set = (owner, epoch) => saveSeriesSettings(inst.series(), { version: 1, owner, epoch, since: '', consent: { by: owner, at: '', workspace: 'w', logins: [], autonomous: true } });
@@ -233,7 +231,6 @@ test('recovery needs autonomy captured by the original run, not a later consent 
     const root = mkdtempSync(join(tmpdir(), 'rf-owner-recovery-')), alice = 'alice@example.test';
     initSystem(root); openStore(root);
     writeJson('users.json', { [alice]: { role: 'user' } });
-    writeJson('capabilities.json', { 'series-owner': [alice] });
     saveTree({ workspaces: { w: { name: 'W', owners: [alice], members: [] } }, series: { s: { name: 'S', workspace: 'w' } } });
     const inst = createInstance('s', 'First', alice);
     const set = autonomous => saveSeriesSettings(inst.series(), { version: 1, owner: alice, epoch: 1, since: '', consent: { by: alice, at: '', workspace: 'w', logins: [], autonomous } });
@@ -267,7 +264,7 @@ test('manual-only reauthentication clears the expiry notice without authorizing 
   assert.equal(standing(inst, renewed)?.starts, false);
 });
 
-test('membership and capability withdrawal clear consent even for an empty owned series', t => {
+test('membership withdrawal clears consent even for an empty owned series', t => {
   fixture(t);
   consent([], true, 'empty');
   const t0 = tree();

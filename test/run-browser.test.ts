@@ -106,7 +106,7 @@ openStore(tmp);
 saveTree({ workspaces: { w: { name: 'Acme', owners: ['alice@demo.test'], members: [] } }, series: { s: { name: 'Portal pull', workspace: 'w' } } });
 mkdirSync(join(tmp, 'series', 's'), { recursive: true });
 writeJson('users.json', { 'alice@demo.test': { role: 'admin' } });
-writeJson('capabilities.json', { 'series-owner': ['alice@demo.test', 'bob@demo.test', 'carol@demo.test'] });
+writeJson('capabilities.json', { });
 // Everyone the tests run as has an approved grant to each website they use, in Acme (grants.ts), but where a test says otherwise.
 const everyone = Object.fromEntries(['alice@demo.test', 'bob@demo.test', 'carol@demo.test'].flatMap(p => ['crm', 'ledger', 'rl', 'pa', 'erp'].map(s => [`${p} ${s}`, { workspace: 'w', person: p, site: s, reason: 'tests', at: '', state: 'approved' }])));
 writeJson('grants.json', everyone);
@@ -566,7 +566,7 @@ test("a run that ended while its connection waited for its person's browser open
 test("a person granted keepalive who keeps their login to a website alive, as they saved it, has its keepalive page, or else its address, loaded in its browser every so often, whatever the hour, until the time they set, its state the login again, until a sign-in shows, which marks the login expired", async () => {
   const bob = 'bob@demo.test', carol = 'carol@demo.test', until = new Date(2026, 10, 9).toISOString(), at = (d: number, h: number, m = 0) => new Date(2026, 10, d, h, m);
   writeJson('users.json', { [alice]: { role: 'admin' }, [bob]: { role: 'user' }, [carol]: { role: 'user' } });
-  writeJson('capabilities.json', { 'series-owner': ['alice@demo.test', 'bob@demo.test', 'carol@demo.test'], keepalive: [carol] });
+  writeJson('capabilities.json', { keepalive: [carol] });
   sites({ pa: { url: 'https://pa.example.com/PatriArchMVC/Account/Login', hosts: ['sso.example.com'], writeback: true, keepalive: '/PatriArchMVC/', every: 8 } });
   saveLogin(alice, { ...website('pa', 'PatriArch'), keepalive: until }, JSON.stringify(state('signed in')));
   saveLogin(bob, { ...website('pa', 'PatriArch'), keepalive: until }, JSON.stringify(state('bob, not granted keepalive')));
@@ -578,7 +578,7 @@ test("a person granted keepalive who keeps their login to a website alive, as th
   assert.deepEqual(JSON.parse(secret(alice, 'web:pa')), state('kept alive'));
   await keepAlive(at(7, 3, 7));
   assert.equal(turns(), 1, 'every 8 minutes, as the website says');
-  writeJson('capabilities.json', { 'series-owner': ['alice@demo.test', 'bob@demo.test', 'carol@demo.test'], keepalive: [carol, bob] });
+  writeJson('capabilities.json', { keepalive: [carol, bob] });
   await keepAlive(at(7, 3, 8));
   assert.deepEqual(states.slice(1), [state('kept alive'), state('bob, not granted keepalive')], 'bob too, once granted keepalive');
   const run = new Browsers(running('k2', ['web:pa']), 1);
@@ -626,7 +626,7 @@ test("a person's keepalive turn that fails leaves the others' to go on, and a pe
   const carol = 'carol@demo.test', until = new Date(2026, 10, 12).toISOString();
   sites({ pa: { url: 'https://pa.example.com/PatriArchMVC/Account/Login', hosts: ['sso.example.com'], writeback: true, keepalive: '/PatriArchMVC/', every: 8 } });
   writeJson('users.json', { [carol]: { role: 'user' }, [alice]: { role: 'admin' } });
-  writeJson('capabilities.json', { 'series-owner': ['alice@demo.test', 'bob@demo.test', 'carol@demo.test'], keepalive: [carol] });
+  writeJson('capabilities.json', { keepalive: [carol] });
   saveLogin(carol, { ...website('pa', 'PatriArch'), keepalive: until }, JSON.stringify(state('refused')));
   saveLogin(alice, { ...website('pa', 'PatriArch'), keepalive: until }, JSON.stringify(state('signed in again')));
   [states.length, back, shown] = [0, state('kept alive again'), { url: 'https://pa.example.com/PatriArchMVC/Home', password: false }];
@@ -645,7 +645,7 @@ test("a run gets its browser on a website only where its runner's grant to it in
   writeJson('users.json', { [alice]: { role: 'admin', name: 'Alice Ng' }, [bob]: { role: 'user' } });
   saveTree({ ...tree(), workspaces: { w: { ...tree().workspaces.w, members: [bob] } } });
   sites({ bank: { url: 'https://bank.example.com', hosts: [], writeback: false, keepalive: '/home', every: 10, profile: { what: 'A bank', category: 'bank', risk: 'low', flags: [] } } });
-  writeJson('capabilities.json', { 'series-owner': ['alice@demo.test', 'bob@demo.test', 'carol@demo.test'], keepalive: [bob] });
+  writeJson('capabilities.json', { keepalive: [bob] });
   writeJson('grants.json', {});
   saveLogin(alice, { ...website('bank', 'Bank'), keepalive: until }, JSON.stringify(state('alice')));
   saveLogin(bob, { ...website('bank', 'Bank'), keepalive: until }, JSON.stringify(state('bob')));

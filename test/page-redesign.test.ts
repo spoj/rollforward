@@ -34,7 +34,7 @@ async function open(role: string, grants: object[] = []) {
   const workspace = { id: 'w1', name: 'Finance', manage: true, owners: [person], members: [], archived: false, mine: true,
     series: [] as object[], grants: grants.filter(g => ['pending', 'approved'].includes((g as { state: string }).state)), reads: [], readers: [], moved: [], agents: '' };
   const responses: Record<string, unknown> = {
-    '/me': { email: person, name: 'Bob', role, can: ['keepalive', 'series-owner'], browsers: true, brand: {}, names: { [person]: 'Bob' } },
+    '/me': { email: person, name: 'Bob', role, can: ['keepalive'], browsers: true, brand: {}, names: { [person]: 'Bob' } },
     '/api': [workspace], '/connections': [], '/grants': grants,
     '/logins': [{ id: 'web:portal', kind: 'website', name: 'portal', since: '2026-11-01T00:00:00Z', expired: false, offers: [], missing: [] }],
     '/logins/sites': { portal: { url: 'https://portal.test/start', hosts: ['cdn.portal.test'], checks: { 'cdn.portal.test': { verdict: 'pass', why: 'Its CDN.' } } } },

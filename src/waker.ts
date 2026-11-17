@@ -7,7 +7,7 @@ import { pylib, startRun, type Run, type TurnEnd, type View } from './runner.ts'
 import type { JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { prepare } from './indexes.ts';
 import { act, canSee, changes, readJson, rfDir, tree, type Tree, writeJson } from './system.ts';
-import { asPerson, can, users } from './auth.ts';
+import { asPerson, users } from './auth.ts';
 import { websitesOf, type Browsers } from './browsers.ts';
 import { notes, saveSeriesSettings, seriesSettings, type Authority, type Note } from './series.ts';
 import { pushed, skills } from './skills.ts';
@@ -48,7 +48,7 @@ const retiring = new Set<Active>();
 
 function sees(i: Instance, t = tree()) {
   const r = ownerOf(i), owner = asPerson(r.by);
-  return !!owner && can(owner, 'series-owner') && !!r.consent && r.consent.by === r.by && r.consent.workspace === r.workspace && canSee(owner, t.workspaces[t.series[i.seriesId].workspace]);
+  return !!owner && !!r.consent && r.consent.by === r.by && r.consent.workspace === r.workspace && canSee(owner, t.workspaces[t.series[i.seriesId].workspace]);
 }
 // A run's Pi stopped, and its copies of indexes gone.
 function end(token: string, run: Run | Promise<Run>) {
@@ -550,7 +550,7 @@ export function setWake(target: string, wake: Omit<Wake, 'target'>): Wake & { id
   const w = wakes(), t = tree(), sid = t.series[target] ? target : instance(target).seriesId, s = seriesSettings(seriesDir(sid));
   const p = s.owner && asPerson(s.owner), source = wake.inst ? active.get(instance(wake.inst).seriesId) : undefined;
   const authorized = s.consent?.autonomous && s.consent.by === s.owner && s.consent.workspace === t.series[sid].workspace
-    && p && can(p, 'series-owner') && canSee(p, t.workspaces[t.series[sid].workspace])
+    && p && canSee(p, t.workspaces[t.series[sid].workspace])
     && (wake.inst ? source?.inst.id === wake.inst && byToken.has(source.token) && source.runner === s.owner && source.authority.autonomous && sameAuthority(source.inst, source.authority) && ownerOf(source.inst).consent?.autonomous : wake.from === s.owner);
   const k: Wake = { ...wake, target, authority: authorized ? { version: 1, owner: s.owner!, epoch: s.epoch, workspace: t.series[sid].workspace, logins: s.consent!.logins.filter(o => !source || source.inst.seriesId !== sid || source.authority.logins.includes(o)), autonomous: true } : undefined, initiator: authorized ? s.owner : undefined, ...(source && { sourceRun: source.n }) }, labelled = k.label !== undefined && !k.days;
   // A weekly one keeps its time of day; fire() spaces it.
@@ -633,7 +633,7 @@ export function fire() {
     const s = seriesSettings(seriesDir(targetSeries)), lease = wake.authority, owner = s.owner && asPerson(s.owner);
     const authorized = !!lease?.autonomous && wake.initiator === lease.owner && s.owner === lease.owner && s.epoch === lease.epoch && wsId === lease.workspace
       && !!s.consent?.autonomous && s.consent.by === s.owner && s.consent.workspace === wsId && lease.logins.every(o => s.consent!.logins.includes(o))
-      && !!owner && can(owner, 'series-owner') && canSee(owner, ws);
+      && !!owner && canSee(owner, ws);
     if (!authorized) {
       delete w.pending[id];
       w.requests[id] = { series: targetSeries, label: label ?? instance(target).label, ...(!t.series[target] && { target }), from: wake.from, at: now, ...(wake.inst && { inst: wake.inst }), ...(wake.text && { text: wake.text }) };

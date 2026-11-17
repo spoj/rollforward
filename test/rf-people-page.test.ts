@@ -78,7 +78,7 @@ test('R4-PEOPLE-02: terminal instance states redraw read-only conversation despi
     const url = new URL(r.request().url()), path = url.pathname;
     if (url.origin !== origin) return r.abort();
     if (path === '/api/events') return r.fulfill({ contentType: 'text/event-stream', body: ': ready\n\n' });
-    if (path === '/me') return r.fulfill({ json: { email: person, name: 'Bob', role: 'user', can: ['series-owner'], browsers: false, brand: {}, names: { [person]: 'Bob' } } });
+    if (path === '/me') return r.fulfill({ json: { email: person, name: 'Bob', role: 'user', can: [], browsers: false, brand: {}, names: { [person]: 'Bob' } } });
     if (path === '/logins') return r.fulfill({ json: [] });
     if (path === '/api') return r.fulfill({ json: [{
       id: 'w1', name: 'Finance', manage: true, owners: [person], members: [], archived: false, mine: true,
@@ -180,7 +180,7 @@ test('R4-PEOPLE-04: Start series and close validates name first and promotes onl
     if (url.origin !== origin) return r.abort();
     if (method !== 'GET') calls.push({ method, path, body: r.request().postData() && r.request().postDataJSON() });
     if (path === '/api/events') return r.fulfill({ contentType: 'text/event-stream', body: ': ready\n\n' });
-    if (path === '/me') return r.fulfill({ json: { email: person, name: 'Bob', role: 'user', can: ['series-owner'], browsers: false, brand: {}, names: { [person]: 'Bob' } } });
+    if (path === '/me') return r.fulfill({ json: { email: person, name: 'Bob', role: 'user', can: [], browsers: false, brand: {}, names: { [person]: 'Bob' } } });
     if (path === '/logins') return r.fulfill({ json: [] });
     if (path === '/api') return r.fulfill({ json: [{
       id: 'w1', name: 'Finance', manage: true, owners: [person], members: [], archived: false, mine: true,

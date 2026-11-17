@@ -191,7 +191,7 @@ async function closeUnlent() {
   for (const [sid, s] of Object.entries(t.series)) {
     const settings = seriesSettings(seriesDir(sid)), p = settings.owner && asPerson(settings.owner);
     if (!settings.consent) retiring.push(retireSeries(sid));
-    else if (!p || !can(p, 'series-owner') || !canSee(p, t.workspaces[s.workspace])) {
+    else if (!p || !canSee(p, t.workspaces[s.workspace])) {
       const { consent, ...rest } = settings;
       retiring.push(changeAuthority(sid, { ...rest, epoch: settings.epoch + 1, since: new Date().toISOString() }));
     }
@@ -1000,7 +1000,6 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const { workspace, name: asked, single, logins, autonomous = false } = payload;
     if (logins !== undefined && typeof payload.autonomous !== 'boolean') throw new HttpError(400, 'series credential selection requires an explicit autonomous boolean; update your client for whole-series consent');
     mustSee(me, t.workspaces[workspace]);
-    if (!can(me, 'series-owner')) throw new HttpError(403, 'series authoring requires the series-owner capability');
     if (typeof autonomous !== 'boolean' || (autonomous && logins === undefined)) throw new HttpError(400, 'autonomous consent requires an explicit credential selection and a boolean');
     const name = single ? freeName(t, workspace, 'Untitled') : folderName(String(asked ?? ''));
     if (Object.values(t.series).some(s => s.workspace === workspace && s.name === name)) throw new HttpError(409, `${name} exists`);
@@ -1023,17 +1022,16 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (!run) mustSee(me, s && t.workspaces[s.workspace]);
     if (action === 'owners' && req.method === 'GET') return send(res, 200, Object.keys(users()).filter(email => {
       const p = asPerson(email);
-      return p && users()[email].last_login && can(p, 'series-owner') && canSee(p, t.workspaces[s.workspace]);
+      return p && canSee(p, t.workspaces[s.workspace]);
     }));
     if (['owner', 'credentials'].includes(action) && req.method === 'PUT') return inOrder(id, async () => {
       recheckRequest(req);
       const { ws, who } = mustUnarchived(by, id), settings = seriesSettings(seriesDir(id)), at = new Date().toISOString();
-      if (action === 'credentials' && !can(who, 'series-owner')) throw new HttpError(403, 'series credential authority requires the series-owner capability');
       if (action === 'owner') {
         if (settings.owner !== by && !canManage(who, ws)) throw new HttpError(403, 'only the current series owner or a workspace manager transfers ownership');
         if ('logins' in payload || 'autonomous' in payload || 'consent' in payload) throw new HttpError(400, 'a transfer never grants credential consent; the new owner selects credentials separately');
         const to = typeof payload.owner === 'string' ? payload.owner.toLowerCase() : '', p = asPerson(to);
-        if (!p || !users()[to].last_login || !can(p, 'series-owner') || !canSee(p, ws)) throw new HttpError(400, 'the owner must be an enabled, signed-in, opted-in person who sees the workspace');
+        if (!p || !canSee(p, ws)) throw new HttpError(400, 'the owner must be enabled and see the workspace');
         if (to === settings.owner) throw new HttpError(409, `${to} already owns this series`);
         await changeAuthority(id, { version: 1, owner: to, epoch: settings.epoch + 1, since: at }, by);
       } else {
@@ -1103,9 +1101,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     }
     if (req.method === 'POST') return inOrder(id, async () => {
       recheckRequest(req);
-      const { who } = mustUnarchived(by, id);
+      mustUnarchived(by, id);
       if ('logins' in payload) throw new HttpError(410, 'instance credentials were removed; only the owner selects the series credential ceiling');
-      if (!can(who, 'series-owner')) throw new HttpError(403, 'series authoring requires the series-owner capability');
       return send(res, 200, { id: startWith(id, String(payload.label ?? ''), by, payload.quiet || seriesSettings(seriesDir(id)).owner !== by ? [] : [{ from: by }]).id });
     });
     if (req.method !== 'PUT') throw new HttpError(405, 'PUT, or POST a new instance');
@@ -1170,10 +1167,11 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     mustSee(me, t.workspaces[t.series[r.series].workspace]);
     if (req.method === 'POST') return inOrder(r.series, async () => {
       recheckRequest(req);
-      const { who } = mustUnarchived(by, r.series), settings = seriesSettings(seriesDir(r.series));
+      mustUnarchived(by, r.series);
+      const settings = seriesSettings(seriesDir(r.series));
       if (!wakes().requests[id]) throw new HttpError(404, `no request ${id}`);
       if ('logins' in payload) throw new HttpError(410, 'request credentials were removed; the owner selects the series credential ceiling separately');
-      if (settings.owner !== by || !can(who, 'series-owner')) throw new HttpError(403, 'only the current series owner starts requests');
+      if (settings.owner !== by) throw new HttpError(403, 'only the current series owner starts requests');
       if (!settings.consent || settings.consent.by !== by || settings.consent.workspace !== tree().series[r.series].workspace) throw new HttpError(403, 'the owner must explicitly select series credentials first, including an empty selection');
       const quiet = !!payload.quiet, provenance = { from: r.from, text: r.text, inst: r.inst, note: true, quiet };
       const inst = r.target ? wakeWith(instance(r.target), [provenance, { from: by, quiet }])
@@ -1413,7 +1411,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     });
     if (out !== undefined) return send(res, 200, out);
   } else throw new HttpError(404, `no action ${action}`);
-  if (!quiet && by === ownerOf(inst).by && can(me, 'series-owner')) kick(inst);
+  if (!quiet && by === ownerOf(inst).by) kick(inst);
   send(res, 200, 'ok');
 }
 
@@ -1569,13 +1567,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
         if (!CAPS.includes(cap)) throw new HttpError(400, `a capability is one of ${CAPS.filter(c => c !== 'vpn' || can(me, c)).join(', ')}`);
         if (!isPeople(people)) throw new HttpError(400, `${cap}: a list of emails and Entra group ids: ${JSON.stringify(people)}`);
         const selected = people.map(p => p.toLowerCase());
-        const owners = cap === 'series-owner' ? [...new Set(Object.keys(tree().series).map(sid => seriesSettings(seriesDir(sid)).owner).filter((email): email is string => !!email))].filter(email => {
-          const p = asPerson(email);
-          return p && can(p, cap) && !selected.includes(email) && !p.groups.some(g => selected.includes(g));
-        }) : [];
-        const retired = owners.map(email => withdrawOwner(email));
         writeJson('capabilities.json', { ...capabilities(), [cap]: selected });
-        await Promise.all(retired);
         if (cap === 'vpn') {
           await endUnpermittedSignIns();
           await dropUnpermittedVpns();

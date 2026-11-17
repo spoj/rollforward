@@ -36,7 +36,6 @@ for (const action of ['interrupt', 'owner-transfer']) test(`agent bodies finishi
       saveLogin(alice, { id: 'web:portal', kind: 'website', name: 'portal', since: '2026-01-01T00:00:00Z', offers: [{ id: 'web:portal', name: 'portal' }] }, '{}');
       writeJson('grants.json', { portal: { state: 'approved', site: 'portal', person: alice, workspace: 'w' } });
       ownSeries('s', alice, ['web:portal']);
-      writeJson('capabilities.json', { 'series-owner': [alice, bob] });
       const admissions = new Map();
       mock.module('./src/sandbox.ts', { namedExports: { ...sandbox, serveSandboxes: o => sandbox.serveSandboxes({ ...o, agent: (req, res, url) => {
         const result = o.agent(req, res, url);

@@ -82,7 +82,6 @@ before(async () => {
   mkdirSync(join(root, 'series', 'serbeta00001'), { recursive: true });
   writeFileSync(join(root, '.rf', 'users.json'), JSON.stringify(Object.fromEntries(['admin', 'carol', 'bob'].map(name => [`${name}@demo.test`, { role: name === 'admin' ? 'admin' : 'user', name, created: '2026-11-15T08:00:00.000Z' }]))));
 
-  writeFileSync(join(root, '.rf', 'capabilities.json'), JSON.stringify({ 'series-owner': ['admin@demo.test', 'carol@demo.test', 'bob@demo.test'] }));
   for (const [id, series] of Object.entries(tree.series) as [string, { workspace: string }][]) {
     const owner = series.workspace === 'wsbeta000001' ? 'admin@demo.test' : 'carol@demo.test', at = '2026-11-15T08:00:00.000Z';
     mkdirSync(join(root, 'series', id), { recursive: true });

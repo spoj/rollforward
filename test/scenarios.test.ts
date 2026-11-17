@@ -145,7 +145,6 @@ exec ${git} "$@"
   writeFixtureTree(root, { workspaces: {}, series: {} });
   await serve();
   [admin, bob] = [await login(ADMIN), await login(BOB)];
-  assert.equal((await call('PUT', '/capabilities', { cap: 'series-owner', people: [ADMIN, BOB, 'carol@demo.test', 'dana@demo.test'] })).status, 200);
 });
 
 // The server on the data root, as a restart starts it again, with `env` besides. The server sends what runs ask of openrouter.ai,

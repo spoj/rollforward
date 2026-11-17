@@ -60,7 +60,7 @@ beforeEach(() => {
   openStore(root);
   saveTree({ workspaces: { w: { name: 'Synthetic', owners: [ALICE, BOB], members: [] } }, series: { s: { name: 'Alice', workspace: 'w' }, other: { name: 'Bob', workspace: 'w' } } });
   writeJson('users.json', { [ALICE]: { role: 'user', groups: [GROUP, OTHER] }, [BOB]: { role: 'user' } });
-  writeJson('capabilities.json', { 'series-owner': [ALICE, BOB], vpn: [GROUP, OTHER, BOB] });
+  writeJson('capabilities.json', { vpn: [GROUP, OTHER, BOB] });
   writeJson('vpns.json', { corp: { type: 'fortinet', gateway: 'vpn.customer.test:10443' } });
   writeJson('internal.json', { 'vpn.customer.test': { by: ALICE, at: '' } });
   writeJson('grants.json', Object.fromEntries([ALICE, BOB].flatMap(person => ['portal', 'public'].map(site => [`${person} ${site}`, { workspace: 'w', person, site, at: '', state: 'approved' }]))));
@@ -135,7 +135,6 @@ test('confirm closes active VPN run browsers and CDP on last-group loss, not oth
   assert.ok(sessions.has(direct.id), 'the same owner retains their direct browser');
   assert.equal(direct.cdp.destroyed, false);
   assert.equal(users()[ALICE].disabled, undefined, 'VPN group loss is not a departure');
-  assert.ok(can(asPerson(ALICE)!, 'series-owner'));
   assert.equal(lender(own.inst, 1).by, ALICE);
   assert.deepEqual(seriesSettings(join(root, 'series/s')), settings, 'owner and consent are unchanged');
   await confirm(BOB);

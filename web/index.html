@@ -354,7 +354,7 @@ function renderSide() {
     shown++;
     if (!wHit) opened.add(w.id);
     h += `<div class="row ws ${won ? 'on' : ''} ${w.archived ? 'archived' : ''}">${chev(w.id)}<a class="nm" href="#/${w.id}" title="${esc(w.name)}"><span class="l">${esc(w.name)}</span>${dot(w.id, w.series)}</a>`
-      + `<span class="n">${w.archived ? 'archived' : ''}</span>${age(wAct(w), w.series.some(s => s.instances.some(i => i.running)))}` + btn('workspace-settings', 'Settings', '\u2699', w.id) + (w.archived || !me.can.includes('series-owner') ? '' : btn('new-task', 'New task', '+', w.id)) + '</div>';
+      + `<span class="n">${w.archived ? 'archived' : ''}</span>${age(wAct(w), w.series.some(s => s.instances.some(i => i.running)))}` + btn('workspace-settings', 'Settings', '\u2699', w.id) + (w.archived ? '' : btn('new-task', 'New task', '+', w.id)) + '</div>';
     if (shut(w.id)) continue;
     h += '<div class="tree">';
     for (const [s, found] of series) {
@@ -362,7 +362,7 @@ function renderSide() {
       if (found) opened.add(s.id);
       const note = s.archived ? 'archived' : s.requests.length ? `<span class="q">${s.requests.length} to start</span>` : open.length && shut(s.id) ? `<span class="tally open" title="${open.length} open">${open.length}</span>` : s.wakes[0] && shut(s.id) ? `<span title="${when(s.wakes[0].at)}">wakes ${soon(s.wakes[0].at)}</span>` : '';
       h += `<div class="row ser ${on ? 'on' : ''} ${s.archived ? 'archived' : ''}">${chev(s.id)}<a class="nm" href="#/${s.id}" title="${esc(s.name)}"><span class="l">${esc(s.name)}</span>${dot(s.id, [s])}</a>`
-        + `<span class="n">${note}</span>${age(sAct(s), s.instances.some(i => i.running))}` + `<button class="add notes" data-act="notes" data-id="${s.id}" title="Notes on ${esc(s.name)}" aria-label="Notes on ${esc(s.name)}">${ICON.chat}</button>` + btn('settings', 'Settings', '\u2699', s.id) + (archived(w, s) || !me.can.includes('series-owner') ? '' : btn('new-instance', 'New instance', '+', s.id)) + '</div>';
+        + `<span class="n">${note}</span>${age(sAct(s), s.instances.some(i => i.running))}` + `<button class="add notes" data-act="notes" data-id="${s.id}" title="Notes on ${esc(s.name)}" aria-label="Notes on ${esc(s.name)}">${ICON.chat}</button>` + btn('settings', 'Settings', '\u2699', s.id) + (archived(w, s) ? '' : btn('new-instance', 'New instance', '+', s.id)) + '</div>';
       if (shut(s.id)) continue;
       if (found) {
         h += `<div class="tree">${found.map(row).join('')}</div>`;
@@ -442,7 +442,7 @@ function renderBar() {
 function owner() {
   const r = data.owner, mine = r.by === me.email;
   return `<span class="owner" tabindex="0">${mine ? 'Your series' : r.by ? person(r.by) : 'No series owner'}<span class="about">Series owner for every instance. Only the owner starts runs and closes instances. Credentials are selected for the whole series, not this instance.${r.since ? `<br>Since ${when(r.since)}.` : ''}<br>${!r.consent ? 'No execution consent.' : r.ticked.length ? `Selected ceiling: ${esc(r.ticked.join(', '))}` : 'Explicit credentialless consent.'}</span></span>`
-    + (mine && me.can.includes('series-owner') && !archived() ? `<button class="creds" data-act="ticks">Series credentials: ${r.consent ? credentials(r) : 'consent needed'}</button>` : '');
+    + (mine && !archived() ? `<button class="creds" data-act="ticks">Series credentials: ${r.consent ? credentials(r) : 'consent needed'}</button>` : '');
 }
 
 // The selected series ceiling at a glance, by kind, such as "Mail · 2 folders".
@@ -1025,7 +1025,7 @@ function startsHtml(s) {
   const mine = s.owner === me.email;
   return `<div>Series owner: ${s.owner ? person(s.owner) : 'not selected'}. Only this person starts runs, across every instance. Collaborators leave information and sign off on content; they never start runs as the owner.</div>`
     + ((mine || cur.w.manage) ? '<div class="row2"><button class="btn" data-act="series-owner">Transfer whole series…</button></div>' : '')
-    + (mine && me.can.includes('series-owner') ? `<h3>Series credential ceiling</h3><div class="sub">Every instance may use the selected credentials. New logins are never added automatically. Saving an empty selection explicitly allows work with no credentials. Removing authority stops existing runs and invalidates old schedules.</div>${ticksHtml(s.logins, pv.on ?? s.consent?.logins ?? [], cur.w)}<label><input type="checkbox" id="autonomous" ${(pv.autonomous ?? s.consent?.autonomous) ? 'checked' : ''}> Allow scheduled and autonomous runs</label><div class="consent">Save explicitly consents to this series-wide selection. Autonomous runs are opt-in; collaborators still cannot initiate execution.</div><button class="btn primary" data-act="series-credentials">Save series credentials</button>`
+    + (mine ? `<h3>Series credential ceiling</h3><div class="sub">Every instance may use the selected credentials. New logins are never added automatically. Saving an empty selection explicitly allows work with no credentials. Removing authority stops existing runs and invalidates old schedules.</div>${ticksHtml(s.logins, pv.on ?? s.consent?.logins ?? [], cur.w)}<label><input type="checkbox" id="autonomous" ${(pv.autonomous ?? s.consent?.autonomous) ? 'checked' : ''}> Allow scheduled and autonomous runs</label><div class="consent">Save explicitly consents to this series-wide selection. Autonomous runs are opt-in; collaborators still cannot initiate execution.</div><button class="btn primary" data-act="series-credentials">Save series credentials</button>`
       : `<div class="sub">${s.consent ? `Selected ceiling: ${s.consent.logins.length} credentials; autonomous runs ${s.consent.autonomous ? 'allowed' : 'not allowed'}.` : 'No execution consent: the owner must explicitly select credentials, including none.'}</div>`);
 }
 
@@ -1970,7 +1970,7 @@ async function onAct(act, el) {
   })) await refresh();
   if (act === 'series-owner') {
     const people = (await api(`${seriesPath(cur)}/owners`)).filter(p => p !== cur.s.owner).sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
-    if (!people.length) return ask({ title: 'Transfer whole series', text: 'No other eligible person has signed in to this workspace.' });
+    if (!people.length) return ask({ title: 'Transfer whole series', text: 'No other enabled person can see this workspace.' });
     if (await ask({
       title: `Transfer whole series: ${cur.s.name}`, text: 'Changes the owner of every instance, not just this one. Stops old runs and invalidates schedules. No credentials transfer: the incoming owner must explicitly consent before any run. This starts no run.',
       html: `<select id="ownerto"><option value="">Select the new series owner</option>${people.map(p => `<option value="${esc(p)}">${esc(me.names[p] ? `${called(p)} <${p}>` : p)}</option>`).join('')}</select>`, ok: 'Transfer whole series',

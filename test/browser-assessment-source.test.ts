@@ -58,7 +58,7 @@ beforeEach(t => {
   openStore(root);
   saveTree({ workspaces: { w: { name: 'Work', owners: [email], members: [bob] }, other: { name: 'Other', owners: [email], members: [] } }, series: { s: { name: 'Series', workspace: 'w' } } });
   writeJson('users.json', { [email]: { role: 'user' }, [bob]: { role: 'user' } });
-  writeJson('capabilities.json', { vpn: [email], 'series-owner': [email, bob] });
+  writeJson('capabilities.json', { vpn: [email], });
   writeJson('vpns.json', { corp: { type: 'fortinet', gateway: 'vpn.synthetic.test:443' } });
   writeJson('connections.json', {});
   writeJson('internal.json', {});

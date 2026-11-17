@@ -109,7 +109,6 @@ before(async () => {
     writeFileSync(join(root, 'series', id, 'series.json'), JSON.stringify({ version: 1, epoch: 0, since: '' }));
   }
 
-  writeFileSync(join(root, '.rf', 'capabilities.json'), JSON.stringify({ 'series-owner': [adminEmail, bobEmail] }));
   writeFileSync(join(root, 'series', 'ser001', 'series.json'), JSON.stringify({ version: 1, owner: bobEmail, epoch: 2, since: today, consent: { by: bobEmail, at: today, workspace: 'ops001', logins: [], autonomous: false } }));
 
   const instId = 'c05750000001', instDir = join(root, 'instances', instId);

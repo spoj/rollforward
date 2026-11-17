@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import type { Instance } from './store.ts';
 import { act, initSystem } from './system.ts';
 import { checkTicks } from './logins.ts';
-import { asPerson, can } from './auth.ts';
+import { asPerson } from './auth.ts';
 import { checkAuthorityFormat } from './authority-format.ts';
 import type { Authority } from './series.ts';
 import { serveAgent } from './agent-api.ts';
@@ -82,7 +82,7 @@ async function tryIt(args: string[]) {
 try {
   // A try's instance is in no workspace, and only admins see every one (logins.ts use()).
   const person = asPerson(as);
-  if (person?.role !== 'admin' || !can(person, 'series-owner')) throw new Error('--as EMAIL: an enabled admin explicitly granted series-owner, whose selected logins to use');
+  if (person?.role !== 'admin') throw new Error('--as EMAIL: an enabled admin whose selected logins to use');
   if (cmd === 'try') await tryIt(rest);
   else throw new Error(`no command ${cmd}`);
 } catch (e) {

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { checkAuthorityFormat, AUTHORITY_FORMAT } from '../src/authority-format.ts';
 import { applySeriesOwners, planSeriesOwners } from '../scripts/series-owner-migrate.ts';
-import { CAPS, can, upsertUser, type Me } from '../src/auth.ts';
+import { CAPS, upsertUser } from '../src/auth.ts';
 import { initSystem, saveTree, tree, writeJson } from '../src/system.ts';
 import { readFixtureTree, snapshotFiles, writeFixtureTree } from './owner-fixture.ts';
 
@@ -227,17 +227,13 @@ test('migration CLI documents readonly planning and blocked apply', () => {
   assert.match(result.stderr, /read-only by default; apply is policy-blocked/);
 });
 
-test('admin try requires explicit pilot identity and selected offers before starting a shell', t => {
+test('admin try requires explicit identity and selected offers before starting a shell', t => {
   const root = mkdtempSync(join(tmpdir(), 'rf-owner-try-')), email = 'admin@example.test';
   t.after(() => rmSync(root, { recursive: true, force: true }));
   checkAuthorityFormat(root);
   initSystem(root);
   upsertUser(email, { role: 'admin' });
   let result = spawnSync(process.execPath, ['src/cli.ts', root, 'try', '--as', email, '--', 'true'], { encoding: 'utf8' });
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /explicitly granted series-owner/);
-  writeJson('capabilities.json', { 'series-owner': [email] });
-  result = spawnSync(process.execPath, ['src/cli.ts', root, 'try', '--as', email, '--', 'true'], { encoding: 'utf8' });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /--logins JSON_ARRAY is required/);
   result = spawnSync(process.execPath, ['src/cli.ts', root, 'try', '--as', email, '--logins', '["someone-elses:offer"]', '--', 'true'], { encoding: 'utf8' });
@@ -248,19 +244,12 @@ test('admin try requires explicit pilot identity and selected offers before star
   assert.match(result.stderr, /--as EMAIL/);
 });
 
-test('series-owner is a named opt-in, including for admins; email and group grants work', t => {
+test('unknown capabilities do not affect startup or become advertised capabilities', t => {
   const root = mkdtempSync(join(tmpdir(), 'rf-owner-cap-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
+  checkAuthorityFormat(root);
   initSystem(root);
-  const admin: Me = { email: 'admin@example.test', name: 'Admin', role: 'admin', groups: [] };
-  const person: Me = { email: 'alice@example.test', name: 'Alice', role: 'user', groups: ['pilot-group'] };
-  assert.ok(CAPS.includes('series-owner'));
-  assert.equal(can(admin, 'series-owner'), false);
-  assert.equal(can(person, 'series-owner'), false);
-  assert.equal(can(admin, 'publish'), true);
-  writeJson('capabilities.json', { 'series-owner': [admin.email, 'pilot-group'] });
-  assert.equal(can(admin, 'series-owner'), true);
-  assert.equal(can(person, 'series-owner'), true);
-  writeJson('capabilities.json', { 'series-owner': [] });
-  assert.equal(can(admin, 'series-owner'), false);
+  writeJson('capabilities.json', { 'series-owner': ['admin@example.test'] });
+  checkAuthorityFormat(root);
+  assert.equal(CAPS.includes('series-owner'), false);
 });

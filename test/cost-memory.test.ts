@@ -21,7 +21,6 @@ for (const mode of ['unterminated line', 'many events', 'JSON response', 'key me
     openStore(root);
     saveTree({ workspaces: { w: { name: 'W', owners: ['a@test'], members: [] } }, series: { s: { name: 'S', workspace: 'w' } } });
     writeJson('users.json', { 'a@test': { role: 'user' } });
-    writeJson('capabilities.json', { 'series-owner': ['a@test'] });
     saveSeriesSettings(join(root, 'series', 's'), { version: 1, owner: 'a@test', epoch: 1, since: '', consent: { by: 'a@test', at: '', workspace: 'w', logins: [], autonomous: false } });
     const mode = ${JSON.stringify(mode)};
     const provider = createServer(async (req, res) => {

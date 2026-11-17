@@ -51,7 +51,6 @@ beforeEach(() => {
   openStore(root);
   saveTree({ workspaces: { w: { name: 'Synthetic', owners: [ALICE], members: [BOB] } }, series: { s: { name: 'Synthetic', workspace: 'w' } } });
   writeJson('users.json', { [ALICE]: { role: 'user' }, [BOB]: { role: 'user' } });
-  writeJson('capabilities.json', { 'series-owner': [ALICE, BOB] });
   writeJson('connections.json', { m365: { type: 'graph' } });
   sequence++;
   ticks = [`m365:item:source${sequence}/folder`, `m365:item:links${sequence}/folder`, `m365:mail:${ALICE}`];

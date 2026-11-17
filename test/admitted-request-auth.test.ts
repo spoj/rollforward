@@ -33,7 +33,6 @@ const skillBody = JSON.stringify({ files: { 'SKILL.md': Buffer.from('---\nname: 
 before(async () => {
   cpSync(join(import.meta.dirname, 'fixture'), root, { recursive: true });
   writeFixtureTree(root, readFixtureTree(root));
-  writeFileSync(join(root, '.rf', 'capabilities.json'), JSON.stringify({ 'series-owner': [ADMIN, ACTOR] }));
   const probe = createServer();
   await new Promise<void>(ok => probe.listen(0, '127.0.0.1', ok));
   const port = (probe.address() as { port: number }).port;
@@ -256,7 +255,6 @@ for (const action of ['reject', 'owner', 'credentials']) test(`a ${action} reque
     await import('./src/server.ts');
     const store = await import('./src/store.ts');
     const { writeJson } = await import('./src/system.ts');
-    writeJson('capabilities.json', { 'series-owner': ['${ADMIN}'] });
     const cookie = (await entra.signIn(base, '${ADMIN}')).headers.getSetCookie().find(c => c.startsWith('rf_session=')).split(';')[0];
     const call = (path, body, headers = { cookie }) => fetch(base + path, { method: 'POST', headers, body: JSON.stringify(body) });
     const { id: ws } = await (await call('/api/workspaces', { name: 'Queue' })).json();

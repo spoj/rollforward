@@ -222,7 +222,6 @@ before(async () => {
   saveTree({ workspaces: { w: { name: 'W', owners: [USER], members: [] } }, series: { s1: { name: 'S1', workspace: 'w' } } });
   const auth = await import('../src/auth.ts');
   auth.upsertUser(USER, { role: 'user' });
-  writeJson('capabilities.json', { 'series-owner': [USER] });
 
   const graphMod = await import('../src/connections/graph.ts');
   graphMod.endpoints.graph = base;

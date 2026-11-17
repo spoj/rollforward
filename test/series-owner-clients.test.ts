@@ -26,7 +26,7 @@ const server = createServer(async (req, res) => {
   calls.push({ path: req.url!, method: req.method!, body });
   res.setHeader('content-type', 'application/json');
   const value = req.url === '/api' ? [{ id: 'w1', name: 'Finance', series: [series] }]
-    : req.url === '/me' ? { email: colleague, can: ['series-owner'], role: 'user' }
+    : req.url === '/me' ? { email: colleague, can: [], role: 'user' }
     : req.url === '/logins' ? []
     : req.url === '/api/instances/i1' && req.method === 'GET' ? { doc: { status: 'open', items: [] }, log: [{ seq: 1, op: 'create', by: colleague }, { seq: 2, op: 'comment', by: colleague }], owner: { by: owner }, waiting: [], starts: false }
     : req.url === '/api/series' ? { instance: 'i1' } : { id: 'i1' };
@@ -58,7 +58,7 @@ async function cli(...args: string[]) {
 function settings(email: string, manage: boolean, consent: any = null) {
   const source = code.slice(code.indexOf('function startsHtml('), code.indexOf('// A series\' notes'));
   return runInNewContext(`${source}\nstartsHtml(s)`, {
-    s: { ...series, consent, logins: [] }, me: { email, can: ['series-owner'] }, cur: { w: { manage } }, pv: {},
+    s: { ...series, consent, logins: [] }, me: { email, can: [] }, cur: { w: { manage } }, pv: {},
     person: (x: string) => x, ticksHtml: (_: any, selected: string[]) => `SELECTED:${JSON.stringify(selected)}`,
   });
 }
@@ -225,7 +225,6 @@ test('real owner clients preserve terminal history and task execution settings',
       const res = await entra.signIn(base, who);
       cookies[who] = res.headers.getSetCookie().find(c => c.startsWith('rf_session='))!.split(';')[0];
     }
-    await api('PUT', '/capabilities', { cap: 'series-owner', people: [owner, bob] });
     const token = (await (await api('POST', '/tokens', { name: 'history', days: 1 })).json()).token;
     mkdirSync(join(tmp, '.config'));
     writeFileSync(join(tmp, '.config', 'rollforward.json'), JSON.stringify({ url: base, token }));

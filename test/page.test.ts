@@ -135,7 +135,6 @@ before(async () => {
     'admin@demo.test': { role: 'admin', name: 'Demo Admin', created: '2026-08-01T09:00:00.000Z' },
     'bob@demo.test': { role: 'user', name: 'Bob', created: '2026-08-01T09:00:00.000Z' },
   }));
-  writeFileSync(join(root, '.rf', 'capabilities.json'), JSON.stringify({ 'series-owner': ['admin@demo.test', 'bob@demo.test'] }));
   for (const [id, series] of Object.entries(tree.series) as [string, { workspace: string }][]) {
     const owner = id === 'd83e3e5c41da' ? 'bob@demo.test' : 'admin@demo.test', at = '2026-08-01T09:00:00.000Z';
     mkdirSync(join(root, 'series', id), { recursive: true });
@@ -2170,7 +2169,6 @@ test("Transfer series changes every instance without credentials; only its owner
   await colleague.goto(`${origin}/auth/login`);
   await colleague.close();
   entra.who.as = 'admin@demo.test';
-  await page.evaluate(async chan => api('/capabilities', { method: 'PUT', body: JSON.stringify({ cap: 'series-owner', people: ['admin@demo.test', 'bob@demo.test', 'handed@demo.test', chan] }) }), chan);
   const { mine, theirs, sid, unrun, empty } = await page.evaluate(async () => {
     const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) });
     const { id: ws } = await post('/api/workspaces', { name: 'Handing' });
@@ -2541,7 +2539,7 @@ test('sidebar navigation and reload keep each draft but do not restore a cancell
   }
 });
 
-test('Transfer series dialog when no other eligible signed-in person sees the workspace explains that instead of showing an empty select', async () => {
+test('Transfer series dialog when no other enabled person sees the workspace explains that instead of showing an empty select', async () => {
   const origin = new URL(page.url()).origin;
   const { inst } = await page.evaluate(async () => {
     const { id: ws } = await (await fetch('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: 'SoloOwner' }) })).json();
@@ -2555,7 +2553,7 @@ test('Transfer series dialog when no other eligible signed-in person sees the wo
   await page.waitForSelector('#ask[open]');
   assert.equal(await page.locator('#ask #ownerto').count(), 0);
   assert.equal(await page.locator('#ask button[value=ok]').count(), 0);
-  assert.match(await page.textContent('#ask p') ?? '', /signed in/i);
+  assert.match(await page.textContent('#ask p') ?? '', /enabled person can see this workspace/i);
   await page.keyboard.press('Escape');
 });
 

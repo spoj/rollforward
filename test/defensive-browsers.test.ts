@@ -62,7 +62,6 @@ saveTree({ workspaces: { w: { name: 'W', owners: [USER], members: [] } }, series
 
 const { upsertUser } = await import('../src/auth.ts');
 upsertUser(USER, { role: 'admin' });
-writeJson('capabilities.json', { 'series-owner': [USER] });
 const { personDir, saveLogin, secret } = await import('../src/logins.ts');
 const { setConnection, setLetIn } = await import('../src/connections.ts');
 const { ask, decide } = await import('../src/grants.ts');

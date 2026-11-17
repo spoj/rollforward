@@ -116,7 +116,6 @@ before(async () => {
   saveSeriesSettings(join(root, 'series', 'd83e3e5c41da'), { version: 1, owner: adminEmail, epoch: 1, since });
   saveSeriesSettings(join(root, 'series', '01d7a4e00002'), { version: 1, owner: CAROL, epoch: 1, since });
   appendFileSync(join(taken, 'log.jsonl'), JSON.stringify({ seq: 10, at: new Date().toISOString(), by: 'server', op: 'authority', owner: CAROL, epoch: 1, workspace: '01d7a4e00001' }) + '\n');
-  writeFileSync(join(root, '.rf', 'capabilities.json'), JSON.stringify({ 'series-owner': [bob, CAROL, DANA, ERIN, 'erin@demo.test', 'runner-groups@demo.test', 'grant-groups@demo.test'] }));
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch') };
   mkdirSync(env.HOME);
   const bin = join(tmp, 'bin'), bwrap = execFileSync('which', ['bwrap'], { encoding: 'utf8' }).trim();
@@ -144,9 +143,7 @@ exec "${bwrap}" "$@"
     proc.on('exit', code => fail(new Error(`server exited with ${code}`)));
   });
   admin = sessionOf(await login(adminEmail))!;
-  assert.ok(!(await json('/me')).can.includes('series-owner'), 'admins are not implicitly in the owner pilot');
-  assert.equal((await call('POST', '/api/series', JSON.stringify({ workspace: '1b3031035ff6', name: 'Not opted in', logins: [], autonomous: false }))).status, 403);
-  assert.equal((await call('PUT', '/capabilities', JSON.stringify({ cap: 'series-owner', people: [adminEmail, bob, CAROL, DANA, ERIN, 'erin@demo.test', 'runner-groups@demo.test', 'grant-groups@demo.test'] }))).status, 200);
+  assert.ok(!(await json('/me')).can.includes('series-owner'), 'unknown capabilities are not exposed');
   assert.equal((await call('PUT', '/api/series/d83e3e5c41da/credentials', JSON.stringify({ logins: [], autonomous: true }))).status, 200);
   for (const id of readdirSync(standIns)) assert.equal((await call('POST', `/skills/${id}/versions`, JSON.stringify({ files: filesOf(join(standIns, id)) }))).status, 200);
 });
@@ -598,13 +595,13 @@ test("each person sees the workspaces they're in, by email or Entra group; owner
   assert.equal((await json('/me', b)).role, 'user');
   assert.deepEqual(await workspaces(b), []);
   const grant = (cap: string, people: unknown, cookie = admin) => call('PUT', '/capabilities', JSON.stringify({ cap, people }), cookie);
-  assert.deepEqual([(await json('/me', b)).can, (await json('/me')).can], [['series-owner'], ['publish', 'create', 'keepalive', 'series-owner']], 'the sole-owner pilot requires explicit named grants, including admins');
+  assert.deepEqual([(await json('/me', b)).can, (await json('/me')).can], [[], ['publish', 'create', 'keepalive']]);
   const refused = await make('BobCo', b);
   assert.deepEqual([refused.status, await refused.text()], [403, 'making a workspace is for admins and those they grant create: ask an admin']);
   assert.equal((await grant('create', [bob], b)).status, 403, 'admins grant capabilities');
   assert.equal((await grant('create', ['Treasury'])).status, 400);
   assert.equal((await grant('delete', [bob])).status, 400);
-  assert.deepEqual(await (await grant('create', ['Bob@demo.test'])).json(), { publish: [], create: [bob], keepalive: [], 'series-owner': [adminEmail, bob, CAROL, DANA, ERIN, 'erin@demo.test', 'runner-groups@demo.test', 'grant-groups@demo.test'] });
+  assert.deepEqual(await (await grant('create', ['Bob@demo.test'])).json(), { publish: [], create: [bob], keepalive: [] });
   assert.equal((await make('BobCo', b)).status, 200, 'and those granted create');
   assert.deepEqual((await workspaces(b)).map((w: { name: string; owners: string[] }) => [w.name, w.owners]), [['BobCo', [bob]]]);
   for (const path of [await at(series, '2026-08-30'), `/files/${await iid(series, '2026-08-30')}/upload/x`])
@@ -626,7 +623,7 @@ test("each person sees the workspaces they're in, by email or Entra group; owner
   entra.who.groups[bob] = [group];
   await login(bob);
   await grant('create', [group.toUpperCase()]);
-  assert.deepEqual((await json('/me', b)).can, ['create', 'series-owner'], 'by an Entra group too');
+  assert.deepEqual((await json('/me', b)).can, ['create'], 'by an Entra group too');
   await grant('create', []);
   assert.equal((await make('Acme Payroll')).status, 200);
   assert.equal((await call('POST', '/api/series', JSON.stringify({ logins: [], autonomous: false, workspace: (await named('Acme Payroll')).id, name: 'Payroll' }))).status, 200);
@@ -1110,7 +1107,7 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   assert.deepEqual((await json('/me')).brand, { text: null, logo: false });
   assert.equal((await call('GET', '/brand/logo')).status, 404);
   assert.equal((await rf('can', 'create', `${bob}, 0B8E5C8A-6D3E-4C21-9F2A-1D2E3F4A5B6C`)).trim(), `create: ${bob}, 0b8e5c8a-6d3e-4c21-9f2a-1d2e3f4a5b6c`);
-  assert.equal((await rf('can')).trim(), `publish: admins only\ncreate: ${bob}, 0b8e5c8a-6d3e-4c21-9f2a-1d2e3f4a5b6c\nkeepalive: admins only\nseries-owner: ${[adminEmail, bob, CAROL, DANA, ERIN, 'erin@demo.test', 'runner-groups@demo.test', 'grant-groups@demo.test'].join(', ')}`);
+  assert.equal((await rf('can')).trim(), `publish: admins only\ncreate: ${bob}, 0b8e5c8a-6d3e-4c21-9f2a-1d2e3f4a5b6c\nkeepalive: admins only`);
   assert.equal((await rf('can', 'create', '--clear')).trim(), 'create: admins only');
 
   // Canonical series ownership guards membership loss, including a demotion when only the admin role grants visibility.
@@ -1226,7 +1223,7 @@ test("rf alone lists its commands and rf help COMMAND gives one's usage; every r
   const rows = JSON.parse(await rf('ls', '--json')), week = rows.find((r: { path: string }) => r.path === `larkfield/${series}/2026-08-30`);
   assert.deepEqual([week.id, week.status, rows.find((r: { path: string }) => r.path === `larkfield/${series}`).id], [await iid(series, '2026-08-30'), 'closed', (await shown(series)).id]);
   assert.ok(JSON.parse(await rf('skills', '--json')).some((s: { id: string }) => s.id === 'tool'));
-  assert.deepEqual(Object.keys(JSON.parse(await rf('can', '--json'))), ['publish', 'create', 'keepalive', 'series-owner']);
+  assert.deepEqual(Object.keys(JSON.parse(await rf('can', '--json'))), ['publish', 'create', 'keepalive']);
   assert.deepEqual(JSON.parse(await rf('brand', '--json')), { text: null, logo: false });
   assert.ok(JSON.parse(await rf('people', '--json')).some((u: { email: string; role: string }) => u.email === adminEmail && u.role === 'admin'));
   assert.ok(JSON.parse(await rf('connections', '--json')).every((c: { name: string; type: string }) => c.name && c.type));
@@ -2282,7 +2279,7 @@ test("admins edit the agents' instructions, which each run started from then on 
   assert.deepEqual([view.text, view.own.by, view.own.stale], [text, adminEmail, false]);
   const acts = readFileSync(join(root, '.rf', 'log.jsonl'), 'utf8');
   assert.ok(acts.includes(`"path":"/prompt","body":{"sha256":"${sha}"}`) && !acts.includes('Answer in rhymes'), "the system's log has its sha256, not its text");
-  assert.equal((await call('POST', '/api/series', JSON.stringify({ workspace: (await named('larkfield')).id, name: 'Prompted' }))).status, 200);
+  assert.equal((await call('POST', '/api/series', JSON.stringify({ workspace: (await named('larkfield')).id, name: 'Prompted', logins: [], autonomous: false }))).status, 200);
   assert.equal((await create('Prompted', '2026-12')).status, 200);
   const run = (await ran(await at('Prompted', '2026-12'))).find(e => e.op === 'run')!;
   assert.deepEqual([run.prompt, run.own_prompt], [sha, true], 'a run started now names the instructions it read');
