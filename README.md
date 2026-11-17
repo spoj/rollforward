@@ -23,6 +23,6 @@ A Linux host, 5.14 or later, with Node 26, git, GNU tar and bubblewrap, and abou
 
 ## Limitations
 
-Highly agentic, with few hard guardrails. The agent does whatever its series owner's logins allow within the selected ceiling, and keeps to its instructions rather than to rules the server enforces. The ceiling applies to every instance, not one period. Every enabled workspace member may own a series; legacy roots require a manual 0.7 cutover with complete explicit owner, consent and pending-work decisions; migration apply is blocked until their evidence policy is approved. It expects accountable adults using a tool.
+Highly agentic, with few hard guardrails. The agent does whatever its series owner's logins allow within the selected ceiling, and keeps to its instructions rather than to rules the server enforces. The ceiling applies to every instance, not one period. Updating legacy data to v0.7.0 needs a hand conversion of a copy, as [docs/deploy.md](docs/deploy.md) describes. It expects accountable adults using a tool.
 
 [docs/system.md](docs/system.md) describes the system in full.

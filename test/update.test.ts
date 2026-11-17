@@ -165,7 +165,7 @@ esac
 `);
   chmodSync(ctl, 0o755);
 
-  // Both synthetic releases use the current authority format; only drain support differs, not the manual migration barrier.
+  // Both synthetic releases use the current authority format; only drain support differs.
   // Build remote with v0.5.0: an older server and updater that know neither /drained nor SIGUSR2.
   git(tmp, 'init', '--bare', '-q', remote);
   git(tmp, 'clone', '-q', remote, stage);
@@ -453,7 +453,7 @@ test('SIGUSR2 during startup, before recover, is handled and can lapse before th
   }
 });
 
-for (const mode of ['slow', 'hanging', 'rejected', 'instant', 'healthy']) test(`post-start health window bounds ${mode} probes`, () => {
+for (const tag of ['v0.5.1', 'v0.6.0', 'v1.0.0']) for (const mode of ['slow', 'hanging', 'rejected', 'instant', 'healthy']) test(`${tag} post-start health window bounds ${mode} probes`, () => {
   const healthHome = mkdtempSync(join(tmp, 'health-'));
   const hook = `
     import cp from 'node:child_process';
@@ -484,7 +484,7 @@ for (const mode of ['slow', 'hanging', 'rejected', 'instant', 'healthy']) test(`
       return signal;
     };
     globalThis.fetch = async (url, options) => {
-      if (String(url).includes('/releases')) return Response.json([{ tag_name: 'v0.5.1', body: 'Urgent: test', html_url: 'mock' }]);
+      if (String(url).includes('/releases')) return Response.json([{ tag_name: ${JSON.stringify(tag)}, body: 'Urgent: test', html_url: 'mock' }]);
       if (String(url).includes('/check-runs')) return Response.json({ check_runs: [{ status: 'completed', conclusion: 'success' }] });
       if (String(url) !== 'http://health.test/') throw Error('unexpected network target: ' + url);
       probes++;
@@ -523,20 +523,20 @@ for (const mode of ['slow', 'hanging', 'rejected', 'instant', 'healthy']) test(`
     assert.equal(report.probes, 1);
     assert.equal(existsSync(join(healthHome, '.local', 'state', 'rollforward-update.json')), false);
   } else {
-    assert.match(result.stdout, /back on v0\.5\.0; v0\.5\.1 won't be tried again/);
-    assert.deepEqual(JSON.parse(readFileSync(join(healthHome, '.local', 'state', 'rollforward-update.json'), 'utf8')).bad, ['v0.5.1']);
-    assert.deepEqual(report.commands.filter((c: string[]) => c[0] === 'git' && c[1] === 'checkout').map((c: string[]) => c.at(-1)), ['v0.5.1', 'v0.5.0']);
+    assert.ok(result.stdout.includes(`back on v0.5.0; ${tag} won't be tried again`), result.stdout);
+    assert.deepEqual(JSON.parse(readFileSync(join(healthHome, '.local', 'state', 'rollforward-update.json'), 'utf8')).bad, [tag]);
+    assert.deepEqual(report.commands.filter((c: string[]) => c[0] === 'git' && c[1] === 'checkout').map((c: string[]) => c.at(-1)), [tag, 'v0.5.0']);
   }
   if (mode === 'hanging') assert.equal(report.aborted, 1);
 });
 
-for (const tag of ['v0.6.0', 'v0.7.0', 'v1.0.0']) test(`an incompatible ${tag} without Manual metadata never crosses the automatic rollback reader boundary`, async () => {
+for (const tag of ['v0.6.0', 'v0.7.0', 'v1.0.0']) test(`a Manual ${tag} prerelease stops automatic updates`, async () => {
   const current = git(work, 'describe', '--tags', '--exact-match', 'HEAD'), pid = proc!.pid, probes = drainedProbes;
-  publish(tag);
+  publish(tag, { body: 'Manual: convert data first', prerelease: true });
   try {
     const result = await spawnUpdater(work).done;
     assert.equal(result.code, 0, result.out);
-    assert.match(result.out, /needs a person first.*reader boundary/);
+    assert.match(result.out, /needs a person first:/);
     assert.equal(git(work, 'describe', '--tags', '--exact-match', 'HEAD'), current);
     assert.equal(proc!.pid, pid, 'neither stop nor target/rollback start ran');
     assert.equal(drainedProbes, probes);

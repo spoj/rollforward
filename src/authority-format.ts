@@ -9,7 +9,7 @@ export function authorityTree(data: any): Tree {
     || 'workspaces' in data || 'series' in data || !data.tree || typeof data.tree !== 'object' || Array.isArray(data.tree)
     || !data.tree.workspaces || typeof data.tree.workspaces !== 'object' || Array.isArray(data.tree.workspaces)
     || !data.tree.series || typeof data.tree.series !== 'object' || Array.isArray(data.tree.series))
-    throw new Error('unsupported or incomplete series owner authority format; manual offline migration required; see docs/deploy.md');
+    throw new Error('legacy data: convert it to series owners first (docs/deploy.md)');
   for (const [id, w] of Object.entries(data.tree.workspaces) as [string, any][]) {
     if (!/^[\w-]+$/.test(id) || !w || typeof w.name !== 'string' || !Array.isArray(w.owners) || !w.owners.every((p: unknown) => typeof p === 'string')
       || !Array.isArray(w.members) || !w.members.every((p: unknown) => typeof p === 'string'))
@@ -25,7 +25,7 @@ export function authorityTree(data: any): Tree {
 export function checkAuthorityFormat(root: string): void {
   const path = join(root, '.rf', 'tree.json');
   if (!existsSync(path)) {
-    if (existsSync(root) && readdirSync(root).length) throw new Error('series owner authority format: manual offline migration required; see docs/deploy.md');
+    if (existsSync(root) && readdirSync(root).length) throw new Error('legacy data: convert it to series owners first (docs/deploy.md)');
     mkdirSync(join(root, '.rf'), { recursive: true, mode: 0o700 });
     const tree = { workspaces: {}, series: {} };
     replaceFile(path, JSON.stringify({ ...AUTHORITY_FORMAT, state: 'incomplete', tree }));

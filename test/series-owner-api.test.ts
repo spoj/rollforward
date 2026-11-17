@@ -104,7 +104,7 @@ test('startup refuses legacy authority before backups, recovery or other data mu
   writeFileSync(join(legacy, '.rf', 'tree.json'), raw);
   const child = spawnSync(process.execPath, ['src/server.ts', legacy, '0'], { env: { ...process.env, ...entra.env(base) }, encoding: 'utf8', timeout: 5000 });
   assert.notEqual(child.status, 0);
-  assert.match(child.stderr, /manual offline migration required/);
+  assert.match(child.stderr, /legacy data: convert it to series owners first \(docs\/deploy\.md\)/);
   assert.equal(readFileSync(join(legacy, '.rf', 'tree.json'), 'utf8'), raw);
   assert.equal(existsSync(join(legacy, '.rf-backups')), false);
   assert.equal(existsSync(join(legacy, '.rf', 'authority-format.json')), false);

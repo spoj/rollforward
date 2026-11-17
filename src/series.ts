@@ -11,7 +11,7 @@ export function seriesSettings(seriesDir: string): SeriesSettings {
   const p = join(seriesDir, 'series.json');
   if (!existsSync(p)) return { version: 1, epoch: 0, since: '' };
   const settings = JSON.parse(readFileSync(p, 'utf8'));
-  if (settings.version !== 1) throw new Error('legacy series settings require the offline series-owner migration');
+  if (settings.version !== 1) throw new Error('legacy data: convert it to series owners first (docs/deploy.md)');
   return settings;
 }
 
