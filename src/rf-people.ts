@@ -95,11 +95,12 @@ rf grant approve|deny ID [TEXT]   a request to use a website in a workspace you 
 rf grant revoke ID                a grant pending or approved, yours or in a workspace you own; its runs' browsers close
 rf correct PATH TEXT [--item ID] [--ref REF] [--superseded] [--see LABEL]   a closed instance, or its item ID at REF, is
                                   wrong, or superseded, as LABEL, another instance of its series, shows; it can't be withdrawn
-rf wake PATH AT [TEXT] [--label LABEL] [--days DAYS] | rf wake --cancel ID
+rf wake PATH AT [TEXT] [--label LABEL] [--days DAYS] [--check PATH [--deadline ISO]] | rf wake --cancel ID
                                   AT now, +<n>m|h|d or a date; PATH an open instance, or a series with LABEL; TEXT a short
                                   message for the run; the owner's now starts under current consent without autonomous opt-in;
                                   later or agent-set wakes need it. Collaborators' wakes are requests. DAYS, such as mon-fri,
-                                  repeats weekly at AT's time; rf ls shows each wake's ID
+                                  repeats weekly at AT's time. With the owner's wake-check capability, --check working/FILE.py (or .ts)
+                                  gates a scheduled wake; optional --deadline TIME (ISO with offset) runs Pi even if the check stops.
 rf note SERIES [TEXT] [--json]    tells the series something for its runs, about the series rather than one period or while no
                                   instance is open, which starts no run; without TEXT, its notes, open and settled
 rf agents [WORKSPACE] [--set FILE|-]     the company's AGENTS.md, or a workspace's; setting the company's is for admins
@@ -530,12 +531,13 @@ if (cmd === 'login' && url) {
   // --mine: open instances of series you own.
   const me = flags.mine && await get('/me'), rows = (await get('/api')).flatMap(w => w.series.flatMap(s => [
     ...me ? [] : [{ path: `${w.name}/${s.name}`, id: s.id, owner: s.owner, requests: s.requests.length, wakes: s.wakes }],
-    ...s.instances.filter(i => !me || (i.status === 'open' && i.owner === me.email)).map(i => ({ path: `${w.name}/${s.name}/${i.label}`, id: i.id, status: i.status, running: i.running, asks: i.asks.length, owner: i.owner, wakes: i.wakes, ...(i.deleted && { deleted: i.deleted }) })),
+    ...s.instances.filter(i => !me || (i.status === 'open' && i.owner === me.email)).map(i => ({ path: `${w.name}/${s.name}/${i.label}`, id: i.id, status: i.status, running: i.running, asks: i.asks.length, owner: i.owner, wakes: i.wakes, ...(i.wakeCheck && { wakeCheck: i.wakeCheck }), ...(i.deleted && { deleted: i.deleted }) })),
   ]));
   if (flags.json) console.log(JSON.stringify(rows, null, 1));
   else for (const r of rows) {
     console.log(r.deleted ? `${r.path}  deleted by ${r.deleted.by} ${when(r.deleted.at)}` : r.status ? `${r.path}  ${r.status}${r.running ? ', running' : ''}${r.asks ? `, ${r.asks} asks waiting` : ''}, owner ${r.owner}` : `${r.path}${r.requests ? `  ${r.requests} asking to start` : ''}`);
-    for (const k of r.wakes) console.log(`  wake ${k.id} ${k.at}${k.label ? ` starts ${k.label}` : ''}${k.days ? `, then each ${k.days.join(', ')}` : ''}${k.text ? `: ${k.text}` : ''}`);
+    if (r.wakeCheck) console.log(`  Wake check stopped: ${clip(r.wakeCheck.message.replace(/[\x00-\x1f\x7f-\x9f]/g, ' '), TEXT_COLS)}`);
+    for (const k of r.wakes) console.log(`  wake ${k.id} ${k.at}${k.label ? ` starts ${k.label}` : ''}${k.days ? `, then each ${k.days.join(', ')}` : ''}${k.text ? `: ${k.text}` : ''}${k.check ? `; check ${k.check}${k.deadline ? ` until ${k.deadline}` : ''}` : ''}`);
   }
 } else if (cmd === 'waiting' && !args.length) {
   const [me, s, all] = await Promise.all([get('/me'), get('/api/status'), get('/api')]), mine = (who: string | null) => (who ?? me.email) === me.email;
@@ -771,8 +773,8 @@ else if (cmd === 'comment' && args.length === 2) {
 } else if (cmd === 'wake' && [2, 3].includes(args.length)) {
   const { series, inst } = await find(args[0]);
   const at = args[1] === 'now' ? Date.now() : args[1].startsWith('+') ? Date.now() + Number(args[1].slice(1, -1)) * { m: 60e3, h: 3600e3, d: 86400e3 }[args[1].at(-1)!]! : Date.parse(args[1]);
-  const w = await (await post(`/api/wakes/${inst?.id ?? series.id}`, { at: new Date(at).toISOString(), label: flags.label, days: flags.days, text: args[2] }, 'PUT')).json();
-  console.log(`wake ${w.id} at ${w.at}${w.days ? `, then each ${w.days.join(', ')}` : ''}`);
+  const w = await (await post(`/api/wakes/${inst?.id ?? series.id}`, { at: new Date(at).toISOString(), label: flags.label, days: flags.days, text: args[2], check: flags.check, deadline: flags.deadline }, 'PUT')).json();
+  console.log(`wake ${w.id} at ${w.at}${w.days ? `, then each ${w.days.join(', ')}` : ''}${w.check ? `; check ${w.check}${w.deadline ? ` until ${w.deadline}` : ''}` : ''}`);
 } else if (cmd === 'note' && [1, 2].includes(args.length)) {
   const at = `/api/series/${(await seriesAt(args[0])).id}/notes`;
   if (args[1]) console.log(`noted ${(await (await post(at, { text: args[1] })).json()).id} on ${args[0]}: it starts no run, and its runs read it`);
@@ -878,8 +880,8 @@ else if (cmd === 'indexes' && !args.length) {
 } else if (cmd === 'runs' && args.length <= 1) await watch(async () => {
   const rows = (await runsIn(args[0])).filter(r => (!flags.failed || r.outcome === 'failed') && (!flags.running || r.outcome === 'running') && (!flags.long || r.seconds >= Number(flags.long) * 60));
   if (flags.json) return JSON.stringify(rows, null, 1);
-  return rows.length ? table(['START', 'PATH', 'RUN', 'OUTCOME', 'TIME', 'COST', 'STARTED BY', 'ERROR'], rows.map(r => [when(r.at), clip(r.path, PATH_COLS), String(r.run),
-    `${r.outcome}${r.failure ? ` (${r.failure})` : ''}`, took(r.seconds), usdNote(r.cost, r.estimated), r.started ? `${r.started.op} by ${r.started.by}` : '', r.error ? brief(r.error, TEXT_COLS) : '']), '') : 'No runs.';
+  return rows.length ? table(['START', 'PATH', 'RUN', 'OUTCOME', 'TIME', 'COST', 'STARTED BY', 'MESSAGE / ERROR'], rows.map(r => [when(r.at), clip(r.path, PATH_COLS), r.run === null ? '—' : String(r.run),
+    `${r.outcome}${r.failure ? ` (${r.failure})` : ''}`, took(r.seconds), usdNote(r.cost, r.estimated), r.started ? `${r.started.op} by ${r.started.by}` : '', r.error ? brief(r.error, TEXT_COLS) : clip((r.message ?? '').replace(/[\x00-\x1f\x7f-\x9f]/g, ' '), TEXT_COLS)]), '') : 'No runs.';
 });
 else if (cmd === 'top' && !args.length) await watch(async () => {
   const m = await get('/monitor');
@@ -981,7 +983,7 @@ else if (cmd === 'kill' && args.length === 1 && /^\d+$/.test(args[0])) {
   if (flags.json) console.log(JSON.stringify(rows, null, 1));
   else for (const r of rows) {
     console.log(`${r.path}  last woken ${r.fired ? when(r.fired) : 'never'}${r.wakes.length || r.requests.length ? '' : ', none pending'}`);
-    for (const k of r.wakes) console.log(`  wake ${k.id} ${when(k.at)}${k.label ? ` starts ${k.label}` : ''}${k.days ? `, then each ${k.days.join(', ')}` : ''}, set by ${k.from}${k.text ? `: ${k.text}` : ''}`);
+    for (const k of r.wakes) console.log(`  wake ${k.id} ${when(k.at)}${k.label ? ` starts ${k.label}` : ''}${k.days ? `, then each ${k.days.join(', ')}` : ''}, set by ${k.from}${k.text ? `: ${k.text}` : ''}${k.check ? `; check ${k.check}${k.deadline ? ` until ${k.deadline}` : ''}` : ''}`);
     for (const q of r.requests) console.log(`  request ${q.id} to ${q.target ? 'wake' : 'start'} ${q.label}, from ${q.from} since ${when(q.at)}, waits on ${q.who ?? 'anyone'}${q.text ? `: ${q.text}` : ''}`);
   }
 } else if (cmd === 'activity' && args.length <= 1) {
@@ -1052,7 +1054,7 @@ else if (cmd === 'kill' && args.length === 1 && /^\d+$/.test(args[0])) {
   const [cap, list] = args, people = flags.clear ? [] : list?.split(',').map(p => p.trim()).filter(Boolean);
   const all: Record<string, string[]> = await (await (people ? post('/capabilities', { cap, people }, 'PUT') : api('/capabilities'))).json();
   if (flags.json) console.log(JSON.stringify(all, null, 1));
-  else for (const [c, who] of Object.entries(all)) if (!cap || c === cap) console.log(`${c}: ${who.join(', ') || (c === 'vpn' ? 'no one' : 'admins only')}`);
+  else for (const [c, who] of Object.entries(all)) if (!cap || c === cap) console.log(`${c}: ${who.join(', ') || (c === 'vpn' || c === 'wake-check' ? 'no one' : 'admins only')}`);
 } else if (cmd === 'user' && args.length >= 2) {
   const [what, email, role] = args, at = `/users/${encodeURIComponent(email)}`;
   if (what === 'add') await post('/users', { roles: { [email]: role ?? 'user' } }, 'PUT');

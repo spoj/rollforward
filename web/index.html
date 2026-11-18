@@ -426,7 +426,7 @@ function renderBar() {
     const next = open && cur.i.wakes[0];
     const wake = open ? `<button class="btn top wake" data-act="wakes"${next ? ` title="Next wake ${when(next.at)}"` : ''}>${ICON.alarm}${next ? `Wakes ${soon(next.at)}` : 'No wake'}</button>` : '';
     const del = cur.w.manage && !gone() ? '<a class="del" data-act="delete" title="For those who manage the workspace: delete it, and all the server holds of it">Delete\u2026</a>' : '';
-    h += `<div class="state">${state}</div>${wake}${del}`;
+    h += `<div class="state">${state}</div>${data.wakeCheck ? `<div class="sub wake-check">Wake check stopped: ${esc(data.wakeCheck.message)} · ${when(data.wakeCheck.at)}</div>` : ''}${wake}${del}`;
     const off = data.run ? 'disabled title="Available when the run ends"' : '', mine = data.owner.by === me.email;
     if (open) h += (mine ? `<button class="btn commit top" data-act="close" ${off}>Close</button>` : '')
       + ((mine || cur.w.manage) ? '<button class="btn top" data-act="series-owner">Transfer series…</button>' : '');
@@ -1059,7 +1059,7 @@ function wakesHtml(target, list, series) {
     + `<input type="text" class="wtext" maxlength="500" placeholder="Message for the run (optional)" value="${esc(k.text ?? '')}">`
     + '<div class="row2">' + WEEK.map(d => `<label class="sub"><input type="checkbox" value="${d}" ${k.days?.includes(d) ? 'checked' : ''}>${d[0].toUpperCase() + d.slice(1)}</label>`).join('')
     + `<button class="btn" data-act="wake-save">${k.id ? 'Save' : 'Add'}</button>${k.id ? '<button class="quiet" data-act="wake-delete">Delete</button>' : ''}</div>${k.id && owns && cur.s.consent?.autonomous && (k.initiator ?? k.from) !== cur.s.owner ? '<div class="sub">Each occurrence asks the owner to start it.</div>' : ''}</div>`;
-  const existing = list.map(k => owns || (!k.authority && k.from === me.email) ? row(k) : `<div class="wakerow" data-id="${k.id}" data-target="${target}">${when(k.at)}${k.label ? ` · ${esc(k.label)}` : ''}${k.text ? ` · ${esc(k.text)}` : ''} · ${k.authority ? 'Captured owner schedule' : 'Wake request'}${cur.w.manage ? '<button class="quiet" data-act="wake-delete">Delete</button>' : ''}</div>`).join('');
+  const existing = list.map(k => !k.check && (owns || (!k.authority && k.from === me.email)) ? row(k) : `<div class="wakerow" data-id="${k.id}" data-target="${target}">${when(k.at)}${k.label ? ` · ${esc(k.label)}` : ''}${k.text ? ` · ${esc(k.text)}` : ''}${k.check ? ` · check ${esc(k.check)}${k.deadline ? ` · deadline ${when(k.deadline)}` : ''} (set with rf)` : ''} · ${k.authority ? 'Captured owner schedule' : 'Wake request'}${owns || cur.w.manage ? '<button class="quiet" data-act="wake-delete">Delete</button>' : ''}</div>`).join('');
   return `<div class="sub">${series ? 'Each starts the instance it names, or continues it if the series has it.' : 'Each continues this instance.'} Tick days to repeat it weekly at its time.${owns && cur.s.consent?.autonomous ? '' : ' Each occurrence asks the owner to start it.'}</div>${existing}${row()}`;
 }
 

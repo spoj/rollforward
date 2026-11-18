@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { closeSync, constants, copyFileSync, createReadStream, createWriteStream, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, truncateSync, writeFileSync, writeSync } from 'node:fs';
+import { copyFile, truncate } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
@@ -8,7 +9,8 @@ import { wipe, type Instance } from './store.ts';
 import { changes, rfDir } from './system.ts';
 import { users } from './auth.ts';
 import { token } from './entra.ts';
-import { lender, logins, personDir, use, type Offer } from './logins.ts';
+import { lender, logins, personDir, sameAuthority, use, type Offer } from './logins.ts';
+import type { Authority } from './series.ts';
 import { endpoints, scope } from './connections/graph.ts';
 import { scratch } from './runner.ts';
 
@@ -260,10 +262,13 @@ export function forget(email: string, offer?: string) {
 }
 
 // What a run of the instance reads: the cache of each source its lender ticked that has one so far, without waiting for it.
-export function sources(inst: Instance, run?: number): { o: Offer; c: Cache }[] {
+export function sources(inst: Instance, run?: number | Authority): { o: Offer; c: Cache }[] {
   let by: string, ticked: string[];
   try {
-    ({ by, logins: ticked } = lender(inst, run));
+    if (typeof run === 'object') {
+      if (!sameAuthority(inst, run) || m365(run.owner)?.expired) return [];
+      ({ owner: by, logins: ticked } = run);
+    } else ({ by, logins: ticked } = lender(inst, run));
   } catch {
     return [];
   }
@@ -291,10 +296,12 @@ A ticked source with neither file has no cache yet.
 // Before a run starts, for each of its caches: into `to`, on the same disk, a copy of the feed as its .json accounts for it, by
 // reflink where the disk does that, as <name>.ndjson.zst, and <name>.json: the source, their own deltaLinks, to follow for what
 // changed since, and as_of, when the oldest of them was reached, null while the cache is still being built; and the README.md that
-// says so. All of it runs at once, so no tidy-up starts a new feed in between. Stopped parts resume in their cache's queue, without
-// holding up the copy. Whether there was any.
-export function prepare(inst: Instance, to: string, run?: number): boolean {
-  const names = new Set<string>();
+// says so. Pi's copies are synchronous and resume stopped parts in their cache's queue. A wake check instead takes an async
+// snapshot without touching the feeds, so its deadline can still fire during a slow copy.
+export function prepare(inst: Instance, to: string, run?: number): boolean;
+export function prepare(inst: Instance, to: string, run: Authority): Promise<boolean>;
+export function prepare(inst: Instance, to: string, run?: number | Authority): boolean | Promise<boolean> {
+  const names = new Set<string>(), copies: (() => Promise<void>)[] = [], snapshot = typeof run === 'object';
   for (const { o, c } of sources(inst, run)) {
     const base = o.name.replace(/[/\0]/g, '-'), ps = Object.values(c.parts);
     const fit = (suffix: string) => {
@@ -302,7 +309,7 @@ export function prepare(inst: Instance, to: string, run?: number): boolean {
       for (const ch of base) if (Buffer.byteLength(s + ch + suffix + '.ndjson.zst') <= 255) s += ch; else break;
       return s + suffix;
     };
-    if (ps.some(p => p.due === null && p.tries >= TRIES)) queue(at(c.person, c.source), async () => {
+    if (!snapshot && ps.some(p => p.due === null && p.tries >= TRIES)) queue(at(c.person, c.source), async () => {
       const now = load(c.person, c.source);
       if (!now) return;
       for (const p of Object.values(now.parts)) if (p.due === null && p.tries >= TRIES) Object.assign(p, { due: Date.now(), tries: 0 });
@@ -313,13 +320,17 @@ export function prepare(inst: Instance, to: string, run?: number): boolean {
     names.add(name);
     mkdirSync(to, { recursive: true });
     if (c.length) {
-      copyFileSync(feed(c), join(to, `${name}.ndjson.zst`), constants.COPYFILE_FICLONE);
-      truncateSync(join(to, `${name}.ndjson.zst`), c.length);
+      const file = join(to, `${name}.ndjson.zst`);
+      if (snapshot) copies.push(() => copyFile(feed(c), file, constants.COPYFILE_FICLONE).then(() => truncate(file, c.length)));
+      else {
+        copyFileSync(feed(c), file, constants.COPYFILE_FICLONE);
+        truncateSync(file, c.length);
+      }
     }
     writeFileSync(join(to, `${name}.json`), JSON.stringify({ source: o.id, as_of: ps.length && ps.every(p => p.as_of) ? ps.map(p => p.as_of!).sort()[0] : null, deltaLinks: ps.flatMap(p => p.delta ?? []) }, null, 1));
   }
   if (names.size) writeFileSync(join(to, 'README.md'), README);
-  return names.size > 0;
+  return snapshot ? Promise.all(copies.map(copy => copy())).then(() => names.size > 0) : names.size > 0;
 }
 
 // A going run's copies, by its token, of sources no longer lent it, as its runner unticked one, took its offer off or signed out,

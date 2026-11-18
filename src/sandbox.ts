@@ -36,7 +36,9 @@ export type SandboxRun = { egress(host: string, allowed: boolean): void; browser
 const bound = new WeakMap<object, string>(), own = new Map<string, NetServer>();
 let sandboxes: ReturnType<typeof createServer>;
 export function listenRun(path: string, token: string) {
-  own.set(token, createNetServer(s => { bound.set(s, token); sandboxes.emit('connection', s); }).listen(path).unref());
+  const server = createNetServer(s => { bound.set(s, token); sandboxes.emit('connection', s); }).listen(path).unref();
+  own.set(token, server);
+  return server;
 }
 export function unlistenRun(token: string) {
   own.get(token)?.close();
@@ -102,14 +104,16 @@ export const userland = () => [
   '--ro-bind', '/etc/passwd', '/etc/passwd', '--ro-bind', '/etc/group', '/etc/group',
 ];
 
-// bubblewrap's arguments for a run: the agent's userland, `ro` read-only and `rw` writable at their own paths, HOME and /tmp on
-// the run's scratch, the socket's folder at /run/rf, and `env` as its whole environment. Nothing else of the host is there.
-// The run's data is a tree of its own under /work, read-only but for the binds in rw, each [host path, path inside].
-export function sandboxArgs(o: { cwd: string; socketDir: string; home: string; tmp: string; ro: [string, string][]; work: { ro: [string, string][]; rw: [string, string][] }; env: Record<string, string> }): string[] {
+// bubblewrap's arguments for a run: the agent's userland, `ro` read-only and `rw` writable, the socket at /run/rf, and `env` as
+// its whole environment. HOME and /tmp are on the run's scratch, or empty read-only mounts for a wake check.
+export function sandboxArgs(o: { cwd: string; socketDir: string; home?: string; tmp?: string; ro: [string, string][]; work: { ro: [string, string][]; rw: [string, string][] }; env: Record<string, string> }): string[] {
   return [
     '--unshare-all', '--die-with-parent', '--new-session', '--clearenv',
     ...userland(),
-    '--proc', '/proc', '--dev', '/dev', '--bind', o.tmp, '/tmp', '--bind', o.home, '/home/agent', '--ro-bind', o.socketDir, '/run/rf',
+    '--proc', '/proc', '--dev', '/dev',
+    ...(o.tmp ? ['--bind', o.tmp, '/tmp'] : ['--tmpfs', '/tmp', '--remount-ro', '/tmp']),
+    ...(o.home ? ['--bind', o.home, '/home/agent'] : ['--tmpfs', '/home/agent', '--remount-ro', '/home/agent']),
+    '--ro-bind', o.socketDir, '/run/rf',
     // /app holds only what is bound there, read-only, as /work does.
     '--tmpfs', '/app', ...o.ro.flatMap(([src, dst]) => ['--ro-bind', src, dst]), '--remount-ro', '/app',
     '--tmpfs', '/work', ...o.work.ro.flatMap(([src, dst]) => ['--ro-bind', src, dst]), ...o.work.rw.flatMap(([src, dst]) => ['--bind', src, dst]), '--remount-ro', '/work',

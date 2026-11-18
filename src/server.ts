@@ -28,7 +28,7 @@ import { forget, indexes, prune, startIndexing, track } from './indexes.ts';
 import { find, killTree, sample, startOf, type Monitor, type Sandbox } from './monitor.ts';
 import { addNote, notes, saveSeriesSettings, seriesSettings, type SeriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, archived, byToken, cancelWake, cancelWakes, closed, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, queued, remove, retireSeries, resolveFor, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesOf, wakeWith, weekly, reads, CUT, type Active, type Request } from './waker.ts';
+import { active, archived, byToken, cancelWake, cancelWakes, closed, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, queued, remove, retireSeries, resolveFor, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesOf, wakeWith, weekly, wakeCheckStatus, wakeCheckView, reads, CUT, type Active, type Request } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -157,8 +157,17 @@ type Caller = Me & { run?: Active };
 // A run by its token, until its stop is asked for: nothing it sends from then on counts, however long it takes to end.
 const running = (token: string) => { const a = byToken.get(token); return a?.stopped ? undefined : a; };
 async function agent(req: IncomingMessage, res: ServerResponse, url: URL) {
-  const a = running(req.headers.authorization?.replace('Bearer ', '') ?? '');
-  if (!a) throw new HttpError(401, 'no run for this token');
+  const token = req.headers.authorization?.replace('Bearer ', '') ?? '', a = running(token);
+  if (!a) {
+    const check = wakeCheckView(token);
+    if (!check) throw new HttpError(401, 'no run for this token');
+    if (req.method === 'GET' && url.pathname === `/api/instances/${check.inst.id}/screen`) return send(res, 200, check.inst.doc);
+    if (req.method === 'GET' && url.pathname === '/api/resolve') {
+      const id = resolveFor(check, url.searchParams.get('path') ?? '');
+      return send(res, 200, { id, kind: tree().series[id] ? 'series' : 'instance' });
+    }
+    throw new HttpError(403, 'a wake check is read-only');
+  }
   if (url.pathname.startsWith('/api/')) return api({ email: 'agent', name: 'Agent', role: 'user', groups: [], run: a }, req, res, url);
   // Browsers and deliveries: rf expired, rf delivered (see agent-api.ts).
   const r = await agentCall(a, url.pathname, req.method ?? 'GET', async () => {
@@ -275,7 +284,7 @@ function summary(i: Instance, me: Me, w8 = wakes()) {
     refused: i.log.filter(e => e.op === 'browser' && e.hosts).map(e => ({ at: e.at, run: e.run as number, site: e.site as string, login: e.login as string, hosts: Object.keys(e.hosts as object) })) });
   return {
     id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(i.seriesId)?.inst === i, queued: !!queued(i),
-    asks: k.asks, wakes: wakesOf(i.id, w8), fired: w8.fired[i.id] ?? null, owner: k.owner, cost: k.cost, ...(k.estimated && { estimated: true }), active: k.active,
+    asks: k.asks, wakeCheck: wakeCheckStatus(i), wakes: wakesOf(i.id, w8), fired: w8.fired[i.id] ?? null, owner: k.owner, cost: k.cost, ...(k.estimated && { estimated: true }), active: k.active,
     unread: !!news && news.at > s.since && news.seq > (s.at[i.id] ?? 0), corrections: k.corrections,
     // A deleted instance's hole: who deleted it, and when.
     deleted: i.hole ? { by: i.log[0].by, at: i.log[0].at } : null,
@@ -382,8 +391,21 @@ function cachedRunsOf(i: Instance): CachedRun[] {
   return rows;
 }
 
-function runsOf(i: Instance, since = ''): RunRow[] {
-  return cachedRunsOf(i).filter(r => r.at >= since).map(({ key: _k, exaCost: _e, openrouterByDay: _o, ...r }) => r);
+type WakeCheckRow = Omit<RunRow, 'run'> & { run: null; outcome: 'wake-check-stop'; message: string };
+
+function wakeChecksOf(i: Instance): WakeCheckRow[] {
+  if (i.hole) return (i.log[0].wakeChecks ?? []) as WakeCheckRow[];
+  return i.log.slice(i.copied).filter(e => e.op === 'wake-check').map(e => ({
+    run: null, outcome: 'wake-check-stop', at: e.at, seconds: e.seconds as number, cost: 0, runner: e.runner as string,
+    started: { op: 'wake', by: e.from as string }, failure: null, error: null, message: e.message as string, provenance: { schedule: e.schedule },
+  }));
+}
+
+function runsOf(i: Instance, since = ''): (RunRow | WakeCheckRow)[] {
+  return [
+    ...cachedRunsOf(i).map(({ key: _k, exaCost: _e, openrouterByDay: _o, ...r }) => r),
+    ...wakeChecksOf(i),
+  ].filter(r => r.at >= since);
 }
 
 // Every run in what `me` sees, started since `since`, by where it ran.
@@ -1141,10 +1163,16 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       if (!run && !t.series[to] && by === owner) see(by, to, instance(to).log.at(-1)!.seq);
       return void (cancelWake(id), send(res, 200, 'ok'));
     }
-    const { at: when = '', label, days, text } = payload, w = String(when);
+    const { at: when = '', label, days, text, check, deadline } = payload, w = String(when);
     const at = w === 'now' ? Date.now() : /^\+\d+[mhd]$/.test(w) ? Date.now() + Number(w.slice(1, -1)) * { m: 60e3, h: 3600e3, d: 86400e3 }[w.at(-1) as 'm'] : Date.parse(w);
     if (req.method !== 'PUT' || Number.isNaN(at)) throw new HttpError(400, 'PUT {"at", "label" for a series, "days", "text"}, or DELETE; at is now, +<n>m|h|d, or a date and time such as 2026-09-14T07:00+08:00');
     if (text != null && (typeof text !== 'string' || text.length > 500)) throw new HttpError(400, "a wake's text is a short message, 500 characters at most");
+    if (check !== undefined && (typeof check !== 'string' || check.length > 500 || !/^working\/[^\\\x00-\x1f\x7f]+\.(py|ts)$/.test(check)
+      || check.split('/').some(p => !p || p === '.' || p === '..')))
+      throw new HttpError(400, 'check: name one .py or .ts file under working/');
+    const until = typeof deadline === 'string' && /^\d{4}-\d{2}-\d{2}T\d\d:\d\d(?::\d\d(?:\.\d+)?)?(?:Z|[+-]\d\d:\d\d)$/.test(deadline) ? Date.parse(deadline) : NaN;
+    if (deadline !== undefined && (!check || !Number.isFinite(until) || until <= at))
+      throw new HttpError(400, 'deadline: a timestamp with its offset, after the scheduled wake and only with a check');
     if (archived(t, sid)) throw new HttpError(409, `${named(t, sid)} is archived`);
     if (t.series[to] && !label) throw new HttpError(400, `waking a series starts a new instance: name it with a label${run ? '; to wake your own instance, name its folder: .' : ''}`);
     if (!t.series[to] && instance(to).doc.status !== 'open') throw new HttpError(409, `${instance(to).label} is ${instance(to).doc.status}: to correct it, wake its series with the label ${instance(to).label}-r2`);
@@ -1153,6 +1181,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const created = setWake(to, {
       at: first.toISOString(), from: run ? `${named(t, run.inst.seriesId)}/${run.inst.label}` : by, ...(run && { inst: run.inst.id }),
       ...(starts && { label: starts }), ...(days !== undefined && { days: weekly(String(days), first, starts) }), ...(text?.trim() && { text: text.trim() }),
+      ...(check && { check }), ...(deadline !== undefined && { deadline: new Date(until).toISOString() }),
     });
     if (run) act('agent', { method: 'PUT', path: url.pathname, wake: wakes().pending[created.id], inst: run.inst.id, run: run.n });
     if (!run && !t.series[to] && by === seriesSettings(seriesDir(sid)).owner) see(by, to, instance(to).log.at(-1)!.seq);
@@ -1191,7 +1220,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   if (!action) see(by, inst.id, inst.log.at(-1)!.seq);
   // Each entry's standing, by its seq, a note's entry saying note too; and whether a comment of yours would start a run now.
   const said = !action && new Map(inst.log.flatMap(e => { const s = standing(inst, e); return s ? [[e.seq, s.word]] : []; }));
-  if (said) return send(res, 200, { doc: inst.doc, log: inst.log.map(e => said.get(e.seq) === 'note' ? { ...e, note: true } : e), standing: Object.fromEntries(said), starts: inst.doc.status === 'open' && standing(inst, { seq: inst.log.length + 1, at: '', by, op: 'comment' })!.starts, run: mine ? { n: mine.n, cost: +mine.cost.toFixed(6), ...(mine.estimated && { estimated: true }), browsers: [...(mine.browsers?.watchable().keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), owner: owner(inst), previous: await previous(inst), sums: Object.fromEntries(await Promise.all(inst.doc.items.filter(i => i.file).map(async i => [i.id, await sha256(inst.dir, i.file!)]))), waiting: waits(inst).filter(({ e }) => e.op === 'comment').map(({ who, e }) => ({ who, seq: e.seq })), held: [...new Set(inst.log.filter(e => e.op === 'expired').map(e => e.login as string))].filter(l => held(inst, l, ownerOf(inst).by)) });
+  if (said) return send(res, 200, { doc: inst.doc, wakeCheck: wakeCheckStatus(inst), log: inst.log.map(e => said.get(e.seq) === 'note' ? { ...e, note: true } : e), standing: Object.fromEntries(said), starts: inst.doc.status === 'open' && standing(inst, { seq: inst.log.length + 1, at: '', by, op: 'comment' })!.starts, run: mine ? { n: mine.n, cost: +mine.cost.toFixed(6), ...(mine.estimated && { estimated: true }), browsers: [...(mine.browsers?.watchable().keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), owner: owner(inst), previous: await previous(inst), sums: Object.fromEntries(await Promise.all(inst.doc.items.filter(i => i.file).map(async i => [i.id, await sha256(inst.dir, i.file!)]))), waiting: waits(inst).filter(({ e }) => e.op === 'comment').map(({ who, e }) => ({ who, seq: e.seq })), held: [...new Set(inst.log.filter(e => e.op === 'expired').map(e => e.login as string))].filter(l => held(inst, l, ownerOf(inst).by)) });
   if (action === 'trace') return send(res, 200, trace(inst));
   if (action === 'summary') return send(res, 200, summary(inst, me));
   // The screen: anyone who sees the instance reads it; only its own run writes it.
@@ -1209,7 +1238,11 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // holds of it goes, but its id, label and place in its series, and who deleted it and when, with what its runs cost, for the
     // totals (waker.ts remove()); the system's log records it.
     if (!canManage(me, t.workspaces[t.series[inst.seriesId].workspace])) throw new HttpError(403, "only the workspace's owners and admins delete an instance");
-    await remove(inst, by, () => ({ cost: costOf(inst), ...(estimatedOf(inst) && { estimated: true }), runs: cachedRunsOf(inst).map(({ started, error, ...r }) => r) }));
+    await remove(inst, by, () => {
+      const wakeChecks = wakeChecksOf(inst);
+      return { cost: costOf(inst), ...(estimatedOf(inst) && { estimated: true }), runs: cachedRunsOf(inst).map(({ started, error, ...r }) => r),
+        ...(wakeChecks.length && { wakeChecks }) };
+    });
     for (const p of readdirSync(previews)) if (p.startsWith(inst.id + '-')) rmSync(join(previews, p));
     for (const k of sums.keys()) if (k.startsWith(inst.dir + sep)) sums.delete(k);
     return send(res, 200, 'ok');

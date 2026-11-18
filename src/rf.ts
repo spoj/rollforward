@@ -35,7 +35,7 @@ const HELP: Record<string, string> = {
   Commits your instance's whole folder as it is now, in your name, to its history: the folder is a repository, which only the
   server commits; read it with git log, show or diff, such as git diff HEAD -- working. Each run's end commits it too, in your
   name, and an approval and closing, in the name of whoever approved or closed.`,
-  wake: `rf wake TARGET AT [--label LABEL] [--days DAYS] [TEXT] | rf wake --cancel ID
+  wake: `rf wake TARGET AT [--label LABEL] [--days DAYS] [--check PATH [--deadline ISO]] [TEXT] | rf wake --cancel ID
   Requests a later run, with who woke it and TEXT. Execution requires the target owner's autonomous consent and a valid
   authority snapshot; otherwise it waits as a request for that owner. TARGET is a folder as you see
   it, by the names your run started with: an open instance, such as . for your own, ../<label> or ../../<series>/<label>, which
@@ -45,7 +45,11 @@ const HELP: Record<string, string> = {
   LABEL then holds the date AT falls on, or that of the day before it that it fires on, and moves on with it. A target has as many wakes as are set, firing at least 15 minutes
   apart; setting a series' wake for a LABEL already pending moves it. Each run's first message lists the wakes pending for
   its instance and series, by ID, which --cancel cancels. A closed instance can't be woken: to correct one, wake its series
-  with --label <its label>-r2.`,
+  with --label <its label>-r2.
+  With the owner's wake-check capability, --check working/FILE.py or working/FILE.ts checks a wake of your own series in the
+  read-only sandbox, with rf show and the selected indexes. Print just {"decision":"stop","message":"No new files"} or
+  {"decision":"continue","message":"New file found"}. Errors fall through to Pi. --deadline TIME (ISO with offset) makes Pi
+  run by that time even if the check would stop.`,
   note: `rf note SERIES TEXT|- | rf note --taken ID [--see cN] TEXT|- | rf note --aside ID TEXT|-
   Leaves a note on a series of your workspace, such as .. for your own or ../../<series>, for its runs, whether or not an
   instance is open; it names you, your run, your captured executor and this instance, and starts no run. Each run's first message lists
@@ -99,7 +103,7 @@ async function comment() {
 const wake = async () => {
   const o: Record<string, string> = {}, rest: string[] = [];
   for (let i = 0; i < args.length; i++) {
-    const flag = /^--(label|days|cancel)$/.exec(args[i])?.[1];
+    const flag = /^--(label|days|cancel|check|deadline)$/.exec(args[i])?.[1];
     if (flag) o[flag] = args[++i];
     else rest.push(args[i]);
   }
@@ -108,10 +112,10 @@ const wake = async () => {
   if (!target || !at) return usage('wake');
   const found = await send('GET', `api/resolve?path=${encodeURIComponent(target)}`);
   if (!found.ok) return found;
-  const { id, kind } = JSON.parse(found.text), set = await send('PUT', `api/wakes/${id}`, JSON.stringify({ at, label: o.label, days: o.days, text: words.join(' ') || undefined }));
+  const { id, kind } = JSON.parse(found.text), set = await send('PUT', `api/wakes/${id}`, JSON.stringify({ at, label: o.label, days: o.days, check: o.check, deadline: o.deadline, text: words.join(' ') || undefined }));
   if (!set.ok) return set;
   const k = JSON.parse(set.text);
-  return { ok: true, text: `set: ${target} ${kind === 'series' ? `starts ${k.label}` : 'wakes'} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''} (wake ${k.id})` };
+  return { ok: true, text: `set: ${target} ${kind === 'series' ? `starts ${k.label}` : 'wakes'} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''} (wake ${k.id})${k.check ? `; check ${k.check}${k.deadline ? ` until ${k.deadline}` : ''}` : ''}` };
 };
 
 // rf correct PATH …: the folder becomes an id, then the correction goes to that instance.

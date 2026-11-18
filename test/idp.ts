@@ -7,7 +7,7 @@ import { createServer } from 'node:http';
 // while `who.down`.
 const NAMES: Record<string, string> = { 'admin@demo.test': 'Demo Admin', 'bob@demo.test': 'Bob', 'chan.taiman.finance-and-accounting@demo.test': '陳大文（財務及會計部，香港辦事處）' };
 
-export async function idp() {
+export async function idp(beforeRenew?: (email: string) => Promise<void>) {
   const b64 = (s: string) => Buffer.from(s).toString('base64url'), who = { as: '', groups: {} as Record<string, string[]>, gone: new Set<string>(), stale: new Set<string>(), down: false, renewed: [] as string[] };
   const refresh = (email: string) => `rt.${b64(email)}`;
   let issuer = '';
@@ -27,6 +27,7 @@ export async function idp() {
       if (f.get('client_secret') !== 'shh' || !f.get('refresh_token')!.startsWith('rt.')) return refused('AADSTS9002313: Invalid request.');
       if (who.gone.has(email)) return refused('AADSTS50057: The user account is disabled.');
       if (who.stale.has(email)) return refused('AADSTS700082: The refresh token has expired due to inactivity.');
+      if (beforeRenew) await beforeRenew(email);
       who.renewed.push(email);
       const claims = { iss: issuer, aud: 'rf-test', exp: Date.now() / 1000 + 300, email, sub: `sub-${email}`, tid: 't1', oid: `oid-${email}`, groups: who.groups[email] };
       return send({ id_token: `${b64('{"alg":"none"}')}.${b64(JSON.stringify(claims))}.`, access_token: `at.${b64(email)}`, refresh_token: refresh(email), expires_in: 3600, scope: f.get('scope') });

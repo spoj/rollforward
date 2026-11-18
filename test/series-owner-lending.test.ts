@@ -223,21 +223,27 @@ test('browser expiry stays attributed to the captured person during retirement',
   assert.equal(logins(BOB).find(l => l.id === 'web:portal')!.expired, undefined);
 });
 
-test('index copies select only leased sources and prune after transfer', () => {
+test('index copies select only leased sources and prune after transfer', async () => {
   const one = 'm365:item:drive/one', two = 'm365:item:drive/two', inst = running([one]);
   mkdirSync(join(personDir(ALICE), 'index'), { recursive: true });
   for (const [id, name] of [[one, 'One'], [two, 'Two']]) {
     const file = join(personDir(ALICE), 'index', createHash('sha256').update(id).digest('hex').slice(0, 16));
-    writeFileSync(`${file}.json`, JSON.stringify({ person: ALICE, source: id, name, gen: 0, length: 0, lines: 0, base: 0, parts: {} }));
+    writeFileSync(`${file}.json`, JSON.stringify({ person: ALICE, source: id, name, gen: 0, length: 0, lines: 0, base: 0, parts: { first: { due: null, tries: 5 } } }));
   }
+  const captured = authority(inst);
   consent([one, two]);
   assert.deepEqual(sources(inst, 1).map(s => s.o.id), [one]);
-  const dir = join(root, '.rf/runs/token');
+  assert.deepEqual(sources(inst, captured).map(s => s.o.id), [one], 'a wake check takes the captured ceiling too');
+  const dir = join(root, '.rf/runs/token'), meta = join(personDir(ALICE), 'index', `${createHash('sha256').update(one).digest('hex').slice(0, 16)}.json`);
+  const before = readFileSync(meta, 'utf8');
+  assert.equal(await prepare(inst, join(root, '.rf/runs/check'), captured), true);
+  assert.equal(readFileSync(meta, 'utf8'), before, 'a snapshot does not resume a stopped feed');
   assert.equal(prepare(inst, dir, 1), true);
   assert.equal(readFileSync(join(dir, 'One.json'), 'utf8').includes(one), true);
   consent([], BOB, 2);
   prune(inst, 1, 'token');
   assert.deepEqual(sources(inst, 1), []);
+  assert.deepEqual(sources(inst, captured), []);
   assert.throws(() => readFileSync(join(dir, 'One.json')), { code: 'ENOENT' });
 });
 

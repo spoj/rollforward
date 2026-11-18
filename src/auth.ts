@@ -19,10 +19,10 @@ export type User = { name?: string; role: Role; disabled?: boolean; sub?: string
 export type Me = { email: string; name: string; role: Role; groups: string[] };
 // Capabilities beyond what every user has, each granted by admins to people and Entra groups: publish, pushing skills, which every
 // run loads; create, making workspaces; and keepalive, keeping one's website logins alive (browsers.ts), which loads the website
-// every few minutes. Admins have those implicitly; VPN requires an explicit grant even for admins.
-export const CAPS = ['publish', 'create', 'keepalive', 'vpn'], capabilities = () => readJson<Record<string, string[]>>('capabilities.json', {});
-export const can = (me: Me, cap: string) => cap === 'vpn' ? !!process.env.RF_TUNNEL_URL && isIn(me, capabilities()[cap] ?? [])
-  : me.role === 'admin' || isIn(me, capabilities()[cap] ?? []);
+// every few minutes. VPN and wake checks require explicit grants, even for admins.
+export const CAPS = ['publish', 'create', 'keepalive', 'vpn', 'wake-check'], capabilities = () => readJson<Record<string, string[]>>('capabilities.json', {});
+export const can = (me: Me, cap: string) => (cap !== 'vpn' || !!process.env.RF_TUNNEL_URL)
+  && ((cap !== 'vpn' && cap !== 'wake-check' && me.role === 'admin') || isIn(me, capabilities()[cap] ?? []));
 
 const env = process.env;
 const oidc = {
@@ -166,7 +166,7 @@ function admit(res: ServerResponse, email: string, name: string | undefined, who
   if (known?.disabled) return page(res, 403, `${email} is disabled. Ask an admin.`);
   if (who.oid ? known?.oid && known.oid !== who.oid : known?.sub && who.sub && known.sub !== who.sub) return page(res, 403, `${email} belongs to another Microsoft account.`);
   const u = upsertUser(email, { name: name ?? known?.name, ...(who.sub && { sub: who.sub }), ...(who.oid && { oid: who.oid }), groups, last_login: new Date().toISOString(), ...(admins.has(email) && { role: 'admin' as Role }) });
-  if (refresh) keepSignIn(email, refresh);
+  keepSignIn(email, refresh);
   const exp = String(Date.now() + SESSION_MS);
   res.writeHead(302, { location: next, 'set-cookie': [cookie('rf_session', `${b64(email)}.${exp}.${mac(`${email} ${exp} ${u.epoch ?? 0}`)}`, SESSION_MS / 1000), ...extra] });
   res.end();
@@ -348,15 +348,19 @@ async function finishLogin(req: IncomingMessage, res: ServerResponse, claims: an
 // as for one expired, revoked, made through another app or wanting multi-factor sign-in again, for its person to sign in again. A refusal that names this server's own
 // app, as when its secret expired, is the server's to mend, and answers 502, as other failures do; one that wants the person's
 // consent to permissions the server asks for anew carries `consent`.
-export async function renew(refreshToken: string, scope: string[], checkpoint?: () => void): Promise<{ access: string; idToken: string; refresh: string; expires: number; scopes?: string[] }> {
+export async function renew(refreshToken: string, scope: string[], checkpoint?: () => void, signal?: AbortSignal): Promise<{ access: string; idToken: string; refresh: string; expires: number; scopes?: string[] }> {
+  signal?.throwIfAborted();
   checkpoint?.();
   const d = await discovery();
+  signal?.throwIfAborted();
   checkpoint?.();
+  const timeout = AbortSignal.timeout(20_000);
   const r = await fetch(d.token_endpoint, {
-    method: 'POST', signal: AbortSignal.timeout(20_000),
+    method: 'POST', signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: oidc.clientId, scope: entraScope(scope), ...(oidc.clientSecret && { client_secret: oidc.clientSecret }) }),
   });
   const t = await r.json().catch(() => ({}));
+  signal?.throwIfAborted();
   const refused = ['invalid_grant', 'unauthorized_client', 'interaction_required'].includes(t.error) || (t.error === 'invalid_client' && !String(t.error_description).includes(`'${oidc.clientId}'`));
   if (!r.ok || !t.access_token) throw Object.assign(new HttpError(refused ? 401 : 502, `Microsoft did not renew the login: ${(t.error_description ?? t.error ?? r.status).toString().split('\r\n')[0]}`), { consent: t.suberror === 'consent_required' });
   return { access: t.access_token, idToken: t.id_token, refresh: t.refresh_token ?? refreshToken, expires: Date.now() + (Number(t.expires_in ?? 3600) - 120) * 1000, scopes: granted(t.scope) };

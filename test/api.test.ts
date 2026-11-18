@@ -624,7 +624,7 @@ test("each person sees the workspaces they're in, by email or Entra group; owner
   assert.equal((await grant('create', [bob], b)).status, 403, 'admins grant capabilities');
   assert.equal((await grant('create', ['Treasury'])).status, 400);
   assert.equal((await grant('delete', [bob])).status, 400);
-  assert.deepEqual(await (await grant('create', ['Bob@demo.test'])).json(), { publish: [], create: [bob], keepalive: [] });
+  assert.deepEqual(await (await grant('create', ['Bob@demo.test'])).json(), { publish: [], create: [bob], keepalive: [], 'wake-check': [] });
   assert.equal((await make('BobCo', b)).status, 200, 'and those granted create');
   assert.deepEqual((await workspaces(b)).map((w: { name: string; owners: string[] }) => [w.name, w.owners]), [['BobCo', [bob]]]);
   for (const path of [await at(series, '2026-08-30'), `/files/${await iid(series, '2026-08-30')}/upload/x`])
@@ -1091,7 +1091,7 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   if (tz === undefined) delete process.env.TZ;
   else process.env.TZ = tz;
   const failed = await rf('runs', '--failed');
-  assert.match(failed, /^START +PATH +RUN +OUTCOME +TIME +COST +STARTED BY +ERROR\n/, 'a table, under its header');
+  assert.match(failed, /^START +PATH +RUN +OUTCOME +TIME +COST +STARTED BY +MESSAGE \/ ERROR\n/, 'a table, under its header');
   assert.match(failed, /^[\d-]+ [\d:]+  larkfield\/.+? +\d+ +failed \(other\) +\d+[sm] +\$0\.00 +(upload|comment|create|wake) by \S+ +\S/m, 'without a model key, the runs the tests start fail');
   const rows = failed.trimEnd().split('\n'), col = (l: string) => l.indexOf(' failed ');
   assert.ok(rows.slice(1).every(l => col(l) === col(rows[1])), 'its columns line up');
@@ -1144,7 +1144,7 @@ test('rf for people: ls, comment, pull as rsync does, runs, costs and status, an
   assert.deepEqual((await json('/me')).brand, { text: null, logo: false });
   assert.equal((await call('GET', '/brand/logo')).status, 404);
   assert.equal((await rf('can', 'create', `${bob}, 0B8E5C8A-6D3E-4C21-9F2A-1D2E3F4A5B6C`)).trim(), `create: ${bob}, 0b8e5c8a-6d3e-4c21-9f2a-1d2e3f4a5b6c`);
-  assert.equal((await rf('can')).trim(), `publish: admins only\ncreate: ${bob}, 0b8e5c8a-6d3e-4c21-9f2a-1d2e3f4a5b6c\nkeepalive: admins only`);
+  assert.equal((await rf('can')).trim(), `publish: admins only\ncreate: ${bob}, 0b8e5c8a-6d3e-4c21-9f2a-1d2e3f4a5b6c\nkeepalive: admins only\nwake-check: no one`);
   assert.equal((await rf('can', 'create', '--clear')).trim(), 'create: admins only');
 
   // Canonical series ownership guards membership loss, including a demotion when only the admin role grants visibility.
@@ -1252,7 +1252,9 @@ test("rf pull --delete on Windows or macOS, whose disks ignore case, keeps a fil
 test("rf alone lists its commands and rf help COMMAND gives one's usage; every read takes --json; a failure is one line, with exit code 1, and a command used wrongly prints its usage, with exit code 2", async () => {
   assert.match(await rf(), /^rf login URL \[TOKEN\] .*\nrf ls \[--mine\] \[--json\] /);
   assert.equal(await rf('--version'), `${JSON.parse(readFileSync(join(app, 'cli', 'package.json'), 'utf8')).version}\n`);
-  assert.match(await rf('help', 'wake'), /^rf wake PATH AT \[TEXT\] \[--label LABEL\] \[--days DAYS\] \| rf wake --cancel ID\n +AT now, [^\n]+\n +message [^\n]+\n +later [^\n]+\n +repeats [^\n]+\n$/);
+  const wakeHelp = await rf('help', 'wake');
+  assert.match(wakeHelp, /^rf wake PATH AT.*\[--check PATH \[--deadline ISO\]\] \| rf wake --cancel ID\n/);
+  assert.match(wakeHelp, /AT now, \+<n>m\|h\|d or a date/);
   await assert.rejects(rf('wake'), fails(2, /^rf wake PATH AT [^\n]+\n +AT now/));
   await assert.rejects(rf('comment', 'nowhere/at/all', 'Hello'), fails(1, /^rf: nothing you can see at nowhere\/at\/all\n$/));
   await assert.rejects(rf('wake', '--cancel', 'nosuch'), fails(1, /^rf: DELETE \/api\/wakes\/nosuch: 404 [^\n]+\n$/));
@@ -1260,7 +1262,7 @@ test("rf alone lists its commands and rf help COMMAND gives one's usage; every r
   const rows = JSON.parse(await rf('ls', '--json')), week = rows.find((r: { path: string }) => r.path === `larkfield/${series}/2026-08-30`);
   assert.deepEqual([week.id, week.status, rows.find((r: { path: string }) => r.path === `larkfield/${series}`).id], [await iid(series, '2026-08-30'), 'closed', (await shown(series)).id]);
   assert.ok(JSON.parse(await rf('skills', '--json')).some((s: { id: string }) => s.id === 'tool'));
-  assert.deepEqual(Object.keys(JSON.parse(await rf('can', '--json'))), ['publish', 'create', 'keepalive']);
+  assert.deepEqual(Object.keys(JSON.parse(await rf('can', '--json'))), ['publish', 'create', 'keepalive', 'wake-check']);
   assert.deepEqual(JSON.parse(await rf('brand', '--json')), { text: null, logo: false });
   assert.ok(JSON.parse(await rf('people', '--json')).some((u: { email: string; role: string }) => u.email === adminEmail && u.role === 'admin'));
   assert.ok(JSON.parse(await rf('connections', '--json')).every((c: { name: string; type: string }) => c.name && c.type));

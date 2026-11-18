@@ -21,9 +21,9 @@ mkdirSync(scratch, { recursive: true });
 chmodSync(scratch, 0o700);
 // Each run's own cgroup, where systemd runs the server; the container image sets this empty. Its CPU and disk weights are a fifth
 // of the default, so under load runs yield to the server and the rest of the host.
-const SCOPE = `systemd-run --user --scope --quiet --collect --slice=rollforward-runs -p MemoryHigh=4G -p MemoryMax=8G -p CPUQuota=${Number(process.env.RF_RUN_CPUS ?? 2) * 100}% -p CPUWeight=20 -p IOWeight=20 --`;
+export const SCOPE = `systemd-run --user --scope --quiet --collect --slice=rollforward-runs -p MemoryHigh=4G -p MemoryMax=8G -p CPUQuota=${Number(process.env.RF_RUN_CPUS ?? 2) * 100}% -p CPUWeight=20 -p IOWeight=20 --`;
 // A run's processes and threads at most, a fork bomb's end, and its biggest file, which bounds a runaway write and a sparse file.
-const TASKS = process.env.RF_RUN_TASKS ?? '2048', FILE_GB = Number(process.env.RF_RUN_FILE_GB ?? 16);
+export const TASKS = process.env.RF_RUN_TASKS ?? '2048', FILE_GB = Number(process.env.RF_RUN_FILE_GB ?? 16);
 
 // A run's Pi: a prompt the agent takes, and steers it may get, until it settles, aborted or not; and its sandbox's bwrap, the
 // server's child, from which all the run's processes descend (monitor.ts).
