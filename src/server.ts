@@ -266,10 +266,10 @@ const NEWS = ['done', 'comment', 'signoff', 'reject', 'withdraw', 'upload', 'tak
 const costOf = (i: Instance) => +i.log.slice(i.log.findLastIndex(e => e.op === 'duplicate') + 1).reduce((t, e) => t + (['done', 'delete'].includes(e.op) ? e.cost as number : 0), 0).toFixed(6);
 const estimatedOf = (i: Instance) => i.log.slice(i.log.findLastIndex(e => e.op === 'duplicate') + 1).some(e => ['done', 'delete'].includes(e.op) && e.estimated === true);
 
-// The page lists every instance after each step of a run, so this reads the owner from the series' settings, not ownerOf's whole
-// tree.json.
-function summary(i: Instance, me: Me, w8 = wakes()) {
-  const email = me.email, settings = seriesSettings(i.series()), by = settings.owner ?? '';
+// The page lists every instance after each step of a run, so this reads the owner from the series' settings, which a listing reads
+// once for all of a series' instances, not ownerOf's whole tree.json.
+function summary(i: Instance, me: Me, w8 = wakes(), settings = seriesSettings(i.series())) {
+  const email = me.email, by = settings.owner ?? '';
   const key = `${i.log.length}:${i.doc.rev}:${JSON.stringify(settings)}:${seen(by).at[i.id]}:${active.get(i.seriesId)?.seen}`;
   const news = i.log.findLast(e => e.by !== email && e.accepted_by !== email && NEWS.includes(e.op)), s = seen(email);
   let k = kept.get(i);
@@ -308,12 +308,12 @@ function listing(me: Me) {
   const t = tree(), w8 = wakes(), us = users(), open = proposals(t), granted = visible(me).filter(g => ['pending', 'approved'].includes(g.state)), byName = (a: [string, { name: string }], b: [string, { name: string }]) => a[1].name.localeCompare(b[1].name);
   return Object.entries(t.workspaces).filter(([, w]) => canSee(me, w)).sort(byName).map(([id, w]) => {
     const series = Object.entries(t.series).filter(([, s]) => s.workspace === id).sort(byName).map(([sid, s]) => {
-      const { owner, consent, epoch, since } = seriesSettings(seriesDir(sid)), person = owner && asPerson(owner, us[owner]);
+      const settings = seriesSettings(seriesDir(sid)), { owner, consent, epoch, since } = settings, person = owner && asPerson(owner, us[owner]);
       return {
         id: sid, name: s.name, archived: !!s.archived, single: !!s.single, owner: owner ?? null, ownerUnavailable: !person || !canSee(person, w), epoch, since, consent: consent ?? null,
         wakes: wakesOf(sid, w8), fired: w8.fired[sid] ?? null, notes: notes(seriesDir(sid)).filter(n => !n.settled).length,
         requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r, who: asked(r) })),
-        instances: instances(sid).map(i => summary(i, me, w8)),
+        instances: instances(sid).map(i => summary(i, me, w8, settings)),
       };
     });
 

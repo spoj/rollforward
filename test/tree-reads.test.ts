@@ -18,12 +18,12 @@ const tmp = mkdtempSync(join(tmpdir(), 'rf-reads-')), root = join(tmp, 'data'), 
 let proc: ChildProcess, base = '', cookie = '', entra: Awaited<ReturnType<typeof idp>>;
 
 const count = (): Record<string, number> => existsSync(counted) ? JSON.parse(readFileSync(counted, 'utf8')) : {};
-// The server's reads of tree.json and users.json while `act` goes, as test/reads.ts counts them.
+// The server's reads of tree.json, users.json and the series' series.json while `act` goes, as test/reads.ts counts them.
 async function reads(act: () => Promise<void>) {
   const was = count();
   await act();
-  const now = count();
-  return { tree: (now['tree.json'] ?? 0) - (was['tree.json'] ?? 0), users: (now['users.json'] ?? 0) - (was['users.json'] ?? 0) };
+  const now = count(), grew = (name: string) => (now[name] ?? 0) - (was[name] ?? 0);
+  return { tree: grew('tree.json'), users: grew('users.json'), series: grew('series.json') };
 }
 
 before(async () => {
@@ -73,6 +73,11 @@ test('a listing reads tree.json and users.json fewer times than it has series, h
     assert.equal(w.series.flatMap((s: { instances: unknown[] }) => s.instances).length, SERIES * EACH);
   });
   assert.ok(n.tree < SERIES && n.users < SERIES, `GET /api read tree.json ${n.tree} times and users.json ${n.users} times, for ${SERIES} series of ${EACH} instances`);
+});
+
+test("a listing reads each series' settings once, however many instances it holds", async () => {
+  const n = await reads(async () => assert.equal((await fetch(`${base}/api`, { headers: { cookie } })).status, 200));
+  assert.ok(n.series <= SERIES, `GET /api read series.json ${n.series} times, for ${SERIES} series of ${EACH} instances`);
 });
 
 test('a change reads tree.json once for all the event streams open, not for each', async () => {
