@@ -260,11 +260,12 @@ for (const action of ['reject', 'owner', 'credentials']) test(`a ${action} reque
     const call = (path, body, headers = { cookie }) => fetch(base + path, { method: 'POST', headers, body: JSON.stringify(body) });
     const { id: ws } = await (await call('/api/workspaces', { name: 'Queue' })).json();
     const { id: sid } = await (await call('/api/series', { workspace: ws, name: 'S' })).json();
+    ownSeries(sid, '${ADMIN}', [], true);
     const { id } = await (await call('/api/series/' + sid, { label: 'one', quiet: true })).json();
     const inst = store.instance(id), path = '/api/instances/' + id;
-    inst.append('agent', 'comment', { text: 'Approve?', thread: 'c2', ask: 'proposal', run: 1 });
-    inst.append('agent', 'comment', { text: 'Other proposal?', thread: 'c3', ask: 'proposal', run: 1 });
-    ownSeries(sid, '${ADMIN}', [], true);
+    const authority = (await import('./src/logins.ts')).authority(inst);
+    inst.append('agent', 'comment', { text: 'Approve?', thread: 'c2', ask: 'proposal', run: 1, authorityOwner: authority.owner, authorityEpoch: authority.epoch });
+    inst.append('agent', 'comment', { text: 'Other proposal?', thread: 'c3', ask: 'proposal', run: 1, authorityOwner: authority.owner, authorityEpoch: authority.epoch });
     const hold = Promise.withResolvers(), prior = action === 'reject' ? git.commit(inst.dir, { name: 'Admin', email: '${ADMIN}' }, 'prior', hold.promise) : Promise.resolve();
     armed = true;
     const first = action === 'reject' ? call(path + '/signoff', { thread: 'c2', quiet: true })

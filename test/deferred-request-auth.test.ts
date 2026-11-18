@@ -107,7 +107,7 @@ for (const action of ['signoff', 'close', 'abandon']) for (const change of ['tok
         if (change === 'owner') {
           const settings = seriesSettings(seriesDir('s'));
           saveSeriesSettings(seriesDir('s'), { version: 1, owner: admin, epoch: settings.epoch + 1, since: new Date().toISOString() }, admin);
-          expected = action === 'signoff' ? 200 : 403;
+          expected = action === 'signoff' ? 409 : 403;
         }
         if (change === 'run') {
           active.set('s', { inst, workspace: 'w', view: { series: {} } });

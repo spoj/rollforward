@@ -387,19 +387,23 @@ test("after a series transfer unread instructions become notes, while the incomi
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ members: [] }))).status, 200);
 });
 
-test("in an instance taken over under v0.4.0, read history stays history, unread advice becomes a note, and the agent's asks still wait on whom they named, whose answer is theirs", async () => {
+test("a legacy takeover keeps read history and named questions, but retires the earlier proposal", async () => {
   const c = sessionOf(await login(CAROL))!, e = sessionOf(await login(ERIN))!, path = '/api/instances/01d7a4e00003';
   assert.equal((await call('PUT', '/api/series/01d7a4e00002/credentials', JSON.stringify({ logins: [], autonomous: false }), c)).status, 200);
-  const { waiting, standing, log, noteStates, noteNotices } = await json(path, c);
-  assert.deepEqual(waiting.map((w: { who: string; seq: number }) => [w.who, w.seq]), [[ERIN, 5], [CAROL, 6]], 'the question and proposal are separate from note notices');
+  const { waiting, standing, log, staleProposals, noteStates, noteNotices } = await json(path, c);
+  assert.deepEqual(waiting.map((w: { who: string; seq: number }) => [w.who, w.seq]), [[ERIN, 5]]);
+  assert.deepEqual(staleProposals, [6]);
+  assert.equal(log[5].text, 'Send the pack?', 'the retired proposal stays in the conversation');
+  assert.equal((await call('POST', `${path}/signoff`, JSON.stringify({ thread: 'c6' }), c)).status, 409);
   assert.deepEqual(noteStates, { c8: { op: 'open' } }, 'already-read history does not become a note');
   assert.deepEqual(noteNotices.map(n => [n.id, n.by, n.kind]), [['c8', bob, 'open']], 'opening does not settle the migrated note');
   assert.deepEqual([standing, log.filter((e: { op: string; by: string }) => e.op === 'comment' && e.by !== 'agent').map((e: { note?: boolean }) => !!e.note)], [{ 8: 'note' }, [false, false, true]]);
   const asks = (await workspaces(c)).find((w: { id: string }) => w.id === '01d7a4e00001').series[0].instances.find((i: { id: string }) => i.id === '01d7a4e00003').asks;
-  assert.deepEqual(asks, [{ who: ERIN, kind: 'question' }, { who: CAROL, kind: 'proposal' }], 'read history and FYI notes do not count as asks');
+  assert.deepEqual(asks, [{ who: ERIN, kind: 'question' }], 'history and FYIs do not count as tasks');
   assert.equal((await call('POST', `${path}/comment`, JSON.stringify({ thread: 'c5', text: 'The HSBC one.' }), e)).status, 200);
   const answered = await json(path, c);
-  assert.deepEqual([answered.standing[answered.log.at(-1).seq], answered.waiting.map((w: { who: string }) => w.who)], ['answer', [CAROL]], 'her answer, as erin was asked; the proposal still waits');
+  assert.equal(answered.standing[answered.log.at(-1).seq], 'answer', 'the named reply still counts');
+  assert.deepEqual(answered.waiting, []);
   await quiet();
   const runs = (await json(path, c)).log.filter((e: { op: string }) => e.op === 'run');
   assert.equal(runs.length, 2, 'a named answer starts a run under current owner consent');
