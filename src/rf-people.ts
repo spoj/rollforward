@@ -568,7 +568,7 @@ if (cmd === 'login' && url) {
   const series = all.flatMap(w => w.series.map(x => ({ ...x, path: `${w.name}/${x.name}` })));
   const rows = [
     ...s.ownership.map(s => ({ kind: 'owner', path: s.path, text: s.text })),
-    ...s.asks.filter(a => a.who === me.email).map(a => ({ kind: a.note ? 'note' : 'ask', path: a.path, since: a.since, text: a.text })),
+    ...s.asks.filter(a => a.who === me.email && !a.legacyNotice).map(a => ({ kind: a.note ? 'note' : 'ask', path: a.path, since: a.since, text: a.text })),
     ...(s.noteNotices ?? []),
     ...series.flatMap(x => x.requests.filter(r => mine(r.who)).map(r => ({ kind: 'request', path: x.path, since: r.at, id: r.id, text: `${r.from} asks to ${r.target ? 'wake' : 'start'} ${r.label}${r.text ? `: ${r.text}` : ''}` }))),
     ...all.filter(w => w.manage && w.proposal?.into === w.id).map(({ proposal: p }) => ({ kind: 'proposal', path: p.to, since: p.at, text: `${p.by} proposes to ${p.kind === 'merge' ? `merge ${p.from} into it` : `move ${p.from}/${p.series} to it`}` })),
@@ -910,13 +910,14 @@ else if (cmd === 'comment' && args.length < 2) {
   console.log('removed');
 } else if (cmd === 'status' && !args.length) await watch(async () => {
   const [s, ix] = await Promise.all([get('/api/status'), get('/api/indexes')]), long = Number(flags.long ?? 30);
-  if (flags.json) return JSON.stringify({ ...s, indexes: ix }, null, 1);
+  const asks = s.asks.filter(a => !a.legacyNotice);
+  if (flags.json) return JSON.stringify({ ...s, asks, indexes: ix }, null, 1);
   else {
     const lowLine = s.low_credit ? `Low OpenRouter credit: ${usd(s.low_credit.remaining)} remaining${s.low_credit.limit !== null ? ` of ${usd(s.low_credit.limit)} limit` : ''}${s.low_credit.reset ? ` (resets ${s.low_credit.reset})` : ''}${s.low_credit.key === 'fallback' ? ', on the fallback key, the first being low too' : ''}` : '';
     // What waits, by whom it waits on, oldest first, at most WAITING each unless --all.
     const waiting: { who: string; kind: string; since?: string; path: string; text: string }[] = [
       ...s.ownership.map(o => ({ who: 'workspace managers', kind: 'owner', path: o.path, text: o.text })),
-      ...s.asks.map(a => ({ who: a.who, kind: a.note ? 'note' : 'ask', since: a.since, path: a.path, text: a.text })),
+      ...asks.map(a => ({ who: a.who, kind: a.note ? 'note' : 'ask', since: a.since, path: a.path, text: a.text })),
       ...s.requests.map(r => ({ who: r.who ?? 'anyone', kind: 'request', since: r.at, path: r.path, text: `${r.from} asks to ${r.target ? 'wake' : 'start'} ${r.label}` })),
       ...s.proposals.map(p => ({ who: `${p.to}'s owners`, kind: 'proposal', since: p.at, path: p.to, text: `${p.by} proposes to ${p.kind === 'merge' ? `merge ${p.from} into it` : `move ${p.from}/${p.series} to it`}` })),
       ...s.expired.map(e => ({ who: e.who, kind: 'login', path: e.holding.join(', '), text: `their ${e.login} login expired` })),

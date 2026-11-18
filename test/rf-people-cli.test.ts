@@ -538,7 +538,8 @@ test('rf comment and settle use the message API, with local IDs qualified by tar
     if (req.url === '/api/indexes') return send([]);
     if (req.url === '/api/status') return send({
       ownership: [], requests: [], proposals: [], expired: [], running: [], queued: [], failed: [],
-      asks: [{ who: person, path: 'ws/ser/p', since: at, note: true, text: 'Legacy note' }],
+      asks: [{ who: person, path: 'ws/ser/p', since: at, note: true, text: 'Legacy note' },
+        ...(hasNotices ? [{ who: person, path: 'ws/ser/p', since: at, note: true, text: 'This mirrors c4', legacyNotice: true }] : [])],
       ...(hasNotices ? { noteNotices: notice } : {}),
     });
     if (req.url === '/api/instances/i') return send({
@@ -607,9 +608,13 @@ test('rf comment and settle use the message API, with local IDs qualified by tar
   assert.deepEqual(requests.slice(refused), ['GET /api/messages?mine=1']);
 
   assert.match(await ok('waiting'), /note settled +ws\/ser#n3 by agent/);
-  assert.match(await ok('waiting'), /note open +ws\/ser\/p#c4 by bob/);
+  const waiting = await ok('waiting');
+  assert.match(waiting, /note open +ws\/ser\/p#c4 by bob/);
+  assert.doesNotMatch(waiting, /This mirrors c4/);
   assert.deepEqual(JSON.parse(await ok('waiting', '--json')).filter(n => ['open', 'settled'].includes(n.kind)), notice);
-  assert.match(await ok('status'), /Note notices \(FYI\)[\s\S]+ws\/ser\/p#c4/);
+  const status = await ok('status');
+  assert.match(status, /Note notices \(FYI\)[\s\S]+ws\/ser\/p#c4/);
+  assert.doesNotMatch(status, /This mirrors c4/);
   assert.deepEqual(JSON.parse(await ok('status', '--json')).noteNotices, notice);
   hasNotices = false;
   assert.match(await ok('waiting'), /note .*Legacy note/);

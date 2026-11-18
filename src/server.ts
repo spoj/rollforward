@@ -556,13 +556,18 @@ async function status(me: Me) {
   const seen = Object.entries(t.series).filter(([, s]) => canSee(me, t.workspaces[s.workspace]));
   const open = seen.flatMap(([sid]) => instances(sid).filter(i => i.doc.status === 'open'));
   const k = !verifyOnly && me.role === 'admin' ? await keyStatus() : null, listed = listing(me);
+  const noteNotices = listed.flatMap(w => w.series.flatMap(s => s.noteNotices.map(n => ({ ...n, path: `${w.name}/${s.name}${n.anchor ? `/${n.anchor.label}` : ''}` }))));
   return {
     ...(k?.low_credit && { low_credit: { remaining: k.remaining!, limit: k.limit, usage: k.usage, reset: k.reset, key: k.key } }),
     running: seen.flatMap(([sid]) => active.get(sid) ?? []).map(a => ({ path: path(a.inst), run: a.n, owner: ownerOf(a.inst).by, at: a.inst.log.findLast(e => e.op === 'run')!.at, cost: +a.cost.toFixed(6), ...(a.estimated && { estimated: true }) })),
     queued: open.flatMap(i => { const q = queued(i); return q ? [{ path: path(i), owner: ownerOf(i).by, ...q }] : []; }),
     ownership: listed.filter(w => w.manage && !w.archived).flatMap(w => w.series.filter(s => !s.archived && s.ownerUnavailable).map(s => ({ id: s.id, path: `${w.name}/${s.name}`, text: s.owner ? `${users()[s.owner]?.name ?? s.owner} can no longer run ${s.name}` : `${s.name} has no owner` }))),
-    noteNotices: listed.flatMap(w => w.series.flatMap(s => s.noteNotices.map(n => ({ ...n, path: `${w.name}/${s.name}${n.anchor ? `/${n.anchor.label}` : ''}` })))),
-    asks: open.flatMap(i => waits(i, t.series[i.seriesId].workspace).map(({ who, e }) => ({ who, path: path(i), since: e.at, text: isPerson(e) ? `${users()[e.by]?.name ?? e.by} ${e.op === 'create' ? 'started' : 'added a note to'} ${t.series[i.seriesId].name} · ${i.label}` : e.text as string, note: e.by !== 'agent' || !e.ask }))),
+    noteNotices,
+    asks: [
+      ...open.flatMap(i => waits(i, t.series[i.seriesId].workspace).map(({ who, e }) => ({ who, path: path(i), since: e.at, text: isPerson(e) ? `${users()[e.by]?.name ?? e.by} ${e.op === 'create' ? 'started' : 'added a note to'} ${t.series[i.seriesId].name} · ${i.label}` : e.text as string, note: e.by !== 'agent' || !e.ask }))),
+      // rf 0.19.2 reads only asks; projected notices are not actionable asks.
+      ...noteNotices.filter(n => n.kind === 'open').map(n => ({ who: me.email, path: n.path, since: n.at, text: n.text, note: true, legacyNotice: true })),
+    ],
     expired: (me.role === 'admin' ? Object.keys(users()) : [me.email]).flatMap(who => logins(who).filter(l => l.expired).map(l => ({
       who, login: l.name,
       holding: open.filter(i => held(i, l.id, who)).map(path),

@@ -166,6 +166,34 @@ test('creations and uploads still wait on read; informing comments wait for sett
   assert.deepEqual((await json('/api/instances/historical', colleague)).waiting, [{ who: colleague, seq: 4 }], 'reacting and opening acknowledge no agent proposal');
 });
 
+test('the old Waiting feed includes only open owner FYIs alongside the new notes feed', async () => {
+  const sid = await series('Legacy Waiting');
+  const { id } = await (await ok('POST', `/api/series/${sid}`, { label: 'Jan', quiet: true }, alice)).json();
+  const when = await ok('POST', '/api/messages', { instance: id, text: 'Method for this period.' }, colleague);
+  const c = `c${when.headers.get('X-RF-Comment-Seq')}`;
+  const n = (await (await ok('POST', '/api/messages', { series: sid, text: 'Method for later periods.' }, colleague)).json()).id;
+  const waits = async (who: string) => (await json('/api/status', who)).asks.filter(a => a.path.startsWith('Workspace/Legacy Waiting'));
+  const before = await waits(alice);
+  assert.deepEqual(before.map(a => [a.who, a.path, a.note, a.text]).sort(), [
+    [alice, 'Workspace/Legacy Waiting', true, 'Method for later periods.'],
+    [alice, 'Workspace/Legacy Waiting/Jan', true, 'Method for this period.'],
+  ]);
+  assert.deepEqual(await waits(colleague), [], 'writer has no old-format owner notice');
+  await ok('PUT', `/api/series/${sid}`, { archived: true });
+  assert.deepEqual(await waits(alice), [], 'archived notices are not in old Waiting');
+  await ok('PUT', `/api/series/${sid}`, { archived: false });
+  assert.deepEqual(await waits(alice), before);
+  await ok('POST', '/api/messages', { instance: id, id: c, dismiss: 'open' }, alice);
+  const ownOpen = await waits(alice);
+  assert.deepEqual(ownOpen.map(a => a.text), ['Method for later periods.']);
+  await ok('POST', '/api/messages', { instance: id, id: c, how: 'taken', text: 'Tried it.' }, alice);
+  await ok('POST', '/api/messages', { series: sid, id: n, how: 'aside', text: 'Unneeded.' }, alice);
+  assert.deepEqual(await waits(alice), []);
+  assert.deepEqual(await waits(colleague), [], 'the new settlement FYI is not an old-format ask');
+  const notices = (await json('/api/status', colleague)).noteNotices.filter(a => a.path.startsWith('Workspace/Legacy Waiting'));
+  assert.deepEqual(notices.map(a => [a.id, a.kind]).sort(), [[c, 'settled'], [n, 'settled']]);
+});
+
 test('admins author series without a capability grant', async () => {
   assert.equal((await request('POST', '/api/series', { workspace: 'ws', name: 'Admin series' })).status, 200);
 });
