@@ -39,22 +39,25 @@ before(async () => {
     workspaces: { ws: { name: 'Workspace', owners: [admin], members: [alice, bob, colleague] }, dest: { name: 'Destination', owners: [admin], members: [alice, bob] } },
     series: { history: { name: 'History', workspace: 'ws' }, unowned: { name: 'Unowned', workspace: 'ws' } },
   });
+  writeFileSync(join(root, '.rf', 'users.json'), JSON.stringify({ [alice]: { role: 'user' } }));
   mkdirSync(join(root, 'series', 'history'), { recursive: true });
   mkdirSync(join(root, 'series', 'unowned'));
   writeFileSync(join(root, 'series', 'unowned', 'series.json'), JSON.stringify({ version: 1, epoch: 0, since: '' }));
   const at = '2026-10-01T00:00:00.000Z';
   writeFileSync(join(root, 'series', 'history', 'series.json'), JSON.stringify({ version: 1, owner: alice, epoch: 1, since: at, consent: { by: alice, at, workspace: 'ws', logins: [], autonomous: false } }));
-  const inst = join(root, 'instances', 'historical');
-  mkdirSync(join(inst, 'working'), { recursive: true });
-  mkdirSync(join(inst, 'upload'));
-  writeFileSync(join(inst, 'instance.json'), JSON.stringify({ label: 'Past', series: 'history' }));
-  writeFileSync(join(inst, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [] }));
-  writeFileSync(join(inst, 'log.jsonl'), [
-    { by: colleague, op: 'create', logins: [] },
-    { by: 'server', op: 'run', run: 1, runner: 'executor@demo.test', initiator: 'initiator@demo.test', upto: 1 },
-    { by: 'server', op: 'done', run: 1, seen: 1, cost: 0.25, aborted: false },
-    { by: 'agent', op: 'comment', thread: 'c4', text: 'Approve content?', ask: 'proposal', to: colleague, run: 1 },
-  ].map((e, i) => JSON.stringify({ seq: i + 1, at, ...e }) + '\n').join(''));
+  for (const [id, label] of [['historical', 'Past'], ['historical-current', 'Present']]) {
+    const inst = join(root, 'instances', id);
+    mkdirSync(join(inst, 'working'), { recursive: true });
+    mkdirSync(join(inst, 'upload'));
+    writeFileSync(join(inst, 'instance.json'), JSON.stringify({ label, series: 'history' }));
+    writeFileSync(join(inst, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [] }));
+    writeFileSync(join(inst, 'log.jsonl'), [
+      { by: colleague, op: 'create', logins: [] },
+      { by: 'server', op: 'run', run: 1, runner: 'executor@demo.test', initiator: 'initiator@demo.test', upto: 1 },
+      { by: 'server', op: 'done', run: 1, seen: 1, cost: 0.25, aborted: false },
+      { by: 'agent', op: 'comment', thread: 'c4', text: 'Approve content?', ask: 'proposal', to: colleague, run: 1 },
+    ].map((e, i) => JSON.stringify({ seq: i + 1, at, ...e }) + '\n').join(''));
+  }
   const caused = join(root, 'instances', 'caused');
   mkdirSync(join(caused, 'working'), { recursive: true });
   mkdirSync(join(caused, 'upload'));
@@ -231,6 +234,21 @@ test('only owner selects an explicit credential ceiling; additions preserve epoc
   assert.deepEqual(settings(sid).consent.logins, []);
 });
 
+test('a named collaborator can decide an unresolved legacy proposal while the authority is unchanged', async () => {
+  const path = '/api/instances/historical-current';
+  await ok('POST', path + '/signoff', { thread: 'c4' }, colleague);
+  await ok('POST', path + '/comment', { thread: 'c4', text: 'A named collaborator reply' }, colleague);
+  await ok('POST', path + '/upload?name=note.txt', { text: 'Collaborator input' }, colleague);
+  const detail = await json(path);
+  assert.equal(detail.log.find(e => e.op === 'signoff').by, colleague);
+  assert.ok(detail.log.some(e => e.op === 'upload' && e.by === colleague));
+  assert.equal(detail.standing[detail.log.find(e => e.op === 'signoff').seq], 'answer');
+  assert.equal(detail.standing[detail.log.find(e => e.op === 'upload').seq], 'note');
+  assert.equal(detail.queued, true);
+  assert.equal(detail.log.filter(e => e.op === 'run').length, 1);
+  assert.equal((await request('POST', path + '/close', {}, colleague)).status, 403);
+});
+
 test('transfer clears consent, updates all projections and retains immutable execution history', async () => {
   const before = await json('/api/runs'), epoch = settings('history').epoch;
   const closedHistory = readFileSync(join(root, 'instances/caused/log.jsonl'), 'utf8');
@@ -257,25 +275,18 @@ test('transfer clears consent, updates all projections and retains immutable exe
   assert.equal((await json('/api/status')).assigned, undefined);
   assert.deepEqual(await json('/api/runs'), before);
   await ok('PUT', '/api/series/history/credentials', { logins: [], autonomous: false }, bob);
-  assert.equal((await json('/api/instances/historical', bob)).starts, true);
+  const held = await json('/api/instances/historical', bob);
+  assert.equal(held.starts, true);
+  assert.equal((await request('POST', '/api/instances/historical/signoff', { thread: 'c4' }, colleague)).status, 409);
+  assert.equal((await request('POST', '/api/messages', { instance: 'historical', id: 'c4', how: 'reject' }, bob)).status, 409);
+  const after = await json('/api/instances/historical', bob);
+  assert.deepEqual(after.log, held.log, 'a stale legacy proposal records no decision');
+  assert.deepEqual(after.waiting, []);
+  assert.deepEqual(after.staleProposals, [4]);
+  assert.equal(after.queued, false);
   await ok('PUT', '/api/series/history/owner', { owner: alice }, bob);
   assert.equal(settings('history').epoch, epoch + 2);
   assert.equal(settings('history').consent, undefined);
-});
-
-test('a named collaborator signoff queues a run under current owner consent', async () => {
-  await ok('PUT', '/api/series/history/credentials', { logins: [], autonomous: false }, alice);
-  await ok('POST', '/api/instances/historical/signoff', { thread: 'c4' }, colleague);
-  await ok('POST', '/api/instances/historical/comment', { thread: 'c4', text: 'A named collaborator reply' }, colleague);
-  await ok('POST', '/api/instances/historical/upload?name=note.txt', { text: 'Collaborator input' }, colleague);
-  const detail = await json('/api/instances/historical');
-  assert.equal(detail.log.find(e => e.op === 'signoff').by, colleague);
-  assert.ok(detail.log.some(e => e.op === 'upload' && e.by === colleague));
-  assert.equal(detail.standing[detail.log.find(e => e.op === 'signoff').seq], 'answer');
-  assert.equal(detail.standing[detail.log.find(e => e.op === 'upload').seq], 'note');
-  assert.equal(detail.queued, true);
-  assert.equal(detail.log.filter(e => e.op === 'run').length, 1);
-  assert.equal((await request('POST', '/api/instances/historical/close', {})).status, 403);
 });
 
 test('a collaborator cannot delete the owner\'s authorized schedule', async () => {

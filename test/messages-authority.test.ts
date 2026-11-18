@@ -61,7 +61,27 @@ for (const source of ['run', 'boundary', 'run conflicting with stamp', 'run with
   assert.equal(binds(inst, { ...decision, by: owner }, owner, current), 'note');
 });
 
-test('a legacy named ask with no series authority proof can still be answered after transfer', () => {
+for (const askKind of ['proposal', true] as const) test(`legacy ${askKind === true ? 'undifferentiated ask' : 'proposal'} without authority cannot authorize work across a transfer`, () => {
+  const run = entry(1, 'server', 'run', { run: 1, runner: other });
+  const ask = entry(2, 'agent', 'comment', { thread: 'c2', ask: askKind, to: named, run: 1 });
+  const decision = entry(4, named, 'signoff', { thread: 'c2', on: ask.seq, ...stamp });
+  const inst = instance([run, ask, authority(3, 8)]);
+  assert.deepEqual(waitsOn(inst, owner, 0, 0, current), [], 'history is not an active approval');
+  inst.log.push(decision);
+  assert.equal(answers(inst, decision, current), undefined);
+  assert.equal(binds(inst, decision, owner, current), 'note');
+});
+
+test('advanced series authority retires unstamped approvals even without an instance boundary', () => {
+  const ask = entry(2, 'agent', 'comment', { thread: 'c2', ask: 'proposal', to: named });
+  const decision = entry(3, named, 'signoff', { thread: 'c2', on: 2, ...stamp });
+  const inst = instance([entry(1, owner, 'create'), ask]);
+  assert.deepEqual(waitsOn(inst, owner, 0, 0, current), []);
+  inst.log.push(decision);
+  assert.equal(binds(inst, decision, owner, current), 'note');
+});
+
+test('a legacy named question with no series authority proof can still be answered after transfer', () => {
   const run = entry(1, 'server', 'run', { run: 1, runner: other });
   const ask = entry(2, 'agent', 'comment', { thread: 'c2', ask: 'question', to: named, run: 1 });
   const reply = person(4, named, { parent: ask.seq });

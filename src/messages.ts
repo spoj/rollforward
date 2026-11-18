@@ -15,7 +15,7 @@ function conflicts(a: Proof, b: Proof) {
   return (['owner', 'epoch', 'workspace'] as const).some(k => a[k] !== undefined && b[k] !== undefined && a[k] !== b[k]);
 }
 
-// A runner's name alone, or the first boundary *after* an unstamped legacy ask, proves no series authority for it.
+// A later boundary retires every proposal, including those made before authority was stamped. It does not establish their old authority.
 export function messageAuthority(log: readonly Entry[], e: Entry, upto = log.length): Proof & { stale: boolean } {
   const run = e.by === 'agent' && e.ask && e.run !== undefined
     ? log.findLast(r => r.seq < e.seq && r.op === 'run' && r.run === e.run) : undefined;
@@ -31,11 +31,14 @@ export function messageAuthority(log: readonly Entry[], e: Entry, upto = log.len
   const epoch = stampedEpoch ?? before?.epoch;
   const workspace = lease.workspace ?? before?.workspace;
   const proof = { ...(owner !== undefined && { owner }), ...(epoch !== undefined && { epoch }), ...(workspace !== undefined && { workspace }) };
-  return { ...proof, stale: crossed || conflicts(stamp, lease) || !!before && conflicts(proof, before) || !!after && conflicts(proof, after) };
+  const proposal = e.op === 'comment' && e.by === 'agent' && (e.ask === 'proposal' || e.ask === true);
+  return { ...proof, stale: crossed || conflicts(stamp, lease) || !!before && conflicts(proof, before) || !!after && (proposal || conflicts(proof, after)) };
 }
 
 export function currentMessage(log: readonly Entry[], e: Entry, current: Current) {
   const proof = messageAuthority(log, e);
+  // A transfer may already be saved in series.json when a restart interrupts writing the instance's boundary.
+  if ((current.epoch ?? 0) > 1 && proof.epoch === undefined && e.by === 'agent' && (e.ask === 'proposal' || e.ask === true)) return false;
   return !proof.stale && !conflicts(proof, { owner: current.by || null, epoch: current.epoch, workspace: current.workspace });
 }
 
