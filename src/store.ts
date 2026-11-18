@@ -161,13 +161,31 @@ export function instance(id: string): Instance {
   return cache.get(id)!;
 }
 
+const byLabel = (a: { label: string }, b: { label: string }) => a.label.localeCompare(b.label, 'en', { numeric: true });
+
 // A series' instances, by label, from the index.
 export function labels(seriesId: string): { id: string; label: string }[] {
-  return [...index].filter(([, m]) => m.series === seriesId).map(([id, m]) => ({ id, label: m.label })).sort((a, b) => a.label.localeCompare(b.label, 'en', { numeric: true }));
+  return [...index].filter(([, m]) => m.series === seriesId).map(([id, m]) => ({ id, label: m.label })).sort(byLabel);
 }
 
 export function instances(seriesId: string): Instance[] {
   return labels(seriesId).map(l => instance(l.id));
+}
+
+// Each series' instances as `instances` gives them, from one pass over the index, for what lists many series at once; a series'
+// are sorted, and load, only once it's asked for, as with `instances`, so a bad one fails only what asks for its series.
+export function instancesBySeries(): (seriesId: string) => Instance[] {
+  const by = new Map<string, { id: string; label: string }[]>(), sorted = new Set<string>();
+  for (const [id, m] of index) {
+    const ls = by.get(m.series);
+    if (ls) ls.push({ id, label: m.label });
+    else by.set(m.series, [{ id, label: m.label }]);
+  }
+  return seriesId => {
+    const ls = by.get(seriesId) ?? [];
+    if (!sorted.has(seriesId)) { ls.sort(byLabel); sorted.add(seriesId); }
+    return ls.map(l => instance(l.id));
+  };
 }
 
 // The closed instances of its series before it, by label: the examples it rolls forward from.
