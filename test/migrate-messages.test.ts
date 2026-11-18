@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { cpSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
@@ -9,8 +10,10 @@ import { test, type TestContext } from 'node:test';
 import { migrateMessageCopy } from '../scripts/migrate-messages.ts';
 import { checkAuthorityFormat } from '../src/authority-format.ts';
 import { eventsFile, jsonLines, messagesAt, messagesFile, notesFile, readEntries, storedMessage } from '../src/message-store.ts';
-import { notes } from '../src/messages.ts';
+import { notes, openNotes } from '../src/messages.ts';
 import { instance, openStore, type Entry } from '../src/store.ts';
+import { initSystem } from '../src/system.ts';
+import { message, seriesConversation, view } from '../src/waker.ts';
 import { idp } from './idp.ts';
 import { snapshotFiles, writeLegacyFixtureTree } from './owner-fixture.ts';
 
@@ -310,6 +313,46 @@ test('legacy pinned objects and local upload/working paths preserve entry bytes'
   assert.equal(JSON.stringify(instance('b').log[1]), JSON.stringify(e));
   assert.equal(JSON.stringify(messagesAt(book(copy)).find(m => m.anchor.instance === 'b')?.entry), JSON.stringify(e));
   assert.equal(readFileSync(path, 'utf8'), jsonLines([b[0], e, b[2]]));
+});
+
+test('run prompts only present migrated pins whose bytes still match in the captured view', t => {
+  const { copy, b } = fixture(t), owner = b[0].by;
+  writeFileSync(join(book(copy), 'series.json'), JSON.stringify({ version: 1, owner, epoch: 1, since: at(0) }));
+  const bytes = Buffer.alloc(64 * 1024 + 1, 0xff);
+  const pin = { inst: 'a', path: 'working/report.csv', sha256: createHash('sha256').update(bytes).digest('hex').toUpperCase() };
+  const report = join(copy, 'instances/a', pin.path);
+  writeFileSync(report, bytes);
+  const legacy = { inst: 'a', path: 'working/process.md' }, local = 'upload/input.csv';
+  mkdirSync(join(copy, 'instances/b/upload'));
+  writeFileSync(join(copy, 'instances/b', local), 'input');
+  const files = [pin, legacy, local, { ...pin, path: 'working/missing.csv' }, { ...pin, inst: 'gone' }];
+  writeFileSync(join(copy, 'instances/b/log.jsonl'), jsonLines([
+    b[0], { ...b[1], by: 'agent', note: true, run: 1, runner: owner, text: 'Historical advice', files },
+    { ...b[2], thread: 'c3', parent: undefined, files },
+  ]));
+  migrateMessageCopy(copy, true);
+  openStore(copy);
+  initSystem(copy);
+  const lease = { version: 1 as const, owner, epoch: 1, workspace: 'w', logins: [], autonomous: false };
+  const i = instance('b'), { names } = view(i, lease), atA = '/work/Workspace/Book/A';
+  assert.equal(names[atA], 'a');
+  const open = openNotes(seriesConversation(i.seriesId).notes, i.id);
+  assert.deepEqual(open.map(n => n.id), ['c2']);
+  const show = (captured = names) => {
+    const [intro, log] = message(i, 1, [i.log[2]], false, open, lease, captured).split(' New log entries:\n');
+    return { advice: intro.split('"Historical advice"')[1], files: JSON.parse(log).files };
+  };
+  assert.deepEqual(show(), { advice: `, ${atA}/${pin.path}, ${atA}/${legacy.path}, ${local}.`, files: [pin, legacy, local] });
+  bytes[bytes.length - 1] = 0xfe; // Same path and size, different bytes.
+  writeFileSync(report, bytes);
+  assert.deepEqual(show(), { advice: `, ${atA}/${legacy.path}, ${local}.`, files: [legacy, local] }, 'changed bytes are not the pin');
+  rmSync(report);
+  assert.deepEqual(show(), { advice: `, ${atA}/${legacy.path}, ${local}.`, files: [legacy, local] });
+  bytes[bytes.length - 1] = 0xff;
+  writeFileSync(report, bytes);
+  assert.deepEqual(show({ '/work/Workspace/Book/B': 'b' }), { advice: `, ${local}.`, files: [local] }, 'current reach does not expand the captured view');
+  assert.deepEqual(i.log[1].files, files, 'prompt presentation does not rewrite history');
+  assert.deepEqual(i.log[2].files, files);
 });
 
 test('live HTTP only admits paths from the attachment upload directory after conversion', { timeout: 10_000 }, async t => {

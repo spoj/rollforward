@@ -1,6 +1,6 @@
 import { addAbortListener } from 'node:events';
 import { freemem } from 'node:os';
-import { closeSync, existsSync, mkdirSync, readFileSync, readSync, realpathSync, rmSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, mkdirSync, readFileSync, readSync, realpathSync, rmSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
 import { agentsFile, closedBefore, createInstance, HttpError, instance, instanceDir, instances, labels, newId, openFile, seriesDir, type Entry, type Instance } from './store.ts';
@@ -143,12 +143,26 @@ export function message(inst: Instance, n: number, entries: Entry[], first = fal
     return `the agent of ${label}, run ${e.run}, for ${who(e.runner as string)}`;
   };
   const paths = new Map(Object.entries(names).map(([path, id]) => [id, path]));
-  const files = (e: Entry) => visibleInstanceFiles(e, inst.id, (id, path) => {
-    if (id !== inst.id && !paths.has(id)) return false;
+  // Bound synchronous I/O per prompt, including files that grow while being read. Filter the prompt, not the mounted log.
+  let remaining = 64 * 1024 * 1024, chunk: Buffer | undefined;
+  const files = (e: Entry) => visibleInstanceFiles(e, inst.id, id => id === inst.id || paths.has(id)).filter(f => {
+    const { inst: id, path, sha256 } = typeof f === 'string' ? { inst: inst.id, path: f, sha256: undefined } : f;
     const fd = openFile(instanceDir(id), path);
     if (fd === undefined) return false;
-    closeSync(fd);
-    return true;
+    try {
+      if (sha256 === undefined) return true;
+      if (fstatSync(fd).size > remaining) return false;
+      const hash = createHash('sha256'), buf = chunk ??= Buffer.allocUnsafe(64 * 1024);
+      for (;;) {
+        const n = readSync(fd, buf, 0, Math.min(buf.length, remaining + 1), null);
+        if (!n) return hash.digest('hex') === sha256.toLowerCase();
+        remaining -= n;
+        if (remaining < 0) return false;
+        hash.update(buf.subarray(0, n));
+      }
+    } catch {
+      return false;
+    } finally { closeSync(fd); }
   });
   const asks = first ? inst.asking(by).filter(e => currentMessage(inst.log, e, { by, epoch: lease.epoch, workspace: lease.workspace })) : [];
   const series = open.filter(e => !e.anchor), here = open.filter(e => e.anchor);
@@ -161,7 +175,7 @@ export function message(inst: Instance, n: number, entries: Entry[], first = fal
     + (here.length ? ` Open notes on this instance: ${here.map(e => `${e.id}, on ${e.anchor!.label}${e.anchor!.item ? ` ${e.anchor!.item}` : ''}${e.anchor!.ref ? `@${e.anchor!.ref}` : ''}, from ${from(e)} at ${e.at}, ${JSON.stringify(e.text)}${files(e).map(f => `, ${typeof f === 'string' ? f : f.inst === inst.id ? f.path : `${paths.get(f.inst)}/${f.path}`}`).join('')}${e.request ? ' [request]' : ''}${e.proposal ? ' [proposal pending]' : ''}`).join('; ')}.` : '')
     + ' New log entries:\n'
     + entries.filter(told).map(e => JSON.stringify({ ...e, ...(standing(inst, e)?.word === 'note' && { note: true }),
-      ...(e.op === 'comment' && e.files && { files: files(e) }) })).join('\n');
+      ...(e.files && { files: files(e) }) })).join('\n');
 }
 
 // What a series' agent may read: the other series of its workspace, and those of each workspace whose managers let its workspace's
