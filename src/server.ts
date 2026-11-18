@@ -391,7 +391,7 @@ function cachedRunsOf(i: Instance): CachedRun[] {
   return rows;
 }
 
-type WakeCheckRow = Omit<RunRow, 'run'> & { run: null; outcome: 'wake-check-stop'; message: string };
+type WakeCheckRow = Omit<RunRow, 'run'> & { run: null; outcome: 'wake-check-stop'; message?: string };
 
 function wakeChecksOf(i: Instance): WakeCheckRow[] {
   if (i.hole) return (i.log[0].wakeChecks ?? []) as WakeCheckRow[];
@@ -1239,7 +1239,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // totals (waker.ts remove()); the system's log records it.
     if (!canManage(me, t.workspaces[t.series[inst.seriesId].workspace])) throw new HttpError(403, "only the workspace's owners and admins delete an instance");
     await remove(inst, by, () => {
-      const wakeChecks = wakeChecksOf(inst);
+      const wakeChecks = wakeChecksOf(inst).map(({ message, ...r }) => r);
       return { cost: costOf(inst), ...(estimatedOf(inst) && { estimated: true }), runs: cachedRunsOf(inst).map(({ started, error, ...r }) => r),
         ...(wakeChecks.length && { wakeChecks }) };
     });

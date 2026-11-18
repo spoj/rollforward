@@ -267,7 +267,11 @@ export class Instance {
     this.log = readLines(log);
     this.copiedSeq = this.log.findLast(e => e.op === 'duplicate')?.seq ?? 0;
     // Its log is written first as it's deleted, so a restart that cut a deletion finds it deleted (waker.ts recover()).
-    if (this.hole) this.doc = { rev: this.doc.rev, status: 'deleted', items: [] };
+    if (this.hole) {
+      this.doc = { rev: this.doc.rev, status: 'deleted', items: [] };
+      // Older tombstones may still hold wake-check text on disk; no reader sees it.
+      for (const row of (this.log[0].wakeChecks ?? []) as { message?: string }[]) delete row.message;
+    }
   }
 
   // Deleted: its log is its delete entry alone.
