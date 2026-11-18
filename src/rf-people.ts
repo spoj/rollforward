@@ -1056,11 +1056,11 @@ else if (cmd === 'kill' && args.length === 1 && /^\d+$/.test(args[0])) {
     process.exit(2);
   }
   const people = flags.clear ? [] : String(edits[0] ?? '').split(',').map(p => p.trim()).filter(Boolean);
-  if ((flags.add || flags.remove) && !people.length) {
+  if ((flags.add !== undefined || flags.remove !== undefined) && !people.length) {
     console.error(usage(cmd));
     process.exit(2);
   }
-  const key = flags.add ? 'add' : flags.remove ? 'remove' : 'people';
+  const key = flags.add !== undefined ? 'add' : flags.remove !== undefined ? 'remove' : 'people';
   const all: Record<string, string[]> = await (await (edits.length ? post('/capabilities', { cap, [key]: people }, 'PUT') : api('/capabilities'))).json();
   if (flags.json) console.log(JSON.stringify(all, null, 1));
   else for (const [c, who] of Object.entries(all)) if (!cap || c === cap) console.log(`${c}: ${who.join(', ') || (c === 'vpn' || c === 'wake-check' ? 'no one' : 'admins only')}`);

@@ -554,6 +554,29 @@ test('A-R4-PEOPLE-07: rf new task rejects deterministic invalid or colliding lab
   assert.match(lsAfterCommentErr.stdout, /task-labels\/Untitled 2\/Untitled 2/);
 });
 
+test('rf can rejects empty deltas without clearing grants', async () => {
+  const can = (...args: string[]) => runRf(admin.home, ['can', 'wake-check', ...args]);
+  assert.equal((await can('carol@demo.test')).code, 0);
+  const before = ['carol@demo.test'];
+
+  for (const delta of ['--add', '--remove']) {
+    const cli = await can(delta, '');
+    assert.equal(cli.code, 2, `${delta} with an empty list must fail`);
+    assert.deepEqual(JSON.parse((await can('--json')).stdout)['wake-check'], before);
+
+    const server = await fetch(`${base}/capabilities`, {
+      method: 'PUT', headers: { cookie: admin.cookie }, body: JSON.stringify({ cap: 'wake-check', [delta.slice(2)]: [] }),
+    });
+    assert.equal(server.status, 400, `empty ${delta} must fail at the server`);
+    assert.deepEqual(JSON.parse((await can('--json')).stdout)['wake-check'], before);
+  }
+
+  assert.equal((await can('')).code, 0, 'legacy explicit empty replacement remains valid');
+  assert.deepEqual(JSON.parse((await can('--json')).stdout)['wake-check'], []);
+  assert.equal((await can('--clear')).code, 0);
+  assert.deepEqual(JSON.parse((await can('--json')).stdout)['wake-check'], []);
+});
+
 test('rf can adds and removes grants without replacing other grantees', async () => {
   const can = (...args: string[]) => runRf(admin.home, ['can', 'wake-check', ...args]);
   assert.equal((await can('carol@demo.test')).code, 0);

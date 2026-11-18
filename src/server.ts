@@ -1598,7 +1598,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
         const payload = await json(req), { cap } = payload;
         if (!CAPS.includes(cap)) throw new HttpError(400, `a capability is one of ${CAPS.filter(c => c !== 'vpn' || can(me, c)).join(', ')}`);
         const edits = ['people', 'add', 'remove'].filter(key => Object.hasOwn(payload, key)), [key] = edits, people = payload[key];
-        if (edits.length !== 1 || !isPeople(people)) throw new HttpError(400, `${cap}: give one list of emails and Entra group ids, in people, add or remove`);
+        if (edits.length !== 1 || !isPeople(people) || key !== 'people' && !people.length) throw new HttpError(400, `${cap}: give one non-empty list of emails and Entra group ids for add or remove, or a list in people`);
         const selected = people.map(p => p.toLowerCase()), all = capabilities(), before = all[cap] ?? [];
         all[cap] = key === 'add' ? [...new Set([...before, ...selected])] : key === 'remove' ? before.filter(p => !selected.includes(p)) : selected;
         writeJson('capabilities.json', all);
