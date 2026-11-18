@@ -128,6 +128,8 @@ Run the image under podman, as a systemd service. The image is the agent image, 
 
 This is a `Manual:` release: the message store changes on disk. Do not point v0.8.0 at the old data, or v0.7.x at converted data. Keep the old checkout and a recoverable backup of the complete original data root and both keys, including keys supplied by systemd. Check that published skills and local scripts on the host use `rf comment` and `rf settle` before the switch.
 
+For the native service under UID 8004 at `/u01/rollforward/rollforward`, use the reviewed [cutover script](../scripts/cutover-v0.8.0.sh). Its `--help` gives the detached launch and prerequisites. It keeps the stopped original as the rollback backup, verifies against a separate converted copy, and requires explicit activation. The steps below are the equivalent manual procedure for other deployments.
+
 1. Stop the update timer; check that no update job is running. Check that the checkout is clean and the tag includes the deployed commit. Use the native or container drain above. Stop the server only after `/drained` returns 200. Keep writers stopped, including clients and admin scripts, until verification is complete.
 2. Copy the stopped data root to a **separate directory** on the production host, preserving owner, permissions and any keys. Do not use hard links to the original. Keep `.rf`, the instance repositories and series directories. Check free space first. As the service user, run against the copy from the new checkout (using its Node 26):
 
