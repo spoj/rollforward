@@ -241,6 +241,7 @@ test('real owner clients preserve terminal history and task execution settings',
   const at = '2026-11-01T00:00:00.000Z', bob = 'bob@example.test';
   mkdirSync(join(root, '.rf'), { recursive: true });
   writeLegacyFixtureTree(root, { workspaces: { w: { name: 'Finance', owners: [owner], members: [colleague, bob] } }, series: { s: { name: 'History', workspace: 'w' } } });
+  writeFileSync(join(root, '.rf', 'users.json'), JSON.stringify({ [owner]: { role: 'admin' } }));
   mkdirSync(join(root, 'series', 's'), { recursive: true });
   writeFileSync(join(root, 'series', 's', 'series.json'), JSON.stringify({ version: 1, owner, epoch: 1, since: at, consent: { by: owner, at, workspace: 'w', logins: [], autonomous: true } }));
   for (const id of cases) {

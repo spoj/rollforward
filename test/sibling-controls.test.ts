@@ -117,8 +117,11 @@ for (const action of ['interrupt', 'transfer', 'same-instance']) test(action ===
           await consentAdmitted.promise;
           await new Promise(ok => setImmediate(ok));
           assert.equal(consented, false, 'admitted new owner consent stays behind authority retirement');
-          hold.resolve(); await prior;
-          assert.equal((await signing).status, 200);
+          hold.resolve();
+          const priorHead = await prior, refused = await signing;
+          assert.equal(refused.status, 409);
+          assert.match(await refused.text(), /earlier series authority/);
+          assert.equal(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: first.dir, encoding: 'utf8' }).trim(), priorHead);
           stopped.resolve(); await new Promise(ok => setTimeout(ok, 50));
           assert.equal(controlled, false, 'browser closure still fences transfer');
           browserGate.resolve(); await new Promise(ok => setTimeout(ok, 50));
@@ -145,15 +148,18 @@ for (const action of ['interrupt', 'transfer', 'same-instance']) test(action ===
         assert.equal(old.authority.epoch, oldEpoch, 'old executor and captured epoch remain immutable');
       }
       hold.resolve(); await prior;
-      assert.equal((await signing).status, 200);
+      assert.equal((await signing).status, action === 'transfer' ? 409 : 200);
       if (action === 'same-instance') assert.equal((await controlling).status, 409, 'idle First has no run to interrupt');
       const entry = first.log.find(e => e.op === 'signoff');
-      assert.equal(entry.by, actor); assert.equal(entry.on, proposal.seq);
-      const signedCommit = execFileSync('git', ['show', '-s', '--format=%ae%n%B', entry.commit], { cwd: first.dir, encoding: 'utf8' });
-      assert.ok(signedCommit.startsWith(actor + '\\n'));
-      assert.ok(signedCommit.includes(proposal.text + '\\n\\nApproved locally.\\n\\nSigned-off-by: '));
-      assert.ok(signedCommit.includes('<' + actor + '>'));
-      assert.equal(execFileSync('git', ['show', entry.commit + ':working/result.txt'], { cwd: first.dir, encoding: 'utf8' }), 'Local result to approve');
+      if (action === 'transfer') assert.equal(entry, undefined, 'the transfer also retires the pending approval on First');
+      else {
+        assert.equal(entry.by, actor); assert.equal(entry.on, proposal.seq);
+        const signedCommit = execFileSync('git', ['show', '-s', '--format=%ae%n%B', entry.commit], { cwd: first.dir, encoding: 'utf8' });
+        assert.ok(signedCommit.startsWith(actor + '\\n'));
+        assert.ok(signedCommit.includes(proposal.text + '\\n\\nApproved locally.\\n\\nSigned-off-by: '));
+        assert.ok(signedCommit.includes('<' + actor + '>'));
+        assert.equal(execFileSync('git', ['show', entry.commit + ':working/result.txt'], { cwd: first.dir, encoding: 'utf8' }), 'Local result to approve');
+      }
       assert.equal(first.log.some(e => e.op === 'run'), false, 'collaborator approval never initiates execution');
       process.exit(0);
     `], { cwd: join(import.meta.dirname, '..'), timeout: 20_000, stdio: 'pipe' });
