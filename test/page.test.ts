@@ -844,13 +844,26 @@ test("hovering a link to a deleted instance's comment says nothing of it, and no
   await page.evaluate(() => api('/api/instances/a5c0ff5e1f0a/comment', { method: 'POST', body: JSON.stringify({ text: 'Check the comment links.' }) }));
   await page.waitForSelector('#bar .state .bad:text("Run 1 failed")');
   await page.evaluate(() => api('/api/instances/a5c0ff5e1f09/delete', { method: 'POST' }));
-  const toasts = await page.locator('#toasts .toast').count();
-  for (let i = 0; i < 2; i++) {
-    await page.mouse.move(0, 0);
-    await page.hover('#conv .post[data-seq="6"] a.cref[data-inst="a5c0ff5e1f09"]');
-    await page.waitForTimeout(500);
+  const toasts = await page.evaluateHandle(() => {
+    const added: string[] = [];
+    const observer = new MutationObserver(records => {
+      for (const record of records) for (const node of record.addedNodes) added.push(node.textContent ?? '');
+    });
+    observer.observe(document.querySelector('#toasts')!, { childList: true });
+    return { added, observer };
+  });
+  try {
+    for (let i = 0; i < 2; i++) {
+      await page.mouse.move(0, 0);
+      await page.hover('#conv .post[data-seq="6"] a.cref[data-inst="a5c0ff5e1f09"]');
+      await page.waitForTimeout(500);
+    }
+    assert.deepEqual(await toasts.evaluate(({ added }) => added), []);
+    assert.equal(await page.locator('#conv a.cref[data-inst="a5c0ff5e1f09"]').getAttribute('title'), null);
+  } finally {
+    await toasts.evaluate(({ observer }) => observer.disconnect());
+    await toasts.dispose();
   }
-  assert.deepEqual([await page.locator('#toasts .toast').count(), await page.locator('#conv a.cref[data-inst="a5c0ff5e1f09"]').getAttribute('title')], [toasts, null]);
 });
 
 test("a bare cN after =, &, ;, !, : or ? is no reference, as in an address, a query or a cell's, and links nothing", async () => {
