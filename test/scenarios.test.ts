@@ -1094,9 +1094,8 @@ test("a run leaves notes elsewhere in its workspace, in another instance and on 
   await until('a collaborator wake becomes a request', () => JSON.parse(readFileSync(join(root, '.rf', 'wakes.json'), 'utf8')).requests[request] !== undefined);
   assert.equal((await call('POST', `/api/requests/${request}`, {})).status, 403, 'a non-owner admin cannot Start a request as Bob');
   assert.equal((await call('POST', `/api/requests/${request}`, { quiet: true }, bob)).status, 200);
-  await new Promise(ok => setTimeout(ok, 2000));
-  const idle = await (await call('GET', `/api/instances/${id}`)).json();
   const resumed = await runs(id, 2), last = resumed.findLast(e => e.op === 'run')!;
+  const idle = await (await call('GET', `/api/instances/${id}`)).json();
   assert.deepEqual([idle.log.filter(e => e.op === 'run').length, idle.run, idle.queued], [2, null, false], 'a named answer starts a run; the upload alone starts no additional run');
   assert.deepEqual([last.runner, last.initiator, last.authority.owner], [ADMIN, BOB, ADMIN]);
   assert.equal(takenUp.saw[0].trim(), '7.82');
