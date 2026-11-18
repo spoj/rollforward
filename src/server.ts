@@ -28,7 +28,7 @@ import { forget, indexes, prune, startIndexing, track } from './indexes.ts';
 import { find, killTree, sample, startOf, type Monitor, type Sandbox } from './monitor.ts';
 import { addNote, notes, saveSeriesSettings, seriesSettings, type SeriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, archived, byToken, cancelWake, cancelWakes, closed, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, queued, remove, retireSeries, resolveFor, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesOf, wakeWith, weekly, reads, CUT, type Active, type Request } from './waker.ts';
+import { active, archived, byToken, cancelWake, cancelWakes, closed, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, queued, remove, retireSeries, resolveFor, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesByTarget, wakeWith, weekly, reads, CUT, type Active, type Request } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -268,7 +268,7 @@ const estimatedOf = (i: Instance) => i.log.slice(i.log.findLastIndex(e => e.op =
 
 // The page lists every instance after each step of a run, so this reads the owner from the series' settings, which a listing reads
 // once for all of a series' instances, not ownerOf's whole tree.json.
-function summary(i: Instance, me: Me, w8 = wakes(), settings = seriesSettings(i.series())) {
+function summary(i: Instance, me: Me, w8 = wakes(), settings = seriesSettings(i.series()), wakesFor = wakesByTarget(w8)) {
   const email = me.email, by = settings.owner ?? '';
   const key = `${i.log.length}:${i.doc.rev}:${JSON.stringify(settings)}:${seen(by).at[i.id]}:${active.get(i.seriesId)?.seen}`;
   const news = i.log.findLast(e => e.by !== email && e.accepted_by !== email && NEWS.includes(e.op)), s = seen(email);
@@ -278,7 +278,7 @@ function summary(i: Instance, me: Me, w8 = wakes(), settings = seriesSettings(i.
     refused: i.log.filter(e => e.op === 'browser' && e.hosts).map(e => ({ at: e.at, run: e.run as number, site: e.site as string, login: e.login as string, hosts: Object.keys(e.hosts as object) })) });
   return {
     id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(i.seriesId)?.inst === i, queued: !!queued(i),
-    asks: k.asks, wakes: wakesOf(i.id, w8), fired: w8.fired[i.id] ?? null, owner: k.owner, cost: k.cost, ...(k.estimated && { estimated: true }), active: k.active,
+    asks: k.asks, wakes: wakesFor(i.id), fired: w8.fired[i.id] ?? null, owner: k.owner, cost: k.cost, ...(k.estimated && { estimated: true }), active: k.active,
     unread: !!news && news.at > s.since && news.seq > (s.at[i.id] ?? 0), corrections: k.corrections,
     // A deleted instance's hole: who deleted it, and when.
     deleted: i.hole ? { by: i.log[0].by, at: i.log[0].at } : null,
@@ -305,15 +305,15 @@ const proposals = (t: Tree) => Object.entries(t.workspaces).filter(([, w]) => {
 });
 
 function listing(me: Me) {
-  const t = tree(), w8 = wakes(), us = users(), instancesOf = instancesBySeries(), open = proposals(t), granted = visible(me).filter(g => ['pending', 'approved'].includes(g.state)), byName = (a: [string, { name: string }], b: [string, { name: string }]) => a[1].name.localeCompare(b[1].name);
+  const t = tree(), w8 = wakes(), wakesFor = wakesByTarget(w8), us = users(), instancesOf = instancesBySeries(), open = proposals(t), granted = visible(me).filter(g => ['pending', 'approved'].includes(g.state)), byName = (a: [string, { name: string }], b: [string, { name: string }]) => a[1].name.localeCompare(b[1].name);
   return Object.entries(t.workspaces).filter(([, w]) => canSee(me, w)).sort(byName).map(([id, w]) => {
     const series = Object.entries(t.series).filter(([, s]) => s.workspace === id).sort(byName).map(([sid, s]) => {
       const settings = seriesSettings(seriesDir(sid)), { owner, consent, epoch, since } = settings, person = owner && asPerson(owner, us[owner]);
       return {
         id: sid, name: s.name, archived: !!s.archived, single: !!s.single, owner: owner ?? null, ownerUnavailable: !person || !canSee(person, w), epoch, since, consent: consent ?? null,
-        wakes: wakesOf(sid, w8), fired: w8.fired[sid] ?? null, notes: notes(seriesDir(sid)).filter(n => !n.settled).length,
+        wakes: wakesFor(sid), fired: w8.fired[sid] ?? null, notes: notes(seriesDir(sid)).filter(n => !n.settled).length,
         requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r, who: asked(r) })),
-        instances: instancesOf(sid).map(i => summary(i, me, w8, settings)),
+        instances: instancesOf(sid).map(i => summary(i, me, w8, settings, wakesFor)),
       };
     });
 

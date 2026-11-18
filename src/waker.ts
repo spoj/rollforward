@@ -510,8 +510,20 @@ export type Request = { series: string; label: string; from: string; at: string;
 type Wakes = { pending: Record<string, Wake>; fired: Record<string, string>; requests: Record<string, Request> };
 export const wakes = () => readJson<Wakes>('wakes.json', { pending: {}, fired: {}, requests: {} });
 const saveWakes = (w: Wakes) => writeJson('wakes.json', w);
+const byAt = (a: { at: string }, b: { at: string }) => a.at.localeCompare(b.at);
 export const wakesOf = (target: string, w = wakes()) => Object.entries(w.pending).filter(([, k]) => k.target === target)
-  .map(([id, k]) => ({ id, ...k })).sort((a, b) => a.at.localeCompare(b.at));
+  .map(([id, k]) => ({ id, ...k })).sort(byAt);
+// Each target's pending wakes as wakesOf gives them, from one pass, for what lists many targets at once.
+export function wakesByTarget(w = wakes()): (target: string) => (Wake & { id: string })[] {
+  const by = new Map<string, (Wake & { id: string })[]>();
+  for (const [id, k] of Object.entries(w.pending)) {
+    const ks = by.get(k.target);
+    if (ks) ks.push({ id, ...k });
+    else by.set(k.target, [{ id, ...k }]);
+  }
+  for (const ks of by.values()) ks.sort(byAt);
+  return target => [...(by.get(target) ?? [])];
+}
 
 const WEEK = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'], dayOf = (d: Date) => WEEK[(d.getDay() + 6) % 7];
 const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
