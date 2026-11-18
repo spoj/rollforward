@@ -1,9 +1,9 @@
-import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, truncateSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, truncateSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { basename, dirname, extname, join, posix, sep } from 'node:path';
 import { appendLine, changes, replaceFile, tree } from './system.ts';
 import { authorityTree, checkSeriesAuthority } from './authority-format.ts';
-import { appendMessage, deletedEntry, eventsFile, installMessageBooks, instanceAnchor, instanceMessage, instanceProjection, jsonLines, messagesAt, projectInstance, Projection, purgeMessages, readBook, readEntries, readMessages, startMessageStore, type Book, type TornTails } from './message-store.ts';
+import { appendMessage, deletedEntry, eventsFile, installMessageBooks, instanceAnchor, instanceMessage, instanceProjection, jsonLines, messagesAt, projectInstance, purgeMessages, readBook, readEntries, readMessages, startMessageStore, type Book, type Projection, type TornTails } from './message-store.ts';
 import { commit, committed, pack, type Who } from './git.ts';
 import { seriesSettings } from './series.ts';
 import { answered } from './messages.ts';
@@ -143,12 +143,21 @@ function readScreen(dir: string): Doc {
   return doc;
 }
 
+const initialScreen = JSON.stringify({ rev: 1, status: 'open', items: [] }, null, 1);
+const createFolders = ['upload', 'working'];
+
+function syncDirectory(path: string) {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+}
+
 export function openStore(dataRoot: string, beforeRepair?: () => void) {
   const manifest = readMetadata<unknown>(join(dataRoot, '.rf', 'tree.json'));
   const authority = manifest === undefined ? undefined : authorityTree(manifest), series = authority?.series ?? {};
   if (authority) checkSeriesAuthority(dataRoot, authority);
   const folders = join(dataRoot, 'instances'), seriesRoot = join(dataRoot, 'series');
-  const metas = new Map<string, Meta>(), uncreated: string[] = [], tails: TornTails = new Map();
+  const metas = new Map<string, Meta>(), uncreated: string[] = [], emptyEventDirs: string[] = [], tails: TornTails = new Map();
+  const orphanCandidates: { id: string; sid: string; source: string }[] = [];
   for (const d of startupDirectory(folders)) {
     const dir = join(folders, d.name), path = join(dir, 'instance.json');
     const m = d.isDirectory() ? readMetadata<Meta>(path) : undefined;
@@ -176,7 +185,18 @@ export function openStore(dataRoot: string, beforeRepair?: () => void) {
     }
     for (const d of startupDirectory(join(dir, 'events'))) {
       const path = eventsFile(dir, d.name), meta = metas.get(d.name);
-      if (d.isDirectory() && (meta?.series === sid || (!meta && readdirSync(dirname(path)).every(name => name === 'events.jsonl.tmp')))) continue;
+      if (d.isDirectory() && meta?.series === sid) continue;
+      if (d.isDirectory() && !meta) {
+        const files = startupDirectory(dirname(path));
+        if (files.every(f => f.name === 'events.jsonl.tmp' && f.isFile())) {
+          if (!files.length) emptyEventDirs.push(dirname(path));
+          continue;
+        }
+        if (files.length === 1 && files[0].name === 'events.jsonl' && files[0].isFile()) {
+          orphanCandidates.push({ id: d.name, sid, source: path });
+          continue;
+        }
+      }
       throw new Error(`${path}: no matching instance.json metadata`);
     }
     loaded.set(dir, b);
@@ -189,6 +209,43 @@ export function openStore(dataRoot: string, beforeRepair?: () => void) {
     replayed.set(id, { doc: readScreen(join(folders, id)), log });
   }
 
+  // Publication moves this exact scratch folder away. A lone create row without that evidence is not safe to drop.
+  const scratch = join(dataRoot, '.tmp');
+  for (const { id, sid, source } of orphanCandidates) {
+    const invalid = new Error(`${source}: no matching instance.json metadata or unpublished create`), stage = join(scratch, id);
+    if (!/^[a-f0-9]{12}$/.test(id) || lstatSync(join(folders, id), { throwIfNoEntry: false })) throw invalid;
+    if (!lstatSync(scratch, { throwIfNoEntry: false })?.isDirectory() || !lstatSync(stage, { throwIfNoEntry: false })?.isDirectory()) throw invalid;
+    const names = new Set(readdirSync(stage));
+    if (!['instance.json', 'screen.json', ...createFolders].every(name => names.delete(name)) || names.size > 1) throw invalid;
+    const [projection] = names;
+    if (projection !== undefined && projection !== 'log.jsonl' && projection !== 'log.jsonl.tmp') throw invalid;
+    for (const name of createFolders) {
+      const path = join(stage, name);
+      if (!lstatSync(path).isDirectory() || readdirSync(path).length) throw invalid;
+    }
+    const m = readMetadata<Meta>(join(stage, 'instance.json')), screen = join(stage, 'screen.json');
+    if (m?.series !== sid || typeof m.label !== 'string' || !m.label || Object.keys(m).length !== 2) throw invalid;
+    if (!lstatSync(screen).isFile() || readFileSync(screen, 'utf8') !== initialScreen) throw invalid;
+    // Even a torn second row could be history; don't pass the tail repair map.
+    const events = readEntries(source), [e] = events;
+    if (events.length !== 1 || e.seq !== 1 || e.op !== 'create' || Object.keys(e).length !== 4) throw invalid;
+    if (projection) {
+      const path = join(stage, projection);
+      if (!lstatSync(path).isFile()) throw invalid;
+      const bytes = readFileSync(path), initialLog = Buffer.from(jsonLines(events));
+      if (!(projection.endsWith('.tmp') ? initialLog.subarray(0, bytes.length) : initialLog).equals(bytes)) throw invalid;
+    }
+  }
+
+  const emptyCreateDirs = uncreated.map(dir => {
+    const path = join(dir, 'instance.json');
+    if (!lstatSync(dir).isDirectory()) throw new Error(`${path}: no instance metadata`);
+    const children = startupDirectory(dir);
+    if (children.some(d => !createFolders.includes(d.name) || !d.isDirectory() || readdirSync(join(dir, d.name)).length))
+      throw new Error(`${path}: no instance metadata; folder is not empty`);
+    return [dir, children.map(d => join(dir, d.name))] as const;
+  });
+
   // A bad stream anywhere must not change even a recoverable stream elsewhere.
   beforeRepair?.();
   for (const dir of [folders, seriesRoot, join(dataRoot, 'agents')]) mkdirSync(dir, { recursive: true });
@@ -197,8 +254,16 @@ export function openStore(dataRoot: string, beforeRepair?: () => void) {
     console.error(`${path}: dropped a torn last line, ${dropped} bytes`);
   }
   for (const [path, tombstone] of redacted) replaceFile(path, jsonLines([tombstone]), true);
-  for (const dir of uncreated) {
-    wipe(Buffer.from(dir));
+  // The server can clear .tmp only once removal is durable, even after an interrupted repair.
+  for (const dir of emptyEventDirs) syncDirectory(dir);
+  for (const { source } of orphanCandidates) {
+    unlinkSync(source);
+    syncDirectory(dirname(source));
+    console.error(`${source}: removed an unpublished create event`);
+  }
+  for (const [dir, children] of emptyCreateDirs) {
+    for (const child of children) rmdirSync(child);
+    rmdirSync(dir);
     console.error(`${dir}: removed an uncreated instance`);
   }
   root = dataRoot;
@@ -310,24 +375,30 @@ function freeLabel(seriesId: string, label: string): string {
 // A new instance starts empty. Its creator is recorded separately from its series owner.
 export function createInstance(seriesId: string, label: string, by: string): Instance {
   const name = freeLabel(seriesId, label), id = newId(), stage = join(root, '.tmp', id), dir = instanceDir(id), meta = { label: name, series: seriesId };
-  const book = seriesDir(seriesId), source = eventsFile(book, id);
+  const book = seriesDir(seriesId), source = eventsFile(book, id), events = dirname(dirname(source)), scratch = dirname(stage);
   if (!existsSync(book)) startMessageStore(book);
   messagesAt(book);
+  mkdirSync(scratch, { recursive: true });
+  mkdirSync(stage);
+  const create = jsonLines([{ seq: 1, at: new Date().toISOString(), by, op: 'create' }]);
   try {
-    mkdirSync(join(stage, 'upload'), { recursive: true });
-    mkdirSync(join(stage, 'working'));
-    replaceReadOnly(join(stage, 'instance.json'), JSON.stringify(meta));
-    replaceReadOnly(join(stage, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [] }, null, 1));
-    mkdirSync(dirname(source), { recursive: true, mode: 0o700 });
-    const create = { seq: 1, at: new Date().toISOString(), by, op: 'create' };
-    replaceFile(source, jsonLines([create]));
-    new Projection(join(stage, 'log.jsonl'), [create]).sync();
-    renameSync(stage, dir);
+    for (const name of createFolders) mkdirSync(join(stage, name));
+    writeFileSync(join(stage, 'instance.json'), JSON.stringify(meta), { mode: 0o444, flush: true });
+    writeFileSync(join(stage, 'screen.json'), initialScreen, { mode: 0o444, flush: true });
+    writeFileSync(join(stage, 'log.jsonl'), create, { mode: 0o600, flush: true });
+    mkdirSync(events, { recursive: true, mode: 0o700 });
+    mkdirSync(dirname(source), { mode: 0o700 });
+    // Make the scratch proof and all parent links durable before publishing a canonical event.
+    for (const path of [stage, scratch, events, book, dirname(book), realpathSync(root)]) syncDirectory(path);
   } catch (e) {
     wipe(Buffer.from(stage));
-    wipe(Buffer.from(dirname(source)));
     throw e;
   }
+  // Once the source rename can have happened, leave its staging proof on failure.
+  replaceFile(source, create, true);
+  renameSync(stage, dir);
+  syncDirectory(dirname(dir));
+  syncDirectory(scratch);
   index.set(id, meta);
   const inst = new Instance(dir);
   inst.syncLog();

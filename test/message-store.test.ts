@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test, type TestContext } from 'node:test';
@@ -68,6 +68,104 @@ test('recovery uses a complete canonical append, not stale, forged or missing pr
   assert.deepEqual(readEntries(notesFile(dir)), [note, settled]);
 });
 
+function interruptedCreate(root: string, dir: string) {
+  const id = '0123456789ab', stage = join(root, '.tmp', id), dest = join(root, 'instances', id);
+  const source = eventsFile(dir, id), create = { seq: 1, at, by, op: 'create' };
+  mkdirSync(join(stage, 'upload'), { recursive: true });
+  mkdirSync(join(stage, 'working'));
+  replaceReadOnly(join(stage, 'instance.json'), JSON.stringify({ label: 'Interrupted', series: 's' }));
+  replaceReadOnly(join(stage, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [] }, null, 1));
+  mkdirSync(dirname(source), { recursive: true });
+  writeFileSync(source, jsonLines([create]), { flush: true });
+  const fd = openSync(dirname(source), 'r');
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+  return { id, stage, dest, source, create };
+}
+
+function snapshot(root: string) {
+  return readdirSync(root, { recursive: true, withFileTypes: true }).map(d => {
+    const path = join(d.parentPath, d.name);
+    return [path, d.isFile() ? readFileSync(path) : null];
+  });
+}
+
+test('startup recovers after the first create event is durable but the instance is not published', t => {
+  const { root, dir, inst } = fixture(t);
+  const { id, stage, dest, source, create } = interruptedCreate(root, dir);
+  assert.equal(existsSync(dest), false);
+  const accepted = inst.append(by, 'comment', { text: 'Established conversation' });
+  let checked = false;
+  openStore(root, () => {
+    assert.deepEqual(readEntries(source), [create]);
+    checked = true;
+  });
+  assert.ok(checked);
+  assert.equal(existsSync(source), false);
+  assert.equal(existsSync(dest), false);
+  assert.throws(() => instance(id), /no instance/);
+  rmSync(stage, { recursive: true }); // Server startup clears scratch after openStore.
+  openStore(root);
+  assert.deepEqual(instance(inst.id).log, inst.log);
+  assert.deepEqual(readEntries(join(inst.dir, 'log.jsonl')).at(-1), accepted);
+  assert.equal(createInstance('s', 'Interrupted', by).label, 'Interrupted');
+});
+
+test('an actual create interrupted at the publication rename leaves recoverable staging', t => {
+  const { root, dir } = fixture(t);
+  const cut = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import fs from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    import { createInstance, openStore } from ${JSON.stringify(new URL('../src/store.ts', import.meta.url).href)};
+    const root = ${JSON.stringify(root)}, rename = fs.renameSync;
+    fs.renameSync = (from, to) => {
+      if (to.startsWith(root + '/instances/')) process.exit(75);
+      return rename(from, to);
+    };
+    syncBuiltinESMExports();
+    openStore(root);
+    createInstance('s', 'Interrupted', ${JSON.stringify(by)});
+  `], { encoding: 'utf8', timeout: 5000 });
+  assert.equal(cut.status, 75, cut.stderr);
+  const [id] = readdirSync(join(root, '.tmp')), source = eventsFile(dir, id);
+  assert.equal(readEntries(source)[0].op, 'create');
+  openStore(root);
+  assert.equal(existsSync(source), false);
+  assert.throws(() => instance(id), /no instance/);
+});
+
+for (const problem of ['later event', 'torn canonical tail', 'linked source', 'linked scratch', 'private working tree',
+  'git history', 'projected comment', 'anchored message', 'occupied destination', 'unrelated bad history']) {
+  test(`startup leaves a staged first create untouched with ${problem}`, t => {
+    const { root, dir, inst } = fixture(t);
+    const { id, stage, dest, source, create } = interruptedCreate(root, dir);
+    if (problem === 'later event') appendFileSync(source, jsonLines([{ seq: 2, at, by, op: 'run' }]));
+    if (problem === 'torn canonical tail') appendFileSync(source, '{"seq":2');
+    if (problem === 'linked source') {
+      rmSync(source);
+      symlinkSync(eventsFile(dir, inst.id), source);
+    }
+    if (problem === 'linked scratch') {
+      const scratch = dirname(stage), elsewhere = scratch + '-elsewhere';
+      renameSync(scratch, elsewhere);
+      symlinkSync(elsewhere, scratch);
+    }
+    if (problem === 'private working tree') writeFileSync(join(stage, 'working', 'private'), 'keep');
+    if (problem === 'git history') mkdirSync(join(stage, '.git'));
+    const comment = { seq: 2, at, by, op: 'comment', thread: 'c2', text: 'Do not lose this' };
+    if (problem === 'projected comment') writeFileSync(join(stage, 'log.jsonl'), jsonLines([create, comment]));
+    if (problem === 'anchored message') appendFileSync(messagesFile(dir), jsonLines([storedMessage(1, { instance: id }, comment)]));
+    if (problem === 'occupied destination') mkdirSync(dest);
+    if (problem === 'unrelated bad history') {
+      const bad = createInstance('z', 'Other book', by);
+      appendFileSync(eventsFile(seriesDir('z'), bad.id), jsonLines([{ seq: 3, at, by, op: 'run' }]));
+    }
+    const before = snapshot(root);
+    assert.throws(() => openStore(root, () => assert.fail('backup must wait for validation')),
+      /instance\.json|unknown instance|torn last line|invalid instance sequence/);
+    assert.deepEqual(snapshot(root), before);
+  });
+}
+
 test('startup rolls back torn canonical tails and leaves uncommitted creates alone', t => {
   const { dir, root, inst } = fixture(t), source = messagesFile(dir);
   const accepted = inst.append(by, 'comment', { text: 'Accepted' });
@@ -98,6 +196,7 @@ test('startup rolls back torn canonical tails and leaves uncommitted creates alo
 for (const [problem, diagnostic] of [
   ['events', /invalid instance sequence/], ['messages', /invalid JSONL/], ['screen', /screen\.json/], ['decision reference', /invalid request decision reference/],
   ['missing metadata', /instance\.json|unknown instance/], ['orphan event stream', /instance\.json|unknown instance/],
+  ['metadata and source both missing', /instance\.json: no instance metadata; folder is not empty/],
 ] as const) {
   test(`startup refuses ${problem} before disk changes or backup`, t => {
     const { root, dir, inst } = fixture(t);
@@ -107,8 +206,7 @@ for (const [problem, diagnostic] of [
     writeFileSync(log, jsonLines([inst.log[0]]));
     rmSync(notesFile(dir));
     const orphan = join(root, 'instances', 'uncreated');
-    mkdirSync(orphan);
-    writeFileSync(join(orphan, 'keep'), 'uncreated data');
+    mkdirSync(join(orphan, 'upload'), { recursive: true });
     const hole = createInstance('s', 'Cut deletion', by);
     const privateComment = hole.append(by, 'comment', { text: 'Not purged yet' });
     writeFileSync(eventsFile(dir, hole.id), jsonLines([{ seq: privateComment.seq + 1, at, by, op: 'delete' }]));
@@ -129,13 +227,15 @@ for (const [problem, diagnostic] of [
       rmSync(join(later.dir, 'instance.json'));
     }
     if (problem === 'orphan event stream') rmSync(join(later.dir, 'instance.json'));
-    const snapshot = () => readdirSync(root, { recursive: true, withFileTypes: true }).map(d => {
-      const file = join(d.parentPath, d.name);
-      return [file, d.isFile() ? readFileSync(file) : null];
-    });
-    const before = snapshot();
+    if (problem === 'metadata and source both missing') {
+      rmSync(join(later.dir, 'instance.json'));
+      rmSync(eventsFile(badDir, later.id));
+      mkdirSync(join(later.dir, '.git'));
+      writeFileSync(join(later.dir, 'working', 'private'), 'keep');
+    }
+    const before = snapshot(root);
     assert.throws(() => openStore(root, () => assert.fail('backup must wait for validation')), diagnostic);
-    assert.deepEqual(snapshot(), before);
+    assert.deepEqual(snapshot(root), before);
   });
 }
 
