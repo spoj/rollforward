@@ -392,7 +392,7 @@ test('disable revokes even empty owned series and enabling never restores old co
 });
 
 test('run-read notes disappear, quiet answers wait, and agent asks and notes keep their reply lifecycle', () => {
-  const source = readFileSync('src/server.ts', 'utf8');
+  const source = readFileSync('src/server.ts', 'utf8'), messages = readFileSync('src/messages.ts', 'utf8');
   const log = [
     { seq: 1, op: 'create', by: colleague },
     { seq: 2, op: 'comment', by: colleague },
@@ -403,7 +403,9 @@ test('run-read notes disappear, quiet answers wait, and agent asks and notes kee
     { seq: 7, op: 'comment', by: colleague },
   ];
   const inst = { id: 'i', seriesId: 's', doc: { status: 'open' }, copied: 0, log };
-  const waits = runInNewContext(stripTypeScriptTypes(source.slice(source.indexOf('function waits('), source.indexOf('\nfunction asked('))) + '\nwaits', {
+  const code = messages.slice(messages.indexOf('function waitsOn('), messages.indexOf('\n// notes/:'))
+    + '\n' + source.slice(source.indexOf('function waits('), source.indexOf('\nfunction asked('));
+  const waits = runInNewContext(stripTypeScriptTypes(code) + '\nwaits', {
     ownerOf: () => ({ by: alice }), seen: () => ({ at: {} }), active: new Map(),
     isPerson: e => e.by.includes('@'), answered: () => false,
   });

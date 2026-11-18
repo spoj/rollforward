@@ -6,7 +6,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { agentsFile, closedBefore, createInstance, keep, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, instancesBySeries, isPerson, labels, newId, openFile, openStore, readFile, folderName, seriesDir, type Entry, type Instance } from './store.ts';
+import { agentsFile, closedBefore, createInstance, keep, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, instancesBySeries, labels, newId, openFile, openStore, readFile, folderName, seriesDir, type Entry, type Instance } from './store.ts';
 import { AGENT, commit, committed, refused } from './git.ts';
 import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
@@ -26,8 +26,8 @@ import { offer } from './connections/graph.ts';
 import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, prune, startIndexing, track } from './indexes.ts';
 import { find, killTree, sample, startOf, type Monitor, type Sandbox } from './monitor.ts';
-import { addNote, notes, saveSeriesSettings, seriesSettings, type SeriesSettings } from './series.ts';
-import { answered, commentAt } from './messages.ts';
+import { saveSeriesSettings, seriesSettings, type SeriesSettings } from './series.ts';
+import { commentAt, isPerson, notes, openNotes, post, waitsOn } from './messages.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
 import { active, archived, byToken, cancelWake, cancelWakes, closed, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, queued, remove, retireSeries, resolveFor, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesByTarget, wakeWith, weekly, wakeCheckStatus, wakeCheckView, reads, CUT, type Active, type Request } from './waker.ts';
 
@@ -219,18 +219,10 @@ function watched(me: Me, id: string, site: string): { browsers: Browsers; id: st
   return { browsers: a!.browsers!, id: b };
 }
 
-// Unanswered asks wait on their named person or the current owner; colleagues' unread notes wait on the owner, `by` where the caller
-// has its series' settings already.
 function waits(inst: Instance, by?: string): { who: string; e: Entry }[] {
   if (inst.doc.status !== 'open') return [];
   const owner = by ?? ownerOf(inst).by;
-  const read = Math.max(inst.copied, seen(owner).at[inst.id] ?? 0, active.get(inst.seriesId)?.inst === inst ? active.get(inst.seriesId)!.seen : 0,
-    ...inst.log.filter(e => e.op === 'done').map(e => (e.seen as number | undefined) ?? 0),
-    inst.log.findLast(e => e.by === owner && ['create', 'comment', 'upload', 'attach', 'signoff', 'reject', 'react', 'rename', 'interrupt', 'promote'].includes(e.op))?.seq ?? 0);
-  return inst.log.filter(e => e.seq > inst.copied && (e.by === 'agent'
-    ? e.op === 'comment' && (e.ask || e.note) && !answered(inst.log, e)
-    : e.seq > read && e.by !== owner && isPerson(e) && ['create', 'comment', 'upload'].includes(e.op)))
-    .map(e => ({ who: e.by === 'agent' ? (e.to as string | undefined) ?? owner : owner, e })).filter(({ who }) => !!who);
+  return waitsOn(inst, owner, seen(owner).at[inst.id] ?? 0, active.get(inst.seriesId)?.inst === inst ? active.get(inst.seriesId)!.seen : 0);
 }
 
 function asked(r: Request): string | null {
@@ -321,7 +313,7 @@ function listing(me: Me) {
       const settings = seriesSettings(seriesDir(sid)), { owner, consent, epoch, since } = settings, person = owner && asPerson(owner, us[owner]);
       return {
         id: sid, name: s.name, archived: !!s.archived, single: !!s.single, owner: owner ?? null, ownerUnavailable: !person || !canSee(person, w), epoch, since, consent: consent ?? null,
-        wakes: wakesFor(sid), fired: w8.fired[sid] ?? null, notes: notes(seriesDir(sid)).filter(n => !n.settled).length,
+        wakes: wakesFor(sid), fired: w8.fired[sid] ?? null, notes: openNotes(notes(seriesDir(sid))).length,
         requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r, who: asked(r) })),
         instances: instancesOf(sid).map(i => summary(i, me, w8, settings, wakesFor)),
       };
@@ -1114,11 +1106,11 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     }
     if (action === 'notes' && req.method === 'GET') return send(res, 200, notes(book));
     if (action === 'notes' && req.method === 'POST') {
-      const { text, files = [], how, thread } = payload, from = run && { run: run.n, runner: run.runner };
+      const { text, files = [], how, thread } = payload;
       if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a note has text');
       if (!other) {
         for (const f of files) if (!(typeof f === 'string' && /^files\/[^./][^/]*$/.test(f) && existsSync(join(book, 'notes', f)))) throw new HttpError(400, `no attachment ${f}`);
-        const e = addNote(book, by, 'note', { text: text.trim(), ...(files.length && { files }), ...(run && { ...from, see: { inst: run.inst.id, label: run.inst.label, ...(run.thread && { thread: run.thread }) } }) });
+        const e = post({ op: 'note', book, by, text, files, run });
         noted(id);
         return send(res, 200, run ? `noted n${e.seq} on ${named(t, id)}, which its runs read` : { id: `n${e.seq}` });
       }
@@ -1129,7 +1121,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       if (run ? run.inst.seriesId !== id : !(canManage(me, t.workspaces[s.workspace]) || seriesSettings(book).owner === by))
         throw new HttpError(403, run ? "you settle your own series' notes" : "the series owner, the workspace's owners and admins settle its notes");
       if (thread != null && !run?.inst.threads().includes(thread)) throw new HttpError(400, `no thread ${thread} in ${run?.inst.label ?? 'your instance'}`);
-      addNote(book, by, how, { on: n.seq, text: text.trim(), ...(run && { ...from, see: { inst: run.inst.id, label: run.inst.label, ...(thread != null && { thread }) } }) });
+      post({ op: how, book, by, text, on: n, thread, run });
       return send(res, 200, run ? `${other} ${how === 'taken' ? 'taken' : 'set aside'}` : 'ok');
     }
     if (req.method === 'POST') return inOrder(id, async () => {
@@ -1346,13 +1338,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // Another instance's run leaves a non-executing note with immutable execution provenance.
     const away = run && run.inst !== inst;
     if (away && (ask || to)) throw new HttpError(400, 'you ask and propose only in your own instance: rf ask and rf propose');
-    const said = inst.append(by, 'comment', {
-      ...(under ? { thread: under.thread, parent: under.seq } : { thread: `c${inst.log.length + 1}`, item: item ?? null, ref: ref ?? null }), text: text.trim(), ...(files.length && { files }),
-      ...(run && { run: run.n, ...(ask && { ask, ...(who && { to: who }) }) }), ...(quiet && { quiet: true }),
-      ...(away && { runner: run.runner, see: { inst: run.inst.id, label: run.inst.label, ...(run.thread && { thread: run.thread }) }, note: true }),
-    });
+    const said = post({ op: 'comment', inst, by, text, under, item, ref, files, run, ask, to: who, quiet });
     if (away) {
-      run.inst.append('agent', 'said', { run: run.n, inst: inst.id, label: inst.label, seq: said.seq, thread: said.thread });
       if (!standing(inst, said)!.starts && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, AGENT, `Note in ${said.thread}`).catch(err => inst.append('server', 'commit', { cause: said.seq, error: err.message }));
       return send(res, 200, `said c${said.seq} in ${named(t, inst.seriesId)}/${inst.label}${under ? `, under ${thread}` : ''}, a note for its series owner`);
     }
@@ -1440,7 +1427,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
         if (!ask) throw new HttpError(409, `${thread} is no question or proposal of yours still waiting; those that are: ${inst.asking().map(e => `c${e.seq}`).join(', ') || 'none'}`);
         if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a withdrawal says why');
         if (see !== undefined && !at) throw new HttpError(400, `no comment ${see}`);
-        inst.append('agent', 'withdraw', { thread: ask.thread, on: ask.seq, text: text.trim(), ...(at && { see: at.seq }), run: run.n });
+        post({ op: 'withdraw', inst, by: 'agent', on: ask, text, see: at, run });
         return `withdrew ${thread}`;
       }
       if (action === 'interrupt') {

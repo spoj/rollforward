@@ -580,7 +580,7 @@ test('recovery clears a deletion interrupted before its files and a task\'s lock
 });
 
 test("a run's first message lists its series' open notes, each with who left it and its files, which its runs read at <series>/.notes/", async () => {
-  const { addNote, notes } = await import('../src/series.ts'), book = join(tmp, 'series', 's1');
+  const { addNote, notes } = await import('../src/messages.ts'), book = join(tmp, 'series', 's1');
   addNote(book, alice, 'note', { text: 'use the new rate', files: ['files/rates.csv'] });
   addNote(book, 'agent', 'note', { text: 'the bank moved', run: 3, runner: alice, see: { inst: oct.id, label: oct.label } });
   const old = addNote(book, 'bob@demo.test', 'note', { text: 'old news' });
@@ -592,7 +592,7 @@ test("a run's first message lists its series' open notes, each with who left it 
 });
 
 test("a note reaches a run going at once, though it starts none: another person's comment, and a note left on its series", async () => {
-  const { addNote } = await import('../src/series.ts'), going = make('s8', 'going'), steered: string[] = [];
+  const { addNote } = await import('../src/messages.ts'), going = make('s8', 'going'), steered: string[] = [];
   const a = { inst: going, n: 1, authority: authority(going), runner: alice, workspace: 'w', view: view(going), sent: going.log.at(-1)!.seq, noted: 0, texts: new Map(), run: { steer: async (t: string) => void steered.push(t) } } as unknown as Active;
   active.set('s8', a);
   going.append('bob@demo.test', 'comment', { thread: 'c9', text: 'the rate moved' });

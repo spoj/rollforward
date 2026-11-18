@@ -15,7 +15,7 @@ const entra = await idp();
 Object.assign(process.env, entra.env('http://127.0.0.1:1'));
 const { active, byToken, fire, message, retireSeries, setWake, standing, startWith, kick, view, wakes } = await import('../src/waker.ts');
 const { authority } = await import('../src/logins.ts');
-const { addNote, notes } = await import('../src/series.ts');
+const { addNote, answered, binds, commentAt, notes, openNotes, post, waitsOn } = await import('../src/messages.ts');
 const { keepSignIn } = await import('../src/entra.ts');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-standing-')), alice = 'alice@demo.test', bob = 'bob@demo.test', carol = 'carol@demo.test';
 initSystem(tmp);
@@ -203,4 +203,70 @@ test('withdrawn, answered, plain and pre-copy asks do not grant answer standing'
   copy.append(alice, 'close', { accepted: [`c${oldAsk.seq}`], commit: '0'.repeat(40) });
   copy.append(alice, 'duplicate', { from: 'old', logins: [] });
   assert.deepEqual(standing(copy, copy.append(bob, 'comment', { thread: 'c2', parent: oldAsk.seq, text: 'Change it.' })), { word: 'note', starts: false });
+});
+
+test('c845 to c846 and c857 to c861 and c870 preserve reply links and wait cutoffs after a legacy named answer', () => {
+  const i = make(false);
+  const waits = () => waitsOn(i, alice, 1, 0).map(({ who, e }) => [who, e.seq]);
+  const legacy = i.append('agent', 'comment', { thread: 't1', ask: true, to: bob, text: 'Which sample?' });
+  assert.deepEqual(waits(), [[bob, legacy.seq]]);
+  const oldReply = i.append(bob, 'comment', { thread: 't1', text: 'The first.' });
+  assert.deepEqual(standing(i, oldReply), { word: 'answer', starts: true });
+  i.append('server', 'done', { run: 1, seen: oldReply.seq });
+
+  const next = (seq: number) => { while (i.log.length + 1 < seq) i.append('server', 'screen', { rev: 1 }); };
+  const run = { inst: i, n: 2, runner: alice };
+  next(845);
+  const c845 = post({ op: 'comment', inst: i, by: bob, text: '  Is the sample ready? ', files: [], quiet: true });
+  const c846 = post({ op: 'comment', inst: i, by: 'agent', under: commentAt(i.log, 'c845'), text: 'Yes.', files: [], quiet: false, run });
+  assert.deepEqual([c845.thread, c845.item, c845.ref, c845.text, c845.quiet], ['c845', null, null, 'Is the sample ready?', true]);
+  assert.deepEqual([c846.seq, c846.thread, c846.parent, c846.item, c846.ref, c846.run], [846, 'c845', 845, undefined, undefined, 2]);
+  assert.equal(answered(i.log, c845), true);
+  assert.deepEqual(waits(), [[alice, 845]], "an agent reply does not acknowledge the owner's unread note");
+
+  next(857);
+  const c857 = post({ op: 'comment', inst: i, by: 'agent', text: 'Which label?', files: [], quiet: false, run, ask: 'question', to: alice });
+  assert.deepEqual([c857.thread, c857.ask, c857.to], ['c857', 'question', alice]);
+  assert.deepEqual(waits(), [[alice, 845], [alice, 857]]);
+  assert.deepEqual(waitsOn(i, alice, 1, 845).map(({ e }) => e.seq), [857], 'reading the note in a run does not answer the ask');
+  next(861);
+  const c861 = post({ op: 'comment', inst: i, by: alice, under: commentAt(i.log, 'c857'), text: 'Amber.', files: [], quiet: false });
+  next(870);
+  const c870 = post({ op: 'comment', inst: i, by: alice, under: commentAt(i.log, 'c857'), text: 'Use the short label.', files: [], quiet: true });
+  assert.deepEqual([c861, c870].map(e => [e.seq, e.thread, e.parent]), [[861, 'c857', 857], [870, 'c857', 857]]);
+  assert.equal(answered(i.log, c857, 860), false);
+  assert.equal(answered(i.log, c857, 861), true);
+  assert.equal(binds(i, c861), c857);
+  assert.equal(binds(i, c870), undefined);
+  assert.deepEqual(standing(i, c861), { word: 'runner', starts: true });
+  assert.deepEqual(standing(i, c870), { word: 'runner', starts: false });
+  assert.deepEqual(waits(), []);
+});
+
+test('n5 and n6 are listed until taken by n7 and n8, after earlier settled rows', () => {
+  const i = make(false), book = i.series();
+  const n1 = addNote(book, bob, 'note', { text: 'First sample.' }), n2 = addNote(book, bob, 'note', { text: 'Second sample.' });
+  const n3 = addNote(book, alice, 'aside', { on: n1.seq, text: 'Not this one.' });
+  const n4 = addNote(book, alice, 'taken', { on: n2.seq, text: 'Used it.' });
+  post({ op: 'comment', inst: i, by: alice, text: 'Review the notes.', files: [], quiet: true });
+  const run = { inst: i, n: 2, runner: alice, thread: 'c2' };
+  const open = () => openNotes(notes(book));
+  const first = () => message(i, 2, [], true, open());
+  const n5 = post({ op: 'note', book, by: bob, text: '  A new sample. ', files: ['files/sample.txt'] });
+  const n6 = post({ op: 'note', book, by: 'agent', text: 'Use the amber label.', files: [], run });
+  assert.deepEqual(open().map(n => n.seq), [5, 6]);
+  assert.equal(first().split(' Open notes on the series: ')[1],
+    `n5, from ${bob} <${bob}> at ${n5.at}, "A new sample.", ../.notes/files/sample.txt; `
+    + `n6, from the agent of Acme/${tree().series[i.seriesId].name}/${i.label}, run 2, for ${alice} <${alice}> at ${n6.at}, "Use the amber label.". New log entries:\n`);
+  const n7 = post({ op: 'taken', book, by: 'agent', on: n5, text: '  Read it. ', run, thread: 'c2' });
+  assert.deepEqual(open().map(n => n.seq), [6]);
+  const n8 = post({ op: 'taken', book, by: 'agent', on: n6, text: 'Used the label.', run });
+  assert.deepEqual([n7, n8].map(e => [e.seq, e.op, e.on, e.text]), [[7, 'taken', 5, 'Read it.'], [8, 'taken', 6, 'Used the label.']]);
+  assert.deepEqual([n6.see, n7.see, n8.see], [
+    { inst: i.id, label: i.label, thread: 'c2' },
+    { inst: i.id, label: i.label, thread: 'c2' },
+    { inst: i.id, label: i.label },
+  ]);
+  assert.deepEqual(notes(book).map(n => [n.seq, n.settled]), [[1, n3], [2, n4], [5, n7], [6, n8]]);
+  assert.doesNotMatch(first(), /Open notes on the series:/);
 });

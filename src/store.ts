@@ -227,10 +227,6 @@ export function keep(dir: string, folder: string, name: string, tmp: string): st
   return file;
 }
 
-export function isPerson(e: Entry): boolean {
-  return e.by !== 'server' && e.by !== 'agent';
-}
-
 function setMeta(id: string, meta: Meta) {
   replaceReadOnly(join(instanceDir(id), 'instance.json'), JSON.stringify(meta));
   index.set(id, meta);

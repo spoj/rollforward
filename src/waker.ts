@@ -3,14 +3,14 @@ import { freemem } from 'node:os';
 import { closeSync, existsSync, mkdirSync, readFileSync, readSync, realpathSync, rmSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
-import { agentsFile, closedBefore, createInstance, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, seriesDir, type Entry, type Instance } from './store.ts';
+import { agentsFile, closedBefore, createInstance, HttpError, instance, instanceDir, instances, labels, newId, openFile, seriesDir, type Entry, type Instance } from './store.ts';
 import { pylib, startRun, type Run, type TurnEnd, type View } from './runner.ts';
 import type { JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { prepare, type Snapshot } from './indexes.ts';
 import { act, canSee, changes, readJson, rfDir, tree, type Tree, writeJson } from './system.ts';
 import { asPerson, can, users } from './auth.ts';
 import { websitesOf, type Browsers } from './browsers.ts';
-import { notes, saveSeriesSettings, seriesSettings, type Authority, type Note } from './series.ts';
+import { saveSeriesSettings, seriesSettings, type Authority } from './series.ts';
 import { pushed, skills } from './skills.ts';
 import { AGENT, commit, committed, forget } from './git.ts';
 import { authority, logins, ownerOf, runnerAt, sameAuthority } from './logins.ts';
@@ -18,7 +18,7 @@ import { confirm } from './entra.ts';
 import { pruneGrants } from './grants.ts';
 import { abortCalls, connections, drainCalls, hasCalls, loginOf, types } from './connections.ts';
 import { runWakeCheck } from './wake-check.ts';
-import { answered } from './messages.ts';
+import { binds, isPerson, notes, openNotes, type Note } from './messages.ts';
 
 // What runs when: one run at a time per series, at most RF_MAX_RUNS at once, started by people's acts and by wakes.
 const LIMIT_MS = Number(process.env.RF_LIMIT_MIN ?? 120) * 60_000;
@@ -77,8 +77,7 @@ export function standing(inst: Instance, e: Entry, upto = inst.log.length): Stan
   const lease = e.authority as Authority | undefined;
   const stale = e.op === 'wake' ? !lease || !sameAuthority(inst, lease) : epoch !== r.epoch;
   if ((e.seq < line && e.seq <= readAt(inst, line)) || (stale && e.seq <= seenBefore(inst))) return undefined;
-  const rawAsk = e.op === 'upload' || !e.thread ? undefined : e.parent ?? e.on ? inst.log[(e.parent ?? e.on) as number - 1] : inst.log.findLast(x => x.seq < e.seq && x.op === 'comment' && x.thread === e.thread && x.by === 'agent');
-  const ask = rawAsk?.op === 'comment' && rawAsk.by === 'agent' && !!rawAsk.ask && rawAsk.seq > inst.copied && rawAsk.seq < e.seq && rawAsk.thread === e.thread && (rawAsk.ask !== 'proposal' || e.op !== 'comment') && !answered(inst.log, rawAsk, e.seq - 1) ? rawAsk : undefined;
+  const ask = binds(inst, e);
   const word = e.seq < line || e.note || stale ? 'note'
     : e.op !== 'wake' ? (e.by === owner ? 'runner' : ask?.to === e.by ? 'answer' : 'note')
     : lease && (e.recovery || e.initiator === lease.owner) && (!e.inst || instance(e.inst as string).seriesId === inst.seriesId) ? 'runner' : 'note';
@@ -179,7 +178,7 @@ export function kick(inst: Instance) {
 
 function flush(a: Active) {
   if (a.stopped) return;
-  const entries = a.inst.log.filter(e => e.seq > a.sent && (e.by !== 'agent' || e.note)), fresh = notes(a.inst.series()).filter(e => e.seq > a.noted && !e.settled);
+  const entries = a.inst.log.filter(e => e.seq > a.sent && (e.by !== 'agent' || e.note)), fresh = openNotes(notes(a.inst.series()).filter(e => e.seq > a.noted));
   // What it is told of reaches it at once, notes too.
   if (!entries.some(told) && !fresh.length) return;
   const text = message(a.inst, a.n, entries, false, fresh);
@@ -240,7 +239,7 @@ async function begin(inst: Instance, tried: Set<Instance>) {
   if (!sees(inst)) return bail(inst, tried);
   const n = inst.log.filter(e => e.op === 'run').length + 1;
   const entries = inst.log.filter(e => e.seq > seen && (e.by !== 'agent' || e.note)), left = notes(inst.series());
-  const text = message(inst, n, entries, true, left.filter(e => !e.settled), lease);
+  const text = message(inst, n, entries, true, openNotes(left), lease);
   // Authority and carried code are captured before the process starts.
   // The versions live as its Pi starts, which it uses to its end.
   const live = skills().map(s => ({ ...s, dir: realpathSync(s.dir) }));

@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createInstance, instance, keep, openFile, openStore, safeName } from '../src/store.ts';
 import { commit, forget } from '../src/git.ts';
-import { addNote, notes } from '../src/series.ts';
+import { addNote, notes } from '../src/messages.ts';
 import { act, initSystem } from '../src/system.ts';
 
 const alex = { email: 'alex', name: 'Alex' };
