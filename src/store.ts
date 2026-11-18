@@ -172,17 +172,20 @@ export function instances(seriesId: string): Instance[] {
   return labels(seriesId).map(l => instance(l.id));
 }
 
-// Each series' instances as `instances` gives them, from one pass over the index, for what lists many series at once; an instance
-// still loads only once its series is asked for.
+// Each series' instances as `instances` gives them, from one pass over the index, for what lists many series at once; a series'
+// are sorted, and load, only once it's asked for, as with `instances`, so a bad one fails only what asks for its series.
 export function instancesBySeries(): (seriesId: string) => Instance[] {
-  const by = new Map<string, { id: string; label: string }[]>();
+  const by = new Map<string, { id: string; label: string }[]>(), sorted = new Set<string>();
   for (const [id, m] of index) {
     const ls = by.get(m.series);
     if (ls) ls.push({ id, label: m.label });
     else by.set(m.series, [{ id, label: m.label }]);
   }
-  for (const ls of by.values()) ls.sort(byLabel);
-  return seriesId => (by.get(seriesId) ?? []).map(l => instance(l.id));
+  return seriesId => {
+    const ls = by.get(seriesId) ?? [];
+    if (!sorted.has(seriesId)) { ls.sort(byLabel); sorted.add(seriesId); }
+    return ls.map(l => instance(l.id));
+  };
 }
 
 // The closed instances of its series before it, by label: the examples it rolls forward from.
