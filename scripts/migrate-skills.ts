@@ -11,7 +11,8 @@ const instancePath = new RegExp(`^(?:\\.|\\.\\./${label}|\\.\\./\\.\\./${label}/
 const seriesPath = new RegExp(`^(?:\\.\\.|\\.\\./\\.\\./${label})$`);
 
 type Word = { start: number; end: number; value: string; dynamic: boolean };
-type Edit = { start: number; end: number; replacement: string };
+type Edit = { start: number; end: number; replacement: string; command: number; verbEnd: number };
+type Refuse = (start: number, end: number, reason?: string, form?: string) => void;
 
 // Arguments under the old argv parsers (4f5bec0:src/rf.ts), not the people's CLI. Preserve the spelling of
 // retained shell words; in particular, quotes aren't part of their argv and don't hide an rf option.
@@ -63,12 +64,14 @@ const shellExtension = new Set(['.sh', '.bash', '.zsh', '.ksh']);
 const shellFence = /^(?:sh|bash|shell|zsh|ksh)$/i;
 const dispatch = /^(?:sh|bash|zsh|ksh|dash|fish|env|sudo|xargs|eval|timeout|nice|nohup|source|time|node|busybox|parallel|find|ssh|su|runuser|setsid|trap|alias|\.)$/;
 const rfPath = /(?:^|\/)rf(?:\.ts)?$/;
-const removedInText = /(?:^|[^\w./-])(?:[\w./-]*\/)?rf(?:\.ts)?["'`]?[\t ,]+["'`]?(?:say|ask|propose|withdraw|note)(?![\w-])/m;
-const indirectInText = /(?:^|[^\w./-])(?:[\w./-]*\/)?rf(?:\.ts)?["'`]?[\t ]+["']?\$(?!\s|$)/m;
-const mention = (value: string) => removedInText.exec(value) ?? indirectInText.exec(value);
+const mention = /(?<![\w./-])(?:[\w./-]*\/)?rf(?:\.ts)?["'`]?(?:[\t ,]+["'`]?(?:say|ask|propose|withdraw|note)(?![\w-])|[\t ]+["']?\$(?!\s|$))/g;
+const localRf = 'shell-local rf definition; review this file manually';
+const signOff = '--sign-off is not a supported v0.7.9 option. For approval, use rf propose on v0.7.9 to migrate to rf comment . --propose TEXT; for information, use rf ask to migrate to --ask. No automatic mapping.';
+const signOffFlag = /^[ \t]+["'“‘]?--sign-off(?=$|[\s"'`”’=.,;:)])/u;
+const flagInProse = /^[ \t]+["'“‘]?--\w/;
 
 // Lex a deliberately small shell subset; no shell, interpreter, expansion or skill code is run.
-function shell(source: string, offset: number, edits: Edit[], refuse: (at: number) => void) {
+function shell(source: string, offset: number, edits: Edit[], refuse: Refuse, inline = false) {
   let i = 0, words: Word[] = [], incomplete = false, redirection = false, complex = false, spacedAfterRedirect = false;
   const raw = (w: Word) => source.slice(w.start, w.end);
   const pendingHere: { word: Word; stripTabs: boolean }[] = [];
@@ -88,23 +91,30 @@ function shell(source: string, offset: number, edits: Edit[], refuse: (at: numbe
     const from = exe?.start ?? end;
     if (exe?.value === 'case' && raw(exe) === exe.value) caseDepth++;
     if (exe?.value === 'esac' && raw(exe) === exe.value) caseDepth--;
-    if (runRf.has(exe?.value)) {
-      if (verb?.dynamic || !verb && separator === '(' || incomplete) refuse(offset + from);
+    if (exe?.value === 'function' && raw(exe) === exe.value && verb?.value === 'rf' || exe?.value === 'rf' && !verb && separator === '(') {
+      refuse(offset + from, offset + (verb ?? exe).end, localRf, 'rf');
+    } else if (runRf.has(exe?.value)) {
+      if (verb?.dynamic || !verb && separator === '(' || incomplete) refuse(offset + from, offset + (verb ?? exe).end, undefined, exe.value);
       else if (verb && legacy.has(verb.value)) {
         // The people CLI takes WORKSPACE/SERIES; a run resolves the path relative to its own instance.
         const peopleNote = exe.value === 'rf' && verb.value === 'note' && args.length && args.every(w => !w.dynamic) &&
           /^[^./\s-][^/]*\/[^./][^/]*$/.test(args[0].value) && !args.some(w => /^--(?:taken|aside|see)$/.test(w.value));
         if (!peopleNote) {
-          const replacement = complex || spacedAfterRedirect || inTest || caseDepth || redirectTo ? undefined : rewrite(verb.value, args, raw);
-          if (replacement === undefined) refuse(offset + from);
-          else edits.push({ start: offset + verb.start, end: offset + rest.at(-1)!.end, replacement });
+          const shortForm = inline && exe.value === 'rf' && (verb.value === 'ask' || verb.value === 'propose') &&
+            !source.slice(0, exe.start).trim() && !source.slice(verb.end).trim();
+          const replacement = exe.dynamic || complex || spacedAfterRedirect || inTest || caseDepth || redirectTo ? undefined :
+            shortForm ? `comment . --${verb.value}` : rewrite(verb.value, args, raw);
+          if (replacement === undefined) {
+            const reason = verb.value === 'ask' && args.some(w => /^--sign-off(?:=|$)/.test(w.value)) ? signOff : undefined;
+            refuse(offset + from, offset + verb.end, reason, `${exe.value} ${verb.value}`);
+          } else edits.push({ command: offset + from, verbEnd: offset + verb.end, start: offset + verb.start, end: offset + rest.at(-1)!.end, replacement });
         }
       }
     } else if (exe && (exe.dynamic && legacy.has(verb?.value) ||
         rfPath.test(exe.value) && (legacy.has(verb?.value) || verb?.dynamic) ||
         (complex || incomplete || inTest || exe.value === '$' || dispatch.test(basename(exe.value)) || exe.value === 'command' && verb?.value !== '-v' && verb?.value !== '-V') &&
-        (mention(source.slice(from, end)) || rest.slice(p + 1).some((w, j, tail) => rfPath.test(w.value) && (tail[j + 1]?.dynamic || legacy.has(tail[j + 1]?.value)))))) {
-      refuse(offset + from);
+        (source.slice(from, end).search(mention) >= 0 || rest.slice(p + 1).some((w, j, tail) => rfPath.test(w.value) && (tail[j + 1]?.dynamic || legacy.has(tail[j + 1]?.value)))))) {
+      refuse(offset + from, offset + end);
     }
     words = [];
     incomplete = redirection = complex = spacedAfterRedirect = false;
@@ -143,8 +153,8 @@ function shell(source: string, offset: number, edits: Edit[], refuse: (at: numbe
           if ((stripTabs ? text.replace(/^\t+/, '') : text) === word.value) break;
         }
         // An unquoted heredoc expands commands, so don't silently miss an rf buried in one.
-        const found = raw(word) === word.value && mention(source.slice(start, i));
-        if (found) refuse(offset + start + found.index);
+        if (raw(word) === word.value) for (const found of source.slice(start, i).matchAll(mention))
+          refuse(offset + start + found.index, offset + start + found.index + found[0].length);
       }
       continue;
     }
@@ -183,8 +193,8 @@ function shell(source: string, offset: number, edits: Edit[], refuse: (at: numbe
       i++;
     }
     const word: Word = { start, end: i, value, dynamic };
-    const found = hidden && mention(raw(word));
-    if (found) refuse(offset + start + found.index);
+    if (hidden) for (const found of raw(word).matchAll(mention))
+      refuse(offset + start + found.index, offset + start + found.index + found[0].length);
     incomplete ||= !!quote;
     if (redirectTo) {
       if (redirectTo === '<<' || redirectTo === '<<-') pendingHere.push({ word, stripTabs: redirectTo === '<<-' });
@@ -197,22 +207,62 @@ function shell(source: string, offset: number, edits: Edit[], refuse: (at: numbe
   finish(i, '');
 }
 
-function convertFile(path: string, bytes: Buffer, refuse: (line: number) => void) {
+function convertFile(path: string, bytes: Buffer, refuse: (line: number) => void,
+    preview?: { path: string; report: (line: string) => void; patches: string[] }) {
   if (bytes.includes(0)) return bytes;
   let text: string;
   try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
   catch { return bytes; }
-  const edits: Edit[] = [];
-  const at = (n: number) => refuse(text.slice(0, n).split('\n').length);
+  const edits: Edit[] = [], lines = [0];
+  for (const newline of text.matchAll(/\n/g)) lines.push(newline.index + 1);
+  function lineAt(offset: number) {
+    let lo = 0, hi = lines.length;
+    while (lo + 1 < hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (lines[mid] <= offset) lo = mid;
+      else hi = mid;
+    }
+    return lo;
+  }
+  const occurrences = new Map<number, { form: string; decision: string }>();
+  function record(start: number, end: number, decision: string, form = '') {
+    if (!preview) return;
+    for (const hit of text.slice(start, end).matchAll(mention)) {
+      occurrences.set(start + hit.index, { form: hit[0], decision });
+      form = '';
+    }
+    if (form) occurrences.set(start, { form, decision });
+  }
+  record(0, text.length, 'unchanged: text, not a recognized run command');
+  let shellLocal = false;
+  const at: Refuse = (start, end, reason = 'not a supported static run command; review manually', form = 'rf command') => {
+    refuse(lineAt(start) + 1);
+    shellLocal ||= reason === localRf;
+    record(start, end, `refused: ${reason}`, form);
+  };
   const type = extname(path).toLowerCase();
   if (shellExtension.has(type) || /^#![^\n]*\b(?:sh|bash|dash|zsh|ksh)(?:\s|$)/.test(text)) shell(text, 0, edits, at);
   else if (type === '.md' || type === '.markdown') {
-    // Only code spans and fenced examples, not prose, links or the YAML description.
     const front = /^---\r?\n[\s\S]*?^---[ \t]*\r?\n/m.exec(text);
     let start = front?.index === 0 ? front[0].length : 0;
     const inline = (end: number) => {
-      for (const span of text.slice(start, end).matchAll(/(?<![\\`])(`+)(?!`)([\s\S]*?)(?<!`)\1(?!`)/g))
-        shell(span[2], start + span.index + span[1].length, edits, at);
+      let next = start;
+      // The end marker lets us check trailing prose as well as the prose before each span.
+      for (const span of text.slice(start, end).matchAll(/(?<![\\`])(`+)(?!`)([\s\S]*?)(?<!`)\1(?!`)|$/g)) {
+        const open = start + span.index;
+        for (const hit of text.slice(next, open).matchAll(mention)) {
+          const command = next + hit.index, verbEnd = command + hit[0].length, line = lineAt(command);
+          const prefix = text.slice(lines[line], command);
+          const suffix = text.slice(verbEnd, Math.min(open, lines[line + 1] ?? text.length));
+          const unknownAsk = /\bask$/.test(hit[0]) && signOffFlag.test(suffix);
+          const startsLine = /^[ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?["'“‘]?$/.test(prefix);
+          const hasShellArgs = flagInProse.test(suffix) || /^[ \t]+(?:["'“‘<]|-(?=\s|$))/.test(suffix);
+          if (unknownAsk || startsLine || hasShellArgs)
+            at(command, verbEnd, unknownAsk ? signOff : 'bare command-like text; use an explicit code span or review manually');
+        }
+        if (span[1]) shell(span[2], open + span[1].length, edits, at, true);
+        next = open + span[0].length;
+      }
     };
     const fence = /^ {0,3}(`{3,}|~{3,})([^\r\n]*)\r?$/gm;
     fence.lastIndex = start;
@@ -223,24 +273,67 @@ function convertFile(path: string, bytes: Buffer, refuse: (line: number) => void
       while ((close = fence.exec(text)) && !(close[1][0] === open[1][0] && close[1].length >= open[1].length && !close[2].trim())) { /* skip inner markers */ }
       const end = close?.index ?? text.length, code = text.slice(body, end);
       if (!tag || shellFence.test(tag)) shell(code, body, edits, at);
-      else for (const line of code.matchAll(/^.*$/gm)) if (mention(line[0])) at(body + line.index);
+      else for (const hit of code.matchAll(mention)) at(body + hit.index, body + hit.index + hit[0].length);
       start = close ? fence.lastIndex + 1 : text.length;
       if (!close) break;
     }
     inline(text.length);
-  } else if (/^(?:\.(?:py|js|ts|jsx|tsx|mjs|cjs|mts|cts|rb|pl|fish|lua|ps1|go|rs))$/.test(type) || text.startsWith('#!')) {
-    for (const line of text.matchAll(/^.*$/gm)) if (mention(line[0])) at(line.index);
+  } else {
+    const code = /^\.(?:py|js|ts|jsx|tsx|mjs|cjs|mts|cts|rb|pl|fish|lua|ps1|go|rs)$/.test(type) || text.startsWith('#!');
+    for (const hit of text.matchAll(mention)) {
+      const end = hit.index + hit[0].length, suffix = text.slice(end);
+      if (code || flagInProse.test(suffix)) at(hit.index, end, /\bask$/.test(hit[0]) && signOffFlag.test(suffix) ? signOff : undefined);
+    }
   }
-  if (!edits.length) return bytes;
+  if (preview) {
+    for (const { command, verbEnd } of edits)
+      record(command, verbEnd, shellLocal ? `unchanged: ${localRf}` : 'rewrite', text.slice(command, verbEnd));
+    for (const [offset, { form, decision }] of [...occurrences].sort(([a], [b]) => a - b)) {
+      const line = lineAt(offset);
+      preview.report(`Occurrence ${preview.path}:${line + 1}:${offset - lines[line] + 1} ${JSON.stringify(form)} — ${decision}`);
+    }
+  }
+  if (shellLocal || !edits.length) return bytes;
   let out = '', last = 0;
   for (const { start, end, replacement } of edits) { out += text.slice(last, start) + replacement; last = end; }
-  return Buffer.from(out + text.slice(last));
+  out += text.slice(last);
+  if (preview) {
+    // Zero-context unified patch (git apply --unidiff-zero): don't print unaffected lines.
+    const patch = ['a', 'b'].map(side => {
+      const path = `${side}/${preview.path}`;
+      return `${side === 'a' ? '---' : '+++'} ${/[ "\\]/.test(path) ? JSON.stringify(path) : path}`;
+    });
+    let shift = 0, lineShift = 0;
+    for (let i = 0; i < edits.length;) {
+      const first = lineAt(edits[i].start), newStart = lines[first] + shift;
+      let last = lineAt(edits[i].end - 1);
+      do {
+        const edit = edits[i++];
+        last = lineAt(edit.end - 1);
+        shift += edit.replacement.length - (edit.end - edit.start);
+      } while (i < edits.length && lineAt(edits[i].start) <= last + 1);
+      const end = lines[last + 1] ?? text.length, hunk = patch.length;
+      patch.push('');
+      const [before, after] = [text.slice(lines[first], end), out.slice(newStart, end + shift)].map((part, i) => {
+        const rows = part.split('\n'), prefix = i ? '+' : '-';
+        const terminated = rows.at(-1) === '';
+        if (terminated) rows.pop();
+        for (const row of rows) patch.push(prefix + row);
+        if (!terminated) patch.push('\\ No newline at end of file');
+        return rows.length;
+      });
+      patch[hunk] = `@@ -${first + 1},${before} +${first + 1 + lineShift},${after} @@`;
+      lineShift += after - before;
+    }
+    preview.patches.push(patch.join('\n'));
+  }
+  return Buffer.from(out);
 }
 
 type Item = { path: string; mode: number; bytes?: Buffer };
 type Version = { pointer: string; previous: string; dir: string; target: string; version: number; items: Item[] };
 
-export function planSkillMigration(root: string, progress?: (line: string) => void) {
+export function planSkillMigration(root: string, progress?: (line: string) => void, preview?: (line: string) => void) {
   const { dev } = lstatSync(root);
   function pathIs(path: string, kind: 'file' | 'directory', optional = false) {
     const st = lstatSync(path, { throwIfNoEntry: false });
@@ -251,7 +344,7 @@ export function planSkillMigration(root: string, progress?: (line: string) => vo
   }
   const skills = join(root, 'skills'), live = join(skills, 'live'), versions = join(skills, 'versions');
   const ids = pathIs(skills, 'directory', true) && pathIs(live, 'directory', true) ? readdirSync(live).sort() : [];
-  const plan: Version[] = [], problems = new Set<string>();
+  const plan: Version[] = [], problems = new Set<string>(), patches: string[] = [];
   let count = 0;
   for (const name of ids) {
     if (!id.test(name)) {
@@ -286,7 +379,8 @@ export function planSkillMigration(root: string, progress?: (line: string) => vo
         pathIs(file, 'file');
         const mode = lstatSync(file).mode & 0o7777;
         if (mode & 0o6000) bad();
-        const original = readFileSync(file), bytes = convertFile(rel, original, line => problems.add(`${name} ${rel}:${line}`));
+        const original = readFileSync(file), bytes = convertFile(rel, original, line => problems.add(`${name} ${rel}:${line}`),
+          preview && { path: `skills/versions/${name}/${prior}/${rel}`, report: preview, patches });
         changed ||= bytes !== original;
         items.push({ path: rel, bytes, mode });
       }
@@ -303,6 +397,7 @@ export function planSkillMigration(root: string, progress?: (line: string) => vo
     if (!Number.isSafeInteger(version)) bad();
     plan.push({ pointer, previous, dir: join(directory, String(version)), version, target: `../versions/${name}/${version}`, items });
   }
+  for (const patch of patches) preview?.(patch);
   if (problems.size) throw new Error([...problems].join('\n'));
   progress?.(`Skills: ${count} live, ${plan.length} to rewrite`);
   for (const v of plan) progress?.(`  ${basename(v.pointer)}: ${basename(v.previous)} -> ${v.version}`);
@@ -341,7 +436,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     if (flag !== '--check' || !data || rest.length) throw new Error('usage: node scripts/migrate-skills.ts --check DATA_ROOT');
     const root = resolve(data);
     if (realpathSync(root) !== root || !lstatSync(root).isDirectory()) throw new Error('expected a real data directory');
-    const plan = planSkillMigration(root, console.error);
+    const plan = planSkillMigration(root, console.error, console.error);
     let bytes = 0, entries = 0;
     for (const v of plan) {
       bytes += v.items.reduce((n, item) => n + (item.bytes?.length ?? 0), 0);

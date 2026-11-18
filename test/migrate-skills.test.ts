@@ -104,7 +104,116 @@ test('offline converter publishes only rewritten live skill versions and leaves 
   assert.deepEqual(snapshot(copy), after);
 });
 
-test('refuses unresolved run forms before writing anything and reports only their locations', t => {
+test('checks standalone inline asks, bare prose and untagged fences; only explicit check shows the patch', t => {
+  const { source, copy, push, stop, cli } = fixture(t);
+  const business = 'In this example, rf propose more study; staff at rf ask about SAMPLE_PLAN.\r\n';
+  const old = doc + business + 'Use `rf ask` your runner, or `rf ask --to "runner@example.test" "SAMPLE_QUESTION"`.\r\n' +
+    '```\r\nrf ask \\\r\n  "SAMPLE_FENCE"\r\n```\r\n\r\nFinally, `rf ask`.';
+  const expected = doc + business + 'Use `rf comment . --ask` your runner, or `rf comment . --ask --to "runner@example.test" "SAMPLE_QUESTION"`.\r\n' +
+    '```\r\nrf comment . --ask "SAMPLE_FENCE"\r\n```\r\n\r\nFinally, `rf comment . --ask`.';
+  push('report', { 'SKILL.md': old, 'bin/end of file.sh': 'rf ask "SAMPLE_LAST"' });
+  stop();
+  const before = snapshot(source);
+  const preview = check(source);
+  assert.equal(preview.status, 0, preview.stderr);
+  assert.match(preview.stdout, /^\d+ \d+\n$/);
+  assert.deepEqual(snapshot(source), before);
+  const reported = preview.stderr.split('\n').filter(line => line.startsWith('Occurrence '));
+  assert.deepEqual(reported.map(line => line.match(/SKILL\.md:(\d+:\d+) ("rf \w+")/)?.slice(1)), [
+    ['5:18', '"rf propose"'], ['5:50', '"rf ask"'], ['6:6', '"rf ask"'], ['6:31', '"rf ask"'], ['8:1', '"rf ask"'], ['12:11', '"rf ask"'], undefined,
+  ]);
+  assert.match(reported[0], /unchanged.*text/i);
+  assert.match(reported[1], /unchanged.*text/i);
+  const patch = preview.stderr.slice(preview.stderr.indexOf('--- a/'));
+  const checked = spawnSync('git', ['apply', '--unidiff-zero', '--whitespace=nowarn', '-'],
+    { cwd: copy, input: patch, encoding: 'utf8', timeout: 5000 });
+  assert.equal(checked.status, 0, checked.stderr);
+  assert.equal(readFileSync(skill(copy, 'versions/report/1/SKILL.md'), 'utf8'), expected);
+  assert.equal(readFileSync(skill(copy, 'versions/report/1/bin/end of file.sh'), 'utf8'), 'rf comment . --ask "SAMPLE_LAST"');
+  writeFileSync(skill(copy, 'versions/report/1/SKILL.md'), old);
+  writeFileSync(skill(copy, 'versions/report/1/bin/end of file.sh'), 'rf ask "SAMPLE_LAST"');
+  for (const mode of ['--dry-run', '--apply'] as const) {
+    const result = cli(mode);
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stderr, /Occurrence|^---|^@@|SAMPLE_|runner@example\.test/m);
+  }
+  assert.equal(readFileSync(skill(copy, 'versions/report/2/SKILL.md'), 'utf8'), expected);
+  assert.deepEqual(snapshot(source), before);
+});
+
+test('an author can replace the unsupported approval instruction on v0.7.9 before migration', t => {
+  const { source, copy, push, stop, cli } = fixture(t);
+  push('report', { 'SKILL.md': doc + 'Before the sample action, `rf ask --sign-off` with the record ID.\n' });
+  push('report', { 'SKILL.md': doc + 'Before the sample action, `rf propose` with the record ID.\n' });
+  stop();
+  const preview = check(source);
+  assert.equal(preview.status, 0, preview.stderr);
+  assert.match(preview.stderr, /^\+Before the sample action, `rf comment \. --propose` with the record ID\.$/m);
+  const apply = cli('--apply');
+  assert.equal(apply.status, 0, apply.stderr);
+  assert.match(readFileSync(skill(copy, 'versions/report/3/SKILL.md'), 'utf8'), /`rf comment \. --propose`/);
+  assert.match(readFileSync(skill(copy, 'versions/report/1/SKILL.md'), 'utf8'), /`rf ask --sign-off`/);
+});
+
+test('unknown asks block writes but explicit check still reports all supported edits', t => {
+  const { source, copy, push, stop, cli } = fixture(t);
+  push('report', {
+    'SKILL.md': doc + 'Before the sample action, `rf ask --sign-off` with SAMPLE_APPROVAL.\n' +
+      'For its sample ID, `rf ask`.\n\nrf ask --sign-off "SAMPLE_BARE"\n',
+    'bin/run.sh': 'rf ask "SAMPLE_OTHER"\n',
+    'instructions.txt': 'Before the sample action use rf ask --sign-off in SAMPLE_TASK.\nElse use rf propose --unknown in SAMPLE_TASK.\n',
+  });
+  stop();
+  const before = snapshot(copy);
+  const preview = check(source);
+  assert.equal(preview.status, 1, preview.stderr);
+  assert.equal(preview.stdout, '');
+  assert.match(preview.stderr, /SKILL\.md:5:\d+ .*refused.*--sign-off.*rf comment \. --propose TEXT.*--ask/i);
+  assert.match(preview.stderr, /SKILL\.md:8:1 .*refused.*--sign-off/i);
+  assert.match(preview.stderr, /SKILL\.md:6:\d+ .*rewrite/i);
+  assert.match(preview.stderr, /bin\/run\.sh:1:1 .*rewrite/i);
+  assert.match(preview.stderr, /instructions\.txt:1:\d+ .*refused.*--sign-off/i);
+  assert.match(preview.stderr, /instructions\.txt:2:\d+ .*refused/i);
+  assert.match(preview.stderr, /^\+For its sample ID, `rf comment \. --ask`\.$/m);
+  assert.match(preview.stderr, /^\+rf comment \. --ask "SAMPLE_OTHER"$/m);
+  assert.doesNotMatch(preview.stderr, /^\+.*(?:--sign-off|--propose)/m);
+  const patch = preview.stderr.slice(preview.stderr.indexOf('--- a/'));
+  const checked = spawnSync('git', ['apply', '--check', '--unidiff-zero', '--whitespace=nowarn', '-'],
+    { cwd: copy, input: patch, encoding: 'utf8', timeout: 5000 });
+  assert.equal(checked.status, 0, checked.stderr);
+  for (const mode of ['--dry-run', '--apply'] as const) {
+    const result = cli(mode);
+    assert.equal(result.status, 1, result.stderr);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /report SKILL\.md:5\nreport SKILL\.md:8/);
+    assert.match(result.stderr, /report instructions\.txt:1\nreport instructions\.txt:2/);
+    assert.doesNotMatch(result.stderr, /Occurrence|^---|^@@|SAMPLE_/m);
+  }
+  assert.deepEqual(snapshot(copy), before);
+  assert.deepEqual(snapshot(source), before);
+});
+
+for (const definition of ['function rf {', 'rf() {']) {
+  test(`refuses a file defining ${definition} without rewriting or running it`, t => {
+    const { source, copy, push, stop, cli } = fixture(t);
+    const sentinel = join(source, 'should-not-exist');
+    push('report', { 'SKILL.md': doc, 'run.sh': `#!/bin/bash\n${definition}\n  touch '${sentinel}'\n}\nrf ask "SAMPLE_LOCAL"\n` });
+    stop();
+    const before = snapshot(copy);
+    const preview = check(source);
+    assert.equal(preview.status, 1, preview.stderr);
+    assert.equal(preview.stdout, '');
+    assert.match(preview.stderr, /run\.sh:2:\d+ .*refused.*shell-local/i);
+    assert.match(preview.stderr, /run\.sh:5:1 .*unchanged.*shell-local/i);
+    assert.doesNotMatch(preview.stderr, /^---|^@@|SAMPLE_LOCAL|should-not-exist/m);
+    const apply = cli('--apply');
+    assert.equal(apply.status, 1, apply.stderr);
+    assert.deepEqual(snapshot(copy), before);
+    assert.deepEqual(snapshot(source), before);
+  });
+}
+
+test('refuses unresolved run forms before writing anything and reports only their locations outside explicit check', t => {
   const { copy, source, push, stop, cli } = fixture(t);
   push('a-ready', { 'SKILL.md': doc + '`rf say "Safe"`\n' });
   push('z-review', { 'SKILL.md': doc, 'run.sh': '#!/bin/sh\nrf say --at "$SECRET_TARGET" "PRIVATE_PAYLOAD"\n' +

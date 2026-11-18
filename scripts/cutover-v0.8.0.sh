@@ -16,9 +16,10 @@ checkout/data and searchable by UID 8004. Check any applicable quotas separately
 AUTH_JSON: root-owned (0600/0400) existing rf config; admin is fine. Its URL is ignored.
 Old/live probes record normal bearer use; admin GETs may read provider credit status.
 PULL_PATH: a known small file (≤2 MiB) or directory of small files.
-Preflight checks the live skill plan without writing it, and leaves the unit,
-updater and checkout alone. Execute repeats the checks before draining. Retain
-the whole stopped original and both credential sources.
+Preflight writes a skill diff to the root-only skills-plan.log. Review it before
+--execute. Preflight doesn't change the data, unit, updater or checkout. Execute
+repeats preflight, then checks the stopped source again before the reflink copy.
+Retain the whole stopped original and both credential sources.
 Pause other data writers and restart supervisors; choose a quiet window. The old
 server still takes requests while draining. The proxy may stay up: verification
 serves existing authenticated reads, rejects writes/sign-ins/upgrades with 503,
@@ -291,6 +292,7 @@ JS
 inventory=$(node_run -e "$inventory_js" "$data") || die 'Source tree inventory failed.'
 read -r entries streams logs backup_entries backup_bytes <<<"$inventory"
 g show "$pin:scripts/migrate-skills.ts" | run tee "$cli_home/migrate-skills.ts" >/dev/null
+log "Review published skill occurrences and proposed diffs in $report/skills-plan.log."
 skill_plan=$(run timeout 60s "$node" --no-warnings "$cli_home/migrate-skills.ts" --check "$data" 2>"$report/skills-plan.log") || die 'Published skills need manual review; see the private skill plan.'
 read -r skill_bytes skill_entries <<<"$skill_plan"
 [[ $skill_bytes =~ ^[0-9]+$ && $skill_entries =~ ^[0-9]+$ ]] || die 'Invalid skill plan counters.'
