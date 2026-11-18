@@ -150,10 +150,23 @@ test('bad message commands fail locally', async t => {
   assert.deepEqual(calls, []);
 });
 
+test('removed run options identify the exact replacement form without replaying the text', async t => {
+  const { calls, run } = await fake(t);
+  for (const [args, hint] of [
+    [['say', '--at', '../Other', '--on', 'balance', 'private text'], 'Use rf comment PATH [--in cN | --on ITEM[@REF]] TEXT'],
+    [['note', '--taken', 'n3', '--see', 'c7', 'private text'], 'Use rf settle nN taken [--see cN] TEXT'],
+    [['note', '--aside', 'n3', 'private text'], 'Use rf settle nN aside TEXT'],
+    [['withdraw', 'c5', '--see', 'c7', 'private text'], 'Use rf settle cN withdrawn [--see cM] TEXT'],
+  ] as const) {
+    assert.deepEqual(await run([...args]), { code: 1, stdout: '', stderr: `${hint}\n` });
+  }
+  assert.deepEqual(calls, []);
+});
+
 test('old verbs only point to their replacement and help advertises the new commands', async t => {
   const { calls, run } = await fake(t);
   for (const [verb, replacement] of [
-    ['note', /rf comment.*rf settle/], ['say', /rf comment TARGET/], ['ask', /rf comment .*--ask/],
+    ['note', /rf comment.*rf settle/], ['say', /rf comment \. \[/], ['ask', /rf comment .*--ask/],
     ['propose', /rf comment .*--propose/], ['withdraw', /rf settle .*withdrawn/],
   ] as const) {
     const result = await run([verb, 'text']);

@@ -58,15 +58,17 @@ rf comment --mine [--json]
   sign in again, and the instance carries on once they do.`,
 };
 const USAGE = `${Object.values(HELP).map(h => h.split('\n  ')[0]).join('\n')}\nrf help COMMAND`;
-const REPLACEMENTS = new Map([
-  ['note', 'Use rf comment SERIES [TEXT], rf comment --mine, or rf settle ID taken|aside TEXT'],
-  ['say', 'Use rf comment TARGET TEXT'],
-  ['ask', 'Use rf comment . --ask TEXT'],
-  ['propose', 'Use rf comment . --propose TEXT'],
-  ['withdraw', 'Use rf settle cN withdrawn [--see cN] TEXT'],
-]);
-
 const [cmd, ...args] = process.argv.slice(2);
+const anchorOptions = '[--in cN | --on ITEM[@REF]]';
+const REPLACEMENTS = new Map([
+  ['note', cmd === 'note' && args.includes('--taken') ? 'Use rf settle nN taken [--see cN] TEXT'
+    : cmd === 'note' && args.includes('--aside') ? 'Use rf settle nN aside TEXT'
+    : 'Use rf comment SERIES TEXT; to settle a note, use rf settle nN taken|aside TEXT'],
+  ['say', `Use rf comment ${cmd === 'say' && args.includes('--at') ? 'PATH' : '.'} ${anchorOptions} TEXT`],
+  ['ask', `Use rf comment . --ask ${anchorOptions} [--to EMAIL] TEXT`],
+  ['propose', `Use rf comment . --propose ${anchorOptions} [--to EMAIL] TEXT`],
+  ['withdraw', 'Use rf settle cN withdrawn [--see cM] TEXT'],
+]);
 // node:http, not fetch, which gives up on an answer after 5 minutes.
 const send = (method: string, path: string, body?: string | Buffer) => new Promise<{ ok: boolean; status: number; text: string }>((ok, fail) => {
   const req = request(`${process.env.RF_URL}/${path}`, { method, headers: { authorization: `Bearer ${process.env.RF_TOKEN}` } }, res => {

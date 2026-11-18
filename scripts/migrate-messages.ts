@@ -1,4 +1,4 @@
-import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, unlinkSync } from 'node:fs';
+import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, unlinkSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { AUTHORITY_FORMAT, authorityTree, checkSeriesAuthority } from '../src/authority-format.ts';
@@ -7,14 +7,15 @@ import { answered, answers, waitsOn } from '../src/messages.ts';
 import type { SeriesSettings } from '../src/series.ts';
 import type { Entry, Meta } from '../src/store.ts';
 import { replaceFile } from '../src/system.ts';
+import { planSkillMigration, publishSkillMigration } from './migrate-skills.ts';
 
 const LEGACY_READER = '0.7.0'; // The exact minReader written by v0.7.9, not a semver range.
 type Pending = { entry: Entry; anchor: StoredMessage['anchor']; time: number; stream: string; legacyOpen?: true };
 type RequestRef = { series: string; label: string; inst?: string; target?: string; message?: number };
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 
-// Preflight the stopped copy in full before touching the envelope or a log. Other data, including working/, Git and session/, is
-// not a migration input. A complete copy is validated and left alone; an interrupted copy must be discarded, not resumed.
+// Preflight the stopped copy before touching the envelope, logs or live skills. Working/, Git and session/ are not inputs.
+// An interrupted copy must be discarded, not resumed.
 export function migrateMessageCopy(copy: string, apply = false, progress?: (line: string) => void) {
   const root = resolve(copy), st = lstatSync(root);
   if (!st.isDirectory() || realpathSync(root) !== root) throw new Error('the stopped copy must be a real directory, not a symlink');
@@ -216,11 +217,14 @@ export function migrateMessageCopy(copy: string, apply = false, progress?: (line
     if (jsonLines(actual) !== jsonLines(expected)) throw new Error(`${e.projection}: instance projection mismatch`);
   }
   progress?.(`Preflight: validated ${plans.size} series, ${periods.size} instances`);
+  const skills = planSkillMigration(root, progress);
+  if (converted && skills.length) throw new Error('converted copy still needs skill migration; use a fresh stopped copy');
   if (apply && !converted) {
     progress?.('Apply: writing canonical streams to the stopped copy');
     const fd = openSync(lock, 'wx', 0o600);
     try {
-      if (readFileSync(manifest, 'utf8') !== before) throw new Error('the stopped copy changed during preflight');
+      if (readFileSync(manifest, 'utf8') !== before || skills.some(v => lstatSync(v.dir, { throwIfNoEntry: false }) || readlinkSync(v.pointer) !== v.previous))
+        throw new Error('the stopped copy changed during preflight');
       replaceFile(manifest, JSON.stringify({ ...AUTHORITY_FORMAT, state: 'incomplete', tree }), true);
       for (const p of plans.values()) replaceFile(messagesFile(p.dir), jsonLines(p.records), true);
       const directories = new Set<string>();
@@ -238,6 +242,7 @@ export function migrateMessageCopy(copy: string, apply = false, progress?: (line
         try { fsyncSync(d); } finally { closeSync(d); }
       }
       if (Object.keys(wakes.requests).length) replaceFile(wakesPath, JSON.stringify({ ...wakes, requests: Object.fromEntries(requests) }, null, 1), true);
+      publishSkillMigration(skills);
       replaceFile(manifest, JSON.stringify({ ...AUTHORITY_FORMAT, tree }), true);
     } finally {
       closeSync(fd);

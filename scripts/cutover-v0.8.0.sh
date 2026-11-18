@@ -16,8 +16,9 @@ checkout/data and searchable by UID 8004. Check any applicable quotas separately
 AUTH_JSON: root-owned (0600/0400) existing rf config; admin is fine. Its URL is ignored.
 Old/live probes record normal bearer use; admin GETs may read provider credit status.
 PULL_PATH: a known small file (≤2 MiB) or directory of small files.
-Preflight leaves the unit, updater, and checkout alone. Execute repeats those
-checks before draining. Retain the whole stopped original and both credential sources.
+Preflight checks the live skill plan without writing it, and leaves the unit,
+updater and checkout alone. Execute repeats the checks before draining. Retain
+the whole stopped original and both credential sources.
 Pause other data writers and restart supervisors; choose a quiet window. The old
 server still takes requests while draining. The proxy may stay up: verification
 serves existing authenticated reads, rejects writes/sign-ins/upgrades with 503,
@@ -249,7 +250,7 @@ listing_stamp() {
     ' "$data"
 }
 drained() { curl --noproxy '*' -sS --max-time 3 -o /dev/null -w '%{http_code}' "$base/drained"; }
-step 'preflight old CLI, pull, unit and reflink capacity'
+step 'preflight old CLI, pull, unit, skills and reflink capacity'
 snapshot "$old" preflight || die 'Old CLI list, Waiting, status or sample pull failed; see private diagnostics.'
 [[ $(drained) =~ ^(200|503)$ ]] || die 'Unexpected /drained response; no signal sent.'
 u=$(show "$updater" ActiveState); [[ $u =~ ^(inactive|failed)$ ]] || die 'Updater busy; do not interrupt it.'
@@ -287,12 +288,16 @@ console.log(entries,streams,logs,backupEntries,backupBytes);
 JS
 ) || die 'Source tree inventory failed.'
 read -r entries streams logs backup_entries backup_bytes <<<"$inventory"
+g show "$pin:scripts/migrate-skills.ts" | run tee "$cli_home/migrate-skills.ts" >/dev/null
+skill_plan=$(run timeout 60s "$node" --no-warnings "$cli_home/migrate-skills.ts" --check "$data" 2>"$report/skills-plan.log") || die 'Published skills need manual review; see the private skill plan.'
+read -r skill_bytes skill_entries <<<"$skill_plan"
+[[ $skill_bytes =~ ^[0-9]+$ && $skill_entries =~ ^[0-9]+$ ]] || die 'Invalid skill plan counters.'
 read -r blocks bytes_per_block inodes free_inodes < <(stat -fc '%a %S %c %d' "$work")
-# Reserve for the clone's metadata, new streams, and the normal startup copy of .rf (without index/run caches).
-need_inodes=$((entries + 2*streams + backup_entries + 1024))
-need_bytes=$((2*logs + backup_bytes + 8192*need_inodes + 1073741824))
+# Reserve for new streams, skill versions and the normal startup copy of .rf (without index/run caches).
+need_inodes=$((entries + 2*streams + skill_entries + backup_entries + 1024))
+need_bytes=$((2*logs + skill_bytes + backup_bytes + 8192*need_inodes + 1073741824))
 free_bytes=$((blocks*bytes_per_block))
-log "Reflink verified: $entries entries, $logs B converter input, $backup_bytes B startup backup; need $need_bytes/$free_bytes B and $need_inodes/$free_inodes inodes (required/available)."
+log "Reflink verified: $entries entries, $logs B converter input, $skill_bytes B new skill files, $backup_bytes B startup backup; need $need_bytes/$free_bytes B and $need_inodes/$free_inodes inodes (required/available)."
 (( free_bytes >= need_bytes && (inodes == 0 || free_inodes >= need_inodes) )) || die 'Insufficient free blocks or inodes for reflink cutover.'
 [[ $(current "$data") == "$old_id" && $(unit_hash) == "$original_unit" && $(g rev-parse HEAD) == "$old" ]] && clean || die 'Process, unit or checkout changed during preflight.'
 [[ -z $envfile || $(stat -Lc '%d:%i:%s:%y:%z' "$envfile") == "$env_stamp" ]] || die 'Env file changed during preflight.'
