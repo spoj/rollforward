@@ -7,25 +7,31 @@ export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C
 usage() { cat <<'EOF'
 On the designated host only, as root, from the reviewed root-owned copy:
   umask 077
+  /bin/bash /root/cutover-v0.8.0.sh --preflight PIN COPY_PARENT AUTH_JSON PULL_PATH
   setsid -f nohup /bin/bash /root/cutover-v0.8.0.sh --execute PIN COPY_PARENT AUTH_JSON PULL_PATH \
     </dev/null >>/root/rf080-cutover.log 2>&1
 PIN: approved full SHA of annotated Manual: v0.8.0. Stage both tags/objects offline.
-COPY_PARENT: root-controlled, outside checkout/data and searchable by UID 8004.
-Check disk/inodes/quota; preserve both keys and any systemd credential sources.
-AUTH_JSON: root-owned (0600/0400) existing non-admin rf config; its URL is ignored.
-PULL_PATH: a known small file (≤2 MiB) or directory of small files. The stopped
-original is the rollback backup. Preflight expects the native UID 8004 unit,
-Node 26, loopback port 8780, and an unchanged env-file and drain lease ≥120 s.
-Pause ingress, writers and restart supervisors. Review conversations, Notes, Waiting
-and links read-only. Touch the printed activate or abort file within 20 minutes.
-Reopen ingress only once healthy. Retain the control directory and live permit.
+COPY_PARENT: root-controlled, same reflink-enabled filesystem as the data, outside
+checkout/data and searchable by UID 8004. Check any applicable quotas separately.
+AUTH_JSON: root-owned (0600/0400) existing rf config; admin is fine. Its URL is ignored.
+Old/live probes record normal bearer use; admin GETs may read provider credit status.
+PULL_PATH: a known small file (≤2 MiB) or directory of small files.
+Preflight leaves the unit, updater, and checkout alone. Execute repeats those
+checks before draining. Retain the whole stopped original and both credential sources.
+Pause other data writers and restart supervisors; choose a quiet window. The old
+server still takes requests while draining. The proxy may stay up: verification
+serves existing authenticated reads, rejects writes/sign-ins/upgrades with 503,
+and starts no work. Stop/boot gaps are unavailable. Warn users of the outage.
+Review, then touch activate or abort within 20 minutes; activation need not wait.
+Retain the control directory and live permit.
 Before granting live permission the script can restore v0.7.9; after that,
 reconcile any new work before rolling back. On SIGKILL/reboot inspect the log,
 permits, drop-in and both roots before starting anything.
 EOF
 }
 [[ ${1-} != --help ]] || { usage; exit 0; }
-[[ $# == 5 && $1 == --execute && $EUID == 0 ]] || { usage >&2; exit 2; }
+[[ $# == 5 && ( $1 == --execute || $1 == --preflight ) && $EUID == 0 ]] || { usage >&2; exit 1; }
+readonly operation=$1
 readonly uid=8004 checkout=/u01/rollforward/rollforward old=4f5bec04cba66b72af67c35b7fafe47ce4c178a1
 readonly unit=rollforward.service updater=rollforward-update.service timer=rollforward-update.timer
 readonly pin=$2 parent=$3 auth=$4 pull=$5 runtime=/run/user/$uid base=http://127.0.0.1:8780
@@ -95,8 +101,12 @@ probe() {
         const [file,version,mode]=process.argv.slice(1), verify=mode==="--verify-only", {url,token}=JSON.parse(readFileSync(file));
         const get=async p=>{const r=await fetch(url+p,{headers:{authorization:`Bearer ${token}`},redirect:"error",signal:AbortSignal.timeout(8000)}); if(r.status!==200)throw 0; return r.json();};
         const m=await get("/me"), s=await get("/api/status"), keys="running queued ownership asks expired requests proposals failed".split(" ");
-        if(m.version!==version || m.role!=="user" || !m.email || m.verifyOnly!==(verify?true:undefined) || !keys.every(k=>Array.isArray(s[k])))throw 0;
-        if(verify && (!Array.isArray(s.noteNotices) || s.running.length || s.queued.length))throw 0;
+        if(m.version!==version || !["user","admin"].includes(m.role) || !m.email || m.verifyOnly!==(verify?true:undefined) || !keys.every(k=>Array.isArray(s[k])))throw 0;
+        if(verify){
+          if(!Array.isArray(s.noteNotices) || s.running.length || s.queued.length)throw 0;
+          const refused=await fetch(url+"/api/messages",{method:"POST",body:"{}",headers:{authorization:`Bearer ${token}`},redirect:"error",signal:AbortSignal.timeout(8000)});
+          if(refused.status!==503)throw 0;
+        }
         console.log(JSON.stringify(m.email));
       } catch {process.exitCode=1}
     ' "$cli_home/.config/rollforward.json" "$1" "${2-}"
@@ -135,12 +145,13 @@ finish() {
         if [[ -n $report && -e $report/COMMITTED && -e $work/live.permit ]]; then
             rm -f -- "$work/live.permit" || log 'Remove the live start permit manually before any restart.'
             [[ $(show "$timer" ActiveState) =~ ^(inactive|failed)$ ]] || ctl stop "$timer" || log 'Stop the updater timer manually.'
-            log "Live effects may exist. Keep ingress/updater off; preserve $data and $copy. Inspect the user unit and reconcile new work before rollback; drain before any live stop."
+            log "Live effects may exist. Keep updater off, ask users to stop writing, and preserve $data and $copy. Inspect the user unit and reconcile new work before rollback; drain before any live stop."
         elif (( managed )); then
             rollback || log "Rollback incomplete. Keep ingress/updater off; inspect $work and the user unit before any start or stop. Neither data tree was removed."
         fi
     fi
     if [[ -n $cli_home ]]; then run rm -rf -- "$cli_home" || log "Remove private CLI HOME $cli_home locally."; fi
+    if [[ $operation == --preflight ]] && (( rc )); then exit 1; fi
     exit "$rc"
 }
 trap 'finish $?' EXIT; trap 'die Interrupted' INT TERM; trap 'log "Command failed at line $LINENO (exit $?)"' ERR
@@ -210,7 +221,7 @@ for rev in "$old" "$pin"; do
     node_run "$cli_home/$rev/cli/build.mjs"
 done
 [[ $(cli "$old" --version) == 0.19.2 && $(cli "$pin" --version) == 0.20.0 ]] || die 'Wrong staged CLI versions.'
-person=$(probe v0.7.9) && [[ $(current "$data") == "$old_id" ]] || die 'Old /me or /api/status failed; use a non-admin token.'
+person=$(probe v0.7.9) && [[ $(current "$data") == "$old_id" ]] || die 'Old /me or /api/status failed; check the existing rf config and native service.'
 snapshot() {
     local rev=$1 name=$2 cmd
     for cmd in ls waiting; do
@@ -238,9 +249,57 @@ listing_stamp() {
     ' "$data"
 }
 drained() { curl --noproxy '*' -sS --max-time 3 -o /dev/null -w '%{http_code}' "$base/drained"; }
-step 'pause updater and fence starts'
+step 'preflight old CLI, pull, unit and reflink capacity'
+snapshot "$old" preflight || die 'Old CLI list, Waiting, status or sample pull failed; see private diagnostics.'
+[[ $(drained) =~ ^(200|503)$ ]] || die 'Unexpected /drained response; no signal sent.'
 u=$(show "$updater" ActiveState); [[ $u =~ ^(inactive|failed)$ ]] || die 'Updater busy; do not interrupt it.'
 timer_was=$(show "$timer" ActiveState); [[ $timer_was =~ ^(active|inactive|failed)$ ]] || die 'Unexpected timer state.'
+jobs=$(ctl list-jobs --no-legend) && [[ $jobs != *rollforward-update.* ]] || die 'Cannot confirm updater jobs are idle; retry later.'
+run timeout 8s busctl --user get-property org.freedesktop.systemd1 /org/freedesktop/systemd1/unit/rollforward_2eservice org.freedesktop.systemd1.Unit Conditions >/dev/null || die 'Cannot query native start conditions.'
+[[ -f $data/.rf/tree.json && ! -L $data/.rf/tree.json && -s $data/.rf/tree.json ]] || die 'Missing regular old tree manifest for clone probe.'
+cp --reflink=always -- "$data/.rf/tree.json" "$report/reflink-probe" || die 'Reflink unavailable between data and COPY_PARENT; no full-copy fallback.'
+rm -- "$report/reflink-probe"
+inventory=$(node_run - "$data" <<'JS'
+const fs=require('node:fs'), {join,resolve,isAbsolute}=require('node:path'), root=process.argv[2], inside=p=>p===root || p.startsWith(root+'/');
+if(fs.readFileSync('/proc/self/mountinfo','utf8').split('\n').some(l=>l.split(' ')[4]?.replace(/\\([0-7]{3})/g,(_,n)=>String.fromCharCode(parseInt(n,8))).startsWith(root+'/')))throw Error('nested mount in original');
+let entries=1, streams=0, logs=0, backupBytes=0, backupEntries=0;
+function scan(rel){
+  for(const e of fs.readdirSync(join(root,rel),{withFileTypes:true})){
+    const r=join(rel,e.name), p=join(root,r), parts=r.split('/'); entries++;
+    const backup=parts[0]==='.rf' && !parts.some(n=>n==='index'||n==='runs');
+    if(backup)backupEntries++;
+    if(e.name==='.git' && (!e.isDirectory() || fs.existsSync(p+'/commondir') || fs.existsSync(p+'/objects/info/alternates')))throw Error(`non-self-contained Git repository: ${r}`);
+    if(e.isSymbolicLink()){
+      const t=fs.readlinkSync(p);
+      if(isAbsolute(t)||!inside(resolve(root,rel,t))||!inside(fs.realpathSync(p)))throw Error(`escaping symlink: ${r}`);
+    }
+    else if(e.isDirectory()){
+      if(parts.length===2 && ['instances','series'].includes(parts[0]))streams++;
+      scan(r);
+    } else if(e.isFile()){
+      if(backup)backupBytes+=fs.lstatSync(p).size;
+      if(/^(?:instances\/[^/]+\/log\.jsonl|series\/[^/]+\/notes\/log\.jsonl|\.rf\/(?:tree|wakes)\.json)$/.test(r))logs+=fs.lstatSync(p).size;
+    } else throw Error(`special file in original: ${r}`);
+  }
+}
+scan('');
+console.log(entries,streams,logs,backupEntries,backupBytes);
+JS
+) || die 'Source tree inventory failed.'
+read -r entries streams logs backup_entries backup_bytes <<<"$inventory"
+read -r blocks bytes_per_block inodes free_inodes < <(stat -fc '%a %S %c %d' "$work")
+# Reserve for the clone's metadata, new streams, and the normal startup copy of .rf (without index/run caches).
+need_inodes=$((entries + 2*streams + backup_entries + 1024))
+need_bytes=$((2*logs + backup_bytes + 8192*need_inodes + 1073741824))
+free_bytes=$((blocks*bytes_per_block))
+log "Reflink verified: $entries entries, $logs B converter input, $backup_bytes B startup backup; need $need_bytes/$free_bytes B and $need_inodes/$free_inodes inodes (required/available)."
+(( free_bytes >= need_bytes && (inodes == 0 || free_inodes >= need_inodes) )) || die 'Insufficient free blocks or inodes for reflink cutover.'
+[[ $(current "$data") == "$old_id" && $(unit_hash) == "$original_unit" && $(g rev-parse HEAD) == "$old" ]] && clean || die 'Process, unit or checkout changed during preflight.'
+[[ -z $envfile || $(stat -Lc '%d:%i:%s:%y:%z' "$envfile") == "$env_stamp" ]] || die 'Env file changed during preflight.'
+log 'Preflight passed; no service, updater or checkout changes.'
+[[ $operation != --preflight ]] || exit 0
+
+step 'pause updater and fence starts'
 managed=1; if [[ $timer_was == active ]]; then ctl stop "$timer"; fi
 idle_updater && [[ $(unit_hash) == "$original_unit" && $(current "$data") == "$old_id" ]] || die 'Updater/unit changed during preflight.'
 install_override hold "$data" || die 'Could not fence native starts.'
@@ -261,20 +320,8 @@ snapshot "$old" old || die 'Old ls, waiting, requests or pull failed; see privat
 old_stop=1; stop_pid "$old_id" "$data" || die 'Old stop did not complete; no forced kill.'
 [[ $(listing_stamp) == "$baseline" ]] || die 'Listing inputs changed before the stop; retry with a fresh baseline.'
 
-step 'copy the stopped original and convert'
-node_run - "$data" <<'JS'
-const fs=require('node:fs'), path=require('node:path'), root=process.argv[2], inside=p=>p===root || p.startsWith(root+'/');
-if(fs.readFileSync('/proc/self/mountinfo','utf8').split('\n').some(l=>l.split(' ')[4]?.replace(/\\([0-7]{3})/g,(_,n)=>String.fromCharCode(parseInt(n,8))).startsWith(root+'/')))throw Error('nested mount in original');
-for(const e of fs.readdirSync(root,{recursive:true,withFileTypes:true})){
-  const p=path.join(e.parentPath,e.name);
-  if(e.name==='.git' && (!e.isDirectory() || fs.existsSync(p+'/commondir') || fs.existsSync(p+'/objects/info/alternates')))throw Error('non-self-contained Git repository');
-  if(e.isSymbolicLink()){const t=fs.readlinkSync(p); if(path.isAbsolute(t)||!inside(path.resolve(e.parentPath,t))||!inside(fs.realpathSync(p)))throw Error('escaping symlink');}
-  else if(!e.isDirectory() && !e.isFile())throw Error('special file in original');
-}
-JS
-size=$(du -sb --count-links -- "$data"); free=$(df -B1 --output=avail -- "$parent" | awk 'NR==2 {print $1}')
-(( free > 2*${size%%[[:space:]]*} + 1073741824 )) || die 'Insufficient space for the copy and conversion headroom.'
-cp -a --no-preserve=links --reflink=auto -T -- "$data" "$copy"
+step 'reflink the stopped original and convert'
+cp -a --no-preserve=links --reflink=always -T -- "$data" "$copy" || die 'Stopped reflink copy failed; original retained.'
 quiet && idle_updater && [[ $(g rev-parse HEAD) == "$old" ]] && clean || die 'Unit or checkout changed while copying.'
 g checkout -q --detach --no-overwrite-ignore --no-recurse-submodules "$pin"; [[ $(g rev-parse HEAD) == "$pin" ]] && clean || die 'Checkout does not match v0.8.0 pin.'
 migrate() {
@@ -399,8 +446,8 @@ try {
   console.log(`parity ls=${old.ls.length} stable_waiting=${verify.stable.length} requests=${verify.reqs.size} tombstoned=${tombstones} ask_scopes=${changed}`);
 } catch { console.error(`parity failed: ${check}`); process.exitCode = 1; }
 JS
-step 'await explicit approval with ingress paused'
-log "Verified v0.8.0 /me, /api/status, CLI and projections. Root: touch $report/activate (or $report/abort)."
+step 'await explicit approval in read-only verification'
+log "Verified v0.8.0 /me, /api/status, write refusal (503), CLI and projections. Root: touch $report/activate (or $report/abort)."
 end=$((SECONDS+1200))
 while [[ ! -f $report/activate ]]; do
     [[ ! -e $report/abort && $(current "$copy" --verify-only) == "$verify_id" ]] && (( SECONDS < end )) || die 'Review aborted, expired, or verify process changed.'; sleep 2
@@ -420,4 +467,4 @@ ready v0.8.0 "$copy" >/dev/null || die 'Live /me or /api/status failed; inspect 
 step 'restore previous updater timer state'
 idle_updater || die 'Updater state changed during live boot.'
 if [[ $timer_was == active ]]; then ctl start "$timer" && [[ $(show "$timer" ActiveState) == active ]] || die 'Could not restore updater timer.'; fi
-log "Live v0.8.0 healthy; keep $override and $work/live.permit, and retain original $data. Operator may reopen ingress."
+log "Live v0.8.0 healthy; keep $override and $work/live.permit, and retain original $data. Normal use may resume."
