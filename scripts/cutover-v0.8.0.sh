@@ -260,8 +260,9 @@ run timeout 8s busctl --user get-property org.freedesktop.systemd1 /org/freedesk
 [[ -f $data/.rf/tree.json && ! -L $data/.rf/tree.json && -s $data/.rf/tree.json ]] || die 'Missing regular old tree manifest for clone probe.'
 cp --reflink=always -- "$data/.rf/tree.json" "$report/reflink-probe" || die 'Reflink unavailable between data and COPY_PARENT; no full-copy fallback.'
 rm -- "$report/reflink-probe"
-inventory=$(node_run - "$data" <<'JS'
-const fs=require('node:fs'), {join,resolve,isAbsolute}=require('node:path'), root=process.argv[2], inside=p=>p===root || p.startsWith(root+'/');
+inventory_js=$(cat <<'JS'
+const fs=require('node:fs'), {join,resolve,isAbsolute}=require('node:path'), root=process.argv[1], inside=p=>p===root || p.startsWith(root+'/');
+if(fs.realpathSync(root)!==root)throw Error('original must be a canonical directory');
 if(fs.readFileSync('/proc/self/mountinfo','utf8').split('\n').some(l=>l.split(' ')[4]?.replace(/\\([0-7]{3})/g,(_,n)=>String.fromCharCode(parseInt(n,8))).startsWith(root+'/')))throw Error('nested mount in original');
 let entries=1, streams=0, logs=0, backupBytes=0, backupEntries=0;
 function scan(rel){
@@ -286,7 +287,8 @@ function scan(rel){
 scan('');
 console.log(entries,streams,logs,backupEntries,backupBytes);
 JS
-) || die 'Source tree inventory failed.'
+)
+inventory=$(node_run -e "$inventory_js" "$data") || die 'Source tree inventory failed.'
 read -r entries streams logs backup_entries backup_bytes <<<"$inventory"
 g show "$pin:scripts/migrate-skills.ts" | run tee "$cli_home/migrate-skills.ts" >/dev/null
 skill_plan=$(run timeout 60s "$node" --no-warnings "$cli_home/migrate-skills.ts" --check "$data" 2>"$report/skills-plan.log") || die 'Published skills need manual review; see the private skill plan.'
@@ -325,7 +327,8 @@ snapshot "$old" old || die 'Old ls, waiting, requests or pull failed; see privat
 old_stop=1; stop_pid "$old_id" "$data" || die 'Old stop did not complete; no forced kill.'
 [[ $(listing_stamp) == "$baseline" ]] || die 'Listing inputs changed before the stop; retry with a fresh baseline.'
 
-step 'reflink the stopped original and convert'
+step 'recheck isolation and reflink the stopped original'
+node_run -e "$inventory_js" "$data" >/dev/null 2>"$report/stopped-inventory.err" || die 'Stopped source tree isolation check failed; see private diagnostics. No copy made.'
 cp -a --no-preserve=links --reflink=always -T -- "$data" "$copy" || die 'Stopped reflink copy failed; original retained.'
 quiet && idle_updater && [[ $(g rev-parse HEAD) == "$old" ]] && clean || die 'Unit or checkout changed while copying.'
 g checkout -q --detach --no-overwrite-ignore --no-recurse-submodules "$pin"; [[ $(g rev-parse HEAD) == "$pin" ]] && clean || die 'Checkout does not match v0.8.0 pin.'
