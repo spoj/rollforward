@@ -209,10 +209,11 @@ function watched(me: Me, id: string, site: string): { browsers: Browsers; id: st
   return { browsers: a!.browsers!, id: b };
 }
 
-// Unanswered asks wait on their named person or the current owner; colleagues' unread notes wait on the owner.
-function waits(inst: Instance): { who: string; e: Entry }[] {
+// Unanswered asks wait on their named person or the current owner; colleagues' unread notes wait on the owner, `by` where the caller
+// has its series' settings already.
+function waits(inst: Instance, by?: string): { who: string; e: Entry }[] {
   if (inst.doc.status !== 'open') return [];
-  const owner = ownerOf(inst).by;
+  const owner = by ?? ownerOf(inst).by;
   const read = Math.max(inst.copied, seen(owner).at[inst.id] ?? 0, active.get(inst.seriesId)?.inst === inst ? active.get(inst.seriesId)!.seen : 0,
     ...inst.log.filter(e => e.op === 'done').map(e => (e.seen as number | undefined) ?? 0),
     inst.log.findLast(e => e.by === owner && ['create', 'comment', 'upload', 'attach', 'signoff', 'reject', 'react', 'rename', 'interrupt', 'promote'].includes(e.op))?.seq ?? 0);
@@ -265,12 +266,14 @@ const NEWS = ['done', 'comment', 'signoff', 'reject', 'withdraw', 'upload', 'tak
 const costOf = (i: Instance) => +i.log.slice(i.log.findLastIndex(e => e.op === 'duplicate') + 1).reduce((t, e) => t + (['done', 'delete'].includes(e.op) ? e.cost as number : 0), 0).toFixed(6);
 const estimatedOf = (i: Instance) => i.log.slice(i.log.findLastIndex(e => e.op === 'duplicate') + 1).some(e => ['done', 'delete'].includes(e.op) && e.estimated === true);
 
+// The page lists every instance after each step of a run, so this reads the owner from the series' settings, not ownerOf's whole
+// tree.json.
 function summary(i: Instance, me: Me, w8 = wakes()) {
-  const email = me.email;
-  const key = `${i.log.length}:${i.doc.rev}:${JSON.stringify(seriesSettings(i.series()))}:${seen(ownerOf(i).by).at[i.id]}:${active.get(i.seriesId)?.seen}`;
+  const email = me.email, settings = seriesSettings(i.series()), by = settings.owner ?? '';
+  const key = `${i.log.length}:${i.doc.rev}:${JSON.stringify(settings)}:${seen(by).at[i.id]}:${active.get(i.seriesId)?.seen}`;
   const news = i.log.findLast(e => e.by !== email && e.accepted_by !== email && NEWS.includes(e.op)), s = seen(email);
   let k = kept.get(i);
-  if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i).map(({ who, e }) => ({ who, kind: e.ask === true ? 'ask' : (e.ask as string | undefined) ?? 'note', ...(isPerson(e) && { from: e.by, started: e.op === 'create' }) })), owner: ownerOf(i).by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: costOf(i), estimated: estimatedOf(i), corrections: i.log.filter(e => e.op === 'correction').length,
+  if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i, by).map(({ who, e }) => ({ who, kind: e.ask === true ? 'ask' : (e.ask as string | undefined) ?? 'note', ...(isPerson(e) && { from: e.by, started: e.op === 'create' }) })), owner: by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: costOf(i), estimated: estimatedOf(i), corrections: i.log.filter(e => e.op === 'correction').length,
     wrong: i.log.filter(e => e.op === 'correction' && e.kind === 'wrong').map(e => e.at),
     refused: i.log.filter(e => e.op === 'browser' && e.hosts).map(e => ({ at: e.at, run: e.run as number, site: e.site as string, login: e.login as string, hosts: Object.keys(e.hosts as object) })) });
   return {
@@ -302,10 +305,10 @@ const proposals = (t: Tree) => Object.entries(t.workspaces).filter(([, w]) => {
 });
 
 function listing(me: Me) {
-  const t = tree(), w8 = wakes(), open = proposals(t), granted = visible(me).filter(g => ['pending', 'approved'].includes(g.state)), byName = (a: [string, { name: string }], b: [string, { name: string }]) => a[1].name.localeCompare(b[1].name);
+  const t = tree(), w8 = wakes(), us = users(), open = proposals(t), granted = visible(me).filter(g => ['pending', 'approved'].includes(g.state)), byName = (a: [string, { name: string }], b: [string, { name: string }]) => a[1].name.localeCompare(b[1].name);
   return Object.entries(t.workspaces).filter(([, w]) => canSee(me, w)).sort(byName).map(([id, w]) => {
     const series = Object.entries(t.series).filter(([, s]) => s.workspace === id).sort(byName).map(([sid, s]) => {
-      const { owner, consent, epoch, since } = seriesSettings(seriesDir(sid)), person = owner && asPerson(owner);
+      const { owner, consent, epoch, since } = seriesSettings(seriesDir(sid)), person = owner && asPerson(owner, us[owner]);
       return {
         id: sid, name: s.name, archived: !!s.archived, single: !!s.single, owner: owner ?? null, ownerUnavailable: !person || !canSee(person, w), epoch, since, consent: consent ?? null,
         wakes: wakesOf(sid, w8), fired: w8.fired[sid] ?? null, notes: notes(seriesDir(sid)).filter(n => !n.settled).length,
@@ -722,16 +725,27 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
 }
 
 // The page's event stream: the id of each instance the person can see as it changes, and "tree" for anything else, at most one a
-// second each, so the page refreshes on change instead of polling.
+// second each, so the page refreshes on change instead of polling. A change reads its instance's workspace once, as the first stream
+// that needs it asks, for all the streams open.
+const streams = new Set<(id: string, workspace: () => Workspace) => void>();
+changes.on('change', (id: string) => {
+  let w: Workspace | undefined;
+  const workspace = () => {
+    if (!w) { const t = tree(); w = t.workspaces[t.series[instance(id).seriesId].workspace]; }
+    return w;
+  };
+  for (const on of streams) on(id, workspace);
+});
+
 function events(me: Me, req: IncomingMessage, res: ServerResponse) {
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' }).flushHeaders(); // the page hears it's open at once
   const due = new Map<string, NodeJS.Timeout>(), beat = setInterval(() => res.write(': beat\n\n'), 30_000);
-  const on = (id: string) => {
-    if (due.has(id) || (id !== 'tree' && !canSee(me, tree().workspaces[tree().series[instance(id).seriesId].workspace]))) return;
+  const on = (id: string, workspace: () => Workspace) => {
+    if (due.has(id) || (id !== 'tree' && !canSee(me, workspace()))) return;
     due.set(id, setTimeout(() => { due.delete(id); res.write(`data: ${id}\n\n`); }, 1000));
   };
-  changes.on('change', on);
-  req.on('close', () => { changes.off('change', on); clearInterval(beat); for (const t of due.values()) clearTimeout(t); });
+  streams.add(on);
+  req.on('close', () => { streams.delete(on); clearInterval(beat); for (const t of due.values()) clearTimeout(t); });
 }
 
 const text = (path: string) => (existsSync(path) ? readFileSync(path, 'utf8') : '');
