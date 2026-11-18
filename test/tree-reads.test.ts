@@ -62,9 +62,8 @@ before(async () => {
 });
 
 after(async () => {
-  proc.kill('SIGTERM');
-  await once(proc, 'exit');
-  entra.close();
+  if (proc?.exitCode === null) { proc.kill('SIGTERM'); await once(proc, 'exit'); }
+  entra?.close();
   rmSync(tmp, { recursive: true, force: true });
 });
 
