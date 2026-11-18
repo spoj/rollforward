@@ -1,4 +1,4 @@
-import { HttpError, instances, newId, type Entry, type Instance } from './store.ts';
+import { HttpError, instancesBySeries, newId, type Entry, type Instance } from './store.ts';
 import { act, canManage, canSee, isIn, readJson, tree, writeJson } from './system.ts';
 import { asPerson, users, type Me } from './auth.ts';
 import { logins, signOut } from './logins.ts';
@@ -32,7 +32,8 @@ export function visible(me: Me) {
     return Boolean(w) && ((g.person === me.email && canSee(me, w)) || canManage(me, w));
   });
   const counted = new Set(shown.filter(([, g]) => g.state === 'approved').map(([, g]) => g.workspace)), used = new Map<string, { runs: Set<string>; wrote: Set<string>; last: string | null }>();
-  for (const [sid, s] of Object.entries(t.series)) if (counted.has(s.workspace)) for (const inst of instances(sid)) {
+  const instancesOf = instancesBySeries();
+  for (const [sid, s] of Object.entries(t.series)) if (counted.has(s.workspace)) for (const inst of instancesOf(sid)) {
     let c = closes.get(inst);
     if (c?.n !== inst.log.length) closes.set(inst, c = { n: inst.log.length, rows: inst.log.slice(inst.log.findLastIndex(e => e.op === 'duplicate') + 1).filter(e => e.op === 'browser' && !e.action) });
     for (const e of c.rows) {
