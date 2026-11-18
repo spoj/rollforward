@@ -2,8 +2,8 @@
 # built here. A tag's run, once they pass, makes its GitHub Release, which the hosts' updaters deploy (docs/deploy.md), and the
 # image's prerelease agent-<id> if it's the first to run that image; a tag whose message has a line starting "Manual:" makes a
 # prerelease, which they stop at, and one with "Urgent:" skips their drain. Only the release job may write to the repository: the tests, and the packages they install,
-# only read it. A tag's run also publishes people's rf, @rfany/rf, when cli/package.json names a version npm doesn't have yet, by
-# npm's trusted publishing from this workflow, with no token kept anywhere.
+# only read it. A tag's run also publishes people's rf, @rfany/rf, when cli/package.json names a version npm doesn't have yet:
+# Manual releases go to npm's next dist-tag, ordinary releases to latest, via trusted publishing with no npm token kept.
 name: ci
 on:
   push:
@@ -84,4 +84,11 @@ jobs:
       - working-directory: cli
         run: |
           v=$(node -p "require('./package.json').version")
-          if [ "$(npm view "@rfany/rf@$v" version 2>/dev/null)" != "$v" ]; then npm publish --provenance; fi
+          if [ "$(npm view "@rfany/rf@$v" version 2>/dev/null)" != "$v" ]; then
+            # A shallow checkout by SHA can lack the annotated tag object.
+            git fetch --no-tags --depth=1 -q -f origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+            notes=$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")
+            dist_tag=latest
+            if grep -q '^Manual:' <<< "$notes"; then dist_tag=next; fi
+            npm publish --provenance --tag "$dist_tag"
+          fi

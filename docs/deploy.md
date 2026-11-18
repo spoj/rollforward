@@ -98,7 +98,7 @@ Run the image under podman, as a systemd service. The image is the agent image, 
 
 ## Keys, backups and updates
 
-- **People's rf,** `@rfany/rf`, is published by CI from a tag whose `cli/package.json` version npm doesn't have yet; npm's trusted publisher for the package is this repository's `ci.yml`, so no npm token is kept.
+- **People's rf,** `@rfany/rf`, is published by CI from a tag whose `cli/package.json` version npm doesn't have yet, to `next` for a `Manual:` release or `latest` otherwise. npm's trusted publisher is this repository's `ci.yml`, so no npm token is kept.
 - **Keys:** `.rf/session.key` signs sessions, and `.rf/seal.key` encrypts everyone's logins. Back up the data folder nightly without them, and keep a copy of both elsewhere. Without seal.key, people sign in to their logins again.
 - **Ordinary compatible production releases deploy by themselves:** `scripts/update.ts` runs every 15 minutes as a per-user systemd timer (below). For v0.7.0, follow Updating to v0.7.0 below.
 - **Updates:** `podman kill --signal=SIGUSR2 rollforward` drains the container first; for the native service, use `systemctl --user kill --kill-whom=main --signal=SIGUSR2 rollforward` instead (the container unit's MainPID is its monitor, not Node). In either case, `GET /drained` answering 200 once the runs going end; then check out the next tag, rebuild, and `systemctl --user restart rollforward`. A restart without the drain cuts the runs going, whose cost so far is recorded. They carry on only with captured and current autonomous consent, unless an Interrupt or authority change holds them.
@@ -142,6 +142,12 @@ The native proxy can stay up. Warn users and choose a quiet window: v0.7.9 still
    Progress goes to standard error; standard output is one JSON count report. Review the counts against the old root. Stop on any refusal; do not hand-fill a gap or restart on an incomplete conversion. The final dry run must say `already converted`. A failed partial conversion is discarded and started again on a fresh stopped copy.
 3. Point the service at the converted copy, with the same keys and environment, and append `--verify-only` after the port in the new `src/server.ts` command. This startup binds only to loopback, does not recover runs, start scheduled work, or contact the browser, tunnelling, index or model services. It refuses sign-in exchanges and all HTTP writes. Use an existing authenticated token from the copied data to check `GET /me` (`version: "v0.8.0"`, `verifyOnly: true`), `/api/status`, conversation links, Notes, Waiting, and `rf pull` with `@rfany/rf@0.20.0`. Verify the converter's projection counts. Use `@rfany/rf@0.19.2` with v0.7.9 and pin `@rfany/rf@0.20.0` after cutover.
 4. On a verification failure, stop the verification service, keep the converted copy for inspection, and restart the old checkout on the untouched original. Verify authenticated `/me` again. If verification passes, stop the verification service, remove only the `--verify-only` argument and restart on the converted copy to activate it. Verify `/me` again and restore the updater timer to its previous state. Activation can run due work and make outward changes. If anything fails after activation, keep the updater paused, preserve both roots, and agree on how to reconcile new work before rolling back. Never copy converted logs over old ones.
+5. Only after v0.8.0 is active and authenticated `/me` reports `v0.8.0` without `verifyOnly`, promote the CLI from an authenticated npm operator workstation:
+
+       npm view @rfany/rf dist-tags --json   # record the previous latest first
+       npm dist-tag add @rfany/rf@0.20.0 latest
+
+   The controller does not publish or use npm credentials. Before activation, tell clients to stay on 0.19.2; 0.20.0's write routes require the new server. If returning to v0.7.9 after promotion, pin clients to 0.19.2 and restore the previous `latest` as needed.
 
 ## Updating to v0.7.0
 
