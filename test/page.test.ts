@@ -841,9 +841,10 @@ test("a cN link to a reply under a withdrawn ask opens the ask to show it", asyn
 test("hovering a link to a deleted instance's comment says nothing of it, and no error", async () => {
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f0a'; });
   await page.waitForSelector('#bar h1 .t:text-is("February")');
-  await page.evaluate(() => api('/api/instances/a5c0ff5e1f0a/comment', { method: 'POST', body: JSON.stringify({ text: 'Check the comment links.' }) }));
-  await page.waitForSelector('#bar .state .bad:text("Run 1 failed")');
+  await page.evaluate(() => api('/api/instances/a5c0ff5e1f0a/comment', { method: 'POST', body: JSON.stringify({ text: 'Check the comment links.', quiet: true }) }));
+  await page.waitForSelector('#conv .post[data-seq="7"]');
   await page.evaluate(() => api('/api/instances/a5c0ff5e1f09/delete', { method: 'POST' }));
+  await page.waitForFunction(async () => (await (await fetch('/api/instances/a5c0ff5e1f09')).json()).doc.status === 'deleted');
   const toasts = await page.evaluateHandle(() => {
     const added: string[] = [];
     const observer = new MutationObserver(records => {
@@ -2015,6 +2016,7 @@ test("website permissions are asked only in Logins, linked from series ticks wit
   await page.waitForSelector('#pv details[data-shown="web:bank"][open]');
   await page.click('#pv [data-act=unpv]');
   await page.waitForSelector('#pv [data-act=series-credentials]');
+  await page.waitForSelector('#pv input.tick[value="web:ledger"]:checked');
   assert.equal(await row('#pv', 'ledger').locator('input').isChecked(), true, 'returning from setup retains series ticks');
   await page.click('#pv [data-act=unpv]');
   await page.fill('#newcomment', '');
