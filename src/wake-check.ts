@@ -18,7 +18,20 @@ const bridge = `
   exec "$@"
 `;
 
-export async function runWakeCheck(o: { token: string; id: string; view: View; script: string; signal: AbortSignal }): Promise<{ decision: 'continue' | 'stop'; message: string }> {
+// -I -S starts without workspace imports or site hooks. Restore import paths only after that, without processing .pth files.
+const python = `
+import sys, sysconfig
+sys.argv = sys.argv[1:]
+__file__ = sys.argv[0]
+paths = sysconfig.get_paths('venv', vars={'base': '/opt/venv', 'platbase': '/opt/venv'})
+sys.path[:0] = [__file__.rsplit('/', 1)[0], '/pylib']
+sys.path.extend(dict.fromkeys((paths['purelib'], paths['platlib'])))
+with open(__file__, 'rb') as f:
+    code = compile(f.read(), __file__, 'exec')
+exec(code)
+`;
+
+export async function runWakeCheck(o: { token: string; id: string; view: View; script: string; signal: AbortSignal; checkpoint?: () => void }): Promise<{ decision: 'continue' | 'stop'; message: string }> {
   const { token, id, view, script, signal } = o, ext = posix.extname(script);
   if (ext !== '.py' && ext !== '.ts') throw new Error('unsupported script type');
   const run = join(scratch, 'runs', token), dir = join(run, 'socket');
@@ -38,22 +51,23 @@ export async function runWakeCheck(o: { token: string; id: string; view: View; s
           PATH: '/app/bin:/opt/venv/bin:/usr/local/bin:/usr/bin', LANG: 'C.UTF-8', TZ: Intl.DateTimeFormat().resolvedOptions().timeZone,
           RF_URL: `http://127.0.0.1:${PORT}`, RF_TOKEN: token, RF_INSTANCE: id, RF_WORKING: `${view.instance}/working`,
           ...(view.env.RF_INDEX && { RF_INDEX: view.env.RF_INDEX }),
-          PYTHONDONTWRITEBYTECODE: '1', ...(lib && { PYTHONPATH: '/pylib' }),
+          PYTHONDONTWRITEBYTECODE: '1',
         },
       });
       const input = Buffer.from(`${mounts.join('\0')}\0`);
       const server = listenRun(join(dir, 'rf.sock'), token);
       listening = true;
       await once(server, 'listening');
-      signal.throwIfAborted();
       const scope = (process.env.RF_SANDBOX_SCOPE ?? SCOPE).match(/\S+/g) ?? [];
       const [cmd, ...args] = [
         ...scope, 'env', '-i', 'bwrap', '--args', '3', '--',
         '/usr/bin/prlimit', `--nproc=${TASKS}`, `--fsize=${FILE_GB * 2 ** 30}`, '/bin/bash', '-c', bridge, 'wake-check',
         // --disable-sigusr1 alone still allows the script to open Node's inspector.
-        ...(ext === '.py' ? ['/opt/venv/bin/python'] : ['/usr/local/bin/node', '--disable-sigusr1', '--permission', '--allow-fs-read=*', '--allow-fs-write=*', '--allow-net', '--allow-child-process']),
-        '--', script,
+        ...(ext === '.py' ? ['/opt/venv/bin/python', '-I', '-S', '-B', '-c', python, script]
+          : ['/usr/local/bin/node', '--disable-sigusr1', '--permission', '--allow-fs-read=*', '--allow-fs-write=*', '--allow-net', '--allow-child-process', '--', script]),
       ];
+      signal.throwIfAborted();
+      o.checkpoint?.();
       const child = spawn(cmd, args, {
         env: { PATH: process.env.PATH, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS },
         stdio: ['ignore', 'pipe', 'ignore', 'pipe'], signal, killSignal: 'SIGKILL',

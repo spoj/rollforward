@@ -236,8 +236,13 @@ test('index copies select only leased sources and prune after transfer', async (
   assert.deepEqual(sources(inst, captured).map(s => s.o.id), [one], 'a wake check takes the captured ceiling too');
   const dir = join(root, '.rf/runs/token'), meta = join(personDir(ALICE), 'index', `${createHash('sha256').update(one).digest('hex').slice(0, 16)}.json`);
   const before = readFileSync(meta, 'utf8');
-  assert.equal(await prepare(inst, join(root, '.rf/runs/check'), captured), true);
+  const check = join(root, '.rf/runs/check');
+  const snapshot = await prepare(inst, check, captured, new AbortController().signal);
+  assert.equal(snapshot?.valid(), true);
   assert.equal(readFileSync(meta, 'utf8'), before, 'a snapshot does not resume a stopped feed');
+  const login = logins(ALICE).find(l => l.id === 'm365')!;
+  saveLogin(ALICE, { ...login, since: 'new Microsoft sign-in' });
+  assert.equal(snapshot?.valid(), false, 'a new sign-in with the same offers does not lend an old snapshot');
   assert.equal(prepare(inst, dir, 1), true);
   assert.equal(readFileSync(join(dir, 'One.json'), 'utf8').includes(one), true);
   consent([], BOB, 2);
@@ -245,6 +250,34 @@ test('index copies select only leased sources and prune after transfer', async (
   assert.deepEqual(sources(inst, 1), []);
   assert.deepEqual(sources(inst, captured), []);
   assert.throws(() => readFileSync(join(dir, 'One.json')), { code: 'ENOENT' });
+});
+
+test('a wake snapshot copies only the accounted feed prefix and notices a changed generation', async () => {
+  const offer = 'm365:item:drive/one', inst = running([offer]), captured = authority(inst);
+  const secretDir = join(personDir(ALICE), 'index'), at = join(secretDir, createHash('sha256').update(offer).digest('hex').slice(0, 16));
+  mkdirSync(secretDir, { recursive: true });
+  const meta = { person: ALICE, source: offer, name: 'One', gen: 0, length: 4, lines: 1, base: 0, parts: {} };
+  writeFileSync(`${at}.json`, JSON.stringify(meta));
+  writeFileSync(`${at}.0.ndjson.zst`, 'abcd followed by an unaccounted append');
+  const dir = join(root, '.rf/runs/check');
+  const snapshot = await prepare(inst, dir, captured, new AbortController().signal);
+  assert.equal(readFileSync(join(dir, 'One.ndjson.zst'), 'utf8'), 'abcd');
+  assert.equal(snapshot?.valid(), true);
+  writeFileSync(`${at}.json`, JSON.stringify({ ...meta, gen: 1 }));
+  assert.equal(snapshot?.valid(), false);
+});
+
+test('a wake snapshot refuses large feeds and honours cancellation', async () => {
+  const offer = 'm365:item:drive/one', inst = running([offer]), captured = authority(inst);
+  const secretDir = join(personDir(ALICE), 'index'), at = join(secretDir, createHash('sha256').update(offer).digest('hex').slice(0, 16));
+  mkdirSync(secretDir, { recursive: true });
+  const meta = { person: ALICE, source: offer, name: 'One', gen: 0, length: 100 * 2 ** 20, lines: 1, base: 0, parts: {} };
+  writeFileSync(`${at}.json`, JSON.stringify(meta));
+  const dir = join(root, '.rf/runs/check');
+  await assert.rejects(async () => prepare(inst, dir, captured, new AbortController().signal), /wake check index copy limit/);
+  writeFileSync(`${at}.json`, JSON.stringify({ ...meta, length: 4 }));
+  const signal = AbortSignal.abort(new Error('cancel the copy'));
+  await assert.rejects(async () => prepare(inst, dir, captured, signal), e => e === signal.reason);
 });
 
 test('browser listing remains the run snapshot after the series ceiling grows', async () => {

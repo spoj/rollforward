@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import { closeSync, constants, copyFileSync, createReadStream, createWriteStream, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, truncateSync, writeFileSync, writeSync } from 'node:fs';
-import { copyFile, truncate } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
@@ -23,6 +22,7 @@ import { scratch } from './runner.ts';
 // batch and nothing else. What the .json accounts for never changes under a feed's name: a tidy-up, a 410, or a source lost, starts a new
 // one, so a run copies a cache as it is, without waiting.
 const SLICE_MS = 5_000, REFRESH_MS = 60 * 60_000, TRIES = 5;
+const WAKE_COPY_BYTES = 64 * 2 ** 20;
 
 type Part = { link: string; delta: string | null; as_of: string | null; pages: number; due: number | null; error: string | null; tries: number };
 type Cache = { person: string; source: string; name: string; gen: number; length: number; lines: number; base: number; parts: Record<string, Part> };
@@ -298,18 +298,22 @@ A ticked source with neither file has no cache yet.
 // changed since, and as_of, when the oldest of them was reached, null while the cache is still being built; and the README.md that
 // says so. Pi's copies are synchronous and resume stopped parts in their cache's queue. A wake check instead takes an async
 // snapshot without touching the feeds, so its deadline can still fire during a slow copy.
+export type Snapshot = { valid(): boolean };
 export function prepare(inst: Instance, to: string, run?: number): boolean;
-export function prepare(inst: Instance, to: string, run: Authority): Promise<boolean>;
-export function prepare(inst: Instance, to: string, run?: number | Authority): boolean | Promise<boolean> {
-  const names = new Set<string>(), copies: (() => Promise<void>)[] = [], snapshot = typeof run === 'object';
-  for (const { o, c } of sources(inst, run)) {
+export function prepare(inst: Instance, to: string, run: Authority, signal: AbortSignal): Promise<Snapshot | undefined>;
+export function prepare(inst: Instance, to: string, run?: number | Authority, signal?: AbortSignal): boolean | Promise<Snapshot | undefined> {
+  signal?.throwIfAborted();
+  const names = new Set<string>(), copies: (() => Promise<void>)[] = [], included = sources(inst, run);
+  const lease = typeof run === 'object' ? run : undefined, since = lease && m365(lease.owner)?.since;
+  if (lease && included.reduce((sum, { c }) => sum + c.length, 0) > WAKE_COPY_BYTES) throw new Error('wake check index copy limit exceeded');
+  for (const { o, c } of included) {
     const base = o.name.replace(/[/\0]/g, '-'), ps = Object.values(c.parts);
     const fit = (suffix: string) => {
       let s = '';
       for (const ch of base) if (Buffer.byteLength(s + ch + suffix + '.ndjson.zst') <= 255) s += ch; else break;
       return s + suffix;
     };
-    if (!snapshot && ps.some(p => p.due === null && p.tries >= TRIES)) queue(at(c.person, c.source), async () => {
+    if (!lease && ps.some(p => p.due === null && p.tries >= TRIES)) queue(at(c.person, c.source), async () => {
       const now = load(c.person, c.source);
       if (!now) return;
       for (const p of Object.values(now.parts)) if (p.due === null && p.tries >= TRIES) Object.assign(p, { due: Date.now(), tries: 0 });
@@ -321,8 +325,12 @@ export function prepare(inst: Instance, to: string, run?: number | Authority): b
     mkdirSync(to, { recursive: true });
     if (c.length) {
       const file = join(to, `${name}.ndjson.zst`);
-      if (snapshot) copies.push(() => copyFile(feed(c), file, constants.COPYFILE_FICLONE).then(() => truncate(file, c.length)));
-      else {
+      if (lease) copies.push(async () => {
+        signal!.throwIfAborted();
+        const source = createReadStream(feed(c), { end: c.length - 1 });
+        await pipeline(source, createWriteStream(file, { flags: 'wx' }), { signal });
+        if (source.bytesRead !== c.length) throw new Error('index feed changed during the copy');
+      }); else {
         copyFileSync(feed(c), file, constants.COPYFILE_FICLONE);
         truncateSync(file, c.length);
       }
@@ -330,7 +338,18 @@ export function prepare(inst: Instance, to: string, run?: number | Authority): b
     writeFileSync(join(to, `${name}.json`), JSON.stringify({ source: o.id, as_of: ps.length && ps.every(p => p.as_of) ? ps.map(p => p.as_of!).sort()[0] : null, deltaLinks: ps.flatMap(p => p.delta ?? []) }, null, 1));
   }
   if (names.size) writeFileSync(join(to, 'README.md'), README);
-  return snapshot ? Promise.all(copies.map(copy => copy())).then(() => names.size > 0) : names.size > 0;
+  if (!lease) return names.size > 0;
+  return (async () => {
+    for (const copy of copies) await copy();
+    if (included.length) return { valid() {
+      const login = m365(lease.owner);
+      return !!login && !login.expired && login.since === since && sameAuthority(inst, lease) && included.every(({ o, c }) => {
+        if (!login.offers.some(offer => offer.id === o.id)) return false;
+        const latest = load(lease.owner, o.id);
+        return latest?.gen === c.gen && latest.length >= c.length && Object.keys(c.parts).every(part => Object.hasOwn(latest.parts, part));
+      });
+    } };
+  })();
 }
 
 // A going run's copies, by its token, of sources no longer lent it, as its runner unticked one, took its offer off or signed out,

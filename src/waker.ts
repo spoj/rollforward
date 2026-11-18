@@ -6,7 +6,7 @@ import { join, posix } from 'node:path';
 import { agentsFile, closedBefore, createInstance, HttpError, instance, instanceDir, instances, isPerson, labels, newId, openFile, seriesDir, type Entry, type Instance } from './store.ts';
 import { pylib, startRun, type Run, type TurnEnd, type View } from './runner.ts';
 import type { JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
-import { prepare } from './indexes.ts';
+import { prepare, type Snapshot } from './indexes.ts';
 import { act, canSee, changes, readJson, rfDir, tree, type Tree, writeJson } from './system.ts';
 import { asPerson, can, users } from './auth.ts';
 import { websitesOf, type Browsers } from './browsers.ts';
@@ -47,7 +47,7 @@ const debounce = new Map<string, NodeJS.Timeout>();
 const waiting = new Set<Instance>();
 const retiring = new Set<Active>();
 
-type Check = { id: string; wake: Wake; inst: Instance; authority: Authority; token: string; cancel: AbortController; signal?: AbortSignal; view?: View; indexed?: boolean; ended?: Promise<void> };
+type Check = { id: string; wake: Wake; inst: Instance; authority: Authority; token: string; cancel: AbortController; signal?: AbortSignal; view?: View; indexes?: Snapshot; ended?: Promise<void> };
 const checking = new Map<string, Check>();
 const busy = (series: string) => active.has(series) || checking.has(series);
 
@@ -642,7 +642,7 @@ function currentCheck(c: Check, w = wakes(), t = tree()) {
   if (stopping || c.cancel.signal.aborted || inst.doc.status !== 'open' || inst.closing || !owner || !can(owner, 'wake-check')
     || !sameAuthority(inst, lease) || !ownerOf(inst).consent?.autonomous || archived(t, inst.seriesId)
     || JSON.stringify(w.pending[c.id]) !== JSON.stringify(c.wake) || (t.series[c.wake.target] && inst.label !== c.wake.label)
-    || (c.indexed && !logins(lease.owner).some(l => l.id === 'm365' && !l.expired))) return false;
+    || (c.indexes && !c.indexes.valid())) return false;
   const reachable = [inst.seriesId, ...reach(t, inst.seriesId)];
   return !c.view || Object.values(c.view.series).every(id => reachable.includes(id));
 }
@@ -686,10 +686,11 @@ async function checkWake(c: Check, from: string) {
         }
         if (!script) { failure = 'script not found in working/'; return; }
         mkdirSync(index, { recursive: true });
-        const indexed = await prepare(inst, index, lease);
+        const indexes = await prepare(inst, index, lease, signal);
         checkpoint();
-        if (indexed) {
-          c.indexed = true;
+        if (indexes) {
+          if (!indexes.valid()) throw new Error('index snapshot changed');
+          c.indexes = indexes;
           v.ro.push([index, '/index']);
           v.env.RF_INDEX = '/index';
         }
@@ -702,7 +703,7 @@ async function checkWake(c: Check, from: string) {
     }
     if (script) {
       // Wait for the sandbox's exit, not merely for the abort, before allowing a normal run of this series.
-      try { result = await runWakeCheck({ token, id: inst.id, view: c.view!, script, signal }); }
+      try { result = await runWakeCheck({ token, id: inst.id, view: c.view!, script, signal, checkpoint }); }
       catch (e) { failure = (e as Error).message; }
     }
     const w = wakes(), at = Date.now(), now = new Date(at).toISOString();

@@ -18,6 +18,8 @@ const view: View = {
 };
 for (const dir of [join(today, 'working'), join(today, 'session'), join(prior, 'working'), index, pylib]) mkdirSync(dir, { recursive: true });
 writeFileSync(join(pylib, 'sample_lib.py'), 'VALUE = 3\n');
+writeFileSync(join(pylib, 'sitecustomize.py'), "MARKER = 'loaded'\n");
+writeFileSync(join(prior, 'working', 'helper.py'), 'VALUE = 4\n');
 writeFileSync(join(index, 'items'), 'index data');
 writeFileSync(join(root, 'secret'), 'host only');
 const opened = Promise.withResolvers<void>(), disconnected = Promise.withResolvers<void>();
@@ -34,9 +36,9 @@ const server = serveSandboxes({
 after(() => { server.close(); rmSync(root, { recursive: true, force: true }); });
 const cleaned = () => assert.deepEqual(readdirSync(join(scratch, 'runs')), []);
 
-function check(file: string, text: string, signal = AbortSignal.timeout(5_000)) {
+function check(file: string, text: string, signal = AbortSignal.timeout(5_000), checkpoint?: () => void) {
   writeFileSync(join(prior, 'working', file), text);
-  return runWakeCheck({ token, id: 'today', view, script: `${previous}/working/${file}`, signal });
+  return runWakeCheck({ token, id: 'today', view, script: `${previous}/working/${file}`, signal, checkpoint });
 }
 
 test('Python checks can read the view and script library but cannot write files or see server settings', async () => {
@@ -44,7 +46,12 @@ test('Python checks can read the view and script library but cannot write files 
 import errno, json, os, resource, sys, urllib.request
 from pathlib import Path
 from sample_lib import VALUE
-assert VALUE == 3 and sys.dont_write_bytecode
+from helper import VALUE as HELPER
+import requests
+assert VALUE == 3 and HELPER == 4 and sys.dont_write_bytecode
+assert '/opt/venv/' in requests.__file__
+assert sys.flags.isolated and sys.flags.no_site
+assert 'sitecustomize' not in sys.modules
 assert resource.getrlimit(resource.RLIMIT_NPROC) == (${TASKS}, ${TASKS})
 assert resource.getrlimit(resource.RLIMIT_FSIZE) == (${FILE_GB * 2 ** 30}, ${FILE_GB * 2 ** 30})
 assert os.getcwd() == ${JSON.stringify(instance)}
@@ -67,7 +74,13 @@ print(json.dumps({'decision': 'stop', 'message': 'No new rows.'}))
 `);
   assert.deepEqual(result, { decision: 'stop', message: 'No new rows.' });
   assert.deepEqual(readdirSync(index), ['items'], 'the caller still owns its index');
-  assert.deepEqual(readdirSync(pylib), ['sample_lib.py']);
+  assert.deepEqual(readdirSync(pylib).sort(), ['sample_lib.py', 'sitecustomize.py']);
+  cleaned();
+});
+
+test('refusing the launch checkpoint prevents the sandbox from running', async () => {
+  const stop = `print('{"decision":"stop","message":"Unexpected launch"}')`;
+  await assert.rejects(check('checkpoint.py', stop, AbortSignal.timeout(5_000), () => { throw new Error('stale snapshot'); }), { message: 'could not start sandbox' });
   cleaned();
 });
 
