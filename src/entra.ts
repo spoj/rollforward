@@ -3,13 +3,13 @@ import { join } from 'node:path';
 import { HttpError } from './store.ts';
 import { changes } from './system.ts';
 import { renew, upsertUser, users } from './auth.ts';
-import { logins, personDir, saveLogin, seal, secret } from './logins.ts';
+import { loginGeneration, logins, personDir, saveLogin, seal, secret } from './logins.ts';
 
 // A person's Entra logins, each a connection's (connections.ts), such as Microsoft 365's: each access token comes from the login's
 // sealed refresh token, which turns over as it's used and is sealed again. A login Microsoft no longer renews is marked expired,
 // for its person to sign in again on the Logins page.
 
-const tokens = new Map<string, { token: string; exp: number; since: string }>();
+const tokens = new Map<string, { token: string; exp: number; generation: string }>();
 const inFlight = new Map<string, { run: Promise<string>; waiters: Set<{ checkpoint?: () => void }> }>();
 
 // The login as it is now: its person may change its offers, or sign out, while Microsoft answers.
@@ -19,9 +19,10 @@ const current = (email: string, id: string) => logins(email).find(l => l.id === 
 export function token(email: string, id: string, scope: string[], checkpoint?: () => void): Promise<string> {
   checkpoint?.();
   const key = `${id} ${email}`, t = tokens.get(key), login = current(email, id);
-  if (t && t.exp > Date.now() && t.since === login?.since && !login.expired) return Promise.resolve(t.token);
   if (!login || login.expired) return Promise.reject(Object.assign(new HttpError(409, `${email} has no current ${login?.name ?? id} login: they sign in to it on the Logins page`), { login: id }));
-  const inflightKey = `${key}\0${login.since}\0${scope.join(' ')}`;
+  const generation = loginGeneration(login)!;
+  if (t && t.exp > Date.now() && t.generation === generation) return Promise.resolve(t.token);
+  const inflightKey = `${key}\0${generation}\0${scope.join(' ')}`;
   let pending = inFlight.get(inflightKey);
   const waiter = { checkpoint }, waiters = pending?.waiters ?? new Set<{ checkpoint?: () => void }>();
   waiters.add(waiter);
@@ -39,15 +40,15 @@ export function token(email: string, id: string, scope: string[], checkpoint?: (
         // Until its person consents to what the server asks for anew, a Microsoft 365 login renews with what Microsoft last granted it.
         const sealed = secret(email, id), r = await renew(sealed, scope, authorized).catch(e => e.consent && login.scopes ? renew(sealed, login.scopes.map(s => `https://graph.microsoft.com/${s}`), authorized) : Promise.reject(e));
         const now = current(email, id);
-        if (now?.since === login.since) {
+        if (now && loginGeneration(now) === generation) {
           saveLogin(email, { ...now, ...(id === 'm365' && r.scopes && { scopes: r.scopes }) }, r.refresh);
-          tokens.set(key, { token: r.access, exp: r.expires, since: login.since });
+          tokens.set(key, { token: r.access, exp: r.expires, generation });
         }
         return r.access;
       } catch (e) {
         if ((e as HttpError).status !== 401) throw e;
         const now = current(email, id);
-        if (now?.since === login.since) {
+        if (now && loginGeneration(now) === generation) {
           tokens.delete(key);
           saveLogin(email, { ...now, expired: true });
         }

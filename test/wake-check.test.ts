@@ -1,6 +1,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -12,6 +13,7 @@ import { writeFixtureTree } from './owner-fixture.ts';
 
 const tmp = mkdtempSync(join(tmpdir(), 'rf-wake-check-')), root = join(tmp, 'data');
 const admin = 'admin@demo.test', bob = 'bob@demo.test';
+const mailbox = { id: `m365:mail:${admin}`, name: 'Mailbox' }, revokeIndex = '/screen?revoke-index';
 const cookies: Record<string, string> = {}, prompts: string[] = [];
 let proc: ChildProcess, base: string, workspace: string, entra: Awaited<ReturnType<typeof idp>>;
 let nextConfirmation: (() => Promise<void>) | undefined;
@@ -62,8 +64,17 @@ before(async () => {
     nextConfirmation = undefined;
     await wait?.();
   });
-  const upstream = `import { upstreams } from ${JSON.stringify(new URL('../src/connections.ts', import.meta.url).href)}; upstreams['openrouter.ai'] = 'http://127.0.0.1:${(model.address() as { port: number }).port}';`;
-  proc = spawn(process.execPath, ['--import', `data:text/javascript,${encodeURIComponent(upstream)}`, 'src/server.ts', root, String(port)], {
+  const preload = `
+    import { subscribe } from 'node:diagnostics_channel';
+    import { upstreams } from ${JSON.stringify(new URL('../src/connections.ts', import.meta.url).href)};
+    import { changes } from ${JSON.stringify(new URL('../src/system.ts', import.meta.url).href)};
+    upstreams['openrouter.ai'] = 'http://127.0.0.1:${(model.address() as { port: number }).port}';
+    subscribe('http.server.response.finish', ({ request, response }) => {
+      if (request.url.endsWith(${JSON.stringify(revokeIndex)}) && response.statusCode === 200)
+        changes.emit('index-removed', ${JSON.stringify(admin)}, ${JSON.stringify(mailbox.id)});
+    });
+  `;
+  proc = spawn(process.execPath, ['--import', `data:text/javascript,${encodeURIComponent(preload)}`, 'src/server.ts', root, String(port)], {
     env: { ...process.env, ...entra.env(base), RF_ADMINS: admin, RF_MIN_FREE_GB: '0', RF_WAKE_TICK_MS: '100', RF_SCRATCH: join(tmp, 'scratch'), OPENROUTER_API_KEY: 'synthetic' },
     stdio: ['ignore', 'pipe', 'inherit'],
   });
@@ -184,6 +195,45 @@ test('a weekly wake checks the new period using the prior closed script and keep
   await until('a run in the stopped period at the deadline', async () => (await info(target.id)).log.some(e => e.op === 'done'));
   assert.equal((await listing()).wakes[0].at, next.toISOString());
   assert.equal((await listing()).instances.length, 2);
+});
+
+test('M365 index revocation aborts a running check and opens Pi under the same wake authority', async () => {
+  await json('/capabilities', 'PUT', { cap: 'wake-check', add: [admin] });
+  const person = join(root, '.rf', 'people', createHash('sha256').update(admin).digest('hex').slice(0, 16));
+  const cache = createHash('sha256').update(mailbox.id).digest('hex').slice(0, 16);
+  const login = { id: 'm365', kind: 'm365', name: 'Microsoft 365', since: iso(0), offers: [mailbox] };
+  mkdirSync(join(person, 'index'), { recursive: true });
+  writeFileSync(join(person, 'logins.json'), JSON.stringify([login]));
+  const delta = 'synthetic-delta';
+  writeFileSync(join(person, 'index', `${cache}.json`), JSON.stringify({
+    person: admin, source: mailbox.id, name: mailbox.name, gen: 1, length: 0, lines: 0, base: 0,
+    wakeGrant: JSON.stringify([login.since, null]),
+    parts: { '': { link: delta, delta, as_of: login.since, due: null, pages: 1, tries: 0, error: null } },
+  }));
+  // The notification leaves the cache valid, so a final snapshot recheck alone cannot pass this test.
+  const { sid, iid, check } = await fixture('Revoked mailbox index', `
+import json, os, time, urllib.request
+from pathlib import Path
+assert json.loads(Path(os.environ['RF_INDEX'], ${JSON.stringify(`${mailbox.name}.json`)}).read_text())['source'] == ${JSON.stringify(mailbox.id)}
+print('{"decision":"stop","message":"Stale mailbox result"}', flush=True)
+url = os.environ['RF_URL'] + '/api/instances/' + os.environ['RF_INSTANCE'] + ${JSON.stringify(revokeIndex)}
+req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + os.environ['RF_TOKEN']})
+urllib.request.urlopen(req).close()
+time.sleep(30)  # The test waits only 15 seconds for Pi: the check must be interrupted.
+`);
+  const consent = await call('PUT', `/api/series/${sid}/credentials`, { logins: [mailbox.id], autonomous: true });
+  assert.equal(consent.status, 200, await consent.text());
+  const { authority } = await json(`/api/wakes/${iid}`, 'PUT', { at: iso(1200), check });
+  const data = await until('Pi run after index revocation', async () => {
+    const d = await info(iid);
+    return (d.wakeCheck || d.log.some(e => e.op === 'done')) && d;
+  });
+  const failure = 'wake check failed: index snapshot changed';
+  assert.ok(!data.log.some(e => e.op === 'wake-check'), 'the stale stop was not recorded');
+  assert.equal(data.log.find(e => e.op === 'wake')?.text, failure);
+  assert.deepEqual(data.log.find(e => e.op === 'run')?.authority, authority);
+  assert.equal(data.log.find(e => e.op === 'done')?.aborted, false);
+  assert.ok(prompts.some(p => p.includes(failure)));
 });
 
 test('continue, crash, malformed JSON and timeout all send their wake text to Pi', { timeout: 100_000 }, async () => {

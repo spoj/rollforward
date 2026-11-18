@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -340,7 +340,7 @@ async function finishLogin(req: IncomingMessage, res: ServerResponse, claims: an
   if (email !== p.email) return page(res, 403, `That was ${email}'s Microsoft account; connect your own, ${p.email}.`);
   if (!t.refresh_token) return page(res, 502, 'Microsoft gave no refresh token, so the login could not be kept: the app needs offline_access.');
   const scopes = id === 'm365' && granted(t.scope);
-  saveLogin(email, { id, kind, name, account: email, since: new Date().toISOString(), offers: offers ?? logins(email).find(l => l.id === id)?.offers ?? [], ...(scopes && { scopes }) }, t.refresh_token);
+  saveLogin(email, { id, kind, name, account: email, since: new Date().toISOString(), ...(id === 'm365' && { generation: randomUUID() }), offers: offers ?? logins(email).find(l => l.id === id)?.offers ?? [], ...(scopes && { scopes }) }, t.refresh_token);
   res.writeHead(302, { location: p.next, 'set-cookie': cookie(pendingCookie(p.state), '', 0) }).end();
 }
 

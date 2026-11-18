@@ -6,9 +6,9 @@ import { promisify } from 'node:util';
 import { createZstdCompress, createZstdDecompress, zstdCompress } from 'node:zlib';
 import { wipe, type Instance } from './store.ts';
 import { changes, rfDir } from './system.ts';
-import { users } from './auth.ts';
+import { asPerson, can, users } from './auth.ts';
 import { token } from './entra.ts';
-import { lender, logins, personDir, sameAuthority, use, type Offer } from './logins.ts';
+import { lender, loginGeneration, logins, personDir, sameAuthority, use, type Offer, type Login } from './logins.ts';
 import type { Authority } from './series.ts';
 import { endpoints, scope } from './connections/graph.ts';
 import { scratch } from './runner.ts';
@@ -23,15 +23,18 @@ import { scratch } from './runner.ts';
 // one, so a run copies a cache as it is, without waiting.
 const SLICE_MS = 5_000, REFRESH_MS = 60 * 60_000, TRIES = 5;
 const WAKE_COPY_BYTES = 64 * 2 ** 20;
+const wakeRebuildAfter = new Map<string, number>();
 
 type Part = { link: string; delta: string | null; as_of: string | null; pages: number; due: number | null; error: string | null; tries: number };
-type Cache = { person: string; source: string; name: string; gen: number; length: number; lines: number; base: number; parts: Record<string, Part> };
+type Cache = { person: string; source: string; name: string; gen: number; length: number; lines: number; base: number; parts: Record<string, Part>; wakeGrant?: string };
 
 // A feed line, U+2028 and U+2029 escaped: JSON.stringify leaves them raw, and line readers such as node's readline and Python's
 // splitlines() end a line at them.
 const ndjson = (json: string) => `${json.replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029')}\n`;
 const kind = (offer: string) => /^m365:(\w+):?(.*)$/.exec(offer)!.slice(1) as [string, string];
 const m365 = (email: string) => logins(email).find(l => l.id === 'm365');
+const wakeGrant = (login?: Login) => login && !login.expired ? JSON.stringify([loginGeneration(login), login.scopes?.toSorted()]) : undefined;
+const wakeOptedIn = (email: string) => { const p = asPerson(email); return !!p && can(p, 'wake-check'); };
 const indexed = (o: Offer) => /^m365:(item:|site:|mail:|onedrive$)/.test(o.id) && !o.name.startsWith('File ');
 const hasOffer = (person: string, offer: string) => !!m365(person)?.offers.some(o => o.id === offer);
 // A cache is kept up while its person's login offers its source and hasn't expired.
@@ -39,11 +42,20 @@ const offered = (person: string, offer: string) => hasOffer(person, offer) && !m
 const at = (person: string, offer: string) => join(personDir(person), 'index', createHash('sha256').update(offer).digest('hex').slice(0, 16));
 const feed = (c: Cache) => `${at(c.person, c.source)}.${c.gen}.ndjson.zst`;
 const load = (person: string, offer: string): Cache | undefined => (existsSync(`${at(person, offer)}.json`) ? JSON.parse(readFileSync(`${at(person, offer)}.json`, 'utf8')) : undefined);
-function save(c: Cache) {
+function save(c: Cache, invalidates = false) {
   const f = `${at(c.person, c.source)}.json`;
   writeFileSync(`${f}.tmp`, JSON.stringify(c));
   renameSync(`${f}.tmp`, f);
+  if (invalidates) changes.emit('index-removed', c.person, c.source);
 }
+
+function reset(c: Cache, parts: Record<string, Part>) {
+  const was = feed(c);
+  Object.assign(c, { gen: c.gen + 1, length: 0, lines: 0, base: 0, parts });
+  save(c, true);
+  rmSync(was, { force: true });
+}
+
 function caches(): Cache[] {
   const people = join(rfDir(), 'people');
   return (existsSync(people) ? readdirSync(people) : []).flatMap(p => {
@@ -105,15 +117,35 @@ async function slice(person: string, offer: string, until: number): Promise<void
     const c = load(person, offer);
     const due = c ? Object.entries(c.parts).filter(([, p]) => p.due !== null && p.due <= Date.now()).sort(([, a], [, b]) => a.due! - b.due!).slice(0, 20) : [];
     if (!c || !due.length) return;
+    const login = m365(person), generation = loginGeneration(login);
+    if (c.wakeGrant && c.wakeGrant !== wakeGrant(login)) delete c.wakeGrant;
+    const current = () => {
+      const now = m365(person);
+      return !!now && loginGeneration(now) === generation && now.offers.some(o => o.id === offer)
+        && (!c.wakeGrant || now.expired || c.wakeGrant === wakeGrant(now));
+    };
     let answers: { id: string; status: number; headers?: Record<string, string>; body: any }[];
     try {
       answers = (await call(person, '/$batch', due.map(([, p], k) => ({ id: String(k), method: 'GET', url: p.link.slice(G().length), headers: { prefer: prefer(offer) } })))).responses;
     } catch (e) {
-      if (!hasOffer(person, offer)) return;
+      if (!current()) return;
+      if (c.wakeGrant && [403, 404].includes((e as { status?: number }).status!)) {
+        const parts = Object.fromEntries(Object.keys(c.parts).map(part => [part, fresh(start(offer, part))]));
+        for (const [part, p] of Object.entries(parts)) failed(p, e, start(offer, part));
+        return reset(c, parts);
+      }
       for (const [part, p] of due) failed(p, e, start(offer, part));
       return save(c);
     }
-    if (!hasOffer(person, offer)) return;
+    if (!current()) return;
+    // Graph can report access loss as a deletion. In a wake-capable feed, start fresh before lending older, raw rows again.
+    if (c.wakeGrant && (c.length || Object.values(c.parts).some(p => p.delta)) && answers.some(a => a.status === 403 || a.status === 404 ||
+         a.status === 200 && a.body.value.some((item: any) => item.deleted || item['@removed']))) {
+      const denied = new Map(answers.filter(a => a.status === 403 || a.status === 404).map(a => [due[Number(a.id)][0], a.status]));
+      const parts = Object.fromEntries(Object.keys(c.parts).filter(part => !part || !denied.has(part)).map(part => [part, fresh(start(offer, part))]));
+      if (denied.has('')) failed(parts[''], { status: denied.get(''), message: `Microsoft Graph answered ${denied.get('')}` }, start(offer, ''));
+      return reset(c, parts);
+    }
     const lines: string[] = [];
     let lost: [string, Part, Error & { status: number }] | undefined;
     for (const a of answers) {
@@ -141,15 +173,14 @@ async function slice(person: string, offer: string, until: number): Promise<void
       Object.assign(p, { link: next ?? end, pages: p.pages + 1, due: next ? Date.now() : Date.now() + REFRESH_MS, error: null, tries: 0 }, end && { delta: end, as_of: new Date().toISOString() });
     }
     if (lost) {
-      const [part, p, e] = lost, was = feed(c);
-      Object.assign(c, { gen: c.gen + 1, length: 0, lines: 0, base: 0, parts: e.status === 410 ? Object.fromEntries(Object.keys(c.parts).map(part => [part, fresh(start(offer, part))])) : { [part]: { ...fresh(start(offer, part)), tries: p.tries } } });
-      failed(c.parts[part], e, start(offer, part));
-      save(c);
-      return rmSync(was, { force: true });
+      const [part, p, e] = lost, parts = e.status === 410 ? Object.fromEntries(Object.keys(c.parts).map(part => [part, fresh(start(offer, part))]))
+        : { [part]: { ...fresh(start(offer, part)), tries: p.tries } };
+      failed(parts[part], e, start(offer, part));
+      return reset(c, parts);
     }
     if (lines.length) {
       const frame = await promisify(zstdCompress)(lines.join(''));
-      if (!hasOffer(person, offer)) return;
+      if (!current() || m365(person)?.expired) return;
       const fd = openSync(feed(c), 'a');
       ftruncateSync(fd, c.length);
       writeSync(fd, frame);
@@ -205,7 +236,7 @@ async function tidy(c: Cache) {
   }, createZstdCompress(), createWriteStream(next));
   if (!hasOffer(c.person, c.source)) return rmSync(next, { force: true });
   Object.assign(c, { gen: c.gen + 1, length: statSync(next).size, base: statSync(next).size, lines: kept });
-  save(c);
+  save(c, true);
   rmSync(file);
 }
 
@@ -214,24 +245,37 @@ const epochOf = (k: string) => epochs.get(k) ?? 0;
 const bump = (k: string) => epochs.set(k, epochOf(k) + 1);
 
 // A cache starts with its source's first part, or for a site, a part per library, which are listed again each time.
-async function begin(o: Offer, person: string, since: string, ep: string) {
+async function begin(o: Offer, person: string, generation: string, ep: string, forWake = false) {
   const key = at(person, o.id);
-  const alive = () => `${epochOf(personDir(person))}:${epochOf(key)}` === ep && m365(person)?.since === since && offered(person, o.id);
-  if (!alive()) return;
-  const [k, id] = kind(o.id), c = load(person, o.id) ?? { person, source: o.id, name: o.name, gen: 0, length: 0, lines: 0, base: 0, parts: k === 'site' ? {} : { '': fresh(start(o.id, '')) } };
+  const alive = () => `${epochOf(personDir(person))}:${epochOf(key)}` === ep && loginGeneration(m365(person)) === generation && offered(person, o.id);
+  if (!alive() || (forWake && !wakeOptedIn(person))) return;
+  const [k, id] = kind(o.id), old = load(person, o.id), grant = wakeGrant(m365(person));
+  if (forWake && old?.wakeGrant === grant) return;
+  const c: Cache = (!forWake && old) || { person, source: o.id, name: o.name, gen: old ? old.gen + 1 : 0, length: 0, lines: 0, base: 0, parts: k === 'site' ? {} : { '': fresh(start(o.id, '')) } };
   c.name = o.name;
   if (k === 'site') {
     let path: string | undefined = `/sites/${id}/drives?$select=id`;
-    while (path) {
-      const page = await call(person, path);
-      if (!alive()) return;
-      for (const d of page.value) c.parts[d.id] ??= fresh(start(o.id, d.id));
-      path = page['@odata.nextLink']?.slice(G().length);
+    const listed = new Set<string>();
+    try {
+      while (path) {
+        const page = await call(person, path);
+        if (!alive()) return;
+        for (const d of page.value) listed.add(d.id);
+        path = page['@odata.nextLink']?.slice(G().length);
+      }
+    } catch (e) {
+      if (old?.wakeGrant && alive() && [403, 404].includes((e as { status?: number }).status!)) reset(old, {});
+      throw e;
     }
+    if (c.wakeGrant && Object.keys(c.parts).some(key => !listed.has(key)))
+      return reset(c, Object.fromEntries([...listed].map(part => [part, fresh(start(o.id, part))])));
+    for (const part of listed) c.parts[part] ??= fresh(start(o.id, part));
   }
-  if (!alive()) return;
+  if (!alive() || (forWake && !wakeOptedIn(person))) return;
   mkdirSync(dirname(key), { recursive: true, mode: 0o700 });
-  save(c);
+  if (forWake) c.wakeGrant = wakeGrant(m365(person));
+  save(c, forWake);
+  if (forWake && old) rmSync(feed(old), { force: true });
 }
 
 // A person's caches start, or a site's libraries are listed again, in the background: when they add an offer or sign in, and at the
@@ -241,7 +285,7 @@ export function track(email: string) {
   if (!l || l.expired) return;
   for (const o of l.offers.filter(indexed)) {
     const key = at(email, o.id), ep = `${epochOf(personDir(email))}:${epochOf(key)}`;
-    queue(key, () => begin(o, email, l.since, ep)).then(() => poke(), e => console.error(`index of ${o.id} for ${email}: no start`, e));
+    queue(key, () => begin(o, email, loginGeneration(l)!, ep)).then(() => poke(), e => console.error(`index of ${o.id} for ${email}: no start`, e));
   }
 }
 
@@ -253,12 +297,15 @@ export function forget(email: string, offer?: string) {
     ...(offer ? [at(email, offer)] : [...queues.keys()].filter(k => k.startsWith(prefix))),
     ...caches().filter(c => c.person === email && (!offer || c.source === offer)).map(c => at(email, c.source)),
   ]);
-  for (const k of keys)
+  for (const k of keys) {
+    wakeRebuildAfter.delete(k);
     queue(k, async () => {
       if (!existsSync(`${k}.json`)) return;
       const now = JSON.parse(readFileSync(`${k}.json`, 'utf8')) as Cache;
       for (const f of [feed(now), `${k}.json`]) rmSync(f, { force: true });
+      changes.emit('index-removed', now.person, now.source);
     });
+  }
 }
 
 // What a run of the instance reads: the cache of each source its lender ticked that has one so far, without waiting for it.
@@ -298,13 +345,17 @@ A ticked source with neither file has no cache yet.
 // changed since, and as_of, when the oldest of them was reached, null while the cache is still being built; and the README.md that
 // says so. Pi's copies are synchronous and resume stopped parts in their cache's queue. A wake check instead takes an async
 // snapshot without touching the feeds, so its deadline can still fire during a slow copy.
-export type Snapshot = { valid(): boolean };
+export type Snapshot = { offers: string[]; valid(): boolean };
 export function prepare(inst: Instance, to: string, run?: number): boolean;
 export function prepare(inst: Instance, to: string, run: Authority, signal: AbortSignal): Promise<Snapshot | undefined>;
 export function prepare(inst: Instance, to: string, run?: number | Authority, signal?: AbortSignal): boolean | Promise<Snapshot | undefined> {
   signal?.throwIfAborted();
   const names = new Set<string>(), copies: (() => Promise<void>)[] = [], included = sources(inst, run);
-  const lease = typeof run === 'object' ? run : undefined, since = lease && m365(lease.owner)?.since;
+  const lease = typeof run === 'object' ? run : undefined, login = lease && m365(lease.owner), grant = wakeGrant(login);
+  const selected = lease && login?.offers.filter(o => lease.logins.includes(o.id) && indexed(o));
+  if (selected?.length && (!grant || selected.length !== included.length ||
+      included.some(({ c }) => c.wakeGrant !== grant || !Object.keys(c.parts).length || Object.values(c.parts).some(p => !p.delta))))
+    throw new Error('Microsoft 365 indexes are not ready for a wake check');
   if (lease && included.reduce((sum, { c }) => sum + c.length, 0) > WAKE_COPY_BYTES) throw new Error('wake check index copy limit exceeded');
   for (const { o, c } of included) {
     const base = o.name.replace(/[/\0]/g, '-'), ps = Object.values(c.parts);
@@ -341,12 +392,13 @@ export function prepare(inst: Instance, to: string, run?: number | Authority, si
   if (!lease) return names.size > 0;
   return (async () => {
     for (const copy of copies) await copy();
-    if (included.length) return { valid() {
+    if (included.length) return { offers: included.map(({ o }) => o.id), valid() {
       const login = m365(lease.owner);
-      return !!login && !login.expired && login.since === since && sameAuthority(inst, lease) && included.every(({ o, c }) => {
+      return !!login && !!grant && wakeGrant(login) === grant && sameAuthority(inst, lease) && included.every(({ o, c }) => {
         if (!login.offers.some(offer => offer.id === o.id)) return false;
         const latest = load(lease.owner, o.id);
-        return latest?.gen === c.gen && latest.length >= c.length && Object.keys(c.parts).every(part => Object.hasOwn(latest.parts, part));
+        return latest?.wakeGrant === grant && latest.gen === c.gen && latest.length >= c.length
+          && Object.keys(c.parts).every(part => Object.hasOwn(latest.parts, part));
       });
     } };
   })();
@@ -379,7 +431,23 @@ export function startIndexing() {
   for (const email of Object.keys(users())) track(email);
   worker = (async () => {
     while (!stopping) {
-      const next = caches().filter(c => offered(c.person, c.source)).flatMap(c => Object.values(c.parts).flatMap(p => (p.due === null ? [] : [{ c, due: p.due }]))).sort((a, b) => a.due - b.due)[0];
+      const offeredCaches = caches().filter(c => offered(c.person, c.source));
+      // Only opted-in owners rebuild legacy copies or copies from a different login, in the background, never for a check.
+      const rebuild = offeredCaches.find(c => (wakeRebuildAfter.get(at(c.person, c.source)) ?? 0) <= Date.now()
+        && c.wakeGrant !== wakeGrant(m365(c.person)) && wakeOptedIn(c.person));
+      if (rebuild) {
+        const { person, source } = rebuild, l = m365(person)!, key = at(person, source);
+        const ep = `${epochOf(personDir(person))}:${epochOf(key)}`;
+        try {
+          await queue(key, () => begin(l.offers.find(o => o.id === source)!, person, loginGeneration(l)!, ep, true));
+          wakeRebuildAfter.delete(key);
+        } catch (e) {
+          wakeRebuildAfter.set(key, Date.now() + 60_000);
+          console.error('indexing for wake checks:', e);
+        }
+        continue;
+      }
+      const next = offeredCaches.flatMap(c => Object.values(c.parts).flatMap(p => (p.due === null ? [] : [{ c, due: p.due }]))).sort((a, b) => a.due - b.due)[0];
       if (!next || next.due > Date.now()) await rest((next?.due ?? Infinity) - Date.now());
       else await queue(at(next.c.person, next.c.source), async () => {
         await slice(next.c.person, next.c.source, Date.now() + SLICE_MS);

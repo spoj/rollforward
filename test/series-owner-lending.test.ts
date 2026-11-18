@@ -228,7 +228,7 @@ test('index copies select only leased sources and prune after transfer', async (
   mkdirSync(join(personDir(ALICE), 'index'), { recursive: true });
   for (const [id, name] of [[one, 'One'], [two, 'Two']]) {
     const file = join(personDir(ALICE), 'index', createHash('sha256').update(id).digest('hex').slice(0, 16));
-    writeFileSync(`${file}.json`, JSON.stringify({ person: ALICE, source: id, name, gen: 0, length: 0, lines: 0, base: 0, parts: { first: { due: null, tries: 5 } } }));
+    writeFileSync(`${file}.json`, JSON.stringify({ person: ALICE, source: id, name, gen: 0, length: 0, lines: 0, base: 0, wakeGrant: JSON.stringify(['', null]), parts: { first: { due: null, tries: 5, delta: 'caught-up' } } }));
   }
   const captured = authority(inst);
   consent([one, two]);
@@ -256,7 +256,7 @@ test('a wake snapshot copies only the accounted feed prefix and notices a change
   const offer = 'm365:item:drive/one', inst = running([offer]), captured = authority(inst);
   const secretDir = join(personDir(ALICE), 'index'), at = join(secretDir, createHash('sha256').update(offer).digest('hex').slice(0, 16));
   mkdirSync(secretDir, { recursive: true });
-  const meta = { person: ALICE, source: offer, name: 'One', gen: 0, length: 4, lines: 1, base: 0, parts: {} };
+  const meta = { person: ALICE, source: offer, name: 'One', gen: 0, length: 4, lines: 1, base: 0, wakeGrant: JSON.stringify(['', null]), parts: { '': { delta: 'caught-up' } } };
   writeFileSync(`${at}.json`, JSON.stringify(meta));
   writeFileSync(`${at}.0.ndjson.zst`, 'abcd followed by an unaccounted append');
   const dir = join(root, '.rf/runs/check');
@@ -271,7 +271,7 @@ test('a wake snapshot refuses large feeds and honours cancellation', async () =>
   const offer = 'm365:item:drive/one', inst = running([offer]), captured = authority(inst);
   const secretDir = join(personDir(ALICE), 'index'), at = join(secretDir, createHash('sha256').update(offer).digest('hex').slice(0, 16));
   mkdirSync(secretDir, { recursive: true });
-  const meta = { person: ALICE, source: offer, name: 'One', gen: 0, length: 100 * 2 ** 20, lines: 1, base: 0, parts: {} };
+  const meta = { person: ALICE, source: offer, name: 'One', gen: 0, length: 100 * 2 ** 20, lines: 1, base: 0, wakeGrant: JSON.stringify(['', null]), parts: { '': { delta: 'caught-up' } } };
   writeFileSync(`${at}.json`, JSON.stringify(meta));
   const dir = join(root, '.rf/runs/check');
   await assert.rejects(async () => prepare(inst, dir, captured, new AbortController().signal), /wake check index copy limit/);

@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 import { saveSeriesSettings, seriesSettings } from '../src/series.ts';
-import { saveTree, tree, writeJson } from '../src/system.ts';
+import { changes, saveTree, tree, writeJson } from '../src/system.ts';
 import { openStore, type Instance } from '../src/store.ts';
 
 // A stand-in for Microsoft's sign-in and Graph: a library whose ticked folder has a subfolder shared with Bob, who sees only what is
@@ -483,6 +483,68 @@ test("a going run's copy of a source goes as soon as it's no longer lent: untick
   logins.signOut(ALICE, 'm365');
   ix.prune(next, 1, 'going');
   assert.deepEqual(copies(), ['README.md']);
+});
+
+test('wake copies reject legacy data and become invalid on a same-time M365 reconnect', async () => {
+  const o = { id: MAIL, name: `Mailbox ${BOX}` }, login = logins.logins(CAROL).find(l => l.id === 'm365')!;
+  const inst = instance(CAROL, [MAIL]), lease = logins.authority(inst), to = join(tmp, 'check-copy');
+  const prepare = () => ix.prepare(inst, to, lease, new AbortController().signal);
+  await assert.rejects(async () => prepare(), /indexes/);
+  writeJson('capabilities.json', { 'wake-check': [CAROL] });
+  const previous = cache(CAROL, MAIL).gen;
+  await work(() => cache(CAROL, MAIL).gen > previous && !!cache(CAROL, MAIL).parts.fin?.delta && settled(CAROL, MAIL)());
+  const snapshot = await prepare();
+  assert.equal(snapshot?.valid(), true);
+  assert.ok(lines(join(to, `${o.name}.ndjson.zst`)).some(e => e.id === 'm2'));
+  logins.saveLogin(CAROL, { ...login, generation: 'a different login with the same timestamp' }, CAROL);
+  assert.equal(snapshot?.valid(), false);
+  await assert.rejects(async () => prepare(), /indexes/);
+});
+
+test('a denied library invalidates a wake snapshot before any recrawl and no old rows come back', async () => {
+  const who = CAROL, name = 'Site Reports', source = SITE;
+  const login = logins.logins(who).find(l => l.id === 'm365')!, grant = JSON.stringify([login.generation, null]);
+  logins.saveLogin(who, { ...login, offers: [...login.offers.filter(o => o.id !== source), { id: source, name }] });
+  await work(() => settled(who, source)() && cache(who, source).wakeGrant === grant && ['b!d', 'b!big'].every(p => cache(who, source).parts[p]?.delta));
+  const inst = instance(who, [source]), lease = logins.authority(inst);
+  const snapshot = async (dir: string) => ix.prepare(inst, join(tmp, dir), lease, new AbortController().signal);
+  const old = await snapshot('before-denial'), before = cache(who, source).gen;
+  assert.equal(old?.valid(), true);
+  let cut = false;
+  const denied = `${who} b!big`;
+  const remove = (person: string, offer: string) => {
+    if (person !== who || offer !== source || cut) return;
+    assert.equal(old?.valid(), false);
+    const reset = cache(who, source);
+    assert.ok(reset.gen > before);
+    assert.equal(reset.length, 0);
+    assert.equal(reset.parts['b!big'], undefined);
+    cut = true;
+  };
+  changes.on('index-removed', remove);
+  closed.add(denied);
+  try {
+    await due(who, source);
+    assert.ok(cut, 'state is invalidated synchronously, before a new page can be published');
+    assert.equal((await snapshot('after-denial'))?.valid(), true);
+    assert.ok(lines(join(tmp, 'after-denial', `${name}.ndjson.zst`)).every(l => l.parentReference?.driveId !== 'b!big'));
+  } finally {
+    closed.delete(denied);
+    changes.off('index-removed', remove);
+  }
+});
+
+test('a delta deletion invalidates a wake snapshot even when the part is still offered', async () => {
+  const who = CAROL, source = MAIL, login = logins.logins(who).find(l => l.id === 'm365')!;
+  const grant = JSON.stringify([login.generation, null]);
+  await work(() => cache(who, source).wakeGrant === grant && ['', 'fin'].every(p => cache(who, source).parts[p]?.delta) && settled(who, source)());
+  const inst = instance(who, [source]), lease = logins.authority(inst);
+  const snapshot = await ix.prepare(inst, join(tmp, 'before-mail-removal'), lease, new AbortController().signal);
+  assert.equal(snapshot?.valid(), true);
+  put('mail', { id: 'm2', '@removed': { reason: 'deleted' } }, 'fin');
+  await due(who, source);
+  assert.equal(snapshot?.valid(), false);
+  assert.ok(!lines(feedOf(who, source)).some(l => l.id === 'm2'), 'the rebuilt raw feed does not carry the removed row');
 });
 
 test('prepare shortens long offer names so index copies fit within 255-byte filenames, including duplicates', async () => {

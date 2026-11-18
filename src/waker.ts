@@ -47,7 +47,7 @@ const debounce = new Map<string, NodeJS.Timeout>();
 const waiting = new Set<Instance>();
 const retiring = new Set<Active>();
 
-type Check = { id: string; wake: Wake; inst: Instance; authority: Authority; token: string; cancel: AbortController; signal?: AbortSignal; view?: View; indexes?: Snapshot; ended?: Promise<void> };
+type Check = { id: string; wake: Wake; inst: Instance; authority: Authority; token: string; cancel: AbortController; signal?: AbortSignal; view?: View; indexes?: Snapshot; indexCut?: AbortController; ended?: Promise<void> };
 const checking = new Map<string, Check>();
 const busy = (series: string) => active.has(series) || checking.has(series);
 
@@ -378,7 +378,10 @@ function leases() {
   }
   if (checking.size) {
     const w = wakes();
-    for (const c of checking.values()) if (!currentCheck(c, w, t)) c.cancel.abort();
+    for (const c of checking.values()) {
+      if (!currentCheck(c, w, t)) c.cancel.abort();
+      else if (c.indexes && !c.indexes.valid()) c.indexCut?.abort();
+    }
   }
 }
 
@@ -453,6 +456,9 @@ export async function remove(inst: Instance, by: string, fields: () => Record<st
   return deleted;
 }
 changes.on('change', (id: string) => id === 'tree' && leases());
+changes.on('index-removed', (owner: string, offer: string) => {
+  for (const c of checking.values()) if (c.authority.owner === owner && c.indexes?.offers.includes(offer)) c.indexCut?.abort();
+});
 
 // A stop, as a restart's, cuts every run, its token first, so nothing more goes out, then its connections to its browsers, and
 // starts none; each Pi goes on, for what it had sent to be answered, until the server is gone. No run ends meanwhile: the next
@@ -641,8 +647,7 @@ function currentCheck(c: Check, w = wakes(), t = tree()) {
   const { inst, authority: lease } = c, owner = asPerson(lease.owner);
   if (stopping || c.cancel.signal.aborted || inst.doc.status !== 'open' || inst.closing || !owner || !can(owner, 'wake-check')
     || !sameAuthority(inst, lease) || !ownerOf(inst).consent?.autonomous || archived(t, inst.seriesId)
-    || JSON.stringify(w.pending[c.id]) !== JSON.stringify(c.wake) || (t.series[c.wake.target] && inst.label !== c.wake.label)
-    || (c.indexes && !c.indexes.valid())) return false;
+    || JSON.stringify(w.pending[c.id]) !== JSON.stringify(c.wake) || (t.series[c.wake.target] && inst.label !== c.wake.label)) return false;
   const reachable = [inst.seriesId, ...reach(t, inst.seriesId)];
   return !c.view || Object.values(c.view.series).every(id => reachable.includes(id));
 }
@@ -650,16 +655,17 @@ function currentCheck(c: Check, w = wakes(), t = tree()) {
 // Unlike a run's token, this opens only the two read-only routes in server.ts, never the proxy or a browser.
 export function wakeCheckView(token: string) {
   const c = [...checking.values()].find(c => c.token === token);
-  if (c?.view && !c.signal?.aborted && currentCheck(c)) return { inst: c.inst, view: c.view };
+  if (c?.view && !c.signal?.aborted && currentCheck(c) && (!c.indexes || c.indexes.valid())) return { inst: c.inst, view: c.view };
 }
 
 async function checkWake(c: Check, from: string) {
   const { inst, wake, id, token, authority: lease } = c, started = Date.now(), index = join(rfDir(), 'runs', token);
   const deadline = wake.deadline ? Date.parse(wake.deadline) : Infinity, expires = Math.min(deadline, started + 60_000);
-  const budget = AbortSignal.timeout(Math.max(1, expires - started)), signal = c.signal = AbortSignal.any([budget, c.cancel.signal]);
+  const indexCut = c.indexCut = new AbortController();
+  const budget = AbortSignal.timeout(Math.max(1, expires - started)), signal = c.signal = AbortSignal.any([budget, c.cancel.signal, indexCut.signal]);
   const checkpoint = () => {
     signal.throwIfAborted();
-    if (Date.now() >= expires || !currentCheck(c)) throw new HttpError(409, 'the check can no longer run');
+    if (Date.now() >= expires || !currentCheck(c) || (c.indexes && !c.indexes.valid())) throw new HttpError(409, 'the check can no longer run');
   };
   let result: Awaited<ReturnType<typeof runWakeCheck>> | undefined, failure = '';
   try {
@@ -689,8 +695,8 @@ async function checkWake(c: Check, from: string) {
         const indexes = await prepare(inst, index, lease, signal);
         checkpoint();
         if (indexes) {
-          if (!indexes.valid()) throw new Error('index snapshot changed');
           c.indexes = indexes;
+          checkpoint();
           v.ro.push([index, '/index']);
           v.env.RF_INDEX = '/index';
         }
@@ -710,6 +716,7 @@ async function checkWake(c: Check, from: string) {
     if (!currentCheck(c, w)) return;
     const forced = at >= deadline || (budget.aborted && expires === deadline);
     if (budget.aborted || at >= expires) { result = undefined; failure = 'timed out'; }
+    else if (indexCut.signal.aborted || (c.indexes && !c.indexes.valid())) { result = undefined; failure = 'index snapshot changed'; }
     advanceWake(w, id, wake);
     w.fired[wake.target] = now;
     if (!forced && result?.decision === 'stop') {
