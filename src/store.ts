@@ -4,6 +4,7 @@ import { basename, extname, join, posix, sep } from 'node:path';
 import { appendLine, changes, readLines, tree } from './system.ts';
 import { commit, committed, pack, type Who } from './git.ts';
 import { seriesSettings } from './series.ts';
+import { answered } from './messages.ts';
 
 // Paths in the screen are /-separated on every system.
 const normalize = posix.normalize;
@@ -338,19 +339,10 @@ export class Instance {
     return [...new Set(this.log.filter(e => e.op === 'comment').map(e => e.thread as string))];
   }
 
-  // Whether a comment waits no more: the agent withdrew it; a proposal was approved (signoff) or rejected; a question has a person's
-  // reply under it, and any other comment anyone's; a close accepted it. An ask from before questions and proposals, `ask: true`,
-  // takes any of these, its agent's reply withdrawing it; and from before replies named what they answer, any later word in its thread.
-  answered(c: Entry, upto = this.log.length): boolean {
-    return this.log.some(e => e.seq > c.seq && e.seq <= upto && (e.op === 'close' && (e.accepted as string[] | undefined)?.includes(`c${c.seq}`) || e.thread === c.thread && (e.on === c.seq ? ['signoff', 'reject', 'withdraw'].includes(e.op)
-      : e.parent === c.seq ? e.op === 'comment' && c.ask !== 'proposal' && !(c.ask === 'question' && e.by === 'agent')
-      : e.parent === undefined && e.on === undefined && ['comment', 'signoff', 'resolve'].includes(e.op))));
-  }
-
   // The agent's asks still waiting on people: those no one answered.
   asking(): Entry[] {
     const from = this.copied;
-    return this.log.filter(e => e.seq > from && e.op === 'comment' && e.by === 'agent' && e.ask && !this.answered(e));
+    return this.log.filter(e => e.seq > from && e.op === 'comment' && e.by === 'agent' && e.ask && !answered(this.log, e));
   }
 
   // Closing makes the instance the period's record and an example for the next, approving nothing: the asks still waiting are

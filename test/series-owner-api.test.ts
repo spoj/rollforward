@@ -402,10 +402,10 @@ test('run-read notes disappear, quiet answers wait, and agent asks and notes kee
     { seq: 6, op: 'done', by: 'server', seen: 3 },
     { seq: 7, op: 'comment', by: colleague },
   ];
-  const inst = { id: 'i', seriesId: 's', doc: { status: 'open' }, copied: 0, log, answered: () => false };
+  const inst = { id: 'i', seriesId: 's', doc: { status: 'open' }, copied: 0, log };
   const waits = runInNewContext(stripTypeScriptTypes(source.slice(source.indexOf('function waits('), source.indexOf('\nfunction asked('))) + '\nwaits', {
     ownerOf: () => ({ by: alice }), seen: () => ({ at: {} }), active: new Map(),
-    isPerson: e => e.by.includes('@'), standing: () => ({ word: 'answer', starts: false }),
+    isPerson: e => e.by.includes('@'), answered: () => false,
   });
   assert.deepEqual(Array.from(waits(inst), x => x.e.seq), [4, 5, 7]);
   log.push({ seq: 8, op: 'authority', by: alice });

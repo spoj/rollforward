@@ -17,7 +17,7 @@ import { act, canManage, canSee, changes, everyone, initSystem, isPeople, readJs
 import { checkTicks, logins, runnerAt, ownerOf, saveLogin, signOut, unoffer } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
-import { answered, byLogin, call, connections, intercepts, keyStatus, refreshKeys, letIn, loginOf, removeConnection, setConnection, setLetIn, upstreams } from './connections.ts';
+import { answered as callsAnswered, byLogin, call, connections, intercepts, keyStatus, refreshKeys, letIn, loginOf, removeConnection, setConnection, setLetIn, upstreams } from './connections.ts';
 import { syncCosts } from './costs.ts';
 import { addSite, allowHost, Browsers, endSignIn, endSignIns, endUnpermittedSignIns, enrolFlagged, isSignIn, isCheckingWebsite, drainWebsiteChecks, keepAlive, passAllowed, passUpgrade, reap, removeHost, removeSite, revokeInternalHosts, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
 import { addVpn, cancelVpnSignIn, disconnectVpn, dropUnpermittedVpns, isVpnSignIn, reapVpns, removeVpn, saveVpnSignIn, startVpnSignIn, vpns } from './vpns.ts';
@@ -27,6 +27,7 @@ import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, prune, startIndexing, track } from './indexes.ts';
 import { find, killTree, sample, startOf, type Monitor, type Sandbox } from './monitor.ts';
 import { addNote, notes, saveSeriesSettings, seriesSettings, type SeriesSettings } from './series.ts';
+import { answered, commentAt } from './messages.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
 import { active, archived, byToken, cancelWake, cancelWakes, closed, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, queued, remove, retireSeries, resolveFor, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesByTarget, wakeWith, weekly, wakeCheckStatus, wakeCheckView, reads, CUT, type Active, type Request } from './waker.ts';
 
@@ -227,7 +228,7 @@ function waits(inst: Instance, by?: string): { who: string; e: Entry }[] {
     ...inst.log.filter(e => e.op === 'done').map(e => (e.seen as number | undefined) ?? 0),
     inst.log.findLast(e => e.by === owner && ['create', 'comment', 'upload', 'attach', 'signoff', 'reject', 'react', 'rename', 'interrupt', 'promote'].includes(e.op))?.seq ?? 0);
   return inst.log.filter(e => e.seq > inst.copied && (e.by === 'agent'
-    ? e.op === 'comment' && (e.ask || e.note) && !inst.answered(e)
+    ? e.op === 'comment' && (e.ask || e.note) && !answered(inst.log, e)
     : e.seq > read && e.by !== owner && isPerson(e) && ['create', 'comment', 'upload'].includes(e.op)))
     .map(e => ({ who: e.by === 'agent' ? (e.to as string | undefined) ?? owner : owner, e })).filter(({ who }) => !!who);
 }
@@ -1332,7 +1333,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // A comment starts a thread, on an item (at a ref, such as a cell, if given) or on the instance, or replies under one of its
     // comments, which `thread` names by its seq, as cN, a thread's own id its first comment's. A person's starts a run, unless quiet.
     // The agent's starts nothing; its questions and proposals wait on their named person or the owner.
-    const { thread, item, ref, text, files = [], ask, to } = payload, under = thread === undefined ? undefined : inst.log.find(e => e.op === 'comment' && `c${e.seq}` === thread);
+    const { thread, item, ref, text, files = [], ask, to } = payload, under = commentAt(inst.log, thread);
     if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a comment has text');
     if (ask !== undefined && !['question', 'proposal'].includes(ask)) throw new HttpError(400, 'ask is "question" or "proposal"');
     if (thread !== undefined && !under) throw new HttpError(400, `no comment ${thread} to reply under; this instance's threads: ${inst.threads().join(', ') || 'none yet'}`);
@@ -1390,7 +1391,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
         if (action !== 'signoff' && ownerOf(inst).by !== by) throw new HttpError(403, `only the series owner, ${ownerOf(inst).by}, ${action === 'close' ? 'closes it, making it the record' : 'abandons it'}`);
       }
       const { thread, text, approved } = payload;
-      const ask = action === 'signoff' || action === 'reject' ? inst.log.find(e => `c${e.seq}` === thread && e.op === 'comment' && e.by === 'agent' && (e.ask === true || e.ask === 'proposal')) : undefined;
+      const target = action === 'signoff' || action === 'reject' ? commentAt(inst.log, thread) : undefined;
+      const ask = target?.by === 'agent' && (target.ask === true || target.ask === 'proposal') ? target : undefined;
       if (action === 'signoff' || action === 'reject') {
         // Anyone who sees the instance approves a proposal of the agent's, which `thread` names as cN, or rejects it, with a note, as an
         // ask from before questions and proposals, `ask: true`, which may have been either. Approving is a sign-off, the route's and the
@@ -1434,7 +1436,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       if (action === 'withdraw' && run) {
         // The agent withdraws a question or proposal of its own still waiting, saying why, and where it was answered, if it was: see, a
         // comment's seq.
-        const { thread, text, see } = payload, ask = inst.asking().find(e => `c${e.seq}` === thread), at = see === undefined ? undefined : inst.log.find(e => `c${e.seq}` === see && e.op === 'comment');
+        const { thread, text, see } = payload, ask = inst.asking().find(e => `c${e.seq}` === thread), at = commentAt(inst.log, see);
         if (!ask) throw new HttpError(409, `${thread} is no question or proposal of yours still waiting; those that are: ${inst.asking().map(e => `c${e.seq}`).join(', ') || 'none'}`);
         if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a withdrawal says why');
         if (see !== undefined && !at) throw new HttpError(400, `no comment ${see}`);
@@ -1864,7 +1866,7 @@ await reapVpns().catch(e => console.error('the tunnel service: tunnels a restart
 // A stop, as an update's, cuts the runs (waker.ts stop()) and exits once what they had sent is answered and logged, within 10 s.
 process.on('SIGTERM', async () => {
   stop();
-  await Promise.all([answered(10_000), drainWebsiteChecks(10_000)]);
+  await Promise.all([callsAnswered(10_000), drainWebsiteChecks(10_000)]);
   process.exit();
 });
 server.listen(port, host, () => {
