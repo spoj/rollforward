@@ -844,26 +844,18 @@ test("hovering a link to a deleted instance's comment says nothing of it, and no
   await page.evaluate(() => api('/api/instances/a5c0ff5e1f0a/comment', { method: 'POST', body: JSON.stringify({ text: 'Check the comment links.', quiet: true }) }));
   await page.waitForSelector('#conv .post[data-seq="7"]');
   await page.evaluate(() => api('/api/instances/a5c0ff5e1f09/delete', { method: 'POST' }));
-  await page.waitForFunction(async () => (await (await fetch('/api/instances/a5c0ff5e1f09')).json()).doc.status === 'deleted');
-  const toasts = await page.evaluateHandle(() => {
-    const added: string[] = [];
-    const observer = new MutationObserver(records => {
-      for (const record of records) for (const node of record.addedNodes) added.push(node.textContent ?? '');
-    });
-    observer.observe(document.querySelector('#toasts')!, { childList: true });
-    return { added, observer };
-  });
+  const tab = await browser.newPage({ storageState: await page.context().storageState() });
   try {
-    for (let i = 0; i < 2; i++) {
-      await page.mouse.move(0, 0);
-      await page.hover('#conv .post[data-seq="6"] a.cref[data-inst="a5c0ff5e1f09"]');
-      await page.waitForTimeout(500);
-    }
-    assert.deepEqual(await toasts.evaluate(({ added }) => added), []);
-    assert.equal(await page.locator('#conv a.cref[data-inst="a5c0ff5e1f09"]').getAttribute('title'), null);
+    await tab.goto(new URL('/#/a5c0ff5e1f0a', page.url()).href);
+    const link = tab.locator('#conv .post[data-seq="6"] a.cref[data-inst="a5c0ff5e1f09"]');
+    const [answer] = await Promise.all([tab.waitForResponse(r => new URL(r.url()).pathname === '/files/a5c0ff5e1f09/log.jsonl'), link.hover()]);
+    assert.equal(answer.status(), 404);
+    await tab.mouse.move(0, 0);
+    await link.hover();
+    assert.equal(await link.getAttribute('title'), null);
+    assert.deepEqual(await tab.locator('#toasts .toast').allTextContents(), []);
   } finally {
-    await toasts.evaluate(({ observer }) => observer.disconnect());
-    await toasts.dispose();
+    await tab.close();
   }
 });
 
